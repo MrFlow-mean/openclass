@@ -1,0 +1,17 @@
+{
+  "name": "ai-board-course-system",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "dev": "concurrently -k \"npm run dev:api\" \"npm run dev:web\"",
+    "dev:web": "npm --prefix apps/web run dev",
+    "dev:api": "cd apps/api && ../../.venv/bin/uvicorn app.main:app --reload",
+    "build:web": "npm --prefix apps/web run build",
+    "lint:web": "npm --prefix apps/web run lint",
+    "test:api": "cd apps/api && ../../.venv/bin/pytest"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}
+
