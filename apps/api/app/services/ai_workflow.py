@@ -162,8 +162,12 @@ def _is_forced_start_request(message: str) -> bool:
     compact = re.sub(r"\s+", "", message)
     forced_patterns = [
         "直接开始",
+        "直接开讲",
+        "开讲",
+        "直接讲",
         "开始教学",
         "马上开始",
+        "马上讲",
         "现在开始",
         "先开始",
         "直接教",
@@ -188,8 +192,11 @@ def _is_explanation_request(message: str) -> bool:
         return False
     explanation_keywords = [
         "解释",
+        "讲解",
         "讲一下",
         "讲讲",
+        "开讲",
+        "直接讲",
         "怎么理解",
         "为什么",
         "什么意思",
@@ -436,9 +443,12 @@ def _chapter_overlap_score(
     keywords: list[str],
     chapter_path: list[str] | None = None,
     chapter_level: int = 1,
+    chapter_no: int | None = None,
+    section_no: int | None = None,
 ) -> tuple[float, list[str]]:
     lowered_query = query_text.lower()
     phrases = _query_phrases(query_text)
+    requested_chapter_no, requested_section_no = _extract_requested_outline_reference(query_text)
     hits: list[str] = []
     score = 0.0
 
@@ -484,6 +494,15 @@ def _chapter_overlap_score(
     if chapter_level > 1 and any(phrase in title_lower or phrase in path_corpus for phrase in phrases):
         score += min((chapter_level - 1) * 0.03, 0.09)
 
+    if requested_chapter_no is not None and chapter_no == requested_chapter_no:
+        score += 0.42 if requested_section_no is None else 0.18
+        hits.append(f"第{requested_chapter_no}章")
+        if requested_section_no is not None and section_no == requested_section_no:
+            score += 0.72
+            hits.append(f"第{requested_chapter_no}章第{requested_section_no}节")
+        elif requested_section_no is not None and chapter_level == 1:
+            score += 0.08
+
     unique_hits: list[str] = []
     seen: set[str] = set()
     for hit in hits:
@@ -514,6 +533,7 @@ def match_resources(
     matches: list[ResourceMatch] = []
     for resource in course_package.resources:
         for chapter in resource.outline:
+            chapter_no, section_no = _outline_reference_position(resource.outline, chapter.id)
             primary_score, primary_overlap = _chapter_overlap_score(
                 primary_query_text,
                 chapter_title=chapter.title,
@@ -521,6 +541,8 @@ def match_resources(
                 keywords=chapter.keywords,
                 chapter_path=chapter.path,
                 chapter_level=chapter.level,
+                chapter_no=chapter_no,
+                section_no=section_no,
             )
             score, overlap = _chapter_overlap_score(
                 query_text,
@@ -529,6 +551,8 @@ def match_resources(
                 keywords=chapter.keywords,
                 chapter_path=chapter.path,
                 chapter_level=chapter.level,
+                chapter_no=chapter_no,
+                section_no=section_no,
             )
             effective_score = max(primary_score, score)
             if effective_score > 0.18:
@@ -563,6 +587,20 @@ def _build_reference_prompt(match: ResourceMatch) -> ResourceReferencePrompt:
         reason=match.reason,
         score=match.score,
     )
+
+
+def _should_auto_attach_reference_for_direct_teaching(
+    *,
+    request: ChatRequest,
+    decision: BoardDecision,
+    top_match: ResourceMatch | None,
+) -> bool:
+    if top_match is None:
+        return False
+    chapter_no, _ = _extract_requested_outline_reference(request.message)
+    if chapter_no is not None:
+        return True
+    return decision.action == "no_change" and (_is_explanation_request(request.message) or _is_forced_start_request(request.message))
 
 
 def _selected_reference_context(
@@ -686,6 +724,54 @@ def _build_scope_options(matches: list[ResourceMatch]) -> list[ScopeOption]:
     ]
 
 
+def _is_reference_separator_title(title: str) -> bool:
+    cleaned = title.strip()
+    return cleaned.startswith("---") or cleaned.lower().startswith("part ")
+
+
+def _extract_requested_outline_reference(text: str) -> tuple[int | None, int | None]:
+    match = re.search(r"第\s*(\d+)\s*章(?:第\s*(\d+)\s*[节讲部分])?", text)
+    if match:
+        chapter_no = int(match.group(1))
+        section_no = int(match.group(2)) if match.group(2) else None
+        return chapter_no, section_no
+    dotted = re.search(r"\bchapter\s*(\d+)\s*(?:section\s*(\d+))?\b", text, flags=re.IGNORECASE)
+    if dotted:
+        chapter_no = int(dotted.group(1))
+        section_no = int(dotted.group(2)) if dotted.group(2) else None
+        return chapter_no, section_no
+    number_pair = re.search(r"\b(\d+)\.(\d+)\b", text)
+    if number_pair:
+        return int(number_pair.group(1)), int(number_pair.group(2))
+    return None, None
+
+
+def _outline_reference_position(
+    chapters: list[object],
+    chapter_id: str,
+) -> tuple[int | None, int | None]:
+    chapter_no = 0
+    section_no = 0
+    current_chapter_id: str | None = None
+    for raw in chapters:
+        chapter = raw
+        title = getattr(chapter, "title", "")
+        level = int(getattr(chapter, "level", 1))
+        current_id = getattr(chapter, "id", "")
+        if level == 1 and not _is_reference_separator_title(str(title)):
+            chapter_no += 1
+            current_chapter_id = current_id
+            section_no = 0
+            if current_id == chapter_id:
+                return chapter_no, None
+            continue
+        if level >= 2 and current_chapter_id is not None:
+            section_no += 1
+            if current_id == chapter_id:
+                return chapter_no or None, section_no
+    return None, None
+
+
 def _fallback_board_decision(
     lesson: Lesson,
     request: ChatRequest,
@@ -717,7 +803,7 @@ def _fallback_board_decision(
         return BoardDecision(action="append_section", reason="用户希望把相关内容纳入当前 lesson 的新章节。")
     if any(keyword in message for keyword in ["更易懂", "通俗", "改写", "整理", "练习", "习题", "例题", "总结", "补一段", "润色", "完善"]):
         return BoardDecision(action="edit_board", reason="当前需求更适合先调整整篇讲义，再围绕更新后的结构讲解。")
-    if any(keyword in message for keyword in ["解释", "讲一下", "讲讲", "为什么", "什么意思", "怎么理解"]):
+    if any(keyword in message for keyword in ["解释", "讲解", "开讲", "直接讲", "讲一下", "讲讲", "为什么", "什么意思", "怎么理解"]):
         return BoardDecision(action="no_change", reason="当前更像围绕现有讲义的讲解请求，不必先改文档。")
     if requirements.output_preference and not is_document_empty(lesson.board_document):
         return BoardDecision(action="no_change", reason="现有讲义已经能支撑这次讲解，先不改文档。")
@@ -853,8 +939,59 @@ def _fallback_board_teaching_guide(
     document: BoardDocument,
     requirements: LearningRequirementSheet,
     request_message: str,
+    selected_reference: ResourceReferenceContext | None = None,
 ) -> BoardTeachingGuide:
     needs = _requirement_needs(requirements)
+    if is_document_empty(document) and selected_reference is not None:
+        selected_items = [
+            BoardTeachingSelectedItem(
+                excerpt=(chunk.excerpt or selected_reference.summary)[:240],
+                source_heading=chunk.title,
+                reason="当前板书还没有可讲内容，因此先直接用已锁定参考章节里的关键片段开讲。",
+                mapped_needs=needs[:1],
+                teaching_role="main_idea" if index == 1 else ("why_it_matters" if index == 2 else "example"),
+                order_index=index,
+            )
+            for index, chunk in enumerate(selected_reference.chunks[:3], start=1)
+        ]
+        if not selected_items:
+            selected_items = [
+                BoardTeachingSelectedItem(
+                    excerpt=selected_reference.summary[:240],
+                    source_heading=selected_reference.chapter_title,
+                    reason="当前板书为空，先用已确认的教材章节摘要起讲。",
+                    mapped_needs=needs[:1],
+                    teaching_role="main_idea",
+                    order_index=1,
+                )
+            ]
+        need_mappings = [
+            BoardNeedMapping(
+                need=need,
+                matched_excerpt=selected_items[0].excerpt,
+                source_heading=selected_items[0].source_heading,
+                rationale="当前优先围绕已锁定的教材章节直接开讲，先满足核心学习需求。",
+            )
+            for need in needs[:3]
+        ]
+        return BoardTeachingGuide(
+            board_document_id=document.id,
+            board_snapshot_hash=_board_snapshot_hash(document),
+            board_title=document.title,
+            selected_items=selected_items,
+            need_mappings=need_mappings,
+            teaching_flow=[
+                f"先根据《{selected_reference.resource_name}》的《{selected_reference.chapter_title}》讲主线。",
+                "再解释这一节为什么重要、它解决什么问题。",
+                "最后给一个例子、类比或检查问题。",
+            ],
+            generation_rationale="用户明确指定了教材章节且要求直接开讲，因此在不改板书正文的前提下，优先使用已锁定参考章节的核心片段组织讲解。",
+            teacher_brief=(
+                f"直接按《{selected_reference.chapter_title}》开讲："
+                "先说这节要解决的问题，再讲关键概念之间的关系，最后给一个例子帮助理解。"
+            ),
+        )
+
     focus_terms = {term.lower() for term in _query_phrases(f"{request_message}\n{requirements.learning_goal}")}
     scored_segments: list[tuple[int, str | None, str]] = []
     for heading, excerpt in _board_segments(document):
@@ -927,11 +1064,13 @@ def _bound_board_teaching_guide(
     document: BoardDocument,
     requirements: LearningRequirementSheet,
     request_message: str,
+    selected_reference: ResourceReferenceContext | None = None,
 ) -> BoardTeachingGuide:
     fallback = _fallback_board_teaching_guide(
         document=document,
         requirements=requirements,
         request_message=request_message,
+        selected_reference=selected_reference,
     )
     if guidance is None:
         return fallback
@@ -1007,6 +1146,7 @@ def _resolve_board_teaching_guide(
     requirements: LearningRequirementSheet,
     document: BoardDocument,
     prefer_existing: bool,
+    selected_reference: ResourceReferenceContext | None = None,
 ) -> BoardTeachingGuide:
     existing = _current_board_teaching_guide(lesson, document) if prefer_existing else None
     if existing is not None:
@@ -1022,6 +1162,7 @@ def _resolve_board_teaching_guide(
         document=document,
         requirements=requirements,
         request_message=request.message,
+        selected_reference=selected_reference,
     )
 
 
@@ -1239,7 +1380,7 @@ def _run_board_manager(state: WorkflowState) -> WorkflowState:
         and top_match.is_high_overlap
         and abs(top_match.score - second_match.score) <= 0.06
     )
-    if request.resource_reference_action is None and decision.action in {"edit_board", "append_section", "create_new_lesson"}:
+    if request.resource_reference_action is None and decision.action in {"edit_board", "append_section", "create_new_lesson", "no_change"}:
         if ambiguous_reference and top_match is not None:
             return {
                 "board_decision": BoardDecision(
@@ -1251,7 +1392,9 @@ def _run_board_manager(state: WorkflowState) -> WorkflowState:
                 "reference_prompt": _build_reference_prompt(top_match),
                 "selected_reference": None,
             }
-        if top_match is not None and top_match.is_high_overlap:
+        if top_match is not None and (
+            top_match.is_high_overlap or _should_auto_attach_reference_for_direct_teaching(request=request, decision=decision, top_match=top_match)
+        ):
             return {
                 "board_decision": decision,
                 "scope_options": [],
@@ -1319,6 +1462,7 @@ def _run_board_executor(state: WorkflowState) -> WorkflowState:
                 requirements=requirements,
                 document=lesson.board_document,
                 prefer_existing=True,
+                selected_reference=selected_reference,
             ),
         }
 
@@ -1335,6 +1479,7 @@ def _run_board_executor(state: WorkflowState) -> WorkflowState:
             requirements=requirements,
             document=generated_lesson.board_document,
             prefer_existing=True,
+            selected_reference=selected_reference,
         )
         generated_lesson.board_teaching_guide = board_teaching_guide
         if generated_lesson.history_graph.commits:
@@ -1393,6 +1538,7 @@ def _run_board_executor(state: WorkflowState) -> WorkflowState:
             document=next_document,
             requirements=requirements,
             request_message=request.message,
+            selected_reference=selected_reference,
         )
     else:
         next_document = _fallback_document_update(
@@ -1408,6 +1554,7 @@ def _run_board_executor(state: WorkflowState) -> WorkflowState:
             requirements=requirements,
             document=next_document,
             prefer_existing=False,
+            selected_reference=selected_reference,
         )
 
     guide = _interactive_teaching_guide(

@@ -150,6 +150,61 @@ def test_workflow_extracts_level_and_goal_from_user_message() -> None:
     assert result["needs_clarification"] is False
 
 
+def test_workflow_honors_direct_open_lecture_without_repeating_clarification(tmp_path) -> None:
+    package = build_initial_course_package()
+    lesson = create_empty_lesson("cs测试2")
+    package.lessons.append(lesson)
+    resource_path = tmp_path / "csapp-mini.md"
+    resource_path.write_text(
+        "\n".join(
+            [
+                "# Chapter 1",
+                "## Section 1.1",
+                "Intro 1.1",
+                "## Section 1.2",
+                "Intro 1.2",
+                "# Chapter 2",
+                "## Section 2.1",
+                "Intro 2.1",
+                "## Section 2.2",
+                "Intro 2.2",
+                "# Chapter 3",
+                "## Section 3.1",
+                "Intro 3.1",
+                "## Section 3.2",
+                "Intro 3.2",
+                "# Chapter 4",
+                "## Section 4.1",
+                "Intro 4.1",
+                "## Section 4.2",
+                "Intro 4.2",
+                "# Chapter 5",
+                "## Expressing Program Performance",
+                "This section explains how to express program performance clearly.",
+                "## Program Example",
+                "This section walks through a concrete program example.",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    package.resources.append(build_resource_item(resource_path, "CSAPP mini.md"))
+
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "course_package": package,
+            "request": ChatRequest(message="为我讲解教材中的第5章第2节的内容，直接开讲"),
+        }
+    )
+
+    assert result["needs_clarification"] is False
+    assert result["board_decision"].action == "no_change"
+    assert result["selected_reference"] is not None
+    assert result["selected_reference"].chapter_title == "Program Example"
+    assert result["board_teaching_guide"] is not None
+    assert "什么水平" not in result["teacher_message"]
+
+
 def test_workflow_can_answer_without_changing_the_board() -> None:
     package = build_initial_course_package()
     lesson = package.lessons[0]
@@ -593,6 +648,56 @@ def test_match_resources_prioritizes_current_request_over_context_noise(tmp_path
 
     assert matches
     assert matches[0].chapter_title == "Virtual Memory"
+
+
+def test_match_resources_understands_numeric_chapter_and_section_reference(tmp_path) -> None:
+    lesson = create_empty_lesson("教材测试")
+    package = build_initial_course_package()
+    package.lessons.append(lesson)
+    resource_path = tmp_path / "structured-notes.md"
+    resource_path.write_text(
+        "\n".join(
+            [
+                "# 第一章",
+                "## 第一节",
+                "内容 1.1",
+                "## 第二节",
+                "内容 1.2",
+                "# 第二章",
+                "## 第一节",
+                "内容 2.1",
+                "## 第二节",
+                "内容 2.2",
+                "# 第三章",
+                "## 第一节",
+                "内容 3.1",
+                "## 第二节",
+                "内容 3.2",
+                "# 第四章",
+                "## 第一节",
+                "内容 4.1",
+                "## 第二节",
+                "内容 4.2",
+                "# 第五章",
+                "## 第一节",
+                "内容 5.1",
+                "## 第二节",
+                "内容 5.2",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    package.resources.append(build_resource_item(resource_path, "structured-notes.md"))
+
+    matches = match_resources(
+        package,
+        lesson,
+        ChatRequest(message="请直接讲教材里的第5章第2节"),
+        effective_requirements(lesson),
+    )
+
+    assert matches
+    assert matches[0].chapter_title == "第二节"
 
 
 def test_docx_import_export_roundtrip(tmp_path) -> None:
