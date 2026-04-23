@@ -2,19 +2,35 @@ import type {
   ChatRequestPayload,
   ChatResponse,
   CoursePackage,
-  PatchOperation,
+  DocumentAIEditPayload,
+  DocumentSavePayload,
+  RealtimeConnectPayload,
+  RealtimeConnectResponse,
+  RealtimeEventLogPayload,
   ScopeAction,
 } from "@/types";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
+const configuredApiBase = process.env.NEXT_PUBLIC_API_BASE_URL;
+
+function getApiBase() {
+  if (configuredApiBase) {
+    return configuredApiBase;
+  }
+  if (typeof window !== "undefined" && window.location.hostname) {
+    return `${window.location.protocol}//${window.location.hostname}:8000`;
+  }
+  return "http://localhost:8000";
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
+  const headers = new Headers(init?.headers);
+  if (!headers.has("Content-Type") && !(init?.body instanceof FormData) && !(init?.body instanceof Blob)) {
+    headers.set("Content-Type", "application/json");
+  }
+
+  const response = await fetch(`${getApiBase()}${path}`, {
     ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers ?? {}),
-    },
+    headers,
     cache: "no-store",
   });
 
@@ -30,20 +46,51 @@ export const api = {
   getCoursePackage() {
     return request<CoursePackage>("/api/course-package");
   },
-  generateLesson(topic: string, branchFromLessonId?: string) {
+  generateLesson(topic: string, branchFromLessonId?: string, startBlank = false) {
     return request<CoursePackage>("/api/lessons/generate", {
       method: "POST",
       body: JSON.stringify({
         topic,
         branch_from_lesson_id: branchFromLessonId ?? null,
+        start_blank: startBlank,
       }),
     });
   },
-  manualCommit(lessonId: string, operations: PatchOperation[], label: string, message: string) {
-    return request<CoursePackage>(`/api/lessons/${lessonId}/manual-commit`, {
+  saveDocument(lessonId: string, payload: DocumentSavePayload) {
+    return request<CoursePackage>(`/api/lessons/${lessonId}/document/save`, {
       method: "POST",
-      body: JSON.stringify({ operations, label, message }),
+      body: JSON.stringify(payload),
     });
+  },
+  aiEditDocument(lessonId: string, payload: DocumentAIEditPayload) {
+    return request<ChatResponse>(`/api/lessons/${lessonId}/document/ai-edit`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
+  async importDocx(lessonId: string, file: File) {
+    const formData = new FormData();
+    formData.append("file", file);
+    const response = await fetch(`${getApiBase()}/api/lessons/${lessonId}/document/import-docx`, {
+      method: "POST",
+      body: formData,
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(text || `Upload failed with ${response.status}`);
+    }
+    return response.json() as Promise<CoursePackage>;
+  },
+  async exportDocx(lessonId: string) {
+    const response = await fetch(`${getApiBase()}/api/lessons/${lessonId}/document/export-docx`, {
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(text || `Export failed with ${response.status}`);
+    }
+    return response.blob();
   },
   createBranch(lessonId: string, name: string, fromCommitId?: string | null) {
     return request<CoursePackage>(`/api/lessons/${lessonId}/branches`, {
@@ -88,26 +135,37 @@ export const api = {
       body: JSON.stringify(payload),
     });
   },
-  applyProposal(lessonId: string, operations: PatchOperation[], label: string, message: string) {
-    return request<CoursePackage>(`/api/lessons/${lessonId}/apply-proposal`, {
+  connectRealtime(lessonId: string, payload: RealtimeConnectPayload) {
+    return request<RealtimeConnectResponse>(`/api/lessons/${lessonId}/realtime/connect`, {
       method: "POST",
-      body: JSON.stringify({ operations, label, message }),
+      body: JSON.stringify(payload),
     });
+  },
+  logRealtimeEvent(lessonId: string, payload: RealtimeEventLogPayload) {
+    return request<{ status: string }>(`/api/lessons/${lessonId}/realtime/events`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
+  logRealtimeEventBeacon(lessonId: string, payload: RealtimeEventLogPayload) {
+    if (typeof navigator === "undefined" || typeof navigator.sendBeacon !== "function") {
+      return false;
+    }
+    const blob = new Blob([JSON.stringify(payload)], { type: "application/json" });
+    return navigator.sendBeacon(`${getApiBase()}/api/lessons/${lessonId}/realtime/events`, blob);
   },
   async uploadResource(file: File) {
     const formData = new FormData();
     formData.append("file", file);
-
-    const response = await fetch(`${API_BASE}/api/resources/upload`, {
+    const response = await fetch(`${getApiBase()}/api/resources/upload`, {
       method: "POST",
       body: formData,
+      cache: "no-store",
     });
-
     if (!response.ok) {
       const text = await response.text();
       throw new Error(text || `Upload failed with ${response.status}`);
     }
-
     return response.json() as Promise<CoursePackage>;
   },
   runScopeAction(

@@ -1,0 +1,192 @@
+import json
+
+import pytest
+from pydantic import BaseModel
+
+import app.main as main_module
+from app.models import ChatRequest, CreateBranchRequest
+from app.services.ai_logging import ai_log_context, ai_usage_logger
+from app.services.course_store import FileCourseStore
+from app.services.openai_course_ai import OpenAICourseAI
+
+
+def _read_log_entries(path):
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+@pytest.fixture
+def isolated_ai_log(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    log_path = tmp_path / "logs" / "ai-usage.jsonl"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(ai_usage_logger, "path", log_path)
+    return log_path
+
+
+def test_openai_parse_logs_prompt_and_output(isolated_ai_log) -> None:
+    class _LessonOutput:
+        id = "resp_123"
+        output_text = '{"title":"勾股定理"}'
+        usage = {"total_tokens": 42}
+
+        def __init__(self) -> None:
+            self.output_parsed = {
+                "title": "勾股定理",
+                "summary": "理解三边关系",
+                "tags": ["勾股定理"],
+                "blocks": [],
+            }
+
+    class _FakeResponses:
+        def __init__(self) -> None:
+            self.payload = None
+
+        def parse(self, **kwargs):
+            self.payload = kwargs
+            return _LessonOutput()
+
+    class _FakeClient:
+        def __init__(self) -> None:
+            self.responses = _FakeResponses()
+
+    ai = OpenAICourseAI()
+    ai.client = _FakeClient()
+    ai.config.default_model = "gpt-5.3"
+    ai.config.lesson_model = "gpt-5.3"
+
+    with ai_log_context(trace_id="trace_unit", route="unit_test"):
+        generated = ai.generate_lesson_document(topic="勾股定理")
+
+    assert generated is not None
+    entries = _read_log_entries(isolated_ai_log)
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry["event_type"] == "openai_text_call"
+    assert entry["context"]["trace_id"] == "trace_unit"
+    assert entry["payload"]["model"] == "gpt-5.3"
+    assert entry["payload"]["user_prompt"]
+    assert entry["payload"]["parsed_output"]["title"] == "勾股定理"
+
+
+def test_openai_parse_retries_model_not_found_with_fallback(isolated_ai_log) -> None:
+    class _Output(BaseModel):
+        title: str
+
+    class _Response:
+        id = "resp_retry"
+        output_text = '{"title":"勾股定理"}'
+        usage = {"total_tokens": 21}
+
+        def __init__(self) -> None:
+            self.output_parsed = _Output(title="勾股定理")
+
+    class _FakeResponses:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def parse(self, **kwargs):
+            model = kwargs["model"]
+            self.calls.append(model)
+            if model == "gpt-5.3":
+                raise Exception(
+                    "Error code: 400 - {'error': {'message': \"The requested model 'gpt-5.3' does not exist.\", "
+                    "'type': 'invalid_request_error', 'param': 'model', 'code': 'model_not_found'}}"
+                )
+            return _Response()
+
+    class _FakeClient:
+        def __init__(self) -> None:
+            self.responses = _FakeResponses()
+
+    ai = OpenAICourseAI()
+    ai.client = _FakeClient()
+    ai.config.default_model = "gpt-5.3"
+    ai.config.pm_model = "gpt-5.3"
+    ai.config.fallback_model = "gpt-5-mini"
+
+    with ai_log_context(trace_id="trace_retry", route="unit_test"):
+        result = ai._parse("pm", "system", "user", _Output)
+
+    assert result is not None
+    assert result.title == "勾股定理"
+    assert ai.client.responses.calls == ["gpt-5.3", "gpt-5-mini"]
+
+    entries = _read_log_entries(isolated_ai_log)
+    assert [entry["event_type"] for entry in entries] == ["openai_text_call_retry", "openai_text_call"]
+    assert entries[0]["payload"]["model"] == "gpt-5.3"
+    assert entries[0]["payload"]["retry_model"] == "gpt-5-mini"
+    assert entries[1]["payload"]["model"] == "gpt-5-mini"
+    assert entries[1]["payload"]["fallback_from_model"] == "gpt-5.3"
+
+
+def test_chat_route_logs_request_and_response(monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path) -> None:
+    store = FileCourseStore(tmp_path / "store.json")
+    monkeypatch.setattr(main_module, "STORE", store)
+    monkeypatch.setattr(main_module.openai_course_ai, "client", None)
+
+    lesson_id = store.load().lessons[0].id
+    response = main_module.chat_on_lesson(lesson_id, ChatRequest(message="请解释一下勾股定理的核心公式"))
+
+    assert response.teacher_message
+    entries = _read_log_entries(isolated_ai_log)
+    event_types = [entry["event_type"] for entry in entries]
+    assert "chat_request" in event_types
+    assert "chat_response" in event_types
+    assert "ai_interaction_message" in event_types
+
+    chat_request = next(entry for entry in entries if entry["event_type"] == "chat_request")
+    chat_response = next(entry for entry in entries if entry["event_type"] == "chat_response")
+    interaction_messages = [
+        entry for entry in entries if entry["event_type"] == "ai_interaction_message"
+    ]
+    updated_lesson = next(lesson for lesson in response.course_package.lessons if lesson.id == lesson_id)
+    flow_commit = updated_lesson.history_graph.commits[-1]
+    assert chat_request["payload"]["message"] == "请解释一下勾股定理的核心公式"
+    assert chat_response["payload"]["teacher_message"] == response.teacher_message
+    assert chat_request["context"]["trace_id"] == chat_response["context"]["trace_id"]
+    assert len(interaction_messages) == 2
+    assert interaction_messages[0]["payload"]["channel"] == "text"
+    assert interaction_messages[0]["payload"]["direction"] == "input"
+    assert interaction_messages[0]["payload"]["content"] == "请解释一下勾股定理的核心公式"
+    assert interaction_messages[1]["payload"]["channel"] == "text"
+    assert interaction_messages[1]["payload"]["direction"] == "output"
+    assert interaction_messages[1]["payload"]["content"] == response.teacher_message
+    assert flow_commit.metadata["kind"] == "chat_flow"
+    assert flow_commit.metadata["user_message"] == "请解释一下勾股定理的核心公式"
+    assert flow_commit.metadata["assistant_message"] == response.teacher_message
+    assert flow_commit.metadata["board_action"] == response.board_decision.action
+
+    branched_package = main_module.create_lesson_branch(
+        lesson_id,
+        CreateBranchRequest(name="flow-branch", from_commit_id=flow_commit.id),
+    )
+    branched_lesson = next(lesson for lesson in branched_package.lessons if lesson.id == lesson_id)
+    assert branched_lesson.history_graph.branches["flow-branch"].base_commit_id == flow_commit.id
+
+
+def test_realtime_transcript_route_logs_each_message(isolated_ai_log) -> None:
+    result = main_module.log_realtime_event(
+        "lesson_demo",
+        main_module.RealtimeTranscriptLogRequest(
+            client_session_id="realtime_session_1",
+            lesson_title="勾股定理",
+            role="assistant",
+            transport_event_type="response.audio_transcript.done",
+            transcript="我们先从直角三角形开始。",
+        ),
+    )
+
+    assert result["status"] == "ok"
+    entries = _read_log_entries(isolated_ai_log)
+    assert len(entries) == 2
+    transcript_entry = next(entry for entry in entries if entry["event_type"] == "realtime_transcript")
+    interaction_entry = next(
+        entry for entry in entries if entry["event_type"] == "ai_interaction_message"
+    )
+    assert transcript_entry["context"]["trace_id"] == "realtime_session_1"
+    assert transcript_entry["payload"]["role"] == "assistant"
+    assert transcript_entry["payload"]["transcript"] == "我们先从直角三角形开始。"
+    assert interaction_entry["payload"]["channel"] == "voice"
+    assert interaction_entry["payload"]["direction"] == "output"
+    assert interaction_entry["payload"]["content"] == "我们先从直角三角形开始。"

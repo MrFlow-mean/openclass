@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 def now_iso() -> str:
@@ -59,9 +59,13 @@ BoardAction = Literal[
     "append_section",
     "create_new_lesson",
     "await_scope_choice",
+    "await_reference_choice",
 ]
 SelectionKind = Literal["chat", "board"]
 ConversationRole = Literal["user", "assistant"]
+ResourceReferenceAction = Literal["confirm", "skip"]
+ResourceScanStrategy = Literal["outline_only", "heading_section", "page_window", "fulltext_match"]
+ChatInteractionMode = Literal["ask", "direct_edit"]
 
 
 class BlockStyle(BaseModel):
@@ -81,10 +85,59 @@ class BoardBlock(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+def _plain_text_to_tiptap_doc(text: str) -> dict[str, Any]:
+    paragraphs = [
+        {"type": "paragraph", "content": [{"type": "text", "text": line}]}
+        for line in text.splitlines()
+        if line.strip()
+    ]
+    return {"type": "doc", "content": paragraphs or [{"type": "paragraph"}]}
+
+
+def _legacy_blocks_to_rich_document(blocks: list[Any]) -> tuple[str, str]:
+    html_parts: list[str] = []
+    text_parts: list[str] = []
+    for raw_block in blocks:
+        block = raw_block.model_dump(mode="json") if hasattr(raw_block, "model_dump") else raw_block
+        if not isinstance(block, dict):
+            continue
+        title = str(block.get("title") or "").strip()
+        content = str(block.get("content") or "").strip()
+        block_type = block.get("type")
+        if title:
+            tag = "h1" if block_type == "heading" else "h2"
+            html_parts.append(f"<{tag}>{title}</{tag}>")
+            text_parts.append(title)
+        if content:
+            paragraphs = [line.strip() for line in content.splitlines() if line.strip()]
+            for paragraph in paragraphs:
+                html_parts.append(f"<p>{paragraph}</p>")
+                text_parts.append(paragraph)
+    return "\n".join(html_parts), "\n".join(text_parts)
+
+
 class BoardDocument(BaseModel):
     id: str = Field(default_factory=lambda: new_id("doc"))
     title: str
-    blocks: list[BoardBlock]
+    content_json: dict[str, Any] = Field(default_factory=lambda: {"type": "doc", "content": [{"type": "paragraph"}]})
+    content_html: str = ""
+    content_text: str = ""
+
+    @model_validator(mode="before")
+    @classmethod
+    def upgrade_legacy_blocks(cls, value: Any) -> Any:
+        if not isinstance(value, dict) or "blocks" not in value:
+            return value
+        if value.get("content_html") or value.get("content_text") or value.get("content_json"):
+            return value
+        html, text = _legacy_blocks_to_rich_document(value.get("blocks") or [])
+        return {
+            "id": value.get("id"),
+            "title": value.get("title") or "Untitled document",
+            "content_json": _plain_text_to_tiptap_doc(text),
+            "content_html": html,
+            "content_text": text,
+        }
 
 
 class PatchOperation(BaseModel):
@@ -133,6 +186,15 @@ class LearningRequirementSheet(BaseModel):
     risk_notes: list[str] = Field(default_factory=list)
 
 
+class LearningClarificationStatus(BaseModel):
+    progress: int = Field(ge=0, le=100)
+    label: str
+    reason: str
+    missing_items: list[str] = Field(default_factory=list)
+    can_start: bool = False
+    forced_start: bool = False
+
+
 class TeachingGuideMapping(BaseModel):
     block_id: str
     supports_goal: str
@@ -161,6 +223,7 @@ class CommitRecord(BaseModel):
     parent_ids: list[str] = Field(default_factory=list)
     operations: list[PatchOperation] = Field(default_factory=list)
     snapshot: BoardDocument
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class BranchRef(BaseModel):
@@ -202,9 +265,14 @@ class LibraryChapter(BaseModel):
     title: str
     level: int = 1
     page_range: str | None = None
+    page_start: int | None = None
+    page_end: int | None = None
     summary: str
     keywords: list[str] = Field(default_factory=list)
     prerequisites: list[str] = Field(default_factory=list)
+    locator_hint: str | None = None
+    order_index: int = 0
+    scan_strategy: ResourceScanStrategy = "outline_only"
 
 
 class ResourceLibraryItem(BaseModel):
@@ -217,6 +285,7 @@ class ResourceLibraryItem(BaseModel):
     outline: list[LibraryChapter] = Field(default_factory=list)
     concept_index: dict[str, list[str]] = Field(default_factory=dict)
     extracted_text_available: bool = False
+    text_content: str | None = None
     source_path: str | None = None
 
 
@@ -257,6 +326,37 @@ class ResourceMatch(BaseModel):
     resource_name: str
     chapter_title: str
     reason: str
+    score: float = 0.0
+    is_high_overlap: bool = False
+
+
+class ResourceReferencePrompt(BaseModel):
+    resource_id: str
+    chapter_id: str
+    resource_name: str
+    chapter_title: str
+    question: str
+    reason: str
+    confirm_label: str = "参考这一章节"
+    skip_label: str = "先不参考"
+    score: float = 0.0
+
+
+class ResourceContextChunk(BaseModel):
+    title: str
+    excerpt: str
+    teaching_hint: str
+
+
+class ResourceReferenceContext(BaseModel):
+    resource_id: str
+    chapter_id: str
+    resource_name: str
+    chapter_title: str
+    summary: str
+    teaching_points: list[str] = Field(default_factory=list)
+    chunks: list[ResourceContextChunk] = Field(default_factory=list)
+    full_text: str = Field(default="", exclude=True, repr=False)
 
 
 class BoardDecision(BaseModel):
@@ -267,8 +367,12 @@ class BoardDecision(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     selection: SelectionRef | None = None
+    interaction_mode: ChatInteractionMode = "ask"
     scope_action: ScopeAction | None = None
     resource_chapter_id: str | None = None
+    resource_reference_action: ResourceReferenceAction | None = None
+    resource_reference_resource_id: str | None = None
+    resource_reference_chapter_id: str | None = None
     conversation: list[ConversationTurn] = Field(default_factory=list)
 
 
@@ -300,12 +404,15 @@ class CoursePackageView(BaseModel):
 class ChatResponse(BaseModel):
     teacher_message: str
     learning_requirement_sheet: LearningRequirementSheet
+    learning_clarification: LearningClarificationStatus
     board_decision: BoardDecision
     needs_clarification: bool = False
     clarification_questions: list[str] = Field(default_factory=list)
     patch_proposal: PatchProposal | None = None
     scope_options: list[ScopeOption] = Field(default_factory=list)
     resource_matches: list[ResourceMatch] = Field(default_factory=list)
+    reference_prompt: ResourceReferencePrompt | None = None
+    selected_reference: ResourceReferenceContext | None = None
     created_lesson: LessonView | None = None
     course_package: CoursePackageView
 
@@ -313,12 +420,27 @@ class ChatResponse(BaseModel):
 class GenerateLessonRequest(BaseModel):
     topic: str
     branch_from_lesson_id: str | None = None
+    start_blank: bool = False
 
 
 class ManualCommitRequest(BaseModel):
-    operations: list[PatchOperation]
-    label: str = "Manual board edit"
-    message: str = "Updated board blocks from the editor"
+    document: BoardDocument | None = None
+    operations: list[PatchOperation] = Field(default_factory=list)
+    label: str = "Manual document edit"
+    message: str = "Saved rich document changes from the editor"
+
+
+class DocumentSaveRequest(BaseModel):
+    document: BoardDocument
+    label: str = "Manual document edit"
+    message: str = "Saved rich document changes from the editor"
+
+
+class DocumentAIEditRequest(BaseModel):
+    instruction: str
+    selection_text: str | None = None
+    replace_whole: bool = False
+    conversation: list[ConversationTurn] = Field(default_factory=list)
 
 
 class CreateBranchRequest(BaseModel):

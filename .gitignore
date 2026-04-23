@@ -5,6 +5,11 @@ __pycache__/
 node_modules/
 apps/web/node_modules/
 apps/web/.next/
+.local-runtime/
+*.swp
+tmp_test_images/
 apps/api/data/store.json
+apps/api/data/store.legacy-blocks-backup-*.json
 apps/api/data/uploads/
+apps/api/data/logs/
 apps/api/.env

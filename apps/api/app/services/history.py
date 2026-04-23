@@ -8,7 +8,6 @@ from app.models import (
     PatchOperation,
     now_iso,
 )
-from app.services.document_ops import apply_patch
 
 
 def current_head_commit(lesson: Lesson) -> CommitRecord:
@@ -32,11 +31,12 @@ def commit_operations(
     label: str,
     message: str,
     new_document: BoardDocument | None = None,
+    metadata: dict[str, object] | None = None,
 ) -> Lesson:
     head = current_head_commit(lesson)
     branch_name = lesson.history_graph.current_branch
     if new_document is None:
-        new_document, _ = apply_patch(lesson.board_document, operations)
+        new_document = lesson.board_document
 
     commit = CommitRecord(
         label=label,
@@ -45,6 +45,7 @@ def commit_operations(
         parent_ids=[head.id],
         operations=operations,
         snapshot=new_document,
+        metadata=metadata or {},
     )
     lesson.board_document = new_document
     lesson.history_graph.commits.append(commit)
@@ -84,4 +85,3 @@ def restore_commit(lesson: Lesson, commit_id: str, label: str) -> Lesson:
         message=f"Restored snapshot from {commit.label}",
         new_document=commit.snapshot,
     )
-

@@ -42,6 +42,8 @@ export OPENAI_BOARD_MODEL=gpt-5.3
 export OPENAI_GUIDE_MODEL=gpt-5.3
 export OPENAI_TEACHER_MODEL=gpt-5.3
 export OPENAI_LESSON_MODEL=gpt-5.3
+export OPENAI_REALTIME_MODEL=gpt-4o-realtime-preview
+export OPENAI_REALTIME_VOICE=marin
 ```
 
 如果没有设置 `OPENAI_API_KEY`，后端会自动回退到当前内置的启发式逻辑，方便继续本地开发。
@@ -54,6 +56,23 @@ npm run dev
 
 - 前端：`http://localhost:3000`
 - 后端：`http://localhost:8000`
+- AI 输入输出日志：`apps/api/data/logs/ai-usage.jsonl`
+
+### 4. 一键启动
+
+如果你以后不想每次都手动输入命令，可以直接双击项目根目录里的：
+
+```text
+start-ai-board.command
+```
+
+它会：
+
+- 启动前端 `3000`
+- 启动后端 `8000`
+- 打开本地启动页 `launcher/ai-board-launcher.html`
+
+这个启动页会把当前前端原样嵌进去，所以你看到的仍然是现有那套页面，不是另一套重写的静态页。
 
 ## 目录结构
 

@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AI 黑板课程工作台</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f4f8fb;
+        --panel: rgba(255, 255, 255, 0.92);
+        --border: rgba(148, 163, 184, 0.22);
+        --text: #0f172a;
+        --muted: #64748b;
+        --accent: #0ea5e9;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: var(--bg);
+        color: var(--text);
+        font-family: "Avenir Next", "PingFang SC", "Microsoft YaHei", sans-serif;
+      }
+
+      body {
+        position: relative;
+      }
+
+      iframe {
+        display: block;
+        width: 100vw;
+        height: 100vh;
+        border: 0;
+        background: #fff;
+      }
+
+      .status {
+        position: fixed;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+        background:
+          radial-gradient(circle at top, rgba(14, 165, 233, 0.08), transparent 32%),
+          var(--bg);
+        transition: opacity 0.25s ease, visibility 0.25s ease;
+        z-index: 2;
+      }
+
+      .status--hidden {
+        opacity: 0;
+        visibility: hidden;
+        pointer-events: none;
+      }
+
+      .status__panel {
+        width: min(560px, calc(100vw - 32px));
+        padding: 28px 28px 24px;
+        border-radius: 16px;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        box-shadow: 0 24px 64px rgba(15, 23, 42, 0.08);
+        backdrop-filter: blur(18px);
+      }
+
+      .status__title {
+        margin: 0;
+        font-size: 24px;
+        font-weight: 700;
+      }
+
+      .status__desc {
+        margin: 12px 0 0;
+        color: var(--muted);
+        line-height: 1.7;
+        font-size: 14px;
+      }
+
+      .status__hint {
+        margin-top: 18px;
+        padding-top: 16px;
+        border-top: 1px solid rgba(148, 163, 184, 0.16);
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.7;
+      }
+
+      .status__actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 20px;
+      }
+
+      .status__button {
+        appearance: none;
+        border: 1px solid rgba(14, 165, 233, 0.2);
+        background: rgba(14, 165, 233, 0.08);
+        color: #0369a1;
+        border-radius: 999px;
+        padding: 10px 14px;
+        font: inherit;
+        font-size: 13px;
+        cursor: pointer;
+      }
+
+      .status__button:hover {
+        background: rgba(14, 165, 233, 0.12);
+      }
+
+      .status__meta {
+        margin-top: 14px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="status" id="status">
+      <div class="status__panel">
+        <h1 class="status__title">AI 黑板课程工作台</h1>
+        <p class="status__desc" id="statusText">正在连接本地前端服务…</p>
+        <div class="status__actions">
+          <button class="status__button" id="retryButton" type="button">重新检测</button>
+          <button class="status__button" id="openButton" type="button">直接打开前端</button>
+        </div>
+        <div class="status__hint">
+          这个页面本身只是本地启动页，真正的应用还是当前那套 Next.js 前端。<br />
+          它会自动把运行中的前端原样嵌进来，所以界面和交互不会被改成另一套。
+        </div>
+        <div class="status__meta" id="statusMeta"></div>
+      </div>
+    </div>
+
+    <iframe id="appFrame" title="AI 黑板课程工作台"></iframe>
+
+    <script>
+      const candidates = ["http://127.0.0.1:3000", "http://localhost:3000"];
+      const statusEl = document.getElementById("status");
+      const statusTextEl = document.getElementById("statusText");
+      const statusMetaEl = document.getElementById("statusMeta");
+      const retryButton = document.getElementById("retryButton");
+      const openButton = document.getElementById("openButton");
+      const appFrame = document.getElementById("appFrame");
+
+      let activeUrl = candidates[0];
+      let probeToken = 0;
+      let retryTimer = null;
+
+      function setStatus(text, meta) {
+        statusTextEl.textContent = text;
+        statusMetaEl.textContent = meta || "";
+        statusEl.classList.remove("status--hidden");
+      }
+
+      function hideStatus() {
+        statusEl.classList.add("status--hidden");
+      }
+
+      function openAppDirectly() {
+        window.open(activeUrl, "_blank", "noopener,noreferrer");
+      }
+
+      function ensureRetryLoop() {
+        if (retryTimer !== null) {
+          return;
+        }
+        retryTimer = window.setInterval(() => {
+          connect();
+        }, 2500);
+      }
+
+      function stopRetryLoop() {
+        if (retryTimer === null) {
+          return;
+        }
+        window.clearInterval(retryTimer);
+        retryTimer = null;
+      }
+
+      function probe(url, timeoutMs) {
+        return new Promise((resolve) => {
+          const image = new Image();
+          let done = false;
+          const timer = setTimeout(() => finish(false), timeoutMs);
+
+          function finish(ok) {
+            if (done) {
+              return;
+            }
+            done = true;
+            clearTimeout(timer);
+            resolve(ok);
+          }
+
+          image.onload = () => finish(true);
+          image.onerror = () => finish(false);
+          image.src = `${url}/favicon.ico?ts=${Date.now()}`;
+        });
+      }
+
+      async function connect() {
+        const currentToken = ++probeToken;
+        setStatus("正在连接本地前端服务…", "优先检测 127.0.0.1:3000，其次 localhost:3000");
+
+        for (const url of candidates) {
+          const ok = await probe(url, 1200);
+          if (currentToken !== probeToken) {
+            return;
+          }
+          if (ok) {
+            activeUrl = url;
+            if (appFrame.dataset.activeUrl !== url) {
+              appFrame.src = `${url}/`;
+              appFrame.dataset.activeUrl = url;
+            }
+            stopRetryLoop();
+            hideStatus();
+            return;
+          }
+        }
+
+        activeUrl = candidates[0];
+        ensureRetryLoop();
+        setStatus(
+          "还没有检测到本地前端服务。",
+          "先双击 start-ai-board.command，或在项目目录运行 npm run dev。这个启动页会继续自动重试。"
+        );
+      }
+
+      retryButton.addEventListener("click", connect);
+      openButton.addEventListener("click", openAppDirectly);
+      appFrame.addEventListener("load", hideStatus);
+
+      ensureRetryLoop();
+      connect();
+    </script>
+  </body>
+</html>

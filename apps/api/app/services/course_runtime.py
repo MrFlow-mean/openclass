@@ -1,8 +1,40 @@
 from __future__ import annotations
 
-from app.models import BoardDocument, LearningRequirementSheet, Lesson, new_id
-from app.services.lesson_factory import build_requirements, build_teaching_guide, create_lesson
+from app.models import BoardDocument, LearningRequirementSheet, Lesson, ResourceReferenceContext, new_id
+from app.services.lesson_factory import (
+    build_requirements,
+    build_teaching_guide,
+    create_lesson,
+)
 from app.services.openai_course_ai import build_generated_lesson, openai_course_ai
+
+
+def _document_outline(document: BoardDocument) -> list[str]:
+    lines = [line.strip() for line in document.content_text.splitlines() if line.strip()]
+    return [line for line in lines if len(line) <= 44][:8] or [document.title]
+
+
+def _reference_context_payload(
+    reference_context: ResourceReferenceContext | None,
+    *,
+    include_full_text: bool,
+) -> dict[str, object] | None:
+    if reference_context is None:
+        return None
+
+    payload: dict[str, object] = {
+        "resource_id": reference_context.resource_id,
+        "chapter_id": reference_context.chapter_id,
+        "resource_name": reference_context.resource_name,
+        "chapter_title": reference_context.chapter_title,
+        "summary": reference_context.summary,
+        "teaching_points": reference_context.teaching_points,
+        "chunks": [chunk.model_dump(mode="json") for chunk in reference_context.chunks],
+        "chapter_text_length": len(reference_context.full_text),
+    }
+    if include_full_text:
+        payload["chapter_text"] = reference_context.full_text
+    return payload
 
 
 def normalize_requirements(
@@ -13,7 +45,7 @@ def normalize_requirements(
 ) -> LearningRequirementSheet:
     normalized = LearningRequirementSheet.model_validate(requirements.model_dump(mode="json"))
     normalized.theme = lesson_title
-    normalized.board_scope = [block.title for block in document.blocks[:6]]
+    normalized.board_scope = _document_outline(document)
     if not normalized.current_questions:
         normalized.current_questions = [f"如何理解 {lesson_title}"]
     return normalized
@@ -68,18 +100,27 @@ def build_lesson_for_topic(
     topic: str,
     *,
     requirements: LearningRequirementSheet | None = None,
+    reference_context: ResourceReferenceContext | None = None,
 ) -> Lesson:
-    generated = openai_course_ai.generate_lesson_document(topic=topic)
+    generated = openai_course_ai.generate_lesson_document(
+        topic=topic,
+        reference_context=_reference_context_payload(reference_context, include_full_text=True),
+    )
     if generated is None:
-        return create_lesson(topic, requirements=requirements)
+        return create_lesson(topic, requirements=requirements, reference_context=reference_context)
 
-    document = BoardDocument(title=generated.title, blocks=generated.blocks)
+    document = BoardDocument(
+        title=generated.title,
+        content_json=generated.content_json,
+        content_html=generated.content_html,
+        content_text=generated.content_text,
+    )
     if requirements is None:
         normalized_requirements = openai_course_ai.generate_learning_requirements(
             lesson_title=generated.title,
             lesson_summary=generated.summary,
             lesson_tags=generated.tags,
-            block_titles=[block.title for block in generated.blocks],
+            document_outline=_document_outline(document),
             user_message=f"我想学习 {topic}",
             selection_excerpt=None,
         ) or build_requirements(topic)
