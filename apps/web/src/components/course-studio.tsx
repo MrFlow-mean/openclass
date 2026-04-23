@@ -233,11 +233,11 @@ function buildWelcomeMessages(): ChatMessage[] {
   return [
     createChatMessage(
       "assistant",
-      "你好！你可以从学习目标出发提问，我会围绕当前讲义解释、重写、生成练习，并把所有变更记录进版本历史。"
+      "你好！你可以从学习目标出发提问，我会先给出一版可讲的主线内容，再按你的追问继续扩写、改写和补练习。"
     ),
     createChatMessage(
       "assistant",
-      "右侧现在是连续 Word-like 板书文档。你可以选中一段文字，让 AI 只改这一段，也可以让我重写整篇讲义。"
+      "右侧现在是连续 Word-like 板书文档。你可以选中一段文字让我只改这一段，也可以让我先起草一版讲义，再逐段讲透。"
     ),
   ];
 }
@@ -1208,14 +1208,14 @@ export function CourseStudio() {
     const pendingAssistantMessage = createChatMessage(
       "assistant",
       payloadOverride?.scope_action
-        ? "正在继续执行这一步，这通常需要几十秒到几分钟。"
+        ? "正在继续执行这一步，我会先把主线接上，再继续细化。"
         : payloadOverride?.resource_reference_action === "confirm"
-          ? "正在结合你确认的参考章节生成讲义，这通常需要几十秒到几分钟。"
+          ? "正在结合你确认的参考章节起草讲义，我会先给出可讲版本。"
           : payloadOverride?.resource_reference_action === "skip"
-            ? "正在按当前 lesson 主线继续生成内容，这通常需要几十秒到几分钟。"
+            ? "正在按当前 lesson 主线继续生成内容，我会先把第一版讲清楚。"
             : isDirectEdit
-              ? "正在改写右侧讲义，这通常需要几十秒到几分钟。"
-              : "正在整理内容并更新右侧讲义，这通常需要几十秒到几分钟。",
+              ? "正在改写右侧讲义，并同步准备更像真人老师的讲法。"
+              : "正在整理内容并更新右侧讲义，我会先返回一版可讲内容。",
       "pending"
     );
     chatRequestInFlightRef.current = true;

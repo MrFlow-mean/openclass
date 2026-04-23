@@ -9,7 +9,7 @@ from app.services.course_store import build_initial_course_package
 from app.services.document_ops import apply_patch
 from app.services.history import create_branch, restore_commit
 from app.services.lesson_factory import create_empty_lesson, create_lesson
-from app.services.openai_course_ai import openai_course_ai
+from app.services.openai_course_ai import DocumentEditOutput, openai_course_ai
 from app.services.resource_library import _keywords_from_text, build_resource_item, extract_reference_context
 from app.services.rich_document import build_document, export_docx, import_docx, replace_selection_in_document
 
@@ -74,7 +74,7 @@ def test_workflow_asks_for_clarification_when_request_is_too_vague() -> None:
     assert result["clarification_questions"]
 
 
-def test_workflow_scores_subject_only_learning_goal_as_15_percent() -> None:
+def test_workflow_scores_subject_only_learning_goal_as_35_percent() -> None:
     package = build_initial_course_package()
     lesson = package.lessons[0]
 
@@ -86,7 +86,7 @@ def test_workflow_scores_subject_only_learning_goal_as_15_percent() -> None:
         }
     )
 
-    assert result["learning_clarification"].progress == 15
+    assert result["learning_clarification"].progress == 35
     assert result["needs_clarification"] is True
 
 
@@ -132,6 +132,24 @@ def test_workflow_can_start_when_user_forces_teaching_before_goal_is_clear() -> 
     assert result["needs_clarification"] is False
 
 
+def test_workflow_extracts_level_and_goal_from_user_message() -> None:
+    package = build_initial_course_package()
+    lesson = create_empty_lesson("法语口语")
+    package.lessons.append(lesson)
+
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "course_package": package,
+            "request": ChatRequest(message="教我法语 B2 我想去法国旅游"),
+        }
+    )
+
+    assert result["learning_requirement_sheet"].level == "B2"
+    assert "法国旅游" in result["learning_requirement_sheet"].success_criteria
+    assert result["needs_clarification"] is False
+
+
 def test_workflow_can_answer_without_changing_the_board() -> None:
     package = build_initial_course_package()
     lesson = package.lessons[0]
@@ -147,6 +165,7 @@ def test_workflow_can_answer_without_changing_the_board() -> None:
     assert result["needs_clarification"] is False
     assert result["board_decision"].action == "no_change"
     assert result["document_updated"] is False
+    assert result["board_teaching_guide"] is not None
     assert "勾股定理" in result["teacher_message"] or "直角三角形" in result["teacher_message"]
 
 
@@ -261,7 +280,58 @@ def test_workflow_generates_initial_dialogue_document_for_blank_lesson() -> None
     assert "Je pensais que je prendrais" in result["teacher_document"].content_text
 
 
-def test_workflow_prompts_for_reference_when_resource_chapter_is_highly_related(tmp_path) -> None:
+def test_workflow_uses_fast_path_for_clear_generation_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    package = build_initial_course_package()
+    lesson = create_empty_lesson("板书测试")
+    package.lessons.append(lesson)
+
+    monkeypatch.setattr(
+        openai_course_ai,
+        "assess_learning_requirements",
+        lambda **kwargs: pytest.fail("clear generation request should skip PM AI assessment"),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_board_decision",
+        lambda **kwargs: pytest.fail("clear generation request should skip board manager AI decision"),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_teacher_message",
+        lambda **kwargs: pytest.fail("document generation with talk track should skip extra teacher AI call"),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_document_edit",
+        lambda **kwargs: DocumentEditOutput(
+            rationale="fast path",
+            replacement_html="<h1>虚拟内存</h1><p>先理解地址空间，再理解页表和缺页异常。</p>",
+            replacement_text="虚拟内存\n先理解地址空间，再理解页表和缺页异常。",
+            teacher_talk_track="这节不用背定义，我们先抓住虚拟内存是在帮程序和物理内存之间做一层更灵活的映射。",
+            replace_whole=True,
+        ),
+    )
+
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "course_package": package,
+            "request": ChatRequest(
+                message=(
+                    "我是一名计算机专业学生，请给我生成一版虚拟内存的讲义，"
+                    "重点讲地址空间、页表和缺页异常，并带一个入门例子"
+                ),
+            ),
+        }
+    )
+
+    assert result["board_decision"].action == "edit_board"
+    assert result["document_updated"] is True
+    assert "虚拟内存" in result["teacher_document"].content_text
+    assert "不用背定义" in result["teacher_message"]
+
+
+def test_workflow_auto_selects_reference_when_one_candidate_is_clearly_best(tmp_path) -> None:
     package = build_initial_course_package()
     lesson = package.lessons[0]
     resource_path = tmp_path / "memory-notes.md"
@@ -279,10 +349,39 @@ def test_workflow_prompts_for_reference_when_resource_chapter_is_highly_related(
         }
     )
 
+    assert result["board_decision"].action == "edit_board"
+    assert result["reference_prompt"] is None
+    assert result["selected_reference"] is not None
+    assert result["selected_reference"].chapter_title == "虚拟内存"
+
+
+def test_workflow_prompts_for_reference_when_top_candidates_are_close(tmp_path) -> None:
+    package = build_initial_course_package()
+    lesson = package.lessons[0]
+    first_path = tmp_path / "ring1.md"
+    first_path.write_text(
+        "# 环论\n## 环\n环这一节先解释加法群与乘法封闭。",
+        encoding="utf-8",
+    )
+    second_path = tmp_path / "ring2.md"
+    second_path.write_text(
+        "# 抽象代数\n## 环\n环这一节重点讲单位元、零因子与理想。",
+        encoding="utf-8",
+    )
+    package.resources.append(build_resource_item(first_path, "环论讲义.md"))
+    package.resources.append(build_resource_item(second_path, "抽象代数讲义.md"))
+
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "course_package": package,
+            "request": ChatRequest(message="请把环这一节整理成更易懂的板书"),
+        }
+    )
+
     assert result["board_decision"].action == "await_reference_choice"
     assert result["reference_prompt"] is not None
-    assert "虚拟内存" in result["reference_prompt"].question
-    assert result["document_updated"] is False
+    assert "要参考它来生成吗" in result["reference_prompt"].question
 
 
 def test_workflow_uses_selected_reference_after_user_confirms(tmp_path) -> None:
@@ -315,6 +414,7 @@ def test_workflow_uses_selected_reference_after_user_confirms(tmp_path) -> None:
     assert result["selected_reference"].chunks
     assert "虚拟内存用于把程序看到的地址空间和物理内存解耦" in result["selected_reference"].full_text
     assert result["document_updated"] is True
+    assert result["board_teaching_guide"] is not None
 
 
 def test_build_resource_item_extracts_image_ocr_text(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:

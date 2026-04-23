@@ -246,6 +246,7 @@ class Lesson(BaseModel):
     summary: str
     tags: list[str] = Field(default_factory=list)
     board_document: BoardDocument
+    board_teaching_guide: BoardTeachingGuide | None = None
     learning_requirements: LearningRequirementSheet | None = None
     teaching_guide: TeachingGuide
     history_graph: LessonHistoryGraph
@@ -270,6 +271,9 @@ class LibraryChapter(BaseModel):
     summary: str
     keywords: list[str] = Field(default_factory=list)
     prerequisites: list[str] = Field(default_factory=list)
+    parent_id: str | None = None
+    parent_title: str | None = None
+    path: list[str] = Field(default_factory=list)
     locator_hint: str | None = None
     order_index: int = 0
     scan_strategy: ResourceScanStrategy = "outline_only"
@@ -362,6 +366,33 @@ class ResourceReferenceContext(BaseModel):
 class BoardDecision(BaseModel):
     action: BoardAction
     reason: str
+
+
+class BoardTeachingSelectedItem(BaseModel):
+    excerpt: str
+    source_heading: str | None = None
+    reason: str
+    mapped_needs: list[str] = Field(default_factory=list)
+    teaching_role: str = "main_idea"
+    order_index: int = 0
+
+
+class BoardNeedMapping(BaseModel):
+    need: str
+    matched_excerpt: str
+    source_heading: str | None = None
+    rationale: str
+
+
+class BoardTeachingGuide(BaseModel):
+    board_document_id: str = ""
+    board_snapshot_hash: str = ""
+    board_title: str = ""
+    selected_items: list[BoardTeachingSelectedItem] = Field(default_factory=list)
+    need_mappings: list[BoardNeedMapping] = Field(default_factory=list)
+    teaching_flow: list[str] = Field(default_factory=list)
+    generation_rationale: str = ""
+    teacher_brief: str = ""
 
 
 class ChatRequest(BaseModel):

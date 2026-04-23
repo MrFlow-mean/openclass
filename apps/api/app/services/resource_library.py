@@ -48,6 +48,26 @@ def _chapter(
     )
 
 
+def _attach_outline_hierarchy(chapters: list[LibraryChapter]) -> list[LibraryChapter]:
+    stack: list[LibraryChapter] = []
+    enriched: list[LibraryChapter] = []
+    for chapter in chapters:
+        while stack and stack[-1].level >= chapter.level:
+            stack.pop()
+        parent = stack[-1] if stack else None
+        path = [*(parent.path if parent else []), chapter.title]
+        enriched_chapter = chapter.model_copy(
+            update={
+                "parent_id": parent.id if parent else None,
+                "parent_title": parent.title if parent else None,
+                "path": path,
+            }
+        )
+        enriched.append(enriched_chapter)
+        stack.append(enriched_chapter)
+    return enriched
+
+
 def _curated_csapp_outline() -> list[LibraryChapter]:
     return [
         _chapter("Computer Systems Tour", "系统总览，建立整本书的坐标系。", ["system", "overview", "csapp", "系统总览"], order_index=0),
@@ -586,9 +606,11 @@ def extract_outline(file_path: Path, original_name: str, mime_type: str) -> tupl
 def build_resource_item(file_path: Path, original_name: str) -> ResourceLibraryItem:
     mime_type = mimetypes.guess_type(original_name)[0] or "application/octet-stream"
     outline, extracted, text_content = extract_outline(file_path, original_name, mime_type)
+    outline = _attach_outline_hierarchy(outline)
     concept_index: dict[str, list[str]] = {}
     for chapter in outline:
-        for keyword in chapter.keywords:
+        path_keywords = _keywords_from_text(" ".join(chapter.path))
+        for keyword in [*chapter.keywords, *path_keywords]:
             concept_index.setdefault(keyword, []).append(chapter.id)
 
     return ResourceLibraryItem(

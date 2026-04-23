@@ -107,14 +107,16 @@ def _get_lesson(package: CoursePackage, lesson_id: str) -> Lesson:
 
 
 def _lesson_view(lesson: Lesson) -> LessonView:
-    return LessonView.model_validate(lesson.model_dump(mode="json", exclude={"teaching_guide"}))
+    return LessonView.model_validate(
+        lesson.model_dump(mode="json", exclude={"teaching_guide", "board_teaching_guide"})
+    )
 
 
 def _package_view(package: CoursePackage) -> CoursePackageView:
     return CoursePackageView.model_validate(
         package.model_dump(
             mode="json",
-            exclude={"lessons": {"__all__": {"teaching_guide"}}},
+            exclude={"lessons": {"__all__": {"teaching_guide", "board_teaching_guide"}}},
         )
     )
 
@@ -162,6 +164,11 @@ def _chat_flow_metadata(
         "board_action": board_decision.action,
         "selection": request.selection.model_dump(mode="json") if request.selection else None,
         "learning_clarification": learning_clarification.model_dump(mode="json"),
+        "board_teaching_guide": (
+            workflow_result["board_teaching_guide"].model_dump(mode="json")
+            if workflow_result.get("board_teaching_guide") is not None
+            else None
+        ),
         "created_lesson_id": created_lesson.id if created_lesson else None,
         "created_lesson_title": created_lesson.title if created_lesson else None,
         "auto_applied": auto_applied,
@@ -496,12 +503,11 @@ def chat_on_lesson(lesson_id: str, request: ChatRequest) -> ChatResponse:
                 {"lesson": lesson, "course_package": package, "request": request}
             )
             lesson.learning_requirements = workflow_result["learning_requirement_sheet"]
-            refresh_lesson_runtime(
-                lesson,
-                requirements=workflow_result["learning_requirement_sheet"],
-            )
-
+            lesson.summary = workflow_result["learning_requirement_sheet"].learning_goal
+            lesson.board_teaching_guide = workflow_result.get("board_teaching_guide")
             created_lesson = workflow_result.get("generated_lesson")
+            if created_lesson is None:
+                lesson.teaching_guide = workflow_result["teaching_guide"]
             teacher_message = workflow_result["teacher_message"]
             teacher_document = workflow_result.get("teacher_document")
             auto_applied_document = (
@@ -513,11 +519,7 @@ def chat_on_lesson(lesson_id: str, request: ChatRequest) -> ChatResponse:
 
             if auto_applied_document and teacher_document is not None:
                 lesson.board_document = teacher_document
-                refresh_lesson_runtime(
-                    lesson,
-                    document=teacher_document,
-                    requirements=workflow_result["learning_requirement_sheet"],
-                )
+                lesson.teaching_guide = workflow_result["teaching_guide"]
                 if was_blank_document:
                     teacher_message = f"我已经把这次需求生成到右侧板书里了。\n{teacher_message}"
 

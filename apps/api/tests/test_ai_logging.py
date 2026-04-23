@@ -156,6 +156,7 @@ def test_chat_route_logs_request_and_response(monkeypatch: pytest.MonkeyPatch, i
     assert flow_commit.metadata["user_message"] == "请解释一下勾股定理的核心公式"
     assert flow_commit.metadata["assistant_message"] == response.teacher_message
     assert flow_commit.metadata["board_action"] == response.board_decision.action
+    assert flow_commit.metadata["board_teaching_guide"]["board_document_id"] == updated_lesson.board_document.id
 
     branched_package = main_module.create_lesson_branch(
         lesson_id,
@@ -163,6 +164,27 @@ def test_chat_route_logs_request_and_response(monkeypatch: pytest.MonkeyPatch, i
     )
     branched_lesson = next(lesson for lesson in branched_package.lessons if lesson.id == lesson_id)
     assert branched_lesson.history_graph.branches["flow-branch"].base_commit_id == flow_commit.id
+
+
+def test_chat_route_reuses_workflow_runtime_without_extra_refresh(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = FileCourseStore(tmp_path / "store.json")
+    monkeypatch.setattr(main_module, "STORE", store)
+    monkeypatch.setattr(main_module.openai_course_ai, "client", None)
+    monkeypatch.setattr(
+        main_module,
+        "refresh_lesson_runtime",
+        lambda *args, **kwargs: pytest.fail("chat route should not refresh runtime after workflow execution"),
+    )
+
+    lesson_id = store.load().lessons[0].id
+    response = main_module.chat_on_lesson(
+        lesson_id,
+        ChatRequest(message="请解释一下勾股定理的核心公式"),
+    )
+
+    assert response.teacher_message
 
 
 def test_realtime_transcript_route_logs_each_message(isolated_ai_log) -> None:

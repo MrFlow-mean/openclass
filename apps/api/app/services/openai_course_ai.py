@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from app.models import (
     BoardDecision,
     BoardDocument,
+    BoardTeachingGuide,
     BranchRef,
     CommitRecord,
     LearningRequirementSheet,
@@ -62,6 +63,8 @@ class DocumentEditOutput(BaseModel):
     commit_label: str = "AI document edit"
     replacement_html: str
     replacement_text: str = ""
+    teacher_talk_track: str = ""
+    board_teaching_guide: BoardTeachingGuide | None = None
     replace_whole: bool = False
     target_action: ScopeAction = "patch_current_lesson"
     suggested_title: str | None = None
@@ -379,7 +382,13 @@ class OpenAICourseAI:
                 "If the user asks to generate or rewrite the lesson, return a complete handout-style HTML document with headings, long dialogue/body content, "
                 "explanations, examples, exercises, and answers. Do not split content into blocks or cards. "
                 "If selected_reference.chapter_text is provided, treat it as the full relevant chapter content and ground the handout in that chapter. "
-                "For French cafe dialogue lessons, the dialogue must be the main body and should be long enough for teaching."
+                "For French cafe dialogue lessons, the dialogue must be the main body and should be long enough for teaching. "
+                "Also return board_teaching_guide in Chinese, permanently bound to this board snapshot. "
+                "In board_teaching_guide, explain which board excerpts should be taught first, why they were selected, "
+                "which learner needs they correspond to, and what teaching flow Teacher AI should follow. "
+                "Also return teacher_talk_track in Chinese: a short classroom-style explanation using your own words, "
+                "not a recap of the document wording. It should sound like a real teacher introducing the main idea, "
+                "the why behind it, and one way to understand or apply it."
             ),
             user_prompt=_json(prompt_payload),
             log_user_prompt=_json(log_payload),
@@ -418,8 +427,7 @@ class OpenAICourseAI:
         lesson_title: str,
         request_message: str,
         requirements: LearningRequirementSheet,
-        document: BoardDocument,
-        guide: TeachingGuide,
+        board_teaching_guide: BoardTeachingGuide,
         board_decision: BoardDecision,
         document_updated: bool,
         scope_options: list[ScopeOption],
@@ -432,16 +440,21 @@ class OpenAICourseAI:
             "teacher",
             system_prompt=(
                 "You are Teacher AI speaking to the learner in Chinese. "
-                "If clarification is needed, ask the questions naturally. If the document was updated, mention that the right-side Word-like board has been updated. "
-                "If no_change, answer directly using the current document. Do not mention internal schemas."
+                "Sound like a live teacher, not a narrator reading the board. "
+                "If clarification is needed, ask at most one very short question and only about current level or learning purpose/application. "
+                "If the document was updated, mention that the right-side Word-like board has been updated in one short clause only. "
+                "Teach mainly from board_teaching_guide.selected_items and board_teaching_guide.teacher_brief. "
+                "Do not quote, enumerate, or read out the board unless the learner explicitly asks for exact wording. "
+                "Prefer this structure: first give the core idea in your own words, then explain why it matters, then offer one analogy, example, or check question. "
+                "Keep the answer tight and classroom-like, with minimal transition filler. "
+                "Do not mention internal schemas."
             ),
             user_prompt=_json(
                 {
                     "lesson_title": lesson_title,
                     "user_message": request_message,
                     "learning_requirement_sheet": requirements.model_dump(mode="json"),
-                    "board_document": document.model_dump(mode="json"),
-                    "teaching_guide": guide.model_dump(mode="json"),
+                    "board_teaching_guide": board_teaching_guide.model_dump(mode="json"),
                     "board_decision": board_decision.model_dump(mode="json"),
                     "document_updated": document_updated,
                     "scope_options": [option.model_dump(mode="json") for option in scope_options],
@@ -454,6 +467,34 @@ class OpenAICourseAI:
             schema=TeacherMessageOutput,
         )
         return result.teacher_message if result else None
+
+    def generate_board_teaching_guide(
+        self,
+        *,
+        lesson_title: str,
+        request_message: str,
+        requirements: LearningRequirementSheet,
+        document: BoardDocument,
+    ) -> BoardTeachingGuide | None:
+        return self._parse(
+            "board",
+            system_prompt=(
+                "You are Board AI preparing a teaching guide permanently bound to the current Word-like board snapshot. "
+                "Return BoardTeachingGuide in Chinese. "
+                "Select the most important excerpts from the board, explain why they matter, map them to the learner's needs, "
+                "and provide a concise teacher_brief that can drive a live spoken explanation. "
+                "Do not rewrite the board itself."
+            ),
+            user_prompt=_json(
+                {
+                    "lesson_title": lesson_title,
+                    "user_message": request_message,
+                    "learning_requirement_sheet": requirements.model_dump(mode="json"),
+                    "board_document": document.model_dump(mode="json"),
+                }
+            ),
+            schema=BoardTeachingGuide,
+        )
 
     def generate_lesson_document(
         self,
