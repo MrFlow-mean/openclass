@@ -324,6 +324,18 @@ class CoursePackage(BaseModel):
     workspace_tab_order: list[str] = Field(default_factory=list)
 
 
+class WorkspaceState(BaseModel):
+    packages: list[CoursePackage] = Field(default_factory=list)
+    active_package_id: str | None = None
+
+    @model_validator(mode="after")
+    def ensure_active_package(self) -> "WorkspaceState":
+        if self.active_package_id and any(package.id == self.active_package_id for package in self.packages):
+            return self
+        self.active_package_id = self.packages[0].id if self.packages else None
+        return self
+
+
 class SelectionRef(BaseModel):
     kind: SelectionKind
     excerpt: str
@@ -451,6 +463,11 @@ class CoursePackageView(BaseModel):
     workspace_tab_order: list[str] = Field(default_factory=list)
 
 
+class WorkspaceStateView(BaseModel):
+    packages: list[CoursePackageView] = Field(default_factory=list)
+    active_package_id: str | None = None
+
+
 class ChatResponse(BaseModel):
     teacher_message: str
     learning_requirement_sheet: LearningRequirementSheet
@@ -465,6 +482,15 @@ class ChatResponse(BaseModel):
     selected_reference: ResourceReferenceContext | None = None
     created_lesson: LessonView | None = None
     course_package: CoursePackageView
+
+
+class CreatePackageRequest(BaseModel):
+    title: str
+    summary: str = ""
+
+
+class MoveLessonRequest(BaseModel):
+    target_package_id: str
 
 
 class GenerateLessonRequest(BaseModel):

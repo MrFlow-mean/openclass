@@ -176,6 +176,11 @@ export interface CoursePackage {
   workspace_tab_order: string[];
 }
 
+export interface WorkspaceState {
+  packages: CoursePackage[];
+  active_package_id?: string | null;
+}
+
 export interface SelectionRef {
   kind: "chat" | "board";
   excerpt: string;

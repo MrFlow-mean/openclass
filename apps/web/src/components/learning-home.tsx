@@ -11,20 +11,22 @@ import {
   Bell,
   BookOpen,
   BookText,
+  ChevronDown,
+  ChevronRight,
   FolderClosed,
   FolderPlus,
-  Layers3,
   LoaderCircle,
   MoreHorizontal,
   Search,
-  ShoppingBag,
+  Share2,
   Sparkles,
+  Trash2,
   Trophy,
   UserRound,
 } from "lucide-react";
 
 import { api } from "@/lib/api";
-import type { CommitRecord, CoursePackage, Lesson, ResourceLibraryItem } from "@/types";
+import type { CommitRecord, CoursePackage, Lesson, ResourceLibraryItem, WorkspaceState } from "@/types";
 
 const CONTRIBUTION_WEEKS = 32;
 
@@ -64,7 +66,6 @@ type ActivityDay = {
 
 type FeedKind = "commit" | "resource";
 type FeedFilter = "all" | FeedKind;
-type ShelfId = "workspace" | "recent" | "library";
 
 type FeedItem = {
   id: string;
@@ -77,6 +78,19 @@ type FeedItem = {
   detailBody: string;
   pills: string[];
   lessonId?: string;
+};
+
+type LessonShelfItem = {
+  lesson: Lesson;
+  packageId: string;
+  packageTitle: string;
+  isPackaged: boolean;
+};
+
+type LessonMenuState = {
+  lessonId: string;
+  top: number;
+  left: number;
 };
 
 function sortByUpdatedAt(items: Lesson[]) {
@@ -333,26 +347,28 @@ function buildRecentFeed(lessons: Lesson[], resources: ResourceLibraryItem[]) {
 
 export function LearningHome() {
   const router = useRouter();
-  const [coursePackage, setCoursePackage] = useState<CoursePackage | null>(null);
+  const [workspaceState, setWorkspaceState] = useState<WorkspaceState | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [selectedShelf, setSelectedShelf] = useState<ShelfId>("workspace");
   const [searchQuery, setSearchQuery] = useState("");
   const deferredQuery = useDeferredValue(searchQuery.trim().toLowerCase());
   const [feedFilter, setFeedFilter] = useState<FeedFilter>("all");
+  const [feedCollapsed, setFeedCollapsed] = useState(false);
   const [notificationOpen, setNotificationOpen] = useState(true);
   const [busyKey, setBusyKey] = useState<string | null>(null);
+  const [lessonMenuState, setLessonMenuState] = useState<LessonMenuState | null>(null);
+  const [lessonMoveMenuState, setLessonMoveMenuState] = useState<LessonMenuState | null>(null);
 
   useEffect(() => {
     let isDisposed = false;
 
     async function load() {
       try {
-        const payload = await api.getCoursePackage();
+        const payload = await api.getWorkspace();
         if (isDisposed) {
           return;
         }
-        setCoursePackage(payload);
+        setWorkspaceState(payload);
         setError(null);
       } catch (loadError) {
         if (isDisposed) {
@@ -373,34 +389,62 @@ export function LearningHome() {
     };
   }, []);
 
+  useEffect(() => {
+    function handlePointerDown(event: MouseEvent) {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) {
+        return;
+      }
+      if (target.closest("[data-lesson-menu-root]")) {
+        return;
+      }
+      setLessonMenuState(null);
+      setLessonMoveMenuState(null);
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key !== "Escape") {
+        return;
+      }
+      setLessonMenuState(null);
+      setLessonMoveMenuState(null);
+    }
+
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, []);
+
+  const packages = workspaceState?.packages ?? [];
+  const activePackageId = workspaceState?.active_package_id ?? packages[0]?.id ?? null;
+  const coursePackage = packages.find((item) => item.id === activePackageId) ?? packages[0] ?? null;
+  const standalonePackage = packages[0] ?? null;
+  const isStandaloneSelected = coursePackage?.id === standalonePackage?.id;
+  const movablePackages = packages.filter((packageItem) => packageItem.id !== standalonePackage?.id);
   const lessons = coursePackage?.lessons ?? [];
   const resources = coursePackage?.resources ?? [];
   const activeLesson =
     lessons.find((lesson) => lesson.id === coursePackage?.active_lesson_id) ?? lessons[0] ?? null;
   const recentLessons = sortByUpdatedAt(lessons).slice(0, 6);
-  const graphRelatedLessonIds = new Set(
-    coursePackage?.course_graph.flatMap((edge) => [edge.source_lesson_id, edge.target_lesson_id]) ?? []
-  );
-  const libraryLessonsBase = sortByUpdatedAt(
-    lessons.filter((lesson) => graphRelatedLessonIds.has(lesson.id) || lesson.tags.length >= 2)
-  );
-  const libraryLessons = libraryLessonsBase.length ? libraryLessonsBase : sortByUpdatedAt(lessons);
-  const workspaceLessons = sortByUpdatedAt(lessons);
-  const visibleLessons =
-    selectedShelf === "recent"
-      ? recentLessons
-      : selectedShelf === "library"
-        ? libraryLessons
-        : workspaceLessons;
-
-  const filteredLessons = visibleLessons.filter((lesson) =>
+  const selectedPackageLessons = sortByUpdatedAt(lessons).slice(0, 8);
+  const standaloneLessonItems: LessonShelfItem[] = sortByUpdatedAt(standalonePackage?.lessons ?? []).map((lesson) => ({
+    lesson,
+    packageId: standalonePackage?.id ?? "standalone",
+    packageTitle: standalonePackage?.title ?? "单独课程",
+    isPackaged: false,
+  }));
+  const filteredLessonItems = standaloneLessonItems.filter(({ lesson, packageTitle }) =>
     matchesQuery(
       deferredQuery,
       lesson.title,
       lesson.summary,
       lesson.tags.join(" "),
       lesson.board_document.title,
-      lesson.board_document.content_text
+      lesson.board_document.content_text,
+      packageTitle
     )
   );
 
@@ -408,14 +452,15 @@ export function LearningHome() {
     matchesQuery(deferredQuery, course.topic, course.summary, course.badge, course.details.join(" "))
   );
 
-  const quickResultLessons = workspaceLessons
-    .filter((lesson) =>
+  const quickResultLessons = standaloneLessonItems
+    .filter(({ lesson, packageTitle }) =>
       matchesQuery(
         deferredQuery,
         lesson.title,
         lesson.summary,
         lesson.tags.join(" "),
-        lesson.board_document.content_text
+        lesson.board_document.content_text,
+        packageTitle
       )
     )
     .slice(0, 3);
@@ -434,6 +479,8 @@ export function LearningHome() {
 
   const activity = buildActivitySummary(coursePackage);
   const latestLesson = recentLessons[0] ?? null;
+  const lessonMenuLesson =
+    lessonMenuState ? standaloneLessonItems.find(({ lesson }) => lesson.id === lessonMenuState.lessonId)?.lesson ?? null : null;
   const latestResource =
     [...resources].sort(
       (left, right) => new Date(right.uploaded_at).getTime() - new Date(left.uploaded_at).getTime()
@@ -443,12 +490,88 @@ export function LearningHome() {
 
   async function handleOpenLesson(lessonId: string) {
     setBusyKey(`lesson:${lessonId}`);
+    setLessonMenuState(null);
+    setLessonMoveMenuState(null);
 
     try {
       await api.openLesson(lessonId);
       router.push("/studio");
     } catch (actionError) {
       setError(actionError instanceof Error ? actionError.message : "打开课程失败");
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  async function handleMoveLesson(lesson: Lesson, targetPackageId: string) {
+    if (!targetPackageId) {
+      return;
+    }
+
+    setBusyKey(`move:${lesson.id}`);
+    setLessonMenuState(null);
+    setLessonMoveMenuState(null);
+    try {
+      const payload = await api.moveLesson(lesson.id, targetPackageId);
+      setWorkspaceState(payload);
+      setError(null);
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : "移动课程失败");
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  async function handleDeleteLesson(lesson: Lesson) {
+    if (typeof window !== "undefined" && !window.confirm(`确定删除《${lesson.title}》吗？`)) {
+      return;
+    }
+
+    setBusyKey(`delete:${lesson.id}`);
+    setLessonMenuState(null);
+    setLessonMoveMenuState(null);
+    try {
+      const payload = await api.deleteLesson(lesson.id);
+      setWorkspaceState(payload);
+      setError(null);
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : "删除课程失败");
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  async function handleCreatePackage() {
+    const title = window.prompt("请输入课程包名称，例如：法考冲刺包");
+    if (!title?.trim()) {
+      return;
+    }
+
+    setBusyKey("package:create");
+    try {
+      const payload = await api.createPackage(title.trim());
+      setWorkspaceState(payload);
+      setError(null);
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : "新建课程包失败");
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  async function handleOpenPackage(packageItem: CoursePackage) {
+    setBusyKey(`package:${packageItem.id}`);
+
+    try {
+      if (packageItem.id === activePackageId) {
+        router.push("/studio");
+        return;
+      }
+      const payload = await api.openPackage(packageItem.id);
+      setWorkspaceState(payload);
+      setError(null);
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : "打开课程包失败");
     } finally {
       setBusyKey(null);
     }
@@ -466,27 +589,6 @@ export function LearningHome() {
       setBusyKey(null);
     }
   }
-
-  const shelves = [
-    {
-      id: "workspace" as const,
-      title: coursePackage?.title ?? "当前课程包",
-      subtitle: coursePackage?.summary ?? "把课程、笔记和工作台聚合在一起。",
-      count: workspaceLessons.length,
-    },
-    {
-      id: "recent" as const,
-      title: "最近推进",
-      subtitle: recentLessons.length ? `最近 ${recentLessons.length} 节课有更新。` : "最新课节会出现在这里。",
-      count: recentLessons.length,
-    },
-    {
-      id: "library" as const,
-      title: "资料联动",
-      subtitle: resources.length ? `已连接 ${resources.length} 份资料。` : "上传教材后可自动挂接。",
-      count: resources.length,
-    },
-  ];
   const feedFilters = [
     { id: "all" as const, label: "全部" },
     { id: "commit" as const, label: "课程提交" },
@@ -525,73 +627,99 @@ export function LearningHome() {
                 <h2 className="text-[11px] font-semibold uppercase tracking-[0.24em] text-stone-400">课程包</h2>
                 <button
                   type="button"
+                  onClick={() => void handleCreatePackage()}
                   className="rounded-xl p-1.5 text-stone-400 transition hover:bg-stone-200/60 hover:text-stone-950"
                   aria-label="添加课程包"
                 >
-                  <FolderPlus className="h-4 w-4" />
+                  {busyKey === "package:create" ? (
+                    <LoaderCircle className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <FolderPlus className="h-4 w-4" />
+                  )}
                 </button>
               </div>
               <div className="space-y-2">
-                {shelves.map((shelf) => (
-                  <button
-                    key={shelf.id}
-                    type="button"
-                    onClick={() => setSelectedShelf(shelf.id)}
-                    className={clsx(
-                      "group w-full rounded-2xl border px-4 py-3 text-left transition",
-                      selectedShelf === shelf.id
-                        ? "border-stone-950 bg-stone-950 text-white shadow-[0_18px_35px_rgba(23,23,23,0.14)]"
-                        : "border-transparent bg-white/75 text-stone-700 hover:border-stone-200 hover:bg-white"
-                    )}
-                  >
-                    <div className="flex items-start gap-3">
-                      <div
+                {packages.length ? (
+                  packages.map((packageItem) => {
+                    const isActive = packageItem.id === activePackageId;
+                    const isBusy = busyKey === `package:${packageItem.id}`;
+                    return (
+                      <button
+                        key={packageItem.id}
+                        type="button"
+                        onClick={() => void handleOpenPackage(packageItem)}
                         className={clsx(
-                          "mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl border transition",
-                          selectedShelf === shelf.id
-                            ? "border-white/10 bg-white/10 text-white"
-                            : "border-stone-200 bg-stone-100 text-stone-500 group-hover:text-stone-950"
+                          "group w-full rounded-2xl border px-4 py-3 text-left transition",
+                          isActive
+                            ? "border-stone-950 bg-stone-950 text-white shadow-[0_18px_35px_rgba(23,23,23,0.14)]"
+                            : "border-transparent bg-white/75 text-stone-700 hover:border-stone-200 hover:bg-white"
                         )}
                       >
-                        <FolderClosed className="h-4 w-4" />
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center justify-between gap-2">
-                          <p className="truncate text-sm font-semibold">{shelf.title}</p>
-                          <span
+                        <div className="flex items-start gap-3">
+                          <div
                             className={clsx(
-                              "rounded-full px-2 py-0.5 text-[10px] font-semibold",
-                              selectedShelf === shelf.id ? "bg-white/10 text-white" : "bg-stone-100 text-stone-500"
+                              "mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl border transition",
+                              isActive
+                                ? "border-white/10 bg-white/10 text-white"
+                                : "border-stone-200 bg-stone-100 text-stone-500 group-hover:text-stone-950"
                             )}
                           >
-                            {shelf.count}
-                          </span>
+                            {isBusy ? (
+                              <LoaderCircle className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <FolderClosed className="h-4 w-4" />
+                            )}
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center justify-between gap-2">
+                              <p className="truncate text-sm font-semibold">{packageItem.title}</p>
+                              <span
+                                className={clsx(
+                                  "rounded-full px-2 py-0.5 text-[10px] font-semibold",
+                                  isActive ? "bg-white/10 text-white" : "bg-stone-100 text-stone-500"
+                                )}
+                              >
+                                {packageItem.lessons.length}
+                              </span>
+                            </div>
+                            <p
+                              className={clsx(
+                                "mt-1 line-clamp-2 text-xs leading-5",
+                                isActive ? "text-white/75" : "text-stone-500"
+                              )}
+                            >
+                              {isActive
+                                ? "已选中，再点一次进入工作台。"
+                                : packageItem.summary || "空课程包，点一下先选中它。"}
+                            </p>
+                          </div>
                         </div>
-                        <p
-                          className={clsx(
-                            "mt-1 line-clamp-2 text-xs leading-5",
-                            selectedShelf === shelf.id ? "text-white/75" : "text-stone-500"
-                          )}
-                        >
-                          {shelf.subtitle}
-                        </p>
-                      </div>
-                    </div>
-                  </button>
-                ))}
+                      </button>
+                    );
+                  })
+                ) : (
+                  <div className="rounded-2xl border border-dashed border-stone-300 bg-white/70 px-4 py-6 text-sm text-stone-500">
+                    还没有课程包，先点右上角的加号创建一个空课程包。
+                  </div>
+                )}
               </div>
             </div>
 
             <div className="min-h-0 flex-1">
               <div className="mb-3 flex items-center justify-between px-2">
                 <h2 className="text-[11px] font-semibold uppercase tracking-[0.24em] text-stone-400">新课程</h2>
-                <Link
-                  href="/studio"
-                  className="rounded-xl p-1.5 text-stone-400 transition hover:bg-stone-200/60 hover:text-stone-950"
-                  aria-label="进入工作台"
-                >
-                  <BookOpen className="h-4 w-4" />
-                </Link>
+                <div className="flex items-center gap-2">
+                  <span className="rounded-full border border-stone-200 bg-white px-3 py-1 text-[10px] font-medium text-stone-500">
+                    默认仅显示未入包课程
+                  </span>
+                  <Link
+                    href="/studio"
+                    className="rounded-xl p-1.5 text-stone-400 transition hover:bg-stone-200/60 hover:text-stone-950"
+                    aria-label="进入工作台"
+                  >
+                    <BookOpen className="h-4 w-4" />
+                  </Link>
+                </div>
               </div>
 
               <div className="custom-scrollbar max-h-[24rem] space-y-2 overflow-y-auto pr-1">
@@ -602,49 +730,84 @@ export function LearningHome() {
                       <div className="mt-3 h-3 w-full animate-pulse rounded bg-stone-100" />
                     </div>
                   ))
-                ) : filteredLessons.length ? (
-                  filteredLessons.map((lesson) => {
+                ) : filteredLessonItems.length ? (
+                  filteredLessonItems.map(({ lesson }) => {
                     const isActive = lesson.id === activeLesson?.id;
                     const buttonBusy = busyKey === `lesson:${lesson.id}`;
+                    const isMenuOpen = lessonMenuState?.lessonId === lesson.id;
                     return (
-                      <button
+                      <article
                         key={lesson.id}
-                        type="button"
-                        onClick={() => void handleOpenLesson(lesson.id)}
                         className={clsx(
-                          "group w-full rounded-2xl border px-4 py-3 text-left transition",
+                          "relative rounded-2xl border bg-white transition",
                           isActive
-                            ? "border-stone-950 bg-white shadow-[0_12px_30px_rgba(0,0,0,0.06)]"
+                            ? "border-stone-950 shadow-[0_12px_30px_rgba(0,0,0,0.06)]"
                             : "border-transparent bg-white/65 hover:border-stone-200 hover:bg-white"
                         )}
                       >
-                        <div className="flex items-start gap-3">
-                          <div
+                        <div className="absolute right-2 top-2 z-20" data-lesson-menu-root>
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              const rect = event.currentTarget.getBoundingClientRect();
+                              setLessonMoveMenuState(null);
+                              setLessonMenuState((current) =>
+                                current?.lessonId === lesson.id
+                                  ? null
+                                  : {
+                                      lessonId: lesson.id,
+                                      top: rect.bottom + 6,
+                                      left: Math.max(16, rect.right - 192),
+                                    }
+                              );
+                            }}
                             className={clsx(
-                              "mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border",
-                              isActive
-                                ? "border-stone-950 bg-stone-950 text-white"
-                                : "border-stone-200 bg-stone-100 text-stone-500 group-hover:text-stone-950"
+                              "flex h-8 w-8 items-center justify-center rounded-lg text-stone-400 transition hover:bg-stone-100 hover:text-stone-950",
+                              isMenuOpen && "bg-stone-100 text-stone-950"
                             )}
+                            aria-label="打开课程操作菜单"
+                            title="更多操作"
                           >
-                            {buttonBusy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <BookText className="h-4 w-4" />}
-                          </div>
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-center justify-between gap-3">
-                              <p className="truncate text-sm font-medium text-stone-950">{lesson.title}</p>
-                              <span className="shrink-0 text-[10px] text-stone-400">
-                                {formatRelativeTime(lesson.updated_at)}
-                              </span>
-                            </div>
-                            <p className="mt-1 line-clamp-2 text-xs leading-5 text-stone-500">{lesson.summary}</p>
-                          </div>
+                            <MoreHorizontal className="h-4 w-4" />
+                          </button>
                         </div>
-                      </button>
+
+                        <button
+                          type="button"
+                          onClick={() => void handleOpenLesson(lesson.id)}
+                          className="group w-full px-4 py-3 pr-14 text-left"
+                        >
+                          <div className="flex items-start gap-3">
+                            <div
+                              className={clsx(
+                                "mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border",
+                                isActive
+                                  ? "border-stone-950 bg-stone-950 text-white"
+                                  : "border-stone-200 bg-stone-100 text-stone-500 group-hover:text-stone-950"
+                              )}
+                            >
+                              {buttonBusy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <BookText className="h-4 w-4" />}
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center justify-between gap-3">
+                                <p className="truncate text-sm font-medium text-stone-950">{lesson.title}</p>
+                                <span className="shrink-0 text-[10px] text-stone-400">
+                                  {formatRelativeTime(lesson.updated_at)}
+                                </span>
+                              </div>
+                              <p className="mt-1 line-clamp-2 text-xs leading-5 text-stone-500">{lesson.summary}</p>
+                            </div>
+                          </div>
+                        </button>
+                      </article>
                     );
                   })
                 ) : (
                   <div className="rounded-2xl border border-dashed border-stone-300 bg-white/70 px-4 py-6 text-sm text-stone-500">
-                    还没有匹配到课程。试试换个关键词，或者去工作台创建一节新课。
+                    {standaloneLessonItems.length
+                      ? "还没有匹配到课程。试试换个关键词，或者去工作台创建一节新课。"
+                      : "现在没有未被存入课程包的单独课程。你可以先新建课程，或者把包内课程移回单独课程池。"}
                   </div>
                 )}
               </div>
@@ -708,7 +871,7 @@ export function LearningHome() {
                   </div>
 
                   <div className="space-y-2">
-                    {quickResultLessons.map((lesson) => (
+                    {quickResultLessons.map(({ lesson, packageTitle, isPackaged }) => (
                       <button
                         key={lesson.id}
                         type="button"
@@ -717,7 +880,10 @@ export function LearningHome() {
                       >
                         <div>
                           <p className="text-sm font-medium text-stone-950">{lesson.title}</p>
-                          <p className="mt-1 text-xs text-stone-500">{lesson.summary}</p>
+                          <p className="mt-1 text-xs text-stone-500">
+                            {isPackaged ? `已存入 ${packageTitle} · ` : ""}
+                            {lesson.summary}
+                          </p>
                         </div>
                         <span className="text-xs text-stone-400">课程</span>
                       </button>
@@ -815,10 +981,28 @@ export function LearningHome() {
               <div className="rounded-[30px] border border-white/70 bg-[linear-gradient(180deg,#ffffff_0%,#faf8f2_100%)] p-6 shadow-[0_18px_50px_rgba(15,23,42,0.07)] sm:p-7">
                 <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                   <div>
-                    <h3 className="flex items-center gap-2 text-lg font-semibold text-stone-950">
-                      <Activity className="h-5 w-5" />
-                      Feed
-                    </h3>
+                    <div className="flex items-center gap-2">
+                      <h3 className="flex items-center gap-2 text-lg font-semibold text-stone-950">
+                        <Activity className="h-5 w-5" />
+                        Feed
+                      </h3>
+                      <button
+                        type="button"
+                        onClick={() => setFeedCollapsed((current) => !current)}
+                        className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-stone-200 bg-white text-stone-600 transition hover:border-stone-300 hover:text-stone-950"
+                        aria-label={feedCollapsed ? "展开 Feed" : "收起 Feed"}
+                        aria-expanded={!feedCollapsed}
+                        aria-controls="learning-home-feed-content"
+                        title={feedCollapsed ? "展开 Feed" : "收起 Feed"}
+                      >
+                        <ChevronDown
+                          className={clsx(
+                            "h-4 w-4 transition-transform duration-200",
+                            feedCollapsed ? "rotate-0" : "rotate-180"
+                          )}
+                        />
+                      </button>
+                    </div>
                     <p className="mt-1 text-sm text-stone-500">
                       最近的课程提交、资料收录和工作台推进会按时间排在这里。
                     </p>
@@ -832,8 +1016,9 @@ export function LearningHome() {
                           key={filter.id}
                           type="button"
                           onClick={() => setFeedFilter(filter.id)}
+                          disabled={feedCollapsed}
                           className={clsx(
-                            "rounded-full border px-4 py-2 text-xs font-semibold transition",
+                            "rounded-full border px-4 py-2 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-45",
                             isActive
                               ? "border-stone-950 bg-stone-950 text-white"
                               : "border-stone-200 bg-white text-stone-600 hover:border-stone-300 hover:text-stone-950"
@@ -846,162 +1031,204 @@ export function LearningHome() {
                   </div>
                 </div>
 
-                <div className="space-y-4">
-                  {visibleFeedItems.length ? (
-                    visibleFeedItems.map((item) => {
-                      const buttonBusy = item.lessonId ? busyKey === `lesson:${item.lessonId}` : false;
-
-                      return (
-                        <article
-                          key={item.id}
-                          className="rounded-[24px] border border-stone-200 bg-white p-4 shadow-[0_10px_30px_rgba(15,23,42,0.05)] sm:p-5"
-                        >
-                          <div className="flex items-start justify-between gap-4">
-                            <div className="flex min-w-0 gap-3">
-                              <div
-                                className={clsx(
-                                  "mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl text-white",
-                                  item.kind === "commit" ? "bg-rose-500" : "bg-emerald-500"
-                                )}
-                              >
-                                {item.kind === "commit" ? (
-                                  <BookText className="h-4 w-4" />
-                                ) : (
-                                  <FolderClosed className="h-4 w-4" />
-                                )}
-                              </div>
-
-                              <div className="min-w-0">
-                                <p className="text-sm text-stone-600">
-                                  <span className="font-semibold text-stone-950">{item.actor}</span> {item.action}
-                                </p>
-                                <p className="mt-1 text-xs text-stone-400">{formatRelativeTime(item.timestamp)}</p>
-                              </div>
-                            </div>
-
-                            <span className="rounded-full border border-stone-200 bg-stone-50 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-stone-400">
-                              {item.kind === "commit" ? "Commit" : "Resource"}
-                            </span>
-                          </div>
-
-                          <h4 className="mt-5 text-2xl font-semibold tracking-tight text-stone-950 sm:text-[2rem]">
-                            {item.title}
-                          </h4>
-
-                          <div className="mt-4 rounded-[22px] border border-stone-200 bg-stone-50/90 p-4">
-                            <div className="border-b border-stone-200 pb-3">
-                              <p className="text-base font-semibold text-stone-950">{item.detailTitle}</p>
-                            </div>
-                            <p className="mt-3 text-sm leading-7 text-stone-600">{item.detailBody}</p>
-                          </div>
-
-                          <div className="mt-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                            <div className="flex flex-wrap gap-2">
-                              {item.pills.map((pill) => (
-                                <span
-                                  key={pill}
-                                  className="rounded-full bg-stone-100 px-3 py-1 text-[11px] font-medium text-stone-500"
-                                >
-                                  {pill}
-                                </span>
-                              ))}
-                            </div>
-
-                            {item.lessonId ? (
-                              <button
-                                type="button"
-                                onClick={() => void handleOpenLesson(item.lessonId!)}
-                                className="inline-flex items-center gap-2 rounded-full border border-stone-200 bg-white px-4 py-2.5 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:text-stone-950"
-                              >
-                                {buttonBusy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : null}
-                                <span>进入工作台</span>
-                                {!buttonBusy ? <ArrowUpRight className="h-4 w-4" /> : null}
-                              </button>
-                            ) : (
-                              <Link
-                                href="/studio"
-                                className="inline-flex items-center gap-2 rounded-full border border-stone-200 bg-white px-4 py-2.5 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:text-stone-950"
-                              >
-                                查看资料入口
-                                <ArrowUpRight className="h-4 w-4" />
-                              </Link>
-                            )}
-                          </div>
-                        </article>
-                      );
-                    })
+                <div
+                  id="learning-home-feed-content"
+                  className={clsx(
+                    "overflow-hidden transition-all duration-300 ease-out",
+                    feedCollapsed ? "max-h-28" : "max-h-[240rem]"
+                  )}
+                >
+                  {feedCollapsed ? (
+                    <div className="rounded-[24px] border border-dashed border-stone-300 bg-white/70 px-5 py-5 text-sm text-stone-500">
+                      Feed 已收起，当前共 {visibleFeedItems.length} 条可见动态。
+                      {visibleFeedItems[0] ? ` 最近一条是 ${visibleFeedItems[0].title}。` : ""}
+                    </div>
                   ) : (
-                    <div className="rounded-[24px] border border-dashed border-stone-300 bg-white/70 px-5 py-8 text-sm text-stone-500">
-                      还没有可以展示的更新。新建课程、编辑文稿或上传资料后，这里会自动变成最近活动流。
+                    <div className="space-y-4">
+                      {visibleFeedItems.length ? (
+                        visibleFeedItems.map((item) => {
+                          const buttonBusy = item.lessonId ? busyKey === `lesson:${item.lessonId}` : false;
+
+                          return (
+                            <article
+                              key={item.id}
+                              className="rounded-[24px] border border-stone-200 bg-white p-4 shadow-[0_10px_30px_rgba(15,23,42,0.05)] sm:p-5"
+                            >
+                              <div className="flex items-start justify-between gap-4">
+                                <div className="flex min-w-0 gap-3">
+                                  <div
+                                    className={clsx(
+                                      "mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl text-white",
+                                      item.kind === "commit" ? "bg-rose-500" : "bg-emerald-500"
+                                    )}
+                                  >
+                                    {item.kind === "commit" ? (
+                                      <BookText className="h-4 w-4" />
+                                    ) : (
+                                      <FolderClosed className="h-4 w-4" />
+                                    )}
+                                  </div>
+
+                                  <div className="min-w-0">
+                                    <p className="text-sm text-stone-600">
+                                      <span className="font-semibold text-stone-950">{item.actor}</span> {item.action}
+                                    </p>
+                                    <p className="mt-1 text-xs text-stone-400">{formatRelativeTime(item.timestamp)}</p>
+                                  </div>
+                                </div>
+
+                                <span className="rounded-full border border-stone-200 bg-stone-50 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-stone-400">
+                                  {item.kind === "commit" ? "Commit" : "Resource"}
+                                </span>
+                              </div>
+
+                              <h4 className="mt-5 text-2xl font-semibold tracking-tight text-stone-950 sm:text-[2rem]">
+                                {item.title}
+                              </h4>
+
+                              <div className="mt-4 rounded-[22px] border border-stone-200 bg-stone-50/90 p-4">
+                                <div className="border-b border-stone-200 pb-3">
+                                  <p className="text-base font-semibold text-stone-950">{item.detailTitle}</p>
+                                </div>
+                                <p className="mt-3 text-sm leading-7 text-stone-600">{item.detailBody}</p>
+                              </div>
+
+                              <div className="mt-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                                <div className="flex flex-wrap gap-2">
+                                  {item.pills.map((pill) => (
+                                    <span
+                                      key={pill}
+                                      className="rounded-full bg-stone-100 px-3 py-1 text-[11px] font-medium text-stone-500"
+                                    >
+                                      {pill}
+                                    </span>
+                                  ))}
+                                </div>
+
+                                {item.lessonId ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleOpenLesson(item.lessonId!)}
+                                    className="inline-flex items-center gap-2 rounded-full border border-stone-200 bg-white px-4 py-2.5 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:text-stone-950"
+                                  >
+                                    {buttonBusy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : null}
+                                    <span>进入工作台</span>
+                                    {!buttonBusy ? <ArrowUpRight className="h-4 w-4" /> : null}
+                                  </button>
+                                ) : (
+                                  <Link
+                                    href="/studio"
+                                    className="inline-flex items-center gap-2 rounded-full border border-stone-200 bg-white px-4 py-2.5 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:text-stone-950"
+                                  >
+                                    查看资料入口
+                                    <ArrowUpRight className="h-4 w-4" />
+                                  </Link>
+                                )}
+                              </div>
+                            </article>
+                          );
+                        })
+                      ) : (
+                        <div className="rounded-[24px] border border-dashed border-stone-300 bg-white/70 px-5 py-8 text-sm text-stone-500">
+                          还没有可以展示的更新。新建课程、编辑文稿或上传资料后，这里会自动变成最近活动流。
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
               </div>
             </section>
 
-            <section className="pb-12">
-              <div className="mb-5 flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
-                <div>
-                  <h3 className="flex items-center gap-2 text-lg font-semibold text-stone-950">
-                    <ShoppingBag className="h-5 w-5" />
-                    全量精品课程商城
-                  </h3>
-                  <p className="mt-1 text-sm text-stone-500">
-                    从主页直接挑选课程主题，加入工作台后继续生成、改写和讲解。
-                  </p>
-                </div>
-                <Link href="/studio" className="text-sm font-medium text-stone-500 transition hover:text-stone-950">
-                  查看全部课程入口
-                </Link>
-              </div>
-
-              <div className="grid gap-4 lg:grid-cols-3">
-                {filteredMarketplace.map((course) => {
-                  const buttonBusy = busyKey === `market:${course.id}`;
-                  return (
-                    <article
-                      key={course.id}
-                      className={clsx(
-                        "overflow-hidden rounded-[28px] border border-white/80 bg-gradient-to-br p-5 shadow-[0_18px_50px_rgba(15,23,42,0.06)]",
-                        course.accent
-                      )}
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <span className="rounded-full bg-white/85 px-3 py-1 text-[11px] font-semibold text-stone-700 shadow-sm">
-                          {course.badge}
-                        </span>
-                        <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-stone-950 text-white shadow-sm">
-                          <Layers3 className="h-4 w-4" />
-                        </div>
-                      </div>
-
-                      <h4 className="mt-8 text-xl font-semibold tracking-tight text-stone-950">{course.topic}</h4>
-                      <p className="mt-3 text-sm leading-7 text-stone-600">{course.summary}</p>
-
-                      <div className="mt-5 flex flex-wrap gap-2">
-                        {course.details.map((detail) => (
-                          <span key={detail} className="rounded-full bg-white/75 px-3 py-1 text-[11px] text-stone-600">
-                            {detail}
-                          </span>
-                        ))}
-                      </div>
-
-                      <button
-                        type="button"
-                        onClick={() => void handleGenerateFromMarketplace(course.topic, course.id)}
-                        className="mt-8 inline-flex w-full items-center justify-center gap-2 rounded-full bg-stone-950 px-4 py-3 text-sm font-semibold text-white transition hover:bg-black"
-                      >
-                        {buttonBusy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-                        加入工作台
-                      </button>
-                    </article>
-                  );
-                })}
-              </div>
-            </section>
           </div>
         </main>
       </div>
+
+      {lessonMenuState && lessonMenuLesson ? (
+        <div
+          data-lesson-menu-root
+          className="fixed z-[140]"
+          style={{ top: lessonMenuState.top, left: lessonMenuState.left }}
+        >
+          <div className="w-48 rounded-[22px] border border-stone-200 bg-white p-2 shadow-[0_18px_40px_rgba(15,23,42,0.14)]">
+            <button
+              type="button"
+              disabled
+              className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-stone-300"
+              title="分享功能稍后提供"
+            >
+              <Share2 className="h-4 w-4" />
+              分享
+            </button>
+
+            <div className="my-1 h-px bg-stone-100" />
+
+            <button
+              type="button"
+              onClick={(event) => {
+                const rect = event.currentTarget.getBoundingClientRect();
+                setLessonMoveMenuState((current) =>
+                  current?.lessonId === lessonMenuLesson.id
+                    ? null
+                    : {
+                        lessonId: lessonMenuLesson.id,
+                        top: rect.top,
+                        left: rect.right + 8,
+                      }
+                );
+              }}
+              disabled={!movablePackages.length || busyKey === `move:${lessonMenuLesson.id}` || busyKey === `delete:${lessonMenuLesson.id}`}
+              className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-stone-700 transition hover:bg-stone-50 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <FolderClosed className="h-4 w-4" />
+              <span className="flex-1">移动到课程包</span>
+              <ChevronRight className="h-4 w-4 text-stone-400" />
+            </button>
+
+            <div className="my-1 h-px bg-stone-100" />
+
+            <button
+              type="button"
+              onClick={() => void handleDeleteLesson(lessonMenuLesson)}
+              disabled={busyKey === `move:${lessonMenuLesson.id}` || busyKey === `delete:${lessonMenuLesson.id}`}
+              className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-rose-600 transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {busyKey === `delete:${lessonMenuLesson.id}` ? (
+                <LoaderCircle className="h-4 w-4 animate-spin" />
+              ) : (
+                <Trash2 className="h-4 w-4" />
+              )}
+              删除
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {lessonMoveMenuState && lessonMenuLesson ? (
+        <div
+          data-lesson-menu-root
+          className="fixed z-[145]"
+          style={{ top: lessonMoveMenuState.top, left: lessonMoveMenuState.left }}
+        >
+          <div className="w-44 rounded-[20px] border border-stone-200 bg-white p-2 shadow-[0_18px_40px_rgba(15,23,42,0.14)]">
+            {movablePackages.length ? (
+              movablePackages.map((packageItem) => (
+                <button
+                  key={packageItem.id}
+                  type="button"
+                  onClick={() => void handleMoveLesson(lessonMenuLesson, packageItem.id)}
+                  disabled={busyKey === `move:${lessonMenuLesson.id}` || busyKey === `delete:${lessonMenuLesson.id}`}
+                  className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-sm text-stone-700 transition hover:bg-stone-50 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <span className="truncate">{packageItem.title}</span>
+                  {busyKey === `move:${lessonMenuLesson.id}` ? <LoaderCircle className="h-4 w-4 animate-spin" /> : null}
+                </button>
+              ))
+            ) : (
+              <p className="px-3 py-2 text-sm text-stone-400">暂无可移动课程包</p>
+            )}
+          </div>
+        </div>
+      ) : null}
 
       <div className="hidden xl:block">
         <div className="fixed right-8 top-6 z-40 w-80">{renderNotificationPanel()}</div>
@@ -1092,6 +1319,88 @@ export function LearningHome() {
               打开课程工作台
               <ArrowUpRight className="h-4 w-4" />
             </Link>
+          </div>
+        ) : null}
+
+        {coursePackage ? (
+          <div className="w-full rounded-[28px] border border-white/80 bg-white/92 p-5 shadow-[0_18px_50px_rgba(15,23,42,0.08)] backdrop-blur">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-stone-400">
+                  {isStandaloneSelected ? "当前课池" : "当前课程包"}
+                </p>
+                <h4 className="mt-2 truncate text-lg font-semibold text-stone-950">{coursePackage.title}</h4>
+                <p className="mt-1 text-xs leading-5 text-stone-500">
+                  {isStandaloneSelected
+                    ? "这里展示当前未入包的单独课程列表。"
+                    : lessons.length
+                      ? `右侧已展开包内课程，当前共 ${lessons.length} 节。`
+                      : "这个课程包还是空的，等待你继续添加课程。"}
+                </p>
+              </div>
+              <span className="rounded-full bg-stone-100 px-2.5 py-1 text-[10px] font-semibold text-stone-600">
+                {lessons.length} 课
+              </span>
+            </div>
+
+            <div className="mt-4 space-y-2">
+              {selectedPackageLessons.length ? (
+                selectedPackageLessons.map((lesson) => {
+                  const isPreviewActive = lesson.id === activeLesson?.id;
+                  return (
+                    <div
+                      key={lesson.id}
+                      className={clsx(
+                        "rounded-2xl border px-3 py-3 transition",
+                        isPreviewActive
+                          ? "border-stone-950 bg-stone-950 text-white"
+                          : "border-stone-200 bg-stone-50/90 text-stone-800"
+                      )}
+                    >
+                      <div className="flex items-start gap-3">
+                        <div
+                          className={clsx(
+                            "mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border",
+                            isPreviewActive
+                              ? "border-white/10 bg-white/10 text-white"
+                              : "border-stone-200 bg-white text-stone-500"
+                          )}
+                        >
+                          <BookText className="h-4 w-4" />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center justify-between gap-2">
+                            <p className="truncate text-sm font-semibold">{lesson.title}</p>
+                            <span
+                              className={clsx(
+                                "shrink-0 text-[10px]",
+                                isPreviewActive ? "text-white/70" : "text-stone-400"
+                              )}
+                            >
+                              {formatRelativeTime(lesson.updated_at)}
+                            </span>
+                          </div>
+                          <p
+                            className={clsx(
+                              "mt-1 line-clamp-2 text-xs leading-5",
+                              isPreviewActive ? "text-white/75" : "text-stone-500"
+                            )}
+                          >
+                            {lesson.summary || "已创建课程文档，等待继续补充内容。"}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })
+              ) : (
+                <div className="rounded-2xl border border-dashed border-stone-300 bg-stone-50/80 px-4 py-5 text-sm text-stone-500">
+                  {isStandaloneSelected
+                    ? "当前还没有未入包课程。去工作台新建后，这里会立即出现。"
+                    : "这个课程包还是空的，先把课程移动进来，或者进入工作台新建一页。"}
+                </div>
+              )}
+            </div>
           </div>
         ) : null}
       </div>

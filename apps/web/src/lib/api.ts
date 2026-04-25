@@ -8,6 +8,7 @@ import type {
   RealtimeConnectResponse,
   RealtimeEventLogPayload,
   ScopeAction,
+  WorkspaceState,
 } from "@/types";
 
 const configuredApiBase = process.env.NEXT_PUBLIC_API_BASE_URL;
@@ -43,6 +44,36 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  getWorkspace() {
+    return request<WorkspaceState>("/api/workspace");
+  },
+  createPackage(title: string, summary = "") {
+    return request<WorkspaceState>("/api/packages", {
+      method: "POST",
+      body: JSON.stringify({
+        title,
+        summary,
+      }),
+    });
+  },
+  openPackage(packageId: string) {
+    return request<WorkspaceState>(`/api/packages/${packageId}/open`, {
+      method: "POST",
+    });
+  },
+  moveLesson(lessonId: string, targetPackageId: string) {
+    return request<WorkspaceState>(`/api/lessons/${lessonId}/move`, {
+      method: "POST",
+      body: JSON.stringify({
+        target_package_id: targetPackageId,
+      }),
+    });
+  },
+  deleteLesson(lessonId: string) {
+    return request<WorkspaceState>(`/api/lessons/${lessonId}/delete`, {
+      method: "POST",
+    });
+  },
   getCoursePackage() {
     return request<CoursePackage>("/api/course-package");
   },

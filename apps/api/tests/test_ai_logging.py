@@ -126,7 +126,7 @@ def test_chat_route_logs_request_and_response(monkeypatch: pytest.MonkeyPatch, i
     monkeypatch.setattr(main_module, "STORE", store)
     monkeypatch.setattr(main_module.openai_course_ai, "client", None)
 
-    lesson_id = store.load().lessons[0].id
+    lesson_id = store.load().packages[0].lessons[0].id
     response = main_module.chat_on_lesson(lesson_id, ChatRequest(message="请解释一下勾股定理的核心公式"))
 
     assert response.teacher_message
@@ -179,7 +179,7 @@ def test_chat_route_reuses_workflow_runtime_without_extra_refresh(
         lambda *args, **kwargs: pytest.fail("chat route should not refresh runtime after workflow execution"),
     )
 
-    lesson_id = store.load().lessons[0].id
+    lesson_id = store.load().packages[0].lessons[0].id
     response = main_module.chat_on_lesson(
         lesson_id,
         ChatRequest(message="请解释一下勾股定理的核心公式"),
@@ -195,16 +195,17 @@ def test_chat_route_hides_reference_box_for_explanation_only_turn(
     monkeypatch.setattr(main_module, "STORE", store)
     monkeypatch.setattr(main_module.openai_course_ai, "client", None)
 
-    package = store.load()
+    workspace = store.load()
+    package = workspace.packages[0]
     resource_path = tmp_path / "pythagorean.md"
     resource_path.write_text(
         "# 勾股定理\n勾股定理说明直角三角形两条直角边的平方和等于斜边的平方。\n\n## 应用\n可以用来计算距离。",
         encoding="utf-8",
     )
     package.resources.append(build_resource_item(resource_path, "勾股定理笔记.md"))
-    store.save(package)
+    store.save(workspace)
 
-    lesson_id = store.load().lessons[0].id
+    lesson_id = store.load().packages[0].lessons[0].id
     response = main_module.chat_on_lesson(
         lesson_id,
         ChatRequest(message="请解释一下勾股定理的核心公式"),

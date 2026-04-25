@@ -1808,12 +1808,12 @@ export function CourseStudio() {
   }
 
   async function saveGeneratedLesson(topic: string) {
-    if (!topic.trim() || !activeLesson) {
+    if (!topic.trim()) {
       return;
     }
     setBusyAction("generate");
     try {
-      const nextPackage = await api.generateLesson(topic.trim(), activeLesson.id, true);
+      const nextPackage = await api.generateLesson(topic.trim(), activeLesson?.id, true);
       updateCoursePackage(nextPackage, {
         blankLessonIds: nextPackage.active_lesson_id ? [nextPackage.active_lesson_id] : [],
       });
@@ -1825,7 +1825,7 @@ export function CourseStudio() {
   }
 
   async function handleCreateLessonFromPrompt() {
-    const topic = window.prompt("请输入新单课主题，例如：法国咖啡厅点餐情景对话");
+    const topic = window.prompt("请输入新页面名称，例如：课程导读 / 第一讲 / 练习讲义");
     if (!topic) {
       return;
     }
@@ -2359,120 +2359,166 @@ export function CourseStudio() {
     return <div className="flex min-h-screen items-center justify-center text-gray-500">正在载入课程工作台…</div>;
   }
 
-  if (!coursePackage || !activeLesson || !displayedDocument) {
+  if (!coursePackage) {
     return <div className="flex min-h-screen items-center justify-center text-gray-500">没有找到可用课程。</div>;
+  }
+
+  const workspaceTitle = coursePackage.title;
+
+  function renderWorkspaceHeader() {
+    return (
+      <>
+        <div
+          className={clsx(
+            "relative z-[60] flex shrink-0 flex-col bg-white transition-all duration-300",
+            topCollapsed && "-translate-y-full -mb-12"
+          )}
+        >
+          <header className="flex h-12 items-center justify-between border-b border-gray-200 px-4">
+            <div className="flex min-w-0 items-center gap-6">
+              <div className="flex shrink-0 items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleReturnHome}
+                  className="flex h-6 w-6 items-center justify-center rounded bg-black text-white shadow-sm transition hover:bg-gray-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/20"
+                  title="返回主页"
+                  aria-label="返回主页"
+                >
+                  <Cpu className="h-3.5 w-3.5" />
+                </button>
+                <span className="text-[13px] font-semibold tracking-tight">{workspaceTitle}</span>
+              </div>
+
+              <nav className="flex min-w-0 items-center overflow-x-auto custom-scrollbar">
+                {openLessons.map((lesson) => (
+                  <button
+                    key={lesson.id}
+                    type="button"
+                    onClick={() => handleSelectLesson(lesson.id)}
+                    className={clsx(
+                      "group flex h-12 items-center gap-2 border-r border-gray-100 px-4 text-left text-[10px] font-bold uppercase tracking-[0.2em] transition-colors",
+                      lesson.id === activeLesson?.id
+                        ? "border-b-2 border-black bg-white text-black"
+                        : "bg-white text-gray-400 hover:bg-gray-50 hover:text-black"
+                    )}
+                  >
+                    <span className="max-w-[160px] truncate">{lesson.title}</span>
+                    <span className="max-w-[52px] truncate text-[9px] font-medium tracking-[0.16em] text-gray-300">
+                      {lesson.history_graph.current_branch}
+                    </span>
+                    <span
+                      className="rounded-md p-1 text-gray-300 opacity-0 transition hover:bg-gray-100 hover:text-black group-hover:opacity-100"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void handleCloseLesson(lesson.id);
+                      }}
+                    >
+                      <X className="h-3 w-3" />
+                    </span>
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  onClick={() => void handleCreateLessonFromPrompt()}
+                  className="p-3 text-gray-300 transition-colors hover:text-black"
+                  title="新建页面"
+                >
+                  <Plus className="h-4 w-4" />
+                </button>
+              </nav>
+            </div>
+
+            <div className="flex shrink-0 items-center gap-4">
+              <div className="flex items-center gap-2 rounded-md border border-green-100/50 bg-green-50/60 px-2 py-1">
+                <div className="h-1.5 w-1.5 rounded-full bg-green-500" />
+                <span className="text-[10px] font-bold uppercase tracking-widest text-green-700">
+                  Teacher AI Online
+                </span>
+              </div>
+              <div className="ml-2 flex items-center gap-1 border-l border-gray-200 pl-4">
+                <button
+                  type="button"
+                  onClick={() => setRightSidebarOpen((current) => !current)}
+                  className="rounded-md p-1.5 text-gray-500 transition-colors hover:bg-gray-100"
+                  title={rightSidebarOpen ? "收起右侧栏" : "展开右侧栏"}
+                >
+                  <PanelRight className="h-4.5 w-4.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTopCollapsed(true)}
+                  className="rounded-md p-1.5 text-gray-500 transition-colors hover:bg-gray-100"
+                  title="收起顶部与编辑工具栏"
+                >
+                  <ChevronUp className="h-4.5 w-4.5" />
+                </button>
+              </div>
+              <Image
+                src="https://api.dicebear.com/7.x/avataaars/svg?seed=Codex"
+                alt="User Avatar"
+                className="h-7 w-7 rounded-full border border-gray-200"
+                width={28}
+                height={28}
+                unoptimized
+              />
+            </div>
+          </header>
+        </div>
+
+        <button
+          type="button"
+          onClick={() => setTopCollapsed(false)}
+          className={clsx(
+            "fixed left-1/2 top-0 z-[70] flex h-4 w-16 -translate-x-1/2 items-center justify-center rounded-b-lg border border-t-0 border-gray-200 bg-white shadow-sm transition-all hover:h-5 hover:bg-gray-50",
+            topCollapsed ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"
+          )}
+          title="展开顶部与编辑工具栏"
+        >
+          <ChevronDown className="h-3 w-3 text-gray-400" />
+        </button>
+      </>
+    );
+  }
+
+  if (!activeLesson || !displayedDocument) {
+    return (
+      <main className="flex h-screen flex-col overflow-hidden bg-[#f8f6f0] text-[#1a1a1a]">
+        {renderWorkspaceHeader()}
+
+        {error ? (
+          <div className="mx-4 mt-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 md:mx-6">
+            {error}
+          </div>
+        ) : null}
+
+        <section className="flex flex-1 items-center justify-center px-6">
+          <div className="w-full max-w-xl rounded-[32px] border border-stone-200 bg-white/90 p-10 text-center shadow-[0_24px_70px_rgba(15,23,42,0.08)]">
+            <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-[20px] bg-stone-950 text-white">
+              <BookOpen className="h-7 w-7" />
+            </div>
+            <h2 className="mt-6 text-2xl font-semibold tracking-tight text-stone-950">这个课程包还是空的</h2>
+            <p className="mt-3 text-sm leading-7 text-stone-500">
+              上方这条页签栏已经是当前课程包的页面区了。点右上角的加号，或者直接从下面创建第一张课程页面。
+            </p>
+            <div className="mt-8 flex justify-center">
+              <button
+                type="button"
+                onClick={() => void handleCreateLessonFromPrompt()}
+                className="inline-flex items-center gap-2 rounded-full bg-stone-950 px-5 py-3 text-sm font-medium text-white transition hover:bg-stone-800"
+              >
+                <Plus className="h-4 w-4" />
+                新建第一页
+              </button>
+            </div>
+          </div>
+        </section>
+      </main>
+    );
   }
 
   return (
     <main className="flex h-screen flex-col overflow-hidden bg-[#f8f6f0] text-[#1a1a1a]">
-      <div
-        className={clsx(
-          "relative z-[60] flex shrink-0 flex-col bg-white transition-all duration-300",
-          topCollapsed && "-translate-y-full -mb-12"
-        )}
-      >
-        <header className="flex h-12 items-center justify-between border-b border-gray-200 px-4">
-          <div className="flex min-w-0 items-center gap-6">
-            <div className="flex shrink-0 items-center gap-2">
-              <button
-                type="button"
-                onClick={handleReturnHome}
-                className="flex h-6 w-6 items-center justify-center rounded bg-black text-white shadow-sm transition hover:bg-gray-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/20"
-                title="返回主页"
-                aria-label="返回主页"
-              >
-                <Cpu className="h-3.5 w-3.5" />
-              </button>
-              <span className="text-[13px] font-semibold tracking-tight">{coursePackage.title}</span>
-            </div>
-
-            <nav className="flex min-w-0 items-center overflow-x-auto custom-scrollbar">
-              {openLessons.map((lesson) => (
-                <button
-                  key={lesson.id}
-                  type="button"
-                  onClick={() => handleSelectLesson(lesson.id)}
-                  className={clsx(
-                    "group flex h-12 items-center gap-2 border-r border-gray-100 px-4 text-left text-[10px] font-bold uppercase tracking-[0.2em] transition-colors",
-                    lesson.id === activeLesson.id
-                      ? "border-b-2 border-black bg-white text-black"
-                      : "bg-white text-gray-400 hover:bg-gray-50 hover:text-black"
-                  )}
-                >
-                  <span className="max-w-[160px] truncate">{lesson.title}</span>
-                  <span className="max-w-[52px] truncate text-[9px] font-medium tracking-[0.16em] text-gray-300">
-                    {lesson.history_graph.current_branch}
-                  </span>
-                  <span
-                    className="rounded-md p-1 text-gray-300 opacity-0 transition hover:bg-gray-100 hover:text-black group-hover:opacity-100"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      void handleCloseLesson(lesson.id);
-                    }}
-                  >
-                    <X className="h-3 w-3" />
-                  </span>
-                </button>
-              ))}
-              <button
-                type="button"
-                onClick={() => void handleCreateLessonFromPrompt()}
-                className="p-3 text-gray-300 transition-colors hover:text-black"
-                title="新建单课"
-              >
-                <Plus className="h-4 w-4" />
-              </button>
-            </nav>
-          </div>
-
-          <div className="flex shrink-0 items-center gap-4">
-            <div className="flex items-center gap-2 rounded-md border border-green-100/50 bg-green-50/60 px-2 py-1">
-              <div className="h-1.5 w-1.5 rounded-full bg-green-500" />
-              <span className="text-[10px] font-bold uppercase tracking-widest text-green-700">
-                Teacher AI Online
-              </span>
-            </div>
-            <div className="ml-2 flex items-center gap-1 border-l border-gray-200 pl-4">
-              <button
-                type="button"
-                onClick={() => setRightSidebarOpen((current) => !current)}
-                className="rounded-md p-1.5 text-gray-500 transition-colors hover:bg-gray-100"
-                title={rightSidebarOpen ? "收起右侧栏" : "展开右侧栏"}
-              >
-                <PanelRight className="h-4.5 w-4.5" />
-              </button>
-              <button
-                type="button"
-                onClick={() => setTopCollapsed(true)}
-                className="rounded-md p-1.5 text-gray-500 transition-colors hover:bg-gray-100"
-                title="收起顶部与编辑工具栏"
-              >
-                <ChevronUp className="h-4.5 w-4.5" />
-              </button>
-            </div>
-            <Image
-              src="https://api.dicebear.com/7.x/avataaars/svg?seed=Codex"
-              alt="User Avatar"
-              className="h-7 w-7 rounded-full border border-gray-200"
-              width={28}
-              height={28}
-              unoptimized
-            />
-          </div>
-        </header>
-      </div>
-
-      <button
-        type="button"
-        onClick={() => setTopCollapsed(false)}
-        className={clsx(
-          "fixed left-1/2 top-0 z-[70] flex h-4 w-16 -translate-x-1/2 items-center justify-center rounded-b-lg border border-t-0 border-gray-200 bg-white shadow-sm transition-all hover:h-5 hover:bg-gray-50",
-          topCollapsed ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"
-        )}
-        title="展开顶部与编辑工具栏"
-      >
-        <ChevronDown className="h-3 w-3 text-gray-400" />
-      </button>
+      {renderWorkspaceHeader()}
 
       {error ? (
         <div className="mx-4 mt-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 md:mx-6">

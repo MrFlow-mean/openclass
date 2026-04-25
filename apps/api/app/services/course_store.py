@@ -4,7 +4,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-from app.models import CourseGraphEdge, CoursePackage
+from app.models import CourseGraphEdge, CoursePackage, WorkspaceState
 from app.services.lesson_factory import create_lesson
 
 
@@ -13,29 +13,34 @@ class FileCourseStore:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
-    def load(self) -> CoursePackage:
+    def load(self) -> WorkspaceState:
         if not self.path.exists():
-            package = build_initial_course_package()
-            self.save(package)
-            return package
+            workspace = build_initial_workspace_state()
+            self.save(workspace)
+            return workspace
         raw_text = self.path.read_text(encoding="utf-8")
         try:
             raw_data = json.loads(raw_text)
             if _contains_legacy_blocks(raw_data):
                 self._backup_legacy_store(raw_text)
-                package = build_initial_course_package()
-                self.save(package)
-                return package
-            return CoursePackage.model_validate(raw_data)
+                workspace = build_initial_workspace_state()
+                self.save(workspace)
+                return workspace
+            if isinstance(raw_data, dict) and isinstance(raw_data.get("packages"), list):
+                return WorkspaceState.model_validate(raw_data)
+            package = CoursePackage.model_validate(raw_data)
+            workspace = WorkspaceState(packages=[package], active_package_id=package.id)
+            self.save(workspace)
+            return workspace
         except Exception:
             self._backup_legacy_store(raw_text)
-            package = build_initial_course_package()
-            self.save(package)
-            return package
+            workspace = build_initial_workspace_state()
+            self.save(workspace)
+            return workspace
 
-    def save(self, package: CoursePackage) -> None:
+    def save(self, workspace: WorkspaceState) -> None:
         self.path.write_text(
-            json.dumps(package.model_dump(mode="json"), ensure_ascii=False, indent=2),
+            json.dumps(workspace.model_dump(mode="json"), ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
 
@@ -48,15 +53,20 @@ class FileCourseStore:
 def _contains_legacy_blocks(raw_data: object) -> bool:
     if not isinstance(raw_data, dict):
         return False
-    lessons = raw_data.get("lessons")
-    if not isinstance(lessons, list):
-        return False
+    lessons: list[object] = []
+    raw_lessons = raw_data.get("lessons")
+    if isinstance(raw_lessons, list):
+        lessons.extend(raw_lessons)
+    raw_packages = raw_data.get("packages")
+    if isinstance(raw_packages, list):
+        for package in raw_packages:
+            if isinstance(package, dict) and isinstance(package.get("lessons"), list):
+                lessons.extend(package["lessons"])
     for lesson in lessons:
-        if not isinstance(lesson, dict):
-            continue
-        board_document = lesson.get("board_document")
-        if isinstance(board_document, dict) and isinstance(board_document.get("blocks"), list):
-            return True
+        if isinstance(lesson, dict):
+            board_document = lesson.get("board_document")
+            if isinstance(board_document, dict) and isinstance(board_document.get("blocks"), list):
+                return True
     return False
 
 
@@ -84,3 +94,8 @@ def build_initial_course_package() -> CoursePackage:
         active_lesson_id=lesson_a.id,
         workspace_tab_order=[lesson_a.id, lesson_b.id],
     )
+
+
+def build_initial_workspace_state() -> WorkspaceState:
+    package = build_initial_course_package()
+    return WorkspaceState(packages=[package], active_package_id=package.id)
