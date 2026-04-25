@@ -3,6 +3,8 @@
 import { Extension, type Editor as TiptapEditor } from "@tiptap/core";
 import Color from "@tiptap/extension-color";
 import Highlight from "@tiptap/extension-highlight";
+import ImageExtension from "@tiptap/extension-image";
+import LinkExtension from "@tiptap/extension-link";
 import { Table } from "@tiptap/extension-table";
 import TableCell from "@tiptap/extension-table-cell";
 import TableHeader from "@tiptap/extension-table-header";
@@ -14,7 +16,8 @@ import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import clsx from "clsx";
 import Image from "next/image";
-import { useCallback, useEffect, useEffectEvent, useRef, useState, type ReactNode } from "react";
+import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useEffectEvent, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import {
   AlignCenter,
   AlignLeft,
@@ -64,6 +67,7 @@ import type {
   ChatRequestPayload,
   CommitRecord,
   CoursePackage,
+  DocumentPageSettings,
   LearningClarificationStatus,
   Lesson,
   RealtimeEventLogPayload,
@@ -95,7 +99,14 @@ type ChatMessage = {
 };
 
 type LessonMessageMap = Record<string, ChatMessage[]>;
+type LessonComposerState = {
+  chatInput: string;
+  composerMode: ChatInteractionMode;
+  includeSelectionInPrompt: boolean;
+};
+type LessonComposerStateMap = Record<string, LessonComposerState>;
 type SidebarTab = "history" | "branch" | "library";
+type WordRibbonTab = "home" | "insert" | "page";
 type SelectionPopoverPosition = {
   top: number;
   left: number;
@@ -197,6 +208,17 @@ const WORD_EDITOR_EXTENSIONS = [
   Color,
   Highlight.configure({ multicolor: true }),
   UnderlineExtension,
+  LinkExtension.configure({
+    autolink: true,
+    openOnClick: false,
+    defaultProtocol: "https",
+  }),
+  ImageExtension.configure({
+    allowBase64: true,
+    HTMLAttributes: {
+      class: "word-editor__image",
+    },
+  }),
   TextAlign.configure({ types: ["heading", "paragraph"] }),
   Table.configure({ resizable: true }),
   TableRow,
@@ -211,6 +233,62 @@ const WORD_EDITOR_PROPS = {
     class: "word-editor__content",
   },
 };
+
+const DEFAULT_LESSON_COMPOSER_STATE: LessonComposerState = {
+  chatInput: "",
+  composerMode: "ask",
+  includeSelectionInPrompt: true,
+};
+
+const DEFAULT_PAGE_SETTINGS: DocumentPageSettings = {
+  margin_preset: "normal",
+  orientation: "portrait",
+  page_size: "a4",
+  columns: 1,
+  page_border: true,
+  background_style: "plain",
+  watermark_text: "",
+  line_numbers: false,
+  show_page_number: false,
+  header_text: "",
+  footer_text: "",
+};
+
+const PAGE_SIZE_OPTIONS = [
+  { value: "a4", label: "A4", width: 860, height: 1216 },
+  { value: "letter", label: "Letter", width: 884, height: 1142 },
+  { value: "a3", label: "A3", width: 980, height: 1386 },
+] as const;
+
+const PAGE_MARGIN_OPTIONS = [
+  { value: "narrow", label: "窄", paddingX: 42, paddingY: 54 },
+  { value: "normal", label: "普通", paddingX: 56, paddingY: 68 },
+  { value: "wide", label: "宽", paddingX: 74, paddingY: 86 },
+] as const;
+
+const PAGE_BACKGROUND_OPTIONS = [
+  { value: "plain", label: "纯白" },
+  { value: "warm", label: "暖白" },
+  { value: "grid", label: "网格纸" },
+] as const;
+
+function normalizePageSettings(settings?: Partial<DocumentPageSettings> | null): DocumentPageSettings {
+  return {
+    ...DEFAULT_PAGE_SETTINGS,
+    ...(settings ?? {}),
+  };
+}
+
+function pagePreviewMetrics(settings: DocumentPageSettings) {
+  const baseSize = PAGE_SIZE_OPTIONS.find((option) => option.value === settings.page_size) ?? PAGE_SIZE_OPTIONS[0];
+  const margin = PAGE_MARGIN_OPTIONS.find((option) => option.value === settings.margin_preset) ?? PAGE_MARGIN_OPTIONS[1];
+  return {
+    width: settings.orientation === "landscape" ? baseSize.height : baseSize.width,
+    height: settings.orientation === "landscape" ? baseSize.width : baseSize.height,
+    paddingX: margin.paddingX,
+    paddingY: margin.paddingY,
+  };
+}
 
 function createChatMessage(
   role: ChatMessage["role"],
@@ -227,6 +305,10 @@ function createChatMessage(
 
 function createClientSessionId(prefix: string): string {
   return `${prefix}_${crypto.randomUUID()}`;
+}
+
+function createLessonComposerState(): LessonComposerState {
+  return { ...DEFAULT_LESSON_COMPOSER_STATE };
 }
 
 function buildWelcomeMessages(): ChatMessage[] {
@@ -286,7 +368,9 @@ function documentsEqual(left: BoardDocument | null | undefined, right: BoardDocu
   return (
     left.title === right.title &&
     left.content_html === right.content_html &&
-    left.content_text === right.content_text
+    left.content_text === right.content_text &&
+    JSON.stringify(normalizePageSettings(left.page_settings)) ===
+      JSON.stringify(normalizePageSettings(right.page_settings))
   );
 }
 
@@ -368,6 +452,64 @@ function ToolbarButton({
       )}
     >
       {children}
+    </button>
+  );
+}
+
+function RibbonTabButton({
+  active,
+  children,
+  onClick,
+}: {
+  active: boolean;
+  children: ReactNode;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={clsx(
+        "mr-4 h-full border-b-2 px-2 text-[10px] font-bold uppercase tracking-widest transition-colors",
+        active ? "border-black text-black" : "border-transparent text-gray-400 hover:text-black"
+      )}
+    >
+      {children}
+    </button>
+  );
+}
+
+function RibbonActionButton({
+  title,
+  label,
+  hint,
+  active,
+  disabled,
+  onClick,
+}: {
+  title: string;
+  label: string;
+  hint?: string;
+  active?: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      title={title}
+      onClick={onClick}
+      disabled={disabled}
+      className={clsx(
+        "flex min-w-[74px] flex-col items-start rounded-xl border px-3 py-2 text-left transition",
+        active
+          ? "border-black bg-black text-white shadow-sm"
+          : "border-gray-200 bg-white text-gray-700 hover:border-gray-300 hover:bg-gray-50",
+        disabled && "cursor-not-allowed opacity-40"
+      )}
+    >
+      <span className="text-[12px] font-semibold">{label}</span>
+      {hint ? <span className={clsx("mt-1 text-[10px]", active ? "text-white/70" : "text-gray-400")}>{hint}</span> : null}
     </button>
   );
 }
@@ -530,6 +672,8 @@ function WordBoardEditor({
   onExportDocx: () => void;
 }) {
   const importRef = useRef<HTMLInputElement | null>(null);
+  const imageUploadRef = useRef<HTMLInputElement | null>(null);
+  const [activeRibbonTab, setActiveRibbonTab] = useState<WordRibbonTab>("home");
   const editorContent =
     document.content_html.trim() ||
     (document.content_json && Object.keys(document.content_json).length ? document.content_json : "<p></p>");
@@ -537,6 +681,28 @@ function WordBoardEditor({
   const latestReadOnlyRef = useRef(readOnly);
   const latestOnDocumentChangeRef = useRef(onDocumentChange);
   const latestOnSelectionChangeRef = useRef(onSelectionChange);
+  const pageSettings = normalizePageSettings(document.page_settings);
+  const pageMetrics = pagePreviewMetrics(pageSettings);
+  const pageStyle = {
+    "--page-padding-x": `${pageMetrics.paddingX}px`,
+    "--page-padding-y": `${pageMetrics.paddingY}px`,
+    maxWidth: `${pageMetrics.width}px`,
+    minHeight: `${pageMetrics.height}px`,
+  } as CSSProperties;
+  const pageChromeStyle = {
+    paddingLeft: "var(--page-padding-x)",
+    paddingRight: "var(--page-padding-x)",
+  } as CSSProperties;
+  const titleStyle = {
+    ...pageChromeStyle,
+    paddingTop: "calc(var(--page-padding-y) * 0.72)",
+    paddingBottom: "calc(var(--page-padding-y) * 0.56)",
+  } as CSSProperties;
+  const contentStyle = {
+    ...pageChromeStyle,
+    paddingTop: "var(--page-padding-y)",
+    paddingBottom: "calc(var(--page-padding-y) * 0.9)",
+  } as CSSProperties;
 
   useEffect(() => {
     latestDocumentRef.current = document;
@@ -606,190 +772,593 @@ function WordBoardEditor({
   const currentFontSize =
     ((editor?.getAttributes("textStyle").fontSize as string | null) ?? "14px").replace("px", "");
   const currentFontFamily = (editor?.getAttributes("textStyle").fontFamily as string | null) ?? FONT_FAMILY_OPTIONS[0].value;
+  const currentPageNumberLabel = pageSettings.show_page_number ? "第 1 页" : "";
+
+  const updatePageSettings = useCallback(
+    (patch: Partial<DocumentPageSettings>) => {
+      if (readOnly) {
+        return;
+      }
+      onDocumentChange({
+        ...document,
+        page_settings: {
+          ...pageSettings,
+          ...patch,
+        },
+      });
+    },
+    [document, onDocumentChange, pageSettings, readOnly]
+  );
+
+  const handleInsertBlankPage = useCallback(() => {
+    if (!editor || readOnly) {
+      return;
+    }
+    editor
+      .chain()
+      .focus()
+      .insertContent([
+        { type: "paragraph" },
+        { type: "horizontalRule" },
+        { type: "paragraph" },
+        { type: "paragraph" },
+      ])
+      .run();
+  }, [editor, readOnly]);
+
+  const handleInsertCoverPage = useCallback(() => {
+    if (!editor || readOnly) {
+      return;
+    }
+    const coverTitle = document.title.trim() || "未命名讲义";
+    editor
+      .chain()
+      .focus("start")
+      .insertContent([
+        { type: "paragraph" },
+        {
+          type: "heading",
+          attrs: { level: 1, textAlign: "center" },
+          content: [{ type: "text", text: coverTitle }],
+        },
+        {
+          type: "paragraph",
+          attrs: { textAlign: "center" },
+          content: [{ type: "text", text: "课程讲义 / Lesson Notes" }],
+        },
+        {
+          type: "paragraph",
+          attrs: { textAlign: "center" },
+          content: [{ type: "text", text: "在这里补充授课对象、目标和使用场景" }],
+        },
+        { type: "paragraph" },
+        { type: "horizontalRule" },
+        { type: "paragraph" },
+      ])
+      .run();
+  }, [document.title, editor, readOnly]);
+
+  const handleInsertTableOfContents = useCallback(() => {
+    if (!editor || readOnly) {
+      return;
+    }
+    const headings: string[] = [];
+    editor.state.doc.descendants((node) => {
+      if (node.type.name === "heading") {
+        const text = node.textContent.trim();
+        if (text) {
+          headings.push(text);
+        }
+      }
+    });
+
+    editor
+      .chain()
+      .focus("start")
+      .insertContent([
+        {
+          type: "heading",
+          attrs: { level: 2 },
+          content: [{ type: "text", text: "目录" }],
+        },
+        {
+          type: "orderedList",
+          content: (headings.length ? headings : ["正文里出现标题后，可再次插入目录页自动整理结构"]).map(
+            (heading) => ({
+              type: "listItem",
+              content: [
+                {
+                  type: "paragraph",
+                  content: [{ type: "text", text: heading }],
+                },
+              ],
+            })
+          ),
+        },
+        { type: "paragraph" },
+      ])
+      .run();
+  }, [editor, readOnly]);
+
+  const handleInsertTextBox = useCallback(() => {
+    if (!editor || readOnly) {
+      return;
+    }
+    editor
+      .chain()
+      .focus()
+      .insertContent({
+        type: "blockquote",
+        content: [
+          {
+            type: "paragraph",
+            content: [{ type: "text", text: "重点说明：在这里补充定义、提醒或课堂旁注。" }],
+          },
+        ],
+      })
+      .run();
+  }, [editor, readOnly]);
+
+  const handleInsertLink = useCallback(() => {
+    if (!editor || readOnly) {
+      return;
+    }
+    const selectedText = editor.state.doc
+      .textBetween(editor.state.selection.from, editor.state.selection.to, " ")
+      .trim();
+    const hrefInput = window.prompt("请输入超链接地址", "https://");
+    const href = hrefInput?.trim() ?? "";
+    if (!href) {
+      return;
+    }
+    if (selectedText) {
+      editor.chain().focus().extendMarkRange("link").setLink({ href }).run();
+      return;
+    }
+    const labelInput = window.prompt("请输入显示文本", "查看资料");
+    const label = labelInput?.trim() ?? "";
+    if (!label) {
+      return;
+    }
+    editor
+      .chain()
+      .focus()
+      .insertContent({
+        type: "text",
+        text: label,
+        marks: [{ type: "link", attrs: { href } }],
+      })
+      .run();
+  }, [editor, readOnly]);
+
+  const handleInsertHeaderFooter = useCallback(() => {
+    if (readOnly) {
+      return;
+    }
+    const nextHeader = window.prompt("请输入页眉文字，留空则清除", pageSettings.header_text);
+    if (nextHeader === null) {
+      return;
+    }
+    const nextFooter = window.prompt("请输入页脚文字，留空则清除", pageSettings.footer_text);
+    if (nextFooter === null) {
+      return;
+    }
+    updatePageSettings({
+      header_text: nextHeader.trim(),
+      footer_text: nextFooter.trim(),
+    });
+  }, [pageSettings.footer_text, pageSettings.header_text, readOnly, updatePageSettings]);
+
+  const handleInsertWatermark = useCallback(() => {
+    if (readOnly) {
+      return;
+    }
+    const nextWatermark = window.prompt("请输入水印文字，留空则清除", pageSettings.watermark_text || "内部讲义");
+    if (nextWatermark === null) {
+      return;
+    }
+    updatePageSettings({ watermark_text: nextWatermark.trim() });
+  }, [pageSettings.watermark_text, readOnly, updatePageSettings]);
+
+  const handleImageUpload = useCallback(
+    (file: File) => {
+      if (!editor || readOnly) {
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        const src = typeof reader.result === "string" ? reader.result : "";
+        if (!src) {
+          return;
+        }
+        editor.chain().focus().setImage({ src, alt: file.name }).run();
+      };
+      reader.readAsDataURL(file);
+    },
+    [editor, readOnly]
+  );
+
+  const renderHomeRibbon = () => (
+    <>
+      <div className="flex items-center gap-2 border-r border-gray-100 pr-4">
+        <select
+          disabled={!editor || readOnly}
+          value={currentFontFamily}
+          onChange={(event) => editor?.chain().focus().setFontFamily(event.target.value).run()}
+          className="rounded-lg border border-gray-200 bg-white px-2.5 py-2 text-[12px] font-medium outline-none"
+        >
+          {FONT_FAMILY_OPTIONS.map((option) => (
+            <option key={option.label} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+        <select
+          disabled={!editor || readOnly}
+          value={currentFontSize}
+          onChange={(event) => editor?.chain().focus().setFontSize(`${event.target.value}px`).run()}
+          className="rounded-lg border border-gray-200 bg-white px-2.5 py-2 text-[12px] font-medium outline-none"
+        >
+          {FONT_SIZE_OPTIONS.map((option) => (
+            <option key={option.value} value={option.label}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      <div className="flex items-center gap-1 border-r border-gray-100 pr-4">
+        <ToolbarButton
+          title="加粗"
+          active={editor?.isActive("bold")}
+          disabled={!editor || readOnly}
+          onClick={() => editor?.chain().focus().toggleBold().run()}
+        >
+          <Bold className="h-4 w-4" />
+        </ToolbarButton>
+        <ToolbarButton
+          title="斜体"
+          active={editor?.isActive("italic")}
+          disabled={!editor || readOnly}
+          onClick={() => editor?.chain().focus().toggleItalic().run()}
+        >
+          <Italic className="h-4 w-4" />
+        </ToolbarButton>
+        <ToolbarButton
+          title="下划线"
+          active={editor?.isActive("underline")}
+          disabled={!editor || readOnly}
+          onClick={() => editor?.chain().focus().toggleUnderline().run()}
+        >
+          <Underline className="h-4 w-4" />
+        </ToolbarButton>
+        <ToolbarButton
+          title="高亮"
+          active={editor?.isActive("highlight")}
+          disabled={!editor || readOnly}
+          onClick={() => editor?.chain().focus().toggleHighlight({ color: "#fef08a" }).run()}
+        >
+          <Highlighter className="h-4 w-4" />
+        </ToolbarButton>
+        <ToolbarButton
+          title="文字颜色"
+          disabled={!editor || readOnly}
+          onClick={() => editor?.chain().focus().setColor("#c2410c").run()}
+        >
+          <Type className="h-4 w-4" />
+        </ToolbarButton>
+      </div>
+
+      <div className="flex items-center gap-1 border-r border-gray-100 pr-4">
+        <ToolbarButton
+          title="左对齐"
+          active={editor?.isActive({ textAlign: "left" })}
+          disabled={!editor || readOnly}
+          onClick={() => editor?.chain().focus().setTextAlign("left").run()}
+        >
+          <AlignLeft className="h-4 w-4" />
+        </ToolbarButton>
+        <ToolbarButton
+          title="居中"
+          active={editor?.isActive({ textAlign: "center" })}
+          disabled={!editor || readOnly}
+          onClick={() => editor?.chain().focus().setTextAlign("center").run()}
+        >
+          <AlignCenter className="h-4 w-4" />
+        </ToolbarButton>
+        <ToolbarButton
+          title="右对齐"
+          active={editor?.isActive({ textAlign: "right" })}
+          disabled={!editor || readOnly}
+          onClick={() => editor?.chain().focus().setTextAlign("right").run()}
+        >
+          <AlignRight className="h-4 w-4" />
+        </ToolbarButton>
+        <ToolbarButton
+          title="引用"
+          active={editor?.isActive("blockquote")}
+          disabled={!editor || readOnly}
+          onClick={() => editor?.chain().focus().toggleBlockquote().run()}
+        >
+          <Quote className="h-4 w-4" />
+        </ToolbarButton>
+      </div>
+
+      <div className="flex items-center gap-1 border-r border-gray-100 pr-4">
+        <ToolbarButton
+          title="项目符号"
+          active={editor?.isActive("bulletList")}
+          disabled={!editor || readOnly}
+          onClick={() => editor?.chain().focus().toggleBulletList().run()}
+        >
+          <List className="h-4 w-4" />
+        </ToolbarButton>
+        <ToolbarButton
+          title="编号列表"
+          active={editor?.isActive("orderedList")}
+          disabled={!editor || readOnly}
+          onClick={() => editor?.chain().focus().toggleOrderedList().run()}
+        >
+          <ListOrdered className="h-4 w-4" />
+        </ToolbarButton>
+        <ToolbarButton
+          title="插入表格"
+          disabled={!editor || readOnly}
+          onClick={() => editor?.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()}
+        >
+          <Table2 className="h-4 w-4" />
+        </ToolbarButton>
+      </div>
+
+      <div className="flex items-center gap-1 border-r border-gray-100 pr-4">
+        <ToolbarButton
+          title="撤销"
+          disabled={!editor || readOnly}
+          onClick={() => editor?.chain().focus().undo().run()}
+        >
+          <Undo2 className="h-4 w-4" />
+        </ToolbarButton>
+        <ToolbarButton
+          title="重做"
+          disabled={!editor || readOnly}
+          onClick={() => editor?.chain().focus().redo().run()}
+        >
+          <Redo2 className="h-4 w-4" />
+        </ToolbarButton>
+      </div>
+    </>
+  );
+
+  const renderInsertRibbon = () => (
+    <>
+      <div className="flex items-center gap-2 border-r border-gray-100 pr-4">
+        <RibbonActionButton
+          title="插入空白页"
+          label="空白页"
+          hint="分页占位"
+          disabled={!editor || readOnly}
+          onClick={handleInsertBlankPage}
+        />
+        <RibbonActionButton
+          title="插入封面"
+          label="封面"
+          hint="置顶模板"
+          disabled={!editor || readOnly}
+          onClick={handleInsertCoverPage}
+        />
+        <RibbonActionButton
+          title="插入目录页"
+          label="目录页"
+          hint="按标题生成"
+          disabled={!editor || readOnly}
+          onClick={handleInsertTableOfContents}
+        />
+      </div>
+
+      <div className="flex items-center gap-2 border-r border-gray-100 pr-4">
+        <RibbonActionButton
+          title="切换页码"
+          label="页码"
+          hint={pageSettings.show_page_number ? "已显示" : "点击显示"}
+          active={pageSettings.show_page_number}
+          disabled={readOnly}
+          onClick={() => updatePageSettings({ show_page_number: !pageSettings.show_page_number })}
+        />
+        <RibbonActionButton
+          title="设置页眉页脚"
+          label="页眉页脚"
+          hint="编辑文案"
+          active={Boolean(pageSettings.header_text || pageSettings.footer_text)}
+          disabled={readOnly}
+          onClick={handleInsertHeaderFooter}
+        />
+      </div>
+
+      <div className="flex items-center gap-2 border-r border-gray-100 pr-4">
+        <input
+          ref={imageUploadRef}
+          type="file"
+          accept="image/*"
+          className="hidden"
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            if (file) {
+              handleImageUpload(file);
+            }
+            event.currentTarget.value = "";
+          }}
+        />
+        <RibbonActionButton
+          title="插入图片"
+          label="图片"
+          hint="上传到讲义"
+          disabled={!editor || readOnly}
+          onClick={() => imageUploadRef.current?.click()}
+        />
+        <RibbonActionButton
+          title="插入表格"
+          label="表格"
+          hint="3 x 3"
+          disabled={!editor || readOnly}
+          onClick={() => editor?.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()}
+        />
+        <RibbonActionButton
+          title="插入文本框"
+          label="文本框"
+          hint="重点旁注"
+          disabled={!editor || readOnly}
+          onClick={handleInsertTextBox}
+        />
+      </div>
+
+      <div className="flex items-center gap-2 border-r border-gray-100 pr-4">
+        <RibbonActionButton
+          title="插入超链接"
+          label="超链接"
+          hint="外部资料"
+          disabled={!editor || readOnly}
+          onClick={handleInsertLink}
+        />
+        <RibbonActionButton
+          title="插入水印"
+          label="水印"
+          hint="页面标识"
+          active={Boolean(pageSettings.watermark_text)}
+          disabled={readOnly}
+          onClick={handleInsertWatermark}
+        />
+      </div>
+    </>
+  );
+
+  const renderPageRibbon = () => (
+    <>
+      <div className="flex items-center gap-2 border-r border-gray-100 pr-4">
+        {PAGE_MARGIN_OPTIONS.map((option) => (
+          <RibbonActionButton
+            key={option.value}
+            title={`页边距：${option.label}`}
+            label={option.label}
+            hint="页边距"
+            active={pageSettings.margin_preset === option.value}
+            disabled={readOnly}
+            onClick={() => updatePageSettings({ margin_preset: option.value })}
+          />
+        ))}
+      </div>
+
+      <div className="flex items-center gap-2 border-r border-gray-100 pr-4">
+        <RibbonActionButton
+          title="纵向排版"
+          label="纵向"
+          hint="纸张方向"
+          active={pageSettings.orientation === "portrait"}
+          disabled={readOnly}
+          onClick={() => updatePageSettings({ orientation: "portrait" })}
+        />
+        <RibbonActionButton
+          title="横向排版"
+          label="横向"
+          hint="纸张方向"
+          active={pageSettings.orientation === "landscape"}
+          disabled={readOnly}
+          onClick={() => updatePageSettings({ orientation: "landscape" })}
+        />
+      </div>
+
+      <div className="flex items-center gap-2 border-r border-gray-100 pr-4">
+        {PAGE_SIZE_OPTIONS.map((option) => (
+          <RibbonActionButton
+            key={option.value}
+            title={`纸张大小：${option.label}`}
+            label={option.label}
+            hint="纸张大小"
+            active={pageSettings.page_size === option.value}
+            disabled={readOnly}
+            onClick={() => updatePageSettings({ page_size: option.value })}
+          />
+        ))}
+      </div>
+
+      <div className="flex items-center gap-2 border-r border-gray-100 pr-4">
+        <RibbonActionButton
+          title="单栏排版"
+          label="单栏"
+          hint="分栏"
+          active={pageSettings.columns === 1}
+          disabled={readOnly}
+          onClick={() => updatePageSettings({ columns: 1 })}
+        />
+        <RibbonActionButton
+          title="双栏排版"
+          label="双栏"
+          hint="分栏"
+          active={pageSettings.columns === 2}
+          disabled={readOnly}
+          onClick={() => updatePageSettings({ columns: 2 })}
+        />
+      </div>
+
+      <div className="flex items-center gap-2 border-r border-gray-100 pr-4">
+        <RibbonActionButton
+          title="页面边框"
+          label="页面边框"
+          hint={pageSettings.page_border ? "已开启" : "已关闭"}
+          active={pageSettings.page_border}
+          disabled={readOnly}
+          onClick={() => updatePageSettings({ page_border: !pageSettings.page_border })}
+        />
+        <RibbonActionButton
+          title="行号"
+          label="行号"
+          hint={pageSettings.line_numbers ? "已显示" : "点击显示"}
+          active={pageSettings.line_numbers}
+          disabled={readOnly}
+          onClick={() => updatePageSettings({ line_numbers: !pageSettings.line_numbers })}
+        />
+      </div>
+
+      <div className="flex items-center gap-2 border-r border-gray-100 pr-4">
+        {PAGE_BACKGROUND_OPTIONS.map((option) => (
+          <RibbonActionButton
+            key={option.value}
+            title={`页面背景：${option.label}`}
+            label={option.label}
+            hint="背景"
+            active={pageSettings.background_style === option.value}
+            disabled={readOnly}
+            onClick={() => updatePageSettings({ background_style: option.value })}
+          />
+        ))}
+      </div>
+    </>
+  );
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       <div
         className={clsx(
           "shrink-0 overflow-hidden transition-all duration-300",
-          toolbarCollapsed ? "max-h-0 opacity-0" : "max-h-32 opacity-100"
+          toolbarCollapsed ? "max-h-0 opacity-0" : "max-h-52 opacity-100"
         )}
         aria-hidden={toolbarCollapsed}
       >
-        <div
-          className={clsx(
-            "border-b border-gray-200 bg-white",
-            readOnly && "bg-gray-50"
-          )}
-        >
+        <div className={clsx("border-b border-gray-200 bg-white", readOnly && "bg-gray-50")}>
           <div className="flex h-10 items-center border-b border-gray-100 px-6">
-            <button className="mr-4 h-full border-b-2 border-black px-2 text-[10px] font-bold uppercase tracking-widest text-black">
+            <RibbonTabButton active={activeRibbonTab === "home"} onClick={() => setActiveRibbonTab("home")}>
               开始 (HOME)
-            </button>
-            <button className="mr-4 h-full px-2 text-[10px] font-bold uppercase tracking-widest text-gray-400 transition-colors hover:text-black">
+            </RibbonTabButton>
+            <RibbonTabButton active={activeRibbonTab === "insert"} onClick={() => setActiveRibbonTab("insert")}>
               插入 (INSERT)
-            </button>
-            <button className="mr-4 h-full px-2 text-[10px] font-bold uppercase tracking-widest text-gray-400 transition-colors hover:text-black">
+            </RibbonTabButton>
+            <RibbonTabButton active={activeRibbonTab === "page"} onClick={() => setActiveRibbonTab("page")}>
               页面 (PAGE)
-            </button>
+            </RibbonTabButton>
           </div>
           <div className="custom-scrollbar flex items-center gap-3 overflow-x-auto px-5 py-3 whitespace-nowrap">
-            <div className="flex items-center gap-2 border-r border-gray-100 pr-4">
-              <select
-                disabled={!editor || readOnly}
-                value={currentFontFamily}
-                onChange={(event) =>
-                  editor?.chain().focus().setFontFamily(event.target.value).run()
-                }
-                className="rounded-lg border border-gray-200 bg-white px-2.5 py-2 text-[12px] font-medium outline-none"
-              >
-                {FONT_FAMILY_OPTIONS.map((option) => (
-                  <option key={option.label} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-              <select
-                disabled={!editor || readOnly}
-                value={currentFontSize}
-                onChange={(event) =>
-                  editor?.chain().focus().setFontSize(`${event.target.value}px`).run()
-                }
-                className="rounded-lg border border-gray-200 bg-white px-2.5 py-2 text-[12px] font-medium outline-none"
-              >
-                {FONT_SIZE_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.label}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="flex items-center gap-1 border-r border-gray-100 pr-4">
-              <ToolbarButton
-                title="加粗"
-                active={editor?.isActive("bold")}
-                disabled={!editor || readOnly}
-                onClick={() => editor?.chain().focus().toggleBold().run()}
-              >
-                <Bold className="h-4 w-4" />
-              </ToolbarButton>
-              <ToolbarButton
-                title="斜体"
-                active={editor?.isActive("italic")}
-                disabled={!editor || readOnly}
-                onClick={() => editor?.chain().focus().toggleItalic().run()}
-              >
-                <Italic className="h-4 w-4" />
-              </ToolbarButton>
-              <ToolbarButton
-                title="下划线"
-                active={editor?.isActive("underline")}
-                disabled={!editor || readOnly}
-                onClick={() => editor?.chain().focus().toggleUnderline().run()}
-              >
-                <Underline className="h-4 w-4" />
-              </ToolbarButton>
-              <ToolbarButton
-                title="高亮"
-                active={editor?.isActive("highlight")}
-                disabled={!editor || readOnly}
-                onClick={() => editor?.chain().focus().toggleHighlight({ color: "#fef08a" }).run()}
-              >
-                <Highlighter className="h-4 w-4" />
-              </ToolbarButton>
-              <ToolbarButton
-                title="文字颜色"
-                disabled={!editor || readOnly}
-                onClick={() => editor?.chain().focus().setColor("#c2410c").run()}
-              >
-                <Type className="h-4 w-4" />
-              </ToolbarButton>
-            </div>
-
-            <div className="flex items-center gap-1 border-r border-gray-100 pr-4">
-              <ToolbarButton
-                title="左对齐"
-                active={editor?.isActive({ textAlign: "left" })}
-                disabled={!editor || readOnly}
-                onClick={() => editor?.chain().focus().setTextAlign("left").run()}
-              >
-                <AlignLeft className="h-4 w-4" />
-              </ToolbarButton>
-              <ToolbarButton
-                title="居中"
-                active={editor?.isActive({ textAlign: "center" })}
-                disabled={!editor || readOnly}
-                onClick={() => editor?.chain().focus().setTextAlign("center").run()}
-              >
-                <AlignCenter className="h-4 w-4" />
-              </ToolbarButton>
-              <ToolbarButton
-                title="右对齐"
-                active={editor?.isActive({ textAlign: "right" })}
-                disabled={!editor || readOnly}
-                onClick={() => editor?.chain().focus().setTextAlign("right").run()}
-              >
-                <AlignRight className="h-4 w-4" />
-              </ToolbarButton>
-              <ToolbarButton
-                title="引用"
-                active={editor?.isActive("blockquote")}
-                disabled={!editor || readOnly}
-                onClick={() => editor?.chain().focus().toggleBlockquote().run()}
-              >
-                <Quote className="h-4 w-4" />
-              </ToolbarButton>
-            </div>
-
-            <div className="flex items-center gap-1 border-r border-gray-100 pr-4">
-              <ToolbarButton
-                title="项目符号"
-                active={editor?.isActive("bulletList")}
-                disabled={!editor || readOnly}
-                onClick={() => editor?.chain().focus().toggleBulletList().run()}
-              >
-                <List className="h-4 w-4" />
-              </ToolbarButton>
-              <ToolbarButton
-                title="编号列表"
-                active={editor?.isActive("orderedList")}
-                disabled={!editor || readOnly}
-                onClick={() => editor?.chain().focus().toggleOrderedList().run()}
-              >
-                <ListOrdered className="h-4 w-4" />
-              </ToolbarButton>
-              <ToolbarButton
-                title="插入表格"
-                disabled={!editor || readOnly}
-                onClick={() =>
-                  editor
-                    ?.chain()
-                    .focus()
-                    .insertTable({ rows: 3, cols: 3, withHeaderRow: true })
-                    .run()
-                }
-              >
-                <Table2 className="h-4 w-4" />
-              </ToolbarButton>
-            </div>
-
-            <div className="flex items-center gap-1 border-r border-gray-100 pr-4">
-              <ToolbarButton
-                title="撤销"
-                disabled={!editor || readOnly}
-                onClick={() => editor?.chain().focus().undo().run()}
-              >
-                <Undo2 className="h-4 w-4" />
-              </ToolbarButton>
-              <ToolbarButton
-                title="重做"
-                disabled={!editor || readOnly}
-                onClick={() => editor?.chain().focus().redo().run()}
-              >
-                <Redo2 className="h-4 w-4" />
-              </ToolbarButton>
-            </div>
+            {activeRibbonTab === "home" ? renderHomeRibbon() : null}
+            {activeRibbonTab === "insert" ? renderInsertRibbon() : null}
+            {activeRibbonTab === "page" ? renderPageRibbon() : null}
 
             <div className="ml-auto flex items-center gap-2">
               <input
@@ -841,24 +1410,43 @@ function WordBoardEditor({
 
       <div className="min-h-0 flex-1 overflow-y-auto bg-[radial-gradient(circle_at_top,#f7f5ef,transparent_28%),linear-gradient(180deg,#f3f0e7_0%,#eef2f8_100%)]">
         <div className="mx-auto flex w-full justify-center px-6 py-10 md:px-10">
-          <div className="word-editor__page min-h-[1120px] w-full max-w-[860px]">
-            <div className="border-b border-[#ece4d9] px-14 py-10">
+          <div
+            className={clsx(
+              "word-editor__page relative flex w-full flex-col overflow-hidden",
+              !pageSettings.page_border && "word-editor__page--borderless",
+              pageSettings.background_style === "warm" && "word-editor__page--warm",
+              pageSettings.background_style === "grid" && "word-editor__page--grid",
+              pageSettings.columns === 2 && "word-editor__page--columns-2",
+              pageSettings.line_numbers && "word-editor__page--line-numbers"
+            )}
+            style={pageStyle}
+          >
+            {pageSettings.watermark_text ? (
+              <div className="word-editor__watermark pointer-events-none select-none">{pageSettings.watermark_text}</div>
+            ) : null}
+            {pageSettings.header_text ? (
+              <div className="word-editor__chrome word-editor__chrome--header" style={pageChromeStyle}>
+                <span>{pageSettings.header_text}</span>
+              </div>
+            ) : null}
+            <div className="border-b border-[#ece4d9]" style={titleStyle}>
               <input
                 value={document.title}
                 disabled={readOnly}
-                onChange={(event) =>
-                  onDocumentChange({
-                    ...document,
-                    title: event.target.value,
-                  })
-                }
+                onChange={(event) => onDocumentChange({ ...document, title: event.target.value })}
                 className="w-full border-0 bg-transparent text-[34px] font-semibold tracking-tight text-[#1a1a1a] outline-none placeholder:text-gray-300"
                 placeholder="未命名讲义"
               />
             </div>
-            <div className="px-14 py-10">
+            <div className="flex-1" style={contentStyle}>
               <EditorContent editor={editor} />
             </div>
+            {pageSettings.footer_text || currentPageNumberLabel ? (
+              <div className="word-editor__chrome word-editor__chrome--footer" style={pageChromeStyle}>
+                <span>{pageSettings.footer_text}</span>
+                <span>{currentPageNumberLabel}</span>
+              </div>
+            ) : null}
           </div>
         </div>
       </div>
@@ -867,6 +1455,7 @@ function WordBoardEditor({
 }
 
 export function CourseStudio() {
+  const router = useRouter();
   const mainContainerRef = useRef<HTMLDivElement | null>(null);
   const chatInputRef = useRef<HTMLTextAreaElement | null>(null);
   const chatRequestInFlightRef = useRef(false);
@@ -885,9 +1474,7 @@ export function CourseStudio() {
   const [isDocumentDirty, setIsDocumentDirty] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [chatInput, setChatInput] = useState("");
-  const [composerMode, setComposerMode] = useState<ChatInteractionMode>("ask");
-  const [includeSelectionInPrompt, setIncludeSelectionInPrompt] = useState(true);
+  const [lessonComposerStates, setLessonComposerStates] = useState<LessonComposerStateMap>({});
   const [newBranchName, setNewBranchName] = useState("");
   const [selection, setSelection] = useState<SelectionRef | null>(null);
   const [selectionPopover, setSelectionPopover] = useState<SelectionPopoverPosition | null>(null);
@@ -909,6 +1496,17 @@ export function CourseStudio() {
   const [voiceActive, setVoiceActive] = useState(false);
   const [voiceStatusText, setVoiceStatusText] = useState("点击麦克风，连接 GPT-4o Realtime 语音讲师");
 
+  const handleReturnHome = useCallback(() => {
+    if (
+      isDocumentDirty &&
+      typeof window !== "undefined" &&
+      !window.confirm("当前讲义还有未保存修改，确定返回主页吗？")
+    ) {
+      return;
+    }
+    router.push("/");
+  }, [isDocumentDirty, router]);
+
   useEffect(() => {
     async function load() {
       try {
@@ -921,6 +1519,13 @@ export function CourseStudio() {
           const next: LessonMessageMap = {};
           payload.lessons.forEach((lesson) => {
             next[lesson.id] = current[lesson.id] ?? buildWelcomeMessages();
+          });
+          return next;
+        });
+        setLessonComposerStates((current) => {
+          const next: LessonComposerStateMap = {};
+          payload.lessons.forEach((lesson) => {
+            next[lesson.id] = current[lesson.id] ?? createLessonComposerState();
           });
           return next;
         });
@@ -951,6 +1556,12 @@ export function CourseStudio() {
     .map((lessonId) => lessonMap.get(lessonId))
     .filter(Boolean) as Lesson[]) ?? [];
   const activeMessages = activeLesson ? lessonMessages[activeLesson.id] ?? [] : [];
+  const activeComposerState = activeLesson
+    ? lessonComposerStates[activeLesson.id] ?? DEFAULT_LESSON_COMPOSER_STATE
+    : DEFAULT_LESSON_COMPOSER_STATE;
+  const chatInput = activeComposerState.chatInput;
+  const composerMode = activeComposerState.composerMode;
+  const includeSelectionInPrompt = activeComposerState.includeSelectionInPrompt;
   const isChatBusy = busyAction === "chat" || busyAction === "agent-edit";
   const activeRequirements = activeLesson?.learning_requirements ?? null;
   const isPreviewMode = Boolean(previewCommit);
@@ -984,28 +1595,66 @@ export function CourseStudio() {
         ? "bg-blue-500"
         : "bg-amber-500";
 
+  function updateLessonComposerState(
+    lessonId: string,
+    updater: (current: LessonComposerState) => LessonComposerState
+  ) {
+    setLessonComposerStates((current) => ({
+      ...current,
+      [lessonId]: updater(current[lessonId] ?? createLessonComposerState()),
+    }));
+  }
+
+  function updateActiveLessonComposerState(
+    updater: (current: LessonComposerState) => LessonComposerState
+  ) {
+    if (!activeLesson) {
+      return;
+    }
+    updateLessonComposerState(activeLesson.id, updater);
+  }
+
+  function syncLessonComposerStates(lessons: Lesson[]) {
+    setLessonComposerStates((current) => {
+      const next: LessonComposerStateMap = {};
+      lessons.forEach((lesson) => {
+        next[lesson.id] = current[lesson.id] ?? createLessonComposerState();
+      });
+      return next;
+    });
+  }
+
   function applySelection(nextSelection: SelectionRef, popoverPosition?: SelectionPopoverPosition | null) {
     setSelection((current) => (sameSelection(current, nextSelection) ? current : nextSelection));
     setSelectionPopover((current) => {
       const nextPosition = popoverPosition ?? null;
       return samePopoverPosition(current, nextPosition) ? current : nextPosition;
     });
-    setComposerMode((current) => (current === "ask" ? current : "ask"));
+    updateActiveLessonComposerState((current) => ({
+      ...current,
+      composerMode: "ask",
+    }));
   }
 
   function clearSelection() {
     setSelection((current) => (current ? null : current));
     setSelectionPopover((current) => (current ? null : current));
-    setComposerMode((current) => (current === "ask" ? current : "ask"));
-    setIncludeSelectionInPrompt((current) => (current ? current : true));
+    updateActiveLessonComposerState((current) => ({
+      ...current,
+      composerMode: "ask",
+      includeSelectionInPrompt: true,
+    }));
   }
 
   function focusComposerWithSelection(nextMode: ChatInteractionMode) {
     if (!selection) {
       return;
     }
-    setComposerMode(nextMode);
-    setIncludeSelectionInPrompt(true);
+    updateActiveLessonComposerState((current) => ({
+      ...current,
+      composerMode: nextMode,
+      includeSelectionInPrompt: true,
+    }));
     setSelectionPopover(null);
     window.requestAnimationFrame(() => {
       chatInputRef.current?.focus();
@@ -1030,9 +1679,6 @@ export function CourseStudio() {
   }, [chatInput, composerSelection?.excerpt]);
 
   function resetTransientUi() {
-    setChatInput("");
-    setComposerMode("ask");
-    setIncludeSelectionInPrompt(true);
     setPreviewCommitId(null);
     setScopeOptions([]);
     setResourceMatches([]);
@@ -1068,15 +1714,28 @@ export function CourseStudio() {
     }));
   }
 
-  function updateCoursePackage(nextPackage: CoursePackage, options?: { blankLessonIds?: string[] }) {
+  function updateCoursePackage(
+    nextPackage: CoursePackage,
+    options?: { blankLessonIds?: string[]; activeLessonId?: string | null }
+  ) {
+    const requestedActiveLessonId = options?.activeLessonId;
+    const effectiveActiveLessonId =
+      requestedActiveLessonId && nextPackage.workspace_tab_order.includes(requestedActiveLessonId)
+        ? requestedActiveLessonId
+        : nextPackage.active_lesson_id;
+    const mergedPackage =
+      effectiveActiveLessonId === nextPackage.active_lesson_id
+        ? nextPackage
+        : { ...nextPackage, active_lesson_id: effectiveActiveLessonId };
     const nextActiveLesson =
-      nextPackage.lessons.find((lesson) => lesson.id === nextPackage.active_lesson_id) ??
-      nextPackage.lessons[0] ??
+      mergedPackage.lessons.find((lesson) => lesson.id === mergedPackage.active_lesson_id) ??
+      mergedPackage.lessons[0] ??
       null;
-    setCoursePackage(nextPackage);
+    setCoursePackage(mergedPackage);
     setDraftDocument(nextActiveLesson?.board_document ?? null);
     setIsDocumentDirty(false);
-    syncLessonMessages(nextPackage, options);
+    syncLessonMessages(mergedPackage, options);
+    syncLessonComposerStates(mergedPackage.lessons);
     resetTransientUi();
     setError(null);
   }
@@ -1105,7 +1764,7 @@ export function CourseStudio() {
         label: "Manual document edit",
         message: "Saved Word-like rich document changes from the editor",
       });
-      updateCoursePackage(nextPackage);
+      updateCoursePackage(nextPackage, { activeLessonId: activeLesson.id });
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : "保存失败");
     } finally {
@@ -1120,7 +1779,7 @@ export function CourseStudio() {
     setBusyAction("import-docx");
     try {
       const nextPackage = await api.importDocx(activeLesson.id, file);
-      updateCoursePackage(nextPackage);
+      updateCoursePackage(nextPackage, { activeLessonId: activeLesson.id });
     } catch (importError) {
       setError(importError instanceof Error ? importError.message : "导入 DOCX 失败");
     } finally {
@@ -1222,7 +1881,10 @@ export function CourseStudio() {
     setBusyAction(isDirectEdit ? "agent-edit" : "chat");
     setError(null);
     if (!payloadOverride) {
-      setChatInput("");
+      updateLessonComposerState(lessonId, (current) => ({
+        ...current,
+        chatInput: "",
+      }));
     }
     updateLessonMessages(lessonId, (current) => [
       ...current,
@@ -1232,7 +1894,9 @@ export function CourseStudio() {
 
     try {
       const response = await api.chatOnLesson(lessonId, payloadWithConversation);
-      updateCoursePackage(response.course_package);
+      updateCoursePackage(response.course_package, {
+        activeLessonId: response.created_lesson ? undefined : lessonId,
+      });
       setLatestBoardDecision(response.board_decision);
       setClarificationQuestions(response.clarification_questions);
       setLearningClarity(response.learning_clarification);
@@ -1260,7 +1924,10 @@ export function CourseStudio() {
       }
     } catch (chatError) {
       if (!payloadOverride) {
-        setChatInput(submittedInput);
+        updateLessonComposerState(lessonId, (current) => ({
+          ...current,
+          chatInput: submittedInput,
+        }));
       }
       updateLessonMessages(lessonId, (current) => [
         ...current.filter((message) => message.id !== pendingAssistantMessage.id),
@@ -1321,7 +1988,7 @@ export function CourseStudio() {
     setBusyAction("branch");
     try {
       const nextPackage = await api.createBranch(activeLesson.id, finalBranchName, fromCommitId);
-      updateCoursePackage(nextPackage);
+      updateCoursePackage(nextPackage, { activeLessonId: activeLesson.id });
       setNewBranchName("");
     } catch (branchError) {
       setError(branchError instanceof Error ? branchError.message : "创建分支失败");
@@ -1347,7 +2014,7 @@ export function CourseStudio() {
     setBusyAction("switch-branch");
     try {
       const nextPackage = await api.switchBranch(activeLesson.id, branchName);
-      updateCoursePackage(nextPackage);
+      updateCoursePackage(nextPackage, { activeLessonId: activeLesson.id });
     } catch (branchError) {
       setError(branchError instanceof Error ? branchError.message : "切换分支失败");
     } finally {
@@ -1362,7 +2029,7 @@ export function CourseStudio() {
     setBusyAction("restore");
     try {
       const nextPackage = await api.restoreCommit(activeLesson.id, commitId);
-      updateCoursePackage(nextPackage);
+      updateCoursePackage(nextPackage, { activeLessonId: activeLesson.id });
     } catch (restoreError) {
       setError(restoreError instanceof Error ? restoreError.message : "恢复版本失败");
     } finally {
@@ -1386,7 +2053,9 @@ export function CourseStudio() {
     setBusyAction("close-lesson");
     try {
       const nextPackage = await api.closeLesson(lessonId);
-      updateCoursePackage(nextPackage);
+      updateCoursePackage(nextPackage, {
+        activeLessonId: activeLesson && activeLesson.id !== lessonId ? activeLesson.id : undefined,
+      });
     } catch (closeError) {
       setError(closeError instanceof Error ? closeError.message : "关闭课程失败");
     } finally {
@@ -1401,7 +2070,7 @@ export function CourseStudio() {
     setBusyAction("upload");
     try {
       const nextPackage = await api.uploadResource(file);
-      updateCoursePackage(nextPackage);
+      updateCoursePackage(nextPackage, { activeLessonId: activeLesson?.id });
     } catch (uploadError) {
       setError(uploadError instanceof Error ? uploadError.message : "上传资料失败");
     } finally {
@@ -1705,9 +2374,15 @@ export function CourseStudio() {
         <header className="flex h-12 items-center justify-between border-b border-gray-200 px-4">
           <div className="flex min-w-0 items-center gap-6">
             <div className="flex shrink-0 items-center gap-2">
-              <div className="flex h-6 w-6 items-center justify-center rounded bg-black text-white shadow-sm">
+              <button
+                type="button"
+                onClick={handleReturnHome}
+                className="flex h-6 w-6 items-center justify-center rounded bg-black text-white shadow-sm transition hover:bg-gray-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/20"
+                title="返回主页"
+                aria-label="返回主页"
+              >
                 <Cpu className="h-3.5 w-3.5" />
-              </div>
+              </button>
               <span className="text-[13px] font-semibold tracking-tight">{coursePackage.title}</span>
             </div>
 
@@ -2055,7 +2730,12 @@ export function CourseStudio() {
                 value={chatInput}
                 disabled={isChatBusy}
                 rows={1}
-                onChange={(event) => setChatInput(event.target.value)}
+                onChange={(event) =>
+                  updateActiveLessonComposerState((current) => ({
+                    ...current,
+                    chatInput: event.target.value,
+                  }))
+                }
                 onInput={adjustComposerHeight}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
@@ -2079,7 +2759,12 @@ export function CourseStudio() {
                   <div className="flex shrink-0 items-center gap-1 rounded-md border border-gray-200 bg-gray-50 p-0.5">
                     <button
                       type="button"
-                      onClick={() => setComposerMode("ask")}
+                      onClick={() =>
+                        updateActiveLessonComposerState((current) => ({
+                          ...current,
+                          composerMode: "ask",
+                        }))
+                      }
                       className={clsx(
                         "flex h-7 w-7 items-center justify-center rounded text-gray-500 transition-colors hover:bg-white hover:text-black",
                         composerMode === "ask" && "bg-white text-black shadow-sm"
@@ -2091,8 +2776,11 @@ export function CourseStudio() {
                     <button
                       type="button"
                       onClick={() => {
-                        setComposerMode("direct_edit");
-                        setIncludeSelectionInPrompt(true);
+                        updateActiveLessonComposerState((current) => ({
+                          ...current,
+                          composerMode: "direct_edit",
+                          includeSelectionInPrompt: true,
+                        }));
                       }}
                       className={clsx(
                         "flex h-7 w-7 items-center justify-center rounded text-gray-500 transition-colors hover:bg-white hover:text-black",
@@ -2106,7 +2794,12 @@ export function CourseStudio() {
                   {composerSelection ? (
                     <button
                       type="button"
-                      onClick={() => setIncludeSelectionInPrompt((current) => !current)}
+                      onClick={() =>
+                        updateActiveLessonComposerState((current) => ({
+                          ...current,
+                          includeSelectionInPrompt: !current.includeSelectionInPrompt,
+                        }))
+                      }
                       className={clsx(
                         "inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-[11px] font-semibold transition-colors",
                         includeSelectionInPrompt

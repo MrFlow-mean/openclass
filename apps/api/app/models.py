@@ -66,6 +66,10 @@ ConversationRole = Literal["user", "assistant"]
 ResourceReferenceAction = Literal["confirm", "skip"]
 ResourceScanStrategy = Literal["outline_only", "heading_section", "page_window", "fulltext_match"]
 ChatInteractionMode = Literal["ask", "direct_edit"]
+DocumentMarginPreset = Literal["narrow", "normal", "wide"]
+DocumentOrientation = Literal["portrait", "landscape"]
+DocumentPageSize = Literal["a4", "letter", "a3"]
+DocumentBackgroundStyle = Literal["plain", "warm", "grid"]
 
 
 class BlockStyle(BaseModel):
@@ -83,6 +87,20 @@ class BoardBlock(BaseModel):
     content: str
     style: BlockStyle = Field(default_factory=BlockStyle)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class DocumentPageSettings(BaseModel):
+    margin_preset: DocumentMarginPreset = "normal"
+    orientation: DocumentOrientation = "portrait"
+    page_size: DocumentPageSize = "a4"
+    columns: Literal[1, 2] = 1
+    page_border: bool = True
+    background_style: DocumentBackgroundStyle = "plain"
+    watermark_text: str = ""
+    line_numbers: bool = False
+    show_page_number: bool = False
+    header_text: str = ""
+    footer_text: str = ""
 
 
 def _plain_text_to_tiptap_doc(text: str) -> dict[str, Any]:
@@ -122,6 +140,7 @@ class BoardDocument(BaseModel):
     content_json: dict[str, Any] = Field(default_factory=lambda: {"type": "doc", "content": [{"type": "paragraph"}]})
     content_html: str = ""
     content_text: str = ""
+    page_settings: DocumentPageSettings = Field(default_factory=DocumentPageSettings)
 
     @model_validator(mode="before")
     @classmethod

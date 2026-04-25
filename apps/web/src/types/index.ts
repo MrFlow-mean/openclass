@@ -16,6 +16,24 @@ export type BoardAction =
 
 export type ResourceReferenceAction = "confirm" | "skip";
 export type ChatInteractionMode = "ask" | "direct_edit";
+export type DocumentMarginPreset = "narrow" | "normal" | "wide";
+export type DocumentOrientation = "portrait" | "landscape";
+export type DocumentPageSize = "a4" | "letter" | "a3";
+export type DocumentBackgroundStyle = "plain" | "warm" | "grid";
+
+export interface DocumentPageSettings {
+  margin_preset: DocumentMarginPreset;
+  orientation: DocumentOrientation;
+  page_size: DocumentPageSize;
+  columns: 1 | 2;
+  page_border: boolean;
+  background_style: DocumentBackgroundStyle;
+  watermark_text: string;
+  line_numbers: boolean;
+  show_page_number: boolean;
+  header_text: string;
+  footer_text: string;
+}
 
 export interface BoardDocument {
   id: string;
@@ -23,6 +41,7 @@ export interface BoardDocument {
   content_json: Record<string, unknown>;
   content_html: string;
   content_text: string;
+  page_settings: DocumentPageSettings;
 }
 
 export interface LearningRequirementSheet {

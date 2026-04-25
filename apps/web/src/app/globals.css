@@ -31,7 +31,8 @@ body {
   color: var(--foreground);
   font-family: var(--font-space-grotesk), sans-serif;
   text-rendering: optimizeLegibility;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 button,
@@ -72,6 +73,7 @@ select {
 }
 
 .word-editor__page {
+  position: relative;
   background: linear-gradient(180deg, #fffdfa 0%, #ffffff 100%);
   border: 1px solid #e8e0d4;
   box-shadow:
@@ -79,7 +81,67 @@ select {
     0 2px 8px rgba(15, 23, 42, 0.04);
 }
 
+.word-editor__page--borderless {
+  border-color: transparent;
+}
+
+.word-editor__page--warm {
+  background: linear-gradient(180deg, #fffcf5 0%, #fffaf0 100%);
+}
+
+.word-editor__page--grid {
+  background:
+    linear-gradient(to right, rgba(181, 197, 218, 0.18) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(181, 197, 218, 0.18) 1px, transparent 1px),
+    linear-gradient(180deg, #fffdfa 0%, #ffffff 100%);
+  background-size:
+    26px 26px,
+    26px 26px,
+    100% 100%;
+}
+
+.word-editor__watermark {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: clamp(3rem, 9vw, 5.5rem);
+  letter-spacing: 0.35em;
+  color: rgba(120, 98, 71, 0.08);
+  text-transform: uppercase;
+  transform: rotate(-24deg);
+  z-index: 0;
+}
+
+.word-editor__chrome {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  color: #8f7d65;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.word-editor__chrome--header {
+  padding-top: 18px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid rgba(232, 224, 212, 0.65);
+}
+
+.word-editor__chrome--footer {
+  margin-top: auto;
+  padding-top: 14px;
+  padding-bottom: 18px;
+  border-top: 1px solid rgba(232, 224, 212, 0.65);
+}
+
 .word-editor__content {
+  position: relative;
+  z-index: 1;
   min-height: 920px;
   outline: none;
   color: #1f2937;
@@ -140,6 +202,7 @@ select {
   margin: 1em 0;
   width: 100%;
   border-collapse: collapse;
+  break-inside: avoid;
 }
 
 .word-editor__content th,
@@ -156,4 +219,57 @@ select {
 
 .word-editor__content .ProseMirror-selectednode {
   outline: 2px solid rgba(15, 23, 42, 0.2);
+}
+
+.word-editor__content a {
+  color: #1d4ed8;
+  text-decoration: underline;
+  text-underline-offset: 0.18em;
+}
+
+.word-editor__content hr {
+  margin: 2em 0;
+  border: 0;
+  border-top: 2px dashed #ddd0bb;
+}
+
+.word-editor__image {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 1.4em auto;
+  border-radius: 18px;
+  box-shadow:
+    0 12px 32px rgba(15, 23, 42, 0.08),
+    0 1px 4px rgba(15, 23, 42, 0.08);
+}
+
+.word-editor__page--columns-2 .word-editor__content {
+  column-count: 2;
+  column-gap: 44px;
+}
+
+.word-editor__page--columns-2 .word-editor__content > * {
+  break-inside: avoid;
+}
+
+.word-editor__page--line-numbers .word-editor__content {
+  counter-reset: editor-line;
+  padding-left: 2.4rem;
+}
+
+.word-editor__page--line-numbers .word-editor__content > * {
+  position: relative;
+}
+
+.word-editor__page--line-numbers .word-editor__content > *::before {
+  position: absolute;
+  left: -2.2rem;
+  top: 0.1rem;
+  counter-increment: editor-line;
+  content: counter(editor-line);
+  color: #b8a78f;
+  font-size: 11px;
+  line-height: 1;
+  font-family: var(--font-plex-mono), monospace;
 }

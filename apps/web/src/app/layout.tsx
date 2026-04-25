@@ -2,8 +2,11 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "AI 黑板课程工作台",
-  description: "面向课程共编、版本回溯和 AI 讲解的板书系统",
+  title: {
+    default: "黑板 AI",
+    template: "%s | 黑板 AI",
+  },
+  description: "面向课程主页、课程共编、版本回溯和 AI 讲解的一体化学习产品。",
 };
 
 export default function RootLayout({
@@ -12,7 +15,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className="h-full antialiased">
+    <html lang="zh-CN" className="h-full antialiased">
       <body className="min-h-full flex flex-col">{children}</body>
     </html>
   );

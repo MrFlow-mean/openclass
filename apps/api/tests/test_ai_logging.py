@@ -8,6 +8,7 @@ from app.models import ChatRequest, CreateBranchRequest
 from app.services.ai_logging import ai_log_context, ai_usage_logger
 from app.services.course_store import FileCourseStore
 from app.services.openai_course_ai import OpenAICourseAI
+from app.services.resource_library import build_resource_item
 
 
 def _read_log_entries(path):
@@ -185,6 +186,33 @@ def test_chat_route_reuses_workflow_runtime_without_extra_refresh(
     )
 
     assert response.teacher_message
+
+
+def test_chat_route_hides_reference_box_for_explanation_only_turn(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = FileCourseStore(tmp_path / "store.json")
+    monkeypatch.setattr(main_module, "STORE", store)
+    monkeypatch.setattr(main_module.openai_course_ai, "client", None)
+
+    package = store.load()
+    resource_path = tmp_path / "pythagorean.md"
+    resource_path.write_text(
+        "# 勾股定理\n勾股定理说明直角三角形两条直角边的平方和等于斜边的平方。\n\n## 应用\n可以用来计算距离。",
+        encoding="utf-8",
+    )
+    package.resources.append(build_resource_item(resource_path, "勾股定理笔记.md"))
+    store.save(package)
+
+    lesson_id = store.load().lessons[0].id
+    response = main_module.chat_on_lesson(
+        lesson_id,
+        ChatRequest(message="请解释一下勾股定理的核心公式"),
+    )
+
+    assert response.board_decision.action == "no_change"
+    assert response.resource_matches
+    assert response.selected_reference is None
 
 
 def test_realtime_transcript_route_logs_each_message(isolated_ai_log) -> None:

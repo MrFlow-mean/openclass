@@ -22,7 +22,6 @@ from app.models import (
     TeachingGuide,
 )
 from app.services.course_runtime import (
-    build_lesson_for_topic,
     effective_requirements,
     normalize_requirements,
 )
@@ -31,9 +30,6 @@ from app.services.openai_course_ai import openai_course_ai
 from app.services.resource_library import extract_reference_context
 from app.services.rich_document import (
     append_html_section,
-    build_document,
-    document_changed,
-    html_to_text,
     is_document_empty,
     replace_selection_in_document,
 )
@@ -57,6 +53,23 @@ TERM_EQUIVALENT_GROUPS: tuple[tuple[str, ...], ...] = (
     ("integer arithmetic", "整数运算"),
     ("floating point", "浮点数", "浮点"),
     ("the memory hierarchy", "storage devices form a hierarchy", "存储层次结构", "存储器层次结构"),
+)
+TEACHER_PARAGRAPH_MARKERS: tuple[str, ...] = (
+    "核心要点",
+    "为什么重要",
+    "先抓一件事",
+    "先抓主线",
+    "主线",
+    "定义",
+    "直觉",
+    "例子",
+    "类比",
+    "应用",
+    "练习题",
+    "练习解析",
+    "检查问题",
+    "关键概念",
+    "小结",
 )
 
 
@@ -597,10 +610,11 @@ def _should_auto_attach_reference_for_direct_teaching(
 ) -> bool:
     if top_match is None:
         return False
+    _ = decision
     chapter_no, _ = _extract_requested_outline_reference(request.message)
     if chapter_no is not None:
         return True
-    return decision.action == "no_change" and (_is_explanation_request(request.message) or _is_forced_start_request(request.message))
+    return False
 
 
 def _selected_reference_context(
@@ -788,8 +802,10 @@ def _fallback_board_decision(
         return BoardDecision(action="append_section", reason="用户选择在当前 lesson 中新增章节。")
     if request.scope_action == "patch_current_lesson":
         return BoardDecision(action="no_change", reason="用户选择先在当前课内简述，不直接改讲义。")
-    if is_document_empty(lesson.board_document) and explicit_generation:
-        return BoardDecision(action="edit_board", reason="当前讲义为空，且用户明确要求生成学习内容。")
+    if is_document_empty(lesson.board_document) and (
+        explicit_generation or _is_explanation_request(message) or _is_forced_start_request(message)
+    ):
+        return BoardDecision(action="edit_board", reason="当前讲义为空，先生成一版可讲的板书，再继续教学。")
     if explicit_generation:
         return BoardDecision(action="edit_board", reason="用户明确要求生成讲义/课文/对话内容，应直接产出整篇文档。")
     if scope_mode == "scope_escalation":
@@ -1179,6 +1195,62 @@ def _guide_focus_titles(guide: TeachingGuide) -> list[str]:
     return titles[:4]
 
 
+def _teacher_sentences(block: str) -> list[str]:
+    sentences = [part.strip() for part in re.findall(r"[^。！？!?]+[。！？!?]?", block) if part.strip()]
+    if sentences:
+        return sentences
+    clauses = [part.strip() for part in re.split(r"(?<=，)", block) if part.strip()]
+    return clauses or [block.strip()]
+
+
+def _split_dense_teacher_block(block: str) -> list[str]:
+    cleaned = block.strip()
+    if len(cleaned) <= 90:
+        return [cleaned]
+    if re.match(r"^(?:[-*•]|\d+[.、）)])", cleaned):
+        return [cleaned]
+
+    sentences = _teacher_sentences(cleaned)
+    if len(sentences) <= 2:
+        return [cleaned]
+
+    groups = ["".join(sentences[:1]).strip()]
+    current: list[str] = []
+    current_length = 0
+    for sentence in sentences[1:]:
+        current.append(sentence)
+        current_length += len(sentence)
+        if len(current) >= 2 or current_length >= 72:
+            groups.append("".join(current).strip())
+            current = []
+            current_length = 0
+    if current:
+        groups.append("".join(current).strip())
+    return [group for group in groups if group]
+
+
+def _format_teacher_message(message: str) -> str:
+    cleaned = message.replace("\r\n", "\n").strip()
+    if not cleaned:
+        return ""
+    cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    for marker in TEACHER_PARAGRAPH_MARKERS:
+        cleaned = re.sub(
+            rf"(?:(?<=^)|(?<=[。！？!?：:\n]))\s*({re.escape(marker)}[：:]?)",
+            r"\n\n\1",
+            cleaned,
+        )
+    cleaned = re.sub(r"(?<!\n)(?=(?:\d+[.、）)]|[-*•]))", "\n\n", cleaned)
+
+    blocks = [block.strip() for block in re.split(r"\n\s*\n", cleaned) if block.strip()]
+    normalized_blocks: list[str] = []
+    for block in blocks:
+        compact_block = re.sub(r"\s*\n\s*", " ", block).strip()
+        normalized_blocks.extend(_split_dense_teacher_block(compact_block))
+    return "\n\n".join(normalized_blocks) if normalized_blocks else cleaned
+
+
 def _teacher_intro(state: WorkflowState) -> str:
     decision = state["board_decision"]
     lesson_title = (state.get("generated_lesson") or state["lesson"]).title
@@ -1243,368 +1315,27 @@ def _fallback_teacher_message(state: WorkflowState) -> str:
 
 
 def _run_pm(state: WorkflowState) -> WorkflowState:
-    lesson = state["lesson"]
-    request = state["request"]
-    draft_requirements = _draft_requirements(lesson, request)
-    draft_status = _learning_clarification_status(
-        lesson=lesson,
-        request=request,
-        requirements=draft_requirements,
-    )
+    from app.services.workflow_roles.pm import run_pm
 
-    if request.interaction_mode == "direct_edit":
-        return {
-            "learning_requirement_sheet": draft_requirements,
-            "learning_clarification": draft_status,
-            "needs_clarification": False,
-            "clarification_questions": [],
-            "pm_reason": "用户通过选区编辑入口直接提交文档修改指令，跳过 PM 澄清。",
-        }
-
-    if _should_use_fast_pm_path(lesson=lesson, request=request, status=draft_status):
-        needs_clarification = _should_ask_brief_clarification(request=request, status=draft_status)
-        questions = _clarification_questions_for_status(draft_status) if needs_clarification else []
-        return {
-            "learning_requirement_sheet": draft_requirements,
-            "learning_clarification": draft_status,
-            "needs_clarification": needs_clarification,
-            "clarification_questions": questions[:1],
-            "pm_reason": "优先走极速澄清策略：能直接讲就不追问，只有明显会讲偏时才补一句。",
-        }
-
-    assessment = openai_course_ai.assess_learning_requirements(
-        lesson_title=lesson.title,
-        lesson_summary=lesson.summary,
-        lesson_tags=lesson.tags,
-        document_outline=draft_requirements.board_scope,
-        user_message=request.message,
-        selection_excerpt=request.selection.excerpt if request.selection else None,
-        conversation=[turn.model_dump(mode="json") for turn in request.conversation],
-    )
-    if assessment is not None:
-        requirements = normalize_requirements(
-            assessment.learning_requirement_sheet,
-            lesson_title=lesson.title,
-            document=lesson.board_document,
-        )
-        status = _learning_clarification_status(
-            lesson=lesson,
-            request=request,
-            requirements=requirements,
-        )
-        needs_clarification = not assessment.ready
-        if status.progress < 35 and not status.forced_start:
-            needs_clarification = True
-        if status.progress >= 80 or status.forced_start:
-            needs_clarification = False
-        clarification_questions = assessment.clarification_questions[:3]
-        if needs_clarification and not clarification_questions:
-            clarification_questions = _clarification_questions_for_status(status)
-        return {
-            "learning_requirement_sheet": requirements,
-            "learning_clarification": status,
-            "needs_clarification": needs_clarification,
-            "clarification_questions": clarification_questions,
-            "pm_reason": assessment.reason,
-        }
-
-    needs_clarification = _should_ask_brief_clarification(request=request, status=draft_status)
-    questions = _clarification_questions_for_status(draft_status) if needs_clarification else []
-    return {
-        "learning_requirement_sheet": draft_requirements,
-        "learning_clarification": draft_status,
-        "needs_clarification": needs_clarification,
-        "clarification_questions": questions[:1],
-        "pm_reason": draft_status.reason,
-    }
+    return run_pm(state)
 
 
 def _run_board_manager(state: WorkflowState) -> WorkflowState:
-    lesson = state["lesson"]
-    request = state["request"]
-    requirements = state["learning_requirement_sheet"]
-    matches = match_resources(state["course_package"], lesson, request, requirements)
+    from app.services.workflow_roles.board_manager import run_board_manager
 
-    if request.interaction_mode == "direct_edit":
-        return {
-            "board_decision": BoardDecision(action="edit_board", reason="用户通过选区编辑入口明确要求直接修改讲义。"),
-            "scope_options": [],
-            "resource_matches": matches,
-            "reference_prompt": None,
-            "selected_reference": None,
-        }
-
-    if state.get("needs_clarification"):
-        return {
-            "board_decision": BoardDecision(action="clarify_request", reason=state.get("pm_reason", "当前需求仍需要继续澄清。")),
-            "scope_options": [],
-            "resource_matches": matches,
-            "reference_prompt": None,
-            "selected_reference": None,
-        }
-
-    if _should_use_fast_board_path(lesson=lesson, request=request, requirements=requirements):
-        decision = _fallback_board_decision(lesson, request, requirements, matches)
-    else:
-        ai_decision = openai_course_ai.generate_board_decision(
-            lesson_title=lesson.title,
-            request_message=request.message,
-            selection=request.selection.model_dump(mode="json") if request.selection else None,
-            interaction_mode=request.interaction_mode,
-            scope_action=request.scope_action,
-            requirements=requirements,
-            document=lesson.board_document,
-            resource_matches=[match.model_dump(mode="json") for match in matches],
-        )
-        decision = ai_decision or _fallback_board_decision(lesson, request, requirements, matches)
-
-    if is_document_empty(lesson.board_document) and _is_board_generation_request(request.message):
-        decision = BoardDecision(action="edit_board", reason="当前讲义为空，且用户明确要求生成学习内容。")
-    elif decision.action == "no_change" and _is_board_generation_request(request.message):
-        decision = BoardDecision(action="edit_board", reason="用户明确要求生成讲义/对话内容，应直接产出文档。")
-
-    if decision.action == "await_scope_choice":
-        return {
-            "board_decision": decision,
-            "scope_options": _build_scope_options(matches),
-            "resource_matches": matches,
-            "reference_prompt": None,
-            "selected_reference": None,
-        }
-
-    top_match = matches[0] if matches else None
-    second_match = matches[1] if len(matches) > 1 else None
-    ambiguous_reference = (
-        top_match is not None
-        and second_match is not None
-        and top_match.is_high_overlap
-        and abs(top_match.score - second_match.score) <= 0.06
-    )
-    if request.resource_reference_action is None and decision.action in {"edit_board", "append_section", "create_new_lesson", "no_change"}:
-        if ambiguous_reference and top_match is not None:
-            return {
-                "board_decision": BoardDecision(
-                    action="await_reference_choice",
-                    reason="资料候选已经缩到很小范围，但前两项还比较接近，短确认一下更稳。",
-                ),
-                "scope_options": [],
-                "resource_matches": matches,
-                "reference_prompt": _build_reference_prompt(top_match),
-                "selected_reference": None,
-            }
-        if top_match is not None and (
-            top_match.is_high_overlap or _should_auto_attach_reference_for_direct_teaching(request=request, decision=decision, top_match=top_match)
-        ):
-            return {
-                "board_decision": decision,
-                "scope_options": [],
-                "resource_matches": matches,
-                "reference_prompt": None,
-                "selected_reference": extract_reference_context(
-                    next(
-                        resource
-                        for resource in state["course_package"].resources
-                        if resource.id == top_match.resource_id
-                    ),
-                    top_match.chapter_id,
-                    user_query=_resource_query_text(lesson, request, requirements),
-                ),
-            }
-
-    return {
-        "board_decision": decision,
-        "scope_options": [],
-        "resource_matches": matches,
-        "reference_prompt": None,
-        "selected_reference": _selected_reference_context(state["course_package"], lesson, request, requirements),
-    }
+    return run_board_manager(state)
 
 
 def _run_board_executor(state: WorkflowState) -> WorkflowState:
-    lesson = state["lesson"]
-    request = state["request"]
-    requirements = state["learning_requirement_sheet"]
-    decision = state["board_decision"]
-    selected_reference = state.get("selected_reference")
+    from app.services.workflow_roles.board_executor import run_board_executor
 
-    if decision.action in {"clarify_request", "await_scope_choice", "await_reference_choice"}:
-        guide = _interactive_teaching_guide(
-            lesson_id=lesson.id,
-            lesson_title=lesson.title,
-            document=lesson.board_document,
-            requirements=requirements,
-        )
-        return {
-            "teaching_guide": guide,
-            "teacher_document": lesson.board_document,
-            "document_updated": False,
-            "generated_lesson": None,
-            "teacher_talk_track": None,
-            "board_teaching_guide": None,
-        }
-
-    if decision.action == "no_change":
-        guide = _interactive_teaching_guide(
-            lesson_id=lesson.id,
-            lesson_title=lesson.title,
-            document=lesson.board_document,
-            requirements=requirements,
-        )
-        return {
-            "teaching_guide": guide,
-            "teacher_document": lesson.board_document,
-            "document_updated": False,
-            "generated_lesson": None,
-            "teacher_talk_track": None,
-            "board_teaching_guide": _resolve_board_teaching_guide(
-                lesson=lesson,
-                request=request,
-                requirements=requirements,
-                document=lesson.board_document,
-                prefer_existing=True,
-                selected_reference=selected_reference,
-            ),
-        }
-
-    if decision.action == "create_new_lesson":
-        topic = _extract_focus_terms(request.message)[0] if _extract_focus_terms(request.message) else request.message
-        generated_lesson = build_lesson_for_topic(
-            topic,
-            requirements=requirements,
-            reference_context=selected_reference,
-        )
-        board_teaching_guide = _resolve_board_teaching_guide(
-            lesson=generated_lesson,
-            request=request,
-            requirements=requirements,
-            document=generated_lesson.board_document,
-            prefer_existing=True,
-            selected_reference=selected_reference,
-        )
-        generated_lesson.board_teaching_guide = board_teaching_guide
-        if generated_lesson.history_graph.commits:
-            generated_lesson.history_graph.commits[-1].metadata["board_teaching_guide"] = board_teaching_guide.model_dump(mode="json")
-        return {
-            "teaching_guide": generated_lesson.teaching_guide,
-            "teacher_document": generated_lesson.board_document,
-            "document_updated": True,
-            "generated_lesson": generated_lesson,
-            "teacher_talk_track": None,
-            "board_teaching_guide": board_teaching_guide,
-        }
-
-    ai_edit = openai_course_ai.generate_document_edit(
-        lesson_id=lesson.id,
-        lesson_title=lesson.title,
-        current_branch=lesson.history_graph.current_branch,
-        request_message=request.message,
-        selection=request.selection.model_dump(mode="json") if request.selection else None,
-        interaction_mode=request.interaction_mode,
-        scope_action=request.scope_action,
-        requirements=requirements,
-        document=lesson.board_document,
-        selected_reference=_reference_payload(selected_reference, include_full_text=True),
-    )
-
-    if ai_edit is not None:
-        replacement_doc = build_document(
-            title=ai_edit.suggested_title or lesson.board_document.title,
-            content_html=ai_edit.replacement_html,
-            content_text=ai_edit.replacement_text or None,
-            document_id=lesson.board_document.id,
-        )
-        if (
-            request.selection
-            and request.interaction_mode == "direct_edit"
-            and not _is_full_rewrite_request(request.message)
-        ):
-            replacement_text = _merge_selection_edit(
-                selection_text=request.selection.excerpt,
-                generated_text=replacement_doc.content_text or html_to_text(ai_edit.replacement_html),
-                request_message=request.message,
-            )
-            next_document = replace_selection_in_document(
-                lesson.board_document,
-                selection_text=request.selection.excerpt,
-                replacement_text=replacement_text,
-            )
-        elif decision.action == "append_section" and not ai_edit.replace_whole:
-            next_document = append_html_section(lesson.board_document, replacement_doc.content_html)
-        else:
-            next_document = replacement_doc
-        teacher_talk_track = ai_edit.teacher_talk_track.strip() or None
-        board_teaching_guide = _bound_board_teaching_guide(
-            guidance=ai_edit.board_teaching_guide,
-            document=next_document,
-            requirements=requirements,
-            request_message=request.message,
-            selected_reference=selected_reference,
-        )
-    else:
-        next_document = _fallback_document_update(
-            lesson=lesson,
-            request=request,
-            decision=decision,
-            selected_reference=selected_reference,
-        )
-        teacher_talk_track = None
-        board_teaching_guide = _resolve_board_teaching_guide(
-            lesson=lesson,
-            request=request,
-            requirements=requirements,
-            document=next_document,
-            prefer_existing=False,
-            selected_reference=selected_reference,
-        )
-
-    guide = _interactive_teaching_guide(
-        lesson_id=lesson.id,
-        lesson_title=lesson.title,
-        document=next_document,
-        requirements=requirements,
-    )
-    return {
-        "teaching_guide": guide,
-        "teacher_document": next_document,
-        "document_updated": document_changed(lesson.board_document, next_document),
-        "generated_lesson": None,
-        "teacher_talk_track": teacher_talk_track,
-        "board_teaching_guide": board_teaching_guide,
-    }
+    return run_board_executor(state)
 
 
 def _run_teacher(state: WorkflowState) -> WorkflowState:
-    request = state["request"]
-    requirements = state["learning_requirement_sheet"]
-    decision = state["board_decision"]
-    reference_prompt = state.get("reference_prompt")
-    selected_reference = state.get("selected_reference")
-    teacher_talk_track = (state.get("teacher_talk_track") or "").strip()
-    board_teaching_guide = state.get("board_teaching_guide")
+    from app.services.workflow_roles.teacher import run_teacher
 
-    if decision.action in {"clarify_request", "await_scope_choice", "await_reference_choice"}:
-        return {"teacher_message": _fallback_teacher_message(state)}
-    if teacher_talk_track and decision.action in {"edit_board", "append_section"}:
-        return {"teacher_message": _teacher_message_from_talk_track(state, teacher_talk_track)}
-    if decision.action == "create_new_lesson":
-        return {"teacher_message": _fallback_teacher_message(state)}
-    if board_teaching_guide is None:
-        return {"teacher_message": _fallback_teacher_message(state)}
-
-    ai_message = openai_course_ai.generate_teacher_message(
-        lesson_title=(state.get("generated_lesson") or state["lesson"]).title,
-        request_message=request.message,
-        requirements=requirements,
-        board_teaching_guide=board_teaching_guide,
-        board_decision=decision,
-        document_updated=state.get("document_updated", False),
-        scope_options=state.get("scope_options", []),
-        resource_matches=[match.model_dump(mode="json") for match in state.get("resource_matches", [])],
-        clarification_questions=state.get("clarification_questions", []),
-        reference_prompt=reference_prompt.model_dump(mode="json") if reference_prompt else None,
-        selected_reference=_reference_payload(selected_reference, include_full_text=False),
-    )
-    return {"teacher_message": ai_message or _fallback_teacher_message(state)}
+    return run_teacher(state)
 
 
 class SimpleCourseWorkflow:

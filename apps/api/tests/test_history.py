@@ -1,8 +1,9 @@
 import pytest
 from docx import Document as DocxDocument
+from docx.enum.section import WD_ORIENT
 from pypdf import PdfWriter
 
-from app.models import ChatRequest, PatchOperation, SelectionRef
+from app.models import ChatRequest, ConversationTurn, PatchOperation, SelectionRef
 from app.services.ai_workflow import classify_scope, course_workflow, match_resources
 from app.services.course_runtime import effective_requirements
 from app.services.course_store import build_initial_course_package
@@ -150,7 +151,7 @@ def test_workflow_extracts_level_and_goal_from_user_message() -> None:
     assert result["needs_clarification"] is False
 
 
-def test_workflow_honors_direct_open_lecture_without_repeating_clarification(tmp_path) -> None:
+def test_workflow_generates_board_for_blank_lesson_when_user_requests_direct_open_lecture(tmp_path) -> None:
     package = build_initial_course_package()
     lesson = create_empty_lesson("cs测试2")
     package.lessons.append(lesson)
@@ -198,10 +199,12 @@ def test_workflow_honors_direct_open_lecture_without_repeating_clarification(tmp
     )
 
     assert result["needs_clarification"] is False
-    assert result["board_decision"].action == "no_change"
+    assert result["board_decision"].action == "edit_board"
+    assert result["document_updated"] is True
     assert result["selected_reference"] is not None
     assert result["selected_reference"].chapter_title == "Program Example"
     assert result["board_teaching_guide"] is not None
+    assert result["teacher_document"].content_text.strip()
     assert "什么水平" not in result["teacher_message"]
 
 
@@ -222,6 +225,58 @@ def test_workflow_can_answer_without_changing_the_board() -> None:
     assert result["document_updated"] is False
     assert result["board_teaching_guide"] is not None
     assert "勾股定理" in result["teacher_message"] or "直角三角形" in result["teacher_message"]
+
+
+def test_workflow_direct_start_after_brief_clarification_generates_board_for_blank_lesson() -> None:
+    package = build_initial_course_package()
+    lesson = create_empty_lesson("法考 测试")
+    package.lessons.append(lesson)
+
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "course_package": package,
+            "request": ChatRequest(
+                message="直接开讲",
+                conversation=[
+                    ConversationTurn(role="user", content="为我讲中华人民共和国民法典是什么"),
+                    ConversationTurn(role="assistant", content="你现在大概什么水平，准备用在哪种场景里？"),
+                ],
+            ),
+        }
+    )
+
+    assert result["needs_clarification"] is False
+    assert result["board_decision"].action == "edit_board"
+    assert result["document_updated"] is True
+    assert result["teacher_document"].content_text.strip()
+
+
+def test_workflow_formats_teacher_message_into_readable_paragraphs(monkeypatch: pytest.MonkeyPatch) -> None:
+    package = build_initial_course_package()
+    lesson = package.lessons[0]
+
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_teacher_message",
+        lambda **kwargs: (
+            "勾股定理先抓一件事，它说的不是死记公式，而是直角三角形三条边之间的稳定关系。"
+            "为什么重要，因为你后面算距离、判定图形、做几何证明都会反复用到它。"
+            "你可以把它理解成一把固定尺子，只要直角确定了，两条边一变，第三条边就被锁定了。"
+            "最后你可以自己检查一下，3、4、5 为什么会刚好满足这个关系。"
+        ),
+    )
+
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "course_package": package,
+            "request": ChatRequest(message="请解释一下勾股定理的核心公式"),
+        }
+    )
+
+    assert "\n\n" in result["teacher_message"]
+    assert "最后你可以自己检查一下" in result["teacher_message"]
 
 
 def test_workflow_direct_edit_rewrites_only_selected_excerpt() -> None:
@@ -717,3 +772,53 @@ def test_docx_import_export_roundtrip(tmp_path) -> None:
     assert target.exists()
     assert "完整双语对话" in imported.content_text
     assert "Je pensais que je prendrais" in imported.content_text
+
+
+def test_replace_selection_preserves_page_settings() -> None:
+    document = build_document(
+        title="页面设置保留测试",
+        content_text="第一段\n第二段",
+        page_settings={
+            "orientation": "landscape",
+            "margin_preset": "narrow",
+            "show_page_number": True,
+            "header_text": "课堂讲义",
+            "footer_text": "黑板 AI",
+        },
+    )
+
+    updated = replace_selection_in_document(
+        document,
+        selection_text="第二段",
+        replacement_text="更新后的第二段",
+    )
+
+    assert updated.content_text.endswith("更新后的第二段")
+    assert updated.page_settings.orientation == "landscape"
+    assert updated.page_settings.margin_preset == "narrow"
+    assert updated.page_settings.show_page_number is True
+    assert updated.page_settings.header_text == "课堂讲义"
+    assert updated.page_settings.footer_text == "黑板 AI"
+
+
+def test_docx_export_applies_basic_page_settings(tmp_path) -> None:
+    document = build_document(
+        title="导出版式测试",
+        content_text="讲义正文",
+        page_settings={
+            "orientation": "landscape",
+            "margin_preset": "wide",
+            "header_text": "页眉示例",
+            "footer_text": "页脚示例",
+        },
+    )
+    target = tmp_path / "page-settings.docx"
+
+    export_docx(document, target)
+    exported = DocxDocument(target)
+    section = exported.sections[0]
+
+    assert section.orientation == WD_ORIENT.LANDSCAPE
+    assert section.page_width > section.page_height
+    assert exported.sections[0].header.paragraphs[0].text == "页眉示例"
+    assert exported.sections[0].footer.paragraphs[0].text == "页脚示例"

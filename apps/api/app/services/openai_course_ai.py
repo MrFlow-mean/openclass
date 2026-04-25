@@ -447,6 +447,7 @@ class OpenAICourseAI:
                 "Do not quote, enumerate, or read out the board unless the learner explicitly asks for exact wording. "
                 "Prefer this structure: first give the core idea in your own words, then explain why it matters, then offer one analogy, example, or check question. "
                 "Keep the answer tight and classroom-like, with minimal transition filler. "
+                "Use short paragraphs separated by blank lines. Never return one dense wall of text. "
                 "Do not mention internal schemas."
             ),
             user_prompt=_json(

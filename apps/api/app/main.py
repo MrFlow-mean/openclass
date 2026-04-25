@@ -536,6 +536,12 @@ def chat_on_lesson(lesson_id: str, request: ChatRequest) -> ChatResponse:
                 package.workspace_tab_order.append(created_lesson.id)
                 package.active_lesson_id = created_lesson.id
 
+            response_selected_reference = (
+                workflow_result.get("selected_reference")
+                if auto_applied_document or created_lesson is not None
+                else None
+            )
+
             flow_metadata = _chat_flow_metadata(
                 request=request,
                 teacher_message=teacher_message,
@@ -567,7 +573,7 @@ def chat_on_lesson(lesson_id: str, request: ChatRequest) -> ChatResponse:
                 scope_options=workflow_result.get("scope_options", []),
                 resource_matches=workflow_result.get("resource_matches", []),
                 reference_prompt=workflow_result.get("reference_prompt"),
-                selected_reference=workflow_result.get("selected_reference"),
+                selected_reference=response_selected_reference,
                 created_lesson=_lesson_view(created_lesson) if created_lesson else None,
                 course_package=_package_view(package),
             )
