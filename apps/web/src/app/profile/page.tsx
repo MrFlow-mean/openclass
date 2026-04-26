@@ -17,5 +17,9 @@ export default async function ProfilePage({ searchParams }: ProfilePageProps) {
   const params = await searchParams;
   const tabParam = Array.isArray(params?.tab) ? params?.tab[0] : params?.tab;
 
-  return <ProfileHome initialTab={tabParam === "stars" ? "stars" : "repositories"} />;
+  return (
+    <ProfileHome
+      initialTab={tabParam === "repositories" ? "repositories" : tabParam === "stars" ? "stars" : "settings"}
+    />
+  );
 }

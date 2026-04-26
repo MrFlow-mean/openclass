@@ -44,12 +44,10 @@ import {
   type OpenCourseSort,
 } from "@/lib/open-courses";
 import {
-  FOLLOWED_COURSE_UPDATES,
-  FOLLOWED_CREATORS,
-  creatorAvatarUrl,
-  type FollowedCourseUpdate,
-} from "@/lib/following";
-import type { CommitRecord, CoursePackage, Lesson, ResourceLibraryItem, WorkspaceState } from "@/types";
+  buildRecentFeed,
+  type RecentFeedFilter,
+} from "@/lib/recent-feed";
+import type { CoursePackage, Lesson, WorkspaceState } from "@/types";
 
 const CONTRIBUTION_WEEKS = 32;
 
@@ -60,38 +58,13 @@ type ActivityDay = {
   level: 0 | 1 | 2 | 3 | 4;
 };
 
-type FeedKind = "commit" | "resource";
-type FeedFilter = "all" | FeedKind;
 type SearchFacet = { kind: "all" } | { kind: "category" | "language"; value: string };
-
-type FeedItem = {
-  id: string;
-  kind: FeedKind;
-  timestamp: string;
-  actor: string;
-  action: string;
-  title: string;
-  detailTitle: string;
-  detailBody: string;
-  pills: string[];
-  lessonId?: string;
-};
 
 type LessonShelfItem = {
   lesson: Lesson;
   packageId: string;
   packageTitle: string;
   isPackaged: boolean;
-};
-
-type PackagedLesson = {
-  lesson: Lesson;
-  packageTitle: string;
-};
-
-type PackagedResource = {
-  resource: ResourceLibraryItem;
-  packageTitle: string;
 };
 
 type LessonMenuState = {
@@ -182,15 +155,6 @@ function formatRelativeTime(value: string | Date | null | undefined) {
   }).format(date);
 }
 
-function followedUpdateKindLabel(kind: FollowedCourseUpdate["updateKind"]) {
-  return {
-    new_lesson: "新增课程",
-    course_revision: "课程更新",
-    resource_added: "资料上新",
-    live_note: "直播笔记",
-  }[kind];
-}
-
 function dayKey(date: Date) {
   return date.toISOString().slice(0, 10);
 }
@@ -279,52 +243,6 @@ function buildActivitySummary(coursePackage: CoursePackage | null) {
   };
 }
 
-function truncateText(value: string, maxLength = 160) {
-  const normalized = value.replace(/\s+/g, " ").trim();
-  if (!normalized) {
-    return "";
-  }
-
-  if (normalized.length <= maxLength) {
-    return normalized;
-  }
-
-  return `${normalized.slice(0, maxLength).trimEnd()}...`;
-}
-
-function humanizeCommitLabel(label: string) {
-  switch (label) {
-    case "Initial document draft":
-      return "初始课程草稿";
-    case "Manual document edit":
-      return "手动编辑已保存";
-    case "Restore snapshot":
-      return "恢复历史快照";
-    case "AI document edit":
-      return "AI 更新文稿";
-    case "Cloned lesson snapshot":
-      return "克隆课程快照";
-    default:
-      return label;
-  }
-}
-
-function humanizeCommitMessage(commit: CommitRecord, lesson: Lesson) {
-  const normalized = commit.message.trim();
-
-  if (!normalized) {
-    return `已更新《${lesson.title}》的课程内容，可以继续进入工作台完善讲义与分支。`;
-  }
-
-  const rewritten = normalized
-    .replace(/^Generated starter rich document for\s+/i, "已生成课程初稿：")
-    .replace(/^Saved Word-like rich document changes from the editor$/i, "已保存 Word 风格编辑器中的文稿改动。")
-    .replace(/^Saved rich document changes from the editor$/i, "已保存编辑器中的文稿改动。")
-    .replace(/^Cloned lesson into an isolated workspace$/i, "已复制到独立工作区，方便继续扩展。");
-
-  return truncateText(rewritten, 180);
-}
-
 function activityTone(level: ActivityDay["level"]) {
   return {
     0: "bg-stone-200",
@@ -333,59 +251,6 @@ function activityTone(level: ActivityDay["level"]) {
     3: "bg-slate-700/70",
     4: "bg-slate-950",
   }[level];
-}
-
-function resourceSummary(resource: ResourceLibraryItem) {
-  return resource.outline[0]?.summary ?? "已进入资料库，可在工作台中继续引用和扩展。";
-}
-
-function resourceTypeLabel(resource: ResourceLibraryItem) {
-  if (resource.mime_type.includes("pdf")) {
-    return "PDF";
-  }
-  if (resource.mime_type.includes("word") || resource.mime_type.includes("document")) {
-    return "Word";
-  }
-  if (resource.mime_type.startsWith("image/")) {
-    return "图片";
-  }
-
-  return resource.resource_type || "资料";
-}
-
-function buildRecentFeed(lessons: PackagedLesson[], resources: PackagedResource[]) {
-  const commitItems: FeedItem[] = lessons.flatMap(({ lesson, packageTitle }) =>
-    lesson.history_graph.commits.map((commit) => ({
-      id: `commit:${commit.id}`,
-      kind: "commit",
-      timestamp: commit.created_at,
-      actor: lesson.title,
-      action: "更新了课程文稿",
-      title: humanizeCommitLabel(commit.label),
-      detailTitle: commit.branch_name === "main" ? "主分支 main" : `分支 ${commit.branch_name}`,
-      detailBody: humanizeCommitMessage(commit, lesson),
-      pills: [packageTitle, lesson.tags[0] ?? "课程内容", `${lesson.history_graph.commits.length} 次提交`],
-      lessonId: lesson.id,
-    }))
-  );
-
-  const resourceItems: FeedItem[] = resources.map(({ resource, packageTitle }) => ({
-    id: `resource:${resource.id}`,
-    kind: "resource",
-    timestamp: resource.uploaded_at,
-    actor: packageTitle,
-    action: "收录了新资料",
-    title: resource.name,
-    detailTitle: resource.outline[0]?.title ?? "资料摘要",
-    detailBody: truncateText(resourceSummary(resource), 180),
-    pills: [
-      resourceTypeLabel(resource),
-      resource.outline.length ? `${resource.outline.length} 个索引片段` : "等待生成索引",
-    ],
-  }));
-
-  return [...commitItems, ...resourceItems]
-    .sort((left, right) => new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime());
 }
 
 export function LearningHome() {
@@ -400,7 +265,7 @@ export function LearningHome() {
   const [collectedCourseIds, setCollectedCourseIds] = useState<Set<string>>(
     () => new Set(DEFAULT_COLLECTED_COURSE_IDS)
   );
-  const [feedFilter, setFeedFilter] = useState<FeedFilter>("all");
+  const [feedFilter, setFeedFilter] = useState<RecentFeedFilter>("all");
   const [feedCollapsed, setFeedCollapsed] = useState(true);
   const [notificationOpen, setNotificationOpen] = useState(false);
   const [selectedPackageId, setSelectedPackageId] = useState<string | null>(null);
@@ -582,19 +447,9 @@ export function LearningHome() {
     lessonMenuState ? standaloneLessonItems.find(({ lesson }) => lesson.id === lessonMenuState.lessonId)?.lesson ?? null : null;
   const feedItems = buildRecentFeed(feedLessons, feedResources);
   const visibleFeedItems = feedFilter === "all" ? feedItems : feedItems.filter((item) => item.kind === feedFilter);
-  const followingUnreadCount = FOLLOWED_CREATORS.reduce((sum, creator) => sum + creator.unreadCount, 0);
+  const followingUnreadCount = feedItems.length;
   const followingBadge = followingUnreadCount > 99 ? "99+" : followingUnreadCount.toString();
-  const notificationUpdates = useMemo(
-    () =>
-      [...FOLLOWED_COURSE_UPDATES]
-        .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime())
-        .slice(0, 4)
-        .map((update) => ({
-          update,
-          creator: FOLLOWED_CREATORS.find((creator) => creator.id === update.creatorId) ?? FOLLOWED_CREATORS[0],
-        })),
-    []
-  );
+  const notificationUpdates = feedItems.slice(0, 4);
 
   async function handleOpenLesson(lessonId: string) {
     setSelectedLessonId(lessonId);
@@ -1836,40 +1691,40 @@ export function LearningHome() {
 
             <div className="space-y-3">
               {notificationUpdates.length ? (
-                notificationUpdates.map(({ update, creator }) => (
+                notificationUpdates.map((item) => (
                   <Link
-                    key={update.id}
+                    key={item.id}
                     href="/following"
                     className="group flex gap-3 rounded-2xl border border-transparent p-2 transition hover:border-stone-100 hover:bg-stone-50"
                   >
-                    <Image
-                      src={creatorAvatarUrl(creator)}
-                      alt=""
-                      className="h-10 w-10 shrink-0 rounded-full border border-stone-200 bg-stone-100"
-                      width={40}
-                      height={40}
-                      unoptimized
-                    />
+                    <div
+                      className={clsx(
+                        "flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl text-white",
+                        item.kind === "commit" ? "bg-rose-500" : "bg-emerald-500"
+                      )}
+                    >
+                      {item.kind === "commit" ? <BookText className="h-4 w-4" /> : <FolderClosed className="h-4 w-4" />}
+                    </div>
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2">
-                        <p className="truncate text-sm font-semibold text-stone-950">{creator.name}</p>
+                        <p className="truncate text-sm font-semibold text-stone-950">{item.actor}</p>
                         <span className="shrink-0 rounded-full bg-rose-50 px-2 py-0.5 text-[10px] font-semibold text-rose-600">
-                          {followedUpdateKindLabel(update.updateKind)}
+                          {item.kind === "commit" ? "Commit" : "Resource"}
                         </span>
                       </div>
                       <p className="mt-1 line-clamp-1 text-sm font-semibold text-stone-800 group-hover:text-stone-950">
-                        {update.moduleTitle}
+                        {item.title}
                       </p>
-                      <p className="mt-1 line-clamp-2 text-xs leading-5 text-stone-500">{update.summary}</p>
+                      <p className="mt-1 line-clamp-2 text-xs leading-5 text-stone-500">{item.detailBody}</p>
                       <p className="mt-1 truncate text-[11px] text-stone-400">
-                        {update.courseTitle} · {formatRelativeTime(update.updatedAt)}
+                        {item.detailTitle} · {formatRelativeTime(item.timestamp)}
                       </p>
                     </div>
                   </Link>
                 ))
               ) : (
                 <div className="rounded-2xl border border-dashed border-stone-200 bg-stone-50 px-4 py-5 text-sm text-stone-500">
-                  关注创作者后，这里会显示他们的最新课程更新。
+                  新建课程、编辑文稿或上传资料后，这里会显示和主页 Feed 一样的更新。
                 </div>
               )}
             </div>
@@ -1878,7 +1733,7 @@ export function LearningHome() {
               href="/following"
               className="mt-5 inline-flex w-full items-center justify-center gap-2 rounded-full border border-stone-200 bg-stone-50 px-4 py-3 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:bg-white hover:text-stone-950"
             >
-              查看全部关注动态
+              查看全部动态
               <ArrowUpRight className="h-4 w-4" />
             </Link>
           </div>

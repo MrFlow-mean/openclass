@@ -5,17 +5,30 @@ import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
+import type { LucideIcon } from "lucide-react";
 import {
+  Accessibility,
   ArrowLeft,
   ArrowUpRight,
+  Bell,
   BookOpen,
   Bookmark,
+  CircleUserRound,
+  CreditCard,
   FolderClosed,
   GitFork,
   GraduationCap,
+  KeyRound,
+  LinkIcon,
   LoaderCircle,
+  Mail,
+  Palette,
   Search,
+  Settings,
+  ShieldCheck,
+  Sparkles,
   Star,
+  UserRound,
 } from "lucide-react";
 
 import { api } from "@/lib/api";
@@ -29,12 +42,39 @@ import {
 } from "@/lib/open-courses";
 import type { CoursePackage, Lesson, WorkspaceState } from "@/types";
 
-type ProfileTab = "repositories" | "stars";
+type ProfileTab = "repositories" | "stars" | "settings";
 type RepositoryTypeFilter = "all" | "lessons" | "packages";
 
 type ProfileHomeProps = {
   initialTab?: ProfileTab;
 };
+
+type SettingsNavItem = {
+  label: string;
+  icon: LucideIcon;
+  active?: boolean;
+};
+
+const PROFILE_AVATAR_URL = "https://api.dicebear.com/9.x/glass/svg?seed=Blackboard-AI";
+
+const settingsPrimaryNav: SettingsNavItem[] = [
+  { label: "公开资料", icon: UserRound, active: true },
+  { label: "账户", icon: CircleUserRound },
+  { label: "外观", icon: Palette },
+  { label: "无障碍", icon: Accessibility },
+  { label: "通知", icon: Bell },
+];
+
+const settingsAccountNav: SettingsNavItem[] = [
+  { label: "计费和许可", icon: CreditCard },
+  { label: "电子邮件", icon: Mail },
+  { label: "密码和身份验证", icon: KeyRound },
+  { label: "AI 模型", icon: Sparkles },
+  { label: "代码安全", icon: ShieldCheck },
+];
+
+const settingsInputClass =
+  "w-full rounded-md border border-stone-300 bg-white px-3 py-2 text-sm text-stone-900 shadow-sm outline-none transition placeholder:text-stone-400 focus:border-sky-500 focus:ring-2 focus:ring-sky-100";
 
 function formatRelativeTime(value: string | Date | null | undefined) {
   if (!value) {
@@ -136,7 +176,7 @@ function persistCollectedCourseIds(courseIds: Set<string>) {
   }
 }
 
-export function ProfileHome({ initialTab = "repositories" }: ProfileHomeProps) {
+export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
   const router = useRouter();
   const [activeTab, setActiveTab] = useState<ProfileTab>(initialTab);
   const [workspaceState, setWorkspaceState] = useState<WorkspaceState | null>(null);
@@ -284,6 +324,7 @@ export function ProfileHome({ initialTab = "repositories" }: ProfileHomeProps) {
   );
 
   const profileTabs = [
+    { id: "settings" as const, label: "个人设置", icon: Settings, count: null },
     { id: "repositories" as const, label: "Repositories", icon: FolderClosed, count: repositoryCount },
     { id: "stars" as const, label: "Stars", icon: Star, count: favoriteProjects.length },
   ];
@@ -314,6 +355,26 @@ export function ProfileHome({ initialTab = "repositories" }: ProfileHomeProps) {
     }
   }
 
+  function renderSettingsMenuItem(item: SettingsNavItem) {
+    const Icon = item.icon;
+
+    return (
+      <button
+        key={item.label}
+        type="button"
+        className={clsx(
+          "flex min-h-9 w-full items-center gap-2 rounded-md border-l-2 px-3 py-2 text-left text-sm transition",
+          item.active
+            ? "border-sky-500 bg-stone-100 font-semibold text-stone-950"
+            : "border-transparent text-stone-700 hover:bg-stone-100 hover:text-stone-950"
+        )}
+      >
+        <Icon className="h-4 w-4 shrink-0 text-stone-500" />
+        <span className="truncate">{item.label}</span>
+      </button>
+    );
+  }
+
   return (
     <main className="min-h-screen bg-[#f7f5ef] text-stone-950">
       <header className="sticky top-0 z-30 border-b border-stone-200 bg-[#fcfbf8]/92 backdrop-blur">
@@ -336,7 +397,7 @@ export function ProfileHome({ initialTab = "repositories" }: ProfileHomeProps) {
             </Link>
             <div className="h-10 w-10 overflow-hidden rounded-full border-2 border-white bg-stone-200 shadow-[0_10px_24px_rgba(15,23,42,0.08)]">
               <Image
-                src="https://api.dicebear.com/9.x/glass/svg?seed=Blackboard-AI"
+                src={PROFILE_AVATAR_URL}
                 alt="用户头像"
                 className="h-full w-full object-cover"
                 width={40}
@@ -376,11 +437,14 @@ export function ProfileHome({ initialTab = "repositories" }: ProfileHomeProps) {
         </nav>
       </header>
 
-      <div className="mx-auto grid max-w-6xl gap-6 px-4 py-8 sm:px-6 lg:grid-cols-[16rem_minmax(0,1fr)]">
+      {activeTab === "settings" ? (
+        renderSettings()
+      ) : (
+        <div className="mx-auto grid max-w-6xl gap-6 px-4 py-8 sm:px-6 lg:grid-cols-[16rem_minmax(0,1fr)]">
         <aside className="h-fit">
           <div className="flex items-start gap-4 lg:block">
             <Image
-              src="https://api.dicebear.com/9.x/glass/svg?seed=Blackboard-AI"
+              src={PROFILE_AVATAR_URL}
               alt="Blackboard AI 用户头像"
               className="h-24 w-24 rounded-full border-4 border-white bg-stone-200 shadow-[0_16px_34px_rgba(15,23,42,0.08)] lg:h-48 lg:w-48"
               width={192}
@@ -392,6 +456,7 @@ export function ProfileHome({ initialTab = "repositories" }: ProfileHomeProps) {
               <p className="mt-1 text-sm text-stone-500">@blackboard-student</p>
               <button
                 type="button"
+                onClick={() => setActiveTab("settings")}
                 className="mt-4 w-full rounded-md border border-stone-200 bg-white px-3 py-2 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:text-stone-950"
               >
                 Edit profile
@@ -412,8 +477,93 @@ export function ProfileHome({ initialTab = "repositories" }: ProfileHomeProps) {
           {activeTab === "stars" ? renderStars() : null}
         </section>
       </div>
+      )}
     </main>
   );
+
+  function renderSettings() {
+    return (
+      <div className="mx-auto grid max-w-6xl gap-6 px-4 py-6 sm:px-6 md:grid-cols-[15rem_minmax(0,1fr)]">
+        <aside className="h-fit md:sticky md:top-28">
+          <nav className="space-y-5" aria-label="个人设置导航">
+            <section className="space-y-1">{settingsPrimaryNav.map((item) => renderSettingsMenuItem(item))}</section>
+            <section className="border-t border-stone-200 pt-4">
+              <h2 className="mb-2 px-3 text-xs font-semibold text-stone-500">使用权</h2>
+              <div className="space-y-1">{settingsAccountNav.map((item) => renderSettingsMenuItem(item))}</div>
+            </section>
+          </nav>
+        </aside>
+
+        <section className="min-w-0">
+          <div className="mb-6 border-b border-stone-200 pb-4">
+            <h2 className="text-2xl font-semibold tracking-tight text-stone-950">公开资料</h2>
+          </div>
+
+          <form className="max-w-3xl space-y-6">
+            <label className="block">
+              <span className="block text-sm font-semibold text-stone-950">姓名</span>
+              <input className={`${settingsInputClass} mt-2`} defaultValue="Flow-mean" />
+              <span className="mt-2 block text-xs leading-5 text-stone-500">
+                你的名字可能会出现在课程贡献记录或被推荐的 Blackboard AI 页面上。
+              </span>
+            </label>
+
+            <label className="block">
+              <span className="block text-sm font-semibold text-stone-950">公开电子邮件</span>
+              <select className={`${settingsInputClass} mt-2 max-w-xl`} defaultValue="">
+                <option value="">选择一个已验证的电子邮件地址以显示</option>
+                <option value="learning@example.com">learning@example.com</option>
+              </select>
+            </label>
+
+            <label className="block">
+              <span className="block text-sm font-semibold text-stone-950">个人简介</span>
+              <textarea
+                className={`${settingsInputClass} mt-2 min-h-28 resize-y leading-6`}
+                placeholder="请简单介绍一下你自己。"
+              />
+            </label>
+
+            <label className="block">
+              <span className="block text-sm font-semibold text-stone-950">URL</span>
+              <input className={`${settingsInputClass} mt-2 max-w-xl`} placeholder="https://blackboard.ai/flow-mean" />
+            </label>
+
+            <div>
+              <h3 className="text-sm font-semibold text-stone-950">社交账号</h3>
+              <div className="mt-2 space-y-2">
+                {[1, 2, 3, 4].map((index) => (
+                  <div key={index} className="flex max-w-2xl items-center gap-2">
+                    <LinkIcon className="h-4 w-4 shrink-0 text-stone-500" />
+                    <input className={settingsInputClass} placeholder={`链接到社交个人资料 ${index}`} />
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <label className="block">
+              <span className="block text-sm font-semibold text-stone-950">公司</span>
+              <input className={`${settingsInputClass} mt-2 max-w-xl`} />
+            </label>
+
+            <label className="block">
+              <span className="block text-sm font-semibold text-stone-950">地点</span>
+              <input className={`${settingsInputClass} mt-2 max-w-xl`} />
+            </label>
+
+            <div className="border-t border-stone-200 pt-5">
+              <button
+                type="button"
+                className="inline-flex h-10 items-center rounded-md bg-emerald-600 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700"
+              >
+                更新个人资料
+              </button>
+            </div>
+          </form>
+        </section>
+      </div>
+    );
+  }
 
   function renderRepositories() {
     return (
