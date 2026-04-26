@@ -43,7 +43,7 @@ def isolated_ai_log(monkeypatch: pytest.MonkeyPatch, tmp_path):
 def test_realtime_call_uses_requested_model_and_lesson_context(isolated_ai_log) -> None:
     teacher = OpenAIRealtimeTeacher()
     teacher.client = _FakeClient()
-    teacher.config.model = "gpt-4o-realtime-preview"
+    teacher.config.model = "gpt-realtime-1.5"
     teacher.config.voice = "marin"
     lesson = create_lesson("勾股定理")
 
@@ -58,7 +58,7 @@ def test_realtime_call_uses_requested_model_and_lesson_context(isolated_ai_log) 
     assert teacher.client.realtime.calls.payload is not None
     session = teacher.client.realtime.calls.payload["session"]
     assert isinstance(session, dict)
-    assert session["model"] == "gpt-4o-realtime-preview"
+    assert session["model"] == "gpt-realtime-1.5"
     assert session["audio"]["output"]["voice"] == "marin"
     assert "勾股定理" in session["instructions"]
     entries = _read_log_entries(isolated_ai_log)

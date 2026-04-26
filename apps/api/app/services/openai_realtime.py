@@ -11,7 +11,7 @@ from openai import OpenAI
 from pydantic import BaseModel, Field
 
 from app.models import AIModelSelection, Lesson
-from app.services.ai_model_catalog import GOOGLE_DEFAULT_REALTIME_MODEL
+from app.services.ai_model_catalog import GOOGLE_DEFAULT_REALTIME_MODEL, OPENAI_DEFAULT_REALTIME_MODEL
 from app.services.ai_logging import ai_usage_logger
 
 def _load_root_dotenv() -> None:
@@ -77,9 +77,7 @@ def build_realtime_instructions(*, lesson: Lesson, latest_assistant_message: str
 class OpenAIRealtimeConfig(BaseModel):
     api_key: str | None = Field(default_factory=lambda: _env_realtime_or_shared("OPENAI_REALTIME_API_KEY", "OPENAI_API_KEY"))
     base_url: str | None = Field(default_factory=lambda: _env_realtime_or_shared("OPENAI_REALTIME_BASE_URL", "OPENAI_BASE_URL"))
-    model: str = Field(
-        default_factory=lambda: os.getenv("OPENAI_REALTIME_MODEL", "gpt-4o-realtime-preview")
-    )
+    model: str = Field(default_factory=lambda: os.getenv("OPENAI_REALTIME_MODEL", OPENAI_DEFAULT_REALTIME_MODEL))
     voice: str = Field(default_factory=lambda: os.getenv("OPENAI_REALTIME_VOICE", "marin"))
     transcription_model: str = Field(
         default_factory=lambda: os.getenv(

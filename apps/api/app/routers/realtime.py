@@ -167,7 +167,10 @@ async def proxy_google_realtime_session(websocket: WebSocket, lesson_id: str) ->
             async def forward_google_to_browser() -> None:
                 async for message in google_socket:
                     if isinstance(message, bytes):
-                        await websocket.send_bytes(message)
+                        try:
+                            await websocket.send_text(message.decode("utf-8"))
+                        except UnicodeDecodeError:
+                            await websocket.send_bytes(message)
                     else:
                         await websocket.send_text(message)
 

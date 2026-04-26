@@ -42,6 +42,7 @@ from app.services.ai_model_catalog import (
     GOOGLE_DEFAULT_TEXT_MODEL,
     KIMI_DEFAULT_TEXT_MODEL,
     MINIMAX_DEFAULT_TEXT_MODEL,
+    OPENAI_DEFAULT_TEXT_MODEL,
     OPENAI_COMPATIBLE_DEFAULT_TEXT_MODEL,
     default_text_selection,
 )
@@ -60,7 +61,7 @@ def _load_root_dotenv() -> None:
 
 
 _load_root_dotenv()
-DEFAULT_TEXT_MODEL = "gpt-5-mini"
+DEFAULT_TEXT_MODEL = OPENAI_DEFAULT_TEXT_MODEL
 _text_model_selection: ContextVar[AIModelSelection | None] = ContextVar(
     "text_model_selection", default=None
 )

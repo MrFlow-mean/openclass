@@ -108,20 +108,20 @@ def test_openai_parse_retries_model_not_found_with_fallback(isolated_ai_log) -> 
     ai.client = _FakeClient()
     ai.config.default_model = "gpt-5.3"
     ai.config.pm_model = "gpt-5.3"
-    ai.config.fallback_model = "gpt-5-mini"
+    ai.config.fallback_model = "gpt-5.4"
 
     with ai_log_context(trace_id="trace_retry", route="unit_test"):
         result = ai._parse("pm", "system", "user", _Output)
 
     assert result is not None
     assert result.title == "勾股定理"
-    assert ai.client.responses.calls == ["gpt-5.3", "gpt-5-mini"]
+    assert ai.client.responses.calls == ["gpt-5.3", "gpt-5.4"]
 
     entries = _read_log_entries(isolated_ai_log)
     assert [entry["event_type"] for entry in entries] == ["openai_text_call_retry", "openai_text_call"]
     assert entries[0]["payload"]["model"] == "gpt-5.3"
-    assert entries[0]["payload"]["retry_model"] == "gpt-5-mini"
-    assert entries[1]["payload"]["model"] == "gpt-5-mini"
+    assert entries[0]["payload"]["retry_model"] == "gpt-5.4"
+    assert entries[1]["payload"]["model"] == "gpt-5.4"
     assert entries[1]["payload"]["fallback_from_model"] == "gpt-5.3"
 
 
@@ -179,7 +179,7 @@ def test_openai_compat_chat_completions_mode_parses_json(isolated_ai_log) -> Non
     [
         ("deepseek", "deepseek_client", "deepseek-v4-pro"),
         ("kimi", "kimi_client", "kimi-k2.6"),
-        ("minimax", "minimax_client", "MiniMax-M2.7"),
+        ("minimax", "minimax_client", "MiniMax-M2.7-highspeed"),
         ("openai_compatible", "openai_compatible_client", "router-model"),
     ],
 )
