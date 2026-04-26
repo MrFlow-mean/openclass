@@ -81,7 +81,7 @@ import {
   Link as LinkIcon,
 } from "lucide-react";
 
-import { api } from "@/lib/api";
+import { api, getApiWebSocketUrl } from "@/lib/api";
 import { MATH_TEXT_SERIALIZERS, normalizeEditorMath } from "@/lib/math-content";
 import type {
   AIModelCatalog,
@@ -421,6 +421,8 @@ const PROVIDER_LABELS: Record<AIModelSelection["provider"], string> = {
   anthropic: "Anthropic",
   google: "Google",
 };
+const TEXT_MODEL_STORAGE_KEY = "blackboard-ai:selected-text-model";
+const REALTIME_MODEL_STORAGE_KEY = "blackboard-ai:selected-realtime-model";
 
 function modelSelectionKey(selection: AIModelSelection): string {
   return `${selection.provider}:${selection.model}`;
@@ -445,6 +447,64 @@ function modelButtonLabel(option: AIModelOption | null, fallback: AIModelSelecti
     return "未选择";
   }
   return `${PROVIDER_LABELS[fallback.provider]} ${fallback.model}`;
+}
+
+function optionToSelection(option: AIModelOption): AIModelSelection {
+  return {
+    provider: option.provider,
+    model: option.model,
+  };
+}
+
+function isModelSelection(value: unknown): value is AIModelSelection {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const candidate = value as Partial<AIModelSelection>;
+  return (
+    typeof candidate.provider === "string" &&
+    candidate.provider in PROVIDER_LABELS &&
+    typeof candidate.model === "string" &&
+    candidate.model.trim().length > 0
+  );
+}
+
+function readStoredModelSelection(key: string): AIModelSelection | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) {
+      return null;
+    }
+    const parsed = JSON.parse(raw) as unknown;
+    return isModelSelection(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function persistModelSelection(key: string, selection: AIModelSelection) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.localStorage.setItem(key, JSON.stringify(selection));
+}
+
+function resolveModelSelection(
+  options: AIModelOption[],
+  preferred: AIModelSelection | null,
+  fallback: AIModelSelection
+): AIModelSelection {
+  if (preferred && findModelOption(options, preferred)) {
+    return preferred;
+  }
+  if (findModelOption(options, fallback)) {
+    return fallback;
+  }
+  const defaultOption = options.find((option) => option.default) ?? options.find((option) => option.enabled) ?? options[0];
+  return defaultOption ? optionToSelection(defaultOption) : fallback;
 }
 
 function decodeBase64Bytes(base64: string): Uint8Array {
@@ -2196,10 +2256,32 @@ export function CourseStudio() {
       try {
         const catalog = await api.getAIModels();
         setModelCatalog(catalog);
-        setSelectedTextModel(catalog.defaults.text);
-        setSelectedRealtimeModel(catalog.defaults.realtime);
+        setSelectedTextModel(
+          resolveModelSelection(catalog.text, readStoredModelSelection(TEXT_MODEL_STORAGE_KEY), catalog.defaults.text)
+        );
+        setSelectedRealtimeModel(
+          resolveModelSelection(
+            catalog.realtime,
+            readStoredModelSelection(REALTIME_MODEL_STORAGE_KEY),
+            catalog.defaults.realtime
+          )
+        );
       } catch {
         setModelCatalog(FALLBACK_MODEL_CATALOG);
+        setSelectedTextModel(
+          resolveModelSelection(
+            FALLBACK_MODEL_CATALOG.text,
+            readStoredModelSelection(TEXT_MODEL_STORAGE_KEY),
+            FALLBACK_MODEL_CATALOG.defaults.text
+          )
+        );
+        setSelectedRealtimeModel(
+          resolveModelSelection(
+            FALLBACK_MODEL_CATALOG.realtime,
+            readStoredModelSelection(REALTIME_MODEL_STORAGE_KEY),
+            FALLBACK_MODEL_CATALOG.defaults.realtime
+          )
+        );
       }
     }
     void loadModelCatalog();
@@ -3224,15 +3306,25 @@ export function CourseStudio() {
   }
 
   function selectTextModel(option: AIModelOption) {
-    setSelectedTextModel({ provider: option.provider, model: option.model });
+    if (!option.enabled) {
+      return;
+    }
+    const nextSelection = optionToSelection(option);
+    setSelectedTextModel(nextSelection);
+    persistModelSelection(TEXT_MODEL_STORAGE_KEY, nextSelection);
     setModelMenuOpen(false);
   }
 
   function selectRealtimeModel(option: AIModelOption) {
+    if (!option.enabled) {
+      return;
+    }
     if (voiceActive || busyAction === "voice-connect") {
       stopRealtimeSession("已切换实时语音模型，当前会话已断开");
     }
-    setSelectedRealtimeModel({ provider: option.provider, model: option.model });
+    const nextSelection = optionToSelection(option);
+    setSelectedRealtimeModel(nextSelection);
+    persistModelSelection(REALTIME_MODEL_STORAGE_KEY, nextSelection);
     setModelMenuOpen(false);
   }
 
@@ -3252,7 +3344,7 @@ export function CourseStudio() {
     googlePlaybackContextRef.current = playbackContext;
     googlePlaybackTimeRef.current = playbackContext.currentTime;
 
-    const socket = new WebSocket(session.websocket_url);
+    const socket = new WebSocket(getApiWebSocketUrl(session.websocket_url));
     googleRealtimeSocketRef.current = socket;
     await new Promise<void>((resolve, reject) => {
       let streamingStarted = false;
@@ -3854,14 +3946,22 @@ export function CourseStudio() {
               <button
                 type="button"
                 onClick={() => setModelMenuOpen((current) => !current)}
-                className="flex w-full items-center justify-between gap-3 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-left transition-colors hover:border-gray-300 hover:bg-white"
+                className="flex w-full items-center justify-between gap-3 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2.5 text-left transition-colors hover:border-gray-300 hover:bg-white"
               >
-                <span className="flex min-w-0 items-center gap-2">
+                <span className="flex min-w-0 flex-1 items-start gap-2">
                   <BrainCircuit className="h-4 w-4 shrink-0 text-gray-600" />
-                  <span className="min-w-0">
-                    <span className="block text-[11px] font-semibold text-gray-500">选择模型</span>
-                    <span className="block truncate text-xs font-semibold text-gray-900">
-                      {modelButtonLabel(selectedTextOption, selectedTextModel)}
+                  <span className="grid min-w-0 flex-1 gap-1">
+                    <span className="grid min-w-0 grid-cols-[42px_minmax(0,1fr)] items-center gap-2">
+                      <span className="text-[11px] font-semibold text-gray-500">文本</span>
+                      <span className="truncate text-xs font-semibold text-gray-900">
+                        {modelButtonLabel(selectedTextOption, selectedTextModel)}
+                      </span>
+                    </span>
+                    <span className="grid min-w-0 grid-cols-[42px_minmax(0,1fr)] items-center gap-2">
+                      <span className="text-[11px] font-semibold text-gray-500">语音</span>
+                      <span className="truncate text-xs font-semibold text-gray-900">
+                        {modelButtonLabel(selectedRealtimeOption, selectedRealtimeModel)}
+                      </span>
                     </span>
                   </span>
                 </span>
@@ -3880,9 +3980,11 @@ export function CourseStudio() {
                             key={`text-${modelOptionKey(option)}`}
                             type="button"
                             onClick={() => selectTextModel(option)}
+                            disabled={!option.enabled}
                             className={clsx(
                               "flex w-full items-center justify-between gap-2 rounded-md px-2 py-2 text-left transition-colors",
-                              selected ? "bg-gray-100 text-gray-950" : "text-gray-700 hover:bg-gray-50"
+                              selected ? "bg-gray-100 text-gray-950" : "text-gray-700 hover:bg-gray-50",
+                              !option.enabled && "cursor-not-allowed opacity-50 hover:bg-transparent"
                             )}
                           >
                             <span className="min-w-0">
@@ -3909,9 +4011,11 @@ export function CourseStudio() {
                             key={`realtime-${modelOptionKey(option)}`}
                             type="button"
                             onClick={() => selectRealtimeModel(option)}
+                            disabled={!option.enabled}
                             className={clsx(
                               "flex w-full items-center justify-between gap-2 rounded-md px-2 py-2 text-left transition-colors",
-                              selected ? "bg-gray-100 text-gray-950" : "text-gray-700 hover:bg-gray-50"
+                              selected ? "bg-gray-100 text-gray-950" : "text-gray-700 hover:bg-gray-50",
+                              !option.enabled && "cursor-not-allowed opacity-50 hover:bg-transparent"
                             )}
                           >
                             <span className="min-w-0">

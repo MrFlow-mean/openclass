@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import json
 import shutil
+import asyncio
+import ssl
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+import websockets
+import certifi
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -947,7 +951,7 @@ def create_google_realtime_session(
             raise HTTPException(status_code=502, detail=f"Google realtime connect failed: {exc}") from exc
 
         response = GoogleRealtimeSessionResponse(
-            websocket_url=str(session["websocket_url"]),
+            websocket_url=f"/api/lessons/{lesson_id}/realtime/google/ws",
             setup=session["setup"],
             provider="google",
             model=str(session["model"]),
@@ -959,6 +963,56 @@ def create_google_realtime_session(
             voice=response.voice,
         )
         return response
+
+
+@app.websocket("/api/lessons/{lesson_id}/realtime/google/ws")
+async def proxy_google_realtime_session(websocket: WebSocket, lesson_id: str) -> None:
+    await websocket.accept()
+    if not google_realtime_teacher.enabled:
+        await websocket.close(code=1011, reason="Google Gemini Live is not configured")
+        return
+
+    try:
+        google_url = google_realtime_teacher.websocket_url()
+        ssl_context = ssl.create_default_context(cafile=certifi.where())
+        async with websockets.connect(google_url, max_size=None, ssl=ssl_context) as google_socket:
+            ai_usage_logger.log_event("google_realtime_proxy_open", lesson_id=lesson_id)
+
+            async def forward_browser_to_google() -> None:
+                while True:
+                    message = await websocket.receive()
+                    if message["type"] == "websocket.disconnect":
+                        await google_socket.close()
+                        return
+                    if message.get("text") is not None:
+                        await google_socket.send(message["text"])
+                    elif message.get("bytes") is not None:
+                        await google_socket.send(message["bytes"])
+
+            async def forward_google_to_browser() -> None:
+                async for message in google_socket:
+                    if isinstance(message, bytes):
+                        await websocket.send_bytes(message)
+                    else:
+                        await websocket.send_text(message)
+
+            tasks = {
+                asyncio.create_task(forward_browser_to_google()),
+                asyncio.create_task(forward_google_to_browser()),
+            }
+            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in pending:
+                task.cancel()
+            for task in done:
+                task.result()
+    except WebSocketDisconnect:
+        return
+    except Exception as exc:
+        ai_usage_logger.log_event("google_realtime_proxy_error", lesson_id=lesson_id, error=str(exc))
+        try:
+            await websocket.close(code=1011, reason="Google Gemini Live proxy failed")
+        except RuntimeError:
+            pass
 
 
 @app.post("/api/lessons/{lesson_id}/realtime/events")
