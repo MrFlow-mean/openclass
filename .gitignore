@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+AGENTS_ME.md
 .venv/
 __pycache__/
 .pytest_cache/
