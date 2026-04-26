@@ -10,7 +10,7 @@ from app.routers import documents as documents_router
 from app.routers import realtime as realtime_router
 from app.services.ai_logging import ai_log_context, ai_usage_logger
 from app.services import chat_service, workspace_state
-from app.services.course_store import FileCourseStore
+from app.services.course_store import SqliteCourseStore
 from app.services.openai_course_ai import OpenAICourseAI, bind_text_model_selection, openai_course_ai
 from app.services.resource_library import build_resource_item
 
@@ -270,7 +270,7 @@ def test_anthropic_compatible_provider_routes_to_selected_client(isolated_ai_log
 
 
 def test_chat_route_logs_request_and_response(monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path) -> None:
-    store = FileCourseStore(tmp_path / "store.json")
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
     monkeypatch.setattr(workspace_state, "STORE", store)
     monkeypatch.setattr(openai_course_ai, "client", None)
 
@@ -319,7 +319,7 @@ def test_chat_route_logs_request_and_response(monkeypatch: pytest.MonkeyPatch, i
 
 
 def test_document_save_route_keeps_autosave_metadata(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
-    store = FileCourseStore(tmp_path / "store.json")
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
     monkeypatch.setattr(workspace_state, "STORE", store)
 
     workspace = store.load()
@@ -352,7 +352,7 @@ def test_document_save_route_keeps_autosave_metadata(monkeypatch: pytest.MonkeyP
 
 
 def test_document_save_beacon_accepts_plain_text_json(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
-    store = FileCourseStore(tmp_path / "store.json")
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
     monkeypatch.setattr(workspace_state, "STORE", store)
 
     workspace = store.load()
@@ -388,7 +388,7 @@ def test_document_save_beacon_accepts_plain_text_json(monkeypatch: pytest.Monkey
 def test_chat_route_reuses_workflow_runtime_without_extra_refresh(
     monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
 ) -> None:
-    store = FileCourseStore(tmp_path / "store.json")
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
     monkeypatch.setattr(workspace_state, "STORE", store)
     monkeypatch.setattr(openai_course_ai, "client", None)
 
@@ -404,7 +404,7 @@ def test_chat_route_reuses_workflow_runtime_without_extra_refresh(
 def test_chat_route_hides_reference_box_for_explanation_only_turn(
     monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
 ) -> None:
-    store = FileCourseStore(tmp_path / "store.json")
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
     monkeypatch.setattr(workspace_state, "STORE", store)
     monkeypatch.setattr(openai_course_ai, "client", None)
 

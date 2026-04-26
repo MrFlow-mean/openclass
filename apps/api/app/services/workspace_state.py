@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
+from dotenv import load_dotenv
 from fastapi import HTTPException
 
 from app.models import (
@@ -12,14 +14,36 @@ from app.models import (
     WorkspaceState,
     WorkspaceStateView,
 )
-from app.services.course_store import FileCourseStore
+from app.services.course_store import SqliteCourseStore
 from app.services.history import commit_operations
 
 BASE_DIR = Path(__file__).resolve().parents[2]
+ROOT_DIR = BASE_DIR.parents[1]
 DATA_DIR = BASE_DIR / "data"
-STORE = FileCourseStore(DATA_DIR / "store.json")
-UPLOAD_DIR = DATA_DIR / "uploads"
-EXPORT_DIR = DATA_DIR / "exports"
+
+
+def _load_root_dotenv() -> None:
+    root_env = ROOT_DIR / ".env"
+    if root_env.exists():
+        load_dotenv(root_env)
+    load_dotenv()
+
+
+def _path_from_env(name: str, default: Path) -> Path:
+    raw = os.getenv(name)
+    path = Path(raw).expanduser() if raw else default
+    if not path.is_absolute():
+        path = ROOT_DIR / path
+    return path
+
+
+_load_root_dotenv()
+
+DATABASE_PATH = _path_from_env("OPENCLASS_DATABASE_PATH", DATA_DIR / "openclass.sqlite3")
+LEGACY_STORE_PATH = _path_from_env("OPENCLASS_LEGACY_STORE_PATH", DATA_DIR / "store.json")
+STORE = SqliteCourseStore(DATABASE_PATH, legacy_json_path=LEGACY_STORE_PATH)
+UPLOAD_DIR = _path_from_env("OPENCLASS_UPLOAD_DIR", DATA_DIR / "uploads")
+EXPORT_DIR = _path_from_env("OPENCLASS_EXPORT_DIR", DATA_DIR / "exports")
 
 
 def ensure_data_dirs() -> None:
