@@ -26,7 +26,11 @@ yarn-error.log*
 .pnpm-debug.log*
 tmp_test_images/
 apps/api/data/store.json
+apps/api/data/store.migrated-*.json
 apps/api/data/store.legacy-blocks-backup-*.json
+apps/api/data/store.invalid-backup-*.json
+apps/api/data/*.sqlite3
+apps/api/data/*.sqlite3-*
 apps/api/data/uploads/
 apps/api/data/exports/
 apps/api/data/logs/

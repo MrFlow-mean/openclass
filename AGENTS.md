@@ -34,13 +34,14 @@ npm run verify           # 提交前 gate：lint + typecheck + test:api + build:
 ## 后端约定：router 只处理 HTTP，service 承担业务
 
 - 新接口先归到 `workspace / documents / chat / realtime / resources` 之一。
-- 状态读写走 `app/services/workspace_state.py` 的 helper（带锁 + 原子替换），不要在 router 里直接动 store JSON。
-- 课程包持久化用 `FileCourseStore`，新增写路径优先复用它的锁。
+- 状态读写走 `app/services/workspace_state.py` 的 helper，不要在 router 里直接碰数据库。
+- 课程包持久化用 `SqliteCourseStore`；新增写路径优先复用 service 层事务，不要恢复 `store.json` 写入。
 - 返回前端前剥离资料原文与本地路径。
 
 ## 环境与日志
 
 - 复制 `.env.example` 为仓库根 `.env`，不要提交。
+- SQLite 主库默认在 `apps/api/data/openclass.sqlite3`，线上用 `OPENCLASS_DATABASE_PATH=/var/lib/openclass/openclass.sqlite3` 指到持久化目录；上传/导出可用 `OPENCLASS_UPLOAD_DIR`、`OPENCLASS_EXPORT_DIR` 同步指到 `/var/lib/openclass/` 下。
 - AI 输入输出日志：`apps/api/data/logs/ai-usage.jsonl`。
 - 前端"选择模型"读 `/api/ai-models`，未配置 key 的 provider 会显示为未配置。
 

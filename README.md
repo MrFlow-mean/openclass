@@ -20,6 +20,7 @@ npm run dev              # 同时启动前后端
 ```
 
 - 前端 http://localhost:3000，后端 http://localhost:8000（健康检查 `/health`）。
+- SQLite 主库：`apps/api/data/openclass.sqlite3`。首次启动会从旧 `apps/api/data/store.json` 导入并归档旧文件；线上部署可用 `OPENCLASS_DATABASE_PATH`、`OPENCLASS_UPLOAD_DIR`、`OPENCLASS_EXPORT_DIR` 指到持久化目录。
 - AI 调用日志：`apps/api/data/logs/ai-usage.jsonl`。
 - 也可以双击 `start-ai-board.command`，它会启动前后端并打开 `launcher/personal-home.html`。
 
