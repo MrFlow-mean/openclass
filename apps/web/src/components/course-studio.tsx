@@ -291,6 +291,8 @@ function normalizeTableDimension(value: number) {
 const WORD_EDITOR_EXTENSIONS = [
   StarterKit.configure({
     heading: { levels: [1, 2, 3] },
+    link: false,
+    underline: false,
   }),
   TextStyle,
   Color,
