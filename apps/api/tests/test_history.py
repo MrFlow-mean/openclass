@@ -2,6 +2,7 @@ import pytest
 from docx import Document as DocxDocument
 from docx.enum.section import WD_ORIENT
 from pypdf import PdfWriter
+from zipfile import ZipFile
 
 from app.models import ChatRequest, ConversationTurn, PatchOperation, SelectionRef
 from app.services.ai_workflow import classify_scope, course_workflow, match_resources
@@ -41,6 +42,9 @@ def test_branch_and_restore_keep_history() -> None:
 
     restore_commit(lesson, first_commit_id, "Restore origin")
     assert lesson.history_graph.branches["alt-proof"].head_commit_id == lesson.history_graph.commits[-1].id
+    restore_metadata = lesson.history_graph.commits[-1].metadata
+    assert restore_metadata["kind"] == "restore_snapshot"
+    assert restore_metadata["restored_commit_id"] == first_commit_id
 
 
 def test_scope_escalation_detects_out_of_domain_question() -> None:
@@ -774,6 +778,38 @@ def test_docx_import_export_roundtrip(tmp_path) -> None:
     assert "Je pensais que je prendrais" in imported.content_text
 
 
+def test_docx_export_writes_math_as_office_math(tmp_path) -> None:
+    document = build_document(
+        title="公式导出测试",
+        content_html="""
+<p>求 lim_{x→0} (sin x)/x。</p>
+<p>lim_{x→a} f(x)/g(x) = lim_{x→a} f'(x)/g'(x)</p>
+<p><span data-type="inline-math" data-latex="x^2"></span> 是平方。</p>
+<p><span data-type="inline-math" data-latex="f'\\frac{x}{g}'(x)"></span> 是历史兼容。</p>
+<div data-type="block-math" data-latex="\\frac{\\ln x}{1/x}"></div>
+        """.strip(),
+    )
+    target = tmp_path / "math-export.docx"
+
+    export_docx(document, target)
+    with ZipFile(target) as package:
+        document_xml = package.read("word/document.xml").decode("utf-8")
+        media_files = [name for name in package.namelist() if name.startswith("word/media/") and name.endswith(".png")]
+
+    assert media_files == []
+    assert "<w:drawing>" not in document_xml
+    assert "r:embed" not in document_xml
+    assert "<m:oMath>" in document_xml
+    assert document_xml.count("<m:f>") >= 3
+    assert "<m:limLow>" in document_xml
+    assert "<m:sSup>" in document_xml
+    assert "lim_{" not in document_xml
+    assert "\\frac" not in document_xml
+    assert "<m:t>f'(x)</m:t>" in document_xml
+    assert "<m:t>g'(x)</m:t>" in document_xml
+    assert "<m:t>ln</m:t>" in document_xml
+
+
 def test_replace_selection_preserves_page_settings() -> None:
     document = build_document(
         title="页面设置保留测试",
@@ -822,3 +858,17 @@ def test_docx_export_applies_basic_page_settings(tmp_path) -> None:
     assert section.page_width > section.page_height
     assert exported.sections[0].header.paragraphs[0].text == "页眉示例"
     assert exported.sections[0].footer.paragraphs[0].text == "页脚示例"
+
+
+def test_docx_export_keeps_page_break_nodes(tmp_path) -> None:
+    document = build_document(
+        title="分页测试",
+        content_html='<p>第一页</p><div data-type="page-break" class="word-editor__page-break"></div><p>第二页</p>',
+    )
+    target = tmp_path / "page-break.docx"
+
+    export_docx(document, target)
+
+    with ZipFile(target) as archive:
+        document_xml = archive.read("word/document.xml").decode("utf-8")
+    assert '<w:br w:type="page"/>' in document_xml

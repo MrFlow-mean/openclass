@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -7,12 +8,14 @@ from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from app.models import (
+    AIModelCatalog,
+    AIModelSelection,
     ChatRequest,
     ChatResponse,
     CreatePackageRequest,
@@ -31,6 +34,7 @@ from app.models import (
     RestoreCommitRequest,
     SelectionRef,
     SwitchBranchRequest,
+    UpdatePackageRequest,
     WorkspaceState,
     WorkspaceStateView,
 )
@@ -51,8 +55,9 @@ from app.services.history import (
     switch_branch,
 )
 from app.services.lesson_factory import create_empty_lesson
-from app.services.openai_course_ai import openai_course_ai
-from app.services.openai_realtime import openai_realtime_teacher
+from app.services.ai_model_catalog import build_model_catalog, default_realtime_selection
+from app.services.openai_course_ai import bind_text_model_selection, openai_course_ai
+from app.services.openai_realtime import google_realtime_teacher, openai_realtime_teacher
 from app.services.resource_library import build_resource_item
 from app.services.rich_document import export_docx, import_docx, is_document_empty
 
@@ -79,10 +84,26 @@ class RealtimeConnectRequest(BaseModel):
     offer_sdp: str
     latest_assistant_message: str | None = None
     client_session_id: str | None = None
+    realtime_model: AIModelSelection | None = None
 
 
 class RealtimeConnectResponse(BaseModel):
     answer_sdp: str
+    provider: str = "openai"
+    model: str
+    voice: str
+
+
+class GoogleRealtimeSessionRequest(BaseModel):
+    latest_assistant_message: str | None = None
+    client_session_id: str | None = None
+    realtime_model: AIModelSelection | None = None
+
+
+class GoogleRealtimeSessionResponse(BaseModel):
+    websocket_url: str
+    setup: dict[str, object]
+    provider: str = "google"
     model: str
     voice: str
 
@@ -237,6 +258,8 @@ def _chat_flow_metadata(
         "user_message": request.message,
         "assistant_message": teacher_message,
         "interaction_mode": request.interaction_mode,
+        "scope_action": request.scope_action,
+        "resource_reference_action": request.resource_reference_action,
         "board_action": board_decision.action,
         "selection": request.selection.model_dump(mode="json") if request.selection else None,
         "learning_clarification": learning_clarification.model_dump(mode="json"),
@@ -293,13 +316,45 @@ def _commit_document_snapshot(
     )
 
 
+def _save_document_request(lesson_id: str, request: DocumentSaveRequest) -> CoursePackageView:
+    workspace, package = _load_workspace_package()
+    lesson = _get_lesson(package, lesson_id)
+    with _bind_ai_request_context(
+        "/api/lessons/{lesson_id}/document/save",
+        lesson=lesson,
+        trace_prefix="document_save",
+    ):
+        lesson.board_document = request.document
+        commit_metadata: dict[str, object] = {
+            "kind": "manual_document_save",
+            **request.metadata,
+        }
+        _commit_document_snapshot(
+            lesson,
+            label=request.label,
+            message=request.message,
+            metadata=commit_metadata,
+        )
+        refresh_lesson_runtime(lesson)
+        _save_workspace(workspace)
+    return _package_view(package)
+
+
 @app.get("/health")
 def health() -> dict[str, object]:
     return {
         "status": "ok",
         "openai": openai_course_ai.status(),
-        "realtime": openai_realtime_teacher.status(),
+        "realtime": {
+            "openai": openai_realtime_teacher.status(),
+            "google": google_realtime_teacher.status(),
+        },
     }
+
+
+@app.get("/api/ai-models", response_model=AIModelCatalog)
+def get_ai_models() -> AIModelCatalog:
+    return build_model_catalog()
 
 
 @app.get("/api/workspace", response_model=WorkspaceStateView)
@@ -330,6 +385,40 @@ def open_package(package_id: str) -> WorkspaceStateView:
     workspace = _load_workspace()
     _get_package(workspace, package_id)
     workspace.active_package_id = package_id
+    _save_workspace(workspace)
+    return _workspace_view(workspace)
+
+
+@app.post("/api/packages/{package_id}", response_model=WorkspaceStateView)
+def update_package(package_id: str, request: UpdatePackageRequest) -> WorkspaceStateView:
+    workspace = _load_workspace()
+    package = _get_package(workspace, package_id)
+
+    if request.title is not None:
+        title = request.title.strip()
+        if not title:
+            raise HTTPException(status_code=400, detail="Package title is required")
+        package.title = title
+
+    if request.summary is not None:
+        package.summary = request.summary.strip()
+
+    _save_workspace(workspace)
+    return _workspace_view(workspace)
+
+
+@app.post("/api/packages/{package_id}/delete", response_model=WorkspaceStateView)
+def delete_package(package_id: str) -> WorkspaceStateView:
+    workspace = _load_workspace()
+    _get_package(workspace, package_id)
+
+    if len(workspace.packages) <= 1:
+        raise HTTPException(status_code=400, detail="Cannot delete the only course package")
+
+    workspace.packages = [package for package in workspace.packages if package.id != package_id]
+    if workspace.active_package_id == package_id:
+        workspace.active_package_id = workspace.packages[0].id if workspace.packages else None
+
     _save_workspace(workspace)
     return _workspace_view(workspace)
 
@@ -455,23 +544,17 @@ def manual_commit(lesson_id: str, request: ManualCommitRequest) -> CoursePackage
 
 @app.post("/api/lessons/{lesson_id}/document/save", response_model=CoursePackageView)
 def save_document(lesson_id: str, request: DocumentSaveRequest) -> CoursePackageView:
-    workspace, package = _load_workspace_package()
-    lesson = _get_lesson(package, lesson_id)
-    with _bind_ai_request_context(
-        "/api/lessons/{lesson_id}/document/save",
-        lesson=lesson,
-        trace_prefix="document_save",
-    ):
-        lesson.board_document = request.document
-        _commit_document_snapshot(
-            lesson,
-            label=request.label,
-            message=request.message,
-            metadata={"kind": "manual_document_save"},
-        )
-        refresh_lesson_runtime(lesson)
-        _save_workspace(workspace)
-    return _package_view(package)
+    return _save_document_request(lesson_id, request)
+
+
+@app.post("/api/lessons/{lesson_id}/document/save-beacon", response_model=CoursePackageView)
+async def save_document_beacon(lesson_id: str, request: Request) -> CoursePackageView:
+    try:
+        payload = json.loads((await request.body()).decode("utf-8"))
+        save_request = DocumentSaveRequest.model_validate(payload)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid document save payload") from exc
+    return _save_document_request(lesson_id, save_request)
 
 
 @app.post("/api/lessons/{lesson_id}/document/ai-edit", response_model=ChatResponse)
@@ -593,13 +676,14 @@ def reorder_workspace_tabs(request: ReorderTabsRequest) -> CoursePackageView:
 
 @app.post("/api/lessons/{lesson_id}/open", response_model=CoursePackageView)
 def open_lesson_tab(lesson_id: str) -> CoursePackageView:
-    workspace, package = _load_workspace_package()
-    _get_lesson(package, lesson_id)
+    workspace = _load_workspace()
+    package, _ = _find_lesson_package(workspace, lesson_id)
     if lesson_id not in package.open_lesson_ids:
         package.open_lesson_ids.append(lesson_id)
     if lesson_id not in package.workspace_tab_order:
         package.workspace_tab_order.append(lesson_id)
     package.active_lesson_id = lesson_id
+    workspace.active_package_id = package.id
     _save_workspace(workspace)
     return _package_view(package)
 
@@ -635,12 +719,14 @@ def chat_on_lesson(lesson_id: str, request: ChatRequest) -> ChatResponse:
                 "selection": request.selection,
                 "interaction_mode": request.interaction_mode,
                 "scope_action": request.scope_action,
+                "text_model": request.text_model,
                 "resource_reference_action": request.resource_reference_action,
             },
         )
         ai_usage_logger.log_event(
             "chat_request",
             message=request.message,
+            text_model=request.text_model,
             selection=request.selection,
             interaction_mode=request.interaction_mode,
             scope_action=request.scope_action,
@@ -653,9 +739,10 @@ def chat_on_lesson(lesson_id: str, request: ChatRequest) -> ChatResponse:
 
         try:
             was_blank_document = is_document_empty(lesson.board_document)
-            workflow_result = course_workflow.invoke(
-                {"lesson": lesson, "course_package": package, "request": request}
-            )
+            with bind_text_model_selection(request.text_model):
+                workflow_result = course_workflow.invoke(
+                    {"lesson": lesson, "course_package": package, "request": request}
+                )
             lesson.learning_requirements = workflow_result["learning_requirement_sheet"]
             lesson.summary = workflow_result["learning_requirement_sheet"].learning_goal
             lesson.board_teaching_guide = workflow_result.get("board_teaching_guide")
@@ -769,6 +856,12 @@ def chat_on_lesson(lesson_id: str, request: ChatRequest) -> ChatResponse:
 def connect_realtime_session(
     lesson_id: str, request: RealtimeConnectRequest
 ) -> RealtimeConnectResponse:
+    realtime_model = request.realtime_model or default_realtime_selection()
+    if realtime_model.provider != "openai":
+        raise HTTPException(
+            status_code=400,
+            detail="This realtime endpoint only supports OpenAI WebRTC. Use the Google Live endpoint for Google models.",
+        )
     if not openai_realtime_teacher.enabled:
         raise HTTPException(status_code=503, detail="OpenAI Realtime is not configured")
 
@@ -790,6 +883,7 @@ def connect_realtime_session(
                 lesson=lesson,
                 offer_sdp=request.offer_sdp,
                 latest_assistant_message=request.latest_assistant_message,
+                model_selection=realtime_model,
             )
         except RuntimeError as exc:
             ai_usage_logger.log_event("realtime_connect_error", error=str(exc))
@@ -800,12 +894,67 @@ def connect_realtime_session(
 
         response = RealtimeConnectResponse(
             answer_sdp=answer_sdp,
-            model=openai_realtime_teacher.config.model,
+            provider="openai",
+            model=realtime_model.model,
             voice=openai_realtime_teacher.config.voice,
         )
         ai_usage_logger.log_event(
             "realtime_connect_response",
             answer_sdp=response.answer_sdp,
+            model=response.model,
+            voice=response.voice,
+        )
+        return response
+
+
+@app.post("/api/lessons/{lesson_id}/realtime/google/session", response_model=GoogleRealtimeSessionResponse)
+def create_google_realtime_session(
+    lesson_id: str, request: GoogleRealtimeSessionRequest
+) -> GoogleRealtimeSessionResponse:
+    realtime_model = request.realtime_model or AIModelSelection(
+        provider="google",
+        model=google_realtime_teacher.config.model,
+    )
+    if realtime_model.provider != "google":
+        raise HTTPException(status_code=400, detail="This endpoint only supports Google Gemini Live models")
+    if not google_realtime_teacher.enabled:
+        raise HTTPException(status_code=503, detail="Google Gemini Live is not configured")
+
+    _, package = _load_workspace_package()
+    lesson = _get_lesson(package, lesson_id)
+    with _bind_ai_request_context(
+        "/api/lessons/{lesson_id}/realtime/google/session",
+        lesson=lesson,
+        trace_prefix="realtime",
+        trace_id=request.client_session_id,
+    ):
+        ai_usage_logger.log_event(
+            "google_realtime_connect_request",
+            latest_assistant_message=request.latest_assistant_message,
+            realtime_model=realtime_model,
+        )
+        try:
+            session = google_realtime_teacher.create_live_session(
+                lesson=lesson,
+                latest_assistant_message=request.latest_assistant_message,
+                model_selection=realtime_model,
+            )
+        except RuntimeError as exc:
+            ai_usage_logger.log_event("google_realtime_connect_error", error=str(exc))
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except Exception as exc:
+            ai_usage_logger.log_event("google_realtime_connect_error", error=str(exc))
+            raise HTTPException(status_code=502, detail=f"Google realtime connect failed: {exc}") from exc
+
+        response = GoogleRealtimeSessionResponse(
+            websocket_url=str(session["websocket_url"]),
+            setup=session["setup"],
+            provider="google",
+            model=str(session["model"]),
+            voice=str(session["voice"]),
+        )
+        ai_usage_logger.log_event(
+            "google_realtime_connect_response",
             model=response.model,
             voice=response.voice,
         )

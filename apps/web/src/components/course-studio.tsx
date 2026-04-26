@@ -1,10 +1,11 @@
 "use client";
 
-import { Extension, type Editor as TiptapEditor } from "@tiptap/core";
+import { Extension, Node, type Editor as TiptapEditor } from "@tiptap/core";
 import Color from "@tiptap/extension-color";
 import Highlight from "@tiptap/extension-highlight";
 import ImageExtension from "@tiptap/extension-image";
 import LinkExtension from "@tiptap/extension-link";
+import { BlockMath, InlineMath } from "@tiptap/extension-mathematics";
 import { Table } from "@tiptap/extension-table";
 import TableCell from "@tiptap/extension-table-cell";
 import TableHeader from "@tiptap/extension-table-header";
@@ -20,8 +21,11 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useEffectEvent, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import {
   AlignCenter,
+  AlignHorizontalSpaceAround,
   AlignLeft,
   AlignRight,
+  ArrowLeft,
+  ArrowRight,
   Bold,
   BookOpen,
   BrainCircuit,
@@ -29,38 +33,60 @@ import {
   ChevronDown,
   ChevronUp,
   Circle,
-  Cpu,
+  Columns3,
   Download,
+  FilePlus,
   FileText,
+  Files,
+  Frame,
   GitBranch,
   Highlighter,
+  Hash,
   Italic,
   List,
   ListOrdered,
   LoaderCircle,
   MessageSquare,
   PanelRight,
+  PanelTop,
+  PaintBucket,
   PencilLine,
   Plus,
   Quote,
   Radio,
   Redo2,
-  Save,
+  RectangleHorizontal,
+  RectangleVertical,
+  Rows3,
   Send,
   Sparkles,
+  Stamp,
   Table2,
+  TableCellsMerge,
+  TableCellsSplit,
   Target,
   TextQuote,
+  TextCursorInput,
+  Trash2,
   Type,
   Underline,
   Undo2,
   Upload,
   Volume2,
   X,
+  ClipboardList,
+  Columns2,
+  ImagePlus,
+  LayoutTemplate,
+  Link as LinkIcon,
 } from "lucide-react";
 
 import { api } from "@/lib/api";
+import { MATH_TEXT_SERIALIZERS, normalizeEditorMath } from "@/lib/math-content";
 import type {
+  AIModelCatalog,
+  AIModelOption,
+  AIModelSelection,
   BoardDecision,
   BoardDocument,
   ChatInteractionMode,
@@ -115,6 +141,48 @@ type QueuedRealtimeLogEvent = {
   lessonId: string;
   payload: RealtimeEventLogPayload;
 };
+type GoogleRealtimeAudioMessage = {
+  setupComplete?: Record<string, unknown>;
+  serverContent?: {
+    modelTurn?: {
+      parts?: Array<{
+        inlineData?: {
+          mimeType?: string;
+          data?: string;
+        };
+        text?: string;
+      }>;
+    };
+    inputTranscription?: {
+      text?: string;
+    };
+    outputTranscription?: {
+      text?: string;
+    };
+    turnComplete?: boolean;
+    interrupted?: boolean;
+  };
+};
+type AutoSaveStatus = "idle" | "pending" | "saving" | "saved" | "error";
+type AutoSaveReason =
+  | "debounce"
+  | "queued"
+  | "manual"
+  | "return-home"
+  | "select-lesson"
+  | "open-lesson"
+  | "close-lesson"
+  | "create-lesson"
+  | "chat"
+  | "branch"
+  | "preview"
+  | "switch-branch"
+  | "restore"
+  | "import"
+  | "export"
+  | "upload-resource"
+  | "voice"
+  | "pagehide";
 
 const FontSize = Extension.create({
   name: "fontSize",
@@ -186,6 +254,19 @@ const FontFamily = Extension.create({
   },
 });
 
+const PageBreak = Node.create({
+  name: "pageBreak",
+  group: "block",
+  atom: true,
+  selectable: true,
+  parseHTML() {
+    return [{ tag: 'div[data-type="page-break"]' }];
+  },
+  renderHTML() {
+    return ["div", { "data-type": "page-break", class: "word-editor__page-break" }];
+  },
+});
+
 const FONT_FAMILY_OPTIONS = [
   { label: "Satoshi", value: '"Satoshi","Avenir Next","PingFang SC","Microsoft YaHei",sans-serif' },
   { label: "Serif", value: '"Iowan Old Style","Songti SC","Times New Roman",serif' },
@@ -199,6 +280,16 @@ const FONT_SIZE_OPTIONS = [
   { label: "18", value: "18px" },
   { label: "24", value: "24px" },
 ];
+
+const TABLE_DIMENSION_MIN = 1;
+const TABLE_DIMENSION_MAX = 12;
+
+function normalizeTableDimension(value: number) {
+  if (!Number.isFinite(value)) {
+    return TABLE_DIMENSION_MIN;
+  }
+  return Math.min(TABLE_DIMENSION_MAX, Math.max(TABLE_DIMENSION_MIN, Math.round(value)));
+}
 
 const WORD_EDITOR_EXTENSIONS = [
   StarterKit.configure({
@@ -220,10 +311,22 @@ const WORD_EDITOR_EXTENSIONS = [
     },
   }),
   TextAlign.configure({ types: ["heading", "paragraph"] }),
-  Table.configure({ resizable: true }),
+  Table.configure({ resizable: true, cellMinWidth: 72, lastColumnResizable: true }),
   TableRow,
   TableHeader,
   TableCell,
+  BlockMath.configure({
+    katexOptions: {
+      displayMode: true,
+      throwOnError: false,
+    },
+  }),
+  InlineMath.configure({
+    katexOptions: {
+      throwOnError: false,
+    },
+  }),
+  PageBreak,
   FontSize,
   FontFamily,
 ];
@@ -239,6 +342,7 @@ const DEFAULT_LESSON_COMPOSER_STATE: LessonComposerState = {
   composerMode: "ask",
   includeSelectionInPrompt: true,
 };
+const AUTO_SAVE_DELAY_MS = 1600;
 
 const DEFAULT_PAGE_SETTINGS: DocumentPageSettings = {
   margin_preset: "normal",
@@ -253,6 +357,169 @@ const DEFAULT_PAGE_SETTINGS: DocumentPageSettings = {
   header_text: "",
   footer_text: "",
 };
+
+const FALLBACK_MODEL_CATALOG: AIModelCatalog = {
+  text: [
+    {
+      provider: "openai",
+      model: "gpt-5-mini",
+      label: "OpenAI GPT-5 Mini",
+      capability: "text",
+      enabled: true,
+      configured: true,
+      default: true,
+    },
+    {
+      provider: "anthropic",
+      model: "claude-opus-4-7",
+      label: "Anthropic Claude Opus 4.7",
+      capability: "text",
+      enabled: false,
+      configured: false,
+      default: false,
+    },
+    {
+      provider: "google",
+      model: "gemini-3.1-pro-preview",
+      label: "Google Gemini 3.1 Pro Preview",
+      capability: "text",
+      enabled: false,
+      configured: false,
+      default: false,
+    },
+  ],
+  realtime: [
+    {
+      provider: "openai",
+      model: "gpt-4o-realtime-preview",
+      label: "OpenAI GPT-4o Realtime",
+      capability: "realtime",
+      enabled: true,
+      configured: true,
+      default: true,
+      transport: "openai_webrtc",
+    },
+    {
+      provider: "google",
+      model: "gemini-3.1-flash-live-preview",
+      label: "Google Gemini 3.1 Flash Live",
+      capability: "realtime",
+      enabled: false,
+      configured: false,
+      default: false,
+      transport: "gemini_live_websocket",
+    },
+  ],
+  defaults: {
+    text: { provider: "openai", model: "gpt-5-mini" },
+    realtime: { provider: "openai", model: "gpt-4o-realtime-preview" },
+  },
+};
+
+const PROVIDER_LABELS: Record<AIModelSelection["provider"], string> = {
+  openai: "OpenAI",
+  anthropic: "Anthropic",
+  google: "Google",
+};
+
+function modelSelectionKey(selection: AIModelSelection): string {
+  return `${selection.provider}:${selection.model}`;
+}
+
+function modelOptionKey(option: AIModelOption): string {
+  return `${option.provider}:${option.model}`;
+}
+
+function findModelOption(options: AIModelOption[], selection: AIModelSelection | null): AIModelOption | null {
+  if (!selection) {
+    return null;
+  }
+  return options.find((option) => modelOptionKey(option) === modelSelectionKey(selection)) ?? null;
+}
+
+function modelButtonLabel(option: AIModelOption | null, fallback: AIModelSelection | null): string {
+  if (option) {
+    return option.label;
+  }
+  if (!fallback) {
+    return "未选择";
+  }
+  return `${PROVIDER_LABELS[fallback.provider]} ${fallback.model}`;
+}
+
+function decodeBase64Bytes(base64: string): Uint8Array {
+  const binary = window.atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+}
+
+function encodeBase64Bytes(bytes: Uint8Array): string {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    const chunk = bytes.subarray(index, index + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+  return window.btoa(binary);
+}
+
+function parsePcmSampleRate(mimeType?: string): number {
+  const match = mimeType?.match(/rate=(\d+)/i);
+  return match ? Number(match[1]) : 24000;
+}
+
+function resampleLinear(input: Float32Array, sourceRate: number, targetRate: number): Float32Array {
+  if (sourceRate === targetRate) {
+    return input;
+  }
+  const outputLength = Math.max(1, Math.round((input.length * targetRate) / sourceRate));
+  const output = new Float32Array(outputLength);
+  const ratio = (input.length - 1) / Math.max(1, outputLength - 1);
+  for (let index = 0; index < outputLength; index += 1) {
+    const sourceIndex = index * ratio;
+    const left = Math.floor(sourceIndex);
+    const right = Math.min(input.length - 1, left + 1);
+    const weight = sourceIndex - left;
+    output[index] = input[left] * (1 - weight) + input[right] * weight;
+  }
+  return output;
+}
+
+function pcmFloatToBase64(input: Float32Array): string {
+  const bytes = new Uint8Array(input.length * 2);
+  const view = new DataView(bytes.buffer);
+  input.forEach((sample, index) => {
+    const clamped = Math.max(-1, Math.min(1, sample));
+    view.setInt16(index * 2, clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff, true);
+  });
+  return encodeBase64Bytes(bytes);
+}
+
+function playPcmBase64(
+  base64: string,
+  mimeType: string | undefined,
+  audioContext: AudioContext,
+  playbackTimeRef: { current: number }
+) {
+  const bytes = decodeBase64Bytes(base64);
+  const view = new DataView(bytes.buffer);
+  const sampleCount = Math.floor(bytes.byteLength / 2);
+  const sampleRate = parsePcmSampleRate(mimeType);
+  const buffer = audioContext.createBuffer(1, sampleCount, sampleRate);
+  const output = buffer.getChannelData(0);
+  for (let index = 0; index < sampleCount; index += 1) {
+    output[index] = view.getInt16(index * 2, true) / 0x8000;
+  }
+  const source = audioContext.createBufferSource();
+  source.buffer = buffer;
+  source.connect(audioContext.destination);
+  const startAt = Math.max(audioContext.currentTime, playbackTimeRef.current);
+  source.start(startAt);
+  playbackTimeRef.current = startAt + buffer.duration;
+}
 
 const PAGE_SIZE_OPTIONS = [
   { value: "a4", label: "A4", width: 860, height: 1216 },
@@ -282,21 +549,25 @@ function normalizePageSettings(settings?: Partial<DocumentPageSettings> | null):
 function pagePreviewMetrics(settings: DocumentPageSettings) {
   const baseSize = PAGE_SIZE_OPTIONS.find((option) => option.value === settings.page_size) ?? PAGE_SIZE_OPTIONS[0];
   const margin = PAGE_MARGIN_OPTIONS.find((option) => option.value === settings.margin_preset) ?? PAGE_MARGIN_OPTIONS[1];
+  const width = settings.orientation === "landscape" ? baseSize.height : baseSize.width;
+  const height = settings.orientation === "landscape" ? baseSize.width : baseSize.height;
   return {
-    width: settings.orientation === "landscape" ? baseSize.height : baseSize.width,
-    height: settings.orientation === "landscape" ? baseSize.width : baseSize.height,
+    width,
+    height,
     paddingX: margin.paddingX,
     paddingY: margin.paddingY,
+    contentMinHeight: Math.max(360, height - margin.paddingY * 2 - 190),
   };
 }
 
 function createChatMessage(
   role: ChatMessage["role"],
   content: string,
-  status: ChatMessage["status"] = "ready"
+  status: ChatMessage["status"] = "ready",
+  id?: string
 ): ChatMessage {
   return {
-    id: crypto.randomUUID(),
+    id: id ?? crypto.randomUUID(),
     role,
     content,
     status,
@@ -311,15 +582,19 @@ function createLessonComposerState(): LessonComposerState {
   return { ...DEFAULT_LESSON_COMPOSER_STATE };
 }
 
-function buildWelcomeMessages(): ChatMessage[] {
+function buildWelcomeMessages(idPrefix?: string): ChatMessage[] {
   return [
     createChatMessage(
       "assistant",
-      "你好！你可以从学习目标出发提问，我会先给出一版可讲的主线内容，再按你的追问继续扩写、改写和补练习。"
+      "你好！你可以从学习目标出发提问，我会先给出一版可讲的主线内容，再按你的追问继续扩写、改写和补练习。",
+      "ready",
+      idPrefix ? `${idPrefix}:welcome:1` : undefined
     ),
     createChatMessage(
       "assistant",
-      "右侧现在是连续 Word-like 板书文档。你可以选中一段文字让我只改这一段，也可以让我先起草一版讲义，再逐段讲透。"
+      "右侧现在是连续 Word-like 板书文档。你可以选中一段文字让我只改这一段，也可以让我先起草一版讲义，再逐段讲透。",
+      "ready",
+      idPrefix ? `${idPrefix}:welcome:2` : undefined
     ),
   ];
 }
@@ -341,6 +616,138 @@ function metadataText(commit: CommitRecord, key: string): string | null {
 
 function metadataBool(commit: CommitRecord, key: string): boolean {
   return commit.metadata?.[key] === true;
+}
+
+function currentHeadCommitId(lesson: Lesson): string | null {
+  const branch = lesson.history_graph.branches[lesson.history_graph.current_branch];
+  return (
+    branch?.head_commit_id ??
+    lesson.history_graph.commits[lesson.history_graph.commits.length - 1]?.id ??
+    null
+  );
+}
+
+function getLessonCommit(lesson: Lesson, commitId: string | null | undefined): CommitRecord | null {
+  if (!commitId) {
+    return null;
+  }
+  return lesson.history_graph.commits.find((commit) => commit.id === commitId) ?? null;
+}
+
+function conversationTargetCommitId(lesson: Lesson, commitId?: string | null): string | null {
+  const requestedCommitId = commitId ?? currentHeadCommitId(lesson);
+  const commit = getLessonCommit(lesson, requestedCommitId);
+  if (!commit) {
+    return requestedCommitId;
+  }
+
+  const restoredCommitId = metadataText(commit, "restored_commit_id");
+  if (commit.metadata?.kind === "restore_snapshot" && restoredCommitId) {
+    return restoredCommitId;
+  }
+
+  return commit.id;
+}
+
+function commitLineageIds(lesson: Lesson, commitId?: string | null): Set<string> {
+  const targetCommitId = conversationTargetCommitId(lesson, commitId);
+  const commitsById = new Map(lesson.history_graph.commits.map((commit) => [commit.id, commit]));
+  const lineage = new Set<string>();
+  const stack = targetCommitId ? [targetCommitId] : [];
+
+  while (stack.length) {
+    const nextCommitId = stack.pop();
+    if (!nextCommitId || lineage.has(nextCommitId)) {
+      continue;
+    }
+    lineage.add(nextCommitId);
+    const commit = commitsById.get(nextCommitId);
+    commit?.parent_ids.forEach((parentId) => stack.push(parentId));
+  }
+
+  return lineage;
+}
+
+function chatUserContentFromCommit(commit: CommitRecord): string | null {
+  const userMessage = metadataText(commit, "user_message");
+  if (!userMessage) {
+    return null;
+  }
+
+  const scopeAction = metadataText(commit, "scope_action");
+  if (scopeAction) {
+    return `继续执行：${scopeAction}`;
+  }
+
+  const referenceAction = metadataText(commit, "resource_reference_action");
+  if (referenceAction === "confirm") {
+    return "继续执行：参考推荐章节生成讲义";
+  }
+  if (referenceAction === "skip") {
+    return "继续执行：先不参考推荐章节";
+  }
+
+  return metadataText(commit, "interaction_mode") === "direct_edit" ? `直接编辑讲义：${userMessage}` : userMessage;
+}
+
+function buildLessonMessagesFromHistory(lesson: Lesson, commitId?: string | null): ChatMessage[] {
+  const targetCommitId = conversationTargetCommitId(lesson, commitId);
+  const lineageIds = commitLineageIds(lesson, targetCommitId);
+  const messages: ChatMessage[] = [];
+
+  lesson.history_graph.commits.forEach((commit) => {
+    if (!lineageIds.has(commit.id) || commit.metadata?.kind !== "chat_flow") {
+      return;
+    }
+
+    const userContent = chatUserContentFromCommit(commit);
+    if (userContent) {
+      messages.push(createChatMessage("user", userContent, "ready", `${commit.id}:user`));
+    }
+
+    const assistantMessage = metadataText(commit, "assistant_message");
+    if (assistantMessage) {
+      messages.push(createChatMessage("assistant", assistantMessage, "ready", `${commit.id}:assistant`));
+    }
+
+    const createdLessonTitle = metadataText(commit, "created_lesson_title");
+    if (createdLessonTitle) {
+      messages.push(
+        createChatMessage(
+          "assistant",
+          `我已经为这个更大的知识问题新开了一节课：《${createdLessonTitle}》。`,
+          "ready",
+          `${commit.id}:created-lesson`
+        )
+      );
+    }
+  });
+
+  const prefix = `${lesson.id}:${targetCommitId ?? "empty"}`;
+  return messages.length ? [...buildWelcomeMessages(prefix), ...messages] : buildWelcomeMessages(prefix);
+}
+
+function learningClarityFromCommit(commit: CommitRecord | null): LearningClarificationStatus | null {
+  const value = commit?.metadata?.learning_clarification;
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const record = value as Partial<LearningClarificationStatus>;
+  if (typeof record.progress !== "number" || typeof record.label !== "string" || typeof record.reason !== "string") {
+    return null;
+  }
+
+  return {
+    progress: Math.max(0, Math.min(100, record.progress)),
+    label: record.label,
+    reason: record.reason,
+    missing_items: Array.isArray(record.missing_items)
+      ? record.missing_items.filter((item): item is string => typeof item === "string")
+      : [],
+    can_start: record.can_start === true,
+    forced_start: record.forced_start === true,
+  };
 }
 
 function compactText(value: string, limit = 120) {
@@ -470,7 +877,7 @@ function RibbonTabButton({
       type="button"
       onClick={onClick}
       className={clsx(
-        "mr-4 h-full border-b-2 px-2 text-[10px] font-bold uppercase tracking-widest transition-colors",
+        "mr-4 flex h-full items-center gap-1.5 border-b-2 px-2 text-[10px] font-bold uppercase tracking-widest transition-colors",
         active ? "border-black text-black" : "border-transparent text-gray-400 hover:text-black"
       )}
     >
@@ -483,6 +890,7 @@ function RibbonActionButton({
   title,
   label,
   hint,
+  icon,
   active,
   disabled,
   onClick,
@@ -490,6 +898,7 @@ function RibbonActionButton({
   title: string;
   label: string;
   hint?: string;
+  icon?: ReactNode;
   active?: boolean;
   disabled?: boolean;
   onClick: () => void;
@@ -501,14 +910,26 @@ function RibbonActionButton({
       onClick={onClick}
       disabled={disabled}
       className={clsx(
-        "flex min-w-[74px] flex-col items-start rounded-xl border px-3 py-2 text-left transition",
+        "flex min-w-[86px] flex-col items-start rounded-lg border px-2.5 py-2 text-left transition",
         active
           ? "border-black bg-black text-white shadow-sm"
           : "border-gray-200 bg-white text-gray-700 hover:border-gray-300 hover:bg-gray-50",
         disabled && "cursor-not-allowed opacity-40"
       )}
     >
-      <span className="text-[12px] font-semibold">{label}</span>
+      <span className="flex items-center gap-2">
+        {icon ? (
+          <span
+            className={clsx(
+              "flex h-7 w-7 shrink-0 items-center justify-center rounded-md",
+              active ? "bg-white/15 text-white" : "bg-gray-100 text-gray-700"
+            )}
+          >
+            {icon}
+          </span>
+        ) : null}
+        <span className="text-[12px] font-semibold">{label}</span>
+      </span>
       {hint ? <span className={clsx("mt-1 text-[10px]", active ? "text-white/70" : "text-gray-400")}>{hint}</span> : null}
     </button>
   );
@@ -571,6 +992,7 @@ function CommitTimelineItem({
   onBranch: () => void;
 }) {
   const isChatFlow = commit.metadata?.kind === "chat_flow";
+  const isAutoSave = metadataBool(commit, "autosave") || commit.metadata?.kind === "auto_document_save";
   const userMessage = metadataText(commit, "user_message");
   const assistantMessage = metadataText(commit, "assistant_message");
   const boardAction = metadataText(commit, "board_action");
@@ -596,6 +1018,11 @@ function CommitTimelineItem({
           {autoApplied ? (
             <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.16em] text-emerald-700">
               Applied
+            </span>
+          ) : null}
+          {isAutoSave ? (
+            <span className="rounded-full bg-stone-100 px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.16em] text-stone-600">
+              Auto Save
             </span>
           ) : null}
         </div>
@@ -651,29 +1078,27 @@ function CommitTimelineItem({
 function WordBoardEditor({
   document,
   readOnly,
-  isDirty,
-  busyAction,
   toolbarCollapsed,
   onDocumentChange,
   onSelectionChange,
-  onSave,
   onImportDocx,
   onExportDocx,
 }: {
   document: BoardDocument;
   readOnly: boolean;
-  isDirty: boolean;
-  busyAction: string | null;
   toolbarCollapsed: boolean;
   onDocumentChange: (document: BoardDocument) => void;
   onSelectionChange: (selection: { excerpt: string; position: SelectionPopoverPosition | null } | null) => void;
-  onSave: () => void;
   onImportDocx: (file: File) => void;
   onExportDocx: () => void;
 }) {
   const importRef = useRef<HTMLInputElement | null>(null);
   const imageUploadRef = useRef<HTMLInputElement | null>(null);
   const [activeRibbonTab, setActiveRibbonTab] = useState<WordRibbonTab>("home");
+  const [tableRows, setTableRows] = useState(3);
+  const [tableCols, setTableCols] = useState(3);
+  const [tableHasHeaderRow, setTableHasHeaderRow] = useState(true);
+  const [isTableActive, setIsTableActive] = useState(false);
   const editorContent =
     document.content_html.trim() ||
     (document.content_json && Object.keys(document.content_json).length ? document.content_json : "<p></p>");
@@ -686,7 +1111,8 @@ function WordBoardEditor({
   const pageStyle = {
     "--page-padding-x": `${pageMetrics.paddingX}px`,
     "--page-padding-y": `${pageMetrics.paddingY}px`,
-    maxWidth: `${pageMetrics.width}px`,
+    "--page-content-min-height": `${pageMetrics.contentMinHeight}px`,
+    width: `${pageMetrics.width}px`,
     minHeight: `${pageMetrics.height}px`,
   } as CSSProperties;
   const pageChromeStyle = {
@@ -715,19 +1141,22 @@ function WordBoardEditor({
     if (latestReadOnlyRef.current) {
       return;
     }
+    setIsTableActive(currentEditor.isActive("table"));
     latestOnDocumentChangeRef.current({
       ...latestDocumentRef.current,
       content_json: currentEditor.getJSON() as Record<string, unknown>,
       content_html: currentEditor.getHTML(),
-      content_text: currentEditor.getText(),
+      content_text: currentEditor.getText({ textSerializers: MATH_TEXT_SERIALIZERS }),
     });
   }, []);
 
   const handleEditorSelectionUpdate = useCallback(({ editor: currentEditor }: { editor: TiptapEditor }) => {
     if (latestReadOnlyRef.current) {
+      setIsTableActive(false);
       latestOnSelectionChangeRef.current(null);
       return;
     }
+    setIsTableActive(currentEditor.isActive("table"));
     const { from, to } = currentEditor.state.selection;
     if (from === to) {
       latestOnSelectionChangeRef.current(null);
@@ -766,6 +1195,7 @@ function WordBoardEditor({
       : JSON.stringify(editor.getJSON()) === JSON.stringify(document.content_json ?? {});
     if (!matchesIncomingDocument) {
       editor.commands.setContent(editorContent, { emitUpdate: false });
+      normalizeEditorMath(editor);
     }
   }, [document.id, document.content_html, document.content_json, editor, editorContent, readOnly]);
 
@@ -798,9 +1228,9 @@ function WordBoardEditor({
       .chain()
       .focus()
       .insertContent([
+        { type: "pageBreak" },
         { type: "paragraph" },
-        { type: "horizontalRule" },
-        { type: "paragraph" },
+        { type: "pageBreak" },
         { type: "paragraph" },
       ])
       .run();
@@ -832,7 +1262,7 @@ function WordBoardEditor({
           content: [{ type: "text", text: "在这里补充授课对象、目标和使用场景" }],
         },
         { type: "paragraph" },
-        { type: "horizontalRule" },
+        { type: "pageBreak" },
         { type: "paragraph" },
       ])
       .run();
@@ -898,6 +1328,18 @@ function WordBoardEditor({
       })
       .run();
   }, [editor, readOnly]);
+
+  const handleInsertTable = useCallback(() => {
+    if (!editor || readOnly) {
+      return;
+    }
+    editor
+      .chain()
+      .focus()
+      .insertTable({ rows: tableRows, cols: tableCols, withHeaderRow: tableHasHeaderRow })
+      .run();
+    setIsTableActive(true);
+  }, [editor, readOnly, tableCols, tableHasHeaderRow, tableRows]);
 
   const handleInsertLink = useCallback(() => {
     if (!editor || readOnly) {
@@ -977,6 +1419,186 @@ function WordBoardEditor({
     },
     [editor, readOnly]
   );
+
+  const tableInsertHint = `${tableRows} x ${tableCols}${tableHasHeaderRow ? " · 表头" : ""}`;
+  const tableInsertDisabled = !editor || readOnly;
+  const tableEditDisabled = tableInsertDisabled || !isTableActive;
+
+  const renderTableDimensionFields = (compact = true) => (
+    <div
+      className={clsx(
+        "flex items-center gap-1 rounded-lg border border-gray-200 bg-white text-gray-600",
+        compact ? "h-9 px-2" : "h-[58px] px-2.5"
+      )}
+    >
+      <Rows3 className="h-3.5 w-3.5 shrink-0" />
+      <input
+        type="number"
+        min={TABLE_DIMENSION_MIN}
+        max={TABLE_DIMENSION_MAX}
+        value={tableRows}
+        aria-label="表格行数"
+        disabled={tableInsertDisabled}
+        onChange={(event) => setTableRows(normalizeTableDimension(Number(event.target.value)))}
+        className="w-9 border-0 bg-transparent text-center text-[12px] font-semibold outline-none disabled:cursor-not-allowed"
+      />
+      <span className="text-[10px] text-gray-300">x</span>
+      <Columns3 className="h-3.5 w-3.5 shrink-0" />
+      <input
+        type="number"
+        min={TABLE_DIMENSION_MIN}
+        max={TABLE_DIMENSION_MAX}
+        value={tableCols}
+        aria-label="表格列数"
+        disabled={tableInsertDisabled}
+        onChange={(event) => setTableCols(normalizeTableDimension(Number(event.target.value)))}
+        className="w-9 border-0 bg-transparent text-center text-[12px] font-semibold outline-none disabled:cursor-not-allowed"
+      />
+      <label
+        title="首行设为表头"
+        className={clsx(
+          "ml-1 flex items-center gap-1 border-l border-gray-100 pl-2 text-[11px] font-medium",
+          tableInsertDisabled ? "cursor-not-allowed opacity-50" : "cursor-pointer"
+        )}
+      >
+        <input
+          type="checkbox"
+          checked={tableHasHeaderRow}
+          disabled={tableInsertDisabled}
+          onChange={(event) => setTableHasHeaderRow(event.target.checked)}
+          className="h-3.5 w-3.5 accent-black"
+        />
+        表头
+      </label>
+    </div>
+  );
+
+  const renderTableEditButtons = (compact = true) => {
+    if (compact) {
+      return (
+        <div className="flex items-center gap-1 border-r border-gray-100 pr-4">
+          <ToolbarButton
+            title="上方插入行"
+            disabled={tableEditDisabled}
+            onClick={() => editor?.chain().focus().addRowBefore().run()}
+          >
+            <ChevronUp className="h-4 w-4" />
+          </ToolbarButton>
+          <ToolbarButton
+            title="下方插入行"
+            disabled={tableEditDisabled}
+            onClick={() => editor?.chain().focus().addRowAfter().run()}
+          >
+            <ChevronDown className="h-4 w-4" />
+          </ToolbarButton>
+          <ToolbarButton
+            title="左侧插入列"
+            disabled={tableEditDisabled}
+            onClick={() => editor?.chain().focus().addColumnBefore().run()}
+          >
+            <ArrowLeft className="h-4 w-4" />
+          </ToolbarButton>
+          <ToolbarButton
+            title="右侧插入列"
+            disabled={tableEditDisabled}
+            onClick={() => editor?.chain().focus().addColumnAfter().run()}
+          >
+            <ArrowRight className="h-4 w-4" />
+          </ToolbarButton>
+          <ToolbarButton
+            title="合并单元格"
+            disabled={tableEditDisabled}
+            onClick={() => editor?.chain().focus().mergeCells().run()}
+          >
+            <TableCellsMerge className="h-4 w-4" />
+          </ToolbarButton>
+          <ToolbarButton
+            title="拆分单元格"
+            disabled={tableEditDisabled}
+            onClick={() => editor?.chain().focus().splitCell().run()}
+          >
+            <TableCellsSplit className="h-4 w-4" />
+          </ToolbarButton>
+          <ToolbarButton
+            title="删除表格"
+            disabled={tableEditDisabled}
+            onClick={() => editor?.chain().focus().deleteTable().run()}
+          >
+            <Trash2 className="h-4 w-4" />
+          </ToolbarButton>
+        </div>
+      );
+    }
+
+    return (
+      <div className="flex items-center gap-2 border-r border-gray-100 pr-4">
+        <RibbonActionButton
+          title="下方插入一行"
+          label="加行"
+          hint="当前表格"
+          icon={<Rows3 className="h-4 w-4" />}
+          disabled={tableEditDisabled}
+          onClick={() => editor?.chain().focus().addRowAfter().run()}
+        />
+        <RibbonActionButton
+          title="右侧插入一列"
+          label="加列"
+          hint="当前表格"
+          icon={<Columns3 className="h-4 w-4" />}
+          disabled={tableEditDisabled}
+          onClick={() => editor?.chain().focus().addColumnAfter().run()}
+        />
+        <RibbonActionButton
+          title="删除当前行"
+          label="删行"
+          hint="当前表格"
+          icon={<Rows3 className="h-4 w-4" />}
+          disabled={tableEditDisabled}
+          onClick={() => editor?.chain().focus().deleteRow().run()}
+        />
+        <RibbonActionButton
+          title="删除当前列"
+          label="删列"
+          hint="当前表格"
+          icon={<Columns3 className="h-4 w-4" />}
+          disabled={tableEditDisabled}
+          onClick={() => editor?.chain().focus().deleteColumn().run()}
+        />
+        <RibbonActionButton
+          title="合并单元格"
+          label="合并"
+          hint="选中单元格"
+          icon={<TableCellsMerge className="h-4 w-4" />}
+          disabled={tableEditDisabled}
+          onClick={() => editor?.chain().focus().mergeCells().run()}
+        />
+        <RibbonActionButton
+          title="拆分单元格"
+          label="拆分"
+          hint="当前单元格"
+          icon={<TableCellsSplit className="h-4 w-4" />}
+          disabled={tableEditDisabled}
+          onClick={() => editor?.chain().focus().splitCell().run()}
+        />
+        <RibbonActionButton
+          title="切换表头行"
+          label="表头行"
+          hint="当前表格"
+          icon={<PanelTop className="h-4 w-4" />}
+          disabled={tableEditDisabled}
+          onClick={() => editor?.chain().focus().toggleHeaderRow().run()}
+        />
+        <RibbonActionButton
+          title="删除表格"
+          label="删表"
+          hint="当前表格"
+          icon={<Trash2 className="h-4 w-4" />}
+          disabled={tableEditDisabled}
+          onClick={() => editor?.chain().focus().deleteTable().run()}
+        />
+      </div>
+    );
+  };
 
   const renderHomeRibbon = () => (
     <>
@@ -1101,14 +1723,20 @@ function WordBoardEditor({
         >
           <ListOrdered className="h-4 w-4" />
         </ToolbarButton>
+      </div>
+
+      <div className="flex items-center gap-2 border-r border-gray-100 pr-4">
+        {renderTableDimensionFields()}
         <ToolbarButton
-          title="插入表格"
-          disabled={!editor || readOnly}
-          onClick={() => editor?.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()}
+          title={`插入 ${tableInsertHint} 表格`}
+          disabled={tableInsertDisabled}
+          onClick={handleInsertTable}
         >
           <Table2 className="h-4 w-4" />
         </ToolbarButton>
       </div>
+
+      {renderTableEditButtons()}
 
       <div className="flex items-center gap-1 border-r border-gray-100 pr-4">
         <ToolbarButton
@@ -1136,6 +1764,7 @@ function WordBoardEditor({
           title="插入空白页"
           label="空白页"
           hint="分页占位"
+          icon={<FilePlus className="h-4 w-4" />}
           disabled={!editor || readOnly}
           onClick={handleInsertBlankPage}
         />
@@ -1143,6 +1772,7 @@ function WordBoardEditor({
           title="插入封面"
           label="封面"
           hint="置顶模板"
+          icon={<LayoutTemplate className="h-4 w-4" />}
           disabled={!editor || readOnly}
           onClick={handleInsertCoverPage}
         />
@@ -1150,6 +1780,7 @@ function WordBoardEditor({
           title="插入目录页"
           label="目录页"
           hint="按标题生成"
+          icon={<ClipboardList className="h-4 w-4" />}
           disabled={!editor || readOnly}
           onClick={handleInsertTableOfContents}
         />
@@ -1160,6 +1791,7 @@ function WordBoardEditor({
           title="切换页码"
           label="页码"
           hint={pageSettings.show_page_number ? "已显示" : "点击显示"}
+          icon={<Hash className="h-4 w-4" />}
           active={pageSettings.show_page_number}
           disabled={readOnly}
           onClick={() => updatePageSettings({ show_page_number: !pageSettings.show_page_number })}
@@ -1168,6 +1800,7 @@ function WordBoardEditor({
           title="设置页眉页脚"
           label="页眉页脚"
           hint="编辑文案"
+          icon={<PanelTop className="h-4 w-4" />}
           active={Boolean(pageSettings.header_text || pageSettings.footer_text)}
           disabled={readOnly}
           onClick={handleInsertHeaderFooter}
@@ -1192,30 +1825,37 @@ function WordBoardEditor({
           title="插入图片"
           label="图片"
           hint="上传到讲义"
+          icon={<ImagePlus className="h-4 w-4" />}
           disabled={!editor || readOnly}
           onClick={() => imageUploadRef.current?.click()}
         />
+        {renderTableDimensionFields(false)}
         <RibbonActionButton
-          title="插入表格"
+          title={`插入 ${tableInsertHint} 表格`}
           label="表格"
-          hint="3 x 3"
-          disabled={!editor || readOnly}
-          onClick={() => editor?.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()}
+          hint={tableInsertHint}
+          icon={<Table2 className="h-4 w-4" />}
+          disabled={tableInsertDisabled}
+          onClick={handleInsertTable}
         />
         <RibbonActionButton
           title="插入文本框"
           label="文本框"
           hint="重点旁注"
+          icon={<TextCursorInput className="h-4 w-4" />}
           disabled={!editor || readOnly}
           onClick={handleInsertTextBox}
         />
       </div>
+
+      {renderTableEditButtons(false)}
 
       <div className="flex items-center gap-2 border-r border-gray-100 pr-4">
         <RibbonActionButton
           title="插入超链接"
           label="超链接"
           hint="外部资料"
+          icon={<LinkIcon className="h-4 w-4" />}
           disabled={!editor || readOnly}
           onClick={handleInsertLink}
         />
@@ -1223,6 +1863,7 @@ function WordBoardEditor({
           title="插入水印"
           label="水印"
           hint="页面标识"
+          icon={<Stamp className="h-4 w-4" />}
           active={Boolean(pageSettings.watermark_text)}
           disabled={readOnly}
           onClick={handleInsertWatermark}
@@ -1240,6 +1881,7 @@ function WordBoardEditor({
             title={`页边距：${option.label}`}
             label={option.label}
             hint="页边距"
+            icon={<AlignHorizontalSpaceAround className="h-4 w-4" />}
             active={pageSettings.margin_preset === option.value}
             disabled={readOnly}
             onClick={() => updatePageSettings({ margin_preset: option.value })}
@@ -1252,6 +1894,7 @@ function WordBoardEditor({
           title="纵向排版"
           label="纵向"
           hint="纸张方向"
+          icon={<RectangleVertical className="h-4 w-4" />}
           active={pageSettings.orientation === "portrait"}
           disabled={readOnly}
           onClick={() => updatePageSettings({ orientation: "portrait" })}
@@ -1260,6 +1903,7 @@ function WordBoardEditor({
           title="横向排版"
           label="横向"
           hint="纸张方向"
+          icon={<RectangleHorizontal className="h-4 w-4" />}
           active={pageSettings.orientation === "landscape"}
           disabled={readOnly}
           onClick={() => updatePageSettings({ orientation: "landscape" })}
@@ -1273,6 +1917,7 @@ function WordBoardEditor({
             title={`纸张大小：${option.label}`}
             label={option.label}
             hint="纸张大小"
+            icon={<Files className="h-4 w-4" />}
             active={pageSettings.page_size === option.value}
             disabled={readOnly}
             onClick={() => updatePageSettings({ page_size: option.value })}
@@ -1285,6 +1930,7 @@ function WordBoardEditor({
           title="单栏排版"
           label="单栏"
           hint="分栏"
+          icon={<FileText className="h-4 w-4" />}
           active={pageSettings.columns === 1}
           disabled={readOnly}
           onClick={() => updatePageSettings({ columns: 1 })}
@@ -1293,6 +1939,7 @@ function WordBoardEditor({
           title="双栏排版"
           label="双栏"
           hint="分栏"
+          icon={<Columns2 className="h-4 w-4" />}
           active={pageSettings.columns === 2}
           disabled={readOnly}
           onClick={() => updatePageSettings({ columns: 2 })}
@@ -1304,6 +1951,7 @@ function WordBoardEditor({
           title="页面边框"
           label="页面边框"
           hint={pageSettings.page_border ? "已开启" : "已关闭"}
+          icon={<Frame className="h-4 w-4" />}
           active={pageSettings.page_border}
           disabled={readOnly}
           onClick={() => updatePageSettings({ page_border: !pageSettings.page_border })}
@@ -1312,6 +1960,7 @@ function WordBoardEditor({
           title="行号"
           label="行号"
           hint={pageSettings.line_numbers ? "已显示" : "点击显示"}
+          icon={<ListOrdered className="h-4 w-4" />}
           active={pageSettings.line_numbers}
           disabled={readOnly}
           onClick={() => updatePageSettings({ line_numbers: !pageSettings.line_numbers })}
@@ -1325,6 +1974,7 @@ function WordBoardEditor({
             title={`页面背景：${option.label}`}
             label={option.label}
             hint="背景"
+            icon={<PaintBucket className="h-4 w-4" />}
             active={pageSettings.background_style === option.value}
             disabled={readOnly}
             onClick={() => updatePageSettings({ background_style: option.value })}
@@ -1346,12 +1996,15 @@ function WordBoardEditor({
         <div className={clsx("border-b border-gray-200 bg-white", readOnly && "bg-gray-50")}>
           <div className="flex h-10 items-center border-b border-gray-100 px-6">
             <RibbonTabButton active={activeRibbonTab === "home"} onClick={() => setActiveRibbonTab("home")}>
+              <PencilLine className="h-3.5 w-3.5" />
               开始 (HOME)
             </RibbonTabButton>
             <RibbonTabButton active={activeRibbonTab === "insert"} onClick={() => setActiveRibbonTab("insert")}>
+              <FilePlus className="h-3.5 w-3.5" />
               插入 (INSERT)
             </RibbonTabButton>
             <RibbonTabButton active={activeRibbonTab === "page"} onClick={() => setActiveRibbonTab("page")}>
+              <Files className="h-3.5 w-3.5" />
               页面 (PAGE)
             </RibbonTabButton>
           </div>
@@ -1390,29 +2043,16 @@ function WordBoardEditor({
                 <Download className="h-4 w-4" />
                 导出 DOCX
               </button>
-              <button
-                type="button"
-                onClick={onSave}
-                disabled={readOnly || !isDirty || busyAction === "save"}
-                className="inline-flex h-10 items-center gap-2 rounded-lg bg-[#1a1a1a] px-4 text-[11px] font-bold uppercase tracking-wider text-white transition hover:bg-black disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {busyAction === "save" ? (
-                  <LoaderCircle className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Save className="h-4 w-4" />
-                )}
-                保存
-              </button>
             </div>
           </div>
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto bg-[radial-gradient(circle_at_top,#f7f5ef,transparent_28%),linear-gradient(180deg,#f3f0e7_0%,#eef2f8_100%)]">
-        <div className="mx-auto flex w-full justify-center px-6 py-10 md:px-10">
+      <div className="min-h-0 flex-1 overflow-auto bg-[radial-gradient(circle_at_top,#f7f5ef,transparent_28%),linear-gradient(180deg,#f3f0e7_0%,#eef2f8_100%)]">
+        <div className="mx-auto flex w-max min-w-full justify-center px-6 py-10 md:px-10">
           <div
             className={clsx(
-              "word-editor__page relative flex w-full flex-col overflow-hidden",
+              "word-editor__page relative flex shrink-0 flex-col overflow-hidden",
               !pageSettings.page_border && "word-editor__page--borderless",
               pageSettings.background_style === "warm" && "word-editor__page--warm",
               pageSettings.background_style === "grid" && "word-editor__page--grid",
@@ -1463,15 +2103,38 @@ export function CourseStudio() {
   const realtimePeerRef = useRef<RTCPeerConnection | null>(null);
   const realtimeChannelRef = useRef<RTCDataChannel | null>(null);
   const realtimeStreamRef = useRef<MediaStream | null>(null);
+  const googleRealtimeSocketRef = useRef<WebSocket | null>(null);
+  const googleAudioContextRef = useRef<AudioContext | null>(null);
+  const googleAudioProcessorRef = useRef<ScriptProcessorNode | null>(null);
+  const googleAudioSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const googlePlaybackContextRef = useRef<AudioContext | null>(null);
+  const googlePlaybackTimeRef = useRef(0);
+  const googleInputTranscriptRef = useRef("");
+  const googleOutputTranscriptRef = useRef("");
   const realtimeLessonIdRef = useRef<string | null>(null);
   const realtimeClientSessionIdRef = useRef<string | null>(null);
   const realtimeLessonTitleRef = useRef<string | null>(null);
   const realtimeLogQueueRef = useRef<QueuedRealtimeLogEvent[]>([]);
   const realtimeLogFlushInFlightRef = useRef(false);
+  const autoSaveTimerRef = useRef<number | null>(null);
+  const autoSaveInFlightRef = useRef<Promise<boolean> | null>(null);
+  const autoSaveQueuedRef = useRef(false);
+  const documentDraftVersionRef = useRef(0);
+  const activeLessonRef = useRef<Lesson | null>(null);
+  const draftDocumentRef = useRef<BoardDocument | null>(null);
+  const isDocumentDirtyRef = useRef(false);
+  const isPreviewModeRef = useRef(false);
 
   const [coursePackage, setCoursePackage] = useState<CoursePackage | null>(null);
+  const [modelCatalog, setModelCatalog] = useState<AIModelCatalog>(FALLBACK_MODEL_CATALOG);
+  const [selectedTextModel, setSelectedTextModel] = useState<AIModelSelection>(FALLBACK_MODEL_CATALOG.defaults.text);
+  const [selectedRealtimeModel, setSelectedRealtimeModel] = useState<AIModelSelection>(
+    FALLBACK_MODEL_CATALOG.defaults.realtime
+  );
+  const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [draftDocument, setDraftDocument] = useState<BoardDocument | null>(null);
   const [isDocumentDirty, setIsDocumentDirty] = useState(false);
+  const [, setAutoSaveStatus] = useState<AutoSaveStatus>("idle");
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [lessonComposerStates, setLessonComposerStates] = useState<LessonComposerStateMap>({});
@@ -1494,18 +2157,7 @@ export function CourseStudio() {
   const [rightSidebarOpen, setRightSidebarOpen] = useState(true);
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>("history");
   const [voiceActive, setVoiceActive] = useState(false);
-  const [voiceStatusText, setVoiceStatusText] = useState("点击麦克风，连接 GPT-4o Realtime 语音讲师");
-
-  const handleReturnHome = useCallback(() => {
-    if (
-      isDocumentDirty &&
-      typeof window !== "undefined" &&
-      !window.confirm("当前讲义还有未保存修改，确定返回主页吗？")
-    ) {
-      return;
-    }
-    router.push("/");
-  }, [isDocumentDirty, router]);
+  const [voiceStatusText, setVoiceStatusText] = useState("点击麦克风，连接所选实时语音讲师");
 
   useEffect(() => {
     async function load() {
@@ -1518,7 +2170,7 @@ export function CourseStudio() {
         setLessonMessages((current) => {
           const next: LessonMessageMap = {};
           payload.lessons.forEach((lesson) => {
-            next[lesson.id] = current[lesson.id] ?? buildWelcomeMessages();
+            next[lesson.id] = current[lesson.id] ?? buildLessonMessagesFromHistory(lesson);
           });
           return next;
         });
@@ -1539,6 +2191,20 @@ export function CourseStudio() {
     void load();
   }, []);
 
+  useEffect(() => {
+    async function loadModelCatalog() {
+      try {
+        const catalog = await api.getAIModels();
+        setModelCatalog(catalog);
+        setSelectedTextModel(catalog.defaults.text);
+        setSelectedRealtimeModel(catalog.defaults.realtime);
+      } catch {
+        setModelCatalog(FALLBACK_MODEL_CATALOG);
+      }
+    }
+    void loadModelCatalog();
+  }, []);
+
   const lessonMap = new Map<string, Lesson>();
   coursePackage?.lessons.forEach((lesson) => lessonMap.set(lesson.id, lesson));
 
@@ -1555,16 +2221,24 @@ export function CourseStudio() {
   const openLessons = (coursePackage?.workspace_tab_order
     .map((lessonId) => lessonMap.get(lessonId))
     .filter(Boolean) as Lesson[]) ?? [];
-  const activeMessages = activeLesson ? lessonMessages[activeLesson.id] ?? [] : [];
+  const activeMessages = activeLesson
+    ? lessonMessages[activeLesson.id] ?? buildLessonMessagesFromHistory(activeLesson)
+    : [];
+  const displayedMessages =
+    activeLesson && previewCommit ? buildLessonMessagesFromHistory(activeLesson, previewCommit.id) : activeMessages;
   const activeComposerState = activeLesson
     ? lessonComposerStates[activeLesson.id] ?? DEFAULT_LESSON_COMPOSER_STATE
     : DEFAULT_LESSON_COMPOSER_STATE;
   const chatInput = activeComposerState.chatInput;
   const composerMode = activeComposerState.composerMode;
   const includeSelectionInPrompt = activeComposerState.includeSelectionInPrompt;
+  const selectedTextOption = findModelOption(modelCatalog.text, selectedTextModel);
+  const selectedRealtimeOption = findModelOption(modelCatalog.realtime, selectedRealtimeModel);
+  const selectedRealtimeTransport = selectedRealtimeOption?.transport ?? "openai_webrtc";
   const isChatBusy = busyAction === "chat" || busyAction === "agent-edit";
   const activeRequirements = activeLesson?.learning_requirements ?? null;
   const isPreviewMode = Boolean(previewCommit);
+  const previewLearningClarity = learningClarityFromCommit(previewCommit);
   const latestAssistantMessage = [...activeMessages].reverse().find((message) => message.role === "assistant");
   const relatedEdges =
     activeLesson && coursePackage
@@ -1580,6 +2254,7 @@ export function CourseStudio() {
     activeRequirements?.success_criteria ?? "先建立概念，再进入例题与练习",
   ];
   const clarityStatus: LearningClarificationStatus =
+    previewLearningClarity ??
     learningClarity ?? {
       progress: 0,
       label: "等待学习目的",
@@ -1594,6 +2269,13 @@ export function CourseStudio() {
       : clarityStatus.can_start
         ? "bg-blue-500"
         : "bg-amber-500";
+
+  useEffect(() => {
+    activeLessonRef.current = activeLesson;
+    draftDocumentRef.current = draftDocument;
+    isDocumentDirtyRef.current = isDocumentDirty;
+    isPreviewModeRef.current = isPreviewMode;
+  }, [activeLesson, draftDocument, isDocumentDirty, isPreviewMode]);
 
   function updateLessonComposerState(
     lessonId: string,
@@ -1692,13 +2374,20 @@ export function CourseStudio() {
     clearSelection();
   }
 
-  function syncLessonMessages(nextPackage: CoursePackage, options?: { blankLessonIds?: string[] }) {
+  function syncLessonMessages(
+    nextPackage: CoursePackage,
+    options?: { blankLessonIds?: string[]; rebuildLessonIds?: string[] }
+  ) {
     const blankLessonIds = new Set(options?.blankLessonIds ?? []);
+    const rebuildLessonIds = new Set(options?.rebuildLessonIds ?? []);
     setLessonMessages((current) => {
       const next: LessonMessageMap = {};
       nextPackage.lessons.forEach((lesson) => {
-        next[lesson.id] =
-          current[lesson.id] ?? (blankLessonIds.has(lesson.id) ? [] : buildWelcomeMessages());
+        next[lesson.id] = blankLessonIds.has(lesson.id)
+          ? []
+          : rebuildLessonIds.has(lesson.id)
+            ? buildLessonMessagesFromHistory(lesson)
+            : current[lesson.id] ?? buildLessonMessagesFromHistory(lesson);
       });
       return next;
     });
@@ -1716,7 +2405,7 @@ export function CourseStudio() {
 
   function updateCoursePackage(
     nextPackage: CoursePackage,
-    options?: { blankLessonIds?: string[]; activeLessonId?: string | null }
+    options?: { blankLessonIds?: string[]; activeLessonId?: string | null; rebuildMessageLessonIds?: string[] }
   ) {
     const requestedActiveLessonId = options?.activeLessonId;
     const effectiveActiveLessonId =
@@ -1734,46 +2423,228 @@ export function CourseStudio() {
     setCoursePackage(mergedPackage);
     setDraftDocument(nextActiveLesson?.board_document ?? null);
     setIsDocumentDirty(false);
-    syncLessonMessages(mergedPackage, options);
+    draftDocumentRef.current = nextActiveLesson?.board_document ?? null;
+    isDocumentDirtyRef.current = false;
+    setAutoSaveStatus("idle");
+    syncLessonMessages(mergedPackage, {
+      blankLessonIds: options?.blankLessonIds,
+      rebuildLessonIds: options?.rebuildMessageLessonIds,
+    });
     syncLessonComposerStates(mergedPackage.lessons);
     resetTransientUi();
     setError(null);
+  }
+
+  function clearAutoSaveTimer() {
+    if (autoSaveTimerRef.current === null) {
+      return;
+    }
+    window.clearTimeout(autoSaveTimerRef.current);
+    autoSaveTimerRef.current = null;
+  }
+
+  function buildDocumentSavePayload(document: BoardDocument, reason: AutoSaveReason) {
+    if (reason === "manual") {
+      return {
+        document,
+        label: "Manual document edit",
+        message: "Saved Word-like rich document changes from the editor",
+        metadata: {
+          kind: "manual_document_save",
+        },
+      };
+    }
+    return {
+      document,
+      label: "Auto Save",
+      message: "Auto-saved Word-like rich document changes from the editor",
+      metadata: {
+        kind: "auto_document_save",
+        autosave: true,
+        autosave_reason: reason,
+        source: "word_board_editor",
+      },
+    };
+  }
+
+  function applyAutoSavedPackage(nextPackage: CoursePackage, lessonId: string, savedVersion: number) {
+    const currentActiveLessonId = activeLessonRef.current?.id ?? null;
+    const effectiveActiveLessonId =
+      currentActiveLessonId && nextPackage.workspace_tab_order.includes(currentActiveLessonId)
+        ? currentActiveLessonId
+        : nextPackage.active_lesson_id;
+    const mergedPackage =
+      effectiveActiveLessonId === nextPackage.active_lesson_id
+        ? nextPackage
+        : { ...nextPackage, active_lesson_id: effectiveActiveLessonId };
+    const savedLesson = mergedPackage.lessons.find((lesson) => lesson.id === lessonId) ?? null;
+
+    setCoursePackage(mergedPackage);
+    syncLessonMessages(mergedPackage);
+    syncLessonComposerStates(mergedPackage.lessons);
+
+    if (currentActiveLessonId !== lessonId || !savedLesson) {
+      setError(null);
+      return;
+    }
+
+    if (documentDraftVersionRef.current === savedVersion) {
+      setDraftDocument(savedLesson.board_document);
+      draftDocumentRef.current = savedLesson.board_document;
+      setIsDocumentDirty(false);
+      isDocumentDirtyRef.current = false;
+      setAutoSaveStatus("saved");
+      setError(null);
+      return;
+    }
+
+    const latestDraft = draftDocumentRef.current;
+    const stillDirty = Boolean(latestDraft && !documentsEqual(latestDraft, savedLesson.board_document));
+    setIsDocumentDirty(stillDirty);
+    isDocumentDirtyRef.current = stillDirty;
+    setAutoSaveStatus(stillDirty ? "pending" : "saved");
+    setError(null);
+  }
+
+  async function flushAutoSave(reason: AutoSaveReason): Promise<boolean> {
+    clearAutoSaveTimer();
+    if (autoSaveInFlightRef.current) {
+      autoSaveQueuedRef.current = true;
+      await autoSaveInFlightRef.current;
+      if (!isDocumentDirtyRef.current) {
+        return true;
+      }
+      return flushAutoSave(reason);
+    }
+
+    const lesson = activeLessonRef.current;
+    const document = draftDocumentRef.current;
+    if (!lesson || !document || !isDocumentDirtyRef.current || isPreviewModeRef.current) {
+      return true;
+    }
+    if (documentsEqual(document, lesson.board_document)) {
+      setIsDocumentDirty(false);
+      isDocumentDirtyRef.current = false;
+      setAutoSaveStatus("idle");
+      return true;
+    }
+
+    const savedVersion = documentDraftVersionRef.current;
+    const isManualSave = reason === "manual";
+    const payload = buildDocumentSavePayload(document, reason);
+    if (isManualSave) {
+      setBusyAction("save");
+    }
+    setAutoSaveStatus("saving");
+
+    const request = (async () => {
+      try {
+        const nextPackage = await api.saveDocument(lesson.id, payload);
+        applyAutoSavedPackage(nextPackage, lesson.id, savedVersion);
+        return true;
+      } catch (saveError) {
+        setAutoSaveStatus("error");
+        setError(saveError instanceof Error ? saveError.message : "自动保存失败");
+        return false;
+      } finally {
+        if (isManualSave) {
+          setBusyAction((current) => (current === "save" ? null : current));
+        }
+      }
+    })();
+
+    autoSaveInFlightRef.current = request;
+    try {
+      return await request;
+    } finally {
+      autoSaveInFlightRef.current = null;
+      if (autoSaveQueuedRef.current) {
+        autoSaveQueuedRef.current = false;
+        if (isDocumentDirtyRef.current) {
+          scheduleAutoSave("queued");
+        }
+      }
+    }
+  }
+
+  function scheduleAutoSave(reason: AutoSaveReason = "debounce") {
+    clearAutoSaveTimer();
+    if (!isDocumentDirtyRef.current || isPreviewModeRef.current) {
+      return;
+    }
+    if (autoSaveInFlightRef.current) {
+      autoSaveQueuedRef.current = true;
+      return;
+    }
+    setAutoSaveStatus("pending");
+    autoSaveTimerRef.current = window.setTimeout(() => {
+      autoSaveTimerRef.current = null;
+      void flushAutoSave(reason);
+    }, AUTO_SAVE_DELAY_MS);
+  }
+
+  function flushAutoSaveWithBeacon(reason: AutoSaveReason = "pagehide") {
+    clearAutoSaveTimer();
+    const lesson = activeLessonRef.current;
+    const document = draftDocumentRef.current;
+    if (!lesson || !document || !isDocumentDirtyRef.current || isPreviewModeRef.current) {
+      return;
+    }
+    if (documentsEqual(document, lesson.board_document)) {
+      return;
+    }
+    const payload = buildDocumentSavePayload(document, reason);
+    const sent = api.saveDocumentBeacon(lesson.id, payload);
+    if (!sent) {
+      void api.saveDocumentKeepalive(lesson.id, payload).catch(() => undefined);
+    }
   }
 
   function handleLocalDocumentChange(nextDocument: BoardDocument) {
     if (isPreviewMode || !activeLesson) {
       return;
     }
+    const hasChanged = !documentsEqual(draftDocumentRef.current, nextDocument);
+    const dirty = !documentsEqual(nextDocument, activeLesson.board_document);
+    if (hasChanged) {
+      documentDraftVersionRef.current += 1;
+    }
+    draftDocumentRef.current = nextDocument;
+    isDocumentDirtyRef.current = dirty;
     setDraftDocument((current) => {
       if (current && current.id === nextDocument.id && documentsEqual(current, nextDocument)) {
         return current;
       }
       return nextDocument;
     });
-    setIsDocumentDirty(!documentsEqual(nextDocument, activeLesson.board_document));
+    setIsDocumentDirty(dirty);
+    setAutoSaveStatus(dirty ? "pending" : "idle");
   }
 
-  async function handleSaveDocument() {
-    if (!activeLesson || !draftDocument || !isDocumentDirty || isPreviewMode) {
+  const scheduleAutoSaveEffectEvent = useEffectEvent(() => {
+    scheduleAutoSave("debounce");
+  });
+
+  const clearAutoSaveTimerEffectEvent = useEffectEvent(() => {
+    clearAutoSaveTimer();
+  });
+
+  useEffect(() => {
+    if (!isDocumentDirty || isPreviewMode) {
+      clearAutoSaveTimerEffectEvent();
       return;
     }
-    setBusyAction("save");
-    try {
-      const nextPackage = await api.saveDocument(activeLesson.id, {
-        document: draftDocument,
-        label: "Manual document edit",
-        message: "Saved Word-like rich document changes from the editor",
-      });
-      updateCoursePackage(nextPackage, { activeLessonId: activeLesson.id });
-    } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : "保存失败");
-    } finally {
-      setBusyAction(null);
-    }
-  }
+    scheduleAutoSaveEffectEvent();
+    return () => {
+      clearAutoSaveTimerEffectEvent();
+    };
+  }, [activeLesson?.id, draftDocument, isDocumentDirty, isPreviewMode]);
 
   async function handleImportDocx(file: File) {
     if (!activeLesson) {
+      return;
+    }
+    if (!(await flushAutoSave("import"))) {
       return;
     }
     setBusyAction("import-docx");
@@ -1789,6 +2660,9 @@ export function CourseStudio() {
 
   async function handleExportDocx() {
     if (!activeLesson) {
+      return;
+    }
+    if (!(await flushAutoSave("export"))) {
       return;
     }
     setBusyAction("export-docx");
@@ -1829,6 +2703,9 @@ export function CourseStudio() {
     if (!topic) {
       return;
     }
+    if (!(await flushAutoSave("create-lesson"))) {
+      return;
+    }
     await saveGeneratedLesson(topic);
   }
 
@@ -1847,10 +2724,17 @@ export function CourseStudio() {
       } satisfies ChatRequestPayload);
     const payloadWithConversation: ChatRequestPayload = {
       ...payload,
+      text_model: payload.text_model ?? selectedTextModel,
       conversation: activeMessages.slice(-8).map(({ role, content }) => ({ role, content })),
     };
 
     if (!payloadWithConversation.message.trim()) {
+      return;
+    }
+
+    chatRequestInFlightRef.current = true;
+    if (!(await flushAutoSave("chat"))) {
+      chatRequestInFlightRef.current = false;
       return;
     }
 
@@ -1877,7 +2761,6 @@ export function CourseStudio() {
               : "正在整理内容并更新右侧讲义，我会先返回一版可讲内容。",
       "pending"
     );
-    chatRequestInFlightRef.current = true;
     setBusyAction(isDirectEdit ? "agent-edit" : "chat");
     setError(null);
     if (!payloadOverride) {
@@ -1983,12 +2866,18 @@ export function CourseStudio() {
     if (!activeLesson) {
       return;
     }
+    if (!fromCommitId && !(await flushAutoSave("branch"))) {
+      return;
+    }
     const branchName = (branchNameOverride ?? newBranchName.trim()).trim();
     const finalBranchName = branchName || nextBranchName(activeLesson);
     setBusyAction("branch");
     try {
       const nextPackage = await api.createBranch(activeLesson.id, finalBranchName, fromCommitId);
-      updateCoursePackage(nextPackage, { activeLessonId: activeLesson.id });
+      updateCoursePackage(nextPackage, {
+        activeLessonId: activeLesson.id,
+        rebuildMessageLessonIds: fromCommitId ? [activeLesson.id] : undefined,
+      });
       setNewBranchName("");
     } catch (branchError) {
       setError(branchError instanceof Error ? branchError.message : "创建分支失败");
@@ -1997,13 +2886,31 @@ export function CourseStudio() {
     }
   }
 
-  async function handleCreateBranchFromCommit(commit: CommitRecord) {
-    if (!activeLesson) {
+  async function handlePreviewCommit(commit: CommitRecord) {
+    if (!(await flushAutoSave("preview"))) {
       return;
     }
     setPreviewCommitId(commit.id);
     setDraftDocument(commit.snapshot);
+    draftDocumentRef.current = commit.snapshot;
     setIsDocumentDirty(false);
+    isDocumentDirtyRef.current = false;
+    setAutoSaveStatus("idle");
+  }
+
+  async function handleCreateBranchFromCommit(commit: CommitRecord) {
+    if (!activeLesson) {
+      return;
+    }
+    if (!(await flushAutoSave("branch"))) {
+      return;
+    }
+    setPreviewCommitId(commit.id);
+    setDraftDocument(commit.snapshot);
+    draftDocumentRef.current = commit.snapshot;
+    setIsDocumentDirty(false);
+    isDocumentDirtyRef.current = false;
+    setAutoSaveStatus("idle");
     await handleCreateBranch(commit.id, newBranchName.trim() || nextBranchName(activeLesson));
   }
 
@@ -2011,10 +2918,16 @@ export function CourseStudio() {
     if (!activeLesson) {
       return;
     }
+    if (!(await flushAutoSave("switch-branch"))) {
+      return;
+    }
     setBusyAction("switch-branch");
     try {
       const nextPackage = await api.switchBranch(activeLesson.id, branchName);
-      updateCoursePackage(nextPackage, { activeLessonId: activeLesson.id });
+      updateCoursePackage(nextPackage, {
+        activeLessonId: activeLesson.id,
+        rebuildMessageLessonIds: [activeLesson.id],
+      });
     } catch (branchError) {
       setError(branchError instanceof Error ? branchError.message : "切换分支失败");
     } finally {
@@ -2026,10 +2939,16 @@ export function CourseStudio() {
     if (!activeLesson) {
       return;
     }
+    if (!(await flushAutoSave("restore"))) {
+      return;
+    }
     setBusyAction("restore");
     try {
       const nextPackage = await api.restoreCommit(activeLesson.id, commitId);
-      updateCoursePackage(nextPackage, { activeLessonId: activeLesson.id });
+      updateCoursePackage(nextPackage, {
+        activeLessonId: activeLesson.id,
+        rebuildMessageLessonIds: [activeLesson.id],
+      });
     } catch (restoreError) {
       setError(restoreError instanceof Error ? restoreError.message : "恢复版本失败");
     } finally {
@@ -2038,6 +2957,9 @@ export function CourseStudio() {
   }
 
   async function handleOpenLesson(lessonId: string) {
+    if (!(await flushAutoSave("open-lesson"))) {
+      return;
+    }
     setBusyAction("open-lesson");
     try {
       const nextPackage = await api.openLesson(lessonId);
@@ -2050,6 +2972,9 @@ export function CourseStudio() {
   }
 
   async function handleCloseLesson(lessonId: string) {
+    if (activeLesson?.id === lessonId && !(await flushAutoSave("close-lesson"))) {
+      return;
+    }
     setBusyAction("close-lesson");
     try {
       const nextPackage = await api.closeLesson(lessonId);
@@ -2065,6 +2990,9 @@ export function CourseStudio() {
 
   async function handleUploadResource(file: File | null) {
     if (!file) {
+      return;
+    }
+    if (!(await flushAutoSave("upload-resource"))) {
       return;
     }
     setBusyAction("upload");
@@ -2142,6 +3070,20 @@ export function CourseStudio() {
     scheduleRealtimeLogFlush();
     realtimeChannelRef.current?.close();
     realtimeChannelRef.current = null;
+    googleRealtimeSocketRef.current?.close();
+    googleRealtimeSocketRef.current = null;
+
+    googleAudioProcessorRef.current?.disconnect();
+    googleAudioProcessorRef.current = null;
+    googleAudioSourceRef.current?.disconnect();
+    googleAudioSourceRef.current = null;
+    void googleAudioContextRef.current?.close().catch(() => undefined);
+    googleAudioContextRef.current = null;
+    void googlePlaybackContextRef.current?.close().catch(() => undefined);
+    googlePlaybackContextRef.current = null;
+    googlePlaybackTimeRef.current = 0;
+    googleInputTranscriptRef.current = "";
+    googleOutputTranscriptRef.current = "";
 
     if (realtimePeerRef.current) {
       realtimePeerRef.current.ontrack = null;
@@ -2169,6 +3111,10 @@ export function CourseStudio() {
 
   const flushRealtimeLogQueueWithBeaconEffectEvent = useEffectEvent(() => {
     flushRealtimeLogQueueWithBeacon();
+  });
+
+  const flushAutoSaveWithBeaconEffectEvent = useEffectEvent(() => {
+    flushAutoSaveWithBeacon("pagehide");
   });
 
   const disposeRealtimeSessionEffectEvent = useEffectEvent(() => {
@@ -2200,8 +3146,150 @@ export function CourseStudio() {
     });
   }
 
+  function flushGoogleRealtimeTranscripts(lessonId: string) {
+    const userTranscript = googleInputTranscriptRef.current.trim();
+    const assistantTranscript = googleOutputTranscriptRef.current.trim();
+    if (userTranscript) {
+      appendRealtimeMessage(lessonId, "user", userTranscript);
+      enqueueRealtimeLogEvent(lessonId, "user", "google.input_transcription", userTranscript);
+      googleInputTranscriptRef.current = "";
+    }
+    if (assistantTranscript) {
+      appendRealtimeMessage(lessonId, "assistant", assistantTranscript);
+      enqueueRealtimeLogEvent(lessonId, "assistant", "google.output_transcription", assistantTranscript);
+      googleOutputTranscriptRef.current = "";
+    }
+  }
+
+  function beginGoogleAudioStreaming(socket: WebSocket, mediaStream: MediaStream, audioContext: AudioContext) {
+    const source = audioContext.createMediaStreamSource(mediaStream);
+    const processor = audioContext.createScriptProcessor(4096, 1, 1);
+    source.connect(processor);
+    processor.connect(audioContext.destination);
+    googleAudioSourceRef.current = source;
+    googleAudioProcessorRef.current = processor;
+    processor.onaudioprocess = (event) => {
+      if (socket.readyState !== WebSocket.OPEN) {
+        return;
+      }
+      const input = event.inputBuffer.getChannelData(0);
+      const resampled = resampleLinear(input, audioContext.sampleRate, 16000);
+      socket.send(
+        JSON.stringify({
+          realtimeInput: {
+            audio: {
+              mimeType: "audio/pcm;rate=16000",
+              data: pcmFloatToBase64(resampled),
+            },
+          },
+        })
+      );
+    };
+  }
+
+  function handleGoogleRealtimeMessage(message: GoogleRealtimeAudioMessage) {
+    const lessonId = realtimeLessonIdRef.current;
+    if (!lessonId) {
+      return;
+    }
+    const serverContent = message.serverContent;
+    if (!serverContent) {
+      return;
+    }
+    const inputText = serverContent.inputTranscription?.text;
+    if (inputText) {
+      googleInputTranscriptRef.current += inputText;
+    }
+    const outputText = serverContent.outputTranscription?.text;
+    if (outputText) {
+      googleOutputTranscriptRef.current += outputText;
+    }
+    serverContent.modelTurn?.parts?.forEach((part) => {
+      const inlineData = part.inlineData;
+      if (!inlineData?.data) {
+        return;
+      }
+      const playbackContext = googlePlaybackContextRef.current;
+      if (!playbackContext) {
+        return;
+      }
+      playPcmBase64(inlineData.data, inlineData.mimeType, playbackContext, googlePlaybackTimeRef);
+    });
+    if (serverContent.interrupted && googlePlaybackContextRef.current) {
+      googlePlaybackTimeRef.current = googlePlaybackContextRef.current.currentTime;
+    }
+    if (serverContent.turnComplete) {
+      flushGoogleRealtimeTranscripts(lessonId);
+    }
+  }
+
+  function selectTextModel(option: AIModelOption) {
+    setSelectedTextModel({ provider: option.provider, model: option.model });
+    setModelMenuOpen(false);
+  }
+
+  function selectRealtimeModel(option: AIModelOption) {
+    if (voiceActive || busyAction === "voice-connect") {
+      stopRealtimeSession("已切换实时语音模型，当前会话已断开");
+    }
+    setSelectedRealtimeModel({ provider: option.provider, model: option.model });
+    setModelMenuOpen(false);
+  }
+
+  async function startGoogleRealtimeSession(
+    lesson: Lesson,
+    mediaStream: MediaStream,
+    clientSessionId: string
+  ) {
+    const session = await api.createGoogleRealtimeSession(lesson.id, {
+      latest_assistant_message: latestAssistantMessage?.content ?? null,
+      client_session_id: clientSessionId,
+      realtime_model: selectedRealtimeModel,
+    });
+    const audioContext = new AudioContext();
+    const playbackContext = new AudioContext();
+    googleAudioContextRef.current = audioContext;
+    googlePlaybackContextRef.current = playbackContext;
+    googlePlaybackTimeRef.current = playbackContext.currentTime;
+
+    const socket = new WebSocket(session.websocket_url);
+    googleRealtimeSocketRef.current = socket;
+    await new Promise<void>((resolve, reject) => {
+      let streamingStarted = false;
+      socket.onopen = () => {
+        socket.send(JSON.stringify(session.setup));
+      };
+      socket.onerror = () => {
+        reject(new Error("Google Gemini Live WebSocket 连接失败"));
+      };
+      socket.onclose = () => {
+        if (googleRealtimeSocketRef.current === socket) {
+          stopRealtimeSession("Google Gemini Live 会话已结束");
+        }
+      };
+      socket.onmessage = (event) => {
+        try {
+          const payload = JSON.parse(String(event.data)) as GoogleRealtimeAudioMessage;
+          if (payload.setupComplete && !streamingStarted) {
+            streamingStarted = true;
+            beginGoogleAudioStreaming(socket, mediaStream, audioContext);
+            setVoiceActive(true);
+            setBusyAction((current) => (current === "voice-connect" ? null : current));
+            setVoiceStatusText(`Google Gemini Live 已连接，语音音色：${session.voice}`);
+            resolve();
+            return;
+          }
+          handleGoogleRealtimeMessage(payload);
+        } catch {
+          // ignore malformed realtime events
+        }
+      };
+    });
+  }
+
   useEffect(() => {
     return () => {
+      flushAutoSaveWithBeaconEffectEvent();
       flushRealtimeLogQueueWithBeaconEffectEvent();
       disposeRealtimeSessionEffectEvent();
     };
@@ -2213,13 +3301,16 @@ export function CourseStudio() {
     }, 2000);
 
     function handlePageHide() {
+      flushAutoSaveWithBeaconEffectEvent();
       flushRealtimeLogQueueWithBeaconEffectEvent();
     }
 
     window.addEventListener("pagehide", handlePageHide);
+    window.addEventListener("beforeunload", handlePageHide);
     return () => {
       window.clearInterval(intervalId);
       window.removeEventListener("pagehide", handlePageHide);
+      window.removeEventListener("beforeunload", handlePageHide);
     };
   }, []);
 
@@ -2245,9 +3336,17 @@ export function CourseStudio() {
       setError("当前浏览器不支持麦克风实时语音会话。");
       return;
     }
+    if (selectedRealtimeOption && !selectedRealtimeOption.enabled) {
+      setError(`当前未配置 ${PROVIDER_LABELS[selectedRealtimeModel.provider]} 的实时语音 API Key。`);
+      return;
+    }
+    if (!(await flushAutoSave("voice"))) {
+      return;
+    }
 
     setBusyAction("voice-connect");
-    setVoiceStatusText("正在连接 GPT-4o Realtime…");
+    const realtimeLabel = modelButtonLabel(selectedRealtimeOption, selectedRealtimeModel);
+    setVoiceStatusText(`正在连接 ${realtimeLabel}…`);
     setError(null);
 
     try {
@@ -2260,12 +3359,18 @@ export function CourseStudio() {
       });
       realtimeStreamRef.current = mediaStream;
 
-      const peerConnection = new RTCPeerConnection();
       const clientSessionId = createClientSessionId("realtime");
-      realtimePeerRef.current = peerConnection;
       realtimeLessonIdRef.current = activeLesson.id;
       realtimeClientSessionIdRef.current = clientSessionId;
       realtimeLessonTitleRef.current = activeLesson.title;
+
+      if (selectedRealtimeTransport === "gemini_live_websocket" || selectedRealtimeModel.provider === "google") {
+        await startGoogleRealtimeSession(activeLesson, mediaStream, clientSessionId);
+        return;
+      }
+
+      const peerConnection = new RTCPeerConnection();
+      realtimePeerRef.current = peerConnection;
 
       mediaStream.getTracks().forEach((track) => {
         peerConnection.addTrack(track, mediaStream);
@@ -2282,7 +3387,7 @@ export function CourseStudio() {
       peerConnection.onconnectionstatechange = () => {
         if (peerConnection.connectionState === "connected") {
           setVoiceActive(true);
-          setVoiceStatusText("GPT-4o Realtime 已连接，直接说话即可");
+          setVoiceStatusText(`${realtimeLabel} 已连接，直接说话即可`);
           setBusyAction((current) => (current === "voice-connect" ? null : current));
           return;
         }
@@ -2327,6 +3432,7 @@ export function CourseStudio() {
         offer_sdp: offer.sdp ?? "",
         latest_assistant_message: latestAssistantMessage?.content ?? null,
         client_session_id: clientSessionId,
+        realtime_model: selectedRealtimeModel,
       });
 
       await peerConnection.setRemoteDescription({
@@ -2334,14 +3440,17 @@ export function CourseStudio() {
         sdp: realtimeResponse.answer_sdp,
       });
 
-      setVoiceStatusText(`GPT-4o Realtime 已就绪，语音音色：${realtimeResponse.voice}`);
+      setVoiceStatusText(`${PROVIDER_LABELS[realtimeResponse.provider]} ${realtimeResponse.model} 已就绪，语音音色：${realtimeResponse.voice}`);
     } catch (voiceError) {
       stopRealtimeSession("语音连接失败");
       setError(voiceError instanceof Error ? voiceError.message : "连接实时语音失败");
     }
   }
 
-  function handleSelectLesson(lessonId: string) {
+  async function handleSelectLesson(lessonId: string) {
+    if (activeLesson?.id !== lessonId && !(await flushAutoSave("select-lesson"))) {
+      return;
+    }
     resetTransientUi();
     setCoursePackage((current) => {
       if (!current) {
@@ -2351,8 +3460,18 @@ export function CourseStudio() {
       const selectedLesson = next.lessons.find((lesson) => lesson.id === lessonId) ?? null;
       setDraftDocument(selectedLesson?.board_document ?? null);
       setIsDocumentDirty(false);
+      draftDocumentRef.current = selectedLesson?.board_document ?? null;
+      isDocumentDirtyRef.current = false;
+      setAutoSaveStatus("idle");
       return next;
     });
+  }
+
+  async function handleReturnHome() {
+    if (!(await flushAutoSave("return-home"))) {
+      return;
+    }
+    router.push("/");
   }
 
   if (isLoading) {
@@ -2379,12 +3498,12 @@ export function CourseStudio() {
               <div className="flex shrink-0 items-center gap-2">
                 <button
                   type="button"
-                  onClick={handleReturnHome}
-                  className="flex h-6 w-6 items-center justify-center rounded bg-black text-white shadow-sm transition hover:bg-gray-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/20"
+                  onClick={() => void handleReturnHome()}
+                  className="group flex h-8 w-8 items-center justify-center rounded-full text-gray-600 transition-colors duration-150 hover:bg-gray-100 hover:text-gray-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-300"
                   title="返回主页"
                   aria-label="返回主页"
                 >
-                  <Cpu className="h-3.5 w-3.5" />
+                  <ArrowLeft className="h-5 w-5 stroke-[1.8] transition-transform duration-150 group-hover:-translate-x-0.5" />
                 </button>
                 <span className="text-[13px] font-semibold tracking-tight">{workspaceTitle}</span>
               </div>
@@ -2394,7 +3513,7 @@ export function CourseStudio() {
                   <button
                     key={lesson.id}
                     type="button"
-                    onClick={() => handleSelectLesson(lesson.id)}
+                    onClick={() => void handleSelectLesson(lesson.id)}
                     className={clsx(
                       "group flex h-12 items-center gap-2 border-r border-gray-100 px-4 text-left text-[10px] font-bold uppercase tracking-[0.2em] transition-colors",
                       lesson.id === activeLesson?.id
@@ -2617,7 +3736,13 @@ export function CourseStudio() {
               </div>
 
               <div className="space-y-6">
-                {activeMessages.map((message) => (
+                {previewCommit ? (
+                  <div className="rounded-xl border border-violet-200 bg-violet-50 px-4 py-3 text-xs leading-6 text-violet-800">
+                    正在查看 {previewCommit.label} 时的交流记录。
+                  </div>
+                ) : null}
+
+                {displayedMessages.map((message) => (
                   <div
                     key={message.id}
                     onMouseUp={() => {
@@ -2639,7 +3764,7 @@ export function CourseStudio() {
                 ))}
               </div>
 
-              {scopeOptions.length ? (
+              {!isPreviewMode && scopeOptions.length ? (
                 <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
                   <p className="text-[11px] font-bold uppercase tracking-widest text-amber-700">范围升级建议</p>
                   <div className="mt-3 space-y-2">
@@ -2658,7 +3783,7 @@ export function CourseStudio() {
                 </div>
               ) : null}
 
-              {referencePrompt ? (
+              {!isPreviewMode && referencePrompt ? (
                 <div className="rounded-xl border border-violet-200 bg-violet-50 p-4">
                   <p className="text-[11px] font-bold uppercase tracking-widest text-violet-700">章节参考建议</p>
                   <p className="mt-2 text-sm leading-6 text-violet-950">{referencePrompt.question}</p>
@@ -2686,7 +3811,7 @@ export function CourseStudio() {
                 </div>
               ) : null}
 
-              {clarificationQuestions.length ? (
+              {!isPreviewMode && clarificationQuestions.length ? (
                 <div className="rounded-xl border border-sky-200 bg-sky-50 p-4">
                   <p className="text-[11px] font-bold uppercase tracking-widest text-sky-700">需求澄清</p>
                   <p className="mt-2 text-xs leading-6 text-sky-900">
@@ -2702,7 +3827,7 @@ export function CourseStudio() {
                 </div>
               ) : null}
 
-              {selectedReference ? (
+              {!isPreviewMode && selectedReference ? (
                 <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
                   <p className="text-[11px] font-bold uppercase tracking-widest text-emerald-700">已引用参考资料</p>
                   <p className="mt-2 text-sm font-semibold text-gray-900">
@@ -2725,6 +3850,86 @@ export function CourseStudio() {
           </div>
 
           <div className="shrink-0 border-t border-gray-100 bg-white p-5">
+            <div className="relative mb-3">
+              <button
+                type="button"
+                onClick={() => setModelMenuOpen((current) => !current)}
+                className="flex w-full items-center justify-between gap-3 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-left transition-colors hover:border-gray-300 hover:bg-white"
+              >
+                <span className="flex min-w-0 items-center gap-2">
+                  <BrainCircuit className="h-4 w-4 shrink-0 text-gray-600" />
+                  <span className="min-w-0">
+                    <span className="block text-[11px] font-semibold text-gray-500">选择模型</span>
+                    <span className="block truncate text-xs font-semibold text-gray-900">
+                      {modelButtonLabel(selectedTextOption, selectedTextModel)}
+                    </span>
+                  </span>
+                </span>
+                <ChevronDown className="h-4 w-4 shrink-0 text-gray-500" />
+              </button>
+
+              {modelMenuOpen ? (
+                <div className="absolute bottom-full left-0 z-30 mb-2 max-h-[420px] w-full overflow-y-auto rounded-lg border border-gray-200 bg-white p-3 shadow-xl">
+                  <div>
+                    <p className="px-1 text-[11px] font-bold uppercase tracking-widest text-gray-500">文本生成</p>
+                    <div className="mt-2 space-y-1">
+                      {modelCatalog.text.map((option) => {
+                        const selected = modelOptionKey(option) === modelSelectionKey(selectedTextModel);
+                        return (
+                          <button
+                            key={`text-${modelOptionKey(option)}`}
+                            type="button"
+                            onClick={() => selectTextModel(option)}
+                            className={clsx(
+                              "flex w-full items-center justify-between gap-2 rounded-md px-2 py-2 text-left transition-colors",
+                              selected ? "bg-gray-100 text-gray-950" : "text-gray-700 hover:bg-gray-50"
+                            )}
+                          >
+                            <span className="min-w-0">
+                              <span className="block truncate text-xs font-semibold">{option.label}</span>
+                              <span className="block truncate text-[11px] text-gray-400">
+                                {PROVIDER_LABELS[option.provider]} / {option.model}
+                                {option.configured ? "" : " / 未配置"}
+                              </span>
+                            </span>
+                            {selected ? <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" /> : null}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="mt-3 border-t border-gray-100 pt-3">
+                    <p className="px-1 text-[11px] font-bold uppercase tracking-widest text-gray-500">实时语音</p>
+                    <div className="mt-2 space-y-1">
+                      {modelCatalog.realtime.map((option) => {
+                        const selected = modelOptionKey(option) === modelSelectionKey(selectedRealtimeModel);
+                        return (
+                          <button
+                            key={`realtime-${modelOptionKey(option)}`}
+                            type="button"
+                            onClick={() => selectRealtimeModel(option)}
+                            className={clsx(
+                              "flex w-full items-center justify-between gap-2 rounded-md px-2 py-2 text-left transition-colors",
+                              selected ? "bg-gray-100 text-gray-950" : "text-gray-700 hover:bg-gray-50"
+                            )}
+                          >
+                            <span className="min-w-0">
+                              <span className="block truncate text-xs font-semibold">{option.label}</span>
+                              <span className="block truncate text-[11px] text-gray-400">
+                                {PROVIDER_LABELS[option.provider]} / {option.model}
+                                {option.configured ? "" : " / 未配置"}
+                              </span>
+                            </span>
+                            {selected ? <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" /> : null}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+            </div>
             <div className="group relative mb-4 flex justify-center">
               <button
                 type="button"
@@ -2774,7 +3979,7 @@ export function CourseStudio() {
               <textarea
                 ref={chatInputRef}
                 value={chatInput}
-                disabled={isChatBusy}
+                disabled={isChatBusy || isPreviewMode}
                 rows={1}
                 onChange={(event) =>
                   updateActiveLessonComposerState((current) => ({
@@ -2792,6 +3997,8 @@ export function CourseStudio() {
                 placeholder={
                   isChatBusy
                     ? "正在处理上一条请求..."
+                    : isPreviewMode
+                      ? "预览历史快照时，先回到当前版本再继续对话"
                     : composerMode === "direct_edit"
                     ? "描述要怎么改这段板书，或直接说“重写整篇”..."
                     : composerSelection
@@ -2861,7 +4068,7 @@ export function CourseStudio() {
                 <button
                   type="button"
                   onClick={() => void handleSubmitChat()}
-                  disabled={isChatBusy || !chatInput.trim()}
+                  disabled={isChatBusy || isPreviewMode || !chatInput.trim()}
                   className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#1a1a1a] text-white shadow-sm transition-colors hover:bg-black disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {isChatBusy ? (
@@ -2885,7 +4092,10 @@ export function CourseStudio() {
                 onClick={() => {
                   setPreviewCommitId(null);
                   setDraftDocument(activeLesson.board_document);
+                  draftDocumentRef.current = activeLesson.board_document;
                   setIsDocumentDirty(false);
+                  isDocumentDirtyRef.current = false;
+                  setAutoSaveStatus("idle");
                 }}
               >
                 回到当前版本
@@ -2896,8 +4106,6 @@ export function CourseStudio() {
           <WordBoardEditor
             document={displayedDocument}
             readOnly={isPreviewMode}
-            isDirty={isDocumentDirty}
-            busyAction={busyAction}
             toolbarCollapsed={topCollapsed}
             onDocumentChange={handleLocalDocumentChange}
             onSelectionChange={(payload) => {
@@ -2917,7 +4125,6 @@ export function CourseStudio() {
                 payload.position
               );
             }}
-            onSave={() => void handleSaveDocument()}
             onImportDocx={(file) => void handleImportDocx(file)}
             onExportDocx={() => void handleExportDocx()}
           />
@@ -2973,11 +4180,7 @@ export function CourseStudio() {
                       commit={commit}
                       active={commit.id === previewCommitId}
                       latest={index === 0}
-                      onPreview={() => {
-                        setPreviewCommitId(commit.id);
-                        setDraftDocument(commit.snapshot);
-                        setIsDocumentDirty(false);
-                      }}
+                      onPreview={() => void handlePreviewCommit(commit)}
                       onRestore={() => void handleRestoreCommit(commit.id)}
                       onBranch={() => void handleCreateBranchFromCommit(commit)}
                     />

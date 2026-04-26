@@ -16,6 +16,9 @@ export type BoardAction =
 
 export type ResourceReferenceAction = "confirm" | "skip";
 export type ChatInteractionMode = "ask" | "direct_edit";
+export type AIProvider = "openai" | "anthropic" | "google";
+export type AIModelCapability = "text" | "realtime";
+export type AIRealtimeTransport = "openai_webrtc" | "gemini_live_websocket";
 export type DocumentMarginPreset = "narrow" | "normal" | "wide";
 export type DocumentOrientation = "portrait" | "landscape";
 export type DocumentPageSize = "a4" | "letter" | "a3";
@@ -181,6 +184,31 @@ export interface WorkspaceState {
   active_package_id?: string | null;
 }
 
+export interface AIModelSelection {
+  provider: AIProvider;
+  model: string;
+}
+
+export interface AIModelOption {
+  provider: AIProvider;
+  model: string;
+  label: string;
+  capability: AIModelCapability;
+  enabled: boolean;
+  configured: boolean;
+  default: boolean;
+  transport?: AIRealtimeTransport | null;
+}
+
+export interface AIModelCatalog {
+  text: AIModelOption[];
+  realtime: AIModelOption[];
+  defaults: {
+    text: AIModelSelection;
+    realtime: AIModelSelection;
+  };
+}
+
 export interface SelectionRef {
   kind: "chat" | "board";
   excerpt: string;
@@ -255,6 +283,7 @@ export interface PatchProposal {
 
 export interface ChatRequestPayload {
   message: string;
+  text_model?: AIModelSelection | null;
   selection?: SelectionRef | null;
   interaction_mode?: ChatInteractionMode;
   scope_action?: ScopeAction | null;
@@ -285,10 +314,26 @@ export interface RealtimeConnectPayload {
   offer_sdp: string;
   latest_assistant_message?: string | null;
   client_session_id?: string | null;
+  realtime_model?: AIModelSelection | null;
 }
 
 export interface RealtimeConnectResponse {
   answer_sdp: string;
+  provider: AIProvider;
+  model: string;
+  voice: string;
+}
+
+export interface GoogleRealtimeSessionPayload {
+  latest_assistant_message?: string | null;
+  client_session_id?: string | null;
+  realtime_model?: AIModelSelection | null;
+}
+
+export interface GoogleRealtimeSessionResponse {
+  websocket_url: string;
+  setup: Record<string, unknown>;
+  provider: "google";
   model: string;
   voice: string;
 }
@@ -305,6 +350,7 @@ export interface DocumentSavePayload {
   document: BoardDocument;
   label?: string;
   message?: string;
+  metadata?: Record<string, unknown>;
 }
 
 export interface DocumentAIEditPayload {

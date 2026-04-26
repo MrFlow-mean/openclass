@@ -4,58 +4,50 @@ import clsx from "clsx";
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useDeferredValue, useEffect, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useState } from "react";
 import {
   Activity,
   ArrowUpRight,
   Bell,
   BookOpen,
   BookText,
+  Bookmark,
   ChevronDown,
   ChevronRight,
+  Code2,
+  Eye,
   FolderClosed,
   FolderPlus,
+  GitFork,
+  GraduationCap,
+  Layers,
   LoaderCircle,
   MoreHorizontal,
+  PencilLine,
   Search,
   Share2,
   Sparkles,
+  Star,
   Trash2,
   Trophy,
   UserRound,
 } from "lucide-react";
 
 import { api } from "@/lib/api";
+import {
+  DEFAULT_COLLECTED_COURSE_IDS,
+  OPEN_COURSE_COLLECTION_STORAGE_KEY,
+  courseAvatarUrl,
+  courseFullName,
+  formatCompactNumber,
+  searchOpenCourses,
+  sortOpenCourses,
+  type OpenCourse,
+  type OpenCourseSort,
+} from "@/lib/open-courses";
 import type { CommitRecord, CoursePackage, Lesson, ResourceLibraryItem, WorkspaceState } from "@/types";
 
 const CONTRIBUTION_WEEKS = 32;
-
-const FEATURED_MARKETPLACE = [
-  {
-    id: "node-patterns",
-    topic: "Node.js 设计模式",
-    badge: "精品专题",
-    summary: "从事件循环到服务拆分，做一套真正能扩展的 Node.js 工程结构。",
-    details: ["12 节模块", "项目驱动", "后端架构"],
-    accent: "from-orange-100 via-white to-amber-50",
-  },
-  {
-    id: "react-performance",
-    topic: "React 性能优化实战",
-    badge: "热门课",
-    summary: "围绕渲染链路、状态分层和真实性能瓶颈，建立前端调优方法论。",
-    details: ["9 节模块", "案例拆解", "前端进阶"],
-    accent: "from-sky-100 via-white to-cyan-50",
-  },
-  {
-    id: "product-writing",
-    topic: "AI 课程脚本与讲义设计",
-    badge: "工作流",
-    summary: "把知识点、讲义结构、练习设计和 AI 互动链路串成一套标准流程。",
-    details: ["8 节模块", "可落地模板", "内容生产"],
-    accent: "from-emerald-100 via-white to-lime-50",
-  },
-] as const;
 
 type ActivityDay = {
   key: string;
@@ -66,6 +58,7 @@ type ActivityDay = {
 
 type FeedKind = "commit" | "resource";
 type FeedFilter = "all" | FeedKind;
+type SearchFacet = { kind: "all" } | { kind: "category" | "language"; value: string };
 
 type FeedItem = {
   id: string;
@@ -87,11 +80,49 @@ type LessonShelfItem = {
   isPackaged: boolean;
 };
 
+type PackagedLesson = {
+  lesson: Lesson;
+  packageTitle: string;
+};
+
+type PackagedResource = {
+  resource: ResourceLibraryItem;
+  packageTitle: string;
+};
+
 type LessonMenuState = {
   lessonId: string;
   top: number;
   left: number;
 };
+
+function countOpenCourseFacet(courses: OpenCourse[], getValue: (course: OpenCourse) => string) {
+  const counts = new Map<string, number>();
+
+  courses.forEach((course) => {
+    const value = getValue(course);
+    counts.set(value, (counts.get(value) ?? 0) + 1);
+  });
+
+  return Array.from(counts, ([value, count]) => ({ value, count })).sort((left, right) => {
+    if (right.count !== left.count) {
+      return right.count - left.count;
+    }
+    return left.value.localeCompare(right.value, "zh-CN");
+  });
+}
+
+function persistCollectedCourseIds(courseIds: Set<string>) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(OPEN_COURSE_COLLECTION_STORAGE_KEY, JSON.stringify(Array.from(courseIds)));
+  } catch {
+    // Local storage can be unavailable in private browsing contexts.
+  }
+}
 
 function sortByUpdatedAt(items: Lesson[]) {
   return [...items].sort((left, right) => {
@@ -309,8 +340,8 @@ function resourceTypeLabel(resource: ResourceLibraryItem) {
   return resource.resource_type || "资料";
 }
 
-function buildRecentFeed(lessons: Lesson[], resources: ResourceLibraryItem[]) {
-  const commitItems: FeedItem[] = lessons.flatMap((lesson) =>
+function buildRecentFeed(lessons: PackagedLesson[], resources: PackagedResource[]) {
+  const commitItems: FeedItem[] = lessons.flatMap(({ lesson, packageTitle }) =>
     lesson.history_graph.commits.map((commit) => ({
       id: `commit:${commit.id}`,
       kind: "commit",
@@ -320,16 +351,16 @@ function buildRecentFeed(lessons: Lesson[], resources: ResourceLibraryItem[]) {
       title: humanizeCommitLabel(commit.label),
       detailTitle: commit.branch_name === "main" ? "主分支 main" : `分支 ${commit.branch_name}`,
       detailBody: humanizeCommitMessage(commit, lesson),
-      pills: [lesson.tags[0] ?? "课程内容", `${lesson.history_graph.commits.length} 次提交`],
+      pills: [packageTitle, lesson.tags[0] ?? "课程内容", `${lesson.history_graph.commits.length} 次提交`],
       lessonId: lesson.id,
     }))
   );
 
-  const resourceItems: FeedItem[] = resources.map((resource) => ({
+  const resourceItems: FeedItem[] = resources.map(({ resource, packageTitle }) => ({
     id: `resource:${resource.id}`,
     kind: "resource",
     timestamp: resource.uploaded_at,
-    actor: "资料库",
+    actor: packageTitle,
     action: "收录了新资料",
     title: resource.name,
     detailTitle: resource.outline[0]?.title ?? "资料摘要",
@@ -341,8 +372,7 @@ function buildRecentFeed(lessons: Lesson[], resources: ResourceLibraryItem[]) {
   }));
 
   return [...commitItems, ...resourceItems]
-    .sort((left, right) => new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime())
-    .slice(0, 4);
+    .sort((left, right) => new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime());
 }
 
 export function LearningHome() {
@@ -352,9 +382,17 @@ export function LearningHome() {
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const deferredQuery = useDeferredValue(searchQuery.trim().toLowerCase());
+  const [openCourseSort, setOpenCourseSort] = useState<OpenCourseSort>("best-match");
+  const [openCourseFacet, setOpenCourseFacet] = useState<SearchFacet>({ kind: "all" });
+  const [collectedCourseIds, setCollectedCourseIds] = useState<Set<string>>(
+    () => new Set(DEFAULT_COLLECTED_COURSE_IDS)
+  );
   const [feedFilter, setFeedFilter] = useState<FeedFilter>("all");
   const [feedCollapsed, setFeedCollapsed] = useState(false);
   const [notificationOpen, setNotificationOpen] = useState(true);
+  const [selectedPackageId, setSelectedPackageId] = useState<string | null>(null);
+  const [selectedLessonId, setSelectedLessonId] = useState<string | null>(null);
+  const [packageLessonsExpanded, setPackageLessonsExpanded] = useState(true);
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [lessonMenuState, setLessonMenuState] = useState<LessonMenuState | null>(null);
   const [lessonMoveMenuState, setLessonMoveMenuState] = useState<LessonMenuState | null>(null);
@@ -369,6 +407,13 @@ export function LearningHome() {
           return;
         }
         setWorkspaceState(payload);
+        if (typeof window !== "undefined") {
+          const packageIdFromUrl = new URLSearchParams(window.location.search).get("package");
+          if (packageIdFromUrl && payload.packages.some((packageItem) => packageItem.id === packageIdFromUrl)) {
+            setSelectedPackageId(packageIdFromUrl);
+            setPackageLessonsExpanded(true);
+          }
+        }
         setError(null);
       } catch (loadError) {
         if (isDisposed) {
@@ -390,6 +435,29 @@ export function LearningHome() {
   }, []);
 
   useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      try {
+        const stored = window.localStorage.getItem(OPEN_COURSE_COLLECTION_STORAGE_KEY);
+        if (!stored) {
+          return;
+        }
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed) && parsed.every((item) => typeof item === "string")) {
+          setCollectedCourseIds(new Set(parsed));
+        }
+      } catch {
+        setCollectedCourseIds(new Set(DEFAULT_COLLECTED_COURSE_IDS));
+      }
+    }, 0);
+
+    return () => window.clearTimeout(timeoutId);
+  }, []);
+
+  useEffect(() => {
     function handlePointerDown(event: MouseEvent) {
       const target = event.target;
       if (!(target instanceof HTMLElement)) {
@@ -400,6 +468,13 @@ export function LearningHome() {
       }
       setLessonMenuState(null);
       setLessonMoveMenuState(null);
+      if (!target.closest("[data-package-selection-root]")) {
+        setSelectedPackageId(null);
+        setPackageLessonsExpanded(false);
+      }
+      if (!target.closest("[data-lesson-selection-root]")) {
+        setSelectedLessonId(null);
+      }
     }
 
     function handleKeyDown(event: KeyboardEvent) {
@@ -408,6 +483,9 @@ export function LearningHome() {
       }
       setLessonMenuState(null);
       setLessonMoveMenuState(null);
+      setSelectedPackageId(null);
+      setSelectedLessonId(null);
+      setPackageLessonsExpanded(false);
     }
 
     document.addEventListener("mousedown", handlePointerDown);
@@ -419,17 +497,34 @@ export function LearningHome() {
   }, []);
 
   const packages = workspaceState?.packages ?? [];
-  const activePackageId = workspaceState?.active_package_id ?? packages[0]?.id ?? null;
-  const coursePackage = packages.find((item) => item.id === activePackageId) ?? packages[0] ?? null;
+  const workspaceActivePackageId = workspaceState?.active_package_id ?? packages[0]?.id ?? null;
+  const selectedCoursePackage = selectedPackageId
+    ? packages.find((item) => item.id === selectedPackageId) ?? null
+    : null;
+  const coursePackage =
+    selectedCoursePackage ?? packages.find((item) => item.id === workspaceActivePackageId) ?? packages[0] ?? null;
   const standalonePackage = packages[0] ?? null;
-  const isStandaloneSelected = coursePackage?.id === standalonePackage?.id;
+  const isSelectedPackageStandalone = selectedCoursePackage?.id === standalonePackage?.id;
   const movablePackages = packages.filter((packageItem) => packageItem.id !== standalonePackage?.id);
   const lessons = coursePackage?.lessons ?? [];
   const resources = coursePackage?.resources ?? [];
-  const activeLesson =
-    lessons.find((lesson) => lesson.id === coursePackage?.active_lesson_id) ?? lessons[0] ?? null;
+  const feedLessons = packages.flatMap((packageItem) =>
+    packageItem.lessons.map((lesson) => ({
+      lesson,
+      packageTitle: packageItem.title,
+    }))
+  );
+  const feedResources = packages.flatMap((packageItem) =>
+    packageItem.resources.map((resource) => ({
+      resource,
+      packageTitle: packageItem.title,
+    }))
+  );
   const recentLessons = sortByUpdatedAt(lessons).slice(0, 6);
-  const selectedPackageLessons = sortByUpdatedAt(lessons).slice(0, 8);
+  const selectedPackageLessons = sortByUpdatedAt(selectedCoursePackage?.lessons ?? []);
+  const selectedPackageActiveLesson = selectedLessonId
+    ? selectedCoursePackage?.lessons.find((lesson) => lesson.id === selectedLessonId) ?? null
+    : null;
   const standaloneLessonItems: LessonShelfItem[] = sortByUpdatedAt(standalonePackage?.lessons ?? []).map((lesson) => ({
     lesson,
     packageId: standalonePackage?.id ?? "standalone",
@@ -448,34 +543,29 @@ export function LearningHome() {
     )
   );
 
-  const filteredMarketplace = FEATURED_MARKETPLACE.filter((course) =>
-    matchesQuery(deferredQuery, course.topic, course.summary, course.badge, course.details.join(" "))
+  const matchingOpenCourses = useMemo(() => searchOpenCourses(deferredQuery), [deferredQuery]);
+  const categoryFacetCounts = useMemo(
+    () => countOpenCourseFacet(matchingOpenCourses, (course) => course.category),
+    [matchingOpenCourses]
   );
+  const languageFacetCounts = useMemo(
+    () => countOpenCourseFacet(matchingOpenCourses, (course) => course.language),
+    [matchingOpenCourses]
+  );
+  const openCourseResults = useMemo(() => {
+    const facetedCourses = matchingOpenCourses.filter((course) => {
+      if (openCourseFacet.kind === "all") {
+        return true;
+      }
+      if (openCourseFacet.kind === "category") {
+        return course.category === openCourseFacet.value;
+      }
+      return course.language === openCourseFacet.value;
+    });
 
-  const quickResultLessons = standaloneLessonItems
-    .filter(({ lesson, packageTitle }) =>
-      matchesQuery(
-        deferredQuery,
-        lesson.title,
-        lesson.summary,
-        lesson.tags.join(" "),
-        lesson.board_document.content_text,
-        packageTitle
-      )
-    )
-    .slice(0, 3);
-
-  const quickResultResources = resources
-    .filter((resource) =>
-      matchesQuery(
-        deferredQuery,
-        resource.name,
-        resourceSummary(resource),
-        resource.outline.map((chapter) => `${chapter.title} ${chapter.summary}`).join(" "),
-        Object.keys(resource.concept_index).join(" ")
-      )
-    )
-    .slice(0, 2);
+    return sortOpenCourses(facetedCourses, openCourseSort);
+  }, [matchingOpenCourses, openCourseFacet, openCourseSort]);
+  const collectedOpenCourseCount = collectedCourseIds.size;
 
   const activity = buildActivitySummary(coursePackage);
   const latestLesson = recentLessons[0] ?? null;
@@ -485,10 +575,11 @@ export function LearningHome() {
     [...resources].sort(
       (left, right) => new Date(right.uploaded_at).getTime() - new Date(left.uploaded_at).getTime()
     )[0] ?? null;
-  const feedItems = buildRecentFeed(lessons, resources);
+  const feedItems = buildRecentFeed(feedLessons, feedResources);
   const visibleFeedItems = feedFilter === "all" ? feedItems : feedItems.filter((item) => item.kind === feedFilter);
 
   async function handleOpenLesson(lessonId: string) {
+    setSelectedLessonId(lessonId);
     setBusyKey(`lesson:${lessonId}`);
     setLessonMenuState(null);
     setLessonMoveMenuState(null);
@@ -560,13 +651,19 @@ export function LearningHome() {
   }
 
   async function handleOpenPackage(packageItem: CoursePackage) {
+    if (packageItem.id === selectedPackageId) {
+      setSelectedPackageId(null);
+      setSelectedLessonId(null);
+      setPackageLessonsExpanded(false);
+      return;
+    }
+
+    setSelectedPackageId(packageItem.id);
+    setSelectedLessonId(null);
+    setPackageLessonsExpanded(true);
     setBusyKey(`package:${packageItem.id}`);
 
     try {
-      if (packageItem.id === activePackageId) {
-        router.push("/studio");
-        return;
-      }
       const payload = await api.openPackage(packageItem.id);
       setWorkspaceState(payload);
       setError(null);
@@ -577,22 +674,100 @@ export function LearningHome() {
     }
   }
 
-  async function handleGenerateFromMarketplace(topic: string, cardId: string) {
-    setBusyKey(`market:${cardId}`);
+  async function handleRenameSelectedPackage() {
+    if (!selectedCoursePackage) {
+      return;
+    }
 
+    const nextTitle = window.prompt("请输入新的课程包名称", selectedCoursePackage.title);
+    if (!nextTitle?.trim() || nextTitle.trim() === selectedCoursePackage.title) {
+      return;
+    }
+
+    setBusyKey(`package:rename:${selectedCoursePackage.id}`);
     try {
-      await api.generateLesson(topic, coursePackage?.active_lesson_id ?? undefined, true);
-      router.push("/studio");
+      const payload = await api.renamePackage(selectedCoursePackage.id, nextTitle.trim());
+      setWorkspaceState(payload);
+      setError(null);
     } catch (actionError) {
-      setError(actionError instanceof Error ? actionError.message : "创建精品课程失败");
+      setError(actionError instanceof Error ? actionError.message : "重命名课程包失败");
     } finally {
       setBusyKey(null);
     }
   }
+
+  async function handleDeleteSelectedPackage() {
+    if (!selectedCoursePackage) {
+      return;
+    }
+
+    const lessonCount = selectedCoursePackage.lessons.length;
+    const message = lessonCount
+      ? `确定删除《${selectedCoursePackage.title}》吗？包内 ${lessonCount} 节单课也会一起删除。`
+      : `确定删除《${selectedCoursePackage.title}》吗？`;
+    if (typeof window !== "undefined" && !window.confirm(message)) {
+      return;
+    }
+
+    setBusyKey(`package:delete:${selectedCoursePackage.id}`);
+    try {
+      const payload = await api.deletePackage(selectedCoursePackage.id);
+      setWorkspaceState(payload);
+      setSelectedPackageId(null);
+      setSelectedLessonId(null);
+      setPackageLessonsExpanded(false);
+      setError(null);
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : "删除课程包失败");
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  async function handleShareSelectedPackage() {
+    if (!selectedCoursePackage || typeof window === "undefined") {
+      return;
+    }
+
+    const shareUrl = new URL(window.location.href);
+    shareUrl.searchParams.set("package", selectedCoursePackage.id);
+    const shareData = {
+      title: selectedCoursePackage.title,
+      text: `分享课程包：${selectedCoursePackage.title}`,
+      url: shareUrl.toString(),
+    };
+
+    try {
+      if (typeof navigator.share === "function") {
+        await navigator.share(shareData);
+        return;
+      }
+      window.prompt("复制课程包链接", shareData.url);
+    } catch (shareError) {
+      if (shareError instanceof DOMException && shareError.name === "AbortError") {
+        return;
+      }
+      setError(shareError instanceof Error ? shareError.message : "分享课程包失败");
+    }
+  }
+
+  function handleToggleCollectCourse(courseId: string) {
+    setCollectedCourseIds((current) => {
+      const next = new Set(current);
+      if (next.has(courseId)) {
+        next.delete(courseId);
+      } else {
+        next.add(courseId);
+      }
+      persistCollectedCourseIds(next);
+      return next;
+    });
+  }
+
   const feedFilters = [
     { id: "all" as const, label: "全部" },
-    { id: "commit" as const, label: "课程提交" },
-    { id: "resource" as const, label: "资料更新" },
+    { id: "commit" as const, label: "我的" },
+    { id: "resource" as const, label: "热门" },
   ];
 
   return (
@@ -603,8 +778,8 @@ export function LearningHome() {
         <div className="absolute bottom-[-8rem] right-32 h-72 w-72 rounded-full bg-emerald-200/30 blur-3xl" />
       </div>
 
-      <div className="relative mx-auto flex min-h-screen max-w-[1600px] flex-col lg:flex-row">
-        <aside className="border-b border-stone-200/80 bg-[#fcfbf8]/85 backdrop-blur lg:sticky lg:top-0 lg:h-screen lg:w-80 lg:border-b-0 lg:border-r">
+      <div className="relative flex min-h-screen w-full flex-col lg:flex-row">
+        <aside className="relative z-[90] border-b border-stone-200/80 bg-[#fcfbf8]/85 backdrop-blur lg:fixed lg:left-0 lg:top-0 lg:h-screen lg:w-80 lg:border-b-0 lg:border-r">
           <div className="flex h-full flex-col p-4 sm:p-5">
             <div className="mb-8 flex items-center justify-between px-2">
               <div>
@@ -641,60 +816,82 @@ export function LearningHome() {
               <div className="space-y-2">
                 {packages.length ? (
                   packages.map((packageItem) => {
-                    const isActive = packageItem.id === activePackageId;
+                    const isActive = packageItem.id === selectedPackageId;
                     const isBusy = busyKey === `package:${packageItem.id}`;
                     return (
-                      <button
-                        key={packageItem.id}
-                        type="button"
-                        onClick={() => void handleOpenPackage(packageItem)}
-                        className={clsx(
-                          "group w-full rounded-2xl border px-4 py-3 text-left transition",
-                          isActive
-                            ? "border-stone-950 bg-stone-950 text-white shadow-[0_18px_35px_rgba(23,23,23,0.14)]"
-                            : "border-transparent bg-white/75 text-stone-700 hover:border-stone-200 hover:bg-white"
-                        )}
-                      >
-                        <div className="flex items-start gap-3">
-                          <div
-                            className={clsx(
-                              "mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl border transition",
-                              isActive
-                                ? "border-white/10 bg-white/10 text-white"
-                                : "border-stone-200 bg-stone-100 text-stone-500 group-hover:text-stone-950"
-                            )}
-                          >
-                            {isBusy ? (
-                              <LoaderCircle className="h-4 w-4 animate-spin" />
-                            ) : (
-                              <FolderClosed className="h-4 w-4" />
-                            )}
-                          </div>
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-center justify-between gap-2">
-                              <p className="truncate text-sm font-semibold">{packageItem.title}</p>
-                              <span
-                                className={clsx(
-                                  "rounded-full px-2 py-0.5 text-[10px] font-semibold",
-                                  isActive ? "bg-white/10 text-white" : "bg-stone-100 text-stone-500"
-                                )}
-                              >
-                                {packageItem.lessons.length}
-                              </span>
-                            </div>
-                            <p
+                      <div key={packageItem.id} className="relative" data-package-selection-root>
+                        <button
+                          type="button"
+                          onClick={() => void handleOpenPackage(packageItem)}
+                          className={clsx(
+                            "group w-full rounded-2xl border px-4 py-3 text-left transition",
+                            isActive
+                              ? "border-stone-950 bg-stone-950 text-white shadow-[0_18px_35px_rgba(23,23,23,0.14)]"
+                              : "border-transparent bg-white/75 text-stone-700 hover:border-stone-200 hover:bg-white"
+                          )}
+                        >
+                          <div className="flex items-start gap-3">
+                            <div
                               className={clsx(
-                                "mt-1 line-clamp-2 text-xs leading-5",
-                                isActive ? "text-white/75" : "text-stone-500"
+                                "mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl border transition",
+                                isActive
+                                  ? "border-white/10 bg-white/10 text-white"
+                                  : "border-stone-200 bg-stone-100 text-stone-500 group-hover:text-stone-950"
                               )}
                             >
-                              {isActive
-                                ? "已选中，再点一次进入工作台。"
-                                : packageItem.summary || "空课程包，点一下先选中它。"}
-                            </p>
+                              {isBusy ? (
+                                <LoaderCircle className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <FolderClosed className="h-4 w-4" />
+                              )}
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center justify-between gap-2">
+                                <p className="truncate text-sm font-semibold">{packageItem.title}</p>
+                                <span className="flex shrink-0 items-center gap-1">
+                                  <span
+                                    className={clsx(
+                                      "rounded-full px-2 py-0.5 text-[10px] font-semibold",
+                                      isActive ? "bg-white/10 text-white" : "bg-stone-100 text-stone-500"
+                                    )}
+                                  >
+                                    {packageItem.lessons.length}
+                                  </span>
+                                  {isActive ? (
+                                    <ChevronDown
+                                      className={clsx(
+                                        "h-3.5 w-3.5 transition-transform",
+                                        packageLessonsExpanded ? "rotate-180" : "rotate-0"
+                                      )}
+                                    />
+                                  ) : null}
+                                </span>
+                              </div>
+                              <p
+                                className={clsx(
+                                  "mt-1 line-clamp-2 text-xs leading-5",
+                                  isActive ? "text-white/75" : "text-stone-500"
+                                )}
+                              >
+                                {isActive
+                                  ? packageLessonsExpanded
+                                    ? "已选中，右侧正在展示包内单课；再点可取消选中。"
+                                    : "已选中，再点可展开包内单课列表。"
+                                  : packageItem.summary || "空课程包，点一下先选中它。"}
+                              </p>
+                            </div>
                           </div>
-                        </div>
-                      </button>
+                        </button>
+
+                        {isActive && packageLessonsExpanded && selectedCoursePackage ? (
+                          <>
+                            <div className="mt-3 lg:hidden">{renderSelectedPackagePanel()}</div>
+                            <div className="absolute left-[calc(100%+0.875rem)] top-0 z-[120] hidden w-80 lg:block">
+                              {renderSelectedPackagePanel()}
+                            </div>
+                          </>
+                        ) : null}
+                      </div>
                     );
                   })
                 ) : (
@@ -732,12 +929,13 @@ export function LearningHome() {
                   ))
                 ) : filteredLessonItems.length ? (
                   filteredLessonItems.map(({ lesson }) => {
-                    const isActive = lesson.id === activeLesson?.id;
+                    const isActive = lesson.id === selectedLessonId;
                     const buttonBusy = busyKey === `lesson:${lesson.id}`;
                     const isMenuOpen = lessonMenuState?.lessonId === lesson.id;
                     return (
                       <article
                         key={lesson.id}
+                        data-lesson-selection-root
                         className={clsx(
                           "relative rounded-2xl border bg-white transition",
                           isActive
@@ -814,8 +1012,8 @@ export function LearningHome() {
             </div>
 
             <div className="mt-6 rounded-[24px] border border-stone-200 bg-white/85 p-3">
-              <button
-                type="button"
+              <Link
+                href="/profile"
                 className="flex w-full items-center gap-3 rounded-[18px] px-2 py-2 text-left transition hover:bg-stone-50"
               >
                 <div className="flex h-10 w-10 items-center justify-center rounded-full bg-stone-950 text-white">
@@ -825,22 +1023,18 @@ export function LearningHome() {
                   <p className="truncate text-sm font-semibold text-stone-950">个人工作区</p>
                   <p className="text-xs text-stone-400">产品主页 / 学习管理入口</p>
                 </div>
-              </button>
+              </Link>
             </div>
           </div>
         </aside>
 
-        <main className="relative flex-1 px-4 py-5 sm:px-6 lg:px-8 xl:pr-[25rem]">
+        <main className="relative flex-1 px-4 py-5 sm:px-6 lg:ml-80 lg:px-8 xl:pr-[25rem]">
           <div className="mx-auto max-w-4xl">
             {error ? (
               <div className="mb-6 rounded-[24px] border border-rose-200 bg-rose-50 px-5 py-4 text-sm text-rose-700">
                 {error}
               </div>
             ) : null}
-
-            <div className="mb-8 xl:hidden">
-              <div className="w-full max-w-sm">{renderNotificationPanel()}</div>
-            </div>
 
             <section className="mb-12">
               <div className="relative">
@@ -851,7 +1045,7 @@ export function LearningHome() {
                   type="text"
                   value={searchQuery}
                   onChange={(event) => setSearchQuery(event.target.value)}
-                  placeholder="搜索你的课程、笔记、资料或想学的主题..."
+                  placeholder="搜索别人的开源课程、作者、主题或知识方向..."
                   className="w-full rounded-[28px] border border-white/70 bg-white/80 py-4 pl-11 pr-24 text-sm text-stone-950 shadow-[0_18px_40px_rgba(15,23,42,0.06)] outline-none transition placeholder:text-stone-400 focus:border-stone-950 focus:bg-white"
                 />
                 <div className="pointer-events-none absolute inset-y-0 right-4 flex items-center">
@@ -860,74 +1054,12 @@ export function LearningHome() {
                   </span>
                 </div>
               </div>
-
-              {deferredQuery ? (
-                <div className="mt-4 rounded-[28px] border border-white/70 bg-white/80 p-4 shadow-[0_18px_40px_rgba(15,23,42,0.06)] backdrop-blur">
-                  <div className="mb-3 flex items-center justify-between">
-                    <p className="text-xs font-semibold uppercase tracking-[0.24em] text-stone-400">快速结果</p>
-                    <p className="text-xs text-stone-400">
-                      共 {quickResultLessons.length + quickResultResources.length + filteredMarketplace.length} 项
-                    </p>
-                  </div>
-
-                  <div className="space-y-2">
-                    {quickResultLessons.map(({ lesson, packageTitle, isPackaged }) => (
-                      <button
-                        key={lesson.id}
-                        type="button"
-                        onClick={() => void handleOpenLesson(lesson.id)}
-                        className="flex w-full items-center justify-between rounded-2xl bg-stone-50 px-4 py-3 text-left transition hover:bg-stone-100"
-                      >
-                        <div>
-                          <p className="text-sm font-medium text-stone-950">{lesson.title}</p>
-                          <p className="mt-1 text-xs text-stone-500">
-                            {isPackaged ? `已存入 ${packageTitle} · ` : ""}
-                            {lesson.summary}
-                          </p>
-                        </div>
-                        <span className="text-xs text-stone-400">课程</span>
-                      </button>
-                    ))}
-
-                    {quickResultResources.map((resource) => (
-                      <Link
-                        key={resource.id}
-                        href="/studio"
-                        className="flex items-center justify-between rounded-2xl bg-stone-50 px-4 py-3 transition hover:bg-stone-100"
-                      >
-                        <div>
-                          <p className="text-sm font-medium text-stone-950">{resource.name}</p>
-                          <p className="mt-1 text-xs text-stone-500">{resourceSummary(resource)}</p>
-                        </div>
-                        <span className="text-xs text-stone-400">资料</span>
-                      </Link>
-                    ))}
-
-                    {filteredMarketplace.slice(0, 2).map((course) => (
-                      <button
-                        key={course.id}
-                        type="button"
-                        onClick={() => void handleGenerateFromMarketplace(course.topic, course.id)}
-                        className="flex w-full items-center justify-between rounded-2xl bg-stone-50 px-4 py-3 text-left transition hover:bg-stone-100"
-                      >
-                        <div>
-                          <p className="text-sm font-medium text-stone-950">{course.topic}</p>
-                          <p className="mt-1 text-xs text-stone-500">{course.summary}</p>
-                        </div>
-                        <span className="text-xs text-stone-400">商城</span>
-                      </button>
-                    ))}
-
-                    {!quickResultLessons.length && !quickResultResources.length && !filteredMarketplace.length ? (
-                      <div className="rounded-2xl bg-stone-50 px-4 py-6 text-sm text-stone-500">
-                        没有找到匹配内容，可以直接去工作台创建一节新课。
-                      </div>
-                    ) : null}
-                  </div>
-                </div>
-              ) : null}
             </section>
 
+            {deferredQuery ? (
+              renderOpenCourseSearchResults()
+            ) : (
+              <>
             <section className="mb-12 rounded-[30px] border border-white/70 bg-white/80 p-6 shadow-[0_18px_50px_rgba(15,23,42,0.07)] backdrop-blur sm:p-7">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div>
@@ -1095,9 +1227,9 @@ export function LearningHome() {
 
                               <div className="mt-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                                 <div className="flex flex-wrap gap-2">
-                                  {item.pills.map((pill) => (
+                                  {item.pills.map((pill, pillIndex) => (
                                     <span
-                                      key={pill}
+                                      key={`${item.id}:pill:${pillIndex}:${pill}`}
                                       className="rounded-full bg-stone-100 px-3 py-1 text-[11px] font-medium text-stone-500"
                                     >
                                       {pill}
@@ -1138,6 +1270,8 @@ export function LearningHome() {
                 </div>
               </div>
             </section>
+              </>
+            )}
 
           </div>
         </main>
@@ -1236,6 +1370,384 @@ export function LearningHome() {
     </div>
   );
 
+  function renderOpenCourseSearchResults() {
+    const searchText = searchQuery.trim();
+    const activeFacetLabel = openCourseFacet.kind === "all" ? "全部开源课程" : openCourseFacet.value;
+    const totalStars = openCourseResults.reduce((sum, course) => sum + course.stars, 0);
+
+    return (
+      <section className="mb-12">
+        <div className="grid gap-5 lg:grid-cols-[15rem_minmax(0,1fr)] 2xl:grid-cols-[15rem_minmax(0,1fr)_18rem]">
+          <aside className="h-fit rounded-lg border border-stone-200 bg-white/88 p-3 shadow-[0_12px_28px_rgba(15,23,42,0.04)] backdrop-blur">
+            <div className="mb-3 flex items-center gap-2 px-2 text-sm font-semibold text-stone-950">
+              <Code2 className="h-4 w-4" />
+              <span>Filter by</span>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setOpenCourseFacet({ kind: "all" })}
+              className={clsx(
+                "flex w-full items-center justify-between rounded-md px-2 py-2 text-left text-sm transition",
+                openCourseFacet.kind === "all"
+                  ? "bg-stone-950 text-white"
+                  : "text-stone-700 hover:bg-stone-100 hover:text-stone-950"
+              )}
+            >
+              <span className="inline-flex items-center gap-2">
+                <BookOpen className="h-4 w-4" />
+                Open courses
+              </span>
+              <span
+                className={clsx(
+                  "rounded-full px-2 py-0.5 text-[10px]",
+                  openCourseFacet.kind === "all" ? "bg-white/12 text-white" : "bg-stone-100 text-stone-500"
+                )}
+              >
+                {matchingOpenCourses.length}
+              </span>
+            </button>
+
+            <div className="mt-4 border-t border-stone-200 pt-4">
+              <p className="px-2 text-xs font-semibold text-stone-500">课程方向</p>
+              <div className="mt-2 space-y-1">
+                {categoryFacetCounts.map((facet) => {
+                  const isActive = openCourseFacet.kind === "category" && openCourseFacet.value === facet.value;
+                  return (
+                    <button
+                      key={facet.value}
+                      type="button"
+                      onClick={() => setOpenCourseFacet({ kind: "category", value: facet.value })}
+                      className={clsx(
+                        "flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-sm transition",
+                        isActive ? "bg-stone-100 text-stone-950" : "text-stone-600 hover:bg-stone-50 hover:text-stone-950"
+                      )}
+                    >
+                      <span className="inline-flex items-center gap-2">
+                        <Layers className="h-3.5 w-3.5" />
+                        {facet.value}
+                      </span>
+                      <span className="text-xs text-stone-400">{facet.count}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="mt-4 border-t border-stone-200 pt-4">
+              <p className="px-2 text-xs font-semibold text-stone-500">语言 / 学科</p>
+              <div className="mt-2 space-y-1">
+                {languageFacetCounts.map((facet) => {
+                  const isActive = openCourseFacet.kind === "language" && openCourseFacet.value === facet.value;
+                  const sampleCourse = matchingOpenCourses.find((course) => course.language === facet.value);
+                  return (
+                    <button
+                      key={facet.value}
+                      type="button"
+                      onClick={() => setOpenCourseFacet({ kind: "language", value: facet.value })}
+                      className={clsx(
+                        "flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-sm transition",
+                        isActive ? "bg-stone-100 text-stone-950" : "text-stone-600 hover:bg-stone-50 hover:text-stone-950"
+                      )}
+                    >
+                      <span className="inline-flex min-w-0 items-center gap-2">
+                        <span
+                          className="h-2.5 w-2.5 shrink-0 rounded-full"
+                          style={{ backgroundColor: sampleCourse?.languageColor ?? "#94a3b8" }}
+                        />
+                        <span className="truncate">{facet.value}</span>
+                      </span>
+                      <span className="text-xs text-stone-400">{facet.count}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </aside>
+
+          <div className="min-w-0">
+            <div className="mb-4 flex flex-col gap-3 rounded-lg border border-stone-200 bg-white/88 px-4 py-3 shadow-[0_12px_28px_rgba(15,23,42,0.04)] backdrop-blur sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h2 className="text-base font-semibold text-stone-950">
+                  {openCourseResults.length.toLocaleString("zh-CN")} 个开源课程结果
+                </h2>
+                <p className="mt-1 text-xs text-stone-500">
+                  搜索 “{searchText}” · 当前筛选：{activeFacetLabel}
+                </p>
+              </div>
+
+              <label className="inline-flex items-center gap-2 text-xs font-medium text-stone-500">
+                Sort by
+                <select
+                  value={openCourseSort}
+                  onChange={(event) => setOpenCourseSort(event.target.value as OpenCourseSort)}
+                  className="rounded-md border border-stone-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-stone-700 outline-none transition focus:border-stone-950"
+                >
+                  <option value="best-match">Best match</option>
+                  <option value="stars">Most stars</option>
+                  <option value="updated">Recently updated</option>
+                </select>
+              </label>
+            </div>
+
+            <div className="space-y-3">
+              {openCourseResults.length ? (
+                openCourseResults.map((course) => {
+                  const isCollected = collectedCourseIds.has(course.id);
+                  return (
+                    <article
+                      key={course.id}
+                      className="rounded-lg border border-stone-200 bg-white/92 p-4 shadow-[0_12px_28px_rgba(15,23,42,0.04)] transition hover:border-stone-300 hover:bg-white"
+                    >
+                      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                        <div className="flex min-w-0 gap-3">
+                          <Image
+                            src={courseAvatarUrl(course)}
+                            alt=""
+                            className="mt-0.5 h-8 w-8 rounded-md border border-stone-200 bg-stone-100"
+                            width={32}
+                            height={32}
+                            unoptimized
+                          />
+
+                          <div className="min-w-0">
+                            <h3 className="truncate text-base font-semibold text-blue-600">
+                              {courseFullName(course)}
+                            </h3>
+                            <p className="mt-1 line-clamp-2 text-sm leading-6 text-stone-700">{course.summary}</p>
+
+                            <div className="mt-3 flex flex-wrap gap-1.5">
+                              {course.topics.map((topic) => (
+                                <span
+                                  key={`${course.id}:${topic}`}
+                                  className="rounded-full bg-sky-50 px-2.5 py-1 text-[11px] font-semibold text-sky-700"
+                                >
+                                  {topic}
+                                </span>
+                              ))}
+                            </div>
+
+                            <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-stone-500">
+                              <span className="inline-flex items-center gap-1.5">
+                                <span
+                                  className="h-2.5 w-2.5 rounded-full"
+                                  style={{ backgroundColor: course.languageColor }}
+                                />
+                                {course.language}
+                              </span>
+                              <span className="inline-flex items-center gap-1">
+                                <Star className="h-3.5 w-3.5" />
+                                {formatCompactNumber(course.stars)}
+                              </span>
+                              <span className="inline-flex items-center gap-1">
+                                <GitFork className="h-3.5 w-3.5" />
+                                {formatCompactNumber(course.forks)}
+                              </span>
+                              <span className="inline-flex items-center gap-1">
+                                <GraduationCap className="h-3.5 w-3.5" />
+                                {course.lessons} lessons
+                              </span>
+                              <span>{course.license}</span>
+                              <span>Updated {formatRelativeTime(course.updatedAt)}</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => handleToggleCollectCourse(course.id)}
+                          className={clsx(
+                            "inline-flex shrink-0 items-center justify-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-semibold transition",
+                            isCollected
+                              ? "border-amber-200 bg-amber-50 text-amber-700 hover:border-amber-300"
+                              : "border-stone-200 bg-white text-stone-700 hover:border-stone-300 hover:text-stone-950"
+                          )}
+                        >
+                          <Star className={clsx("h-3.5 w-3.5", isCollected && "fill-current")} />
+                          {isCollected ? "已收藏" : "收藏"}
+                        </button>
+                      </div>
+                    </article>
+                  );
+                })
+              ) : (
+                <div className="rounded-lg border border-dashed border-stone-300 bg-white/88 px-5 py-10 text-sm text-stone-500">
+                  没有找到匹配的开源课程。换个关键词，或清除左侧筛选后再试。
+                </div>
+              )}
+            </div>
+          </div>
+
+          <aside className="hidden h-fit space-y-3 2xl:block">
+            <div className="rounded-lg border border-stone-200 bg-white/88 p-4 shadow-[0_12px_28px_rgba(15,23,42,0.04)]">
+              <div className="flex items-center gap-2 text-sm font-semibold text-stone-950">
+                <Bookmark className="h-4 w-4 text-amber-500" />
+                收藏的开源课程
+              </div>
+              <p className="mt-2 text-sm leading-6 text-stone-600">
+                已收藏 {collectedOpenCourseCount} 个项目，可在个人主页继续查看和管理。
+              </p>
+              <Link
+                href="/profile"
+                className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-md border border-stone-200 bg-stone-50 px-3 py-2 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:bg-white hover:text-stone-950"
+              >
+                打开个人主页
+                <ArrowUpRight className="h-4 w-4" />
+              </Link>
+            </div>
+
+            <div className="rounded-lg border border-stone-200 bg-white/88 p-4 shadow-[0_12px_28px_rgba(15,23,42,0.04)]">
+              <div className="flex items-center gap-2 text-sm font-semibold text-stone-950">
+                <Eye className="h-4 w-4 text-sky-600" />
+                搜索概览
+              </div>
+              <dl className="mt-3 grid grid-cols-2 gap-3 text-sm">
+                <div>
+                  <dt className="text-xs text-stone-400">Stars</dt>
+                  <dd className="mt-1 font-semibold text-stone-900">{formatCompactNumber(totalStars)}</dd>
+                </div>
+                <div>
+                  <dt className="text-xs text-stone-400">Topics</dt>
+                  <dd className="mt-1 font-semibold text-stone-900">
+                    {new Set(openCourseResults.flatMap((course) => course.topics)).size}
+                  </dd>
+                </div>
+              </dl>
+            </div>
+          </aside>
+        </div>
+      </section>
+    );
+  }
+
+  function renderSelectedPackagePanel() {
+    if (!selectedCoursePackage) {
+      return null;
+    }
+    const isDeletingPackage = busyKey === `package:delete:${selectedCoursePackage.id}`;
+    const isRenamingPackage = busyKey === `package:rename:${selectedCoursePackage.id}`;
+    const packageActionBusy = isDeletingPackage || isRenamingPackage;
+
+    return (
+      <div className="w-full rounded-[28px] border border-white/80 bg-white/95 p-5 shadow-[0_18px_50px_rgba(15,23,42,0.1)] backdrop-blur">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-stone-400">
+              {isSelectedPackageStandalone ? "当前课池" : "当前课程包"}
+            </p>
+            <h4 className="mt-2 truncate text-lg font-semibold text-stone-950">{selectedCoursePackage.title}</h4>
+            <div className="mt-2 flex h-3.5 origin-left scale-[0.82] flex-nowrap items-center gap-0.5">
+              <button
+                type="button"
+                onClick={() => void handleDeleteSelectedPackage()}
+                disabled={packageActionBusy || packages.length <= 1}
+                className="inline-flex h-3.5 shrink-0 items-center gap-px rounded-full border border-rose-100 bg-rose-50 px-1 text-[8px] font-normal leading-none text-rose-600 transition hover:border-rose-200 hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-45"
+                title={packages.length <= 1 ? "至少保留一个课程包" : "删除课程包"}
+              >
+                {isDeletingPackage ? <LoaderCircle className="h-2 w-2 animate-spin" /> : <Trash2 className="h-2 w-2" />}
+                删除
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleShareSelectedPackage()}
+                disabled={packageActionBusy}
+                className="inline-flex h-3.5 shrink-0 items-center gap-px rounded-full border border-stone-200 bg-white px-1 text-[8px] font-normal leading-none text-stone-600 transition hover:border-stone-300 hover:text-stone-950 disabled:cursor-not-allowed disabled:opacity-45"
+                title="分享课程包"
+              >
+                <Share2 className="h-2 w-2" />
+                分享
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleRenameSelectedPackage()}
+                disabled={packageActionBusy}
+                className="inline-flex h-3.5 shrink-0 items-center gap-px rounded-full border border-stone-200 bg-white px-1 text-[8px] font-normal leading-none text-stone-600 transition hover:border-stone-300 hover:text-stone-950 disabled:cursor-not-allowed disabled:opacity-45"
+                title="重命名课程包"
+              >
+                {isRenamingPackage ? <LoaderCircle className="h-2 w-2 animate-spin" /> : <PencilLine className="h-2 w-2" />}
+                重命名
+              </button>
+            </div>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <span className="rounded-full bg-stone-100 px-2.5 py-1 text-[10px] font-semibold text-stone-600">
+              {selectedPackageLessons.length} 课
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                setSelectedPackageId(null);
+                setSelectedLessonId(null);
+                setPackageLessonsExpanded(false);
+              }}
+              className="flex h-8 w-8 items-center justify-center rounded-full border border-stone-200 bg-white text-stone-600 transition hover:border-stone-300 hover:text-stone-950"
+              aria-label="收起单课列表"
+              title="收起单课列表"
+            >
+              <ChevronDown className="h-4 w-4 rotate-180" />
+            </button>
+          </div>
+        </div>
+
+        <div className="mt-4">
+          <div className="custom-scrollbar max-h-[28rem] space-y-2 overflow-y-auto pr-1">
+            {selectedPackageLessons.length ? (
+              selectedPackageLessons.map((lesson) => {
+                const isPreviewActive = lesson.id === selectedPackageActiveLesson?.id;
+                const buttonBusy = busyKey === `lesson:${lesson.id}`;
+                return (
+                  <button
+                    key={lesson.id}
+                    type="button"
+                    data-lesson-selection-root
+                    onClick={() => void handleOpenLesson(lesson.id)}
+                    disabled={buttonBusy}
+                    className={clsx(
+                      "w-full rounded-2xl border px-3 py-3 text-left transition disabled:cursor-wait",
+                      isPreviewActive
+                        ? "border-stone-950 bg-stone-950 text-white"
+                        : "border-stone-200 bg-stone-50/90 text-stone-800 hover:border-stone-300 hover:bg-white"
+                    )}
+                  >
+                    <div className="flex items-start gap-3">
+                      <div
+                        className={clsx(
+                          "mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border",
+                          isPreviewActive
+                            ? "border-white/10 bg-white/10 text-white"
+                            : "border-stone-200 bg-white text-stone-500"
+                        )}
+                      >
+                        {buttonBusy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <BookText className="h-4 w-4" />}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="truncate text-sm font-semibold">{lesson.title}</p>
+                          <span className={clsx("shrink-0 text-[10px]", isPreviewActive ? "text-white/70" : "text-stone-400")}>
+                            {formatRelativeTime(lesson.updated_at)}
+                          </span>
+                        </div>
+                        <p className={clsx("mt-1 line-clamp-2 text-xs leading-5", isPreviewActive ? "text-white/75" : "text-stone-500")}>
+                          {lesson.summary || "已创建课程文档，等待继续补充内容。"}
+                        </p>
+                      </div>
+                    </div>
+                  </button>
+                );
+              })
+            ) : (
+              <div className="rounded-2xl border border-dashed border-stone-300 bg-stone-50/80 px-4 py-5 text-sm text-stone-500">
+                {isSelectedPackageStandalone
+                  ? "当前还没有未入包课程。去工作台新建后，这里会立即出现。"
+                  : "这个课程包还是空的，先把课程移动进来，或者进入工作台新建一页。"}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   function renderNotificationPanel() {
     return (
       <div className="flex flex-col items-end gap-4">
@@ -1249,8 +1761,8 @@ export function LearningHome() {
             <Bell className="h-5 w-5" />
             <span className="absolute right-2 top-2 h-2 w-2 rounded-full border border-white bg-rose-500" />
           </button>
-          <button
-            type="button"
+          <Link
+            href="/profile"
             className="h-11 w-11 overflow-hidden rounded-full border-2 border-white bg-stone-200 shadow-[0_10px_24px_rgba(15,23,42,0.08)] transition hover:scale-[1.03]"
             aria-label="用户头像"
           >
@@ -1262,7 +1774,7 @@ export function LearningHome() {
               height={44}
               unoptimized
             />
-          </button>
+          </Link>
         </div>
 
         {notificationOpen ? (
@@ -1322,87 +1834,6 @@ export function LearningHome() {
           </div>
         ) : null}
 
-        {coursePackage ? (
-          <div className="w-full rounded-[28px] border border-white/80 bg-white/92 p-5 shadow-[0_18px_50px_rgba(15,23,42,0.08)] backdrop-blur">
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-stone-400">
-                  {isStandaloneSelected ? "当前课池" : "当前课程包"}
-                </p>
-                <h4 className="mt-2 truncate text-lg font-semibold text-stone-950">{coursePackage.title}</h4>
-                <p className="mt-1 text-xs leading-5 text-stone-500">
-                  {isStandaloneSelected
-                    ? "这里展示当前未入包的单独课程列表。"
-                    : lessons.length
-                      ? `右侧已展开包内课程，当前共 ${lessons.length} 节。`
-                      : "这个课程包还是空的，等待你继续添加课程。"}
-                </p>
-              </div>
-              <span className="rounded-full bg-stone-100 px-2.5 py-1 text-[10px] font-semibold text-stone-600">
-                {lessons.length} 课
-              </span>
-            </div>
-
-            <div className="mt-4 space-y-2">
-              {selectedPackageLessons.length ? (
-                selectedPackageLessons.map((lesson) => {
-                  const isPreviewActive = lesson.id === activeLesson?.id;
-                  return (
-                    <div
-                      key={lesson.id}
-                      className={clsx(
-                        "rounded-2xl border px-3 py-3 transition",
-                        isPreviewActive
-                          ? "border-stone-950 bg-stone-950 text-white"
-                          : "border-stone-200 bg-stone-50/90 text-stone-800"
-                      )}
-                    >
-                      <div className="flex items-start gap-3">
-                        <div
-                          className={clsx(
-                            "mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border",
-                            isPreviewActive
-                              ? "border-white/10 bg-white/10 text-white"
-                              : "border-stone-200 bg-white text-stone-500"
-                          )}
-                        >
-                          <BookText className="h-4 w-4" />
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center justify-between gap-2">
-                            <p className="truncate text-sm font-semibold">{lesson.title}</p>
-                            <span
-                              className={clsx(
-                                "shrink-0 text-[10px]",
-                                isPreviewActive ? "text-white/70" : "text-stone-400"
-                              )}
-                            >
-                              {formatRelativeTime(lesson.updated_at)}
-                            </span>
-                          </div>
-                          <p
-                            className={clsx(
-                              "mt-1 line-clamp-2 text-xs leading-5",
-                              isPreviewActive ? "text-white/75" : "text-stone-500"
-                            )}
-                          >
-                            {lesson.summary || "已创建课程文档，等待继续补充内容。"}
-                          </p>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })
-              ) : (
-                <div className="rounded-2xl border border-dashed border-stone-300 bg-stone-50/80 px-4 py-5 text-sm text-stone-500">
-                  {isStandaloneSelected
-                    ? "当前还没有未入包课程。去工作台新建后，这里会立即出现。"
-                    : "这个课程包还是空的，先把课程移动进来，或者进入工作台新建一页。"}
-                </div>
-              )}
-            </div>
-          </div>
-        ) : null}
       </div>
     );
   }

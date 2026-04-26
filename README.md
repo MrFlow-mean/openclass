@@ -38,13 +38,23 @@ python3 -m venv .venv
 npm install
 ```
 
-### 2.5. 配置 OpenAI
+### 2.5. 配置模型厂商
 
-如果要启用真实 GPT 模型，请在运行前设置环境变量：
+如果要启用真实模型，请在运行前设置对应厂商的环境变量：
 
 ```bash
 export OPENAI_API_KEY=your_key_here
 export OPENAI_MODEL=gpt-5.3
+export OPENAI_REALTIME_MODEL=gpt-4o-realtime-preview
+export AI_TEXT_PROVIDER=openai
+export AI_REALTIME_PROVIDER=openai
+
+export ANTHROPIC_API_KEY=your_anthropic_key_here
+export ANTHROPIC_MODEL=claude-opus-4-7
+
+export GOOGLE_API_KEY=your_google_gemini_key_here
+export GOOGLE_TEXT_MODEL=gemini-3.1-pro-preview
+export GOOGLE_REALTIME_MODEL=gemini-3.1-flash-live-preview
 ```
 
 可选覆盖：
@@ -57,9 +67,12 @@ export OPENAI_TEACHER_MODEL=gpt-5.3
 export OPENAI_LESSON_MODEL=gpt-5.3
 export OPENAI_REALTIME_MODEL=gpt-4o-realtime-preview
 export OPENAI_REALTIME_VOICE=marin
+export AI_TEXT_PROVIDER=anthropic      # openai / anthropic / google
+export AI_REALTIME_PROVIDER=google     # openai / google
+export GOOGLE_REALTIME_VOICE=Aoede
 ```
 
-如果没有设置 `OPENAI_API_KEY`，后端会自动回退到当前内置的启发式逻辑，方便继续本地开发。
+学习页左侧对话框的“选择模型”按钮会读取 `/api/ai-models`，在文本生成里显示 OpenAI、Anthropic、Google，在实时语音里显示 OpenAI GPT-4o Realtime 和 Google Gemini Live。未设置对应 API Key 的厂商会显示为“未配置”。如果文本模型没有可用 Key，后端会自动回退到当前内置的启发式逻辑，方便继续本地开发。
 
 ### 3. 启动前后端
 
@@ -83,9 +96,9 @@ start-ai-board.command
 
 - 启动前端 `3000`
 - 启动后端 `8000`
-- 打开本地启动页 `launcher/ai-board-launcher.html`
+- 打开个人主页入口 `launcher/personal-home.html`
 
-这个启动页会把当前前端原样嵌进去，所以你看到的仍然是现有那套页面，不是另一套重写的静态页。
+学习页面也拆成了独立入口：`launcher/learning-page.html`。两个 HTML 文件都会把当前前端原样嵌进去，所以你看到的仍然是现有那套页面，不是另一套重写的静态页。
 
 ## 目录结构
 

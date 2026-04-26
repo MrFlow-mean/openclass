@@ -3,7 +3,7 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
-LAUNCHER_FILE="$PROJECT_DIR/launcher/ai-board-launcher.html"
+LAUNCHER_FILE="$PROJECT_DIR/launcher/personal-home.html"
 
 has_listener() {
   lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1

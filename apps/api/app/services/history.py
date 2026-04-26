@@ -84,4 +84,9 @@ def restore_commit(lesson: Lesson, commit_id: str, label: str) -> Lesson:
         label=label,
         message=f"Restored snapshot from {commit.label}",
         new_document=commit.snapshot,
+        metadata={
+            "kind": "restore_snapshot",
+            "restored_commit_id": commit.id,
+            "restored_commit_label": commit.label,
+        },
     )

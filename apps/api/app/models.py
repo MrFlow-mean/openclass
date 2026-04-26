@@ -63,6 +63,9 @@ BoardAction = Literal[
 ]
 SelectionKind = Literal["chat", "board"]
 ConversationRole = Literal["user", "assistant"]
+AIProvider = Literal["openai", "anthropic", "google"]
+AIModelCapability = Literal["text", "realtime"]
+AIRealtimeTransport = Literal["openai_webrtc", "gemini_live_websocket"]
 ResourceReferenceAction = Literal["confirm", "skip"]
 ResourceScanStrategy = Literal["outline_only", "heading_section", "page_window", "fulltext_match"]
 ChatInteractionMode = Literal["ask", "direct_edit"]
@@ -348,6 +351,28 @@ class ConversationTurn(BaseModel):
     content: str
 
 
+class AIModelSelection(BaseModel):
+    provider: AIProvider
+    model: str
+
+
+class AIModelOption(BaseModel):
+    provider: AIProvider
+    model: str
+    label: str
+    capability: AIModelCapability
+    enabled: bool = False
+    configured: bool = False
+    default: bool = False
+    transport: AIRealtimeTransport | None = None
+
+
+class AIModelCatalog(BaseModel):
+    text: list[AIModelOption] = Field(default_factory=list)
+    realtime: list[AIModelOption] = Field(default_factory=list)
+    defaults: dict[AIModelCapability, AIModelSelection]
+
+
 class ScopeOption(BaseModel):
     action: ScopeAction
     label: str
@@ -428,6 +453,7 @@ class BoardTeachingGuide(BaseModel):
 
 class ChatRequest(BaseModel):
     message: str
+    text_model: AIModelSelection | None = None
     selection: SelectionRef | None = None
     interaction_mode: ChatInteractionMode = "ask"
     scope_action: ScopeAction | None = None
@@ -489,6 +515,11 @@ class CreatePackageRequest(BaseModel):
     summary: str = ""
 
 
+class UpdatePackageRequest(BaseModel):
+    title: str | None = None
+    summary: str | None = None
+
+
 class MoveLessonRequest(BaseModel):
     target_package_id: str
 
@@ -510,6 +541,7 @@ class DocumentSaveRequest(BaseModel):
     document: BoardDocument
     label: str = "Manual document edit"
     message: str = "Saved rich document changes from the editor"
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class DocumentAIEditRequest(BaseModel):

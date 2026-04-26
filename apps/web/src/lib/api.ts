@@ -1,9 +1,12 @@
 import type {
+  AIModelCatalog,
   ChatRequestPayload,
   ChatResponse,
   CoursePackage,
   DocumentAIEditPayload,
   DocumentSavePayload,
+  GoogleRealtimeSessionPayload,
+  GoogleRealtimeSessionResponse,
   RealtimeConnectPayload,
   RealtimeConnectResponse,
   RealtimeEventLogPayload,
@@ -44,6 +47,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  getAIModels() {
+    return request<AIModelCatalog>("/api/ai-models");
+  },
   getWorkspace() {
     return request<WorkspaceState>("/api/workspace");
   },
@@ -58,6 +64,19 @@ export const api = {
   },
   openPackage(packageId: string) {
     return request<WorkspaceState>(`/api/packages/${packageId}/open`, {
+      method: "POST",
+    });
+  },
+  renamePackage(packageId: string, title: string) {
+    return request<WorkspaceState>(`/api/packages/${packageId}`, {
+      method: "POST",
+      body: JSON.stringify({
+        title,
+      }),
+    });
+  },
+  deletePackage(packageId: string) {
+    return request<WorkspaceState>(`/api/packages/${packageId}/delete`, {
       method: "POST",
     });
   },
@@ -91,6 +110,24 @@ export const api = {
     return request<CoursePackage>(`/api/lessons/${lessonId}/document/save`, {
       method: "POST",
       body: JSON.stringify(payload),
+    });
+  },
+  saveDocumentBeacon(lessonId: string, payload: DocumentSavePayload) {
+    if (typeof navigator === "undefined" || typeof navigator.sendBeacon !== "function") {
+      return false;
+    }
+    const blob = new Blob([JSON.stringify(payload)], { type: "text/plain;charset=UTF-8" });
+    return navigator.sendBeacon(`${getApiBase()}/api/lessons/${lessonId}/document/save-beacon`, blob);
+  },
+  saveDocumentKeepalive(lessonId: string, payload: DocumentSavePayload) {
+    return fetch(`${getApiBase()}/api/lessons/${lessonId}/document/save`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+      cache: "no-store",
+      keepalive: true,
     });
   },
   aiEditDocument(lessonId: string, payload: DocumentAIEditPayload) {
@@ -168,6 +205,12 @@ export const api = {
   },
   connectRealtime(lessonId: string, payload: RealtimeConnectPayload) {
     return request<RealtimeConnectResponse>(`/api/lessons/${lessonId}/realtime/connect`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
+  createGoogleRealtimeSession(lessonId: string, payload: GoogleRealtimeSessionPayload) {
+    return request<GoogleRealtimeSessionResponse>(`/api/lessons/${lessonId}/realtime/google/session`, {
       method: "POST",
       body: JSON.stringify(payload),
     });

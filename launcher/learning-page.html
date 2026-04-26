@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AI 黑板学习页面</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f4f8fb;
+        --panel: rgba(255, 255, 255, 0.92);
+        --border: rgba(148, 163, 184, 0.22);
+        --text: #0f172a;
+        --muted: #64748b;
+        --accent: #0ea5e9;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: var(--bg);
+        color: var(--text);
+        font-family: "Avenir Next", "PingFang SC", "Microsoft YaHei", sans-serif;
+      }
+
+      iframe {
+        display: block;
+        width: 100vw;
+        height: 100vh;
+        border: 0;
+        background: #fff;
+      }
+
+      .status {
+        position: fixed;
+        inset: 0;
+        z-index: 2;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+        background:
+          radial-gradient(circle at top, rgba(14, 165, 233, 0.08), transparent 32%),
+          var(--bg);
+        transition: opacity 0.25s ease, visibility 0.25s ease;
+      }
+
+      .status--hidden {
+        opacity: 0;
+        visibility: hidden;
+        pointer-events: none;
+      }
+
+      .status__panel {
+        width: min(580px, calc(100vw - 32px));
+        padding: 28px 28px 24px;
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        background: var(--panel);
+        box-shadow: 0 24px 64px rgba(15, 23, 42, 0.08);
+        backdrop-filter: blur(18px);
+      }
+
+      .status__eyebrow {
+        margin: 0 0 8px;
+        color: var(--accent);
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+
+      .status__title {
+        margin: 0;
+        font-size: 24px;
+        font-weight: 700;
+      }
+
+      .status__desc {
+        margin: 12px 0 0;
+        color: var(--muted);
+        font-size: 14px;
+        line-height: 1.7;
+      }
+
+      .status__actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 20px;
+      }
+
+      .status__button,
+      .status__link {
+        appearance: none;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 38px;
+        border: 1px solid rgba(14, 165, 233, 0.2);
+        border-radius: 999px;
+        background: rgba(14, 165, 233, 0.08);
+        color: #0369a1;
+        padding: 9px 14px;
+        font: inherit;
+        font-size: 13px;
+        text-decoration: none;
+        cursor: pointer;
+      }
+
+      .status__button:hover,
+      .status__link:hover {
+        background: rgba(14, 165, 233, 0.12);
+      }
+
+      .status__hint {
+        margin-top: 18px;
+        padding-top: 16px;
+        border-top: 1px solid rgba(148, 163, 184, 0.16);
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.7;
+      }
+
+      .status__meta {
+        margin-top: 14px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="status" id="status">
+      <div class="status__panel">
+        <p class="status__eyebrow">Learning Page</p>
+        <h1 class="status__title">AI 黑板学习页面</h1>
+        <p class="status__desc" id="statusText">正在连接本地前端服务…</p>
+        <div class="status__actions">
+          <button class="status__button" id="retryButton" type="button">重新检测</button>
+          <button class="status__button" id="openButton" type="button">直接打开学习页面</button>
+          <a class="status__link" href="./personal-home.html">切到个人主页</a>
+        </div>
+        <div class="status__hint">
+          这个文件是学习页面的独立 HTML 入口，会自动打开 Next.js 前端的课程工作台。<br />
+          个人主页已拆到单独的 <code>personal-home.html</code>。
+        </div>
+        <div class="status__meta" id="statusMeta"></div>
+      </div>
+    </div>
+
+    <iframe id="appFrame" title="AI 黑板学习页面"></iframe>
+
+    <script>
+      const candidates = ["http://127.0.0.1:3000", "http://localhost:3000"];
+      const targetPath = "/studio";
+      const targetLabel = "学习页面";
+      const statusEl = document.getElementById("status");
+      const statusTextEl = document.getElementById("statusText");
+      const statusMetaEl = document.getElementById("statusMeta");
+      const retryButton = document.getElementById("retryButton");
+      const openButton = document.getElementById("openButton");
+      const appFrame = document.getElementById("appFrame");
+
+      let activeUrl = candidates[0];
+      let probeToken = 0;
+      let retryTimer = null;
+
+      function targetUrl(baseUrl) {
+        return `${baseUrl}${targetPath}`;
+      }
+
+      function setStatus(text, meta) {
+        statusTextEl.textContent = text;
+        statusMetaEl.textContent = meta || "";
+        statusEl.classList.remove("status--hidden");
+      }
+
+      function hideStatus() {
+        statusEl.classList.add("status--hidden");
+      }
+
+      function openAppDirectly() {
+        window.open(targetUrl(activeUrl), "_blank", "noopener,noreferrer");
+      }
+
+      function ensureRetryLoop() {
+        if (retryTimer !== null) {
+          return;
+        }
+        retryTimer = window.setInterval(() => {
+          connect();
+        }, 2500);
+      }
+
+      function stopRetryLoop() {
+        if (retryTimer === null) {
+          return;
+        }
+        window.clearInterval(retryTimer);
+        retryTimer = null;
+      }
+
+      function probe(url, timeoutMs) {
+        return new Promise((resolve) => {
+          const image = new Image();
+          let done = false;
+          const timer = setTimeout(() => finish(false), timeoutMs);
+
+          function finish(ok) {
+            if (done) {
+              return;
+            }
+            done = true;
+            clearTimeout(timer);
+            resolve(ok);
+          }
+
+          image.onload = () => finish(true);
+          image.onerror = () => finish(false);
+          image.src = `${url}/favicon.ico?ts=${Date.now()}`;
+        });
+      }
+
+      async function connect() {
+        const currentToken = ++probeToken;
+        setStatus(`正在连接本地前端服务，准备打开${targetLabel}…`, "优先检测 127.0.0.1:3000，其次 localhost:3000");
+
+        for (const url of candidates) {
+          const ok = await probe(url, 1200);
+          if (currentToken !== probeToken) {
+            return;
+          }
+          if (ok) {
+            activeUrl = url;
+            const nextUrl = targetUrl(url);
+            if (appFrame.dataset.activeUrl !== nextUrl) {
+              appFrame.src = nextUrl;
+              appFrame.dataset.activeUrl = nextUrl;
+            }
+            stopRetryLoop();
+            hideStatus();
+            return;
+          }
+        }
+
+        activeUrl = candidates[0];
+        ensureRetryLoop();
+        setStatus(
+          "还没有检测到本地前端服务。",
+          "先双击 start-ai-board.command，或在项目目录运行 npm run dev。这个入口会继续自动重试。"
+        );
+      }
+
+      retryButton.addEventListener("click", connect);
+      openButton.addEventListener("click", openAppDirectly);
+      appFrame.addEventListener("load", hideStatus);
+
+      ensureRetryLoop();
+      connect();
+    </script>
+  </body>
+</html>

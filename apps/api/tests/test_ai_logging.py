@@ -1,10 +1,11 @@
 import json
 
 import pytest
+from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
 import app.main as main_module
-from app.models import ChatRequest, CreateBranchRequest
+from app.models import ChatRequest, CreateBranchRequest, DocumentSaveRequest
 from app.services.ai_logging import ai_log_context, ai_usage_logger
 from app.services.course_store import FileCourseStore
 from app.services.openai_course_ai import OpenAICourseAI
@@ -165,6 +166,73 @@ def test_chat_route_logs_request_and_response(monkeypatch: pytest.MonkeyPatch, i
     )
     branched_lesson = next(lesson for lesson in branched_package.lessons if lesson.id == lesson_id)
     assert branched_lesson.history_graph.branches["flow-branch"].base_commit_id == flow_commit.id
+
+
+def test_document_save_route_keeps_autosave_metadata(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    store = FileCourseStore(tmp_path / "store.json")
+    monkeypatch.setattr(main_module, "STORE", store)
+
+    workspace = store.load()
+    lesson = workspace.packages[0].lessons[0]
+    document = lesson.board_document.model_copy(deep=True)
+    document.content_html = "<p>自动保存后的内容</p>"
+    document.content_text = "自动保存后的内容"
+
+    package = main_module.save_document(
+        lesson.id,
+        DocumentSaveRequest(
+            document=document,
+            label="Auto Save",
+            message="Auto-saved Word-like rich document changes from the editor",
+            metadata={
+                "kind": "auto_document_save",
+                "autosave": True,
+                "autosave_reason": "pagehide",
+                "source": "word_board_editor",
+            },
+        ),
+    )
+
+    updated_lesson = next(current for current in package.lessons if current.id == lesson.id)
+    commit = updated_lesson.history_graph.commits[-1]
+    assert commit.snapshot.content_text == "自动保存后的内容"
+    assert commit.metadata["kind"] == "auto_document_save"
+    assert commit.metadata["autosave"] is True
+    assert commit.metadata["autosave_reason"] == "pagehide"
+
+
+def test_document_save_beacon_accepts_plain_text_json(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    store = FileCourseStore(tmp_path / "store.json")
+    monkeypatch.setattr(main_module, "STORE", store)
+
+    workspace = store.load()
+    lesson = workspace.packages[0].lessons[0]
+    document = lesson.board_document.model_copy(deep=True)
+    document.content_html = "<p>关闭页面前保存</p>"
+    document.content_text = "关闭页面前保存"
+    save_request = DocumentSaveRequest(
+        document=document,
+        label="Auto Save",
+        message="Auto-saved Word-like rich document changes from the editor",
+        metadata={
+            "kind": "auto_document_save",
+            "autosave": True,
+            "autosave_reason": "pagehide",
+        },
+    )
+
+    response = TestClient(main_module.app).post(
+        f"/api/lessons/{lesson.id}/document/save-beacon",
+        content=save_request.model_dump_json(),
+        headers={"content-type": "text/plain;charset=UTF-8"},
+    )
+
+    assert response.status_code == 200
+    updated_lesson = next(current for current in response.json()["lessons"] if current["id"] == lesson.id)
+    commit = updated_lesson["history_graph"]["commits"][-1]
+    assert commit["snapshot"]["content_text"] == "关闭页面前保存"
+    assert commit["metadata"]["autosave"] is True
+    assert commit["metadata"]["autosave_reason"] == "pagehide"
 
 
 def test_chat_route_reuses_workflow_runtime_without_extra_refresh(

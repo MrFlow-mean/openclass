@@ -3,6 +3,13 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
+import urllib.error
+import urllib.parse
+import urllib.request
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 from typing import Any
 
 from dotenv import load_dotenv
@@ -10,6 +17,8 @@ from openai import OpenAI
 from pydantic import BaseModel, Field
 
 from app.models import (
+    AIModelSelection,
+    AIProvider,
     BoardDecision,
     BoardDocument,
     BoardTeachingGuide,
@@ -25,16 +34,47 @@ from app.models import (
     now_iso,
 )
 from app.services.ai_logging import ai_usage_logger
+from app.services.ai_model_catalog import (
+    ANTHROPIC_DEFAULT_TEXT_MODEL,
+    GOOGLE_DEFAULT_TEXT_MODEL,
+    default_text_selection,
+)
 from app.services.lesson_factory import slugify
 from app.services.rich_document import build_document
 
 logger = logging.getLogger(__name__)
 load_dotenv()
 DEFAULT_TEXT_MODEL = "gpt-5-mini"
+_text_model_selection: ContextVar[AIModelSelection | None] = ContextVar(
+    "text_model_selection", default=None
+)
 
 
 def _json(data: Any) -> str:
     return json.dumps(data, ensure_ascii=False, indent=2)
+
+
+def _compact_json(data: Any) -> str:
+    return json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+
+
+def _extract_json_object(text: str) -> Any:
+    stripped = text.strip()
+    if not stripped:
+        raise ValueError("Empty model response")
+    if stripped.startswith("```"):
+        stripped = re.sub(r"^```(?:json)?\s*", "", stripped, flags=re.IGNORECASE)
+        stripped = re.sub(r"\s*```$", "", stripped)
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        pass
+
+    start = stripped.find("{")
+    end = stripped.rfind("}")
+    if start >= 0 and end > start:
+        return json.loads(stripped[start : end + 1])
+    raise ValueError("Model response did not contain a JSON object")
 
 
 def _redact_reference_payload(reference: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -79,6 +119,23 @@ class GeneratedLessonDocument(BaseModel):
     content_json: dict[str, Any] = Field(default_factory=lambda: {"type": "doc", "content": [{"type": "paragraph"}]})
 
 
+@dataclass
+class ParsedAIResponse:
+    output_parsed: BaseModel
+    id: str | None = None
+    output_text: str | None = None
+    usage: Any = None
+
+
+@contextmanager
+def bind_text_model_selection(selection: AIModelSelection | None):
+    token = _text_model_selection.set(selection)
+    try:
+        yield
+    finally:
+        _text_model_selection.reset(token)
+
+
 class OpenAIConfig(BaseModel):
     api_key: str | None = Field(default_factory=lambda: os.getenv("OPENAI_API_KEY"))
     base_url: str | None = Field(default_factory=lambda: os.getenv("OPENAI_BASE_URL"))
@@ -99,22 +156,193 @@ class OpenAIConfig(BaseModel):
         return value or self.default_model
 
 
+class AnthropicConfig(BaseModel):
+    api_key: str | None = Field(default_factory=lambda: os.getenv("ANTHROPIC_API_KEY"))
+    base_url: str = Field(default_factory=lambda: os.getenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com"))
+    default_model: str = Field(default_factory=lambda: os.getenv("ANTHROPIC_MODEL", ANTHROPIC_DEFAULT_TEXT_MODEL))
+    api_version: str = Field(default_factory=lambda: os.getenv("ANTHROPIC_VERSION", "2023-06-01"))
+    max_tokens: int = Field(default_factory=lambda: int(os.getenv("ANTHROPIC_MAX_TOKENS", "12000")))
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.api_key)
+
+
+class GoogleTextConfig(BaseModel):
+    api_key: str | None = Field(default_factory=lambda: os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"))
+    base_url: str = Field(
+        default_factory=lambda: os.getenv(
+            "GOOGLE_GENERATIVE_LANGUAGE_BASE_URL",
+            "https://generativelanguage.googleapis.com",
+        )
+    )
+    default_model: str = Field(default_factory=lambda: os.getenv("GOOGLE_TEXT_MODEL", GOOGLE_DEFAULT_TEXT_MODEL))
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.api_key)
+
+
+class AnthropicTextClient:
+    def __init__(self, config: AnthropicConfig) -> None:
+        self.config = config
+
+    def parse(
+        self,
+        *,
+        model: str,
+        system_prompt: str,
+        user_prompt: str,
+        schema: type[BaseModel],
+    ) -> ParsedAIResponse:
+        if not self.config.api_key:
+            raise RuntimeError("Anthropic is not configured")
+
+        tool_schema = schema.model_json_schema()
+        payload = {
+            "model": model,
+            "max_tokens": self.config.max_tokens,
+            "system": (
+                f"{system_prompt}\n\n"
+                "Return the final answer by calling the return_result tool. "
+                "Do not put the JSON in normal text."
+            ),
+            "messages": [{"role": "user", "content": user_prompt}],
+            "tools": [
+                {
+                    "name": "return_result",
+                    "description": f"Return the {schema.__name__} object.",
+                    "input_schema": tool_schema,
+                }
+            ],
+            "tool_choice": {"type": "tool", "name": "return_result"},
+        }
+        raw = self._post_json("/v1/messages", payload)
+        parsed_payload: Any | None = None
+        output_text_parts: list[str] = []
+        for block in raw.get("content", []):
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "tool_use" and block.get("name") == "return_result":
+                parsed_payload = block.get("input")
+            if block.get("type") == "text" and isinstance(block.get("text"), str):
+                output_text_parts.append(block["text"])
+        output_text = "\n".join(output_text_parts)
+        if parsed_payload is None:
+            parsed_payload = _extract_json_object(output_text)
+        return ParsedAIResponse(
+            output_parsed=schema.model_validate(parsed_payload),
+            id=raw.get("id"),
+            output_text=output_text or _compact_json(parsed_payload),
+            usage=raw.get("usage"),
+        )
+
+    def _post_json(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        data = json.dumps(payload).encode("utf-8")
+        request = urllib.request.Request(
+            f"{self.config.base_url.rstrip('/')}{path}",
+            data=data,
+            headers={
+                "content-type": "application/json",
+                "anthropic-version": self.config.api_version,
+                "x-api-key": self.config.api_key or "",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=120) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"Anthropic API error {exc.code}: {body}") from exc
+
+
+class GoogleTextClient:
+    def __init__(self, config: GoogleTextConfig) -> None:
+        self.config = config
+
+    def parse(
+        self,
+        *,
+        model: str,
+        system_prompt: str,
+        user_prompt: str,
+        schema: type[BaseModel],
+    ) -> ParsedAIResponse:
+        if not self.config.api_key:
+            raise RuntimeError("Google Gemini is not configured")
+
+        payload = {
+            "systemInstruction": {"parts": [{"text": system_prompt}]},
+            "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
+            "generationConfig": {
+                "responseMimeType": "application/json",
+                "responseJsonSchema": schema.model_json_schema(),
+            },
+        }
+        normalized_model = model.removeprefix("models/")
+        path_model = urllib.parse.quote(normalized_model, safe="")
+        raw = self._post_json(f"/v1beta/models/{path_model}:generateContent", payload)
+        candidates = raw.get("candidates") or []
+        first_candidate = candidates[0] if candidates else {}
+        content = first_candidate.get("content") if isinstance(first_candidate, dict) else {}
+        parts = content.get("parts") if isinstance(content, dict) else []
+        output_text = "\n".join(
+            part.get("text", "") for part in parts if isinstance(part, dict) and isinstance(part.get("text"), str)
+        )
+        parsed_payload = _extract_json_object(output_text)
+        return ParsedAIResponse(
+            output_parsed=schema.model_validate(parsed_payload),
+            id=raw.get("responseId"),
+            output_text=output_text,
+            usage=raw.get("usageMetadata"),
+        )
+
+    def _post_json(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        data = json.dumps(payload).encode("utf-8")
+        separator = "&" if "?" in path else "?"
+        url = f"{self.config.base_url.rstrip('/')}{path}{separator}key={urllib.parse.quote(self.config.api_key or '')}"
+        request = urllib.request.Request(
+            url,
+            data=data,
+            headers={"content-type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=120) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"Google Gemini API error {exc.code}: {body}") from exc
+
+
 class OpenAICourseAI:
     def __init__(self) -> None:
         self.config = OpenAIConfig()
+        self.anthropic_config = AnthropicConfig()
+        self.google_config = GoogleTextConfig()
         self.client = (
             OpenAI(api_key=self.config.api_key, base_url=self.config.base_url)
             if self.config.enabled
             else None
         )
+        self.anthropic_client = (
+            AnthropicTextClient(self.anthropic_config) if self.anthropic_config.enabled else None
+        )
+        self.google_client = GoogleTextClient(self.google_config) if self.google_config.enabled else None
 
     @property
     def enabled(self) -> bool:
-        return self.client is not None
+        return any([self.client is not None, self.anthropic_client is not None, self.google_client is not None])
 
     def status(self) -> dict[str, Any]:
         return {
             "enabled": self.enabled,
+            "providers": {
+                "openai": self.client is not None,
+                "anthropic": self.anthropic_client is not None,
+                "google": self.google_client is not None,
+            },
             "models": {
                 "pm": self.config.model_for("pm"),
                 "board": self.config.model_for("board"),
@@ -124,7 +352,33 @@ class OpenAICourseAI:
             },
         }
 
-    def _call_parse(self, *, model: str, system_prompt: str, user_prompt: str, schema: type[BaseModel]):
+    def _call_parse(
+        self,
+        *,
+        provider: AIProvider,
+        model: str,
+        system_prompt: str,
+        user_prompt: str,
+        schema: type[BaseModel],
+    ):
+        if provider == "anthropic":
+            if not self.anthropic_client:
+                raise RuntimeError("Anthropic is not configured")
+            return self.anthropic_client.parse(
+                model=model,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                schema=schema,
+            )
+        if provider == "google":
+            if not self.google_client:
+                raise RuntimeError("Google Gemini is not configured")
+            return self.google_client.parse(
+                model=model,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                schema=schema,
+            )
         assert self.client is not None
         return self.client.responses.parse(
             model=model,
@@ -134,6 +388,28 @@ class OpenAICourseAI:
             ],
             text_format=schema,
         )
+
+    def _model_for(self, role: str) -> tuple[AIProvider, str]:
+        selection = _text_model_selection.get()
+        if selection:
+            return selection.provider, selection.model
+
+        default_selection = default_text_selection()
+        if default_selection.provider == "anthropic":
+            return "anthropic", default_selection.model or self.anthropic_config.default_model
+        if default_selection.provider == "google":
+            return "google", default_selection.model or self.google_config.default_model
+        return "openai", self.config.model_for(role)
+
+    def _log_event_name(self, provider: AIProvider, suffix: str) -> str:
+        return f"{provider}_text_call{suffix}"
+
+    def _provider_available(self, provider: AIProvider) -> bool:
+        if provider == "anthropic":
+            return self.anthropic_client is not None
+        if provider == "google":
+            return self.google_client is not None
+        return self.client is not None
 
     def _fallback_model_for(self, exc: Exception, attempted_model: str) -> str | None:
         fallback_model = self.config.fallback_model.strip()
@@ -161,17 +437,18 @@ class OpenAICourseAI:
         *,
         log_user_prompt: str | None = None,
     ):
-        requested_model = self.config.model_for(role)
+        provider, requested_model = self._model_for(role)
         call_details = {
+            "provider": provider,
             "role": role,
             "model": requested_model,
             "schema": schema.__name__,
             "system_prompt": system_prompt,
             "user_prompt": log_user_prompt or user_prompt,
         }
-        if not self.client:
+        if not self._provider_available(provider):
             ai_usage_logger.log_event(
-                "openai_text_call_skipped",
+                self._log_event_name(provider, "_skipped"),
                 **call_details,
                 reason="client_disabled",
             )
@@ -179,13 +456,14 @@ class OpenAICourseAI:
 
         try:
             response = self._call_parse(
+                provider=provider,
                 model=requested_model,
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 schema=schema,
             )
             ai_usage_logger.log_event(
-                "openai_text_call",
+                self._log_event_name(provider, ""),
                 **call_details,
                 response_id=getattr(response, "id", None),
                 output_text=getattr(response, "output_text", None),
@@ -194,23 +472,24 @@ class OpenAICourseAI:
             )
             return response.output_parsed
         except Exception as exc:  # pragma: no cover - network/runtime dependent
-            fallback_model = self._fallback_model_for(exc, requested_model)
+            fallback_model = self._fallback_model_for(exc, requested_model) if provider == "openai" else None
             if fallback_model:
                 ai_usage_logger.log_event(
-                    "openai_text_call_retry",
+                    self._log_event_name(provider, "_retry"),
                     **call_details,
                     retry_model=fallback_model,
                     error=str(exc),
                 )
                 try:
                     response = self._call_parse(
+                        provider=provider,
                         model=fallback_model,
                         system_prompt=system_prompt,
                         user_prompt=user_prompt,
                         schema=schema,
                     )
                     ai_usage_logger.log_event(
-                        "openai_text_call",
+                        self._log_event_name(provider, ""),
                         **{**call_details, "model": fallback_model},
                         fallback_from_model=requested_model,
                         response_id=getattr(response, "id", None),
@@ -221,7 +500,7 @@ class OpenAICourseAI:
                     return response.output_parsed
                 except Exception as retry_exc:  # pragma: no cover - network/runtime dependent
                     ai_usage_logger.log_event(
-                        "openai_text_call_error",
+                        self._log_event_name(provider, "_error"),
                         **{**call_details, "model": fallback_model},
                         fallback_from_model=requested_model,
                         error=str(retry_exc),
@@ -234,11 +513,11 @@ class OpenAICourseAI:
                     )
                     return None
             ai_usage_logger.log_event(
-                "openai_text_call_error",
+                self._log_event_name(provider, "_error"),
                 **call_details,
                 error=str(exc),
             )
-            logger.warning("OpenAI %s call failed, falling back to heuristic flow: %s", role, exc)
+            logger.warning("%s %s call failed, falling back to heuristic flow: %s", provider, role, exc)
             return None
 
     def generate_learning_requirements(
