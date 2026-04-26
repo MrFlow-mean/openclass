@@ -169,6 +169,7 @@ export interface ResourceLibraryItem {
   resource_type: string;
   size_bytes: number;
   uploaded_at: string;
+  scope_lesson_id?: string | null;
   outline: LibraryChapter[];
   concept_index: Record<string, string[]>;
   extracted_text_available: boolean;

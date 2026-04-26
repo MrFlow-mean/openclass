@@ -19,7 +19,7 @@ from app.services.ai_logging import ai_usage_logger, log_ai_interaction_message
 from app.services.ai_model_catalog import default_realtime_selection
 from app.services.openai_realtime import google_realtime_teacher, openai_realtime_teacher
 from app.services.route_context import bind_ai_request_context
-from app.services.workspace_state import get_lesson, load_workspace_package
+from app.services.workspace_state import find_lesson_package, load_workspace
 
 router = APIRouter()
 
@@ -44,8 +44,8 @@ def connect_realtime_session(
     if not openai_realtime_teacher.enabled:
         raise HTTPException(status_code=503, detail="OpenAI Realtime is not configured")
 
-    _, package = load_workspace_package()
-    lesson = get_lesson(package, lesson_id)
+    workspace = load_workspace()
+    _, lesson = find_lesson_package(workspace, lesson_id)
     with bind_ai_request_context(
         "/api/lessons/{lesson_id}/realtime/connect",
         lesson=lesson,
@@ -99,8 +99,8 @@ def create_google_realtime_session(
     if not google_realtime_teacher.enabled:
         raise HTTPException(status_code=503, detail="Google Gemini Live is not configured")
 
-    _, package = load_workspace_package()
-    lesson = get_lesson(package, lesson_id)
+    workspace = load_workspace()
+    _, lesson = find_lesson_package(workspace, lesson_id)
     with bind_ai_request_context(
         "/api/lessons/{lesson_id}/realtime/google/session",
         lesson=lesson,

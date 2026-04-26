@@ -276,9 +276,12 @@ export const api = {
     const blob = new Blob([JSON.stringify(payload)], { type: "application/json" });
     return navigator.sendBeacon(`${getApiBase()}/api/lessons/${lessonId}/realtime/events`, blob);
   },
-  async uploadResource(file: File) {
+  async uploadResource(file: File, lessonId?: string | null) {
     const formData = new FormData();
     formData.append("file", file);
+    if (lessonId) {
+      formData.append("lesson_id", lessonId);
+    }
     const response = await fetch(`${getApiBase()}/api/resources/upload`, {
       method: "POST",
       body: formData,
@@ -289,6 +292,12 @@ export const api = {
       throw new Error(text || `Upload failed with ${response.status}`);
     }
     return response.json() as Promise<CoursePackage>;
+  },
+  deleteResource(resourceId: string, lessonId?: string | null) {
+    const query = lessonId ? `?lesson_id=${encodeURIComponent(lessonId)}` : "";
+    return request<CoursePackage>(`/api/resources/${resourceId}/delete${query}`, {
+      method: "POST",
+    });
   },
   runScopeAction(
     lessonId: string,

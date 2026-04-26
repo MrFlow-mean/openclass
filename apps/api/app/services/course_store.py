@@ -22,7 +22,7 @@ from app.models import (
 from app.services.lesson_factory import create_lesson
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class SqliteCourseStore:
@@ -181,6 +181,7 @@ class SqliteCourseStore:
                 resource_type TEXT NOT NULL,
                 size_bytes INTEGER NOT NULL,
                 uploaded_at TEXT NOT NULL,
+                scope_lesson_id TEXT,
                 concept_index_json TEXT NOT NULL,
                 extracted_text_available INTEGER NOT NULL,
                 text_content TEXT,
@@ -212,10 +213,19 @@ class SqliteCourseStore:
             );
             """
         )
+        self._migrate_schema(conn)
         conn.execute(
             "INSERT OR REPLACE INTO schema_meta(key, value) VALUES (?, ?)",
             ("schema_version", str(SCHEMA_VERSION)),
         )
+
+    def _migrate_schema(self, conn: sqlite3.Connection) -> None:
+        resource_columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(resources)").fetchall()
+        }
+        if "scope_lesson_id" not in resource_columns:
+            conn.execute("ALTER TABLE resources ADD COLUMN scope_lesson_id TEXT")
 
     def _has_packages(self, conn: sqlite3.Connection) -> bool:
         row = conn.execute("SELECT 1 FROM course_packages LIMIT 1").fetchone()
@@ -396,6 +406,7 @@ class SqliteCourseStore:
             resource_type=row["resource_type"],
             size_bytes=row["size_bytes"],
             uploaded_at=row["uploaded_at"],
+            scope_lesson_id=row["scope_lesson_id"],
             outline=chapters,
             concept_index=_loads(row["concept_index_json"], {}),
             extracted_text_available=bool(row["extracted_text_available"]),
@@ -571,8 +582,8 @@ class SqliteCourseStore:
             """
             INSERT INTO resources(
                 id, package_id, sort_order, name, mime_type, resource_type, size_bytes,
-                uploaded_at, concept_index_json, extracted_text_available, text_content, source_path
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                uploaded_at, scope_lesson_id, concept_index_json, extracted_text_available, text_content, source_path
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 resource.id,
@@ -583,6 +594,7 @@ class SqliteCourseStore:
                 resource.resource_type,
                 resource.size_bytes,
                 resource.uploaded_at,
+                resource.scope_lesson_id,
                 _dumps(resource.concept_index),
                 int(resource.extracted_text_available),
                 resource.text_content,

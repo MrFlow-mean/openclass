@@ -415,7 +415,9 @@ def test_chat_route_hides_reference_box_for_explanation_only_turn(
         "# 勾股定理\n勾股定理说明直角三角形两条直角边的平方和等于斜边的平方。\n\n## 应用\n可以用来计算距离。",
         encoding="utf-8",
     )
-    package.resources.append(build_resource_item(resource_path, "勾股定理笔记.md"))
+    resource = build_resource_item(resource_path, "勾股定理笔记.md")
+    resource.scope_lesson_id = package.lessons[0].id
+    package.resources.append(resource)
     store.save(workspace)
 
     lesson_id = store.load().packages[0].lessons[0].id

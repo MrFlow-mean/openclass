@@ -19,15 +19,18 @@ import {
 } from "lucide-react";
 
 import {
+  FOLLOWED_CREATORS,
   FOLLOWED_UPDATE_KIND_LABELS,
   buildFollowedCourseUpdateItems,
   creatorAvatarUrl,
   updateCoverUrl,
+  type FollowedCreator,
   type FollowedCourseUpdate,
   type FollowedCourseUpdateItem,
 } from "@/lib/following";
 
 type FollowedFeedFilter = "all" | FollowedCourseUpdate["updateKind"];
+type CreatorFilter = "all" | string;
 
 const feedFilters: Array<{ id: FollowedFeedFilter; label: string }> = [
   { id: "all", label: "全部" },
@@ -93,6 +96,13 @@ function feedItemMatchesSearch(item: FollowedCourseUpdateItem, normalizedQuery: 
   );
 }
 
+function formatCompactCount(value: number) {
+  return new Intl.NumberFormat("zh-CN", {
+    maximumFractionDigits: 1,
+    notation: "compact",
+  }).format(value);
+}
+
 function updateTone(kind: FollowedCourseUpdate["updateKind"]) {
   switch (kind) {
     case "resource_added":
@@ -123,24 +133,47 @@ function updateLabelTone(kind: FollowedCourseUpdate["updateKind"]) {
 
 export function FollowingFeedContent() {
   const [feedFilter, setFeedFilter] = useState<FollowedFeedFilter>("all");
+  const [selectedCreatorId, setSelectedCreatorId] = useState<CreatorFilter>("all");
   const [query, setQuery] = useState("");
   const normalizedQuery = query.trim().toLowerCase();
   const feedItems = useMemo(() => buildFollowedCourseUpdateItems(), []);
+  const updateCountByCreator = useMemo(() => {
+    return feedItems.reduce((counts, item) => {
+      counts.set(item.creator.id, (counts.get(item.creator.id) ?? 0) + 1);
+      return counts;
+    }, new Map<string, number>());
+  }, [feedItems]);
+  const selectedCreator =
+    selectedCreatorId === "all" ? null : FOLLOWED_CREATORS.find((creator) => creator.id === selectedCreatorId) ?? null;
+  const totalUnreadCount = FOLLOWED_CREATORS.reduce((total, creator) => total + creator.unreadCount, 0);
   const visibleFeedItems = feedItems.filter((item) => {
+    const matchesCreator = selectedCreatorId === "all" || item.creator.id === selectedCreatorId;
     const matchesFilter = feedFilter === "all" || item.update.updateKind === feedFilter;
-    return matchesFilter && feedItemMatchesSearch(item, normalizedQuery);
+    return matchesCreator && matchesFilter && feedItemMatchesSearch(item, normalizedQuery);
   });
 
   return (
-    <div className="mx-auto max-w-5xl">
-      <section className="rounded-[30px] border border-white/70 bg-[linear-gradient(180deg,#ffffff_0%,#faf8f2_100%)] p-6 shadow-[0_18px_50px_rgba(15,23,42,0.07)] sm:p-7">
+    <div className="mx-auto grid max-w-7xl gap-5 lg:grid-cols-[250px_minmax(0,1fr)] lg:items-start">
+      <FollowingCreatorRail
+        creators={FOLLOWED_CREATORS}
+        selectedCreatorId={selectedCreatorId}
+        totalUnreadCount={totalUnreadCount}
+        updateCountByCreator={updateCountByCreator}
+        onSelectCreator={setSelectedCreatorId}
+      />
+
+      <section className="min-w-0 rounded-[30px] border border-white/70 bg-[linear-gradient(180deg,#ffffff_0%,#faf8f2_100%)] p-6 shadow-[0_18px_50px_rgba(15,23,42,0.07)] sm:p-7">
         <div className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div>
             <h1 className="flex items-center gap-2 text-lg font-semibold text-stone-950">
               <Activity className="h-5 w-5" />
-              Following
+              {selectedCreator ? selectedCreator.name : "全部动态"}
             </h1>
-            <p className="mt-1 text-sm text-stone-500">只显示你关注的他人课程项目更新，不混入本地工作台提交。</p>
+            <p className="mt-1 text-sm text-stone-500">
+              {selectedCreator
+                ? `${selectedCreator.field} · ${formatCompactCount(selectedCreator.followers)} 粉丝`
+                : `${FOLLOWED_CREATORS.length} 位关注创作者的课程项目更新`}
+            </p>
           </div>
 
           <div className="flex flex-col gap-3 md:flex-row md:items-center">
@@ -189,6 +222,104 @@ export function FollowingFeedContent() {
         </div>
       </section>
     </div>
+  );
+}
+
+type FollowingCreatorRailProps = {
+  creators: FollowedCreator[];
+  selectedCreatorId: CreatorFilter;
+  totalUnreadCount: number;
+  updateCountByCreator: Map<string, number>;
+  onSelectCreator: (creatorId: CreatorFilter) => void;
+};
+
+function FollowingCreatorRail({
+  creators,
+  selectedCreatorId,
+  totalUnreadCount,
+  updateCountByCreator,
+  onSelectCreator,
+}: FollowingCreatorRailProps) {
+  const isAllActive = selectedCreatorId === "all";
+
+  return (
+    <aside className="min-w-0 overflow-hidden border-y border-stone-200 bg-[#eef0f3] sm:rounded-[24px] sm:border lg:sticky lg:top-[82px]">
+      <div className="flex gap-2 overflow-x-auto p-3 lg:max-h-[calc(100vh-7rem)] lg:flex-col lg:gap-1 lg:overflow-y-auto lg:p-2">
+        <button
+          type="button"
+          aria-pressed={isAllActive}
+          onClick={() => onSelectCreator("all")}
+          className={clsx(
+            "flex min-w-[178px] shrink-0 items-center gap-3 rounded-[18px] px-3 py-3 text-left transition lg:min-w-0 lg:w-full",
+            isAllActive ? "bg-white text-stone-950 shadow-sm" : "text-stone-600 hover:bg-white/70 hover:text-stone-950"
+          )}
+        >
+          <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-[#ff6699] text-white shadow-sm">
+            <Activity className="h-5 w-5" />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-sm font-semibold">全部动态</span>
+            <span className="mt-0.5 block truncate text-xs text-stone-400">{creators.length} 位已关注</span>
+          </span>
+          {totalUnreadCount ? (
+            <span className="flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-[#ff6699] px-1.5 text-[11px] font-semibold text-white">
+              {totalUnreadCount > 99 ? "99+" : totalUnreadCount}
+            </span>
+          ) : null}
+        </button>
+
+        {creators.map((creator) => {
+          const isActive = selectedCreatorId === creator.id;
+          const updateCount = updateCountByCreator.get(creator.id) ?? 0;
+
+          return (
+            <button
+              key={creator.id}
+              type="button"
+              aria-pressed={isActive}
+              onClick={() => onSelectCreator(creator.id)}
+              className={clsx(
+                "flex min-w-[210px] shrink-0 items-center gap-3 rounded-[18px] px-3 py-3 text-left transition lg:min-w-0 lg:w-full",
+                isActive ? "bg-white text-stone-950 shadow-sm" : "text-stone-600 hover:bg-white/70 hover:text-stone-950"
+              )}
+            >
+              <span className="relative h-12 w-12 shrink-0">
+                <Image
+                  src={creatorAvatarUrl(creator)}
+                  alt={`${creator.name} 头像`}
+                  className="h-12 w-12 rounded-full border border-white bg-stone-100 object-cover shadow-sm"
+                  width={48}
+                  height={48}
+                  unoptimized
+                />
+                {creator.unreadCount ? (
+                  <span
+                    className={clsx(
+                      "absolute bottom-0 right-0 h-3.5 w-3.5 rounded-full bg-[#ff6699] ring-2",
+                      isActive ? "ring-white" : "ring-[#eef0f3]"
+                    )}
+                  />
+                ) : null}
+              </span>
+
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-sm font-semibold">{creator.name}</span>
+                <span className="mt-0.5 block truncate text-xs text-stone-400">{creator.field}</span>
+              </span>
+
+              <span
+                className={clsx(
+                  "flex h-6 min-w-6 shrink-0 items-center justify-center rounded-full px-1.5 text-xs font-semibold",
+                  isActive ? "bg-stone-100 text-stone-600" : "bg-white/80 text-stone-400"
+                )}
+              >
+                {updateCount}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </aside>
   );
 }
 

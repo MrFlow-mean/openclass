@@ -317,6 +317,7 @@ class ResourceLibraryItem(BaseModel):
     resource_type: str
     size_bytes: int
     uploaded_at: str = Field(default_factory=now_iso)
+    scope_lesson_id: str | None = None
     outline: list[LibraryChapter] = Field(default_factory=list)
     concept_index: dict[str, list[str]] = Field(default_factory=dict)
     extracted_text_available: bool = False
@@ -331,6 +332,7 @@ class ResourceLibraryItemView(BaseModel):
     resource_type: str
     size_bytes: int
     uploaded_at: str
+    scope_lesson_id: str | None = None
     outline: list[LibraryChapter] = Field(default_factory=list)
     concept_index: dict[str, list[str]] = Field(default_factory=dict)
     extracted_text_available: bool = False

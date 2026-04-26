@@ -181,6 +181,7 @@ type AutoSaveReason =
   | "import"
   | "export"
   | "upload-resource"
+  | "delete-resource"
   | "voice"
   | "pagehide";
 
@@ -3314,10 +3315,28 @@ export function CourseStudio() {
     }
     setBusyAction("upload");
     try {
-      const nextPackage = await api.uploadResource(file);
+      const nextPackage = await api.uploadResource(file, activeLesson?.id);
       updateCoursePackage(nextPackage, { activeLessonId: activeLesson?.id });
     } catch (uploadError) {
       setError(uploadError instanceof Error ? uploadError.message : "上传资料失败");
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function handleDeleteResource(resourceId: string, resourceName: string) {
+    if (!window.confirm(`删除资料“${resourceName}”？删除后，AI 将不再引用它。`)) {
+      return;
+    }
+    if (!(await flushAutoSave("delete-resource"))) {
+      return;
+    }
+    setBusyAction(`delete-resource:${resourceId}`);
+    try {
+      const nextPackage = await api.deleteResource(resourceId, activeLesson?.id);
+      updateCoursePackage(nextPackage, { activeLessonId: activeLesson?.id });
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : "删除资料失败");
     } finally {
       setBusyAction(null);
     }
@@ -4645,39 +4664,67 @@ export function CourseStudio() {
                     <input
                       type="file"
                       className="hidden"
-                      onChange={(event) => void handleUploadResource(event.target.files?.[0] ?? null)}
+                      onChange={(event) => {
+                        const file = event.target.files?.[0] ?? null;
+                        event.currentTarget.value = "";
+                        void handleUploadResource(file);
+                      }}
                     />
                   </label>
                   <div className="mt-4 space-y-3">
                     {coursePackage.resources.length ? (
-                      coursePackage.resources.map((resource) => (
-                        <div
-                          key={resource.id}
-                          className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm transition-colors hover:border-gray-300"
-                        >
-                          <div className="flex items-start gap-3">
-                            <div className="flex h-7 w-7 items-center justify-center rounded-md bg-blue-50 text-blue-600">
-                              <FileText className="h-4 w-4" />
-                            </div>
-                            <div className="min-w-0 flex-1">
-                              <p className="truncate text-xs font-bold text-gray-900">{resource.name}</p>
-                              <p className="mt-1 text-[11px] text-gray-500">
-                                {resource.extracted_text_available
-                                  ? `已索引 ${resource.outline.length} 个章节入口`
-                                  : "当前仅做入口索引"}
-                              </p>
-                            </div>
-                          </div>
-                          <div className="mt-3 space-y-2">
-                            {resource.outline.slice(0, 3).map((chapter) => (
-                              <div key={chapter.id} className="rounded-lg bg-gray-50 px-3 py-2 text-[11px] text-gray-600">
-                                <p className="font-semibold text-gray-800">{chapter.title}</p>
-                                <p className="mt-1 leading-6">{chapter.summary}</p>
+                      coursePackage.resources.map((resource) => {
+                        const isDeletingResource = busyAction === `delete-resource:${resource.id}`;
+                        return (
+                          <div
+                            key={resource.id}
+                            className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm transition-colors hover:border-gray-300"
+                          >
+                            <div className="flex items-start gap-3">
+                              <div className="flex h-7 w-7 items-center justify-center rounded-md bg-blue-50 text-blue-600">
+                                {resource.resource_type === "image" || resource.mime_type.startsWith("image/") ? (
+                                  <ImagePlus className="h-4 w-4" />
+                                ) : (
+                                  <FileText className="h-4 w-4" />
+                                )}
                               </div>
-                            ))}
+                              <div className="min-w-0 flex-1">
+                                <p className="truncate text-xs font-bold text-gray-900">{resource.name}</p>
+                                <p className="mt-1 text-[11px] text-gray-500">
+                                  {resource.extracted_text_available
+                                    ? `已索引 ${resource.outline.length} 个章节入口`
+                                    : "当前仅做入口索引"}
+                                </p>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => void handleDeleteResource(resource.id, resource.name)}
+                                disabled={Boolean(busyAction)}
+                                title={`删除 ${resource.name}`}
+                                aria-label={`删除资料 ${resource.name}`}
+                                className={clsx(
+                                  "flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-gray-400 transition-colors hover:bg-red-50 hover:text-red-600",
+                                  busyAction && "cursor-not-allowed opacity-50 hover:bg-transparent hover:text-gray-400"
+                                )}
+                              >
+                                {isDeletingResource ? (
+                                  <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+                                ) : (
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                )}
+                              </button>
+                            </div>
+                            <div className="mt-3 space-y-2">
+                              {resource.outline.slice(0, 3).map((chapter) => (
+                                <div key={chapter.id} className="rounded-lg bg-gray-50 px-3 py-2 text-[11px] text-gray-600">
+                                  <p className="font-semibold text-gray-800">{chapter.title}</p>
+                                  <p className="mt-1 leading-6">{chapter.summary}</p>
+                                </div>
+                              ))}
+                            </div>
                           </div>
-                        </div>
-                      ))
+                        );
+                      })
                     ) : (
                       <div className="rounded-xl border border-gray-200 bg-white px-4 py-6 text-sm text-gray-500">
                         还没有上传资料。可以先把教材、讲义或图片放进当前课程资料库。

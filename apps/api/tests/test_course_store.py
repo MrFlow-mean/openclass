@@ -1,6 +1,7 @@
 import json
 import sqlite3
 
+from app.models import ResourceLibraryItem
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
 
 
@@ -50,3 +51,26 @@ def test_sqlite_store_imports_and_archives_legacy_store_json(tmp_path) -> None:
     with sqlite3.connect(db_path) as conn:
         package_title = conn.execute("SELECT title FROM course_packages").fetchone()[0]
     assert package_title == "旧 JSON 课程包"
+
+
+def test_sqlite_store_round_trips_resource_lesson_scope(tmp_path) -> None:
+    db_path = tmp_path / "openclass.sqlite3"
+    store = SqliteCourseStore(db_path, legacy_json_path=None)
+
+    workspace = store.load()
+    package = workspace.packages[0]
+    lesson = package.lessons[0]
+    package.resources.append(
+        ResourceLibraryItem(
+            name="lesson-only.png",
+            mime_type="image/png",
+            resource_type="image",
+            size_bytes=12,
+            scope_lesson_id=lesson.id,
+        )
+    )
+    store.save(workspace)
+
+    reloaded = store.load()
+
+    assert reloaded.packages[0].resources[0].scope_lesson_id == lesson.id

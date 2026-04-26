@@ -11,6 +11,7 @@ from app.models import (
     CoursePackageView,
     Lesson,
     LessonView,
+    ResourceLibraryItem,
     WorkspaceState,
     WorkspaceStateView,
 )
@@ -96,6 +97,36 @@ def find_lesson_package(workspace: WorkspaceState, lesson_id: str) -> tuple[Cour
     raise HTTPException(status_code=404, detail=f"Unknown lesson {lesson_id}")
 
 
+def is_standalone_package(workspace: WorkspaceState, package: CoursePackage) -> bool:
+    return bool(workspace.packages and workspace.packages[0].id == package.id)
+
+
+def resources_visible_to_lesson(
+    package: CoursePackage,
+    *,
+    lesson_id: str | None,
+    isolate_lesson_resources: bool,
+) -> list[ResourceLibraryItem]:
+    if not isolate_lesson_resources:
+        return package.resources
+    if not lesson_id:
+        return []
+    return [resource for resource in package.resources if resource.scope_lesson_id == lesson_id]
+
+
+def package_context_for_lesson(
+    workspace: WorkspaceState,
+    package: CoursePackage,
+    lesson_id: str | None,
+) -> CoursePackage:
+    resources = resources_visible_to_lesson(
+        package,
+        lesson_id=lesson_id,
+        isolate_lesson_resources=is_standalone_package(workspace, package),
+    )
+    return package.model_copy(update={"resources": resources})
+
+
 def normalize_package_state(package: CoursePackage) -> None:
     lesson_ids = [lesson.id for lesson in package.lessons]
     valid_ids = set(lesson_ids)
@@ -137,18 +168,47 @@ def lesson_view(lesson: Lesson) -> LessonView:
     )
 
 
-def package_view(package: CoursePackage) -> CoursePackageView:
+def package_view(
+    package: CoursePackage,
+    *,
+    resource_lesson_id: str | None = None,
+    isolate_lesson_resources: bool = False,
+) -> CoursePackageView:
+    visible_package = package.model_copy(
+        update={
+            "resources": resources_visible_to_lesson(
+                package,
+                lesson_id=resource_lesson_id,
+                isolate_lesson_resources=isolate_lesson_resources,
+            )
+        }
+    )
     return CoursePackageView.model_validate(
-        package.model_dump(
+        visible_package.model_dump(
             mode="json",
             exclude={"lessons": {"__all__": {"teaching_guide", "board_teaching_guide"}}},
         )
     )
 
 
+def package_view_for_lesson(
+    workspace: WorkspaceState,
+    package: CoursePackage,
+    lesson_id: str | None,
+) -> CoursePackageView:
+    return package_view(
+        package,
+        resource_lesson_id=lesson_id,
+        isolate_lesson_resources=is_standalone_package(workspace, package),
+    )
+
+
 def workspace_view(workspace: WorkspaceState) -> WorkspaceStateView:
     return WorkspaceStateView(
-        packages=[package_view(package) for package in workspace.packages],
+        packages=[
+            package_view_for_lesson(workspace, package, package.active_lesson_id)
+            for package in workspace.packages
+        ],
         active_package_id=workspace.active_package_id,
     )
 

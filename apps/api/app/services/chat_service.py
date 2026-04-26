@@ -8,10 +8,11 @@ from app.services.rich_document import is_document_empty
 from app.services.route_context import bind_ai_request_context
 from app.services.workspace_state import (
     commit_document_snapshot,
-    get_lesson,
+    find_lesson_package,
     lesson_view,
-    load_workspace_package,
-    package_view,
+    load_workspace,
+    package_context_for_lesson,
+    package_view_for_lesson,
     save_workspace,
 )
 
@@ -92,8 +93,9 @@ def document_ai_edit_request(lesson_id: str, instruction: str, selection_text: s
 
 
 def process_chat_on_lesson(lesson_id: str, request: ChatRequest) -> ChatResponse:
-    workspace, package = load_workspace_package()
-    lesson = get_lesson(package, lesson_id)
+    workspace = load_workspace()
+    package, lesson = find_lesson_package(workspace, lesson_id)
+    package.active_lesson_id = lesson.id
     with bind_ai_request_context(
         "/api/lessons/{lesson_id}/chat",
         lesson=lesson,
@@ -130,9 +132,10 @@ def process_chat_on_lesson(lesson_id: str, request: ChatRequest) -> ChatResponse
 
         try:
             was_blank_document = is_document_empty(lesson.board_document)
+            workflow_package = package_context_for_lesson(workspace, package, lesson_id)
             with bind_text_model_selection(request.text_model):
                 workflow_result = course_workflow.invoke(
-                    {"lesson": lesson, "course_package": package, "request": request}
+                    {"lesson": lesson, "course_package": workflow_package, "request": request}
                 )
             lesson.learning_requirements = workflow_result["learning_requirement_sheet"]
             lesson.summary = workflow_result["learning_requirement_sheet"].learning_goal
@@ -207,7 +210,7 @@ def process_chat_on_lesson(lesson_id: str, request: ChatRequest) -> ChatResponse
                 reference_prompt=workflow_result.get("reference_prompt"),
                 selected_reference=response_selected_reference,
                 created_lesson=lesson_view(created_lesson) if created_lesson else None,
-                course_package=package_view(package),
+                course_package=package_view_for_lesson(workspace, package, package.active_lesson_id),
             )
         except Exception as exc:
             ai_usage_logger.log_event("chat_error", error=str(exc))

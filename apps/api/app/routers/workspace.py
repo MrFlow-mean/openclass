@@ -18,14 +18,16 @@ from app.services.course_runtime import build_lesson_for_topic
 from app.services.history import current_head_commit
 from app.services.lesson_factory import create_empty_lesson
 from app.services.route_context import bind_ai_request_context
+from app.services.resource_service import delete_uploaded_resource_file
 from app.services.workspace_state import (
+    UPLOAD_DIR,
     find_lesson_package,
-    get_lesson,
     get_package,
+    is_standalone_package,
     load_workspace,
     load_workspace_package,
     normalize_package_state,
-    package_view,
+    package_view_for_lesson,
     save_workspace,
     workspace_view,
 )
@@ -114,7 +116,20 @@ def move_lesson(lesson_id: str, request: MoveLessonRequest) -> WorkspaceStateVie
     if source_package.active_lesson_id == lesson_id:
         source_package.active_lesson_id = None
 
+    moving_resources = []
+    if is_standalone_package(workspace, source_package):
+        moving_resources = [
+            resource for resource in source_package.resources if resource.scope_lesson_id == lesson_id
+        ]
+        source_package.resources = [
+            resource for resource in source_package.resources if resource.scope_lesson_id != lesson_id
+        ]
+
     target_package.lessons.append(lesson)
+    if moving_resources and not is_standalone_package(workspace, target_package):
+        for resource in moving_resources:
+            resource.scope_lesson_id = None
+        target_package.resources.extend(moving_resources)
     if lesson.id not in target_package.open_lesson_ids:
         target_package.open_lesson_ids.append(lesson.id)
     if lesson.id not in target_package.workspace_tab_order:
@@ -132,6 +147,14 @@ def move_lesson(lesson_id: str, request: MoveLessonRequest) -> WorkspaceStateVie
 def delete_lesson(lesson_id: str) -> WorkspaceStateView:
     workspace = load_workspace()
     package, _ = find_lesson_package(workspace, lesson_id)
+    removed_resources = []
+    if is_standalone_package(workspace, package):
+        removed_resources = [
+            resource for resource in package.resources if resource.scope_lesson_id == lesson_id
+        ]
+        package.resources = [
+            resource for resource in package.resources if resource.scope_lesson_id != lesson_id
+        ]
 
     package.lessons = [current for current in package.lessons if current.id != lesson_id]
     package.open_lesson_ids = [current for current in package.open_lesson_ids if current != lesson_id]
@@ -141,13 +164,15 @@ def delete_lesson(lesson_id: str) -> WorkspaceStateView:
 
     normalize_package_state(package)
     save_workspace(workspace)
+    for resource in removed_resources:
+        delete_uploaded_resource_file(resource, UPLOAD_DIR)
     return workspace_view(workspace)
 
 
 @router.get("/api/course-package", response_model=CoursePackageView)
 def get_course_package() -> CoursePackageView:
-    _, package = load_workspace_package()
-    return package_view(package)
+    workspace, package = load_workspace_package()
+    return package_view_for_lesson(workspace, package, package.active_lesson_id)
 
 
 @router.post("/api/lessons/generate", response_model=CoursePackageView)
@@ -192,7 +217,7 @@ def generate_lesson(request: GenerateLessonRequest) -> CoursePackageView:
                 summary=lesson.summary,
                 tags=lesson.tags,
             )
-    return package_view(package)
+    return package_view_for_lesson(workspace, package, package.active_lesson_id)
 
 
 @router.post("/api/workspace/reorder", response_model=CoursePackageView)
@@ -204,7 +229,7 @@ def reorder_workspace_tabs(request: ReorderTabsRequest) -> CoursePackageView:
         request.ordered_lesson_ids[0] if request.ordered_lesson_ids else None
     )
     save_workspace(workspace)
-    return package_view(package)
+    return package_view_for_lesson(workspace, package, package.active_lesson_id)
 
 
 @router.post("/api/lessons/{lesson_id}/open", response_model=CoursePackageView)
@@ -218,23 +243,24 @@ def open_lesson_tab(lesson_id: str) -> CoursePackageView:
     package.active_lesson_id = lesson_id
     workspace.active_package_id = package.id
     save_workspace(workspace)
-    return package_view(package)
+    return package_view_for_lesson(workspace, package, lesson_id)
 
 
 @router.post("/api/lessons/{lesson_id}/close", response_model=CoursePackageView)
 def close_lesson_tab(lesson_id: str) -> CoursePackageView:
-    workspace, package = load_workspace_package()
+    workspace = load_workspace()
+    package, _ = find_lesson_package(workspace, lesson_id)
     package.open_lesson_ids = [current for current in package.open_lesson_ids if current != lesson_id]
     package.workspace_tab_order = [current for current in package.workspace_tab_order if current != lesson_id]
     if package.active_lesson_id == lesson_id:
         package.active_lesson_id = package.workspace_tab_order[0] if package.workspace_tab_order else None
     save_workspace(workspace)
-    return package_view(package)
+    return package_view_for_lesson(workspace, package, package.active_lesson_id)
 
 
 @router.get("/api/lessons/{lesson_id}/head")
 def get_lesson_head(lesson_id: str) -> dict[str, str]:
-    _, package = load_workspace_package()
-    lesson = get_lesson(package, lesson_id)
+    workspace = load_workspace()
+    _, lesson = find_lesson_package(workspace, lesson_id)
     head = current_head_commit(lesson)
     return {"lesson_id": lesson_id, "head_commit_id": head.id}

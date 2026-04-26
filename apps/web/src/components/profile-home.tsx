@@ -5,32 +5,24 @@ import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
-import type { LucideIcon } from "lucide-react";
 import {
-  Accessibility,
   ArrowLeft,
   ArrowUpRight,
-  Bell,
   BookOpen,
   Bookmark,
-  CircleUserRound,
-  CreditCard,
+  ChevronDown,
   FolderClosed,
   GitFork,
   GraduationCap,
   KeyRound,
-  LinkIcon,
   LoaderCircle,
-  Mail,
-  Palette,
   Search,
   Settings,
   ShieldCheck,
-  Sparkles,
   Star,
-  UserRound,
 } from "lucide-react";
 
+import { ProfileSettingsPanel } from "@/components/profile-settings-panel";
 import { api } from "@/lib/api";
 import {
   DEFAULT_COLLECTED_COURSE_IDS,
@@ -49,32 +41,7 @@ type ProfileHomeProps = {
   initialTab?: ProfileTab;
 };
 
-type SettingsNavItem = {
-  label: string;
-  icon: LucideIcon;
-  active?: boolean;
-};
-
 const PROFILE_AVATAR_URL = "https://api.dicebear.com/9.x/glass/svg?seed=Blackboard-AI";
-
-const settingsPrimaryNav: SettingsNavItem[] = [
-  { label: "公开资料", icon: UserRound, active: true },
-  { label: "账户", icon: CircleUserRound },
-  { label: "外观", icon: Palette },
-  { label: "无障碍", icon: Accessibility },
-  { label: "通知", icon: Bell },
-];
-
-const settingsAccountNav: SettingsNavItem[] = [
-  { label: "计费和许可", icon: CreditCard },
-  { label: "电子邮件", icon: Mail },
-  { label: "密码和身份验证", icon: KeyRound },
-  { label: "AI 模型", icon: Sparkles },
-  { label: "代码安全", icon: ShieldCheck },
-];
-
-const settingsInputClass =
-  "w-full rounded-md border border-stone-300 bg-white px-3 py-2 text-sm text-stone-900 shadow-sm outline-none transition placeholder:text-stone-400 focus:border-sky-500 focus:ring-2 focus:ring-sky-100";
 
 function formatRelativeTime(value: string | Date | null | undefined) {
   if (!value) {
@@ -184,6 +151,7 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
   const [error, setError] = useState<string | null>(null);
   const [repositoryQuery, setRepositoryQuery] = useState("");
   const [repositoryTypeFilter, setRepositoryTypeFilter] = useState<RepositoryTypeFilter>("all");
+  const [expandedPackageIds, setExpandedPackageIds] = useState<Set<string>>(() => new Set());
   const [starQuery, setStarQuery] = useState("");
   const [openingLessonId, setOpeningLessonId] = useState<string | null>(null);
   const [collectedCourseIds, setCollectedCourseIds] = useState<Set<string>>(
@@ -355,24 +323,16 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
     }
   }
 
-  function renderSettingsMenuItem(item: SettingsNavItem) {
-    const Icon = item.icon;
-
-    return (
-      <button
-        key={item.label}
-        type="button"
-        className={clsx(
-          "flex min-h-9 w-full items-center gap-2 rounded-md border-l-2 px-3 py-2 text-left text-sm transition",
-          item.active
-            ? "border-sky-500 bg-stone-100 font-semibold text-stone-950"
-            : "border-transparent text-stone-700 hover:bg-stone-100 hover:text-stone-950"
-        )}
-      >
-        <Icon className="h-4 w-4 shrink-0 text-stone-500" />
-        <span className="truncate">{item.label}</span>
-      </button>
-    );
+  function handleTogglePackageLessons(packageId: string) {
+    setExpandedPackageIds((current) => {
+      const next = new Set(current);
+      if (next.has(packageId)) {
+        next.delete(packageId);
+      } else {
+        next.add(packageId);
+      }
+      return next;
+    });
   }
 
   return (
@@ -452,7 +412,11 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
       </header>
 
       {activeTab === "settings" ? (
-        renderSettings()
+        <ProfileSettingsPanel
+          avatarUrl={PROFILE_AVATAR_URL}
+          favoriteCount={favoriteProjects.length}
+          repositoryCount={repositoryCount}
+        />
       ) : (
         <div className="mx-auto grid max-w-6xl gap-6 px-4 py-8 sm:px-6 lg:grid-cols-[16rem_minmax(0,1fr)]">
         <aside className="h-fit">
@@ -476,7 +440,7 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
                 Edit profile
               </button>
               <p className="mt-4 text-sm leading-6 text-stone-600">
-                管理自己的课程项目，并收藏值得继续学习的开源课程。
+                管理自己的课程项目，Stars 只收纳你收藏的他人开源课程。
               </p>
               <div className="mt-4 flex flex-wrap gap-x-4 gap-y-2 text-sm text-stone-600">
                 <span>{repositoryCount} repositories</span>
@@ -494,90 +458,6 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
       )}
     </main>
   );
-
-  function renderSettings() {
-    return (
-      <div className="mx-auto grid max-w-6xl gap-6 px-4 py-6 sm:px-6 md:grid-cols-[15rem_minmax(0,1fr)]">
-        <aside className="h-fit md:sticky md:top-28">
-          <nav className="space-y-5" aria-label="个人设置导航">
-            <section className="space-y-1">{settingsPrimaryNav.map((item) => renderSettingsMenuItem(item))}</section>
-            <section className="border-t border-stone-200 pt-4">
-              <h2 className="mb-2 px-3 text-xs font-semibold text-stone-500">使用权</h2>
-              <div className="space-y-1">{settingsAccountNav.map((item) => renderSettingsMenuItem(item))}</div>
-            </section>
-          </nav>
-        </aside>
-
-        <section className="min-w-0">
-          <div className="mb-6 border-b border-stone-200 pb-4">
-            <h2 className="text-2xl font-semibold tracking-tight text-stone-950">公开资料</h2>
-          </div>
-
-          <form className="max-w-3xl space-y-6">
-            <label className="block">
-              <span className="block text-sm font-semibold text-stone-950">姓名</span>
-              <input className={`${settingsInputClass} mt-2`} defaultValue="Flow-mean" />
-              <span className="mt-2 block text-xs leading-5 text-stone-500">
-                你的名字可能会出现在课程贡献记录或被推荐的 Blackboard AI 页面上。
-              </span>
-            </label>
-
-            <label className="block">
-              <span className="block text-sm font-semibold text-stone-950">公开电子邮件</span>
-              <select className={`${settingsInputClass} mt-2 max-w-xl`} defaultValue="">
-                <option value="">选择一个已验证的电子邮件地址以显示</option>
-                <option value="learning@example.com">learning@example.com</option>
-              </select>
-            </label>
-
-            <label className="block">
-              <span className="block text-sm font-semibold text-stone-950">个人简介</span>
-              <textarea
-                className={`${settingsInputClass} mt-2 min-h-28 resize-y leading-6`}
-                placeholder="请简单介绍一下你自己。"
-              />
-            </label>
-
-            <label className="block">
-              <span className="block text-sm font-semibold text-stone-950">URL</span>
-              <input className={`${settingsInputClass} mt-2 max-w-xl`} placeholder="https://blackboard.ai/flow-mean" />
-            </label>
-
-            <div>
-              <h3 className="text-sm font-semibold text-stone-950">社交账号</h3>
-              <div className="mt-2 space-y-2">
-                {[1, 2, 3, 4].map((index) => (
-                  <div key={index} className="flex max-w-2xl items-center gap-2">
-                    <LinkIcon className="h-4 w-4 shrink-0 text-stone-500" />
-                    <input className={settingsInputClass} placeholder={`链接到社交个人资料 ${index}`} />
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <label className="block">
-              <span className="block text-sm font-semibold text-stone-950">公司</span>
-              <input className={`${settingsInputClass} mt-2 max-w-xl`} />
-            </label>
-
-            <label className="block">
-              <span className="block text-sm font-semibold text-stone-950">地点</span>
-              <input className={`${settingsInputClass} mt-2 max-w-xl`} />
-            </label>
-
-            <div className="border-t border-stone-200 pt-5">
-              <button
-                type="button"
-                className="inline-flex h-10 items-center rounded-md bg-emerald-600 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700"
-              >
-                更新个人资料
-              </button>
-            </div>
-          </form>
-        </section>
-      </div>
-    );
-  }
 
   function renderRepositories() {
     return (
@@ -652,7 +532,7 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
           <Star className="mx-auto h-7 w-7 text-stone-400" />
           <h2 className="mt-4 text-lg font-semibold text-stone-950">Create your first list</h2>
           <p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-stone-600">
-            收藏的开源课程会出现在这里，你可以像 GitHub Stars 一样快速回到感兴趣的学习项目。
+            Stars 只显示你收藏的他人课程包；自己创建的课程包会保留在 Repositories。
           </p>
         </section>
 
@@ -686,7 +566,7 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
               filteredFavoriteProjects.map((course) => renderStarCard(course))
             ) : (
               <div className="rounded-lg border border-dashed border-stone-300 bg-white/82 px-5 py-8 text-sm text-stone-500">
-                没有匹配到收藏项目。
+                没有匹配到已收藏的他人课程包。
               </div>
             )}
           </div>
@@ -759,6 +639,8 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
     const topics = getPackageTopics(coursePackage);
     const updatedAt = getPackageUpdatedAt(coursePackage);
     const isCompact = variant === "compact";
+    const isExpanded = !isCompact && expandedPackageIds.has(coursePackage.id);
+    const lessonsListId = `package-lessons-${coursePackage.id}`;
 
     return (
       <article
@@ -774,6 +656,20 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
               <Link href={`/?package=${coursePackage.id}`} className="text-base font-semibold text-blue-600 hover:underline">
                 {coursePackage.title}
               </Link>
+              <button
+                type="button"
+                onClick={() => handleTogglePackageLessons(coursePackage.id)}
+                aria-expanded={isExpanded}
+                aria-controls={lessonsListId}
+                className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-700 transition hover:border-emerald-300 hover:bg-emerald-100"
+              >
+                <FolderClosed className="h-3 w-3" />
+                课程包
+                <span className="rounded-full bg-white/75 px-1.5 py-px text-[10px] text-emerald-700">
+                  {coursePackage.lessons.length}
+                </span>
+                <ChevronDown className={clsx("h-3 w-3 transition", isExpanded ? "rotate-180" : null)} />
+              </button>
               <span className="rounded-full border border-stone-200 px-2 py-0.5 text-[11px] font-semibold text-stone-500">
                 Public
               </span>
@@ -813,6 +709,61 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
             <ArrowUpRight className="h-4 w-4" />
           </Link>
         </div>
+
+        {isExpanded ? (
+          <ul
+            id={lessonsListId}
+            className="mt-4 divide-y divide-stone-200 rounded-md border border-stone-200 bg-stone-50/80"
+            aria-label={`${coursePackage.title} 的单独课程列表`}
+          >
+            {coursePackage.lessons.length ? (
+              coursePackage.lessons.map((lesson, index) => {
+                const isOpening = openingLessonId === lesson.id;
+
+                return (
+                  <li
+                    key={lesson.id}
+                    className="flex flex-col gap-3 px-3 py-3 sm:flex-row sm:items-start sm:justify-between"
+                  >
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-mono text-[11px] font-semibold text-stone-400">
+                          {String(index + 1).padStart(2, "0")}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => void handleOpenLesson(lesson.id)}
+                          className="min-w-0 text-left text-sm font-semibold text-blue-600 hover:underline"
+                        >
+                          {lesson.title}
+                        </button>
+                        <span className="rounded-full border border-sky-200 bg-sky-50 px-2 py-0.5 text-[11px] font-semibold text-sky-700">
+                          单独课程
+                        </span>
+                      </div>
+                      <p className="mt-1 line-clamp-1 text-xs leading-5 text-stone-500">
+                        {lesson.summary || lesson.board_document.title || "课程文档，可进入工作台继续编辑。"}
+                      </p>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => void handleOpenLesson(lesson.id)}
+                      disabled={isOpening}
+                      className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-md border border-stone-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-stone-700 transition hover:border-stone-300 hover:text-stone-950 disabled:cursor-wait disabled:opacity-70"
+                    >
+                      {isOpening ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : null}
+                      打开
+                      {!isOpening ? <ArrowUpRight className="h-3.5 w-3.5" /> : null}
+                    </button>
+                  </li>
+                );
+              })
+            ) : (
+              <li className="px-3 py-3 text-sm text-stone-500">这个课程包还没有单独课程。</li>
+            )}
+          </ul>
+        ) : null}
       </article>
     );
   }

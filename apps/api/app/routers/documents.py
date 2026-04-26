@@ -26,9 +26,9 @@ from app.services.workspace_state import (
     EXPORT_DIR,
     UPLOAD_DIR,
     commit_document_snapshot,
-    get_lesson,
-    load_workspace_package,
-    package_view,
+    find_lesson_package,
+    load_workspace,
+    package_view_for_lesson,
     save_workspace,
 )
 
@@ -36,8 +36,9 @@ router = APIRouter()
 
 
 def _save_document_request(lesson_id: str, request: DocumentSaveRequest) -> CoursePackageView:
-    workspace, package = load_workspace_package()
-    lesson = get_lesson(package, lesson_id)
+    workspace = load_workspace()
+    package, lesson = find_lesson_package(workspace, lesson_id)
+    package.active_lesson_id = lesson.id
     with bind_ai_request_context(
         "/api/lessons/{lesson_id}/document/save",
         lesson=lesson,
@@ -56,13 +57,14 @@ def _save_document_request(lesson_id: str, request: DocumentSaveRequest) -> Cour
         )
         refresh_lesson_runtime(lesson)
         save_workspace(workspace)
-    return package_view(package)
+    return package_view_for_lesson(workspace, package, lesson.id)
 
 
 @router.post("/api/lessons/{lesson_id}/manual-commit", response_model=CoursePackageView)
 def manual_commit(lesson_id: str, request: ManualCommitRequest) -> CoursePackageView:
-    workspace, package = load_workspace_package()
-    lesson = get_lesson(package, lesson_id)
+    workspace = load_workspace()
+    package, lesson = find_lesson_package(workspace, lesson_id)
+    package.active_lesson_id = lesson.id
     with bind_ai_request_context(
         "/api/lessons/{lesson_id}/manual-commit",
         lesson=lesson,
@@ -79,7 +81,7 @@ def manual_commit(lesson_id: str, request: ManualCommitRequest) -> CoursePackage
         )
         refresh_lesson_runtime(lesson)
         save_workspace(workspace)
-    return package_view(package)
+    return package_view_for_lesson(workspace, package, lesson.id)
 
 
 @router.post("/api/lessons/{lesson_id}/document/save", response_model=CoursePackageView)
@@ -109,8 +111,9 @@ def ai_edit_document(lesson_id: str, request: DocumentAIEditRequest) -> ChatResp
 
 @router.post("/api/lessons/{lesson_id}/document/import-docx", response_model=CoursePackageView)
 def import_document_docx(lesson_id: str, file: UploadFile = File(...)) -> CoursePackageView:
-    workspace, package = load_workspace_package()
-    lesson = get_lesson(package, lesson_id)
+    workspace = load_workspace()
+    package, lesson = find_lesson_package(workspace, lesson_id)
+    package.active_lesson_id = lesson.id
     safe_name = Path(file.filename or "document.docx").name
     destination = UPLOAD_DIR / f"{lesson_id}_{safe_name}"
     with bind_ai_request_context(
@@ -130,13 +133,13 @@ def import_document_docx(lesson_id: str, file: UploadFile = File(...)) -> Course
         )
         refresh_lesson_runtime(lesson)
         save_workspace(workspace)
-    return package_view(package)
+    return package_view_for_lesson(workspace, package, lesson.id)
 
 
 @router.get("/api/lessons/{lesson_id}/document/export-docx")
 def export_document_docx(lesson_id: str) -> FileResponse:
-    _, package = load_workspace_package()
-    lesson = get_lesson(package, lesson_id)
+    workspace = load_workspace()
+    _, lesson = find_lesson_package(workspace, lesson_id)
     target_path = EXPORT_DIR / f"{lesson.slug or lesson.id}.docx"
     export_docx(lesson.board_document, target_path)
     return FileResponse(
@@ -148,8 +151,9 @@ def export_document_docx(lesson_id: str) -> FileResponse:
 
 @router.post("/api/lessons/{lesson_id}/branches", response_model=CoursePackageView)
 def create_lesson_branch(lesson_id: str, request: CreateBranchRequest) -> CoursePackageView:
-    workspace, package = load_workspace_package()
-    lesson = get_lesson(package, lesson_id)
+    workspace = load_workspace()
+    package, lesson = find_lesson_package(workspace, lesson_id)
+    package.active_lesson_id = lesson.id
     with bind_ai_request_context(
         "/api/lessons/{lesson_id}/branches",
         lesson=lesson,
@@ -160,13 +164,14 @@ def create_lesson_branch(lesson_id: str, request: CreateBranchRequest) -> Course
         create_branch(lesson, request.name, request.from_commit_id)
         refresh_lesson_runtime(lesson)
         save_workspace(workspace)
-    return package_view(package)
+    return package_view_for_lesson(workspace, package, lesson.id)
 
 
 @router.post("/api/lessons/{lesson_id}/branches/checkout", response_model=CoursePackageView)
 def checkout_lesson_branch(lesson_id: str, request: SwitchBranchRequest) -> CoursePackageView:
-    workspace, package = load_workspace_package()
-    lesson = get_lesson(package, lesson_id)
+    workspace = load_workspace()
+    package, lesson = find_lesson_package(workspace, lesson_id)
+    package.active_lesson_id = lesson.id
     with bind_ai_request_context(
         "/api/lessons/{lesson_id}/branches/checkout",
         lesson=lesson,
@@ -176,13 +181,14 @@ def checkout_lesson_branch(lesson_id: str, request: SwitchBranchRequest) -> Cour
         switch_branch(lesson, request.name)
         refresh_lesson_runtime(lesson)
         save_workspace(workspace)
-    return package_view(package)
+    return package_view_for_lesson(workspace, package, lesson.id)
 
 
 @router.post("/api/lessons/{lesson_id}/restore", response_model=CoursePackageView)
 def restore_lesson_commit(lesson_id: str, request: RestoreCommitRequest) -> CoursePackageView:
-    workspace, package = load_workspace_package()
-    lesson = get_lesson(package, lesson_id)
+    workspace = load_workspace()
+    package, lesson = find_lesson_package(workspace, lesson_id)
+    package.active_lesson_id = lesson.id
     with bind_ai_request_context(
         "/api/lessons/{lesson_id}/restore",
         lesson=lesson,
@@ -193,13 +199,14 @@ def restore_lesson_commit(lesson_id: str, request: RestoreCommitRequest) -> Cour
         restore_commit(lesson, request.commit_id, request.label)
         refresh_lesson_runtime(lesson)
         save_workspace(workspace)
-    return package_view(package)
+    return package_view_for_lesson(workspace, package, lesson.id)
 
 
 @router.post("/api/lessons/{lesson_id}/apply-proposal", response_model=CoursePackageView)
 def apply_patch_proposal(lesson_id: str, proposal: ManualCommitRequest) -> CoursePackageView:
-    workspace, package = load_workspace_package()
-    lesson = get_lesson(package, lesson_id)
+    workspace = load_workspace()
+    package, lesson = find_lesson_package(workspace, lesson_id)
+    package.active_lesson_id = lesson.id
     with bind_ai_request_context(
         "/api/lessons/{lesson_id}/apply-proposal",
         lesson=lesson,
@@ -216,4 +223,4 @@ def apply_patch_proposal(lesson_id: str, proposal: ManualCommitRequest) -> Cours
             )
             refresh_lesson_runtime(lesson)
             save_workspace(workspace)
-    return package_view(package)
+    return package_view_for_lesson(workspace, package, lesson.id)
