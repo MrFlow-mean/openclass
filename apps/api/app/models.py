@@ -515,6 +515,37 @@ class WorkspaceStateView(BaseModel):
     active_package_id: str | None = None
 
 
+class UserView(BaseModel):
+    id: str
+    email: str
+    role: Literal["user", "admin"]
+    created_at: str
+    last_login_at: str | None = None
+
+
+class AuthRequest(BaseModel):
+    email: str
+    password: str = Field(min_length=8, max_length=256)
+
+
+class AuthSessionResponse(BaseModel):
+    token: str
+    user: UserView
+
+
+class AdminStats(BaseModel):
+    users: int
+    admins: int
+    packages: int
+    lessons: int
+    resources: int
+
+
+class AdminOverview(BaseModel):
+    stats: AdminStats
+    users: list[UserView] = Field(default_factory=list)
+
+
 class ChatResponse(BaseModel):
     teacher_message: str
     learning_requirement_sheet: LearningRequirementSheet
