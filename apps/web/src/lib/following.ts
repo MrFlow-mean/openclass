@@ -26,6 +26,18 @@ export type FollowedCourseUpdate = {
   coverSeed: string;
 };
 
+export type FollowedCourseUpdateItem = {
+  update: FollowedCourseUpdate;
+  creator: FollowedCreator;
+};
+
+export const FOLLOWED_UPDATE_KIND_LABELS: Record<FollowedCourseUpdate["updateKind"], string> = {
+  new_lesson: "新课",
+  course_revision: "更新",
+  resource_added: "资料",
+  live_note: "直播",
+};
+
 export const FOLLOWED_CREATORS: FollowedCreator[] = [
   {
     id: "civil-moon",
@@ -210,4 +222,15 @@ export function creatorAvatarUrl(creator: FollowedCreator) {
 
 export function updateCoverUrl(update: FollowedCourseUpdate) {
   return `https://api.dicebear.com/9.x/shapes/svg?seed=${encodeURIComponent(update.coverSeed)}`;
+}
+
+export function buildFollowedCourseUpdateItems(): FollowedCourseUpdateItem[] {
+  const creatorById = new Map(FOLLOWED_CREATORS.map((creator) => [creator.id, creator]));
+
+  return FOLLOWED_COURSE_UPDATES.map((update) => {
+    const creator = creatorById.get(update.creatorId);
+    return creator ? { update, creator } : null;
+  })
+    .filter((item): item is FollowedCourseUpdateItem => item !== null)
+    .sort((left, right) => new Date(right.update.updatedAt).getTime() - new Date(left.update.updatedAt).getTime());
 }

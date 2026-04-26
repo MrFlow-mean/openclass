@@ -44,6 +44,10 @@ import {
   type OpenCourseSort,
 } from "@/lib/open-courses";
 import {
+  FOLLOWED_UPDATE_KIND_LABELS,
+  buildFollowedCourseUpdateItems,
+} from "@/lib/following";
+import {
   buildRecentFeed,
   type RecentFeedFilter,
 } from "@/lib/recent-feed";
@@ -447,9 +451,10 @@ export function LearningHome() {
     lessonMenuState ? standaloneLessonItems.find(({ lesson }) => lesson.id === lessonMenuState.lessonId)?.lesson ?? null : null;
   const feedItems = buildRecentFeed(feedLessons, feedResources);
   const visibleFeedItems = feedFilter === "all" ? feedItems : feedItems.filter((item) => item.kind === feedFilter);
-  const followingUnreadCount = feedItems.length;
+  const followedProjectUpdates = useMemo(() => buildFollowedCourseUpdateItems(), []);
+  const followingUnreadCount = followedProjectUpdates.length;
   const followingBadge = followingUnreadCount > 99 ? "99+" : followingUnreadCount.toString();
-  const notificationUpdates = feedItems.slice(0, 4);
+  const notificationUpdates = followedProjectUpdates.slice(0, 4);
 
   async function handleOpenLesson(lessonId: string) {
     setSelectedLessonId(lessonId);
@@ -1693,38 +1698,42 @@ export function LearningHome() {
               {notificationUpdates.length ? (
                 notificationUpdates.map((item) => (
                   <Link
-                    key={item.id}
+                    key={item.update.id}
                     href="/following"
                     className="group flex gap-3 rounded-2xl border border-transparent p-2 transition hover:border-stone-100 hover:bg-stone-50"
                   >
                     <div
                       className={clsx(
                         "flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl text-white",
-                        item.kind === "commit" ? "bg-rose-500" : "bg-emerald-500"
+                        item.update.updateKind === "resource_added" ? "bg-emerald-500" : "bg-rose-500"
                       )}
                     >
-                      {item.kind === "commit" ? <BookText className="h-4 w-4" /> : <FolderClosed className="h-4 w-4" />}
+                      {item.update.updateKind === "resource_added" ? (
+                        <FolderClosed className="h-4 w-4" />
+                      ) : (
+                        <BookText className="h-4 w-4" />
+                      )}
                     </div>
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2">
-                        <p className="truncate text-sm font-semibold text-stone-950">{item.actor}</p>
+                        <p className="truncate text-sm font-semibold text-stone-950">{item.creator.name}</p>
                         <span className="shrink-0 rounded-full bg-rose-50 px-2 py-0.5 text-[10px] font-semibold text-rose-600">
-                          {item.kind === "commit" ? "Commit" : "Resource"}
+                          {FOLLOWED_UPDATE_KIND_LABELS[item.update.updateKind]}
                         </span>
                       </div>
                       <p className="mt-1 line-clamp-1 text-sm font-semibold text-stone-800 group-hover:text-stone-950">
-                        {item.title}
+                        {item.update.courseTitle}
                       </p>
-                      <p className="mt-1 line-clamp-2 text-xs leading-5 text-stone-500">{item.detailBody}</p>
+                      <p className="mt-1 line-clamp-2 text-xs leading-5 text-stone-500">{item.update.summary}</p>
                       <p className="mt-1 truncate text-[11px] text-stone-400">
-                        {item.detailTitle} · {formatRelativeTime(item.timestamp)}
+                        {item.update.moduleTitle} · {formatRelativeTime(item.update.updatedAt)}
                       </p>
                     </div>
                   </Link>
                 ))
               ) : (
                 <div className="rounded-2xl border border-dashed border-stone-200 bg-stone-50 px-4 py-5 text-sm text-stone-500">
-                  新建课程、编辑文稿或上传资料后，这里会显示和主页 Feed 一样的更新。
+                  关注他人项目后，这里只显示这些项目的更新推送。
                 </div>
               )}
             </div>
