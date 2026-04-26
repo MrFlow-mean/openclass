@@ -359,8 +359,17 @@ const FALLBACK_MODEL_CATALOG: AIModelCatalog = {
   text: [
     {
       provider: "openai",
-      model: "gpt-5-mini",
-      label: "OpenAI GPT-5 Mini",
+      model: "gpt-5.4",
+      label: "OpenAI GPT-5.4",
+      capability: "text",
+      enabled: true,
+      configured: true,
+      default: false,
+    },
+    {
+      provider: "openai",
+      model: "gpt-5.4-mini",
+      label: "OpenAI GPT-5.4 Mini",
       capability: "text",
       enabled: true,
       configured: true,
@@ -368,8 +377,17 @@ const FALLBACK_MODEL_CATALOG: AIModelCatalog = {
     },
     {
       provider: "anthropic",
-      model: "claude-opus-4-7",
-      label: "Anthropic Claude Opus 4.7",
+      model: "claude-haiku-4-5",
+      label: "Anthropic Claude Haiku 4.5",
+      capability: "text",
+      enabled: false,
+      configured: false,
+      default: false,
+    },
+    {
+      provider: "anthropic",
+      model: "claude-sonnet-4-6",
+      label: "Anthropic Claude Sonnet 4.6",
       capability: "text",
       enabled: false,
       configured: false,
@@ -385,9 +403,36 @@ const FALLBACK_MODEL_CATALOG: AIModelCatalog = {
       default: false,
     },
     {
+      provider: "google",
+      model: "gemini-3-flash-preview",
+      label: "Google Gemini 3 Flash Preview",
+      capability: "text",
+      enabled: false,
+      configured: false,
+      default: false,
+    },
+    {
+      provider: "deepseek",
+      model: "deepseek-v4-flash",
+      label: "DeepSeek V4 Flash",
+      capability: "text",
+      enabled: false,
+      configured: false,
+      default: false,
+    },
+    {
       provider: "deepseek",
       model: "deepseek-v4-pro",
       label: "DeepSeek V4 Pro",
+      capability: "text",
+      enabled: false,
+      configured: false,
+      default: false,
+    },
+    {
+      provider: "kimi",
+      model: "kimi-k2.5",
+      label: "Kimi K2.5",
       capability: "text",
       enabled: false,
       configured: false,
@@ -411,12 +456,21 @@ const FALLBACK_MODEL_CATALOG: AIModelCatalog = {
       configured: false,
       default: false,
     },
+    {
+      provider: "minimax",
+      model: "MiniMax-M2.7-highspeed",
+      label: "MiniMax M2.7 Highspeed",
+      capability: "text",
+      enabled: false,
+      configured: false,
+      default: false,
+    },
   ],
   realtime: [
     {
       provider: "openai",
-      model: "gpt-4o-realtime-preview",
-      label: "OpenAI GPT-4o Realtime",
+      model: "gpt-realtime-1.5",
+      label: "OpenAI GPT Realtime 1.5",
       capability: "realtime",
       enabled: true,
       configured: true,
@@ -435,8 +489,8 @@ const FALLBACK_MODEL_CATALOG: AIModelCatalog = {
     },
   ],
   defaults: {
-    text: { provider: "openai", model: "gpt-5-mini" },
-    realtime: { provider: "openai", model: "gpt-4o-realtime-preview" },
+    text: { provider: "openai", model: "gpt-5.4-mini" },
+    realtime: { provider: "openai", model: "gpt-realtime-1.5" },
   },
 };
 
@@ -512,6 +566,22 @@ function readStoredModelSelection(key: string): AIModelSelection | null {
   } catch {
     return null;
   }
+}
+
+async function websocketMessageText(data: MessageEvent["data"]): Promise<string> {
+  if (typeof data === "string") {
+    return data;
+  }
+  if (data instanceof Blob) {
+    return data.text();
+  }
+  if (data instanceof ArrayBuffer) {
+    return new TextDecoder().decode(data);
+  }
+  if (ArrayBuffer.isView(data)) {
+    return new TextDecoder().decode(data);
+  }
+  return String(data);
 }
 
 function persistModelSelection(key: string, selection: AIModelSelection) {
@@ -2154,7 +2224,7 @@ export function CourseStudio() {
   const [selectedRealtimeModel, setSelectedRealtimeModel] = useState<AIModelSelection>(
     FALLBACK_MODEL_CATALOG.defaults.realtime
   );
-  const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  const [openModelMenu, setOpenModelMenu] = useState<"text" | "realtime" | null>(null);
   const [draftDocument, setDraftDocument] = useState<BoardDocument | null>(null);
   const [isDocumentDirty, setIsDocumentDirty] = useState(false);
   const [, setAutoSaveStatus] = useState<AutoSaveStatus>("idle");
@@ -3215,7 +3285,7 @@ export function CourseStudio() {
     const nextSelection = optionToSelection(option);
     setSelectedTextModel(nextSelection);
     persistModelSelection(TEXT_MODEL_STORAGE_KEY, nextSelection);
-    setModelMenuOpen(false);
+    setOpenModelMenu(null);
   }
 
   function selectRealtimeModel(option: AIModelOption) {
@@ -3228,7 +3298,7 @@ export function CourseStudio() {
     const nextSelection = optionToSelection(option);
     setSelectedRealtimeModel(nextSelection);
     persistModelSelection(REALTIME_MODEL_STORAGE_KEY, nextSelection);
-    setModelMenuOpen(false);
+    setOpenModelMenu(null);
   }
 
   async function startGoogleRealtimeSession(
@@ -3246,38 +3316,63 @@ export function CourseStudio() {
     googleAudioContextRef.current = audioContext;
     googlePlaybackContextRef.current = playbackContext;
     googlePlaybackTimeRef.current = playbackContext.currentTime;
+    await audioContext.resume();
+    await playbackContext.resume();
 
     const socket = new WebSocket(getApiWebSocketUrl(session.websocket_url));
     googleRealtimeSocketRef.current = socket;
     await new Promise<void>((resolve, reject) => {
       let streamingStarted = false;
+      let settled = false;
+      const resolveStart = () => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        resolve();
+      };
+      const rejectStart = (message: string) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        reject(new Error(message));
+      };
       socket.onopen = () => {
         socket.send(JSON.stringify(session.setup));
       };
       socket.onerror = () => {
-        reject(new Error("Google Gemini Live WebSocket 连接失败"));
+        rejectStart("Google Gemini Live WebSocket 连接失败");
       };
-      socket.onclose = () => {
+      socket.onclose = (event) => {
+        if (!streamingStarted) {
+          rejectStart(
+            `Google Gemini Live WebSocket 在初始化前关闭（${event.code}${event.reason ? `：${event.reason}` : ""}）`
+          );
+        }
         if (googleRealtimeSocketRef.current === socket) {
           stopRealtimeSession("Google Gemini Live 会话已结束");
         }
       };
       socket.onmessage = (event) => {
-        try {
-          const payload = JSON.parse(String(event.data)) as GoogleRealtimeAudioMessage;
-          if (payload.setupComplete && !streamingStarted) {
-            streamingStarted = true;
-            beginGoogleAudioStreaming(socket, mediaStream, audioContext);
-            setVoiceActive(true);
-            setBusyAction((current) => (current === "voice-connect" ? null : current));
-            setVoiceStatusText(`Google Gemini Live 已连接，语音音色：${session.voice}`);
-            resolve();
-            return;
+        void (async () => {
+          try {
+            const messageText = await websocketMessageText(event.data);
+            const payload = JSON.parse(messageText) as GoogleRealtimeAudioMessage;
+            if (payload.setupComplete && !streamingStarted) {
+              streamingStarted = true;
+              beginGoogleAudioStreaming(socket, mediaStream, audioContext);
+              setVoiceActive(true);
+              setBusyAction((current) => (current === "voice-connect" ? null : current));
+              setVoiceStatusText(`Google Gemini Live 已连接，语音音色：${session.voice}`);
+              resolveStart();
+              return;
+            }
+            handleGoogleRealtimeMessage(payload);
+          } catch {
+            // ignore malformed realtime events
           }
-          handleGoogleRealtimeMessage(payload);
-        } catch {
-          // ignore malformed realtime events
-        }
+        })();
       };
     });
   }
@@ -3845,37 +3940,30 @@ export function CourseStudio() {
           </div>
 
           <div className="shrink-0 border-t border-gray-100 bg-white p-5">
-            <div className="relative mb-3">
-              <button
-                type="button"
-                onClick={() => setModelMenuOpen((current) => !current)}
-                className="flex w-full items-center justify-between gap-3 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2.5 text-left transition-colors hover:border-gray-300 hover:bg-white"
-              >
-                <span className="flex min-w-0 flex-1 items-start gap-2">
-                  <BrainCircuit className="h-4 w-4 shrink-0 text-gray-600" />
-                  <span className="grid min-w-0 flex-1 gap-1">
-                    <span className="grid min-w-0 grid-cols-[42px_minmax(0,1fr)] items-center gap-2">
-                      <span className="text-[11px] font-semibold text-gray-500">文本</span>
-                      <span className="truncate text-xs font-semibold text-gray-900">
-                        {modelButtonLabel(selectedTextOption, selectedTextModel)}
-                      </span>
-                    </span>
-                    <span className="grid min-w-0 grid-cols-[42px_minmax(0,1fr)] items-center gap-2">
-                      <span className="text-[11px] font-semibold text-gray-500">语音</span>
-                      <span className="truncate text-xs font-semibold text-gray-900">
-                        {modelButtonLabel(selectedRealtimeOption, selectedRealtimeModel)}
-                      </span>
-                    </span>
+            <div className="mb-3 space-y-2">
+              <div className="relative">
+                <button
+                  type="button"
+                  aria-expanded={openModelMenu === "text"}
+                  aria-label={`文本生成，当前模型 ${modelButtonLabel(selectedTextOption, selectedTextModel)}`}
+                  onClick={() => setOpenModelMenu((current) => (current === "text" ? null : "text"))}
+                  className="flex w-full items-center justify-between gap-3 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2.5 text-left transition-colors hover:border-gray-300 hover:bg-white"
+                >
+                  <span className="flex min-w-0 items-center gap-2">
+                    <BrainCircuit className="h-4 w-4 shrink-0 text-gray-600" />
+                    <span className="truncate text-xs font-semibold text-gray-900">文本生成</span>
                   </span>
-                </span>
-                <ChevronDown className="h-4 w-4 shrink-0 text-gray-500" />
-              </button>
+                  <ChevronDown
+                    className={clsx(
+                      "h-4 w-4 shrink-0 text-gray-500 transition-transform",
+                      openModelMenu === "text" && "rotate-180"
+                    )}
+                  />
+                </button>
 
-              {modelMenuOpen ? (
-                <div className="absolute bottom-full left-0 z-30 mb-2 max-h-[420px] w-full overflow-y-auto rounded-lg border border-gray-200 bg-white p-3 shadow-xl">
-                  <div>
-                    <p className="px-1 text-[11px] font-bold uppercase tracking-widest text-gray-500">文本生成</p>
-                    <div className="mt-2 space-y-1">
+                {openModelMenu === "text" ? (
+                  <div className="absolute bottom-full left-0 z-30 mb-2 max-h-[360px] w-full overflow-y-auto rounded-lg border border-gray-200 bg-white p-2 shadow-xl">
+                    <div className="space-y-1">
                       {modelCatalog.text.map((option) => {
                         const selected = modelOptionKey(option) === modelSelectionKey(selectedTextModel);
                         return (
@@ -3903,10 +3991,32 @@ export function CourseStudio() {
                       })}
                     </div>
                   </div>
+                ) : null}
+              </div>
 
-                  <div className="mt-3 border-t border-gray-100 pt-3">
-                    <p className="px-1 text-[11px] font-bold uppercase tracking-widest text-gray-500">实时语音</p>
-                    <div className="mt-2 space-y-1">
+              <div className="relative">
+                <button
+                  type="button"
+                  aria-expanded={openModelMenu === "realtime"}
+                  aria-label={`语音模型，当前模型 ${modelButtonLabel(selectedRealtimeOption, selectedRealtimeModel)}`}
+                  onClick={() => setOpenModelMenu((current) => (current === "realtime" ? null : "realtime"))}
+                  className="flex w-full items-center justify-between gap-3 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2.5 text-left transition-colors hover:border-gray-300 hover:bg-white"
+                >
+                  <span className="flex min-w-0 items-center gap-2">
+                    <Volume2 className="h-4 w-4 shrink-0 text-gray-600" />
+                    <span className="truncate text-xs font-semibold text-gray-900">语音模型</span>
+                  </span>
+                  <ChevronDown
+                    className={clsx(
+                      "h-4 w-4 shrink-0 text-gray-500 transition-transform",
+                      openModelMenu === "realtime" && "rotate-180"
+                    )}
+                  />
+                </button>
+
+                {openModelMenu === "realtime" ? (
+                  <div className="absolute bottom-full left-0 z-30 mb-2 max-h-[280px] w-full overflow-y-auto rounded-lg border border-gray-200 bg-white p-2 shadow-xl">
+                    <div className="space-y-1">
                       {modelCatalog.realtime.map((option) => {
                         const selected = modelOptionKey(option) === modelSelectionKey(selectedRealtimeModel);
                         return (
@@ -3934,8 +4044,8 @@ export function CourseStudio() {
                       })}
                     </div>
                   </div>
-                </div>
-              ) : null}
+                ) : null}
+              </div>
             </div>
             <div className="group relative mb-4 flex justify-center">
               <button
