@@ -16,9 +16,8 @@ export type FollowedCourseUpdate = {
   moduleTitle: string;
   summary: string;
   updatedAt: string;
-  updateKind: "new_lesson" | "course_revision" | "resource_added" | "live_note";
+  updateKind: "new_lesson" | "course_revision" | "resource_added" | "note_added";
   lessonCount: number;
-  durationLabel: string;
   views: number;
   comments: number;
   likes: number;
@@ -35,7 +34,7 @@ export const FOLLOWED_UPDATE_KIND_LABELS: Record<FollowedCourseUpdate["updateKin
   new_lesson: "新课",
   course_revision: "更新",
   resource_added: "资料",
-  live_note: "直播",
+  note_added: "笔记",
 };
 
 export const FOLLOWED_CREATORS: FollowedCreator[] = [
@@ -90,13 +89,13 @@ export const FOLLOWED_CREATORS: FollowedCreator[] = [
     unreadCount: 0,
   },
   {
-    id: "math-live",
-    name: "乐与侃 live",
-    handle: "math-live",
-    bio: "数学证明、线代和概率论直播讲义。",
+    id: "math-proof",
+    name: "乐与侃数学",
+    handle: "math-proof",
+    bio: "数学证明、线代和概率论讲义。",
     field: "数学",
     followers: 101800,
-    avatarSeed: "math-live",
+    avatarSeed: "math-proof",
     unreadCount: 4,
   },
 ];
@@ -111,7 +110,6 @@ export const FOLLOWED_COURSE_UPDATES: FollowedCourseUpdate[] = [
     updatedAt: "2026-04-26T08:30:00.000+08:00",
     updateKind: "new_lesson",
     lessonCount: 18,
-    durationLabel: "34 分钟",
     views: 7440,
     comments: 42,
     likes: 610,
@@ -119,15 +117,14 @@ export const FOLLOWED_COURSE_UPDATES: FollowedCourseUpdate[] = [
     coverSeed: "civil-contract-return",
   },
   {
-    id: "math-live-01",
-    creatorId: "math-live",
+    id: "math-proof-01",
+    creatorId: "math-proof",
     courseTitle: "线性代数证明课",
     moduleTitle: "更新：特征值与对角化的五个常见误区",
     summary: "把对角化条件、几何重数和最小多项式放在同一张讲义里，适合复习前快速校准。",
     updatedAt: "2026-04-26T07:40:00.000+08:00",
     updateKind: "course_revision",
     lessonCount: 24,
-    durationLabel: "27 分钟",
     views: 5820,
     comments: 31,
     likes: 428,
@@ -143,7 +140,6 @@ export const FOLLOWED_COURSE_UPDATES: FollowedCourseUpdate[] = [
     updatedAt: "2026-04-25T21:18:00.000+08:00",
     updateKind: "new_lesson",
     lessonCount: 31,
-    durationLabel: "41 分钟",
     views: 9100,
     comments: 67,
     likes: 820,
@@ -159,7 +155,6 @@ export const FOLLOWED_COURSE_UPDATES: FollowedCourseUpdate[] = [
     updatedAt: "2026-04-25T18:06:00.000+08:00",
     updateKind: "resource_added",
     lessonCount: 12,
-    durationLabel: "资料包",
     views: 4860,
     comments: 19,
     likes: 306,
@@ -170,12 +165,11 @@ export const FOLLOWED_COURSE_UPDATES: FollowedCourseUpdate[] = [
     id: "nav-bclass-01",
     creatorId: "nav-bclass",
     courseTitle: "城市公共议题观察课",
-    moduleTitle: "直播笔记：从交通数据看城市生活半径",
-    summary: "整理了直播里的地图案例和数据表，补充了几个适合做课堂讨论的问题。",
+    moduleTitle: "课堂笔记：从交通数据看城市生活半径",
+    summary: "整理了地图案例和数据表，补充了几个适合做课堂讨论的问题。",
     updatedAt: "2026-04-25T14:12:00.000+08:00",
-    updateKind: "live_note",
+    updateKind: "note_added",
     lessonCount: 9,
-    durationLabel: "直播回放",
     views: 3520,
     comments: 26,
     likes: 211,
@@ -191,7 +185,6 @@ export const FOLLOWED_COURSE_UPDATES: FollowedCourseUpdate[] = [
     updatedAt: "2026-04-24T22:05:00.000+08:00",
     updateKind: "course_revision",
     lessonCount: 18,
-    durationLabel: "22 分钟",
     views: 6290,
     comments: 38,
     likes: 472,
@@ -207,7 +200,6 @@ export const FOLLOWED_COURSE_UPDATES: FollowedCourseUpdate[] = [
     updatedAt: "2026-04-24T10:35:00.000+08:00",
     updateKind: "new_lesson",
     lessonCount: 15,
-    durationLabel: "29 分钟",
     views: 6880,
     comments: 35,
     likes: 540,

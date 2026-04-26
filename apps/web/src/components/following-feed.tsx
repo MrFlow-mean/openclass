@@ -34,7 +34,7 @@ const feedFilters: Array<{ id: FollowedFeedFilter; label: string }> = [
   { id: "new_lesson", label: "新课" },
   { id: "course_revision", label: "更新" },
   { id: "resource_added", label: "资料" },
-  { id: "live_note", label: "直播" },
+  { id: "note_added", label: "笔记" },
 ];
 
 function formatRelativeTime(value: string | Date | null | undefined) {
@@ -97,7 +97,7 @@ function updateTone(kind: FollowedCourseUpdate["updateKind"]) {
   switch (kind) {
     case "resource_added":
       return "bg-emerald-500";
-    case "live_note":
+    case "note_added":
       return "bg-sky-500";
     case "course_revision":
       return "bg-rose-500";
@@ -111,7 +111,7 @@ function updateLabelTone(kind: FollowedCourseUpdate["updateKind"]) {
   switch (kind) {
     case "resource_added":
       return "bg-emerald-50 text-emerald-700";
-    case "live_note":
+    case "note_added":
       return "bg-sky-50 text-sky-700";
     case "course_revision":
       return "bg-rose-50 text-rose-700";
@@ -275,7 +275,6 @@ function renderFeedCard(item: FollowedCourseUpdateItem) {
             <GraduationCap className="h-3.5 w-3.5" />
             {update.lessonCount} 课
           </span>
-          <span>{update.durationLabel}</span>
           <span className="inline-flex items-center gap-1">
             <Eye className="h-3.5 w-3.5" />
             {update.views.toLocaleString("zh-CN")}
