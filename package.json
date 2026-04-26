@@ -2,16 +2,25 @@
   "name": "ai-board-course-system",
   "private": true,
   "version": "0.1.0",
+  "workspaces": [
+    "apps/web"
+  ],
   "scripts": {
+    "setup": "npm install && npm run setup:api",
+    "setup:api": "python3 -m venv .venv && .venv/bin/python -m pip install --upgrade pip && .venv/bin/python -m pip install -e '.[dev]'",
     "dev": "concurrently -k \"npm run dev:api\" \"npm run dev:web\"",
     "dev:web": "npm --prefix apps/web run dev",
-    "dev:api": "cd apps/api && ../../.venv/bin/uvicorn app.main:app --reload",
+    "dev:api": ".venv/bin/python -m uvicorn app.main:app --reload --app-dir apps/api",
     "build:web": "npm --prefix apps/web run build",
     "lint:web": "npm --prefix apps/web run lint",
-    "test:api": "cd apps/api && ../../.venv/bin/pytest"
+    "typecheck:web": "npm --prefix apps/web run typecheck",
+    "test:api": ".venv/bin/python -m pytest",
+    "verify": "npm run lint:web && npm run typecheck:web && npm run test:api && npm run build:web"
+  },
+  "overrides": {
+    "postcss": "8.5.10"
   },
   "devDependencies": {
     "concurrently": "^9.2.1"
   }
 }
-

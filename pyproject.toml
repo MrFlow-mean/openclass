@@ -2,7 +2,7 @@
 name = "ai-board-api"
 version = "0.1.0"
 description = "FastAPI backend for the AI board course system"
-requires-python = ">=3.14"
+requires-python = ">=3.13"
 dependencies = [
   "fastapi==0.136.0",
   "uvicorn==0.44.0",
@@ -19,5 +19,23 @@ dependencies = [
   "certifi==2025.11.12"
 ]
 
+[project.optional-dependencies]
+dev = [
+  "pytest==9.0.3"
+]
+
 [tool.pytest.ini_options]
-pythonpath = ["."]
+pythonpath = ["apps/api"]
+testpaths = ["apps/api/tests"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.package-dir]
+"" = "apps/api"
+
+[tool.setuptools.packages.find]
+where = ["apps/api"]
+include = ["app*"]
+exclude = ["data*"]
