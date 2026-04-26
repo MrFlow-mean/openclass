@@ -24,7 +24,7 @@ if ! has_listener 3000 && ! has_listener 8000; then
 elif ! has_listener 3000; then
   run_in_terminal "cd '$PROJECT_DIR/apps/web' && npm run dev"
 elif ! has_listener 8000; then
-  run_in_terminal "cd '$PROJECT_DIR/apps/api' && ../../.venv/bin/uvicorn app.main:app --reload"
+  run_in_terminal "cd '$PROJECT_DIR' && .venv/bin/python -m uvicorn app.main:app --reload --app-dir apps/api"
 fi
 
 open "$LAUNCHER_FILE"

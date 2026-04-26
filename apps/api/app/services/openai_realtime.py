@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import urllib.parse
+from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
@@ -13,7 +14,15 @@ from app.models import AIModelSelection, Lesson
 from app.services.ai_model_catalog import GOOGLE_DEFAULT_REALTIME_MODEL
 from app.services.ai_logging import ai_usage_logger
 
-load_dotenv()
+def _load_root_dotenv() -> None:
+    root_env = Path(__file__).resolve().parents[4] / ".env"
+    if root_env.exists():
+        load_dotenv(root_env)
+        return
+    load_dotenv()
+
+
+_load_root_dotenv()
 
 
 def _json(data: Any) -> str:
