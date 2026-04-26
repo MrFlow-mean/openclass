@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -11,38 +14,52 @@ from app.services.lesson_factory import create_lesson
 class FileCourseStore:
     def __init__(self, path: Path):
         self.path = path
+        self._lock = threading.RLock()
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
     def load(self) -> WorkspaceState:
-        if not self.path.exists():
-            workspace = build_initial_workspace_state()
-            self.save(workspace)
-            return workspace
-        raw_text = self.path.read_text(encoding="utf-8")
-        try:
-            raw_data = json.loads(raw_text)
-            if _contains_legacy_blocks(raw_data):
+        with self._lock:
+            if not self.path.exists():
+                workspace = build_initial_workspace_state()
+                self.save(workspace)
+                return workspace
+            raw_text = self.path.read_text(encoding="utf-8")
+            try:
+                raw_data = json.loads(raw_text)
+                if _contains_legacy_blocks(raw_data):
+                    self._backup_legacy_store(raw_text)
+                    workspace = build_initial_workspace_state()
+                    self.save(workspace)
+                    return workspace
+                if isinstance(raw_data, dict) and isinstance(raw_data.get("packages"), list):
+                    return WorkspaceState.model_validate(raw_data)
+                package = CoursePackage.model_validate(raw_data)
+                workspace = WorkspaceState(packages=[package], active_package_id=package.id)
+                self.save(workspace)
+                return workspace
+            except Exception:
                 self._backup_legacy_store(raw_text)
                 workspace = build_initial_workspace_state()
                 self.save(workspace)
                 return workspace
-            if isinstance(raw_data, dict) and isinstance(raw_data.get("packages"), list):
-                return WorkspaceState.model_validate(raw_data)
-            package = CoursePackage.model_validate(raw_data)
-            workspace = WorkspaceState(packages=[package], active_package_id=package.id)
-            self.save(workspace)
-            return workspace
-        except Exception:
-            self._backup_legacy_store(raw_text)
-            workspace = build_initial_workspace_state()
-            self.save(workspace)
-            return workspace
 
     def save(self, workspace: WorkspaceState) -> None:
-        self.path.write_text(
-            json.dumps(workspace.model_dump(mode="json"), ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        with self._lock:
+            payload = json.dumps(workspace.model_dump(mode="json"), ensure_ascii=False, indent=2)
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                dir=self.path.parent,
+                delete=False,
+                prefix=f".{self.path.name}.",
+                suffix=".tmp",
+            ) as output:
+                output.write(payload)
+                output.flush()
+                os.fsync(output.fileno())
+                temp_path = Path(output.name)
+            temp_path.replace(self.path)
 
     def _backup_legacy_store(self, raw_text: str) -> None:
         timestamp = datetime.now().strftime("%Y%m%d%H%M%S")

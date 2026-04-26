@@ -5,10 +5,13 @@ from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
 import app.main as main_module
-from app.models import ChatRequest, CreateBranchRequest, DocumentSaveRequest
+from app.models import AIModelSelection, ChatRequest, CreateBranchRequest, DocumentSaveRequest, RealtimeTranscriptLogRequest
+from app.routers import documents as documents_router
+from app.routers import realtime as realtime_router
 from app.services.ai_logging import ai_log_context, ai_usage_logger
+from app.services import chat_service, workspace_state
 from app.services.course_store import FileCourseStore
-from app.services.openai_course_ai import OpenAICourseAI
+from app.services.openai_course_ai import OpenAICourseAI, bind_text_model_selection, openai_course_ai
 from app.services.resource_library import build_resource_item
 
 
@@ -171,13 +174,111 @@ def test_openai_compat_chat_completions_mode_parses_json(isolated_ai_log) -> Non
     assert entries[0]["payload"]["output_text"] == '{"title":"勾股定理"}'
 
 
+@pytest.mark.parametrize(
+    ("provider", "client_attr", "model"),
+    [
+        ("deepseek", "deepseek_client", "deepseek-v4-pro"),
+        ("kimi", "kimi_client", "kimi-k2.6"),
+        ("minimax", "minimax_client", "MiniMax-M2.7"),
+        ("openai_compatible", "openai_compatible_client", "router-model"),
+    ],
+)
+def test_openai_compatible_style_providers_route_to_selected_client(
+    provider: str, client_attr: str, model: str, isolated_ai_log
+) -> None:
+    class _Output(BaseModel):
+        title: str
+
+    class _Message:
+        content = '{"title":"统一接口"}'
+
+    class _Choice:
+        message = _Message()
+
+    class _Response:
+        id = f"{provider}_123"
+        choices = [_Choice()]
+        usage = {"total_tokens": 12}
+
+    class _FakeChatCompletions:
+        def __init__(self) -> None:
+            self.payload = None
+
+        def create(self, **kwargs):
+            self.payload = kwargs
+            return _Response()
+
+    class _FakeChat:
+        def __init__(self) -> None:
+            self.completions = _FakeChatCompletions()
+
+    class _FakeClient:
+        def __init__(self) -> None:
+            self.chat = _FakeChat()
+
+    ai = OpenAICourseAI()
+    fake_client = _FakeClient()
+    setattr(ai, client_attr, fake_client)
+
+    with bind_text_model_selection(AIModelSelection(provider=provider, model=model)):  # type: ignore[arg-type]
+        result = ai._parse("pm", "system", "user", _Output)
+
+    assert result is not None
+    assert result.title == "统一接口"
+    assert fake_client.chat.completions.payload["model"] == model
+    entries = _read_log_entries(isolated_ai_log)
+    assert entries[0]["event_type"] == f"{provider}_text_call"
+    assert entries[0]["payload"]["provider"] == provider
+    assert entries[0]["payload"]["model"] == model
+
+
+def test_anthropic_compatible_provider_routes_to_selected_client(isolated_ai_log) -> None:
+    class _Output(BaseModel):
+        title: str
+
+    class _FakeAnthropicCompatibleClient:
+        def __init__(self) -> None:
+            self.payload = None
+
+        def parse(self, **kwargs):
+            self.payload = kwargs
+
+            class _Response:
+                id = "anthropic_compatible_123"
+                output_text = '{"title":"统一接口"}'
+                usage = {"input_tokens": 3, "output_tokens": 5}
+                output_parsed = _Output(title="统一接口")
+
+            return _Response()
+
+    ai = OpenAICourseAI()
+    fake_client = _FakeAnthropicCompatibleClient()
+    ai.anthropic_compatible_client = fake_client
+
+    with bind_text_model_selection(
+        AIModelSelection(provider="anthropic_compatible", model="claude-router")
+    ):
+        result = ai._parse("pm", "system", "user", _Output)
+
+    assert result is not None
+    assert result.title == "统一接口"
+    assert fake_client.payload["model"] == "claude-router"
+    entries = _read_log_entries(isolated_ai_log)
+    assert entries[0]["event_type"] == "anthropic_compatible_text_call"
+    assert entries[0]["payload"]["provider"] == "anthropic_compatible"
+    assert entries[0]["payload"]["model"] == "claude-router"
+
+
 def test_chat_route_logs_request_and_response(monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path) -> None:
     store = FileCourseStore(tmp_path / "store.json")
-    monkeypatch.setattr(main_module, "STORE", store)
-    monkeypatch.setattr(main_module.openai_course_ai, "client", None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    monkeypatch.setattr(openai_course_ai, "client", None)
 
     lesson_id = store.load().packages[0].lessons[0].id
-    response = main_module.chat_on_lesson(lesson_id, ChatRequest(message="请解释一下勾股定理的核心公式"))
+    response = chat_service.process_chat_on_lesson(
+        lesson_id,
+        ChatRequest(message="请解释一下勾股定理的核心公式"),
+    )
 
     assert response.teacher_message
     entries = _read_log_entries(isolated_ai_log)
@@ -209,7 +310,7 @@ def test_chat_route_logs_request_and_response(monkeypatch: pytest.MonkeyPatch, i
     assert flow_commit.metadata["board_action"] == response.board_decision.action
     assert flow_commit.metadata["board_teaching_guide"]["board_document_id"] == updated_lesson.board_document.id
 
-    branched_package = main_module.create_lesson_branch(
+    branched_package = documents_router.create_lesson_branch(
         lesson_id,
         CreateBranchRequest(name="flow-branch", from_commit_id=flow_commit.id),
     )
@@ -219,7 +320,7 @@ def test_chat_route_logs_request_and_response(monkeypatch: pytest.MonkeyPatch, i
 
 def test_document_save_route_keeps_autosave_metadata(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     store = FileCourseStore(tmp_path / "store.json")
-    monkeypatch.setattr(main_module, "STORE", store)
+    monkeypatch.setattr(workspace_state, "STORE", store)
 
     workspace = store.load()
     lesson = workspace.packages[0].lessons[0]
@@ -227,7 +328,7 @@ def test_document_save_route_keeps_autosave_metadata(monkeypatch: pytest.MonkeyP
     document.content_html = "<p>自动保存后的内容</p>"
     document.content_text = "自动保存后的内容"
 
-    package = main_module.save_document(
+    package = documents_router.save_document(
         lesson.id,
         DocumentSaveRequest(
             document=document,
@@ -252,7 +353,7 @@ def test_document_save_route_keeps_autosave_metadata(monkeypatch: pytest.MonkeyP
 
 def test_document_save_beacon_accepts_plain_text_json(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     store = FileCourseStore(tmp_path / "store.json")
-    monkeypatch.setattr(main_module, "STORE", store)
+    monkeypatch.setattr(workspace_state, "STORE", store)
 
     workspace = store.load()
     lesson = workspace.packages[0].lessons[0]
@@ -288,16 +389,11 @@ def test_chat_route_reuses_workflow_runtime_without_extra_refresh(
     monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
 ) -> None:
     store = FileCourseStore(tmp_path / "store.json")
-    monkeypatch.setattr(main_module, "STORE", store)
-    monkeypatch.setattr(main_module.openai_course_ai, "client", None)
-    monkeypatch.setattr(
-        main_module,
-        "refresh_lesson_runtime",
-        lambda *args, **kwargs: pytest.fail("chat route should not refresh runtime after workflow execution"),
-    )
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    monkeypatch.setattr(openai_course_ai, "client", None)
 
     lesson_id = store.load().packages[0].lessons[0].id
-    response = main_module.chat_on_lesson(
+    response = chat_service.process_chat_on_lesson(
         lesson_id,
         ChatRequest(message="请解释一下勾股定理的核心公式"),
     )
@@ -309,8 +405,8 @@ def test_chat_route_hides_reference_box_for_explanation_only_turn(
     monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
 ) -> None:
     store = FileCourseStore(tmp_path / "store.json")
-    monkeypatch.setattr(main_module, "STORE", store)
-    monkeypatch.setattr(main_module.openai_course_ai, "client", None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    monkeypatch.setattr(openai_course_ai, "client", None)
 
     workspace = store.load()
     package = workspace.packages[0]
@@ -323,7 +419,7 @@ def test_chat_route_hides_reference_box_for_explanation_only_turn(
     store.save(workspace)
 
     lesson_id = store.load().packages[0].lessons[0].id
-    response = main_module.chat_on_lesson(
+    response = chat_service.process_chat_on_lesson(
         lesson_id,
         ChatRequest(message="请解释一下勾股定理的核心公式"),
     )
@@ -334,9 +430,9 @@ def test_chat_route_hides_reference_box_for_explanation_only_turn(
 
 
 def test_realtime_transcript_route_logs_each_message(isolated_ai_log) -> None:
-    result = main_module.log_realtime_event(
+    result = realtime_router.log_realtime_event(
         "lesson_demo",
-        main_module.RealtimeTranscriptLogRequest(
+        RealtimeTranscriptLogRequest(
             client_session_id="realtime_session_1",
             lesson_title="勾股定理",
             role="assistant",

@@ -1,0 +1,240 @@
+from __future__ import annotations
+
+from fastapi import APIRouter, HTTPException
+
+from app.models import (
+    CourseGraphEdge,
+    CoursePackage,
+    CoursePackageView,
+    CreatePackageRequest,
+    GenerateLessonRequest,
+    MoveLessonRequest,
+    ReorderTabsRequest,
+    UpdatePackageRequest,
+    WorkspaceStateView,
+)
+from app.services.ai_logging import ai_usage_logger
+from app.services.course_runtime import build_lesson_for_topic
+from app.services.history import current_head_commit
+from app.services.lesson_factory import create_empty_lesson
+from app.services.route_context import bind_ai_request_context
+from app.services.workspace_state import (
+    find_lesson_package,
+    get_lesson,
+    get_package,
+    load_workspace,
+    load_workspace_package,
+    normalize_package_state,
+    package_view,
+    save_workspace,
+    workspace_view,
+)
+
+router = APIRouter()
+
+
+@router.get("/api/workspace", response_model=WorkspaceStateView)
+def get_workspace() -> WorkspaceStateView:
+    return workspace_view(load_workspace())
+
+
+@router.post("/api/packages", response_model=WorkspaceStateView)
+def create_package(request: CreatePackageRequest) -> WorkspaceStateView:
+    title = request.title.strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="Package title is required")
+
+    workspace = load_workspace()
+    package = CoursePackage(
+        title=title,
+        summary=request.summary.strip() or "空课程包，等待你在顶部继续新建页面。",
+        lessons=[],
+    )
+    workspace.packages.append(package)
+    workspace.active_package_id = package.id
+    save_workspace(workspace)
+    return workspace_view(workspace)
+
+
+@router.post("/api/packages/{package_id}/open", response_model=WorkspaceStateView)
+def open_package(package_id: str) -> WorkspaceStateView:
+    workspace = load_workspace()
+    get_package(workspace, package_id)
+    workspace.active_package_id = package_id
+    save_workspace(workspace)
+    return workspace_view(workspace)
+
+
+@router.post("/api/packages/{package_id}", response_model=WorkspaceStateView)
+def update_package(package_id: str, request: UpdatePackageRequest) -> WorkspaceStateView:
+    workspace = load_workspace()
+    package = get_package(workspace, package_id)
+
+    if request.title is not None:
+        title = request.title.strip()
+        if not title:
+            raise HTTPException(status_code=400, detail="Package title is required")
+        package.title = title
+
+    if request.summary is not None:
+        package.summary = request.summary.strip()
+
+    save_workspace(workspace)
+    return workspace_view(workspace)
+
+
+@router.post("/api/packages/{package_id}/delete", response_model=WorkspaceStateView)
+def delete_package(package_id: str) -> WorkspaceStateView:
+    workspace = load_workspace()
+    get_package(workspace, package_id)
+
+    if len(workspace.packages) <= 1:
+        raise HTTPException(status_code=400, detail="Cannot delete the only course package")
+
+    workspace.packages = [package for package in workspace.packages if package.id != package_id]
+    if workspace.active_package_id == package_id:
+        workspace.active_package_id = workspace.packages[0].id if workspace.packages else None
+
+    save_workspace(workspace)
+    return workspace_view(workspace)
+
+
+@router.post("/api/lessons/{lesson_id}/move", response_model=WorkspaceStateView)
+def move_lesson(lesson_id: str, request: MoveLessonRequest) -> WorkspaceStateView:
+    workspace = load_workspace()
+    source_package, lesson = find_lesson_package(workspace, lesson_id)
+    target_package = get_package(workspace, request.target_package_id)
+
+    if source_package.id == target_package.id:
+        raise HTTPException(status_code=400, detail="Lesson is already in the selected package")
+
+    source_package.lessons = [current for current in source_package.lessons if current.id != lesson_id]
+    source_package.open_lesson_ids = [current for current in source_package.open_lesson_ids if current != lesson_id]
+    source_package.workspace_tab_order = [current for current in source_package.workspace_tab_order if current != lesson_id]
+    if source_package.active_lesson_id == lesson_id:
+        source_package.active_lesson_id = None
+
+    target_package.lessons.append(lesson)
+    if lesson.id not in target_package.open_lesson_ids:
+        target_package.open_lesson_ids.append(lesson.id)
+    if lesson.id not in target_package.workspace_tab_order:
+        target_package.workspace_tab_order.append(lesson.id)
+    if target_package.active_lesson_id is None:
+        target_package.active_lesson_id = lesson.id
+
+    normalize_package_state(source_package)
+    normalize_package_state(target_package)
+    save_workspace(workspace)
+    return workspace_view(workspace)
+
+
+@router.post("/api/lessons/{lesson_id}/delete", response_model=WorkspaceStateView)
+def delete_lesson(lesson_id: str) -> WorkspaceStateView:
+    workspace = load_workspace()
+    package, _ = find_lesson_package(workspace, lesson_id)
+
+    package.lessons = [current for current in package.lessons if current.id != lesson_id]
+    package.open_lesson_ids = [current for current in package.open_lesson_ids if current != lesson_id]
+    package.workspace_tab_order = [current for current in package.workspace_tab_order if current != lesson_id]
+    if package.active_lesson_id == lesson_id:
+        package.active_lesson_id = None
+
+    normalize_package_state(package)
+    save_workspace(workspace)
+    return workspace_view(workspace)
+
+
+@router.get("/api/course-package", response_model=CoursePackageView)
+def get_course_package() -> CoursePackageView:
+    _, package = load_workspace_package()
+    return package_view(package)
+
+
+@router.post("/api/lessons/generate", response_model=CoursePackageView)
+def generate_lesson(request: GenerateLessonRequest) -> CoursePackageView:
+    workspace, package = load_workspace_package()
+    with bind_ai_request_context(
+        "/api/lessons/generate",
+        trace_prefix="generate_lesson",
+        generation_topic=request.topic,
+        branch_from_lesson_id=request.branch_from_lesson_id,
+        start_blank=request.start_blank,
+    ):
+        if not request.start_blank:
+            ai_usage_logger.log_event(
+                "lesson_generation_request",
+                topic=request.topic,
+                branch_from_lesson_id=request.branch_from_lesson_id,
+            )
+        lesson = (
+            create_empty_lesson(request.topic)
+            if request.start_blank
+            else build_lesson_for_topic(request.topic)
+        )
+        package.lessons.append(lesson)
+        package.open_lesson_ids.append(lesson.id)
+        package.workspace_tab_order.append(lesson.id)
+        package.active_lesson_id = lesson.id
+        if request.branch_from_lesson_id:
+            package.course_graph.append(
+                CourseGraphEdge(
+                    source_lesson_id=request.branch_from_lesson_id,
+                    target_lesson_id=lesson.id,
+                    relationship="deep_dive",
+                )
+            )
+        save_workspace(workspace)
+        if not request.start_blank:
+            ai_usage_logger.log_event(
+                "lesson_generation_response",
+                lesson_id=lesson.id,
+                lesson_title=lesson.title,
+                summary=lesson.summary,
+                tags=lesson.tags,
+            )
+    return package_view(package)
+
+
+@router.post("/api/workspace/reorder", response_model=CoursePackageView)
+def reorder_workspace_tabs(request: ReorderTabsRequest) -> CoursePackageView:
+    workspace, package = load_workspace_package()
+    package.workspace_tab_order = request.ordered_lesson_ids
+    package.open_lesson_ids = request.ordered_lesson_ids
+    package.active_lesson_id = request.active_lesson_id or (
+        request.ordered_lesson_ids[0] if request.ordered_lesson_ids else None
+    )
+    save_workspace(workspace)
+    return package_view(package)
+
+
+@router.post("/api/lessons/{lesson_id}/open", response_model=CoursePackageView)
+def open_lesson_tab(lesson_id: str) -> CoursePackageView:
+    workspace = load_workspace()
+    package, _ = find_lesson_package(workspace, lesson_id)
+    if lesson_id not in package.open_lesson_ids:
+        package.open_lesson_ids.append(lesson_id)
+    if lesson_id not in package.workspace_tab_order:
+        package.workspace_tab_order.append(lesson_id)
+    package.active_lesson_id = lesson_id
+    workspace.active_package_id = package.id
+    save_workspace(workspace)
+    return package_view(package)
+
+
+@router.post("/api/lessons/{lesson_id}/close", response_model=CoursePackageView)
+def close_lesson_tab(lesson_id: str) -> CoursePackageView:
+    workspace, package = load_workspace_package()
+    package.open_lesson_ids = [current for current in package.open_lesson_ids if current != lesson_id]
+    package.workspace_tab_order = [current for current in package.workspace_tab_order if current != lesson_id]
+    if package.active_lesson_id == lesson_id:
+        package.active_lesson_id = package.workspace_tab_order[0] if package.workspace_tab_order else None
+    save_workspace(workspace)
+    return package_view(package)
+
+
+@router.get("/api/lessons/{lesson_id}/head")
+def get_lesson_head(lesson_id: str) -> dict[str, str]:
+    _, package = load_workspace_package()
+    lesson = get_lesson(package, lesson_id)
+    head = current_head_commit(lesson)
+    return {"lesson_id": lesson_id, "head_commit_id": head.id}
