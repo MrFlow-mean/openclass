@@ -25,7 +25,7 @@ from app.services.course_runtime import (
     effective_requirements,
     normalize_requirements,
 )
-from app.services.lesson_factory import build_teaching_guide, create_lesson
+from app.services.lesson_factory import build_requirements, build_teaching_guide, create_lesson
 from app.services.openai_course_ai import openai_course_ai
 from app.services.resource_library import extract_reference_context
 from app.services.rich_document import (
@@ -171,6 +171,27 @@ def _is_board_generation_request(message: str) -> bool:
     return bool(re.search(r"(生成|写|编|做|给我|来|完善)(一篇|一段|一份)?.*(课文|对话|板书|讲义|练习|例题|文档)", compact))
 
 
+def _is_append_document_request(message: str) -> bool:
+    if _is_full_rewrite_request(message):
+        return False
+    compact = re.sub(r"\s+", "", message)
+    append_signals = [
+        "新增",
+        "追加",
+        "补充",
+        "加上",
+        "加几",
+        "再生成",
+        "新生成",
+        "继续生成",
+        "继续写",
+        "扩展",
+        "扩写",
+    ]
+    append_targets = ["页面", "一页", "几页", "多页", "章节", "一节", "几节", "内容"]
+    return any(signal in compact for signal in append_signals) and any(target in compact for target in append_targets)
+
+
 def _is_forced_start_request(message: str) -> bool:
     compact = re.sub(r"\s+", "", message)
     forced_patterns = [
@@ -249,6 +270,83 @@ def _is_selection_enhancement_request(message: str) -> bool:
     return any(keyword in compact for keyword in enhancement_keywords)
 
 
+def _is_vague_pointer_request(message: str) -> bool:
+    compact = re.sub(r"\s+", "", message)
+    if compact in {"这里没懂", "这没懂", "这个没懂", "这块没懂", "没懂", "不懂", "看不懂", "不会"}:
+        return True
+    if len(compact) <= 8 and any(pointer in compact for pointer in ["这里", "这个", "这块", "那句", "它"]) and any(
+        keyword in compact for keyword in ["没懂", "不懂", "不会", "什么意思"]
+    ):
+        return True
+    return False
+
+
+def _is_low_information_request(message: str) -> bool:
+    compact = re.sub(r"\s+", "", message).lower()
+    return compact in {
+        "你好",
+        "您好",
+        "嗨",
+        "哈喽",
+        "hello",
+        "hi",
+        "在吗",
+        "我想学",
+        "想学",
+        "教我",
+        "讲讲",
+        "讲一下",
+        "开始",
+        "开始吧",
+    }
+
+
+def _has_teachable_subject_signal(text: str, lesson: Lesson, request: ChatRequest) -> bool:
+    if request.selection is not None:
+        return True
+    if lesson.title and lesson.title in text and not _is_vague_pointer_request(text):
+        return True
+    if _is_low_information_request(text) or _is_vague_pointer_request(text):
+        return False
+    generic_terms = {
+        "你好",
+        "您好",
+        "我想学",
+        "想学",
+        "教我",
+        "讲讲",
+        "讲一下",
+        "开始",
+        "开始吧",
+    }
+    terms = _extract_focus_terms(text)
+    return any(re.sub(r"\s+", "", term).lower() not in generic_terms for term in terms)
+
+
+def _clean_topic_hint(value: str) -> str | None:
+    cleaned = " ".join(value.split()).strip(" ：:，,。！？!?；;")
+    cleaned = re.sub(r"(?:是什么|的内容|这件事|这个概念)$", "", cleaned).strip(" ：:，,。！？!?；;")
+    cleaned = re.sub(r"(?:直接开讲|直接讲|开讲|开始教学|先开始)$", "", cleaned).strip(" ：:，,。！？!?；;")
+    if len(cleaned) < 2 or _is_low_information_request(cleaned) or _is_vague_pointer_request(cleaned):
+        return None
+    return cleaned[:40]
+
+
+def _extract_topic_hint(text: str) -> str | None:
+    patterns = [
+        r"(?:我想学|想学|教我|学习|学一下|为我讲解|给我讲解|为我讲|给我讲|讲解|请讲|请解释|解释一下)\s*([^，。！？!?；;\n]{2,48})",
+        r"([^，。！？!?；;\n]{2,48})是什么",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if not match:
+            continue
+        topic = _clean_topic_hint(match.group(1))
+        if topic:
+            return topic
+    return None
+
+
 def _extract_level_hint(text: str) -> str | None:
     patterns = [
         r"\b([ABC][12])\b",
@@ -291,8 +389,7 @@ def _learning_clarification_status(
     missing_items: list[str] = []
     progress = 0
 
-    subject_terms = _extract_focus_terms(user_context) or _extract_focus_terms(requirements.learning_goal)
-    if subject_terms or lesson.title in user_context:
+    if _has_teachable_subject_signal(user_context, lesson, request):
         progress += 35
     else:
         missing_items.append("想学的主题")
@@ -666,6 +763,9 @@ def _draft_requirements(lesson: Lesson, request: ChatRequest) -> LearningRequire
     requirements = effective_requirements(lesson)
     user_turns = [turn.content for turn in request.conversation if turn.role == "user"]
     user_context = "\n".join([*user_turns[-3:], request.message]).strip()
+    topic_hint = _extract_topic_hint(user_context)
+    if topic_hint and topic_hint != lesson.title:
+        requirements = build_requirements(topic_hint)
     requirements.current_questions = [*user_turns[-3:], request.message][-4:]
     if request.selection:
         requirements.current_questions.append(f"用户框选内容：{request.selection.excerpt[:80]}")
@@ -682,20 +782,27 @@ def _draft_requirements(lesson: Lesson, request: ChatRequest) -> LearningRequire
             requirements.target_depth = f"优先围绕“{goal_hint}”这个场景，把当前知识点讲明白并能立刻用起来。"
 
     requirements.boundary = "优先围绕当前 lesson 的整篇文档主线；超出范围时先决定是仅讲解、补充章节还是新开 lesson。"
-    return normalize_requirements(requirements, lesson_title=lesson.title, document=lesson.board_document)
+    normalized = normalize_requirements(requirements, lesson_title=lesson.title, document=lesson.board_document)
+    if topic_hint:
+        normalized.theme = topic_hint
+    return normalized
 
 
 def _clarification_questions_for_status(status: LearningClarificationStatus) -> list[str]:
     missing = set(status.missing_items)
     if "想学的主题" in missing:
-        return ["你现在最想学的具体内容是什么？"]
+        return ["我们先找一个小入口：你指的是哪一句、哪个概念，或者想先学什么主题？给我一个关键词，我就从那里开讲。"]
     if "当前水平或背景" in missing and "学习目的或应用场景" in missing:
-        return ["你现在大概什么水平，准备用在哪种场景里？"]
+        return ["我可以先按入门节奏讲起来；你顺手告诉我，是为了考试、工作项目，还是日常兴趣？"]
     if "当前水平或背景" in missing:
-        return ["你现在大概什么水平？"]
+        return ["我先不预设基础；你听起来如果太浅或太快，告诉我，我马上调节。"]
     if "学习目的或应用场景" in missing:
-        return ["你准备把这个内容用在哪种场景里？"]
+        return ["我先讲核心用法；你也可以说说准备用在哪儿，我会把例子往那个场景靠。"]
     return []
+
+
+def _is_first_user_exchange(request: ChatRequest) -> bool:
+    return not any(turn.role == "user" for turn in request.conversation)
 
 
 def _should_ask_brief_clarification(
@@ -710,9 +817,13 @@ def _should_ask_brief_clarification(
     if _is_explanation_request(request.message) or _is_board_generation_request(request.message):
         return False
     missing = set(status.missing_items)
+    if request.selection is None and _is_vague_pointer_request(request.message):
+        return True
     if "想学的主题" in missing and status.progress < 35:
         return True
     if {"当前水平或背景", "学习目的或应用场景"} <= missing and status.progress < 55:
+        if "想学的主题" not in missing and _is_first_user_exchange(request):
+            return False
         return True
     return False
 
@@ -806,6 +917,8 @@ def _fallback_board_decision(
         explicit_generation or _is_explanation_request(message) or _is_forced_start_request(message)
     ):
         return BoardDecision(action="edit_board", reason="当前讲义为空，先生成一版可讲的板书，再继续教学。")
+    if _is_append_document_request(message) and not is_document_empty(lesson.board_document):
+        return BoardDecision(action="append_section", reason="用户要求在现有讲义后新增页面或章节内容。")
     if explicit_generation:
         return BoardDecision(action="edit_board", reason="用户明确要求生成讲义/课文/对话内容，应直接产出整篇文档。")
     if scope_mode == "scope_escalation":
@@ -821,6 +934,8 @@ def _fallback_board_decision(
         return BoardDecision(action="edit_board", reason="当前需求更适合先调整整篇讲义，再围绕更新后的结构讲解。")
     if any(keyword in message for keyword in ["解释", "讲解", "开讲", "直接讲", "讲一下", "讲讲", "为什么", "什么意思", "怎么理解"]):
         return BoardDecision(action="no_change", reason="当前更像围绕现有讲义的讲解请求，不必先改文档。")
+    if requirements.theme != lesson.title:
+        return BoardDecision(action="edit_board", reason=f"用户提出了新的学习主题“{requirements.theme}”，先生成一版可讲的板书。")
     if requirements.output_preference and not is_document_empty(lesson.board_document):
         return BoardDecision(action="no_change", reason="现有讲义已经能支撑这次讲解，先不改文档。")
     return BoardDecision(action="edit_board", reason="默认先生成一版更完整的连续讲义，便于后续教学。")
@@ -870,6 +985,7 @@ def _fallback_document_update(
     lesson: Lesson,
     request: ChatRequest,
     decision: BoardDecision,
+    requirements: LearningRequirementSheet,
     selected_reference: ResourceReferenceContext | None,
 ) -> BoardDocument:
     if request.selection and request.interaction_mode == "direct_edit" and not _is_full_rewrite_request(request.message):
@@ -891,7 +1007,7 @@ def _fallback_document_update(
 
     generated = create_lesson(
         request.message.strip() or lesson.title,
-        requirements=effective_requirements(lesson),
+        requirements=requirements,
         reference_context=selected_reference,
     )
     return generated.board_document.model_copy(update={"id": lesson.board_document.id})
@@ -1261,6 +1377,22 @@ def _teacher_intro(state: WorkflowState) -> str:
     return "我们直接抓这次最该讲的重点。"
 
 
+def _teacher_learning_probe(state: WorkflowState) -> str | None:
+    status = state.get("learning_clarification")
+    if status is None:
+        return None
+    missing = set(status.missing_items)
+    if "想学的主题" in missing:
+        return None
+    if {"当前水平或背景", "学习目的或应用场景"} <= missing:
+        return "我先按入门到进阶之间的节奏走；你边听边告诉我更偏考试、工作项目还是日常兴趣，我会把例子往那边调。"
+    if "当前水平或背景" in missing:
+        return "我先不预设基础；如果你已经很熟悉前置概念，下一轮我会直接加深。"
+    if "学习目的或应用场景" in missing:
+        return "你也可以顺手说说准备用在哪儿，我会把后面的例子往那个场景靠。"
+    return None
+
+
 def _teacher_message_from_talk_track(state: WorkflowState, talk_track: str) -> str:
     selected_reference = state.get("selected_reference")
     lines = [_teacher_intro(state), talk_track.strip()]
@@ -1268,6 +1400,9 @@ def _teacher_message_from_talk_track(state: WorkflowState, talk_track: str) -> s
         lines.append(
             f"这次还参考了《{selected_reference.resource_name}》的《{selected_reference.chapter_title}》，但我会用课堂口吻讲。"
         )
+    probe = _teacher_learning_probe(state)
+    if probe:
+        lines.append(probe)
     return "\n".join(line for line in lines if line.strip())
 
 
@@ -1311,6 +1446,9 @@ def _fallback_teacher_message(state: WorkflowState) -> str:
         lines.append(
             f"这次也参考了《{selected_reference.resource_name}》的《{selected_reference.chapter_title}》，但讲法会更口语化。"
         )
+    probe = _teacher_learning_probe(state)
+    if probe:
+        lines.append(probe)
     return "\n".join(lines)
 
 

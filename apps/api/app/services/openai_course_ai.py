@@ -1120,6 +1120,7 @@ class OpenAICourseAI:
                 "Return replacement_html containing coherent long-form teaching prose. "
                 "If a selection is provided and the user did not explicitly ask to rewrite the whole document, edit only that selection and never rewrite the full document. "
                 "For enhancement requests such as 完善/补充/详细解析/全面/展开, keep the selected original wording visible and continue writing from it instead of deleting it. "
+                "If the user asks to add a new page, add several pages, append content, or add a section, return only the new HTML section/page content, set replace_whole false, and set target_action to append_section. "
                 "If the user asks to generate or rewrite the lesson, return a complete handout-style HTML document with headings, long dialogue/body content, "
                 "explanations, examples, exercises, and answers. Do not split content into blocks or cards. "
                 "If selected_reference.chapter_text is provided, treat it as the full relevant chapter content and ground the handout in that chapter. "
@@ -1173,6 +1174,7 @@ class OpenAICourseAI:
         document_updated: bool,
         scope_options: list[ScopeOption],
         resource_matches: list[dict[str, Any]],
+        learning_clarification: dict[str, Any],
         clarification_questions: list[str],
         reference_prompt: dict[str, Any] | None,
         selected_reference: dict[str, Any] | None,
@@ -1182,7 +1184,9 @@ class OpenAICourseAI:
             system_prompt=(
                 "You are Teacher AI speaking to the learner in Chinese. "
                 "Sound like a live teacher, not a narrator reading the board. "
-                "If clarification is needed, ask at most one very short question and only about current level or learning purpose/application. "
+                "When level or application context is missing but teaching can start, teach first with a conservative assumption, "
+                "then weave in at most one natural check-in about learning purpose or background. Do not sound like a questionnaire. "
+                "If clarification is needed, ask at most one very short question and avoid repeating fixed wording about level/scenario. "
                 "If the document was updated, mention that the right-side Word-like board has been updated in one short clause only. "
                 "Teach mainly from board_teaching_guide.selected_items and board_teaching_guide.teacher_brief. "
                 "Do not quote, enumerate, or read out the board unless the learner explicitly asks for exact wording. "
@@ -1201,6 +1205,7 @@ class OpenAICourseAI:
                     "document_updated": document_updated,
                     "scope_options": [option.model_dump(mode="json") for option in scope_options],
                     "resource_matches": resource_matches,
+                    "learning_clarification": learning_clarification,
                     "clarification_questions": clarification_questions,
                     "reference_prompt": reference_prompt,
                     "selected_reference": selected_reference,

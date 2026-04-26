@@ -77,9 +77,30 @@ def test_workflow_asks_for_clarification_when_request_is_too_vague() -> None:
     assert result["board_decision"].action == "clarify_request"
     assert result.get("document_updated") is False
     assert result["clarification_questions"]
+    assert "什么水平" not in result["teacher_message"]
 
 
-def test_workflow_scores_subject_only_learning_goal_as_35_percent() -> None:
+def test_workflow_asks_for_topic_keyword_on_greeting_without_level_refrain() -> None:
+    package = build_initial_course_package()
+    lesson = package.lessons[0]
+
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "course_package": package,
+            "request": ChatRequest(message="你好"),
+        }
+    )
+
+    assert result["learning_clarification"].progress == 0
+    assert result["needs_clarification"] is True
+    assert result["board_decision"].action == "clarify_request"
+    assert result.get("document_updated") is False
+    assert "关键词" in result["teacher_message"]
+    assert "什么水平" not in result["teacher_message"]
+
+
+def test_workflow_starts_teaching_on_first_subject_only_learning_goal() -> None:
     package = build_initial_course_package()
     lesson = package.lessons[0]
 
@@ -92,7 +113,12 @@ def test_workflow_scores_subject_only_learning_goal_as_35_percent() -> None:
     )
 
     assert result["learning_clarification"].progress == 35
-    assert result["needs_clarification"] is True
+    assert result["needs_clarification"] is False
+    assert result["board_decision"].action == "edit_board"
+    assert result["document_updated"] is True
+    assert result["teacher_message"].strip()
+    assert "什么水平" not in result["teacher_message"]
+    assert "准备用在哪种场景" not in result["teacher_message"]
 
 
 def test_workflow_marks_detailed_learning_goal_as_fully_clarified() -> None:
@@ -244,7 +270,7 @@ def test_workflow_direct_start_after_brief_clarification_generates_board_for_bla
                 message="直接开讲",
                 conversation=[
                     ConversationTurn(role="user", content="为我讲中华人民共和国民法典是什么"),
-                    ConversationTurn(role="assistant", content="你现在大概什么水平，准备用在哪种场景里？"),
+                    ConversationTurn(role="assistant", content="我可以先按入门节奏讲起来；你顺手告诉我，是为了考试、工作项目，还是日常兴趣？"),
                 ],
             ),
         }
@@ -350,6 +376,55 @@ def test_workflow_direct_edit_enhancement_preserves_original_excerpt() -> None:
     assert "课后提醒：注意端点条件。" in result["teacher_document"].content_text
 
 
+def test_workflow_direct_edit_new_page_appends_instead_of_replacing(monkeypatch: pytest.MonkeyPatch) -> None:
+    package = build_initial_course_package()
+    lesson = package.lessons[0]
+    lesson.board_document = build_document(
+        title="量化金融入门讲义",
+        content_html=(
+            "<h1>量化金融入门讲义：给第一次接触的人</h1>"
+            "<p>量化金融是用数据、数学和程序辅助投资决策。</p>"
+        ),
+        document_id=lesson.board_document.id,
+    )
+
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_document_edit",
+        lambda **kwargs: DocumentEditOutput(
+            rationale="append new page",
+            replacement_html=(
+                "<h1>量化金融中的数学工具方法</h1>"
+                "<p>这一页讲蒙特卡洛方法、相关性和回归。</p>"
+            ),
+            replacement_text="量化金融中的数学工具方法\n这一页讲蒙特卡洛方法、相关性和回归。",
+            teacher_talk_track="这一页我们继续补工具箱。",
+            replace_whole=False,
+            target_action="create_child_lesson",
+        ),
+    )
+
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "course_package": package,
+            "request": ChatRequest(
+                message="再为我新生成做一个页面，为我生成几个量化金融的数学工具知识方法，比如蒙特卡洛方法什么的",
+                interaction_mode="direct_edit",
+            ),
+        }
+    )
+
+    assert result["board_decision"].action == "append_section"
+    assert result["document_updated"] is True
+    assert "量化金融入门讲义：给第一次接触的人" in result["teacher_document"].content_text
+    assert "量化金融是用数据、数学和程序辅助投资决策。" in result["teacher_document"].content_text
+    assert "量化金融中的数学工具方法" in result["teacher_document"].content_text
+    assert result["teacher_document"].content_html.index("量化金融入门讲义") < result["teacher_document"].content_html.index(
+        "量化金融中的数学工具方法"
+    )
+
+
 def test_replace_selection_in_document_replaces_exact_block_without_nested_paragraphs() -> None:
     document = build_document(
         title="测试",
@@ -366,6 +441,55 @@ def test_replace_selection_in_document_replaces_exact_block_without_nested_parag
     assert "原始题干" in next_document.content_text
     assert "补充说明" in next_document.content_text
     assert "后续内容" in next_document.content_text
+
+
+def test_replace_selection_in_document_preserves_rich_html_for_cross_block_selection() -> None:
+    document = build_document(
+        title="量化金融入门讲义",
+        content_html=(
+            "<h1>量化金融入门讲义：给第一次接触的人</h1>"
+            "<p>开场正文。</p>"
+            "<h2>九、量化金融和普通炒股有什么不同</h2>"
+            "<p>上一节正文。</p>"
+            "<h2>十、初学者最该优先掌握的学习顺序</h2>"
+            "<p>如果你是零基础，建议按下面顺序学：</p>"
+            "<ol>"
+            "<li>先理解金融市场里有哪些资产；</li>"
+            "<li>再理解收益率、风险、波动率、回撤这些基本指标；</li>"
+            "<li>接着理解策略、回测、过拟合；</li>"
+            "<li>然后学习最简单的统计知识，比如均值、方差、相关性；</li>"
+            "<li>最后再进入编程和实际策略设计。</li>"
+            "</ol>"
+            "<p>很多人一开始就学复杂模型，结果概念混乱。</p>"
+            "<h2>十一、一个入门练习</h2>"
+            "<p>练习正文。</p>"
+        ),
+    )
+    selection = (
+        "十、初学者最该优先掌握的学习顺序 如果你是零基础，建议按下面顺序学： "
+        "先理解金融市场里有哪些资产； 再理解收益率、风险、波动率、回撤这些基本指标； "
+        "接着理解策略、回测、过拟合； 然后学习最简单的统计知识，比如均值、方差、相关性； "
+        "最后再进入编程和实际策略设计。 很多人一开始就学复杂模型，结果概念混乱。"
+    )
+
+    updated = replace_selection_in_document(
+        document,
+        selection_text=selection,
+        replacement_text="十、初学者最该优先掌握的学习顺序\n\n补充正文",
+        replacement_html=(
+            "<h2>十、初学者最该优先掌握的学习顺序</h2>"
+            "<p>补充正文。</p>"
+            "<h3>1. 为什么量化金融离不开一点数学</h3>"
+            "<p>量化里的数学是为了把感觉变成可比较的东西。</p>"
+        ),
+    )
+
+    assert updated.content_html.startswith("<h1>量化金融入门讲义")
+    assert "<h2>九、量化金融和普通炒股有什么不同</h2>" in updated.content_html
+    assert "<h2>十一、一个入门练习</h2>" in updated.content_html
+    assert "<h3>1. 为什么量化金融离不开一点数学</h3>" in updated.content_html
+    assert updated.content_html.count("<h2>十、初学者最该优先掌握的学习顺序</h2>") == 1
+    assert "<p>量化金融入门讲义：给第一次接触的人</p>" not in updated.content_html
 
 
 def test_workflow_generates_initial_dialogue_document_for_blank_lesson() -> None:

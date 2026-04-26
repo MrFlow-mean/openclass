@@ -81,6 +81,10 @@ select {
     0 2px 8px rgba(15, 23, 42, 0.04);
 }
 
+.word-editor__page--zoomable {
+  zoom: var(--word-page-zoom, 1);
+}
+
 .word-editor__page--borderless {
   border-color: transparent;
 }
@@ -318,18 +322,20 @@ select {
 
 .word-editor__page-break {
   position: relative;
-  height: 2.8rem;
-  margin: 2rem 0;
+  height: var(--word-page-preview-height, 1216px);
+  margin: 2.5rem 0;
   break-after: page;
   page-break-after: always;
 }
 
 .word-editor__page-break::before {
   position: absolute;
-  top: 50%;
-  right: 0;
-  left: 0;
+  inset: 0;
   border-top: 2px dashed #c7d2fe;
+  border-bottom: 2px dashed rgba(199, 210, 254, 0.85);
+  background:
+    linear-gradient(180deg, rgba(238, 242, 255, 0.78), rgba(255, 255, 255, 0.32) 18%, rgba(255, 255, 255, 0.32) 82%, rgba(238, 242, 255, 0.78)),
+    repeating-linear-gradient(180deg, transparent 0, transparent 38px, rgba(199, 210, 254, 0.32) 39px);
   content: "";
 }
 
@@ -348,6 +354,18 @@ select {
   letter-spacing: 0.08em;
   line-height: 1;
   padding: 0.35rem 0.7rem;
+}
+
+@media print {
+  .word-editor__page-break {
+    height: 0;
+    margin: 0;
+  }
+
+  .word-editor__page-break::before,
+  .word-editor__page-break::after {
+    display: none;
+  }
 }
 
 .word-editor__image {
@@ -389,4 +407,60 @@ select {
   font-size: 11px;
   line-height: 1;
   font-family: var(--font-plex-mono), monospace;
+}
+
+.word-editor__zoom-range {
+  --word-zoom-progress: 33%;
+  appearance: none;
+  cursor: pointer;
+  background: transparent;
+}
+
+.word-editor__zoom-range::-webkit-slider-runnable-track {
+  height: 3px;
+  border-radius: 999px;
+  background: linear-gradient(
+    to right,
+    #2563eb 0%,
+    #2563eb var(--word-zoom-progress),
+    #d7dee9 var(--word-zoom-progress),
+    #d7dee9 100%
+  );
+  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.16);
+}
+
+.word-editor__zoom-range::-webkit-slider-thumb {
+  appearance: none;
+  width: 13px;
+  height: 13px;
+  margin-top: -5px;
+  border: 2px solid #ffffff;
+  border-radius: 999px;
+  background: #2563eb;
+  box-shadow:
+    0 1px 2px rgba(15, 23, 42, 0.2),
+    0 0 0 1px rgba(37, 99, 235, 0.12);
+}
+
+.word-editor__zoom-range::-moz-range-track {
+  height: 3px;
+  border-radius: 999px;
+  background: #d7dee9;
+}
+
+.word-editor__zoom-range::-moz-range-progress {
+  height: 3px;
+  border-radius: 999px;
+  background: #2563eb;
+}
+
+.word-editor__zoom-range::-moz-range-thumb {
+  width: 13px;
+  height: 13px;
+  border: 2px solid #ffffff;
+  border-radius: 999px;
+  background: #2563eb;
+  box-shadow:
+    0 1px 2px rgba(15, 23, 42, 0.2),
+    0 0 0 1px rgba(37, 99, 235, 0.12);
 }

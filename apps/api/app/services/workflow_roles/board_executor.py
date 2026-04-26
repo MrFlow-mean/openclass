@@ -5,6 +5,7 @@ from app.services.ai_workflow import (
     _bound_board_teaching_guide,
     _extract_focus_terms,
     _fallback_document_update,
+    _is_append_document_request,
     _interactive_teaching_guide,
     _is_full_rewrite_request,
     _merge_selection_edit,
@@ -19,6 +20,7 @@ from app.services.rich_document import (
     document_changed,
     html_to_text,
     replace_selection_in_document,
+    text_to_html,
 )
 
 
@@ -120,17 +122,29 @@ def run_board_executor(state: WorkflowState) -> WorkflowState:
             and request.interaction_mode == "direct_edit"
             and not _is_full_rewrite_request(request.message)
         ):
+            generated_text = replacement_doc.content_text or html_to_text(ai_edit.replacement_html)
             replacement_text = _merge_selection_edit(
                 selection_text=request.selection.excerpt,
-                generated_text=replacement_doc.content_text or html_to_text(ai_edit.replacement_html),
+                generated_text=generated_text,
                 request_message=request.message,
             )
+            replacement_html = replacement_doc.content_html
+            if replacement_text.strip() != generated_text.strip():
+                replacement_html = text_to_html(replacement_text)
             next_document = replace_selection_in_document(
                 lesson.board_document,
                 selection_text=request.selection.excerpt,
                 replacement_text=replacement_text,
+                replacement_html=replacement_html,
             )
-        elif decision.action == "append_section" and not ai_edit.replace_whole:
+        elif (
+            not ai_edit.replace_whole
+            and (
+                decision.action == "append_section"
+                or ai_edit.target_action in {"append_section", "create_child_lesson"}
+                or _is_append_document_request(request.message)
+            )
+        ):
             next_document = append_html_section(lesson.board_document, replacement_doc.content_html)
         else:
             next_document = replacement_doc
@@ -147,6 +161,7 @@ def run_board_executor(state: WorkflowState) -> WorkflowState:
             lesson=lesson,
             request=request,
             decision=decision,
+            requirements=requirements,
             selected_reference=selected_reference,
         )
         teacher_talk_track = None

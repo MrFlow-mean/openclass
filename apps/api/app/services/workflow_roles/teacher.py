@@ -37,6 +37,7 @@ def run_teacher(state: WorkflowState) -> WorkflowState:
         document_updated=state.get("document_updated", False),
         scope_options=state.get("scope_options", []),
         resource_matches=[match.model_dump(mode="json") for match in state.get("resource_matches", [])],
+        learning_clarification=state["learning_clarification"].model_dump(mode="json"),
         clarification_questions=state.get("clarification_questions", []),
         reference_prompt=reference_prompt.model_dump(mode="json") if reference_prompt else None,
         selected_reference=_reference_payload(selected_reference, include_full_text=False),

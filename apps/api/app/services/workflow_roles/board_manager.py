@@ -6,6 +6,7 @@ from app.services.ai_workflow import (
     _build_reference_prompt,
     _build_scope_options,
     _fallback_board_decision,
+    _is_append_document_request,
     _is_board_generation_request,
     _is_explanation_request,
     _is_forced_start_request,
@@ -27,6 +28,14 @@ def run_board_manager(state: WorkflowState) -> WorkflowState:
     matches = match_resources(state["course_package"], lesson, request, requirements)
 
     if request.interaction_mode == "direct_edit":
+        if _is_append_document_request(request.message) and not is_document_empty(lesson.board_document):
+            return {
+                "board_decision": BoardDecision(action="append_section", reason="用户要求在现有讲义后新增页面或章节内容。"),
+                "scope_options": [],
+                "resource_matches": matches,
+                "reference_prompt": None,
+                "selected_reference": None,
+            }
         return {
             "board_decision": BoardDecision(action="edit_board", reason="用户通过选区编辑入口明确要求直接修改讲义。"),
             "scope_options": [],

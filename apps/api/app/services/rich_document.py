@@ -30,6 +30,10 @@ _MATH_SIGNAL_RE = re.compile(
     r"|[A-Za-z]\s*\([^)]*\)"
     r"|[A-Za-z]\s*\^\s*\{?[-+\w/]+\}?"
 )
+_HTML_BLOCK_RE = re.compile(
+    r"<(?P<tag>h[1-6]|p|li|blockquote)\b[^>]*>.*?</(?P=tag)>",
+    re.IGNORECASE | re.DOTALL,
+)
 _MATH_RUN_RE = re.compile(r"[A-Za-z0-9\\_{}^()+\-−*/=·∞→←≤≥≈≠±<>|'\s.]+")
 _DELIMITED_MATH_RE = re.compile(r"\\\((.+?)\\\)|\$(?!\d+\$)([^$\n]+?)\$(?!\d)")
 _TRAILING_SENTENCE_MARKS_RE = re.compile(r"[\s.,，。；;:：]+$")
@@ -187,11 +191,62 @@ def append_html_section(document: BoardDocument, section_html: str) -> BoardDocu
     )
 
 
+def _looks_like_html(value: str) -> bool:
+    return bool(re.search(r"</?[A-Za-z][^>]*>", value))
+
+
+def _replacement_html(replacement_text: str, replacement_html: str | None) -> str:
+    html_candidate = (replacement_html or "").strip()
+    if html_candidate and _looks_like_html(html_candidate):
+        return html_candidate
+    return text_to_html(replacement_text)
+
+
+def _selection_match_key(value: str) -> str:
+    return re.sub(r"\s+", "", html.unescape(value or ""))
+
+
+def _replace_html_blocks_by_selection_text(
+    *,
+    content_html: str,
+    selection_text: str,
+    replacement_html: str,
+) -> str | None:
+    selected_key = _selection_match_key(selection_text)
+    if not content_html.strip() or not selected_key:
+        return None
+
+    blocks: list[tuple[int, int]] = []
+    source_chars: list[str] = []
+    char_block_indexes: list[int] = []
+    for match in _HTML_BLOCK_RE.finditer(content_html):
+        block_index = len(blocks)
+        blocks.append((match.start(), match.end()))
+        for char in html_to_text(match.group(0)):
+            if char.isspace():
+                continue
+            source_chars.append(char)
+            char_block_indexes.append(block_index)
+
+    source_key = "".join(source_chars)
+    match_start = source_key.find(selected_key)
+    if match_start < 0:
+        return None
+
+    match_end = match_start + len(selected_key) - 1
+    start_block = char_block_indexes[match_start]
+    end_block = char_block_indexes[match_end]
+    html_start = blocks[start_block][0]
+    html_end = blocks[end_block][1]
+    return f"{content_html[:html_start]}{replacement_html}{content_html[html_end:]}"
+
+
 def replace_selection_in_document(
     document: BoardDocument,
     *,
     selection_text: str,
     replacement_text: str,
+    replacement_html: str | None = None,
 ) -> BoardDocument:
     selected = selection_text.strip()
     replacement = replacement_text.strip()
@@ -199,27 +254,18 @@ def replace_selection_in_document(
         return document
 
     escaped_selection = html.escape(selected)
-    replacement_html = text_to_html(replacement)
+    block_replacement_html = _replacement_html(replacement, replacement_html)
     inline_replacement_html = html.escape(replacement).replace("\n", "<br>")
     for tag in ("p", "h1", "h2", "h3", "li", "blockquote"):
         exact_block_html = f"<{tag}>{escaped_selection}</{tag}>"
         if exact_block_html in document.content_html:
-            next_html = document.content_html.replace(exact_block_html, replacement_html, 1)
+            next_html = document.content_html.replace(exact_block_html, block_replacement_html, 1)
             return build_document(
                 title=document.title,
                 content_html=next_html,
                 document_id=document.id,
                 page_settings=document.page_settings,
             )
-
-    if selected in document.content_text:
-        next_text = document.content_text.replace(selected, replacement, 1)
-        return build_document(
-            title=document.title,
-            content_text=next_text,
-            document_id=document.id,
-            page_settings=document.page_settings,
-        )
 
     if escaped_selection in document.content_html:
         next_html = document.content_html.replace(escaped_selection, inline_replacement_html, 1)
@@ -239,9 +285,35 @@ def replace_selection_in_document(
             page_settings=document.page_settings,
         )
 
+    next_html = _replace_html_blocks_by_selection_text(
+        content_html=document.content_html,
+        selection_text=selected,
+        replacement_html=block_replacement_html,
+    )
+    if next_html is not None:
+        return build_document(
+            title=document.title,
+            content_html=next_html,
+            document_id=document.id,
+            page_settings=document.page_settings,
+        )
+
+    if selected in document.content_text and not document.content_html.strip():
+        next_text = document.content_text.replace(selected, replacement, 1)
+        return build_document(
+            title=document.title,
+            content_text=next_text,
+            document_id=document.id,
+            page_settings=document.page_settings,
+        )
+
     next_text = f"{document.content_text.rstrip()}\n\n{replacement}".strip()
+    next_html = "\n".join(
+        part for part in [document.content_html.strip(), block_replacement_html.strip()] if part
+    )
     return build_document(
         title=document.title,
+        content_html=next_html,
         content_text=next_text,
         document_id=document.id,
         page_settings=document.page_settings,

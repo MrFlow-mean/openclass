@@ -46,7 +46,9 @@ import {
   List,
   ListOrdered,
   LoaderCircle,
+  Maximize2,
   MessageSquare,
+  Minus,
   PanelRight,
   PanelTop,
   PaintBucket,
@@ -123,6 +125,7 @@ type ChatMessage = {
   role: "user" | "assistant";
   content: string;
   status?: "ready" | "pending" | "error";
+  selection?: SelectionRef | null;
 };
 
 type LessonMessageMap = Record<string, ChatMessage[]>;
@@ -626,6 +629,19 @@ const PAGE_BACKGROUND_OPTIONS = [
   { value: "grid", label: "网格纸" },
 ] as const;
 
+const PAGE_ZOOM_MIN = 50;
+const PAGE_ZOOM_MAX = 200;
+const PAGE_ZOOM_DEFAULT = 100;
+const PAGE_ZOOM_STEP = 10;
+const PAGE_ZOOM_SLIDER_STEP = 5;
+
+function normalizePageZoom(value: number) {
+  if (!Number.isFinite(value)) {
+    return PAGE_ZOOM_DEFAULT;
+  }
+  return Math.min(PAGE_ZOOM_MAX, Math.max(PAGE_ZOOM_MIN, Math.round(value)));
+}
+
 function normalizePageSettings(settings?: Partial<DocumentPageSettings> | null): DocumentPageSettings {
   return {
     ...DEFAULT_PAGE_SETTINGS,
@@ -651,13 +667,15 @@ function createChatMessage(
   role: ChatMessage["role"],
   content: string,
   status: ChatMessage["status"] = "ready",
-  id?: string
+  id?: string,
+  selection?: SelectionRef | null
 ): ChatMessage {
   return {
     id: id ?? crypto.randomUUID(),
     role,
     content,
     status,
+    ...(selection ? { selection } : {}),
   };
 }
 
@@ -703,6 +721,32 @@ function metadataText(commit: CommitRecord, key: string): string | null {
 
 function metadataBool(commit: CommitRecord, key: string): boolean {
   return commit.metadata?.[key] === true;
+}
+
+function selectionFromMetadata(value: unknown): SelectionRef | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const raw = value as Record<string, unknown>;
+  const kind = raw.kind === "chat" || raw.kind === "board" ? raw.kind : null;
+  const excerpt = typeof raw.excerpt === "string" ? raw.excerpt.trim() : "";
+  if (!kind || !excerpt) {
+    return null;
+  }
+  return {
+    kind,
+    excerpt,
+    lesson_id: typeof raw.lesson_id === "string" ? raw.lesson_id : null,
+    block_id: typeof raw.block_id === "string" ? raw.block_id : null,
+  };
+}
+
+function selectionPreviewLabel(selection: SelectionRef): string {
+  return selection.kind === "board" ? "选中的讲义" : "引用的对话";
+}
+
+function selectionPreviewText(excerpt: string): string {
+  return excerpt.replace(/\s+/g, " ").trim();
 }
 
 function currentHeadCommitId(lesson: Lesson): string | null {
@@ -789,7 +833,15 @@ function buildLessonMessagesFromHistory(lesson: Lesson, commitId?: string | null
 
     const userContent = chatUserContentFromCommit(commit);
     if (userContent) {
-      messages.push(createChatMessage("user", userContent, "ready", `${commit.id}:user`));
+      messages.push(
+        createChatMessage(
+          "user",
+          userContent,
+          "ready",
+          `${commit.id}:user`,
+          selectionFromMetadata(commit.metadata?.selection)
+        )
+      );
     }
 
     const assistantMessage = metadataText(commit, "assistant_message");
@@ -1022,13 +1074,80 @@ function RibbonActionButton({
   );
 }
 
+function WordPageZoomControls({
+  value,
+  onChange,
+  onFitToWidth,
+}: {
+  value: number;
+  onChange: (value: number) => void;
+  onFitToWidth: () => void;
+}) {
+  const zoomProgress = ((value - PAGE_ZOOM_MIN) / (PAGE_ZOOM_MAX - PAGE_ZOOM_MIN)) * 100;
+
+  return (
+    <div className="flex h-10 items-center gap-1 rounded-full border border-gray-200 bg-gradient-to-b from-white to-gray-50 px-1.5 text-gray-600 shadow-[0_1px_3px_rgba(15,23,42,0.08)]">
+      <button
+        type="button"
+        title="适配页面宽度"
+        aria-label="适配页面宽度"
+        onClick={onFitToWidth}
+        className="flex h-7 w-7 items-center justify-center rounded-full transition hover:bg-white hover:text-black hover:shadow-sm"
+      >
+        <Maximize2 className="h-3.5 w-3.5" />
+      </button>
+      <button
+        type="button"
+        title="重置缩放为 100%"
+        onClick={() => onChange(PAGE_ZOOM_DEFAULT)}
+        className="mx-0.5 flex h-7 min-w-14 items-center justify-center rounded-full border border-gray-200 bg-white px-2 text-[12px] font-semibold tabular-nums text-gray-800 shadow-[inset_0_1px_0_rgba(255,255,255,0.75)] transition hover:border-gray-300 hover:text-black"
+      >
+        {value}%
+      </button>
+      <button
+        type="button"
+        title="缩小页面"
+        aria-label="缩小页面"
+        disabled={value <= PAGE_ZOOM_MIN}
+        onClick={() => onChange(value - PAGE_ZOOM_STEP)}
+        className="flex h-7 w-7 items-center justify-center rounded-full transition hover:bg-white hover:text-black hover:shadow-sm disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:bg-transparent disabled:hover:shadow-none"
+      >
+        <Minus className="h-3.5 w-3.5" />
+      </button>
+      <input
+        type="range"
+        min={PAGE_ZOOM_MIN}
+        max={PAGE_ZOOM_MAX}
+        step={PAGE_ZOOM_SLIDER_STEP}
+        value={value}
+        aria-label="页面缩放"
+        onChange={(event) => onChange(Number(event.target.value))}
+        className="word-editor__zoom-range h-5 w-28 sm:w-32"
+        style={{ "--word-zoom-progress": `${zoomProgress}%` } as CSSProperties}
+      />
+      <button
+        type="button"
+        title="放大页面"
+        aria-label="放大页面"
+        disabled={value >= PAGE_ZOOM_MAX}
+        onClick={() => onChange(value + PAGE_ZOOM_STEP)}
+        className="flex h-7 w-7 items-center justify-center rounded-full transition hover:bg-white hover:text-black hover:shadow-sm disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:bg-transparent disabled:hover:shadow-none"
+      >
+        <Plus className="h-3.5 w-3.5" />
+      </button>
+    </div>
+  );
+}
+
 function ChatBubble({ message }: { message: ChatMessage }) {
+  const [isSelectionExpanded, setIsSelectionExpanded] = useState(false);
   const isAssistant = message.role === "assistant";
   const isPending = message.status === "pending";
   const isError = message.status === "error";
+  const selectedExcerpt = message.selection?.excerpt ? selectionPreviewText(message.selection.excerpt) : "";
   return (
     <div className="flex flex-col gap-2">
-      <div className="flex items-center gap-2">
+      <div className={clsx("flex items-center gap-2", !isAssistant && "justify-end")}>
         {isPending ? (
           <LoaderCircle className="h-3.5 w-3.5 animate-spin text-blue-600" />
         ) : isAssistant ? (
@@ -1040,6 +1159,42 @@ function ChatBubble({ message }: { message: ChatMessage }) {
           {isPending ? "AI 讲师处理中" : isAssistant ? "AI 讲师" : "用户"}
         </span>
       </div>
+      {message.selection && selectedExcerpt ? (
+        <div
+          className={clsx(
+            "max-w-[94%] rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-gray-700 shadow-sm",
+            !isAssistant && "ml-auto"
+          )}
+        >
+          <div className="flex items-start gap-2">
+            <TextQuote className="mt-0.5 h-3.5 w-3.5 shrink-0 text-gray-400" />
+            <div className="min-w-0">
+              <p className="text-[10px] font-semibold text-gray-500">{selectionPreviewLabel(message.selection)}</p>
+              <p
+                className={clsx(
+                  "mt-1 whitespace-pre-wrap break-words pr-1 text-[12px] leading-5",
+                  isSelectionExpanded ? "custom-scrollbar max-h-40 overflow-y-auto" : "max-h-10 overflow-hidden"
+                )}
+              >
+                “{selectedExcerpt}”
+              </p>
+              <button
+                type="button"
+                aria-expanded={isSelectionExpanded}
+                onClick={() => setIsSelectionExpanded((current) => !current)}
+                className="mt-2 inline-flex h-6 items-center gap-1 rounded-md px-1.5 text-[11px] font-semibold text-gray-500 transition hover:bg-white hover:text-gray-900"
+              >
+                {isSelectionExpanded ? (
+                  <ChevronUp className="h-3.5 w-3.5" />
+                ) : (
+                  <ChevronDown className="h-3.5 w-3.5" />
+                )}
+                {isSelectionExpanded ? "收起" : "展开"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       <div
         className={clsx(
           "max-w-[94%] rounded-2xl p-4 text-[13px] leading-relaxed shadow-sm",
@@ -1181,11 +1336,13 @@ function WordBoardEditor({
 }) {
   const importRef = useRef<HTMLInputElement | null>(null);
   const imageUploadRef = useRef<HTMLInputElement | null>(null);
+  const pageScrollRef = useRef<HTMLDivElement | null>(null);
   const [activeRibbonTab, setActiveRibbonTab] = useState<WordRibbonTab>("home");
   const [tableRows, setTableRows] = useState(3);
   const [tableCols, setTableCols] = useState(3);
   const [tableHasHeaderRow, setTableHasHeaderRow] = useState(true);
   const [isTableActive, setIsTableActive] = useState(false);
+  const [pageZoom, setPageZoom] = useState(PAGE_ZOOM_DEFAULT);
   const editorContent =
     document.content_html.trim() ||
     (document.content_json && Object.keys(document.content_json).length ? document.content_json : "<p></p>");
@@ -1195,10 +1352,13 @@ function WordBoardEditor({
   const latestOnSelectionChangeRef = useRef(onSelectionChange);
   const pageSettings = normalizePageSettings(document.page_settings);
   const pageMetrics = pagePreviewMetrics(pageSettings);
+  const pageZoomScale = pageZoom / 100;
   const pageStyle = {
     "--page-padding-x": `${pageMetrics.paddingX}px`,
     "--page-padding-y": `${pageMetrics.paddingY}px`,
     "--page-content-min-height": `${pageMetrics.contentMinHeight}px`,
+    "--word-page-preview-height": `${pageMetrics.height}px`,
+    "--word-page-zoom": pageZoomScale.toString(),
     width: `${pageMetrics.width}px`,
     minHeight: `${pageMetrics.height}px`,
   } as CSSProperties;
@@ -1306,6 +1466,20 @@ function WordBoardEditor({
     },
     [document, onDocumentChange, pageSettings, readOnly]
   );
+
+  const updatePageZoom = useCallback((value: number) => {
+    setPageZoom(normalizePageZoom(value));
+  }, []);
+
+  const fitPageToWidth = useCallback(() => {
+    const viewportWidth = pageScrollRef.current?.clientWidth ?? 0;
+    if (!viewportWidth) {
+      updatePageZoom(PAGE_ZOOM_DEFAULT);
+      return;
+    }
+    const horizontalBreathingRoom = viewportWidth >= 768 ? 96 : 48;
+    updatePageZoom(((viewportWidth - horizontalBreathingRoom) / pageMetrics.width) * 100);
+  }, [pageMetrics.width, updatePageZoom]);
 
   const handleInsertBlankPage = useCallback(() => {
     if (!editor || readOnly) {
@@ -2101,6 +2275,11 @@ function WordBoardEditor({
             {activeRibbonTab === "page" ? renderPageRibbon() : null}
 
             <div className="ml-auto flex items-center gap-2">
+              <WordPageZoomControls
+                value={pageZoom}
+                onChange={updatePageZoom}
+                onFitToWidth={fitPageToWidth}
+              />
               <input
                 ref={importRef}
                 type="file"
@@ -2135,11 +2314,14 @@ function WordBoardEditor({
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-auto bg-[radial-gradient(circle_at_top,#f7f5ef,transparent_28%),linear-gradient(180deg,#f3f0e7_0%,#eef2f8_100%)]">
+      <div
+        ref={pageScrollRef}
+        className="min-h-0 flex-1 overflow-auto bg-[radial-gradient(circle_at_top,#f7f5ef,transparent_28%),linear-gradient(180deg,#f3f0e7_0%,#eef2f8_100%)]"
+      >
         <div className="mx-auto flex w-max min-w-full justify-center px-6 py-10 md:px-10">
           <div
             className={clsx(
-              "word-editor__page relative flex shrink-0 flex-col overflow-hidden",
+              "word-editor__page word-editor__page--zoomable relative flex shrink-0 flex-col overflow-hidden",
               !pageSettings.page_border && "word-editor__page--borderless",
               pageSettings.background_style === "warm" && "word-editor__page--warm",
               pageSettings.background_style === "grid" && "word-editor__page--grid",
@@ -2377,7 +2559,7 @@ export function CourseStudio() {
     learningClarity ?? {
       progress: 0,
       label: "等待学习目的",
-      reason: "先告诉我你想学什么，我会逐步确认目标、水平、场景、输出形式和重点约束。",
+      reason: "说一个想学的主题，我会先讲起来，再边教边确认目标、水平和使用场景。",
       missing_items: ["想学的主题", "当前水平或背景", "具体使用场景或知识点"],
       can_start: false,
       forced_start: false,
@@ -2832,6 +3014,9 @@ export function CourseStudio() {
     if (!activeLesson || chatRequestInFlightRef.current || isChatBusy) {
       return;
     }
+    if (isPreviewMode) {
+      exitPreviewMode();
+    }
     const lessonId = activeLesson.id;
     const submittedInput = chatInput;
     const payload =
@@ -2846,6 +3031,7 @@ export function CourseStudio() {
       text_model: payload.text_model ?? selectedTextModel,
       conversation: activeMessages.slice(-8).map(({ role, content }) => ({ role, content })),
     };
+    const submittedSelection = payloadWithConversation.selection ?? null;
 
     if (!payloadWithConversation.message.trim()) {
       return;
@@ -2890,7 +3076,7 @@ export function CourseStudio() {
     }
     updateLessonMessages(lessonId, (current) => [
       ...current,
-      createChatMessage("user", userMessageContent),
+      createChatMessage("user", userMessageContent, "ready", undefined, submittedSelection),
       pendingAssistantMessage,
     ]);
 
@@ -3012,6 +3198,18 @@ export function CourseStudio() {
     setPreviewCommitId(commit.id);
     setDraftDocument(commit.snapshot);
     draftDocumentRef.current = commit.snapshot;
+    setIsDocumentDirty(false);
+    isDocumentDirtyRef.current = false;
+    setAutoSaveStatus("idle");
+  }
+
+  function exitPreviewMode() {
+    if (!activeLesson || !previewCommitId) {
+      return;
+    }
+    setPreviewCommitId(null);
+    setDraftDocument(activeLesson.board_document);
+    draftDocumentRef.current = activeLesson.board_document;
     setIsDocumentDirty(false);
     isDocumentDirtyRef.current = false;
     setAutoSaveStatus("idle");
@@ -4159,8 +4357,13 @@ export function CourseStudio() {
               <textarea
                 ref={chatInputRef}
                 value={chatInput}
-                disabled={isChatBusy || isPreviewMode}
+                disabled={isChatBusy}
                 rows={1}
+                onFocus={() => {
+                  if (isPreviewMode) {
+                    exitPreviewMode();
+                  }
+                }}
                 onChange={(event) =>
                   updateActiveLessonComposerState((current) => ({
                     ...current,
@@ -4178,7 +4381,7 @@ export function CourseStudio() {
                   isChatBusy
                     ? "正在处理上一条请求..."
                     : isPreviewMode
-                      ? "预览历史快照时，先回到当前版本再继续对话"
+                      ? "点击输入会回到当前版本并继续对话"
                     : composerMode === "direct_edit"
                     ? "描述要怎么改这段板书，或直接说“重写整篇”..."
                     : composerSelection
@@ -4248,7 +4451,7 @@ export function CourseStudio() {
                 <button
                   type="button"
                   onClick={() => void handleSubmitChat()}
-                  disabled={isChatBusy || isPreviewMode || !chatInput.trim()}
+                  disabled={isChatBusy || !chatInput.trim()}
                   className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#1a1a1a] text-white shadow-sm transition-colors hover:bg-black disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {isChatBusy ? (
@@ -4269,14 +4472,7 @@ export function CourseStudio() {
               <button
                 type="button"
                 className="ml-3 rounded-md border border-violet-200 bg-white px-3 py-1 text-[11px] font-bold uppercase tracking-wider text-violet-700"
-                onClick={() => {
-                  setPreviewCommitId(null);
-                  setDraftDocument(activeLesson.board_document);
-                  draftDocumentRef.current = activeLesson.board_document;
-                  setIsDocumentDirty(false);
-                  isDocumentDirtyRef.current = false;
-                  setAutoSaveStatus("idle");
-                }}
+                onClick={exitPreviewMode}
               >
                 回到当前版本
               </button>
