@@ -395,6 +395,20 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
               <BookOpen className="h-4 w-4" />
               工作台
             </Link>
+            <Link
+              href="/login"
+              className="inline-flex items-center gap-2 rounded-md border border-stone-200 bg-white px-3 py-2 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:text-stone-950"
+            >
+              <KeyRound className="h-4 w-4" />
+              登录
+            </Link>
+            <Link
+              href="/admin"
+              className="inline-flex items-center gap-2 rounded-md border border-stone-200 bg-white px-3 py-2 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:text-stone-950"
+            >
+              <ShieldCheck className="h-4 w-4" />
+              后台
+            </Link>
             <div className="h-10 w-10 overflow-hidden rounded-full border-2 border-white bg-stone-200 shadow-[0_10px_24px_rgba(15,23,42,0.08)]">
               <Image
                 src={PROFILE_AVATAR_URL}

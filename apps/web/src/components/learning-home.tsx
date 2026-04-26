@@ -22,10 +22,12 @@ import {
   GraduationCap,
   Layers,
   LoaderCircle,
+  LogIn,
   MoreHorizontal,
   PencilLine,
   Search,
   Share2,
+  ShieldCheck,
   Star,
   Trash2,
   UserRound,
@@ -890,6 +892,22 @@ export function LearningHome() {
             </div>
 
             <div className="mt-6 rounded-[24px] border border-stone-200 bg-white/85 p-3">
+              <div className="mb-2 grid grid-cols-2 gap-2">
+                <Link
+                  href="/login"
+                  className="inline-flex items-center justify-center gap-2 rounded-[14px] border border-stone-200 bg-white px-3 py-2 text-xs font-semibold text-stone-600 transition hover:border-stone-300 hover:text-stone-950"
+                >
+                  <LogIn className="h-3.5 w-3.5" />
+                  登录
+                </Link>
+                <Link
+                  href="/admin"
+                  className="inline-flex items-center justify-center gap-2 rounded-[14px] border border-stone-200 bg-white px-3 py-2 text-xs font-semibold text-stone-600 transition hover:border-stone-300 hover:text-stone-950"
+                >
+                  <ShieldCheck className="h-3.5 w-3.5" />
+                  后台
+                </Link>
+              </div>
               <Link
                 href="/profile"
                 className="flex w-full items-center gap-3 rounded-[18px] px-2 py-2 text-left transition hover:bg-stone-50"
