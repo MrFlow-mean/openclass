@@ -83,6 +83,8 @@ import {
 
 import { api, getApiWebSocketUrl } from "@/lib/api";
 import { MATH_TEXT_SERIALIZERS, normalizeEditorMath } from "@/lib/math-content";
+import { useRealtimeLogQueue } from "@/hooks/use-realtime-log-queue";
+import { pcmFloatToBase64, playPcmBase64, resampleLinear } from "@/lib/realtime-audio";
 import type {
   AIModelCatalog,
   AIModelOption,
@@ -96,7 +98,6 @@ import type {
   DocumentPageSettings,
   LearningClarificationStatus,
   Lesson,
-  RealtimeEventLogPayload,
   ResourceMatch,
   ResourceReferenceContext,
   ResourceReferencePrompt,
@@ -136,10 +137,6 @@ type WordRibbonTab = "home" | "insert" | "page";
 type SelectionPopoverPosition = {
   top: number;
   left: number;
-};
-type QueuedRealtimeLogEvent = {
-  lessonId: string;
-  payload: RealtimeEventLogPayload;
 };
 type GoogleRealtimeAudioMessage = {
   setupComplete?: Record<string, unknown>;
@@ -387,6 +384,33 @@ const FALLBACK_MODEL_CATALOG: AIModelCatalog = {
       configured: false,
       default: false,
     },
+    {
+      provider: "deepseek",
+      model: "deepseek-v4-pro",
+      label: "DeepSeek V4 Pro",
+      capability: "text",
+      enabled: false,
+      configured: false,
+      default: false,
+    },
+    {
+      provider: "kimi",
+      model: "kimi-k2.6",
+      label: "Kimi K2.6",
+      capability: "text",
+      enabled: false,
+      configured: false,
+      default: false,
+    },
+    {
+      provider: "minimax",
+      model: "MiniMax-M2.7",
+      label: "MiniMax M2.7",
+      capability: "text",
+      enabled: false,
+      configured: false,
+      default: false,
+    },
   ],
   realtime: [
     {
@@ -420,6 +444,11 @@ const PROVIDER_LABELS: Record<AIModelSelection["provider"], string> = {
   openai: "OpenAI",
   anthropic: "Anthropic",
   google: "Google",
+  deepseek: "DeepSeek",
+  kimi: "Kimi",
+  minimax: "MiniMax",
+  openai_compatible: "OpenAI 兼容",
+  anthropic_compatible: "Anthropic 兼容",
 };
 const TEXT_MODEL_STORAGE_KEY = "blackboard-ai:selected-text-model";
 const REALTIME_MODEL_STORAGE_KEY = "blackboard-ai:selected-realtime-model";
@@ -505,80 +534,6 @@ function resolveModelSelection(
   }
   const defaultOption = options.find((option) => option.default) ?? options.find((option) => option.enabled) ?? options[0];
   return defaultOption ? optionToSelection(defaultOption) : fallback;
-}
-
-function decodeBase64Bytes(base64: string): Uint8Array {
-  const binary = window.atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
-  }
-  return bytes;
-}
-
-function encodeBase64Bytes(bytes: Uint8Array): string {
-  let binary = "";
-  const chunkSize = 0x8000;
-  for (let index = 0; index < bytes.length; index += chunkSize) {
-    const chunk = bytes.subarray(index, index + chunkSize);
-    binary += String.fromCharCode(...chunk);
-  }
-  return window.btoa(binary);
-}
-
-function parsePcmSampleRate(mimeType?: string): number {
-  const match = mimeType?.match(/rate=(\d+)/i);
-  return match ? Number(match[1]) : 24000;
-}
-
-function resampleLinear(input: Float32Array, sourceRate: number, targetRate: number): Float32Array {
-  if (sourceRate === targetRate) {
-    return input;
-  }
-  const outputLength = Math.max(1, Math.round((input.length * targetRate) / sourceRate));
-  const output = new Float32Array(outputLength);
-  const ratio = (input.length - 1) / Math.max(1, outputLength - 1);
-  for (let index = 0; index < outputLength; index += 1) {
-    const sourceIndex = index * ratio;
-    const left = Math.floor(sourceIndex);
-    const right = Math.min(input.length - 1, left + 1);
-    const weight = sourceIndex - left;
-    output[index] = input[left] * (1 - weight) + input[right] * weight;
-  }
-  return output;
-}
-
-function pcmFloatToBase64(input: Float32Array): string {
-  const bytes = new Uint8Array(input.length * 2);
-  const view = new DataView(bytes.buffer);
-  input.forEach((sample, index) => {
-    const clamped = Math.max(-1, Math.min(1, sample));
-    view.setInt16(index * 2, clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff, true);
-  });
-  return encodeBase64Bytes(bytes);
-}
-
-function playPcmBase64(
-  base64: string,
-  mimeType: string | undefined,
-  audioContext: AudioContext,
-  playbackTimeRef: { current: number }
-) {
-  const bytes = decodeBase64Bytes(base64);
-  const view = new DataView(bytes.buffer);
-  const sampleCount = Math.floor(bytes.byteLength / 2);
-  const sampleRate = parsePcmSampleRate(mimeType);
-  const buffer = audioContext.createBuffer(1, sampleCount, sampleRate);
-  const output = buffer.getChannelData(0);
-  for (let index = 0; index < sampleCount; index += 1) {
-    output[index] = view.getInt16(index * 2, true) / 0x8000;
-  }
-  const source = audioContext.createBufferSource();
-  source.buffer = buffer;
-  source.connect(audioContext.destination);
-  const startAt = Math.max(audioContext.currentTime, playbackTimeRef.current);
-  source.start(startAt);
-  playbackTimeRef.current = startAt + buffer.duration;
 }
 
 const PAGE_SIZE_OPTIONS = [
@@ -2174,8 +2129,6 @@ export function CourseStudio() {
   const realtimeLessonIdRef = useRef<string | null>(null);
   const realtimeClientSessionIdRef = useRef<string | null>(null);
   const realtimeLessonTitleRef = useRef<string | null>(null);
-  const realtimeLogQueueRef = useRef<QueuedRealtimeLogEvent[]>([]);
-  const realtimeLogFlushInFlightRef = useRef(false);
   const autoSaveTimerRef = useRef<number | null>(null);
   const autoSaveInFlightRef = useRef<Promise<boolean> | null>(null);
   const autoSaveQueuedRef = useRef(false);
@@ -2184,6 +2137,16 @@ export function CourseStudio() {
   const draftDocumentRef = useRef<BoardDocument | null>(null);
   const isDocumentDirtyRef = useRef(false);
   const isPreviewModeRef = useRef(false);
+  const getRealtimeClientSessionId = useCallback(() => realtimeClientSessionIdRef.current, []);
+  const getRealtimeLessonTitle = useCallback(() => realtimeLessonTitleRef.current, []);
+  const {
+    enqueueRealtimeLogEvent,
+    flushRealtimeLogQueue,
+    flushRealtimeLogQueueWithBeacon,
+  } = useRealtimeLogQueue({
+    getClientSessionId: getRealtimeClientSessionId,
+    getLessonTitle: getRealtimeLessonTitle,
+  });
 
   const [coursePackage, setCoursePackage] = useState<CoursePackage | null>(null);
   const [modelCatalog, setModelCatalog] = useState<AIModelCatalog>(FALLBACK_MODEL_CATALOG);
@@ -3088,68 +3051,8 @@ export function CourseStudio() {
     }
   }
 
-  async function flushRealtimeLogQueue() {
-    if (realtimeLogFlushInFlightRef.current) {
-      return;
-    }
-    realtimeLogFlushInFlightRef.current = true;
-    try {
-      while (realtimeLogQueueRef.current.length > 0) {
-        const nextEvent = realtimeLogQueueRef.current[0];
-        await api.logRealtimeEvent(nextEvent.lessonId, nextEvent.payload);
-        realtimeLogQueueRef.current.shift();
-      }
-    } catch {
-      // keep queue for retry
-    } finally {
-      realtimeLogFlushInFlightRef.current = false;
-    }
-  }
-
-  function scheduleRealtimeLogFlush() {
-    void flushRealtimeLogQueue();
-  }
-
-  function flushRealtimeLogQueueWithBeacon() {
-    if (realtimeLogFlushInFlightRef.current || realtimeLogQueueRef.current.length === 0) {
-      return;
-    }
-    const pending = [...realtimeLogQueueRef.current];
-    const failed: QueuedRealtimeLogEvent[] = [];
-    pending.forEach((event) => {
-      const sent = api.logRealtimeEventBeacon(event.lessonId, event.payload);
-      if (!sent) {
-        failed.push(event);
-      }
-    });
-    realtimeLogQueueRef.current = failed;
-  }
-
-  function enqueueRealtimeLogEvent(
-    lessonId: string,
-    role: RealtimeEventLogPayload["role"],
-    transportEventType: string,
-    transcript: string
-  ) {
-    const normalized = transcript.trim();
-    if (!normalized) {
-      return;
-    }
-    realtimeLogQueueRef.current.push({
-      lessonId,
-      payload: {
-        client_session_id: realtimeClientSessionIdRef.current,
-        lesson_title: realtimeLessonTitleRef.current,
-        role,
-        transport_event_type: transportEventType,
-        transcript: normalized,
-      },
-    });
-    scheduleRealtimeLogFlush();
-  }
-
   function disposeRealtimeSession() {
-    scheduleRealtimeLogFlush();
+    void flushRealtimeLogQueue();
     realtimeChannelRef.current?.close();
     realtimeChannelRef.current = null;
     googleRealtimeSocketRef.current?.close();
@@ -3188,7 +3091,7 @@ export function CourseStudio() {
   }
 
   const scheduleRealtimeLogFlushEffectEvent = useEffectEvent(() => {
-    scheduleRealtimeLogFlush();
+    void flushRealtimeLogQueue();
   });
 
   const flushRealtimeLogQueueWithBeaconEffectEvent = useEffectEvent(() => {
