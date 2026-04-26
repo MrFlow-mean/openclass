@@ -3939,15 +3939,15 @@ export function CourseStudio() {
             </div>
           </div>
 
-          <div className="shrink-0 border-t border-gray-100 bg-white p-5">
-            <div className="mb-3 space-y-2">
+          <div className="shrink-0 border-t border-gray-100 bg-white px-3 py-3">
+            <div className="mb-2 grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_40px] items-center gap-2">
               <div className="relative">
                 <button
                   type="button"
                   aria-expanded={openModelMenu === "text"}
                   aria-label={`文本生成，当前模型 ${modelButtonLabel(selectedTextOption, selectedTextModel)}`}
                   onClick={() => setOpenModelMenu((current) => (current === "text" ? null : "text"))}
-                  className="flex w-full items-center justify-between gap-3 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2.5 text-left transition-colors hover:border-gray-300 hover:bg-white"
+                  className="flex h-10 w-full items-center justify-between gap-2 rounded-lg border border-gray-200 bg-gray-50 px-2.5 text-left transition-colors hover:border-gray-300 hover:bg-white"
                 >
                   <span className="flex min-w-0 items-center gap-2">
                     <BrainCircuit className="h-4 w-4 shrink-0 text-gray-600" />
@@ -3962,7 +3962,7 @@ export function CourseStudio() {
                 </button>
 
                 {openModelMenu === "text" ? (
-                  <div className="absolute bottom-full left-0 z-30 mb-2 max-h-[360px] w-full overflow-y-auto rounded-lg border border-gray-200 bg-white p-2 shadow-xl">
+                  <div className="absolute bottom-full left-0 z-30 mb-2 max-h-[360px] w-[min(336px,calc(100vw-2rem))] overflow-y-auto rounded-lg border border-gray-200 bg-white p-2 shadow-xl">
                     <div className="space-y-1">
                       {modelCatalog.text.map((option) => {
                         const selected = modelOptionKey(option) === modelSelectionKey(selectedTextModel);
@@ -4000,7 +4000,7 @@ export function CourseStudio() {
                   aria-expanded={openModelMenu === "realtime"}
                   aria-label={`语音模型，当前模型 ${modelButtonLabel(selectedRealtimeOption, selectedRealtimeModel)}`}
                   onClick={() => setOpenModelMenu((current) => (current === "realtime" ? null : "realtime"))}
-                  className="flex w-full items-center justify-between gap-3 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2.5 text-left transition-colors hover:border-gray-300 hover:bg-white"
+                  className="flex h-10 w-full items-center justify-between gap-2 rounded-lg border border-gray-200 bg-gray-50 px-2.5 text-left transition-colors hover:border-gray-300 hover:bg-white"
                 >
                   <span className="flex min-w-0 items-center gap-2">
                     <Volume2 className="h-4 w-4 shrink-0 text-gray-600" />
@@ -4015,7 +4015,7 @@ export function CourseStudio() {
                 </button>
 
                 {openModelMenu === "realtime" ? (
-                  <div className="absolute bottom-full left-0 z-30 mb-2 max-h-[280px] w-full overflow-y-auto rounded-lg border border-gray-200 bg-white p-2 shadow-xl">
+                  <div className="absolute bottom-full right-0 z-30 mb-2 max-h-[280px] w-[min(336px,calc(100vw-2rem))] overflow-y-auto rounded-lg border border-gray-200 bg-white p-2 shadow-xl">
                     <div className="space-y-1">
                       {modelCatalog.realtime.map((option) => {
                         const selected = modelOptionKey(option) === modelSelectionKey(selectedRealtimeModel);
@@ -4046,39 +4046,39 @@ export function CourseStudio() {
                   </div>
                 ) : null}
               </div>
-            </div>
-            <div className="group relative mb-4 flex justify-center">
+
               <button
                 type="button"
                 onClick={() => void handleVoiceToggle()}
+                title={voiceStatusText}
                 className={clsx(
-                  "relative flex h-12 w-12 items-center justify-center rounded-full text-white shadow-md transition-all hover:scale-105 hover:shadow-lg",
-                  voiceActive ? "bg-gray-800 ring-4 ring-gray-200" : "bg-[#1a1a1a]"
+                  "flex h-10 w-10 items-center justify-center rounded-xl text-white shadow-sm transition-all hover:scale-105 hover:shadow-md",
+                  voiceActive ? "bg-gray-800 ring-2 ring-gray-200" : "bg-[#1a1a1a]"
                 )}
               >
-                {voiceActive ? <Radio className="h-5 w-5" /> : <Volume2 className="h-5 w-5" />}
+                {voiceActive ? <Radio className="h-4.5 w-4.5" /> : <Volume2 className="h-4.5 w-4.5" />}
               </button>
             </div>
-            <p className="mb-4 text-center text-[11px] leading-5 text-gray-500">{voiceStatusText}</p>
+            <p className="mb-2 truncate px-1 text-center text-[10px] leading-4 text-gray-500">{voiceStatusText}</p>
             <audio ref={remoteAudioRef} autoPlay className="hidden" />
 
             <div
               className={clsx(
-                "overflow-hidden rounded-[20px] border bg-white shadow-sm transition-colors focus-within:ring-1",
+                "overflow-hidden rounded-2xl border bg-white shadow-sm transition-colors focus-within:ring-1",
                 composerMode === "direct_edit"
                   ? "border-amber-200 focus-within:border-amber-500 focus-within:ring-amber-500"
                   : "border-gray-200 focus-within:border-black focus-within:ring-black"
               )}
             >
               {composerSelection ? (
-                <div className="mx-3 mt-3 flex items-center justify-between gap-3 rounded-xl bg-gray-50 px-3 py-2">
+                <div className="mx-2.5 mt-2.5 flex items-center justify-between gap-2 rounded-xl bg-gray-50 px-2.5 py-1.5">
                   <div className="flex min-w-0 items-center gap-2">
                     {composerMode === "direct_edit" ? (
                       <PencilLine className="h-4 w-4 shrink-0 text-amber-600" />
                     ) : (
                       <TextQuote className="h-4 w-4 shrink-0 text-gray-500" />
                     )}
-                    <p className="min-w-0 truncate text-[13px] leading-5 text-gray-700">
+                    <p className="min-w-0 truncate text-xs leading-5 text-gray-700">
                       “{composerSelection.excerpt.replace(/\s+/g, " ").slice(0, 160)}”
                     </p>
                   </div>
@@ -4122,9 +4122,9 @@ export function CourseStudio() {
                       ? "基于选中内容继续追问"
                       : "提问或下达修改指令..."
                 }
-                className="custom-scrollbar block w-full resize-none border-0 bg-transparent px-4 py-3 text-[13px] leading-relaxed outline-none placeholder:text-gray-400 disabled:cursor-wait disabled:text-gray-400"
+                className="custom-scrollbar block w-full resize-none border-0 bg-transparent px-3.5 py-2.5 text-[13px] leading-relaxed outline-none placeholder:text-gray-400 disabled:cursor-wait disabled:text-gray-400"
               />
-              <div className="flex items-center justify-between gap-3 px-3 pb-3">
+              <div className="flex items-center justify-between gap-2 px-2.5 pb-2.5">
                 <div className="flex min-w-0 flex-wrap items-center gap-2">
                   <div className="flex shrink-0 items-center gap-1 rounded-md border border-gray-200 bg-gray-50 p-0.5">
                     <button
@@ -4186,7 +4186,7 @@ export function CourseStudio() {
                   type="button"
                   onClick={() => void handleSubmitChat()}
                   disabled={isChatBusy || isPreviewMode || !chatInput.trim()}
-                  className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#1a1a1a] text-white shadow-sm transition-colors hover:bg-black disabled:cursor-not-allowed disabled:opacity-60"
+                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#1a1a1a] text-white shadow-sm transition-colors hover:bg-black disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {isChatBusy ? (
                     <LoaderCircle className="h-4 w-4 animate-spin" />
