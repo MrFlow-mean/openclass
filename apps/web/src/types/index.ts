@@ -191,6 +191,30 @@ export interface WorkspaceState {
   active_package_id?: string | null;
 }
 
+export interface UserView {
+  id: string;
+  email: string;
+  role: "user" | "admin";
+  created_at: string;
+  last_login_at?: string | null;
+}
+
+export interface AuthSessionResponse {
+  token: string;
+  user: UserView;
+}
+
+export interface AdminOverview {
+  stats: {
+    users: number;
+    admins: number;
+    packages: number;
+    lessons: number;
+    resources: number;
+  };
+  users: UserView[];
+}
+
 export interface AIModelSelection {
   provider: AIProvider;
   model: string;

@@ -1,5 +1,7 @@
 import type {
   AIModelCatalog,
+  AdminOverview,
+  AuthSessionResponse,
   ChatRequestPayload,
   ChatResponse,
   CoursePackage,
@@ -12,9 +14,11 @@ import type {
   RealtimeEventLogPayload,
   ScopeAction,
   WorkspaceState,
+  UserView,
 } from "@/types";
 
 const configuredApiBase = process.env.NEXT_PUBLIC_API_BASE_URL;
+export const OPENCLASS_AUTH_TOKEN_STORAGE_KEY = "openclass.auth.token";
 
 function getApiBase() {
   if (configuredApiBase) {
@@ -42,6 +46,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (!headers.has("Content-Type") && !(init?.body instanceof FormData) && !(init?.body instanceof Blob)) {
     headers.set("Content-Type", "application/json");
   }
+  if (typeof window !== "undefined" && !headers.has("Authorization")) {
+    const token = window.localStorage.getItem(OPENCLASS_AUTH_TOKEN_STORAGE_KEY);
+    if (token) {
+      headers.set("Authorization", `Bearer ${token}`);
+    }
+  }
 
   const response = await fetch(`${getApiBase()}${path}`, {
     ...init,
@@ -51,13 +61,40 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text || `Request failed with ${response.status}`);
+    let message = text || `Request failed with ${response.status}`;
+    try {
+      const parsed = JSON.parse(text) as { detail?: unknown };
+      if (typeof parsed.detail === "string") {
+        message = parsed.detail;
+      }
+    } catch {
+      // Keep the raw response text for non-JSON errors.
+    }
+    throw new Error(message);
   }
 
   return response.json() as Promise<T>;
 }
 
 export const api = {
+  register(email: string, password: string) {
+    return request<AuthSessionResponse>("/api/auth/register", {
+      method: "POST",
+      body: JSON.stringify({ email, password }),
+    });
+  },
+  login(email: string, password: string) {
+    return request<AuthSessionResponse>("/api/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ email, password }),
+    });
+  },
+  getCurrentUser() {
+    return request<UserView>("/api/auth/me");
+  },
+  getAdminOverview() {
+    return request<AdminOverview>("/api/admin/overview");
+  },
   getAIModels() {
     return request<AIModelCatalog>("/api/ai-models");
   },
