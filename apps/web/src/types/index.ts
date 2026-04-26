@@ -16,7 +16,15 @@ export type BoardAction =
 
 export type ResourceReferenceAction = "confirm" | "skip";
 export type ChatInteractionMode = "ask" | "direct_edit";
-export type AIProvider = "openai" | "anthropic" | "google";
+export type AIProvider =
+  | "openai"
+  | "anthropic"
+  | "google"
+  | "deepseek"
+  | "kimi"
+  | "minimax"
+  | "openai_compatible"
+  | "anthropic_compatible";
 export type AIModelCapability = "text" | "realtime";
 export type AIRealtimeTransport = "openai_webrtc" | "gemini_live_websocket";
 export type DocumentMarginPreset = "narrow" | "normal" | "wide";
@@ -164,7 +172,6 @@ export interface ResourceLibraryItem {
   outline: LibraryChapter[];
   concept_index: Record<string, string[]>;
   extracted_text_available: boolean;
-  source_path?: string | null;
 }
 
 export interface CoursePackage {

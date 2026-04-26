@@ -13,12 +13,22 @@ OPENAI_DEFAULT_REALTIME_MODEL = "gpt-4o-realtime-preview"
 ANTHROPIC_DEFAULT_TEXT_MODEL = "claude-opus-4-7"
 GOOGLE_DEFAULT_TEXT_MODEL = "gemini-3.1-pro-preview"
 GOOGLE_DEFAULT_REALTIME_MODEL = "gemini-3.1-flash-live-preview"
+DEEPSEEK_DEFAULT_TEXT_MODEL = "deepseek-v4-pro"
+KIMI_DEFAULT_TEXT_MODEL = "kimi-k2.6"
+MINIMAX_DEFAULT_TEXT_MODEL = "MiniMax-M2.7"
+OPENAI_COMPATIBLE_DEFAULT_TEXT_MODEL = "gpt-5-mini"
+ANTHROPIC_COMPATIBLE_DEFAULT_TEXT_MODEL = "claude-opus-4-7"
 
 
 PROVIDER_LABELS: dict[AIProvider, str] = {
     "openai": "OpenAI",
     "anthropic": "Anthropic",
     "google": "Google",
+    "deepseek": "DeepSeek",
+    "kimi": "Kimi",
+    "minimax": "MiniMax",
+    "openai_compatible": "OpenAI 兼容",
+    "anthropic_compatible": "Anthropic 兼容",
 }
 
 OPENAI_MODEL_DISCOVERY_TIMEOUT_SECONDS = 4
@@ -48,6 +58,48 @@ def _env_any(*names: str) -> str | None:
     return None
 
 
+def _custom_openai_api_key() -> str | None:
+    return _env_any("OPENAI_COMPATIBLE_API_KEY", "CUSTOM_OPENAI_API_KEY", "AI_OPENAI_COMPAT_API_KEY")
+
+
+def _custom_openai_base_url() -> str | None:
+    return _env_any("OPENAI_COMPATIBLE_BASE_URL", "CUSTOM_OPENAI_BASE_URL", "AI_OPENAI_COMPAT_BASE_URL")
+
+
+def _custom_openai_model() -> str:
+    return (
+        _env_any("OPENAI_COMPATIBLE_MODEL", "CUSTOM_OPENAI_MODEL", "AI_OPENAI_COMPAT_MODEL")
+        or OPENAI_COMPATIBLE_DEFAULT_TEXT_MODEL
+    )
+
+
+def _custom_anthropic_api_key() -> str | None:
+    return _env_any("ANTHROPIC_COMPATIBLE_API_KEY", "CUSTOM_ANTHROPIC_API_KEY", "AI_ANTHROPIC_COMPAT_API_KEY")
+
+
+def _custom_anthropic_base_url() -> str | None:
+    return _env_any("ANTHROPIC_COMPATIBLE_BASE_URL", "CUSTOM_ANTHROPIC_BASE_URL", "AI_ANTHROPIC_COMPAT_BASE_URL")
+
+
+def _custom_anthropic_model() -> str:
+    return (
+        _env_any("ANTHROPIC_COMPATIBLE_MODEL", "CUSTOM_ANTHROPIC_MODEL", "AI_ANTHROPIC_COMPAT_MODEL")
+        or ANTHROPIC_COMPATIBLE_DEFAULT_TEXT_MODEL
+    )
+
+
+def _deepseek_model() -> str:
+    return os.getenv("DEEPSEEK_MODEL", DEEPSEEK_DEFAULT_TEXT_MODEL)
+
+
+def _kimi_model() -> str:
+    return _env_any("KIMI_MODEL", "MOONSHOT_MODEL") or KIMI_DEFAULT_TEXT_MODEL
+
+
+def _minimax_model() -> str:
+    return os.getenv("MINIMAX_MODEL", MINIMAX_DEFAULT_TEXT_MODEL)
+
+
 def _env_explicit_or_fallback(name: str, fallback_name: str) -> str | None:
     if name in os.environ:
         return _normalize_optional_secret(os.getenv(name))
@@ -65,11 +117,21 @@ def _normalize_optional_secret(value: str | None) -> str | None:
 
 def _provider_enabled(provider: AIProvider) -> bool:
     if provider == "openai":
-        return bool(_env_any("OPENAI_API_KEY"))
+        return bool(_normalize_optional_secret(_env_any("OPENAI_API_KEY")))
     if provider == "anthropic":
-        return bool(_env_any("ANTHROPIC_API_KEY"))
+        return bool(_normalize_optional_secret(_env_any("ANTHROPIC_API_KEY")))
     if provider == "google":
-        return bool(_env_any("GOOGLE_API_KEY", "GEMINI_API_KEY"))
+        return bool(_normalize_optional_secret(_env_any("GOOGLE_API_KEY", "GEMINI_API_KEY")))
+    if provider == "deepseek":
+        return bool(_normalize_optional_secret(_env_any("DEEPSEEK_API_KEY")))
+    if provider == "kimi":
+        return bool(_normalize_optional_secret(_env_any("KIMI_API_KEY", "MOONSHOT_API_KEY")))
+    if provider == "minimax":
+        return bool(_normalize_optional_secret(_env_any("MINIMAX_API_KEY")))
+    if provider == "openai_compatible":
+        return bool(_normalize_optional_secret(_custom_openai_api_key()) and _custom_openai_base_url())
+    if provider == "anthropic_compatible":
+        return bool(_normalize_optional_secret(_custom_anthropic_api_key()) and _custom_anthropic_base_url())
     return False
 
 
@@ -86,6 +148,16 @@ def default_text_selection() -> AIModelSelection:
         model = os.getenv("ANTHROPIC_MODEL", ANTHROPIC_DEFAULT_TEXT_MODEL)
     elif provider == "google":
         model = os.getenv("GOOGLE_TEXT_MODEL", GOOGLE_DEFAULT_TEXT_MODEL)
+    elif provider == "deepseek":
+        model = _deepseek_model()
+    elif provider == "kimi":
+        model = _kimi_model()
+    elif provider == "minimax":
+        model = _minimax_model()
+    elif provider == "openai_compatible":
+        model = _custom_openai_model()
+    elif provider == "anthropic_compatible":
+        model = _custom_anthropic_model()
     else:
         model = os.getenv("OPENAI_MODEL", OPENAI_DEFAULT_TEXT_MODEL)
     return AIModelSelection(provider=provider, model=model)
@@ -153,18 +225,17 @@ def _env_flag_enabled(name: str, *, default: bool = True) -> bool:
     return raw.strip().lower() not in OPENAI_MODEL_DISCOVERY_DISABLED_VALUES
 
 
-def _openai_models_url() -> str:
-    base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").strip() or "https://api.openai.com/v1"
+def _openai_models_url(base_url: str | None = None) -> str:
+    base_url = (base_url or os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")).strip() or "https://api.openai.com/v1"
     return f"{base_url.rstrip('/')}/models"
 
 
-def _read_openai_compatible_models() -> list[str]:
-    api_key = os.getenv("OPENAI_API_KEY")
+def _read_openai_compatible_models(*, api_key: str | None, base_url: str | None) -> list[str]:
     if not api_key or not _env_flag_enabled("AI_MODEL_DISCOVERY_ENABLED"):
         return []
 
     request = urllib.request.Request(
-        _openai_models_url(),
+        _openai_models_url(base_url),
         headers={
             "Authorization": f"Bearer {api_key}",
             "Accept": "application/json",
@@ -205,9 +276,9 @@ def _looks_like_text_model(model: str) -> bool:
     return not any(fragment in normalized for fragment in TEXT_MODEL_EXCLUDED_FRAGMENTS)
 
 
-def _discovered_openai_text_options(model_ids: list[str]) -> list[AIModelOption]:
+def _discovered_openai_text_options(model_ids: list[str], *, provider: AIProvider = "openai") -> list[AIModelOption]:
     return [
-        _option(provider="openai", model=model, capability="text")
+        _option(provider=provider, model=model, capability="text")
         for model in model_ids
         if _looks_like_text_model(model)
     ]
@@ -254,7 +325,15 @@ def _custom_options(env_name: str, capability: str) -> list[AIModelOption]:
 def build_model_catalog() -> AIModelCatalog:
     text_default = default_text_selection()
     realtime_default = default_realtime_selection()
-    discovered_openai_models = _read_openai_compatible_models()
+    discovered_openai_models = _read_openai_compatible_models(
+        api_key=os.getenv("OPENAI_API_KEY"),
+        base_url=os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+    )
+    custom_openai_base_url = _custom_openai_base_url()
+    discovered_custom_openai_models = _read_openai_compatible_models(
+        api_key=_custom_openai_api_key() if custom_openai_base_url else None,
+        base_url=custom_openai_base_url,
+    )
 
     text_options = [
         _option(
@@ -288,8 +367,53 @@ def build_model_catalog() -> AIModelCatalog:
         _option(provider="google", model="gemini-3.1-pro-preview", label="Google Gemini 3.1 Pro Preview", capability="text"),
         _option(provider="google", model="gemini-3-flash-preview", label="Google Gemini 3 Flash Preview", capability="text"),
         _option(provider="google", model="gemini-2.5-flash", capability="text"),
+        _option(
+            provider="deepseek",
+            model=_deepseek_model(),
+            label="DeepSeek 默认文本模型",
+            capability="text",
+            default=text_default.provider == "deepseek",
+        ),
+        _option(provider="deepseek", model="deepseek-v4-pro", capability="text"),
+        _option(provider="deepseek", model="deepseek-v4-flash", capability="text"),
+        _option(provider="deepseek", model="deepseek-chat", capability="text"),
+        _option(provider="deepseek", model="deepseek-reasoner", capability="text"),
+        _option(
+            provider="kimi",
+            model=_kimi_model(),
+            label="Kimi 默认文本模型",
+            capability="text",
+            default=text_default.provider == "kimi",
+        ),
+        _option(provider="kimi", model="kimi-k2.6", capability="text"),
+        _option(provider="kimi", model="kimi-k2-0905-preview", capability="text"),
+        _option(provider="kimi", model="kimi-k2-turbo-preview", capability="text"),
+        _option(
+            provider="minimax",
+            model=_minimax_model(),
+            label="MiniMax 默认文本模型",
+            capability="text",
+            default=text_default.provider == "minimax",
+        ),
+        _option(provider="minimax", model="MiniMax-M2.7", capability="text"),
+        _option(provider="minimax", model="MiniMax-M2", capability="text"),
+        _option(
+            provider="openai_compatible",
+            model=_custom_openai_model(),
+            label="自定义 OpenAI 兼容模型",
+            capability="text",
+            default=text_default.provider == "openai_compatible",
+        ),
+        _option(
+            provider="anthropic_compatible",
+            model=_custom_anthropic_model(),
+            label="自定义 Anthropic 兼容模型",
+            capability="text",
+            default=text_default.provider == "anthropic_compatible",
+        ),
     ]
     text_options.extend(_discovered_openai_text_options(discovered_openai_models))
+    text_options.extend(_discovered_openai_text_options(discovered_custom_openai_models, provider="openai_compatible"))
     text_options.extend(_custom_options("AI_TEXT_MODELS_JSON", "text"))
 
     realtime_options = [

@@ -28,6 +28,14 @@ def test_catalog_discovers_openai_compatible_models(monkeypatch) -> None:
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.delenv("KIMI_API_KEY", raising=False)
+    monkeypatch.delenv("MOONSHOT_API_KEY", raising=False)
+    monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_COMPATIBLE_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_COMPATIBLE_BASE_URL", raising=False)
+    monkeypatch.delenv("ANTHROPIC_COMPATIBLE_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_COMPATIBLE_BASE_URL", raising=False)
 
     def fake_urlopen(request, timeout: float):
         assert request.full_url == "https://api.example.com/v1/models"
@@ -70,3 +78,35 @@ def test_catalog_skips_discovery_when_disabled(monkeypatch) -> None:
     catalog = ai_model_catalog.build_model_catalog()
 
     assert catalog.text
+
+
+def test_catalog_includes_official_and_custom_text_providers(monkeypatch) -> None:
+    monkeypatch.setenv("AI_MODEL_DISCOVERY_ENABLED", "false")
+    monkeypatch.setenv("AI_TEXT_PROVIDER", "kimi")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek-key")
+    monkeypatch.setenv("DEEPSEEK_MODEL", "deepseek-v4-pro")
+    monkeypatch.setenv("KIMI_API_KEY", "kimi-key")
+    monkeypatch.setenv("KIMI_MODEL", "kimi-k2.6")
+    monkeypatch.setenv("MINIMAX_API_KEY", "minimax-key")
+    monkeypatch.setenv("MINIMAX_MODEL", "MiniMax-M2.7")
+    monkeypatch.setenv("OPENAI_COMPATIBLE_API_KEY", "custom-openai-key")
+    monkeypatch.setenv("OPENAI_COMPATIBLE_BASE_URL", "https://gateway.example.com/v1")
+    monkeypatch.setenv("OPENAI_COMPATIBLE_MODEL", "router-model")
+    monkeypatch.setenv("ANTHROPIC_COMPATIBLE_API_KEY", "custom-anthropic-key")
+    monkeypatch.setenv("ANTHROPIC_COMPATIBLE_BASE_URL", "https://anthropic-gateway.example.com")
+    monkeypatch.setenv("ANTHROPIC_COMPATIBLE_MODEL", "claude-router")
+
+    catalog = ai_model_catalog.build_model_catalog()
+
+    assert catalog.defaults["text"].provider == "kimi"
+    assert catalog.defaults["text"].model == "kimi-k2.6"
+    enabled = {
+        (option.provider, option.model): option.enabled
+        for option in catalog.text
+        if option.provider in {"deepseek", "kimi", "minimax", "openai_compatible", "anthropic_compatible"}
+    }
+    assert enabled[("deepseek", "deepseek-v4-pro")]
+    assert enabled[("kimi", "kimi-k2.6")]
+    assert enabled[("minimax", "MiniMax-M2.7")]
+    assert enabled[("openai_compatible", "router-model")]
+    assert enabled[("anthropic_compatible", "claude-router")]

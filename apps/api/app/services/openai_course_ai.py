@@ -10,6 +10,7 @@ import urllib.request
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
@@ -36,18 +37,60 @@ from app.models import (
 from app.services.ai_logging import ai_usage_logger
 from app.services.ai_model_catalog import (
     ANTHROPIC_DEFAULT_TEXT_MODEL,
+    ANTHROPIC_COMPATIBLE_DEFAULT_TEXT_MODEL,
+    DEEPSEEK_DEFAULT_TEXT_MODEL,
     GOOGLE_DEFAULT_TEXT_MODEL,
+    KIMI_DEFAULT_TEXT_MODEL,
+    MINIMAX_DEFAULT_TEXT_MODEL,
+    OPENAI_COMPATIBLE_DEFAULT_TEXT_MODEL,
     default_text_selection,
 )
 from app.services.lesson_factory import slugify
 from app.services.rich_document import build_document
 
 logger = logging.getLogger(__name__)
-load_dotenv()
+
+
+def _load_root_dotenv() -> None:
+    root_env = Path(__file__).resolve().parents[4] / ".env"
+    if root_env.exists():
+        load_dotenv(root_env)
+        return
+    load_dotenv()
+
+
+_load_root_dotenv()
 DEFAULT_TEXT_MODEL = "gpt-5-mini"
 _text_model_selection: ContextVar[AIModelSelection | None] = ContextVar(
     "text_model_selection", default=None
 )
+
+
+def _env_any(*names: str) -> str | None:
+    for name in names:
+        value = os.getenv(name)
+        if value:
+            return value
+    return None
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def _normalize_optional_api_key(value: str | None) -> str | None:
+    normalized = (value or "").strip()
+    if not normalized or normalized.lower() in {"none", "null", "disabled", "false", "0"}:
+        return None
+    if normalized.startswith("你的_") or normalized.startswith("your_"):
+        return None
+    return normalized
 
 
 def _json(data: Any) -> str:
@@ -150,7 +193,125 @@ class OpenAIConfig(BaseModel):
 
     @property
     def enabled(self) -> bool:
-        return bool(self.api_key)
+        return bool(_normalize_optional_api_key(self.api_key))
+
+    def model_for(self, role: str) -> str:
+        value = getattr(self, f"{role}_model", None)
+        return value or self.default_model
+
+
+class DeepSeekConfig(BaseModel):
+    api_key: str | None = Field(default_factory=lambda: os.getenv("DEEPSEEK_API_KEY"))
+    base_url: str = Field(default_factory=lambda: os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"))
+    default_model: str = Field(default_factory=lambda: os.getenv("DEEPSEEK_MODEL", DEEPSEEK_DEFAULT_TEXT_MODEL))
+    pm_model: str | None = Field(default_factory=lambda: os.getenv("DEEPSEEK_PM_MODEL"))
+    board_model: str | None = Field(default_factory=lambda: os.getenv("DEEPSEEK_BOARD_MODEL"))
+    guide_model: str | None = Field(default_factory=lambda: os.getenv("DEEPSEEK_GUIDE_MODEL"))
+    teacher_model: str | None = Field(default_factory=lambda: os.getenv("DEEPSEEK_TEACHER_MODEL"))
+    lesson_model: str | None = Field(default_factory=lambda: os.getenv("DEEPSEEK_LESSON_MODEL"))
+    fallback_model: str = Field(default_factory=lambda: os.getenv("DEEPSEEK_FALLBACK_MODEL", "deepseek-chat"))
+    compat_api: str = Field(default_factory=lambda: os.getenv("DEEPSEEK_COMPAT_API", "chat_completions"))
+
+    @property
+    def enabled(self) -> bool:
+        return bool(_normalize_optional_api_key(self.api_key))
+
+    def model_for(self, role: str) -> str:
+        value = getattr(self, f"{role}_model", None)
+        return value or self.default_model
+
+
+class KimiConfig(BaseModel):
+    api_key: str | None = Field(default_factory=lambda: _env_any("KIMI_API_KEY", "MOONSHOT_API_KEY"))
+    base_url: str = Field(default_factory=lambda: _env_any("KIMI_BASE_URL", "MOONSHOT_BASE_URL") or "https://api.moonshot.ai/v1")
+    default_model: str = Field(default_factory=lambda: _env_any("KIMI_MODEL", "MOONSHOT_MODEL") or KIMI_DEFAULT_TEXT_MODEL)
+    pm_model: str | None = Field(default_factory=lambda: _env_any("KIMI_PM_MODEL", "MOONSHOT_PM_MODEL"))
+    board_model: str | None = Field(default_factory=lambda: _env_any("KIMI_BOARD_MODEL", "MOONSHOT_BOARD_MODEL"))
+    guide_model: str | None = Field(default_factory=lambda: _env_any("KIMI_GUIDE_MODEL", "MOONSHOT_GUIDE_MODEL"))
+    teacher_model: str | None = Field(default_factory=lambda: _env_any("KIMI_TEACHER_MODEL", "MOONSHOT_TEACHER_MODEL"))
+    lesson_model: str | None = Field(default_factory=lambda: _env_any("KIMI_LESSON_MODEL", "MOONSHOT_LESSON_MODEL"))
+    fallback_model: str = Field(default_factory=lambda: _env_any("KIMI_FALLBACK_MODEL", "MOONSHOT_FALLBACK_MODEL") or KIMI_DEFAULT_TEXT_MODEL)
+    compat_api: str = Field(default_factory=lambda: _env_any("KIMI_COMPAT_API", "MOONSHOT_COMPAT_API") or "chat_completions")
+
+    @property
+    def enabled(self) -> bool:
+        return bool(_normalize_optional_api_key(self.api_key))
+
+    def model_for(self, role: str) -> str:
+        value = getattr(self, f"{role}_model", None)
+        return value or self.default_model
+
+
+class MiniMaxConfig(BaseModel):
+    api_key: str | None = Field(default_factory=lambda: os.getenv("MINIMAX_API_KEY"))
+    base_url: str = Field(default_factory=lambda: os.getenv("MINIMAX_BASE_URL", "https://api.minimax.io/v1"))
+    default_model: str = Field(default_factory=lambda: os.getenv("MINIMAX_MODEL", MINIMAX_DEFAULT_TEXT_MODEL))
+    pm_model: str | None = Field(default_factory=lambda: os.getenv("MINIMAX_PM_MODEL"))
+    board_model: str | None = Field(default_factory=lambda: os.getenv("MINIMAX_BOARD_MODEL"))
+    guide_model: str | None = Field(default_factory=lambda: os.getenv("MINIMAX_GUIDE_MODEL"))
+    teacher_model: str | None = Field(default_factory=lambda: os.getenv("MINIMAX_TEACHER_MODEL"))
+    lesson_model: str | None = Field(default_factory=lambda: os.getenv("MINIMAX_LESSON_MODEL"))
+    fallback_model: str = Field(default_factory=lambda: os.getenv("MINIMAX_FALLBACK_MODEL", "MiniMax-M2"))
+    compat_api: str = Field(default_factory=lambda: os.getenv("MINIMAX_COMPAT_API", "chat_completions"))
+
+    @property
+    def enabled(self) -> bool:
+        return bool(_normalize_optional_api_key(self.api_key))
+
+    def model_for(self, role: str) -> str:
+        value = getattr(self, f"{role}_model", None)
+        return value or self.default_model
+
+
+class OpenAICompatibleConfig(BaseModel):
+    api_key: str | None = Field(
+        default_factory=lambda: _env_any("OPENAI_COMPATIBLE_API_KEY", "CUSTOM_OPENAI_API_KEY", "AI_OPENAI_COMPAT_API_KEY")
+    )
+    base_url: str | None = Field(
+        default_factory=lambda: _env_any(
+            "OPENAI_COMPATIBLE_BASE_URL",
+            "CUSTOM_OPENAI_BASE_URL",
+            "AI_OPENAI_COMPAT_BASE_URL",
+        )
+    )
+    default_model: str = Field(
+        default_factory=lambda: _env_any("OPENAI_COMPATIBLE_MODEL", "CUSTOM_OPENAI_MODEL", "AI_OPENAI_COMPAT_MODEL")
+        or OPENAI_COMPATIBLE_DEFAULT_TEXT_MODEL
+    )
+    pm_model: str | None = Field(default_factory=lambda: _env_any("OPENAI_COMPATIBLE_PM_MODEL", "CUSTOM_OPENAI_PM_MODEL"))
+    board_model: str | None = Field(
+        default_factory=lambda: _env_any("OPENAI_COMPATIBLE_BOARD_MODEL", "CUSTOM_OPENAI_BOARD_MODEL")
+    )
+    guide_model: str | None = Field(
+        default_factory=lambda: _env_any("OPENAI_COMPATIBLE_GUIDE_MODEL", "CUSTOM_OPENAI_GUIDE_MODEL")
+    )
+    teacher_model: str | None = Field(
+        default_factory=lambda: _env_any("OPENAI_COMPATIBLE_TEACHER_MODEL", "CUSTOM_OPENAI_TEACHER_MODEL")
+    )
+    lesson_model: str | None = Field(
+        default_factory=lambda: _env_any("OPENAI_COMPATIBLE_LESSON_MODEL", "CUSTOM_OPENAI_LESSON_MODEL")
+    )
+    fallback_model: str = Field(
+        default_factory=lambda: _env_any(
+            "OPENAI_COMPATIBLE_FALLBACK_MODEL",
+            "CUSTOM_OPENAI_FALLBACK_MODEL",
+            "AI_OPENAI_COMPAT_FALLBACK_MODEL",
+        )
+        or OPENAI_COMPATIBLE_DEFAULT_TEXT_MODEL
+    )
+    compat_api: str = Field(
+        default_factory=lambda: _env_any(
+            "OPENAI_COMPATIBLE_COMPAT_API",
+            "OPENAI_COMPATIBLE_API_MODE",
+            "CUSTOM_OPENAI_COMPAT_API",
+            "AI_OPENAI_COMPAT_API",
+        )
+        or "chat_completions"
+    )
+
+    @property
+    def enabled(self) -> bool:
+        return bool(_normalize_optional_api_key(self.api_key) and self.base_url)
 
     def model_for(self, role: str) -> str:
         value = getattr(self, f"{role}_model", None)
@@ -166,7 +327,47 @@ class AnthropicConfig(BaseModel):
 
     @property
     def enabled(self) -> bool:
-        return bool(self.api_key)
+        return bool(_normalize_optional_api_key(self.api_key))
+
+
+class AnthropicCompatibleConfig(BaseModel):
+    api_key: str | None = Field(
+        default_factory=lambda: _env_any(
+            "ANTHROPIC_COMPATIBLE_API_KEY",
+            "CUSTOM_ANTHROPIC_API_KEY",
+            "AI_ANTHROPIC_COMPAT_API_KEY",
+        )
+    )
+    base_url: str | None = Field(
+        default_factory=lambda: _env_any(
+            "ANTHROPIC_COMPATIBLE_BASE_URL",
+            "CUSTOM_ANTHROPIC_BASE_URL",
+            "AI_ANTHROPIC_COMPAT_BASE_URL",
+        )
+    )
+    default_model: str = Field(
+        default_factory=lambda: _env_any(
+            "ANTHROPIC_COMPATIBLE_MODEL",
+            "CUSTOM_ANTHROPIC_MODEL",
+            "AI_ANTHROPIC_COMPAT_MODEL",
+        )
+        or ANTHROPIC_COMPATIBLE_DEFAULT_TEXT_MODEL
+    )
+    api_version: str = Field(
+        default_factory=lambda: _env_any(
+            "ANTHROPIC_COMPATIBLE_VERSION",
+            "CUSTOM_ANTHROPIC_VERSION",
+            "AI_ANTHROPIC_COMPAT_VERSION",
+        )
+        or "2023-06-01"
+    )
+    max_tokens: int = Field(
+        default_factory=lambda: _env_int("ANTHROPIC_COMPATIBLE_MAX_TOKENS", 12000)
+    )
+
+    @property
+    def enabled(self) -> bool:
+        return bool(_normalize_optional_api_key(self.api_key) and self.base_url)
 
 
 class GoogleTextConfig(BaseModel):
@@ -181,7 +382,7 @@ class GoogleTextConfig(BaseModel):
 
     @property
     def enabled(self) -> bool:
-        return bool(self.api_key)
+        return bool(_normalize_optional_api_key(self.api_key))
 
 
 class AnthropicTextClient:
@@ -320,21 +521,65 @@ class GoogleTextClient:
 class OpenAICourseAI:
     def __init__(self) -> None:
         self.config = OpenAIConfig()
+        self.deepseek_config = DeepSeekConfig()
+        self.kimi_config = KimiConfig()
+        self.minimax_config = MiniMaxConfig()
+        self.openai_compatible_config = OpenAICompatibleConfig()
         self.anthropic_config = AnthropicConfig()
+        self.anthropic_compatible_config = AnthropicCompatibleConfig()
         self.google_config = GoogleTextConfig()
         self.client = (
             OpenAI(api_key=self.config.api_key, base_url=self.config.base_url)
             if self.config.enabled
             else None
         )
+        self.deepseek_client = (
+            OpenAI(api_key=self.deepseek_config.api_key, base_url=self.deepseek_config.base_url)
+            if self.deepseek_config.enabled
+            else None
+        )
+        self.kimi_client = (
+            OpenAI(api_key=self.kimi_config.api_key, base_url=self.kimi_config.base_url)
+            if self.kimi_config.enabled
+            else None
+        )
+        self.minimax_client = (
+            OpenAI(api_key=self.minimax_config.api_key, base_url=self.minimax_config.base_url)
+            if self.minimax_config.enabled
+            else None
+        )
+        self.openai_compatible_client = (
+            OpenAI(
+                api_key=self.openai_compatible_config.api_key,
+                base_url=self.openai_compatible_config.base_url,
+            )
+            if self.openai_compatible_config.enabled
+            else None
+        )
         self.anthropic_client = (
             AnthropicTextClient(self.anthropic_config) if self.anthropic_config.enabled else None
+        )
+        self.anthropic_compatible_client = (
+            AnthropicTextClient(self.anthropic_compatible_config)
+            if self.anthropic_compatible_config.enabled
+            else None
         )
         self.google_client = GoogleTextClient(self.google_config) if self.google_config.enabled else None
 
     @property
     def enabled(self) -> bool:
-        return any([self.client is not None, self.anthropic_client is not None, self.google_client is not None])
+        return any(
+            [
+                self.client is not None,
+                self.deepseek_client is not None,
+                self.kimi_client is not None,
+                self.minimax_client is not None,
+                self.openai_compatible_client is not None,
+                self.anthropic_client is not None,
+                self.anthropic_compatible_client is not None,
+                self.google_client is not None,
+            ]
+        )
 
     def status(self) -> dict[str, Any]:
         return {
@@ -343,6 +588,11 @@ class OpenAICourseAI:
                 "openai": self.client is not None,
                 "anthropic": self.anthropic_client is not None,
                 "google": self.google_client is not None,
+                "deepseek": self.deepseek_client is not None,
+                "kimi": self.kimi_client is not None,
+                "minimax": self.minimax_client is not None,
+                "openai_compatible": self.openai_compatible_client is not None,
+                "anthropic_compatible": self.anthropic_compatible_client is not None,
             },
             "models": {
                 "pm": self.config.model_for("pm"),
@@ -350,6 +600,11 @@ class OpenAICourseAI:
                 "guide": self.config.model_for("guide"),
                 "teacher": self.config.model_for("teacher"),
                 "lesson": self.config.model_for("lesson"),
+                "deepseek": self.deepseek_config.default_model,
+                "kimi": self.kimi_config.default_model,
+                "minimax": self.minimax_config.default_model,
+                "openai_compatible": self.openai_compatible_config.default_model,
+                "anthropic_compatible": self.anthropic_compatible_config.default_model,
             },
         }
 
@@ -380,8 +635,59 @@ class OpenAICourseAI:
                 user_prompt=user_prompt,
                 schema=schema,
             )
-        assert self.client is not None
-        return self._call_openai_parse(model=model, system_prompt=system_prompt, user_prompt=user_prompt, schema=schema)
+        if provider == "anthropic_compatible":
+            if not self.anthropic_compatible_client:
+                raise RuntimeError("Anthropic-compatible API is not configured")
+            return self.anthropic_compatible_client.parse(
+                model=model,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                schema=schema,
+            )
+        if provider == "deepseek":
+            return self._call_openai_parse(
+                model=model,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                schema=schema,
+                client=self.deepseek_client,
+                config=self.deepseek_config,
+            )
+        if provider == "kimi":
+            return self._call_openai_parse(
+                model=model,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                schema=schema,
+                client=self.kimi_client,
+                config=self.kimi_config,
+            )
+        if provider == "minimax":
+            return self._call_openai_parse(
+                model=model,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                schema=schema,
+                client=self.minimax_client,
+                config=self.minimax_config,
+            )
+        if provider == "openai_compatible":
+            return self._call_openai_parse(
+                model=model,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                schema=schema,
+                client=self.openai_compatible_client,
+                config=self.openai_compatible_config,
+            )
+        return self._call_openai_parse(
+            model=model,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            schema=schema,
+            client=self.client,
+            config=self.config,
+        )
 
     def _call_openai_parse(
         self,
@@ -390,16 +696,22 @@ class OpenAICourseAI:
         system_prompt: str,
         user_prompt: str,
         schema: type[BaseModel],
+        client: Any | None = None,
+        config: Any | None = None,
     ) -> ParsedAIResponse | Any:
-        if self.config.compat_api.strip().lower() in {"chat", "chat_completions", "chat-completions"}:
+        client = client or self.client
+        config = config or self.config
+        assert client is not None
+        if config.compat_api.strip().lower() in {"chat", "chat_completions", "chat-completions"}:
             return self._call_openai_chat_parse(
                 model=model,
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 schema=schema,
+                client=client,
             )
         try:
-            return self.client.responses.parse(
+            return client.responses.parse(
                 model=model,
                 input=[
                     {"role": "system", "content": system_prompt},
@@ -415,6 +727,7 @@ class OpenAICourseAI:
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 schema=schema,
+                client=client,
             )
 
     def _should_retry_openai_chat_parse(self, exc: Exception) -> bool:
@@ -440,8 +753,10 @@ class OpenAICourseAI:
         system_prompt: str,
         user_prompt: str,
         schema: type[BaseModel],
+        client: Any | None = None,
     ) -> ParsedAIResponse:
-        assert self.client is not None
+        client = client or self.client
+        assert client is not None
         schema_payload = schema.model_json_schema()
         messages = [
             {
@@ -455,7 +770,7 @@ class OpenAICourseAI:
             {"role": "user", "content": user_prompt},
         ]
         try:
-            response = self.client.chat.completions.create(
+            response = client.chat.completions.create(
                 model=model,
                 messages=messages,
                 response_format={
@@ -470,7 +785,7 @@ class OpenAICourseAI:
         except Exception as exc:
             if not self._should_retry_openai_chat_without_schema(exc):
                 raise
-            response = self.client.chat.completions.create(model=model, messages=messages)
+            response = client.chat.completions.create(model=model, messages=messages)
 
         output_text = self._chat_completion_text(response)
         return ParsedAIResponse(
@@ -514,6 +829,16 @@ class OpenAICourseAI:
             return "anthropic", default_selection.model or self.anthropic_config.default_model
         if default_selection.provider == "google":
             return "google", default_selection.model or self.google_config.default_model
+        if default_selection.provider == "deepseek":
+            return "deepseek", default_selection.model or self.deepseek_config.default_model
+        if default_selection.provider == "kimi":
+            return "kimi", default_selection.model or self.kimi_config.default_model
+        if default_selection.provider == "minimax":
+            return "minimax", default_selection.model or self.minimax_config.default_model
+        if default_selection.provider == "openai_compatible":
+            return "openai_compatible", default_selection.model or self.openai_compatible_config.default_model
+        if default_selection.provider == "anthropic_compatible":
+            return "anthropic_compatible", default_selection.model or self.anthropic_compatible_config.default_model
         return "openai", self.config.model_for(role)
 
     def _log_event_name(self, provider: AIProvider, suffix: str) -> str:
@@ -524,10 +849,31 @@ class OpenAICourseAI:
             return self.anthropic_client is not None
         if provider == "google":
             return self.google_client is not None
+        if provider == "deepseek":
+            return self.deepseek_client is not None
+        if provider == "kimi":
+            return self.kimi_client is not None
+        if provider == "minimax":
+            return self.minimax_client is not None
+        if provider == "openai_compatible":
+            return self.openai_compatible_client is not None
+        if provider == "anthropic_compatible":
+            return self.anthropic_compatible_client is not None
         return self.client is not None
 
-    def _fallback_model_for(self, exc: Exception, attempted_model: str) -> str | None:
-        fallback_model = self.config.fallback_model.strip()
+    def _fallback_model_for(self, provider: AIProvider, exc: Exception, attempted_model: str) -> str | None:
+        if provider == "openai_compatible":
+            fallback_model = self.openai_compatible_config.fallback_model.strip()
+        elif provider == "deepseek":
+            fallback_model = self.deepseek_config.fallback_model.strip()
+        elif provider == "kimi":
+            fallback_model = self.kimi_config.fallback_model.strip()
+        elif provider == "minimax":
+            fallback_model = self.minimax_config.fallback_model.strip()
+        elif provider == "openai":
+            fallback_model = self.config.fallback_model.strip()
+        else:
+            return None
         if not fallback_model or fallback_model == attempted_model:
             return None
 
@@ -587,7 +933,7 @@ class OpenAICourseAI:
             )
             return response.output_parsed
         except Exception as exc:  # pragma: no cover - network/runtime dependent
-            fallback_model = self._fallback_model_for(exc, requested_model) if provider == "openai" else None
+            fallback_model = self._fallback_model_for(provider, exc, requested_model)
             if fallback_model:
                 ai_usage_logger.log_event(
                     self._log_event_name(provider, "_retry"),

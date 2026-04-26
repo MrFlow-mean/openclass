@@ -63,7 +63,16 @@ BoardAction = Literal[
 ]
 SelectionKind = Literal["chat", "board"]
 ConversationRole = Literal["user", "assistant"]
-AIProvider = Literal["openai", "anthropic", "google"]
+AIProvider = Literal[
+    "openai",
+    "anthropic",
+    "google",
+    "deepseek",
+    "kimi",
+    "minimax",
+    "openai_compatible",
+    "anthropic_compatible",
+]
 AIModelCapability = Literal["text", "realtime"]
 AIRealtimeTransport = Literal["openai_webrtc", "gemini_live_websocket"]
 ResourceReferenceAction = Literal["confirm", "skip"]
@@ -315,6 +324,18 @@ class ResourceLibraryItem(BaseModel):
     source_path: str | None = None
 
 
+class ResourceLibraryItemView(BaseModel):
+    id: str
+    name: str
+    mime_type: str
+    resource_type: str
+    size_bytes: int
+    uploaded_at: str
+    outline: list[LibraryChapter] = Field(default_factory=list)
+    concept_index: dict[str, list[str]] = Field(default_factory=dict)
+    extracted_text_available: bool = False
+
+
 class CoursePackage(BaseModel):
     id: str = Field(default_factory=lambda: new_id("course"))
     title: str
@@ -483,7 +504,7 @@ class CoursePackageView(BaseModel):
     summary: str
     lessons: list[LessonView]
     course_graph: list[CourseGraphEdge] = Field(default_factory=list)
-    resources: list[ResourceLibraryItem] = Field(default_factory=list)
+    resources: list[ResourceLibraryItemView] = Field(default_factory=list)
     open_lesson_ids: list[str] = Field(default_factory=list)
     active_lesson_id: str | None = None
     workspace_tab_order: list[str] = Field(default_factory=list)
@@ -568,3 +589,39 @@ class RestoreCommitRequest(BaseModel):
 class ReorderTabsRequest(BaseModel):
     ordered_lesson_ids: list[str]
     active_lesson_id: str | None = None
+
+
+class RealtimeConnectRequest(BaseModel):
+    offer_sdp: str
+    latest_assistant_message: str | None = None
+    client_session_id: str | None = None
+    realtime_model: AIModelSelection | None = None
+
+
+class RealtimeConnectResponse(BaseModel):
+    answer_sdp: str
+    provider: str = "openai"
+    model: str
+    voice: str
+
+
+class GoogleRealtimeSessionRequest(BaseModel):
+    latest_assistant_message: str | None = None
+    client_session_id: str | None = None
+    realtime_model: AIModelSelection | None = None
+
+
+class GoogleRealtimeSessionResponse(BaseModel):
+    websocket_url: str
+    setup: dict[str, object]
+    provider: str = "google"
+    model: str
+    voice: str
+
+
+class RealtimeTranscriptLogRequest(BaseModel):
+    client_session_id: str | None = None
+    lesson_title: str | None = None
+    role: Literal["user", "assistant"]
+    transport_event_type: str
+    transcript: str
