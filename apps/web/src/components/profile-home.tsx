@@ -16,12 +16,9 @@ import {
   LoaderCircle,
   Search,
   Star,
-  UsersRound,
 } from "lucide-react";
 
-import { FollowingFeedContent } from "@/components/following-feed";
 import { api } from "@/lib/api";
-import { FOLLOWED_CREATORS } from "@/lib/following";
 import {
   DEFAULT_COLLECTED_COURSE_IDS,
   OPEN_COURSE_COLLECTION_STORAGE_KEY,
@@ -32,8 +29,12 @@ import {
 } from "@/lib/open-courses";
 import type { CoursePackage, Lesson, WorkspaceState } from "@/types";
 
-type ProfileTab = "repositories" | "stars" | "following";
+type ProfileTab = "repositories" | "stars";
 type RepositoryTypeFilter = "all" | "lessons" | "packages";
+
+type ProfileHomeProps = {
+  initialTab?: ProfileTab;
+};
 
 function formatRelativeTime(value: string | Date | null | undefined) {
   if (!value) {
@@ -135,9 +136,9 @@ function persistCollectedCourseIds(courseIds: Set<string>) {
   }
 }
 
-export function ProfileHome() {
+export function ProfileHome({ initialTab = "repositories" }: ProfileHomeProps) {
   const router = useRouter();
-  const [activeTab, setActiveTab] = useState<ProfileTab>("repositories");
+  const [activeTab, setActiveTab] = useState<ProfileTab>(initialTab);
   const [workspaceState, setWorkspaceState] = useState<WorkspaceState | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -285,7 +286,6 @@ export function ProfileHome() {
   const profileTabs = [
     { id: "repositories" as const, label: "Repositories", icon: FolderClosed, count: repositoryCount },
     { id: "stars" as const, label: "Stars", icon: Star, count: favoriteProjects.length },
-    { id: "following" as const, label: "关注列表", icon: UsersRound, count: FOLLOWED_CREATORS.length },
   ];
 
   function handleToggleCollectCourse(courseId: string) {
@@ -376,11 +376,6 @@ export function ProfileHome() {
         </nav>
       </header>
 
-      {activeTab === "following" ? (
-        <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6">
-          <FollowingFeedContent />
-        </div>
-      ) : (
       <div className="mx-auto grid max-w-6xl gap-6 px-4 py-8 sm:px-6 lg:grid-cols-[16rem_minmax(0,1fr)]">
         <aside className="h-fit">
           <div className="flex items-start gap-4 lg:block">
@@ -417,7 +412,6 @@ export function ProfileHome() {
           {activeTab === "stars" ? renderStars() : null}
         </section>
       </div>
-      )}
     </main>
   );
 

@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-import urllib.error
 import urllib.parse
-import urllib.request
 from typing import Any
 
 from dotenv import load_dotenv
@@ -20,6 +18,21 @@ load_dotenv()
 
 def _json(data: Any) -> str:
     return json.dumps(data, ensure_ascii=False, indent=2)
+
+
+def _env_realtime_or_shared(name: str, shared_name: str) -> str | None:
+    if name in os.environ:
+        return _normalize_optional_api_key(os.getenv(name))
+    return _normalize_optional_api_key(os.getenv(shared_name))
+
+
+def _normalize_optional_api_key(value: str | None) -> str | None:
+    normalized = (value or "").strip()
+    if not normalized or normalized.lower() in {"none", "null", "disabled", "false", "0"}:
+        return None
+    if normalized.startswith("你的_") or normalized.startswith("your_"):
+        return None
+    return normalized
 
 
 def build_realtime_instructions(*, lesson: Lesson, latest_assistant_message: str | None) -> str:
@@ -53,8 +66,8 @@ def build_realtime_instructions(*, lesson: Lesson, latest_assistant_message: str
 
 
 class OpenAIRealtimeConfig(BaseModel):
-    api_key: str | None = Field(default_factory=lambda: os.getenv("OPENAI_API_KEY"))
-    base_url: str | None = Field(default_factory=lambda: os.getenv("OPENAI_BASE_URL"))
+    api_key: str | None = Field(default_factory=lambda: _env_realtime_or_shared("OPENAI_REALTIME_API_KEY", "OPENAI_API_KEY"))
+    base_url: str | None = Field(default_factory=lambda: _env_realtime_or_shared("OPENAI_REALTIME_BASE_URL", "OPENAI_BASE_URL"))
     model: str = Field(
         default_factory=lambda: os.getenv("OPENAI_REALTIME_MODEL", "gpt-4o-realtime-preview")
     )
@@ -242,15 +255,17 @@ class GoogleRealtimeTeacher:
             latest_assistant_message=latest_assistant_message,
         )
         setup = {
-            "config": {
+            "setup": {
                 "model": model_path,
-                "responseModalities": ["AUDIO"],
-                "speechConfig": {
-                    "voiceConfig": {
-                        "prebuiltVoiceConfig": {
-                            "voiceName": self.config.voice,
+                "generationConfig": {
+                    "responseModalities": ["AUDIO"],
+                    "speechConfig": {
+                        "voiceConfig": {
+                            "prebuiltVoiceConfig": {
+                                "voiceName": self.config.voice,
+                            }
                         }
-                    }
+                    },
                 },
                 "systemInstruction": {
                     "parts": [{"text": instructions}],
@@ -260,12 +275,6 @@ class GoogleRealtimeTeacher:
             }
         }
 
-        token = self._create_ephemeral_token(model_path=model_path)
-        websocket_url = (
-            f"{self.config.base_url.rstrip('/').replace('https://', 'wss://').replace('http://', 'ws://')}"
-            "/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained"
-            f"?access_token={urllib.parse.quote(token)}"
-        )
         ai_usage_logger.log_event(
             "google_realtime_session",
             model=model,
@@ -276,40 +285,19 @@ class GoogleRealtimeTeacher:
             "provider": "google",
             "model": model,
             "voice": self.config.voice,
-            "websocket_url": websocket_url,
+            "websocket_url": "",
             "setup": setup,
         }
 
-    def _create_ephemeral_token(self, *, model_path: str) -> str:
-        payload = {"uses": 1}
-        data = json.dumps(payload).encode("utf-8")
-        url = (
-            f"{self.config.base_url.rstrip('/')}/v1alpha/authTokens"
-            f"?key={urllib.parse.quote(self.config.api_key or '')}"
-        )
-        request = urllib.request.Request(
-            url,
-            data=data,
-            headers={"content-type": "application/json"},
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=30) as response:
-                raw = json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
-            ai_usage_logger.log_event(
-                "google_realtime_session_error",
-                model=model_path,
-                voice=self.config.voice,
-                error=f"Google auth token error {exc.code}: {body}",
-            )
-            raise RuntimeError(f"Google Live token failed: {body}") from exc
+    def websocket_url(self) -> str:
+        if not self.config.api_key:
+            raise RuntimeError("Google Gemini Live is not configured")
 
-        token = raw.get("name") or raw.get("token") or raw.get("accessToken")
-        if not isinstance(token, str) or not token:
-            raise RuntimeError("Google Live token response did not include a usable token")
-        return token
+        base_url = self.config.base_url.rstrip("/").replace("https://", "wss://").replace("http://", "ws://")
+        return (
+            f"{base_url}/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
+            f"?key={urllib.parse.quote(self.config.api_key)}"
+        )
 
 
 openai_realtime_teacher = OpenAIRealtimeTeacher()

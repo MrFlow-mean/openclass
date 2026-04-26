@@ -122,6 +122,55 @@ def test_openai_parse_retries_model_not_found_with_fallback(isolated_ai_log) -> 
     assert entries[1]["payload"]["fallback_from_model"] == "gpt-5.3"
 
 
+def test_openai_compat_chat_completions_mode_parses_json(isolated_ai_log) -> None:
+    class _Output(BaseModel):
+        title: str
+
+    class _Message:
+        content = '{"title":"勾股定理"}'
+
+    class _Choice:
+        message = _Message()
+
+    class _Response:
+        id = "chatcmpl_123"
+        choices = [_Choice()]
+        usage = {"total_tokens": 12}
+
+    class _FakeChatCompletions:
+        def __init__(self) -> None:
+            self.payload = None
+
+        def create(self, **kwargs):
+            self.payload = kwargs
+            return _Response()
+
+    class _FakeChat:
+        def __init__(self) -> None:
+            self.completions = _FakeChatCompletions()
+
+    class _FakeClient:
+        def __init__(self) -> None:
+            self.chat = _FakeChat()
+
+    ai = OpenAICourseAI()
+    ai.client = _FakeClient()
+    ai.config.compat_api = "chat_completions"
+    ai.config.default_model = "gpt-5.4"
+    ai.config.pm_model = "gpt-5.4"
+
+    with ai_log_context(trace_id="trace_chat_compat", route="unit_test"):
+        result = ai._parse("pm", "system", "user", _Output)
+
+    assert result is not None
+    assert result.title == "勾股定理"
+    assert ai.client.chat.completions.payload["model"] == "gpt-5.4"
+    assert ai.client.chat.completions.payload["response_format"]["type"] == "json_schema"
+    entries = _read_log_entries(isolated_ai_log)
+    assert entries[0]["event_type"] == "openai_text_call"
+    assert entries[0]["payload"]["output_text"] == '{"title":"勾股定理"}'
+
+
 def test_chat_route_logs_request_and_response(monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path) -> None:
     store = FileCourseStore(tmp_path / "store.json")
     monkeypatch.setattr(main_module, "STORE", store)

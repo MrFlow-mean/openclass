@@ -26,10 +26,8 @@ import {
   PencilLine,
   Search,
   Share2,
-  Sparkles,
   Star,
   Trash2,
-  Trophy,
   UserRound,
 } from "lucide-react";
 
@@ -45,6 +43,12 @@ import {
   type OpenCourse,
   type OpenCourseSort,
 } from "@/lib/open-courses";
+import {
+  FOLLOWED_COURSE_UPDATES,
+  FOLLOWED_CREATORS,
+  creatorAvatarUrl,
+  type FollowedCourseUpdate,
+} from "@/lib/following";
 import type { CommitRecord, CoursePackage, Lesson, ResourceLibraryItem, WorkspaceState } from "@/types";
 
 const CONTRIBUTION_WEEKS = 32;
@@ -176,6 +180,15 @@ function formatRelativeTime(value: string | Date | null | undefined) {
     month: "numeric",
     day: "numeric",
   }).format(date);
+}
+
+function followedUpdateKindLabel(kind: FollowedCourseUpdate["updateKind"]) {
+  return {
+    new_lesson: "新增课程",
+    course_revision: "课程更新",
+    resource_added: "资料上新",
+    live_note: "直播笔记",
+  }[kind];
 }
 
 function dayKey(date: Date) {
@@ -388,8 +401,8 @@ export function LearningHome() {
     () => new Set(DEFAULT_COLLECTED_COURSE_IDS)
   );
   const [feedFilter, setFeedFilter] = useState<FeedFilter>("all");
-  const [feedCollapsed, setFeedCollapsed] = useState(false);
-  const [notificationOpen, setNotificationOpen] = useState(true);
+  const [feedCollapsed, setFeedCollapsed] = useState(true);
+  const [notificationOpen, setNotificationOpen] = useState(false);
   const [selectedPackageId, setSelectedPackageId] = useState<string | null>(null);
   const [selectedLessonId, setSelectedLessonId] = useState<string | null>(null);
   const [packageLessonsExpanded, setPackageLessonsExpanded] = useState(true);
@@ -506,8 +519,6 @@ export function LearningHome() {
   const standalonePackage = packages[0] ?? null;
   const isSelectedPackageStandalone = selectedCoursePackage?.id === standalonePackage?.id;
   const movablePackages = packages.filter((packageItem) => packageItem.id !== standalonePackage?.id);
-  const lessons = coursePackage?.lessons ?? [];
-  const resources = coursePackage?.resources ?? [];
   const feedLessons = packages.flatMap((packageItem) =>
     packageItem.lessons.map((lesson) => ({
       lesson,
@@ -520,7 +531,6 @@ export function LearningHome() {
       packageTitle: packageItem.title,
     }))
   );
-  const recentLessons = sortByUpdatedAt(lessons).slice(0, 6);
   const selectedPackageLessons = sortByUpdatedAt(selectedCoursePackage?.lessons ?? []);
   const selectedPackageActiveLesson = selectedLessonId
     ? selectedCoursePackage?.lessons.find((lesson) => lesson.id === selectedLessonId) ?? null
@@ -568,15 +578,23 @@ export function LearningHome() {
   const collectedOpenCourseCount = collectedCourseIds.size;
 
   const activity = buildActivitySummary(coursePackage);
-  const latestLesson = recentLessons[0] ?? null;
   const lessonMenuLesson =
     lessonMenuState ? standaloneLessonItems.find(({ lesson }) => lesson.id === lessonMenuState.lessonId)?.lesson ?? null : null;
-  const latestResource =
-    [...resources].sort(
-      (left, right) => new Date(right.uploaded_at).getTime() - new Date(left.uploaded_at).getTime()
-    )[0] ?? null;
   const feedItems = buildRecentFeed(feedLessons, feedResources);
   const visibleFeedItems = feedFilter === "all" ? feedItems : feedItems.filter((item) => item.kind === feedFilter);
+  const followingUnreadCount = FOLLOWED_CREATORS.reduce((sum, creator) => sum + creator.unreadCount, 0);
+  const followingBadge = followingUnreadCount > 99 ? "99+" : followingUnreadCount.toString();
+  const notificationUpdates = useMemo(
+    () =>
+      [...FOLLOWED_COURSE_UPDATES]
+        .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime())
+        .slice(0, 4)
+        .map((update) => ({
+          update,
+          creator: FOLLOWED_CREATORS.find((creator) => creator.id === update.creatorId) ?? FOLLOWED_CREATORS[0],
+        })),
+    []
+  );
 
   async function handleOpenLesson(lessonId: string) {
     setSelectedLessonId(lessonId);
@@ -1140,42 +1158,38 @@ export function LearningHome() {
                     </p>
                   </div>
 
-                  <div className="flex flex-wrap items-center gap-2">
-                    {feedFilters.map((filter) => {
-                      const isActive = feedFilter === filter.id;
-                      return (
-                        <button
-                          key={filter.id}
-                          type="button"
-                          onClick={() => setFeedFilter(filter.id)}
-                          disabled={feedCollapsed}
-                          className={clsx(
-                            "rounded-full border px-4 py-2 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-45",
-                            isActive
-                              ? "border-stone-950 bg-stone-950 text-white"
-                              : "border-stone-200 bg-white text-stone-600 hover:border-stone-300 hover:text-stone-950"
-                          )}
-                        >
-                          {filter.label}
-                        </button>
-                      );
-                    })}
-                  </div>
+                  {feedCollapsed ? null : (
+                    <div className="flex flex-wrap items-center gap-2">
+                      {feedFilters.map((filter) => {
+                        const isActive = feedFilter === filter.id;
+                        return (
+                          <button
+                            key={filter.id}
+                            type="button"
+                            onClick={() => setFeedFilter(filter.id)}
+                            className={clsx(
+                              "rounded-full border px-4 py-2 text-xs font-semibold transition",
+                              isActive
+                                ? "border-stone-950 bg-stone-950 text-white"
+                                : "border-stone-200 bg-white text-stone-600 hover:border-stone-300 hover:text-stone-950"
+                            )}
+                          >
+                            {filter.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
 
                 <div
                   id="learning-home-feed-content"
                   className={clsx(
                     "overflow-hidden transition-all duration-300 ease-out",
-                    feedCollapsed ? "max-h-28" : "max-h-[240rem]"
+                    feedCollapsed ? "max-h-0" : "max-h-[240rem]"
                   )}
                 >
-                  {feedCollapsed ? (
-                    <div className="rounded-[24px] border border-dashed border-stone-300 bg-white/70 px-5 py-5 text-sm text-stone-500">
-                      Feed 已收起，当前共 {visibleFeedItems.length} 条可见动态。
-                      {visibleFeedItems[0] ? ` 最近一条是 ${visibleFeedItems[0].title}。` : ""}
-                    </div>
-                  ) : (
+                  {!feedCollapsed ? (
                     <div className="space-y-4">
                       {visibleFeedItems.length ? (
                         visibleFeedItems.map((item) => {
@@ -1266,7 +1280,7 @@ export function LearningHome() {
                         </div>
                       )}
                     </div>
-                  )}
+                  ) : null}
                 </div>
               </div>
             </section>
@@ -1752,6 +1766,36 @@ export function LearningHome() {
     return (
       <div className="flex flex-col items-end gap-4">
         <div className="flex items-center gap-3">
+          <Link
+            href="/profile?tab=stars"
+            className="group relative flex h-11 items-center gap-2 rounded-full border border-amber-100 bg-white px-3 text-sm font-semibold text-stone-700 shadow-[0_10px_24px_rgba(245,158,11,0.10)] transition hover:-translate-y-0.5 hover:bg-amber-500 hover:text-white hover:shadow-[0_14px_28px_rgba(245,158,11,0.18)]"
+            aria-label="打开 Stars 收藏"
+          >
+            <span className="relative flex h-8 w-8 items-center justify-center rounded-full bg-amber-50 text-amber-500 transition group-hover:bg-white group-hover:text-amber-500">
+              <Star className="h-4 w-4" />
+              {collectedOpenCourseCount ? (
+                <span className="absolute -right-1.5 -top-1.5 min-w-5 rounded-full bg-amber-500 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white ring-2 ring-white">
+                  {collectedOpenCourseCount > 99 ? "99+" : collectedOpenCourseCount}
+                </span>
+              ) : null}
+            </span>
+            <span>Star</span>
+          </Link>
+          <Link
+            href="/following"
+            className="group relative flex h-11 items-center gap-2 rounded-full border border-rose-100 bg-white px-3 text-sm font-semibold text-stone-700 shadow-[0_10px_24px_rgba(244,63,94,0.10)] transition hover:-translate-y-0.5 hover:bg-rose-500 hover:text-white hover:shadow-[0_14px_28px_rgba(244,63,94,0.18)]"
+            aria-label="打开关注动态"
+          >
+            <span className="relative flex h-8 w-8 items-center justify-center rounded-full bg-rose-50 text-rose-500 transition group-hover:bg-white group-hover:text-rose-500">
+              <Activity className="h-4 w-4" />
+              {followingUnreadCount ? (
+                <span className="absolute -right-1.5 -top-1.5 min-w-5 rounded-full bg-rose-500 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white ring-2 ring-white">
+                  {followingBadge}
+                </span>
+              ) : null}
+            </span>
+            <span>动态</span>
+          </Link>
           <button
             type="button"
             onClick={() => setNotificationOpen((current) => !current)}
@@ -1759,7 +1803,11 @@ export function LearningHome() {
             aria-label="切换消息面板"
           >
             <Bell className="h-5 w-5" />
-            <span className="absolute right-2 top-2 h-2 w-2 rounded-full border border-white bg-rose-500" />
+            {followingUnreadCount ? (
+              <span className="absolute -right-1 -top-1 min-w-5 rounded-full bg-rose-500 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white ring-2 ring-white">
+                {followingBadge}
+              </span>
+            ) : null}
           </button>
           <Link
             href="/profile"
@@ -1781,54 +1829,56 @@ export function LearningHome() {
           <div className="w-full rounded-[28px] border border-white/80 bg-white/92 p-5 shadow-[0_18px_50px_rgba(15,23,42,0.08)] backdrop-blur">
             <div className="mb-4 flex items-center justify-between">
               <h4 className="text-[11px] font-semibold uppercase tracking-[0.28em] text-stone-400">消息推送</h4>
-              <span className="rounded-full bg-stone-950 px-2 py-1 text-[10px] font-semibold text-white">NEW</span>
+              <span className="rounded-full bg-rose-500 px-2 py-1 text-[10px] font-semibold text-white">
+                {followingUnreadCount ? `${followingBadge} NEW` : "已同步"}
+              </span>
             </div>
 
-            <div className="space-y-4">
-              <div className="flex gap-3">
-                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-orange-50 text-orange-500">
-                  <Sparkles className="h-4 w-4" />
+            <div className="space-y-3">
+              {notificationUpdates.length ? (
+                notificationUpdates.map(({ update, creator }) => (
+                  <Link
+                    key={update.id}
+                    href="/following"
+                    className="group flex gap-3 rounded-2xl border border-transparent p-2 transition hover:border-stone-100 hover:bg-stone-50"
+                  >
+                    <Image
+                      src={creatorAvatarUrl(creator)}
+                      alt=""
+                      className="h-10 w-10 shrink-0 rounded-full border border-stone-200 bg-stone-100"
+                      width={40}
+                      height={40}
+                      unoptimized
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <p className="truncate text-sm font-semibold text-stone-950">{creator.name}</p>
+                        <span className="shrink-0 rounded-full bg-rose-50 px-2 py-0.5 text-[10px] font-semibold text-rose-600">
+                          {followedUpdateKindLabel(update.updateKind)}
+                        </span>
+                      </div>
+                      <p className="mt-1 line-clamp-1 text-sm font-semibold text-stone-800 group-hover:text-stone-950">
+                        {update.moduleTitle}
+                      </p>
+                      <p className="mt-1 line-clamp-2 text-xs leading-5 text-stone-500">{update.summary}</p>
+                      <p className="mt-1 truncate text-[11px] text-stone-400">
+                        {update.courseTitle} · {formatRelativeTime(update.updatedAt)}
+                      </p>
+                    </div>
+                  </Link>
+                ))
+              ) : (
+                <div className="rounded-2xl border border-dashed border-stone-200 bg-stone-50 px-4 py-5 text-sm text-stone-500">
+                  关注创作者后，这里会显示他们的最新课程更新。
                 </div>
-                <div className="min-w-0">
-                  <p className="text-sm font-semibold text-stone-950">
-                    {latestLesson ? `最近更新：${latestLesson.title}` : "创建你的第一节课程"}
-                  </p>
-                  <p className="mt-1 text-xs leading-5 text-stone-500">
-                    {latestLesson
-                      ? latestLesson.summary
-                      : "去工作台新建课程后，这里会给你展示最近的推进动态。"}
-                  </p>
-                  <p className="mt-1 text-[11px] text-stone-400">
-                    {latestLesson ? formatRelativeTime(latestLesson.updated_at) : "随时"}
-                  </p>
-                </div>
-              </div>
-
-              <div className="flex gap-3">
-                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-sky-50 text-sky-500">
-                  <Trophy className="h-4 w-4" />
-                </div>
-                <div className="min-w-0">
-                  <p className="text-sm font-semibold text-stone-950">
-                    {latestResource ? `资料已索引：${latestResource.name}` : "上传教材，激活资料库联动"}
-                  </p>
-                  <p className="mt-1 text-xs leading-5 text-stone-500">
-                    {latestResource
-                      ? `已提取 ${latestResource.outline.length} 个章节入口，可在工作台中继续引用。`
-                      : "图片、PDF 和文档上传后，会自动形成资料入口和引用上下文。"}
-                  </p>
-                  <p className="mt-1 text-[11px] text-stone-400">
-                    {latestResource ? formatRelativeTime(latestResource.uploaded_at) : "现在就可以开始"}
-                  </p>
-                </div>
-              </div>
+              )}
             </div>
 
             <Link
-              href="/studio"
+              href="/following"
               className="mt-5 inline-flex w-full items-center justify-center gap-2 rounded-full border border-stone-200 bg-stone-50 px-4 py-3 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:bg-white hover:text-stone-950"
             >
-              打开课程工作台
+              查看全部关注动态
               <ArrowUpRight className="h-4 w-4" />
             </Link>
           </div>

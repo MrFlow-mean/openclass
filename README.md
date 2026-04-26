@@ -44,6 +44,7 @@ npm install
 
 ```bash
 export OPENAI_API_KEY=your_key_here
+export OPENAI_BASE_URL=https://api.openai.com/v1
 export OPENAI_MODEL=gpt-5.3
 export OPENAI_REALTIME_MODEL=gpt-4o-realtime-preview
 export AI_TEXT_PROVIDER=openai
@@ -57,6 +58,15 @@ export GOOGLE_TEXT_MODEL=gemini-3.1-pro-preview
 export GOOGLE_REALTIME_MODEL=gemini-3.1-flash-live-preview
 ```
 
+如果使用 OpenAI-compatible 网关，比如 Sub2API/BUPT，把 `OPENAI_BASE_URL` 换成网关的 `/v1` 地址：
+
+```bash
+export OPENAI_API_KEY=your_gateway_key_here
+export OPENAI_BASE_URL=https://api.bupt8.com/v1
+export OPENAI_COMPAT_API=chat_completions
+export AI_TEXT_PROVIDER=openai
+```
+
 可选覆盖：
 
 ```bash
@@ -67,12 +77,16 @@ export OPENAI_TEACHER_MODEL=gpt-5.3
 export OPENAI_LESSON_MODEL=gpt-5.3
 export OPENAI_REALTIME_MODEL=gpt-4o-realtime-preview
 export OPENAI_REALTIME_VOICE=marin
+export OPENAI_COMPAT_API=responses       # responses / chat_completions
 export AI_TEXT_PROVIDER=anthropic      # openai / anthropic / google
 export AI_REALTIME_PROVIDER=google     # openai / google
 export GOOGLE_REALTIME_VOICE=Aoede
+export AI_MODEL_DISCOVERY_ENABLED=true
+export AI_TEXT_MODELS_JSON='[{"provider":"openai","model":"gpt-5.4","label":"GPT-5.4"}]'
+export AI_REALTIME_MODELS_JSON='[{"provider":"openai","model":"gpt-4o-realtime-preview","label":"GPT-4o Realtime","transport":"openai_webrtc"}]'
 ```
 
-学习页左侧对话框的“选择模型”按钮会读取 `/api/ai-models`，在文本生成里显示 OpenAI、Anthropic、Google，在实时语音里显示 OpenAI GPT-4o Realtime 和 Google Gemini Live。未设置对应 API Key 的厂商会显示为“未配置”。如果文本模型没有可用 Key，后端会自动回退到当前内置的启发式逻辑，方便继续本地开发。
+学习页左侧对话框的“选择模型”按钮会读取 `/api/ai-models`，在文本生成里显示 OpenAI、Anthropic、Google，并会从 `OPENAI_BASE_URL/models` 自动发现 OpenAI-compatible 网关暴露的模型；在实时语音里显示 OpenAI GPT-4o Realtime 和 Google Gemini Live。未设置对应 API Key 的厂商会显示为“未配置”。如果文本模型没有可用 Key，后端会自动回退到当前内置的启发式逻辑，方便继续本地开发。
 
 ### 3. 启动前后端
 

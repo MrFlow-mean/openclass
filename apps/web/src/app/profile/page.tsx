@@ -7,6 +7,15 @@ export const metadata: Metadata = {
   description: "黑板 AI 的个人项目与收藏项目主页。",
 };
 
-export default function ProfilePage() {
-  return <ProfileHome />;
+type ProfilePageProps = {
+  searchParams?: Promise<{
+    tab?: string | string[];
+  }>;
+};
+
+export default async function ProfilePage({ searchParams }: ProfilePageProps) {
+  const params = await searchParams;
+  const tabParam = Array.isArray(params?.tab) ? params?.tab[0] : params?.tab;
+
+  return <ProfileHome initialTab={tabParam === "stars" ? "stars" : "repositories"} />;
 }

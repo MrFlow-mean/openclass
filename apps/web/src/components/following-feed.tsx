@@ -73,9 +73,28 @@ function getCreatorById(creatorId: string) {
   return FOLLOWED_CREATORS.find((creator) => creator.id === creatorId) ?? FOLLOWED_CREATORS[0];
 }
 
+function updateMatchesSearch(update: FollowedCourseUpdate, creator: FollowedCreator, normalizedQuery: string) {
+  return (
+    !normalizedQuery ||
+    [
+      creator.name,
+      creator.handle,
+      creator.field,
+      update.courseTitle,
+      update.moduleTitle,
+      update.summary,
+      update.tags.join(" "),
+    ]
+      .join(" ")
+      .toLowerCase()
+      .includes(normalizedQuery)
+  );
+}
+
 export function FollowingFeedContent() {
   const [selectedCreatorId, setSelectedCreatorId] = useState<"all" | string>("all");
   const [query, setQuery] = useState("");
+  const normalizedQuery = query.trim().toLowerCase();
 
   const sortedUpdates = useMemo(
     () =>
@@ -84,23 +103,23 @@ export function FollowingFeedContent() {
       ),
     []
   );
+  const latestCreatorUpdates = useMemo(
+    () =>
+      FOLLOWED_CREATORS.map((creator) => {
+        const update = sortedUpdates.find((candidate) => candidate.creatorId === creator.id);
+        return update ? { creator, update } : null;
+      })
+        .filter((item): item is { creator: FollowedCreator; update: FollowedCourseUpdate } => Boolean(item))
+        .sort((left, right) => new Date(right.update.updatedAt).getTime() - new Date(left.update.updatedAt).getTime()),
+    [sortedUpdates]
+  );
+  const visibleCreatorFeed = latestCreatorUpdates.filter(({ update, creator }) =>
+    updateMatchesSearch(update, creator, normalizedQuery)
+  );
   const visibleUpdates = sortedUpdates.filter((update) => {
     const creator = getCreatorById(update.creatorId);
     const matchesCreator = selectedCreatorId === "all" || update.creatorId === selectedCreatorId;
-    const normalizedQuery = query.trim().toLowerCase();
-    const matchesSearch =
-      !normalizedQuery ||
-      [
-        creator.name,
-        creator.handle,
-        update.courseTitle,
-        update.moduleTitle,
-        update.summary,
-        update.tags.join(" "),
-      ]
-        .join(" ")
-        .toLowerCase()
-        .includes(normalizedQuery);
+    const matchesSearch = updateMatchesSearch(update, creator, normalizedQuery);
 
     return matchesCreator && matchesSearch;
   });
@@ -137,7 +156,7 @@ export function FollowingFeedContent() {
             </div>
             <div className="min-w-0 flex-1">
               <p className="truncate text-sm font-semibold">全部动态</p>
-              <p className="mt-0.5 text-xs text-stone-500">{sortedUpdates.length} 条课程更新</p>
+              <p className="mt-0.5 text-xs text-stone-500">{latestCreatorUpdates.length} 位创作者最近更新</p>
             </div>
             {totalUnreadCount ? <span className="h-2.5 w-2.5 rounded-full bg-rose-500" /> : null}
           </button>
@@ -191,7 +210,7 @@ export function FollowingFeedContent() {
                   {selectedCreator ? `@${selectedCreator.handle}` : "Following feed"}
                 </p>
                 <h2 className="mt-1 text-xl font-semibold tracking-tight text-stone-950">
-                  {selectedCreator ? `${selectedCreator.name} 的最近课程更新` : "全部关注创作者的课程动态"}
+                  {selectedCreator ? `${selectedCreator.name} 的最近课程更新` : "全部动态"}
                 </h2>
               </div>
 
@@ -214,15 +233,19 @@ export function FollowingFeedContent() {
             ) : null}
           </div>
 
-          <div className="space-y-4">
-            {visibleUpdates.length ? (
-              visibleUpdates.map((update) => renderUpdateCard(update, getCreatorById(update.creatorId)))
-            ) : (
-              <div className="rounded-lg border border-dashed border-stone-300 bg-white/82 px-5 py-10 text-sm text-stone-500">
-                暂时没有匹配到课程动态。
-              </div>
-            )}
-          </div>
+          {selectedCreator ? (
+            <div className="space-y-4">
+              {visibleUpdates.length ? (
+                visibleUpdates.map((update) => renderUpdateCard(update, getCreatorById(update.creatorId)))
+              ) : (
+                <div className="rounded-lg border border-dashed border-stone-300 bg-white/82 px-5 py-10 text-sm text-stone-500">
+                  暂时没有匹配到课程动态。
+                </div>
+              )}
+            </div>
+          ) : (
+            renderAllCreatorsFeed(visibleCreatorFeed)
+          )}
         </section>
 
         <aside className="hidden h-fit space-y-3 xl:block">
@@ -255,6 +278,94 @@ export function FollowingFeedContent() {
         </aside>
       </div>
   );
+
+  function renderAllCreatorsFeed(items: { creator: FollowedCreator; update: FollowedCourseUpdate }[]) {
+    return (
+      <div className="overflow-hidden rounded-lg border border-stone-200 bg-white shadow-[0_12px_28px_rgba(15,23,42,0.04)]">
+        <div className="flex flex-col gap-3 border-b border-stone-100 px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <div className="flex items-center gap-2 text-sm font-semibold text-stone-950">
+              <Sparkles className="h-4 w-4 text-rose-500" />
+              关注创作者最近更新
+            </div>
+            <p className="mt-1 text-sm leading-6 text-stone-500">
+              汇总你关注的所有创作者，每人展示最近一次课程动态。
+            </p>
+          </div>
+          <span className="w-fit rounded-full bg-stone-100 px-3 py-1 text-xs font-semibold text-stone-500">
+            {items.length} / {FOLLOWED_CREATORS.length} 位创作者
+          </span>
+        </div>
+
+        {items.length ? (
+          <div className="divide-y divide-stone-100">
+            {items.map(({ creator, update }) => (
+              <article key={update.id} className="grid gap-3 px-4 py-4 transition hover:bg-stone-50/70 md:grid-cols-[minmax(0,1fr)_9.5rem]">
+                <div className="flex min-w-0 gap-3">
+                  <div className="relative shrink-0">
+                    <Image
+                      src={creatorAvatarUrl(creator)}
+                      alt=""
+                      className="h-11 w-11 rounded-full border border-stone-200 bg-stone-100"
+                      width={44}
+                      height={44}
+                      unoptimized
+                    />
+                    {creator.unreadCount ? (
+                      <span className="absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full border-2 border-white bg-rose-500" />
+                    ) : null}
+                  </div>
+
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                      <p className="truncate text-sm font-semibold text-stone-950">{creator.name}</p>
+                      <span className="text-xs text-stone-400">@{creator.handle}</span>
+                      <span className="rounded-full bg-rose-50 px-2 py-0.5 text-[10px] font-semibold text-rose-600">
+                        {updateKindLabel(update.updateKind)}
+                      </span>
+                    </div>
+
+                    <p className="mt-1 text-xs text-stone-500">
+                      {formatRelativeTime(update.updatedAt)} · {update.courseTitle}
+                    </p>
+                    <h3 className="mt-2 line-clamp-2 text-base font-semibold leading-6 text-stone-950">
+                      {update.moduleTitle}
+                    </h3>
+                    <p className="mt-1 line-clamp-2 text-sm leading-6 text-stone-600">{update.summary}</p>
+
+                    <div className="mt-3 flex flex-wrap items-center gap-1.5 text-xs text-stone-500">
+                      {update.tags.slice(0, 3).map((tag) => (
+                        <span key={`${update.id}:feed:${tag}`} className="rounded-full bg-sky-50 px-2.5 py-1 font-semibold text-sky-700">
+                          {tag}
+                        </span>
+                      ))}
+                      <span className="px-1">{formatCompactNumber(update.views)} 次学习</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="relative hidden overflow-hidden rounded-md border border-stone-200 bg-stone-950 md:block">
+                  <Image
+                    src={updateCoverUrl(update)}
+                    alt=""
+                    className="h-full min-h-24 w-full object-cover"
+                    width={304}
+                    height={192}
+                    unoptimized
+                  />
+                  <span className="absolute bottom-2 right-2 rounded bg-black/50 px-2 py-1 text-[11px] font-semibold text-white">
+                    {update.durationLabel}
+                  </span>
+                </div>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <div className="px-5 py-10 text-sm text-stone-500">暂时没有匹配到关注创作者的最近动态。</div>
+        )}
+      </div>
+    );
+  }
 
   function renderUpdateCard(update: FollowedCourseUpdate, creator: FollowedCreator) {
     return (
@@ -350,11 +461,11 @@ export function FollowingFeed() {
       <header className="sticky top-0 z-40 border-b border-stone-200 bg-[#fcfbf8]/92 backdrop-blur">
         <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-3 sm:px-6">
           <Link
-            href="/profile"
+            href="/"
             className="inline-flex items-center gap-2 rounded-md px-2 py-2 text-sm font-semibold text-stone-700 transition hover:bg-stone-100 hover:text-stone-950"
           >
             <ArrowLeft className="h-4 w-4" />
-            个人主页
+            产品主页
           </Link>
 
           <div className="flex items-center gap-2">

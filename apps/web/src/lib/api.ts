@@ -26,6 +26,17 @@ function getApiBase() {
   return "http://localhost:8000";
 }
 
+export function getApiWebSocketUrl(pathOrUrl: string) {
+  if (pathOrUrl.startsWith("ws://") || pathOrUrl.startsWith("wss://")) {
+    return pathOrUrl;
+  }
+
+  const apiBase = getApiBase();
+  const baseUrl = new URL(apiBase);
+  baseUrl.protocol = baseUrl.protocol === "https:" ? "wss:" : "ws:";
+  return new URL(pathOrUrl, baseUrl).toString();
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   if (!headers.has("Content-Type") && !(init?.body instanceof FormData) && !(init?.body instanceof Blob)) {

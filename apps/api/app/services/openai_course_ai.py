@@ -146,6 +146,7 @@ class OpenAIConfig(BaseModel):
     teacher_model: str | None = Field(default_factory=lambda: os.getenv("OPENAI_TEACHER_MODEL"))
     lesson_model: str | None = Field(default_factory=lambda: os.getenv("OPENAI_LESSON_MODEL"))
     fallback_model: str = Field(default_factory=lambda: os.getenv("OPENAI_FALLBACK_MODEL", DEFAULT_TEXT_MODEL))
+    compat_api: str = Field(default_factory=lambda: os.getenv("OPENAI_COMPAT_API", "responses"))
 
     @property
     def enabled(self) -> bool:
@@ -380,14 +381,128 @@ class OpenAICourseAI:
                 schema=schema,
             )
         assert self.client is not None
-        return self.client.responses.parse(
-            model=model,
-            input=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            text_format=schema,
+        return self._call_openai_parse(model=model, system_prompt=system_prompt, user_prompt=user_prompt, schema=schema)
+
+    def _call_openai_parse(
+        self,
+        *,
+        model: str,
+        system_prompt: str,
+        user_prompt: str,
+        schema: type[BaseModel],
+    ) -> ParsedAIResponse | Any:
+        if self.config.compat_api.strip().lower() in {"chat", "chat_completions", "chat-completions"}:
+            return self._call_openai_chat_parse(
+                model=model,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                schema=schema,
+            )
+        try:
+            return self.client.responses.parse(
+                model=model,
+                input=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                text_format=schema,
+            )
+        except Exception as exc:
+            if not self._should_retry_openai_chat_parse(exc):
+                raise
+            return self._call_openai_chat_parse(
+                model=model,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                schema=schema,
+            )
+
+    def _should_retry_openai_chat_parse(self, exc: Exception) -> bool:
+        status_code = getattr(exc, "status_code", None) or getattr(exc, "status", None)
+        message = str(exc).lower()
+        if status_code in {404, 405} and "model_not_found" not in message:
+            return True
+        return "responses" in message and any(
+            marker in message
+            for marker in (
+                "not found",
+                "not supported",
+                "unsupported",
+                "unknown endpoint",
+                "invalid url",
+            )
         )
+
+    def _call_openai_chat_parse(
+        self,
+        *,
+        model: str,
+        system_prompt: str,
+        user_prompt: str,
+        schema: type[BaseModel],
+    ) -> ParsedAIResponse:
+        assert self.client is not None
+        schema_payload = schema.model_json_schema()
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    f"{system_prompt}\n\n"
+                    "Return only valid JSON that matches this JSON schema:\n"
+                    f"{_compact_json(schema_payload)}"
+                ),
+            },
+            {"role": "user", "content": user_prompt},
+        ]
+        try:
+            response = self.client.chat.completions.create(
+                model=model,
+                messages=messages,
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": schema.__name__,
+                        "schema": schema_payload,
+                        "strict": True,
+                    },
+                },
+            )
+        except Exception as exc:
+            if not self._should_retry_openai_chat_without_schema(exc):
+                raise
+            response = self.client.chat.completions.create(model=model, messages=messages)
+
+        output_text = self._chat_completion_text(response)
+        return ParsedAIResponse(
+            output_parsed=schema.model_validate(_extract_json_object(output_text)),
+            id=getattr(response, "id", None),
+            output_text=output_text,
+            usage=getattr(response, "usage", None),
+        )
+
+    def _should_retry_openai_chat_without_schema(self, exc: Exception) -> bool:
+        message = str(exc).lower()
+        return "response_format" in message or "json_schema" in message or "schema" in message
+
+    def _chat_completion_text(self, response: Any) -> str:
+        choices = getattr(response, "choices", None)
+        if not choices:
+            raise ValueError("Chat completion response did not include choices")
+        message = getattr(choices[0], "message", None)
+        content = getattr(message, "content", None)
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: list[str] = []
+            for part in content:
+                if isinstance(part, dict):
+                    text = part.get("text")
+                else:
+                    text = getattr(part, "text", None)
+                if isinstance(text, str):
+                    parts.append(text)
+            return "".join(parts)
+        raise ValueError("Chat completion response did not include text content")
 
     def _model_for(self, role: str) -> tuple[AIProvider, str]:
         selection = _text_model_selection.get()
