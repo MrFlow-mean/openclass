@@ -81,18 +81,6 @@ npm run verify           # 提交前 gate：lint + typecheck + test:api + build:
 - 持久化数据：`/opt/openclass/data` 挂载到容器内 `/var/lib/openclass`。
 - 容器：`openclass-api` 绑定 `127.0.0.1:8000`，`openclass-web` 绑定 `127.0.0.1:3000`。
 
-Cloudflare DNS：
-
-```text
-Type: A
-Name: class
-IPv4 address: 188.166.185.136
-Proxy status: Proxied 或 DNS only
-SSL/TLS mode: Full (strict)
-```
-
-首次签证书时可先用 `DNS only`，Caddy 签发成功后可切回 `Proxied` 隐藏源站 IP。换域名时必须同步改 Cloudflare DNS、`/etc/caddy/Caddyfile` 站点名、`/opt/openclass/.env` 的 `OPENCLASS_PUBLIC_ORIGIN`，然后重建前端。
-
 本地部署前 gate：
 
 ```bash
