@@ -54,7 +54,7 @@ export function playPcmBase64(
   mimeType: string | undefined,
   audioContext: AudioContext,
   playbackTimeRef: { current: number }
-) {
+): AudioBufferSourceNode {
   const bytes = decodeBase64Bytes(base64);
   const view = new DataView(bytes.buffer);
   const sampleCount = Math.floor(bytes.byteLength / 2);
@@ -70,4 +70,5 @@ export function playPcmBase64(
   const startAt = Math.max(audioContext.currentTime, playbackTimeRef.current);
   source.start(startAt);
   playbackTimeRef.current = startAt + buffer.duration;
+  return source;
 }

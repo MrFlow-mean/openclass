@@ -2194,8 +2194,10 @@ export function CourseStudio() {
   const googleAudioSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const googlePlaybackContextRef = useRef<AudioContext | null>(null);
   const googlePlaybackTimeRef = useRef(0);
+  const googlePlaybackSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
   const googleInputTranscriptRef = useRef("");
   const googleOutputTranscriptRef = useRef("");
+  const openAIResponseInProgressRef = useRef(false);
   const realtimeLessonIdRef = useRef<string | null>(null);
   const realtimeClientSessionIdRef = useRef<string | null>(null);
   const realtimeLessonTitleRef = useRef<string | null>(null);
@@ -3121,6 +3123,52 @@ export function CourseStudio() {
     }
   }
 
+  function stopGoogleQueuedPlayback() {
+    googlePlaybackSourcesRef.current.forEach((source) => {
+      try {
+        source.stop();
+      } catch {
+        // Already ended or never started.
+      }
+      try {
+        source.disconnect();
+      } catch {
+        // Already disconnected.
+      }
+    });
+    googlePlaybackSourcesRef.current.clear();
+    const playbackContext = googlePlaybackContextRef.current;
+    googlePlaybackTimeRef.current = playbackContext?.currentTime ?? 0;
+  }
+
+  function queueGooglePlayback(base64: string, mimeType?: string) {
+    const playbackContext = googlePlaybackContextRef.current;
+    if (!playbackContext) {
+      return;
+    }
+    const source = playPcmBase64(base64, mimeType, playbackContext, googlePlaybackTimeRef);
+    googlePlaybackSourcesRef.current.add(source);
+    source.addEventListener(
+      "ended",
+      () => {
+        googlePlaybackSourcesRef.current.delete(source);
+      },
+      { once: true }
+    );
+  }
+
+  function resetOpenAIRemoteAudioPlayback() {
+    const remoteAudio = remoteAudioRef.current;
+    const remoteStream = remoteAudio?.srcObject;
+    if (!remoteAudio || !remoteStream) {
+      return;
+    }
+    remoteAudio.pause();
+    remoteAudio.srcObject = null;
+    remoteAudio.srcObject = remoteStream;
+    void remoteAudio.play().catch(() => undefined);
+  }
+
   function disposeRealtimeSession() {
     void flushRealtimeLogQueue();
     realtimeChannelRef.current?.close();
@@ -3134,11 +3182,13 @@ export function CourseStudio() {
     googleAudioSourceRef.current = null;
     void googleAudioContextRef.current?.close().catch(() => undefined);
     googleAudioContextRef.current = null;
+    stopGoogleQueuedPlayback();
     void googlePlaybackContextRef.current?.close().catch(() => undefined);
     googlePlaybackContextRef.current = null;
     googlePlaybackTimeRef.current = 0;
     googleInputTranscriptRef.current = "";
     googleOutputTranscriptRef.current = "";
+    openAIResponseInProgressRef.current = false;
 
     if (realtimePeerRef.current) {
       realtimePeerRef.current.ontrack = null;
@@ -3255,24 +3305,22 @@ export function CourseStudio() {
     if (inputText) {
       googleInputTranscriptRef.current += inputText;
     }
+    if (serverContent.interrupted) {
+      stopGoogleQueuedPlayback();
+      googleOutputTranscriptRef.current = "";
+      setVoiceStatusText("检测到插话，已停止上一段回答");
+    }
     const outputText = serverContent.outputTranscription?.text;
-    if (outputText) {
+    if (outputText && !serverContent.interrupted) {
       googleOutputTranscriptRef.current += outputText;
     }
     serverContent.modelTurn?.parts?.forEach((part) => {
       const inlineData = part.inlineData;
-      if (!inlineData?.data) {
+      if (!inlineData?.data || serverContent.interrupted) {
         return;
       }
-      const playbackContext = googlePlaybackContextRef.current;
-      if (!playbackContext) {
-        return;
-      }
-      playPcmBase64(inlineData.data, inlineData.mimeType, playbackContext, googlePlaybackTimeRef);
+      queueGooglePlayback(inlineData.data, inlineData.mimeType);
     });
-    if (serverContent.interrupted && googlePlaybackContextRef.current) {
-      googlePlaybackTimeRef.current = googlePlaybackContextRef.current.currentTime;
-    }
     if (serverContent.turnComplete) {
       flushGoogleRealtimeTranscripts(lessonId);
     }
@@ -3498,6 +3546,19 @@ export function CourseStudio() {
             type?: string;
             transcript?: string;
           };
+          if (payload.type === "response.created") {
+            openAIResponseInProgressRef.current = true;
+          }
+          if (payload.type === "response.done" || payload.type === "response.audio.done") {
+            openAIResponseInProgressRef.current = false;
+          }
+          if (payload.type === "input_audio_buffer.speech_started") {
+            if (openAIResponseInProgressRef.current && dataChannel.readyState === "open") {
+              dataChannel.send(JSON.stringify({ type: "response.cancel" }));
+              openAIResponseInProgressRef.current = false;
+            }
+            resetOpenAIRemoteAudioPlayback();
+          }
           const lessonId = realtimeLessonIdRef.current;
           if (!lessonId || !payload.type || !payload.transcript) {
             return;
