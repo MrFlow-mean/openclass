@@ -1,94 +1,68 @@
-# AI 黑板课程系统
+# OpenClass AI 课程工作台
 
-这是一个面向教学场景的 AI 原生课程工作台：
+OpenClass 是一个面向学习场景的 AI 课程工作台。它不是单轮问答窗口，而是把聊天、学习目标澄清、讲义编辑、版本历史、资料库和实时语音讲解放在同一个课程空间里。
 
-- 如果你已经厌倦了“问一句、答一句、下一次又从零开始”的普通 AI 学习方式，这个项目想做的是另一种体验：让 AI 像真正陪你上课的老师一样，一边和你确认你到底想学什么，一边把右侧讲义和板书持续整理出来。你不是在和一个只会聊天的窗口对话，而是在一点点搭建一份属于你自己的课程。
-- 对学习者来说，`黑板 AI` 的价值不只是“回答问题”，而是把学习过程变成可沉淀、可回看、可继续扩写的内容资产。你可以让它按你的水平和目标生成一节课，可以直接改写某一段讲义，可以上传教材或笔记让它参考，也可以在不同思路之间开分支，不用担心一改就把原来的内容弄丢。
-- 如果你想找的不是一个泛泛而谈的聊天机器人，而是一款能帮你“边学边整理、边问边成课、边迭代边保留版本”的学习工作台，那么这个黑板 AI 就是在往这个方向做。
+核心体验：
 
-## 为什么学习者会想选它
+- 左侧用聊天确认学习目标、理解程度和上下文。
+- 右侧是类 Word 的富文本讲义，可以手动编辑、AI 局部改写、导入/导出 DOCX。
+- 每节课有 commit、branch、restore，可以试不同讲法再回退。
+- 课程包支持多 lesson、标签页工作区、课程图谱和资料库引用。
+- 文本模型支持 OpenAI、Anthropic、Google、DeepSeek、Kimi、MiniMax、自定义 OpenAI-compatible 和 Anthropic-compatible provider。
+- 实时语音支持 OpenAI Realtime 和 Google Gemini Live。
 
-- 它不是只会回答，而是会把你的问题逐步长成一份完整讲义。
-- 它会先理解你的学习目标、水平和场景，再决定讲多深、怎么讲。
-- 它支持像 Word 一样直接编辑课程内容，不满意就改，不用反复复制粘贴。
-- 它保留 history、commit、branch，你可以放心试错、回退、比较不同讲法。
-- 它能接入你自己的教材、讲义、图片资料，让学习内容更贴近你的真实需要。
-- 它不是一次性答案，而是一套可以持续积累的个人课程工作台。
+## 架构概览
 
-- 左侧是聊天与学习需求澄清
-- 右侧是块级板书文档
-- 顶部支持像浏览器一样同时打开多节课
-- 底层支持 commit / branch / history / lesson graph
-- 后端预留 LangGraph 编排，支持 `PM AI -> Board AI -> Teacher AI`
+```text
+.
+├── package.json                 # 根 workspace 脚本，统一安装、启动、验证
+├── pyproject.toml               # 后端依赖、editable 安装与 pytest 配置
+├── .env.example                 # 后端模型与运行时环境变量示例
+├── apps/
+│   ├── api/
+│   │   ├── app/main.py           # FastAPI app 组装与健康检查
+│   │   ├── app/routers/          # workspace / documents / chat / realtime / resources
+│   │   ├── app/services/         # 状态、存储、AI、导入导出、历史等业务逻辑
+│   │   └── data/                 # 本地运行数据，已在 .gitignore 中忽略
+│   └── web/
+│       ├── src/app/              # Next.js App Router 页面入口
+│       ├── src/components/       # 课程工作台与首页组件
+│       ├── src/hooks/            # 前端副作用和交互状态 hook
+│       ├── src/lib/              # API、数学内容、实时音频等纯工具
+│       └── src/types/            # 前后端共享的 TypeScript 视图类型
+└── launcher/                     # 可双击打开的本地入口页
+```
+
+后端现在按「router 只处理 HTTP 边界，service 承担业务逻辑」拆分：
+
+- `workspace`：课程包、lesson、打开标签页、移动和删除。
+- `documents`：富文本保存、AI 编辑、DOCX 导入导出、branch、restore、proposal。
+- `chat`：学习对话与课程内容生成。
+- `realtime`：OpenAI WebRTC、Google Live WebSocket、实时转写日志。
+- `resources`：资料上传和资料库索引。
+
+`FileCourseStore` 使用锁和原子替换写入，避免并发保存时写出半截 JSON。API 返回的课程包视图会剥离资料原文和本地路径，减少前端暴露不必要数据。
 
 ## 本地运行
 
-### 1. 启动后端依赖
+需要：
 
-项目已经按 `.venv` 约定准备好 Python 运行路径。若需要重新安装：
+- Node.js 20 或更新版本。
+- Python 3.13 或更新版本。
 
-```bash
-python3 -m venv .venv
-.venv/bin/pip install -r apps/api/requirements.txt
-```
-
-### 2. 安装根目录脚本依赖
+第一次安装：
 
 ```bash
-npm install
+npm run setup
 ```
 
-### 2.5. 配置模型厂商
-
-如果要启用真实模型，请在运行前设置对应厂商的环境变量：
+后端环境变量可以从示例文件开始：
 
 ```bash
-export OPENAI_API_KEY=your_key_here
-export OPENAI_BASE_URL=https://api.openai.com/v1
-export OPENAI_MODEL=gpt-5.3
-export OPENAI_REALTIME_MODEL=gpt-4o-realtime-preview
-export AI_TEXT_PROVIDER=openai
-export AI_REALTIME_PROVIDER=openai
-
-export ANTHROPIC_API_KEY=your_anthropic_key_here
-export ANTHROPIC_MODEL=claude-opus-4-7
-
-export GOOGLE_API_KEY=your_google_gemini_key_here
-export GOOGLE_TEXT_MODEL=gemini-3.1-pro-preview
-export GOOGLE_REALTIME_MODEL=gemini-3.1-flash-live-preview
+cp .env.example .env
 ```
 
-如果使用 OpenAI-compatible 网关，比如 Sub2API/BUPT，把 `OPENAI_BASE_URL` 换成网关的 `/v1` 地址：
-
-```bash
-export OPENAI_API_KEY=your_gateway_key_here
-export OPENAI_BASE_URL=https://api.bupt8.com/v1
-export OPENAI_COMPAT_API=chat_completions
-export AI_TEXT_PROVIDER=openai
-```
-
-可选覆盖：
-
-```bash
-export OPENAI_PM_MODEL=gpt-5.3
-export OPENAI_BOARD_MODEL=gpt-5.3
-export OPENAI_GUIDE_MODEL=gpt-5.3
-export OPENAI_TEACHER_MODEL=gpt-5.3
-export OPENAI_LESSON_MODEL=gpt-5.3
-export OPENAI_REALTIME_MODEL=gpt-4o-realtime-preview
-export OPENAI_REALTIME_VOICE=marin
-export OPENAI_COMPAT_API=responses       # responses / chat_completions
-export AI_TEXT_PROVIDER=anthropic      # openai / anthropic / google
-export AI_REALTIME_PROVIDER=google     # openai / google
-export GOOGLE_REALTIME_VOICE=Aoede
-export AI_MODEL_DISCOVERY_ENABLED=true
-export AI_TEXT_MODELS_JSON='[{"provider":"openai","model":"gpt-5.4","label":"GPT-5.4"}]'
-export AI_REALTIME_MODELS_JSON='[{"provider":"openai","model":"gpt-4o-realtime-preview","label":"GPT-4o Realtime","transport":"openai_webrtc"}]'
-```
-
-学习页左侧对话框的“选择模型”按钮会读取 `/api/ai-models`，在文本生成里显示 OpenAI、Anthropic、Google，并会从 `OPENAI_BASE_URL/models` 自动发现 OpenAI-compatible 网关暴露的模型；在实时语音里显示 OpenAI GPT-4o Realtime 和 Google Gemini Live。未设置对应 API Key 的厂商会显示为“未配置”。如果文本模型没有可用 Key，后端会自动回退到当前内置的启发式逻辑，方便继续本地开发。
-
-### 3. 启动前后端
+启动前后端：
 
 ```bash
 npm run dev
@@ -96,35 +70,86 @@ npm run dev
 
 - 前端：`http://localhost:3000`
 - 后端：`http://localhost:8000`
+- 健康检查：`http://localhost:8000/health`
 - AI 输入输出日志：`apps/api/data/logs/ai-usage.jsonl`
 
-### 4. 一键启动
+也可以双击根目录的 `start-ai-board.command`。它会启动前端 `3000`、后端 `8000`，并打开 `launcher/personal-home.html`。
 
-如果你以后不想每次都手动输入命令，可以直接双击项目根目录里的：
+## 常用命令
 
-```text
-start-ai-board.command
+```bash
+npm run dev              # 同时启动前后端
+npm run dev:web          # 只启动 Next.js
+npm run dev:api          # 只启动 FastAPI
+npm run lint:web         # 前端 lint
+npm run typecheck:web    # 前端类型检查
+npm run test:api         # 后端 pytest
+npm run build:web        # 前端生产构建
+npm run verify           # lint + typecheck + 后端测试 + 前端构建
 ```
 
-它会：
+后端依赖以根目录 `pyproject.toml` 为单一来源，根目录 `npm run setup:api` 会安装为 editable 包并带上测试依赖。
 
-- 启动前端 `3000`
-- 启动后端 `8000`
-- 打开个人主页入口 `launcher/personal-home.html`
+## 模型配置
 
-学习页面也拆成了独立入口：`launcher/learning-page.html`。两个 HTML 文件都会把当前前端原样嵌进去，所以你看到的仍然是现有那套页面，不是另一套重写的静态页。
+最小配置示例：
 
-## 目录结构
-
-```text
-apps/
-  api/   FastAPI + LangGraph orchestration + file-backed course store
-  web/   Next.js course studio UI
+```bash
+OPENAI_API_KEY=your_key_here
+OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_MODEL=gpt-5-mini
+OPENAI_REALTIME_MODEL=gpt-4o-realtime-preview
+AI_TEXT_PROVIDER=openai
+AI_REALTIME_PROVIDER=openai
 ```
+
+更多 provider 可参考根目录 `.env.example`。常用覆盖项：
+
+```bash
+ANTHROPIC_API_KEY=your_anthropic_key_here
+ANTHROPIC_MODEL=claude-opus-4-7
+
+GOOGLE_API_KEY=your_google_gemini_key_here
+GOOGLE_TEXT_MODEL=gemini-3.1-pro-preview
+GOOGLE_REALTIME_MODEL=gemini-3.1-flash-live-preview
+
+DEEPSEEK_API_KEY=your_deepseek_key_here
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+DEEPSEEK_MODEL=deepseek-v4-pro
+
+KIMI_API_KEY=your_kimi_key_here
+KIMI_BASE_URL=https://api.moonshot.ai/v1
+KIMI_MODEL=kimi-k2.6
+
+MINIMAX_API_KEY=your_minimax_key_here
+MINIMAX_BASE_URL=https://api.minimax.io/v1
+MINIMAX_MODEL=MiniMax-M2.7
+```
+
+自定义兼容网关可以单独配置，不会覆盖官方 OpenAI / Anthropic：
+
+```bash
+OPENAI_COMPATIBLE_API_KEY=your_custom_openai_compatible_key_here
+OPENAI_COMPATIBLE_BASE_URL=https://your-openai-compatible-host/v1
+OPENAI_COMPATIBLE_MODEL=gpt-5-mini
+OPENAI_COMPATIBLE_COMPAT_API=chat_completions
+
+ANTHROPIC_COMPATIBLE_API_KEY=your_custom_anthropic_compatible_key_here
+ANTHROPIC_COMPATIBLE_BASE_URL=https://your-anthropic-compatible-host
+ANTHROPIC_COMPATIBLE_MODEL=claude-opus-4-7
+```
+
+前端“选择模型”会读取 `/api/ai-models`。文本模型支持 OpenAI、Anthropic、Google、DeepSeek、Kimi、MiniMax、自定义 OpenAI 兼容接口和自定义 Anthropic 兼容接口；实时语音模型只保留官方 OpenAI Realtime 与 Google Gemini Live。没有配置 Key 的 provider 会显示为未配置；没有可用文本模型时，后端会回退到本地启发式逻辑，方便离线开发。
 
 ## 当前实现范围
 
-- Phase 1：课程包、lesson、块级板书、手动编辑、commit、branch、restore、标签页工作区
-- Phase 2：聊天驱动 patch proposal、diff preview、范围升级判断、课程资料库索引、LangGraph 工作流
-- Phase 3：前端提供讲解朗读与讲师模式状态槽位
-- Phase 4：保留课程图谱与版本模型，为后续社区协作继续扩展
+- 课程包、lesson、标签页工作区、课程图谱。
+- 富文本讲义编辑、自动保存、手动 commit、branch、restore、diff preview。
+- 聊天驱动的学习目标澄清、内容生成、局部文档编辑。
+- 资料上传、PDF/DOCX/TXT 提取、资料引用。
+- OpenAI / Anthropic / Google / DeepSeek / Kimi / MiniMax / 兼容 provider 文本模型选择。
+- OpenAI Realtime / Google Gemini Live 语音讲师与转写日志。
+
+## 后续架构建议
+
+已完成的收口是“启动入口、后端路由、状态服务、依赖来源、前端实时语音工具”的第一轮整理。下一轮更值得做的是把 `CourseStudio` 继续按编辑器、聊天、模型选择、资源库、语音会话拆成更小的容器组件，并给 `workspace_state` 增加更细的事务 helper，减少 router 里重复的 load、mutate、save 模式。
