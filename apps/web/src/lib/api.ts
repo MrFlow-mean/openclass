@@ -69,15 +69,28 @@ function authHeaders(headers?: HeadersInit) {
   return nextHeaders;
 }
 
+function withAuthTokenQuery(url: string) {
+  if (typeof window === "undefined") {
+    return url;
+  }
+  const token = readAuthToken();
+  if (!token) {
+    return url;
+  }
+  const nextUrl = new URL(url, window.location.href);
+  nextUrl.searchParams.set("access_token", token);
+  return nextUrl.toString();
+}
+
 export function getApiWebSocketUrl(pathOrUrl: string) {
   if (pathOrUrl.startsWith("ws://") || pathOrUrl.startsWith("wss://")) {
-    return pathOrUrl;
+    return withAuthTokenQuery(pathOrUrl);
   }
 
   const apiBase = getApiBase();
   const baseUrl = new URL(apiBase);
   baseUrl.protocol = baseUrl.protocol === "https:" ? "wss:" : "ws:";
-  return new URL(pathOrUrl, baseUrl).toString();
+  return withAuthTokenQuery(new URL(pathOrUrl, baseUrl).toString());
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -207,7 +220,10 @@ export const api = {
       return false;
     }
     const blob = new Blob([JSON.stringify(payload)], { type: "text/plain;charset=UTF-8" });
-    return navigator.sendBeacon(`${getApiBase()}/api/lessons/${lessonId}/document/save-beacon`, blob);
+    return navigator.sendBeacon(
+      withAuthTokenQuery(`${getApiBase()}/api/lessons/${lessonId}/document/save-beacon`),
+      blob
+    );
   },
   saveDocumentKeepalive(lessonId: string, payload: DocumentSavePayload) {
     return fetch(`${getApiBase()}/api/lessons/${lessonId}/document/save`, {
@@ -316,7 +332,10 @@ export const api = {
       return false;
     }
     const blob = new Blob([JSON.stringify(payload)], { type: "application/json" });
-    return navigator.sendBeacon(`${getApiBase()}/api/lessons/${lessonId}/realtime/events`, blob);
+    return navigator.sendBeacon(
+      withAuthTokenQuery(`${getApiBase()}/api/lessons/${lessonId}/realtime/events`),
+      blob
+    );
   },
   async uploadResource(file: File, lessonId?: string | null) {
     const formData = new FormData();

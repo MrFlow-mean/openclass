@@ -5,7 +5,15 @@ from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
 import app.main as main_module
-from app.models import AIModelSelection, ChatRequest, CreateBranchRequest, DocumentSaveRequest, RealtimeTranscriptLogRequest
+from app.models import (
+    AIModelSelection,
+    ChatRequest,
+    CreateBranchRequest,
+    DocumentSaveRequest,
+    RealtimeTranscriptLogRequest,
+    UserView,
+)
+from app.routers.auth import current_user
 from app.routers import documents as documents_router
 from app.routers import realtime as realtime_router
 from app.services.ai_logging import ai_log_context, ai_usage_logger
@@ -13,6 +21,14 @@ from app.services import chat_service, workspace_state
 from app.services.course_store import SqliteCourseStore
 from app.services.openai_course_ai import OpenAICourseAI, bind_text_model_selection, openai_course_ai
 from app.services.resource_library import build_resource_item
+
+
+TEST_USER = UserView(
+    id="user_test",
+    email="test@example.com",
+    role="user",
+    created_at="2026-01-01T00:00:00+00:00",
+)
 
 
 def _read_log_entries(path):
@@ -370,6 +386,7 @@ def test_chat_route_logs_request_and_response(monkeypatch: pytest.MonkeyPatch, i
     response = chat_service.process_chat_on_lesson(
         lesson_id,
         ChatRequest(message="请解释一下勾股定理的核心公式"),
+        user_id=TEST_USER.id,
     )
 
     assert response.teacher_message
@@ -405,6 +422,7 @@ def test_chat_route_logs_request_and_response(monkeypatch: pytest.MonkeyPatch, i
     branched_package = documents_router.create_lesson_branch(
         lesson_id,
         CreateBranchRequest(name="flow-branch", from_commit_id=flow_commit.id),
+        user=TEST_USER,
     )
     branched_lesson = next(lesson for lesson in branched_package.lessons if lesson.id == lesson_id)
     assert branched_lesson.history_graph.branches["flow-branch"].base_commit_id == flow_commit.id
@@ -433,6 +451,7 @@ def test_document_save_route_keeps_autosave_metadata(monkeypatch: pytest.MonkeyP
                 "source": "word_board_editor",
             },
         ),
+        user=TEST_USER,
     )
 
     updated_lesson = next(current for current in package.lessons if current.id == lesson.id)
@@ -463,11 +482,15 @@ def test_document_save_beacon_accepts_plain_text_json(monkeypatch: pytest.Monkey
         },
     )
 
-    response = TestClient(main_module.app).post(
-        f"/api/lessons/{lesson.id}/document/save-beacon",
-        content=save_request.model_dump_json(),
-        headers={"content-type": "text/plain;charset=UTF-8"},
-    )
+    main_module.app.dependency_overrides[current_user] = lambda: TEST_USER
+    try:
+        response = TestClient(main_module.app).post(
+            f"/api/lessons/{lesson.id}/document/save-beacon",
+            content=save_request.model_dump_json(),
+            headers={"content-type": "text/plain;charset=UTF-8"},
+        )
+    finally:
+        main_module.app.dependency_overrides.pop(current_user, None)
 
     assert response.status_code == 200
     updated_lesson = next(current for current in response.json()["lessons"] if current["id"] == lesson.id)
@@ -488,6 +511,7 @@ def test_chat_route_reuses_workflow_runtime_without_extra_refresh(
     response = chat_service.process_chat_on_lesson(
         lesson_id,
         ChatRequest(message="请解释一下勾股定理的核心公式"),
+        user_id=TEST_USER.id,
     )
 
     assert response.teacher_message
@@ -516,6 +540,7 @@ def test_chat_route_hides_reference_box_for_explanation_only_turn(
     response = chat_service.process_chat_on_lesson(
         lesson_id,
         ChatRequest(message="请解释一下勾股定理的核心公式"),
+        user_id=TEST_USER.id,
     )
 
     assert response.board_decision.action == "no_change"
@@ -523,9 +548,15 @@ def test_chat_route_hides_reference_box_for_explanation_only_turn(
     assert response.selected_reference is None
 
 
-def test_realtime_transcript_route_logs_each_message(isolated_ai_log) -> None:
+def test_realtime_transcript_route_logs_each_message(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    lesson = store.load().packages[0].lessons[0]
+
     result = realtime_router.log_realtime_event(
-        "lesson_demo",
+        lesson.id,
         RealtimeTranscriptLogRequest(
             client_session_id="realtime_session_1",
             lesson_title="勾股定理",
@@ -533,6 +564,7 @@ def test_realtime_transcript_route_logs_each_message(isolated_ai_log) -> None:
             transport_event_type="response.audio_transcript.done",
             transcript="我们先从直角三角形开始。",
         ),
+        user=TEST_USER,
     )
 
     assert result["status"] == "ok"

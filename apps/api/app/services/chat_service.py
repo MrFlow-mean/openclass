@@ -9,10 +9,10 @@ from app.services.workspace_state import (
     commit_document_snapshot,
     find_lesson_package,
     lesson_view,
-    load_workspace,
+    load_workspace_for_user,
     package_context_for_lesson,
     package_view_for_lesson,
-    save_workspace,
+    save_workspace_for_user,
 )
 
 
@@ -95,7 +95,14 @@ def chat_flow_message(request: ChatRequest, teacher_message: str) -> str:
     return f"用户：{short_text(request.message)}\nAI：{short_text(teacher_message, 120)}"
 
 
-def document_ai_edit_request(lesson_id: str, instruction: str, selection_text: str | None, conversation) -> ChatResponse:
+def document_ai_edit_request(
+    lesson_id: str,
+    instruction: str,
+    selection_text: str | None,
+    conversation,
+    *,
+    user_id: str,
+) -> ChatResponse:
     selection = None
     if selection_text:
         selection = SelectionRef(kind="board", lesson_id=lesson_id, excerpt=selection_text)
@@ -107,11 +114,12 @@ def document_ai_edit_request(lesson_id: str, instruction: str, selection_text: s
             interaction_mode="direct_edit",
             conversation=conversation,
         ),
+        user_id=user_id,
     )
 
 
-def process_chat_on_lesson(lesson_id: str, request: ChatRequest) -> ChatResponse:
-    workspace = load_workspace()
+def process_chat_on_lesson(lesson_id: str, request: ChatRequest, *, user_id: str) -> ChatResponse:
+    workspace = load_workspace_for_user(user_id)
     package, lesson = find_lesson_package(workspace, lesson_id)
     package.active_lesson_id = lesson.id
     with bind_ai_request_context(
@@ -215,7 +223,7 @@ def process_chat_on_lesson(lesson_id: str, request: ChatRequest) -> ChatResponse
                 message=chat_flow_message(request, teacher_message),
                 metadata=metadata,
             )
-            save_workspace(workspace)
+            save_workspace_for_user(user_id, workspace)
 
             response = ChatResponse(
                 teacher_message=teacher_message,

@@ -61,6 +61,14 @@ def save_workspace(workspace: WorkspaceState) -> None:
     STORE.save(workspace)
 
 
+def load_workspace_for_user(user_id: str) -> WorkspaceState:
+    return STORE.load_for_user(user_id)
+
+
+def save_workspace_for_user(user_id: str, workspace: WorkspaceState) -> None:
+    STORE.save_for_user(user_id, workspace)
+
+
 def get_package(workspace: WorkspaceState, package_id: str) -> CoursePackage:
     for package in workspace.packages:
         if package.id == package_id:
@@ -79,6 +87,12 @@ def get_active_package(workspace: WorkspaceState) -> CoursePackage:
 
 def load_workspace_package() -> tuple[WorkspaceState, CoursePackage]:
     workspace = load_workspace()
+    package = get_active_package(workspace)
+    return workspace, package
+
+
+def load_workspace_package_for_user(user_id: str) -> tuple[WorkspaceState, CoursePackage]:
+    workspace = load_workspace_for_user(user_id)
     package = get_active_package(workspace)
     return workspace, package
 

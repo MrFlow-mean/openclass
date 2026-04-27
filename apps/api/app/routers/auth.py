@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from urllib import parse
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket
 from fastapi.responses import RedirectResponse
 
 from app.models import AdminOverview, AuthProviderView, AuthRequest, AuthSessionResponse, UserView
-from app.services.auth_service import AuthService, bearer_token_from_request
+from app.services.auth_service import AuthService, bearer_token_from_request, bearer_token_from_websocket
 from app.services.workspace_state import DATABASE_PATH
 
 
@@ -16,6 +16,11 @@ auth_service = AuthService(DATABASE_PATH)
 
 def current_user(request: Request) -> UserView:
     token = bearer_token_from_request(request)
+    return auth_service.get_user_by_token(token)
+
+
+def current_websocket_user(websocket: WebSocket) -> UserView:
+    token = bearer_token_from_websocket(websocket)
     return auth_service.get_user_by_token(token)
 
 

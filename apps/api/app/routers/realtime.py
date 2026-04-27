@@ -6,7 +6,7 @@ import ssl
 
 import certifi
 import websockets
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 
 from app.models import (
     AIModelSelection,
@@ -15,12 +15,14 @@ from app.models import (
     RealtimeConnectRequest,
     RealtimeConnectResponse,
     RealtimeTranscriptLogRequest,
+    UserView,
 )
+from app.routers.auth import current_user, current_websocket_user
 from app.services.ai_logging import ai_usage_logger, log_ai_interaction_message
 from app.services.ai_model_catalog import default_realtime_selection
 from app.services.openai_realtime import google_realtime_teacher, openai_realtime_teacher
 from app.services.route_context import bind_ai_request_context
-from app.services.workspace_state import find_lesson_package, load_workspace
+from app.services.workspace_state import find_lesson_package, load_workspace_for_user
 
 router = APIRouter()
 
@@ -75,7 +77,9 @@ async def _send_google_realtime_error(websocket: WebSocket, error: dict[str, obj
 
 @router.post("/api/lessons/{lesson_id}/realtime/connect", response_model=RealtimeConnectResponse)
 def connect_realtime_session(
-    lesson_id: str, request: RealtimeConnectRequest
+    lesson_id: str,
+    request: RealtimeConnectRequest,
+    user: UserView = Depends(current_user),
 ) -> RealtimeConnectResponse:
     realtime_model = request.realtime_model or default_realtime_selection()
     if realtime_model.provider != "openai":
@@ -86,7 +90,7 @@ def connect_realtime_session(
     if not openai_realtime_teacher.enabled:
         raise HTTPException(status_code=503, detail="OpenAI Realtime is not configured")
 
-    workspace = load_workspace()
+    workspace = load_workspace_for_user(user.id)
     _, lesson = find_lesson_package(workspace, lesson_id)
     with bind_ai_request_context(
         "/api/lessons/{lesson_id}/realtime/connect",
@@ -130,7 +134,9 @@ def connect_realtime_session(
 
 @router.post("/api/lessons/{lesson_id}/realtime/google/session", response_model=GoogleRealtimeSessionResponse)
 def create_google_realtime_session(
-    lesson_id: str, request: GoogleRealtimeSessionRequest
+    lesson_id: str,
+    request: GoogleRealtimeSessionRequest,
+    user: UserView = Depends(current_user),
 ) -> GoogleRealtimeSessionResponse:
     realtime_model = request.realtime_model or AIModelSelection(
         provider="google",
@@ -141,7 +147,7 @@ def create_google_realtime_session(
     if not google_realtime_teacher.enabled:
         raise HTTPException(status_code=503, detail="Google Gemini Live is not configured")
 
-    workspace = load_workspace()
+    workspace = load_workspace_for_user(user.id)
     _, lesson = find_lesson_package(workspace, lesson_id)
     with bind_ai_request_context(
         "/api/lessons/{lesson_id}/realtime/google/session",
@@ -185,6 +191,21 @@ def create_google_realtime_session(
 @router.websocket("/api/lessons/{lesson_id}/realtime/google/ws")
 async def proxy_google_realtime_session(websocket: WebSocket, lesson_id: str) -> None:
     await websocket.accept()
+    try:
+        user = current_websocket_user(websocket)
+        workspace = load_workspace_for_user(user.id)
+        find_lesson_package(workspace, lesson_id)
+    except HTTPException as exc:
+        await _send_google_realtime_error(
+            websocket,
+            {
+                "code": exc.status_code,
+                "status": "UNAUTHORIZED" if exc.status_code == 401 else "FORBIDDEN",
+                "message": str(exc.detail),
+            },
+        )
+        await websocket.close(code=1008, reason="Authentication required")
+        return
     if not google_realtime_teacher.enabled:
         await _send_google_realtime_error(
             websocket,
@@ -246,7 +267,13 @@ async def proxy_google_realtime_session(websocket: WebSocket, lesson_id: str) ->
 
 
 @router.post("/api/lessons/{lesson_id}/realtime/events")
-def log_realtime_event(lesson_id: str, request: RealtimeTranscriptLogRequest) -> dict[str, str]:
+def log_realtime_event(
+    lesson_id: str,
+    request: RealtimeTranscriptLogRequest,
+    user: UserView = Depends(current_user),
+) -> dict[str, str]:
+    workspace = load_workspace_for_user(user.id)
+    find_lesson_package(workspace, lesson_id)
     with bind_ai_request_context(
         "/api/lessons/{lesson_id}/realtime/events",
         trace_prefix="realtime",

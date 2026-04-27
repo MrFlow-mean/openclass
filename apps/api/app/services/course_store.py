@@ -22,7 +22,13 @@ from app.models import (
 from app.services.lesson_factory import create_lesson
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
+
+
+def _active_package_setting_key(owner_user_id: str | None) -> str:
+    if owner_user_id:
+        return f"active_package_id:{owner_user_id}"
+    return "active_package_id"
 
 
 class SqliteCourseStore:
@@ -36,7 +42,7 @@ class SqliteCourseStore:
     def load(self) -> WorkspaceState:
         with self._lock:
             with self._connect() as conn:
-                if self._has_packages(conn):
+                if self._has_any_packages(conn):
                     return self._read_workspace(conn)
 
             legacy_workspace = self._load_legacy_workspace()
@@ -51,6 +57,29 @@ class SqliteCourseStore:
             with self._connect() as conn:
                 with conn:
                     self._replace_workspace(conn, workspace)
+
+    def load_for_user(self, owner_user_id: str) -> WorkspaceState:
+        with self._lock:
+            with self._connect() as conn:
+                with conn:
+                    if self._has_unowned_packages(conn):
+                        self._claim_unowned_workspace(
+                            conn,
+                            self._legacy_workspace_owner_candidate(conn) or owner_user_id,
+                        )
+                    if not self._has_user_packages(conn, owner_user_id):
+                        self._replace_workspace(
+                            conn,
+                            build_initial_workspace_state(),
+                            owner_user_id=owner_user_id,
+                        )
+                    return self._read_workspace(conn, owner_user_id=owner_user_id)
+
+    def save_for_user(self, owner_user_id: str, workspace: WorkspaceState) -> None:
+        with self._lock:
+            with self._connect() as conn:
+                with conn:
+                    self._replace_workspace(conn, workspace, owner_user_id=owner_user_id)
 
     def _initialize(self) -> None:
         with self._lock:
@@ -81,6 +110,7 @@ class SqliteCourseStore:
 
             CREATE TABLE IF NOT EXISTS course_packages (
                 id TEXT PRIMARY KEY,
+                owner_user_id TEXT,
                 title TEXT NOT NULL,
                 summary TEXT NOT NULL,
                 sort_order INTEGER NOT NULL,
@@ -216,6 +246,12 @@ class SqliteCourseStore:
         )
         self._migrate_schema(conn)
         conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_course_packages_owner
+                ON course_packages(owner_user_id, sort_order)
+            """
+        )
+        conn.execute(
             "INSERT OR REPLACE INTO schema_meta(key, value) VALUES (?, ?)",
             ("schema_version", str(SCHEMA_VERSION)),
         )
@@ -233,20 +269,75 @@ class SqliteCourseStore:
         }
         if "scope_lesson_id" not in resource_columns:
             conn.execute("ALTER TABLE resources ADD COLUMN scope_lesson_id TEXT")
+        package_columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(course_packages)").fetchall()
+        }
+        if "owner_user_id" not in package_columns:
+            conn.execute("ALTER TABLE course_packages ADD COLUMN owner_user_id TEXT")
 
-    def _has_packages(self, conn: sqlite3.Connection) -> bool:
+    def _has_any_packages(self, conn: sqlite3.Connection) -> bool:
         row = conn.execute("SELECT 1 FROM course_packages LIMIT 1").fetchone()
         return row is not None
 
-    def _read_workspace(self, conn: sqlite3.Connection) -> WorkspaceState:
+    def _has_user_packages(self, conn: sqlite3.Connection, owner_user_id: str) -> bool:
+        row = conn.execute(
+            "SELECT 1 FROM course_packages WHERE owner_user_id = ? LIMIT 1",
+            (owner_user_id,),
+        ).fetchone()
+        return row is not None
+
+    def _has_unowned_packages(self, conn: sqlite3.Connection) -> bool:
+        row = conn.execute(
+            "SELECT 1 FROM course_packages WHERE owner_user_id IS NULL LIMIT 1"
+        ).fetchone()
+        return row is not None
+
+    def _claim_unowned_workspace(self, conn: sqlite3.Connection, owner_user_id: str) -> None:
+        conn.execute(
+            "UPDATE course_packages SET owner_user_id = ? WHERE owner_user_id IS NULL",
+            (owner_user_id,),
+        )
         active_package_id = _setting(conn, "active_package_id")
+        if active_package_id:
+            conn.execute(
+                "INSERT OR REPLACE INTO workspace_settings(key, value) VALUES (?, ?)",
+                (_active_package_setting_key(owner_user_id), active_package_id),
+            )
+            conn.execute("DELETE FROM workspace_settings WHERE key = ?", ("active_package_id",))
+
+    def _legacy_workspace_owner_candidate(self, conn: sqlite3.Connection) -> str | None:
+        if not _table_exists(conn, "users"):
+            return None
+        row = conn.execute(
+            """
+            SELECT id
+            FROM users
+            ORDER BY
+                CASE role WHEN 'admin' THEN 0 ELSE 1 END,
+                created_at,
+                id
+            LIMIT 1
+            """
+        ).fetchone()
+        return row["id"] if row is not None else None
+
+    def _read_workspace(self, conn: sqlite3.Connection, *, owner_user_id: str | None = None) -> WorkspaceState:
+        active_package_id = _setting(conn, _active_package_setting_key(owner_user_id))
+        where_clause = ""
+        params: tuple[str, ...] = ()
+        if owner_user_id is not None:
+            where_clause = "WHERE owner_user_id = ?"
+            params = (owner_user_id,)
         packages = [
             self._read_package(conn, package_row)
             for package_row in conn.execute(
-                """
+                f"""
                 SELECT * FROM course_packages
+                {where_clause}
                 ORDER BY sort_order, id
-                """
+                """,
+                params,
             ).fetchall()
         ]
         return WorkspaceState(packages=packages, active_package_id=active_package_id)
@@ -422,29 +513,42 @@ class SqliteCourseStore:
             source_path=row["source_path"],
         )
 
-    def _replace_workspace(self, conn: sqlite3.Connection, workspace: WorkspaceState) -> None:
-        conn.execute("DELETE FROM workspace_settings")
-        conn.execute("DELETE FROM course_packages")
+    def _replace_workspace(
+        self,
+        conn: sqlite3.Connection,
+        workspace: WorkspaceState,
+        *,
+        owner_user_id: str | None = None,
+    ) -> None:
+        setting_key = _active_package_setting_key(owner_user_id)
+        if owner_user_id is None:
+            conn.execute("DELETE FROM workspace_settings")
+            conn.execute("DELETE FROM course_packages")
+        else:
+            conn.execute("DELETE FROM workspace_settings WHERE key = ?", (setting_key,))
+            conn.execute("DELETE FROM course_packages WHERE owner_user_id = ?", (owner_user_id,))
         conn.execute(
             "INSERT INTO workspace_settings(key, value) VALUES (?, ?)",
-            ("active_package_id", workspace.active_package_id or ""),
+            (setting_key, workspace.active_package_id or ""),
         )
         for package_index, package in enumerate(workspace.packages):
-            self._insert_package(conn, package, package_index)
+            self._insert_package(conn, package, package_index, owner_user_id=owner_user_id)
 
     def _insert_package(
         self,
         conn: sqlite3.Connection,
         package: CoursePackage,
         package_index: int,
+        *,
+        owner_user_id: str | None = None,
     ) -> None:
         conn.execute(
             """
             INSERT INTO course_packages(
-                id, title, summary, sort_order, active_lesson_id
-            ) VALUES (?, ?, ?, ?, ?)
+                id, owner_user_id, title, summary, sort_order, active_lesson_id
+            ) VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (package.id, package.title, package.summary, package_index, package.active_lesson_id),
+            (package.id, owner_user_id, package.title, package.summary, package_index, package.active_lesson_id),
         )
         for index, lesson_id in enumerate(package.open_lesson_ids):
             conn.execute(
@@ -677,6 +781,14 @@ def _setting(conn: sqlite3.Connection, key: str) -> str | None:
     if row is None or row["value"] == "":
         return None
     return row["value"]
+
+
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table,),
+    ).fetchone()
+    return row is not None
 
 
 def _ordered_values(conn: sqlite3.Connection, table: str, package_id: str) -> list[str]:

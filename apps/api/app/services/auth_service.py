@@ -16,7 +16,7 @@ from typing import Any
 from urllib import parse, request as urlrequest
 
 import certifi
-from fastapi import HTTPException, Request
+from fastapi import HTTPException, Request, WebSocket
 
 from app.models import AdminOverview, AdminStats, AuthIdentityView, AuthProviderView, UserView, new_id
 
@@ -26,6 +26,7 @@ SESSION_TOKEN_BYTES = 32
 OAUTH_STATE_BYTES = 24
 OAUTH_STATE_TTL = timedelta(minutes=15)
 _URLLIB_SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
+AUTH_COOKIE_NAME = "openclass.auth.token"
 
 
 @dataclass(frozen=True)
@@ -810,9 +811,33 @@ class AuthService:
         return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-def bearer_token_from_request(request: Request) -> str:
-    authorization = request.headers.get("Authorization", "")
+def _bearer_token_from_parts(
+    authorization: str,
+    *,
+    cookie_token: str | None = None,
+    query_token: str | None = None,
+) -> str:
     scheme, _, token = authorization.partition(" ")
-    if scheme.lower() != "bearer" or not token:
-        raise HTTPException(status_code=401, detail="请先登录")
-    return token.strip()
+    if scheme.lower() == "bearer" and token:
+        return token.strip()
+    if query_token:
+        return query_token.strip()
+    if cookie_token:
+        return cookie_token.strip()
+    raise HTTPException(status_code=401, detail="请先登录")
+
+
+def bearer_token_from_request(request: Request) -> str:
+    return _bearer_token_from_parts(
+        request.headers.get("Authorization", ""),
+        cookie_token=request.cookies.get(AUTH_COOKIE_NAME),
+        query_token=request.query_params.get("access_token"),
+    )
+
+
+def bearer_token_from_websocket(websocket: WebSocket) -> str:
+    return _bearer_token_from_parts(
+        websocket.headers.get("Authorization", ""),
+        cookie_token=websocket.cookies.get(AUTH_COOKIE_NAME),
+        query_token=websocket.query_params.get("access_token"),
+    )
