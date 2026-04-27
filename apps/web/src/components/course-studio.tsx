@@ -445,7 +445,7 @@ const PROVIDER_LABELS: Record<AIModelSelection["provider"], string> = {
 const TEXT_MODEL_STORAGE_KEY = "blackboard-ai:selected-text-model";
 const REALTIME_MODEL_STORAGE_KEY = "blackboard-ai:selected-realtime-model";
 const DISABLED_TEXT_MODEL_PROVIDERS = new Set<AIModelSelection["provider"]>();
-const DISABLED_REALTIME_MODEL_PROVIDERS = new Set<AIModelSelection["provider"]>(["openai"]);
+const DISABLED_REALTIME_MODEL_PROVIDERS = new Set<AIModelSelection["provider"]>();
 
 function modelSelectionKey(selection: AIModelSelection): string {
   return `${selection.provider}:${selection.model}`;
@@ -3931,10 +3931,6 @@ export function CourseStudio() {
       setError(`当前未配置 ${PROVIDER_LABELS[selectedRealtimeModel.provider]} 的实时语音 API Key。`);
       return;
     }
-    if (selectedRealtimeTransport === "gemini_live_websocket" || selectedRealtimeModel.provider === "google") {
-      setError("Google Gemini Live 暂未接入受控语音工作流。请先选择 OpenAI 实时转写模型。");
-      return;
-    }
     if (!(await flushAutoSave("voice"))) {
       return;
     }
@@ -3958,6 +3954,11 @@ export function CourseStudio() {
       realtimeLessonIdRef.current = activeLesson.id;
       realtimeClientSessionIdRef.current = clientSessionId;
       realtimeLessonTitleRef.current = activeLesson.title;
+
+      if (selectedRealtimeTransport === "gemini_live_websocket" || selectedRealtimeModel.provider === "google") {
+        await startGoogleRealtimeSession(activeLesson, mediaStream, clientSessionId);
+        return;
+      }
 
       const peerConnection = new RTCPeerConnection();
       realtimePeerRef.current = peerConnection;

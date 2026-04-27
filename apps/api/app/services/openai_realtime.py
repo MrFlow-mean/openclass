@@ -39,10 +39,19 @@ def _single_api_key_mode() -> bool:
     return (os.getenv("AI_SINGLE_API_KEY_MODE") or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _openai_realtime_allowed() -> bool:
+    if _normalize_optional_api_key(os.getenv("OPENAI_REALTIME_API_KEY")):
+        return True
+    base_url = (os.getenv("OPENAI_REALTIME_BASE_URL") or os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1").lower()
+    return not _single_api_key_mode() or "api.openai.com" in base_url
+
+
 def _google_api_key() -> str | None:
-    if _single_api_key_mode():
-        return os.getenv("AI_API_KEY") or os.getenv("OPENAI_API_KEY")
-    return os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+    return _normalize_optional_api_key(
+        os.getenv("GOOGLE_REALTIME_API_KEY")
+        or os.getenv("GOOGLE_API_KEY")
+        or os.getenv("GEMINI_API_KEY")
+    )
 
 
 def _normalize_optional_api_key(value: str | None) -> str | None:
@@ -103,7 +112,7 @@ class OpenAIRealtimeTeacher:
         self.config = OpenAIRealtimeConfig()
         self.client = (
             OpenAI(api_key=self.config.api_key, base_url=self.config.base_url)
-            if self.config.enabled and not _single_api_key_mode()
+            if self.config.enabled and _openai_realtime_allowed()
             else None
         )
 

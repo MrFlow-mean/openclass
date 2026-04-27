@@ -198,13 +198,34 @@ export interface UserView {
   id: string;
   email: string;
   role: "user" | "admin";
+  display_name?: string | null;
+  avatar_url?: string | null;
   created_at: string;
   last_login_at?: string | null;
+  auth_identities: AuthIdentityView[];
 }
 
 export interface AuthSessionResponse {
   token: string;
   user: UserView;
+}
+
+export interface AuthIdentityView {
+  provider: string;
+  provider_label: string;
+  email?: string | null;
+  display_name?: string | null;
+  avatar_url?: string | null;
+  created_at: string;
+  last_login_at?: string | null;
+}
+
+export interface AuthProviderView {
+  id: string;
+  label: string;
+  description: string;
+  configured: boolean;
+  kind: "password" | "oauth";
 }
 
 export interface AdminOverview {

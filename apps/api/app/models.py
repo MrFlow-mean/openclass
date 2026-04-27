@@ -563,12 +563,25 @@ class WorkspaceStateView(BaseModel):
     active_package_id: str | None = None
 
 
+class AuthIdentityView(BaseModel):
+    provider: str
+    provider_label: str
+    email: str | None = None
+    display_name: str | None = None
+    avatar_url: str | None = None
+    created_at: str
+    last_login_at: str | None = None
+
+
 class UserView(BaseModel):
     id: str
     email: str
     role: Literal["user", "admin"]
+    display_name: str | None = None
+    avatar_url: str | None = None
     created_at: str
     last_login_at: str | None = None
+    auth_identities: list[AuthIdentityView] = Field(default_factory=list)
 
 
 class AuthRequest(BaseModel):
@@ -579,6 +592,14 @@ class AuthRequest(BaseModel):
 class AuthSessionResponse(BaseModel):
     token: str
     user: UserView
+
+
+class AuthProviderView(BaseModel):
+    id: str
+    label: str
+    description: str
+    configured: bool
+    kind: Literal["password", "oauth"] = "oauth"
 
 
 class AdminStats(BaseModel):

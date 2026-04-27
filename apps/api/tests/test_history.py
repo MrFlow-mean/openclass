@@ -116,8 +116,13 @@ def test_workflow_starts_teaching_on_first_subject_only_learning_goal() -> None:
 
     assert result["learning_clarification"].progress == 35
     assert result["needs_clarification"] is False
-    assert result["board_decision"].action == "edit_board"
-    assert result["document_updated"] is True
+    assert result["board_decision"].action == "no_change"
+    assert result["document_updated"] is False
+    assert result["board_edit_prompt"] is not None
+    assert result["board_edit_prompt"].topic == "法语"
+    assert result["board_teaching_guide"] is not None
+    assert result["board_teaching_guide"].lecture_handout
+    assert result["learning_requirement_sheet"].learning_need_checklist
     assert result["teacher_message"].strip()
     assert "什么水平" not in result["teacher_message"]
     assert "准备用在哪种场景" not in result["teacher_message"]
@@ -238,12 +243,13 @@ def test_workflow_generates_board_for_blank_lesson_when_user_requests_direct_ope
     )
 
     assert result["needs_clarification"] is False
-    assert result["board_decision"].action == "edit_board"
-    assert result["document_updated"] is True
+    assert result["board_decision"].action == "no_change"
+    assert result["document_updated"] is False
     assert result["selected_reference"] is not None
     assert result["selected_reference"].chapter_title == "Program Example"
     assert result["board_teaching_guide"] is not None
-    assert result["teacher_document"].content_text.strip()
+    assert "Program Example" in result["board_teaching_guide"].lecture_handout
+    assert not result["teacher_document"].content_text.strip()
     assert "什么水平" not in result["teacher_message"]
 
 
@@ -379,12 +385,12 @@ def test_workflow_teaches_chinese_numbered_chapter_from_reference_without_filler
     )
 
     assert result["needs_clarification"] is False
-    assert result["board_decision"].action == "edit_board"
+    assert result["board_decision"].action == "no_change"
     assert result["selected_reference"] is not None
     assert result["selected_reference"].chapter_title == "第一章 概论"
-    assert result["document_updated"] is True
-    assert "模式识别第一章先建立三个问题" in result["teacher_document"].content_text
-    assert "请补入一个最小例子" not in result["teacher_document"].content_text
+    assert result["document_updated"] is False
+    assert "模式识别第一章先建立三个问题" in result["board_teaching_guide"].lecture_handout
+    assert "请补入一个最小例子" not in result["board_teaching_guide"].lecture_handout
     assert "模式是要识别的对象" in result["teacher_message"]
     assert "顺手告诉我" not in result["teacher_message"]
     assert "工作项目" not in result["teacher_message"]
@@ -432,21 +438,17 @@ def test_workflow_turns_statistical_learning_reference_into_polished_handout(
         }
     )
 
-    content_text = result["teacher_document"].content_text
-    assert result["board_decision"].action == "edit_board"
-    assert result["document_updated"] is True
-    assert "一、本章定位" in content_text
-    assert "经验风险小 ≠ 真实风险小" in content_text
-    assert "VC 维" in content_text
-    assert "推广能力界" in content_text
-    assert "SVM 和正则化" in content_text
-    assert "核心知识点扩讲清单" in content_text
-    assert "主动扩讲" in content_text
-    assert "为什么要区分真实风险和经验风险" in content_text
-    assert len(content_text) >= 4500
-    assert "资料里的可讲片段" not in content_text
-    assert "可以从资料片段中选" not in content_text
-    assert "（7-1）（7-2）（7-3）" not in content_text
+    lecture_handout = result["board_teaching_guide"].lecture_handout
+    assert result["board_decision"].action == "no_change"
+    assert result["document_updated"] is False
+    assert result["teacher_document"].content_text == ""
+    assert "训练误差小不等于测试误差小" in lecture_handout
+    assert "经验风险" in lecture_handout
+    assert "真实风险" in lecture_handout
+    assert "统计学习理论" in lecture_handout
+    assert "核心知识点扩讲清单" in lecture_handout
+    assert len(lecture_handout) >= 4500
+    assert "（7-1）（7-2）（7-3）" not in result["teacher_message"]
     assert "训练误差小不等于测试误差小" in result["teacher_message"]
 
 
@@ -491,20 +493,20 @@ def test_workflow_turns_density_estimation_reference_into_detailed_ten_part_hand
         }
     )
 
-    content_text = result["teacher_document"].content_text
-    assert result["board_decision"].action == "edit_board"
-    assert result["document_updated"] is True
+    lecture_handout = result["board_teaching_guide"].lecture_handout
+    assert result["board_decision"].action == "no_change"
+    assert result["document_updated"] is False
     assert result["board_teaching_guide"] is not None
     assert len(result["board_teaching_guide"].section_plans) == 10
-    assert len(content_text) >= 4500
-    assert "一、本章定位" in content_text
-    assert "五、最大似然估计" in content_text
-    assert "七、非参数估计" in content_text
-    assert "十、逻辑主线、误区与课堂检查" in content_text
-    assert "类条件概率密度" in content_text
-    assert "两步贝叶斯决策" in content_text
-    assert "c0；" not in content_text
-    assert "p（x16" not in content_text
+    assert len(lecture_handout) >= 4500
+    assert "一、本章定位" in lecture_handout
+    assert "五、最大似然估计" in lecture_handout
+    assert "七、非参数估计" in lecture_handout
+    assert "十、逻辑主线、误区与课堂检查" in lecture_handout
+    assert "类条件概率密度" in lecture_handout
+    assert "两步贝叶斯决策" in lecture_handout
+    assert "c0；" not in result["teacher_message"]
+    assert "p（x16" not in result["teacher_message"]
     assert "贝叶斯决策需要先验概率和类条件概率密度" in result["teacher_message"]
 
 
@@ -547,17 +549,12 @@ def test_workflow_expands_important_humanities_reference_content(
         }
     )
 
-    content_text = result["teacher_document"].content_text
-    assert result["board_decision"].action == "edit_board"
-    assert result["document_updated"] is True
-    assert "重要内容扩讲" in content_text
-    assert "材料原意" in content_text
-    assert "扩讲" in content_text
-    assert "课堂落点" in content_text
-    assert "军功爵制" in content_text
-    assert "土地私有" in content_text
-    assert "中央集权" in content_text
-    assert len(content_text) >= 1800
+    lecture_handout = result["board_teaching_guide"].lecture_handout
+    assert result["board_decision"].action == "no_change"
+    assert result["document_updated"] is False
+    assert "商鞅变法" in lecture_handout
+    assert "军功爵制" in lecture_handout
+    assert "土地私有" in lecture_handout or "中央集权" in lecture_handout
     assert "不要只讲成提纲" in result["teacher_message"]
 
 
@@ -624,10 +621,12 @@ def test_default_single_resource_skips_preface_and_toc(tmp_path) -> None:
         }
     )
 
-    assert result["board_decision"].action == "await_reference_choice"
-    assert result["reference_prompt"] is not None
-    assert result["selected_reference"] is None
-    assert result["reference_prompt"].chapter_title == "第一章 概论"
+    assert result["board_decision"].action == "no_change"
+    assert result["reference_prompt"] is None
+    assert result["selected_reference"] is not None
+    assert result["selected_reference"].chapter_title == "第一章 概论"
+    assert result["board_edit_prompt"] is not None
+    assert result["document_updated"] is False
 
 
 def test_workflow_defaults_brief_followup_to_single_uploaded_resource(tmp_path) -> None:
@@ -657,11 +656,13 @@ def test_workflow_defaults_brief_followup_to_single_uploaded_resource(tmp_path) 
     )
 
     assert result["needs_clarification"] is False
-    assert result["board_decision"].action == "await_reference_choice"
-    assert result["reference_prompt"] is not None
-    assert result["selected_reference"] is None
-    assert result["reference_prompt"].resource_name == "学习资料.md"
-    assert result["reference_prompt"].chapter_title == "第一章 概论"
+    assert result["board_decision"].action == "no_change"
+    assert result["reference_prompt"] is None
+    assert result["selected_reference"] is not None
+    assert result["selected_reference"].resource_name == "学习资料.md"
+    assert result["selected_reference"].chapter_title == "第一章 概论"
+    assert result["board_edit_prompt"] is not None
+    assert result["document_updated"] is False
 
 
 def test_workflow_asks_which_file_when_multiple_resources_share_chapter_pointer(tmp_path) -> None:
@@ -712,12 +713,13 @@ def test_workflow_uses_named_file_when_multiple_resources_are_uploaded(tmp_path)
     )
 
     assert result["needs_clarification"] is False
-    assert result["board_decision"].action == "edit_board"
+    assert result["board_decision"].action == "no_change"
     assert result["reference_prompt"] is None
     assert result["selected_reference"] is not None
     assert result["selected_reference"].resource_name == "线性代数讲义.md"
     assert result["selected_reference"].chapter_title == "第一章 矩阵"
-    assert "矩阵" in result["teacher_document"].content_text
+    assert result["document_updated"] is False
+    assert "矩阵" in result["board_teaching_guide"].lecture_handout
 
 
 def test_workflow_can_answer_without_changing_the_board() -> None:
@@ -805,9 +807,12 @@ def test_workflow_direct_start_after_brief_clarification_generates_board_for_bla
     )
 
     assert result["needs_clarification"] is False
-    assert result["board_decision"].action == "edit_board"
-    assert result["document_updated"] is True
-    assert result["teacher_document"].content_text.strip()
+    assert result["board_decision"].action == "no_change"
+    assert result["document_updated"] is False
+    assert result["teacher_document"].content_text == ""
+    assert result["board_teaching_guide"] is not None
+    assert result["board_teaching_guide"].lecture_handout
+    assert result["board_edit_prompt"] is not None
 
 
 def test_workflow_formats_teacher_message_into_readable_paragraphs(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -28,13 +28,13 @@ def test_catalog_keeps_curated_openai_models_only(monkeypatch) -> None:
 
     assert _models_by_provider(catalog, "text", "openai") == ["gpt-5.4", "gpt-5.4-mini"]
     assert catalog.defaults["text"].model == "gpt-5.4-mini"
-    assert _models_by_provider(catalog, "realtime", "openai") == []
+    assert _models_by_provider(catalog, "realtime", "openai") == ["legacy-openai-realtime"]
     assert _models_by_provider(catalog, "realtime", "google") == ["gemini-3.1-flash-live-preview"]
-    assert catalog.defaults["realtime"].provider == "google"
-    assert catalog.defaults["realtime"].model == "gemini-3.1-flash-live-preview"
+    assert catalog.defaults["realtime"].provider == "openai"
+    assert catalog.defaults["realtime"].model == "legacy-openai-realtime"
 
 
-def test_catalog_realtime_only_includes_supported_voice_providers(monkeypatch) -> None:
+def test_catalog_realtime_includes_supported_voice_providers(monkeypatch) -> None:
     monkeypatch.delenv("AI_SINGLE_API_KEY_MODE", raising=False)
     monkeypatch.delenv("AI_REALTIME_MODELS_JSON", raising=False)
     monkeypatch.delenv("OPENAI_REALTIME_MODEL", raising=False)
@@ -42,8 +42,8 @@ def test_catalog_realtime_only_includes_supported_voice_providers(monkeypatch) -
 
     catalog = ai_model_catalog.build_model_catalog()
 
-    assert {option.provider for option in catalog.realtime} == {"google"}
-    assert _models_by_provider(catalog, "realtime", "openai") == []
+    assert {option.provider for option in catalog.realtime} == {"openai", "google"}
+    assert _models_by_provider(catalog, "realtime", "openai") == ["gpt-realtime-1.5"]
     assert _models_by_provider(catalog, "realtime", "google") == ["gemini-3.1-flash-live-preview"]
 
 
@@ -94,8 +94,25 @@ def test_single_key_mode_routes_text_models_through_openai_provider(monkeypatch)
         "gemini-3-flash-preview",
     ]
     assert _models_by_provider(catalog, "text", "google") == []
-    assert _models_by_provider(catalog, "realtime", "openai") == []
-    assert catalog.defaults["realtime"].provider == "google"
+    assert _models_by_provider(catalog, "realtime", "openai") == ["gpt-realtime-1.5"]
+    assert catalog.defaults["realtime"].provider == "openai"
+
+
+def test_single_key_mode_does_not_use_shared_key_for_google_realtime(monkeypatch) -> None:
+    monkeypatch.setenv("AI_SINGLE_API_KEY_MODE", "true")
+    monkeypatch.setenv("AI_API_KEY", "one-key")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.gateway.example.com/v1")
+    monkeypatch.setenv("AI_REALTIME_PROVIDER", "google")
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_REALTIME_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_REALTIME_API_KEY", raising=False)
+    monkeypatch.delenv("AI_REALTIME_MODELS_JSON", raising=False)
+
+    catalog = ai_model_catalog.build_model_catalog()
+
+    google_realtime = next(option for option in catalog.realtime if option.provider == "google")
+    assert not google_realtime.enabled
 
 
 def test_catalog_includes_official_and_configured_custom_text_providers(monkeypatch) -> None:

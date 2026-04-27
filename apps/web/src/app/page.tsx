@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 
+import { AuthGate } from "@/components/auth-gate";
 import { LearningHome } from "@/components/learning-home";
 
 export const metadata: Metadata = {
@@ -8,5 +9,9 @@ export const metadata: Metadata = {
 };
 
 export default function Home() {
-  return <LearningHome />;
+  return (
+    <AuthGate>
+      <LearningHome />
+    </AuthGate>
+  );
 }

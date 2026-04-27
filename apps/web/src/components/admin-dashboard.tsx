@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { ArrowLeft, BookOpen, Database, LoaderCircle, ShieldCheck, UsersRound } from "lucide-react";
 
+import { AccountMenu } from "@/components/account-menu";
 import { api } from "@/lib/api";
 import type { AdminOverview } from "@/types";
 
@@ -77,13 +78,7 @@ export function AdminDashboard() {
             <ArrowLeft className="h-4 w-4" />
             Learning Hub
           </Link>
-          <Link
-            href="/login"
-            className="inline-flex items-center gap-2 rounded-md border border-stone-200 bg-white px-3 py-2 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:text-stone-950"
-          >
-            <ShieldCheck className="h-4 w-4" />
-            账户
-          </Link>
+          <AccountMenu />
         </div>
       </header>
 
@@ -164,4 +159,3 @@ export function AdminDashboard() {
     </main>
   );
 }
-

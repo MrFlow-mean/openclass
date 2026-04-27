@@ -33,8 +33,8 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
-import { OPENCLASS_AUTH_TOKEN_STORAGE_KEY, api } from "@/lib/api";
-import type { UserView } from "@/types";
+import { api, clearAuthToken, getApiBase, readAuthToken, storeAuthToken } from "@/lib/api";
+import type { AuthProviderView, UserView } from "@/types";
 
 type AuthPanelProps = {
   initialMode: "register" | "login";
@@ -50,7 +50,7 @@ type SocialSignInOption = {
   label: string;
   providerLabel: string;
   className: string;
-  brand: "apple" | "google";
+  brand: "apple" | "github" | "google" | "microsoft";
 };
 
 type KnowledgeTextItem = {
@@ -79,6 +79,20 @@ const socialSignInOptions: SocialSignInOption[] = [
     providerLabel: "Apple 账号",
     className: "border-[#1f1a17] bg-[#1f1a17] text-white hover:bg-black",
     brand: "apple",
+  },
+  {
+    id: "github",
+    label: "使用 GitHub 登录",
+    providerLabel: "GitHub 账号",
+    className: "border-[#24292f] bg-[#24292f] text-white hover:bg-black",
+    brand: "github",
+  },
+  {
+    id: "microsoft",
+    label: "使用 Microsoft 登录",
+    providerLabel: "Microsoft 账号",
+    className: "border-[#e8dfd2] bg-white text-[#5c4c3c] hover:border-[#d2a878] hover:bg-[#fcfbf9]",
+    brand: "microsoft",
   },
 ];
 
@@ -213,10 +227,6 @@ const knowledgeIconItems: KnowledgeIconItem[] = [
   },
 ];
 
-function storeSession(token: string) {
-  window.localStorage.setItem(OPENCLASS_AUTH_TOKEN_STORAGE_KEY, token);
-}
-
 function GoogleBrandIcon() {
   return (
     <svg aria-hidden="true" viewBox="0 0 18 18" className="h-[18px] w-[18px]">
@@ -248,8 +258,43 @@ function AppleBrandIcon() {
   );
 }
 
+function GitHubBrandIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 16 16" className="h-[18px] w-[18px]" fill="currentColor">
+      <path d="M8 0C3.58 0 0 3.67 0 8.2c0 3.62 2.29 6.69 5.47 7.78.4.08.55-.18.55-.4 0-.2-.01-.86-.01-1.56-2.01.38-2.53-.5-2.69-.95-.09-.23-.48-.95-.82-1.14-.28-.16-.68-.55-.01-.56.63-.01 1.08.59 1.23.83.72 1.24 1.87.89 2.33.68.07-.53.28-.89.51-1.09-1.78-.21-3.64-.91-3.64-4.03 0-.89.31-1.62.82-2.19-.08-.21-.36-1.04.08-2.16 0 0 .67-.22 2.2.84A7.4 7.4 0 0 1 8 3.98c.68 0 1.36.09 2 .27 1.53-1.06 2.2-.84 2.2-.84.44 1.12.16 1.95.08 2.16.51.57.82 1.3.82 2.19 0 3.13-1.87 3.82-3.65 4.03.29.26.54.76.54 1.54 0 1.11-.01 2.01-.01 2.28 0 .22.15.48.55.4A8.15 8.15 0 0 0 16 8.2C16 3.67 12.42 0 8 0Z" />
+    </svg>
+  );
+}
+
+function MicrosoftBrandIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 18 18" className="h-[18px] w-[18px]">
+      <rect x="1" y="1" width="7.5" height="7.5" fill="#f25022" />
+      <rect x="9.5" y="1" width="7.5" height="7.5" fill="#7fba00" />
+      <rect x="1" y="9.5" width="7.5" height="7.5" fill="#00a4ef" />
+      <rect x="9.5" y="9.5" width="7.5" height="7.5" fill="#ffb900" />
+    </svg>
+  );
+}
+
 function SocialBrandIcon({ brand }: { brand: SocialSignInOption["brand"] }) {
-  return brand === "google" ? <GoogleBrandIcon /> : <AppleBrandIcon />;
+  if (brand === "google") {
+    return <GoogleBrandIcon />;
+  }
+  if (brand === "apple") {
+    return <AppleBrandIcon />;
+  }
+  if (brand === "github") {
+    return <GitHubBrandIcon />;
+  }
+  return <MicrosoftBrandIcon />;
+}
+
+function safeNextPath(value: string | null) {
+  if (!value || !value.startsWith("/") || value.startsWith("//")) {
+    return "/";
+  }
+  return value;
 }
 
 function AuthInput({
@@ -500,15 +545,24 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
   const [isCheckingSession, setIsCheckingSession] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [authProviders, setAuthProviders] = useState<AuthProviderView[]>([]);
 
   useEffect(() => {
     let disposed = false;
 
     async function loadUser() {
       try {
-        const user = await api.getCurrentUser();
+        const [user, providers] = await Promise.all([
+          api.getCurrentUser().catch(() => null),
+          api.getAuthProviders().catch(() => []),
+        ]);
         if (!disposed) {
           setCurrentUser(user);
+          setAuthProviders(providers);
+          const token = readAuthToken();
+          if (user && token) {
+            storeAuthToken(token);
+          }
         }
       } catch {
         if (!disposed) {
@@ -536,9 +590,10 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
 
     try {
       const payload = mode === "register" ? await api.register(email, password) : await api.login(email, password);
-      storeSession(payload.token);
+      storeAuthToken(payload.token);
       setCurrentUser(payload.user);
-      router.push(payload.user.role === "admin" ? "/admin" : "/");
+      const nextPath = safeNextPath(new URLSearchParams(window.location.search).get("next"));
+      router.push(payload.user.role === "admin" && nextPath === "/" ? "/admin" : nextPath);
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : "操作失败");
     } finally {
@@ -547,13 +602,19 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
   }
 
   function handleLogout() {
-    window.localStorage.removeItem(OPENCLASS_AUTH_TOKEN_STORAGE_KEY);
+    clearAuthToken();
     setCurrentUser(null);
   }
 
-  function handleProviderSignIn(providerLabel: string) {
+  function handleProviderSignIn(option: SocialSignInOption) {
     setError(null);
-    setNotice(`${providerLabel}登录入口已放在页面上；接入 OAuth 配置后即可启用。`);
+    const provider = authProviders.find((item) => item.id === option.id);
+    if (!provider?.configured) {
+      setNotice(`${option.providerLabel}需要先在服务器 .env 配置 OAuth Client ID 与 Secret。邮箱注册登录已可直接使用。`);
+      return;
+    }
+    const nextPath = typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("next") || "/" : "/";
+    window.location.assign(`${getApiBase()}/api/auth/oauth/${option.id}/start?next=${encodeURIComponent(nextPath)}`);
   }
 
   function handleForgotPassword() {
@@ -631,18 +692,24 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
               <>
                 <div className="mb-5 space-y-3">
                   {socialSignInOptions.map((option) => {
+                    const provider = authProviders.find((item) => item.id === option.id);
+                    const isConfigured = provider?.configured ?? false;
                     return (
                       <button
                         key={option.id}
                         type="button"
-                        onClick={() => handleProviderSignIn(option.providerLabel)}
+                        onClick={() => handleProviderSignIn(option)}
+                        disabled={authProviders.length > 0 && !isConfigured}
                         className={clsx(
-                          "flex w-full items-center justify-center gap-3 rounded-lg border px-4 py-3.5 text-sm font-semibold shadow-sm transition active:scale-[0.99]",
+                          "flex w-full items-center justify-center gap-3 rounded-lg border px-4 py-3.5 text-sm font-semibold shadow-sm transition active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60",
                           option.className
                         )}
                       >
                         <SocialBrandIcon brand={option.brand} />
                         {option.label}
+                        {authProviders.length > 0 && !isConfigured ? (
+                          <span className="rounded-full bg-black/5 px-2 py-0.5 text-[11px] font-semibold">未配置</span>
+                        ) : null}
                       </button>
                     );
                   })}

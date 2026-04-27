@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 
+import { AuthGate } from "@/components/auth-gate";
 import { FollowingFeed } from "@/components/following-feed";
 
 export const metadata: Metadata = {
@@ -8,5 +9,9 @@ export const metadata: Metadata = {
 };
 
 export default function FollowingPage() {
-  return <FollowingFeed />;
+  return (
+    <AuthGate>
+      <FollowingFeed />
+    </AuthGate>
+  );
 }

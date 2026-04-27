@@ -23,17 +23,15 @@ import {
   GraduationCap,
   Layers,
   LoaderCircle,
-  LogIn,
   MoreHorizontal,
   PencilLine,
   Search,
   Share2,
-  ShieldCheck,
   Star,
   Trash2,
-  UserRound,
 } from "lucide-react";
 
+import { AccountMenu } from "@/components/account-menu";
 import { api } from "@/lib/api";
 import {
   DEFAULT_COLLECTED_COURSE_IDS,
@@ -671,30 +669,7 @@ export function LearningHome() {
                 <h1 className="mt-2 text-2xl font-semibold tracking-tight text-stone-950">Learning Hub</h1>
               </div>
               <div className="flex shrink-0 items-center gap-1">
-                <Link
-                  href="/login"
-                  className="flex h-9 w-9 items-center justify-center rounded-xl border border-stone-200 bg-white text-stone-500 transition hover:border-stone-300 hover:text-stone-950"
-                  aria-label="登录"
-                  title="登录"
-                >
-                  <LogIn className="h-4 w-4" />
-                </Link>
-                <Link
-                  href="/admin"
-                  className="flex h-9 w-9 items-center justify-center rounded-xl border border-stone-200 bg-white text-stone-500 transition hover:border-stone-300 hover:text-stone-950"
-                  aria-label="后台"
-                  title="后台"
-                >
-                  <ShieldCheck className="h-4 w-4" />
-                </Link>
-                <Link
-                  href="/profile"
-                  className="flex h-9 w-9 items-center justify-center rounded-xl border border-stone-200 bg-white text-stone-500 transition hover:border-stone-300 hover:text-stone-950"
-                  aria-label="个人工作区"
-                  title="个人工作区"
-                >
-                  <UserRound className="h-4 w-4" />
-                </Link>
+                <AccountMenu compact />
               </div>
             </div>
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -14,9 +16,14 @@ ensure_data_dirs()
 
 app = FastAPI(title="AI Board Course System API", version="0.2.0")
 
+cors_origins = ["http://localhost:3000", "http://127.0.0.1:3000"]
+for origin in (os.getenv("OPENCLASS_PUBLIC_ORIGIN"), os.getenv("OPENCLASS_WEB_ORIGIN")):
+    if origin and origin.rstrip("/") not in cors_origins:
+        cors_origins.append(origin.rstrip("/"))
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

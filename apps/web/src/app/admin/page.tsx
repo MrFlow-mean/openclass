@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 
 import { AdminDashboard } from "@/components/admin-dashboard";
+import { AuthGate } from "@/components/auth-gate";
 
 export const metadata: Metadata = {
   title: "管理员后台",
@@ -8,5 +9,9 @@ export const metadata: Metadata = {
 };
 
 export default function AdminPage() {
-  return <AdminDashboard />;
+  return (
+    <AuthGate adminOnly>
+      <AdminDashboard />
+    </AuthGate>
+  );
 }

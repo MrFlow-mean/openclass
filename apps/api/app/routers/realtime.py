@@ -41,6 +41,12 @@ def _redact_google_api_key(value: str) -> str:
 def _google_proxy_error_payload(error: Exception) -> tuple[str, dict[str, object]]:
     sanitized = _redact_google_api_key(str(error))
     normalized = sanitized.lower()
+    if "api key not valid" in normalized or "invalid api key" in normalized:
+        return sanitized, {
+            "code": 401,
+            "status": "UNAUTHENTICATED",
+            "message": "Google Gemini Live API key is invalid",
+        }
     if "permission denied" in normalized or "permission_denied" in normalized or "403" in normalized:
         return sanitized, {
             "code": 403,

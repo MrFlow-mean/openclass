@@ -1,6 +1,7 @@
 import type {
   AIModelCatalog,
   AdminOverview,
+  AuthProviderView,
   AuthSessionResponse,
   ChatRequestPayload,
   ChatResponse,
@@ -20,14 +21,52 @@ import type {
 const configuredApiBase = process.env.NEXT_PUBLIC_API_BASE_URL;
 export const OPENCLASS_AUTH_TOKEN_STORAGE_KEY = "openclass.auth.token";
 
-function getApiBase() {
+export function getApiBase() {
   if (configuredApiBase) {
     return configuredApiBase;
   }
   if (typeof window !== "undefined" && window.location.hostname) {
+    if (window.location.hostname !== "localhost" && window.location.hostname !== "127.0.0.1") {
+      return window.location.origin;
+    }
     return `${window.location.protocol}//${window.location.hostname}:8000`;
   }
   return "http://localhost:8000";
+}
+
+export function readAuthToken() {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  return window.localStorage.getItem(OPENCLASS_AUTH_TOKEN_STORAGE_KEY);
+}
+
+export function storeAuthToken(token: string) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.localStorage.setItem(OPENCLASS_AUTH_TOKEN_STORAGE_KEY, token);
+  const secure = window.location.protocol === "https:" ? "; Secure" : "";
+  document.cookie = `${OPENCLASS_AUTH_TOKEN_STORAGE_KEY}=${encodeURIComponent(token)}; Path=/; Max-Age=2592000; SameSite=Lax${secure}`;
+}
+
+export function clearAuthToken() {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.localStorage.removeItem(OPENCLASS_AUTH_TOKEN_STORAGE_KEY);
+  document.cookie = `${OPENCLASS_AUTH_TOKEN_STORAGE_KEY}=; Path=/; Max-Age=0; SameSite=Lax`;
+}
+
+function authHeaders(headers?: HeadersInit) {
+  const nextHeaders = new Headers(headers);
+  if (!nextHeaders.has("Authorization")) {
+    const token = readAuthToken();
+    if (token) {
+      nextHeaders.set("Authorization", `Bearer ${token}`);
+    }
+  }
+  return nextHeaders;
 }
 
 export function getApiWebSocketUrl(pathOrUrl: string) {
@@ -47,7 +86,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers.set("Content-Type", "application/json");
   }
   if (typeof window !== "undefined" && !headers.has("Authorization")) {
-    const token = window.localStorage.getItem(OPENCLASS_AUTH_TOKEN_STORAGE_KEY);
+    const token = readAuthToken();
     if (token) {
       headers.set("Authorization", `Bearer ${token}`);
     }
@@ -91,6 +130,9 @@ export const api = {
   },
   getCurrentUser() {
     return request<UserView>("/api/auth/me");
+  },
+  getAuthProviders() {
+    return request<AuthProviderView[]>("/api/auth/providers");
   },
   getAdminOverview() {
     return request<AdminOverview>("/api/admin/overview");
@@ -170,9 +212,7 @@ export const api = {
   saveDocumentKeepalive(lessonId: string, payload: DocumentSavePayload) {
     return fetch(`${getApiBase()}/api/lessons/${lessonId}/document/save`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
+      headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify(payload),
       cache: "no-store",
       keepalive: true,
@@ -190,6 +230,7 @@ export const api = {
     const response = await fetch(`${getApiBase()}/api/lessons/${lessonId}/document/import-docx`, {
       method: "POST",
       body: formData,
+      headers: authHeaders(),
       cache: "no-store",
     });
     if (!response.ok) {
@@ -200,6 +241,7 @@ export const api = {
   },
   async exportDocx(lessonId: string) {
     const response = await fetch(`${getApiBase()}/api/lessons/${lessonId}/document/export-docx`, {
+      headers: authHeaders(),
       cache: "no-store",
     });
     if (!response.ok) {
@@ -285,6 +327,7 @@ export const api = {
     const response = await fetch(`${getApiBase()}/api/resources/upload`, {
       method: "POST",
       body: formData,
+      headers: authHeaders(),
       cache: "no-store",
     });
     if (!response.ok) {

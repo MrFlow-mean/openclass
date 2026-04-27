@@ -1,8 +1,11 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from urllib import parse
 
-from app.models import AdminOverview, AuthRequest, AuthSessionResponse, UserView
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import RedirectResponse
+
+from app.models import AdminOverview, AuthProviderView, AuthRequest, AuthSessionResponse, UserView
 from app.services.auth_service import AuthService, bearer_token_from_request
 from app.services.workspace_state import DATABASE_PATH
 
@@ -37,6 +40,32 @@ def login(payload: AuthRequest) -> AuthSessionResponse:
 @router.get("/auth/me", response_model=UserView)
 def me(user: UserView = Depends(current_user)) -> UserView:
     return user
+
+
+@router.get("/auth/providers", response_model=list[AuthProviderView])
+def auth_providers() -> list[AuthProviderView]:
+    return auth_service.providers()
+
+
+@router.get("/auth/oauth/{provider}/start")
+def oauth_start(provider: str, request: Request, next: str = "/") -> RedirectResponse:  # noqa: A002
+    return RedirectResponse(auth_service.oauth_authorization_url(provider, next, request), status_code=303)
+
+
+@router.api_route("/auth/oauth/{provider}/callback", methods=["GET", "POST"])
+async def oauth_callback(provider: str, request: Request) -> RedirectResponse:
+    payload = dict(request.query_params)
+    if request.method == "POST":
+        form = await request.form()
+        payload.update({key: str(value) for key, value in form.items()})
+    if payload.get("error"):
+        target = f"{str(request.base_url).rstrip('/')}/auth/callback?{parse.urlencode({'error': payload.get('error_description') or payload['error']})}"
+        return RedirectResponse(target, status_code=303)
+    token, user, next_path, frontend_origin = auth_service.complete_oauth_callback(provider, payload, request)
+    return RedirectResponse(
+        auth_service.oauth_frontend_redirect_url(token, user, next_path, frontend_origin, request),
+        status_code=303,
+    )
 
 
 @router.get("/admin/overview", response_model=AdminOverview)

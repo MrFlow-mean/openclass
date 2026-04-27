@@ -58,9 +58,12 @@ def test_realtime_call_uses_requested_model_and_lesson_context(isolated_ai_log) 
     assert teacher.client.realtime.calls.payload is not None
     session = teacher.client.realtime.calls.payload["session"]
     assert isinstance(session, dict)
+    assert session["type"] == "transcription"
     assert session["model"] == "gpt-realtime-1.5"
-    assert session["audio"]["output"]["voice"] == "marin"
-    assert "勾股定理" in session["instructions"]
+    assert session["audio"]["input"]["transcription"]["language"] == "zh"
+    assert "勾股定理" in session["audio"]["input"]["transcription"]["prompt"]
+    assert session["audio"]["input"]["turn_detection"]["create_response"] is False
+    assert "output" not in session["audio"]
     entries = _read_log_entries(isolated_ai_log)
     assert len(entries) == 1
     entry = entries[0]

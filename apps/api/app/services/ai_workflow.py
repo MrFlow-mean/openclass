@@ -1436,7 +1436,7 @@ def _clean_board_edit_topic(value: str) -> str:
     for prefix in ("请帮我", "帮我", "为我", "给我", "请", "能不能", "可以"):
         if cleaned.startswith(prefix):
             cleaned = cleaned[len(prefix) :]
-    for marker in ("什么是", "解释一下", "讲解一下", "讲一下", "讲讲", "怎么理解", "为什么", "直接开讲", "直接讲"):
+    for marker in ("我想学", "想学", "什么是", "解释一下", "讲解一下", "讲一下", "讲讲", "怎么理解", "为什么", "直接开讲", "直接讲"):
         cleaned = cleaned.replace(marker, "")
     cleaned = re.sub(r"(内容|问题|这一块|这个部分|一下|吗|呢)$", "", cleaned)
     return cleaned.strip(" ：:，,。？！!?」『』“”\"'")[:36]
@@ -2167,11 +2167,18 @@ def _fallback_board_teaching_guide(
     needs = _requirement_needs(requirements)
     if selected_reference is not None:
         brief = _reference_teacher_brief(selected_reference)
+        reference_handout_document = create_lesson(
+            selected_reference.chapter_title or requirements.theme or document.title,
+            requirements=requirements,
+            reference_context=selected_reference,
+        ).board_document
+        reference_handout = reference_handout_document.content_text.strip()
         lecture_handout = "\n".join(
             [
                 f"内部讲义：《{selected_reference.chapter_title}》",
                 f"学习需求：{'；'.join(needs[:3])}",
                 f"讲解主线：{brief}",
+                reference_handout,
                 "讲解方式：先把材料中的核心问题说清楚，再解释关键概念和关系，最后用一个例子或检查问题收束。",
             ]
         )
@@ -2272,7 +2279,7 @@ def _fallback_board_teaching_guide(
             generation_rationale="用户明确指定了教材章节且要求直接开讲，因此在不改板书正文的前提下，优先使用已锁定参考章节的核心片段组织讲解。",
             teacher_brief=brief,
             lecture_handout=lecture_handout,
-            section_plans=_fallback_section_plans(document, requirements),
+            section_plans=_fallback_section_plans(reference_handout_document, requirements),
         )
 
     focus_terms = {term.lower() for term in _query_phrases(f"{request_message}\n{requirements.learning_goal}")}

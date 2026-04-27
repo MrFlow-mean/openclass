@@ -141,6 +141,17 @@ def run_board_manager(state: WorkflowState) -> WorkflowState:
             request=request,
             decision=decision,
             top_match=top_match,
+        ) or (
+            decision.action == "no_change"
+            and top_match is not None
+            and len(resources) == 1
+            and not ambiguous_reference
+            and is_document_empty(lesson.board_document)
+        ) or (
+            request.board_edit_action == "confirm"
+            and top_match is not None
+            and len(resources) == 1
+            and not ambiguous_reference
         ):
             auto_reference = _reference_context_for_match(
                 state["course_package"],
@@ -163,12 +174,17 @@ def run_board_manager(state: WorkflowState) -> WorkflowState:
                     "needs_clarification": True,
                     "clarification_questions": ["这份资料的目标页没有抽到可读正文。请换成可复制文字的 PDF，或上传对应页截图/文本，我再按原文讲。"],
                 }
+            board_edit_prompt = (
+                _build_board_edit_prompt(lesson=lesson, request=request, requirements=requirements, matches=matches)
+                if _should_offer_board_edit_prompt(lesson=lesson, request=request, requirements=requirements, decision=decision)
+                else None
+            )
             return {
                 "board_decision": decision,
                 "scope_options": [],
                 "resource_matches": matches,
                 "reference_prompt": None,
-                "board_edit_prompt": None,
+                "board_edit_prompt": board_edit_prompt,
                 "selected_reference": auto_reference,
             }
         if decision.action != "no_change" and top_match is not None and (ambiguous_reference or top_match.is_high_overlap):
@@ -199,7 +215,6 @@ def run_board_manager(state: WorkflowState) -> WorkflowState:
             "needs_clarification": True,
             "clarification_questions": ["这份资料的目标页没有抽到可读正文。请换成可复制文字的 PDF，或上传对应页截图/文本，我再按原文讲。"],
         }
-
     board_edit_prompt = (
         _build_board_edit_prompt(lesson=lesson, request=request, requirements=requirements, matches=matches)
         if _should_offer_board_edit_prompt(lesson=lesson, request=request, requirements=requirements, decision=decision)

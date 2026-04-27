@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 
+import { AuthGate } from "@/components/auth-gate";
 import { CourseStudio } from "@/components/course-studio";
 
 export const metadata: Metadata = {
@@ -8,5 +9,9 @@ export const metadata: Metadata = {
 };
 
 export default function StudioPage() {
-  return <CourseStudio />;
+  return (
+    <AuthGate>
+      <CourseStudio />
+    </AuthGate>
+  );
 }

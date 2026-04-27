@@ -96,6 +96,20 @@ def _shared_api_key() -> str | None:
     return _env_any("AI_API_KEY", "OPENAI_API_KEY")
 
 
+def _openai_realtime_api_key() -> str | None:
+    explicit_key = _normalize_optional_secret(os.getenv("OPENAI_REALTIME_API_KEY"))
+    if explicit_key:
+        return explicit_key
+    base_url = (_env_any("OPENAI_REALTIME_BASE_URL", "OPENAI_BASE_URL") or "https://api.openai.com/v1").lower()
+    if _single_api_key_mode() and "api.openai.com" not in base_url:
+        return None
+    return _normalize_optional_secret(_env_any("OPENAI_API_KEY", "AI_API_KEY"))
+
+
+def _google_realtime_api_key() -> str | None:
+    return _normalize_optional_secret(_env_any("GOOGLE_REALTIME_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY"))
+
+
 def _custom_openai_api_key() -> str | None:
     return _env_any("OPENAI_COMPATIBLE_API_KEY", "CUSTOM_OPENAI_API_KEY", "AI_OPENAI_COMPAT_API_KEY")
 
@@ -158,7 +172,7 @@ def _provider_enabled(provider: AIProvider) -> bool:
         if provider == "openai":
             return bool(_normalize_optional_secret(_shared_api_key()))
         if provider == "google":
-            return bool(_normalize_optional_secret(_shared_api_key()))
+            return bool(_google_realtime_api_key())
         return False
     if provider == "openai":
         return bool(_normalize_optional_secret(_shared_api_key()))
@@ -176,6 +190,14 @@ def _provider_enabled(provider: AIProvider) -> bool:
         return bool(_normalize_optional_secret(_custom_openai_api_key()) and _custom_openai_base_url())
     if provider == "anthropic_compatible":
         return bool(_normalize_optional_secret(_custom_anthropic_api_key()) and _custom_anthropic_base_url())
+    return False
+
+
+def _realtime_provider_enabled(provider: AIProvider) -> bool:
+    if provider == "openai":
+        return bool(_openai_realtime_api_key())
+    if provider == "google":
+        return bool(_google_realtime_api_key())
     return False
 
 
@@ -220,6 +242,12 @@ def default_text_selection() -> AIModelSelection:
 
 
 def default_realtime_selection() -> AIModelSelection:
+    provider = _normalize_provider(os.getenv("AI_REALTIME_PROVIDER"), "google")
+    if provider == "openai":
+        return AIModelSelection(
+            provider="openai",
+            model=os.getenv("OPENAI_REALTIME_MODEL", OPENAI_DEFAULT_REALTIME_MODEL),
+        )
     return AIModelSelection(
         provider="google",
         model=os.getenv("GOOGLE_REALTIME_MODEL", GOOGLE_DEFAULT_REALTIME_MODEL),
@@ -243,8 +271,8 @@ def _option(
     default: bool = False,
     transport: str | None = None,
 ) -> AIModelOption:
-    if capability == "realtime" and provider == "openai":
-        configured = bool(_env_explicit_or_fallback("OPENAI_REALTIME_API_KEY", "OPENAI_API_KEY"))
+    if capability == "realtime":
+        configured = _realtime_provider_enabled(provider)
     else:
         configured = _provider_enabled(provider)
     return AIModelOption(
@@ -288,14 +316,14 @@ def _custom_options(env_name: str, capability: str) -> list[AIModelOption]:
         provider = _normalize_provider(str(value.get("provider") or ""), "openai")
         if capability == "text" and _single_api_key_mode():
             provider = "openai"
-        if capability == "realtime" and provider != "google":
+        if capability == "realtime" and provider not in {"openai", "google"}:
             continue
         model = str(value.get("model") or "").strip()
         if not model:
             continue
         transport = value.get("transport") if isinstance(value.get("transport"), str) else None
         if capability == "realtime" and transport is None:
-            transport = "gemini_live_websocket"
+            transport = "openai_webrtc" if provider == "openai" else "gemini_live_websocket"
         options.append(
             _option(
                 provider=provider,
@@ -317,11 +345,12 @@ def _catalog_default_selection(
     requested: AIModelSelection,
     options: list[AIModelOption],
     curated_models: dict[AIProvider, tuple[tuple[str, str], ...]],
+    provider_enabled: Any = _provider_enabled,
 ) -> AIModelSelection:
     enabled_options = [option for option in options if option.enabled]
     if any(_option_matches_selection(option, requested) and option.enabled for option in options):
         return requested
-    provider_models = curated_models.get(requested.provider) if _provider_enabled(requested.provider) else None
+    provider_models = curated_models.get(requested.provider) if provider_enabled(requested.provider) else None
     if provider_models:
         return AIModelSelection(provider=requested.provider, model=provider_models[-1][0])
     fallback = enabled_options[0] if enabled_options else (options[0] if options else None)
@@ -390,10 +419,20 @@ def build_model_catalog() -> AIModelCatalog:
     for option in text_options:
         option.default = _option_matches_selection(option, text_default)
 
+    openai_realtime_model = os.getenv("OPENAI_REALTIME_MODEL", OPENAI_DEFAULT_REALTIME_MODEL)
+    google_realtime_model = os.getenv("GOOGLE_REALTIME_MODEL", GOOGLE_DEFAULT_REALTIME_MODEL)
     realtime_options = [
         _option(
+            provider="openai",
+            model=openai_realtime_model,
+            label="OpenAI GPT Realtime",
+            capability="realtime",
+            default=False,
+            transport="openai_webrtc",
+        ),
+        _option(
             provider="google",
-            model=GOOGLE_DEFAULT_REALTIME_MODEL,
+            model=google_realtime_model,
             label="Google Gemini 3.1 Flash Live",
             capability="realtime",
             default=False,
@@ -406,8 +445,10 @@ def build_model_catalog() -> AIModelCatalog:
         requested=requested_realtime_default,
         options=realtime_options,
         curated_models={
-            "google": ((GOOGLE_DEFAULT_REALTIME_MODEL, "Google Gemini 3.1 Flash Live"),),
+            "openai": ((openai_realtime_model, "OpenAI GPT Realtime"),),
+            "google": ((google_realtime_model, "Google Gemini 3.1 Flash Live"),),
         },
+        provider_enabled=_realtime_provider_enabled,
     )
     for option in realtime_options:
         option.default = _option_matches_selection(option, realtime_default)
