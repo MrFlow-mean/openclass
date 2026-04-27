@@ -1,24 +1,31 @@
 from __future__ import annotations
 
 import hashlib
+import html
 import re
 from typing import TypedDict
 
 from app.models import (
     BoardDecision,
     BoardDocument,
+    BoardEditPrompt,
     BoardNeedMapping,
+    BoardSectionTeachingPlan,
     BoardTeachingGuide,
+    BoardTeachingProgress,
     BoardTeachingSelectedItem,
     ChatRequest,
     CoursePackage,
+    LibraryChapter,
     LearningClarificationStatus,
     LearningRequirementSheet,
     Lesson,
+    ResourceLibraryItem,
     ResourceMatch,
     ResourceReferenceContext,
     ResourceReferencePrompt,
     ScopeOption,
+    SectionTeachingProgressView,
     TeachingGuide,
 )
 from app.services.course_runtime import (
@@ -30,6 +37,8 @@ from app.services.openai_course_ai import openai_course_ai
 from app.services.resource_library import extract_reference_context
 from app.services.rich_document import (
     append_html_section,
+    build_document,
+    html_to_text,
     is_document_empty,
     replace_selection_in_document,
 )
@@ -94,6 +103,10 @@ class WorkflowState(TypedDict, total=False):
     generated_lesson: Lesson | None
     teacher_talk_track: str | None
     board_teaching_guide: BoardTeachingGuide | None
+    board_edit_prompt: BoardEditPrompt | None
+    board_teaching_progress: BoardTeachingProgress | None
+    teaching_progress: SectionTeachingProgressView | None
+    teaching_start_section_index: int
 
 
 def _lesson_corpus(lesson: Lesson) -> str:
@@ -114,6 +127,9 @@ def _query_phrases(text: str) -> list[str]:
         cleaned = chunk.strip().lower()
         if len(cleaned) >= 2:
             phrases.append(cleaned)
+    topic_hint = _extract_topic_hint(text)
+    if topic_hint:
+        phrases.append(topic_hint.strip().lower())
     for term in _extract_focus_terms(text):
         cleaned = term.strip().lower()
         if len(cleaned) >= 2:
@@ -151,7 +167,9 @@ def _expanded_match_terms(*texts: str) -> list[str]:
 def classify_scope(message: str, lesson: Lesson) -> str:
     if any(keyword in message for keyword in ["习题", "练习", "例题", "更易懂", "简单讲", "总结", "整理", "改写", "润色"]):
         return "in_scope"
-    if any(keyword in message for keyword in ["新增章节", "补充一节", "展开讲", "单独一节", "新开一节"]):
+    if _is_in_place_expansion_request(message):
+        return "in_scope"
+    if any(keyword in message for keyword in ["新增章节", "补充一节", "单独一节", "新开一节"]):
         return "scope_escalation"
     if "什么是" in message or "what is" in message.lower():
         lesson_text = _lesson_corpus(lesson)
@@ -171,25 +189,78 @@ def _is_board_generation_request(message: str) -> bool:
     return bool(re.search(r"(生成|写|编|做|给我|来|完善)(一篇|一段|一份)?.*(课文|对话|板书|讲义|练习|例题|文档)", compact))
 
 
+def _compact_request_text(value: str) -> str:
+    return re.sub(r"[\s，,。？?！!：:；;\"'“”‘’]+", "", value or "")
+
+
+def _has_explicit_append_intent(message: str) -> bool:
+    compact = _compact_request_text(message)
+    section_targets = ("页面", "一页", "几页", "多页", "章节", "新章节", "一节", "几节", "整章")
+    content_targets = (*section_targets, "内容")
+    forward_signals = ("继续写", "续写", "接着写", "再写", "往后写", "继续生成")
+    create_signals = ("新增", "追加", "新生成", "再生成")
+
+    if any(signal in compact for signal in forward_signals) and any(target in compact for target in content_targets):
+        return True
+    if any(signal in compact for signal in create_signals) and any(target in compact for target in content_targets):
+        return True
+    if "补充" in compact and any(target in compact for target in section_targets):
+        return True
+    if any(signal in compact for signal in ("加上", "加几", "加一", "加个", "添加")) and any(
+        target in compact for target in section_targets
+    ):
+        return True
+    tail_markers = ("在后面补", "在末尾补", "追加到末尾", "接在后面", "放到最后", "另起一节", "另起一章")
+    return any(marker in compact for marker in tail_markers)
+
+
 def _is_append_document_request(message: str) -> bool:
     if _is_full_rewrite_request(message):
         return False
-    compact = re.sub(r"\s+", "", message)
-    append_signals = [
-        "新增",
-        "追加",
-        "补充",
-        "加上",
-        "加几",
-        "再生成",
-        "新生成",
-        "继续生成",
-        "继续写",
+    return _has_explicit_append_intent(message)
+
+
+def _is_in_place_expansion_request(message: str) -> bool:
+    if _is_full_rewrite_request(message) or _has_explicit_append_intent(message):
+        return False
+    compact = _compact_request_text(message)
+    expansion_signals = (
         "扩展",
         "扩写",
-    ]
-    append_targets = ["页面", "一页", "几页", "多页", "章节", "一节", "几节", "内容"]
-    return any(signal in compact for signal in append_signals) and any(target in compact for target in append_targets)
+        "展开",
+        "细化",
+        "丰富",
+        "补全",
+        "完善",
+        "补充",
+        "讲透",
+        "更详细",
+        "更细致",
+        "细致讲解",
+        "详细讲解",
+        "详细解析",
+        "全面",
+    )
+    current_targets = (
+        "板书",
+        "版书",
+        "讲义",
+        "文档",
+        "内容",
+        "当前",
+        "原有",
+        "已有",
+        "这一节",
+        "这节",
+        "这一章",
+        "这章",
+        "小节",
+        "段落",
+        "例子",
+        "案例",
+        "知识点",
+    )
+    return any(signal in compact for signal in expansion_signals) and any(target in compact for target in current_targets)
 
 
 def _is_forced_start_request(message: str) -> bool:
@@ -224,6 +295,8 @@ def _is_explanation_request(message: str) -> bool:
     compact = re.sub(r"\s+", "", message)
     if _is_board_generation_request(message):
         return False
+    if _is_vague_pointer_request(message):
+        return False
     explanation_keywords = [
         "解释",
         "讲解",
@@ -231,9 +304,17 @@ def _is_explanation_request(message: str) -> bool:
         "讲讲",
         "开讲",
         "直接讲",
+        "是什么",
         "怎么理解",
         "为什么",
         "什么意思",
+        "不理解",
+        "没理解",
+        "不懂",
+        "没懂",
+        "看不懂",
+        "不明白",
+        "看不明白",
         "用自己的话",
         "通俗",
         "别照着念",
@@ -335,6 +416,7 @@ def _clean_topic_hint(value: str) -> str | None:
 def _extract_topic_hint(text: str) -> str | None:
     patterns = [
         r"(?:我想学|想学|教我|学习|学一下|为我讲解|给我讲解|为我讲|给我讲|讲解|请讲|请解释|解释一下)\s*([^，。！？!?；;\n]{2,48})",
+        r"什么是\s*([^，。！？!?；;\n]{2,48})",
         r"([^，。！？!?；;\n]{2,48})是什么",
     ]
     for pattern in patterns:
@@ -496,9 +578,13 @@ def _should_use_fast_board_path(
 ) -> bool:
     if request.interaction_mode == "direct_edit" or request.scope_action is not None:
         return True
+    if request.board_edit_action is not None:
+        return True
     if request.resource_reference_action is not None:
         return True
     if is_document_empty(lesson.board_document):
+        return True
+    if _is_append_document_request(request.message):
         return True
     if _is_board_generation_request(request.message) or _is_explanation_request(request.message):
         return True
@@ -533,6 +619,7 @@ def _resource_query_text(
     parts = [
         lesson.title,
         lesson.board_document.title,
+        lesson.board_document.content_text[:3000],
         requirements.theme,
         requirements.learning_goal,
         requirements.target_depth,
@@ -543,6 +630,81 @@ def _resource_query_text(
     if request.selection:
         parts.append(request.selection.excerpt[:120])
     return "\n".join(part for part in parts if part)
+
+
+def _available_reference_resources(course_package: CoursePackage, lesson: Lesson) -> list[ResourceLibraryItem]:
+    return [
+        resource
+        for resource in course_package.resources
+        if resource.scope_lesson_id is None or resource.scope_lesson_id == lesson.id
+    ]
+
+
+def _is_resource_followup_request(message: str) -> bool:
+    compact = re.sub(r"\s+", "", message).lower()
+    if compact in {"你好", "您好", "嗨", "哈喽", "hello", "hi", "在吗"}:
+        return False
+    if _is_explanation_request(message) or _is_board_generation_request(message) or _is_forced_start_request(message):
+        return True
+    chapter_no, _ = _extract_requested_outline_reference(message)
+    if chapter_no is not None:
+        return True
+    resource_terms = [
+        "资料",
+        "文件",
+        "文章",
+        "教材",
+        "讲义",
+        "文档",
+        "内容",
+        "章节",
+        "这一章",
+        "这一节",
+        "这个部分",
+        "这部分",
+        "第一",
+        "第二",
+        "第三",
+        "第四",
+        "第五",
+        "chapter",
+        "section",
+    ]
+    teaching_terms = ["讲", "学", "教", "解释", "开始", "开讲", "整理"]
+    return any(term in compact for term in resource_terms) and any(term in compact for term in teaching_terms)
+
+
+def _status_with_resource_context_default(
+    status: LearningClarificationStatus,
+    *,
+    resource_count: int,
+) -> LearningClarificationStatus:
+    missing_items = [item for item in status.missing_items if item != "想学的主题"]
+    reason = "当前追问可以先按已上传资料理解，缺少的学习背景由系统先做保守假设。"
+    if resource_count > 1:
+        reason = "当前追问看起来指向已上传资料；如果资料不唯一，系统会先确认具体文件。"
+    return status.model_copy(
+        update={
+            "progress": max(status.progress, 35),
+            "label": "可以先开始",
+            "reason": reason,
+            "missing_items": missing_items[:2],
+            "can_start": True,
+        }
+    )
+
+
+def _should_use_resource_followup_context(
+    *,
+    course_package: CoursePackage,
+    lesson: Lesson,
+    request: ChatRequest,
+) -> bool:
+    if request.interaction_mode == "direct_edit" or request.selection is not None:
+        return False
+    if request.resource_reference_action is not None:
+        return False
+    return bool(_available_reference_resources(course_package, lesson)) and _is_resource_followup_request(request.message)
 
 
 def _chapter_overlap_score(
@@ -605,10 +767,14 @@ def _chapter_overlap_score(
         score += min((chapter_level - 1) * 0.03, 0.09)
 
     if requested_chapter_no is not None and chapter_no == requested_chapter_no:
-        score += 0.42 if requested_section_no is None else 0.18
-        hits.append(f"第{requested_chapter_no}章")
+        if requested_section_no is None:
+            score += 0.78 if chapter_level == 1 else 0.18
+            hits.append(f"第{requested_chapter_no}章")
+        else:
+            score += 0.24
+            hits.append(f"第{requested_chapter_no}章")
         if requested_section_no is not None and section_no == requested_section_no:
-            score += 0.72
+            score += 0.86
             hits.append(f"第{requested_chapter_no}章第{requested_section_no}节")
         elif requested_section_no is not None and chapter_level == 1:
             score += 0.08
@@ -622,6 +788,73 @@ def _chapter_overlap_score(
         seen.add(lowered_hit)
         unique_hits.append(hit)
     return min(score, 0.99), unique_hits[:3]
+
+
+def _resource_name_overlap_score(query_text: str, resource_name: str) -> tuple[float, list[str]]:
+    lowered_query = query_text.lower()
+    cleaned_name = resource_name.strip().lower()
+    stem = re.sub(r"\.[^.]+$", "", cleaned_name).strip()
+    candidates = [candidate for candidate in [cleaned_name, stem] if len(candidate) >= 2]
+    for candidate in candidates:
+        if candidate and candidate in lowered_query:
+            return 0.66, [candidate]
+
+    tokens = [
+        token
+        for token in re.split(r"[\s_\-—–.，。！？?!.、/（）()：:；;,\[\]【】]+", stem)
+        if len(token) >= 2
+    ]
+    hits = [token for token in tokens if token in lowered_query]
+    if hits:
+        return min(0.42 + 0.08 * len(hits), 0.62), hits[:3]
+    return 0.0, []
+
+
+def _query_mentions_resource_name(message: str, resources: list[ResourceLibraryItem]) -> bool:
+    return any(_resource_name_overlap_score(message, resource.name)[0] >= 0.42 for resource in resources)
+
+
+def _default_chapter_for_resource(resource: ResourceLibraryItem, request: ChatRequest) -> LibraryChapter | None:
+    if not resource.outline:
+        return None
+    requested_chapter_no, requested_section_no = _extract_requested_outline_reference(request.message)
+    if requested_chapter_no is not None:
+        fallback_in_chapter: LibraryChapter | None = None
+        for chapter in resource.outline:
+            chapter_no, section_no = _outline_reference_position(resource.outline, chapter.id)
+            if chapter_no != requested_chapter_no:
+                continue
+            if requested_section_no is not None and section_no == requested_section_no:
+                return chapter
+            if requested_section_no is None and chapter.level == 1:
+                return chapter
+            if fallback_in_chapter is None:
+                fallback_in_chapter = chapter
+        if fallback_in_chapter is not None:
+            return fallback_in_chapter
+
+    return next(
+        (chapter for chapter in resource.outline if chapter.level == 1 and not _is_reference_separator_title(chapter.title)),
+        resource.outline[0],
+    )
+
+
+def _default_single_resource_match(
+    resource: ResourceLibraryItem,
+    request: ChatRequest,
+) -> ResourceMatch | None:
+    chapter = _default_chapter_for_resource(resource, request)
+    if chapter is None:
+        return None
+    return ResourceMatch(
+        resource_id=resource.id,
+        chapter_id=chapter.id,
+        resource_name=resource.name,
+        chapter_title=chapter.title,
+        reason="当前课程只有这一份已上传资料，按它作为本轮默认学习资料。",
+        score=0.76,
+        is_high_overlap=True,
+    )
 
 
 def match_resources(
@@ -639,9 +872,12 @@ def match_resources(
         ]
         if part
     )
-    scored_matches: list[tuple[float, float, ResourceMatch]] = []
+    scored_matches: list[tuple[float, float, float, float, ResourceMatch]] = []
     matches: list[ResourceMatch] = []
-    for resource in course_package.resources:
+    resources = _available_reference_resources(course_package, lesson)
+    for resource in resources:
+        resource_primary_score, resource_primary_hits = _resource_name_overlap_score(primary_query_text, resource.name)
+        resource_context_score, resource_context_hits = _resource_name_overlap_score(query_text, resource.name)
         for chapter in resource.outline:
             chapter_no, section_no = _outline_reference_position(resource.outline, chapter.id)
             primary_score, primary_overlap = _chapter_overlap_score(
@@ -664,8 +900,15 @@ def match_resources(
                 chapter_no=chapter_no,
                 section_no=section_no,
             )
+            chapter_specific_score = max(primary_score, score)
+            primary_score = min(primary_score + resource_primary_score, 0.99)
+            score = min(score + resource_context_score, 0.99)
             effective_score = max(primary_score, score)
             if effective_score > 0.18:
+                overlap_hits = [
+                    *(primary_overlap or overlap),
+                    *(resource_primary_hits or resource_context_hits),
+                ]
                 matches.append(
                     ResourceMatch(
                         resource_id=resource.id,
@@ -674,15 +917,73 @@ def match_resources(
                         chapter_title=chapter.title,
                         reason=(
                             f"章节标题与关键词和当前学习目标有明显重合："
-                            f"{', '.join(primary_overlap or overlap) or chapter.title}"
+                            f"{', '.join(overlap_hits[:3]) or chapter.title}"
                         ),
                         score=round(effective_score, 2),
                         is_high_overlap=effective_score >= HIGH_OVERLAP_THRESHOLD,
                     )
                 )
-                scored_matches.append((primary_score, score, float(chapter.level), matches[-1]))
-    scored_matches.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
-    return [item[3] for item in scored_matches[:3]]
+                scored_matches.append(
+                    (primary_score, score, chapter_specific_score, -float(chapter.order_index), matches[-1])
+                )
+    scored_matches.sort(key=lambda item: (item[0], item[1], item[2], item[3]), reverse=True)
+    ranked = [item[4] for item in scored_matches[:3]]
+    if ranked:
+        return ranked
+    if len(resources) == 1 and _is_resource_followup_request(request.message):
+        default_match = _default_single_resource_match(resources[0], request)
+        return [default_match] if default_match is not None else []
+    return []
+
+
+def _resource_file_clarification_question(
+    resources: list[ResourceLibraryItem],
+    matches: list[ResourceMatch],
+) -> str:
+    ordered_ids: list[str] = []
+    for match in matches:
+        if match.resource_id not in ordered_ids:
+            ordered_ids.append(match.resource_id)
+    for resource in sorted(resources, key=lambda item: item.uploaded_at, reverse=True):
+        if resource.id not in ordered_ids:
+            ordered_ids.append(resource.id)
+
+    resource_by_id = {resource.id: resource for resource in resources}
+    option_names = [resource_by_id[resource_id].name for resource_id in ordered_ids if resource_id in resource_by_id][:4]
+    options = "、".join(f"《{name}》" for name in option_names)
+    suffix = "等" if len(resources) > len(option_names) else ""
+    return f"你想讲哪一份资料？我看到 {options}{suffix}。直接回文件名或资料名，我就按那份资料的对应章节讲。"
+
+
+def _should_clarify_resource_file(
+    *,
+    resources: list[ResourceLibraryItem],
+    matches: list[ResourceMatch],
+    request: ChatRequest,
+) -> bool:
+    if len(resources) <= 1 or request.resource_reference_action is not None:
+        return False
+    if not _is_resource_followup_request(request.message):
+        return False
+    if _query_mentions_resource_name(request.message, resources):
+        return False
+    if not matches:
+        return True
+
+    top_match = matches[0]
+    second_match = next((match for match in matches[1:] if match.resource_id != top_match.resource_id), None)
+    if second_match is None:
+        return False
+
+    score_delta = abs(top_match.score - second_match.score)
+    if top_match.is_high_overlap and second_match.is_high_overlap and score_delta <= 0.06:
+        return True
+    chapter_no, _ = _extract_requested_outline_reference(request.message)
+    if chapter_no is not None and score_delta <= 0.18:
+        return True
+    if not top_match.is_high_overlap and score_delta <= 0.12:
+        return True
+    return False
 
 
 def _build_reference_prompt(match: ResourceMatch) -> ResourceReferencePrompt:
@@ -692,9 +993,10 @@ def _build_reference_prompt(match: ResourceMatch) -> ResourceReferencePrompt:
         resource_name=match.resource_name,
         chapter_title=match.chapter_title,
         question=(
-            f"我找到一个很贴近的参考章节：《{match.resource_name}》的《{match.chapter_title}》。要参考它来生成吗？"
+            f"我在资料目录里找到一个很贴近当前板书/请求的章节：《{match.resource_name}》的《{match.chapter_title}》。要参考这章正文来生成板书吗？"
         ),
         reason=match.reason,
+        confirm_label="参考资料生成板书",
         score=match.score,
     )
 
@@ -736,6 +1038,23 @@ def _selected_reference_context(
     )
 
 
+def _reference_context_for_match(
+    course_package: CoursePackage,
+    lesson: Lesson,
+    request: ChatRequest,
+    requirements: LearningRequirementSheet,
+    match: ResourceMatch,
+) -> ResourceReferenceContext | None:
+    resource = next((candidate for candidate in course_package.resources if candidate.id == match.resource_id), None)
+    if resource is None:
+        return None
+    return extract_reference_context(
+        resource,
+        match.chapter_id,
+        user_query=_resource_query_text(lesson, request, requirements),
+    )
+
+
 def _reference_payload(
     reference: ResourceReferenceContext | None,
     *,
@@ -757,6 +1076,47 @@ def _reference_payload(
     if include_full_text:
         payload["chapter_text"] = reference.full_text
     return payload
+
+
+def _learning_need_checklist(lesson: Lesson, request: ChatRequest, requirements: LearningRequirementSheet) -> list[str]:
+    candidates: list[str] = []
+    user_turns = [turn.content for turn in request.conversation if turn.role == "user"][-3:]
+    for question in [*user_turns, request.message, *requirements.current_questions[-3:]]:
+        cleaned = " ".join(str(question).split()).strip()
+        if cleaned:
+            candidates.append(f"回应用户当前问题：{cleaned[:80]}")
+    if request.selection and request.selection.excerpt.strip():
+        candidates.append(f"解释用户框选内容：{request.selection.excerpt.strip()[:80]}")
+    if requirements.learning_goal.strip():
+        candidates.append(f"服务学习目标：{requirements.learning_goal.strip()[:80]}")
+    if requirements.target_depth.strip():
+        candidates.append(f"达到讲解深度：{requirements.target_depth.strip()[:80]}")
+    for term in _extract_focus_terms(request.message)[:3]:
+        candidates.append(f"讲清关键词：{term}")
+    if lesson.board_document.content_text.strip():
+        for line in _relevant_lines(lesson.board_document, request)[:2]:
+            candidates.append(f"对齐当前版书：{line[:80]}")
+    else:
+        candidates.append(f"在不写入版书的前提下，先围绕《{lesson.title}》形成可讲主线")
+
+    needs: list[str] = []
+    seen: set[str] = set()
+    for candidate in [*requirements.learning_need_checklist, *candidates]:
+        cleaned = " ".join(str(candidate).split()).strip(" ：:，,。")
+        if len(cleaned) < 4 or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        needs.append(cleaned)
+        if len(needs) >= 6:
+            break
+    while len(needs) < 2:
+        fallback = f"围绕《{lesson.title}》把当前问题讲清楚" if not needs else "用一个例子或检查问题确认理解"
+        if fallback not in seen:
+            needs.append(fallback)
+            seen.add(fallback)
+        else:
+            break
+    return needs[:6]
 
 
 def _draft_requirements(lesson: Lesson, request: ChatRequest) -> LearningRequirementSheet:
@@ -785,6 +1145,7 @@ def _draft_requirements(lesson: Lesson, request: ChatRequest) -> LearningRequire
     normalized = normalize_requirements(requirements, lesson_title=lesson.title, document=lesson.board_document)
     if topic_hint:
         normalized.theme = topic_hint
+    normalized.learning_need_checklist = _learning_need_checklist(lesson, request, normalized)
     return normalized
 
 
@@ -793,11 +1154,11 @@ def _clarification_questions_for_status(status: LearningClarificationStatus) -> 
     if "想学的主题" in missing:
         return ["我们先找一个小入口：你指的是哪一句、哪个概念，或者想先学什么主题？给我一个关键词，我就从那里开讲。"]
     if "当前水平或背景" in missing and "学习目的或应用场景" in missing:
-        return ["我可以先按入门节奏讲起来；你顺手告诉我，是为了考试、工作项目，还是日常兴趣？"]
+        return ["我先按入门节奏讲。你要更偏概念理解、做题，还是实际应用？"]
     if "当前水平或背景" in missing:
-        return ["我先不预设基础；你听起来如果太浅或太快，告诉我，我马上调节。"]
+        return ["我先按入门节奏讲；如果你已经熟悉前置知识，我下一轮直接加深。"]
     if "学习目的或应用场景" in missing:
-        return ["我先讲核心用法；你也可以说说准备用在哪儿，我会把例子往那个场景靠。"]
+        return ["我先讲核心用法；之后可以再把例子换成做题或实际应用场景。"]
     return []
 
 
@@ -850,15 +1211,81 @@ def _build_scope_options(matches: list[ResourceMatch]) -> list[ScopeOption]:
 
 
 def _is_reference_separator_title(title: str) -> bool:
-    cleaned = title.strip()
-    return cleaned.startswith("---") or cleaned.lower().startswith("part ")
+    cleaned = re.sub(r"\s+", "", title.strip().lower())
+    front_or_back_matter = {
+        "前言",
+        "序",
+        "序言",
+        "补序",
+        "目录",
+        "目次",
+        "参考文献",
+        "后记",
+        "索引",
+        "致谢",
+    }
+    return (
+        cleaned.startswith("---")
+        or cleaned.startswith("part")
+        or cleaned in front_or_back_matter
+        or cleaned.startswith("附录")
+    )
+
+
+CHINESE_DIGITS: dict[str, int] = {
+    "零": 0,
+    "〇": 0,
+    "一": 1,
+    "二": 2,
+    "两": 2,
+    "三": 3,
+    "四": 4,
+    "五": 5,
+    "六": 6,
+    "七": 7,
+    "八": 8,
+    "九": 9,
+}
+CHINESE_UNITS: dict[str, int] = {"十": 10, "百": 100}
+OUTLINE_NUMBER_PATTERN = r"([0-9一二三四五六七八九十百〇零两]+)"
+
+
+def _parse_outline_number(value: str | None) -> int | None:
+    if value is None:
+        return None
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+    if cleaned.isdigit():
+        return int(cleaned)
+
+    total = 0
+    current = 0
+    seen = False
+    for char in cleaned:
+        if char in CHINESE_DIGITS:
+            current = CHINESE_DIGITS[char]
+            seen = True
+            continue
+        unit = CHINESE_UNITS.get(char)
+        if unit is None:
+            return None
+        total += (current or 1) * unit
+        current = 0
+        seen = True
+    if not seen:
+        return None
+    return total + current
 
 
 def _extract_requested_outline_reference(text: str) -> tuple[int | None, int | None]:
-    match = re.search(r"第\s*(\d+)\s*章(?:第\s*(\d+)\s*[节讲部分])?", text)
+    match = re.search(
+        rf"第\s*{OUTLINE_NUMBER_PATTERN}\s*章(?:\s*第\s*{OUTLINE_NUMBER_PATTERN}\s*[节讲部分])?",
+        text,
+    )
     if match:
-        chapter_no = int(match.group(1))
-        section_no = int(match.group(2)) if match.group(2) else None
+        chapter_no = _parse_outline_number(match.group(1))
+        section_no = _parse_outline_number(match.group(2)) if match.group(2) else None
         return chapter_no, section_no
     dotted = re.search(r"\bchapter\s*(\d+)\s*(?:section\s*(\d+))?\b", text, flags=re.IGNORECASE)
     if dotted:
@@ -871,29 +1298,74 @@ def _extract_requested_outline_reference(text: str) -> tuple[int | None, int | N
     return None, None
 
 
+def _extract_numbered_title_reference(title: str) -> tuple[int | None, int | None]:
+    cleaned = title.strip()
+    chapter_match = re.search(rf"第\s*{OUTLINE_NUMBER_PATTERN}\s*章", cleaned)
+    if chapter_match:
+        return _parse_outline_number(chapter_match.group(1)), None
+
+    dotted = re.search(r"^\s*(\d+)\s*[.．]\s*(\d+)", cleaned)
+    if dotted:
+        return int(dotted.group(1)), int(dotted.group(2))
+
+    english_chapter = re.search(r"\bchapter\s*(\d+)\b", cleaned, flags=re.IGNORECASE)
+    if english_chapter:
+        return int(english_chapter.group(1)), None
+
+    english_section = re.search(r"\bsection\s*(\d+)\s*[.．]\s*(\d+)\b", cleaned, flags=re.IGNORECASE)
+    if english_section:
+        return int(english_section.group(1)), int(english_section.group(2))
+
+    section_match = re.search(rf"第\s*{OUTLINE_NUMBER_PATTERN}\s*[节讲部分]", cleaned)
+    if section_match:
+        return None, _parse_outline_number(section_match.group(1))
+
+    return None, None
+
+
 def _outline_reference_position(
     chapters: list[object],
     chapter_id: str,
 ) -> tuple[int | None, int | None]:
     chapter_no = 0
     section_no = 0
+    current_chapter_no: int | None = None
     current_chapter_id: str | None = None
     for raw in chapters:
         chapter = raw
         title = getattr(chapter, "title", "")
         level = int(getattr(chapter, "level", 1))
         current_id = getattr(chapter, "id", "")
-        if level == 1 and not _is_reference_separator_title(str(title)):
-            chapter_no += 1
+        explicit_chapter_no, explicit_section_no = _extract_numbered_title_reference(str(title))
+        if level == 1:
+            if _is_reference_separator_title(str(title)) and explicit_chapter_no is None:
+                current_chapter_no = None
+                current_chapter_id = None
+                section_no = 0
+                if current_id == chapter_id:
+                    return None, None
+                continue
+            if explicit_chapter_no is not None:
+                chapter_no = max(chapter_no, explicit_chapter_no)
+                current_chapter_no = explicit_chapter_no
+            else:
+                chapter_no += 1
+                current_chapter_no = chapter_no
             current_chapter_id = current_id
-            section_no = 0
+            section_no = explicit_section_no or 0
             if current_id == chapter_id:
-                return chapter_no, None
+                return current_chapter_no, explicit_section_no
             continue
-        if level >= 2 and current_chapter_id is not None:
-            section_no += 1
+        if level >= 2 and current_chapter_id is not None and current_chapter_no is not None:
+            if explicit_chapter_no is not None and explicit_chapter_no != current_chapter_no:
+                current_chapter_no = explicit_chapter_no
+                section_no = 0
+            if explicit_section_no is not None:
+                section_no = explicit_section_no
+            else:
+                section_no += 1
             if current_id == chapter_id:
-                return chapter_no or None, section_no
+                return current_chapter_no, section_no
     return None, None
 
 
@@ -907,38 +1379,129 @@ def _fallback_board_decision(
     scope_mode = classify_scope(message, lesson)
     explicit_generation = _is_board_generation_request(message)
 
+    if request.board_edit_action == "skip":
+        return BoardDecision(action="no_change", reason="用户选择暂不把这次扩展内容写入版书。")
+    if request.board_edit_action == "confirm":
+        if request.scope_action == "create_new_lesson":
+            return BoardDecision(action="create_new_lesson", reason="用户确认扩选版书，并明确要求拆成一节新课。")
+        if request.scope_action == "append_section":
+            return BoardDecision(action="append_section", reason="用户确认扩选版书，并选择在当前 lesson 中新增章节。")
+        if _is_append_document_request(message):
+            return BoardDecision(action="append_section", reason="用户确认扩选版书，且请求指向新增页面或章节。")
+        if _is_in_place_expansion_request(message) or explicit_generation or is_document_empty(lesson.board_document):
+            return BoardDecision(action="edit_board", reason="用户确认扩选版书，版书管理 AI 将按当前内容生成可写入版本。")
+        if scope_mode == "scope_escalation":
+            return BoardDecision(action="append_section", reason="用户确认将新知识纳入当前版书，默认作为扩展章节承接原主线。")
+        return BoardDecision(action="edit_board", reason="用户确认为这次问题编辑扩选版书。")
     if request.scope_action == "create_new_lesson":
         return BoardDecision(action="create_new_lesson", reason="用户明确要求把问题拆成一节新课。")
     if request.scope_action == "append_section":
         return BoardDecision(action="append_section", reason="用户选择在当前 lesson 中新增章节。")
     if request.scope_action == "patch_current_lesson":
         return BoardDecision(action="no_change", reason="用户选择先在当前课内简述，不直接改讲义。")
-    if is_document_empty(lesson.board_document) and (
-        explicit_generation or _is_explanation_request(message) or _is_forced_start_request(message)
-    ):
-        return BoardDecision(action="edit_board", reason="当前讲义为空，先生成一版可讲的板书，再继续教学。")
+    if is_document_empty(lesson.board_document) and explicit_generation:
+        return BoardDecision(action="edit_board", reason="用户明确要求生成讲义/板书，当前版书为空，直接生成可写入版本。")
+    if _is_explicit_board_edit_request(message) and _is_in_place_expansion_request(message) and not is_document_empty(lesson.board_document):
+        return BoardDecision(action="edit_board", reason="用户明确要求扩展当前板书内容，应在原有章节里就地扩写。")
     if _is_append_document_request(message) and not is_document_empty(lesson.board_document):
         return BoardDecision(action="append_section", reason="用户要求在现有讲义后新增页面或章节内容。")
     if explicit_generation:
         return BoardDecision(action="edit_board", reason="用户明确要求生成讲义/课文/对话内容，应直接产出整篇文档。")
     if scope_mode == "scope_escalation":
-        if matches:
-            return BoardDecision(
-                action="await_scope_choice",
-                reason=f"问题超出当前讲义范围，并且资料库里已有相关入口：{matches[0].resource_name} / {matches[0].chapter_title}。",
-            )
-        return BoardDecision(action="await_scope_choice", reason="问题已经超出当前 lesson，需要先选择推进方式。")
-    if any(keyword in message for keyword in ["新增章节", "补充一节", "展开讲", "扩展"]):
+        return BoardDecision(action="no_change", reason="问题可能超出当前版书范围，先生成内部讲义讲解，再由用户确认是否扩选版书。")
+    if any(keyword in message for keyword in ["新增章节", "补充一节"]):
         return BoardDecision(action="append_section", reason="用户希望把相关内容纳入当前 lesson 的新章节。")
-    if any(keyword in message for keyword in ["更易懂", "通俗", "改写", "整理", "练习", "习题", "例题", "总结", "补一段", "润色", "完善"]):
+    if _is_explicit_board_edit_request(message) and any(keyword in message for keyword in ["改写", "整理", "补一段", "润色", "完善", "扩展", "扩写", "细化", "丰富"]):
         return BoardDecision(action="edit_board", reason="当前需求更适合先调整整篇讲义，再围绕更新后的结构讲解。")
     if any(keyword in message for keyword in ["解释", "讲解", "开讲", "直接讲", "讲一下", "讲讲", "为什么", "什么意思", "怎么理解"]):
         return BoardDecision(action="no_change", reason="当前更像围绕现有讲义的讲解请求，不必先改文档。")
     if requirements.theme != lesson.title:
-        return BoardDecision(action="edit_board", reason=f"用户提出了新的学习主题“{requirements.theme}”，先生成一版可讲的板书。")
+        return BoardDecision(action="no_change", reason=f"用户提出了新的学习主题“{requirements.theme}”，先讲解，再确认是否扩选版书。")
     if requirements.output_preference and not is_document_empty(lesson.board_document):
         return BoardDecision(action="no_change", reason="现有讲义已经能支撑这次讲解，先不改文档。")
-    return BoardDecision(action="edit_board", reason="默认先生成一版更完整的连续讲义，便于后续教学。")
+    return BoardDecision(action="no_change", reason="默认先生成内部讲义供讲师讲解，不改动右侧版书。")
+
+
+def _is_explicit_board_edit_request(message: str) -> bool:
+    if _is_append_document_request(message) or _is_board_generation_request(message):
+        return True
+    compact = _compact_request_text(message)
+    edit_signals = ("生成", "写", "做", "整理", "改写", "润色", "补充", "补全", "完善", "扩展", "扩写", "新增", "追加")
+    board_targets = ("板书", "版书", "讲义", "文档", "课文", "章节", "页面", "一节", "整章", "练习", "习题", "例题", "对话")
+    return any(signal in compact for signal in edit_signals) and any(target in compact for target in board_targets)
+
+
+def _clean_board_edit_topic(value: str) -> str:
+    cleaned = re.sub(r"\s+", "", value or "")
+    for prefix in ("请帮我", "帮我", "为我", "给我", "请", "能不能", "可以"):
+        if cleaned.startswith(prefix):
+            cleaned = cleaned[len(prefix) :]
+    for marker in ("什么是", "解释一下", "讲解一下", "讲一下", "讲讲", "怎么理解", "为什么", "直接开讲", "直接讲"):
+        cleaned = cleaned.replace(marker, "")
+    cleaned = re.sub(r"(内容|问题|这一块|这个部分|一下|吗|呢)$", "", cleaned)
+    return cleaned.strip(" ：:，,。？！!?」『』“”\"'")[:36]
+
+
+def _board_edit_prompt_topic(
+    *,
+    lesson: Lesson,
+    request: ChatRequest,
+    requirements: LearningRequirementSheet,
+    matches: list[ResourceMatch],
+) -> str:
+    if request.board_edit_topic and request.board_edit_topic.strip():
+        return request.board_edit_topic.strip()[:36]
+    if matches and matches[0].is_high_overlap:
+        return matches[0].chapter_title[:36]
+    for term in _extract_focus_terms(request.message):
+        topic = _clean_board_edit_topic(term)
+        if len(topic) >= 2 and topic not in {"解释", "讲解", "直接开讲"}:
+            return topic
+    if requirements.theme and requirements.theme != lesson.title:
+        return requirements.theme[:36]
+    return _clean_board_edit_topic(request.message) or lesson.title
+
+
+def _build_board_edit_prompt(
+    *,
+    lesson: Lesson,
+    request: ChatRequest,
+    requirements: LearningRequirementSheet,
+    matches: list[ResourceMatch],
+) -> BoardEditPrompt:
+    topic = _board_edit_prompt_topic(lesson=lesson, request=request, requirements=requirements, matches=matches)
+    reason = "这次问题引入了当前版书之外的内容，先按内部讲义讲解；如果你想沉淀到右侧版书，可以确认后由版书管理 AI 判断怎么扩写。"
+    if is_document_empty(lesson.board_document):
+        reason = "当前版书为空，本轮先只生成内部讲义给讲师讲解；确认后再把内容写成右侧版书。"
+    return BoardEditPrompt(
+        topic=topic,
+        question=f"是否为「{topic}」内容编辑扩选板书？",
+        reason=reason,
+        confirm_label="是",
+        skip_label="否",
+    )
+
+
+def _should_offer_board_edit_prompt(
+    *,
+    lesson: Lesson,
+    request: ChatRequest,
+    requirements: LearningRequirementSheet,
+    decision: BoardDecision,
+) -> bool:
+    if request.interaction_mode == "direct_edit":
+        return False
+    if request.board_edit_action is not None or request.scope_action is not None:
+        return False
+    if _is_explicit_board_edit_request(request.message):
+        return False
+    if decision.action != "no_change":
+        return False
+    if is_document_empty(lesson.board_document) and (_is_explanation_request(request.message) or _is_forced_start_request(request.message)):
+        return True
+    if classify_scope(request.message, lesson) == "scope_escalation":
+        return True
+    return bool(requirements.theme and requirements.theme != lesson.title)
 
 
 def _fallback_selection_replacement(request: ChatRequest) -> str:
@@ -980,6 +1543,204 @@ def _merge_selection_edit(
     return f"{selected}\n\n{generated}"
 
 
+def _append_section_topic(message: str, requirements: LearningRequirementSheet) -> str:
+    cleaned = message.strip()
+    for separator in ("：", ":", "，", ","):
+        head, found, tail = cleaned.partition(separator)
+        if found and tail.strip() and _is_append_document_request(head + found):
+            cleaned = tail.strip()
+            break
+    cleaned = re.sub(
+        r"^(?:请|帮我|为我|给我)?(?:再)?"
+        r"(?:新增|追加|补充|加上|新生成|再生成|继续生成|继续写|续写|接着写|再写|往后写|扩展|扩写)"
+        r"(?:一个|一篇|一段|一份|几)?(?:新)?(?:页面|一页|几页|多页|章节|一节|几节|内容)?",
+        "",
+        cleaned,
+    )
+    cleaned = cleaned.strip(" ：:，,。？?！!")
+    return cleaned or requirements.theme or "补充内容"
+
+
+def _fallback_append_section_html(
+    *,
+    request: ChatRequest,
+    requirements: LearningRequirementSheet,
+    selected_reference: ResourceReferenceContext | None,
+) -> str:
+    topic = _append_section_topic(request.message, requirements)
+    escaped_topic = html.escape(topic)
+    if selected_reference:
+        chapter_title = html.escape(selected_reference.chapter_title or topic)
+        resource_name = html.escape(selected_reference.resource_name)
+        summary = html.escape(selected_reference.summary or topic)
+        teaching_points = [
+            point
+            for point in selected_reference.teaching_points
+            if point.strip() and "不要照搬原文" not in point
+        ][:5]
+        if not teaching_points:
+            teaching_points = [selected_reference.summary or topic]
+        point_items = "\n".join(f"<li>{html.escape(point)}</li>" for point in teaching_points)
+        chunks = [chunk for chunk in selected_reference.chunks if chunk.excerpt.strip()][:4]
+        chunk_html = "\n".join(
+            (
+                f"<p><strong>{html.escape(chunk.title)}：</strong>"
+                f"{html.escape(chunk.excerpt.strip())}</p>"
+            )
+            for chunk in chunks
+        )
+        if not chunk_html:
+            chunk_html = f"<p>{summary}</p>"
+        return f"""
+<h2>补充章节：{escaped_topic}</h2>
+<p>这一章接在当前板书末尾，用《{resource_name}》里的《{chapter_title}》作为主要依据。目标不是简单贴一段资料，而是把新章节写成可以直接讲、可以继续做笔记的一整段讲义。</p>
+<h3>一、本章先解决什么问题</h3>
+<p>{summary}</p>
+<p>读这一章时，先不要急着记所有细节。先抓住它在当前课程里的位置：它补上了前文还没有展开的概念、方法或应用场景，让原来的板书可以继续往下讲。</p>
+<h3>二、关键概念与讲解顺序</h3>
+<ol>
+{point_items}
+</ol>
+<p>课堂上可以按“问题入口 -> 关键概念 -> 例子 -> 检查问题”的顺序推进。每个概念都要回答两个问题：它解决什么困难，以及不用它会在哪里卡住。</p>
+<h3>三、关键内容讲解</h3>
+{chunk_html}
+<p>这些片段要转化成板书语言：先把术语放进一句清楚的话，再用例子说明它如何发生，最后指出它和当前 lesson 前文的连接点。</p>
+<h3>四、最小例子</h3>
+<p>可以设计一个最小例子来检验理解：只保留本章最关键的对象、条件和结论。先让学生说出“已知什么、要判断什么、使用哪条规则”，再补上推理过程。</p>
+<p>如果学生只能背结论，却说不出条件为什么重要，就说明这一章还没有真正接上前面的板书，需要回到关键概念重新解释。</p>
+<h3>五、练习与检查</h3>
+<ol>
+<li>用一句话概括本章最核心的问题。</li>
+<li>从上面的关键概念中选一个，说明它在例子里承担什么作用。</li>
+<li>写出一个容易误用本章方法的场景，并说明怎样避免。</li>
+</ol>
+<h3>六、参考答案与小结</h3>
+<p>参考答案不要求逐字一致，但必须包含三件事：本章要解决的问题、关键概念之间的关系、以及一个可验证的使用条件。最后把它接回当前板书：这一章让我们从“知道一个概念”往前走到“知道什么时候用、怎么检查是否用对”。</p>
+""".strip()
+
+    if "过拟合" in topic or "过拟合" in request.message:
+        return """
+<h2>补充章节：如何解决过拟合</h2>
+<p>过拟合指模型在训练数据上表现很好，但一换到新数据、验证集或真实市场环境就明显变差。它本质上不是“学得太好”，而是把训练样本里的噪声、偶然模式也当成了稳定规律。</p>
+<p>这一章接在前面的量化数学工具之后，专门回答一个现实问题：模型、回归、机器学习方法看起来很强，为什么真正交易或换一批数据后会失效？答案往往不是公式错了，而是研究流程没有把“样本内好看”和“样本外可靠”分清楚。</p>
+<h3>一、先判断是不是过拟合</h3>
+<p>最直接的信号是训练集效果持续变好，但验证集或测试集效果停滞甚至变差。在量化研究里，还要特别警惕回测收益很好、换时间段或换市场后效果迅速消失。</p>
+<p>判断时不要只看一个总收益数字。更稳的做法是同时看训练集、验证集、测试集和样本外数据：如果训练集指标不断变漂亮，验证集却开始走弱，就说明模型可能正在记住历史噪声。</p>
+<h3>二、常用解决方法</h3>
+<ol>
+<li><strong>降低模型复杂度：</strong>少用不必要的特征、减少模型层数或参数，让模型先抓稳定主线。</li>
+<li><strong>加入正则化：</strong>用 L1、L2、权重衰减等方式惩罚过大的参数，避免模型为了贴合训练集而变得太弯。</li>
+<li><strong>做交叉验证：</strong>把数据分成多段反复验证，确认效果不是只在某一次切分里碰巧成立。</li>
+<li><strong>增加或清洗数据：</strong>更多样本能降低偶然性；清理异常值和泄漏特征能减少假规律。</li>
+<li><strong>早停与独立测试：</strong>验证集开始变差时停止训练，并保留从未参与调参的测试集做最后检查。</li>
+</ol>
+<h3>三、量化金融里的特别提醒</h3>
+<p>量化策略最容易把历史行情里的偶然波动误当成规律。检查一个策略时，不只看回测收益，还要看样本外表现、换时间段表现、交易成本后表现，以及参数轻微变化时结果是否稳定。</p>
+<p>还要特别注意数据泄漏：如果未来信息在不知不觉中进入了训练特征，回测会看起来非常优秀，但真实交易时这些信息根本拿不到。常见例子包括用到了未来修正后的财报数据、用全样本标准化、或者在调参时反复偷看测试集。</p>
+<h3>四、课堂例题</h3>
+<p>假设我们用 80 个技术指标预测明天涨跌，训练集准确率 78%，验证集只有 53%，测试集接近随机。这个结果说明模型很可能不是找到了稳定规律，而是把训练区间里的偶然形态记住了。</p>
+<p>一个合理改法是：先减少特征，只保留有解释力且不会泄漏未来信息的变量；再用时间序列交叉验证检查不同市场阶段；最后把完全没参与调参的测试集留到最后，只做一次验收。</p>
+<h3>五、练习题</h3>
+<ol>
+<li>如果训练集收益率很高、样本外收益率很低，第一反应应该检查什么？</li>
+<li>L1、L2 正则化分别在直觉上起什么作用？</li>
+<li>为什么量化策略不能只看回测收益，还要看交易成本和参数稳定性？</li>
+</ol>
+<h3>六、参考答案与小结</h3>
+<p>第一题先检查数据泄漏、模型复杂度和样本划分方式。第二题可以理解为：L1 更倾向于让部分特征权重变成 0，帮助做特征选择；L2 更倾向于压小过大的权重，让模型平滑一些。第三题的关键在于：真实交易不是历史表演，成本、滑点、换时间段和轻微参数变化都会暴露策略是否只是在拟合过去。</p>
+<p>小结一句话：解决过拟合，就是让模型少记偶然噪声，多抓可迁移规律；少追求样本内漂亮，多追求样本外可靠。</p>
+""".strip()
+
+    return f"""
+<h2>补充章节：{escaped_topic}</h2>
+<p>这一章承接当前板书，专门回答“{escaped_topic}”这个新问题。它不是在原文后面补一句提示，而是要把一个新的教学单元完整铺开：先说明问题从哪里来，再给出核心概念、操作方法、例子、练习和小结。</p>
+<h3>一、本章要解决的问题</h3>
+<p>学习“{escaped_topic}”时，先问一句：前面的板书已经讲到哪里，为什么还需要继续往后写？通常是因为前文只解决了定义或基本直觉，而这一章要补上应用条件、判断方法或更深入的解释。</p>
+<p>因此，本章的入口不是堆术语，而是把新内容放回原有主线：它解决前文留下的哪个疑问？它让学生多掌握了哪一种判断或操作能力？</p>
+<h3>二、核心概念和前文的连接</h3>
+<p>可以把这一章拆成三层：第一层是关键词，也就是必须认识的概念；第二层是关系，也就是这些概念如何互相影响；第三层是使用场景，也就是什么时候该用它、什么时候不该用它。</p>
+<p>讲解时要不断提醒学生：新章节不是另起炉灶，而是在当前 lesson 后面继续生长出来的内容。每个新概念都应该能找到一个和前文相连的理由。</p>
+<h3>三、最小例子</h3>
+<p>为了让“{escaped_topic}”不只停留在抽象描述上，可以设计一个最小例子：只保留一个主要对象、一个限制条件和一个需要判断的问题。先让学生说出已知条件，再让学生选择要用的概念，最后说明为什么这样做是合理的。</p>
+<p>如果这个例子讲得通，再逐步加复杂度；如果最小例子都讲不通，就说明这一章还需要回到定义和直觉，不能急着进入综合应用。</p>
+<h3>四、方法步骤</h3>
+<ol>
+<li><strong>先定位问题：</strong>明确这一章补的是定义、方法、例题、应用还是误区。</li>
+<li><strong>再给出规则：</strong>用一两句话说清核心判断标准，避免直接堆长段解释。</li>
+<li><strong>接着演示例子：</strong>把规则放进具体场景，说明每一步为什么成立。</li>
+<li><strong>最后做检查：</strong>用一个反例或变式题确认学生不是只记住了表面词语。</li>
+</ol>
+<h3>五、常见误区</h3>
+<p>第一个误区是只记结论，不看条件。很多知识点只有在特定前提下才成立，离开条件就会用错。第二个误区是把例子当定义，看到不同题型就不会迁移。第三个误区是把新章节和前文割裂，导致板书越写越散。</p>
+<h3>六、课堂练习</h3>
+<ol>
+<li>用一句话说明“{escaped_topic}”和前文内容的连接点。</li>
+<li>写出这一章最关键的一个概念，并说明它解决什么问题。</li>
+<li>构造一个最小例子：包含已知条件、要判断的问题、使用的方法和结论。</li>
+</ol>
+<h3>七、参考答案与小结</h3>
+<p>参考答案的重点不是措辞一致，而是结构完整：先说连接点，再说核心概念，最后说明使用条件。小结一句话：这一章的价值在于把原来的板书继续往前推进，让学生从“听懂前面的解释”走到“能判断、能使用、能检查”。</p>
+""".strip()
+
+
+def _plain_text_from_html_fragment(value: str) -> str:
+    return html.unescape(re.sub(r"<[^>]+>", "", value or "")).strip()
+
+
+def _fallback_expansion_paragraph(source_text: str) -> str:
+    cleaned = " ".join(source_text.split()).strip()
+    if any(marker in cleaned for marker in ("例如", "比如", "例子", "案例")):
+        detail = (
+            "这个例子可以拆成三层来讲：先标出已知条件和要解决的问题，再说明每一步为什么这样推，"
+            "最后补一个相近但不完全一样的变式，让学生确认自己理解的是方法而不是记住表面词语。"
+        )
+    else:
+        detail = (
+            "这句话可以继续展开：先说明它在本节里回答什么问题，再补出关键条件、推理过程和一个可检查的小例子，"
+            "让原来的结论从“看得懂”变成“能讲清、能迁移”。"
+        )
+    return f"\n<p><strong>展开说明：</strong>{html.escape(detail)}</p>"
+
+
+def _fallback_expand_existing_document(
+    *,
+    lesson: Lesson,
+    request: ChatRequest,
+    requirements: LearningRequirementSheet,
+) -> BoardDocument:
+    source_html = lesson.board_document.content_html.strip()
+    if not source_html:
+        source_html = f"<h1>{html.escape(lesson.board_document.title)}</h1><p>{html.escape(lesson.board_document.content_text)}</p>"
+
+    block_re = re.compile(r"<(?P<tag>p)\b(?P<attrs>[^>]*)>(?P<body>.*?)</(?P=tag)>", re.IGNORECASE | re.DOTALL)
+    parts: list[str] = []
+    last_end = 0
+    expanded_count = 0
+    for match in block_re.finditer(source_html):
+        parts.append(source_html[last_end : match.end()])
+        last_end = match.end()
+        paragraph_text = _plain_text_from_html_fragment(match.group("body"))
+        if len(paragraph_text) < 6:
+            continue
+        parts.append(_fallback_expansion_paragraph(paragraph_text))
+        expanded_count += 1
+
+    parts.append(source_html[last_end:])
+    if expanded_count == 0:
+        parts.append(
+            "\n<p><strong>展开说明：</strong>"
+            "围绕当前板书继续补充定义、条件、例子拆解和检查问题，把原有内容讲得更细，而不是另起一个补充章节。"
+            "</p>"
+        )
+
+    return build_document(
+        title=lesson.board_document.title or requirements.theme,
+        content_html="".join(parts),
+        document_id=lesson.board_document.id,
+        page_settings=lesson.board_document.page_settings,
+    )
+
+
 def _fallback_document_update(
     *,
     lesson: Lesson,
@@ -1000,13 +1761,32 @@ def _fallback_document_update(
             replacement_text=replacement_text,
         )
 
+    if (
+        decision.action == "edit_board"
+        and _is_in_place_expansion_request(request.message)
+        and not is_document_empty(lesson.board_document)
+    ):
+        return _fallback_expand_existing_document(
+            lesson=lesson,
+            request=request,
+            requirements=requirements,
+        )
+
     if decision.action == "append_section":
-        lead = selected_reference.teaching_points[0] if selected_reference and selected_reference.teaching_points else "这一节专门承接用户当前追问，把新问题接回原有主线。"
-        section_html = f"<h2>补充章节</h2><p>{lead}</p><p>{request.message}</p>"
+        section_html = _fallback_append_section_html(
+            request=request,
+            requirements=requirements,
+            selected_reference=selected_reference,
+        )
         return append_html_section(lesson.board_document, section_html)
 
+    topic = (
+        selected_reference.chapter_title
+        if selected_reference is not None
+        else (request.message.strip() or requirements.theme or lesson.title)
+    )
     generated = create_lesson(
-        request.message.strip() or lesson.title,
+        topic,
         requirements=requirements,
         reference_context=selected_reference,
     )
@@ -1020,6 +1800,7 @@ def _board_snapshot_hash(document: BoardDocument) -> str:
 
 def _requirement_needs(requirements: LearningRequirementSheet) -> list[str]:
     candidates = [
+        *requirements.learning_need_checklist,
         *reversed(requirements.current_questions[-2:]),
         requirements.learning_goal,
         requirements.target_depth,
@@ -1036,6 +1817,21 @@ def _requirement_needs(requirements: LearningRequirementSheet) -> list[str]:
 
 
 def _board_segments(document: BoardDocument) -> list[tuple[str | None, str]]:
+    if document.content_html.strip():
+        segments: list[tuple[str | None, str]] = []
+        current_heading: str | None = document.title
+        for match in _TEACHING_BLOCK_RE.finditer(document.content_html):
+            tag = match.group("tag").lower()
+            text = _plain_text_from_html_fragment(match.group("body"))
+            if not text:
+                continue
+            if tag.startswith("h"):
+                current_heading = text
+                continue
+            segments.append((current_heading, text))
+        if segments:
+            return segments
+
     lines = [line.strip() for line in document.content_text.splitlines() if line.strip()]
     segments: list[tuple[str | None, str]] = []
     current_heading: str | None = document.title
@@ -1054,6 +1850,118 @@ def _board_segments(document: BoardDocument) -> list[tuple[str | None, str]]:
     return segments
 
 
+_TEACHING_BLOCK_RE = re.compile(
+    r"<(?P<tag>h[1-6]|p|li|blockquote)\b[^>]*>(?P<body>.*?)</(?P=tag)>",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _compact_teaching_line(value: str, limit: int = 160) -> str:
+    cleaned = " ".join(value.split()).strip(" ：:，,。！？!?；;")
+    if len(cleaned) <= limit:
+        return cleaned
+    return f"{cleaned[: limit - 1]}…"
+
+
+def _dedupe_teaching_lines(values: list[str], *, limit: int = 4) -> list[str]:
+    lines: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        cleaned = _compact_teaching_line(value)
+        if not cleaned or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        lines.append(cleaned)
+        if len(lines) >= limit:
+            break
+    return lines
+
+
+def _board_h2_sections(document: BoardDocument) -> list[tuple[str, str]]:
+    blocks: list[tuple[str, str]] = []
+    for match in _TEACHING_BLOCK_RE.finditer(document.content_html or ""):
+        text = _plain_text_from_html_fragment(match.group("body"))
+        if text:
+            blocks.append((match.group("tag").lower(), text))
+
+    sections: list[tuple[str, list[str]]] = []
+    prelude: list[str] = []
+    current_heading: str | None = None
+    current_parts: list[str] = []
+
+    for tag, text in blocks:
+        if tag == "h2":
+            if current_heading is not None:
+                sections.append((current_heading, current_parts))
+            current_heading = text
+            current_parts = list(prelude)
+            prelude = []
+            continue
+        if current_heading is None:
+            if tag != "h1":
+                prelude.append(text)
+            continue
+        current_parts.append(text)
+
+    if current_heading is not None:
+        sections.append((current_heading, current_parts))
+
+    if sections:
+        return [
+            (heading, "\n".join(part for part in parts if part.strip()).strip())
+            for heading, parts in sections
+        ]
+
+    text = document.content_text.strip() or html_to_text(document.content_html)
+    if not text:
+        text = document.title
+    return [(document.title or "本节内容", text)]
+
+
+def _fallback_section_plans(
+    document: BoardDocument,
+    requirements: LearningRequirementSheet,
+) -> list[BoardSectionTeachingPlan]:
+    sections = _board_h2_sections(document)
+    plans: list[BoardSectionTeachingPlan] = []
+    for index, (heading, body) in enumerate(sections):
+        candidate_points = [line for line in body.splitlines() if line.strip() and line.strip() != heading]
+        core_points = _dedupe_teaching_lines(candidate_points, limit=3) or [
+            f"这一节围绕“{heading}”建立核心理解。"
+        ]
+        excerpt_source = body or "\n".join(core_points)
+        plans.append(
+            BoardSectionTeachingPlan(
+                order_index=index,
+                heading=heading,
+                board_excerpt=_compact_teaching_line(excerpt_source, limit=420),
+                core_points=core_points,
+                teaching_steps=[
+                    f"先说明“{heading}”在本课里解决什么问题。",
+                    "再按板书顺序拆开核心概念、关键条件和推理关系。",
+                    "最后用一个例子或检查问题确认学生是否真的听懂。",
+                ],
+                teaching_method=(
+                    f"用“问题入口 -> 核心解释 -> 小例子 -> 检查问题”的方式讲，不照读板书。"
+                    f"学习目标要贴住：{requirements.learning_goal}"
+                ),
+                example_or_analogy=(
+                    f"可以把“{heading}”放进一个最小例子里讲：先给已知条件，再说明怎么判断或使用。"
+                ),
+                common_pitfalls=["不要只复述标题；要说明条件、边界和容易混淆的点。"],
+                check_question=f"你能用一句话说出“{heading}”这一节最核心的意思吗？",
+                transition_to_next="如果这一节能跟上，就继续进入下一小节。",
+            )
+        )
+
+    for index, plan in enumerate(plans[:-1]):
+        next_title = plans[index + 1].heading
+        plan.transition_to_next = f"如果这一节能跟上，下一节就接着讲“{next_title}”。"
+    if plans:
+        plans[-1].transition_to_next = "这是这份板书的最后一个小节，讲完后可以回到具体问题或练习。"
+    return plans
+
+
 def _needs_for_excerpt(excerpt: str, needs: list[str]) -> list[str]:
     excerpt_lower = excerpt.lower()
     scored: list[tuple[int, str]] = []
@@ -1066,6 +1974,189 @@ def _needs_for_excerpt(excerpt: str, needs: list[str]) -> list[str]:
     return selected or needs[:1]
 
 
+def _compact_instruction_text(value: str) -> str:
+    return re.sub(r"[\s，,。？?！!：:；;\"'“”‘’]+", "", value or "")
+
+
+def _is_low_value_teaching_excerpt(excerpt: str, request_message: str) -> bool:
+    cleaned = " ".join(excerpt.split()).strip()
+    compact_excerpt = _compact_instruction_text(cleaned)
+    compact_request = _compact_instruction_text(request_message)
+    if not compact_excerpt:
+        return True
+    if compact_request and (
+        compact_excerpt == compact_request
+        or (compact_excerpt in compact_request and len(compact_excerpt) >= 8)
+        or (compact_request in compact_excerpt and len(compact_excerpt) <= len(compact_request) + 16)
+    ):
+        return True
+    if any(marker in cleaned for marker in ("用户当前追问", "当前追问", "原有主线", "新问题接回", "专门承接")):
+        return True
+    if re.match(r"^(?:请|帮我|为我|给我)?(?:续写|继续写|接着写|新增|追加|补充)", cleaned) and len(cleaned) <= 48:
+        return True
+    if re.match(r"^(?:补充|新增|追加)?章节[：:]", cleaned) and len(cleaned) <= 28:
+        return True
+    if cleaned in {"补充章节", "新增章节", "追加章节"}:
+        return True
+    return False
+
+
+def _is_statistical_learning_reference_context(reference: ResourceReferenceContext) -> bool:
+    corpus = " ".join(
+        [
+            reference.chapter_title,
+            reference.summary,
+            *reference.teaching_points,
+            *(chunk.excerpt for chunk in reference.chunks[:4]),
+            reference.full_text[:3000],
+        ]
+    )
+    compact = re.sub(r"\s+", "", corpus).lower()
+    return (
+        ("统计学习理论" in compact or "statisticallearning" in compact)
+        and any(term in compact for term in ("经验风险", "真实风险", "期望风险", "vc", "一致性", "推广能力"))
+    )
+
+
+def _is_density_estimation_reference_context(reference: ResourceReferenceContext) -> bool:
+    corpus = " ".join(
+        [
+            reference.chapter_title,
+            reference.summary,
+            *reference.teaching_points,
+            *(chunk.excerpt for chunk in reference.chunks[:4]),
+            reference.full_text[:4000],
+        ]
+    )
+    compact = re.sub(r"\s+", "", corpus).lower()
+    return any(
+        term in compact
+        for term in (
+            "概率密度函数的估计",
+            "概率密度估计",
+            "密度函数估计",
+            "类条件概率密度",
+        )
+    ) and any(term in compact for term in ("最大似然", "贝叶斯", "先验概率", "训练样本", "似然函数"))
+
+
+def _is_humanities_reference_context(reference: ResourceReferenceContext) -> bool:
+    corpus = " ".join(
+        [
+            reference.resource_name,
+            reference.chapter_title,
+            reference.summary,
+            *reference.teaching_points,
+            *(chunk.excerpt for chunk in reference.chunks[:4]),
+            reference.full_text[:2600],
+        ]
+    )
+    compact = re.sub(r"\s+", "", corpus).lower()
+    technical_markers = ("统计学习理论", "模式识别", "机器学习", "算法", "公式", "定理", "计算机", "vc")
+    if any(marker.lower() in compact for marker in technical_markers):
+        return False
+    humanities_markers = (
+        "文科",
+        "文学",
+        "历史",
+        "哲学",
+        "政治",
+        "法律",
+        "社会",
+        "文化",
+        "教育",
+        "伦理",
+        "艺术",
+        "语文",
+        "制度",
+        "思想",
+        "观点",
+        "论证",
+        "叙事",
+        "人物",
+        "原因",
+        "影响",
+        "意义",
+        "评价",
+        "改革",
+        "变法",
+        "革命",
+        "战争",
+    )
+    return sum(1 for marker in humanities_markers if marker in compact) >= 2
+
+
+def _humanities_teacher_brief(reference: ResourceReferenceContext) -> str:
+    first_chunk = next((chunk.excerpt for chunk in reference.chunks if chunk.excerpt.strip()), reference.summary)
+    excerpt = " ".join(first_chunk.split())[:180]
+    return (
+        f"《{reference.chapter_title}》不要只讲成提纲，先抓材料里的重要内容细讲。"
+        f"可以从这句话入手：{excerpt}。"
+        "讲法是：先解释材料原意，再补背景和上下文，然后把原因、过程、影响或论证链条拆开。"
+        "如果是文学文本，就抓关键词、叙述角度和细节如何塑造主题；如果是历史/政治/法律材料，就抓事件背景、制度变化、利益关系和长期影响。"
+        "最后用一个检查问题收束：学生能不能拿材料里的具体证据，而不是空泛套话，说明这个观点为什么成立。"
+    )
+
+
+def _reference_teacher_brief(reference: ResourceReferenceContext) -> str:
+    if _is_statistical_learning_reference_context(reference):
+        return (
+            f"《{reference.chapter_title}》先抓一件事：训练误差小不等于测试误差小。"
+            "经验风险是在训练集上算出来的错误，真实风险是模型面对未来未知样本时的平均错误；"
+            "统计学习理论要回答的，就是经验风险什么时候能代表真实风险。"
+            "所以讲课顺序可以这样走：先区分经验风险和真实风险，再用过拟合说明只追求训练误差会出问题，"
+            "然后引出一致性、函数集容量和 VC 维，最后落到推广能力界、SVM 最大间隔和正则化。"
+            "一句话总结：本章不是教某个算法，而是解释机器学习为什么需要控制复杂度，才能有推广能力。"
+        )
+    if _is_density_estimation_reference_context(reference):
+        return (
+            f"《{reference.chapter_title}》先抓一条主线：贝叶斯决策需要先验概率和类条件概率密度，"
+            "但真实任务里这些概率通常未知，所以要先从训练样本中估计出来，再把估计结果代回分类器。"
+            "讲课顺序按十个小章展开：本章定位、先验概率与类条件密度、两步贝叶斯决策、参数估计、"
+            "最大似然估计、贝叶斯估计、非参数估计、估计质量、从估计回到分类器、最后用误区和检查题收束。"
+            "重点不是复述教材片段，而是把“为什么要估计、怎样估计、估计误差怎样影响分类边界”讲成一条完整链路。"
+        )
+    if _is_humanities_reference_context(reference):
+        return _humanities_teacher_brief(reference)
+
+    corpus = " ".join(
+        [
+            reference.chapter_title,
+            reference.summary,
+            *reference.teaching_points,
+            *(chunk.excerpt for chunk in reference.chunks[:4]),
+        ]
+    )
+    compact = re.sub(r"\s+", "", corpus)
+    compact_title = re.sub(r"\s+", "", reference.chapter_title)
+    if (
+        ("概论" in compact_title or "第一章" in compact_title or "第1章" in compact_title)
+        and "模式识别" in compact
+        and any(term in compact for term in ("监督", "非监督", "分类器", "聚类"))
+    ):
+        return (
+            f"《{reference.chapter_title}》先抓一条主线：模式识别不是先讲某个算法，"
+            "而是先把现实对象变成可观察的特征，再根据特征做分类或聚类。"
+            "有已知类别样本时训练分类器，这是监督模式识别；没有标签时按相似性发现结构，这是非监督模式识别。"
+            "换句话说，模式是要识别的对象，特征是描述对象的线索，分类器是根据这些线索做判断的规则。"
+            "最后把它放进系统流程：信息获取与预处理、特征提取与选择、分类器设计或聚类分析、分类决策或结果解释。"
+        )
+    first_chunk = next(
+        (
+            chunk.excerpt
+            for chunk in reference.chunks
+            if chunk.excerpt.strip() and "目录顺序" not in chunk.excerpt
+        ),
+        "",
+    )
+    if first_chunk:
+        return f"《{reference.chapter_title}》先抓这条主线：{first_chunk[:220]}"
+    if reference.teaching_points:
+        return f"《{reference.chapter_title}》先抓这条主线：{reference.teaching_points[0]}"
+    first_chunk = next((chunk.excerpt for chunk in reference.chunks if chunk.excerpt.strip()), reference.summary)
+    return f"《{reference.chapter_title}》先抓这条主线：{first_chunk[:140]}"
+
+
 def _fallback_board_teaching_guide(
     *,
     document: BoardDocument,
@@ -1074,29 +2165,90 @@ def _fallback_board_teaching_guide(
     selected_reference: ResourceReferenceContext | None = None,
 ) -> BoardTeachingGuide:
     needs = _requirement_needs(requirements)
-    if is_document_empty(document) and selected_reference is not None:
-        selected_items = [
-            BoardTeachingSelectedItem(
-                excerpt=(chunk.excerpt or selected_reference.summary)[:240],
-                source_heading=chunk.title,
-                reason="当前板书还没有可讲内容，因此先直接用已锁定参考章节里的关键片段开讲。",
-                mapped_needs=needs[:1],
-                teaching_role="main_idea" if index == 1 else ("why_it_matters" if index == 2 else "example"),
-                order_index=index,
-            )
-            for index, chunk in enumerate(selected_reference.chunks[:3], start=1)
-        ]
-        if not selected_items:
+    if selected_reference is not None:
+        brief = _reference_teacher_brief(selected_reference)
+        lecture_handout = "\n".join(
+            [
+                f"内部讲义：《{selected_reference.chapter_title}》",
+                f"学习需求：{'；'.join(needs[:3])}",
+                f"讲解主线：{brief}",
+                "讲解方式：先把材料中的核心问题说清楚，再解释关键概念和关系，最后用一个例子或检查问题收束。",
+            ]
+        )
+        if _is_density_estimation_reference_context(selected_reference):
             selected_items = [
                 BoardTeachingSelectedItem(
-                    excerpt=selected_reference.summary[:240],
+                    excerpt=brief[:420],
                     source_heading=selected_reference.chapter_title,
-                    reason="当前板书为空，先用已确认的教材章节摘要起讲。",
+                    reason="用户明确指定了资料章节，先把参考章节压缩成可直接开讲的主线。",
                     mapped_needs=needs[:1],
                     teaching_role="main_idea",
                     order_index=1,
-                )
+                ),
+                BoardTeachingSelectedItem(
+                    excerpt="贝叶斯分类器需要先验概率 P(w_i) 和类条件概率密度 p(x|w_i)；第三章的核心是从训练样本中估计这些概率，再用于判别。",
+                    source_heading="先验概率与类条件概率密度",
+                    reason="这能解释本章为什么要从第二章的理论判别规则进入概率估计问题。",
+                    mapped_needs=needs[:1],
+                    teaching_role="why_it_matters",
+                    order_index=2,
+                ),
+                BoardTeachingSelectedItem(
+                    excerpt="最大似然估计的直觉是：样本已经出现了，选择最能解释这批样本的参数；贝叶斯估计则进一步把先验知识放进参数更新。",
+                    source_heading="最大似然估计与贝叶斯估计",
+                    reason="这能承接本章最重要的两条参数估计路线，避免直接照读 OCR 片段。",
+                    mapped_needs=needs[:1],
+                    teaching_role="example",
+                    order_index=3,
+                ),
             ]
+        else:
+            selected_items = [
+                BoardTeachingSelectedItem(
+                    excerpt=brief[:420],
+                    source_heading=selected_reference.chapter_title,
+                    reason="用户明确指定了资料章节，先把参考章节压缩成可直接开讲的主线。",
+                    mapped_needs=needs[:1],
+                    teaching_role="main_idea",
+                    order_index=1,
+                ),
+                *[
+                    BoardTeachingSelectedItem(
+                        excerpt=(chunk.excerpt or selected_reference.summary)[:420],
+                        source_heading=chunk.title,
+                        reason="这段来自已锁定参考章节，适合补充定义、例子或系统流程。",
+                        mapped_needs=needs[:1],
+                        teaching_role="why_it_matters" if index == 2 else "example",
+                        order_index=index,
+                    )
+                    for index, chunk in enumerate(selected_reference.chunks[:2], start=2)
+                ],
+            ]
+        if len(selected_items) == 1 and selected_reference.summary.strip():
+            selected_items.append(
+                BoardTeachingSelectedItem(
+                    excerpt=selected_reference.summary[:420],
+                    source_heading=selected_reference.chapter_title,
+                    reason="当前参考章节缺少细分片段，使用章节摘要补足讲解依据。",
+                    mapped_needs=needs[:1],
+                    teaching_role="why_it_matters",
+                    order_index=2,
+                )
+            )
+        selected_items = [
+            item
+            for item in selected_items
+            if item.excerpt.strip() and not _is_low_value_teaching_excerpt(item.excerpt, request_message)
+        ] or [
+            BoardTeachingSelectedItem(
+                excerpt=brief[:420],
+                source_heading=selected_reference.chapter_title,
+                reason="用户明确指定了资料章节，先用章节主线开讲。",
+                mapped_needs=needs[:1],
+                teaching_role="main_idea",
+                order_index=1,
+            )
+        ]
         need_mappings = [
             BoardNeedMapping(
                 need=need,
@@ -1118,23 +2270,33 @@ def _fallback_board_teaching_guide(
                 "最后给一个例子、类比或检查问题。",
             ],
             generation_rationale="用户明确指定了教材章节且要求直接开讲，因此在不改板书正文的前提下，优先使用已锁定参考章节的核心片段组织讲解。",
-            teacher_brief=(
-                f"直接按《{selected_reference.chapter_title}》开讲："
-                "先说这节要解决的问题，再讲关键概念之间的关系，最后给一个例子帮助理解。"
-            ),
+            teacher_brief=brief,
+            lecture_handout=lecture_handout,
+            section_plans=_fallback_section_plans(document, requirements),
         )
 
     focus_terms = {term.lower() for term in _query_phrases(f"{request_message}\n{requirements.learning_goal}")}
     scored_segments: list[tuple[int, str | None, str]] = []
+    low_value_segments: list[tuple[int, str | None, str]] = []
     for heading, excerpt in _board_segments(document):
         corpus = f"{heading or ''}\n{excerpt}".lower()
         score = sum(1 for term in focus_terms if term in corpus)
-        if request_message.strip() and excerpt in request_message:
-            score += 2
+        if _is_low_value_teaching_excerpt(excerpt, request_message):
+            low_value_segments.append((score - 4, heading, excerpt))
+            continue
+        if "过拟合" in request_message and any(
+            term in excerpt for term in ("训练数据", "训练集", "验证集", "测试集", "正则", "交叉验证", "早停", "样本外", "数据泄漏")
+        ):
+            score += 3
         scored_segments.append((score, heading, excerpt))
     scored_segments.sort(key=lambda item: item[0], reverse=True)
+    low_value_segments.sort(key=lambda item: item[0], reverse=True)
 
-    chosen = scored_segments[:3] if scored_segments else [(0, document.title, document.content_text.strip() or document.title)]
+    chosen = (
+        scored_segments[:3]
+        if scored_segments
+        else (low_value_segments[:3] if low_value_segments else [(0, document.title, document.content_text.strip() or document.title)])
+    )
     selected_items: list[BoardTeachingSelectedItem] = []
     for index, (_, heading, excerpt) in enumerate(chosen, start=1):
         mapped_needs = _needs_for_excerpt(excerpt, needs)
@@ -1187,6 +2349,39 @@ def _fallback_board_teaching_guide(
             f"这次先抓“{first.excerpt[:36]}”这条主线，"
             "不要按板书顺序念，而是先讲它在解决什么问题，再补一个例子或检查问题。"
         ),
+        lecture_handout=_fallback_lecture_handout(
+            document=document,
+            requirements=requirements,
+            request_message=request_message,
+            selected_items=selected_items,
+        ),
+        section_plans=_fallback_section_plans(document, requirements),
+    )
+
+
+def _fallback_lecture_handout(
+    *,
+    document: BoardDocument,
+    requirements: LearningRequirementSheet,
+    request_message: str,
+    selected_items: list[BoardTeachingSelectedItem],
+) -> str:
+    needs = _requirement_needs(requirements)
+    excerpts = [item.excerpt.strip() for item in selected_items if item.excerpt.strip()]
+    if not excerpts and document.content_text.strip():
+        first_segment = _board_segments(document)[:1]
+        excerpts = [first_segment[0][1]] if first_segment else []
+    source_lines = excerpts[:3] or [document.content_text.strip()[:240] or document.title]
+    return "\n".join(
+        [
+            f"内部讲义：{document.title}",
+            f"用户问题：{request_message.strip() or requirements.learning_goal}",
+            f"学习需求：{'；'.join(needs[:4])}",
+            "讲解依据：",
+            *[f"- {line}" for line in source_lines if line],
+            "讲解顺序：先用一句话说核心概念，再解释它为什么重要，最后给一个例子、类比或检查问题。",
+            "注意：这份讲义只供讲师讲解使用，不写入右侧版书。",
+        ]
     )
 
 
@@ -1221,6 +2416,10 @@ def _bound_board_teaching_guide(
         payload["generation_rationale"] = fallback.generation_rationale
     if not payload.get("teacher_brief"):
         payload["teacher_brief"] = fallback.teacher_brief
+    if not payload.get("lecture_handout"):
+        payload["lecture_handout"] = fallback.lecture_handout
+    if not payload.get("section_plans"):
+        payload["section_plans"] = fallback.section_plans
     return BoardTeachingGuide.model_validate(payload)
 
 
@@ -1282,7 +2481,21 @@ def _resolve_board_teaching_guide(
 ) -> BoardTeachingGuide:
     existing = _current_board_teaching_guide(lesson, document) if prefer_existing else None
     if existing is not None:
-        return existing
+        return _bound_board_teaching_guide(
+            guidance=existing,
+            document=document,
+            requirements=requirements,
+            request_message=request.message,
+            selected_reference=selected_reference,
+        )
+    if selected_reference is not None:
+        return _bound_board_teaching_guide(
+            guidance=None,
+            document=document,
+            requirements=requirements,
+            request_message=request.message,
+            selected_reference=selected_reference,
+        )
     ai_guidance = openai_course_ai.generate_board_teaching_guide(
         lesson_title=lesson.title,
         request_message=request.message,
@@ -1357,7 +2570,7 @@ def _format_teacher_message(message: str) -> str:
             r"\n\n\1",
             cleaned,
         )
-    cleaned = re.sub(r"(?<!\n)(?=(?:\d+[.、）)]|[-*•]))", "\n\n", cleaned)
+    cleaned = re.sub(r"(?<![\nA-Za-z])(?=(?:\d+[.、）)]|[-*•]))", "\n\n", cleaned)
 
     blocks = [block.strip() for block in re.split(r"\n\s*\n", cleaned) if block.strip()]
     normalized_blocks: list[str] = []
@@ -1371,39 +2584,202 @@ def _teacher_intro(state: WorkflowState) -> str:
     decision = state["board_decision"]
     lesson_title = (state.get("generated_lesson") or state["lesson"]).title
     if state.get("document_updated"):
-        return "右侧我先补好一版板书了，我们直接抓重点。"
+        return "直接开讲，先抓主线。"
     if decision.action == "create_new_lesson":
         return f"这个问题我已经拆成新课《{lesson_title}》，我们直接讲主线。"
     return "我们直接抓这次最该讲的重点。"
 
 
 def _teacher_learning_probe(state: WorkflowState) -> str | None:
-    status = state.get("learning_clarification")
-    if status is None:
-        return None
-    missing = set(status.missing_items)
-    if "想学的主题" in missing:
-        return None
-    if {"当前水平或背景", "学习目的或应用场景"} <= missing:
-        return "我先按入门到进阶之间的节奏走；你边听边告诉我更偏考试、工作项目还是日常兴趣，我会把例子往那边调。"
-    if "当前水平或背景" in missing:
-        return "我先不预设基础；如果你已经很熟悉前置概念，下一轮我会直接加深。"
-    if "学习目的或应用场景" in missing:
-        return "你也可以顺手说说准备用在哪儿，我会把后面的例子往那个场景靠。"
+    _ = state
     return None
 
 
 def _teacher_message_from_talk_track(state: WorkflowState, talk_track: str) -> str:
-    selected_reference = state.get("selected_reference")
     lines = [_teacher_intro(state), talk_track.strip()]
-    if selected_reference is not None:
-        lines.append(
-            f"这次还参考了《{selected_reference.resource_name}》的《{selected_reference.chapter_title}》，但我会用课堂口吻讲。"
-        )
     probe = _teacher_learning_probe(state)
     if probe:
         lines.append(probe)
     return "\n".join(line for line in lines if line.strip())
+
+
+def _is_continue_teaching_request(message: str) -> bool:
+    compact = _compact_instruction_text(message)
+    return compact in {
+        "继续",
+        "继续讲",
+        "继续下一节",
+        "讲下一节",
+        "下一节",
+        "下一个小节",
+        "继续下一个小节",
+        "往下讲",
+        "接着讲",
+    }
+
+
+def _is_teaching_control_request(request: ChatRequest) -> bool:
+    return request.teaching_action in {"continue", "restart"} or _is_continue_teaching_request(request.message)
+
+
+def _section_progress_view(
+    progress: BoardTeachingProgress,
+    guide: BoardTeachingGuide,
+) -> SectionTeachingProgressView:
+    section_count = len(guide.section_plans)
+    section_index = max(0, min(progress.current_section_index, max(section_count - 1, 0)))
+    title = guide.section_plans[section_index].heading if section_count else ""
+    return SectionTeachingProgressView(
+        section_index=section_index,
+        section_count=section_count,
+        current_section_title=title,
+        has_next_section=section_index + 1 < section_count,
+        waiting_for_continue=progress.waiting_for_continue,
+    )
+
+
+def _section_teacher_message(
+    *,
+    state: WorkflowState,
+    plan: BoardSectionTeachingPlan,
+    progress: SectionTeachingProgressView,
+) -> str:
+    lead = f"第 {progress.section_index + 1} 小节，我们先讲《{plan.heading}》。"
+    core = "；".join(plan.core_points[:3]) if plan.core_points else plan.board_excerpt
+    steps = " ".join(plan.teaching_steps[:3]).strip()
+    method = plan.teaching_method.strip()
+    example = plan.example_or_analogy.strip()
+    pitfalls = "；".join(plan.common_pitfalls[:2])
+    check = plan.check_question.strip() or f"你能用一句话说出《{plan.heading}》最核心的意思吗？"
+
+    blocks = [lead]
+    if core:
+        blocks.append(f"核心先抓住这一点：{core}。")
+    if steps or method:
+        blocks.append("讲的时候我会这样展开：" + " ".join(part for part in [steps, method] if part).strip())
+    if example:
+        blocks.append(f"可以用这个方式理解：{example}")
+    if pitfalls:
+        blocks.append(f"容易卡住的地方是：{pitfalls}。")
+
+    if progress.has_next_section:
+        blocks.append(f"检查一下：{check} 这一节你能理解吗？可以的话，我继续讲下一个小节。")
+    else:
+        blocks.append(f"检查一下：{check} 这是这份板书的最后一个小节，后面可以回到练习或具体疑问。")
+
+    return "\n\n".join(block for block in blocks if block.strip())
+
+
+def _section_teaching_turn(state: WorkflowState) -> WorkflowState | None:
+    request = state["request"]
+    decision = state["board_decision"]
+    guide = state.get("board_teaching_guide")
+    if guide is None or not guide.section_plans:
+        return None
+
+    source_lesson = state.get("generated_lesson") or state["lesson"]
+    document = state.get("teacher_document") or source_lesson.board_document
+    target_hash = guide.board_snapshot_hash or _board_snapshot_hash(document)
+    previous = source_lesson.board_teaching_progress
+    completed: list[int] = []
+    if (
+        previous is not None
+        and previous.board_document_id == document.id
+        and previous.board_snapshot_hash == target_hash
+    ):
+        completed = list(previous.completed_section_indexes)
+
+    is_auto_start = bool(state.get("document_updated")) and decision.action in {
+        "edit_board",
+        "append_section",
+        "create_new_lesson",
+    }
+    is_continue = request.teaching_action == "continue" or _is_continue_teaching_request(request.message)
+    is_restart = request.teaching_action == "restart"
+    if not (is_auto_start or is_continue or is_restart):
+        return None
+
+    section_count = len(guide.section_plans)
+    if is_restart:
+        target_index = 0
+        completed = []
+    elif is_continue:
+        target_index = (max(completed) + 1) if completed else 0
+    else:
+        target_index = int(state.get("teaching_start_section_index") or 0)
+        completed = []
+    target_index = max(0, min(target_index, section_count - 1))
+    completed = sorted({*completed, target_index})
+
+    progress = BoardTeachingProgress(
+        board_document_id=document.id,
+        board_snapshot_hash=target_hash,
+        current_section_index=target_index,
+        completed_section_indexes=completed,
+        waiting_for_continue=target_index + 1 < section_count,
+    )
+    progress_view = _section_progress_view(progress, guide)
+    plan = guide.section_plans[target_index]
+    first_section_briefs = [
+        (state.get("teacher_talk_track") or "").strip(),
+        guide.teacher_brief.strip(),
+    ]
+    if target_index == 0 and any(first_section_briefs):
+        plan = plan.model_copy(
+            update={
+                "core_points": _dedupe_teaching_lines(
+                    [*first_section_briefs, *plan.core_points],
+                    limit=3,
+                )
+            }
+        )
+    message = _section_teacher_message(
+        state=state,
+        plan=plan,
+        progress=progress_view,
+    )
+    return {
+        "teacher_message": _format_teacher_message(message),
+        "board_teaching_progress": progress,
+        "teaching_progress": progress_view,
+    }
+
+
+def _plain_teaching_from_excerpt(excerpt: str) -> str:
+    cleaned = " ".join(excerpt.split()).strip(" ：:，,。！？!?；;")
+    cleaned = re.sub(r"^(?:本节主线|参考片段\s*\d+|学习目标)[：:]\s*", "", cleaned).strip()
+    if {"模式", "特征", "分类器"} <= set(re.findall(r"模式|特征|分类器", cleaned)):
+        return (
+            f"{cleaned}。换句话说，模式是要识别的对象，特征是我们拿来描述它的线索，"
+            "分类器是根据这些线索做判断的规则。"
+        )
+    if "监督学习" in cleaned and "无监督学习" in cleaned:
+        return (
+            f"{cleaned}。监督学习是带着答案样本去学判断规则；无监督学习是先从没有标签的数据里找结构；"
+            "分类决策则把模型结果落成一个具体选择。"
+        )
+    return cleaned
+
+
+def _teacher_brief_from_handout(handout: str) -> str:
+    lines = []
+    for raw in handout.splitlines():
+        cleaned = raw.strip(" -•\t")
+        if not cleaned or cleaned.startswith(("内部讲义", "用户问题", "学习需求", "讲解依据", "讲解顺序", "注意")):
+            continue
+        lines.append(cleaned)
+        if len(lines) >= 3:
+            break
+    return "\n".join(lines)
+
+
+def _overfitting_teacher_message() -> str:
+    return (
+        "我们直接抓这次最该讲的重点。\n\n"
+        "过拟合的核心不是模型“学得太好”，而是它把训练数据里的噪声、偶然行情和历史巧合也当成了规律。所以最典型的信号是：训练集表现很好，但验证集、测试集或样本外市场一换，效果就明显变差。\n\n"
+        "解决思路要围绕“提高泛化能力”：先降低模型复杂度，少放不必要的特征和参数；再加入正则化，比如 L1、L2 或权重衰减，让模型别为了贴合历史而变得太弯；同时做交叉验证和样本外测试，确认策略不是只在某一次切分里碰巧好看。\n\n"
+        "放到量化金融里，还要特别检查数据泄漏、交易成本、换时间段表现和参数稳定性。一个策略如果只有某组参数、某段行情、某次回测特别漂亮，反而要先怀疑它是不是过拟合。"
+    )
 
 
 def _fallback_teacher_message(state: WorkflowState) -> str:
@@ -1412,7 +2788,6 @@ def _fallback_teacher_message(state: WorkflowState) -> str:
     board_teaching_guide = state.get("board_teaching_guide")
     clarification_questions = state.get("clarification_questions", [])
     reference_prompt = state.get("reference_prompt")
-    selected_reference = state.get("selected_reference")
     lesson_title = (state.get("generated_lesson") or state["lesson"]).title
 
     if decision.action == "clarify_request":
@@ -1425,27 +2800,34 @@ def _fallback_teacher_message(state: WorkflowState) -> str:
     talk_track = (state.get("teacher_talk_track") or "").strip()
     if talk_track:
         return _teacher_message_from_talk_track(state, talk_track)
+    if "过拟合" in request.message:
+        return _overfitting_teacher_message()
 
     lines = [_teacher_intro(state)]
     if board_teaching_guide is not None:
-        if board_teaching_guide.teacher_brief.strip():
+        handout_brief = _teacher_brief_from_handout(board_teaching_guide.lecture_handout)
+        if handout_brief:
+            lines.append(handout_brief)
+            probe = _teacher_learning_probe(state)
+            if probe:
+                lines.append(probe)
+            return "\n".join(lines)
+        if "已锁定参考章节" in board_teaching_guide.generation_rationale and board_teaching_guide.teacher_brief.strip():
             lines.append(board_teaching_guide.teacher_brief.strip())
+            probe = _teacher_learning_probe(state)
+            if probe:
+                lines.append(probe)
+            return "\n".join(lines)
         selected_items = board_teaching_guide.selected_items
-        need_mappings = board_teaching_guide.need_mappings
         if selected_items:
             first = selected_items[0]
-            if need_mappings:
-                lines.append(
-                    f"先把“{need_mappings[0].need[:28]}”这件事讲清楚，重点落在“{first.excerpt[:28]}”背后的意思，而不是照读原句。"
-                )
-            elif len(selected_items) > 1:
-                lines.append(
-                    f"先讲“{first.excerpt[:24]}”，再接“{selected_items[1].excerpt[:24]}”，这样主线会更顺。"
-                )
-    if selected_reference is not None:
-        lines.append(
-            f"这次也参考了《{selected_reference.resource_name}》的《{selected_reference.chapter_title}》，但讲法会更口语化。"
-        )
+            lines.append(_plain_teaching_from_excerpt(first.excerpt))
+            for item in selected_items[1:3]:
+                next_line = _plain_teaching_from_excerpt(item.excerpt)
+                if next_line and next_line not in lines:
+                    lines.append(next_line)
+        elif board_teaching_guide.teacher_brief.strip():
+            lines.append(board_teaching_guide.teacher_brief.strip())
     probe = _teacher_learning_probe(state)
     if probe:
         lines.append(probe)
@@ -1479,6 +2861,46 @@ def _run_teacher(state: WorkflowState) -> WorkflowState:
 class SimpleCourseWorkflow:
     def invoke(self, initial_state: WorkflowState) -> WorkflowState:
         state: WorkflowState = dict(initial_state)
+        if _is_teaching_control_request(state["request"]):
+            lesson = state["lesson"]
+            requirements = effective_requirements(lesson)
+            learning_clarification = _learning_clarification_status(
+                lesson=lesson,
+                request=state["request"],
+                requirements=requirements,
+            )
+            state.update(
+                {
+                    "learning_requirement_sheet": requirements,
+                    "learning_clarification": learning_clarification,
+                    "needs_clarification": False,
+                    "clarification_questions": [],
+                    "board_decision": BoardDecision(action="no_change", reason="用户要求按分节讲义继续讲解。"),
+                    "teaching_guide": _interactive_teaching_guide(
+                        lesson_id=lesson.id,
+                        lesson_title=lesson.title,
+                        document=lesson.board_document,
+                        requirements=requirements,
+                    ),
+                    "teacher_document": lesson.board_document,
+                    "document_updated": False,
+                    "scope_options": [],
+                    "resource_matches": match_resources(state["course_package"], lesson, state["request"], requirements),
+                    "reference_prompt": None,
+                    "selected_reference": None,
+                    "generated_lesson": None,
+                    "teacher_talk_track": None,
+                    "board_teaching_guide": _resolve_board_teaching_guide(
+                        lesson=lesson,
+                        request=state["request"],
+                        requirements=requirements,
+                        document=lesson.board_document,
+                        prefer_existing=True,
+                    ),
+                }
+            )
+            state.update(_run_teacher(state))
+            return state
         state.update(_run_pm(state))
         state.update(_run_board_manager(state))
         state.update(_run_board_executor(state))

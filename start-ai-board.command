@@ -9,22 +9,25 @@ has_listener() {
   lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1
 }
 
-run_in_terminal() {
-  local command="$1"
-  osascript <<EOF
-tell application "Terminal"
-  activate
-  do script "$command"
-end tell
-EOF
+start_screen() {
+  local name="$1"
+  local command="$2"
+
+  screen -S "$name" -X quit >/dev/null 2>&1 || true
+  screen -dmS "$name" zsh -lc "$command"
 }
 
-if ! has_listener 3000 && ! has_listener 8000; then
-  run_in_terminal "cd '$PROJECT_DIR' && npm run dev"
-elif ! has_listener 3000; then
-  run_in_terminal "cd '$PROJECT_DIR/apps/web' && npm run dev"
-elif ! has_listener 8000; then
-  run_in_terminal "cd '$PROJECT_DIR' && .venv/bin/python -m uvicorn app.main:app --reload --app-dir apps/api"
+screen -wipe >/dev/null 2>&1 || true
+
+if ! has_listener 8000; then
+  start_screen "openclass-api" "cd '$PROJECT_DIR' && ./scripts/keep-api-up.sh > /tmp/openclass-api.log 2>&1"
+fi
+
+if ! has_listener 3000; then
+  if [[ ! -f "$PROJECT_DIR/apps/web/.next/BUILD_ID" ]]; then
+    npm run build:web
+  fi
+  start_screen "openclass-web" "cd '$PROJECT_DIR' && ./scripts/keep-web-up.sh > /tmp/openclass-web.log 2>&1"
 fi
 
 open "$LAUNCHER_FILE"

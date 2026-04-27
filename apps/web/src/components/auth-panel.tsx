@@ -3,8 +3,35 @@
 import clsx from "clsx";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { FormEvent, useEffect, useState } from "react";
-import { ArrowLeft, LoaderCircle, LockKeyhole, Mail, ShieldCheck, UserPlus } from "lucide-react";
+import type { CSSProperties, FormEvent } from "react";
+import { useEffect, useState } from "react";
+import {
+  ArrowLeft,
+  ArrowUp,
+  Atom,
+  BarChart3,
+  Dna,
+  FlaskConical,
+  GraduationCap,
+  Hexagon,
+  Layers,
+  LoaderCircle,
+  LockKeyhole,
+  Mail,
+  Magnet,
+  Microscope,
+  Network,
+  PenTool,
+  PieChart,
+  Pill,
+  ShieldCheck,
+  Sparkles,
+  Telescope,
+  TestTubes,
+  User,
+  WandSparkles,
+  type LucideIcon,
+} from "lucide-react";
 
 import { OPENCLASS_AUTH_TOKEN_STORAGE_KEY, api } from "@/lib/api";
 import type { UserView } from "@/types";
@@ -13,8 +40,454 @@ type AuthPanelProps = {
   initialMode: "register" | "login";
 };
 
+type AuthCssVars = CSSProperties & {
+  "--base-op"?: string;
+  "--rot"?: string;
+};
+
+type SocialSignInOption = {
+  id: string;
+  label: string;
+  providerLabel: string;
+  className: string;
+  brand: "apple" | "google";
+};
+
+type KnowledgeTextItem = {
+  className: string;
+  content: string;
+  style?: AuthCssVars;
+};
+
+type KnowledgeIconItem = {
+  className: string;
+  Icon: LucideIcon;
+  style?: AuthCssVars;
+};
+
+const socialSignInOptions: SocialSignInOption[] = [
+  {
+    id: "google",
+    label: "使用 Google 账号登录",
+    providerLabel: "Google 账号",
+    className: "border-[#e8dfd2] bg-white text-[#5c4c3c] hover:border-[#d2a878] hover:bg-[#fcfbf9]",
+    brand: "google",
+  },
+  {
+    id: "apple",
+    label: "使用 Apple 账号登录",
+    providerLabel: "Apple 账号",
+    className: "border-[#1f1a17] bg-[#1f1a17] text-white hover:bg-black",
+    brand: "apple",
+  },
+];
+
+const knowledgeTextItems: KnowledgeTextItem[] = [
+  {
+    content: "∮ E · dA = Q/ε₀",
+    className: "auth-float-orbit auth-fade-breathe absolute left-[10%] top-[5%] font-serif text-3xl text-[#5c4c3c] md:text-4xl",
+    style: { "--base-op": "0.08", "--rot": "-10deg" },
+  },
+  {
+    content: "∑(x_i - μ)²",
+    className: "auth-float-diag absolute right-[5%] top-[35%] font-serif text-4xl text-[#5c4c3c] opacity-[0.08] md:text-5xl",
+    style: { "--rot": "5deg" },
+  },
+  {
+    content: "iℏ(∂Ψ/∂t) = HΨ",
+    className: "auth-float-wave absolute bottom-[10%] left-[15%] font-serif text-3xl text-[#cbaa77] opacity-[0.12] md:text-4xl",
+    style: { "--rot": "-5deg" },
+  },
+  {
+    content: "π",
+    className: "auth-rotate-spin auth-fade-breathe absolute left-[45%] top-[15%] font-serif text-8xl text-[#6d93a7] md:text-9xl",
+    style: { "--base-op": "0.05", "--rot": "15deg" },
+  },
+  {
+    content: "e^{iπ} + 1 = 0",
+    className: "auth-float-up absolute bottom-[25%] right-[25%] font-serif text-5xl text-[#5c4c3c] opacity-[0.08] md:text-6xl",
+    style: { "--rot": "10deg" },
+  },
+  {
+    content: "∇ × B = μ₀J",
+    className: "auth-float-fast-drift absolute left-[5%] top-[50%] font-serif text-4xl text-[#708f73] opacity-10 md:text-5xl",
+    style: { "--rot": "-15deg" },
+  },
+  {
+    content: "格物致知",
+    className: "auth-scale-grow absolute left-[15%] top-[20%] text-4xl font-bold text-[#5c4c3c] opacity-10 md:text-5xl",
+    style: { "--rot": "12deg" },
+  },
+  {
+    content: "العربية",
+    className: "auth-float-orbit auth-fade-breathe absolute bottom-[35%] left-[8%] font-serif text-3xl text-[#8d8377] md:text-4xl",
+    style: { "--base-op": "0.12", "--rot": "-8deg" },
+  },
+  {
+    content: "Наука",
+    className: "auth-float-diag absolute right-[8%] top-[65%] font-serif text-2xl text-[#cbaa77] opacity-[0.15] md:text-3xl",
+    style: { "--rot": "-20deg" },
+  },
+  {
+    content: "日本語",
+    className: "auth-float-wave absolute right-[40%] top-[8%] text-3xl text-[#6d93a7] opacity-[0.12] md:text-4xl",
+    style: { "--rot": "5deg" },
+  },
+  {
+    content: "Ελληνικά",
+    className: "auth-float-up absolute bottom-[15%] right-[45%] font-serif text-2xl text-[#708f73] opacity-[0.15] md:text-3xl",
+    style: { "--rot": "-12deg" },
+  },
+  {
+    content: "λ",
+    className: "auth-float-diag absolute bottom-[30%] right-[35%] font-serif text-4xl text-[#708f73] opacity-[0.15] md:text-5xl",
+    style: { "--rot": "20deg" },
+  },
+  {
+    content: "Au",
+    className:
+      "auth-rotate-spin absolute right-[18%] top-[18%] flex h-12 w-12 items-center justify-center border-2 border-[#d2a878] font-serif text-xl text-[#d2a878] opacity-[0.15]",
+    style: { "--rot": "5deg" },
+  },
+];
+
+const knowledgeIconItems: KnowledgeIconItem[] = [
+  {
+    Icon: Dna,
+    className: "auth-float-up auth-fade-breathe absolute left-[25%] top-[12%] text-4xl text-[#6d93a7] md:text-5xl",
+    style: { "--base-op": "0.12", "--rot": "25deg" },
+  },
+  {
+    Icon: FlaskConical,
+    className: "auth-float-diag auth-fade-breathe absolute right-[25%] top-[28%] text-5xl text-[#708f73] md:text-6xl",
+    style: { "--base-op": "0.15", "--rot": "15deg" },
+  },
+  {
+    Icon: TestTubes,
+    className: "auth-float-fast-drift absolute bottom-[40%] left-[12%] text-4xl text-[#708f73] opacity-[0.15] md:text-5xl",
+    style: { "--rot": "-15deg" },
+  },
+  {
+    Icon: Atom,
+    className: "auth-rotate-spin absolute right-[45%] top-[42%] text-5xl text-[#cbaa77] opacity-[0.15] md:text-7xl",
+    style: { "--rot": "-10deg" },
+  },
+  {
+    Icon: Telescope,
+    className: "auth-float-wave auth-fade-breathe absolute bottom-[50%] right-[8%] text-4xl text-[#5c4c3c] md:text-5xl",
+    style: { "--base-op": "0.08", "--rot": "10deg" },
+  },
+  {
+    Icon: Microscope,
+    className: "auth-scale-grow absolute bottom-[5%] right-[15%] text-5xl text-[#6d93a7] opacity-[0.12] md:text-6xl",
+  },
+  {
+    Icon: Magnet,
+    className: "auth-float-fast-drift absolute right-[12%] top-[60%] text-4xl text-[#8d8377] opacity-[0.12]",
+    style: { "--rot": "45deg" },
+  },
+  {
+    Icon: BarChart3,
+    className: "auth-scale-grow auth-fade-breathe absolute left-[30%] top-[75%] text-4xl text-[#5c4c3c] md:text-5xl",
+    style: { "--base-op": "0.08" },
+  },
+  {
+    Icon: Hexagon,
+    className: "auth-float-orbit absolute right-[10%] top-[15%] text-4xl text-[#8d8377] opacity-[0.12] md:text-5xl",
+    style: { "--rot": "45deg" },
+  },
+  {
+    Icon: Network,
+    className: "auth-float-fast-drift absolute bottom-[20%] left-[35%] text-5xl text-[#cbaa77] opacity-[0.12] md:text-6xl",
+    style: { "--rot": "15deg" },
+  },
+  {
+    Icon: PieChart,
+    className: "auth-float-wave absolute right-[25%] top-[85%] text-4xl text-[#6d93a7] opacity-[0.15]",
+    style: { "--rot": "-15deg" },
+  },
+  {
+    Icon: Pill,
+    className: "auth-float-wave absolute right-[30%] top-[80%] text-4xl text-[#cbaa77] opacity-[0.15]",
+    style: { "--rot": "-10deg" },
+  },
+];
+
 function storeSession(token: string) {
   window.localStorage.setItem(OPENCLASS_AUTH_TOKEN_STORAGE_KEY, token);
+}
+
+function GoogleBrandIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 18 18" className="h-[18px] w-[18px]">
+      <path
+        fill="#4285F4"
+        d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 0 1-1.8 2.72v2.26h2.91c1.7-1.56 2.69-3.86 2.69-6.62Z"
+      />
+      <path
+        fill="#34A853"
+        d="M9 18c2.43 0 4.47-.8 5.96-2.18l-2.91-2.26c-.81.54-1.84.86-3.05.86-2.35 0-4.33-1.58-5.04-3.71H.96v2.33A9 9 0 0 0 9 18Z"
+      />
+      <path
+        fill="#FBBC05"
+        d="M3.96 10.71A5.41 5.41 0 0 1 3.68 9c0-.59.1-1.16.28-1.71V4.96H.96A9 9 0 0 0 0 9c0 1.45.35 2.82.96 4.04l3-2.33Z"
+      />
+      <path
+        fill="#EA4335"
+        d="M9 3.58c1.32 0 2.5.45 3.43 1.35l2.58-2.58A8.64 8.64 0 0 0 9 0 9 9 0 0 0 .96 4.96l3 2.33C4.67 5.16 6.65 3.58 9 3.58Z"
+      />
+    </svg>
+  );
+}
+
+function AppleBrandIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 16 16" className="h-[18px] w-[18px]" fill="currentColor">
+      <path d="M11.18.01c-.03-.04-1.26.02-2.32 1.17-1.07 1.16-.91 2.49-.88 2.52.02.03 1.52.09 2.47-1.26.96-1.34.76-2.39.73-2.43ZM14.5 11.74c-.05-.1-2.33-1.24-2.12-3.42.22-2.19 1.68-2.79 1.7-2.86.02-.06-.6-.79-1.25-1.15a4.48 4.48 0 0 0-2.21-.56c-.25 0-1.13.14-1.72.14s-1.43-.14-2.17-.1c-.74.03-1.9.44-2.71 1.29-.8.86-1.89 2.5-1.61 5.16.28 2.65 2.21 5.56 3.18 5.59.97.03 1.32-.62 2.77-.62 1.45 0 1.74.62 2.83.6 1.1-.01 1.84-1.09 2.54-2.17.69-1.08.82-1.84.77-1.9Z" />
+    </svg>
+  );
+}
+
+function SocialBrandIcon({ brand }: { brand: SocialSignInOption["brand"] }) {
+  return brand === "google" ? <GoogleBrandIcon /> : <AppleBrandIcon />;
+}
+
+function AuthInput({
+  autoComplete,
+  Icon,
+  id,
+  label,
+  minLength,
+  onChange,
+  placeholder,
+  type,
+  value,
+}: {
+  autoComplete: string;
+  Icon: LucideIcon;
+  id: string;
+  label: string;
+  minLength?: number;
+  onChange: (value: string) => void;
+  placeholder: string;
+  type: "email" | "password";
+  value: string;
+}) {
+  return (
+    <label className="block">
+      {label ? <span className="text-sm font-semibold text-[#5c4c3c]">{label}</span> : null}
+      <span className="mt-2 flex items-center rounded-lg border border-[#ebe2d2] bg-white shadow-sm transition focus-within:border-[#d2a878] focus-within:ring-2 focus-within:ring-[#d2a878]/25">
+        <Icon className="ml-3.5 h-[18px] w-[18px] text-[#decbae]" />
+        <input
+          id={id}
+          type={type}
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          required
+          minLength={minLength}
+          autoComplete={autoComplete}
+          className="min-w-0 flex-1 bg-transparent px-3 py-3 text-sm font-medium text-[#3a312b] outline-none placeholder:text-[#b8a58f] sm:py-3.5"
+          placeholder={placeholder}
+        />
+      </span>
+    </label>
+  );
+}
+
+function KnowledgeBackground() {
+  return (
+    <div className="pointer-events-none absolute inset-0 z-0 overflow-hidden">
+      {knowledgeTextItems.map((item) => (
+        <div key={item.content} className={item.className} style={item.style}>
+          {item.content}
+        </div>
+      ))}
+
+      {knowledgeIconItems.map(({ Icon, className, style }) => (
+        <Icon key={className} className={className} style={style} strokeWidth={1.6} />
+      ))}
+
+      <div className="auth-float-orbit auth-fade-breathe absolute right-[15%] top-[55%] text-[#d2a878]" style={{ "--base-op": "0.15", "--rot": "5deg" } as AuthCssVars}>
+        <svg width="120" height="120" viewBox="0 0 120 120" fill="none" stroke="currentColor" strokeWidth="0.5" className="h-28 w-28 md:h-36 md:w-36">
+          <circle cx="60" cy="60" r="40" />
+          <ellipse cx="60" cy="60" rx="40" ry="15" transform="rotate(45 60 60)" />
+          <ellipse cx="60" cy="60" rx="40" ry="15" transform="rotate(-45 60 60)" />
+          <ellipse cx="60" cy="60" rx="40" ry="15" transform="rotate(90 60 60)" />
+          <polygon points="60,20 100,60 60,100 20,60" />
+        </svg>
+      </div>
+
+      <div className="auth-float-up absolute bottom-[20%] right-[48%] text-[#6d93a7] opacity-[0.18]" style={{ "--rot": "-15deg" } as AuthCssVars}>
+        <svg width="100" height="100" viewBox="0 0 100 100" fill="none" stroke="currentColor" strokeWidth="1.5" className="h-20 w-20 md:h-24 md:w-24">
+          <polygon points="50,20 20,80 80,80" />
+          <path d="M 0 60 L 35 60" strokeDasharray="2 2" />
+          <path d="M 65 60 L 100 40" stroke="#8d8377" strokeDasharray="2 2" />
+          <path d="M 65 60 L 100 60" stroke="#708f73" strokeDasharray="2 2" />
+          <path d="M 65 60 L 100 80" stroke="#6d93a7" strokeDasharray="2 2" />
+        </svg>
+      </div>
+
+      <div className="auth-float-diag absolute left-[30%] top-[35%] text-[#5c4c3c] opacity-[0.08]" style={{ "--rot": "10deg" } as AuthCssVars}>
+        <svg width="80" height="80" viewBox="0 0 80 80" fill="none" stroke="currentColor" strokeWidth="1" className="h-16 w-16">
+          {[10, 32, 54].map((x) =>
+            [10, 32, 54].map((y) => <rect key={`${x}-${y}`} x={x} y={y} width="15" height="15" />)
+          )}
+        </svg>
+      </div>
+    </div>
+  );
+}
+
+function ChatShowcase() {
+  return (
+    <div
+      className="absolute left-10 top-20 z-10 flex h-[520px] w-[340px] flex-col rounded-lg border border-white/60 bg-white/40 p-6 shadow-[0_30px_60px_-15px_rgba(58,49,43,0.09)] backdrop-blur-2xl"
+      style={{ transform: "translateZ(-80px)" }}
+    >
+      <div className="mb-8 flex items-center gap-3 border-b border-[#3a312b]/5 pb-4">
+        <span className="h-2 w-2 rounded-full bg-[#d2a878]" />
+        <span className="text-xs font-bold text-[#5c4c3c]/60">AI Logic Engine</span>
+      </div>
+
+      <div className="relative flex-1 overflow-hidden">
+        <div className="auth-loop auth-chat-scroll absolute left-0 top-4 w-full space-y-6">
+          <div className="auth-loop auth-chat-user-1 flex flex-row-reverse gap-3">
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#3a312b] shadow-md">
+              <User className="h-4 w-4 text-white" />
+            </div>
+            <div className="flex w-full flex-col items-end gap-2 pt-1.5">
+              <div className="auth-skeleton-dark h-2.5 w-[65%] rounded-full" />
+              <div className="auth-skeleton-dark h-2.5 w-[45%] rounded-full" />
+            </div>
+          </div>
+
+          <div className="auth-loop auth-chat-ai-1 flex gap-3">
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-white bg-[#ebe2d2] shadow-sm">
+              <Sparkles className="h-4 w-4 text-[#5c4c3c]" />
+            </div>
+            <div className="flex w-full flex-col gap-2 rounded-lg border border-white/60 bg-white/50 p-3 pt-3.5">
+              <div className="auth-skeleton h-2 w-[85%] rounded-full" />
+              <div className="auth-skeleton h-2 w-[70%] rounded-full" />
+              <div className="auth-skeleton h-2 w-[90%] rounded-full" />
+              <div className="mt-2 flex gap-2">
+                <div className="h-8 w-10 rounded-lg border border-white bg-[#f7f3eb]/80" />
+                <div className="h-8 w-10 rounded-lg border border-white bg-[#f7f3eb]/80" />
+              </div>
+            </div>
+          </div>
+
+          <div className="auth-loop auth-chat-user-2 mt-8 flex flex-row-reverse gap-3">
+            <div className="h-8 w-8 shrink-0 rounded-full bg-[#3a312b] shadow-md" />
+            <div className="flex w-full flex-col items-end gap-2 pt-1.5">
+              <div className="auth-skeleton-dark h-2.5 w-[80%] rounded-full" />
+            </div>
+          </div>
+
+          <div className="auth-loop auth-chat-ai-2 flex gap-3">
+            <div className="h-8 w-8 shrink-0 rounded-full border border-white bg-[#ebe2d2] shadow-sm" />
+            <div className="flex w-full flex-col gap-2 rounded-lg border border-white/60 bg-white/50 p-3 pt-3.5">
+              <div className="auth-skeleton h-2 w-full rounded-full" />
+              <div className="auth-skeleton h-2 w-[60%] rounded-full" />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-4 flex h-12 items-center rounded-lg border border-white bg-white/60 px-4">
+        <span className="mr-3 h-4 w-4 rounded-full border-2 border-[#decbae]" />
+        <span className="h-2 w-1/3 rounded-full bg-[#ebe2d2]" />
+        <span className="ml-auto flex h-6 w-6 items-center justify-center rounded-full bg-[#3a312b]">
+          <ArrowUp className="h-3.5 w-3.5 text-white" />
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function DocumentShowcase() {
+  return (
+    <div
+      className="absolute right-10 top-10 z-20 h-[600px] w-[500px] overflow-hidden rounded-lg border border-[#f0e8dc] bg-[#fefdfb] p-10 shadow-[0_40px_80px_-20px_rgba(58,49,43,0.16),inset_0_0_0_1px_rgba(255,255,255,0.8)]"
+      style={{ transform: "translateZ(60px)" }}
+    >
+      <div className="mb-10 flex items-center justify-between opacity-60">
+        <div className="flex gap-2">
+          <span className="h-3 w-3 rounded-full bg-[#ebe2d2]" />
+          <span className="h-3 w-3 rounded-full bg-[#ebe2d2]" />
+        </div>
+        <div className="flex gap-4">
+          <span className="h-1 w-8 rounded-full bg-[#ebe2d2]" />
+          <span className="h-1 w-12 rounded-full bg-[#ebe2d2]" />
+          <span className="h-1 w-6 rounded-full bg-[#ebe2d2]" />
+        </div>
+      </div>
+
+      <div className="auth-loop auth-fade-end relative h-[450px] w-full">
+        <svg viewBox="0 0 420 450" fill="none" className="h-full w-full overflow-visible">
+          <path d="M40 0 V450 M380 0 V450" stroke="#f7f3eb" strokeWidth="1" strokeDasharray="4 6" />
+          <g stroke="#d8c9b6" strokeLinecap="round" opacity="0.16">
+            <line x1="40" y1="40" x2="260" y2="40" strokeWidth="14" />
+            <line x1="40" y1="65" x2="140" y2="65" strokeWidth="6" />
+            <line x1="40" y1="110" x2="360" y2="110" strokeWidth="6" />
+            <line x1="40" y1="135" x2="380" y2="135" strokeWidth="6" />
+            <line x1="40" y1="160" x2="330" y2="160" strokeWidth="6" />
+            <line x1="40" y1="185" x2="220" y2="185" strokeWidth="6" />
+            <line x1="40" y1="245" x2="190" y2="245" strokeWidth="10" />
+            <line x1="40" y1="285" x2="370" y2="285" strokeWidth="6" />
+            <line x1="40" y1="310" x2="350" y2="310" strokeWidth="6" />
+            <line x1="40" y1="335" x2="290" y2="335" strokeWidth="6" />
+            <line x1="40" y1="380" x2="40" y2="430" strokeWidth="4" />
+            <line x1="60" y1="390" x2="320" y2="390" strokeWidth="6" />
+            <line x1="60" y1="415" x2="240" y2="415" strokeWidth="6" />
+          </g>
+          <line x1="40" y1="40" x2="260" y2="40" className="auth-draw-line auth-doc-draw-1" style={{ stroke: "#3a312b", strokeWidth: 14 }} />
+          <line x1="40" y1="65" x2="140" y2="65" className="auth-draw-line auth-doc-draw-2" style={{ stroke: "#d2a878", strokeWidth: 6 }} />
+          <line x1="40" y1="110" x2="360" y2="110" className="auth-draw-line auth-doc-draw-3" style={{ stroke: "#5c4c3c", strokeWidth: 6 }} />
+          <line x1="40" y1="135" x2="380" y2="135" className="auth-draw-line auth-doc-draw-4" style={{ stroke: "#5c4c3c", strokeWidth: 6 }} />
+          <line x1="40" y1="160" x2="330" y2="160" className="auth-draw-line auth-doc-draw-5" style={{ stroke: "#5c4c3c", strokeWidth: 6 }} />
+          <line x1="40" y1="185" x2="220" y2="185" className="auth-draw-line auth-doc-draw-6" style={{ stroke: "#5c4c3c", strokeWidth: 6 }} />
+          <line x1="40" y1="245" x2="190" y2="245" className="auth-draw-line auth-doc-draw-7" style={{ stroke: "#3a312b", strokeWidth: 10 }} />
+          <line x1="40" y1="285" x2="370" y2="285" className="auth-draw-line auth-doc-draw-8" style={{ stroke: "#5c4c3c", strokeWidth: 6 }} />
+          <line x1="40" y1="310" x2="350" y2="310" className="auth-draw-line auth-doc-draw-9" style={{ stroke: "#5c4c3c", strokeWidth: 6 }} />
+          <line x1="40" y1="335" x2="290" y2="335" className="auth-draw-line auth-doc-draw-10" style={{ stroke: "#5c4c3c", strokeWidth: 6 }} />
+          <line x1="40" y1="380" x2="40" y2="430" className="auth-draw-line auth-doc-draw-11" style={{ stroke: "#d2a878", strokeWidth: 4 }} />
+          <line x1="60" y1="390" x2="320" y2="390" className="auth-draw-line auth-doc-draw-11" style={{ stroke: "#708f73", strokeWidth: 6 }} />
+          <line x1="60" y1="415" x2="240" y2="415" className="auth-draw-line auth-doc-draw-12" style={{ stroke: "#708f73", strokeWidth: 6 }} />
+        </svg>
+      </div>
+    </div>
+  );
+}
+
+function ProductShowcase() {
+  return (
+    <div className="auth-perspective auth-bg-mesh relative hidden flex-1 items-center justify-center overflow-hidden lg:flex">
+      <KnowledgeBackground />
+
+      <div className="auth-scene relative flex h-[700px] w-[900px] items-center justify-center">
+        <ChatShowcase />
+        <DocumentShowcase />
+
+        <div
+          className="auth-float-fast absolute bottom-20 right-0 z-30 flex items-center gap-3 rounded-full border border-white bg-white/70 px-5 py-3 shadow-xl backdrop-blur-xl"
+          style={{ transform: "translateZ(120px) translateX(20px)" }}
+        >
+          <PenTool className="h-5 w-5 text-[#5c4c3c]" />
+          <div>
+            <div className="mb-1.5 h-1.5 w-12 rounded-full bg-[#5c4c3c]" />
+            <div className="h-1 w-8 rounded-full bg-[#decbae]" />
+          </div>
+        </div>
+
+        <div
+          className="auth-float-slow absolute -right-8 top-1/4 z-30 flex h-16 w-16 items-center justify-center rounded-full border-2 border-white bg-[#3a312b] shadow-[0_10px_30px_rgba(58,49,43,0.3)]"
+          style={{ transform: "translateZ(80px)" }}
+        >
+          <WandSparkles className="h-6 w-6 text-[#ebe2d2]" />
+        </div>
+      </div>
+    </div>
+  );
 }
 
 export function AuthPanel({ initialMode }: AuthPanelProps) {
@@ -26,6 +499,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
   const [isLoading, setIsLoading] = useState(false);
   const [isCheckingSession, setIsCheckingSession] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   useEffect(() => {
     let disposed = false;
@@ -58,6 +532,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
     event.preventDefault();
     setIsLoading(true);
     setError(null);
+    setNotice(null);
 
     try {
       const payload = mode === "register" ? await api.register(email, password) : await api.login(email, password);
@@ -76,150 +551,206 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
     setCurrentUser(null);
   }
 
+  function handleProviderSignIn(providerLabel: string) {
+    setError(null);
+    setNotice(`${providerLabel}登录入口已放在页面上；接入 OAuth 配置后即可启用。`);
+  }
+
+  function handleForgotPassword() {
+    setError(null);
+    setNotice("密码找回入口已预留；接入邮件服务后即可发送重置链接。");
+  }
+
   const isRegister = mode === "register";
+  const alternateMode = isRegister ? "login" : "register";
 
   return (
-    <main className="min-h-screen bg-[#f7f5ef] text-stone-950">
-      <header className="border-b border-stone-200 bg-[#fcfbf8]/92 backdrop-blur">
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3 sm:px-6">
-          <Link
-            href="/"
-            className="inline-flex items-center gap-2 rounded-md px-2 py-2 text-sm font-semibold text-stone-700 transition hover:bg-stone-100 hover:text-stone-950"
-          >
-            <ArrowLeft className="h-4 w-4" />
-            Learning Hub
-          </Link>
-          <Link
-            href="/admin"
-            className="inline-flex items-center gap-2 rounded-md border border-stone-200 bg-white px-3 py-2 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:text-stone-950"
-          >
-            <ShieldCheck className="h-4 w-4" />
-            管理后台
-          </Link>
-        </div>
-      </header>
-
-      <section className="mx-auto grid max-w-6xl gap-8 px-4 py-10 sm:px-6 lg:grid-cols-[minmax(0,1fr)_28rem] lg:py-16">
-        <div className="flex min-h-[24rem] flex-col justify-center">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-stone-400">OpenClass Account</p>
-          <h1 className="mt-3 max-w-2xl text-4xl font-semibold tracking-tight text-stone-950 sm:text-5xl">
-            用一个邮箱进入你的 AI 课程工作台
-          </h1>
-          <p className="mt-5 max-w-2xl text-base leading-8 text-stone-600">
-            当前版本只保留最轻量的账号入口：邮箱和密码即可注册。第一个注册账号会自动成为管理员，负责进入后台查看用户与课程数据。
-          </p>
-          <div className="mt-8 grid max-w-2xl gap-3 sm:grid-cols-3">
-            {["邮箱注册", "密码登录", "首位管理员"].map((item) => (
-              <div key={item} className="rounded-lg border border-stone-200 bg-white/82 p-4 text-sm font-semibold text-stone-700">
-                {item}
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="h-fit rounded-lg border border-stone-200 bg-white p-6 shadow-[0_18px_50px_rgba(15,23,42,0.07)]">
-          {isCheckingSession ? (
-            <div className="flex min-h-72 items-center justify-center text-stone-500">
-              <LoaderCircle className="mr-2 h-4 w-4 animate-spin" />
-              正在检查登录状态
+    <main className="auth-shell min-h-screen overflow-hidden bg-[#fcfbf9] text-[#3a312b]">
+      <div className="flex min-h-screen flex-col lg:flex-row">
+        <section className="relative z-20 flex w-full flex-col justify-center border-[#f0e8dc] bg-[#fcfbf9] px-6 py-8 shadow-[20px_0_40px_-15px_rgba(58,49,43,0.06)] sm:px-12 sm:py-10 lg:w-[45%] lg:border-r lg:px-16 lg:py-0 xl:w-[40%] xl:px-24">
+          <div className="w-full max-w-[21rem] sm:mx-auto sm:max-w-[28rem]">
+            <div className="mb-6 flex items-center justify-between gap-4 sm:mb-8">
+              <Link href="/" className="flex min-w-0 items-center gap-3" aria-label="回到学习主页">
+                <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-[#3a312b] text-white shadow-lg shadow-[#3a312b]/20">
+                  <Layers className="h-5 w-5" />
+                </span>
+                <span className="auth-display truncate text-2xl font-bold text-[#3a312b]">OpenClass</span>
+              </Link>
+              <Link
+                href="/"
+                className="inline-flex h-9 shrink-0 items-center gap-2 rounded-lg border border-[#ebe2d2] bg-white px-3 text-sm font-semibold text-[#5c4c3c] transition hover:border-[#d2a878] hover:text-[#3a312b]"
+              >
+                <ArrowLeft className="h-4 w-4" />
+                主页
+              </Link>
             </div>
-          ) : currentUser ? (
-            <div>
-              <div className="flex h-11 w-11 items-center justify-center rounded-full bg-stone-950 text-white">
-                <ShieldCheck className="h-5 w-5" />
-              </div>
-              <h2 className="mt-5 text-xl font-semibold text-stone-950">已登录</h2>
-              <p className="mt-2 text-sm text-stone-600">{currentUser.email}</p>
-              <p className="mt-1 text-xs text-stone-500">权限：{currentUser.role === "admin" ? "管理员" : "普通用户"}</p>
-              <div className="mt-6 flex flex-col gap-2 sm:flex-row">
-                <Link
-                  href={currentUser.role === "admin" ? "/admin" : "/"}
-                  className="inline-flex h-10 items-center justify-center rounded-md bg-stone-950 px-4 text-sm font-semibold text-white transition hover:bg-stone-800"
-                >
-                  {currentUser.role === "admin" ? "进入后台" : "回到主页"}
-                </Link>
-                <button
-                  type="button"
-                  onClick={handleLogout}
-                  className="inline-flex h-10 items-center justify-center rounded-md border border-stone-200 bg-white px-4 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:text-stone-950"
-                >
-                  退出登录
-                </button>
-              </div>
+
+            <div className="mb-6 sm:mb-7">
+              <h1 className="auth-display text-4xl font-bold leading-[1.08] text-[#3a312b] sm:text-5xl">
+                构筑思维
+                <br />
+                <span className="bg-gradient-to-r from-[#ead9b3] via-[#d2b77c] to-[#a78651] bg-clip-text text-transparent">
+                  优雅呈现
+                </span>
+              </h1>
+              <p className="mt-4 text-base leading-7 text-[#5c4c3c]/70">
+                将课堂灵感转化为结构化课程包、讲义与可复用的学习资料。欢迎回来，登录以继续创作。
+              </p>
             </div>
-          ) : (
-            <>
-              <div className="flex gap-2 rounded-lg bg-stone-100 p-1">
-                {(["register", "login"] as const).map((item) => (
-                  <button
-                    key={item}
-                    type="button"
-                    onClick={() => {
-                      setMode(item);
-                      setError(null);
-                    }}
-                    className={clsx(
-                      "h-10 flex-1 rounded-md text-sm font-semibold transition",
-                      mode === item ? "bg-white text-stone-950 shadow-sm" : "text-stone-500 hover:text-stone-950"
-                    )}
+
+            {isCheckingSession ? (
+              <div className="flex min-h-80 items-center justify-center rounded-lg border border-[#ebe2d2] bg-white/80 text-sm font-medium text-[#5c4c3c]">
+                <LoaderCircle className="mr-2 h-4 w-4 animate-spin" />
+                正在检查登录状态
+              </div>
+            ) : currentUser ? (
+              <div className="rounded-lg border border-[#ebe2d2] bg-white p-6 shadow-[0_18px_48px_rgba(58,49,43,0.08)]">
+                <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-[#3a312b] text-white">
+                  <ShieldCheck className="h-5 w-5" />
+                </div>
+                <h2 className="auth-display mt-5 text-2xl font-bold text-[#3a312b]">已登录</h2>
+                <p className="mt-2 break-all text-sm text-[#5c4c3c]">{currentUser.email}</p>
+                <p className="mt-1 text-xs text-[#8d8377]">权限：{currentUser.role === "admin" ? "管理员" : "普通用户"}</p>
+                <div className="mt-6 flex flex-col gap-2 sm:flex-row">
+                  <Link
+                    href={currentUser.role === "admin" ? "/admin" : "/"}
+                    className="inline-flex h-11 items-center justify-center rounded-lg bg-[#3a312b] px-4 text-sm font-bold text-white transition hover:bg-[#1f1a17]"
                   >
-                    {item === "register" ? "注册" : "登录"}
+                    {currentUser.role === "admin" ? "进入后台" : "回到主页"}
+                  </Link>
+                  <button
+                    type="button"
+                    onClick={handleLogout}
+                    className="inline-flex h-11 items-center justify-center rounded-lg border border-[#ebe2d2] bg-white px-4 text-sm font-bold text-[#5c4c3c] transition hover:border-[#d2a878] hover:text-[#3a312b]"
+                  >
+                    退出登录
                   </button>
-                ))}
+                </div>
               </div>
+            ) : (
+              <>
+                <div className="mb-5 space-y-3">
+                  {socialSignInOptions.map((option) => {
+                    return (
+                      <button
+                        key={option.id}
+                        type="button"
+                        onClick={() => handleProviderSignIn(option.providerLabel)}
+                        className={clsx(
+                          "flex w-full items-center justify-center gap-3 rounded-lg border px-4 py-3.5 text-sm font-semibold shadow-sm transition active:scale-[0.99]",
+                          option.className
+                        )}
+                      >
+                        <SocialBrandIcon brand={option.brand} />
+                        {option.label}
+                      </button>
+                    );
+                  })}
+                </div>
 
-              <form onSubmit={(event) => void handleSubmit(event)} className="mt-6 space-y-4">
-                <label className="block">
-                  <span className="text-sm font-semibold text-stone-950">邮箱</span>
-                  <div className="relative mt-2">
-                    <Mail className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-stone-400" />
-                    <input
-                      type="email"
-                      value={email}
-                      onChange={(event) => setEmail(event.target.value)}
-                      required
-                      autoComplete="email"
-                      className="w-full rounded-md border border-stone-300 bg-white py-2.5 pl-9 pr-3 text-sm outline-none transition placeholder:text-stone-400 focus:border-sky-500 focus:ring-2 focus:ring-sky-100"
-                      placeholder="you@example.com"
-                    />
+                {notice ? (
+                  <div className="mb-5 rounded-lg border border-[#b9cbb8] bg-[#f1f7ef] px-3 py-2 text-sm leading-6 text-[#496a4c]">
+                    {notice}
                   </div>
-                </label>
-
-                <label className="block">
-                  <span className="text-sm font-semibold text-stone-950">密码</span>
-                  <div className="relative mt-2">
-                    <LockKeyhole className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-stone-400" />
-                    <input
-                      type="password"
-                      value={password}
-                      onChange={(event) => setPassword(event.target.value)}
-                      required
-                      minLength={8}
-                      autoComplete={isRegister ? "new-password" : "current-password"}
-                      className="w-full rounded-md border border-stone-300 bg-white py-2.5 pl-9 pr-3 text-sm outline-none transition placeholder:text-stone-400 focus:border-sky-500 focus:ring-2 focus:ring-sky-100"
-                      placeholder="至少 8 位"
-                    />
-                  </div>
-                </label>
-
-                {error ? (
-                  <div className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</div>
                 ) : null}
 
-                <button
-                  type="submit"
-                  disabled={isLoading}
-                  className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-md bg-stone-950 px-4 text-sm font-semibold text-white transition hover:bg-stone-800 disabled:cursor-wait disabled:opacity-70"
-                >
-                  {isLoading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <UserPlus className="h-4 w-4" />}
-                  {isRegister ? "创建账号" : "登录"}
-                </button>
-              </form>
-            </>
-          )}
-        </div>
-      </section>
+                <div className="mb-5 flex items-center gap-3 text-xs font-semibold text-[#8d8377]">
+                  <span className="h-px flex-1 bg-[#ebe2d2]" />
+                  或使用邮箱
+                  <span className="h-px flex-1 bg-[#ebe2d2]" />
+                </div>
+
+                <div className="mb-4 grid grid-cols-2 gap-2 rounded-lg bg-[#f7f3eb] p-1">
+                  {(["login", "register"] as const).map((item) => (
+                    <Link
+                      key={item}
+                      href={`/${item}`}
+                      onClick={() => {
+                        setMode(item);
+                        setError(null);
+                        setNotice(null);
+                      }}
+                      className={clsx(
+                        "flex h-10 items-center justify-center rounded-lg text-sm font-bold transition",
+                        mode === item ? "bg-white text-[#3a312b] shadow-sm" : "text-[#8d8377] hover:text-[#3a312b]"
+                      )}
+                    >
+                      {item === "register" ? "注册" : "登录"}
+                    </Link>
+                  ))}
+                </div>
+
+                <form onSubmit={(event) => void handleSubmit(event)} className="space-y-4">
+                  <AuthInput
+                    id="email"
+                    label="邮箱地址"
+                    type="email"
+                    value={email}
+                    onChange={setEmail}
+                    autoComplete="email"
+                    placeholder="name@company.com"
+                    Icon={Mail}
+                  />
+
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-sm font-semibold text-[#5c4c3c]">密码</span>
+                      <button
+                        type="button"
+                        onClick={handleForgotPassword}
+                        className="text-sm font-medium text-[#b88952] transition hover:text-[#5c4c3c]"
+                      >
+                        忘记密码？
+                      </button>
+                    </div>
+                    <AuthInput
+                      id="password"
+                      label=""
+                      type="password"
+                      value={password}
+                      onChange={setPassword}
+                      minLength={8}
+                      autoComplete={isRegister ? "new-password" : "current-password"}
+                      placeholder={isRegister ? "至少 8 位" : "••••••••"}
+                      Icon={LockKeyhole}
+                    />
+                  </div>
+
+                  {error ? (
+                    <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm leading-6 text-rose-700">{error}</div>
+                  ) : null}
+
+                  <button
+                    type="submit"
+                    disabled={isLoading}
+                    className="flex w-full items-center justify-center gap-2 rounded-lg border border-transparent bg-[#3a312b] px-4 py-3 text-sm font-bold text-white shadow-[0_8px_20px_-8px_rgba(58,49,43,0.5)] transition hover:bg-[#1f1a17] focus:outline-none focus:ring-2 focus:ring-[#3a312b] focus:ring-offset-2 disabled:cursor-wait disabled:opacity-70 sm:py-3.5"
+                  >
+                    {isLoading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <GraduationCap className="h-4 w-4" />}
+                    {isRegister ? "创建账号" : "进入工作台"}
+                  </button>
+                </form>
+
+                <p className="mt-5 text-center text-sm text-[#5c4c3c]/70">
+                  {isRegister ? "已有账号？" : "还没有账号？"}
+                  <Link
+                    href={`/${alternateMode}`}
+                    onClick={() => {
+                      setMode(alternateMode);
+                      setError(null);
+                      setNotice(null);
+                    }}
+                    className="ml-1 border-b border-[#3a312b] pb-0.5 font-semibold text-[#3a312b] transition hover:border-[#d2a878] hover:text-[#b88952]"
+                  >
+                    {isRegister ? "返回登录" : "免费注册"}
+                  </Link>
+                </p>
+              </>
+            )}
+          </div>
+        </section>
+
+        <ProductShowcase />
+      </div>
     </main>
   );
 }
-

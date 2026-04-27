@@ -2,11 +2,15 @@ from __future__ import annotations
 
 from app.services.ai_workflow import (
     WorkflowState,
+    _available_reference_resources,
     _clarification_questions_for_status,
     _draft_requirements,
     _learning_clarification_status,
+    _learning_need_checklist,
     _should_ask_brief_clarification,
     _should_use_fast_pm_path,
+    _should_use_resource_followup_context,
+    _status_with_resource_context_default,
 )
 from app.services.course_runtime import normalize_requirements
 from app.services.openai_course_ai import openai_course_ai
@@ -21,6 +25,11 @@ def run_pm(state: WorkflowState) -> WorkflowState:
         request=request,
         requirements=draft_requirements,
     )
+    if _should_use_resource_followup_context(course_package=state["course_package"], lesson=lesson, request=request):
+        draft_status = _status_with_resource_context_default(
+            draft_status,
+            resource_count=len(_available_reference_resources(state["course_package"], lesson)),
+        )
 
     if request.interaction_mode == "direct_edit":
         return {
@@ -57,6 +66,7 @@ def run_pm(state: WorkflowState) -> WorkflowState:
             lesson_title=lesson.title,
             document=lesson.board_document,
         )
+        requirements.learning_need_checklist = _learning_need_checklist(lesson, request, requirements)
         status = _learning_clarification_status(
             lesson=lesson,
             request=request,

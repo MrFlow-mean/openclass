@@ -1,7 +1,7 @@
 import json
 import sqlite3
 
-from app.models import ResourceLibraryItem
+from app.models import BoardTeachingProgress, ResourceLibraryItem
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
 
 
@@ -74,3 +74,27 @@ def test_sqlite_store_round_trips_resource_lesson_scope(tmp_path) -> None:
     reloaded = store.load()
 
     assert reloaded.packages[0].resources[0].scope_lesson_id == lesson.id
+
+
+def test_sqlite_store_round_trips_board_teaching_progress(tmp_path) -> None:
+    db_path = tmp_path / "openclass.sqlite3"
+    store = SqliteCourseStore(db_path, legacy_json_path=None)
+
+    workspace = store.load()
+    lesson = workspace.packages[0].lessons[0]
+    lesson.board_teaching_progress = BoardTeachingProgress(
+        board_document_id=lesson.board_document.id,
+        board_snapshot_hash="hash-1",
+        current_section_index=1,
+        completed_section_indexes=[0, 1],
+        waiting_for_continue=True,
+    )
+    store.save(workspace)
+
+    reloaded = store.load()
+    progress = reloaded.packages[0].lessons[0].board_teaching_progress
+
+    assert progress is not None
+    assert progress.current_section_index == 1
+    assert progress.completed_section_indexes == [0, 1]
+    assert progress.waiting_for_continue is True

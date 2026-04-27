@@ -185,6 +185,10 @@ export function courseFullName(course: OpenCourse) {
   return `${course.owner}/${course.title}`;
 }
 
+export function courseDetailHref(course: Pick<OpenCourse, "id">) {
+  return `/courses/${course.id}`;
+}
+
 export function courseAvatarUrl(course: OpenCourse) {
   return `https://api.dicebear.com/9.x/glass/svg?seed=${encodeURIComponent(course.avatarSeed)}`;
 }

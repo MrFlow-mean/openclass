@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -13,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import certifi
 from dotenv import load_dotenv
 from openai import OpenAI
 from pydantic import BaseModel, Field
@@ -50,6 +52,32 @@ from app.services.lesson_factory import slugify
 from app.services.rich_document import build_document
 
 logger = logging.getLogger(__name__)
+_URLLIB_SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
+
+REFERENCE_HANDOUT_QUALITY_STANDARD = (
+    "Quality bar for chapter handouts: write like a polished teacher-prepared lecture handout, "
+    "not like copied source notes. For a full chapter, organize about 10 coherent H2 sections, similar to a teacher's chapter plan, such as "
+    "chapter positioning, mathematical/problem formulation, key definitions, core conflict, "
+    "worked intuition/example, important theorem or bound, method/application, common pitfalls, "
+    "logic map, and classroom summary/check questions. Transform source excerpts into clean teaching prose; "
+    "do not paste noisy OCR fragments, page numbers, broken formulas, or raw textbook paragraphs. "
+    "Avoid placeholder headings and filler such as 资料里的可讲片段, 可以从资料片段中选, 请补入一个最小例子, "
+    "本章通常, or asks for later completion. Use concrete concepts, equations in readable text, examples, "
+    "and answers/checks in the same response. For technical textbook chapters, especially pattern recognition, "
+    "machine learning, mathematics, computer science, and engineering materials, do not merely summarize or rearrange "
+    "the source. Identify the core knowledge points and actively expand them: explain why each concept is introduced, "
+    "what problem it solves, how it connects to earlier/later chapters, the intuition behind formulas, a small worked "
+    "example, common misunderstandings, and a classroom check. Keep the fine-grained chapter splitting, but make every "
+    "section substantial: a full chapter handout should usually be several thousand Chinese characters with developed "
+    "multi-paragraph explanations under each important heading, not a 1-3 page outline or sparse bullet plan."
+    " For humanities and social-science materials such as history, literature, philosophy, politics, law, sociology, "
+    "education, culture, or ethics, do not stay at outline level. Identify 3-5 important claims, concepts, events, "
+    "people, textual details, or arguments from the source and expand each one in depth: explain its background, "
+    "what the source is really saying, the reasoning or cause-effect chain, why it matters, how to compare it with "
+    "nearby ideas, and what learners often misunderstand. Include close-reading style explanations when the source "
+    "is literary or textual, and historical/contextual explanation when the source is historical or political. "
+    "The handout must contain developed multi-paragraph expansion of important content, not generic summaries."
+)
 
 
 def _load_root_dotenv() -> None:
@@ -73,6 +101,20 @@ def _env_any(*names: str) -> str | None:
         if value:
             return value
     return None
+
+
+def _shared_api_key() -> str | None:
+    return _env_any("AI_API_KEY", "OPENAI_API_KEY")
+
+
+def _single_api_key_mode() -> bool:
+    return (os.getenv("AI_SINGLE_API_KEY_MODE") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _google_api_key() -> str | None:
+    if _single_api_key_mode():
+        return _shared_api_key()
+    return _env_any("GOOGLE_API_KEY", "GEMINI_API_KEY")
 
 
 def _env_int(name: str, default: int) -> int:
@@ -131,6 +173,129 @@ def _redact_reference_payload(reference: dict[str, Any] | None) -> dict[str, Any
     return redacted
 
 
+def _compact_generation_request(value: str) -> str:
+    return re.sub(r"[\s，,。？?！!：:；;\"'“”‘’]+", "", value or "")
+
+
+def _contract_has_explicit_append_intent(compact: str) -> bool:
+    section_targets = ("页面", "一页", "几页", "多页", "章节", "新章节", "一节", "几节", "整章")
+    content_targets = (*section_targets, "内容")
+    forward_signals = ("继续写", "续写", "接着写", "再写", "往后写", "继续生成")
+    create_signals = ("新增", "追加", "新生成", "再生成")
+    if any(signal in compact for signal in forward_signals) and any(target in compact for target in content_targets):
+        return True
+    if any(signal in compact for signal in create_signals) and any(target in compact for target in content_targets):
+        return True
+    if "补充" in compact and any(target in compact for target in section_targets):
+        return True
+    if any(signal in compact for signal in ("加上", "加几", "加一", "加个", "添加")) and any(
+        target in compact for target in section_targets
+    ):
+        return True
+    tail_markers = ("在后面补", "在末尾补", "追加到末尾", "接在后面", "放到最后", "另起一节", "另起一章")
+    return any(marker in compact for marker in tail_markers)
+
+
+def _contract_is_in_place_expansion(compact: str) -> bool:
+    if _contract_has_explicit_append_intent(compact):
+        return False
+    expansion_signals = (
+        "扩展",
+        "扩写",
+        "展开",
+        "细化",
+        "丰富",
+        "补全",
+        "完善",
+        "补充",
+        "讲透",
+        "更详细",
+        "更细致",
+        "细致讲解",
+        "详细讲解",
+        "详细解析",
+        "全面",
+    )
+    current_targets = (
+        "板书",
+        "版书",
+        "讲义",
+        "文档",
+        "内容",
+        "当前",
+        "原有",
+        "已有",
+        "这一节",
+        "这节",
+        "这一章",
+        "这章",
+        "小节",
+        "段落",
+        "例子",
+        "案例",
+        "知识点",
+    )
+    return any(signal in compact for signal in expansion_signals) and any(target in compact for target in current_targets)
+
+
+def _document_edit_generation_contract(
+    *,
+    request_message: str,
+    scope_action: ScopeAction | None,
+) -> dict[str, Any]:
+    compact = _compact_generation_request(request_message)
+    append_signals = (
+        "新增",
+        "追加",
+        "补充",
+        "加上",
+        "再生成",
+        "新生成",
+        "继续生成",
+        "继续写",
+        "续写",
+        "接着写",
+        "再写",
+        "往后写",
+    )
+    chapter_targets = ("章节", "新章节", "一节", "几节", "整章")
+    page_targets = ("页面", "一页", "几页", "多页")
+    if scope_action != "append_section" and _contract_is_in_place_expansion(compact):
+        return {
+            "mode": "expand_existing_board_in_place",
+            "html_scope": "return the complete updated board document, not only a new section",
+            "required_behavior": "preserve the original heading order and expand the existing paragraphs, examples, and explanations under their relevant headings",
+            "forbidden": "do not append a 补充章节/新增章节 unless the user explicitly asks to 新增/追加/续写/新章节/页面/末尾",
+        }
+    if scope_action == "append_section" and any(target in compact for target in chapter_targets):
+        return {
+            "mode": "append_full_chapter",
+            "append_position": "end_of_current_board",
+            "html_scope": "return only the new chapter HTML, not the existing board",
+            "required_scale": "comparable to a newly generated board/lesson, not a short addendum",
+            "minimum_structure": "one h2 chapter title, about 8-10 h3 subsections, multiple developed paragraphs per subsection, concrete examples, exercises, and reference answers or summary",
+            "target_length": "usually 2400-4500 Chinese characters unless the requested topic is intentionally narrow",
+            "forbidden": "do not echo the user instruction, do not return only an introduction, and do not ask the user to fill examples later",
+        }
+    if scope_action == "append_section" and any(signal in compact for signal in append_signals):
+        return {
+            "mode": "append_new_section",
+            "append_position": "end_of_current_board",
+            "html_scope": "return only the new HTML to append, not the existing board",
+            "required_scale": "large enough to teach directly; avoid one-paragraph placeholders",
+        }
+    if any(target in compact for target in page_targets) and any(signal in compact for signal in append_signals):
+        return {
+            "mode": "append_new_page",
+            "append_position": "end_of_current_board",
+            "html_scope": "return only the new page or section HTML, not the existing board",
+        }
+    return {
+        "mode": "edit_or_generate_document",
+        "html_scope": "follow the user's edit scope and selection rules",
+    }
+
+
 class TeacherMessageOutput(BaseModel):
     teacher_message: str
 
@@ -181,7 +346,7 @@ def bind_text_model_selection(selection: AIModelSelection | None):
 
 
 class OpenAIConfig(BaseModel):
-    api_key: str | None = Field(default_factory=lambda: os.getenv("OPENAI_API_KEY"))
+    api_key: str | None = Field(default_factory=_shared_api_key)
     base_url: str | None = Field(default_factory=lambda: os.getenv("OPENAI_BASE_URL"))
     default_model: str = Field(default_factory=lambda: os.getenv("OPENAI_MODEL", DEFAULT_TEXT_MODEL))
     pm_model: str | None = Field(default_factory=lambda: os.getenv("OPENAI_PM_MODEL"))
@@ -372,7 +537,7 @@ class AnthropicCompatibleConfig(BaseModel):
 
 
 class GoogleTextConfig(BaseModel):
-    api_key: str | None = Field(default_factory=lambda: os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"))
+    api_key: str | None = Field(default_factory=_google_api_key)
     base_url: str = Field(
         default_factory=lambda: os.getenv(
             "GOOGLE_GENERATIVE_LANGUAGE_BASE_URL",
@@ -453,7 +618,7 @@ class AnthropicTextClient:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=120) as response:
+            with urllib.request.urlopen(request, timeout=120, context=_URLLIB_SSL_CONTEXT) as response:
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
@@ -512,7 +677,7 @@ class GoogleTextClient:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=120) as response:
+            with urllib.request.urlopen(request, timeout=120, context=_URLLIB_SSL_CONTEXT) as response:
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
@@ -565,7 +730,11 @@ class OpenAICourseAI:
             if self.anthropic_compatible_config.enabled
             else None
         )
-        self.google_client = GoogleTextClient(self.google_config) if self.google_config.enabled else None
+        self.google_client = (
+            GoogleTextClient(self.google_config)
+            if self.google_config.enabled and not _single_api_key_mode()
+            else None
+        )
 
     @property
     def enabled(self) -> bool:
@@ -826,21 +995,28 @@ class OpenAICourseAI:
             return selection.provider, selection.model
 
         default_selection = default_text_selection()
-        if default_selection.provider == "anthropic":
-            return "anthropic", default_selection.model or self.anthropic_config.default_model
-        if default_selection.provider == "google":
-            return "google", default_selection.model or self.google_config.default_model
-        if default_selection.provider == "deepseek":
-            return "deepseek", default_selection.model or self.deepseek_config.default_model
-        if default_selection.provider == "kimi":
-            return "kimi", default_selection.model or self.kimi_config.default_model
-        if default_selection.provider == "minimax":
-            return "minimax", default_selection.model or self.minimax_config.default_model
-        if default_selection.provider == "openai_compatible":
-            return "openai_compatible", default_selection.model or self.openai_compatible_config.default_model
-        if default_selection.provider == "anthropic_compatible":
-            return "anthropic_compatible", default_selection.model or self.anthropic_compatible_config.default_model
-        return "openai", self.config.model_for(role)
+        if default_selection.provider == "openai":
+            return "openai", self.config.model_for(role)
+        return default_selection.provider, self._model_for_provider(default_selection.provider, role, default_selection.model)
+
+    def _model_for_provider(self, provider: AIProvider, role: str, requested_model: str | None = None) -> str:
+        if requested_model:
+            return requested_model
+        if provider == "anthropic":
+            return self.anthropic_config.default_model
+        if provider == "google":
+            return self.google_config.default_model
+        if provider == "deepseek":
+            return self.deepseek_config.model_for(role)
+        if provider == "kimi":
+            return self.kimi_config.model_for(role)
+        if provider == "minimax":
+            return self.minimax_config.model_for(role)
+        if provider == "openai_compatible":
+            return self.openai_compatible_config.model_for(role)
+        if provider == "anthropic_compatible":
+            return self.anthropic_compatible_config.default_model
+        return self.config.model_for(role)
 
     def _log_event_name(self, provider: AIProvider, suffix: str) -> str:
         return f"{provider}_text_call{suffix}"
@@ -861,6 +1037,51 @@ class OpenAICourseAI:
         if provider == "anthropic_compatible":
             return self.anthropic_compatible_client is not None
         return self.client is not None
+
+    def _fallback_provider_candidates(self, failed_provider: AIProvider, role: str) -> list[tuple[AIProvider, str]]:
+        ordered_providers: tuple[AIProvider, ...] = (
+            "google",
+            "deepseek",
+            "kimi",
+            "minimax",
+            "openai_compatible",
+            "anthropic",
+            "anthropic_compatible",
+            "openai",
+        )
+        candidates: list[tuple[AIProvider, str]] = []
+        for provider in ordered_providers:
+            if provider == failed_provider or not self._provider_available(provider):
+                continue
+            candidates.append((provider, self._model_for_provider(provider, role)))
+        return candidates
+
+    def _should_retry_provider_fallback(self, exc: Exception) -> bool:
+        status_code = getattr(exc, "status_code", None) or getattr(exc, "status", None)
+        if status_code in {401, 403, 404, 429, 500, 502, 503, 504}:
+            return True
+        message = str(exc).lower()
+        retry_markers = (
+            "incorrect api key",
+            "invalid_api_key",
+            "unauthorized",
+            "unauthenticated",
+            "permission denied",
+            "permission_denied",
+            "quota",
+            "rate limit",
+            "model_not_found",
+            "does not exist",
+            "not configured",
+            "certificate_verify_failed",
+            "connection error",
+            "timed out",
+            "timeout",
+            "temporarily unavailable",
+            "bad gateway",
+            "service unavailable",
+        )
+        return any(marker in message for marker in retry_markers)
 
     def _fallback_model_for(self, provider: AIProvider, exc: Exception, attempted_model: str) -> str | None:
         if provider == "openai_compatible":
@@ -890,6 +1111,68 @@ class OpenAICourseAI:
             return fallback_model
         return None
 
+    def _try_provider_fallback(
+        self,
+        *,
+        role: str,
+        system_prompt: str,
+        user_prompt: str,
+        schema: type[BaseModel],
+        call_details: dict[str, Any],
+        failed_provider: AIProvider,
+        failed_model: str,
+        error: Exception,
+    ):
+        for fallback_provider, fallback_model in self._fallback_provider_candidates(failed_provider, role):
+            ai_usage_logger.log_event(
+                self._log_event_name(failed_provider, "_provider_retry"),
+                **call_details,
+                retry_provider=fallback_provider,
+                retry_model=fallback_model,
+                error=str(error),
+            )
+            fallback_details = {
+                **call_details,
+                "provider": fallback_provider,
+                "model": fallback_model,
+            }
+            try:
+                response = self._call_parse(
+                    provider=fallback_provider,
+                    model=fallback_model,
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    schema=schema,
+                )
+                ai_usage_logger.log_event(
+                    self._log_event_name(fallback_provider, ""),
+                    **fallback_details,
+                    fallback_from_provider=failed_provider,
+                    fallback_from_model=failed_model,
+                    response_id=getattr(response, "id", None),
+                    output_text=getattr(response, "output_text", None),
+                    usage=getattr(response, "usage", None),
+                    parsed_output=response.output_parsed,
+                )
+                return response.output_parsed
+            except Exception as fallback_exc:  # pragma: no cover - network/runtime dependent
+                ai_usage_logger.log_event(
+                    self._log_event_name(fallback_provider, "_error"),
+                    **fallback_details,
+                    fallback_from_provider=failed_provider,
+                    fallback_from_model=failed_model,
+                    error=str(fallback_exc),
+                )
+                logger.warning(
+                    "%s %s fallback provider call failed after %s/%s failed: %s",
+                    fallback_provider,
+                    role,
+                    failed_provider,
+                    failed_model,
+                    fallback_exc,
+                )
+        return None
+
     def _parse(
         self,
         role: str,
@@ -914,6 +1197,18 @@ class OpenAICourseAI:
                 **call_details,
                 reason="client_disabled",
             )
+            provider_fallback = self._try_provider_fallback(
+                role=role,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                schema=schema,
+                call_details=call_details,
+                failed_provider=provider,
+                failed_model=requested_model,
+                error=RuntimeError("client_disabled"),
+            )
+            if provider_fallback is not None:
+                return provider_fallback
             return None
 
         try:
@@ -973,7 +1268,33 @@ class OpenAICourseAI:
                         requested_model,
                         retry_exc,
                     )
+                    if self._should_retry_provider_fallback(retry_exc):
+                        provider_fallback = self._try_provider_fallback(
+                            role=role,
+                            system_prompt=system_prompt,
+                            user_prompt=user_prompt,
+                            schema=schema,
+                            call_details={**call_details, "model": fallback_model},
+                            failed_provider=provider,
+                            failed_model=fallback_model,
+                            error=retry_exc,
+                        )
+                        if provider_fallback is not None:
+                            return provider_fallback
                     return None
+            if self._should_retry_provider_fallback(exc):
+                provider_fallback = self._try_provider_fallback(
+                    role=role,
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    schema=schema,
+                    call_details=call_details,
+                    failed_provider=provider,
+                    failed_model=requested_model,
+                    error=exc,
+                )
+                if provider_fallback is not None:
+                    return provider_fallback
             ai_usage_logger.log_event(
                 self._log_event_name(provider, "_error"),
                 **call_details,
@@ -1034,6 +1355,7 @@ class OpenAICourseAI:
                 "You are PM AI for an AI teaching workbench. Decide whether the learner's request is clear enough. "
                 "If not, set ready=false and ask 1 to 3 concise clarification questions in Chinese. "
                 "If ready, set ready=true. Always provide the best current LearningRequirementSheet. "
+                "Fill learning_need_checklist with 2 to 6 concrete learner needs derived from the user message, selected text, recent conversation, and board outline. "
                 "The visible board is a single Word-like rich document."
             ),
             user_prompt=_json(
@@ -1058,6 +1380,7 @@ class OpenAICourseAI:
         selection: dict[str, Any] | None,
         interaction_mode: str,
         scope_action: ScopeAction | None,
+        board_edit_action: str | None,
         requirements: LearningRequirementSheet,
         document: BoardDocument,
         resource_matches: list[dict[str, Any]],
@@ -1068,7 +1391,10 @@ class OpenAICourseAI:
                 "You are Board Manager AI for a Word-like teaching document. Choose one action. "
                 "clarify_request asks PM follow-up questions; no_change only answers; edit_board edits the current document; "
                 "append_section appends a section; create_new_lesson creates a separate lesson; await_scope_choice asks the learner to choose. "
-                "Because the board is now a full rich document, prefer edit_board for requests that ask to generate or rewrite teaching material."
+                "Default ask-mode follow-up questions should be no_change: Board AI prepares an internal lecture handout and Teacher AI explains, without changing the visible board. "
+                "Use edit_board/append_section/create_new_lesson only when the learner explicitly asks to generate/rewrite/expand board or handout content, or when board_edit_action is confirm. "
+                "When board_edit_action is confirm, choose the best write strategy yourself: edit_board for in-place expansion, append_section for an extension chapter, or create_new_lesson for a genuinely separate topic. "
+                "Use append_section when the learner explicitly asks for a new page/section/chapter or when confirmed expansion should safely extend the current lesson."
             ),
             user_prompt=_json(
                 {
@@ -1077,6 +1403,7 @@ class OpenAICourseAI:
                     "selection": selection,
                     "interaction_mode": interaction_mode,
                     "scope_action": scope_action,
+                    "board_edit_action": board_edit_action,
                     "learning_requirement_sheet": requirements.model_dump(mode="json"),
                     "board_document": document.model_dump(mode="json"),
                     "resource_matches": resource_matches,
@@ -1110,6 +1437,10 @@ class OpenAICourseAI:
             "learning_requirement_sheet": requirements.model_dump(mode="json"),
             "board_document": document.model_dump(mode="json"),
             "selected_reference": selected_reference,
+            "generation_contract": _document_edit_generation_contract(
+                request_message=request_message,
+                scope_action=scope_action,
+            ),
         }
         log_payload = dict(prompt_payload)
         log_payload["selected_reference"] = _redact_reference_payload(selected_reference)
@@ -1117,17 +1448,29 @@ class OpenAICourseAI:
             "board",
             system_prompt=(
                 "You are Board AI editing a Word-like rich teaching document. "
+                f"{REFERENCE_HANDOUT_QUALITY_STANDARD} "
                 "Return replacement_html containing coherent long-form teaching prose. "
                 "If a selection is provided and the user did not explicitly ask to rewrite the whole document, edit only that selection and never rewrite the full document. "
                 "For enhancement requests such as 完善/补充/详细解析/全面/展开, keep the selected original wording visible and continue writing from it instead of deleting it. "
-                "If the user asks to add a new page, add several pages, append content, or add a section, return only the new HTML section/page content, set replace_whole false, and set target_action to append_section. "
+                "If no selection is provided and the user asks to 扩展/扩写/展开/细化/丰富/更详细/细致讲解 the current board, handout, content, examples, or knowledge points, edit the existing document in place: preserve the original heading order, expand paragraphs and examples under the relevant headings, and return the complete updated document. Do not append a 补充章节/新增章节 unless they explicitly ask for 新增/追加/续写/新章节/页面/末尾. "
+                "If the user explicitly asks to add a new page, add several pages, append at the end, continue writing after the current board, or add a new section/chapter, return only the new HTML section/page content, set replace_whole false, and set target_action to append_section. "
+                "For append_section, write the actual expanded new section with concrete explanations, examples, checks, and teaching flow; never echo the user's instruction as board content. "
+                "When append_section continues or adds a chapter (续写章节/新章节/一节/整章), write a full chapter appended to the end of the current board: "
+                "use an h2 chapter title, about 8-10 h3 subsections, multiple developed paragraphs per subsection, concrete examples, exercises, and reference answers or a summary. "
+                "The appended chapter should be comparable in scale to an initial generated board/lesson, usually 2400-4500 Chinese characters, not just one or two short paragraphs. "
                 "If the user asks to generate or rewrite the lesson, return a complete handout-style HTML document with headings, long dialogue/body content, "
                 "explanations, examples, exercises, and answers. Do not split content into blocks or cards. "
                 "If selected_reference.chapter_text is provided, treat it as the full relevant chapter content and ground the handout in that chapter. "
+                "Never return a placeholder template that merely says 学习目标, 问题入口, 核心概念, 最小例题, or asks the user to fill examples later. "
+                "If the request is to teach a chapter, start from the chapter's concrete ideas, terms, or excerpts immediately, keep about 10 meaningful H2 sections, and make each section detailed enough to teach directly. "
                 "For French cafe dialogue lessons, the dialogue must be the main body and should be long enough for teaching. "
                 "Also return board_teaching_guide in Chinese, permanently bound to this board snapshot. "
                 "In board_teaching_guide, explain which board excerpts should be taught first, why they were selected, "
                 "which learner needs they correspond to, and what teaching flow Teacher AI should follow. "
+                "Fill board_teaching_guide.lecture_handout as an internal lecture handout for Teacher AI. It may be richer than the visible board, but it must stay grounded in the document/reference and must not be treated as persisted board content. "
+                "Fill board_teaching_guide.section_plans by H2 section. Each section plan should tell Teacher AI the section title, "
+                "board summary, core knowledge points, teaching steps, teaching method, example or analogy, common pitfalls, "
+                "check question, and transition to the next section. "
                 "Also return teacher_talk_track in Chinese: a short classroom-style explanation using your own words, "
                 "not a recap of the document wording. It should sound like a real teacher introducing the main idea, "
                 "the why behind it, and one way to understand or apply it."
@@ -1183,16 +1526,18 @@ class OpenAICourseAI:
             "teacher",
             system_prompt=(
                 "You are Teacher AI speaking to the learner in Chinese. "
+                "Start with the subject matter itself, not workflow status, board status, or what you are about to do. "
                 "Sound like a live teacher, not a narrator reading the board. "
-                "When level or application context is missing but teaching can start, teach first with a conservative assumption, "
-                "then weave in at most one natural check-in about learning purpose or background. Do not sound like a questionnaire. "
+                "When level or application context is missing but teaching can start, do not ask about purpose/background in this turn; just teach at a reasonable introductory depth. "
                 "If clarification is needed, ask at most one very short question and avoid repeating fixed wording about level/scenario. "
-                "If the document was updated, mention that the right-side Word-like board has been updated in one short clause only. "
-                "Teach mainly from board_teaching_guide.selected_items and board_teaching_guide.teacher_brief. "
+                "If the document was updated, do not announce the update unless the learner asked about the document. "
+                "Teach only from board_teaching_guide.selected_items, board_teaching_guide.lecture_handout, and board_teaching_guide.teacher_brief. "
+                "Do not independently introduce new curriculum content that Board AI did not prepare. "
                 "Do not quote, enumerate, or read out the board unless the learner explicitly asks for exact wording. "
                 "Prefer this structure: first give the core idea in your own words, then explain why it matters, then offer one analogy, example, or check question. "
-                "Keep the answer tight and classroom-like, with minimal transition filler. "
+                "Keep the answer tight and classroom-like, with minimal transition filler, usually 2 to 4 short paragraphs. "
                 "Use short paragraphs separated by blank lines. Never return one dense wall of text. "
+                "Never end with a generic prompt like 顺手告诉我, 你可以告诉我, 是为了考试/工作/兴趣, unless clarification is truly blocking. "
                 "Do not mention internal schemas."
             ),
             user_prompt=_json(
@@ -1229,7 +1574,10 @@ class OpenAICourseAI:
                 "You are Board AI preparing a teaching guide permanently bound to the current Word-like board snapshot. "
                 "Return BoardTeachingGuide in Chinese. "
                 "Select the most important excerpts from the board, explain why they matter, map them to the learner's needs, "
-                "and provide a concise teacher_brief that can drive a live spoken explanation. "
+                "and provide a concise teacher_brief plus lecture_handout that can drive a live spoken explanation. "
+                "lecture_handout is internal guidance for Teacher AI only; never rewrite the board itself. "
+                "Also fill section_plans by H2 section: each plan must include the section heading, board excerpt, core points, "
+                "teaching steps, teaching method, example or analogy, pitfalls, check question, and transition to the next section. "
                 "Do not rewrite the board itself."
             ),
             user_prompt=_json(
@@ -1258,11 +1606,13 @@ class OpenAICourseAI:
             "lesson",
             system_prompt=(
                 "You are Board AI creating a brand-new Word-like rich teaching document. "
+                f"{REFERENCE_HANDOUT_QUALITY_STANDARD} "
                 "Return one complete handout-style document, not blocks. Use HTML with h1/h2/h3/p/ol/ul/table when helpful. "
                 "The document should be long enough for a real lesson. For French cafe ordering lessons, include: title, scene, complete bilingual dialogue, "
                 "grammar focus, sentence analysis, vocabulary expressions, exercises, and answers. "
                 "The dialogue should be the main body, not a tiny sample. Avoid card-like fragmented notes. "
-                "If reference_context.chapter_text is provided, treat it as the full relevant chapter content and ground the new lesson in that chapter."
+                "If reference_context.chapter_text is provided, treat it as the full relevant chapter content and ground the new lesson in that chapter. "
+                "Never return an empty scaffold or ask the learner to fill in examples later; provide concrete teaching content in this response."
             ),
             user_prompt=_json(prompt_payload),
             log_user_prompt=_json(log_payload),

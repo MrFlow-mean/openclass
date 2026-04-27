@@ -76,8 +76,10 @@ AIProvider = Literal[
 AIModelCapability = Literal["text", "realtime"]
 AIRealtimeTransport = Literal["openai_webrtc", "gemini_live_websocket"]
 ResourceReferenceAction = Literal["confirm", "skip"]
+BoardEditConfirmationAction = Literal["confirm", "skip"]
 ResourceScanStrategy = Literal["outline_only", "heading_section", "page_window", "fulltext_match"]
 ChatInteractionMode = Literal["ask", "direct_edit"]
+TeachingAction = Literal["continue", "restart"]
 DocumentMarginPreset = Literal["narrow", "normal", "wide"]
 DocumentOrientation = Literal["portrait", "landscape"]
 DocumentPageSize = Literal["a4", "letter", "a3"]
@@ -209,6 +211,7 @@ class LearningRequirementSheet(BaseModel):
     level: str
     known_background: str
     current_questions: list[str]
+    learning_need_checklist: list[str] = Field(default_factory=list)
     target_depth: str
     output_preference: str
     boundary: str
@@ -278,6 +281,7 @@ class Lesson(BaseModel):
     tags: list[str] = Field(default_factory=list)
     board_document: BoardDocument
     board_teaching_guide: BoardTeachingGuide | None = None
+    board_teaching_progress: BoardTeachingProgress | None = None
     learning_requirements: LearningRequirementSheet | None = None
     teaching_guide: TeachingGuide
     history_graph: LessonHistoryGraph
@@ -447,6 +451,14 @@ class BoardDecision(BaseModel):
     reason: str
 
 
+class BoardEditPrompt(BaseModel):
+    topic: str
+    question: str
+    reason: str
+    confirm_label: str = "是"
+    skip_label: str = "否"
+
+
 class BoardTeachingSelectedItem(BaseModel):
     excerpt: str
     source_heading: str | None = None
@@ -463,6 +475,19 @@ class BoardNeedMapping(BaseModel):
     rationale: str
 
 
+class BoardSectionTeachingPlan(BaseModel):
+    order_index: int = 0
+    heading: str
+    board_excerpt: str = ""
+    core_points: list[str] = Field(default_factory=list)
+    teaching_steps: list[str] = Field(default_factory=list)
+    teaching_method: str = ""
+    example_or_analogy: str = ""
+    common_pitfalls: list[str] = Field(default_factory=list)
+    check_question: str = ""
+    transition_to_next: str = ""
+
+
 class BoardTeachingGuide(BaseModel):
     board_document_id: str = ""
     board_snapshot_hash: str = ""
@@ -472,6 +497,24 @@ class BoardTeachingGuide(BaseModel):
     teaching_flow: list[str] = Field(default_factory=list)
     generation_rationale: str = ""
     teacher_brief: str = ""
+    lecture_handout: str = ""
+    section_plans: list[BoardSectionTeachingPlan] = Field(default_factory=list)
+
+
+class BoardTeachingProgress(BaseModel):
+    board_document_id: str = ""
+    board_snapshot_hash: str = ""
+    current_section_index: int = 0
+    completed_section_indexes: list[int] = Field(default_factory=list)
+    waiting_for_continue: bool = False
+
+
+class SectionTeachingProgressView(BaseModel):
+    section_index: int = 0
+    section_count: int = 0
+    current_section_title: str = ""
+    has_next_section: bool = False
+    waiting_for_continue: bool = False
 
 
 class ChatRequest(BaseModel):
@@ -484,6 +527,9 @@ class ChatRequest(BaseModel):
     resource_reference_action: ResourceReferenceAction | None = None
     resource_reference_resource_id: str | None = None
     resource_reference_chapter_id: str | None = None
+    board_edit_action: BoardEditConfirmationAction | None = None
+    board_edit_topic: str | None = None
+    teaching_action: TeachingAction | None = None
     conversation: list[ConversationTurn] = Field(default_factory=list)
 
 
@@ -559,8 +605,10 @@ class ChatResponse(BaseModel):
     scope_options: list[ScopeOption] = Field(default_factory=list)
     resource_matches: list[ResourceMatch] = Field(default_factory=list)
     reference_prompt: ResourceReferencePrompt | None = None
+    board_edit_prompt: BoardEditPrompt | None = None
     selected_reference: ResourceReferenceContext | None = None
     created_lesson: LessonView | None = None
+    teaching_progress: SectionTeachingProgressView | None = None
     course_package: CoursePackageView
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import ssl
 
 import certifi
@@ -23,12 +24,47 @@ from app.services.workspace_state import find_lesson_package, load_workspace
 
 router = APIRouter()
 
+_GOOGLE_API_KEY_PATTERN = re.compile(r"([?&]key=)[^&\s)]+")
+
 
 def _sdp_log_summary(value: str) -> dict[str, object]:
     return {
         "present": bool(value.strip()),
         "length": len(value),
     }
+
+
+def _redact_google_api_key(value: str) -> str:
+    return _GOOGLE_API_KEY_PATTERN.sub(r"\1[redacted]", value)
+
+
+def _google_proxy_error_payload(error: Exception) -> tuple[str, dict[str, object]]:
+    sanitized = _redact_google_api_key(str(error))
+    normalized = sanitized.lower()
+    if "permission denied" in normalized or "permission_denied" in normalized or "403" in normalized:
+        return sanitized, {
+            "code": 403,
+            "status": "PERMISSION_DENIED",
+            "message": "Google Gemini Live permission denied",
+        }
+    if "unauthenticated" in normalized or "401" in normalized:
+        return sanitized, {
+            "code": 401,
+            "status": "UNAUTHENTICATED",
+            "message": "Google Gemini Live authentication failed",
+        }
+    return sanitized, {
+        "code": 502,
+        "status": "BAD_GATEWAY",
+        "message": "Google Gemini Live proxy failed",
+    }
+
+
+async def _send_google_realtime_error(websocket: WebSocket, error: dict[str, object]) -> None:
+    try:
+        await websocket.send_json({"error": error})
+    except RuntimeError:
+        pass
 
 
 @router.post("/api/lessons/{lesson_id}/realtime/connect", response_model=RealtimeConnectResponse)
@@ -144,6 +180,14 @@ def create_google_realtime_session(
 async def proxy_google_realtime_session(websocket: WebSocket, lesson_id: str) -> None:
     await websocket.accept()
     if not google_realtime_teacher.enabled:
+        await _send_google_realtime_error(
+            websocket,
+            {
+                "code": 503,
+                "status": "UNCONFIGURED",
+                "message": "Google Gemini Live is not configured",
+            },
+        )
         await websocket.close(code=1011, reason="Google Gemini Live is not configured")
         return
 
@@ -186,7 +230,9 @@ async def proxy_google_realtime_session(websocket: WebSocket, lesson_id: str) ->
     except WebSocketDisconnect:
         return
     except Exception as exc:
-        ai_usage_logger.log_event("google_realtime_proxy_error", lesson_id=lesson_id, error=str(exc))
+        log_error, client_error = _google_proxy_error_payload(exc)
+        ai_usage_logger.log_event("google_realtime_proxy_error", lesson_id=lesson_id, error=log_error)
+        await _send_google_realtime_error(websocket, client_error)
         try:
             await websocket.close(code=1011, reason="Google Gemini Live proxy failed")
         except RuntimeError:

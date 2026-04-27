@@ -125,6 +125,98 @@ def test_openai_parse_retries_model_not_found_with_fallback(isolated_ai_log) -> 
     assert entries[1]["payload"]["fallback_from_model"] == "gpt-5.3"
 
 
+def test_openai_parse_falls_back_to_google_on_provider_auth_error(isolated_ai_log) -> None:
+    class _Output(BaseModel):
+        title: str
+
+    class _GoogleResponse:
+        id = "google_123"
+        output_text = '{"title":"勾股定理"}'
+        usage = {"totalTokenCount": 12}
+        output_parsed = _Output(title="勾股定理")
+
+    class _FakeOpenAIResponses:
+        def parse(self, **kwargs):
+            raise Exception(
+                "Error code: 401 - {'error': {'message': 'Incorrect API key provided', "
+                "'type': 'invalid_request_error', 'code': 'invalid_api_key'}}"
+            )
+
+    class _FakeOpenAIClient:
+        def __init__(self) -> None:
+            self.responses = _FakeOpenAIResponses()
+
+    class _FakeGoogleClient:
+        def __init__(self) -> None:
+            self.payload = None
+
+        def parse(self, **kwargs):
+            self.payload = kwargs
+            return _GoogleResponse()
+
+    ai = OpenAICourseAI()
+    ai.client = _FakeOpenAIClient()
+    ai.google_client = _FakeGoogleClient()
+    ai.google_config.default_model = "gemini-good"
+
+    with bind_text_model_selection(AIModelSelection(provider="openai", model="gpt-bad")):
+        result = ai._parse("pm", "system", "user", _Output)
+
+    assert result is not None
+    assert result.title == "勾股定理"
+    assert ai.google_client.payload["model"] == "gemini-good"
+
+    entries = _read_log_entries(isolated_ai_log)
+    assert [entry["event_type"] for entry in entries] == ["openai_text_call_provider_retry", "google_text_call"]
+    assert entries[0]["payload"]["retry_provider"] == "google"
+    assert entries[0]["payload"]["retry_model"] == "gemini-good"
+    assert entries[1]["payload"]["fallback_from_provider"] == "openai"
+    assert entries[1]["payload"]["fallback_from_model"] == "gpt-bad"
+
+
+def test_unavailable_provider_falls_back_to_google(isolated_ai_log) -> None:
+    class _Output(BaseModel):
+        title: str
+
+    class _GoogleResponse:
+        id = "google_456"
+        output_text = '{"title":"函数"}'
+        usage = {"totalTokenCount": 10}
+        output_parsed = _Output(title="函数")
+
+    class _FakeGoogleClient:
+        def __init__(self) -> None:
+            self.payload = None
+
+        def parse(self, **kwargs):
+            self.payload = kwargs
+            return _GoogleResponse()
+
+    ai = OpenAICourseAI()
+    ai.client = None
+    ai.google_client = _FakeGoogleClient()
+    ai.google_config.default_model = "gemini-ready"
+
+    with bind_text_model_selection(AIModelSelection(provider="openai", model="gpt-missing")):
+        result = ai._parse("pm", "system", "user", _Output)
+
+    assert result is not None
+    assert result.title == "函数"
+    assert ai.google_client.payload["model"] == "gemini-ready"
+
+    entries = _read_log_entries(isolated_ai_log)
+    assert [entry["event_type"] for entry in entries] == [
+        "openai_text_call_skipped",
+        "openai_text_call_provider_retry",
+        "google_text_call",
+    ]
+    assert entries[0]["payload"]["reason"] == "client_disabled"
+    assert entries[1]["payload"]["retry_provider"] == "google"
+    assert entries[1]["payload"]["retry_model"] == "gemini-ready"
+    assert entries[2]["payload"]["fallback_from_provider"] == "openai"
+    assert entries[2]["payload"]["fallback_from_model"] == "gpt-missing"
+
+
 def test_openai_compat_chat_completions_mode_parses_json(isolated_ai_log) -> None:
     class _Output(BaseModel):
         title: str

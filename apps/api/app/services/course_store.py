@@ -22,7 +22,7 @@ from app.models import (
 from app.services.lesson_factory import create_lesson
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 class SqliteCourseStore:
@@ -102,6 +102,7 @@ class SqliteCourseStore:
                 board_content_text TEXT NOT NULL,
                 board_page_settings_json TEXT NOT NULL,
                 board_teaching_guide_json TEXT,
+                board_teaching_progress_json TEXT,
                 learning_requirements_json TEXT,
                 teaching_guide_json TEXT NOT NULL,
                 current_branch TEXT NOT NULL,
@@ -220,6 +221,12 @@ class SqliteCourseStore:
         )
 
     def _migrate_schema(self, conn: sqlite3.Connection) -> None:
+        lesson_columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(lessons)").fetchall()
+        }
+        if "board_teaching_progress_json" not in lesson_columns:
+            conn.execute("ALTER TABLE lessons ADD COLUMN board_teaching_progress_json TEXT")
         resource_columns = {
             row["name"]
             for row in conn.execute("PRAGMA table_info(resources)").fetchall()
@@ -340,6 +347,7 @@ class SqliteCourseStore:
             tags=_loads(row["tags_json"], []),
             board_document=_document_from_row(row, "board"),
             board_teaching_guide=_loads_optional(row["board_teaching_guide_json"]),
+            board_teaching_progress=_loads_optional(row["board_teaching_progress_json"]),
             learning_requirements=_loads_optional(row["learning_requirements_json"]),
             teaching_guide=_loads(row["teaching_guide_json"], {}),
             history_graph=history_graph,
@@ -489,9 +497,9 @@ class SqliteCourseStore:
                 id, package_id, sort_order, title, slug, summary, tags_json,
                 board_document_id, board_document_title, board_content_json,
                 board_content_html, board_content_text, board_page_settings_json,
-                board_teaching_guide_json, learning_requirements_json, teaching_guide_json,
+                board_teaching_guide_json, board_teaching_progress_json, learning_requirements_json, teaching_guide_json,
                 current_branch, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 lesson.id,
@@ -508,6 +516,7 @@ class SqliteCourseStore:
                 document.content_text,
                 _dumps(document.page_settings.model_dump(mode="json")),
                 _dumps_optional(lesson.board_teaching_guide),
+                _dumps_optional(lesson.board_teaching_progress),
                 _dumps_optional(lesson.learning_requirements),
                 _dumps(lesson.teaching_guide.model_dump(mode="json")),
                 lesson.history_graph.current_branch,

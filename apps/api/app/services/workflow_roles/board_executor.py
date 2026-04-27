@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+import re
+
+from app.models import BoardDecision, BoardDocument
 from app.services.ai_workflow import (
     WorkflowState,
+    _append_section_topic,
+    _board_h2_sections,
     _bound_board_teaching_guide,
     _extract_focus_terms,
     _fallback_document_update,
     _is_append_document_request,
     _interactive_teaching_guide,
     _is_full_rewrite_request,
+    _is_in_place_expansion_request,
     _merge_selection_edit,
     _reference_payload,
     _resolve_board_teaching_guide,
@@ -22,6 +28,148 @@ from app.services.rich_document import (
     replace_selection_in_document,
     text_to_html,
 )
+
+
+_LOW_VALUE_APPEND_MARKERS = (
+    "用户当前追问",
+    "当前追问",
+    "原有主线",
+    "新问题接回",
+    "承接用户",
+    "专门承接",
+)
+
+_APPEND_INSTRUCTION_ECHOES = (
+    "续写一个新章节",
+    "续写新章节",
+    "新增一个新章节",
+    "新增章节",
+    "追加一个新章节",
+    "补充一个新章节",
+)
+_MIN_CHAPTER_APPEND_COMPACT_CHARS = 900
+_MIN_EXPLICIT_LARGE_CHAPTER_APPEND_COMPACT_CHARS = 1200
+
+
+def _compact_for_echo(value: str) -> str:
+    return re.sub(r"[\s，,。？?！!：:；;\"'“”‘’]+", "", value or "")
+
+
+def _is_chapter_append_request(message: str) -> bool:
+    compact = _compact_for_echo(message)
+    return _is_append_document_request(message) and any(target in compact for target in ("章节", "新章节", "一节", "几节"))
+
+
+def _chapter_append_min_compact_chars(request_message: str, document: BoardDocument) -> int:
+    compact = _compact_for_echo(request_message)
+    document_floor = min(
+        _MIN_EXPLICIT_LARGE_CHAPTER_APPEND_COMPACT_CHARS,
+        len(_compact_for_echo(document.content_text)) // 3,
+    )
+    explicit_large_signals = (
+        "大章节",
+        "完整章节",
+        "完整一章",
+        "整章",
+        "篇幅一样",
+        "一样大",
+        "同样篇幅",
+        "跟一开始生成的板书",
+    )
+    if any(signal in compact for signal in explicit_large_signals):
+        return max(_MIN_EXPLICIT_LARGE_CHAPTER_APPEND_COMPACT_CHARS, document_floor)
+    return max(_MIN_CHAPTER_APPEND_COMPACT_CHARS, document_floor)
+
+
+def _append_edit_needs_fallback(
+    *,
+    document: BoardDocument,
+    request_message: str,
+    replacement_html: str,
+    replacement_text: str,
+) -> bool:
+    if not _is_append_document_request(request_message):
+        return False
+
+    generated_text = "\n".join(part for part in [html_to_text(replacement_html), replacement_text.strip()] if part)
+    compact_generated = _compact_for_echo(generated_text)
+    compact_request = _compact_for_echo(request_message)
+
+    if compact_request and compact_request in compact_generated:
+        return True
+    if any(_compact_for_echo(marker) in compact_generated for marker in _LOW_VALUE_APPEND_MARKERS):
+        return True
+    if any(_compact_for_echo(marker) in compact_generated for marker in _APPEND_INSTRUCTION_ECHOES):
+        return True
+    if _is_chapter_append_request(request_message) and len(compact_generated) < _chapter_append_min_compact_chars(
+        request_message,
+        document,
+    ):
+        return True
+    if _is_chapter_append_request(request_message):
+        heading_count = len(re.findall(r"<h[23]\b", replacement_html, flags=re.IGNORECASE))
+        if heading_count < 3 and len(compact_generated) < _MIN_EXPLICIT_LARGE_CHAPTER_APPEND_COMPACT_CHARS:
+            return True
+    if "过拟合" in compact_request and not any(
+        term in generated_text for term in ("训练集", "验证集", "正则", "交叉验证", "早停", "复杂度", "数据泄漏", "样本外")
+    ):
+        return True
+    return False
+
+
+def _append_request_already_applied(
+    *,
+    document: BoardDocument,
+    request_message: str,
+    requirements,
+) -> bool:
+    if not _is_append_document_request(request_message) or not document.content_text.strip():
+        return False
+
+    topic = _append_section_topic(request_message, requirements)
+    compact_topic = _compact_for_echo(topic)
+    if len(compact_topic) < 4:
+        return False
+
+    heading_markers = (
+        f"补充章节{compact_topic}",
+        f"新增章节{compact_topic}",
+        f"追加章节{compact_topic}",
+        f"新章节{compact_topic}",
+    )
+    compact_lines = [_compact_for_echo(line) for line in document.content_text.splitlines()]
+    if any(line in heading_markers for line in compact_lines):
+        return True
+
+    if not _is_chapter_append_request(request_message):
+        return False
+
+    tail = _compact_document_tail(document.content_text)
+    compact_request = _compact_for_echo(request_message)
+    if compact_topic not in tail:
+        return False
+    if compact_request and compact_request in tail:
+        return False
+    if any(_compact_for_echo(marker) in tail for marker in _APPEND_INSTRUCTION_ECHOES):
+        return False
+    return len(tail) >= 500
+
+
+def _compact_document_tail(value: str) -> str:
+    return _compact_for_echo(value[-1800:])
+
+
+def _in_place_expansion_edit_looks_appended(ai_edit) -> bool:
+    generated_text = "\n".join(
+        part for part in [html_to_text(ai_edit.replacement_html), ai_edit.replacement_text.strip()] if part
+    )
+    compact_generated = _compact_for_echo(generated_text)
+    if ai_edit.target_action in {"append_section", "create_child_lesson"}:
+        return True
+    append_headings = ("补充章节", "新增章节", "追加章节", "新章节")
+    if any(_compact_for_echo(heading) in compact_generated[:120] for heading in append_headings):
+        return True
+    return bool(re.search(r"<h2\b[^>]*>\s*(?:补充|新增|追加)?章节", ai_edit.replacement_html, flags=re.IGNORECASE))
 
 
 def run_board_executor(state: WorkflowState) -> WorkflowState:
@@ -65,7 +213,7 @@ def run_board_executor(state: WorkflowState) -> WorkflowState:
                 request=request,
                 requirements=requirements,
                 document=lesson.board_document,
-                prefer_existing=True,
+                prefer_existing=selected_reference is None,
                 selected_reference=selected_reference,
             ),
         }
@@ -95,8 +243,40 @@ def run_board_executor(state: WorkflowState) -> WorkflowState:
             "generated_lesson": generated_lesson,
             "teacher_talk_track": None,
             "board_teaching_guide": board_teaching_guide,
+            "teaching_start_section_index": 0,
         }
 
+    if decision.action == "append_section" and _append_request_already_applied(
+        document=lesson.board_document,
+        request_message=request.message,
+        requirements=requirements,
+    ):
+        board_teaching_guide = _resolve_board_teaching_guide(
+            lesson=lesson,
+            request=request,
+            requirements=requirements,
+            document=lesson.board_document,
+            prefer_existing=False,
+            selected_reference=selected_reference,
+        )
+        guide = _interactive_teaching_guide(
+            lesson_id=lesson.id,
+            lesson_title=lesson.title,
+            document=lesson.board_document,
+            requirements=requirements,
+        )
+        return {
+            "board_decision": BoardDecision(action="no_change", reason="同一追加章节已经在当前讲义中，避免重复写入。"),
+            "teaching_guide": guide,
+            "teacher_document": lesson.board_document,
+            "document_updated": False,
+            "generated_lesson": None,
+            "teacher_talk_track": None,
+            "board_teaching_guide": board_teaching_guide,
+        }
+
+    existing_section_count = len(_board_h2_sections(lesson.board_document)) if decision.action == "append_section" else 0
+    effective_scope_action = request.scope_action or ("append_section" if decision.action == "append_section" else None)
     ai_edit = openai_course_ai.generate_document_edit(
         lesson_id=lesson.id,
         lesson_title=lesson.title,
@@ -104,11 +284,26 @@ def run_board_executor(state: WorkflowState) -> WorkflowState:
         request_message=request.message,
         selection=request.selection.model_dump(mode="json") if request.selection else None,
         interaction_mode=request.interaction_mode,
-        scope_action=request.scope_action,
+        scope_action=effective_scope_action,
         requirements=requirements,
         document=lesson.board_document,
         selected_reference=_reference_payload(selected_reference, include_full_text=True),
     )
+
+    if ai_edit is not None and decision.action == "append_section" and _append_edit_needs_fallback(
+        document=lesson.board_document,
+        request_message=request.message,
+        replacement_html=ai_edit.replacement_html,
+        replacement_text=ai_edit.replacement_text,
+    ):
+        ai_edit = None
+    if (
+        ai_edit is not None
+        and decision.action == "edit_board"
+        and _is_in_place_expansion_request(request.message)
+        and _in_place_expansion_edit_looks_appended(ai_edit)
+    ):
+        ai_edit = None
 
     if ai_edit is not None:
         replacement_doc = build_document(
@@ -138,12 +333,12 @@ def run_board_executor(state: WorkflowState) -> WorkflowState:
                 replacement_html=replacement_html,
             )
         elif (
-            not ai_edit.replace_whole
-            and (
-                decision.action == "append_section"
-                or ai_edit.target_action in {"append_section", "create_child_lesson"}
-                or _is_append_document_request(request.message)
+            decision.action == "append_section"
+            or (
+                ai_edit.target_action in {"append_section", "create_child_lesson"}
+                and not _is_in_place_expansion_request(request.message)
             )
+            or (not ai_edit.replace_whole and _is_append_document_request(request.message))
         ):
             next_document = append_html_section(lesson.board_document, replacement_doc.content_html)
         else:
@@ -180,11 +375,17 @@ def run_board_executor(state: WorkflowState) -> WorkflowState:
         document=next_document,
         requirements=requirements,
     )
+    has_document_changed = document_changed(lesson.board_document, next_document)
+    teaching_start_section_index = 0
+    if has_document_changed and decision.action == "append_section" and board_teaching_guide.section_plans:
+        teaching_start_section_index = min(existing_section_count, len(board_teaching_guide.section_plans) - 1)
+
     return {
         "teaching_guide": guide,
         "teacher_document": next_document,
-        "document_updated": document_changed(lesson.board_document, next_document),
+        "document_updated": has_document_changed,
         "generated_lesson": None,
         "teacher_talk_track": teacher_talk_track,
         "board_teaching_guide": board_teaching_guide,
+        "teaching_start_section_index": teaching_start_section_index,
     }

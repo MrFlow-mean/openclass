@@ -2,10 +2,12 @@ import pytest
 from docx import Document as DocxDocument
 from docx.enum.section import WD_ORIENT
 from pypdf import PdfWriter
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
 from zipfile import ZipFile
 
-from app.models import ChatRequest, ConversationTurn, PatchOperation, SelectionRef
-from app.services.ai_workflow import classify_scope, course_workflow, match_resources
+from app.models import BoardTeachingGuide, BoardTeachingSelectedItem, ChatRequest, ConversationTurn, PatchOperation, SelectionRef
+from app.services.ai_workflow import _board_snapshot_hash, _is_append_document_request, classify_scope, course_workflow, match_resources
 from app.services.course_runtime import effective_requirements
 from app.services.course_store import build_initial_course_package
 from app.services.document_ops import apply_patch
@@ -218,13 +220,20 @@ def test_workflow_generates_board_for_blank_lesson_when_user_requests_direct_ope
         ),
         encoding="utf-8",
     )
-    package.resources.append(build_resource_item(resource_path, "CSAPP mini.md"))
+    resource = build_resource_item(resource_path, "CSAPP mini.md")
+    package.resources.append(resource)
+    chapter = next(chapter for chapter in resource.outline if chapter.title == "Program Example")
 
     result = course_workflow.invoke(
         {
             "lesson": lesson,
             "course_package": package,
-            "request": ChatRequest(message="为我讲解教材中的第5章第2节的内容，直接开讲"),
+            "request": ChatRequest(
+                message="为我讲解教材中的第5章第2节的内容，直接开讲",
+                resource_reference_action="confirm",
+                resource_reference_resource_id=resource.id,
+                resource_reference_chapter_id=chapter.id,
+            ),
         }
     )
 
@@ -236,6 +245,479 @@ def test_workflow_generates_board_for_blank_lesson_when_user_requests_direct_ope
     assert result["board_teaching_guide"] is not None
     assert result["teacher_document"].content_text.strip()
     assert "什么水平" not in result["teacher_message"]
+
+
+def test_workflow_teaches_generated_board_one_h2_section_at_a_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    package = build_initial_course_package()
+    lesson = create_empty_lesson("分节讲义")
+    package.lessons.append(lesson)
+    content_html = """
+    <h1>分节讲义</h1>
+    <h2>一、问题入口</h2><p>先说明为什么要学这个主题。</p>
+    <h2>二、核心概念</h2><p>解释最重要的定义和边界。</p>
+    <h2>三、例子拆解</h2><p>用一个最小例子走完整流程。</p>
+    <h2>四、检查练习</h2><p>让学生自己判断是否掌握。</p>
+    """.strip()
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_document_edit",
+        lambda **kwargs: DocumentEditOutput(
+            rationale="生成四节板书",
+            replacement_html=content_html,
+        ),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_teacher_message",
+        lambda **kwargs: pytest.fail("section teaching should not call the generic teacher message"),
+    )
+
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "course_package": package,
+            "request": ChatRequest(message="请生成一版四个小节的板书"),
+        }
+    )
+
+    guide = result["board_teaching_guide"]
+    progress = result["board_teaching_progress"]
+    assert guide is not None
+    assert [plan.heading for plan in guide.section_plans] == ["一、问题入口", "二、核心概念", "三、例子拆解", "四、检查练习"]
+    assert progress.current_section_index == 0
+    assert result["teaching_progress"].has_next_section is True
+    assert "第 1 小节" in result["teacher_message"]
+    assert "一、问题入口" in result["teacher_message"]
+    assert "二、核心概念" not in result["teacher_message"]
+
+    lesson.board_document = result["teacher_document"]
+    lesson.board_teaching_guide = guide
+    lesson.board_teaching_progress = progress
+    followup = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "course_package": package,
+            "request": ChatRequest(message="继续下一节", teaching_action="continue"),
+        }
+    )
+
+    assert followup["board_teaching_progress"].current_section_index == 1
+    assert followup["teaching_progress"].current_section_title == "二、核心概念"
+    assert "第 2 小节" in followup["teacher_message"]
+    assert "二、核心概念" in followup["teacher_message"]
+    assert "一、问题入口" not in followup["teacher_message"]
+
+
+def test_workflow_backfills_section_plans_for_legacy_board_teaching_guide() -> None:
+    package = build_initial_course_package()
+    lesson = create_empty_lesson("旧教案")
+    package.lessons.append(lesson)
+    lesson.board_document = build_document(
+        title="旧教案",
+        content_html="<h1>旧教案</h1><h2>第一节</h2><p>第一节正文。</p><h2>第二节</h2><p>第二节正文。</p>",
+        document_id=lesson.board_document.id,
+    )
+    lesson.board_teaching_guide = BoardTeachingGuide(
+        board_document_id=lesson.board_document.id,
+        board_snapshot_hash=_board_snapshot_hash(lesson.board_document),
+        board_title=lesson.board_document.title,
+        selected_items=[
+            BoardTeachingSelectedItem(
+                excerpt="第一节正文。",
+                source_heading="第一节",
+                reason="旧版只存重点摘录。",
+                order_index=1,
+            )
+        ],
+        teacher_brief="旧版教案没有分节计划。",
+    )
+
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "course_package": package,
+            "request": ChatRequest(message="继续下一节", teaching_action="continue"),
+        }
+    )
+
+    assert [plan.heading for plan in result["board_teaching_guide"].section_plans] == ["第一节", "第二节"]
+    assert result["board_teaching_progress"].current_section_index == 0
+    assert "第一节" in result["teacher_message"]
+
+
+def test_workflow_teaches_chinese_numbered_chapter_from_reference_without_filler(tmp_path) -> None:
+    package = build_initial_course_package()
+    lesson = create_empty_lesson("模式识别")
+    package.lessons.append(lesson)
+    resource_path = tmp_path / "pattern-notes.md"
+    resource_path.write_text(
+        "\n".join(
+            [
+                "# 第一章 概论",
+                "模式识别第一章先建立三个问题：什么是模式、什么是特征、什么是分类器。",
+                "它还会说明监督学习、无监督学习和分类决策之间的关系。",
+                "# 第二章 贝叶斯决策",
+                "第二章进入贝叶斯分类器。",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    resource = build_resource_item(resource_path, "模式识别讲义.md")
+    package.resources.append(resource)
+
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "course_package": package,
+            "request": ChatRequest(
+                message="为我讲第一章内容",
+                resource_reference_action="confirm",
+                resource_reference_resource_id=resource.id,
+                resource_reference_chapter_id=resource.outline[0].id,
+            ),
+        }
+    )
+
+    assert result["needs_clarification"] is False
+    assert result["board_decision"].action == "edit_board"
+    assert result["selected_reference"] is not None
+    assert result["selected_reference"].chapter_title == "第一章 概论"
+    assert result["document_updated"] is True
+    assert "模式识别第一章先建立三个问题" in result["teacher_document"].content_text
+    assert "请补入一个最小例子" not in result["teacher_document"].content_text
+    assert "模式是要识别的对象" in result["teacher_message"]
+    assert "顺手告诉我" not in result["teacher_message"]
+    assert "工作项目" not in result["teacher_message"]
+
+
+def test_workflow_turns_statistical_learning_reference_into_polished_handout(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setattr(openai_course_ai, "generate_document_edit", lambda **kwargs: None)
+    monkeypatch.setattr(openai_course_ai, "generate_teacher_message", lambda **kwargs: None)
+
+    package = build_initial_course_package()
+    lesson = create_empty_lesson("测试5")
+    package.lessons.append(lesson)
+    resource_path = tmp_path / "statistical-learning.md"
+    resource_path.write_text(
+        "\n".join(
+            [
+                "# 第7章 统计学习理论概要",
+                "第7章统计学习理论概要 7.1 引言。本章关心监督学习方法在有限样本下为什么能推广到未知样本。",
+                "定义经验风险 empirical risk 为训练样本上损失函数的平均，真实风险或期望风险是总体分布上的平均损失。",
+                "（7-1）（7-2）（7-3）160 第7章统计学习理论概要 R(a) Remp(a) 这里有一些 PDF 抽取噪声。",
+                "经验风险最小化原则并不总是可靠，因为函数集容量过大时会出现过学习，也就是过拟合。",
+                "一致性要求样本数趋于无穷时经验风险能够逼近真实风险；进一步要讨论非平凡一致性。",
+                "VC 维刻画函数集容量，推广能力界把真实风险、经验风险和复杂度项联系起来。",
+                "支持向量机通过最大间隔降低有效容量；不适定问题可以通过正则化控制复杂度。",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    resource = build_resource_item(resource_path, "模式识别讲义.md")
+    package.resources.append(resource)
+
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "course_package": package,
+            "request": ChatRequest(
+                message="讲解第七章的内容",
+                resource_reference_action="confirm",
+                resource_reference_resource_id=resource.id,
+                resource_reference_chapter_id=resource.outline[0].id,
+            ),
+        }
+    )
+
+    content_text = result["teacher_document"].content_text
+    assert result["board_decision"].action == "edit_board"
+    assert result["document_updated"] is True
+    assert "一、本章定位" in content_text
+    assert "经验风险小 ≠ 真实风险小" in content_text
+    assert "VC 维" in content_text
+    assert "推广能力界" in content_text
+    assert "SVM 和正则化" in content_text
+    assert "核心知识点扩讲清单" in content_text
+    assert "主动扩讲" in content_text
+    assert "为什么要区分真实风险和经验风险" in content_text
+    assert len(content_text) >= 4500
+    assert "资料里的可讲片段" not in content_text
+    assert "可以从资料片段中选" not in content_text
+    assert "（7-1）（7-2）（7-3）" not in content_text
+    assert "训练误差小不等于测试误差小" in result["teacher_message"]
+
+
+def test_workflow_turns_density_estimation_reference_into_detailed_ten_part_handout(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setattr(openai_course_ai, "generate_document_edit", lambda **kwargs: None)
+    monkeypatch.setattr(openai_course_ai, "generate_teacher_message", lambda **kwargs: None)
+
+    package = build_initial_course_package()
+    lesson = create_empty_lesson("测试8")
+    package.lessons.append(lesson)
+    resource_path = tmp_path / "density-estimation.md"
+    resource_path.write_text(
+        "\n".join(
+            [
+                "# 第3章 概率密度函数的估计",
+                "第3章 概率密度函数的估计。贝叶斯决策的基础是先验概率 P(w_i) 和类条件概率密度 p(x|w_i)。",
+                "先验概率比较容易用样本比例估计，本章重点讨论类条件概率密度的估计。",
+                "这种先通过训练样本估计概率密度函数，再用统计决策进行类别判定的方法称作基于样本的两步贝叶斯决策。",
+                "c0；）。max p（x16,1）。这里是 PDF 抽取噪声，不应该被照搬进板书。",
+                "最大似然估计的思想是选择使似然函数最大的参数；贝叶斯估计把参数看成随机变量并结合先验分布。",
+                "非参数估计包括直方图、Parzen 窗和 k 近邻方法，估计质量受样本数量、维数和模型假设影响。",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    resource = build_resource_item(resource_path, "模式识别讲义.md")
+    package.resources.append(resource)
+
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "course_package": package,
+            "request": ChatRequest(
+                message="讲解第三章的内容",
+                resource_reference_action="confirm",
+                resource_reference_resource_id=resource.id,
+                resource_reference_chapter_id=resource.outline[0].id,
+            ),
+        }
+    )
+
+    content_text = result["teacher_document"].content_text
+    assert result["board_decision"].action == "edit_board"
+    assert result["document_updated"] is True
+    assert result["board_teaching_guide"] is not None
+    assert len(result["board_teaching_guide"].section_plans) == 10
+    assert len(content_text) >= 4500
+    assert "一、本章定位" in content_text
+    assert "五、最大似然估计" in content_text
+    assert "七、非参数估计" in content_text
+    assert "十、逻辑主线、误区与课堂检查" in content_text
+    assert "类条件概率密度" in content_text
+    assert "两步贝叶斯决策" in content_text
+    assert "c0；" not in content_text
+    assert "p（x16" not in content_text
+    assert "贝叶斯决策需要先验概率和类条件概率密度" in result["teacher_message"]
+
+
+def test_workflow_expands_important_humanities_reference_content(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setattr(openai_course_ai, "generate_document_edit", lambda **kwargs: None)
+    monkeypatch.setattr(openai_course_ai, "generate_teacher_message", lambda **kwargs: None)
+
+    package = build_initial_course_package()
+    lesson = create_empty_lesson("历史资料讲解")
+    package.lessons.append(lesson)
+    resource_path = tmp_path / "history-notes.md"
+    resource_path.write_text(
+        "\n".join(
+            [
+                "# 商鞅变法",
+                "商鞅变法是战国时期秦国的重要改革，它通过奖励耕战、推行县制、承认土地私有等制度调整，改变了秦国的社会结构。",
+                "军功爵制打破旧贵族凭血缘占有政治地位的方式，使普通人可以通过军功获得爵位和土地。",
+                "推行县制削弱了贵族封地的独立性，加强了君主对地方社会的直接控制，是中央集权形成的重要步骤。",
+                "从历史影响看，商鞅变法提高了秦国的动员能力，也带来了严刑峻法和社会控制加强的问题。",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    resource = build_resource_item(resource_path, "中国历史资料.md")
+    package.resources.append(resource)
+
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "course_package": package,
+            "request": ChatRequest(
+                message="讲一下商鞅变法",
+                resource_reference_action="confirm",
+                resource_reference_resource_id=resource.id,
+                resource_reference_chapter_id=resource.outline[0].id,
+            ),
+        }
+    )
+
+    content_text = result["teacher_document"].content_text
+    assert result["board_decision"].action == "edit_board"
+    assert result["document_updated"] is True
+    assert "重要内容扩讲" in content_text
+    assert "材料原意" in content_text
+    assert "扩讲" in content_text
+    assert "课堂落点" in content_text
+    assert "军功爵制" in content_text
+    assert "土地私有" in content_text
+    assert "中央集权" in content_text
+    assert len(content_text) >= 1800
+    assert "不要只讲成提纲" in result["teacher_message"]
+
+
+def test_match_resources_uses_real_numbered_chapter_after_preface_and_toc(tmp_path) -> None:
+    lesson = create_empty_lesson("模式识别")
+    package = build_initial_course_package()
+    package.lessons.append(lesson)
+    resource_path = tmp_path / "pattern-book.md"
+    resource_path.write_text(
+        "\n".join(
+            [
+                "# 前言",
+                "这里是教材前言。",
+                "# 目录",
+                "第一章 概论。",
+                "# 第一章 概论",
+                "第一章正文讲模式、特征和分类器。",
+                "## 1.1模式与模式识别",
+                "第一节说明模式识别的基本任务。",
+                "# 第二章 贝叶斯决策",
+                "第二章进入统计决策。",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    package.resources.append(build_resource_item(resource_path, "模式识别教材.md"))
+
+    matches = match_resources(
+        package,
+        lesson,
+        ChatRequest(message="讲第一章的内容"),
+        effective_requirements(lesson),
+    )
+
+    assert matches
+    assert matches[0].chapter_title == "第一章 概论"
+
+
+def test_default_single_resource_skips_preface_and_toc(tmp_path) -> None:
+    package = build_initial_course_package()
+    lesson = create_empty_lesson("资料学习")
+    package.lessons.append(lesson)
+    resource_path = tmp_path / "book.md"
+    resource_path.write_text(
+        "\n".join(
+            [
+                "# 前言",
+                "出版说明。",
+                "# 目录",
+                "第一章 概论。",
+                "# 第一章 概论",
+                "第一章先建立课程的整体地图。",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    package.resources.append(build_resource_item(resource_path, "学习资料.md"))
+
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "course_package": package,
+            "request": ChatRequest(message="讲一下"),
+        }
+    )
+
+    assert result["board_decision"].action == "await_reference_choice"
+    assert result["reference_prompt"] is not None
+    assert result["selected_reference"] is None
+    assert result["reference_prompt"].chapter_title == "第一章 概论"
+
+
+def test_workflow_defaults_brief_followup_to_single_uploaded_resource(tmp_path) -> None:
+    package = build_initial_course_package()
+    lesson = create_empty_lesson("资料学习")
+    package.lessons.append(lesson)
+    resource_path = tmp_path / "single-notes.md"
+    resource_path.write_text(
+        "\n".join(
+            [
+                "# 第一章 概论",
+                "第一章先建立课程的整体地图。",
+                "# 第二章 深入",
+                "第二章进入细节。",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    package.resources.append(build_resource_item(resource_path, "学习资料.md"))
+
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "course_package": package,
+            "request": ChatRequest(message="讲一下"),
+        }
+    )
+
+    assert result["needs_clarification"] is False
+    assert result["board_decision"].action == "await_reference_choice"
+    assert result["reference_prompt"] is not None
+    assert result["selected_reference"] is None
+    assert result["reference_prompt"].resource_name == "学习资料.md"
+    assert result["reference_prompt"].chapter_title == "第一章 概论"
+
+
+def test_workflow_asks_which_file_when_multiple_resources_share_chapter_pointer(tmp_path) -> None:
+    package = build_initial_course_package()
+    lesson = create_empty_lesson("资料学习")
+    package.lessons.append(lesson)
+    algebra_path = tmp_path / "algebra.md"
+    algebra_path.write_text("# 第一章 群\n第一章讲群的定义。", encoding="utf-8")
+    calculus_path = tmp_path / "calculus.md"
+    calculus_path.write_text("# 第一章 极限\n第一章讲极限。", encoding="utf-8")
+    package.resources.append(build_resource_item(algebra_path, "抽象代数讲义.md"))
+    package.resources.append(build_resource_item(calculus_path, "微积分讲义.md"))
+
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "course_package": package,
+            "request": ChatRequest(message="我要学第一章内容"),
+        }
+    )
+
+    assert result["needs_clarification"] is True
+    assert result["board_decision"].action == "clarify_request"
+    assert result["reference_prompt"] is None
+    assert result["selected_reference"] is None
+    assert "哪一份资料" in result["teacher_message"]
+    assert "抽象代数讲义.md" in result["teacher_message"]
+    assert "微积分讲义.md" in result["teacher_message"]
+
+
+def test_workflow_uses_named_file_when_multiple_resources_are_uploaded(tmp_path) -> None:
+    package = build_initial_course_package()
+    lesson = create_empty_lesson("资料学习")
+    package.lessons.append(lesson)
+    algebra_path = tmp_path / "algebra.md"
+    algebra_path.write_text("# 第一章 群\n第一章讲群的定义。", encoding="utf-8")
+    linear_path = tmp_path / "linear.md"
+    linear_path.write_text("# 第一章 矩阵\n第一章讲矩阵和线性方程组。", encoding="utf-8")
+    package.resources.append(build_resource_item(algebra_path, "抽象代数讲义.md"))
+    package.resources.append(build_resource_item(linear_path, "线性代数讲义.md"))
+
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "course_package": package,
+            "request": ChatRequest(message="请讲线性代数讲义第一章"),
+        }
+    )
+
+    assert result["needs_clarification"] is False
+    assert result["board_decision"].action == "edit_board"
+    assert result["reference_prompt"] is None
+    assert result["selected_reference"] is not None
+    assert result["selected_reference"].resource_name == "线性代数讲义.md"
+    assert result["selected_reference"].chapter_title == "第一章 矩阵"
+    assert "矩阵" in result["teacher_document"].content_text
 
 
 def test_workflow_can_answer_without_changing_the_board() -> None:
@@ -255,6 +737,52 @@ def test_workflow_can_answer_without_changing_the_board() -> None:
     assert result["document_updated"] is False
     assert result["board_teaching_guide"] is not None
     assert "勾股定理" in result["teacher_message"] or "直角三角形" in result["teacher_message"]
+
+
+def test_workflow_answers_specific_board_followup_without_preference_clarification() -> None:
+    package = build_initial_course_package()
+    lesson = create_lesson("第7章 统计学习理论概要")
+    lesson.board_document = build_document(
+        title="第7章 统计学习理论概要：讲解板书",
+        content_html="""
+<h1>第7章 统计学习理论概要：讲解板书</h1>
+<h2>一、本章定位</h2>
+<p>经验风险小不等于真实风险小。机器学习真正追求的是推广能力，而不是只在训练集上表现好。</p>
+<h2>二、机器学习问题的数学提法</h2>
+<h3>1. 损失函数</h3>
+<p>损失函数 L(y,f(x)) 衡量预测结果和真实结果之间的差距。分类问题里常见的是 0-1 损失：预测正确损失为 0，预测错误损失为 1。</p>
+<p>损失函数的作用，是把“模型好不好”变成可以计算的量。</p>
+<h3>2. 真实风险</h3>
+<p>真实风险表示模型在总体分布上的平均损失。</p>
+<h3>3. 经验风险</h3>
+<p>经验风险是训练集上的平均损失，可以从样本直接计算。</p>
+""",
+    )
+    package.lessons.append(lesson)
+
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "course_package": package,
+            "request": ChatRequest(
+                message="损失函数是什么？我不理解",
+                conversation=[
+                    ConversationTurn(role="user", content="直接展开讲解第7章内容"),
+                    ConversationTurn(
+                        role="assistant",
+                        content="直接开讲，先抓主线。统计学习理论要回答训练误差什么时候能代表真实风险。",
+                    ),
+                ],
+            ),
+        }
+    )
+
+    assert result["needs_clarification"] is False
+    assert result["board_decision"].action == "no_change"
+    assert result["document_updated"] is False
+    assert "你要更偏概念理解" not in result["teacher_message"]
+    assert "损失函数" in result["teacher_message"]
+    assert "预测结果" in result["teacher_message"] or "真实结果" in result["teacher_message"]
 
 
 def test_workflow_direct_start_after_brief_clarification_generates_board_for_blank_lesson() -> None:
@@ -425,6 +953,290 @@ def test_workflow_direct_edit_new_page_appends_instead_of_replacing(monkeypatch:
     )
 
 
+def test_append_request_recognizes_continue_new_chapter_wording() -> None:
+    assert _is_append_document_request("续写一个新章节，如何解决过拟合？")
+
+
+def test_expand_board_content_is_not_append_request() -> None:
+    assert not _is_append_document_request("请扩展版书内容，细致讲解每个例子")
+    assert not _is_append_document_request("把当前板书内容扩写得更详细")
+
+
+def test_workflow_expands_existing_board_in_place_instead_of_appending_chapter(monkeypatch: pytest.MonkeyPatch) -> None:
+    package = build_initial_course_package()
+    lesson = create_empty_lesson("测试4")
+    package.lessons.append(lesson)
+    lesson.board_document = build_document(
+        title="风险与收益",
+        content_html=(
+            "<h1>风险与收益</h1>"
+            "<h2>一、什么是风险</h2>"
+            "<p>风险不是一定亏钱，而是不确定性。比如同样买入一只股票，未来可能上涨，也可能下跌。</p>"
+            "<h2>二、收益怎么理解</h2>"
+            "<p>收益是投资结果相对本金的变化，可以用百分比来比较。</p>"
+        ),
+        document_id=lesson.board_document.id,
+    )
+
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_document_edit",
+        lambda **kwargs: DocumentEditOutput(
+            rationale="bad appended chapter",
+            replacement_html="<h2>补充章节</h2><p>这里补充一章风险和收益的内容。</p>",
+            replacement_text="补充章节\n这里补充一章风险和收益的内容。",
+            teacher_talk_track="继续补充。",
+            replace_whole=False,
+            target_action="append_section",
+        ),
+    )
+
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "course_package": package,
+            "request": ChatRequest(message="请扩展版书内容，细致讲解每个例子"),
+        }
+    )
+
+    content_text = result["teacher_document"].content_text
+    content_html = result["teacher_document"].content_html
+    assert result["board_decision"].action == "edit_board"
+    assert result["document_updated"] is True
+    assert "补充章节" not in content_text
+    assert "风险不是一定亏钱" in content_text
+    assert "收益是投资结果相对本金的变化" in content_text
+    assert "展开说明" in content_text
+    assert content_html.index("一、什么是风险") < content_html.index("二、收益怎么理解")
+
+
+def test_workflow_fallback_continue_new_chapter_appends_without_replacing() -> None:
+    package = build_initial_course_package()
+    lesson = create_empty_lesson("测试2")
+    package.lessons.append(lesson)
+    lesson.board_document = build_document(
+        title="几个比较基础的量化数学知识",
+        content_html=(
+            "<h1>几个比较基础的量化数学知识</h1>"
+            "<p>这一页先讲蒙特卡洛方法、相关性和回归。</p>"
+        ),
+        document_id=lesson.board_document.id,
+    )
+    lesson.board_teaching_guide = BoardTeachingGuide(
+        board_document_id=lesson.board_document.id,
+        board_snapshot_hash=_board_snapshot_hash(lesson.board_document),
+        board_title=lesson.board_document.title,
+        selected_items=[
+            BoardTeachingSelectedItem(
+                excerpt="续写一个新章节，如何解决过拟合",
+                source_heading="补充章节",
+                reason="stale guide from earlier bad append",
+                mapped_needs=["续写一个新章节，如何解决过拟合"],
+                teaching_role="main_idea",
+                order_index=1,
+            )
+        ],
+        teacher_brief="这次先抓“续写一个新章节，如何解决过拟合”这条主线。",
+    )
+
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "course_package": package,
+            "request": ChatRequest(message="续写一个新章节，如何解决过拟合？"),
+        }
+    )
+
+    content_text = result["teacher_document"].content_text
+    assert result["board_decision"].action == "append_section"
+    assert result["document_updated"] is True
+    assert "几个比较基础的量化数学知识" in content_text
+    assert "蒙特卡洛方法、相关性和回归" in content_text
+    assert "补充章节：如何解决过拟合" in content_text
+    assert "训练集" in content_text
+    assert "课堂例题" in content_text
+    assert "练习题" in content_text
+    assert len(content_text) >= 850
+    assert result["teacher_document"].content_html.index("蒙特卡洛方法") < result["teacher_document"].content_html.index(
+        "如何解决过拟合"
+    )
+
+
+def test_workflow_replaces_low_value_ai_append_with_expanded_section(monkeypatch: pytest.MonkeyPatch) -> None:
+    package = build_initial_course_package()
+    lesson = create_empty_lesson("测试2")
+    package.lessons.append(lesson)
+    lesson.board_document = build_document(
+        title="几个比较基础的量化数学知识",
+        content_html=(
+            "<h1>几个比较基础的量化数学知识</h1>"
+            "<p>这一页先讲蒙特卡洛方法、相关性和回归。</p>"
+        ),
+        document_id=lesson.board_document.id,
+    )
+
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_document_edit",
+        lambda **kwargs: DocumentEditOutput(
+            rationale="low value append",
+            replacement_html=(
+                "<h2>补充章节</h2>"
+                "<p>这一节专门承接用户当前追问，把新问题接回原有主线。</p>"
+                "<p>续写一个新章节，如何解决过拟合</p>"
+            ),
+            replacement_text=(
+                "补充章节\n"
+                "这一节专门承接用户当前追问，把新问题接回原有主线。\n"
+                "续写一个新章节，如何解决过拟合"
+            ),
+            teacher_talk_track="直接开讲，先抓主线。",
+            replace_whole=False,
+            target_action="append_section",
+        ),
+    )
+
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "course_package": package,
+            "request": ChatRequest(message="续写一个新章节，如何解决过拟合？"),
+        }
+    )
+
+    content_text = result["teacher_document"].content_text
+    assert result["board_decision"].action == "append_section"
+    assert "补充章节：如何解决过拟合" in content_text
+    assert "训练集" in content_text
+    assert "正则化" in content_text
+    assert "用户当前追问" not in content_text
+    assert "续写一个新章节" not in content_text
+
+
+def test_workflow_replaces_too_short_ai_chapter_append_with_full_section(monkeypatch: pytest.MonkeyPatch) -> None:
+    package = build_initial_course_package()
+    lesson = create_empty_lesson("测试2")
+    package.lessons.append(lesson)
+    lesson.board_document = build_document(
+        title="几个比较基础的量化数学知识",
+        content_html=(
+            "<h1>几个比较基础的量化数学知识</h1>"
+            "<p>这一页先讲蒙特卡洛方法、相关性和回归。</p>"
+        ),
+        document_id=lesson.board_document.id,
+    )
+
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_document_edit",
+        lambda **kwargs: DocumentEditOutput(
+            rationale="too short append",
+            replacement_html="<h2>补充章节：如何解决过拟合</h2><p>可以用验证集、正则化和交叉验证来减少过拟合。</p>",
+            replacement_text="补充章节：如何解决过拟合\n可以用验证集、正则化和交叉验证来减少过拟合。",
+            teacher_talk_track="过拟合要看样本外效果。",
+            replace_whole=False,
+            target_action="append_section",
+        ),
+    )
+
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "course_package": package,
+            "request": ChatRequest(message="续写一个新章节，如何解决过拟合？"),
+        }
+    )
+
+    content_text = result["teacher_document"].content_text
+    assert "可以用验证集、正则化和交叉验证来减少过拟合" not in content_text
+    assert "课堂例题" in content_text
+    assert "参考答案与小结" in content_text
+    assert len(content_text) >= 850
+
+
+def test_workflow_does_not_treat_echoed_existing_append_as_complete(monkeypatch: pytest.MonkeyPatch) -> None:
+    package = build_initial_course_package()
+    lesson = create_empty_lesson("测试2")
+    package.lessons.append(lesson)
+    lesson.board_document = build_document(
+        title="几个比较基础的量化数学知识",
+        content_html=(
+            "<h1>几个比较基础的量化数学知识</h1>"
+            "<p>这一页先讲蒙特卡洛方法、相关性和回归。</p>"
+            "<h2>补充章节</h2>"
+            "<p>续写一个新章节，如何解决过拟合</p>"
+        ),
+        document_id=lesson.board_document.id,
+    )
+
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_document_edit",
+        lambda **kwargs: None,
+    )
+
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "course_package": package,
+            "request": ChatRequest(message="续写一个新章节，如何解决过拟合？"),
+        }
+    )
+
+    content_text = result["teacher_document"].content_text
+    content_html = result["teacher_document"].content_html
+    assert result["board_decision"].action == "append_section"
+    assert result["document_updated"] is True
+    assert content_text.count("补充章节：如何解决过拟合") == 1
+    assert "课堂例题" in content_text
+    assert content_html.index("续写一个新章节，如何解决过拟合") < content_html.index("补充章节：如何解决过拟合")
+
+
+def test_workflow_does_not_append_same_chapter_twice(monkeypatch: pytest.MonkeyPatch) -> None:
+    package = build_initial_course_package()
+    lesson = create_empty_lesson("测试2")
+    package.lessons.append(lesson)
+    lesson.board_document = build_document(
+        title="几个比较基础的量化数学知识",
+        content_html=(
+            "<h1>几个比较基础的量化数学知识</h1>"
+            "<p>这一页先讲蒙特卡洛方法、相关性和回归。</p>"
+            "<h2>补充章节</h2>"
+            "<p>续写一个新章节，如何解决过拟合</p>"
+            "<h2>补充章节：如何解决过拟合</h2>"
+            "<p>过拟合指模型在训练数据上表现很好，但一换到新数据、验证集或真实市场环境就明显变差。</p>"
+            "<h3>一、先判断是不是过拟合</h3>"
+            "<p>最直接的信号是训练集效果持续变好，但验证集或测试集效果停滞甚至变差。</p>"
+        ),
+        document_id=lesson.board_document.id,
+    )
+
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_document_edit",
+        lambda **kwargs: pytest.fail("duplicate append should not call Board AI again"),
+    )
+
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "course_package": package,
+            "request": ChatRequest(message="续写一个新章节，如何解决过拟合？"),
+        }
+    )
+
+    assert result["board_decision"].action == "no_change"
+    assert result["document_updated"] is False
+    assert result["teacher_document"].content_text.count("补充章节：如何解决过拟合") == 1
+    assert "训练数据里的噪声" in result["teacher_message"]
+    assert "降低模型复杂度" in result["teacher_message"]
+    assert "交叉验证" in result["teacher_message"]
+    assert "量化金融" in result["teacher_message"]
+    assert "L1、L2" in result["teacher_message"]
+    assert "L\n\n1" not in result["teacher_message"]
+    assert "续写一个新章节" not in result["teacher_message"]
+
+
 def test_replace_selection_in_document_replaces_exact_block_without_nested_paragraphs() -> None:
     document = build_document(
         title="测试",
@@ -569,7 +1381,7 @@ def test_workflow_uses_fast_path_for_clear_generation_request(monkeypatch: pytes
     assert "不用背定义" in result["teacher_message"]
 
 
-def test_workflow_auto_selects_reference_when_one_candidate_is_clearly_best(tmp_path) -> None:
+def test_workflow_prompts_before_using_reference_when_one_candidate_is_clearly_best(tmp_path) -> None:
     package = build_initial_course_package()
     lesson = package.lessons[0]
     resource_path = tmp_path / "memory-notes.md"
@@ -587,10 +1399,39 @@ def test_workflow_auto_selects_reference_when_one_candidate_is_clearly_best(tmp_
         }
     )
 
-    assert result["board_decision"].action == "edit_board"
-    assert result["reference_prompt"] is None
-    assert result["selected_reference"] is not None
-    assert result["selected_reference"].chapter_title == "虚拟内存"
+    assert result["board_decision"].action == "await_reference_choice"
+    assert result["reference_prompt"] is not None
+    assert result["selected_reference"] is None
+    assert result["reference_prompt"].chapter_title == "虚拟内存"
+    assert "参考这章正文" in result["reference_prompt"].question
+
+
+def test_workflow_compares_current_board_with_resource_directory_before_generating(tmp_path) -> None:
+    package = build_initial_course_package()
+    lesson = create_empty_lesson("系统课")
+    lesson.board_document = build_document(
+        title="虚拟内存草稿",
+        content_html="<h1>虚拟内存草稿</h1><p>这节课准备讲地址空间、页表、缺页异常和地址转换。</p>",
+    )
+    package.lessons.append(lesson)
+    resource_path = tmp_path / "memory-notes.md"
+    resource_path.write_text(
+        "# Virtual Memory\nVirtual memory explains address translation, page tables, TLBs, and page faults.",
+        encoding="utf-8",
+    )
+    package.resources.append(build_resource_item(resource_path, "CSAPP notes.md"))
+
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "course_package": package,
+            "request": ChatRequest(message="请根据当前内容生成一版更完整的板书"),
+        }
+    )
+
+    assert result["board_decision"].action == "await_reference_choice"
+    assert result["reference_prompt"] is not None
+    assert result["reference_prompt"].chapter_title == "Virtual Memory"
 
 
 def test_workflow_prompts_for_reference_when_top_candidates_are_close(tmp_path) -> None:
@@ -617,9 +1458,10 @@ def test_workflow_prompts_for_reference_when_top_candidates_are_close(tmp_path) 
         }
     )
 
-    assert result["board_decision"].action == "await_reference_choice"
-    assert result["reference_prompt"] is not None
-    assert "要参考它来生成吗" in result["reference_prompt"].question
+    assert result["board_decision"].action == "clarify_request"
+    assert result["needs_clarification"] is True
+    assert result["reference_prompt"] is None
+    assert "哪一份资料" in result["teacher_message"]
 
 
 def test_workflow_uses_selected_reference_after_user_confirms(tmp_path) -> None:
@@ -689,6 +1531,43 @@ def test_build_resource_item_extracts_docx_outline_and_reference_context(tmp_pat
     reference = extract_reference_context(resource, chapter.id, user_query="单调性")
     assert reference is not None
     assert "先判断单调性" in reference.full_text
+
+
+def _write_text_pdf(path, pages: list[list[str]]) -> None:
+    pdf = canvas.Canvas(str(path), pagesize=letter)
+    for lines in pages:
+        y = 760
+        for line in lines:
+            pdf.drawString(72, y, line)
+            y -= 18
+        pdf.showPage()
+    pdf.save()
+
+
+def test_build_resource_item_extracts_pdf_toc_page_and_uses_offset_page_candidate(tmp_path) -> None:
+    resource_path = tmp_path / "toc-offset.pdf"
+    _write_text_pdf(
+        resource_path,
+        [
+            ["Cover"],
+            ["Contents", "Chapter 1 Overview 3", "Chapter 2 Details 6"],
+            ["Preface", "This is not the chapter."],
+            ["Front matter continues."],
+            ["Chapter 1 Overview", "This chapter explains patterns, features, and classifiers."],
+            ["Chapter 2 Details", "This chapter goes deeper."],
+        ],
+    )
+
+    resource = build_resource_item(resource_path, "toc-offset.pdf")
+
+    assert resource.outline
+    chapter = resource.outline[0]
+    assert chapter.title == "Chapter 1 Overview"
+    assert chapter.page_start == 5
+    assert "目录页 2" in chapter.summary
+    reference = extract_reference_context(resource, chapter.id, user_query="patterns")
+    assert reference is not None
+    assert "patterns, features, and classifiers" in reference.full_text
 
 
 def test_build_resource_item_uses_pdf_outline_ranges_by_hierarchy(tmp_path) -> None:
@@ -881,6 +1760,16 @@ def test_match_resources_understands_numeric_chapter_and_section_reference(tmp_p
 
     assert matches
     assert matches[0].chapter_title == "第二节"
+
+    chinese_matches = match_resources(
+        package,
+        lesson,
+        ChatRequest(message="请直接讲教材里的第五章第二节"),
+        effective_requirements(lesson),
+    )
+
+    assert chinese_matches
+    assert chinese_matches[0].chapter_title == "第二节"
 
 
 def test_docx_import_export_roundtrip(tmp_path) -> None:

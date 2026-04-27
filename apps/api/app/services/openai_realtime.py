@@ -32,7 +32,17 @@ def _json(data: Any) -> str:
 def _env_realtime_or_shared(name: str, shared_name: str) -> str | None:
     if name in os.environ:
         return _normalize_optional_api_key(os.getenv(name))
-    return _normalize_optional_api_key(os.getenv(shared_name))
+    return _normalize_optional_api_key(os.getenv(shared_name) or os.getenv("AI_API_KEY"))
+
+
+def _single_api_key_mode() -> bool:
+    return (os.getenv("AI_SINGLE_API_KEY_MODE") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _google_api_key() -> str | None:
+    if _single_api_key_mode():
+        return os.getenv("AI_API_KEY") or os.getenv("OPENAI_API_KEY")
+    return os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
 
 
 def _normalize_optional_api_key(value: str | None) -> str | None:
@@ -63,12 +73,10 @@ def build_realtime_instructions(*, lesson: Lesson, latest_assistant_message: str
     }
 
     return (
-        "You are Teacher AI for an AI blackboard teaching workbench. "
-        "Speak in Chinese, with short and clear sentences that are easy to follow in voice mode. "
-        "Teach from the current lesson and board only. "
-        "If the learner asks for a board edit, lesson creation, branch change, or any persistent change, "
-        "explain briefly that voice mode is for real-time teaching conversation and ask them to use the text chat for structural edits. "
-        "Prefer concrete examples, repeat critical formulas slowly, and keep answers supportive and accessible. "
+        "You are only a realtime transcription layer for an AI blackboard teaching workbench. "
+        "Do not answer, teach, edit the board, or make curriculum decisions in this session. "
+        "The application will send every completed transcript through PM AI, Board Manager AI, and Teacher AI before speaking to the learner. "
+        "Use the lesson context only to improve Chinese transcription accuracy for course terminology. "
         "Here is the current lesson context as JSON:\n"
         f"{_json(board_context)}"
     )
@@ -95,7 +103,7 @@ class OpenAIRealtimeTeacher:
         self.config = OpenAIRealtimeConfig()
         self.client = (
             OpenAI(api_key=self.config.api_key, base_url=self.config.base_url)
-            if self.config.enabled
+            if self.config.enabled and not _single_api_key_mode()
             else None
         )
 
@@ -135,30 +143,24 @@ class OpenAIRealtimeTeacher:
             latest_assistant_message=latest_assistant_message,
         )
         session = {
-            "type": "realtime",
+            "type": "transcription",
             "model": model,
-            "instructions": instructions,
-            "output_modalities": ["audio"],
-            "max_output_tokens": 1024,
             "audio": {
                 "input": {
                     "noise_reduction": {"type": "near_field"},
                     "transcription": {
                         "model": self.config.transcription_model,
                         "language": "zh",
+                        "prompt": instructions,
                     },
                     "turn_detection": {
                         "type": "server_vad",
-                        "create_response": True,
-                        "interrupt_response": True,
+                        "create_response": False,
+                        "interrupt_response": False,
                         "prefix_padding_ms": 300,
                         "silence_duration_ms": 650,
                     },
-                },
-                "output": {
-                    "voice": self.config.voice,
-                    "speed": 1.0,
-                },
+                }
             },
         }
         if not self.client:
@@ -204,7 +206,7 @@ class OpenAIRealtimeTeacher:
 
 
 class GoogleRealtimeConfig(BaseModel):
-    api_key: str | None = Field(default_factory=lambda: os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"))
+    api_key: str | None = Field(default_factory=_google_api_key)
     base_url: str = Field(
         default_factory=lambda: os.getenv(
             "GOOGLE_GENERATIVE_LANGUAGE_BASE_URL",

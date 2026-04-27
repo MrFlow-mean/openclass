@@ -15,6 +15,7 @@ export type BoardAction =
   | "await_reference_choice";
 
 export type ResourceReferenceAction = "confirm" | "skip";
+export type BoardEditConfirmationAction = "confirm" | "skip";
 export type ChatInteractionMode = "ask" | "direct_edit";
 export type AIProvider =
   | "openai"
@@ -61,6 +62,7 @@ export interface LearningRequirementSheet {
   level: string;
   known_background: string;
   current_questions: string[];
+  learning_need_checklist: string[];
   target_depth: string;
   output_preference: string;
   boundary: string;
@@ -282,6 +284,14 @@ export interface ResourceReferencePrompt {
   score: number;
 }
 
+export interface BoardEditPrompt {
+  topic: string;
+  question: string;
+  reason: string;
+  confirm_label: string;
+  skip_label: string;
+}
+
 export interface ResourceContextChunk {
   title: string;
   excerpt: string;
@@ -323,7 +333,18 @@ export interface ChatRequestPayload {
   resource_reference_action?: ResourceReferenceAction | null;
   resource_reference_resource_id?: string | null;
   resource_reference_chapter_id?: string | null;
+  board_edit_action?: BoardEditConfirmationAction | null;
+  board_edit_topic?: string | null;
+  teaching_action?: "continue" | "restart" | null;
   conversation?: ConversationTurn[];
+}
+
+export interface SectionTeachingProgress {
+  section_index: number;
+  section_count: number;
+  current_section_title: string;
+  has_next_section: boolean;
+  waiting_for_continue: boolean;
 }
 
 export interface ChatResponse {
@@ -337,8 +358,10 @@ export interface ChatResponse {
   scope_options: ScopeOption[];
   resource_matches: ResourceMatch[];
   reference_prompt?: ResourceReferencePrompt | null;
+  board_edit_prompt?: BoardEditPrompt | null;
   selected_reference?: ResourceReferenceContext | null;
   created_lesson?: Lesson | null;
+  teaching_progress?: SectionTeachingProgress | null;
   course_package: CoursePackage;
 }
 

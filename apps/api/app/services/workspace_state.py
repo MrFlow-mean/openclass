@@ -27,6 +27,7 @@ def _load_root_dotenv() -> None:
     root_env = ROOT_DIR / ".env"
     if root_env.exists():
         load_dotenv(root_env)
+        return
     load_dotenv()
 
 

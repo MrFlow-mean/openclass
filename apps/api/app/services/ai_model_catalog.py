@@ -29,6 +29,13 @@ MINIMAX_DEFAULT_TEXT_MODEL = MINIMAX_FAST_TEXT_MODEL
 OPENAI_COMPATIBLE_DEFAULT_TEXT_MODEL = OPENAI_FAST_TEXT_MODEL
 ANTHROPIC_COMPATIBLE_DEFAULT_TEXT_MODEL = ANTHROPIC_FAST_TEXT_MODEL
 
+SINGLE_KEY_TEXT_MODELS: tuple[tuple[str, str], ...] = (
+    (OPENAI_ECONOMY_TEXT_MODEL, "GPT-5.4"),
+    (OPENAI_FAST_TEXT_MODEL, "GPT-5.4 Mini"),
+    (GOOGLE_ECONOMY_TEXT_MODEL, "Gemini 3.1 Pro Preview"),
+    (GOOGLE_FAST_TEXT_MODEL, "Gemini 3 Flash Preview"),
+)
+
 
 PROVIDER_LABELS: dict[AIProvider, str] = {
     "openai": "OpenAI",
@@ -75,6 +82,18 @@ def _env_any(*names: str) -> str | None:
         if value:
             return value
     return None
+
+
+def _env_truthy(name: str) -> bool:
+    return (os.getenv(name) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _single_api_key_mode() -> bool:
+    return _env_truthy("AI_SINGLE_API_KEY_MODE")
+
+
+def _shared_api_key() -> str | None:
+    return _env_any("AI_API_KEY", "OPENAI_API_KEY")
 
 
 def _custom_openai_api_key() -> str | None:
@@ -135,8 +154,14 @@ def _normalize_optional_secret(value: str | None) -> str | None:
 
 
 def _provider_enabled(provider: AIProvider) -> bool:
+    if _single_api_key_mode():
+        if provider == "openai":
+            return bool(_normalize_optional_secret(_shared_api_key()))
+        if provider == "google":
+            return bool(_normalize_optional_secret(_shared_api_key()))
+        return False
     if provider == "openai":
-        return bool(_normalize_optional_secret(_env_any("OPENAI_API_KEY")))
+        return bool(_normalize_optional_secret(_shared_api_key()))
     if provider == "anthropic":
         return bool(_normalize_optional_secret(_env_any("ANTHROPIC_API_KEY")))
     if provider == "google":
@@ -163,6 +188,18 @@ def _normalize_provider(value: str | None, default: AIProvider) -> AIProvider:
 
 def default_text_selection() -> AIModelSelection:
     provider = _normalize_provider(os.getenv("AI_TEXT_PROVIDER"), "openai")
+    if _single_api_key_mode():
+        if provider == "google":
+            model = os.getenv("GOOGLE_TEXT_MODEL", GOOGLE_DEFAULT_TEXT_MODEL)
+        elif provider == "deepseek":
+            model = _deepseek_model()
+        elif provider == "kimi":
+            model = _kimi_model()
+        elif provider == "minimax":
+            model = _minimax_model()
+        else:
+            model = os.getenv("OPENAI_MODEL", OPENAI_DEFAULT_TEXT_MODEL)
+        return AIModelSelection(provider="openai", model=model)
     if provider == "anthropic":
         model = os.getenv("ANTHROPIC_MODEL", ANTHROPIC_DEFAULT_TEXT_MODEL)
     elif provider == "google":
@@ -183,13 +220,10 @@ def default_text_selection() -> AIModelSelection:
 
 
 def default_realtime_selection() -> AIModelSelection:
-    provider = _normalize_provider(os.getenv("AI_REALTIME_PROVIDER"), "openai")
-    if provider == "google":
-        model = os.getenv("GOOGLE_REALTIME_MODEL", GOOGLE_DEFAULT_REALTIME_MODEL)
-    else:
-        model = os.getenv("OPENAI_REALTIME_MODEL", OPENAI_DEFAULT_REALTIME_MODEL)
-        provider = "openai"
-    return AIModelSelection(provider=provider, model=model)
+    return AIModelSelection(
+        provider="google",
+        model=os.getenv("GOOGLE_REALTIME_MODEL", GOOGLE_DEFAULT_REALTIME_MODEL),
+    )
 
 
 def provider_is_configured(provider: AIProvider) -> bool:
@@ -252,14 +286,16 @@ def _custom_options(env_name: str, capability: str) -> list[AIModelOption]:
         if not isinstance(value, dict):
             continue
         provider = _normalize_provider(str(value.get("provider") or ""), "openai")
-        if capability == "realtime" and provider not in {"openai", "google"}:
+        if capability == "text" and _single_api_key_mode():
+            provider = "openai"
+        if capability == "realtime" and provider != "google":
             continue
         model = str(value.get("model") or "").strip()
         if not model:
             continue
         transport = value.get("transport") if isinstance(value.get("transport"), str) else None
         if capability == "realtime" and transport is None:
-            transport = "gemini_live_websocket" if provider == "google" else "openai_webrtc"
+            transport = "gemini_live_websocket"
         options.append(
             _option(
                 provider=provider,
@@ -282,68 +318,79 @@ def _catalog_default_selection(
     options: list[AIModelOption],
     curated_models: dict[AIProvider, tuple[tuple[str, str], ...]],
 ) -> AIModelSelection:
-    if any(_option_matches_selection(option, requested) for option in options):
+    enabled_options = [option for option in options if option.enabled]
+    if any(_option_matches_selection(option, requested) and option.enabled for option in options):
         return requested
-    provider_models = curated_models.get(requested.provider)
+    provider_models = curated_models.get(requested.provider) if _provider_enabled(requested.provider) else None
     if provider_models:
         return AIModelSelection(provider=requested.provider, model=provider_models[-1][0])
-    fallback = options[0] if options else None
+    fallback = enabled_options[0] if enabled_options else (options[0] if options else None)
+    if fallback:
+        for model, _label in reversed(curated_models.get(fallback.provider, ())):
+            if any(option.provider == fallback.provider and option.model == model and option.enabled for option in options):
+                return AIModelSelection(provider=fallback.provider, model=model)
     return AIModelSelection(provider=fallback.provider, model=fallback.model) if fallback else requested
 
 
 def build_model_catalog() -> AIModelCatalog:
     requested_text_default = default_text_selection()
     requested_realtime_default = default_realtime_selection()
-    text_options = [
-        _option(
-            provider=provider,
-            model=model,
-            label=label,
-            capability="text",
-            default=False,
-        )
-        for provider, models in CURATED_TEXT_MODELS.items()
-        for model, label in models
-    ]
-    if _provider_enabled("openai_compatible"):
-        text_options.append(
+    text_curated_models = CURATED_TEXT_MODELS
+    if _single_api_key_mode():
+        text_curated_models = {"openai": SINGLE_KEY_TEXT_MODELS}
+        text_options = [
             _option(
-                provider="openai_compatible",
-                model=_custom_openai_model(),
-                label="自定义 OpenAI 兼容模型",
+                provider="openai",
+                model=model,
+                label=label,
                 capability="text",
                 default=False,
             )
-        )
-    if _provider_enabled("anthropic_compatible"):
-        text_options.append(
+            for model, label in SINGLE_KEY_TEXT_MODELS
+        ]
+    else:
+        text_options = [
             _option(
-                provider="anthropic_compatible",
-                model=_custom_anthropic_model(),
-                label="自定义 Anthropic 兼容模型",
+                provider=provider,
+                model=model,
+                label=label,
                 capability="text",
                 default=False,
             )
-        )
+            for provider, models in CURATED_TEXT_MODELS.items()
+            for model, label in models
+        ]
+        if _provider_enabled("openai_compatible"):
+            text_options.append(
+                _option(
+                    provider="openai_compatible",
+                    model=_custom_openai_model(),
+                    label="自定义 OpenAI 兼容模型",
+                    capability="text",
+                    default=False,
+                )
+            )
+        if _provider_enabled("anthropic_compatible"):
+            text_options.append(
+                _option(
+                    provider="anthropic_compatible",
+                    model=_custom_anthropic_model(),
+                    label="自定义 Anthropic 兼容模型",
+                    capability="text",
+                    default=False,
+                )
+            )
     text_options.extend(_custom_options("AI_TEXT_MODELS_JSON", "text"))
     text_options = _dedupe_options(text_options)
     text_default = _catalog_default_selection(
         requested=requested_text_default,
         options=text_options,
-        curated_models=CURATED_TEXT_MODELS,
+        curated_models=text_curated_models,
     )
     for option in text_options:
         option.default = _option_matches_selection(option, text_default)
 
     realtime_options = [
-        _option(
-            provider="openai",
-            model=OPENAI_DEFAULT_REALTIME_MODEL,
-            label="OpenAI GPT Realtime 1.5",
-            capability="realtime",
-            default=False,
-            transport="openai_webrtc",
-        ),
         _option(
             provider="google",
             model=GOOGLE_DEFAULT_REALTIME_MODEL,
@@ -359,7 +406,6 @@ def build_model_catalog() -> AIModelCatalog:
         requested=requested_realtime_default,
         options=realtime_options,
         curated_models={
-            "openai": ((OPENAI_DEFAULT_REALTIME_MODEL, "OpenAI GPT Realtime 1.5"),),
             "google": ((GOOGLE_DEFAULT_REALTIME_MODEL, "Google Gemini 3.1 Flash Live"),),
         },
     )

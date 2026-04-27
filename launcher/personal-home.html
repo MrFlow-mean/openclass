@@ -154,7 +154,7 @@
       </div>
     </div>
 
-    <iframe id="appFrame" title="AI 黑板个人主页"></iframe>
+    <iframe id="appFrame" title="AI 黑板个人主页" allow="microphone; autoplay"></iframe>
 
     <script>
       const candidates = ["http://127.0.0.1:3000", "http://localhost:3000"];
@@ -253,7 +253,7 @@
         ensureRetryLoop();
         setStatus(
           "还没有检测到本地前端服务。",
-          "先双击 start-ai-board.command，或在项目目录运行 npm run dev。这个入口会继续自动重试。"
+          "先双击 start-ai-board.command。这个入口会继续自动重试。"
         );
       }
 

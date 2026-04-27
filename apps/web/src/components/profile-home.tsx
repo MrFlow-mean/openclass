@@ -8,27 +8,40 @@ import { useEffect, useMemo, useState } from "react";
 import {
   ArrowLeft,
   ArrowUpRight,
+  AtSign,
   BookOpen,
   Bookmark,
+  Building2,
   ChevronDown,
   FolderClosed,
   GitFork,
   GraduationCap,
+  Globe2,
   KeyRound,
+  LinkIcon,
   LoaderCircle,
+  MapPin,
   Search,
   Settings,
   ShieldCheck,
   Star,
 } from "lucide-react";
 
-import { ProfileSettingsPanel } from "@/components/profile-settings-panel";
+import {
+  DEFAULT_PROFILE_SETTINGS,
+  PROFILE_SETTINGS_CHANGED_EVENT,
+  PROFILE_SETTINGS_STORAGE_KEY,
+  ProfileSettingsPanel,
+  readStoredProfileSettings,
+  type ProfileSettings,
+} from "@/components/profile-settings-panel";
 import { api } from "@/lib/api";
 import {
   DEFAULT_COLLECTED_COURSE_IDS,
   OPEN_COURSE_COLLECTION_STORAGE_KEY,
   OPEN_SOURCE_COURSES,
   courseAvatarUrl,
+  courseDetailHref,
   courseFullName,
   formatCompactNumber,
 } from "@/lib/open-courses";
@@ -146,6 +159,7 @@ function persistCollectedCourseIds(courseIds: Set<string>) {
 export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
   const router = useRouter();
   const [activeTab, setActiveTab] = useState<ProfileTab>(initialTab);
+  const [profileSettings, setProfileSettings] = useState<ProfileSettings>(DEFAULT_PROFILE_SETTINGS);
   const [workspaceState, setWorkspaceState] = useState<WorkspaceState | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -208,6 +222,32 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
     }, 0);
 
     return () => window.clearTimeout(timeoutId);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const syncProfileSettings = () => {
+      setProfileSettings(readStoredProfileSettings());
+    };
+    const timeoutId = window.setTimeout(syncProfileSettings, 0);
+
+    function handleStorage(event: StorageEvent) {
+      if (event.key === PROFILE_SETTINGS_STORAGE_KEY) {
+        syncProfileSettings();
+      }
+    }
+
+    window.addEventListener(PROFILE_SETTINGS_CHANGED_EVENT, syncProfileSettings);
+    window.addEventListener("storage", handleStorage);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+      window.removeEventListener(PROFILE_SETTINGS_CHANGED_EVENT, syncProfileSettings);
+      window.removeEventListener("storage", handleStorage);
+    };
   }, []);
 
   const packages = useMemo(() => workspaceState?.packages ?? [], [workspaceState]);
@@ -296,6 +336,18 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
     { id: "repositories" as const, label: "Repositories", icon: FolderClosed, count: repositoryCount },
     { id: "stars" as const, label: "Stars", icon: Star, count: favoriteProjects.length },
   ];
+  const profileDisplayName = profileSettings.displayName.trim() || DEFAULT_PROFILE_SETTINGS.displayName;
+  const profileHandle = profileSettings.handle.trim() || DEFAULT_PROFILE_SETTINGS.handle;
+  const profileBio = profileSettings.bio.trim() || DEFAULT_PROFILE_SETTINGS.bio;
+  const profileShellClassName = clsx(
+    "profile-shell min-h-screen text-stone-950",
+    profileSettings.theme === "light" ? "profile-shell--light" : "profile-shell--warm",
+    profileSettings.density === "compact" && "profile-shell--compact",
+    profileSettings.highContrast && "profile-shell--high-contrast",
+    profileSettings.largeText && "profile-shell--large-text",
+    profileSettings.reduceMotion && "profile-shell--reduce-motion",
+    profileSettings.visibleFocus && "profile-shell--visible-focus"
+  );
 
   function handleToggleCollectCourse(courseId: string) {
     setCollectedCourseIds((current) => {
@@ -336,7 +388,7 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
   }
 
   return (
-    <main className="min-h-screen bg-[#f7f5ef] text-stone-950">
+    <main className={profileShellClassName}>
       <header className="sticky top-0 z-30 border-b border-stone-200 bg-[#fcfbf8]/92 backdrop-blur">
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-3 sm:px-6">
           <Link
@@ -415,6 +467,7 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
         <ProfileSettingsPanel
           avatarUrl={PROFILE_AVATAR_URL}
           favoriteCount={favoriteProjects.length}
+          onSettingsPreviewChange={setProfileSettings}
           repositoryCount={repositoryCount}
         />
       ) : (
@@ -430,8 +483,15 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
               unoptimized
             />
             <div className="min-w-0 flex-1 lg:mt-4">
-              <h1 className="truncate text-2xl font-semibold tracking-tight text-stone-950">Flow-mean</h1>
-              <p className="mt-1 text-sm text-stone-500">@blackboard-student</p>
+              <h1 className="truncate text-2xl font-semibold tracking-tight text-stone-950">{profileDisplayName}</h1>
+              <p className="mt-1 text-sm text-stone-500">@{profileHandle}</p>
+              <span className="mt-3 inline-flex rounded-full border border-stone-200 bg-white px-2.5 py-1 text-xs font-semibold text-stone-500">
+                {profileSettings.profileVisibility === "public"
+                  ? "公开"
+                  : profileSettings.profileVisibility === "workspace"
+                    ? "工作区可见"
+                    : "仅自己可见"}
+              </span>
               <button
                 type="button"
                 onClick={() => setActiveTab("settings")}
@@ -439,12 +499,47 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
               >
                 Edit profile
               </button>
-              <p className="mt-4 text-sm leading-6 text-stone-600">
-                管理自己的课程项目，Stars 只收纳你收藏的他人开源课程。
-              </p>
+              <p className="mt-4 text-sm leading-6 text-stone-600">{profileBio}</p>
+              <div className="mt-4 space-y-2 text-sm text-stone-600">
+                {profileSettings.location ? (
+                  <p className="flex items-center gap-2">
+                    <MapPin className="h-4 w-4 text-stone-400" />
+                    {profileSettings.location}
+                  </p>
+                ) : null}
+                {profileSettings.company ? (
+                  <p className="flex items-center gap-2">
+                    <Building2 className="h-4 w-4 text-stone-400" />
+                    {profileSettings.company}
+                  </p>
+                ) : null}
+                {profileSettings.website ? (
+                  <p className="flex items-center gap-2 break-all">
+                    <Globe2 className="h-4 w-4 shrink-0 text-stone-400" />
+                    {profileSettings.website}
+                  </p>
+                ) : null}
+                {profileSettings.showPublicEmail && profileSettings.publicEmail ? (
+                  <p className="flex items-center gap-2 break-all">
+                    <AtSign className="h-4 w-4 shrink-0 text-stone-400" />
+                    {profileSettings.publicEmail}
+                  </p>
+                ) : null}
+                {profileSettings.showSocialLinks
+                  ? profileSettings.socialLinks
+                      .filter(Boolean)
+                      .slice(0, 4)
+                      .map((link, index) => (
+                        <p key={`${link}:${index}`} className="flex items-center gap-2 break-all">
+                          <LinkIcon className="h-4 w-4 shrink-0 text-stone-400" />
+                          {link}
+                        </p>
+                      ))
+                  : null}
+              </div>
               <div className="mt-4 flex flex-wrap gap-x-4 gap-y-2 text-sm text-stone-600">
-                <span>{repositoryCount} repositories</span>
-                <span>{favoriteProjects.length} stars</span>
+                {profileSettings.showRepositoriesOnProfile ? <span>{repositoryCount} repositories</span> : null}
+                {profileSettings.showStarsOnProfile ? <span>{favoriteProjects.length} stars</span> : null}
               </div>
             </div>
           </div>
@@ -782,7 +877,12 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
               unoptimized
             />
             <div className="min-w-0">
-              <p className="truncate text-base font-semibold text-blue-600">{courseFullName(course)}</p>
+              <Link
+                href={courseDetailHref(course)}
+                className="block truncate text-base font-semibold text-blue-600 hover:underline"
+              >
+                {courseFullName(course)}
+              </Link>
               <p className="mt-1 line-clamp-2 text-sm leading-6 text-stone-600">{course.summary}</p>
               <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-stone-500">
                 <span className="inline-flex items-center gap-1.5">
@@ -802,14 +902,23 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
             </div>
           </div>
 
-          <button
-            type="button"
-            onClick={() => handleToggleCollectCourse(course.id)}
-            className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-md border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700 transition hover:border-amber-300"
-          >
-            <Star className="h-3.5 w-3.5 fill-current" />
-            Starred
-          </button>
+          <div className="flex shrink-0 items-center gap-2">
+            <Link
+              href={courseDetailHref(course)}
+              className="inline-flex items-center justify-center gap-1.5 rounded-md border border-stone-200 bg-stone-50 px-3 py-1.5 text-xs font-semibold text-stone-700 transition hover:border-stone-300 hover:bg-white hover:text-stone-950"
+            >
+              打开
+              <ArrowUpRight className="h-3.5 w-3.5" />
+            </Link>
+            <button
+              type="button"
+              onClick={() => handleToggleCollectCourse(course.id)}
+              className="inline-flex items-center justify-center gap-1.5 rounded-md border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700 transition hover:border-amber-300"
+            >
+              <Star className="h-3.5 w-3.5 fill-current" />
+              Starred
+            </button>
+          </div>
         </div>
       </article>
     );

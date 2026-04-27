@@ -4,21 +4,28 @@ import clsx from "clsx";
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import type { LucideIcon } from "lucide-react";
 import {
-  Accessibility,
+  AtSign,
   Bell,
+  Building2,
   Check,
   CircleUserRound,
   Clock3,
   CreditCard,
+  Eye,
+  Globe2,
   KeyRound,
   LinkIcon,
   LoaderCircle,
   LockKeyhole,
   Mail,
+  MapPin,
+  MonitorSmartphone,
   Palette,
+  RotateCcw,
+  Send,
   ShieldCheck,
   Sparkles,
   UserRound,
@@ -31,7 +38,6 @@ type SettingsSectionId =
   | "profile"
   | "account"
   | "appearance"
-  | "accessibility"
   | "notifications"
   | "billing"
   | "email"
@@ -45,10 +51,15 @@ type SettingsNavItem = {
   icon: LucideIcon;
 };
 
-type ProfileSettings = {
+export type ProfileSettings = {
   displayName: string;
   handle: string;
+  profileVisibility: "private" | "workspace" | "public";
   publicEmail: string;
+  showPublicEmail: boolean;
+  showSocialLinks: boolean;
+  showRepositoriesOnProfile: boolean;
+  showStarsOnProfile: boolean;
   bio: string;
   website: string;
   company: string;
@@ -66,6 +77,8 @@ type ProfileSettings = {
   weeklyDigestNotifications: boolean;
   aiResultNotifications: boolean;
   resourceNotifications: boolean;
+  browserNotifications: boolean;
+  notificationFrequency: "instant" | "hourly" | "daily";
   quietStart: string;
   quietEnd: string;
   emailCourseDigest: boolean;
@@ -82,18 +95,20 @@ type ProfileSettings = {
 type ProfileSettingsPanelProps = {
   avatarUrl: string;
   favoriteCount: number;
+  onSettingsPreviewChange?: (settings: ProfileSettings) => void;
   repositoryCount: number;
 };
 
 type SaveStatus = "idle" | "saved" | "error";
+type BrowserNotificationPermission = NotificationPermission | "unsupported";
 
-const PROFILE_SETTINGS_STORAGE_KEY = "openclass.profile.settings";
+export const PROFILE_SETTINGS_STORAGE_KEY = "openclass.profile.settings";
+export const PROFILE_SETTINGS_CHANGED_EVENT = "openclass.profile.settings.changed";
 
 const settingsPrimaryNav: SettingsNavItem[] = [
   { id: "profile", label: "公开资料", icon: UserRound },
   { id: "account", label: "账户", icon: CircleUserRound },
   { id: "appearance", label: "外观", icon: Palette },
-  { id: "accessibility", label: "无障碍", icon: Accessibility },
   { id: "notifications", label: "通知", icon: Bell },
 ];
 
@@ -109,7 +124,6 @@ const sectionTitles: Record<SettingsSectionId, { title: string; eyebrow: string 
   profile: { title: "公开资料", eyebrow: "Profile" },
   account: { title: "账户概览", eyebrow: "Account" },
   appearance: { title: "外观", eyebrow: "Appearance" },
-  accessibility: { title: "无障碍", eyebrow: "Accessibility" },
   notifications: { title: "通知", eyebrow: "Notifications" },
   billing: { title: "计费和许可", eyebrow: "License" },
   email: { title: "电子邮件", eyebrow: "Email" },
@@ -118,10 +132,15 @@ const sectionTitles: Record<SettingsSectionId, { title: string; eyebrow: string 
   security: { title: "代码安全", eyebrow: "Security" },
 };
 
-const DEFAULT_PROFILE_SETTINGS: ProfileSettings = {
+export const DEFAULT_PROFILE_SETTINGS: ProfileSettings = {
   displayName: "Flow-mean",
   handle: "blackboard-student",
+  profileVisibility: "workspace",
   publicEmail: "",
+  showPublicEmail: false,
+  showSocialLinks: true,
+  showRepositoriesOnProfile: true,
+  showStarsOnProfile: true,
   bio: "管理自己的课程项目，Stars 收藏值得继续学习的他人开源课程。",
   website: "",
   company: "",
@@ -139,6 +158,8 @@ const DEFAULT_PROFILE_SETTINGS: ProfileSettings = {
   weeklyDigestNotifications: true,
   aiResultNotifications: true,
   resourceNotifications: false,
+  browserNotifications: false,
+  notificationFrequency: "instant",
   quietStart: "22:00",
   quietEnd: "08:00",
   emailCourseDigest: true,
@@ -157,7 +178,7 @@ const settingsInputClass =
 
 const settingSectionClass = "border-b border-stone-200 pb-7";
 
-function normalizeProfileSettings(raw: Partial<ProfileSettings> | null): ProfileSettings {
+export function normalizeProfileSettings(raw: Partial<ProfileSettings> | null): ProfileSettings {
   const next = {
     ...DEFAULT_PROFILE_SETTINGS,
     ...(raw ?? {}),
@@ -171,7 +192,7 @@ function normalizeProfileSettings(raw: Partial<ProfileSettings> | null): Profile
   };
 }
 
-function readStoredSettings() {
+export function readStoredProfileSettings() {
   if (typeof window === "undefined") {
     return DEFAULT_PROFILE_SETTINGS;
   }
@@ -185,6 +206,14 @@ function readStoredSettings() {
   } catch {
     return DEFAULT_PROFILE_SETTINGS;
   }
+}
+
+function getNotificationPermission(): BrowserNotificationPermission {
+  if (typeof window === "undefined" || !("Notification" in window)) {
+    return "unsupported";
+  }
+
+  return Notification.permission;
 }
 
 function formatAccountDate(value: string | null | undefined) {
@@ -219,11 +248,17 @@ function configuredModels(models: AIModelOption[]) {
   return models.filter((model) => model.configured);
 }
 
-export function ProfileSettingsPanel({ avatarUrl, favoriteCount, repositoryCount }: ProfileSettingsPanelProps) {
+export function ProfileSettingsPanel({
+  avatarUrl,
+  favoriteCount,
+  onSettingsPreviewChange,
+  repositoryCount,
+}: ProfileSettingsPanelProps) {
   const router = useRouter();
   const [activeSection, setActiveSection] = useState<SettingsSectionId>("profile");
   const [settings, setSettings] = useState<ProfileSettings>(DEFAULT_PROFILE_SETTINGS);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
+  const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [currentUser, setCurrentUser] = useState<UserView | null>(null);
   const [isLoadingUser, setIsLoadingUser] = useState(true);
   const [userError, setUserError] = useState<string | null>(null);
@@ -231,6 +266,9 @@ export function ProfileSettingsPanel({ avatarUrl, favoriteCount, repositoryCount
   const [isLoadingModels, setIsLoadingModels] = useState(true);
   const [modelError, setModelError] = useState<string | null>(null);
   const [passwordMessage, setPasswordMessage] = useState<string | null>(null);
+  const [notificationPermission, setNotificationPermission] =
+    useState<BrowserNotificationPermission>("unsupported");
+  const [notificationMessage, setNotificationMessage] = useState<string | null>(null);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -238,11 +276,16 @@ export function ProfileSettingsPanel({ avatarUrl, favoriteCount, repositoryCount
     }
 
     const timeoutId = window.setTimeout(() => {
-      setSettings(readStoredSettings());
+      setSettings(readStoredProfileSettings());
+      setNotificationPermission(getNotificationPermission());
     }, 0);
 
     return () => window.clearTimeout(timeoutId);
   }, []);
+
+  useEffect(() => {
+    onSettingsPreviewChange?.(settings);
+  }, [onSettingsPreviewChange, settings]);
 
   useEffect(() => {
     let isDisposed = false;
@@ -302,10 +345,32 @@ export function ProfileSettingsPanel({ avatarUrl, favoriteCount, repositoryCount
     () => modelCatalog?.realtime.find((model) => model.default) ?? null,
     [modelCatalog]
   );
+  const normalizedHandle = settings.handle.trim().toLowerCase();
+  const isHandleValid = /^[a-z0-9][a-z0-9-]{2,31}$/.test(normalizedHandle);
+  const publicProfileUrl = `openclass.local/${normalizedHandle || DEFAULT_PROFILE_SETTINGS.handle}`;
+  const filledProfileFields = [
+    settings.displayName,
+    settings.handle,
+    settings.bio,
+    settings.learningFocus,
+    settings.website,
+    settings.company,
+    settings.location,
+    ...settings.socialLinks.filter(Boolean),
+  ].filter((value) => value.trim()).length;
+  const profileCompleteness = Math.min(100, Math.round((filledProfileFields / 11) * 100));
+  const enabledNotificationCount = [
+    settings.courseActivityNotifications,
+    settings.weeklyDigestNotifications,
+    settings.aiResultNotifications,
+    settings.resourceNotifications,
+    settings.browserNotifications,
+  ].filter(Boolean).length;
 
   function updateSetting<Key extends keyof ProfileSettings>(key: Key, value: ProfileSettings[Key]) {
     setSettings((current) => ({ ...current, [key]: value }));
     setSaveStatus("idle");
+    setSaveMessage(null);
   }
 
   function updateSocialLink(index: number, value: string) {
@@ -315,16 +380,89 @@ export function ProfileSettingsPanel({ avatarUrl, favoriteCount, repositoryCount
       return { ...current, socialLinks };
     });
     setSaveStatus("idle");
+    setSaveMessage(null);
   }
 
   function handleSave(event?: FormEvent<HTMLFormElement>) {
     event?.preventDefault();
 
+    if (activeSection === "profile" && !isHandleValid) {
+      setSaveStatus("error");
+      setSaveMessage("用户名需为 3-32 位小写字母、数字或连字符，并以字母或数字开头。");
+      return;
+    }
+
     try {
       window.localStorage.setItem(PROFILE_SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+      window.dispatchEvent(new CustomEvent(PROFILE_SETTINGS_CHANGED_EVENT, { detail: settings }));
       setSaveStatus("saved");
+      setSaveMessage("已保存到本机");
     } catch {
       setSaveStatus("error");
+      setSaveMessage("保存失败，请检查浏览器存储权限。");
+    }
+  }
+
+  function handleResetAppearance() {
+    setSettings((current) => ({
+      ...current,
+      density: DEFAULT_PROFILE_SETTINGS.density,
+      highContrast: DEFAULT_PROFILE_SETTINGS.highContrast,
+      largeText: DEFAULT_PROFILE_SETTINGS.largeText,
+      reduceMotion: DEFAULT_PROFILE_SETTINGS.reduceMotion,
+      startPage: DEFAULT_PROFILE_SETTINGS.startPage,
+      theme: DEFAULT_PROFILE_SETTINGS.theme,
+      visibleFocus: DEFAULT_PROFILE_SETTINGS.visibleFocus,
+    }));
+    setSaveStatus("idle");
+    setSaveMessage(null);
+  }
+
+  async function handleRequestNotificationPermission() {
+    if (typeof window === "undefined" || !("Notification" in window)) {
+      setNotificationPermission("unsupported");
+      setNotificationMessage("当前浏览器不支持桌面通知。");
+      return;
+    }
+
+    try {
+      const permission = await Notification.requestPermission();
+      setNotificationPermission(permission);
+      setNotificationMessage(permission === "granted" ? "桌面通知已启用。" : "浏览器没有授予桌面通知权限。");
+      if (permission === "granted") {
+        updateSetting("browserNotifications", true);
+      }
+    } catch {
+      setNotificationMessage("通知权限请求失败。");
+    }
+  }
+
+  async function handleSendTestNotification() {
+    if (typeof window === "undefined" || !("Notification" in window)) {
+      setNotificationPermission("unsupported");
+      setNotificationMessage("当前浏览器不支持桌面通知。");
+      return;
+    }
+
+    let permission = Notification.permission;
+    if (permission === "default") {
+      permission = await Notification.requestPermission();
+      setNotificationPermission(permission);
+    }
+
+    if (permission !== "granted") {
+      setNotificationMessage("需要先允许浏览器通知。");
+      return;
+    }
+
+    try {
+      new Notification("OpenClass 通知测试", {
+        body: `课程活动、AI 结果和资料库变化会按 ${settings.quietStart}-${settings.quietEnd} 的免打扰时段过滤。`,
+        tag: "openclass-notification-test",
+      });
+      setNotificationMessage("测试通知已发送。");
+    } catch {
+      setNotificationMessage("测试通知发送失败。");
     }
   }
 
@@ -375,21 +513,30 @@ export function ProfileSettingsPanel({ avatarUrl, favoriteCount, repositoryCount
     );
   }
 
-  function renderSaveFooter() {
+  function renderSaveFooter(options: { disabled?: boolean; helper?: ReactNode } = {}) {
     return (
       <div className="flex flex-col gap-3 border-t border-stone-200 pt-5 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-h-5 text-sm">
           {saveStatus === "saved" ? (
             <span className="inline-flex items-center gap-1.5 font-medium text-emerald-700">
               <Check className="h-4 w-4" />
-              已保存到本机
+              {saveMessage ?? "已保存到本机"}
             </span>
           ) : null}
-          {saveStatus === "error" ? <span className="font-medium text-red-600">保存失败，请检查浏览器存储权限。</span> : null}
+          {saveStatus === "error" ? (
+            <span className="font-medium text-red-600">{saveMessage ?? "保存失败，请检查浏览器存储权限。"}</span>
+          ) : null}
+          {saveStatus === "idle" ? options.helper : null}
         </div>
         <button
           type="submit"
-          className="inline-flex h-10 items-center justify-center rounded-md bg-emerald-600 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700"
+          disabled={options.disabled}
+          className={clsx(
+            "inline-flex h-10 items-center justify-center rounded-md px-4 text-sm font-semibold text-white shadow-sm transition",
+            options.disabled
+              ? "cursor-not-allowed bg-stone-300"
+              : "bg-emerald-600 hover:bg-emerald-700"
+          )}
         >
           保存设置
         </button>
@@ -410,29 +557,113 @@ export function ProfileSettingsPanel({ avatarUrl, favoriteCount, repositoryCount
 
   function renderProfileSection() {
     return (
-      <form className="max-w-3xl space-y-7" onSubmit={handleSave}>
-        <section className={settingSectionClass}>
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
-            <Image
-              src={avatarUrl}
-              alt="用户头像"
-              className="h-20 w-20 rounded-full border-4 border-white bg-stone-200 shadow-[0_16px_34px_rgba(15,23,42,0.08)]"
-              width={80}
-              height={80}
-              unoptimized
+      <form className="max-w-5xl space-y-7" onSubmit={handleSave}>
+        <section className={clsx(settingSectionClass, "grid gap-5 lg:grid-cols-[minmax(0,1fr)_22rem]")}>
+          <div className="space-y-5">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
+              <Image
+                src={avatarUrl}
+                alt="用户头像"
+                className="h-20 w-20 rounded-full border-4 border-white bg-stone-200 shadow-[0_16px_34px_rgba(15,23,42,0.08)]"
+                width={80}
+                height={80}
+                unoptimized
+              />
+              <div className="min-w-0">
+                <h3 className="truncate text-lg font-semibold text-stone-950">
+                  {settings.displayName || DEFAULT_PROFILE_SETTINGS.displayName}
+                </h3>
+                <p className="mt-1 text-sm text-stone-500">@{settings.handle || DEFAULT_PROFILE_SETTINGS.handle}</p>
+                <p className="mt-2 text-xs font-medium text-stone-500">公开链接：{publicProfileUrl}</p>
+              </div>
+            </div>
+
+            <div>
+              <div className="mb-2 flex items-center justify-between gap-3 text-sm">
+                <span className="font-semibold text-stone-950">资料完整度</span>
+                <span className="text-stone-500">{profileCompleteness}%</span>
+              </div>
+              <div className="h-2 overflow-hidden rounded-full bg-stone-200">
+                <div className="h-full rounded-full bg-emerald-500" style={{ width: `${profileCompleteness}%` }} />
+              </div>
+            </div>
+
+            <SegmentedSetting
+              label="公开范围"
+              value={settings.profileVisibility}
+              options={[
+                { value: "private", label: "仅自己" },
+                { value: "workspace", label: "工作区" },
+                { value: "public", label: "公开" },
+              ]}
+              onChange={(value) => updateSetting("profileVisibility", value as ProfileSettings["profileVisibility"])}
             />
-            <div className="min-w-0">
-              <h3 className="truncate text-lg font-semibold text-stone-950">{settings.displayName}</h3>
-              <p className="mt-1 text-sm text-stone-500">@{settings.handle || "blackboard-student"}</p>
+          </div>
+
+          <div className="rounded-md border border-stone-200 bg-white p-4">
+            <div className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.14em] text-stone-400">
+              <Eye className="h-3.5 w-3.5" />
+              Preview
+            </div>
+            <div className="flex items-start gap-3">
+              <Image
+                src={avatarUrl}
+                alt=""
+                className="h-12 w-12 rounded-full border border-stone-200 bg-stone-100"
+                width={48}
+                height={48}
+                unoptimized
+              />
+              <div className="min-w-0">
+                <p className="truncate text-base font-semibold text-stone-950">
+                  {settings.displayName || DEFAULT_PROFILE_SETTINGS.displayName}
+                </p>
+                <p className="mt-0.5 truncate text-sm text-stone-500">@{settings.handle || DEFAULT_PROFILE_SETTINGS.handle}</p>
+              </div>
+            </div>
+            <p className="mt-4 line-clamp-3 text-sm leading-6 text-stone-600">{settings.bio || "还没有填写个人简介。"}</p>
+            <div className="mt-4 space-y-2 text-xs text-stone-500">
+              {settings.location ? (
+                <p className="flex items-center gap-2">
+                  <MapPin className="h-3.5 w-3.5" />
+                  {settings.location}
+                </p>
+              ) : null}
+              {settings.company ? (
+                <p className="flex items-center gap-2">
+                  <Building2 className="h-3.5 w-3.5" />
+                  {settings.company}
+                </p>
+              ) : null}
+              {settings.website ? (
+                <p className="flex items-center gap-2">
+                  <Globe2 className="h-3.5 w-3.5" />
+                  {settings.website}
+                </p>
+              ) : null}
+              {settings.showPublicEmail && (settings.publicEmail || currentUser?.email) ? (
+                <p className="flex items-center gap-2">
+                  <AtSign className="h-3.5 w-3.5" />
+                  {settings.publicEmail || currentUser?.email}
+                </p>
+              ) : null}
+            </div>
+            <div className="mt-4 flex flex-wrap gap-2 text-xs font-semibold text-stone-600">
+              {settings.showRepositoriesOnProfile ? <span>{repositoryCount} repositories</span> : null}
+              {settings.showStarsOnProfile ? <span>{favoriteCount} stars</span> : null}
             </div>
           </div>
         </section>
 
-        <div className="grid gap-5 sm:grid-cols-2">
+        <div className="grid max-w-3xl gap-5 sm:grid-cols-2">
           <label className="block">
-            <span className="block text-sm font-semibold text-stone-950">姓名</span>
+            <span className="flex items-center justify-between gap-3 text-sm font-semibold text-stone-950">
+              姓名
+              <span className="text-xs font-medium text-stone-400">{settings.displayName.length}/40</span>
+            </span>
             <input
               className={`${settingsInputClass} mt-2`}
+              maxLength={40}
               value={settings.displayName}
               onChange={(event) => updateSetting("displayName", event.target.value)}
             />
@@ -441,14 +672,26 @@ export function ProfileSettingsPanel({ avatarUrl, favoriteCount, repositoryCount
           <label className="block">
             <span className="block text-sm font-semibold text-stone-950">用户名</span>
             <input
-              className={`${settingsInputClass} mt-2`}
+              className={clsx(`${settingsInputClass} mt-2`, !isHandleValid && "border-red-300 focus:border-red-500 focus:ring-red-100")}
+              maxLength={32}
               value={settings.handle}
-              onChange={(event) => updateSetting("handle", event.target.value.replace(/\s+/g, "-"))}
+              onChange={(event) =>
+                updateSetting(
+                  "handle",
+                  event.target.value
+                    .toLowerCase()
+                    .replace(/[^a-z0-9-]/g, "-")
+                    .replace(/-+/g, "-")
+                )
+              }
             />
+            <span className={clsx("mt-2 block text-xs leading-5", isHandleValid ? "text-stone-500" : "text-red-600")}>
+              3-32 位小写字母、数字或连字符。
+            </span>
           </label>
         </div>
 
-        <label className="block">
+        <label className="block max-w-3xl">
           <span className="block text-sm font-semibold text-stone-950">公开电子邮件</span>
           <select
             className={`${settingsInputClass} mt-2 max-w-xl`}
@@ -460,17 +703,21 @@ export function ProfileSettingsPanel({ avatarUrl, favoriteCount, repositoryCount
           </select>
         </label>
 
-        <label className="block">
-          <span className="block text-sm font-semibold text-stone-950">个人简介</span>
+        <label className="block max-w-3xl">
+          <span className="flex items-center justify-between gap-3 text-sm font-semibold text-stone-950">
+            个人简介
+            <span className="text-xs font-medium text-stone-400">{settings.bio.length}/160</span>
+          </span>
           <textarea
             className={`${settingsInputClass} mt-2 min-h-28 resize-y leading-6`}
+            maxLength={160}
             value={settings.bio}
             onChange={(event) => updateSetting("bio", event.target.value)}
             placeholder="请简单介绍一下你自己。"
           />
         </label>
 
-        <label className="block">
+        <label className="block max-w-3xl">
           <span className="block text-sm font-semibold text-stone-950">学习方向</span>
           <input
             className={`${settingsInputClass} mt-2`}
@@ -479,7 +726,7 @@ export function ProfileSettingsPanel({ avatarUrl, favoriteCount, repositoryCount
           />
         </label>
 
-        <div className="grid gap-5 sm:grid-cols-2">
+        <div className="grid max-w-3xl gap-5 sm:grid-cols-2">
           <label className="block">
             <span className="block text-sm font-semibold text-stone-950">URL</span>
             <input
@@ -501,7 +748,7 @@ export function ProfileSettingsPanel({ avatarUrl, favoriteCount, repositoryCount
           </label>
         </div>
 
-        <label className="block">
+        <label className="block max-w-3xl">
           <span className="block text-sm font-semibold text-stone-950">机构</span>
           <input
             className={`${settingsInputClass} mt-2 max-w-xl`}
@@ -510,7 +757,7 @@ export function ProfileSettingsPanel({ avatarUrl, favoriteCount, repositoryCount
           />
         </label>
 
-        <div>
+        <div className="max-w-3xl">
           <h3 className="text-sm font-semibold text-stone-950">社交账号</h3>
           <div className="mt-2 space-y-2">
             {settings.socialLinks.map((link, index) => (
@@ -527,7 +774,41 @@ export function ProfileSettingsPanel({ avatarUrl, favoriteCount, repositoryCount
           </div>
         </div>
 
-        {renderSaveFooter()}
+        <section className="max-w-3xl space-y-5 border-y border-stone-200 py-5">
+          <ToggleSetting
+            title="公开邮箱"
+            description="在公开资料中显示已选择的邮箱。"
+            enabled={settings.showPublicEmail}
+            onChange={(value) => updateSetting("showPublicEmail", value)}
+          />
+          <ToggleSetting
+            title="公开社交账号"
+            description="在个人主页展示社交链接。"
+            enabled={settings.showSocialLinks}
+            onChange={(value) => updateSetting("showSocialLinks", value)}
+          />
+          <ToggleSetting
+            title="展示个人项目"
+            description="在个人主页侧栏显示 repositories 数量。"
+            enabled={settings.showRepositoriesOnProfile}
+            onChange={(value) => updateSetting("showRepositoriesOnProfile", value)}
+          />
+          <ToggleSetting
+            title="展示 Stars 收藏"
+            description="在个人主页侧栏显示收藏课程数量。"
+            enabled={settings.showStarsOnProfile}
+            onChange={(value) => updateSetting("showStarsOnProfile", value)}
+          />
+        </section>
+
+        {renderSaveFooter({
+          disabled: !isHandleValid,
+          helper: (
+            <span className="text-stone-500">
+              {isHandleValid ? `公开资料会预览到 ${publicProfileUrl}` : "请先修正用户名。"}
+            </span>
+          ),
+        })}
       </form>
     );
   }
@@ -601,32 +882,60 @@ export function ProfileSettingsPanel({ avatarUrl, favoriteCount, repositoryCount
 
   function renderAppearanceSection() {
     return (
-      <form className="max-w-3xl space-y-7" onSubmit={handleSave}>
-        <section className={settingSectionClass}>
-          <h3 className="text-sm font-semibold text-stone-950">主题</h3>
-          <div className="mt-3 grid gap-3 sm:grid-cols-3">
-            <ThemeOption
-              active={settings.theme === "system"}
-              label="跟随系统"
-              swatches={["#f8fafc", "#0f172a", "#0ea5e9"]}
-              onClick={() => updateSetting("theme", "system")}
-            />
-            <ThemeOption
-              active={settings.theme === "light"}
-              label="明亮"
-              swatches={["#ffffff", "#e7eef8", "#2563eb"]}
-              onClick={() => updateSetting("theme", "light")}
-            />
-            <ThemeOption
-              active={settings.theme === "warm"}
-              label="暖色纸面"
-              swatches={["#fff7ed", "#f5d0a5", "#059669"]}
-              onClick={() => updateSetting("theme", "warm")}
-            />
+      <form className="max-w-5xl space-y-7" onSubmit={handleSave}>
+        <section className={clsx(settingSectionClass, "grid gap-5 lg:grid-cols-[minmax(0,1fr)_22rem]")}>
+          <div>
+            <h3 className="text-sm font-semibold text-stone-950">主题</h3>
+            <div className="mt-3 grid gap-3 sm:grid-cols-3">
+              <ThemeOption
+                active={settings.theme === "system"}
+                label="跟随系统"
+                swatches={["#f8fafc", "#0f172a", "#0ea5e9"]}
+                onClick={() => updateSetting("theme", "system")}
+              />
+              <ThemeOption
+                active={settings.theme === "light"}
+                label="明亮"
+                swatches={["#ffffff", "#e7eef8", "#2563eb"]}
+                onClick={() => updateSetting("theme", "light")}
+              />
+              <ThemeOption
+                active={settings.theme === "warm"}
+                label="暖色纸面"
+                swatches={["#fff7ed", "#f5d0a5", "#059669"]}
+                onClick={() => updateSetting("theme", "warm")}
+              />
+            </div>
+          </div>
+
+          <div
+            className={clsx(
+              "rounded-md border p-4",
+              settings.theme === "light" && "border-slate-200 bg-slate-50",
+              settings.theme !== "light" && "border-stone-200 bg-white",
+              settings.highContrast && "border-stone-950"
+            )}
+          >
+            <div className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.14em] text-stone-400">
+              <MonitorSmartphone className="h-3.5 w-3.5" />
+              Live Preview
+            </div>
+            <div className={clsx("rounded-md border bg-white p-3", settings.density === "compact" ? "space-y-2" : "space-y-3")}>
+              <p className={clsx("font-semibold text-stone-950", settings.largeText ? "text-base" : "text-sm")}>
+                {settings.displayName || DEFAULT_PROFILE_SETTINGS.displayName}
+              </p>
+              <p className={clsx("leading-6 text-stone-600", settings.largeText ? "text-sm" : "text-xs")}>
+                {settings.bio || DEFAULT_PROFILE_SETTINGS.bio}
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                <span className="rounded-full bg-sky-50 px-2 py-1 text-[11px] font-semibold text-sky-700">AI 课程</span>
+                <span className="rounded-full bg-emerald-50 px-2 py-1 text-[11px] font-semibold text-emerald-700">讲义</span>
+              </div>
+            </div>
           </div>
         </section>
 
-        <section className={settingSectionClass}>
+        <section className="grid gap-6 border-b border-stone-200 pb-7 lg:grid-cols-2">
           <SegmentedSetting
             label="界面密度"
             value={settings.density}
@@ -636,9 +945,7 @@ export function ProfileSettingsPanel({ avatarUrl, favoriteCount, repositoryCount
             ]}
             onChange={(value) => updateSetting("density", value as ProfileSettings["density"])}
           />
-        </section>
 
-        <section className={settingSectionClass}>
           <SegmentedSetting
             label="默认入口"
             value={settings.startPage}
@@ -651,70 +958,143 @@ export function ProfileSettingsPanel({ avatarUrl, favoriteCount, repositoryCount
           />
         </section>
 
-        {renderSaveFooter()}
-      </form>
-    );
-  }
+        <section className="space-y-5 border-b border-stone-200 pb-7">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h3 className="text-sm font-semibold text-stone-950">阅读辅助</h3>
+              <p className="mt-1 text-sm text-stone-500">这些选项会立即作用于个人主页和设置页。</p>
+            </div>
+            <button
+              type="button"
+              onClick={handleResetAppearance}
+              className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-stone-200 bg-white px-3 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:text-stone-950"
+            >
+              <RotateCcw className="h-4 w-4" />
+              重置外观
+            </button>
+          </div>
+          <ToggleSetting
+            title="减少动态效果"
+            description="降低动画和过渡频率。"
+            enabled={settings.reduceMotion}
+            onChange={(value) => updateSetting("reduceMotion", value)}
+          />
+          <ToggleSetting
+            title="高对比度"
+            description="提高文字和边框对比度。"
+            enabled={settings.highContrast}
+            onChange={(value) => updateSetting("highContrast", value)}
+          />
+          <ToggleSetting
+            title="放大正文"
+            description="提高课程列表和设置页正文尺寸。"
+            enabled={settings.largeText}
+            onChange={(value) => updateSetting("largeText", value)}
+          />
+          <ToggleSetting
+            title="突出键盘焦点"
+            description="让键盘导航状态更容易被看见。"
+            enabled={settings.visibleFocus}
+            onChange={(value) => updateSetting("visibleFocus", value)}
+          />
+        </section>
 
-  function renderAccessibilitySection() {
-    return (
-      <form className="max-w-3xl space-y-6" onSubmit={handleSave}>
-        <ToggleSetting
-          title="减少动态效果"
-          description="降低动画和过渡频率。"
-          enabled={settings.reduceMotion}
-          onChange={(value) => updateSetting("reduceMotion", value)}
-        />
-        <ToggleSetting
-          title="高对比度"
-          description="提高文字和边框对比度。"
-          enabled={settings.highContrast}
-          onChange={(value) => updateSetting("highContrast", value)}
-        />
-        <ToggleSetting
-          title="放大正文"
-          description="提高课程列表和设置页正文尺寸。"
-          enabled={settings.largeText}
-          onChange={(value) => updateSetting("largeText", value)}
-        />
-        <ToggleSetting
-          title="突出键盘焦点"
-          description="让键盘导航状态更容易被看见。"
-          enabled={settings.visibleFocus}
-          onChange={(value) => updateSetting("visibleFocus", value)}
-        />
-        {renderSaveFooter()}
+        {renderSaveFooter({ helper: <span className="text-stone-500">外观会立即预览，保存后下次打开仍然保留。</span> })}
       </form>
     );
   }
 
   function renderNotificationsSection() {
     return (
-      <form className="max-w-3xl space-y-6" onSubmit={handleSave}>
-        <ToggleSetting
-          title="课程活动"
-          description="课程包、讲义和资料更新。"
-          enabled={settings.courseActivityNotifications}
-          onChange={(value) => updateSetting("courseActivityNotifications", value)}
-        />
-        <ToggleSetting
-          title="每周摘要"
-          description="Stars 收藏和个人项目的周报。"
-          enabled={settings.weeklyDigestNotifications}
-          onChange={(value) => updateSetting("weeklyDigestNotifications", value)}
-        />
-        <ToggleSetting
-          title="AI 生成结果"
-          description="长任务结束后提醒。"
-          enabled={settings.aiResultNotifications}
-          onChange={(value) => updateSetting("aiResultNotifications", value)}
-        />
-        <ToggleSetting
-          title="资料库变化"
-          description="上传资料解析完成或失败。"
-          enabled={settings.resourceNotifications}
-          onChange={(value) => updateSetting("resourceNotifications", value)}
-        />
+      <form className="max-w-5xl space-y-7" onSubmit={handleSave}>
+        <section className={clsx(settingSectionClass, "grid gap-4 lg:grid-cols-[minmax(0,1fr)_18rem]")}>
+          <div>
+            <h3 className="text-sm font-semibold text-stone-950">通知中心</h3>
+            <p className="mt-1 text-sm leading-6 text-stone-500">
+              已开启 {enabledNotificationCount} 个通知来源，免打扰时段为 {settings.quietStart}-{settings.quietEnd}。
+            </p>
+          </div>
+          <div className="rounded-md border border-stone-200 bg-white px-4 py-3">
+            <p className="text-xs font-semibold text-stone-500">浏览器权限</p>
+            <p className="mt-1 text-sm font-semibold text-stone-950">
+              {notificationPermission === "unsupported"
+                ? "不支持"
+                : notificationPermission === "granted"
+                  ? "已允许"
+                  : notificationPermission === "denied"
+                    ? "已拒绝"
+                    : "未询问"}
+            </p>
+          </div>
+        </section>
+
+        <section className="grid gap-6 border-b border-stone-200 pb-7 lg:grid-cols-[minmax(0,1fr)_18rem]">
+          <div className="space-y-5">
+            <ToggleSetting
+              title="桌面通知"
+              description="允许浏览器弹出课程和 AI 任务提醒。"
+              enabled={settings.browserNotifications}
+              onChange={(value) => updateSetting("browserNotifications", value)}
+            />
+            <SegmentedSetting
+              label="提醒频率"
+              value={settings.notificationFrequency}
+              options={[
+                { value: "instant", label: "即时" },
+                { value: "hourly", label: "每小时" },
+                { value: "daily", label: "每日摘要" },
+              ]}
+              onChange={(value) => updateSetting("notificationFrequency", value as ProfileSettings["notificationFrequency"])}
+            />
+          </div>
+
+          <div className="space-y-2">
+            <button
+              type="button"
+              onClick={() => void handleRequestNotificationPermission()}
+              className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-md border border-stone-200 bg-white px-4 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:text-stone-950"
+            >
+              <Bell className="h-4 w-4" />
+              允许浏览器通知
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleSendTestNotification()}
+              className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-md bg-stone-950 px-4 text-sm font-semibold text-white transition hover:bg-stone-800"
+            >
+              <Send className="h-4 w-4" />
+              发送测试通知
+            </button>
+            {notificationMessage ? <p className="text-sm leading-6 text-stone-500">{notificationMessage}</p> : null}
+          </div>
+        </section>
+
+        <section className="grid gap-5 lg:grid-cols-2">
+          <ToggleSetting
+            title="课程活动"
+            description="课程包、讲义和资料更新。"
+            enabled={settings.courseActivityNotifications}
+            onChange={(value) => updateSetting("courseActivityNotifications", value)}
+          />
+          <ToggleSetting
+            title="每周摘要"
+            description="Stars 收藏和个人项目的周报。"
+            enabled={settings.weeklyDigestNotifications}
+            onChange={(value) => updateSetting("weeklyDigestNotifications", value)}
+          />
+          <ToggleSetting
+            title="AI 生成结果"
+            description="长任务结束后提醒。"
+            enabled={settings.aiResultNotifications}
+            onChange={(value) => updateSetting("aiResultNotifications", value)}
+          />
+          <ToggleSetting
+            title="资料库变化"
+            description="上传资料解析完成或失败。"
+            enabled={settings.resourceNotifications}
+            onChange={(value) => updateSetting("resourceNotifications", value)}
+          />
+        </section>
 
         <section className="grid gap-4 border-y border-stone-200 py-6 sm:grid-cols-2">
           <label className="block">
@@ -743,7 +1123,7 @@ export function ProfileSettingsPanel({ avatarUrl, favoriteCount, repositoryCount
           </label>
         </section>
 
-        {renderSaveFooter()}
+        {renderSaveFooter({ helper: <span className="text-stone-500">浏览器权限由当前浏览器控制，其他通知偏好保存到本机。</span> })}
       </form>
     );
   }
@@ -968,8 +1348,6 @@ export function ProfileSettingsPanel({ avatarUrl, favoriteCount, repositoryCount
         return renderAccountSection();
       case "appearance":
         return renderAppearanceSection();
-      case "accessibility":
-        return renderAccessibilitySection();
       case "notifications":
         return renderNotificationsSection();
       case "billing":

@@ -29,16 +29,7 @@ import {
   type FollowedCourseUpdateItem,
 } from "@/lib/following";
 
-type FollowedFeedFilter = "all" | FollowedCourseUpdate["updateKind"];
 type CreatorFilter = "all" | string;
-
-const feedFilters: Array<{ id: FollowedFeedFilter; label: string }> = [
-  { id: "all", label: "全部" },
-  { id: "new_lesson", label: "新课" },
-  { id: "course_revision", label: "更新" },
-  { id: "resource_added", label: "资料" },
-  { id: "note_added", label: "笔记" },
-];
 
 function formatRelativeTime(value: string | Date | null | undefined) {
   if (!value) {
@@ -132,7 +123,6 @@ function updateLabelTone(kind: FollowedCourseUpdate["updateKind"]) {
 }
 
 export function FollowingFeedContent() {
-  const [feedFilter, setFeedFilter] = useState<FollowedFeedFilter>("all");
   const [selectedCreatorId, setSelectedCreatorId] = useState<CreatorFilter>("all");
   const [query, setQuery] = useState("");
   const normalizedQuery = query.trim().toLowerCase();
@@ -148,8 +138,7 @@ export function FollowingFeedContent() {
   const totalUnreadCount = FOLLOWED_CREATORS.reduce((total, creator) => total + creator.unreadCount, 0);
   const visibleFeedItems = feedItems.filter((item) => {
     const matchesCreator = selectedCreatorId === "all" || item.creator.id === selectedCreatorId;
-    const matchesFilter = feedFilter === "all" || item.update.updateKind === feedFilter;
-    return matchesCreator && matchesFilter && feedItemMatchesSearch(item, normalizedQuery);
+    return matchesCreator && feedItemMatchesSearch(item, normalizedQuery);
   });
 
   return (
@@ -188,26 +177,6 @@ export function FollowingFeedContent() {
               />
             </div>
 
-            <div className="flex flex-wrap items-center gap-2">
-              {feedFilters.map((filter) => {
-                const isActive = feedFilter === filter.id;
-                return (
-                  <button
-                    key={filter.id}
-                    type="button"
-                    onClick={() => setFeedFilter(filter.id)}
-                    className={clsx(
-                      "rounded-full border px-4 py-2 text-xs font-semibold transition",
-                      isActive
-                        ? "border-stone-950 bg-stone-950 text-white"
-                        : "border-stone-200 bg-white text-stone-600 hover:border-stone-300 hover:text-stone-950"
-                    )}
-                  >
-                    {filter.label}
-                  </button>
-                );
-              })}
-            </div>
           </div>
         </div>
 

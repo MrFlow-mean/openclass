@@ -4,7 +4,6 @@ from app.models import ChatRequest, ChatResponse, CourseGraphEdge, Lesson, Selec
 from app.services.ai_logging import ai_usage_logger, log_ai_interaction_message
 from app.services.ai_workflow import course_workflow
 from app.services.openai_course_ai import bind_text_model_selection
-from app.services.rich_document import is_document_empty
 from app.services.route_context import bind_ai_request_context
 from app.services.workspace_state import (
     commit_document_snapshot,
@@ -59,12 +58,31 @@ def chat_flow_metadata(
         "interaction_mode": request.interaction_mode,
         "scope_action": request.scope_action,
         "resource_reference_action": request.resource_reference_action,
+        "board_edit_action": request.board_edit_action,
+        "board_edit_topic": request.board_edit_topic,
+        "teaching_action": request.teaching_action,
         "board_action": board_decision.action,
         "selection": request.selection.model_dump(mode="json") if request.selection else None,
+        "learning_need_checklist": workflow_result["learning_requirement_sheet"].learning_need_checklist,
         "learning_clarification": learning_clarification.model_dump(mode="json"),
+        "board_edit_prompt": (
+            workflow_result["board_edit_prompt"].model_dump(mode="json")
+            if workflow_result.get("board_edit_prompt") is not None
+            else None
+        ),
         "board_teaching_guide": (
             workflow_result["board_teaching_guide"].model_dump(mode="json")
             if workflow_result.get("board_teaching_guide") is not None
+            else None
+        ),
+        "board_teaching_progress": (
+            workflow_result["board_teaching_progress"].model_dump(mode="json")
+            if workflow_result.get("board_teaching_progress") is not None
+            else None
+        ),
+        "teaching_progress": (
+            workflow_result["teaching_progress"].model_dump(mode="json")
+            if workflow_result.get("teaching_progress") is not None
             else None
         ),
         "created_lesson_id": created_lesson.id if created_lesson else None,
@@ -114,6 +132,8 @@ def process_chat_on_lesson(lesson_id: str, request: ChatRequest) -> ChatResponse
                 "scope_action": request.scope_action,
                 "text_model": request.text_model,
                 "resource_reference_action": request.resource_reference_action,
+                "board_edit_action": request.board_edit_action,
+                "board_edit_topic": request.board_edit_topic,
             },
         )
         ai_usage_logger.log_event(
@@ -127,11 +147,13 @@ def process_chat_on_lesson(lesson_id: str, request: ChatRequest) -> ChatResponse
             resource_reference_action=request.resource_reference_action,
             resource_reference_resource_id=request.resource_reference_resource_id,
             resource_reference_chapter_id=request.resource_reference_chapter_id,
+            board_edit_action=request.board_edit_action,
+            board_edit_topic=request.board_edit_topic,
+            teaching_action=request.teaching_action,
             conversation=request.conversation,
         )
 
         try:
-            was_blank_document = is_document_empty(lesson.board_document)
             workflow_package = package_context_for_lesson(workspace, package, lesson_id)
             with bind_text_model_selection(request.text_model):
                 workflow_result = course_workflow.invoke(
@@ -140,7 +162,11 @@ def process_chat_on_lesson(lesson_id: str, request: ChatRequest) -> ChatResponse
             lesson.learning_requirements = workflow_result["learning_requirement_sheet"]
             lesson.summary = workflow_result["learning_requirement_sheet"].learning_goal
             lesson.board_teaching_guide = workflow_result.get("board_teaching_guide")
+            if workflow_result.get("board_teaching_progress") is not None:
+                lesson.board_teaching_progress = workflow_result["board_teaching_progress"]
             created_lesson = workflow_result.get("generated_lesson")
+            if created_lesson is not None and workflow_result.get("board_teaching_progress") is not None:
+                created_lesson.board_teaching_progress = workflow_result["board_teaching_progress"]
             if created_lesson is None:
                 lesson.teaching_guide = workflow_result["teaching_guide"]
             teacher_message = workflow_result["teacher_message"]
@@ -155,8 +181,6 @@ def process_chat_on_lesson(lesson_id: str, request: ChatRequest) -> ChatResponse
             if auto_applied_document and teacher_document is not None:
                 lesson.board_document = teacher_document
                 lesson.teaching_guide = workflow_result["teaching_guide"]
-                if was_blank_document:
-                    teacher_message = f"我已经把这次需求生成到右侧板书里了。\n{teacher_message}"
 
             if created_lesson is not None:
                 package.lessons.append(created_lesson)
@@ -171,11 +195,7 @@ def process_chat_on_lesson(lesson_id: str, request: ChatRequest) -> ChatResponse
                 package.workspace_tab_order.append(created_lesson.id)
                 package.active_lesson_id = created_lesson.id
 
-            response_selected_reference = (
-                workflow_result.get("selected_reference")
-                if auto_applied_document or created_lesson is not None
-                else None
-            )
+            response_selected_reference = workflow_result.get("selected_reference")
 
             metadata = chat_flow_metadata(
                 request=request,
@@ -208,8 +228,10 @@ def process_chat_on_lesson(lesson_id: str, request: ChatRequest) -> ChatResponse
                 scope_options=workflow_result.get("scope_options", []),
                 resource_matches=workflow_result.get("resource_matches", []),
                 reference_prompt=workflow_result.get("reference_prompt"),
+                board_edit_prompt=workflow_result.get("board_edit_prompt"),
                 selected_reference=response_selected_reference,
                 created_lesson=lesson_view(created_lesson) if created_lesson else None,
+                teaching_progress=workflow_result.get("teaching_progress"),
                 course_package=package_view_for_lesson(workspace, package, package.active_lesson_id),
             )
         except Exception as exc:
@@ -228,6 +250,7 @@ def process_chat_on_lesson(lesson_id: str, request: ChatRequest) -> ChatResponse
             scope_options=response.scope_options,
             resource_matches=response.resource_matches,
             reference_prompt=response.reference_prompt,
+            board_edit_prompt=response.board_edit_prompt,
             selected_reference=response.selected_reference,
             created_lesson=response.created_lesson,
         )

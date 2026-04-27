@@ -84,6 +84,8 @@ import {
 } from "lucide-react";
 
 import { api, getApiWebSocketUrl } from "@/lib/api";
+import { BranchSequenceSelector, type BranchSequenceOption } from "@/components/branch-sequence-selector";
+import { ResourceUploadDropzone } from "@/components/resource-upload-dropzone";
 import { MATH_TEXT_SERIALIZERS, normalizeEditorMath } from "@/lib/math-content";
 import { useRealtimeLogQueue } from "@/hooks/use-realtime-log-queue";
 import { pcmFloatToBase64, playPcmBase64, resampleLinear } from "@/lib/realtime-audio";
@@ -91,6 +93,7 @@ import type {
   AIModelCatalog,
   AIModelOption,
   AIModelSelection,
+  BoardEditPrompt,
   BoardDecision,
   BoardDocument,
   ChatInteractionMode,
@@ -105,6 +108,7 @@ import type {
   ResourceReferencePrompt,
   ScopeOption,
   SelectionRef,
+  SectionTeachingProgress,
 } from "@/types";
 
 declare module "@tiptap/core" {
@@ -126,6 +130,7 @@ type ChatMessage = {
   content: string;
   status?: "ready" | "pending" | "error";
   selection?: SelectionRef | null;
+  teachingProgress?: SectionTeachingProgress | null;
 };
 
 type LessonMessageMap = Record<string, ChatMessage[]>;
@@ -143,6 +148,11 @@ type SelectionPopoverPosition = {
 };
 type GoogleRealtimeAudioMessage = {
   setupComplete?: Record<string, unknown>;
+  error?: {
+    code?: number;
+    message?: string;
+    status?: string;
+  };
   serverContent?: {
     modelTurn?: {
       parts?: Array<{
@@ -346,6 +356,10 @@ const DEFAULT_LESSON_COMPOSER_STATE: LessonComposerState = {
   includeSelectionInPrompt: true,
 };
 const AUTO_SAVE_DELAY_MS = 1600;
+const HIDDEN_LEARNING_PURPOSE_ITEMS = new Set([
+  "理解概念、能跟着连续讲义讲清楚并完成基础练习",
+  "用户能复述核心概念并完成一题相关练习",
+]);
 
 const DEFAULT_PAGE_SETTINGS: DocumentPageSettings = {
   margin_preset: "normal",
@@ -366,7 +380,7 @@ const FALLBACK_MODEL_CATALOG: AIModelCatalog = {
     {
       provider: "openai",
       model: "gpt-5.4",
-      label: "OpenAI GPT-5.4",
+      label: "GPT-5.4",
       capability: "text",
       enabled: true,
       configured: true,
@@ -375,128 +389,46 @@ const FALLBACK_MODEL_CATALOG: AIModelCatalog = {
     {
       provider: "openai",
       model: "gpt-5.4-mini",
-      label: "OpenAI GPT-5.4 Mini",
+      label: "GPT-5.4 Mini",
+      capability: "text",
+      enabled: true,
+      configured: true,
+      default: false,
+    },
+    {
+      provider: "openai",
+      model: "gemini-3.1-pro-preview",
+      label: "Gemini 3.1 Pro Preview",
+      capability: "text",
+      enabled: true,
+      configured: true,
+      default: false,
+    },
+    {
+      provider: "openai",
+      model: "gemini-3-flash-preview",
+      label: "Gemini 3 Flash Preview",
       capability: "text",
       enabled: true,
       configured: true,
       default: true,
-    },
-    {
-      provider: "anthropic",
-      model: "claude-haiku-4-5",
-      label: "Anthropic Claude Haiku 4.5",
-      capability: "text",
-      enabled: false,
-      configured: false,
-      default: false,
-    },
-    {
-      provider: "anthropic",
-      model: "claude-sonnet-4-6",
-      label: "Anthropic Claude Sonnet 4.6",
-      capability: "text",
-      enabled: false,
-      configured: false,
-      default: false,
-    },
-    {
-      provider: "google",
-      model: "gemini-3.1-pro-preview",
-      label: "Google Gemini 3.1 Pro Preview",
-      capability: "text",
-      enabled: false,
-      configured: false,
-      default: false,
-    },
-    {
-      provider: "google",
-      model: "gemini-3-flash-preview",
-      label: "Google Gemini 3 Flash Preview",
-      capability: "text",
-      enabled: false,
-      configured: false,
-      default: false,
-    },
-    {
-      provider: "deepseek",
-      model: "deepseek-v4-flash",
-      label: "DeepSeek V4 Flash",
-      capability: "text",
-      enabled: false,
-      configured: false,
-      default: false,
-    },
-    {
-      provider: "deepseek",
-      model: "deepseek-v4-pro",
-      label: "DeepSeek V4 Pro",
-      capability: "text",
-      enabled: false,
-      configured: false,
-      default: false,
-    },
-    {
-      provider: "kimi",
-      model: "kimi-k2.5",
-      label: "Kimi K2.5",
-      capability: "text",
-      enabled: false,
-      configured: false,
-      default: false,
-    },
-    {
-      provider: "kimi",
-      model: "kimi-k2.6",
-      label: "Kimi K2.6",
-      capability: "text",
-      enabled: false,
-      configured: false,
-      default: false,
-    },
-    {
-      provider: "minimax",
-      model: "MiniMax-M2.7",
-      label: "MiniMax M2.7",
-      capability: "text",
-      enabled: false,
-      configured: false,
-      default: false,
-    },
-    {
-      provider: "minimax",
-      model: "MiniMax-M2.7-highspeed",
-      label: "MiniMax M2.7 Highspeed",
-      capability: "text",
-      enabled: false,
-      configured: false,
-      default: false,
     },
   ],
   realtime: [
-    {
-      provider: "openai",
-      model: "gpt-realtime-1.5",
-      label: "OpenAI GPT Realtime 1.5",
-      capability: "realtime",
-      enabled: true,
-      configured: true,
-      default: true,
-      transport: "openai_webrtc",
-    },
     {
       provider: "google",
       model: "gemini-3.1-flash-live-preview",
       label: "Google Gemini 3.1 Flash Live",
       capability: "realtime",
-      enabled: false,
-      configured: false,
-      default: false,
+      enabled: true,
+      configured: true,
+      default: true,
       transport: "gemini_live_websocket",
     },
   ],
   defaults: {
-    text: { provider: "openai", model: "gpt-5.4-mini" },
-    realtime: { provider: "openai", model: "gpt-realtime-1.5" },
+    text: { provider: "openai", model: "gemini-3-flash-preview" },
+    realtime: { provider: "google", model: "gemini-3.1-flash-live-preview" },
   },
 };
 
@@ -512,6 +444,8 @@ const PROVIDER_LABELS: Record<AIModelSelection["provider"], string> = {
 };
 const TEXT_MODEL_STORAGE_KEY = "blackboard-ai:selected-text-model";
 const REALTIME_MODEL_STORAGE_KEY = "blackboard-ai:selected-realtime-model";
+const DISABLED_TEXT_MODEL_PROVIDERS = new Set<AIModelSelection["provider"]>();
+const DISABLED_REALTIME_MODEL_PROVIDERS = new Set<AIModelSelection["provider"]>(["openai"]);
 
 function modelSelectionKey(selection: AIModelSelection): string {
   return `${selection.provider}:${selection.model}`;
@@ -526,6 +460,27 @@ function findModelOption(options: AIModelOption[], selection: AIModelSelection |
     return null;
   }
   return options.find((option) => modelOptionKey(option) === modelSelectionKey(selection)) ?? null;
+}
+
+function findEnabledModelOption(options: AIModelOption[], selection: AIModelSelection | null): AIModelOption | null {
+  const option = findModelOption(options, selection);
+  return option?.enabled ? option : null;
+}
+
+function normalizeCourseStudioModelCatalog(catalog: AIModelCatalog): AIModelCatalog {
+  return {
+    ...catalog,
+    text: catalog.text.map((option) =>
+      DISABLED_TEXT_MODEL_PROVIDERS.has(option.provider)
+        ? { ...option, enabled: false, configured: false, default: false }
+        : option
+    ),
+    realtime: catalog.realtime.map((option) =>
+      DISABLED_REALTIME_MODEL_PROVIDERS.has(option.provider)
+        ? { ...option, enabled: false, configured: false, default: false }
+        : option
+    ),
+  };
 }
 
 function modelButtonLabel(option: AIModelOption | null, fallback: AIModelSelection | null): string {
@@ -590,6 +545,52 @@ async function websocketMessageText(data: MessageEvent["data"]): Promise<string>
   return String(data);
 }
 
+function googleRealtimeErrorMessage(error: GoogleRealtimeAudioMessage["error"]): string {
+  const rawMessage = error?.message?.trim() ?? "";
+  const status = error?.status?.trim() ?? "";
+  const lowerMessage = rawMessage.toLowerCase();
+  const lowerStatus = status.toLowerCase();
+
+  if (error?.code === 401 || lowerStatus.includes("unauthenticated")) {
+    return "Google Gemini Live 认证失败。请检查统一模型 API Key 是否正确。";
+  }
+  if (error?.code === 403 || lowerStatus.includes("permission") || lowerMessage.includes("permission denied")) {
+    return "Google Gemini Live 权限被拒绝。请检查 Google API Key 是否启用了 Gemini API，并确认该 key 可使用 Live API。";
+  }
+  if (error?.code === 429 || lowerStatus.includes("quota") || lowerMessage.includes("quota")) {
+    return "Google Gemini Live 配额不足或请求过于频繁，请稍后重试或检查 Google API 配额。";
+  }
+  if (rawMessage) {
+    return `Google Gemini Live 连接失败：${rawMessage}`;
+  }
+  return "Google Gemini Live 连接失败。";
+}
+
+function realtimeConnectionErrorMessage(error: unknown, selection: AIModelSelection): string {
+  const errorName = typeof error === "object" && error && "name" in error ? String(error.name) : "";
+  const rawMessage = error instanceof Error ? error.message.trim() : "";
+  const lowerMessage = rawMessage.toLowerCase();
+
+  if (
+    errorName === "NotAllowedError" ||
+    errorName === "SecurityError" ||
+    lowerMessage === "permission denied" ||
+    lowerMessage.includes("permission dismissed")
+  ) {
+    return "麦克风权限被拒绝。请在浏览器地址栏允许本网站使用麦克风；如果通过本地启动页打开，请重新打开启动页或点“直接打开前端”；如果不是 localhost，请通过 HTTPS 打开页面。";
+  }
+  if (errorName === "NotFoundError" || lowerMessage.includes("requested device not found")) {
+    return "没有找到可用麦克风。请连接或启用麦克风后重试。";
+  }
+  if (errorName === "NotReadableError" || lowerMessage.includes("could not start audio source")) {
+    return "麦克风暂时不可用，可能正被其他应用占用。请关闭占用麦克风的应用后重试。";
+  }
+  if (rawMessage) {
+    return rawMessage;
+  }
+  return `连接 ${PROVIDER_LABELS[selection.provider]} 实时语音失败`;
+}
+
 function persistModelSelection(key: string, selection: AIModelSelection) {
   if (typeof window === "undefined") {
     return;
@@ -602,13 +603,14 @@ function resolveModelSelection(
   preferred: AIModelSelection | null,
   fallback: AIModelSelection
 ): AIModelSelection {
-  if (preferred && findModelOption(options, preferred)) {
+  if (preferred && findEnabledModelOption(options, preferred)) {
     return preferred;
   }
-  if (findModelOption(options, fallback)) {
+  if (findEnabledModelOption(options, fallback)) {
     return fallback;
   }
-  const defaultOption = options.find((option) => option.default) ?? options.find((option) => option.enabled) ?? options[0];
+  const defaultOption =
+    options.find((option) => option.default && option.enabled) ?? options.find((option) => option.enabled) ?? options[0];
   return defaultOption ? optionToSelection(defaultOption) : fallback;
 }
 
@@ -635,6 +637,7 @@ const PAGE_ZOOM_MAX = 200;
 const PAGE_ZOOM_DEFAULT = 100;
 const PAGE_ZOOM_STEP = 10;
 const PAGE_ZOOM_SLIDER_STEP = 5;
+const PAGE_ZOOM_WHEEL_SENSITIVITY = 0.18;
 
 function normalizePageZoom(value: number) {
   if (!Number.isFinite(value)) {
@@ -669,7 +672,8 @@ function createChatMessage(
   content: string,
   status: ChatMessage["status"] = "ready",
   id?: string,
-  selection?: SelectionRef | null
+  selection?: SelectionRef | null,
+  teachingProgress?: SectionTeachingProgress | null
 ): ChatMessage {
   return {
     id: id ?? crypto.randomUUID(),
@@ -677,6 +681,7 @@ function createChatMessage(
     content,
     status,
     ...(selection ? { selection } : {}),
+    ...(teachingProgress ? { teachingProgress } : {}),
   };
 }
 
@@ -688,21 +693,12 @@ function createLessonComposerState(): LessonComposerState {
   return { ...DEFAULT_LESSON_COMPOSER_STATE };
 }
 
-function buildWelcomeMessages(idPrefix?: string): ChatMessage[] {
-  return [
-    createChatMessage(
-      "assistant",
-      "你好！你可以从学习目标出发提问，我会先给出一版可讲的主线内容，再按你的追问继续扩写、改写和补练习。",
-      "ready",
-      idPrefix ? `${idPrefix}:welcome:1` : undefined
-    ),
-    createChatMessage(
-      "assistant",
-      "右侧现在是连续 Word-like 板书文档。你可以选中一段文字让我只改这一段，也可以让我先起草一版讲义，再逐段讲透。",
-      "ready",
-      idPrefix ? `${idPrefix}:welcome:2` : undefined
-    ),
-  ];
+function visibleLearningPurposeItem(value?: string | null): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed || HIDDEN_LEARNING_PURPOSE_ITEMS.has(trimmed)) {
+    return null;
+  }
+  return trimmed;
 }
 
 function formatDate(value: string) {
@@ -739,6 +735,25 @@ function selectionFromMetadata(value: unknown): SelectionRef | null {
     excerpt,
     lesson_id: typeof raw.lesson_id === "string" ? raw.lesson_id : null,
     block_id: typeof raw.block_id === "string" ? raw.block_id : null,
+  };
+}
+
+function teachingProgressFromMetadata(value: unknown): SectionTeachingProgress | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const raw = value as Record<string, unknown>;
+  const sectionIndex = typeof raw.section_index === "number" ? raw.section_index : null;
+  const sectionCount = typeof raw.section_count === "number" ? raw.section_count : null;
+  if (sectionIndex === null || sectionCount === null || sectionCount <= 0) {
+    return null;
+  }
+  return {
+    section_index: sectionIndex,
+    section_count: sectionCount,
+    current_section_title: typeof raw.current_section_title === "string" ? raw.current_section_title : "",
+    has_next_section: raw.has_next_section === true,
+    waiting_for_continue: raw.waiting_for_continue === true,
   };
 }
 
@@ -819,6 +834,15 @@ function chatUserContentFromCommit(commit: CommitRecord): string | null {
     return "继续执行：先不参考推荐章节";
   }
 
+  const boardEditAction = metadataText(commit, "board_edit_action");
+  const boardEditTopic = metadataText(commit, "board_edit_topic");
+  if (boardEditAction === "confirm") {
+    return `扩选板书：${boardEditTopic || userMessage}`;
+  }
+  if (boardEditAction === "skip") {
+    return `暂不扩选板书：${boardEditTopic || userMessage}`;
+  }
+
   return metadataText(commit, "interaction_mode") === "direct_edit" ? `直接编辑讲义：${userMessage}` : userMessage;
 }
 
@@ -847,7 +871,16 @@ function buildLessonMessagesFromHistory(lesson: Lesson, commitId?: string | null
 
     const assistantMessage = metadataText(commit, "assistant_message");
     if (assistantMessage) {
-      messages.push(createChatMessage("assistant", assistantMessage, "ready", `${commit.id}:assistant`));
+      messages.push(
+        createChatMessage(
+          "assistant",
+          assistantMessage,
+          "ready",
+          `${commit.id}:assistant`,
+          null,
+          teachingProgressFromMetadata(commit.metadata?.teaching_progress)
+        )
+      );
     }
 
     const createdLessonTitle = metadataText(commit, "created_lesson_title");
@@ -863,8 +896,7 @@ function buildLessonMessagesFromHistory(lesson: Lesson, commitId?: string | null
     }
   });
 
-  const prefix = `${lesson.id}:${targetCommitId ?? "empty"}`;
-  return messages.length ? [...buildWelcomeMessages(prefix), ...messages] : buildWelcomeMessages(prefix);
+  return messages;
 }
 
 function learningClarityFromCommit(commit: CommitRecord | null): LearningClarificationStatus | null {
@@ -906,6 +938,32 @@ function nextBranchName(lesson: Lesson) {
     name = `branch-${index}`;
   }
   return name;
+}
+
+function branchSequenceForCommit(lesson: Lesson, commit: CommitRecord): BranchSequenceOption[] {
+  const commitsById = new Map(lesson.history_graph.commits.map((item) => [item.id, item]));
+  return Object.values(lesson.history_graph.branches)
+    .filter((branch) => branch.base_commit_id === commit.id)
+    .sort((left, right) => {
+      const timeDelta = new Date(left.created_at).getTime() - new Date(right.created_at).getTime();
+      if (timeDelta !== 0) {
+        return timeDelta;
+      }
+      return left.name.localeCompare(right.name, "zh-CN", { numeric: true });
+    })
+    .map((branch, index) => {
+      const headCommit = commitsById.get(branch.head_commit_id);
+      const snapshot = headCommit?.snapshot ?? commit.snapshot;
+      return {
+        order: index + 1,
+        branchName: branch.name,
+        documentTitle: snapshot.title || "未命名章节",
+        documentOverview: compactText(snapshot.content_text || snapshot.title || "这个分支暂时还没有章节正文。", 220),
+        latestLabel: headCommit?.label ?? "分支起点",
+        latestMessage: compactText(headCommit?.message || commit.message || "还没有新的章节更新。", 120),
+        updatedAt: headCommit?.created_at ?? branch.created_at,
+      };
+    });
 }
 
 function documentsEqual(left: BoardDocument | null | undefined, right: BoardDocument | null | undefined) {
@@ -1140,12 +1198,19 @@ function WordPageZoomControls({
   );
 }
 
-function ChatBubble({ message }: { message: ChatMessage }) {
+function ChatBubble({
+  message,
+  onContinueTeaching,
+}: {
+  message: ChatMessage;
+  onContinueTeaching?: () => void;
+}) {
   const [isSelectionExpanded, setIsSelectionExpanded] = useState(false);
   const isAssistant = message.role === "assistant";
   const isPending = message.status === "pending";
   const isError = message.status === "error";
   const selectedExcerpt = message.selection?.excerpt ? selectionPreviewText(message.selection.excerpt) : "";
+  const teachingProgress = message.teachingProgress;
   return (
     <div className="flex flex-col gap-2">
       <div className={clsx("flex items-center gap-2", !isAssistant && "justify-end")}>
@@ -1214,6 +1279,24 @@ function ChatBubble({ message }: { message: ChatMessage }) {
             请求已发出，生成讲义可能需要几十秒到几分钟。
           </p>
         ) : null}
+        {isAssistant && teachingProgress && !isPending && !isError ? (
+          <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-gray-200 pt-3 text-[11px] text-gray-500">
+            <span>
+              第 {teachingProgress.section_index + 1}/{teachingProgress.section_count} 节
+              {teachingProgress.current_section_title ? `：${teachingProgress.current_section_title}` : ""}
+            </span>
+            {teachingProgress.has_next_section && onContinueTeaching ? (
+              <button
+                type="button"
+                onClick={onContinueTeaching}
+                className="inline-flex h-7 items-center gap-1 rounded-md border border-gray-200 bg-white px-2.5 font-semibold text-gray-700 transition hover:border-gray-300 hover:text-gray-950"
+              >
+                <ArrowRight className="h-3.5 w-3.5" />
+                继续下一节
+              </button>
+            ) : null}
+          </div>
+        ) : null}
       </div>
     </div>
   );
@@ -1223,16 +1306,22 @@ function CommitTimelineItem({
   commit,
   active,
   latest,
+  branchSequence,
+  currentBranchName,
   onPreview,
   onRestore,
   onBranch,
+  onSwitchBranch,
 }: {
   commit: CommitRecord;
   active: boolean;
   latest: boolean;
+  branchSequence: BranchSequenceOption[];
+  currentBranchName: string;
   onPreview: () => void;
   onRestore: () => void;
   onBranch: () => void;
+  onSwitchBranch: (branchName: string) => void;
 }) {
   const isChatFlow = commit.metadata?.kind === "chat_flow";
   const isAutoSave = metadataBool(commit, "autosave") || commit.metadata?.kind === "auto_document_save";
@@ -1313,6 +1402,11 @@ function CommitTimelineItem({
             Branch
           </button>
         </div>
+        <BranchSequenceSelector
+          branches={branchSequence}
+          currentBranchName={currentBranchName}
+          onSelectBranch={onSwitchBranch}
+        />
       </div>
     </div>
   );
@@ -1338,6 +1432,7 @@ function WordBoardEditor({
   const importRef = useRef<HTMLInputElement | null>(null);
   const imageUploadRef = useRef<HTMLInputElement | null>(null);
   const pageScrollRef = useRef<HTMLDivElement | null>(null);
+  const pageZoomRef = useRef(PAGE_ZOOM_DEFAULT);
   const [activeRibbonTab, setActiveRibbonTab] = useState<WordRibbonTab>("home");
   const [tableRows, setTableRows] = useState(3);
   const [tableCols, setTableCols] = useState(3);
@@ -1469,7 +1564,9 @@ function WordBoardEditor({
   );
 
   const updatePageZoom = useCallback((value: number) => {
-    setPageZoom(normalizePageZoom(value));
+    const nextZoom = normalizePageZoom(value);
+    pageZoomRef.current = nextZoom;
+    setPageZoom(nextZoom);
   }, []);
 
   const fitPageToWidth = useCallback(() => {
@@ -1481,6 +1578,50 @@ function WordBoardEditor({
     const horizontalBreathingRoom = viewportWidth >= 768 ? 96 : 48;
     updatePageZoom(((viewportWidth - horizontalBreathingRoom) / pageMetrics.width) * 100);
   }, [pageMetrics.width, updatePageZoom]);
+
+  const handlePageWheelZoom = useCallback(
+    (event: WheelEvent) => {
+      if (!event.ctrlKey) {
+        return;
+      }
+      const pageScroll = pageScrollRef.current;
+      if (!pageScroll) {
+        return;
+      }
+
+      event.preventDefault();
+      const currentZoom = pageZoomRef.current;
+      const nextZoom = normalizePageZoom(currentZoom - event.deltaY * PAGE_ZOOM_WHEEL_SENSITIVITY);
+      if (nextZoom === currentZoom) {
+        return;
+      }
+
+      const scrollRect = pageScroll.getBoundingClientRect();
+      const pointerX = event.clientX - scrollRect.left;
+      const pointerY = event.clientY - scrollRect.top;
+      const currentScale = currentZoom / 100;
+      const nextScale = nextZoom / 100;
+      const worldX = (pageScroll.scrollLeft + pointerX) / currentScale;
+      const worldY = (pageScroll.scrollTop + pointerY) / currentScale;
+
+      updatePageZoom(nextZoom);
+      window.requestAnimationFrame(() => {
+        pageScroll.scrollLeft = worldX * nextScale - pointerX;
+        pageScroll.scrollTop = worldY * nextScale - pointerY;
+      });
+    },
+    [updatePageZoom]
+  );
+
+  useEffect(() => {
+    const pageScroll = pageScrollRef.current;
+    if (!pageScroll) {
+      return;
+    }
+
+    pageScroll.addEventListener("wheel", handlePageWheelZoom, { capture: true, passive: false });
+    return () => pageScroll.removeEventListener("wheel", handlePageWheelZoom, { capture: true });
+  }, [handlePageWheelZoom]);
 
   const handleInsertBlankPage = useCallback(() => {
     if (!editor || readOnly) {
@@ -2406,7 +2547,9 @@ export function CourseStudio() {
   });
 
   const [coursePackage, setCoursePackage] = useState<CoursePackage | null>(null);
-  const [modelCatalog, setModelCatalog] = useState<AIModelCatalog>(FALLBACK_MODEL_CATALOG);
+  const [modelCatalog, setModelCatalog] = useState<AIModelCatalog>(() =>
+    normalizeCourseStudioModelCatalog(FALLBACK_MODEL_CATALOG)
+  );
   const [selectedTextModel, setSelectedTextModel] = useState<AIModelSelection>(FALLBACK_MODEL_CATALOG.defaults.text);
   const [selectedRealtimeModel, setSelectedRealtimeModel] = useState<AIModelSelection>(
     FALLBACK_MODEL_CATALOG.defaults.realtime
@@ -2427,9 +2570,11 @@ export function CourseStudio() {
   const [learningClarity, setLearningClarity] = useState<LearningClarificationStatus | null>(null);
   const [latestBoardDecision, setLatestBoardDecision] = useState<BoardDecision | null>(null);
   const [referencePrompt, setReferencePrompt] = useState<ResourceReferencePrompt | null>(null);
+  const [boardEditPrompt, setBoardEditPrompt] = useState<BoardEditPrompt | null>(null);
   const [selectedReference, setSelectedReference] = useState<ResourceReferenceContext | null>(null);
   const [lastScopedRequest, setLastScopedRequest] = useState<ChatRequestPayload | null>(null);
   const [lastReferenceRequest, setLastReferenceRequest] = useState<ChatRequestPayload | null>(null);
+  const [lastBoardEditRequest, setLastBoardEditRequest] = useState<ChatRequestPayload | null>(null);
   const [previewCommitId, setPreviewCommitId] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [lessonMessages, setLessonMessages] = useState<LessonMessageMap>({});
@@ -2474,7 +2619,7 @@ export function CourseStudio() {
   useEffect(() => {
     async function loadModelCatalog() {
       try {
-        const catalog = await api.getAIModels();
+        const catalog = normalizeCourseStudioModelCatalog(await api.getAIModels());
         setModelCatalog(catalog);
         setSelectedTextModel(
           resolveModelSelection(catalog.text, readStoredModelSelection(TEXT_MODEL_STORAGE_KEY), catalog.defaults.text)
@@ -2487,19 +2632,20 @@ export function CourseStudio() {
           )
         );
       } catch {
-        setModelCatalog(FALLBACK_MODEL_CATALOG);
+        const fallbackCatalog = normalizeCourseStudioModelCatalog(FALLBACK_MODEL_CATALOG);
+        setModelCatalog(fallbackCatalog);
         setSelectedTextModel(
           resolveModelSelection(
-            FALLBACK_MODEL_CATALOG.text,
+            fallbackCatalog.text,
             readStoredModelSelection(TEXT_MODEL_STORAGE_KEY),
-            FALLBACK_MODEL_CATALOG.defaults.text
+            fallbackCatalog.defaults.text
           )
         );
         setSelectedRealtimeModel(
           resolveModelSelection(
-            FALLBACK_MODEL_CATALOG.realtime,
+            fallbackCatalog.realtime,
             readStoredModelSelection(REALTIME_MODEL_STORAGE_KEY),
-            FALLBACK_MODEL_CATALOG.defaults.realtime
+            fallbackCatalog.defaults.realtime
           )
         );
       }
@@ -2536,7 +2682,7 @@ export function CourseStudio() {
   const includeSelectionInPrompt = activeComposerState.includeSelectionInPrompt;
   const selectedTextOption = findModelOption(modelCatalog.text, selectedTextModel);
   const selectedRealtimeOption = findModelOption(modelCatalog.realtime, selectedRealtimeModel);
-  const selectedRealtimeTransport = selectedRealtimeOption?.transport ?? "openai_webrtc";
+  const selectedRealtimeTransport = selectedRealtimeOption?.transport ?? "gemini_live_websocket";
   const isChatBusy = busyAction === "chat" || busyAction === "agent-edit";
   const activeRequirements = activeLesson?.learning_requirements ?? null;
   const isPreviewMode = Boolean(previewCommit);
@@ -2552,16 +2698,16 @@ export function CourseStudio() {
   const composerSelection = selection && !selectionPopover ? selection : null;
 
   const learningGoalItems = [
-    activeRequirements?.learning_goal ?? activeLesson?.summary ?? "围绕当前课程主线推进学习",
-    activeRequirements?.success_criteria ?? "先建立概念，再进入例题与练习",
-  ];
+    visibleLearningPurposeItem(activeRequirements?.learning_goal) ?? visibleLearningPurposeItem(activeLesson?.summary),
+    visibleLearningPurposeItem(activeRequirements?.success_criteria),
+  ].filter((item): item is string => item !== null);
   const clarityStatus: LearningClarificationStatus =
     previewLearningClarity ??
     learningClarity ?? {
       progress: 0,
-      label: "等待学习目的",
-      reason: "说一个想学的主题，我会先讲起来，再边教边确认目标、水平和使用场景。",
-      missing_items: ["想学的主题", "当前水平或背景", "具体使用场景或知识点"],
+      label: "",
+      reason: "",
+      missing_items: [],
       can_start: false,
       forced_start: false,
     };
@@ -2571,6 +2717,7 @@ export function CourseStudio() {
       : clarityStatus.can_start
         ? "bg-blue-500"
         : "bg-amber-500";
+  const showClarityBadges = Boolean(clarityStatus.label || clarityStatus.forced_start);
 
   useEffect(() => {
     activeLessonRef.current = activeLesson;
@@ -2670,9 +2817,11 @@ export function CourseStudio() {
     setLearningClarity(null);
     setLatestBoardDecision(null);
     setReferencePrompt(null);
+    setBoardEditPrompt(null);
     setSelectedReference(null);
     setLastScopedRequest(null);
     setLastReferenceRequest(null);
+    setLastBoardEditRequest(null);
     clearSelection();
   }
 
@@ -3011,7 +3160,7 @@ export function CourseStudio() {
     await saveGeneratedLesson(topic);
   }
 
-  async function handleSubmitChat(payloadOverride?: ChatRequestPayload) {
+  async function handleSubmitChat(payloadOverride?: ChatRequestPayload, options?: { speakResponse?: boolean }) {
     if (!activeLesson || chatRequestInFlightRef.current || isChatBusy) {
       return;
     }
@@ -3047,24 +3196,40 @@ export function CourseStudio() {
     const isDirectEdit = payloadWithConversation.interaction_mode === "direct_edit";
     const userMessageContent = payloadOverride?.scope_action
       ? `继续执行：${payloadOverride.scope_action}`
-      : payloadOverride?.resource_reference_action === "confirm"
-        ? "继续执行：参考推荐章节生成讲义"
-        : payloadOverride?.resource_reference_action === "skip"
-          ? "继续执行：先不参考推荐章节"
-          : isDirectEdit
-            ? `直接编辑讲义：${payloadWithConversation.message}`
-            : payloadWithConversation.message;
+      : payloadOverride?.teaching_action === "continue"
+        ? "继续讲下一节"
+        : payloadOverride?.teaching_action === "restart"
+          ? "从第一节重新讲"
+          : payloadOverride?.board_edit_action === "confirm"
+            ? `扩选板书：${payloadOverride.board_edit_topic ?? payloadWithConversation.message}`
+            : payloadOverride?.board_edit_action === "skip"
+              ? `暂不扩选板书：${payloadOverride.board_edit_topic ?? payloadWithConversation.message}`
+              : payloadOverride?.resource_reference_action === "confirm"
+                ? "继续执行：参考推荐章节生成讲义"
+                : payloadOverride?.resource_reference_action === "skip"
+                  ? "继续执行：先不参考推荐章节"
+                  : isDirectEdit
+                    ? `直接编辑讲义：${payloadWithConversation.message}`
+                    : payloadWithConversation.message;
     const pendingAssistantMessage = createChatMessage(
       "assistant",
       payloadOverride?.scope_action
         ? "正在继续执行这一步，我会先把主线接上，再继续细化。"
-        : payloadOverride?.resource_reference_action === "confirm"
-          ? "正在结合你确认的参考章节起草讲义，我会先给出可讲版本。"
-          : payloadOverride?.resource_reference_action === "skip"
-            ? "正在按当前 lesson 主线继续生成内容，我会先把第一版讲清楚。"
-            : isDirectEdit
-              ? "正在改写右侧讲义，并同步准备更像真人老师的讲法。"
-              : "正在整理内容并更新右侧讲义，我会先返回一版可讲内容。",
+        : payloadOverride?.teaching_action === "continue"
+          ? "正在接着讲下一小节。"
+          : payloadOverride?.teaching_action === "restart"
+            ? "正在从第一小节重新讲。"
+            : payloadOverride?.board_edit_action === "confirm"
+              ? "正在把这次扩展落成版书内容，并同步准备讲解。"
+              : payloadOverride?.board_edit_action === "skip"
+                ? "好的，我会只按内部讲义继续讲解，不改右侧版书。"
+                : payloadOverride?.resource_reference_action === "confirm"
+                  ? "正在结合你确认的参考章节准备讲解。"
+                  : payloadOverride?.resource_reference_action === "skip"
+                    ? "正在按当前 lesson 主线准备讲解。"
+                    : isDirectEdit
+                      ? "正在改写右侧讲义，并同步准备更像真人老师的讲法。"
+                      : "正在整理学习需求并准备讲解。",
       "pending"
     );
     setBusyAction(isDirectEdit ? "agent-edit" : "chat");
@@ -3092,10 +3257,14 @@ export function CourseStudio() {
       setScopeOptions(response.scope_options);
       setResourceMatches(response.resource_matches);
       setReferencePrompt(response.reference_prompt ?? null);
+      setBoardEditPrompt(response.board_edit_prompt ?? null);
       setSelectedReference(response.selected_reference ?? null);
       setLastScopedRequest(response.scope_options.length ? payloadWithConversation : null);
       setLastReferenceRequest(response.reference_prompt ? payloadWithConversation : null);
-      const assistantMessages = [createChatMessage("assistant", response.teacher_message)];
+      setLastBoardEditRequest(response.board_edit_prompt ? payloadWithConversation : null);
+      const assistantMessages = [
+        createChatMessage("assistant", response.teacher_message, "ready", undefined, null, response.teaching_progress ?? null),
+      ];
       if (response.created_lesson) {
         assistantMessages.push(
           createChatMessage(
@@ -3108,6 +3277,10 @@ export function CourseStudio() {
         ...current.filter((message) => message.id !== pendingAssistantMessage.id),
         ...assistantMessages,
       ]);
+      if (options?.speakResponse) {
+        speakControlledTeacherMessage(response.teacher_message);
+        setVoiceStatusText("讲师回答已通过受控工作流播出，可以继续提问");
+      }
       if (!payloadWithConversation.scope_action) {
         clearSelection();
       }
@@ -3166,6 +3339,37 @@ export function CourseStudio() {
     });
     setReferencePrompt(null);
     setLastReferenceRequest(null);
+  }
+
+  async function handleBoardEditAction(action: "confirm" | "skip") {
+    if (!boardEditPrompt || !lastBoardEditRequest) {
+      return;
+    }
+    await handleSubmitChat({
+      message: lastBoardEditRequest.message,
+      selection: lastBoardEditRequest.selection,
+      interaction_mode: lastBoardEditRequest.interaction_mode,
+      scope_action: lastBoardEditRequest.scope_action,
+      resource_chapter_id: lastBoardEditRequest.resource_chapter_id,
+      resource_reference_action: lastBoardEditRequest.resource_reference_action,
+      resource_reference_resource_id: lastBoardEditRequest.resource_reference_resource_id,
+      resource_reference_chapter_id: lastBoardEditRequest.resource_reference_chapter_id,
+      board_edit_action: action,
+      board_edit_topic: boardEditPrompt.topic,
+    });
+    setBoardEditPrompt(null);
+    setLastBoardEditRequest(null);
+  }
+
+  async function handleContinueTeaching() {
+    if (!activeLesson) {
+      return;
+    }
+    await handleSubmitChat({
+      message: "继续下一节",
+      interaction_mode: "ask",
+      teaching_action: "continue",
+    });
   }
 
   async function handleCreateBranch(fromCommitId = previewCommitId, branchNameOverride?: string) {
@@ -3447,6 +3651,7 @@ export function CourseStudio() {
 
   function stopRealtimeSession(statusText = "语音讲师已断开") {
     disposeRealtimeSession();
+    window.speechSynthesis?.cancel();
     setVoiceActive(false);
     setVoiceStatusText(statusText);
     setBusyAction((current) => (current === "voice-connect" ? null : current));
@@ -3456,30 +3661,49 @@ export function CourseStudio() {
     stopRealtimeSession(statusText);
   });
 
-  function appendRealtimeMessage(lessonId: string, role: ChatMessage["role"], content: string) {
-    const normalized = content.trim();
+  function speakControlledTeacherMessage(content: string) {
+    if (typeof window === "undefined" || !("speechSynthesis" in window)) {
+      return;
+    }
+    const text = content.trim();
+    if (!text) {
+      return;
+    }
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = "zh-CN";
+    utterance.rate = 1;
+    utterance.pitch = 1;
+    window.speechSynthesis.speak(utterance);
+  }
+
+  function handleRealtimeUserTranscript(lessonId: string, transcript: string, eventType: string) {
+    const normalized = transcript.trim();
     if (!normalized) {
       return;
     }
-    updateLessonMessages(lessonId, (current) => {
-      const previous = current[current.length - 1];
-      if (previous && previous.role === role && previous.content.trim() === normalized) {
-        return current;
-      }
-      return [...current, createChatMessage(role, normalized)];
-    });
+    enqueueRealtimeLogEvent(lessonId, "user", eventType, normalized);
+    if (chatRequestInFlightRef.current) {
+      setVoiceStatusText("正在处理上一句语音，请稍等片刻");
+      return;
+    }
+    void handleSubmitChat(
+      {
+        message: normalized,
+        interaction_mode: "ask",
+      },
+      { speakResponse: true }
+    );
   }
 
   function flushGoogleRealtimeTranscripts(lessonId: string) {
     const userTranscript = googleInputTranscriptRef.current.trim();
     const assistantTranscript = googleOutputTranscriptRef.current.trim();
     if (userTranscript) {
-      appendRealtimeMessage(lessonId, "user", userTranscript);
-      enqueueRealtimeLogEvent(lessonId, "user", "google.input_transcription", userTranscript);
+      handleRealtimeUserTranscript(lessonId, userTranscript, "google.input_transcription");
       googleInputTranscriptRef.current = "";
     }
     if (assistantTranscript) {
-      appendRealtimeMessage(lessonId, "assistant", assistantTranscript);
       enqueueRealtimeLogEvent(lessonId, "assistant", "google.output_transcription", assistantTranscript);
       googleOutputTranscriptRef.current = "";
     }
@@ -3626,6 +3850,16 @@ export function CourseStudio() {
           try {
             const messageText = await websocketMessageText(event.data);
             const payload = JSON.parse(messageText) as GoogleRealtimeAudioMessage;
+            if (payload.error) {
+              const message = googleRealtimeErrorMessage(payload.error);
+              if (!streamingStarted) {
+                rejectStart(message);
+                return;
+              }
+              stopRealtimeSession("Google Gemini Live 会话已结束");
+              setError(message);
+              return;
+            }
             if (payload.setupComplete && !streamingStarted) {
               streamingStarted = true;
               beginGoogleAudioStreaming(socket, mediaStream, audioContext);
@@ -3690,11 +3924,15 @@ export function CourseStudio() {
       return;
     }
     if (!navigator.mediaDevices?.getUserMedia) {
-      setError("当前浏览器不支持麦克风实时语音会话。");
+      setError("当前浏览器无法访问麦克风。请使用支持麦克风的浏览器，并通过 localhost 或 HTTPS 打开页面。");
       return;
     }
     if (selectedRealtimeOption && !selectedRealtimeOption.enabled) {
       setError(`当前未配置 ${PROVIDER_LABELS[selectedRealtimeModel.provider]} 的实时语音 API Key。`);
+      return;
+    }
+    if (selectedRealtimeTransport === "gemini_live_websocket" || selectedRealtimeModel.provider === "google") {
+      setError("Google Gemini Live 暂未接入受控语音工作流。请先选择 OpenAI 实时转写模型。");
       return;
     }
     if (!(await flushAutoSave("voice"))) {
@@ -3721,11 +3959,6 @@ export function CourseStudio() {
       realtimeClientSessionIdRef.current = clientSessionId;
       realtimeLessonTitleRef.current = activeLesson.title;
 
-      if (selectedRealtimeTransport === "gemini_live_websocket" || selectedRealtimeModel.provider === "google") {
-        await startGoogleRealtimeSession(activeLesson, mediaStream, clientSessionId);
-        return;
-      }
-
       const peerConnection = new RTCPeerConnection();
       realtimePeerRef.current = peerConnection;
 
@@ -3744,7 +3977,7 @@ export function CourseStudio() {
       peerConnection.onconnectionstatechange = () => {
         if (peerConnection.connectionState === "connected") {
           setVoiceActive(true);
-          setVoiceStatusText(`${realtimeLabel} 已连接，直接说话即可`);
+          setVoiceStatusText(`${realtimeLabel} 已连接，说话后会先进入 PM/版书管理/讲师工作流`);
           setBusyAction((current) => (current === "voice-connect" ? null : current));
           return;
         }
@@ -3782,12 +4015,13 @@ export function CourseStudio() {
           if (!lessonId || !payload.type || !payload.transcript) {
             return;
           }
-          if (payload.type === "conversation.item.input_audio_transcription.completed") {
-            appendRealtimeMessage(lessonId, "user", payload.transcript);
-            enqueueRealtimeLogEvent(lessonId, "user", payload.type, payload.transcript);
+          if (
+            payload.type === "conversation.item.input_audio_transcription.completed" ||
+            payload.type === "conversation.item.input_audio_transcription.done"
+          ) {
+            handleRealtimeUserTranscript(lessonId, payload.transcript, payload.type);
           }
           if (payload.type === "response.audio_transcript.done") {
-            appendRealtimeMessage(lessonId, "assistant", payload.transcript);
             enqueueRealtimeLogEvent(lessonId, "assistant", payload.type, payload.transcript);
           }
         } catch {
@@ -3810,10 +4044,10 @@ export function CourseStudio() {
         sdp: realtimeResponse.answer_sdp,
       });
 
-      setVoiceStatusText(`${PROVIDER_LABELS[realtimeResponse.provider]} ${realtimeResponse.model} 已就绪，语音音色：${realtimeResponse.voice}`);
+      setVoiceStatusText(`${PROVIDER_LABELS[realtimeResponse.provider]} ${realtimeResponse.model} 已就绪，正在受控转写`);
     } catch (voiceError) {
       stopRealtimeSession("语音连接失败");
-      setError(voiceError instanceof Error ? voiceError.message : "连接实时语音失败");
+      setError(realtimeConnectionErrorMessage(voiceError, selectedRealtimeModel));
     }
   }
 
@@ -3969,16 +4203,35 @@ export function CourseStudio() {
     );
   }
 
+  function renderErrorBanner() {
+    if (!error) {
+      return null;
+    }
+    return (
+      <div
+        role="alert"
+        className="mx-4 mt-3 flex items-start gap-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 md:mx-6"
+      >
+        <span className="min-w-0 flex-1">{error}</span>
+        <button
+          type="button"
+          onClick={() => setError(null)}
+          aria-label="关闭错误提示"
+          title="关闭提示"
+          className="-mr-1 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-rose-500 transition-colors hover:bg-rose-100 hover:text-rose-700"
+        >
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+    );
+  }
+
   if (!activeLesson || !displayedDocument) {
     return (
       <main className="flex h-screen flex-col overflow-hidden bg-[#f8f6f0] text-[#1a1a1a]">
         {renderWorkspaceHeader()}
 
-        {error ? (
-          <div className="mx-4 mt-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 md:mx-6">
-            {error}
-          </div>
-        ) : null}
+        {renderErrorBanner()}
 
         <section className="flex flex-1 items-center justify-center px-6">
           <div className="w-full max-w-xl rounded-[32px] border border-stone-200 bg-white/90 p-10 text-center shadow-[0_24px_70px_rgba(15,23,42,0.08)]">
@@ -4009,11 +4262,7 @@ export function CourseStudio() {
     <main className="flex h-screen flex-col overflow-hidden bg-[#f8f6f0] text-[#1a1a1a]">
       {renderWorkspaceHeader()}
 
-      {error ? (
-        <div className="mx-4 mt-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 md:mx-6">
-          {error}
-        </div>
-      ) : null}
+      {renderErrorBanner()}
 
       {selection && selectionPopover ? (
         <div
@@ -4073,36 +4322,37 @@ export function CourseStudio() {
                     style={{ width: `${clarityStatus.progress}%` }}
                   />
                 </div>
-                <div className="mt-3 flex flex-wrap items-center gap-2">
-                  <span className="rounded-full bg-blue-100 px-2.5 py-1 text-[10px] font-bold uppercase tracking-widest text-blue-700">
-                    {clarityStatus.label}
-                  </span>
-                  {clarityStatus.forced_start ? (
-                    <span className="rounded-full bg-amber-100 px-2.5 py-1 text-[10px] font-bold uppercase tracking-widest text-amber-700">
-                      已按当前信息开始
-                    </span>
-                  ) : null}
-                </div>
+                {showClarityBadges ? (
+                  <div className="mt-3 flex flex-wrap items-center gap-2">
+                    {clarityStatus.label ? (
+                      <span className="rounded-full bg-blue-100 px-2.5 py-1 text-[10px] font-bold uppercase tracking-widest text-blue-700">
+                        {clarityStatus.label}
+                      </span>
+                    ) : null}
+                    {clarityStatus.forced_start ? (
+                      <span className="rounded-full bg-amber-100 px-2.5 py-1 text-[10px] font-bold uppercase tracking-widest text-amber-700">
+                        已按当前信息开始
+                      </span>
+                    ) : null}
+                  </div>
+                ) : null}
                 {clarityStatus.reason ? (
                   <p className="mt-2 text-xs leading-6 text-blue-900">{clarityStatus.reason}</p>
                 ) : null}
-                {clarityStatus.missing_items.length ? (
-                  <p className="mt-1 text-[11px] leading-5 text-blue-700/75">
-                    可补充：{clarityStatus.missing_items.join("、")}
-                  </p>
+                {learningGoalItems.length ? (
+                  <ul className="mt-3 space-y-2">
+                    {learningGoalItems.map((item, index) => (
+                      <li key={item} className="flex items-start gap-2.5 text-xs leading-relaxed text-blue-800">
+                        {index === 0 ? (
+                          <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-blue-500" />
+                        ) : (
+                          <Circle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-blue-300" />
+                        )}
+                        <span>{item}</span>
+                      </li>
+                    ))}
+                  </ul>
                 ) : null}
-                <ul className="mt-3 space-y-2">
-                  {learningGoalItems.map((item, index) => (
-                    <li key={item} className="flex items-start gap-2.5 text-xs leading-relaxed text-blue-800">
-                      {index === 0 ? (
-                        <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-blue-500" />
-                      ) : (
-                        <Circle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-blue-300" />
-                      )}
-                      <span>{item}</span>
-                    </li>
-                  ))}
-                </ul>
               </div>
 
               <div className="space-y-6">
@@ -4112,7 +4362,7 @@ export function CourseStudio() {
                   </div>
                 ) : null}
 
-                {displayedMessages.map((message) => (
+                {displayedMessages.map((message, index) => (
                   <div
                     key={message.id}
                     onMouseUp={() => {
@@ -4129,7 +4379,17 @@ export function CourseStudio() {
                       }
                     }}
                   >
-                    <ChatBubble message={message} />
+                    <ChatBubble
+                      message={message}
+                      onContinueTeaching={
+                        !isPreviewMode &&
+                        index === displayedMessages.length - 1 &&
+                        message.role === "assistant" &&
+                        message.teachingProgress?.has_next_section
+                          ? () => void handleContinueTeaching()
+                          : undefined
+                      }
+                    />
                   </div>
                 ))}
               </div>
@@ -4181,6 +4441,30 @@ export function CourseStudio() {
                 </div>
               ) : null}
 
+              {!isPreviewMode && boardEditPrompt ? (
+                <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+                  <p className="text-[11px] font-bold uppercase tracking-widest text-emerald-700">扩选板书</p>
+                  <p className="mt-2 text-sm leading-6 text-emerald-950">{boardEditPrompt.question}</p>
+                  <p className="mt-2 text-xs leading-6 text-emerald-900/80">{boardEditPrompt.reason}</p>
+                  <div className="mt-3 grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void handleBoardEditAction("confirm")}
+                      className="w-full rounded-xl border border-emerald-200 bg-white px-4 py-3 text-center text-sm font-semibold text-gray-900 transition hover:border-emerald-300"
+                    >
+                      {boardEditPrompt.confirm_label}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleBoardEditAction("skip")}
+                      className="w-full rounded-xl border border-emerald-200 bg-white px-4 py-3 text-center text-sm font-semibold text-gray-900 transition hover:border-emerald-300"
+                    >
+                      {boardEditPrompt.skip_label}
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+
               {!isPreviewMode && clarificationQuestions.length ? (
                 <div className="rounded-xl border border-sky-200 bg-sky-50 p-4">
                   <p className="text-[11px] font-bold uppercase tracking-widest text-sky-700">需求澄清</p>
@@ -4203,17 +4487,6 @@ export function CourseStudio() {
                   <p className="mt-2 text-sm font-semibold text-gray-900">
                     {selectedReference.resource_name} / {selectedReference.chapter_title}
                   </p>
-                  <p className="mt-2 text-xs leading-6 text-gray-600">{selectedReference.summary}</p>
-                  <div className="mt-3 space-y-2">
-                    {selectedReference.teaching_points.slice(0, 3).map((point, index) => (
-                      <div
-                        key={`${point}-${index}`}
-                        className="rounded-lg bg-white px-3 py-2 text-xs leading-6 text-gray-700"
-                      >
-                        {point}
-                      </div>
-                    ))}
-                  </div>
                 </div>
               ) : null}
             </div>
@@ -4575,9 +4848,12 @@ export function CourseStudio() {
                       commit={commit}
                       active={commit.id === previewCommitId}
                       latest={index === 0}
+                      branchSequence={branchSequenceForCommit(activeLesson, commit)}
+                      currentBranchName={activeLesson.history_graph.current_branch}
                       onPreview={() => void handlePreviewCommit(commit)}
                       onRestore={() => void handleRestoreCommit(commit.id)}
                       onBranch={() => void handleCreateBranchFromCommit(commit)}
+                      onSwitchBranch={(branchName) => void handleSwitchBranch(branchName)}
                     />
                   ))}
                 </div>
@@ -4659,18 +4935,11 @@ export function CourseStudio() {
               <div className="space-y-8">
                 <div>
                   <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">关联资料库</p>
-                  <label className="mt-4 block rounded-xl border border-dashed border-gray-300 bg-white px-4 py-5 text-center text-sm text-gray-500 hover:border-gray-400">
-                    上传文件或图片
-                    <input
-                      type="file"
-                      className="hidden"
-                      onChange={(event) => {
-                        const file = event.target.files?.[0] ?? null;
-                        event.currentTarget.value = "";
-                        void handleUploadResource(file);
-                      }}
-                    />
-                  </label>
+                  <ResourceUploadDropzone
+                    disabled={Boolean(busyAction)}
+                    uploading={busyAction === "upload"}
+                    onUpload={(file) => void handleUploadResource(file)}
+                  />
                   <div className="mt-4 space-y-3">
                     {coursePackage.resources.length ? (
                       coursePackage.resources.map((resource) => {

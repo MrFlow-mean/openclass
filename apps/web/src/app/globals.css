@@ -26,6 +26,11 @@ html {
   background: var(--background);
 }
 
+html:has(.auth-shell),
+body:has(.auth-shell) {
+  background: #fcfbf9;
+}
+
 body {
   background: var(--background);
   color: var(--foreground);
@@ -44,6 +49,52 @@ select {
 
 ::selection {
   background: rgba(14, 165, 233, 0.18);
+}
+
+.profile-shell {
+  background: #f7f5ef;
+}
+
+.profile-shell--light {
+  background: #f8fafc;
+}
+
+.profile-shell--warm {
+  background: #f7f5ef;
+}
+
+.profile-shell--compact {
+  font-size: 14px;
+}
+
+.profile-shell--large-text {
+  font-size: 17px;
+}
+
+.profile-shell--high-contrast {
+  color: #000000;
+}
+
+.profile-shell--high-contrast input,
+.profile-shell--high-contrast select,
+.profile-shell--high-contrast textarea,
+.profile-shell--high-contrast button,
+.profile-shell--high-contrast a {
+  border-color: #292524;
+}
+
+.profile-shell--reduce-motion *,
+.profile-shell--reduce-motion *::before,
+.profile-shell--reduce-motion *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  scroll-behavior: auto !important;
+  transition-duration: 0.001ms !important;
+}
+
+.profile-shell--visible-focus :focus-visible {
+  outline: 3px solid #0ea5e9;
+  outline-offset: 2px;
 }
 
 .custom-scrollbar::-webkit-scrollbar {
@@ -463,4 +514,651 @@ select {
   box-shadow:
     0 1px 2px rgba(15, 23, 42, 0.2),
     0 0 0 1px rgba(37, 99, 235, 0.12);
+}
+
+.auth-display {
+  font-family: var(--font-space-grotesk), "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", sans-serif;
+}
+
+.auth-shell {
+  min-height: 100vh;
+  min-height: 100lvh;
+  background: #fcfbf9;
+}
+
+.auth-shell > div {
+  min-height: inherit;
+}
+
+.auth-bg-mesh {
+  background:
+    linear-gradient(120deg, #fffaf2 0%, #f6edda 34%, #ead9b5 68%, #fff8eb 100%),
+    radial-gradient(circle at 70% 18%, rgba(232, 203, 144, 0.22), transparent 34%),
+    radial-gradient(circle at 24% 82%, rgba(186, 151, 92, 0.1), transparent 30%);
+  background-size:
+    300% 300%,
+    100% 100%,
+    100% 100%;
+  animation: authSoftBgFlow 15s ease-in-out infinite;
+}
+
+.auth-perspective {
+  perspective: 1200px;
+}
+
+.auth-scene {
+  transform-style: preserve-3d;
+  animation: authSceneFloat 10s ease-in-out infinite alternate;
+}
+
+.auth-loop {
+  animation-duration: 12s;
+  animation-fill-mode: both;
+  animation-iteration-count: infinite;
+  animation-timing-function: cubic-bezier(0.25, 0.8, 0.25, 1);
+}
+
+.auth-float-slow {
+  animation: authFloatSlow 6s ease-in-out infinite;
+}
+
+.auth-float-fast {
+  animation: authFloatFast 4s ease-in-out infinite;
+}
+
+.auth-chat-user-1 {
+  animation-name: authChatUser1;
+}
+
+.auth-chat-ai-1 {
+  animation-name: authChatAi1;
+}
+
+.auth-chat-user-2 {
+  animation-name: authChatUser2;
+}
+
+.auth-chat-ai-2 {
+  animation-name: authChatAi2;
+}
+
+.auth-chat-scroll {
+  animation-name: authChatScroll;
+}
+
+.auth-draw-line {
+  stroke-dasharray: 400;
+  stroke-linecap: round;
+  opacity: 0;
+  animation-duration: 12s;
+  animation-fill-mode: both;
+  animation-iteration-count: infinite;
+  animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.auth-doc-draw-1 {
+  animation-name: authDocDraw1;
+}
+
+.auth-doc-draw-2 {
+  animation-name: authDocDraw2;
+}
+
+.auth-doc-draw-3 {
+  animation-name: authDocDraw3;
+}
+
+.auth-doc-draw-4 {
+  animation-name: authDocDraw4;
+}
+
+.auth-doc-draw-5 {
+  animation-name: authDocDraw5;
+}
+
+.auth-doc-draw-6 {
+  animation-name: authDocDraw6;
+}
+
+.auth-doc-draw-7 {
+  animation-name: authDocDraw7;
+}
+
+.auth-doc-draw-8 {
+  animation-name: authDocDraw8;
+}
+
+.auth-doc-draw-9 {
+  animation-name: authDocDraw9;
+}
+
+.auth-doc-draw-10 {
+  animation-name: authDocDraw10;
+}
+
+.auth-doc-draw-11 {
+  animation-name: authDocDraw11;
+}
+
+.auth-doc-draw-12 {
+  animation-name: authDocDraw12;
+}
+
+.auth-fade-end {
+  animation-name: authFadeOutEnd;
+}
+
+.auth-float-up {
+  animation: authFloatUp 6s ease-in-out infinite;
+}
+
+.auth-float-diag {
+  animation: authFloatDiag 12s ease-in-out infinite;
+}
+
+.auth-float-orbit {
+  animation: authFloatOrbit 12s ease-in-out infinite;
+}
+
+.auth-float-wave {
+  animation: authFloatWave 6s ease-in-out infinite;
+}
+
+.auth-float-fast-drift {
+  animation: authFloatFastDrift 4s ease-in-out infinite;
+}
+
+.auth-rotate-spin {
+  animation: authRotateSpin 12s ease-in-out infinite;
+}
+
+.auth-scale-grow {
+  animation: authScaleGrow 6s ease-in-out infinite;
+}
+
+.auth-fade-breathe {
+  animation: authFadeBreathe 4s ease-in-out infinite;
+}
+
+.auth-skeleton {
+  background: linear-gradient(90deg, #f7f3eb 25%, #fffdf8 50%, #f7f3eb 75%);
+  background-size: 200% 100%;
+  animation: authSkeletonShimmer 2s linear infinite;
+}
+
+.auth-skeleton-dark {
+  background: linear-gradient(90deg, #5c4c3c 25%, #6a5b4c 50%, #5c4c3c 75%);
+  background-size: 200% 100%;
+  animation: authSkeletonShimmer 2s linear infinite;
+}
+
+@keyframes authSoftBgFlow {
+  0% {
+    background-position:
+      0% 50%,
+      50% 50%,
+      50% 50%;
+  }
+  50% {
+    background-position:
+      100% 50%,
+      50% 50%,
+      50% 50%;
+  }
+  100% {
+    background-position:
+      0% 50%,
+      50% 50%,
+      50% 50%;
+  }
+}
+
+@keyframes authSceneFloat {
+  0% {
+    transform: rotateY(-18deg) rotateX(8deg) translateY(0);
+  }
+  100% {
+    transform: rotateY(-12deg) rotateX(4deg) translateY(-20px);
+  }
+}
+
+@keyframes authFloatSlow {
+  0%,
+  100% {
+    transform: translateY(0) translateZ(80px);
+  }
+  50% {
+    transform: translateY(-10px) translateZ(80px);
+  }
+}
+
+@keyframes authFloatFast {
+  0%,
+  100% {
+    transform: translateY(0) translateZ(120px) translateX(20px);
+  }
+  50% {
+    transform: translateY(-15px) translateZ(120px) translateX(20px);
+  }
+}
+
+@keyframes authChatUser1 {
+  0%,
+  5% {
+    opacity: 0;
+    transform: translateY(10px) scale(0.95);
+  }
+  8%,
+  85% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  92%,
+  100% {
+    opacity: 0;
+    transform: translateY(-10px) scale(0.95);
+  }
+}
+
+@keyframes authChatAi1 {
+  0%,
+  15% {
+    opacity: 0;
+    transform: translateY(10px) scale(0.95);
+  }
+  18%,
+  85% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  92%,
+  100% {
+    opacity: 0;
+    transform: translateY(-10px) scale(0.95);
+  }
+}
+
+@keyframes authChatUser2 {
+  0%,
+  50% {
+    opacity: 0;
+    transform: translateY(10px) scale(0.95);
+  }
+  53%,
+  85% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  92%,
+  100% {
+    opacity: 0;
+    transform: translateY(-10px) scale(0.95);
+  }
+}
+
+@keyframes authChatAi2 {
+  0%,
+  60% {
+    opacity: 0;
+    transform: translateY(10px) scale(0.95);
+  }
+  63%,
+  85% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  92%,
+  100% {
+    opacity: 0;
+    transform: translateY(-10px) scale(0.95);
+  }
+}
+
+@keyframes authChatScroll {
+  0%,
+  55% {
+    transform: translateY(0);
+  }
+  60%,
+  85% {
+    transform: translateY(-90px);
+  }
+  92%,
+  100% {
+    transform: translateY(0);
+  }
+}
+
+@keyframes authDocDraw1 {
+  0%,
+  2% {
+    opacity: 1;
+    stroke-dashoffset: 400;
+  }
+  12%,
+  85% {
+    opacity: 1;
+    stroke-dashoffset: 0;
+  }
+  92%,
+  100% {
+    opacity: 0;
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes authDocDraw2 {
+  0%,
+  6% {
+    opacity: 1;
+    stroke-dashoffset: 400;
+  }
+  16%,
+  85% {
+    opacity: 1;
+    stroke-dashoffset: 0;
+  }
+  92%,
+  100% {
+    opacity: 0;
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes authDocDraw3 {
+  0%,
+  12% {
+    opacity: 1;
+    stroke-dashoffset: 400;
+  }
+  22%,
+  85% {
+    opacity: 1;
+    stroke-dashoffset: 0;
+  }
+  92%,
+  100% {
+    opacity: 0;
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes authDocDraw4 {
+  0%,
+  16% {
+    opacity: 1;
+    stroke-dashoffset: 400;
+  }
+  26%,
+  85% {
+    opacity: 1;
+    stroke-dashoffset: 0;
+  }
+  92%,
+  100% {
+    opacity: 0;
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes authDocDraw5 {
+  0%,
+  20% {
+    opacity: 1;
+    stroke-dashoffset: 400;
+  }
+  30%,
+  85% {
+    opacity: 1;
+    stroke-dashoffset: 0;
+  }
+  92%,
+  100% {
+    opacity: 0;
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes authDocDraw6 {
+  0%,
+  24% {
+    opacity: 1;
+    stroke-dashoffset: 400;
+  }
+  34%,
+  85% {
+    opacity: 1;
+    stroke-dashoffset: 0;
+  }
+  92%,
+  100% {
+    opacity: 0;
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes authDocDraw7 {
+  0%,
+  32% {
+    opacity: 1;
+    stroke-dashoffset: 400;
+  }
+  42%,
+  85% {
+    opacity: 1;
+    stroke-dashoffset: 0;
+  }
+  92%,
+  100% {
+    opacity: 0;
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes authDocDraw8 {
+  0%,
+  38% {
+    opacity: 1;
+    stroke-dashoffset: 400;
+  }
+  48%,
+  85% {
+    opacity: 1;
+    stroke-dashoffset: 0;
+  }
+  92%,
+  100% {
+    opacity: 0;
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes authDocDraw9 {
+  0%,
+  42% {
+    opacity: 1;
+    stroke-dashoffset: 400;
+  }
+  52%,
+  85% {
+    opacity: 1;
+    stroke-dashoffset: 0;
+  }
+  92%,
+  100% {
+    opacity: 0;
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes authDocDraw10 {
+  0%,
+  46% {
+    opacity: 1;
+    stroke-dashoffset: 400;
+  }
+  56%,
+  85% {
+    opacity: 1;
+    stroke-dashoffset: 0;
+  }
+  92%,
+  100% {
+    opacity: 0;
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes authDocDraw11 {
+  0%,
+  54% {
+    opacity: 1;
+    stroke-dashoffset: 400;
+  }
+  64%,
+  85% {
+    opacity: 1;
+    stroke-dashoffset: 0;
+  }
+  92%,
+  100% {
+    opacity: 0;
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes authDocDraw12 {
+  0%,
+  58% {
+    opacity: 1;
+    stroke-dashoffset: 400;
+  }
+  68%,
+  85% {
+    opacity: 1;
+    stroke-dashoffset: 0;
+  }
+  92%,
+  100% {
+    opacity: 0;
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes authFadeOutEnd {
+  0%,
+  85% {
+    opacity: 1;
+  }
+  92%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes authFloatUp {
+  0%,
+  100% {
+    transform: translateY(0) rotate(var(--rot, 0deg));
+  }
+  50% {
+    transform: translateY(-30px) rotate(var(--rot, 0deg));
+  }
+}
+
+@keyframes authFloatDiag {
+  0%,
+  100% {
+    transform: translate(0, 0) rotate(var(--rot, 0deg));
+  }
+  50% {
+    transform: translate(25px, -25px) rotate(var(--rot, 0deg));
+  }
+}
+
+@keyframes authFloatOrbit {
+  0%,
+  100% {
+    transform: translate(0, 0) rotate(var(--rot, 0deg));
+  }
+  25% {
+    transform: translate(15px, -15px) rotate(calc(var(--rot, 0deg) + 3deg));
+  }
+  50% {
+    transform: translate(30px, 0) rotate(var(--rot, 0deg));
+  }
+  75% {
+    transform: translate(15px, 15px) rotate(calc(var(--rot, 0deg) - 3deg));
+  }
+}
+
+@keyframes authFloatWave {
+  0%,
+  100% {
+    transform: translate(0, 0) rotate(var(--rot, 0deg));
+  }
+  50% {
+    transform: translate(0, -20px) rotate(calc(var(--rot, 0deg) - 5deg));
+  }
+}
+
+@keyframes authFloatFastDrift {
+  0%,
+  100% {
+    transform: translate(0, 0) rotate(var(--rot, 0deg));
+  }
+  50% {
+    transform: translate(-15px, -15px) rotate(calc(var(--rot, 0deg) + 2deg));
+  }
+}
+
+@keyframes authRotateSpin {
+  0%,
+  100% {
+    transform: rotate(var(--rot, 0deg));
+  }
+  50% {
+    transform: rotate(calc(var(--rot, 0deg) + 15deg));
+  }
+}
+
+@keyframes authScaleGrow {
+  0%,
+  100% {
+    transform: scale(1) rotate(var(--rot, 0deg));
+  }
+  50% {
+    transform: scale(1.15) rotate(var(--rot, 0deg));
+  }
+}
+
+@keyframes authFadeBreathe {
+  0%,
+  100% {
+    opacity: var(--base-op, 0.1);
+  }
+  50% {
+    opacity: calc(var(--base-op, 0.1) + 0.15);
+  }
+}
+
+@keyframes authSkeletonShimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .auth-shell *,
+  .auth-shell *::before,
+  .auth-shell *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.001ms !important;
+  }
 }
