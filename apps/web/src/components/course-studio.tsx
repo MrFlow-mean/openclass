@@ -85,6 +85,7 @@ import {
 
 import { api, getApiWebSocketUrl } from "@/lib/api";
 import { BranchSequenceSelector, type BranchSequenceOption } from "@/components/branch-sequence-selector";
+import { InlineNameForm } from "@/components/inline-name-form";
 import { ResourceUploadDropzone } from "@/components/resource-upload-dropzone";
 import { MATH_TEXT_SERIALIZERS, normalizeEditorMath } from "@/lib/math-content";
 import { useRealtimeLogQueue } from "@/hooks/use-realtime-log-queue";
@@ -2581,6 +2582,7 @@ export function CourseStudio() {
   const [topCollapsed, setTopCollapsed] = useState(false);
   const [rightSidebarOpen, setRightSidebarOpen] = useState(true);
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>("history");
+  const [isCreatingLessonInline, setIsCreatingLessonInline] = useState(false);
   const [voiceActive, setVoiceActive] = useState(false);
   const [voiceStatusText, setVoiceStatusText] = useState("点击麦克风，连接所选实时语音讲师");
 
@@ -3132,9 +3134,9 @@ export function CourseStudio() {
     }
   }
 
-  async function saveGeneratedLesson(topic: string) {
+  async function saveGeneratedLesson(topic: string): Promise<boolean> {
     if (!topic.trim()) {
-      return;
+      return false;
     }
     setBusyAction("generate");
     try {
@@ -3142,22 +3144,24 @@ export function CourseStudio() {
       updateCoursePackage(nextPackage, {
         blankLessonIds: nextPackage.active_lesson_id ? [nextPackage.active_lesson_id] : [],
       });
+      return true;
     } catch (generationError) {
       setError(generationError instanceof Error ? generationError.message : "生成 lesson 失败");
+      return false;
     } finally {
       setBusyAction(null);
     }
   }
 
-  async function handleCreateLessonFromPrompt() {
-    const topic = window.prompt("请输入新页面名称，例如：课程导读 / 第一讲 / 练习讲义");
-    if (!topic) {
-      return;
-    }
+  async function handleCreateLessonFromName(topic: string) {
     if (!(await flushAutoSave("create-lesson"))) {
-      return;
+      return false;
     }
-    await saveGeneratedLesson(topic);
+    const isCreated = await saveGeneratedLesson(topic);
+    if (isCreated) {
+      setIsCreatingLessonInline(false);
+    }
+    return isCreated;
   }
 
   async function handleSubmitChat(payloadOverride?: ChatRequestPayload, options?: { speakResponse?: boolean }) {
@@ -4141,9 +4145,19 @@ export function CourseStudio() {
                     </span>
                   </button>
                 ))}
+                {isCreatingLessonInline ? (
+                  <InlineNameForm
+                    label="新页面名称"
+                    placeholder="课程导读 / 第一讲 / 练习讲义"
+                    variant="tab"
+                    isBusy={busyAction === "generate"}
+                    onCancel={() => setIsCreatingLessonInline(false)}
+                    onSubmit={handleCreateLessonFromName}
+                  />
+                ) : null}
                 <button
                   type="button"
-                  onClick={() => void handleCreateLessonFromPrompt()}
+                  onClick={() => setIsCreatingLessonInline(true)}
                   className="p-3 text-gray-300 transition-colors hover:text-black"
                   title="新建页面"
                 >
@@ -4246,7 +4260,7 @@ export function CourseStudio() {
             <div className="mt-8 flex justify-center">
               <button
                 type="button"
-                onClick={() => void handleCreateLessonFromPrompt()}
+                onClick={() => setIsCreatingLessonInline(true)}
                 className="inline-flex items-center gap-2 rounded-full bg-stone-950 px-5 py-3 text-sm font-medium text-white transition hover:bg-stone-800"
               >
                 <Plus className="h-4 w-4" />

@@ -33,6 +33,7 @@ import {
 
 import { AccountMenu } from "@/components/account-menu";
 import { BrandMark } from "@/components/brand-mark";
+import { InlineNameForm } from "@/components/inline-name-form";
 import { api } from "@/lib/api";
 import {
   DEFAULT_COLLECTED_COURSE_IDS,
@@ -281,6 +282,7 @@ export function LearningHome() {
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [lessonMenuState, setLessonMenuState] = useState<LessonMenuState | null>(null);
   const [lessonMoveMenuState, setLessonMoveMenuState] = useState<LessonMenuState | null>(null);
+  const [isCreatingPackageInline, setIsCreatingPackageInline] = useState(false);
 
   useEffect(() => {
     let isDisposed = false;
@@ -368,6 +370,7 @@ export function LearningHome() {
       }
       setLessonMenuState(null);
       setLessonMoveMenuState(null);
+      setIsCreatingPackageInline(false);
       setSelectedPackageId(null);
       setSelectedLessonId(null);
       setPackageLessonsExpanded(false);
@@ -513,16 +516,19 @@ export function LearningHome() {
     }
   }
 
-  async function handleCreatePackage() {
-    const title = window.prompt("请输入课程包名称，例如：法考冲刺包");
-    if (!title?.trim()) {
+  async function handleCreatePackage(title: string) {
+    const trimmedTitle = title.trim();
+    if (!trimmedTitle) {
       return;
     }
 
     setBusyKey("package:create");
     try {
-      const payload = await api.createPackage(title.trim());
+      const payload = await api.createPackage(trimmedTitle);
       setWorkspaceState(payload);
+      setSelectedPackageId(payload.active_package_id ?? null);
+      setPackageLessonsExpanded(true);
+      setIsCreatingPackageInline(false);
       setError(null);
     } catch (actionError) {
       setError(actionError instanceof Error ? actionError.message : "新建课程包失败");
@@ -685,7 +691,7 @@ export function LearningHome() {
                 <h2 className="text-[11px] font-semibold uppercase tracking-[0.24em] text-stone-400">课程包</h2>
                 <button
                   type="button"
-                  onClick={() => void handleCreatePackage()}
+                  onClick={() => setIsCreatingPackageInline(true)}
                   className="rounded-xl p-1.5 text-stone-400 transition hover:bg-stone-200/60 hover:text-stone-950"
                   aria-label="添加课程包"
                 >
@@ -777,11 +783,22 @@ export function LearningHome() {
                       </div>
                     );
                   })
-                ) : (
+                ) : isCreatingPackageInline ? null : (
                   <div className="rounded-2xl border border-dashed border-stone-300 bg-white/70 px-4 py-6 text-sm text-stone-500">
                     还没有课程包，先点右上角的加号创建一个空课程包。
                   </div>
                 )}
+                {isCreatingPackageInline ? (
+                  <div data-package-selection-root>
+                    <InlineNameForm
+                      label="课程包名称"
+                      placeholder="输入课程包名称"
+                      isBusy={busyKey === "package:create"}
+                      onCancel={() => setIsCreatingPackageInline(false)}
+                      onSubmit={handleCreatePackage}
+                    />
+                  </div>
+                ) : null}
               </div>
             </div>
 
