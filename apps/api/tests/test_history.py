@@ -1030,6 +1030,64 @@ def test_workflow_direct_start_after_brief_clarification_generates_board_for_bla
     assert result["board_edit_prompt"] is None
 
 
+def test_workflow_starts_after_user_answers_from_zero_to_probe() -> None:
+    package = build_initial_course_package()
+    lesson = create_empty_lesson("在测试1")
+    package.lessons.append(lesson)
+
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "course_package": package,
+            "request": ChatRequest(
+                message="从零开始",
+                conversation=[
+                    ConversationTurn(role="user", content="我要学什么是虚数"),
+                    ConversationTurn(
+                        role="assistant",
+                        content="为了下一轮把例子和深度对准，你之前接触过这个主题吗，还是希望我从零开始？",
+                    ),
+                ],
+            ),
+        }
+    )
+
+    assert result["needs_clarification"] is False
+    assert result["board_decision"].action == "no_change"
+    assert result["document_updated"] is False
+    assert "你要更偏概念理解" not in result["teacher_message"]
+    assert "什么是虚数" in result["teacher_message"]
+
+
+def test_workflow_starts_when_user_delegates_after_option_prompt() -> None:
+    package = build_initial_course_package()
+    lesson = create_empty_lesson("在测试1")
+    package.lessons.append(lesson)
+
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "course_package": package,
+            "request": ChatRequest(
+                message="都要，你自己看着办",
+                conversation=[
+                    ConversationTurn(role="user", content="我要学什么是虚数"),
+                    ConversationTurn(
+                        role="assistant",
+                        content="我先按入门节奏讲。你要更偏概念理解、做题，还是实际应用？",
+                    ),
+                ],
+            ),
+        }
+    )
+
+    assert result["needs_clarification"] is False
+    assert result["board_decision"].action == "no_change"
+    assert result["document_updated"] is False
+    assert "你要更偏概念理解" not in result["teacher_message"]
+    assert "什么是虚数" in result["teacher_message"]
+
+
 def test_workflow_formats_teacher_message_into_readable_paragraphs(monkeypatch: pytest.MonkeyPatch) -> None:
     package = build_initial_course_package()
     lesson = package.lessons[0]

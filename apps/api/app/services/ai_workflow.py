@@ -270,9 +270,13 @@ def _is_forced_start_request(message: str) -> bool:
         "直接开讲",
         "开讲",
         "直接讲",
+        "开始讲解",
+        "开始讲课",
+        "开始讲",
         "开始教学",
         "马上开始",
         "马上讲",
+        "马上讲解",
         "现在开始",
         "先开始",
         "直接教",
@@ -280,6 +284,9 @@ def _is_forced_start_request(message: str) -> bool:
         "不用问",
         "不要问",
         "别问",
+        "不用再问",
+        "不要再问",
+        "别再问",
         "就按当前",
         "按目前",
     ]
@@ -432,7 +439,7 @@ def _extract_topic_hint(text: str) -> str | None:
 def _extract_level_hint(text: str) -> str | None:
     patterns = [
         r"\b([ABC][12])\b",
-        r"(零基础|初学|入门|进阶|高级|高三|高二|高一|初三|初二|初一|考研|本科|研究生)",
+        r"(从零开始|零基础|完全没学过|没学过|基础薄弱|初学|入门|进阶|高级|高三|高二|高一|初三|初二|初一|考研|本科|研究生)",
         r"法语水平是([ABC][12])",
     ]
     for pattern in patterns:
@@ -447,7 +454,7 @@ def _extract_level_hint(text: str) -> str | None:
 def _extract_goal_or_scenario_hint(text: str) -> str | None:
     patterns = [
         r"(?:为了|我要(?!学|学习)|想要(?!学|学习)|用于|用来|准备用在|准备应对|应对|准备)\s*([^，。！？!?；;]{2,28})",
-        r"(法国旅游|出国旅游|高考压轴导数大题|高考压轴题|导数大题|旅游|考试|面试|工作|项目|阅读|写作)",
+        r"(概念理解|概念|理念|理论|做题|题目|练习|实际应用|应用|都要|全都要|都可以|都行|自己看着办|你自己看着办|你看着办|你来决定|你决定|按你判断|按你安排|法国旅游|出国旅游|高考压轴导数大题|高考压轴题|导数大题|旅游|考试|面试|工作|项目|阅读|写作)",
     ]
     for pattern in patterns:
         match = re.search(pattern, text, flags=re.IGNORECASE)
@@ -482,6 +489,7 @@ def _learning_clarification_status(
         r"\b初[一二三]\b",
         r"\d+\s*(?:个)?(?:词|词汇|单词)",
         r"(?:零基础|初学|入门|进阶|高级|水平|学习者|基础|b1|b2|c1|高三|考研|本科|研究生)",
+        r"(?:从零开始|完全没学过|没学过|基础薄弱)",
     ]
     if any(re.search(pattern, compact, flags=re.IGNORECASE) for pattern in profile_patterns):
         progress += 30
@@ -501,6 +509,25 @@ def _learning_clarification_status(
         "工作",
         "项目",
         "题目",
+        "概念理解",
+        "概念",
+        "理念",
+        "理论",
+        "做题",
+        "练习",
+        "实际应用",
+        "应用",
+        "都要",
+        "全都要",
+        "都可以",
+        "都行",
+        "自己看着办",
+        "你自己看着办",
+        "你看着办",
+        "你来决定",
+        "你决定",
+        "按你判断",
+        "按你安排",
         "场景",
         "情景",
         "高考",
@@ -529,6 +556,9 @@ def _learning_clarification_status(
         "整理",
         "文档",
         "开始教学",
+        "开始讲解",
+        "开始讲课",
+        "开始讲",
         "直接开始",
     ]
     if any(pattern in compact for pattern in output_patterns):
