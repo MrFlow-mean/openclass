@@ -344,6 +344,57 @@ def test_workflow_recognizes_varied_student_personas_as_clear_learning_needs(
 
 
 @pytest.mark.parametrize(
+    "message",
+    [
+        "我是医学生，背诵能力强，但机制理解不足。我想学习免疫系统的细胞机制，用于理解感染、疫苗和自身免疫病。",
+        "我是土木工程学生，学过材料力学。我想学习结构力学中的梁、桁架、弯矩图和稳定性分析。",
+        "我是建筑学学生，设计能力强，但结构知识弱。我想学习建筑结构受力原理，理解柱、梁、拱、壳体结构。",
+        "我是软件工程学生，会写代码，但系统设计经验少。我想学习后端架构、数据库设计、缓存、消息队列和微服务。",
+        "我是社会学学生，对社会现象感兴趣。我想学习社会分层、现代性、韦伯、涂尔干和马克思的社会理论。",
+        "我是音乐学院学生，会演奏但乐理薄弱。我想学习和声学、调式、转调和曲式分析。",
+        "我是公共卫生学生，医学基础一般。我想学习流行病学中的发病率、患病率、队列研究和病例对照研究。",
+        "我是商科学生，对创业感兴趣。我想学习商业模式、市场定位、用户需求分析和 MVP 产品验证。",
+    ],
+)
+def test_workflow_recognizes_natural_background_phrases_from_student_personas(message: str) -> None:
+    package = build_initial_course_package()
+    lesson = create_empty_lesson("多画像需求识别")
+    package.lessons.append(lesson)
+
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "course_package": package,
+            "request": ChatRequest(message=message),
+        }
+    )
+
+    status = result["learning_clarification"]
+    assert status.progress >= 90
+    assert "当前水平或背景" not in status.missing_items
+    assert "学习目的或应用场景" not in status.missing_items
+    assert result["needs_clarification"] is False
+
+
+def test_workflow_does_not_misread_environment_science_as_ring_algebra() -> None:
+    package = build_initial_course_package()
+    lesson = create_empty_lesson("环境科学")
+    package.lessons.append(lesson)
+
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "course_package": package,
+            "request": ChatRequest(message="我想学环境科学"),
+        }
+    )
+
+    assert "当前是什么阶段或背景" in result["teacher_message"]
+    assert "理想或素理想" not in result["teacher_message"]
+    assert "抽象代数" not in result["teacher_message"]
+
+
+@pytest.mark.parametrize(
     ("message", "must_terms"),
     [
         (
@@ -361,6 +412,14 @@ def test_workflow_recognizes_varied_student_personas_as_clear_learning_needs(
         (
             "请生成一份 p-value 与显著性检验讲义，覆盖零假设、备择假设、一类错误、置信区间，生成后先只讲第一小节。",
             ["p-value", "显著性检验", "零假设", "备择假设", "置信区间"],
+        ),
+        (
+            "请生成一份集合、映射、群、环、域系统讲义，覆盖集合、映射、群、环、域，为大学数学打基础。生成后先只讲第一小节。",
+            ["集合", "映射", "群", "环", "域"],
+        ),
+        (
+            "请生成一份法语虚拟式、复合过去时、未完成过去时和条件式系统讲义，覆盖法语虚拟式、复合过去时、未完成过去时和条件式。生成后先只讲第一小节。",
+            ["法语虚拟式", "复合过去时", "未完成过去时", "条件式"],
         ),
     ],
 )
@@ -392,6 +451,8 @@ def test_workflow_generates_generic_handouts_from_varied_personas_without_echoin
         assert term in doc_text
     assert "请生成一份" not in doc_text
     assert "生成后先只讲" not in doc_text
+    assert "抽象代数、交换代数与代数几何中的“环”" not in doc_text
+    assert "法国咖啡厅点餐" not in doc_text
     assert "教师模型" not in result["teacher_message"]
     assert "学习目标：" not in result["teacher_message"]
     assert "继续讲下一个小节" in result["teacher_message"]

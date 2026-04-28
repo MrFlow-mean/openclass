@@ -450,7 +450,7 @@ def _clean_generation_topic_hint(value: str) -> str:
         cleaned,
         flags=re.IGNORECASE,
     )
-    cleaned = re.sub(r"(?:的一篇|的一份|的一版)$", "", cleaned).strip(" ：:，,。")
+    cleaned = re.sub(r"(?:的一篇|的一份|的一版|系统|专题)$", "", cleaned).strip(" ：:，,。")
     cleaned = re.sub(r"(?:情景对话课文|对话课文|课文|情景对话|板书讲义|专题讲义|讲义|板书|课程|教案)$", "", cleaned).strip(" ：:，,。")
     return cleaned[:96]
 
@@ -506,6 +506,7 @@ def _extract_level_hint(text: str) -> str | None:
 def _extract_goal_or_scenario_hint(text: str) -> str | None:
     patterns = [
         r"(?:为了|我要(?!学|学习)|我想把|想把|想要(?!学|学习)|用于|用来|准备用在|准备应对|应对|准备)\s*([^，。！？!?；;]{2,48})",
+        r"(?:我想学习|想学习|我想学|想学)\s*([^，。！？!?；;]{4,80})",
         r"(概念理解|概念|理念|理论|做题|题目|练习|实际应用|应用|都要|全都要|都可以|都行|自己看着办|你自己看着办|你看着办|你来决定|你决定|按你判断|按你安排|法国旅游|出国旅游|高考压轴导数大题|高考压轴题|导数大题|旅游|期末考试|考试|期末|面试|作业|论文阅读|论文|课程展示|课堂展示|展示|汇报|实验|工作|项目|阅读|写作|系统学|系统学习|学扎实|主线学扎实|连接.*主线|贯通|打基础|补基础)",
     ]
     for pattern in patterns:
@@ -527,6 +528,7 @@ def _learning_clarification_status(
     user_turns = [turn.content for turn in request.conversation if turn.role == "user"][-4:]
     user_context = "\n".join([*user_turns, message]).strip() or requirements.learning_goal
     compact = re.sub(r"\s+", "", user_context.lower())
+    profile_text = user_context.lower()
     missing_items: list[str] = []
     progress = 0
 
@@ -544,8 +546,10 @@ def _learning_clarification_status(
         r"\d+\s*(?:个)?(?:词|词汇|单词)",
         r"(?:零基础|初学|入门|进阶|高级|水平|学习者|基础|b1|b2|c1|高中生|高中|初中生|初中|小学生|小学|高三|考研|本科|本科生|大学生|研究生|硕士|博士|专业|年级)",
         r"(?:从零开始|完全没学过|没学过|基础薄弱)",
+        r"(?:我是|作为|身为)[^，。！？!?；;\n]{0,24}(?:学生|本科生|研究生|老师|开发者)",
+        r"(?:^|[，。！？!?；;\n])(?:会|学过|懂|了解|读过|接触过|刚接触|刚入门|不熟|理论(?:基础)?(?:弱|较弱|薄弱|不足)|基础(?:一般|薄弱|较弱|不足)?|能力(?:强|弱)|有[^，。！？!?；;\n]{1,12}经验|准备当老师)",
     ]
-    if any(re.search(pattern, compact, flags=re.IGNORECASE) for pattern in profile_patterns):
+    if any(re.search(pattern, profile_text, flags=re.IGNORECASE) for pattern in profile_patterns):
         progress += 30
     else:
         missing_items.append("当前水平或背景")
@@ -609,7 +613,7 @@ def _learning_clarification_status(
         "打基础",
         "补基础",
     ]
-    if any(pattern in compact for pattern in scenario_patterns) or request.selection:
+    if _extract_goal_or_scenario_hint(user_context) or any(pattern in compact for pattern in scenario_patterns) or request.selection:
         progress += 25
     else:
         missing_items.append("学习目的或应用场景")
@@ -3166,17 +3170,20 @@ def _is_math_learning_topic(text: str) -> bool:
         "微积分",
         "数学分析",
         "拓扑",
-        "环",
-        "群",
-        "域",
-        "模",
         "理想",
         "素理想",
         "多项式",
         "簇",
         "概形",
     )
-    return any(term in compact for term in math_terms)
+    if any(term in compact for term in math_terms):
+        return True
+    return bool(
+        re.search(
+            r"(^|[\s，。！？!?；;、：:《》（）()])(?:环|群|域|模)($|[\s，。！？!?；;、：:《》（）()的与和及论])",
+            text,
+        )
+    )
 
 
 def _is_advanced_algebra_learning_topic(text: str) -> bool:
@@ -3185,13 +3192,10 @@ def _is_advanced_algebra_learning_topic(text: str) -> bool:
         "抽象代数",
         "代数几何",
         "交换代数",
-        "环",
         "环论",
         "理想",
         "素理想",
         "商环",
-        "域",
-        "模",
         "概形",
         "zariski",
         "spec",

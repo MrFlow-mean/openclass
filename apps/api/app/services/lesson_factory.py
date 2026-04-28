@@ -694,9 +694,7 @@ def _is_ring_algebra_geometry_topic(topic: str) -> bool:
         "hilbert",
         "仿射概形",
     )
-    if any(term in normalized for term in strong_terms):
-        return True
-    return bool(re.search(r"(^|[\s，。！？!?；;、：:《》（）()])环($|[\s，。！？!?；;、：:《》（）()的与和及论])", topic))
+    return any(term in normalized for term in strong_terms)
 
 
 def _ring_algebra_geometry_html() -> str:
@@ -955,7 +953,7 @@ def build_document_for_topic(
     reference_context: ResourceReferenceContext | None = None,
 ) -> BoardDocument:
     normalized = topic.lower()
-    if any(keyword in normalized for keyword in ["法语", "french", "dialogue", "对话", "咖啡", "café", "cafe", "点餐"]):
+    if any(keyword in normalized for keyword in ["dialogue", "对话", "咖啡", "café", "cafe", "点餐"]):
         title = "法国咖啡厅点餐情景对话（含过去将来时）"
         return build_document(title=title, content_html=_language_cafe_html())
     if reference_context is None and _is_ring_algebra_geometry_topic(topic):
