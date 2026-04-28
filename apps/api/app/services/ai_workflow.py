@@ -415,7 +415,7 @@ def _clean_topic_hint(value: str) -> str | None:
 
 def _extract_topic_hint(text: str) -> str | None:
     patterns = [
-        r"(?:我想学|想学|教我|学习|学一下|为我讲解|给我讲解|为我讲|给我讲|讲解|请讲|请解释|解释一下)\s*([^，。！？!?；;\n]{2,48})",
+        r"(?:我要学|我要学习|我想要学|我想要学习|我想学|想要学|想要学习|想学|教我|学习|学一下|为我讲解|给我讲解|为我讲|给我讲|讲解|请讲|请解释|解释一下)\s*([^，。！？!?；;\n]{2,48})",
         r"什么是\s*([^，。！？!?；;\n]{2,48})",
         r"([^，。！？!?；;\n]{2,48})是什么",
     ]
@@ -446,7 +446,7 @@ def _extract_level_hint(text: str) -> str | None:
 
 def _extract_goal_or_scenario_hint(text: str) -> str | None:
     patterns = [
-        r"(?:为了|我要|想要|用于|用来|准备用在|准备应对|应对|准备)\s*([^，。！？!?；;]{2,28})",
+        r"(?:为了|我要(?!学|学习)|想要(?!学|学习)|用于|用来|准备用在|准备应对|应对|准备)\s*([^，。！？!?；;]{2,28})",
         r"(法国旅游|出国旅游|高考压轴导数大题|高考压轴题|导数大题|旅游|考试|面试|工作|项目|阅读|写作)",
     ]
     for pattern in patterns:
@@ -490,7 +490,6 @@ def _learning_clarification_status(
 
     scenario_patterns = [
         "为了",
-        "我要",
         "用于",
         "应对",
         "准备",
@@ -1105,7 +1104,8 @@ def _learning_need_checklist(lesson: Lesson, request: ChatRequest, requirements:
         for line in _relevant_lines(lesson.board_document, request)[:2]:
             candidates.append(f"对齐当前版书：{line[:80]}")
     else:
-        candidates.append(f"在不写入版书的前提下，先围绕《{lesson.title}》形成可讲主线")
+        topic = requirements.theme if requirements.theme and requirements.theme != lesson.title else lesson.title
+        candidates.append(f"在不写入版书的前提下，先围绕《{topic}》形成可讲主线")
 
     needs: list[str] = []
     seen: set[str] = set()
@@ -2510,11 +2510,14 @@ def _fallback_board_teaching_guide(
     scored_segments.sort(key=lambda item: item[0], reverse=True)
     low_value_segments.sort(key=lambda item: item[0], reverse=True)
 
-    chosen = (
-        scored_segments[:3]
-        if scored_segments
-        else (low_value_segments[:3] if low_value_segments else [(0, document.title, document.content_text.strip() or document.title)])
-    )
+    if is_document_empty(document) and requirements.theme and requirements.theme != document.title:
+        chosen = [(0, requirements.theme, requirements.theme)]
+    else:
+        chosen = (
+            scored_segments[:3]
+            if scored_segments
+            else (low_value_segments[:3] if low_value_segments else [(0, document.title, document.content_text.strip() or document.title)])
+        )
     selected_items: list[BoardTeachingSelectedItem] = []
     for index, (_, heading, excerpt) in enumerate(chosen, start=1):
         mapped_needs = _needs_for_excerpt(excerpt, needs)
@@ -2945,9 +2948,71 @@ def _teacher_intro(state: WorkflowState) -> str:
     return "我们直接抓这次最该讲的重点。"
 
 
+def _is_broad_learning_goal_request(message: str) -> bool:
+    compact = _compact_instruction_text(message)
+    if _is_low_information_request(message) or _is_vague_pointer_request(message):
+        return False
+    learning_intents = (
+        "我要学",
+        "我要学习",
+        "我想学",
+        "我想要学",
+        "我想要学习",
+        "想学",
+        "想要学",
+        "想要学习",
+        "教我",
+    )
+    return any(intent in compact for intent in learning_intents) or compact.startswith("学习")
+
+
+def _is_math_learning_topic(text: str) -> bool:
+    compact = _compact_instruction_text(text)
+    math_terms = (
+        "代数几何",
+        "抽象代数",
+        "线性代数",
+        "微积分",
+        "数学分析",
+        "拓扑",
+        "环",
+        "群",
+        "域",
+        "模",
+        "理想",
+        "素理想",
+        "多项式",
+        "簇",
+        "概形",
+    )
+    return any(term in compact for term in math_terms)
+
+
 def _teacher_learning_probe(state: WorkflowState) -> str | None:
-    _ = state
-    return None
+    request = state["request"]
+    status = state.get("learning_clarification")
+    if status is None or status.forced_start:
+        return None
+    if not _is_first_user_exchange(request):
+        return None
+    if request.selection is not None or request.interaction_mode == "direct_edit":
+        return None
+    if not _is_broad_learning_goal_request(request.message):
+        return None
+
+    missing = set(status.missing_items)
+    if "当前水平或背景" not in missing:
+        return None
+
+    lesson = state["lesson"]
+    requirements = state["learning_requirement_sheet"]
+    topic = _extract_topic_hint(request.message) or (requirements.theme if requirements.theme != lesson.title else "") or request.message
+    if _is_math_learning_topic(f"{topic}\n{request.message}"):
+        return (
+            "为了下一轮不把深度讲偏，我需要先摸一下你的数学背景：你现在更接近高中、本科低年级、"
+            "数学专业本科，还是研究生阶段？如果已经学过环、理想或素理想，也可以直接说。"
+        )
+    return "为了下一轮把例子和深度对准，你之前接触过这个主题吗，还是希望我从零开始？"
 
 
 def _teacher_message_from_talk_track(state: WorkflowState, talk_track: str) -> str:

@@ -397,7 +397,9 @@ export function LearningHome() {
   const feedLessons = packages.flatMap((packageItem) =>
     packageItem.lessons.map((lesson) => ({
       lesson,
+      packageId: packageItem.id,
       packageTitle: packageItem.title,
+      isStandalone: packageItem.id === standalonePackage?.id,
     }))
   );
   const feedResources = packages.flatMap((packageItem) =>
@@ -1062,6 +1064,7 @@ export function LearningHome() {
                       {visibleFeedItems.length ? (
                         visibleFeedItems.map((item) => {
                           const buttonBusy = item.lessonId ? busyKey === `lesson:${item.lessonId}` : false;
+                          const hasCommitTimeline = item.kind === "commit" && Boolean(item.updates?.length);
 
                           return (
                             <article
@@ -1096,16 +1099,57 @@ export function LearningHome() {
                                 </span>
                               </div>
 
-                              <h4 className="mt-5 text-2xl font-semibold tracking-tight text-stone-950 sm:text-[2rem]">
+                              <h4
+                                className={clsx(
+                                  "mt-5 font-semibold text-stone-950",
+                                  hasCommitTimeline ? "text-xl sm:text-2xl" : "text-2xl sm:text-[2rem]"
+                                )}
+                              >
                                 {item.title}
                               </h4>
 
-                              <div className="mt-4 rounded-[22px] border border-stone-200 bg-stone-50/90 p-4">
-                                <div className="border-b border-stone-200 pb-3">
-                                  <p className="text-base font-semibold text-stone-950">{item.detailTitle}</p>
+                              {hasCommitTimeline ? (
+                                <ol className="mt-5">
+                                  {item.updates?.map((update, updateIndex) => {
+                                    const isLast = updateIndex === (item.updates?.length ?? 0) - 1;
+
+                                    return (
+                                      <li key={update.id} className="relative flex gap-3 pb-5 last:pb-0">
+                                        {!isLast ? (
+                                          <span className="absolute left-[5px] top-4 h-full w-px bg-stone-200" />
+                                        ) : null}
+                                        <span className="relative mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full bg-rose-500 ring-4 ring-rose-50" />
+                                        <div className="min-w-0 flex-1">
+                                          <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                                            {update.lessonTitle ? (
+                                              <p className="text-sm font-semibold text-stone-950">
+                                                {update.lessonTitle}
+                                              </p>
+                                            ) : null}
+                                            <span className="text-xs text-stone-400">
+                                              {formatRelativeTime(update.timestamp)}
+                                            </span>
+                                          </div>
+                                          <div className="mt-1 flex flex-wrap items-center gap-2">
+                                            <p className="text-sm font-medium text-stone-800">{update.title}</p>
+                                            <span className="rounded-full bg-stone-100 px-2 py-0.5 text-[10px] font-semibold text-stone-500">
+                                              {update.detailTitle}
+                                            </span>
+                                          </div>
+                                          <p className="mt-1 text-sm leading-6 text-stone-600">{update.detailBody}</p>
+                                        </div>
+                                      </li>
+                                    );
+                                  })}
+                                </ol>
+                              ) : (
+                                <div className="mt-4 rounded-[22px] border border-stone-200 bg-stone-50/90 p-4">
+                                  <div className="border-b border-stone-200 pb-3">
+                                    <p className="text-base font-semibold text-stone-950">{item.detailTitle}</p>
+                                  </div>
+                                  <p className="mt-3 text-sm leading-7 text-stone-600">{item.detailBody}</p>
                                 </div>
-                                <p className="mt-3 text-sm leading-7 text-stone-600">{item.detailBody}</p>
-                              </div>
+                              )}
 
                               <div className="mt-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                                 <div className="flex flex-wrap gap-2">

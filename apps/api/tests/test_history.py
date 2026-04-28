@@ -129,6 +129,31 @@ def test_workflow_starts_teaching_on_first_subject_only_learning_goal() -> None:
     assert "准备用在哪种场景" not in result["teacher_message"]
 
 
+def test_workflow_probes_math_background_for_first_advanced_subject_goal() -> None:
+    package = build_initial_course_package()
+    lesson = create_empty_lesson("测试9")
+    package.lessons.append(lesson)
+
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "course_package": package,
+            "request": ChatRequest(message="我要学代数几何的环的内容"),
+        }
+    )
+
+    assert result["learning_requirement_sheet"].theme == "代数几何的环"
+    assert result["learning_clarification"].progress == 35
+    assert set(result["learning_clarification"].missing_items) == {"当前水平或背景", "学习目的或应用场景"}
+    assert result["needs_clarification"] is False
+    assert result["board_decision"].action == "no_change"
+    assert "代数几何的环" in result["teacher_message"]
+    assert "高中" in result["teacher_message"]
+    assert "本科" in result["teacher_message"]
+    assert "研究生" in result["teacher_message"]
+    assert "测试9" not in result["teacher_message"]
+
+
 def test_workflow_marks_detailed_learning_goal_as_fully_clarified() -> None:
     package = build_initial_course_package()
     lesson = create_empty_lesson("板书测试")

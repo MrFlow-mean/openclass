@@ -5,12 +5,23 @@ export type RecentFeedFilter = "all" | RecentFeedKind;
 
 export type RecentFeedLesson = {
   lesson: Lesson;
+  packageId: string;
   packageTitle: string;
+  isStandalone?: boolean;
 };
 
 export type RecentFeedResource = {
   resource: ResourceLibraryItem;
   packageTitle: string;
+};
+
+export type RecentFeedUpdate = {
+  id: string;
+  timestamp: string;
+  title: string;
+  detailTitle: string;
+  detailBody: string;
+  lessonTitle?: string;
 };
 
 export type RecentFeedItem = {
@@ -24,6 +35,7 @@ export type RecentFeedItem = {
   detailBody: string;
   pills: string[];
   lessonId?: string;
+  updates?: RecentFeedUpdate[];
 };
 
 function truncateText(value: string, maxLength = 160) {
@@ -91,20 +103,89 @@ function resourceTypeLabel(resource: ResourceLibraryItem) {
 }
 
 export function buildRecentFeed(lessons: RecentFeedLesson[], resources: RecentFeedResource[]) {
-  const commitItems: RecentFeedItem[] = lessons.flatMap(({ lesson, packageTitle }) =>
-    lesson.history_graph.commits.map((commit) => ({
-      id: `commit:${commit.id}`,
-      kind: "commit",
-      timestamp: commit.created_at,
-      actor: lesson.title,
-      action: "更新了课程文稿",
-      title: humanizeCommitLabel(commit.label),
-      detailTitle: commit.branch_name === "main" ? "主分支 main" : `分支 ${commit.branch_name}`,
-      detailBody: humanizeCommitMessage(commit, lesson),
-      pills: [packageTitle, lesson.tags[0] ?? "课程内容", `${lesson.history_graph.commits.length} 次提交`],
-      lessonId: lesson.id,
-    }))
-  );
+  const commitGroups = new Map<
+    string,
+    {
+      id: string;
+      packageTitle: string;
+      isStandalone: boolean;
+      updates: RecentFeedUpdate[];
+      lessonIdsByUpdateId: Map<string, string>;
+      lessonTitles: Set<string>;
+      tags: Set<string>;
+    }
+  >();
+
+  lessons.forEach(({ lesson, packageId, packageTitle, isStandalone = false }) => {
+    const groupId = isStandalone ? `lesson:${lesson.id}` : `package:${packageId}`;
+    const group =
+      commitGroups.get(groupId) ??
+      {
+        id: groupId,
+        packageTitle,
+        isStandalone,
+        updates: [],
+        lessonIdsByUpdateId: new Map<string, string>(),
+        lessonTitles: new Set<string>(),
+        tags: new Set<string>(),
+      };
+
+    lesson.history_graph.commits.forEach((commit) => {
+      const update: RecentFeedUpdate = {
+        id: `commit:${commit.id}`,
+        timestamp: commit.created_at,
+        title: humanizeCommitLabel(commit.label),
+        detailTitle: commit.branch_name === "main" ? "主分支 main" : `分支 ${commit.branch_name}`,
+        detailBody: humanizeCommitMessage(commit, lesson),
+        lessonTitle: lesson.title,
+      };
+
+      group.updates.push(update);
+      group.lessonIdsByUpdateId.set(update.id, lesson.id);
+    });
+
+    group.lessonTitles.add(lesson.title);
+    if (lesson.tags[0]) {
+      group.tags.add(lesson.tags[0]);
+    }
+    commitGroups.set(groupId, group);
+  });
+
+  const commitItems: RecentFeedItem[] = Array.from(commitGroups.values()).flatMap((group) => {
+    const updates = [...group.updates].sort(
+      (left, right) => new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime()
+    );
+    const latestUpdate = updates[0];
+
+    if (!latestUpdate) {
+      return [];
+    }
+
+    const commitCount = updates.length;
+    const lessonCount = group.lessonTitles.size;
+    const actor =
+      group.isStandalone && lessonCount === 1
+        ? Array.from(group.lessonTitles)[0] ?? group.packageTitle
+        : group.packageTitle;
+    const lessonPill = lessonCount > 1 ? `${lessonCount} 个课程页` : latestUpdate.lessonTitle ?? "课程内容";
+    const tagPill = Array.from(group.tags)[0] ?? "课程内容";
+
+    return [
+      {
+        id: `commit-group:${group.id}`,
+        kind: "commit",
+        timestamp: latestUpdate.timestamp,
+        actor,
+        action: commitCount > 1 ? `有 ${commitCount} 次课程文稿更新` : "更新了课程文稿",
+        title: commitCount > 1 ? "近期更新记录" : latestUpdate.title,
+        detailTitle: latestUpdate.detailTitle,
+        detailBody: latestUpdate.detailBody,
+        pills: [group.packageTitle, lessonPill, tagPill, `${commitCount} 次提交`],
+        lessonId: group.lessonIdsByUpdateId.get(latestUpdate.id),
+        updates,
+      } satisfies RecentFeedItem,
+    ];
+  });
 
   const resourceItems: RecentFeedItem[] = resources.map(({ resource, packageTitle }) => ({
     id: `resource:${resource.id}`,
