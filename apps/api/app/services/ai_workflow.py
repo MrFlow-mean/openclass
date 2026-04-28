@@ -453,8 +453,8 @@ def _extract_level_hint(text: str) -> str | None:
 
 def _extract_goal_or_scenario_hint(text: str) -> str | None:
     patterns = [
-        r"(?:为了|我要(?!学|学习)|想要(?!学|学习)|用于|用来|准备用在|准备应对|应对|准备)\s*([^，。！？!?；;]{2,28})",
-        r"(概念理解|概念|理念|理论|做题|题目|练习|实际应用|应用|都要|全都要|都可以|都行|自己看着办|你自己看着办|你看着办|你来决定|你决定|按你判断|按你安排|法国旅游|出国旅游|高考压轴导数大题|高考压轴题|导数大题|旅游|考试|面试|工作|项目|阅读|写作)",
+        r"(?:为了|我要(?!学|学习)|我想把|想把|想要(?!学|学习)|用于|用来|准备用在|准备应对|应对|准备)\s*([^，。！？!?；;]{2,48})",
+        r"(概念理解|概念|理念|理论|做题|题目|练习|实际应用|应用|都要|全都要|都可以|都行|自己看着办|你自己看着办|你看着办|你来决定|你决定|按你判断|按你安排|法国旅游|出国旅游|高考压轴导数大题|高考压轴题|导数大题|旅游|考试|面试|工作|项目|阅读|写作|系统学|系统学习|学扎实|主线学扎实|连接.*主线|贯通|打基础|补基础)",
     ]
     for pattern in patterns:
         match = re.search(pattern, text, flags=re.IGNORECASE)
@@ -536,6 +536,14 @@ def _learning_clarification_status(
         "法国",
         "餐厅",
         "压轴",
+        "系统学",
+        "系统学习",
+        "学扎实",
+        "主线",
+        "连接",
+        "贯通",
+        "打基础",
+        "补基础",
     ]
     if any(pattern in compact for pattern in scenario_patterns) or request.selection:
         progress += 25
@@ -2137,6 +2145,19 @@ def _dedupe_teaching_lines(values: list[str], *, limit: int = 4) -> list[str]:
     return lines
 
 
+def _is_low_value_section_teaching_line(value: str) -> bool:
+    cleaned = " ".join(value.split()).strip()
+    if not cleaned:
+        return True
+    if cleaned.startswith(("学习定位：", "讲解节奏：", "内部讲义：", "学习需求：", "讲解方式：")):
+        return True
+    if "每次只讲一个小节" in cleaned:
+        return True
+    if "不要按板书顺序念" in cleaned:
+        return True
+    return False
+
+
 def _board_h2_sections(document: BoardDocument) -> list[tuple[str, str]]:
     blocks: list[tuple[str, str]] = []
     for match in _TEACHING_BLOCK_RE.finditer(document.content_html or ""):
@@ -2185,10 +2206,17 @@ def _fallback_section_plans(
     sections = _board_h2_sections(document)
     plans: list[BoardSectionTeachingPlan] = []
     for index, (heading, body) in enumerate(sections):
-        candidate_points = [line for line in body.splitlines() if line.strip() and line.strip() != heading]
-        core_points = _dedupe_teaching_lines(candidate_points, limit=3) or [
+        candidate_points = [
+            line
+            for line in body.splitlines()
+            if line.strip() and line.strip() != heading and not _is_low_value_section_teaching_line(line)
+        ]
+        check_line = next((line for line in candidate_points if re.match(r"^\s*(?:检查点|检查问题|练习|思考题)[：:]", line)), "")
+        core_candidates = [line for line in candidate_points if line != check_line]
+        core_points = _dedupe_teaching_lines(core_candidates, limit=3) or [
             f"这一节围绕“{heading}”建立核心理解。"
         ]
+        cleaned_check = re.sub(r"^\s*(?:检查点|检查问题|练习|思考题)[：:]\s*", "", check_line).strip()
         excerpt_source = body or "\n".join(core_points)
         plans.append(
             BoardSectionTeachingPlan(
@@ -2209,7 +2237,7 @@ def _fallback_section_plans(
                     f"可以把“{heading}”放进一个最小例子里讲：先给已知条件，再说明怎么判断或使用。"
                 ),
                 common_pitfalls=["不要只复述标题；要说明条件、边界和容易混淆的点。"],
-                check_question=f"你能用一句话说出“{heading}”这一节最核心的意思吗？",
+                check_question=cleaned_check or f"你能用一句话说出“{heading}”这一节最核心的意思吗？",
                 transition_to_next="如果这一节能跟上，就继续进入下一小节。",
             )
         )
@@ -2251,6 +2279,8 @@ def _is_low_value_teaching_excerpt(excerpt: str, request_message: str) -> bool:
     ):
         return True
     if any(marker in cleaned for marker in ("用户当前追问", "当前追问", "原有主线", "新问题接回", "专门承接")):
+        return True
+    if cleaned.startswith(("学习定位：", "讲解节奏：")) or "每次只讲一个小节" in cleaned:
         return True
     if re.match(r"^(?:请|帮我|为我|给我)?(?:续写|继续写|接着写|新增|追加|补充)", cleaned) and len(cleaned) <= 48:
         return True
@@ -3118,19 +3148,25 @@ def _section_teacher_message(
     progress: SectionTeachingProgressView,
 ) -> str:
     lead = f"第 {progress.section_index + 1} 小节，我们先讲《{plan.heading}》。"
-    core = "；".join(plan.core_points[:3]) if plan.core_points else plan.board_excerpt
-    steps = " ".join(plan.teaching_steps[:3]).strip()
-    method = plan.teaching_method.strip()
+    core_points = [
+        point
+        for point in plan.core_points[:3]
+        if point.strip() and not _is_low_value_section_teaching_line(point)
+    ]
     example = plan.example_or_analogy.strip()
-    pitfalls = "；".join(plan.common_pitfalls[:2])
+    pitfalls = "；".join(point.strip(" 。！？!?；;") for point in plan.common_pitfalls[:2] if point.strip())
     check = plan.check_question.strip() or f"你能用一句话说出《{plan.heading}》最核心的意思吗？"
 
     blocks = [lead]
-    if core:
-        blocks.append(f"核心先抓住这一点：{core}。")
-    if steps or method:
-        blocks.append("讲的时候我会这样展开：" + " ".join(part for part in [steps, method] if part).strip())
-    if example:
+    if core_points:
+        blocks.append(f"这一节的核心是：{core_points[0]}。")
+        if len(core_points) > 1:
+            blocks.append(f"接着看第二层：{core_points[1]}。")
+        if len(core_points) > 2:
+            blocks.append(f"最后落到一个判断：{core_points[2]}。")
+    elif plan.board_excerpt.strip():
+        blocks.append(f"这一节的核心是：{plan.board_excerpt.strip()}。")
+    if example and "放进一个最小例子里讲" not in example:
         blocks.append(f"可以用这个方式理解：{example}")
     if pitfalls:
         blocks.append(f"容易卡住的地方是：{pitfalls}。")
@@ -3193,10 +3229,9 @@ def _section_teaching_turn(state: WorkflowState) -> WorkflowState | None:
     )
     progress_view = _section_progress_view(progress, guide)
     plan = guide.section_plans[target_index]
-    first_section_briefs = [
-        (state.get("teacher_talk_track") or "").strip(),
-        guide.teacher_brief.strip(),
-    ]
+    first_section_briefs = [(state.get("teacher_talk_track") or "").strip()]
+    if guide.teacher_brief.strip() and not _is_low_value_section_teaching_line(guide.teacher_brief):
+        first_section_briefs.append(guide.teacher_brief.strip())
     if target_index == 0 and any(first_section_briefs):
         plan = plan.model_copy(
             update={

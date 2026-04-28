@@ -245,6 +245,73 @@ def test_workflow_extracts_level_and_goal_from_user_message() -> None:
     assert result["needs_clarification"] is False
 
 
+def test_workflow_treats_integrated_math_learning_goal_as_purpose() -> None:
+    package = build_initial_course_package()
+    lesson = create_empty_lesson("环论学习")
+    package.lessons.append(lesson)
+
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "course_package": package,
+            "request": ChatRequest(
+                message=(
+                    "我是数学系大三，本科抽象代数学过群、环的基本定义，也知道一点理想和商环，"
+                    "但代数几何还没系统学。我想把环作为连接抽象代数、交换代数和代数几何的主线学扎实。"
+                )
+            ),
+        }
+    )
+
+    assert result["learning_clarification"].progress >= 90
+    assert "学习目的或应用场景" not in result["learning_clarification"].missing_items
+    assert "连接抽象代数" in result["learning_requirement_sheet"].success_criteria
+    assert result["needs_clarification"] is False
+
+
+def test_workflow_fallback_generates_ring_handout_and_teaches_one_section_at_a_time() -> None:
+    package = build_initial_course_package()
+    lesson = create_empty_lesson("环论学习")
+    package.lessons.append(lesson)
+
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "course_package": package,
+            "request": ChatRequest(
+                message=(
+                    "我是数学系大三，本科抽象代数学过群、环的基本定义，也知道一点理想和商环，"
+                    "但代数几何还没系统学。我想把环作为连接抽象代数、交换代数和代数几何的主线学扎实。"
+                    "请生成一份系统的 Word 式板书讲义，至少 21 个小节，覆盖 Spec、Zariski 拓扑、"
+                    "Hilbert 零点定理、局部化、Noether 环和仿射概形。生成后先只讲第一个小节。"
+                )
+            ),
+        }
+    )
+
+    doc_text = result["teacher_document"].content_text
+    guide = result["board_teaching_guide"]
+    progress = result["teaching_progress"]
+
+    assert result["board_decision"].action == "edit_board"
+    assert result["document_updated"] is True
+    assert guide is not None
+    assert len(guide.section_plans) >= 21
+    assert progress.section_count >= 21
+    assert guide.section_plans[0].heading.startswith("第0章")
+    assert "抽象代数" in doc_text
+    assert "Hilbert 零点定理" in doc_text
+    assert "Zariski 拓扑" in doc_text
+    assert "仿射概形" in doc_text
+    assert "直角三角形" not in doc_text
+    assert "勾股" not in doc_text
+    assert "第 1 小节" in result["teacher_message"]
+    assert "继续讲下一个小节" in result["teacher_message"]
+    assert "讲的时候我会这样展开" not in result["teacher_message"]
+    assert "讲解节奏" not in result["teacher_message"]
+    assert result["board_teaching_progress"].waiting_for_continue is True
+
+
 def test_workflow_generates_board_for_blank_lesson_when_user_requests_direct_open_lecture(tmp_path) -> None:
     package = build_initial_course_package()
     lesson = create_empty_lesson("cs测试2")

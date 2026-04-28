@@ -4270,7 +4270,10 @@ export function CourseStudio() {
             <div className="mt-8 flex justify-center">
               <button
                 type="button"
-                onClick={() => setIsCreatingLessonInline(true)}
+                onClick={() => {
+                  setTopCollapsed(false);
+                  setIsCreatingLessonInline(true);
+                }}
                 className="inline-flex items-center gap-2 rounded-full bg-stone-950 px-5 py-3 text-sm font-medium text-white transition hover:bg-stone-800"
               >
                 <Plus className="h-4 w-4" />
