@@ -23,6 +23,53 @@ export const OPENCLASS_AUTH_TOKEN_STORAGE_KEY = "openclass.auth.token";
 export const OPENCLASS_GUEST_AUTH_TOKEN_STORAGE_KEY = "openclass.guest.auth.token";
 let guestAuthToken: string | null = null;
 
+function readCookie(name: string) {
+  if (typeof document === "undefined") {
+    return null;
+  }
+  const prefix = `${name}=`;
+  const cookie = document.cookie
+    .split("; ")
+    .find((item) => item.startsWith(prefix))
+    ?.slice(prefix.length);
+  if (!cookie) {
+    return null;
+  }
+  try {
+    return decodeURIComponent(cookie);
+  } catch {
+    return cookie;
+  }
+}
+
+function clearCookie(name: string) {
+  if (typeof document === "undefined") {
+    return;
+  }
+  document.cookie = `${name}=; Path=/; Max-Age=0; SameSite=Lax`;
+}
+
+function readSessionToken(name: string) {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  return window.sessionStorage.getItem(name);
+}
+
+function storeSessionToken(name: string, token: string) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.sessionStorage.setItem(name, token);
+}
+
+function clearSessionToken(name: string) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.sessionStorage.removeItem(name);
+}
+
 export function getApiBase() {
   if (configuredApiBase) {
     return configuredApiBase;
@@ -44,11 +91,15 @@ export function readAuthToken() {
 }
 
 export function readGuestAuthToken() {
+  if (guestAuthToken) {
+    return guestAuthToken;
+  }
+  guestAuthToken = readSessionToken(OPENCLASS_GUEST_AUTH_TOKEN_STORAGE_KEY) || readCookie(OPENCLASS_GUEST_AUTH_TOKEN_STORAGE_KEY);
   return guestAuthToken;
 }
 
 export function readEffectiveAuthToken() {
-  return readAuthToken() || guestAuthToken;
+  return readAuthToken() || readGuestAuthToken();
 }
 
 export function storeAuthToken(token: string) {
@@ -56,6 +107,8 @@ export function storeAuthToken(token: string) {
     return;
   }
   guestAuthToken = null;
+  clearSessionToken(OPENCLASS_GUEST_AUTH_TOKEN_STORAGE_KEY);
+  clearCookie(OPENCLASS_GUEST_AUTH_TOKEN_STORAGE_KEY);
   window.localStorage.setItem(OPENCLASS_AUTH_TOKEN_STORAGE_KEY, token);
   const secure = window.location.protocol === "https:" ? "; Secure" : "";
   document.cookie = `${OPENCLASS_AUTH_TOKEN_STORAGE_KEY}=${encodeURIComponent(token)}; Path=/; Max-Age=2592000; SameSite=Lax${secure}`;
@@ -67,6 +120,9 @@ export function storeGuestAuthToken(token: string) {
     return;
   }
   const secure = window.location.protocol === "https:" ? "; Secure" : "";
+  window.localStorage.removeItem(OPENCLASS_AUTH_TOKEN_STORAGE_KEY);
+  clearCookie(OPENCLASS_AUTH_TOKEN_STORAGE_KEY);
+  storeSessionToken(OPENCLASS_GUEST_AUTH_TOKEN_STORAGE_KEY, token);
   document.cookie = `${OPENCLASS_GUEST_AUTH_TOKEN_STORAGE_KEY}=${encodeURIComponent(token)}; Path=/; SameSite=Lax${secure}`;
 }
 
@@ -76,8 +132,9 @@ export function clearAuthToken() {
     return;
   }
   window.localStorage.removeItem(OPENCLASS_AUTH_TOKEN_STORAGE_KEY);
-  document.cookie = `${OPENCLASS_AUTH_TOKEN_STORAGE_KEY}=; Path=/; Max-Age=0; SameSite=Lax`;
-  document.cookie = `${OPENCLASS_GUEST_AUTH_TOKEN_STORAGE_KEY}=; Path=/; Max-Age=0; SameSite=Lax`;
+  clearSessionToken(OPENCLASS_GUEST_AUTH_TOKEN_STORAGE_KEY);
+  clearCookie(OPENCLASS_AUTH_TOKEN_STORAGE_KEY);
+  clearCookie(OPENCLASS_GUEST_AUTH_TOKEN_STORAGE_KEY);
 }
 
 function authHeaders(headers?: HeadersInit) {
