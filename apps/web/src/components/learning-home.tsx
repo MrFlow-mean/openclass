@@ -32,6 +32,7 @@ import {
 } from "lucide-react";
 
 import { AccountMenu } from "@/components/account-menu";
+import { BrandMark } from "@/components/brand-mark";
 import { api } from "@/lib/api";
 import {
   DEFAULT_COLLECTED_COURSE_IDS,
@@ -662,11 +663,17 @@ export function LearningHome() {
         <aside className="relative z-[90] h-[100dvh] border-b border-stone-200/80 bg-[#fcfbf8]/85 backdrop-blur lg:fixed lg:left-0 lg:top-0 lg:h-screen lg:w-80 lg:border-b-0 lg:border-r">
           <div className="flex h-full min-h-0 flex-col p-4 sm:p-5">
             <div className="mb-8 flex items-center justify-between gap-4 px-2">
-              <div>
-                <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-stone-400">
-                  Blackboard AI
-                </p>
-                <h1 className="mt-2 text-2xl font-semibold tracking-tight text-stone-950">Learning Hub</h1>
+              <div className="flex min-w-0 items-center gap-3">
+                <BrandMark
+                  alt=""
+                  className="h-11 w-11 rounded-xl border border-stone-200 bg-white shadow-sm"
+                  priority
+                  size={88}
+                />
+                <div className="min-w-0">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-stone-400">AI 课程工作台</p>
+                  <h1 className="mt-1 truncate text-2xl font-semibold tracking-tight text-stone-950">OpenClass</h1>
+                </div>
               </div>
               <div className="flex shrink-0 items-center gap-1">
                 <AccountMenu compact />
@@ -1681,8 +1688,8 @@ export function LearningHome() {
             aria-label="用户头像"
           >
             <Image
-              src="https://api.dicebear.com/9.x/glass/svg?seed=Blackboard-AI"
-              alt="Avatar"
+              src="https://api.dicebear.com/9.x/glass/svg?seed=OpenClass"
+              alt="OpenClass 用户头像"
               className="h-full w-full object-cover"
               width={44}
               height={44}

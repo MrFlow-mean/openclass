@@ -8,7 +8,6 @@ import {
   Activity,
   ArrowLeft,
   ArrowUpRight,
-  BookOpen,
   BookText,
   Eye,
   FolderClosed,
@@ -18,6 +17,7 @@ import {
   Search,
 } from "lucide-react";
 
+import { BrandMark } from "@/components/brand-mark";
 import {
   FOLLOWED_CREATORS,
   FOLLOWED_UPDATE_KIND_LABELS,
@@ -413,15 +413,15 @@ export function FollowingFeed() {
             className="inline-flex items-center gap-2 rounded-md px-2 py-2 text-sm font-semibold text-stone-700 transition hover:bg-stone-100 hover:text-stone-950"
           >
             <ArrowLeft className="h-4 w-4" />
-            产品主页
+            OpenClass
           </Link>
 
           <Link
             href="/"
             className="inline-flex items-center gap-2 rounded-md border border-stone-200 bg-white px-3 py-2 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:text-stone-950"
           >
-            <BookOpen className="h-4 w-4" />
-            Learning Hub
+            <BrandMark alt="" className="h-5 w-5 rounded bg-white" size={40} />
+            OpenClass
           </Link>
         </div>
       </header>

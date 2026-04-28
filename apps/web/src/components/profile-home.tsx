@@ -26,6 +26,7 @@ import {
 } from "lucide-react";
 
 import { AccountMenu } from "@/components/account-menu";
+import { BrandMark } from "@/components/brand-mark";
 import {
   DEFAULT_PROFILE_SETTINGS,
   PROFILE_SETTINGS_CHANGED_EVENT,
@@ -53,7 +54,7 @@ type ProfileHomeProps = {
   initialTab?: ProfileTab;
 };
 
-const PROFILE_AVATAR_URL = "https://api.dicebear.com/9.x/glass/svg?seed=Blackboard-AI";
+const PROFILE_AVATAR_URL = "https://api.dicebear.com/9.x/glass/svg?seed=OpenClass";
 
 function formatRelativeTime(value: string | Date | null | undefined) {
   if (!value) {
@@ -395,7 +396,8 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
             className="inline-flex items-center gap-2 rounded-md px-2 py-2 text-sm font-semibold text-stone-700 transition hover:bg-stone-100 hover:text-stone-950"
           >
             <ArrowLeft className="h-4 w-4" />
-            Learning Hub
+            <BrandMark alt="" className="h-5 w-5 rounded bg-white" size={40} />
+            OpenClass
           </Link>
 
           <div className="flex items-center gap-2">
@@ -452,7 +454,7 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
           <div className="flex items-start gap-4 lg:block">
             <Image
               src={PROFILE_AVATAR_URL}
-              alt="Blackboard AI 用户头像"
+              alt="OpenClass 用户头像"
               className="h-24 w-24 rounded-full border-4 border-white bg-stone-200 shadow-[0_16px_34px_rgba(15,23,42,0.08)] lg:h-48 lg:w-48"
               width={192}
               height={192}

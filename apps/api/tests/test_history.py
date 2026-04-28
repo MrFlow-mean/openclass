@@ -1837,7 +1837,7 @@ def test_replace_selection_preserves_page_settings() -> None:
             "margin_preset": "narrow",
             "show_page_number": True,
             "header_text": "课堂讲义",
-            "footer_text": "黑板 AI",
+            "footer_text": "OpenClass",
         },
     )
 
@@ -1852,7 +1852,7 @@ def test_replace_selection_preserves_page_settings() -> None:
     assert updated.page_settings.margin_preset == "narrow"
     assert updated.page_settings.show_page_number is True
     assert updated.page_settings.header_text == "课堂讲义"
-    assert updated.page_settings.footer_text == "黑板 AI"
+    assert updated.page_settings.footer_text == "OpenClass"
 
 
 def test_docx_export_applies_basic_page_settings(tmp_path) -> None:

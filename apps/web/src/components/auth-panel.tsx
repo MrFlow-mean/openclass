@@ -14,7 +14,6 @@ import {
   FlaskConical,
   GraduationCap,
   Hexagon,
-  Layers,
   LoaderCircle,
   LockKeyhole,
   Mail,
@@ -33,6 +32,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
+import { BrandMark } from "@/components/brand-mark";
 import { api, clearAuthToken, getApiBase, readAuthToken, storeAuthToken } from "@/lib/api";
 import type { AuthProviderView, UserView } from "@/types";
 
@@ -632,9 +632,12 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
           <div className="w-full max-w-[21rem] sm:mx-auto sm:max-w-[28rem]">
             <div className="mb-6 flex items-center justify-between gap-4 sm:mb-8">
               <Link href="/" className="flex min-w-0 items-center gap-3" aria-label="回到学习主页">
-                <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-[#3a312b] text-white shadow-lg shadow-[#3a312b]/20">
-                  <Layers className="h-5 w-5" />
-                </span>
+                <BrandMark
+                  alt=""
+                  className="h-10 w-10 rounded-lg border border-[#ebe2d2] bg-white shadow-lg shadow-[#3a312b]/10"
+                  priority
+                  size={80}
+                />
                 <span className="auth-display truncate text-2xl font-bold text-[#3a312b]">OpenClass</span>
               </Link>
               <Link

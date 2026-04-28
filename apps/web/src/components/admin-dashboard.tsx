@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { ArrowLeft, BookOpen, Database, LoaderCircle, ShieldCheck, UsersRound } from "lucide-react";
 
 import { AccountMenu } from "@/components/account-menu";
+import { BrandMark } from "@/components/brand-mark";
 import { api } from "@/lib/api";
 import type { AdminOverview } from "@/types";
 
@@ -76,7 +77,8 @@ export function AdminDashboard() {
             className="inline-flex items-center gap-2 rounded-md px-2 py-2 text-sm font-semibold text-stone-700 transition hover:bg-stone-100 hover:text-stone-950"
           >
             <ArrowLeft className="h-4 w-4" />
-            Learning Hub
+            <BrandMark alt="" className="h-5 w-5 rounded bg-white" size={40} />
+            OpenClass
           </Link>
           <AccountMenu />
         </div>
