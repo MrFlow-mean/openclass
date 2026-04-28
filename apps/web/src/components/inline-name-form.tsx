@@ -45,9 +45,9 @@ export function InlineNameForm({
     <form
       onSubmit={(event) => void handleSubmit(event)}
       className={clsx(
-        "flex items-center gap-2 border bg-white",
+        "flex items-center gap-2 border bg-white transition-colors",
         variant === "tab"
-          ? "h-12 min-w-[220px] border-y-0 border-l-0 border-r-gray-100 px-3"
+          ? "mx-2 h-9 w-[280px] max-w-[38vw] rounded-lg border-gray-200 bg-gray-50/80 px-2.5 shadow-sm focus-within:border-stone-300 focus-within:bg-white"
           : "rounded-2xl border-stone-200 px-3 py-2 shadow-sm",
         className
       )}
@@ -67,8 +67,8 @@ export function InlineNameForm({
         aria-label={label}
         placeholder={placeholder}
         className={clsx(
-          "min-w-0 flex-1 bg-transparent text-sm text-stone-950 outline-none placeholder:text-stone-400 disabled:text-stone-400",
-          variant === "tab" ? "font-medium" : "font-semibold"
+          "min-w-0 flex-1 bg-transparent text-stone-950 outline-none placeholder:text-stone-400 disabled:text-stone-400",
+          variant === "tab" ? "text-[13px] font-semibold" : "text-sm font-semibold"
         )}
       />
       <button
@@ -76,7 +76,12 @@ export function InlineNameForm({
         disabled={!trimmedDraft || isBusy}
         title="确认"
         aria-label="确认"
-        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-stone-950 text-white transition hover:bg-stone-800 disabled:cursor-not-allowed disabled:bg-stone-200 disabled:text-stone-400"
+        className={clsx(
+          "flex shrink-0 items-center justify-center transition disabled:cursor-not-allowed",
+          variant === "tab"
+            ? "h-7 w-7 rounded-md bg-stone-900 text-white hover:bg-stone-700 disabled:bg-stone-200 disabled:text-stone-400"
+            : "h-8 w-8 rounded-xl bg-stone-950 text-white hover:bg-stone-800 disabled:bg-stone-200 disabled:text-stone-400"
+        )}
       >
         {isBusy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
       </button>
@@ -86,7 +91,10 @@ export function InlineNameForm({
         disabled={isBusy}
         title="取消"
         aria-label="取消"
-        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl text-stone-400 transition hover:bg-stone-100 hover:text-stone-950 disabled:cursor-not-allowed disabled:text-stone-300"
+        className={clsx(
+          "flex shrink-0 items-center justify-center text-stone-400 transition hover:bg-stone-100 hover:text-stone-950 disabled:cursor-not-allowed disabled:text-stone-300",
+          variant === "tab" ? "h-7 w-7 rounded-md" : "h-8 w-8 rounded-xl"
+        )}
       >
         <X className="h-4 w-4" />
       </button>
