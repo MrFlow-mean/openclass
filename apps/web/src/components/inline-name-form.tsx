@@ -47,7 +47,7 @@ export function InlineNameForm({
       className={clsx(
         "flex items-center gap-2 border bg-white transition-colors",
         variant === "tab"
-          ? "mx-2 h-9 w-[280px] max-w-[38vw] rounded-lg border-gray-200 bg-gray-50/80 px-2.5 shadow-sm focus-within:border-stone-300 focus-within:bg-white"
+          ? "mx-1.5 h-[30px] w-[260px] max-w-[36vw] rounded-md border-gray-200 bg-gray-50/80 px-2 shadow-sm focus-within:border-stone-300 focus-within:bg-white"
           : "rounded-2xl border-stone-200 px-3 py-2 shadow-sm",
         className
       )}
@@ -68,7 +68,7 @@ export function InlineNameForm({
         placeholder={placeholder}
         className={clsx(
           "min-w-0 flex-1 bg-transparent text-stone-950 outline-none placeholder:text-stone-400 disabled:text-stone-400",
-          variant === "tab" ? "text-[13px] font-semibold" : "text-sm font-semibold"
+          variant === "tab" ? "text-xs font-semibold" : "text-sm font-semibold"
         )}
       />
       <button
@@ -79,11 +79,15 @@ export function InlineNameForm({
         className={clsx(
           "flex shrink-0 items-center justify-center transition disabled:cursor-not-allowed",
           variant === "tab"
-            ? "h-7 w-7 rounded-md bg-stone-900 text-white hover:bg-stone-700 disabled:bg-stone-200 disabled:text-stone-400"
+            ? "h-6 w-6 rounded-md bg-stone-900 text-white hover:bg-stone-700 disabled:bg-stone-200 disabled:text-stone-400"
             : "h-8 w-8 rounded-xl bg-stone-950 text-white hover:bg-stone-800 disabled:bg-stone-200 disabled:text-stone-400"
         )}
       >
-        {isBusy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+        {isBusy ? (
+          <LoaderCircle className={clsx("animate-spin", variant === "tab" ? "h-3.5 w-3.5" : "h-4 w-4")} />
+        ) : (
+          <Check className={clsx(variant === "tab" ? "h-3.5 w-3.5" : "h-4 w-4")} />
+        )}
       </button>
       <button
         type="button"
@@ -93,10 +97,10 @@ export function InlineNameForm({
         aria-label="取消"
         className={clsx(
           "flex shrink-0 items-center justify-center text-stone-400 transition hover:bg-stone-100 hover:text-stone-950 disabled:cursor-not-allowed disabled:text-stone-300",
-          variant === "tab" ? "h-7 w-7 rounded-md" : "h-8 w-8 rounded-xl"
+          variant === "tab" ? "h-6 w-6 rounded-md" : "h-8 w-8 rounded-xl"
         )}
       >
-        <X className="h-4 w-4" />
+        <X className={clsx(variant === "tab" ? "h-3.5 w-3.5" : "h-4 w-4")} />
       </button>
     </form>
   );
