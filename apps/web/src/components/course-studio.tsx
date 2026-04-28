@@ -2578,8 +2578,8 @@ export function CourseStudio() {
   const [previewCommitId, setPreviewCommitId] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [lessonMessages, setLessonMessages] = useState<LessonMessageMap>({});
-  const [topCollapsed, setTopCollapsed] = useState(false);
-  const [rightSidebarOpen, setRightSidebarOpen] = useState(true);
+  const [topCollapsed, setTopCollapsed] = useState(true);
+  const [rightSidebarOpen, setRightSidebarOpen] = useState(false);
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>("history");
   const [isCreatingLessonInline, setIsCreatingLessonInline] = useState(false);
   const [voiceActive, setVoiceActive] = useState(false);
