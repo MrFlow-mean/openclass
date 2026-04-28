@@ -70,3 +70,17 @@ def test_realtime_call_uses_requested_model_and_lesson_context(isolated_ai_log) 
     assert entry["event_type"] == "openai_realtime_session"
     assert entry["context"]["trace_id"] == "realtime_test"
     assert entry["payload"]["answer_sdp"].startswith("v=0")
+
+
+def test_realtime_base_url_defaults_to_gateway_not_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AI_SINGLE_API_KEY_MODE", "true")
+    monkeypatch.setenv("AI_API_KEY", "shared-secret")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_REALTIME_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_REALTIME_API_KEY", raising=False)
+
+    teacher = OpenAIRealtimeTeacher()
+
+    assert teacher.config.base_url == "https://api.bupt8.com/v1"
+    assert teacher.client is None

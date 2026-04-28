@@ -6,9 +6,12 @@ from typing import Any
 
 from app.models import AIModelCatalog, AIModelOption, AIModelSelection, AIProvider
 
+OPENAI_GATEWAY_BASE_URL = "https://api.bupt8.com/v1"
+OPENAI_PREMIUM_TEXT_MODEL = "gpt-5.5"
 OPENAI_ECONOMY_TEXT_MODEL = "gpt-5.4"
 OPENAI_FAST_TEXT_MODEL = "gpt-5.4-mini"
 OPENAI_DEFAULT_TEXT_MODEL = OPENAI_FAST_TEXT_MODEL
+OPENAI_IMAGE_MODEL = "gpt-image-2"
 OPENAI_DEFAULT_REALTIME_MODEL = "gpt-realtime-1.5"
 ANTHROPIC_ECONOMY_TEXT_MODEL = "claude-haiku-4-5"
 ANTHROPIC_FAST_TEXT_MODEL = "claude-sonnet-4-6"
@@ -30,6 +33,7 @@ OPENAI_COMPATIBLE_DEFAULT_TEXT_MODEL = OPENAI_FAST_TEXT_MODEL
 ANTHROPIC_COMPATIBLE_DEFAULT_TEXT_MODEL = ANTHROPIC_FAST_TEXT_MODEL
 
 SINGLE_KEY_TEXT_MODELS: tuple[tuple[str, str], ...] = (
+    (OPENAI_PREMIUM_TEXT_MODEL, "GPT-5.5"),
     (OPENAI_ECONOMY_TEXT_MODEL, "GPT-5.4"),
     (OPENAI_FAST_TEXT_MODEL, "GPT-5.4 Mini"),
     (GOOGLE_ECONOMY_TEXT_MODEL, "Gemini 3.1 Pro Preview"),
@@ -50,6 +54,7 @@ PROVIDER_LABELS: dict[AIProvider, str] = {
 
 CURATED_TEXT_MODELS: dict[AIProvider, tuple[tuple[str, str], ...]] = {
     "openai": (
+        (OPENAI_PREMIUM_TEXT_MODEL, "OpenAI GPT-5.5"),
         (OPENAI_ECONOMY_TEXT_MODEL, "OpenAI GPT-5.4"),
         (OPENAI_FAST_TEXT_MODEL, "OpenAI GPT-5.4 Mini"),
     ),
@@ -100,7 +105,7 @@ def _openai_realtime_api_key() -> str | None:
     explicit_key = _normalize_optional_secret(os.getenv("OPENAI_REALTIME_API_KEY"))
     if explicit_key:
         return explicit_key
-    base_url = (_env_any("OPENAI_REALTIME_BASE_URL", "OPENAI_BASE_URL") or "https://api.openai.com/v1").lower()
+    base_url = (_env_any("OPENAI_REALTIME_BASE_URL", "OPENAI_BASE_URL") or OPENAI_GATEWAY_BASE_URL).lower()
     if _single_api_key_mode() and "api.openai.com" not in base_url:
         return None
     return _normalize_optional_secret(_env_any("OPENAI_API_KEY", "AI_API_KEY"))

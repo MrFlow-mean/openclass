@@ -379,6 +379,15 @@ const FALLBACK_MODEL_CATALOG: AIModelCatalog = {
   text: [
     {
       provider: "openai",
+      model: "gpt-5.5",
+      label: "GPT-5.5",
+      capability: "text",
+      enabled: true,
+      configured: true,
+      default: false,
+    },
+    {
+      provider: "openai",
       model: "gpt-5.4",
       label: "GPT-5.4",
       capability: "text",

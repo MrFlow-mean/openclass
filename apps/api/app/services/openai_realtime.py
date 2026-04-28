@@ -11,8 +11,13 @@ from openai import OpenAI
 from pydantic import BaseModel, Field
 
 from app.models import AIModelSelection, Lesson
-from app.services.ai_model_catalog import GOOGLE_DEFAULT_REALTIME_MODEL, OPENAI_DEFAULT_REALTIME_MODEL
+from app.services.ai_model_catalog import (
+    GOOGLE_DEFAULT_REALTIME_MODEL,
+    OPENAI_DEFAULT_REALTIME_MODEL,
+    OPENAI_GATEWAY_BASE_URL,
+)
 from app.services.ai_logging import ai_usage_logger
+
 
 def _load_root_dotenv() -> None:
     root_env = Path(__file__).resolve().parents[4] / ".env"
@@ -35,6 +40,14 @@ def _env_realtime_or_shared(name: str, shared_name: str) -> str | None:
     return _normalize_optional_api_key(os.getenv(shared_name) or os.getenv("AI_API_KEY"))
 
 
+def _env_realtime_base_url() -> str:
+    return (
+        os.getenv("OPENAI_REALTIME_BASE_URL")
+        or os.getenv("OPENAI_BASE_URL")
+        or OPENAI_GATEWAY_BASE_URL
+    )
+
+
 def _single_api_key_mode() -> bool:
     return (os.getenv("AI_SINGLE_API_KEY_MODE") or "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -42,7 +55,7 @@ def _single_api_key_mode() -> bool:
 def _openai_realtime_allowed() -> bool:
     if _normalize_optional_api_key(os.getenv("OPENAI_REALTIME_API_KEY")):
         return True
-    base_url = (os.getenv("OPENAI_REALTIME_BASE_URL") or os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1").lower()
+    base_url = _env_realtime_base_url().lower()
     return not _single_api_key_mode() or "api.openai.com" in base_url
 
 
@@ -93,7 +106,7 @@ def build_realtime_instructions(*, lesson: Lesson, latest_assistant_message: str
 
 class OpenAIRealtimeConfig(BaseModel):
     api_key: str | None = Field(default_factory=lambda: _env_realtime_or_shared("OPENAI_REALTIME_API_KEY", "OPENAI_API_KEY"))
-    base_url: str | None = Field(default_factory=lambda: _env_realtime_or_shared("OPENAI_REALTIME_BASE_URL", "OPENAI_BASE_URL"))
+    base_url: str | None = Field(default_factory=_env_realtime_base_url)
     model: str = Field(default_factory=lambda: os.getenv("OPENAI_REALTIME_MODEL", OPENAI_DEFAULT_REALTIME_MODEL))
     voice: str = Field(default_factory=lambda: os.getenv("OPENAI_REALTIME_VOICE", "marin"))
     transcription_model: str = Field(

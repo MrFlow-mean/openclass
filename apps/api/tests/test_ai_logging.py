@@ -75,6 +75,7 @@ def test_openai_parse_logs_prompt_and_output(isolated_ai_log) -> None:
     ai.client = _FakeClient()
     ai.config.default_model = "gpt-5.3"
     ai.config.lesson_model = "gpt-5.3"
+    ai.config.compat_api = "responses"
 
     with ai_log_context(trace_id="trace_unit", route="unit_test"):
         generated = ai.generate_lesson_document(topic="勾股定理")
@@ -125,6 +126,7 @@ def test_openai_parse_retries_model_not_found_with_fallback(isolated_ai_log) -> 
     ai.config.default_model = "gpt-5.3"
     ai.config.pm_model = "gpt-5.3"
     ai.config.fallback_model = "gpt-5.4"
+    ai.config.compat_api = "responses"
 
     with ai_log_context(trace_id="trace_retry", route="unit_test"):
         result = ai._parse("pm", "system", "user", _Output)
@@ -174,6 +176,7 @@ def test_openai_parse_falls_back_to_google_on_provider_auth_error(isolated_ai_lo
     ai.client = _FakeOpenAIClient()
     ai.google_client = _FakeGoogleClient()
     ai.google_config.default_model = "gemini-good"
+    ai.config.compat_api = "responses"
 
     with bind_text_model_selection(AIModelSelection(provider="openai", model="gpt-bad")):
         result = ai._parse("pm", "system", "user", _Output)
@@ -280,6 +283,20 @@ def test_openai_compat_chat_completions_mode_parses_json(isolated_ai_log) -> Non
     entries = _read_log_entries(isolated_ai_log)
     assert entries[0]["event_type"] == "openai_text_call"
     assert entries[0]["payload"]["output_text"] == '{"title":"勾股定理"}'
+
+
+def test_openai_defaults_to_bupt_gateway_and_gpt_image_2(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("AI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_COMPAT_API", raising=False)
+    monkeypatch.delenv("OPENAI_IMAGE_MODEL", raising=False)
+
+    ai = OpenAICourseAI()
+
+    assert ai.config.base_url == "https://api.bupt8.com/v1"
+    assert ai.config.compat_api == "chat_completions"
+    assert ai.config.image_model == "gpt-image-2"
 
 
 @pytest.mark.parametrize(

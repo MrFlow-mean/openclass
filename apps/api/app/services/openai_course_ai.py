@@ -47,6 +47,8 @@ from app.services.ai_model_catalog import (
     MINIMAX_DEFAULT_TEXT_MODEL,
     OPENAI_DEFAULT_TEXT_MODEL,
     OPENAI_COMPATIBLE_DEFAULT_TEXT_MODEL,
+    OPENAI_GATEWAY_BASE_URL,
+    OPENAI_IMAGE_MODEL,
     default_text_selection,
 )
 from app.services.lesson_factory import slugify
@@ -350,16 +352,16 @@ def bind_text_model_selection(selection: AIModelSelection | None):
 
 class OpenAIConfig(BaseModel):
     api_key: str | None = Field(default_factory=_shared_api_key)
-    base_url: str | None = Field(default_factory=lambda: os.getenv("OPENAI_BASE_URL"))
+    base_url: str | None = Field(default_factory=lambda: os.getenv("OPENAI_BASE_URL") or OPENAI_GATEWAY_BASE_URL)
     default_model: str = Field(default_factory=lambda: os.getenv("OPENAI_MODEL", DEFAULT_TEXT_MODEL))
-    image_model: str = Field(default_factory=lambda: os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-2"))
+    image_model: str = Field(default_factory=lambda: os.getenv("OPENAI_IMAGE_MODEL", OPENAI_IMAGE_MODEL))
     pm_model: str | None = Field(default_factory=lambda: os.getenv("OPENAI_PM_MODEL"))
     board_model: str | None = Field(default_factory=lambda: os.getenv("OPENAI_BOARD_MODEL"))
     guide_model: str | None = Field(default_factory=lambda: os.getenv("OPENAI_GUIDE_MODEL"))
     teacher_model: str | None = Field(default_factory=lambda: os.getenv("OPENAI_TEACHER_MODEL"))
     lesson_model: str | None = Field(default_factory=lambda: os.getenv("OPENAI_LESSON_MODEL"))
     fallback_model: str = Field(default_factory=lambda: os.getenv("OPENAI_FALLBACK_MODEL", DEFAULT_TEXT_MODEL))
-    compat_api: str = Field(default_factory=lambda: os.getenv("OPENAI_COMPAT_API", "responses"))
+    compat_api: str = Field(default_factory=lambda: os.getenv("OPENAI_COMPAT_API", "chat_completions"))
 
     @property
     def enabled(self) -> bool:
