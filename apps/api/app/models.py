@@ -576,7 +576,8 @@ class AuthIdentityView(BaseModel):
 class UserView(BaseModel):
     id: str
     email: str
-    role: Literal["user", "admin"]
+    phone: str | None = None
+    role: Literal["user", "admin", "guest"]
     display_name: str | None = None
     avatar_url: str | None = None
     created_at: str
@@ -585,8 +586,14 @@ class UserView(BaseModel):
 
 
 class AuthRequest(BaseModel):
-    email: str
+    identifier: str | None = None
+    email: str | None = None
+    phone: str | None = None
+    guest_token: str | None = None
     password: str = Field(min_length=8, max_length=256)
+
+    def account_identifier(self) -> str:
+        return self.identifier or self.email or self.phone or ""
 
 
 class AuthSessionResponse(BaseModel):

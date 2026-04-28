@@ -32,13 +32,19 @@ def current_admin(user: UserView = Depends(current_user)) -> UserView:
 
 @router.post("/auth/register", response_model=AuthSessionResponse)
 def register(payload: AuthRequest) -> AuthSessionResponse:
-    token, user = auth_service.register(payload.email, payload.password)
+    token, user = auth_service.register(payload.account_identifier(), payload.password, guest_token=payload.guest_token)
     return AuthSessionResponse(token=token, user=user)
 
 
 @router.post("/auth/login", response_model=AuthSessionResponse)
 def login(payload: AuthRequest) -> AuthSessionResponse:
-    token, user = auth_service.login(payload.email, payload.password)
+    token, user = auth_service.login(payload.account_identifier(), payload.password, guest_token=payload.guest_token)
+    return AuthSessionResponse(token=token, user=user)
+
+
+@router.post("/auth/guest", response_model=AuthSessionResponse)
+def guest() -> AuthSessionResponse:
+    token, user = auth_service.start_guest_session()
     return AuthSessionResponse(token=token, user=user)
 
 
@@ -53,8 +59,16 @@ def auth_providers() -> list[AuthProviderView]:
 
 
 @router.get("/auth/oauth/{provider}/start")
-def oauth_start(provider: str, request: Request, next: str = "/") -> RedirectResponse:  # noqa: A002
-    return RedirectResponse(auth_service.oauth_authorization_url(provider, next, request), status_code=303)
+def oauth_start(
+    provider: str,
+    request: Request,
+    next: str = "/",  # noqa: A002
+    guest_token: str | None = None,
+) -> RedirectResponse:
+    return RedirectResponse(
+        auth_service.oauth_authorization_url(provider, next, request, guest_token=guest_token),
+        status_code=303,
+    )
 
 
 @router.api_route("/auth/oauth/{provider}/callback", methods=["GET", "POST"])

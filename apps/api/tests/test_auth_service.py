@@ -45,6 +45,72 @@ def test_register_rejects_duplicate_email(tmp_path) -> None:
     assert exc_info.value.status_code == 409
 
 
+def test_register_and_login_with_phone(tmp_path) -> None:
+    db_path = tmp_path / "openclass.sqlite3"
+    SqliteCourseStore(db_path, legacy_json_path=None)
+    auth = AuthService(db_path)
+
+    token, user = auth.register("13800138000", "correct-password")
+
+    assert user.phone == "13800138000"
+    assert user.email.endswith("@phone.openclass.local")
+    assert user.auth_identities[0].provider == "phone"
+    assert auth.get_user_by_token(token).id == user.id
+
+    login_token, logged_in = auth.login("+86 138 0013 8000", "correct-password")
+
+    assert logged_in.id == user.id
+    assert auth.get_user_by_token(login_token).phone == "13800138000"
+
+
+def test_guest_session_can_use_workspace_without_creating_user(tmp_path) -> None:
+    db_path = tmp_path / "openclass.sqlite3"
+    store = SqliteCourseStore(db_path, legacy_json_path=None)
+    auth = AuthService(db_path)
+
+    guest_token, guest_user = auth.start_guest_session()
+    guest_workspace = store.load_for_user(guest_user.id)
+    guest_workspace.packages[0].title = "游客临时课程包"
+    store.save_for_user(guest_user.id, guest_workspace)
+
+    reloaded_guest = auth.get_user_by_token(guest_token)
+
+    assert reloaded_guest.role == "guest"
+    assert store.load_for_user(guest_user.id).packages[0].title == "游客临时课程包"
+
+
+def test_register_claims_guest_workspace(tmp_path) -> None:
+    db_path = tmp_path / "openclass.sqlite3"
+    store = SqliteCourseStore(db_path, legacy_json_path=None)
+    auth = AuthService(db_path)
+
+    guest_token, guest_user = auth.start_guest_session()
+    guest_workspace = store.load_for_user(guest_user.id)
+    guest_workspace.packages[0].title = "登录前学习记录"
+    store.save_for_user(guest_user.id, guest_workspace)
+
+    _, user = auth.register("student@example.com", "correct-password", guest_token=guest_token)
+
+    assert store.load_for_user(user.id).packages[0].title == "登录前学习记录"
+    with pytest.raises(HTTPException) as exc_info:
+        auth.get_user_by_token(guest_token)
+    assert exc_info.value.status_code == 401
+
+
+def test_register_rejects_duplicate_phone(tmp_path) -> None:
+    db_path = tmp_path / "openclass.sqlite3"
+    SqliteCourseStore(db_path, legacy_json_path=None)
+    auth = AuthService(db_path)
+
+    auth.register("13800138000", "correct-password")
+
+    with pytest.raises(HTTPException) as exc_info:
+        auth.register("13800138000", "correct-password")
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == "该手机号已注册"
+
+
 def test_login_rejects_wrong_password(tmp_path) -> None:
     db_path = tmp_path / "openclass.sqlite3"
     SqliteCourseStore(db_path, legacy_json_path=None)
@@ -56,6 +122,17 @@ def test_login_rejects_wrong_password(tmp_path) -> None:
         auth.login("student@example.com", "wrong-password")
 
     assert exc_info.value.status_code == 401
+
+
+def test_provider_list_uses_wechat_instead_of_microsoft(tmp_path) -> None:
+    db_path = tmp_path / "openclass.sqlite3"
+    SqliteCourseStore(db_path, legacy_json_path=None)
+    auth = AuthService(db_path)
+
+    provider_ids = {provider.id for provider in auth.providers()}
+
+    assert "wechat" in provider_ids
+    assert "microsoft" not in provider_ids
 
 
 def test_oauth_login_links_existing_email_and_reuses_unique_account(tmp_path) -> None:

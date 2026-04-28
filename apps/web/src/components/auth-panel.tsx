@@ -16,7 +16,6 @@ import {
   Hexagon,
   LoaderCircle,
   LockKeyhole,
-  Mail,
   Magnet,
   Microscope,
   Network,
@@ -32,8 +31,17 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
+import {
+  api,
+  clearAuthToken,
+  getApiBase,
+  readAuthToken,
+  readGuestAuthToken,
+  storeAuthToken,
+  storeGuestAuthToken,
+} from "@/lib/api";
 import { BrandMark } from "@/components/brand-mark";
-import { api, clearAuthToken, getApiBase, readAuthToken, storeAuthToken } from "@/lib/api";
+import { userAccountLabel } from "@/lib/account";
 import type { AuthProviderView, UserView } from "@/types";
 
 type AuthPanelProps = {
@@ -50,7 +58,7 @@ type SocialSignInOption = {
   label: string;
   providerLabel: string;
   className: string;
-  brand: "apple" | "github" | "google" | "microsoft";
+  brand: "apple" | "github" | "google" | "wechat";
 };
 
 type KnowledgeTextItem = {
@@ -88,11 +96,11 @@ const socialSignInOptions: SocialSignInOption[] = [
     brand: "github",
   },
   {
-    id: "microsoft",
-    label: "使用 Microsoft 登录",
-    providerLabel: "Microsoft 账号",
-    className: "border-[#e8dfd2] bg-white text-[#5c4c3c] hover:border-[#d2a878] hover:bg-[#fcfbf9]",
-    brand: "microsoft",
+    id: "wechat",
+    label: "使用微信登录",
+    providerLabel: "微信登录",
+    className: "border-[#1aad19] bg-[#1aad19] text-white hover:border-[#159b17] hover:bg-[#159b17]",
+    brand: "wechat",
   },
 ];
 
@@ -266,13 +274,11 @@ function GitHubBrandIcon() {
   );
 }
 
-function MicrosoftBrandIcon() {
+function WeChatBrandIcon() {
   return (
-    <svg aria-hidden="true" viewBox="0 0 18 18" className="h-[18px] w-[18px]">
-      <rect x="1" y="1" width="7.5" height="7.5" fill="#f25022" />
-      <rect x="9.5" y="1" width="7.5" height="7.5" fill="#7fba00" />
-      <rect x="1" y="9.5" width="7.5" height="7.5" fill="#00a4ef" />
-      <rect x="9.5" y="9.5" width="7.5" height="7.5" fill="#ffb900" />
+    <svg aria-hidden="true" viewBox="0 0 24 24" className="h-[18px] w-[18px]" fill="currentColor">
+      <path d="M9.4 4.2c-4.25 0-7.7 2.8-7.7 6.25 0 2.02 1.18 3.8 3.02 4.94l-.69 2.08 2.47-1.2c.9.27 1.88.42 2.9.42h.47a6.02 6.02 0 0 1-.27-1.78c0-3.14 2.96-5.69 6.62-5.69.28 0 .56.02.83.05-.68-2.9-3.82-5.07-7.65-5.07Zm-2.5 4.25a.86.86 0 1 1 0 1.72.86.86 0 0 1 0-1.72Zm5 0a.86.86 0 1 1 0 1.72.86.86 0 0 1 0-1.72Z" />
+      <path d="M22.3 14.9c0-2.72-2.72-4.92-6.08-4.92s-6.08 2.2-6.08 4.92 2.72 4.92 6.08 4.92c.74 0 1.45-.1 2.1-.3l1.95.95-.54-1.65c1.56-.9 2.57-2.32 2.57-3.92Zm-8.08-.7a.7.7 0 1 1 0-1.4.7.7 0 0 1 0 1.4Zm4 0a.7.7 0 1 1 0-1.4.7.7 0 0 1 0 1.4Z" />
     </svg>
   );
 }
@@ -287,14 +293,21 @@ function SocialBrandIcon({ brand }: { brand: SocialSignInOption["brand"] }) {
   if (brand === "github") {
     return <GitHubBrandIcon />;
   }
-  return <MicrosoftBrandIcon />;
+  return <WeChatBrandIcon />;
 }
 
 function safeNextPath(value: string | null) {
   if (!value || !value.startsWith("/") || value.startsWith("//")) {
     return "/";
   }
+  if (value === "/login" || value.startsWith("/login?") || value === "/register" || value.startsWith("/register?")) {
+    return "/";
+  }
   return value;
+}
+
+function loginDestination(user: UserView, nextPath: string) {
+  return user.role === "admin" && nextPath === "/" ? "/admin" : nextPath;
 }
 
 function AuthInput({
@@ -315,7 +328,7 @@ function AuthInput({
   minLength?: number;
   onChange: (value: string) => void;
   placeholder: string;
-  type: "email" | "password";
+  type: "email" | "password" | "text";
   value: string;
 }) {
   return (
@@ -538,7 +551,7 @@ function ProductShowcase() {
 export function AuthPanel({ initialMode }: AuthPanelProps) {
   const router = useRouter();
   const [mode, setMode] = useState(initialMode);
-  const [email, setEmail] = useState("");
+  const [accountIdentifier, setAccountIdentifier] = useState("");
   const [password, setPassword] = useState("");
   const [currentUser, setCurrentUser] = useState<UserView | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -557,7 +570,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
           api.getAuthProviders().catch(() => []),
         ]);
         if (!disposed) {
-          setCurrentUser(user);
+          setCurrentUser(user?.role === "guest" ? null : user);
           setAuthProviders(providers);
           const token = readAuthToken();
           if (user && token) {
@@ -582,6 +595,14 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
     };
   }, []);
 
+  useEffect(() => {
+    if (!currentUser) {
+      return;
+    }
+    const nextPath = safeNextPath(new URLSearchParams(window.location.search).get("next"));
+    router.replace(loginDestination(currentUser, nextPath));
+  }, [currentUser, router]);
+
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setIsLoading(true);
@@ -589,11 +610,12 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
     setNotice(null);
 
     try {
-      const payload = mode === "register" ? await api.register(email, password) : await api.login(email, password);
+      const payload =
+        mode === "register" ? await api.register(accountIdentifier, password) : await api.login(accountIdentifier, password);
       storeAuthToken(payload.token);
       setCurrentUser(payload.user);
       const nextPath = safeNextPath(new URLSearchParams(window.location.search).get("next"));
-      router.push(payload.user.role === "admin" && nextPath === "/" ? "/admin" : nextPath);
+      router.push(loginDestination(payload.user, nextPath));
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : "操作失败");
     } finally {
@@ -606,15 +628,36 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
     setCurrentUser(null);
   }
 
+  async function handleGuestAccess() {
+    setIsLoading(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const payload = await api.startGuestSession();
+      storeGuestAuthToken(payload.token);
+      const nextPath = safeNextPath(new URLSearchParams(window.location.search).get("next"));
+      router.push(nextPath);
+    } catch (guestError) {
+      setError(guestError instanceof Error ? guestError.message : "游客访问失败");
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
   function handleProviderSignIn(option: SocialSignInOption) {
     setError(null);
     const provider = authProviders.find((item) => item.id === option.id);
     if (!provider?.configured) {
-      setNotice(`${option.providerLabel}需要先在服务器 .env 配置 OAuth Client ID 与 Secret。邮箱注册登录已可直接使用。`);
+      setNotice(`${option.providerLabel}需要先在服务器 .env 配置 OAuth Client/App ID 与 Secret。邮箱/手机号注册登录已可直接使用。`);
       return;
     }
     const nextPath = typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("next") || "/" : "/";
-    window.location.assign(`${getApiBase()}/api/auth/oauth/${option.id}/start?next=${encodeURIComponent(nextPath)}`);
+    const params = new URLSearchParams({ next: nextPath });
+    const guestToken = readGuestAuthToken();
+    if (guestToken) {
+      params.set("guest_token", guestToken);
+    }
+    window.location.assign(`${getApiBase()}/api/auth/oauth/${option.id}/start?${params.toString()}`);
   }
 
   function handleForgotPassword() {
@@ -673,7 +716,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                   <ShieldCheck className="h-5 w-5" />
                 </div>
                 <h2 className="auth-display mt-5 text-2xl font-bold text-[#3a312b]">已登录</h2>
-                <p className="mt-2 break-all text-sm text-[#5c4c3c]">{currentUser.email}</p>
+                <p className="mt-2 break-all text-sm text-[#5c4c3c]">{userAccountLabel(currentUser)}</p>
                 <p className="mt-1 text-xs text-[#8d8377]">权限：{currentUser.role === "admin" ? "管理员" : "普通用户"}</p>
                 <div className="mt-6 flex flex-col gap-2 sm:flex-row">
                   <Link
@@ -695,23 +738,24 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
               <>
                 <div className="mb-5 space-y-3">
                   {socialSignInOptions.map((option) => {
-                    const provider = authProviders.find((item) => item.id === option.id);
-                    const isConfigured = provider?.configured ?? false;
+                    const provider = authProviders.find((item) => item.kind === "oauth" && item.id === option.id);
+                    const isUnconfigured = provider ? !provider.configured : false;
+                    const statusClassName = option.brand === "google" ? "bg-black/5 text-[#5c4c3c]" : "bg-white/20 text-current";
+
                     return (
                       <button
                         key={option.id}
                         type="button"
                         onClick={() => handleProviderSignIn(option)}
-                        disabled={authProviders.length > 0 && !isConfigured}
                         className={clsx(
-                          "flex w-full items-center justify-center gap-3 rounded-lg border px-4 py-3.5 text-sm font-semibold shadow-sm transition active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60",
+                          "flex w-full items-center justify-center gap-3 rounded-lg border px-4 py-3.5 text-sm font-semibold shadow-sm transition active:scale-[0.99]",
                           option.className
                         )}
                       >
                         <SocialBrandIcon brand={option.brand} />
                         {option.label}
-                        {authProviders.length > 0 && !isConfigured ? (
-                          <span className="rounded-full bg-black/5 px-2 py-0.5 text-[11px] font-semibold">未配置</span>
+                        {isUnconfigured ? (
+                          <span className={clsx("rounded-full px-2 py-0.5 text-[11px] font-semibold", statusClassName)}>未配置</span>
                         ) : null}
                       </button>
                     );
@@ -726,7 +770,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
 
                 <div className="mb-5 flex items-center gap-3 text-xs font-semibold text-[#8d8377]">
                   <span className="h-px flex-1 bg-[#ebe2d2]" />
-                  或使用邮箱
+                  或使用邮箱/手机号
                   <span className="h-px flex-1 bg-[#ebe2d2]" />
                 </div>
 
@@ -752,14 +796,14 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
 
                 <form onSubmit={(event) => void handleSubmit(event)} className="space-y-4">
                   <AuthInput
-                    id="email"
-                    label="邮箱地址"
-                    type="email"
-                    value={email}
-                    onChange={setEmail}
-                    autoComplete="email"
-                    placeholder="name@company.com"
-                    Icon={Mail}
+                    id="account"
+                    label="邮箱或手机号"
+                    type="text"
+                    value={accountIdentifier}
+                    onChange={setAccountIdentifier}
+                    autoComplete="username"
+                    placeholder="name@company.com / 13800138000"
+                    Icon={User}
                   />
 
                   <div className="space-y-2">
@@ -814,6 +858,18 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                     {isRegister ? "返回登录" : "免费注册"}
                   </Link>
                 </p>
+
+                {!isRegister ? (
+                  <button
+                    type="button"
+                    onClick={() => void handleGuestAccess()}
+                    disabled={isLoading}
+                    className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg border border-[#ebe2d2] bg-white px-4 py-3 text-sm font-bold text-[#5c4c3c] shadow-sm transition hover:border-[#d2a878] hover:text-[#3a312b] disabled:cursor-wait disabled:opacity-70"
+                  >
+                    {isLoading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+                    游客登录（使用记录不会被缓存）
+                  </button>
+                ) : null}
               </>
             )}
           </div>

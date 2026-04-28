@@ -62,7 +62,7 @@ class SqliteCourseStore:
         with self._lock:
             with self._connect() as conn:
                 with conn:
-                    if self._has_unowned_packages(conn):
+                    if self._has_unowned_packages(conn) and not owner_user_id.startswith("guest_"):
                         self._claim_unowned_workspace(
                             conn,
                             self._legacy_workspace_owner_candidate(conn) or owner_user_id,

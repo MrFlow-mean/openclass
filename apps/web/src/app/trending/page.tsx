@@ -1,6 +1,5 @@
 import type { Metadata } from "next";
 
-import { AuthGate } from "@/components/auth-gate";
 import { TrendingCourses } from "@/components/trending-courses";
 
 export const metadata: Metadata = {
@@ -9,9 +8,5 @@ export const metadata: Metadata = {
 };
 
 export default function TrendingPage() {
-  return (
-    <AuthGate>
-      <TrendingCourses />
-    </AuthGate>
-  );
+  return <TrendingCourses />;
 }

@@ -5,6 +5,7 @@ import hmac
 import base64
 import json
 import os
+import re
 import secrets
 import sqlite3
 import ssl
@@ -27,17 +28,44 @@ OAUTH_STATE_BYTES = 24
 OAUTH_STATE_TTL = timedelta(minutes=15)
 _URLLIB_SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
 AUTH_COOKIE_NAME = "openclass.auth.token"
+PHONE_EMAIL_DOMAIN = "phone.openclass.local"
+GUEST_EMAIL_DOMAIN = "guest.openclass.local"
 
 
 @dataclass(frozen=True)
 class AuthUser:
     id: str
     email: str
+    phone: str | None
     role: str
     created_at: str
     display_name: str | None = None
     avatar_url: str | None = None
     last_login_at: str | None = None
+
+
+@dataclass(frozen=True)
+class AccountIdentifier:
+    kind: str
+    subject: str
+    email: str | None = None
+    phone: str | None = None
+
+    @property
+    def storage_email(self) -> str:
+        if self.email:
+            return self.email
+        if self.phone:
+            return _synthetic_email_for_phone(self.phone)
+        raise HTTPException(status_code=422, detail="请输入有效邮箱或手机号")
+
+    @property
+    def display_name(self) -> str:
+        if self.email:
+            return self.email.split("@", 1)[0]
+        if self.phone:
+            return _mask_phone(self.phone)
+        return "OpenClass 用户"
 
 
 @dataclass(frozen=True)
@@ -99,6 +127,52 @@ def _normalize_email(email: str) -> str:
     if "@" not in normalized or normalized.startswith("@") or normalized.endswith("@"):
         raise HTTPException(status_code=422, detail="请输入有效邮箱")
     return normalized
+
+
+def _normalize_phone(phone: str) -> str:
+    compact = re.sub(r"[\s().-]", "", phone.strip())
+    if compact.startswith("+86"):
+        compact = compact[3:]
+    elif compact.startswith("0086"):
+        compact = compact[4:]
+    if not re.fullmatch(r"1[3-9]\d{9}", compact):
+        raise HTTPException(status_code=422, detail="请输入有效手机号")
+    return compact
+
+
+def _normalize_account_identifier(identifier: str) -> AccountIdentifier:
+    raw = identifier.strip()
+    if not raw:
+        raise HTTPException(status_code=422, detail="请输入有效邮箱或手机号")
+    if "@" in raw:
+        email = _normalize_email(raw)
+        return AccountIdentifier(kind="email", subject=email, email=email)
+    try:
+        phone = _normalize_phone(raw)
+    except HTTPException as exc:
+        raise HTTPException(status_code=422, detail="请输入有效邮箱或手机号") from exc
+    return AccountIdentifier(kind="phone", subject=phone, phone=phone)
+
+
+def _synthetic_email_for_phone(phone: str) -> str:
+    digest = hashlib.sha256(phone.encode("utf-8")).hexdigest()[:16]
+    return f"phone-{digest}@{PHONE_EMAIL_DOMAIN}"
+
+
+def _synthetic_email_for_guest(guest_user_id: str) -> str:
+    return f"{guest_user_id}@{GUEST_EMAIL_DOMAIN}"
+
+
+def _mask_phone(phone: str) -> str:
+    if len(phone) == 11:
+        return f"{phone[:3]}****{phone[-4:]}"
+    if len(phone) <= 4:
+        return phone
+    return f"{phone[:2]}****{phone[-2:]}"
+
+
+def _workspace_setting_key(owner_user_id: str) -> str:
+    return f"active_package_id:{owner_user_id}"
 
 
 def _admin_emails() -> set[str]:
@@ -170,9 +244,11 @@ def _verify_password(password: str, salt_hex: str, hash_hex: str) -> bool:
 def _provider_label(provider: str) -> str:
     return {
         "email": "邮箱",
+        "phone": "手机号",
         "google": "Google",
         "apple": "Apple",
         "github": "GitHub",
+        "wechat": "微信",
         "microsoft": "Microsoft",
     }.get(provider, provider)
 
@@ -193,6 +269,11 @@ def _user_view(row: sqlite3.Row | AuthUser, identities: list[AuthIdentityView] |
     return UserView(
         id=row["id"] if isinstance(row, sqlite3.Row) else row.id,
         email=row["email"] if isinstance(row, sqlite3.Row) else row.email,
+        phone=(
+            row["phone"]
+            if isinstance(row, sqlite3.Row) and "phone" in row.keys()
+            else (None if isinstance(row, sqlite3.Row) else row.phone)
+        ),
         role=row["role"] if isinstance(row, sqlite3.Row) else row.role,  # type: ignore[arg-type]
         display_name=row["display_name"] if isinstance(row, sqlite3.Row) and "display_name" in row.keys() else (None if isinstance(row, sqlite3.Row) else row.display_name),
         avatar_url=row["avatar_url"] if isinstance(row, sqlite3.Row) and "avatar_url" in row.keys() else (None if isinstance(row, sqlite3.Row) else row.avatar_url),
@@ -238,16 +319,16 @@ def _oauth_providers() -> dict[str, OAuthProviderConfig]:
             client_id_env="OPENCLASS_OAUTH_GITHUB_CLIENT_ID",
             client_secret_env="OPENCLASS_OAUTH_GITHUB_CLIENT_SECRET",
         ),
-        "microsoft": OAuthProviderConfig(
-            id="microsoft",
-            label="Microsoft",
-            description="使用 Microsoft 账号登录 OpenClass。",
-            auth_url="https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
-            token_url="https://login.microsoftonline.com/common/oauth2/v2.0/token",
-            userinfo_url="https://graph.microsoft.com/oidc/userinfo",
-            scopes=("openid", "email", "profile"),
-            client_id_env="OPENCLASS_OAUTH_MICROSOFT_CLIENT_ID",
-            client_secret_env="OPENCLASS_OAUTH_MICROSOFT_CLIENT_SECRET",
+        "wechat": OAuthProviderConfig(
+            id="wechat",
+            label="微信",
+            description="使用微信扫码登录 OpenClass。",
+            auth_url="https://open.weixin.qq.com/connect/qrconnect",
+            token_url="https://api.weixin.qq.com/sns/oauth2/access_token",
+            userinfo_url="https://api.weixin.qq.com/sns/userinfo",
+            scopes=("snsapi_login",),
+            client_id_env="OPENCLASS_OAUTH_WECHAT_APP_ID",
+            client_secret_env="OPENCLASS_OAUTH_WECHAT_APP_SECRET",
         ),
     }
 
@@ -277,6 +358,23 @@ def _get_json(url: str, access_token: str) -> dict[str, Any] | list[Any]:
         headers={
             "Accept": "application/json",
             "Authorization": f"Bearer {access_token}",
+            "User-Agent": "OpenClass OAuth",
+        },
+        method="GET",
+    )
+    try:
+        with urlrequest.urlopen(req, timeout=12, context=_URLLIB_SSL_CONTEXT) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="第三方账号资料读取失败") from exc
+
+
+def _get_json_with_params(url: str, params: dict[str, str]) -> dict[str, Any] | list[Any]:
+    target = f"{url}?{parse.urlencode(params)}"
+    req = urlrequest.Request(
+        target,
+        headers={
+            "Accept": "application/json",
             "User-Agent": "OpenClass OAuth",
         },
         method="GET",
@@ -321,6 +419,7 @@ class AuthService:
                     CREATE TABLE IF NOT EXISTS users (
                         id TEXT PRIMARY KEY,
                         email TEXT NOT NULL UNIQUE,
+                        phone TEXT,
                         password_salt TEXT NOT NULL,
                         password_hash TEXT NOT NULL,
                         role TEXT NOT NULL CHECK(role IN ('user', 'admin')),
@@ -358,13 +457,29 @@ class AuthService:
                         provider TEXT NOT NULL,
                         next_path TEXT NOT NULL,
                         frontend_origin TEXT,
+                        guest_user_id TEXT,
                         created_at TEXT NOT NULL
                     );
+
+                    CREATE TABLE IF NOT EXISTS auth_guest_sessions (
+                        token_hash TEXT PRIMARY KEY,
+                        guest_user_id TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        last_seen_at TEXT NOT NULL
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_auth_guest_sessions_guest
+                        ON auth_guest_sessions(guest_user_id);
                     """
                 )
                 self._ensure_user_column(conn, "display_name", "TEXT")
                 self._ensure_user_column(conn, "avatar_url", "TEXT")
+                self._ensure_user_column(conn, "phone", "TEXT")
+                conn.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_phone_unique ON users(phone) WHERE phone IS NOT NULL"
+                )
                 self._ensure_table_column(conn, "auth_oauth_states", "frontend_origin", "TEXT")
+                self._ensure_table_column(conn, "auth_oauth_states", "guest_user_id", "TEXT")
                 with conn:
                     self._ensure_email_identities(conn)
 
@@ -386,6 +501,7 @@ class AuthService:
                 ON auth_identities.user_id = users.id
                 AND auth_identities.provider = 'email'
             WHERE auth_identities.user_id IS NULL
+                AND users.phone IS NULL
             """
         ).fetchall()
         for row in rows:
@@ -407,8 +523,8 @@ class AuthService:
                 ),
             )
 
-    def register(self, email: str, password: str) -> tuple[str, UserView]:
-        normalized_email = _normalize_email(email)
+    def register(self, identifier: str, password: str, *, guest_token: str | None = None) -> tuple[str, UserView]:
+        account = _normalize_account_identifier(identifier)
         salt, password_hash = _hash_password(password)
         created_at = _now_iso()
 
@@ -416,43 +532,49 @@ class AuthService:
             with self._connect() as conn:
                 with conn:
                     user_count = conn.execute("SELECT count(*) FROM users").fetchone()[0]
-                    role = "admin" if user_count == 0 or normalized_email in _admin_emails() else "user"
+                    role = "admin" if user_count == 0 or (account.email and account.email in _admin_emails()) else "user"
                     try:
                         user_id = new_id("user")
                         conn.execute(
                             """
-                            INSERT INTO users(id, email, password_salt, password_hash, role, display_name, created_at)
-                            VALUES (?, ?, ?, ?, ?, ?, ?)
+                            INSERT INTO users(id, email, phone, password_salt, password_hash, role, display_name, created_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                             """,
-                            (user_id, normalized_email, salt, password_hash, role, normalized_email.split("@", 1)[0], created_at),
+                            (user_id, account.storage_email, account.phone, salt, password_hash, role, account.display_name, created_at),
                         )
                         conn.execute(
                             """
                             INSERT INTO auth_identities(
                                 provider, provider_subject, user_id, email, display_name, created_at, last_login_at
                             )
-                            VALUES ('email', ?, ?, ?, ?, ?, ?)
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
                             """,
                             (
-                                normalized_email,
+                                account.kind,
+                                account.subject,
                                 user_id,
-                                normalized_email,
-                                normalized_email.split("@", 1)[0],
+                                account.email,
+                                account.display_name,
                                 created_at,
                                 created_at,
                             ),
                         )
                     except sqlite3.IntegrityError as exc:
-                        raise HTTPException(status_code=409, detail="该邮箱已注册") from exc
-                    return self._issue_session(conn, normalized_email)
+                        message = "该手机号已注册" if account.kind == "phone" else "该邮箱已注册"
+                        raise HTTPException(status_code=409, detail=message) from exc
+                    self._claim_guest_workspace(conn, guest_token=guest_token, user_id=user_id)
+                    return self._issue_session_for_user_id(conn, user_id)
 
-    def login(self, email: str, password: str) -> tuple[str, UserView]:
-        normalized_email = _normalize_email(email)
+    def login(self, identifier: str, password: str, *, guest_token: str | None = None) -> tuple[str, UserView]:
+        account = _normalize_account_identifier(identifier)
         with self._lock:
             with self._connect() as conn:
-                row = conn.execute("SELECT * FROM users WHERE email = ?", (normalized_email,)).fetchone()
+                if account.kind == "phone":
+                    row = conn.execute("SELECT * FROM users WHERE phone = ?", (account.phone,)).fetchone()
+                else:
+                    row = conn.execute("SELECT * FROM users WHERE email = ?", (account.email,)).fetchone()
                 if row is None or not _verify_password(password, row["password_salt"], row["password_hash"]):
-                    raise HTTPException(status_code=401, detail="邮箱或密码不正确")
+                    raise HTTPException(status_code=401, detail="账号或密码不正确")
                 with conn:
                     now = _now_iso()
                     conn.execute("UPDATE users SET last_login_at = ? WHERE id = ?", (now, row["id"]))
@@ -460,13 +582,14 @@ class AuthService:
                         """
                         UPDATE auth_identities
                         SET last_login_at = ?
-                        WHERE user_id = ? AND provider = 'email'
+                        WHERE user_id = ? AND provider = ?
                         """,
-                        (now, row["id"]),
+                        (now, row["id"], account.kind),
                     )
-                    return self._issue_session(conn, normalized_email)
+                    self._claim_guest_workspace(conn, guest_token=guest_token, user_id=row["id"])
+                    return self._issue_session_for_user_id(conn, row["id"])
 
-    def login_with_oauth(self, profile: OAuthProfile) -> tuple[str, UserView]:
+    def login_with_oauth(self, profile: OAuthProfile, *, guest_user_id: str | None = None) -> tuple[str, UserView]:
         if not profile.provider or not profile.subject:
             raise HTTPException(status_code=422, detail="第三方账号资料不完整")
         provider = profile.provider.strip().lower()
@@ -554,6 +677,7 @@ class AuthService:
                         """,
                         (now, profile.display_name or "", profile.avatar_url or "", user_id),
                     )
+                    self._claim_guest_workspace_by_id(conn, guest_user_id=guest_user_id, user_id=user_id)
                     return self._issue_session_for_user_id(conn, user_id)
 
     def get_user_by_token(self, token: str) -> UserView:
@@ -570,13 +694,40 @@ class AuthService:
                     (token_hash,),
                 ).fetchone()
                 if row is None:
-                    raise HTTPException(status_code=401, detail="请先登录")
+                    guest = conn.execute(
+                        "SELECT * FROM auth_guest_sessions WHERE token_hash = ?",
+                        (token_hash,),
+                    ).fetchone()
+                    if guest is None:
+                        raise HTTPException(status_code=401, detail="请先登录")
+                    with conn:
+                        conn.execute(
+                            "UPDATE auth_guest_sessions SET last_seen_at = ? WHERE token_hash = ?",
+                            (_now_iso(), token_hash),
+                        )
+                    return self._guest_user_view(guest["guest_user_id"], guest["created_at"], guest["last_seen_at"])
                 with conn:
                     conn.execute(
                         "UPDATE auth_sessions SET last_seen_at = ? WHERE token_hash = ?",
                         (_now_iso(), token_hash),
                     )
                 return _user_view(row, self._identities_for_user(conn, row["id"]))
+
+    def start_guest_session(self) -> tuple[str, UserView]:
+        guest_user_id = new_id("guest")
+        token = secrets.token_urlsafe(SESSION_TOKEN_BYTES)
+        now = _now_iso()
+        with self._lock:
+            with self._connect() as conn:
+                with conn:
+                    conn.execute(
+                        """
+                        INSERT INTO auth_guest_sessions(token_hash, guest_user_id, created_at, last_seen_at)
+                        VALUES (?, ?, ?, ?)
+                        """,
+                        (self._token_hash(token), guest_user_id, now, now),
+                    )
+        return token, self._guest_user_view(guest_user_id, now, now)
 
     def overview(self) -> AdminOverview:
         with self._lock:
@@ -610,8 +761,8 @@ class AuthService:
         options = [
             AuthProviderView(
                 id="email",
-                label="邮箱",
-                description="使用邮箱和密码注册或登录。",
+                label="邮箱/手机号",
+                description="使用邮箱或手机号和密码注册或登录。",
                 configured=True,
                 kind="password",
             )
@@ -628,17 +779,34 @@ class AuthService:
             )
         return options
 
-    def oauth_authorization_url(self, provider_id: str, next_path: str, request: Request) -> str:
+    def oauth_authorization_url(
+        self,
+        provider_id: str,
+        next_path: str,
+        request: Request,
+        *,
+        guest_token: str | None = None,
+    ) -> str:
         provider = self._configured_provider(provider_id)
         state = secrets.token_urlsafe(OAUTH_STATE_BYTES)
         redirect_uri = self._oauth_redirect_uri(provider.id, request)
-        params = {
-            "client_id": provider.client_id or "",
-            "redirect_uri": redirect_uri,
-            "response_type": "code",
-            "scope": " ".join(provider.scopes),
-            "state": state,
-        }
+        guest_user_id = self._guest_user_id_for_token(guest_token)
+        if provider.id == "wechat":
+            params = {
+                "appid": provider.client_id or "",
+                "redirect_uri": redirect_uri,
+                "response_type": "code",
+                "scope": " ".join(provider.scopes),
+                "state": state,
+            }
+        else:
+            params = {
+                "client_id": provider.client_id or "",
+                "redirect_uri": redirect_uri,
+                "response_type": "code",
+                "scope": " ".join(provider.scopes),
+                "state": state,
+            }
         if provider.id == "google":
             params["prompt"] = "select_account"
         if provider.response_mode:
@@ -649,12 +817,13 @@ class AuthService:
                 with conn:
                     conn.execute(
                         """
-                        INSERT INTO auth_oauth_states(state, provider, next_path, frontend_origin, created_at)
-                        VALUES (?, ?, ?, ?, ?)
+                        INSERT INTO auth_oauth_states(state, provider, next_path, frontend_origin, guest_user_id, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?)
                         """,
-                        (state, provider.id, _safe_next_path(next_path), _frontend_origin(request), _now_iso()),
+                        (state, provider.id, _safe_next_path(next_path), _frontend_origin(request), guest_user_id, _now_iso()),
                     )
-        return f"{provider.auth_url}?{parse.urlencode(params)}"
+        suffix = "#wechat_redirect" if provider.id == "wechat" else ""
+        return f"{provider.auth_url}?{parse.urlencode(params)}{suffix}"
 
     def complete_oauth_callback(self, provider_id: str, payload: dict[str, str], request: Request) -> tuple[str, UserView, str, str]:
         provider = self._configured_provider(provider_id)
@@ -662,8 +831,29 @@ class AuthService:
         code = payload.get("code", "")
         if not state or not code:
             raise HTTPException(status_code=400, detail="第三方登录回调缺少授权码")
-        next_path, frontend_origin = self._consume_oauth_state(provider.id, state)
-        token_payload = _post_form(
+        next_path, frontend_origin, guest_user_id = self._consume_oauth_state(provider.id, state)
+        token_payload = self._exchange_oauth_code(provider, code, request)
+        profile = self._profile_from_oauth(provider, token_payload)
+        token, user = self.login_with_oauth(profile, guest_user_id=guest_user_id)
+        return token, user, next_path, frontend_origin
+
+    def _exchange_oauth_code(self, provider: OAuthProviderConfig, code: str, request: Request) -> dict[str, Any]:
+        if provider.id == "wechat":
+            payload = _get_json_with_params(
+                provider.token_url,
+                {
+                    "appid": provider.client_id or "",
+                    "secret": provider.client_secret or "",
+                    "code": code,
+                    "grant_type": "authorization_code",
+                },
+            )
+            if not isinstance(payload, dict):
+                raise HTTPException(status_code=502, detail="微信登录令牌格式异常")
+            if payload.get("errcode"):
+                raise HTTPException(status_code=502, detail=str(payload.get("errmsg") or "微信登录令牌交换失败"))
+            return payload
+        return _post_form(
             provider.token_url,
             {
                 "client_id": provider.client_id or "",
@@ -673,9 +863,6 @@ class AuthService:
                 "redirect_uri": self._oauth_redirect_uri(provider.id, request),
             },
         )
-        profile = self._profile_from_oauth(provider, token_payload)
-        token, user = self.login_with_oauth(profile)
-        return token, user, next_path, frontend_origin
 
     def oauth_frontend_redirect_url(self, token: str, user: UserView, next_path: str, frontend_origin: str, request: Request) -> str:
         target = parse.urljoin((frontend_origin or _frontend_origin(request)).rstrip("/"), "/auth/callback")
@@ -707,6 +894,74 @@ class AuthService:
         refreshed = conn.execute("SELECT * FROM users WHERE id = ?", (row["id"],)).fetchone()
         return token, _user_view(refreshed, self._identities_for_user(conn, row["id"]))
 
+    def _guest_user_view(self, guest_user_id: str, created_at: str, last_seen_at: str | None = None) -> UserView:
+        return UserView(
+            id=guest_user_id,
+            email=_synthetic_email_for_guest(guest_user_id),
+            role="guest",
+            display_name="游客",
+            created_at=created_at,
+            last_login_at=last_seen_at,
+            auth_identities=[],
+        )
+
+    def _guest_user_id_for_token(self, guest_token: str | None) -> str | None:
+        if not guest_token:
+            return None
+        token_hash = self._token_hash(guest_token)
+        with self._lock:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT guest_user_id FROM auth_guest_sessions WHERE token_hash = ?",
+                    (token_hash,),
+                ).fetchone()
+        return row["guest_user_id"] if row is not None else None
+
+    def _claim_guest_workspace(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        guest_token: str | None,
+        user_id: str,
+    ) -> None:
+        if not guest_token:
+            return
+        token_hash = self._token_hash(guest_token)
+        row = conn.execute(
+            "SELECT guest_user_id FROM auth_guest_sessions WHERE token_hash = ?",
+            (token_hash,),
+        ).fetchone()
+        if row is None:
+            return
+        self._claim_guest_workspace_by_id(conn, guest_user_id=row["guest_user_id"], user_id=user_id)
+
+    def _claim_guest_workspace_by_id(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        guest_user_id: str | None,
+        user_id: str,
+    ) -> None:
+        if not guest_user_id or guest_user_id == user_id:
+            return
+        conn.execute(
+            "UPDATE course_packages SET owner_user_id = ? WHERE owner_user_id = ?",
+            (user_id, guest_user_id),
+        )
+        guest_setting_key = _workspace_setting_key(guest_user_id)
+        user_setting_key = _workspace_setting_key(user_id)
+        guest_active_row = conn.execute(
+            "SELECT value FROM workspace_settings WHERE key = ?",
+            (guest_setting_key,),
+        ).fetchone()
+        if guest_active_row is not None:
+            conn.execute(
+                "INSERT OR REPLACE INTO workspace_settings(key, value) VALUES (?, ?)",
+                (user_setting_key, guest_active_row["value"]),
+            )
+            conn.execute("DELETE FROM workspace_settings WHERE key = ?", (guest_setting_key,))
+        conn.execute("DELETE FROM auth_guest_sessions WHERE guest_user_id = ?", (guest_user_id,))
+
     def _identities_for_user(self, conn: sqlite3.Connection, user_id: str) -> list[AuthIdentityView]:
         rows = conn.execute(
             """
@@ -716,9 +971,11 @@ class AuthService:
             ORDER BY
                 CASE provider
                     WHEN 'email' THEN 0
-                    WHEN 'google' THEN 1
-                    WHEN 'apple' THEN 2
-                    ELSE 3
+                    WHEN 'phone' THEN 1
+                    WHEN 'wechat' THEN 2
+                    WHEN 'google' THEN 3
+                    WHEN 'apple' THEN 4
+                    ELSE 9
                 END,
                 created_at
             """,
@@ -746,7 +1003,7 @@ class AuthService:
     def _oauth_redirect_uri(self, provider_id: str, request: Request) -> str:
         return parse.urljoin(_public_origin(request), f"/api/auth/oauth/{provider_id}/callback")
 
-    def _consume_oauth_state(self, provider_id: str, state: str) -> tuple[str, str]:
+    def _consume_oauth_state(self, provider_id: str, state: str) -> tuple[str, str, str | None]:
         with self._lock:
             with self._connect() as conn:
                 with conn:
@@ -760,7 +1017,11 @@ class AuthService:
                     created_at = _parse_iso(row["created_at"])
                     if created_at is None or datetime.now(timezone.utc) - created_at > OAUTH_STATE_TTL:
                         raise HTTPException(status_code=400, detail="第三方登录状态已过期，请重新发起登录")
-                    return _safe_next_path(row["next_path"]), (row["frontend_origin"] or _frontend_origin(None))
+                    return (
+                        _safe_next_path(row["next_path"]),
+                        row["frontend_origin"] or _frontend_origin(None),
+                        row["guest_user_id"],
+                    )
 
     def _profile_from_oauth(self, provider: OAuthProviderConfig, token_payload: dict[str, Any]) -> OAuthProfile:
         access_token = str(token_payload.get("access_token") or "")
@@ -776,6 +1037,30 @@ class AuthService:
             )
         if not access_token:
             raise HTTPException(status_code=502, detail="第三方登录没有返回访问令牌")
+        if provider.id == "wechat":
+            openid = str(token_payload.get("openid") or "")
+            if not openid:
+                raise HTTPException(status_code=502, detail="微信登录没有返回 OpenID")
+            raw_profile = _get_json_with_params(
+                provider.userinfo_url or "",
+                {
+                    "access_token": access_token,
+                    "openid": openid,
+                    "lang": "zh_CN",
+                },
+            )
+            if not isinstance(raw_profile, dict):
+                raise HTTPException(status_code=502, detail="微信账号资料格式异常")
+            if raw_profile.get("errcode"):
+                raise HTTPException(status_code=502, detail=str(raw_profile.get("errmsg") or "微信账号资料读取失败"))
+            subject = str(raw_profile.get("unionid") or raw_profile.get("openid") or openid)
+            return OAuthProfile(
+                provider=provider.id,
+                subject=subject,
+                email=None,
+                display_name=str(raw_profile.get("nickname") or "") or None,
+                avatar_url=str(raw_profile.get("headimgurl") or "") or None,
+            )
         if provider.id == "github":
             raw_profile = _get_json(provider.userinfo_url or "", access_token)
             if not isinstance(raw_profile, dict):

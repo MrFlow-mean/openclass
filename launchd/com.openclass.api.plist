@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.openclass.api</string>
+  <key>KeepAlive</key>
+  <true/>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>WorkingDirectory</key>
+  <string>__LAUNCH_DIR__</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>-lc</string>
+    <string>cd "__LAUNCH_DIR__" &amp;&amp; while true; do echo "[openclass-api] $(date '+%Y-%m-%d %H:%M:%S') starting FastAPI server on :8000"; .venv/bin/python -m uvicorn app.main:app --reload --app-dir apps/api; code=$?; echo "[openclass-api] $(date '+%Y-%m-%d %H:%M:%S') server exited with code $code; restarting in 5s"; sleep 5; done</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>/tmp/openclass-api.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/openclass-api.log</string>
+</dict>
+</plist>

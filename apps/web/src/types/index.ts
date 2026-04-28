@@ -197,7 +197,8 @@ export interface WorkspaceState {
 export interface UserView {
   id: string;
   email: string;
-  role: "user" | "admin";
+  phone?: string | null;
+  role: "user" | "admin" | "guest";
   display_name?: string | null;
   avatar_url?: string | null;
   created_at: string;

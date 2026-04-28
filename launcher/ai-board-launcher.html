@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>OpenClass 课程工作台</title>
+    <title>OpenClass 产品页面</title>
     <style>
       :root {
         color-scheme: light;
@@ -126,24 +126,25 @@
   <body>
     <div class="status" id="status">
       <div class="status__panel">
-        <h1 class="status__title">OpenClass 课程工作台</h1>
+        <h1 class="status__title">OpenClass 产品页面</h1>
         <p class="status__desc" id="statusText">正在连接本地前端服务…</p>
         <div class="status__actions">
           <button class="status__button" id="retryButton" type="button">重新检测</button>
-          <button class="status__button" id="openButton" type="button">直接打开前端</button>
+          <button class="status__button" id="openButton" type="button">直接打开产品页面</button>
         </div>
         <div class="status__hint">
-          这个页面本身只是本地启动页，真正的应用还是当前那套 Next.js 前端。<br />
-          它会自动把运行中的前端原样嵌进来，所以界面和交互不会被改成另一套。
+          这个页面本身只是本地启动页，会自动打开可免登录访问的产品课程页。<br />
+          需要进入个人主页或学习工作台时，再从对应入口登录。
         </div>
         <div class="status__meta" id="statusMeta"></div>
       </div>
     </div>
 
-    <iframe id="appFrame" title="OpenClass 课程工作台" allow="microphone; autoplay"></iframe>
+    <iframe id="appFrame" title="OpenClass 产品页面" allow="microphone; autoplay"></iframe>
 
     <script>
       const candidates = ["http://127.0.0.1:3000", "http://localhost:3000"];
+      const targetPath = "/courses/product-thinking";
       const statusEl = document.getElementById("status");
       const statusTextEl = document.getElementById("statusText");
       const statusMetaEl = document.getElementById("statusMeta");
@@ -154,6 +155,10 @@
       let activeUrl = candidates[0];
       let probeToken = 0;
       let retryTimer = null;
+
+      function targetUrl(baseUrl) {
+        return `${baseUrl}${targetPath}`;
+      }
 
       function setStatus(text, meta) {
         statusTextEl.textContent = text;
@@ -166,7 +171,7 @@
       }
 
       function openAppDirectly() {
-        window.open(activeUrl, "_blank", "noopener,noreferrer");
+        window.open(targetUrl(activeUrl), "_blank", "noopener,noreferrer");
       }
 
       function ensureRetryLoop() {
@@ -209,7 +214,7 @@
 
       async function connect() {
         const currentToken = ++probeToken;
-        setStatus("正在连接本地前端服务…", "优先检测 127.0.0.1:3000，其次 localhost:3000");
+        setStatus("正在连接本地前端服务，准备打开产品页面…", "优先检测 127.0.0.1:3000，其次 localhost:3000");
 
         for (const url of candidates) {
           const ok = await probe(url, 1200);
@@ -218,9 +223,10 @@
           }
           if (ok) {
             activeUrl = url;
-            if (appFrame.dataset.activeUrl !== url) {
-              appFrame.src = `${url}/`;
-              appFrame.dataset.activeUrl = url;
+            const nextUrl = targetUrl(url);
+            if (appFrame.dataset.activeUrl !== nextUrl) {
+              appFrame.src = nextUrl;
+              appFrame.dataset.activeUrl = nextUrl;
             }
             stopRetryLoop();
             hideStatus();

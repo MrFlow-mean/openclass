@@ -32,6 +32,7 @@ import {
 } from "lucide-react";
 
 import { api, OPENCLASS_AUTH_TOKEN_STORAGE_KEY } from "@/lib/api";
+import { userAccountLabel, userPublicEmail } from "@/lib/account";
 import type { AIModelCatalog, AIModelOption, UserView } from "@/types";
 
 type SettingsSectionId =
@@ -641,10 +642,10 @@ export function ProfileSettingsPanel({
                   {settings.website}
                 </p>
               ) : null}
-              {settings.showPublicEmail && (settings.publicEmail || currentUser?.email) ? (
+              {settings.showPublicEmail && (settings.publicEmail || userPublicEmail(currentUser)) ? (
                 <p className="flex items-center gap-2">
                   <AtSign className="h-3.5 w-3.5" />
-                  {settings.publicEmail || currentUser?.email}
+                  {settings.publicEmail || userPublicEmail(currentUser)}
                 </p>
               ) : null}
             </div>
@@ -699,7 +700,7 @@ export function ProfileSettingsPanel({
             onChange={(event) => updateSetting("publicEmail", event.target.value)}
           >
             <option value="">不公开</option>
-            {currentUser?.email ? <option value={currentUser.email}>{currentUser.email}</option> : null}
+            {userPublicEmail(currentUser) ? <option value={userPublicEmail(currentUser)}>{userPublicEmail(currentUser)}</option> : null}
           </select>
         </label>
 
@@ -825,7 +826,7 @@ export function ProfileSettingsPanel({
           ) : currentUser ? (
             <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
               <div className="min-w-0">
-                <p className="truncate text-lg font-semibold text-stone-950">{currentUser.email}</p>
+                <p className="truncate text-lg font-semibold text-stone-950">{userAccountLabel(currentUser)}</p>
                 <p className="mt-1 text-sm text-stone-500">
                   {currentUser.role === "admin" ? "管理员" : "普通用户"} · 创建于 {formatAccountDate(currentUser.created_at)}
                 </p>
@@ -1173,7 +1174,7 @@ export function ProfileSettingsPanel({
         <section className={settingSectionClass}>
           <label className="block">
             <span className="block text-sm font-semibold text-stone-950">主邮箱</span>
-            <input className={`${settingsInputClass} mt-2 max-w-xl bg-stone-50`} value={currentUser?.email ?? ""} readOnly />
+            <input className={`${settingsInputClass} mt-2 max-w-xl bg-stone-50`} value={userPublicEmail(currentUser) || "未绑定邮箱"} readOnly />
           </label>
         </section>
 

@@ -8,16 +8,8 @@ import { useEffect, useState } from "react";
 import { ChevronDown, LogOut, ShieldCheck, UserRound } from "lucide-react";
 
 import { api, clearAuthToken } from "@/lib/api";
+import { userAccountLabel, userDisplayName, userInitial } from "@/lib/account";
 import type { UserView } from "@/types";
-
-function accountInitial(user: UserView | null) {
-  const source = user?.display_name || user?.email || "U";
-  return source.trim().slice(0, 1).toUpperCase();
-}
-
-function displayName(user: UserView | null) {
-  return user?.display_name?.trim() || user?.email.split("@", 1)[0] || "OpenClass 用户";
-}
 
 export function AccountMenu({ compact = false }: { compact?: boolean }) {
   const router = useRouter();
@@ -53,6 +45,14 @@ export function AccountMenu({ compact = false }: { compact?: boolean }) {
     router.replace("/login");
   }
 
+  const isGuest = user?.role === "guest";
+
+  function handleLoginToSave() {
+    setOpen(false);
+    const next = `${window.location.pathname}${window.location.search}` || "/";
+    router.push(`/login?next=${encodeURIComponent(next)}`);
+  }
+
   return (
     <div className="relative" data-account-menu-root>
       <button
@@ -64,16 +64,16 @@ export function AccountMenu({ compact = false }: { compact?: boolean }) {
         )}
         aria-haspopup="menu"
         aria-expanded={open}
-        title={user ? user.email : "账号"}
+        title={userAccountLabel(user)}
       >
         <span className="flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-full bg-stone-950 text-xs font-bold text-white">
           {user?.avatar_url ? (
             <Image src={user.avatar_url} alt="" width={28} height={28} className="h-full w-full object-cover" unoptimized />
           ) : (
-            accountInitial(user)
+            userInitial(user)
           )}
         </span>
-        {!compact ? <span className="truncate">{displayName(user)}</span> : null}
+        {!compact ? <span className="truncate">{userDisplayName(user)}</span> : null}
         {!compact ? <ChevronDown className="h-4 w-4 shrink-0 text-stone-400" /> : null}
       </button>
 
@@ -88,19 +88,19 @@ export function AccountMenu({ compact = false }: { compact?: boolean }) {
                 {user?.avatar_url ? (
                   <Image src={user.avatar_url} alt="" width={44} height={44} className="h-full w-full object-cover" unoptimized />
                 ) : (
-                  accountInitial(user)
+                  userInitial(user)
                 )}
               </span>
               <div className="min-w-0">
-                <p className="truncate text-sm font-semibold text-stone-950">{displayName(user)}</p>
-                <p className="mt-1 break-all text-xs text-stone-500">{user?.email ?? "正在读取账号"}</p>
+                <p className="truncate text-sm font-semibold text-stone-950">{userDisplayName(user)}</p>
+                <p className="mt-1 break-all text-xs text-stone-500">{user ? userAccountLabel(user) : "正在读取账号"}</p>
                 {user ? <p className="mt-1 break-all font-mono text-[11px] text-stone-400">ID {user.id}</p> : null}
               </div>
             </div>
             {user ? (
               <div className="mt-3 flex flex-wrap gap-1.5">
                 <span className="rounded-full border border-stone-200 bg-stone-50 px-2 py-0.5 text-[11px] font-semibold text-stone-600">
-                  {user.role === "admin" ? "管理员" : "普通用户"}
+                  {user.role === "guest" ? "游客模式" : user.role === "admin" ? "管理员" : "普通用户"}
                 </span>
                 {user.auth_identities.map((identity) => (
                   <span
@@ -115,15 +115,27 @@ export function AccountMenu({ compact = false }: { compact?: boolean }) {
           </div>
 
           <div className="p-2">
-            <Link
-              href="/profile?tab=settings"
-              className="flex items-center gap-2 rounded-md px-3 py-2 text-sm font-semibold text-stone-700 transition hover:bg-stone-100 hover:text-stone-950"
-              role="menuitem"
-              onClick={() => setOpen(false)}
-            >
-              <UserRound className="h-4 w-4 text-stone-400" />
-              个人账号
-            </Link>
+            {isGuest ? (
+              <button
+                type="button"
+                className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm font-semibold text-stone-700 transition hover:bg-stone-100 hover:text-stone-950"
+                role="menuitem"
+                onClick={handleLoginToSave}
+              >
+                <UserRound className="h-4 w-4 text-stone-400" />
+                登录以保存
+              </button>
+            ) : (
+              <Link
+                href="/profile?tab=settings"
+                className="flex items-center gap-2 rounded-md px-3 py-2 text-sm font-semibold text-stone-700 transition hover:bg-stone-100 hover:text-stone-950"
+                role="menuitem"
+                onClick={() => setOpen(false)}
+              >
+                <UserRound className="h-4 w-4 text-stone-400" />
+                个人账号
+              </Link>
+            )}
             {user?.role === "admin" ? (
               <Link
                 href="/admin"
@@ -142,7 +154,7 @@ export function AccountMenu({ compact = false }: { compact?: boolean }) {
               role="menuitem"
             >
               <LogOut className="h-4 w-4" />
-              退出登录
+              {isGuest ? "结束游客访问" : "退出登录"}
             </button>
           </div>
         </div>

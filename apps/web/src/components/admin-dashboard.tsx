@@ -7,6 +7,7 @@ import { ArrowLeft, BookOpen, Database, LoaderCircle, ShieldCheck, UsersRound } 
 import { AccountMenu } from "@/components/account-menu";
 import { BrandMark } from "@/components/brand-mark";
 import { api } from "@/lib/api";
+import { userAccountLabel } from "@/lib/account";
 import type { AdminOverview } from "@/types";
 
 function formatDate(value: string | null | undefined) {
@@ -132,7 +133,7 @@ export function AdminDashboard() {
                 <table className="w-full min-w-[46rem] text-left text-sm">
                   <thead className="bg-stone-50 text-xs font-semibold uppercase tracking-[0.16em] text-stone-500">
                     <tr>
-                      <th className="px-5 py-3">邮箱</th>
+                      <th className="px-5 py-3">账号</th>
                       <th className="px-5 py-3">权限</th>
                       <th className="px-5 py-3">注册时间</th>
                       <th className="px-5 py-3">最近登录</th>
@@ -141,7 +142,7 @@ export function AdminDashboard() {
                   <tbody className="divide-y divide-stone-200">
                     {overview.users.map((user) => (
                       <tr key={user.id}>
-                        <td className="px-5 py-4 font-medium text-stone-950">{user.email}</td>
+                        <td className="px-5 py-4 font-medium text-stone-950">{userAccountLabel(user)}</td>
                         <td className="px-5 py-4">
                           <span className="rounded-full border border-stone-200 bg-stone-50 px-2.5 py-1 text-xs font-semibold text-stone-600">
                             {user.role === "admin" ? "管理员" : "用户"}

@@ -20,6 +20,8 @@ import type {
 
 const configuredApiBase = process.env.NEXT_PUBLIC_API_BASE_URL;
 export const OPENCLASS_AUTH_TOKEN_STORAGE_KEY = "openclass.auth.token";
+export const OPENCLASS_GUEST_AUTH_TOKEN_STORAGE_KEY = "openclass.guest.auth.token";
+let guestAuthToken: string | null = null;
 
 export function getApiBase() {
   if (configuredApiBase) {
@@ -41,27 +43,47 @@ export function readAuthToken() {
   return window.localStorage.getItem(OPENCLASS_AUTH_TOKEN_STORAGE_KEY);
 }
 
+export function readGuestAuthToken() {
+  return guestAuthToken;
+}
+
+export function readEffectiveAuthToken() {
+  return readAuthToken() || guestAuthToken;
+}
+
 export function storeAuthToken(token: string) {
   if (typeof window === "undefined") {
     return;
   }
+  guestAuthToken = null;
   window.localStorage.setItem(OPENCLASS_AUTH_TOKEN_STORAGE_KEY, token);
   const secure = window.location.protocol === "https:" ? "; Secure" : "";
   document.cookie = `${OPENCLASS_AUTH_TOKEN_STORAGE_KEY}=${encodeURIComponent(token)}; Path=/; Max-Age=2592000; SameSite=Lax${secure}`;
 }
 
+export function storeGuestAuthToken(token: string) {
+  guestAuthToken = token;
+  if (typeof window === "undefined") {
+    return;
+  }
+  const secure = window.location.protocol === "https:" ? "; Secure" : "";
+  document.cookie = `${OPENCLASS_GUEST_AUTH_TOKEN_STORAGE_KEY}=${encodeURIComponent(token)}; Path=/; SameSite=Lax${secure}`;
+}
+
 export function clearAuthToken() {
+  guestAuthToken = null;
   if (typeof window === "undefined") {
     return;
   }
   window.localStorage.removeItem(OPENCLASS_AUTH_TOKEN_STORAGE_KEY);
   document.cookie = `${OPENCLASS_AUTH_TOKEN_STORAGE_KEY}=; Path=/; Max-Age=0; SameSite=Lax`;
+  document.cookie = `${OPENCLASS_GUEST_AUTH_TOKEN_STORAGE_KEY}=; Path=/; Max-Age=0; SameSite=Lax`;
 }
 
 function authHeaders(headers?: HeadersInit) {
   const nextHeaders = new Headers(headers);
   if (!nextHeaders.has("Authorization")) {
-    const token = readAuthToken();
+    const token = readEffectiveAuthToken();
     if (token) {
       nextHeaders.set("Authorization", `Bearer ${token}`);
     }
@@ -73,7 +95,7 @@ function withAuthTokenQuery(url: string) {
   if (typeof window === "undefined") {
     return url;
   }
-  const token = readAuthToken();
+  const token = readEffectiveAuthToken();
   if (!token) {
     return url;
   }
@@ -99,7 +121,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers.set("Content-Type", "application/json");
   }
   if (typeof window !== "undefined" && !headers.has("Authorization")) {
-    const token = readAuthToken();
+    const token = readEffectiveAuthToken();
     if (token) {
       headers.set("Authorization", `Bearer ${token}`);
     }
@@ -129,16 +151,21 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  register(email: string, password: string) {
+  register(identifier: string, password: string) {
     return request<AuthSessionResponse>("/api/auth/register", {
       method: "POST",
-      body: JSON.stringify({ email, password }),
+      body: JSON.stringify({ identifier, password, guest_token: readGuestAuthToken() }),
     });
   },
-  login(email: string, password: string) {
+  login(identifier: string, password: string) {
     return request<AuthSessionResponse>("/api/auth/login", {
       method: "POST",
-      body: JSON.stringify({ email, password }),
+      body: JSON.stringify({ identifier, password, guest_token: readGuestAuthToken() }),
+    });
+  },
+  startGuestSession() {
+    return request<AuthSessionResponse>("/api/auth/guest", {
+      method: "POST",
     });
   },
   getCurrentUser() {

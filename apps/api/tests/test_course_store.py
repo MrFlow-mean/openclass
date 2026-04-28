@@ -153,6 +153,21 @@ def test_sqlite_store_claims_legacy_workspace_for_first_user(tmp_path) -> None:
     assert owner_count == len(claimed_workspace.packages)
 
 
+def test_sqlite_store_does_not_claim_legacy_workspace_for_guest(tmp_path) -> None:
+    db_path = tmp_path / "openclass.sqlite3"
+    store = SqliteCourseStore(db_path, legacy_json_path=None)
+
+    legacy_workspace = store.load()
+    legacy_workspace.packages[0].title = "正式账号旧课程包"
+    store.save(legacy_workspace)
+
+    guest_workspace = store.load_for_user("guest_preview")
+    claimed_workspace = store.load_for_user("user_owner")
+
+    assert guest_workspace.packages[0].title != "正式账号旧课程包"
+    assert claimed_workspace.packages[0].title == "正式账号旧课程包"
+
+
 def test_sqlite_store_assigns_legacy_workspace_to_existing_admin(tmp_path) -> None:
     db_path = tmp_path / "openclass.sqlite3"
     store = SqliteCourseStore(db_path, legacy_json_path=None)
