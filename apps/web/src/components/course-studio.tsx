@@ -16,7 +16,6 @@ import UnderlineExtension from "@tiptap/extension-underline";
 import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import clsx from "clsx";
-import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useEffectEvent, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import {
@@ -4191,14 +4190,6 @@ export function CourseStudio() {
                   <ChevronUp className="h-4.5 w-4.5" />
                 </button>
               </div>
-              <Image
-                src="https://api.dicebear.com/7.x/avataaars/svg?seed=Codex"
-                alt="User Avatar"
-                className="h-7 w-7 rounded-full border border-gray-200"
-                width={28}
-                height={28}
-                unoptimized
-              />
             </div>
           </header>
         </div>
