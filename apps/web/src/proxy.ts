@@ -19,6 +19,9 @@ function safeNextPath(value: string | null) {
   if (value === "/login" || value.startsWith("/login?") || value === "/register" || value.startsWith("/register?")) {
     return "/";
   }
+  if (value === "/studio" || value.startsWith("/studio?")) {
+    return "/";
+  }
   return value;
 }
 

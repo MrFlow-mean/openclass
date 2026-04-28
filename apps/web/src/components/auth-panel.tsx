@@ -42,6 +42,7 @@ import {
 } from "@/lib/api";
 import { BrandMark } from "@/components/brand-mark";
 import { userAccountLabel } from "@/lib/account";
+import { loginRedirectPath } from "@/lib/auth-redirect";
 import type { AuthProviderView, UserView } from "@/types";
 
 type AuthPanelProps = {
@@ -296,18 +297,9 @@ function SocialBrandIcon({ brand }: { brand: SocialSignInOption["brand"] }) {
   return <WeChatBrandIcon />;
 }
 
-function safeNextPath(value: string | null) {
-  if (!value || !value.startsWith("/") || value.startsWith("//")) {
-    return "/";
-  }
-  if (value === "/login" || value.startsWith("/login?") || value === "/register" || value.startsWith("/register?")) {
-    return "/";
-  }
-  return value;
-}
-
-function loginDestination(user: UserView, nextPath: string) {
-  return user.role === "admin" && nextPath === "/" ? "/admin" : nextPath;
+function loginDestination(user: UserView, nextPath: string | null) {
+  const destination = loginRedirectPath(nextPath);
+  return user.role === "admin" && destination === "/" ? "/admin" : destination;
 }
 
 function AuthInput({
@@ -599,7 +591,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
     if (!currentUser) {
       return;
     }
-    const nextPath = safeNextPath(new URLSearchParams(window.location.search).get("next"));
+    const nextPath = new URLSearchParams(window.location.search).get("next");
     router.replace(loginDestination(currentUser, nextPath));
   }, [currentUser, router]);
 
@@ -614,7 +606,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
         mode === "register" ? await api.register(accountIdentifier, password) : await api.login(accountIdentifier, password);
       storeAuthToken(payload.token);
       setCurrentUser(payload.user);
-      const nextPath = safeNextPath(new URLSearchParams(window.location.search).get("next"));
+      const nextPath = new URLSearchParams(window.location.search).get("next");
       router.push(loginDestination(payload.user, nextPath));
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : "操作失败");
@@ -635,7 +627,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
     try {
       const payload = await api.startGuestSession();
       storeGuestAuthToken(payload.token);
-      const nextPath = safeNextPath(new URLSearchParams(window.location.search).get("next"));
+      const nextPath = loginRedirectPath(new URLSearchParams(window.location.search).get("next"));
       router.push(nextPath);
     } catch (guestError) {
       setError(guestError instanceof Error ? guestError.message : "游客访问失败");
@@ -651,7 +643,8 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
       setNotice(`${option.providerLabel}需要先在服务器 .env 配置 OAuth Client/App ID 与 Secret。邮箱/手机号注册登录已可直接使用。`);
       return;
     }
-    const nextPath = typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("next") || "/" : "/";
+    const nextPath =
+      typeof window !== "undefined" ? loginRedirectPath(new URLSearchParams(window.location.search).get("next")) : "/";
     const params = new URLSearchParams({ next: nextPath });
     const guestToken = readGuestAuthToken();
     if (guestToken) {

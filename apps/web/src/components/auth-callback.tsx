@@ -6,6 +6,7 @@ import { useEffect } from "react";
 import { LoaderCircle, ShieldCheck, TriangleAlert } from "lucide-react";
 
 import { storeAuthToken } from "@/lib/api";
+import { loginRedirectPath } from "@/lib/auth-redirect";
 
 type AuthCallbackProps = {
   error?: string | null;
@@ -13,24 +14,17 @@ type AuthCallbackProps = {
   token?: string | null;
 };
 
-function safeNextPath(value: string | null | undefined) {
-  if (!value || !value.startsWith("/") || value.startsWith("//")) {
-    return "/";
-  }
-  return value;
-}
-
 export function AuthCallback({ error, nextPath, token }: AuthCallbackProps) {
   const router = useRouter();
   const hasError = Boolean(error || !token);
-  const message = error || (!token ? "第三方登录没有返回有效会话，请重新登录。" : "正在跳转到开放课堂工作台。");
+  const message = error || (!token ? "第三方登录没有返回有效会话，请重新登录。" : "正在跳转到开放课堂主页。");
 
   useEffect(() => {
     if (error || !token) {
       return;
     }
     storeAuthToken(token);
-    router.replace(safeNextPath(nextPath));
+    router.replace(loginRedirectPath(nextPath));
   }, [error, nextPath, router, token]);
 
   return (
