@@ -59,7 +59,7 @@ type SocialSignInOption = {
   label: string;
   providerLabel: string;
   className: string;
-  brand: "apple" | "github" | "google" | "wechat";
+  brand: "apple" | "github" | "google" | "microsoft" | "wechat" | "x";
 };
 
 type KnowledgeTextItem = {
@@ -77,14 +77,21 @@ type KnowledgeIconItem = {
 const socialSignInOptions: SocialSignInOption[] = [
   {
     id: "google",
-    label: "使用 Google 账号登录",
+    label: "使用 Google 登录",
     providerLabel: "Google 账号",
     className: "border-[#e8dfd2] bg-white text-[#5c4c3c] hover:border-[#d2a878] hover:bg-[#fcfbf9]",
     brand: "google",
   },
   {
+    id: "wechat",
+    label: "使用微信登录",
+    providerLabel: "微信登录",
+    className: "border-[#1aad19] bg-[#1aad19] text-white hover:border-[#159b17] hover:bg-[#159b17]",
+    brand: "wechat",
+  },
+  {
     id: "apple",
-    label: "使用 Apple 账号登录",
+    label: "使用 Apple 登录",
     providerLabel: "Apple 账号",
     className: "border-[#1f1a17] bg-[#1f1a17] text-white hover:bg-black",
     brand: "apple",
@@ -97,11 +104,18 @@ const socialSignInOptions: SocialSignInOption[] = [
     brand: "github",
   },
   {
-    id: "wechat",
-    label: "使用微信登录",
-    providerLabel: "微信登录",
-    className: "border-[#1aad19] bg-[#1aad19] text-white hover:border-[#159b17] hover:bg-[#159b17]",
-    brand: "wechat",
+    id: "microsoft",
+    label: "使用 Microsoft 登录",
+    providerLabel: "Microsoft 账号",
+    className: "border-[#e8dfd2] bg-white text-[#5c4c3c] hover:border-[#d2a878] hover:bg-[#fcfbf9]",
+    brand: "microsoft",
+  },
+  {
+    id: "x",
+    label: "使用 X 登录",
+    providerLabel: "X 账号",
+    className: "border-black bg-black text-white hover:bg-[#1f1a17]",
+    brand: "x",
   },
 ];
 
@@ -275,6 +289,25 @@ function GitHubBrandIcon() {
   );
 }
 
+function MicrosoftBrandIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 18 18" className="h-[18px] w-[18px]">
+      <path fill="#f35325" d="M1 1h7.5v7.5H1z" />
+      <path fill="#81bc06" d="M9.5 1H17v7.5H9.5z" />
+      <path fill="#05a6f0" d="M1 9.5h7.5V17H1z" />
+      <path fill="#ffba08" d="M9.5 9.5H17V17H9.5z" />
+    </svg>
+  );
+}
+
+function XBrandIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 18 18" className="h-[18px] w-[18px]" fill="currentColor">
+      <path d="M10.7 7.63 17.37 0h-1.58L10 6.62 5.37 0H0l7 10.01L0 18h1.58l6.12-6.99L12.6 18H18L10.7 7.63Zm-2.17 2.48-.71-.99L2.18 1.18h2.43l4.55 6.4.71.99 5.92 8.34h-2.43l-4.83-6.8Z" />
+    </svg>
+  );
+}
+
 function WeChatBrandIcon() {
   return (
     <svg aria-hidden="true" viewBox="0 0 24 24" className="h-[18px] w-[18px]" fill="currentColor">
@@ -293,6 +326,12 @@ function SocialBrandIcon({ brand }: { brand: SocialSignInOption["brand"] }) {
   }
   if (brand === "github") {
     return <GitHubBrandIcon />;
+  }
+  if (brand === "microsoft") {
+    return <MicrosoftBrandIcon />;
+  }
+  if (brand === "x") {
+    return <XBrandIcon />;
   }
   return <WeChatBrandIcon />;
 }
@@ -729,11 +768,12 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
               </div>
             ) : (
               <>
-                <div className="mb-5 space-y-3">
+                <div className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-2">
                   {socialSignInOptions.map((option) => {
                     const provider = authProviders.find((item) => item.kind === "oauth" && item.id === option.id);
                     const isUnconfigured = provider ? !provider.configured : false;
-                    const statusClassName = option.brand === "google" ? "bg-black/5 text-[#5c4c3c]" : "bg-white/20 text-current";
+                    const statusClassName =
+                      option.brand === "google" || option.brand === "microsoft" ? "bg-black/5 text-[#5c4c3c]" : "bg-white/20 text-current";
 
                     return (
                       <button
@@ -741,14 +781,14 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                         type="button"
                         onClick={() => handleProviderSignIn(option)}
                         className={clsx(
-                          "flex w-full items-center justify-center gap-3 rounded-lg border px-4 py-3.5 text-sm font-semibold shadow-sm transition active:scale-[0.99]",
+                          "flex min-h-12 w-full items-center justify-center gap-2 rounded-lg border px-3 py-3 text-center text-sm font-semibold leading-tight shadow-sm transition active:scale-[0.99]",
                           option.className
                         )}
                       >
                         <SocialBrandIcon brand={option.brand} />
-                        {option.label}
+                        <span className="min-w-0">{option.label}</span>
                         {isUnconfigured ? (
-                          <span className={clsx("rounded-full px-2 py-0.5 text-[11px] font-semibold", statusClassName)}>未配置</span>
+                          <span className={clsx("shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold", statusClassName)}>未配置</span>
                         ) : null}
                       </button>
                     );

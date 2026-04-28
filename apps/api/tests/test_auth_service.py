@@ -1,5 +1,6 @@
 import pytest
 from fastapi import HTTPException
+from starlette.requests import Request
 
 from app.services.auth_service import AuthService, OAuthProfile
 from app.services.course_store import SqliteCourseStore
@@ -124,15 +125,57 @@ def test_login_rejects_wrong_password(tmp_path) -> None:
     assert exc_info.value.status_code == 401
 
 
-def test_provider_list_uses_wechat_instead_of_microsoft(tmp_path) -> None:
+def test_provider_list_includes_supported_social_logins(tmp_path) -> None:
     db_path = tmp_path / "openclass.sqlite3"
     SqliteCourseStore(db_path, legacy_json_path=None)
     auth = AuthService(db_path)
 
     provider_ids = {provider.id for provider in auth.providers()}
 
-    assert "wechat" in provider_ids
-    assert "microsoft" not in provider_ids
+    assert {"google", "wechat", "apple", "github", "microsoft", "x"}.issubset(provider_ids)
+
+
+def test_provider_configuration_reflects_env(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "openclass.sqlite3"
+    SqliteCourseStore(db_path, legacy_json_path=None)
+    auth = AuthService(db_path)
+
+    monkeypatch.setenv("OPENCLASS_OAUTH_GOOGLE_CLIENT_ID", "google-client")
+    monkeypatch.setenv("OPENCLASS_OAUTH_GOOGLE_CLIENT_SECRET", "google-secret")
+
+    providers = {provider.id: provider for provider in auth.providers()}
+
+    assert providers["google"].configured is True
+    assert providers["wechat"].configured is False
+
+
+def test_x_oauth_authorization_url_uses_pkce(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "openclass.sqlite3"
+    SqliteCourseStore(db_path, legacy_json_path=None)
+    auth = AuthService(db_path)
+    monkeypatch.setenv("OPENCLASS_OAUTH_X_CLIENT_ID", "x-client")
+    monkeypatch.setenv("OPENCLASS_OAUTH_X_CLIENT_SECRET", "x-secret")
+    request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/api/auth/oauth/x/start",
+            "headers": [
+                (b"host", b"example.com"),
+                (b"x-forwarded-proto", b"https"),
+            ],
+            "query_string": b"",
+            "server": ("example.com", 443),
+            "scheme": "https",
+        }
+    )
+
+    target = auth.oauth_authorization_url("x", "/studio", request)
+
+    assert target.startswith("https://x.com/i/oauth2/authorize?")
+    assert "code_challenge=" in target
+    assert "code_challenge_method=S256" in target
+    assert "redirect_uri=https%3A%2F%2Fexample.com%2Fapi%2Fauth%2Foauth%2Fx%2Fcallback" in target
 
 
 def test_oauth_login_links_existing_email_and_reuses_unique_account(tmp_path) -> None:

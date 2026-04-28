@@ -90,6 +90,8 @@ class OAuthProviderConfig:
     userinfo_url: str | None = None
     email_url: str | None = None
     response_mode: str | None = None
+    pkce: bool = False
+    token_auth_method: str = "body"
 
     @property
     def client_id(self) -> str | None:
@@ -250,7 +252,17 @@ def _provider_label(provider: str) -> str:
         "github": "GitHub",
         "wechat": "微信",
         "microsoft": "Microsoft",
+        "x": "X",
     }.get(provider, provider)
+
+
+def _oauth_code_verifier() -> str:
+    return secrets.token_urlsafe(64)
+
+
+def _oauth_code_challenge(verifier: str) -> str:
+    digest = hashlib.sha256(verifier.encode("ascii")).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
 
 
 def _identity_view(row: sqlite3.Row) -> AuthIdentityView:
@@ -330,19 +342,48 @@ def _oauth_providers() -> dict[str, OAuthProviderConfig]:
             client_id_env="OPENCLASS_OAUTH_WECHAT_APP_ID",
             client_secret_env="OPENCLASS_OAUTH_WECHAT_APP_SECRET",
         ),
+        "microsoft": OAuthProviderConfig(
+            id="microsoft",
+            label="Microsoft",
+            description="使用 Microsoft 账号登录开放课堂。",
+            auth_url="https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+            token_url="https://login.microsoftonline.com/common/oauth2/v2.0/token",
+            userinfo_url="https://graph.microsoft.com/oidc/userinfo",
+            scopes=("openid", "email", "profile"),
+            client_id_env="OPENCLASS_OAUTH_MICROSOFT_CLIENT_ID",
+            client_secret_env="OPENCLASS_OAUTH_MICROSOFT_CLIENT_SECRET",
+        ),
+        "x": OAuthProviderConfig(
+            id="x",
+            label="X",
+            description="使用 X 账号登录开放课堂。",
+            auth_url="https://x.com/i/oauth2/authorize",
+            token_url="https://api.x.com/2/oauth2/token",
+            userinfo_url="https://api.x.com/2/users/me?user.fields=profile_image_url",
+            scopes=("users.read",),
+            client_id_env="OPENCLASS_OAUTH_X_CLIENT_ID",
+            client_secret_env="OPENCLASS_OAUTH_X_CLIENT_SECRET",
+            pkce=True,
+            token_auth_method="basic",
+        ),
     }
 
 
-def _post_form(url: str, data: dict[str, str]) -> dict[str, Any]:
+def _post_form(url: str, data: dict[str, str], *, basic_auth: tuple[str, str] | None = None) -> dict[str, Any]:
     encoded = parse.urlencode(data).encode("utf-8")
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/x-www-form-urlencoded",
+        "User-Agent": "OpenClass OAuth",
+    }
+    if basic_auth is not None:
+        username, password = basic_auth
+        token = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
+        headers["Authorization"] = f"Basic {token}"
     req = urlrequest.Request(
         url,
         data=encoded,
-        headers={
-            "Accept": "application/json",
-            "Content-Type": "application/x-www-form-urlencoded",
-            "User-Agent": "OpenClass OAuth",
-        },
+        headers=headers,
         method="POST",
     )
     try:
@@ -480,6 +521,7 @@ class AuthService:
                 )
                 self._ensure_table_column(conn, "auth_oauth_states", "frontend_origin", "TEXT")
                 self._ensure_table_column(conn, "auth_oauth_states", "guest_user_id", "TEXT")
+                self._ensure_table_column(conn, "auth_oauth_states", "code_verifier", "TEXT")
                 with conn:
                     self._ensure_email_identities(conn)
 
@@ -791,6 +833,7 @@ class AuthService:
         state = secrets.token_urlsafe(OAUTH_STATE_BYTES)
         redirect_uri = self._oauth_redirect_uri(provider.id, request)
         guest_user_id = self._guest_user_id_for_token(guest_token)
+        code_verifier = _oauth_code_verifier() if provider.pkce else None
         if provider.id == "wechat":
             params = {
                 "appid": provider.client_id or "",
@@ -809,6 +852,9 @@ class AuthService:
             }
         if provider.id == "google":
             params["prompt"] = "select_account"
+        if provider.pkce and code_verifier:
+            params["code_challenge"] = _oauth_code_challenge(code_verifier)
+            params["code_challenge_method"] = "S256"
         if provider.response_mode:
             params["response_mode"] = provider.response_mode
 
@@ -817,10 +863,20 @@ class AuthService:
                 with conn:
                     conn.execute(
                         """
-                        INSERT INTO auth_oauth_states(state, provider, next_path, frontend_origin, guest_user_id, created_at)
-                        VALUES (?, ?, ?, ?, ?, ?)
+                        INSERT INTO auth_oauth_states(
+                            state, provider, next_path, frontend_origin, guest_user_id, code_verifier, created_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
                         """,
-                        (state, provider.id, _safe_next_path(next_path), _frontend_origin(request), guest_user_id, _now_iso()),
+                        (
+                            state,
+                            provider.id,
+                            _safe_next_path(next_path),
+                            _frontend_origin(request),
+                            guest_user_id,
+                            code_verifier,
+                            _now_iso(),
+                        ),
                     )
         suffix = "#wechat_redirect" if provider.id == "wechat" else ""
         return f"{provider.auth_url}?{parse.urlencode(params)}{suffix}"
@@ -831,13 +887,20 @@ class AuthService:
         code = payload.get("code", "")
         if not state or not code:
             raise HTTPException(status_code=400, detail="第三方登录回调缺少授权码")
-        next_path, frontend_origin, guest_user_id = self._consume_oauth_state(provider.id, state)
-        token_payload = self._exchange_oauth_code(provider, code, request)
+        next_path, frontend_origin, guest_user_id, code_verifier = self._consume_oauth_state(provider.id, state)
+        token_payload = self._exchange_oauth_code(provider, code, request, code_verifier=code_verifier)
         profile = self._profile_from_oauth(provider, token_payload)
         token, user = self.login_with_oauth(profile, guest_user_id=guest_user_id)
         return token, user, next_path, frontend_origin
 
-    def _exchange_oauth_code(self, provider: OAuthProviderConfig, code: str, request: Request) -> dict[str, Any]:
+    def _exchange_oauth_code(
+        self,
+        provider: OAuthProviderConfig,
+        code: str,
+        request: Request,
+        *,
+        code_verifier: str | None = None,
+    ) -> dict[str, Any]:
         if provider.id == "wechat":
             payload = _get_json_with_params(
                 provider.token_url,
@@ -853,15 +916,25 @@ class AuthService:
             if payload.get("errcode"):
                 raise HTTPException(status_code=502, detail=str(payload.get("errmsg") or "微信登录令牌交换失败"))
             return payload
+        token_data = {
+            "client_id": provider.client_id or "",
+            "client_secret": provider.client_secret or "",
+            "code": code,
+            "grant_type": "authorization_code",
+            "redirect_uri": self._oauth_redirect_uri(provider.id, request),
+        }
+        basic_auth = None
+        if provider.pkce:
+            if not code_verifier:
+                raise HTTPException(status_code=400, detail="第三方登录状态已失效，请重新发起登录")
+            token_data["code_verifier"] = code_verifier
+        if provider.token_auth_method == "basic":
+            basic_auth = (provider.client_id or "", provider.client_secret or "")
+            token_data.pop("client_secret", None)
         return _post_form(
             provider.token_url,
-            {
-                "client_id": provider.client_id or "",
-                "client_secret": provider.client_secret or "",
-                "code": code,
-                "grant_type": "authorization_code",
-                "redirect_uri": self._oauth_redirect_uri(provider.id, request),
-            },
+            token_data,
+            basic_auth=basic_auth,
         )
 
     def oauth_frontend_redirect_url(self, token: str, user: UserView, next_path: str, frontend_origin: str, request: Request) -> str:
@@ -975,6 +1048,9 @@ class AuthService:
                     WHEN 'wechat' THEN 2
                     WHEN 'google' THEN 3
                     WHEN 'apple' THEN 4
+                    WHEN 'github' THEN 5
+                    WHEN 'microsoft' THEN 6
+                    WHEN 'x' THEN 7
                     ELSE 9
                 END,
                 created_at
@@ -1003,7 +1079,7 @@ class AuthService:
     def _oauth_redirect_uri(self, provider_id: str, request: Request) -> str:
         return parse.urljoin(_public_origin(request), f"/api/auth/oauth/{provider_id}/callback")
 
-    def _consume_oauth_state(self, provider_id: str, state: str) -> tuple[str, str, str | None]:
+    def _consume_oauth_state(self, provider_id: str, state: str) -> tuple[str, str, str | None, str | None]:
         with self._lock:
             with self._connect() as conn:
                 with conn:
@@ -1021,6 +1097,7 @@ class AuthService:
                         _safe_next_path(row["next_path"]),
                         row["frontend_origin"] or _frontend_origin(None),
                         row["guest_user_id"],
+                        row["code_verifier"],
                     )
 
     def _profile_from_oauth(self, provider: OAuthProviderConfig, token_payload: dict[str, Any]) -> OAuthProfile:
@@ -1079,6 +1156,20 @@ class AuthService:
                 email=str(email or "") or None,
                 display_name=str(raw_profile.get("name") or raw_profile.get("login") or "") or None,
                 avatar_url=str(raw_profile.get("avatar_url") or "") or None,
+            )
+        if provider.id == "x":
+            raw_profile = _get_json(provider.userinfo_url or "", access_token)
+            if not isinstance(raw_profile, dict):
+                raise HTTPException(status_code=502, detail="X 账号资料格式异常")
+            data = raw_profile.get("data")
+            if not isinstance(data, dict):
+                raise HTTPException(status_code=502, detail="X 账号资料格式异常")
+            return OAuthProfile(
+                provider=provider.id,
+                subject=str(data.get("id") or ""),
+                email=str(data.get("email") or "") or None,
+                display_name=str(data.get("name") or data.get("username") or "") or None,
+                avatar_url=str(data.get("profile_image_url") or "") or None,
             )
         raw_profile = _get_json(provider.userinfo_url or "", access_token)
         if not isinstance(raw_profile, dict):
