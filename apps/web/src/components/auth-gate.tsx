@@ -5,7 +5,7 @@ import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
 import { LoaderCircle, ShieldCheck } from "lucide-react";
 
-import { api, clearAuthToken, readAuthToken, readEffectiveAuthToken, storeGuestAuthToken } from "@/lib/api";
+import { api, clearAuthToken, readAuthToken, readEffectiveAuthToken } from "@/lib/api";
 import type { UserView } from "@/types";
 
 type AuthGateProps = {
@@ -35,16 +35,13 @@ export function AuthGate({ adminOnly = false, children }: AuthGateProps) {
         router.replace(loginHref());
         return;
       }
+      if (!readEffectiveAuthToken()) {
+        router.replace(loginHref());
+        return;
+      }
 
       try {
-        let currentUser: UserView;
-        if (readEffectiveAuthToken()) {
-          currentUser = await api.getCurrentUser();
-        } else {
-          const guestSession = await api.startGuestSession();
-          storeGuestAuthToken(guestSession.token);
-          currentUser = guestSession.user;
-        }
+        const currentUser = await api.getCurrentUser();
         if (disposed) {
           return;
         }
@@ -55,20 +52,8 @@ export function AuthGate({ adminOnly = false, children }: AuthGateProps) {
         setUser(currentUser);
       } catch {
         clearAuthToken();
-        if (adminOnly) {
+        if (!disposed) {
           router.replace(loginHref());
-          return;
-        }
-        try {
-          const guestSession = await api.startGuestSession();
-          if (!disposed) {
-            storeGuestAuthToken(guestSession.token);
-            setUser(guestSession.user);
-          }
-        } catch {
-          if (!disposed) {
-            router.replace(loginHref());
-          }
         }
       } finally {
         if (!disposed) {
