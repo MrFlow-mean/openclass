@@ -20,7 +20,17 @@ def run_teacher(state: WorkflowState) -> WorkflowState:
     teacher_talk_track = (state.get("teacher_talk_track") or "").strip()
     board_teaching_guide = state.get("board_teaching_guide")
 
-    if decision.action in {"clarify_request", "await_scope_choice", "await_reference_choice"}:
+    if decision.action == "clarify_request":
+        ai_message = openai_course_ai.generate_clarification_message(
+            lesson_title=(state.get("generated_lesson") or state["lesson"]).title,
+            request_message=request.message,
+            requirements=requirements,
+            learning_clarification=state["learning_clarification"].model_dump(mode="json"),
+            clarification_questions=state.get("clarification_questions", []),
+            conversation=[turn.model_dump(mode="json") for turn in request.conversation],
+        )
+        return {"teacher_message": _format_teacher_message(ai_message or _fallback_teacher_message(state))}
+    if decision.action in {"await_scope_choice", "await_reference_choice"}:
         return {"teacher_message": _format_teacher_message(_fallback_teacher_message(state))}
     section_turn = _section_teaching_turn(state)
     if section_turn is not None:

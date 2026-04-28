@@ -3,7 +3,6 @@ from __future__ import annotations
 from app.services.ai_workflow import (
     WorkflowState,
     _available_reference_resources,
-    _clarification_questions_for_status,
     _draft_requirements,
     _learning_clarification_status,
     _learning_need_checklist,
@@ -14,6 +13,37 @@ from app.services.ai_workflow import (
 )
 from app.services.course_runtime import normalize_requirements
 from app.services.openai_course_ai import openai_course_ai
+
+
+def _ai_pm_assessment(
+    *,
+    lesson,
+    request,
+    draft_requirements,
+):
+    assessment = openai_course_ai.assess_learning_requirements(
+        lesson_title=lesson.title,
+        lesson_summary=lesson.summary,
+        lesson_tags=lesson.tags,
+        document_outline=draft_requirements.board_scope,
+        user_message=request.message,
+        selection_excerpt=request.selection.excerpt if request.selection else None,
+        conversation=[turn.model_dump(mode="json") for turn in request.conversation],
+    )
+    if assessment is None:
+        return None
+    requirements = normalize_requirements(
+        assessment.learning_requirement_sheet,
+        lesson_title=lesson.title,
+        document=lesson.board_document,
+    )
+    requirements.learning_need_checklist = _learning_need_checklist(lesson, request, requirements)
+    status = _learning_clarification_status(
+        lesson=lesson,
+        request=request,
+        requirements=requirements,
+    )
+    return assessment, requirements, status
 
 
 def run_pm(state: WorkflowState) -> WorkflowState:
@@ -42,44 +72,42 @@ def run_pm(state: WorkflowState) -> WorkflowState:
 
     if _should_use_fast_pm_path(lesson=lesson, request=request, status=draft_status):
         needs_clarification = _should_ask_brief_clarification(request=request, status=draft_status)
-        questions = _clarification_questions_for_status(draft_status) if needs_clarification else []
+        if needs_clarification:
+            assessed = _ai_pm_assessment(
+                lesson=lesson,
+                request=request,
+                draft_requirements=draft_requirements,
+            )
+            if assessed is not None:
+                assessment, requirements, status = assessed
+                return {
+                    "learning_requirement_sheet": requirements,
+                    "learning_clarification": status,
+                    "needs_clarification": True,
+                    "clarification_questions": assessment.clarification_questions[:3],
+                    "pm_reason": assessment.reason,
+                }
         return {
             "learning_requirement_sheet": draft_requirements,
             "learning_clarification": draft_status,
             "needs_clarification": needs_clarification,
-            "clarification_questions": questions[:1],
-            "pm_reason": "优先走极速澄清策略：能直接讲就不追问，只有明显会讲偏时才补一句。",
+            "clarification_questions": [],
+            "pm_reason": "启发式仅判断缺口；用户可见澄清话术交给 Teacher AI 临场生成。",
         }
 
-    assessment = openai_course_ai.assess_learning_requirements(
-        lesson_title=lesson.title,
-        lesson_summary=lesson.summary,
-        lesson_tags=lesson.tags,
-        document_outline=draft_requirements.board_scope,
-        user_message=request.message,
-        selection_excerpt=request.selection.excerpt if request.selection else None,
-        conversation=[turn.model_dump(mode="json") for turn in request.conversation],
+    assessed = _ai_pm_assessment(
+        lesson=lesson,
+        request=request,
+        draft_requirements=draft_requirements,
     )
-    if assessment is not None:
-        requirements = normalize_requirements(
-            assessment.learning_requirement_sheet,
-            lesson_title=lesson.title,
-            document=lesson.board_document,
-        )
-        requirements.learning_need_checklist = _learning_need_checklist(lesson, request, requirements)
-        status = _learning_clarification_status(
-            lesson=lesson,
-            request=request,
-            requirements=requirements,
-        )
+    if assessed is not None:
+        assessment, requirements, status = assessed
         needs_clarification = not assessment.ready
         if status.progress < 35 and not status.forced_start:
             needs_clarification = True
         if status.progress >= 80 or status.forced_start:
             needs_clarification = False
         clarification_questions = assessment.clarification_questions[:3]
-        if needs_clarification and not clarification_questions:
-            clarification_questions = _clarification_questions_for_status(status)
         return {
             "learning_requirement_sheet": requirements,
             "learning_clarification": status,
@@ -89,11 +117,10 @@ def run_pm(state: WorkflowState) -> WorkflowState:
         }
 
     needs_clarification = _should_ask_brief_clarification(request=request, status=draft_status)
-    questions = _clarification_questions_for_status(draft_status) if needs_clarification else []
     return {
         "learning_requirement_sheet": draft_requirements,
         "learning_clarification": draft_status,
         "needs_clarification": needs_clarification,
-        "clarification_questions": questions[:1],
+        "clarification_questions": [],
         "pm_reason": draft_status.reason,
     }

@@ -1356,19 +1356,6 @@ def _draft_requirements(lesson: Lesson, request: ChatRequest) -> LearningRequire
     return normalized
 
 
-def _clarification_questions_for_status(status: LearningClarificationStatus) -> list[str]:
-    missing = set(status.missing_items)
-    if "想学的主题" in missing:
-        return ["我们先找一个小入口：你指的是哪一句、哪个概念，或者想先学什么主题？给我一个关键词，我就从那里开讲。"]
-    if "当前水平或背景" in missing and "学习目的或应用场景" in missing:
-        return ["我先按入门节奏讲。你要更偏概念理解、做题，还是实际应用？"]
-    if "当前水平或背景" in missing:
-        return ["我先按入门节奏讲；如果你已经熟悉前置知识，我下一轮直接加深。"]
-    if "学习目的或应用场景" in missing:
-        return ["我先讲核心用法；之后可以再把例子换成做题或实际应用场景。"]
-    return []
-
-
 def _is_first_user_exchange(request: ChatRequest) -> bool:
     return not any(turn.role == "user" for turn in request.conversation)
 
@@ -3273,7 +3260,11 @@ def _fallback_teacher_message(state: WorkflowState) -> str:
     lesson_title = (state.get("generated_lesson") or state["lesson"]).title
 
     if decision.action == "clarify_request":
-        return (clarification_questions or ["你现在最想先学的具体内容是什么？"])[0]
+        if clarification_questions:
+            return clarification_questions[0]
+        status = state.get("learning_clarification")
+        missing = "、".join(status.missing_items) if status is not None else "必要学习信息"
+        return f"教师模型暂时没有返回自然追问；当前还缺：{missing}。"
     if decision.action == "await_reference_choice" and reference_prompt is not None:
         return reference_prompt.question
     if decision.action == "await_scope_choice":

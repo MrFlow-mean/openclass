@@ -79,7 +79,7 @@ def test_workflow_asks_for_clarification_when_request_is_too_vague() -> None:
     assert result["needs_clarification"] is True
     assert result["board_decision"].action == "clarify_request"
     assert result.get("document_updated") is False
-    assert result["clarification_questions"]
+    assert result["teacher_message"].strip()
     assert "什么水平" not in result["teacher_message"]
 
 
@@ -99,7 +99,7 @@ def test_workflow_asks_for_topic_keyword_on_greeting_without_level_refrain() -> 
     assert result["needs_clarification"] is True
     assert result["board_decision"].action == "clarify_request"
     assert result.get("document_updated") is False
-    assert "关键词" in result["teacher_message"]
+    assert "想学的主题" in result["learning_clarification"].missing_items
     assert "什么水平" not in result["teacher_message"]
 
 
@@ -127,6 +127,42 @@ def test_workflow_starts_teaching_on_first_subject_only_learning_goal() -> None:
     assert result["teacher_message"].strip()
     assert "什么水平" not in result["teacher_message"]
     assert "准备用在哪种场景" not in result["teacher_message"]
+
+
+def test_workflow_probes_learning_purpose_after_greeting_then_broad_math_goal(monkeypatch: pytest.MonkeyPatch) -> None:
+    package = build_initial_course_package()
+    lesson = create_empty_lesson("测试12")
+    package.lessons.append(lesson)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_clarification_message",
+        lambda **kwargs: "数学这个范围很大，我先确认一下：你现在是几年级或什么水平，这次学数学主要为了什么目的，想先从代数、几何、函数、微积分还是概率统计哪一块开始？",
+    )
+
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "course_package": package,
+            "request": ChatRequest(
+                message="我想学数学",
+                conversation=[
+                    ConversationTurn(role="user", content="你好"),
+                    ConversationTurn(
+                        role="assistant",
+                        content="我们先找一个小入口：你指的是哪一句、哪个概念，或者想先学什么主题？给我一个关键词，我就从那里开讲。",
+                    ),
+                ],
+            ),
+        }
+    )
+
+    assert result["learning_requirement_sheet"].theme == "数学"
+    assert result["needs_clarification"] is True
+    assert result["board_decision"].action == "clarify_request"
+    assert "几年级" in result["teacher_message"] or "什么水平" in result["teacher_message"]
+    assert "目的" in result["teacher_message"] or "为了考试" in result["teacher_message"]
+    assert "哪一块" in result["teacher_message"]
+    assert "代数" in result["teacher_message"]
 
 
 def test_workflow_probes_math_background_for_first_advanced_subject_goal() -> None:
@@ -997,7 +1033,6 @@ def test_workflow_answers_specific_board_followup_without_preference_clarificati
     assert result["needs_clarification"] is False
     assert result["board_decision"].action == "no_change"
     assert result["document_updated"] is False
-    assert "你要更偏概念理解" not in result["teacher_message"]
     assert "损失函数" in result["teacher_message"]
     assert "预测结果" in result["teacher_message"] or "真实结果" in result["teacher_message"]
 
@@ -1055,7 +1090,6 @@ def test_workflow_starts_after_user_answers_from_zero_to_probe() -> None:
     assert result["needs_clarification"] is False
     assert result["board_decision"].action == "no_change"
     assert result["document_updated"] is False
-    assert "你要更偏概念理解" not in result["teacher_message"]
     assert "什么是虚数" in result["teacher_message"]
 
 
@@ -1074,7 +1108,7 @@ def test_workflow_starts_when_user_delegates_after_option_prompt() -> None:
                     ConversationTurn(role="user", content="我要学什么是虚数"),
                     ConversationTurn(
                         role="assistant",
-                        content="我先按入门节奏讲。你要更偏概念理解、做题，还是实际应用？",
+                        content="虚数可以从直观图像讲，也可以从代数规则讲；你更想先解决哪一个卡点？",
                     ),
                 ],
             ),
@@ -1084,7 +1118,6 @@ def test_workflow_starts_when_user_delegates_after_option_prompt() -> None:
     assert result["needs_clarification"] is False
     assert result["board_decision"].action == "no_change"
     assert result["document_updated"] is False
-    assert "你要更偏概念理解" not in result["teacher_message"]
     assert "什么是虚数" in result["teacher_message"]
 
 

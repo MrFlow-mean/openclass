@@ -1626,6 +1626,44 @@ class OpenAICourseAI:
         )
         return result.teacher_message if result else None
 
+    def generate_clarification_message(
+        self,
+        *,
+        lesson_title: str,
+        request_message: str,
+        requirements: LearningRequirementSheet,
+        learning_clarification: dict[str, Any],
+        clarification_questions: list[str],
+        conversation: list[dict[str, Any]],
+    ) -> str | None:
+        result = self._parse(
+            "teacher",
+            system_prompt=(
+                "You are Teacher AI speaking to the learner in Chinese. "
+                "Generate the next user-facing clarification reply yourself; do not copy canned wording, templates, or any provided question verbatim. "
+                "Use the learner's latest wording and recent conversation to ask a natural, context-specific follow-up. "
+                "When the learner gives only a broad subject such as math, language, programming, or finance, ask for the concrete learning purpose, current level/study stage, and the first subtopic or problem they want to start from. "
+                "Avoid repetitive form-like wording. Prefer one compact question, at most two short sentences. "
+                "Do not teach substantive content yet unless a tiny orientation phrase helps the question feel natural."
+            ),
+            user_prompt=_json(
+                {
+                    "lesson_title": lesson_title,
+                    "conversation": conversation,
+                    "user_message": request_message,
+                    "learning_requirement_sheet": requirements.model_dump(mode="json"),
+                    "learning_clarification": learning_clarification,
+                    "ai_generated_question_candidates_from_pm": clarification_questions,
+                    "instruction": (
+                        "The candidate questions, if present, are only semantic hints from PM AI. "
+                        "Rewrite naturally and adapt to this learner; never paste them directly."
+                    ),
+                }
+            ),
+            schema=TeacherMessageOutput,
+        )
+        return result.teacher_message if result else None
+
     def generate_board_teaching_guide(
         self,
         *,
