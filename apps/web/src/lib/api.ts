@@ -283,13 +283,21 @@ export const api = {
   getCoursePackage() {
     return request<CoursePackage>("/api/course-package");
   },
-  generateLesson(topic: string, branchFromLessonId?: string, startBlank = false) {
+  generateLesson(
+    topic: string,
+    options: {
+      branchFromLessonId?: string | null;
+      startBlank?: boolean;
+      targetPackageId?: string | null;
+    } = {}
+  ) {
     return request<CoursePackage>("/api/lessons/generate", {
       method: "POST",
       body: JSON.stringify({
         topic,
-        branch_from_lesson_id: branchFromLessonId ?? null,
-        start_blank: startBlank,
+        branch_from_lesson_id: options.branchFromLessonId ?? null,
+        target_package_id: options.targetPackageId ?? null,
+        start_blank: options.startBlank ?? false,
       }),
     });
   },

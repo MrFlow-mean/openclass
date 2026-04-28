@@ -550,6 +550,7 @@ class CoursePackageView(BaseModel):
     id: str
     title: str
     summary: str
+    is_standalone: bool = False
     lessons: list[LessonView]
     course_graph: list[CourseGraphEdge] = Field(default_factory=list)
     resources: list[ResourceLibraryItemView] = Field(default_factory=list)
@@ -657,6 +658,7 @@ class MoveLessonRequest(BaseModel):
 class GenerateLessonRequest(BaseModel):
     topic: str
     branch_from_lesson_id: str | None = None
+    target_package_id: str | None = None
     start_blank: bool = False
 
 

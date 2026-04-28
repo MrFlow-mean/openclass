@@ -85,6 +85,12 @@ def get_active_package(workspace: WorkspaceState) -> CoursePackage:
     return workspace.packages[0]
 
 
+def get_standalone_package(workspace: WorkspaceState) -> CoursePackage:
+    if not workspace.packages:
+        raise HTTPException(status_code=404, detail="No standalone course pool available")
+    return workspace.packages[0]
+
+
 def load_workspace_package() -> tuple[WorkspaceState, CoursePackage]:
     workspace = load_workspace()
     package = get_active_package(workspace)
@@ -186,6 +192,7 @@ def lesson_view(lesson: Lesson) -> LessonView:
 def package_view(
     package: CoursePackage,
     *,
+    is_standalone: bool = False,
     resource_lesson_id: str | None = None,
     isolate_lesson_resources: bool = False,
 ) -> CoursePackageView:
@@ -198,12 +205,12 @@ def package_view(
             )
         }
     )
-    return CoursePackageView.model_validate(
-        visible_package.model_dump(
-            mode="json",
-            exclude={"lessons": {"__all__": {"teaching_guide", "board_teaching_guide"}}},
-        )
+    package_data = visible_package.model_dump(
+        mode="json",
+        exclude={"lessons": {"__all__": {"teaching_guide", "board_teaching_guide"}}},
     )
+    package_data["is_standalone"] = is_standalone
+    return CoursePackageView.model_validate(package_data)
 
 
 def package_view_for_lesson(
@@ -211,10 +218,12 @@ def package_view_for_lesson(
     package: CoursePackage,
     lesson_id: str | None,
 ) -> CoursePackageView:
+    standalone = is_standalone_package(workspace, package)
     return package_view(
         package,
+        is_standalone=standalone,
         resource_lesson_id=lesson_id,
-        isolate_lesson_resources=is_standalone_package(workspace, package),
+        isolate_lesson_resources=standalone,
     )
 
 

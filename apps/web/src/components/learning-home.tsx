@@ -296,7 +296,12 @@ export function LearningHome() {
         setWorkspaceState(payload);
         if (typeof window !== "undefined") {
           const packageIdFromUrl = new URLSearchParams(window.location.search).get("package");
-          if (packageIdFromUrl && payload.packages.some((packageItem) => packageItem.id === packageIdFromUrl)) {
+          const standalonePackageId = payload.packages.find((packageItem) => packageItem.is_standalone)?.id ?? payload.packages[0]?.id;
+          if (
+            packageIdFromUrl &&
+            packageIdFromUrl !== standalonePackageId &&
+            payload.packages.some((packageItem) => packageItem.id === packageIdFromUrl)
+          ) {
             setSelectedPackageId(packageIdFromUrl);
             setPackageLessonsExpanded(true);
           }
@@ -386,14 +391,14 @@ export function LearningHome() {
 
   const packages = workspaceState?.packages ?? [];
   const workspaceActivePackageId = workspaceState?.active_package_id ?? packages[0]?.id ?? null;
+  const standalonePackage = packages.find((packageItem) => packageItem.is_standalone) ?? packages[0] ?? null;
+  const coursePackages = packages.filter((packageItem) => packageItem.id !== standalonePackage?.id);
   const selectedCoursePackage = selectedPackageId
-    ? packages.find((item) => item.id === selectedPackageId) ?? null
+    ? coursePackages.find((item) => item.id === selectedPackageId) ?? null
     : null;
   const coursePackage =
-    selectedCoursePackage ?? packages.find((item) => item.id === workspaceActivePackageId) ?? packages[0] ?? null;
-  const standalonePackage = packages[0] ?? null;
-  const isSelectedPackageStandalone = selectedCoursePackage?.id === standalonePackage?.id;
-  const movablePackages = packages.filter((packageItem) => packageItem.id !== standalonePackage?.id);
+    selectedCoursePackage ?? coursePackages.find((item) => item.id === workspaceActivePackageId) ?? coursePackages[0] ?? null;
+  const movablePackages = coursePackages;
   const feedLessons = packages.flatMap((packageItem) =>
     packageItem.lessons.map((lesson) => ({
       lesson,
@@ -475,6 +480,30 @@ export function LearningHome() {
       router.push("/studio");
     } catch (actionError) {
       setError(actionError instanceof Error ? actionError.message : "打开课程失败");
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  async function handleOpenStandaloneWorkspace() {
+    if (!standalonePackage) {
+      router.push("/studio");
+      return;
+    }
+
+    setBusyKey(`package:${standalonePackage.id}`);
+    setSelectedPackageId(null);
+    setSelectedLessonId(null);
+    setPackageLessonsExpanded(false);
+    setLessonMenuState(null);
+    setLessonMoveMenuState(null);
+    try {
+      const payload = await api.openPackage(standalonePackage.id);
+      setWorkspaceState(payload);
+      setError(null);
+      router.push("/studio");
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : "打开单独课程工作台失败");
     } finally {
       setBusyKey(null);
     }
@@ -705,8 +734,8 @@ export function LearningHome() {
                 </button>
               </div>
               <div className="space-y-2">
-                {packages.length ? (
-                  packages.map((packageItem) => {
+                {coursePackages.length ? (
+                  coursePackages.map((packageItem) => {
                     const isActive = packageItem.id === selectedPackageId;
                     const isBusy = busyKey === `package:${packageItem.id}`;
                     return (
@@ -811,13 +840,19 @@ export function LearningHome() {
                   <span className="rounded-full border border-stone-200 bg-white px-3 py-1 text-[10px] font-medium text-stone-500">
                     默认仅显示未入包课程
                   </span>
-                  <Link
-                    href="/studio"
+                  <button
+                    type="button"
+                    onClick={() => void handleOpenStandaloneWorkspace()}
+                    disabled={standalonePackage ? busyKey === `package:${standalonePackage.id}` : false}
                     className="rounded-xl p-1.5 text-stone-400 transition hover:bg-stone-200/60 hover:text-stone-950"
-                    aria-label="进入工作台"
+                    aria-label="进入单独课程工作台"
                   >
-                    <BookOpen className="h-4 w-4" />
-                  </Link>
+                    {standalonePackage && busyKey === `package:${standalonePackage.id}` ? (
+                      <LoaderCircle className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <BookOpen className="h-4 w-4" />
+                    )}
+                  </button>
                 </div>
               </div>
 
@@ -1571,16 +1606,16 @@ export function LearningHome() {
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-stone-400">
-              {isSelectedPackageStandalone ? "当前课池" : "当前课程包"}
+              当前课程包
             </p>
             <h4 className="mt-2 truncate text-lg font-semibold text-stone-950">{selectedCoursePackage.title}</h4>
             <div className="mt-2 flex h-3.5 origin-left scale-[0.82] flex-nowrap items-center gap-0.5">
               <button
                 type="button"
                 onClick={() => void handleDeleteSelectedPackage()}
-                disabled={packageActionBusy || packages.length <= 1}
+                disabled={packageActionBusy}
                 className="inline-flex h-3.5 shrink-0 items-center gap-px rounded-full border border-rose-100 bg-rose-50 px-1 text-[8px] font-normal leading-none text-rose-600 transition hover:border-rose-200 hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-45"
-                title={packages.length <= 1 ? "至少保留一个课程包" : "删除课程包"}
+                title="删除课程包"
               >
                 {isDeletingPackage ? <LoaderCircle className="h-2 w-2 animate-spin" /> : <Trash2 className="h-2 w-2" />}
                 删除
@@ -1675,9 +1710,7 @@ export function LearningHome() {
               })
             ) : (
               <div className="rounded-2xl border border-dashed border-stone-300 bg-stone-50/80 px-4 py-5 text-sm text-stone-500">
-                {isSelectedPackageStandalone
-                  ? "当前还没有未入包课程。去工作台新建后，这里会立即出现。"
-                  : "这个课程包还是空的，先把课程移动进来，或者进入工作台新建一页。"}
+                这个课程包还是空的，先把课程移动进来，或者进入工作台新建一页。
               </div>
             )}
           </div>

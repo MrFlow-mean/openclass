@@ -25,6 +25,7 @@ from app.services.workspace_state import (
     UPLOAD_DIR,
     find_lesson_package,
     get_package,
+    get_standalone_package,
     is_standalone_package,
     load_workspace_for_user,
     load_workspace_package_for_user,
@@ -190,12 +191,25 @@ def generate_lesson(
     request: GenerateLessonRequest,
     user: UserView = Depends(current_user),
 ) -> CoursePackageView:
-    workspace, package = load_workspace_package_for_user(user.id)
+    workspace = load_workspace_for_user(user.id)
+    source_package = None
+    if request.branch_from_lesson_id:
+        source_package, _ = find_lesson_package(workspace, request.branch_from_lesson_id)
+    if request.target_package_id:
+        package = get_package(workspace, request.target_package_id)
+    elif source_package is not None:
+        package = source_package
+    else:
+        package = get_standalone_package(workspace)
+    if source_package is not None and source_package.id != package.id:
+        raise HTTPException(status_code=400, detail="Branch source lesson must be in the target package")
+
     with bind_ai_request_context(
         "/api/lessons/generate",
         trace_prefix="generate_lesson",
         generation_topic=request.topic,
         branch_from_lesson_id=request.branch_from_lesson_id,
+        target_package_id=package.id,
         start_blank=request.start_blank,
     ):
         if not request.start_blank:
@@ -213,6 +227,7 @@ def generate_lesson(
         package.open_lesson_ids.append(lesson.id)
         package.workspace_tab_order.append(lesson.id)
         package.active_lesson_id = lesson.id
+        workspace.active_package_id = package.id
         if request.branch_from_lesson_id:
             package.course_graph.append(
                 CourseGraphEdge(

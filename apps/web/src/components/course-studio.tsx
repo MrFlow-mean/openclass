@@ -3148,7 +3148,11 @@ export function CourseStudio() {
     }
     setBusyAction("generate");
     try {
-      const nextPackage = await api.generateLesson(topic.trim(), activeLesson?.id, true);
+      const nextPackage = await api.generateLesson(topic.trim(), {
+        branchFromLessonId: coursePackage?.is_standalone ? null : activeLesson?.id,
+        startBlank: true,
+        targetPackageId: coursePackage?.id,
+      });
       updateCoursePackage(nextPackage, {
         blankLessonIds: nextPackage.active_lesson_id ? [nextPackage.active_lesson_id] : [],
       });

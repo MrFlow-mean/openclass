@@ -181,6 +181,7 @@ export interface CoursePackage {
   id: string;
   title: string;
   summary: string;
+  is_standalone: boolean;
   lessons: Lesson[];
   course_graph: CourseGraphEdge[];
   resources: ResourceLibraryItem[];

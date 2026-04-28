@@ -251,7 +251,7 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
   }, []);
 
   const packages = useMemo(() => workspaceState?.packages ?? [], [workspaceState]);
-  const standalonePackage = packages[0] ?? null;
+  const standalonePackage = packages.find((coursePackage) => coursePackage.is_standalone) ?? packages[0] ?? null;
   const coursePackageProjects = useMemo(
     () =>
       packages.filter((coursePackage) => coursePackage.id !== standalonePackage?.id).sort((left, right) => {
