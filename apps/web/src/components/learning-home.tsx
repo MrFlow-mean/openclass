@@ -680,7 +680,7 @@ export function LearningHome() {
                 />
                 <div className="min-w-0">
                   <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-stone-400">AI 课程工作台</p>
-                  <h1 className="mt-1 truncate text-2xl font-semibold tracking-tight text-stone-950">OpenClass</h1>
+                  <h1 className="mt-1 truncate text-2xl font-semibold tracking-tight text-stone-950">开放课堂</h1>
                 </div>
               </div>
               <div className="flex shrink-0 items-center gap-1">
@@ -1749,8 +1749,8 @@ export function LearningHome() {
             aria-label="用户头像"
           >
             <Image
-              src="https://api.dicebear.com/9.x/glass/svg?seed=OpenClass"
-              alt="OpenClass 用户头像"
+              src="https://api.dicebear.com/9.x/glass/svg?seed=kai-fang-ke-tang"
+              alt="开放课堂用户头像"
               className="h-full w-full object-cover"
               width={44}
               height={44}

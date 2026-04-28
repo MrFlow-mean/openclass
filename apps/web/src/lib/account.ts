@@ -30,7 +30,7 @@ export function userAccountLabel(user: UserView | null | undefined) {
 
 export function userDisplayName(user: UserView | null | undefined) {
   if (!user) {
-    return "OpenClass 用户";
+    return "开放课堂用户";
   }
   if (user.role === "guest") {
     return "游客";

@@ -457,7 +457,7 @@ export function ProfileSettingsPanel({
     }
 
     try {
-      new Notification("OpenClass 通知测试", {
+      new Notification("开放课堂通知测试", {
         body: `课程活动、AI 结果和资料库变化会按 ${settings.quietStart}-${settings.quietEnd} 的免打扰时段过滤。`,
         tag: "openclass-notification-test",
       });
@@ -1135,7 +1135,7 @@ export function ProfileSettingsPanel({
         <section className={settingSectionClass}>
           <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <p className="text-lg font-semibold text-stone-950">OpenClass 本地工作台</p>
+              <p className="text-lg font-semibold text-stone-950">开放课堂本地工作台</p>
               <p className="mt-1 text-sm text-stone-500">Community License</p>
             </div>
             <span className="inline-flex w-fit items-center rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">

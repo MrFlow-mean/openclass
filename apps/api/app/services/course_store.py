@@ -864,7 +864,7 @@ def build_initial_course_package() -> CoursePackage:
     lesson_b = create_lesson("直角三角形基础")
     lesson_c = create_lesson("欧几里得几何导论")
     return CoursePackage(
-        title="OpenClass 课程工作台",
+        title="开放课堂课程工作台",
         summary="把 lesson 当作可编辑、可分支、可讲解的课程资产。",
         lessons=[lesson_a, lesson_b, lesson_c],
         course_graph=[

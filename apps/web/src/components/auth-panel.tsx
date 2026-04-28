@@ -681,7 +681,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                   priority
                   size={80}
                 />
-                <span className="auth-display truncate text-2xl font-bold text-[#3a312b]">OpenClass</span>
+                <span className="auth-display truncate text-2xl font-bold text-[#3a312b]">开放课堂</span>
               </Link>
               <Link
                 href="/"

@@ -413,7 +413,7 @@ export function FollowingFeed() {
             className="inline-flex items-center gap-2 rounded-md px-2 py-2 text-sm font-semibold text-stone-700 transition hover:bg-stone-100 hover:text-stone-950"
           >
             <ArrowLeft className="h-4 w-4" />
-            OpenClass
+            开放课堂
           </Link>
 
           <Link
@@ -421,7 +421,7 @@ export function FollowingFeed() {
             className="inline-flex items-center gap-2 rounded-md border border-stone-200 bg-white px-3 py-2 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:text-stone-950"
           >
             <BrandMark alt="" className="h-5 w-5 rounded bg-white" size={40} />
-            OpenClass
+            开放课堂
           </Link>
         </div>
       </header>

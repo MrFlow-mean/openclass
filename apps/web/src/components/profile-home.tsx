@@ -54,7 +54,7 @@ type ProfileHomeProps = {
   initialTab?: ProfileTab;
 };
 
-const PROFILE_AVATAR_URL = "https://api.dicebear.com/9.x/glass/svg?seed=OpenClass";
+const PROFILE_AVATAR_URL = "https://api.dicebear.com/9.x/glass/svg?seed=kai-fang-ke-tang";
 
 function formatRelativeTime(value: string | Date | null | undefined) {
   if (!value) {
@@ -397,7 +397,7 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
           >
             <ArrowLeft className="h-4 w-4" />
             <BrandMark alt="" className="h-5 w-5 rounded bg-white" size={40} />
-            OpenClass
+            开放课堂
           </Link>
 
           <div className="flex items-center gap-2">
@@ -454,7 +454,7 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
           <div className="flex items-start gap-4 lg:block">
             <Image
               src={PROFILE_AVATAR_URL}
-              alt="OpenClass 用户头像"
+              alt="开放课堂用户头像"
               className="h-24 w-24 rounded-full border-4 border-white bg-stone-200 shadow-[0_16px_34px_rgba(15,23,42,0.08)] lg:h-48 lg:w-48"
               width={192}
               height={192}

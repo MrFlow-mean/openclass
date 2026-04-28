@@ -79,7 +79,7 @@ export function AdminDashboard() {
           >
             <ArrowLeft className="h-4 w-4" />
             <BrandMark alt="" className="h-5 w-5 rounded bg-white" size={40} />
-            OpenClass
+            开放课堂
           </Link>
           <AccountMenu />
         </div>

@@ -65,7 +65,7 @@ class AccountIdentifier:
             return self.email.split("@", 1)[0]
         if self.phone:
             return _mask_phone(self.phone)
-        return "OpenClass 用户"
+        return "开放课堂用户"
 
 
 @dataclass(frozen=True)
@@ -288,7 +288,7 @@ def _oauth_providers() -> dict[str, OAuthProviderConfig]:
         "google": OAuthProviderConfig(
             id="google",
             label="Google",
-            description="使用 Google 账号登录 OpenClass。",
+            description="使用 Google 账号登录开放课堂。",
             auth_url="https://accounts.google.com/o/oauth2/v2/auth",
             token_url="https://oauth2.googleapis.com/token",
             userinfo_url="https://openidconnect.googleapis.com/v1/userinfo",
@@ -299,7 +299,7 @@ def _oauth_providers() -> dict[str, OAuthProviderConfig]:
         "apple": OAuthProviderConfig(
             id="apple",
             label="Apple",
-            description="使用 Apple ID 登录 OpenClass。",
+            description="使用 Apple ID 登录开放课堂。",
             auth_url="https://appleid.apple.com/auth/authorize",
             token_url="https://appleid.apple.com/auth/token",
             scopes=("name", "email"),
@@ -310,7 +310,7 @@ def _oauth_providers() -> dict[str, OAuthProviderConfig]:
         "github": OAuthProviderConfig(
             id="github",
             label="GitHub",
-            description="使用 GitHub 账号登录 OpenClass。",
+            description="使用 GitHub 账号登录开放课堂。",
             auth_url="https://github.com/login/oauth/authorize",
             token_url="https://github.com/login/oauth/access_token",
             userinfo_url="https://api.github.com/user",
@@ -322,7 +322,7 @@ def _oauth_providers() -> dict[str, OAuthProviderConfig]:
         "wechat": OAuthProviderConfig(
             id="wechat",
             label="微信",
-            description="使用微信扫码登录 OpenClass。",
+            description="使用微信扫码登录开放课堂。",
             auth_url="https://open.weixin.qq.com/connect/qrconnect",
             token_url="https://api.weixin.qq.com/sns/oauth2/access_token",
             userinfo_url="https://api.weixin.qq.com/sns/userinfo",

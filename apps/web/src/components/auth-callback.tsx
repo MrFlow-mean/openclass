@@ -23,7 +23,7 @@ function safeNextPath(value: string | null | undefined) {
 export function AuthCallback({ error, nextPath, token }: AuthCallbackProps) {
   const router = useRouter();
   const hasError = Boolean(error || !token);
-  const message = error || (!token ? "第三方登录没有返回有效会话，请重新登录。" : "正在跳转到 OpenClass 工作台。");
+  const message = error || (!token ? "第三方登录没有返回有效会话，请重新登录。" : "正在跳转到开放课堂工作台。");
 
   useEffect(() => {
     if (error || !token) {

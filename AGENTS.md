@@ -1,6 +1,6 @@
-# OpenClass — AI 协作指南
+# 开放课堂（OpenClass）— AI 协作指南
 
-OpenClass 是一个 AI 课程工作台。产品介绍、安装与 provider 配置见 `README.md` 和 `.env.example`。本文件只列协作必须知道的事。
+开放课堂（OpenClass）是一个 AI 课程工作台。产品介绍、安装与 provider 配置见 `README.md` 和 `.env.example`。本文件只列协作必须知道的事。
 
 ## 仓库地图
 

@@ -81,7 +81,7 @@ export default async function CourseDetailPage({ params }: CourseDetailPageProps
           className="inline-flex w-fit items-center gap-2 rounded-md border border-stone-200 bg-white px-3 py-2 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:text-stone-950"
         >
           <ArrowLeft className="h-4 w-4" />
-          返回 OpenClass
+          返回开放课堂
         </Link>
 
         <section className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_20rem]">
