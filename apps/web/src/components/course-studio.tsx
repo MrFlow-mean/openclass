@@ -5012,11 +5012,7 @@ export function CourseStudio() {
                           </div>
                         );
                       })
-                    ) : (
-                      <div className="rounded-xl border border-gray-200 bg-white px-4 py-6 text-sm text-gray-500">
-                        还没有上传资料。可以先把教材、讲义或图片放进当前课程资料库。
-                      </div>
-                    )}
+                    ) : null}
                   </div>
                 </div>
 
