@@ -3,6 +3,7 @@ import sqlite3
 
 from app.models import BoardTeachingProgress, ResourceLibraryItem
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
+from app.services.lesson_factory import create_empty_lesson
 
 
 def test_sqlite_store_round_trips_workspace_without_store_json(tmp_path) -> None:
@@ -125,6 +126,43 @@ def test_sqlite_store_keeps_user_workspaces_isolated(tmp_path) -> None:
             for row in conn.execute("SELECT DISTINCT owner_user_id FROM course_packages").fetchall()
         }
     assert owner_ids == {"user_a", "user_b"}
+
+
+def test_sqlite_store_creates_empty_account_workspace(tmp_path) -> None:
+    db_path = tmp_path / "openclass.sqlite3"
+    store = SqliteCourseStore(db_path, legacy_json_path=None)
+
+    workspace = store.load_for_user("guest_preview")
+
+    assert len(workspace.packages) == 1
+    assert workspace.packages[0].lessons == []
+    assert workspace.packages[0].course_graph == []
+    assert workspace.packages[0].open_lesson_ids == []
+    assert workspace.packages[0].active_lesson_id is None
+    assert workspace.packages[0].workspace_tab_order == []
+
+
+def test_sqlite_store_removes_only_unmodified_starter_lessons_from_account_workspace(tmp_path) -> None:
+    db_path = tmp_path / "openclass.sqlite3"
+    store = SqliteCourseStore(db_path, legacy_json_path=None)
+
+    workspace = build_initial_workspace_state()
+    user_lesson = create_empty_lesson("在测试1")
+    package = workspace.packages[0]
+    package.lessons.append(user_lesson)
+    package.open_lesson_ids.append(user_lesson.id)
+    package.workspace_tab_order.append(user_lesson.id)
+    package.active_lesson_id = user_lesson.id
+    store.save_for_user("guest_preview", workspace)
+
+    reloaded = store.load_for_user("guest_preview")
+    package = reloaded.packages[0]
+
+    assert [lesson.title for lesson in package.lessons] == ["在测试1"]
+    assert package.open_lesson_ids == [user_lesson.id]
+    assert package.workspace_tab_order == [user_lesson.id]
+    assert package.active_lesson_id == user_lesson.id
+    assert package.course_graph == []
 
 
 def test_sqlite_store_claims_legacy_workspace_for_first_user(tmp_path) -> None:

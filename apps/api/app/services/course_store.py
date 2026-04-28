@@ -23,6 +23,8 @@ from app.services.lesson_factory import create_lesson
 
 
 SCHEMA_VERSION = 4
+STARTER_PACKAGE_TITLES = {"开放课堂课程工作台", "OpenClass 课程工作台"}
+STARTER_LESSON_TITLES = {"勾股定理", "直角三角形基础", "欧几里得几何导论"}
 
 
 def _active_package_setting_key(owner_user_id: str | None) -> str:
@@ -70,10 +72,13 @@ class SqliteCourseStore:
                     if not self._has_user_packages(conn, owner_user_id):
                         self._replace_workspace(
                             conn,
-                            build_initial_workspace_state(),
+                            build_empty_account_workspace_state(),
                             owner_user_id=owner_user_id,
                         )
-                    return self._read_workspace(conn, owner_user_id=owner_user_id)
+                    workspace = self._read_workspace(conn, owner_user_id=owner_user_id)
+                    if _remove_unmodified_starter_lessons(workspace):
+                        self._replace_workspace(conn, workspace, owner_user_id=owner_user_id)
+                    return workspace
 
     def save_for_user(self, owner_user_id: str, workspace: WorkspaceState) -> None:
         with self._lock:
@@ -888,3 +893,54 @@ def build_initial_course_package() -> CoursePackage:
 def build_initial_workspace_state() -> WorkspaceState:
     package = build_initial_course_package()
     return WorkspaceState(packages=[package], active_package_id=package.id)
+
+
+def build_empty_account_workspace_state() -> WorkspaceState:
+    package = CoursePackage(
+        title="开放课堂课程工作台",
+        summary="把 lesson 当作可编辑、可分支、可讲解的课程资产。",
+        lessons=[],
+        course_graph=[],
+        open_lesson_ids=[],
+        active_lesson_id=None,
+        workspace_tab_order=[],
+    )
+    return WorkspaceState(packages=[package], active_package_id=package.id)
+
+
+def _is_unmodified_starter_lesson(lesson: Lesson) -> bool:
+    commits = lesson.history_graph.commits
+    return (
+        lesson.title in STARTER_LESSON_TITLES
+        and len(commits) == 1
+        and commits[0].message == f"Generated starter rich document for {lesson.title}"
+    )
+
+
+def _remove_unmodified_starter_lessons(workspace: WorkspaceState) -> bool:
+    changed = False
+    for package in workspace.packages:
+        if package.title not in STARTER_PACKAGE_TITLES:
+            continue
+        starter_lesson_ids = {
+            lesson.id for lesson in package.lessons if _is_unmodified_starter_lesson(lesson)
+        }
+        if not starter_lesson_ids:
+            continue
+
+        package.lessons = [lesson for lesson in package.lessons if lesson.id not in starter_lesson_ids]
+        package.course_graph = [
+            edge
+            for edge in package.course_graph
+            if edge.source_lesson_id not in starter_lesson_ids and edge.target_lesson_id not in starter_lesson_ids
+        ]
+        package.open_lesson_ids = [
+            lesson_id for lesson_id in package.open_lesson_ids if lesson_id not in starter_lesson_ids
+        ]
+        package.workspace_tab_order = [
+            lesson_id for lesson_id in package.workspace_tab_order if lesson_id not in starter_lesson_ids
+        ]
+        if package.active_lesson_id in starter_lesson_ids:
+            package.active_lesson_id = package.workspace_tab_order[0] if package.workspace_tab_order else None
+        changed = True
+    return changed

@@ -18,7 +18,7 @@ from app.routers import documents as documents_router
 from app.routers import realtime as realtime_router
 from app.services.ai_logging import ai_log_context, ai_usage_logger
 from app.services import chat_service, workspace_state
-from app.services.course_store import SqliteCourseStore
+from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
 from app.services.openai_course_ai import OpenAICourseAI, bind_text_model_selection, openai_course_ai
 from app.services.resource_library import build_resource_item
 
@@ -35,6 +35,13 @@ def _read_log_entries(path):
     if not path.exists():
         return []
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def _seed_test_user_workspace(store: SqliteCourseStore):
+    workspace = build_initial_workspace_state()
+    workspace.packages[0].title = "测试课程工作台"
+    store.save_for_user(TEST_USER.id, workspace)
+    return workspace
 
 
 @pytest.fixture
@@ -399,7 +406,7 @@ def test_chat_route_logs_request_and_response(monkeypatch: pytest.MonkeyPatch, i
     monkeypatch.setattr(workspace_state, "STORE", store)
     monkeypatch.setattr(openai_course_ai, "client", None)
 
-    lesson_id = store.load().packages[0].lessons[0].id
+    lesson_id = _seed_test_user_workspace(store).packages[0].lessons[0].id
     response = chat_service.process_chat_on_lesson(
         lesson_id,
         ChatRequest(message="请解释一下勾股定理的核心公式"),
@@ -449,7 +456,7 @@ def test_document_save_route_keeps_autosave_metadata(monkeypatch: pytest.MonkeyP
     store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
     monkeypatch.setattr(workspace_state, "STORE", store)
 
-    workspace = store.load()
+    workspace = _seed_test_user_workspace(store)
     lesson = workspace.packages[0].lessons[0]
     document = lesson.board_document.model_copy(deep=True)
     document.content_html = "<p>自动保存后的内容</p>"
@@ -483,7 +490,7 @@ def test_document_save_beacon_accepts_plain_text_json(monkeypatch: pytest.Monkey
     store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
     monkeypatch.setattr(workspace_state, "STORE", store)
 
-    workspace = store.load()
+    workspace = _seed_test_user_workspace(store)
     lesson = workspace.packages[0].lessons[0]
     document = lesson.board_document.model_copy(deep=True)
     document.content_html = "<p>关闭页面前保存</p>"
@@ -524,7 +531,7 @@ def test_chat_route_reuses_workflow_runtime_without_extra_refresh(
     monkeypatch.setattr(workspace_state, "STORE", store)
     monkeypatch.setattr(openai_course_ai, "client", None)
 
-    lesson_id = store.load().packages[0].lessons[0].id
+    lesson_id = _seed_test_user_workspace(store).packages[0].lessons[0].id
     response = chat_service.process_chat_on_lesson(
         lesson_id,
         ChatRequest(message="请解释一下勾股定理的核心公式"),
@@ -541,7 +548,7 @@ def test_chat_route_hides_reference_box_for_explanation_only_turn(
     monkeypatch.setattr(workspace_state, "STORE", store)
     monkeypatch.setattr(openai_course_ai, "client", None)
 
-    workspace = store.load()
+    workspace = _seed_test_user_workspace(store)
     package = workspace.packages[0]
     resource_path = tmp_path / "pythagorean.md"
     resource_path.write_text(
@@ -551,9 +558,9 @@ def test_chat_route_hides_reference_box_for_explanation_only_turn(
     resource = build_resource_item(resource_path, "勾股定理笔记.md")
     resource.scope_lesson_id = package.lessons[0].id
     package.resources.append(resource)
-    store.save(workspace)
+    store.save_for_user(TEST_USER.id, workspace)
 
-    lesson_id = store.load().packages[0].lessons[0].id
+    lesson_id = store.load_for_user(TEST_USER.id).packages[0].lessons[0].id
     response = chat_service.process_chat_on_lesson(
         lesson_id,
         ChatRequest(message="请解释一下勾股定理的核心公式"),
@@ -570,7 +577,7 @@ def test_realtime_transcript_route_logs_each_message(
 ) -> None:
     store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
     monkeypatch.setattr(workspace_state, "STORE", store)
-    lesson = store.load().packages[0].lessons[0]
+    lesson = _seed_test_user_workspace(store).packages[0].lessons[0]
 
     result = realtime_router.log_realtime_event(
         lesson.id,
