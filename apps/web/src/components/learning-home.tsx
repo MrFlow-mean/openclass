@@ -806,7 +806,7 @@ export function LearningHome() {
 
             <div className="flex min-h-0 flex-1 flex-col">
               <div className="mb-3 flex items-center justify-between px-2">
-                <h2 className="text-[11px] font-semibold uppercase tracking-[0.24em] text-stone-400">新课程</h2>
+                <h2 className="text-[11px] font-semibold uppercase tracking-[0.24em] text-stone-400">单独课程</h2>
                 <div className="flex items-center gap-2">
                   <span className="rounded-full border border-stone-200 bg-white px-3 py-1 text-[10px] font-medium text-stone-500">
                     默认仅显示未入包课程
