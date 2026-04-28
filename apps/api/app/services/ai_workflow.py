@@ -312,6 +312,9 @@ def _is_explanation_request(message: str) -> bool:
         "开讲",
         "直接讲",
         "是什么",
+        "什么事",
+        "什么是",
+        "啥是",
         "怎么理解",
         "为什么",
         "什么意思",
@@ -413,6 +416,7 @@ def _has_teachable_subject_signal(text: str, lesson: Lesson, request: ChatReques
 
 def _clean_topic_hint(value: str) -> str | None:
     cleaned = " ".join(value.split()).strip(" ：:，,。！？!?；;")
+    cleaned = re.sub(r"^(?:什么是|什么事|啥是|何为)\s*", "", cleaned).strip(" ：:，,。！？!?；;")
     cleaned = re.sub(r"(?:是什么|的内容|这件事|这个概念)$", "", cleaned).strip(" ：:，,。！？!?；;")
     cleaned = re.sub(r"(?:直接开讲|直接讲|开讲|开始教学|先开始)$", "", cleaned).strip(" ：:，,。！？!?；;")
     if len(cleaned) < 2 or _is_low_information_request(cleaned) or _is_vague_pointer_request(cleaned):
@@ -424,6 +428,8 @@ def _extract_topic_hint(text: str) -> str | None:
     patterns = [
         r"(?:我要学|我要学习|我想要学|我想要学习|我想学|想要学|想要学习|想学|教我|学习|学一下|为我讲解|给我讲解|为我讲|给我讲|讲解|请讲|请解释|解释一下)\s*([^，。！？!?；;\n]{2,48})",
         r"什么是\s*([^，。！？!?；;\n]{2,48})",
+        r"什么事\s*([^，。！？!?；;\n]{2,48})",
+        r"啥是\s*([^，。！？!?；;\n]{2,48})",
         r"([^，。！？!?；;\n]{2,48})是什么",
     ]
     for pattern in patterns:
@@ -436,10 +442,56 @@ def _extract_topic_hint(text: str) -> str | None:
     return None
 
 
+def _clean_generation_topic_hint(value: str) -> str:
+    cleaned = " ".join(value.split()).strip(" ：:，,。！？!?；;")
+    cleaned = re.sub(
+        r"^(?:一份|一版|一篇|一个|系统的|完整的|高质量的|教材式|教科书式|word\s*式|Word\s*式|专题|关于)\s*",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(r"(?:的一篇|的一份|的一版)$", "", cleaned).strip(" ：:，,。")
+    cleaned = re.sub(r"(?:情景对话课文|对话课文|课文|情景对话|板书讲义|专题讲义|讲义|板书|课程|教案)$", "", cleaned).strip(" ：:，,。")
+    return cleaned[:96]
+
+
+def _extract_generation_topic_hint(text: str) -> str | None:
+    topic_patterns = [
+        r"主题[是为：:]\s*([^，。！？!?；;\n]{2,80})",
+        r"(?:生成|整理|制作|创建|写出|写一份|写一版|写一篇|给我一份|给我一篇|给我生成|为我生成|请生成).*?(?:一份|一版|一篇|一个)?\s*(?:系统的|完整的|高质量的|教材式|教科书式|word\s*式|Word\s*式)?\s*([^，。！？!?；;\n]{2,80}?)(?:情景对话课文|对话课文|课文|情景对话|板书讲义|专题讲义|讲义|板书|课程|教案)",
+    ]
+    topic = None
+    for pattern in topic_patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            topic = _clean_generation_topic_hint(match.group(1))
+            if topic:
+                break
+    if not topic:
+        topic = _extract_topic_hint(text)
+    if not topic:
+        return None
+
+    coverage_match = re.search(
+        r"(?:覆盖|包含|包括|按小节讲|按小节讲[：:])\s*([^。！？!?；;\n]{2,140})",
+        text,
+    )
+    if coverage_match:
+        coverage = " ".join(coverage_match.group(1).split()).strip(" ：:，,。")
+        coverage = re.sub(
+            r"[，,]?\s*(?:生成后|生成完|然后|并且|同时|再)?\s*(?:先只讲|每次只讲|讲完|继续问|不要一次|逐步讲).*",
+            "",
+            coverage,
+        ).strip(" ：:，,。")
+        if coverage and coverage not in topic:
+            return f"{topic}：{coverage[:120]}"
+    return topic
+
+
 def _extract_level_hint(text: str) -> str | None:
     patterns = [
         r"\b([ABC][12])\b",
-        r"(从零开始|零基础|完全没学过|没学过|基础薄弱|初学|入门|进阶|高级|高三|高二|高一|初三|初二|初一|考研|本科|研究生)",
+        r"(从零开始|零基础|完全没学过|没学过|基础薄弱|初学|入门|进阶|高级|高中生|高中|初中生|初中|小学生|小学|高三|高二|高一|初三|初二|初一|大一|大二|大三|大四|研一|研二|研三|本科(?:一|二|三|四)?年级|本科生|大学生|硕士|博士|考研|本科|研究生)",
         r"法语水平是([ABC][12])",
     ]
     for pattern in patterns:
@@ -454,7 +506,7 @@ def _extract_level_hint(text: str) -> str | None:
 def _extract_goal_or_scenario_hint(text: str) -> str | None:
     patterns = [
         r"(?:为了|我要(?!学|学习)|我想把|想把|想要(?!学|学习)|用于|用来|准备用在|准备应对|应对|准备)\s*([^，。！？!?；;]{2,48})",
-        r"(概念理解|概念|理念|理论|做题|题目|练习|实际应用|应用|都要|全都要|都可以|都行|自己看着办|你自己看着办|你看着办|你来决定|你决定|按你判断|按你安排|法国旅游|出国旅游|高考压轴导数大题|高考压轴题|导数大题|旅游|考试|面试|工作|项目|阅读|写作|系统学|系统学习|学扎实|主线学扎实|连接.*主线|贯通|打基础|补基础)",
+        r"(概念理解|概念|理念|理论|做题|题目|练习|实际应用|应用|都要|全都要|都可以|都行|自己看着办|你自己看着办|你看着办|你来决定|你决定|按你判断|按你安排|法国旅游|出国旅游|高考压轴导数大题|高考压轴题|导数大题|旅游|期末考试|考试|期末|面试|作业|论文阅读|论文|课程展示|课堂展示|展示|汇报|实验|工作|项目|阅读|写作|系统学|系统学习|学扎实|主线学扎实|连接.*主线|贯通|打基础|补基础)",
     ]
     for pattern in patterns:
         match = re.search(pattern, text, flags=re.IGNORECASE)
@@ -485,10 +537,12 @@ def _learning_clarification_status(
 
     profile_patterns = [
         r"\b[a-c][12]\b",
-        r"\b高[一二三]\b",
-        r"\b初[一二三]\b",
+        r"高[一二三](?:学生)?",
+        r"初[一二三](?:学生)?",
+        r"大[一二三四]",
+        r"研[一二三]",
         r"\d+\s*(?:个)?(?:词|词汇|单词)",
-        r"(?:零基础|初学|入门|进阶|高级|水平|学习者|基础|b1|b2|c1|高三|考研|本科|研究生)",
+        r"(?:零基础|初学|入门|进阶|高级|水平|学习者|基础|b1|b2|c1|高中生|高中|初中生|初中|小学生|小学|高三|考研|本科|本科生|大学生|研究生|硕士|博士|专业|年级)",
         r"(?:从零开始|完全没学过|没学过|基础薄弱)",
     ]
     if any(re.search(pattern, compact, flags=re.IGNORECASE) for pattern in profile_patterns):
@@ -503,7 +557,13 @@ def _learning_clarification_status(
         "准备",
         "旅游",
         "考试",
+        "期末",
         "面试",
+        "作业",
+        "论文",
+        "展示",
+        "汇报",
+        "实验",
         "写作",
         "阅读",
         "工作",
@@ -517,6 +577,10 @@ def _learning_clarification_status(
         "练习",
         "实际应用",
         "应用",
+        "是什么",
+        "什么是",
+        "什么事",
+        "啥是",
         "都要",
         "全都要",
         "都可以",
@@ -1338,7 +1402,7 @@ def _draft_requirements(lesson: Lesson, request: ChatRequest) -> LearningRequire
     requirements = effective_requirements(lesson)
     user_turns = [turn.content for turn in request.conversation if turn.role == "user"]
     user_context = "\n".join([*user_turns[-3:], request.message]).strip()
-    topic_hint = _extract_topic_hint(user_context)
+    topic_hint = _extract_topic_hint(request.message) or _extract_topic_hint(user_context)
     if topic_hint and topic_hint != lesson.title:
         requirements = build_requirements(topic_hint)
     requirements.current_questions = [*user_turns[-3:], request.message][-4:]
@@ -2051,7 +2115,7 @@ def _fallback_document_update(
     topic = (
         selected_reference.chapter_title
         if selected_reference is not None
-        else (request.message.strip() or requirements.theme or lesson.title)
+        else (_extract_generation_topic_hint(request.message) or requirements.theme or lesson.title)
     )
     generated = create_lesson(
         topic,
@@ -2149,7 +2213,7 @@ def _is_low_value_section_teaching_line(value: str) -> bool:
     cleaned = " ".join(value.split()).strip()
     if not cleaned:
         return True
-    if cleaned.startswith(("学习定位：", "讲解节奏：", "内部讲义：", "学习需求：", "讲解方式：")):
+    if cleaned.startswith(("适用水平：", "学习定位：", "学习目标：", "讲解节奏：", "内部讲义：", "学习需求：", "讲解方式：")):
         return True
     if "每次只讲一个小节" in cleaned:
         return True
@@ -2447,6 +2511,29 @@ def _reference_teacher_brief(reference: ResourceReferenceContext) -> str:
     return f"《{reference.chapter_title}》先抓这条主线：{first_chunk[:140]}"
 
 
+def _fallback_empty_board_teaching_excerpt(
+    *,
+    requirements: LearningRequirementSheet,
+    request_message: str,
+    document_title: str,
+) -> str:
+    topic = requirements.theme.strip()
+    question_sources = [
+        question.strip().replace("什么事", "什么是")
+        for question in reversed(requirements.current_questions)
+        if question.strip() and topic and topic in question
+    ]
+    question_sources.extend(
+        question.strip().replace("什么事", "什么是")
+        for question in reversed(requirements.current_questions)
+        if question.strip() and not _is_low_information_request(question)
+    )
+    for question in dict.fromkeys(question_sources):
+        if question:
+            return question[:240]
+    return (request_message.strip().replace("什么事", "什么是") or topic or document_title)[:240]
+
+
 def _fallback_board_teaching_guide(
     *,
     document: BoardDocument,
@@ -2590,7 +2677,17 @@ def _fallback_board_teaching_guide(
     low_value_segments.sort(key=lambda item: item[0], reverse=True)
 
     if is_document_empty(document) and requirements.theme and requirements.theme != document.title:
-        chosen = [(0, requirements.theme, requirements.theme)]
+        chosen = [
+            (
+                0,
+                requirements.theme,
+                _fallback_empty_board_teaching_excerpt(
+                    requirements=requirements,
+                    request_message=request_message,
+                    document_title=document.title,
+                ),
+            )
+        ]
     else:
         chosen = (
             scored_segments[:3]
@@ -2671,7 +2768,18 @@ def _fallback_lecture_handout(
     if not excerpts and document.content_text.strip():
         first_segment = _board_segments(document)[:1]
         excerpts = [first_segment[0][1]] if first_segment else []
-    source_lines = excerpts[:3] or [document.content_text.strip()[:240] or document.title]
+    if excerpts:
+        source_lines = excerpts[:3]
+    elif document.content_text.strip():
+        source_lines = [document.content_text.strip()[:240]]
+    else:
+        source_lines = [
+            _fallback_empty_board_teaching_excerpt(
+                requirements=requirements,
+                request_message=request_message,
+                document_title=document.title,
+            )
+        ]
     return "\n".join(
         [
             f"内部讲义：{document.title}",
@@ -3071,6 +3179,26 @@ def _is_math_learning_topic(text: str) -> bool:
     return any(term in compact for term in math_terms)
 
 
+def _is_advanced_algebra_learning_topic(text: str) -> bool:
+    compact = _compact_instruction_text(text)
+    advanced_terms = (
+        "抽象代数",
+        "代数几何",
+        "交换代数",
+        "环",
+        "环论",
+        "理想",
+        "素理想",
+        "商环",
+        "域",
+        "模",
+        "概形",
+        "zariski",
+        "spec",
+    )
+    return any(term in compact.lower() for term in advanced_terms)
+
+
 def _teacher_learning_probe(state: WorkflowState) -> str | None:
     request = state["request"]
     status = state.get("learning_clarification")
@@ -3091,11 +3219,16 @@ def _teacher_learning_probe(state: WorkflowState) -> str | None:
     requirements = state["learning_requirement_sheet"]
     topic = _extract_topic_hint(request.message) or (requirements.theme if requirements.theme != lesson.title else "") or request.message
     if _is_math_learning_topic(f"{topic}\n{request.message}"):
+        if not _is_advanced_algebra_learning_topic(f"{topic}\n{request.message}"):
+            return (
+                "为了下一轮不把深度讲偏，我需要先摸一下你的数学背景：你当前是什么水平、几年级？"
+                "另外你具体想学数学里的什么内容，比如函数、几何、代数、微积分、概率统计，还是某类题？"
+            )
         return (
-            "为了下一轮不把深度讲偏，我需要先摸一下你的数学背景：你现在更接近高中、本科低年级、"
+            f"你想学的是“{topic}”。为了下一轮不把深度讲偏，我需要先摸一下你的数学背景：你现在更接近高中、本科低年级、"
             "数学专业本科，还是研究生阶段？如果已经学过环、理想或素理想，也可以直接说。"
         )
-    return "为了下一轮把例子和深度对准，你之前接触过这个主题吗，还是希望我从零开始？"
+    return "为了下一轮把例子和深度对准，你当前是什么阶段或背景？这次具体想学哪一块，想用于考试、作业、论文、项目还是日常应用？"
 
 
 def _teacher_message_from_talk_track(state: WorkflowState, talk_track: str) -> str:
@@ -3256,6 +3389,9 @@ def _section_teaching_turn(state: WorkflowState) -> WorkflowState | None:
 def _plain_teaching_from_excerpt(excerpt: str) -> str:
     cleaned = " ".join(excerpt.split()).strip(" ：:，,。！？!?；;")
     cleaned = re.sub(r"^(?:本节主线|参考片段\s*\d+|学习目标)[：:]\s*", "", cleaned).strip()
+    topic = _extract_topic_hint(cleaned)
+    if topic and _is_generic_school_subject_topic(topic):
+        return ""
     if {"模式", "特征", "分类器"} <= set(re.findall(r"模式|特征|分类器", cleaned)):
         return (
             f"{cleaned}。换句话说，模式是要识别的对象，特征是我们拿来描述它的线索，"
@@ -3269,13 +3405,55 @@ def _plain_teaching_from_excerpt(excerpt: str) -> str:
     return cleaned
 
 
+def _is_generic_school_subject_topic(topic: str) -> bool:
+    return _compact_instruction_text(topic) in {
+        "数学",
+        "物理",
+        "化学",
+        "生物",
+        "英语",
+        "法语",
+        "语文",
+        "历史",
+        "地理",
+        "政治",
+        "编程",
+        "计算机",
+    }
+
+
+def _fallback_concept_teaching_from_request(text: str) -> str | None:
+    topic = _extract_topic_hint(text)
+    if not topic:
+        return None
+    if _is_generic_school_subject_topic(topic):
+        return None
+    compact_topic = _compact_instruction_text(topic)
+    if "库仑力" in compact_topic:
+        return (
+            "什么是库仑力：它就是两个带电物体之间的相互作用力。"
+            "同号电荷相互排斥，异号电荷相互吸引；距离越近、电荷量越大，力通常越明显。"
+            "高中阶段先抓这三件事：方向看吸引还是排斥，大小看电荷量和距离，受力分析时把它当成一种力画进受力图。"
+        )
+    return (
+        f"什么是{topic}：先把它当成这节课要抓住的核心对象。"
+        "我们按三步来学：先说定义，再解释它为什么重要，最后用一个例子或小题检查你是不是真的会用。"
+    )
+
+
 def _teacher_brief_from_handout(handout: str) -> str:
     lines = []
     for raw in handout.splitlines():
         cleaned = raw.strip(" -•\t")
         if not cleaned or cleaned.startswith(("内部讲义", "用户问题", "学习需求", "讲解依据", "讲解顺序", "注意")):
             continue
-        lines.append(cleaned)
+        concept_teaching = _fallback_concept_teaching_from_request(cleaned)
+        if concept_teaching:
+            lines.append(concept_teaching)
+        elif _is_generic_school_subject_topic(_extract_topic_hint(cleaned) or ""):
+            continue
+        else:
+            lines.append(cleaned)
         if len(lines) >= 3:
             break
     return "\n".join(lines)
@@ -3330,6 +3508,10 @@ def _fallback_teacher_message(state: WorkflowState) -> str:
     if decision.action == "await_scope_choice":
         return f"这个问题已经超出《{lesson_title}》当前讲义范围。你想先在本课简述，还是单独开一节详细课？"
 
+    probe = _teacher_learning_probe(state)
+    if probe:
+        return probe
+
     talk_track = (state.get("teacher_talk_track") or "").strip()
     if talk_track:
         return _teacher_message_from_talk_track(state, talk_track)
@@ -3341,29 +3523,22 @@ def _fallback_teacher_message(state: WorkflowState) -> str:
         handout_brief = _teacher_brief_from_handout(board_teaching_guide.lecture_handout)
         if handout_brief:
             lines.append(handout_brief)
-            probe = _teacher_learning_probe(state)
-            if probe:
-                lines.append(probe)
             return "\n".join(lines)
         if "已锁定参考章节" in board_teaching_guide.generation_rationale and board_teaching_guide.teacher_brief.strip():
             lines.append(board_teaching_guide.teacher_brief.strip())
-            probe = _teacher_learning_probe(state)
-            if probe:
-                lines.append(probe)
             return "\n".join(lines)
         selected_items = board_teaching_guide.selected_items
         if selected_items:
             first = selected_items[0]
-            lines.append(_plain_teaching_from_excerpt(first.excerpt))
+            first_line = _plain_teaching_from_excerpt(first.excerpt)
+            if first_line:
+                lines.append(first_line)
             for item in selected_items[1:3]:
                 next_line = _plain_teaching_from_excerpt(item.excerpt)
                 if next_line and next_line not in lines:
                     lines.append(next_line)
         elif board_teaching_guide.teacher_brief.strip():
             lines.append(board_teaching_guide.teacher_brief.strip())
-    probe = _teacher_learning_probe(state)
-    if probe:
-        lines.append(probe)
     return "\n".join(lines)
 
 

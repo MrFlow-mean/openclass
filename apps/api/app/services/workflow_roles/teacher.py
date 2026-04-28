@@ -6,6 +6,7 @@ from app.services.ai_workflow import (
     _format_teacher_message,
     _reference_payload,
     _section_teaching_turn,
+    _teacher_learning_probe,
     _teacher_message_from_talk_track,
 )
 from app.services.openai_course_ai import openai_course_ai
@@ -32,6 +33,9 @@ def run_teacher(state: WorkflowState) -> WorkflowState:
         return {"teacher_message": _format_teacher_message(ai_message or _fallback_teacher_message(state))}
     if decision.action in {"await_scope_choice", "await_reference_choice"}:
         return {"teacher_message": _format_teacher_message(_fallback_teacher_message(state))}
+    probe = _teacher_learning_probe(state)
+    if probe:
+        return {"teacher_message": _format_teacher_message(probe)}
     section_turn = _section_teaching_turn(state)
     if section_turn is not None:
         return section_turn

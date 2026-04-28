@@ -103,7 +103,7 @@ def test_workflow_asks_for_topic_keyword_on_greeting_without_level_refrain() -> 
     assert "什么水平" not in result["teacher_message"]
 
 
-def test_workflow_starts_teaching_on_first_subject_only_learning_goal() -> None:
+def test_workflow_probes_level_and_goal_on_first_subject_only_learning_goal() -> None:
     package = build_initial_course_package()
     lesson = package.lessons[0]
 
@@ -125,8 +125,32 @@ def test_workflow_starts_teaching_on_first_subject_only_learning_goal() -> None:
     assert result["board_teaching_guide"].lecture_handout
     assert result["learning_requirement_sheet"].learning_need_checklist
     assert result["teacher_message"].strip()
-    assert "什么水平" not in result["teacher_message"]
-    assert "准备用在哪种场景" not in result["teacher_message"]
+    assert "当前是什么阶段" in result["teacher_message"] or "当前是什么水平" in result["teacher_message"]
+    assert "具体想学" in result["teacher_message"]
+
+
+def test_workflow_first_broad_math_goal_only_asks_for_level_and_specific_topic() -> None:
+    package = build_initial_course_package()
+    lesson = create_empty_lesson("测试12")
+    package.lessons.append(lesson)
+
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "course_package": package,
+            "request": ChatRequest(message="我想学数学"),
+        }
+    )
+
+    assert result["learning_requirement_sheet"].theme == "数学"
+    assert result["learning_clarification"].progress == 35
+    assert result["needs_clarification"] is False
+    assert result["board_decision"].action == "no_change"
+    assert "当前是什么水平" in result["teacher_message"] or "几年级" in result["teacher_message"]
+    assert "具体想学数学里的什么内容" in result["teacher_message"]
+    assert "什么是数学" not in result["teacher_message"]
+    assert "我们直接抓这次最该讲的重点" not in result["teacher_message"]
+    assert "教师模型" not in result["teacher_message"]
 
 
 def test_workflow_probes_learning_purpose_after_greeting_then_broad_math_goal() -> None:
@@ -157,7 +181,44 @@ def test_workflow_probes_learning_purpose_after_greeting_then_broad_math_goal() 
     assert "几年级" in result["teacher_message"] or "什么水平" in result["teacher_message"]
     assert "具体想学" in result["teacher_message"]
     assert "代数" in result["teacher_message"]
+    assert "理想" not in result["teacher_message"]
+    assert "素理想" not in result["teacher_message"]
     assert "教师模型" not in result["teacher_message"]
+
+
+def test_workflow_updates_topic_and_starts_after_high_school_concept_answer() -> None:
+    package = build_initial_course_package()
+    lesson = create_empty_lesson("测试13")
+    package.lessons.append(lesson)
+
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "course_package": package,
+            "request": ChatRequest(
+                message="我是高中生，我想学什么事库仑力",
+                conversation=[
+                    ConversationTurn(role="user", content="你好"),
+                    ConversationTurn(role="assistant", content="你具体想学什么内容？可以直接说一个主题、章节，或者把卡住的题目发给我。"),
+                    ConversationTurn(role="user", content="我想学数学"),
+                    ConversationTurn(
+                        role="assistant",
+                        content="你当前是什么水平、几年级？另外你具体想学数学里的什么内容，比如函数、几何、代数、微积分、概率统计，还是某类题？",
+                    ),
+                    ConversationTurn(role="user", content="其实我想学物理"),
+                    ConversationTurn(role="assistant", content="你当前是什么水平或背景？这次具体想学什么内容，想达到什么目标？"),
+                ],
+            ),
+        }
+    )
+
+    assert result["learning_requirement_sheet"].theme == "库仑力"
+    assert result["learning_requirement_sheet"].level == "高中生"
+    assert result["needs_clarification"] is False
+    assert result["board_decision"].action == "no_change"
+    assert "库仑力" in result["teacher_message"]
+    assert "带电" in result["teacher_message"]
+    assert "你当前是什么水平或背景？这次具体想学什么内容，想达到什么目标？" not in result["teacher_message"]
 
 
 def test_workflow_probes_math_background_for_first_advanced_subject_goal() -> None:
@@ -208,6 +269,132 @@ def test_workflow_marks_detailed_learning_goal_as_fully_clarified() -> None:
     assert result["needs_clarification"] is False
     assert result["board_decision"].action == "edit_board"
     assert result["document_updated"] is True
+    assert "适用水平：" not in result["teacher_message"]
+    assert "学习目标：" not in result["teacher_message"]
+
+
+@pytest.mark.parametrize(
+    ("title", "message", "expected_level", "expected_goal"),
+    [
+        (
+            "操作系统学习",
+            "我是计算机大二，正在学操作系统，准备操作系统期末考试，想把虚拟内存、页表和 TLB 讲清楚。",
+            "大二",
+            "操作系统期末考试",
+        ),
+        (
+            "统计方法学习",
+            "我是社会学研一，量化方法刚入门，论文阅读里总看到 p-value 和显著性检验，想知道怎么解释结论。",
+            "研一",
+            "论文阅读",
+        ),
+        (
+            "法国大革命",
+            "我是高二学生，准备历史考试，想学法国大革命的原因、过程和影响。",
+            "高二",
+            "历史考试",
+        ),
+        (
+            "红楼梦导读",
+            "我是中文系大一，古代小说课要做课程展示，想理清《红楼梦》人物关系和主题。",
+            "大一",
+            "课程展示",
+        ),
+        (
+            "有机化学学习",
+            "我是化学专业大一，实验课前要补 SN1 和 SN2 反应机理，想知道怎么判断底物和条件。",
+            "大一",
+            "实验",
+        ),
+        (
+            "合同法学习",
+            "我是法学本科二年级，合同法期末考试要考要约和承诺，想会判断案例里的合同是否成立。",
+            "本科二年级",
+            "期末考试",
+        ),
+    ],
+)
+def test_workflow_recognizes_varied_student_personas_as_clear_learning_needs(
+    title: str,
+    message: str,
+    expected_level: str,
+    expected_goal: str,
+) -> None:
+    package = build_initial_course_package()
+    lesson = create_empty_lesson(title)
+    package.lessons.append(lesson)
+
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "course_package": package,
+            "request": ChatRequest(message=message),
+        }
+    )
+
+    status = result["learning_clarification"]
+    requirements = result["learning_requirement_sheet"]
+
+    assert status.progress >= 90
+    assert "当前水平或背景" not in status.missing_items
+    assert "学习目的或应用场景" not in status.missing_items
+    assert result["needs_clarification"] is False
+    assert requirements.level == expected_level
+    assert expected_goal in requirements.success_criteria
+
+
+@pytest.mark.parametrize(
+    ("message", "must_terms"),
+    [
+        (
+            "请生成一份虚拟内存讲义，覆盖地址空间、页表、TLB、缺页异常、页面置换，生成后先只讲第一小节。",
+            ["虚拟内存", "地址空间", "页表", "TLB", "页面置换"],
+        ),
+        (
+            "请生成一份法国大革命讲义，覆盖三级会议、攻占巴士底狱、雅各宾派、拿破仑，生成后先只讲第一小节。",
+            ["法国大革命", "三级会议", "攻占巴士底狱", "雅各宾派", "拿破仑"],
+        ),
+        (
+            "请生成一份合同法要约与承诺专题讲义，覆盖要约、承诺、撤回、撤销和案例判断，生成后先只讲第一小节。",
+            ["合同法要约与承诺", "要约", "承诺", "撤回", "撤销"],
+        ),
+        (
+            "请生成一份 p-value 与显著性检验讲义，覆盖零假设、备择假设、一类错误、置信区间，生成后先只讲第一小节。",
+            ["p-value", "显著性检验", "零假设", "备择假设", "置信区间"],
+        ),
+    ],
+)
+def test_workflow_generates_generic_handouts_from_varied_personas_without_echoing_prompt(
+    message: str,
+    must_terms: list[str],
+) -> None:
+    package = build_initial_course_package()
+    lesson = create_empty_lesson("跨学科生成测试")
+    package.lessons.append(lesson)
+
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "course_package": package,
+            "request": ChatRequest(message=message),
+        }
+    )
+
+    doc_text = result["teacher_document"].content_text
+    guide = result["board_teaching_guide"]
+
+    assert result["board_decision"].action == "edit_board"
+    assert result["document_updated"] is True
+    assert guide is not None
+    assert len(guide.section_plans) >= 8
+    assert result["board_teaching_progress"].waiting_for_continue is True
+    for term in must_terms:
+        assert term in doc_text
+    assert "请生成一份" not in doc_text
+    assert "生成后先只讲" not in doc_text
+    assert "教师模型" not in result["teacher_message"]
+    assert "学习目标：" not in result["teacher_message"]
+    assert "继续讲下一个小节" in result["teacher_message"]
 
 
 def test_workflow_can_start_when_user_forces_teaching_before_goal_is_clear() -> None:
