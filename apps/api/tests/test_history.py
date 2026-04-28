@@ -1844,6 +1844,83 @@ def test_build_resource_item_extracts_epub_outline_and_reference_context(tmp_pat
     assert "曼昆宏观经济学.epub" not in reference.chunks[0].excerpt
 
 
+def test_epub_reference_prefers_body_chapter_over_toc_duplicate(tmp_path) -> None:
+    package = build_initial_course_package()
+    lesson = create_empty_lesson("测试11")
+    package.lessons.append(lesson)
+    resource_path = tmp_path / "macro-duplicate.epub"
+    toc_html = """
+<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head><title>目录</title></head>
+  <body>
+    <h1>第2章宏观经济学的数据</h1>
+    <p>【学习精要】</p>
+    <p>【习题解析】</p>
+    <p>【补充训练】</p>
+  </body>
+</html>
+""".strip()
+    chapter_html = """
+<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head><title>第2章宏观经济学的数据</title></head>
+  <body>
+    <h1>第2章宏观经济学的数据</h1>
+    <p>【学习精要】国内生产总值 GDP 衡量一定时期内一个经济体生产的最终产品和服务的市场价值。</p>
+    <p>本章还要区分名义 GDP、实际 GDP、GDP 平减指数、消费者价格指数 CPI 和失业率。</p>
+    <p>这些指标共同回答宏观经济运行到底如何被计量，以及为什么同一个经济体会有产出、价格和就业三条观察线索。</p>
+  </body>
+</html>
+""".strip()
+    with ZipFile(resource_path, "w") as archive:
+        archive.writestr(
+            "META-INF/container.xml",
+            """
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>
+""".strip(),
+        )
+        archive.writestr(
+            "OEBPS/content.opf",
+            """
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+  <manifest>
+    <item id="toc" href="toc.xhtml" media-type="application/xhtml+xml"/>
+    <item id="chapter2" href="chapter2.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine>
+    <itemref idref="toc"/>
+    <itemref idref="chapter2"/>
+  </spine>
+</package>
+""".strip(),
+        )
+        archive.writestr("OEBPS/toc.xhtml", toc_html)
+        archive.writestr("OEBPS/chapter2.xhtml", chapter_html)
+
+    resource = build_resource_item(resource_path, "曼昆宏观经济学.epub")
+    package.resources.append(resource)
+
+    matches = match_resources(
+        package,
+        lesson,
+        ChatRequest(message="讲解第二章内容"),
+        effective_requirements(lesson),
+    )
+
+    assert matches
+    reference = extract_reference_context(resource, matches[0].chapter_id, user_query="讲解第二章内容")
+    assert reference is not None
+    assert len(reference.full_text) > 120
+    assert "国内生产总值GDP" in reference.full_text
+    assert "GDP平减指数" in reference.full_text
+    assert "【学习精要】\n【习题解析】\n【补充训练】" not in reference.full_text
+
+
 def test_build_resource_item_extracts_docx_outline_and_reference_context(tmp_path) -> None:
     resource_path = tmp_path / "math_solutions.docx"
     document = DocxDocument()

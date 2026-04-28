@@ -718,6 +718,7 @@ def _extract_epub_outline(file_path: Path) -> list[LibraryChapter]:
 def _epub_section_with_children(sections: list[dict[str, object]], start_index: int) -> str:
     target = sections[start_index]
     target_level = int(target["level"])
+
     def section_text(section: dict[str, object]) -> str:
         title = str(section["title"]).strip()
         content = str(section["content"]).strip()
@@ -733,6 +734,20 @@ def _epub_section_with_children(sections: list[dict[str, object]], start_index: 
     return "\n\n".join(part for part in parts if part.strip())
 
 
+def _epub_section_body_score(sections: list[dict[str, object]], index: int) -> tuple[int, int]:
+    text = _epub_section_with_children(sections, index)
+    compact = re.sub(r"\s+", "", text)
+    outline_markers = sum(1 for marker in ("【学习精要】", "【习题解析】", "【补充训练】") if marker in text)
+    if len(compact) <= 80 and outline_markers >= 2:
+        return (-1, len(compact))
+    score = min(len(compact), 2000)
+    if any(term in compact.lower() for term in ("gdp", "国内生产总值", "生产函数", "边际产量", "通货膨胀", "失业率")):
+        score += 500
+    if outline_markers >= 2:
+        score -= 200
+    return (score, len(compact))
+
+
 def _extract_epub_section_text(file_path: Path, chapter: LibraryChapter, user_query: str) -> tuple[str, str]:
     sections = _epub_sections(file_path)
     if not sections:
@@ -740,25 +755,33 @@ def _extract_epub_section_text(file_path: Path, chapter: LibraryChapter, user_qu
 
     requested_chapter_no, requested_section_no = _extract_epub_requested_outline_reference(user_query)
     if requested_chapter_no is not None:
-        fallback_index: int | None = None
+        exact_candidates: list[int] = []
+        fallback_candidates: list[int] = []
         for index, section in enumerate(sections):
             chapter_no, section_no = _epub_title_outline_reference(str(section["title"]))
             if chapter_no != requested_chapter_no:
                 continue
             if requested_section_no is not None and section_no == requested_section_no:
-                return str(section["title"]), _epub_section_with_children(sections, index)
+                exact_candidates.append(index)
             if requested_section_no is None and section_no is None:
-                return str(section["title"]), _epub_section_with_children(sections, index)
-            if fallback_index is None:
-                fallback_index = index
-        if fallback_index is not None:
-            section = sections[fallback_index]
-            return str(section["title"]), _epub_section_with_children(sections, fallback_index)
+                exact_candidates.append(index)
+            fallback_candidates.append(index)
+        candidates = exact_candidates or fallback_candidates
+        if candidates:
+            best_index = max(candidates, key=lambda candidate: _epub_section_body_score(sections, candidate))
+            section = sections[best_index]
+            return str(section["title"]), _epub_section_with_children(sections, best_index)
 
     target_title = (chapter.locator_hint or chapter.title).strip()
-    for index, section in enumerate(sections):
-        if str(section["title"]).strip() == target_title:
-            return str(section["title"]), _epub_section_with_children(sections, index)
+    title_candidates = [
+        index
+        for index, section in enumerate(sections)
+        if str(section["title"]).strip() == target_title
+    ]
+    if title_candidates:
+        best_index = max(title_candidates, key=lambda candidate: _epub_section_body_score(sections, candidate))
+        section = sections[best_index]
+        return str(section["title"]), _epub_section_with_children(sections, best_index)
 
     first_index = next(
         (

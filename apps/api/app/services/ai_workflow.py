@@ -886,6 +886,24 @@ def _default_single_resource_match(
     )
 
 
+def _chapter_body_quality_score(chapter: LibraryChapter) -> float:
+    compact_summary = re.sub(r"\s+", "", chapter.summary or "")
+    outline_only = bool(re.fullmatch(r"(?:【[^】]+】)+", compact_summary))
+    quality = min(len(compact_summary) / 1000, 0.16)
+    meaningful_keywords = [
+        keyword
+        for keyword in chapter.keywords
+        if len(keyword.strip()) >= 2 and keyword.strip() not in {"学习精要", "习题解析", "补充训练"}
+    ]
+    if meaningful_keywords:
+        quality += min(len(meaningful_keywords), 6) * 0.015
+    if outline_only:
+        quality -= 0.18
+    if _is_reference_separator_title(chapter.title):
+        quality -= 0.24
+    return quality
+
+
 def match_resources(
     course_package: CoursePackage,
     lesson: Lesson,
@@ -901,7 +919,8 @@ def match_resources(
         ]
         if part
     )
-    scored_matches: list[tuple[float, float, float, float, ResourceMatch]] = []
+    requested_chapter_no, requested_section_no = _extract_requested_outline_reference(primary_query_text or query_text)
+    scored_matches: list[tuple[float, float, float, float, float, float, ResourceMatch]] = []
     matches: list[ResourceMatch] = []
     resources = _available_reference_resources(course_package, lesson)
     for resource in resources:
@@ -934,6 +953,11 @@ def match_resources(
             score = min(score + resource_context_score, 0.99)
             effective_score = max(primary_score, score)
             if effective_score > 0.18:
+                outline_specificity = 0.0
+                if requested_chapter_no is not None and chapter_no == requested_chapter_no:
+                    outline_specificity += 0.25
+                if requested_section_no is not None and section_no == requested_section_no:
+                    outline_specificity += 0.75
                 overlap_hits = [
                     *(primary_overlap or overlap),
                     *(resource_primary_hits or resource_context_hits),
@@ -953,10 +977,18 @@ def match_resources(
                     )
                 )
                 scored_matches.append(
-                    (primary_score, score, chapter_specific_score, -float(chapter.order_index), matches[-1])
+                    (
+                        primary_score,
+                        score,
+                        chapter_specific_score,
+                        outline_specificity,
+                        _chapter_body_quality_score(chapter),
+                        -float(chapter.order_index),
+                        matches[-1],
+                    )
                 )
-    scored_matches.sort(key=lambda item: (item[0], item[1], item[2], item[3]), reverse=True)
-    ranked = [item[4] for item in scored_matches[:3]]
+    scored_matches.sort(key=lambda item: (item[0], item[1], item[2], item[3], item[4], item[5]), reverse=True)
+    ranked = [item[6] for item in scored_matches[:3]]
     if ranked:
         return ranked
     if len(resources) == 1 and _is_resource_followup_request(request.message):
