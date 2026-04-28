@@ -6,7 +6,8 @@ from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from zipfile import ZipFile
 
-from app.models import BoardTeachingGuide, BoardTeachingSelectedItem, ChatRequest, ConversationTurn, PatchOperation, SelectionRef
+from app.models import BoardTeachingGuide, BoardTeachingProgress, BoardTeachingSelectedItem, ChatRequest, ConversationTurn, PatchOperation, SelectionRef
+from app.services.chart_generation import extract_chart_data_fragments
 from app.services.ai_workflow import _board_snapshot_hash, _is_append_document_request, classify_scope, course_workflow, match_resources
 from app.services.course_runtime import effective_requirements
 from app.services.course_store import build_initial_course_package
@@ -243,13 +244,13 @@ def test_workflow_generates_board_for_blank_lesson_when_user_requests_direct_ope
     )
 
     assert result["needs_clarification"] is False
-    assert result["board_decision"].action == "no_change"
-    assert result["document_updated"] is False
+    assert result["board_decision"].action == "edit_board"
+    assert result["document_updated"] is True
     assert result["selected_reference"] is not None
     assert result["selected_reference"].chapter_title == "Program Example"
     assert result["board_teaching_guide"] is not None
     assert "Program Example" in result["board_teaching_guide"].lecture_handout
-    assert not result["teacher_document"].content_text.strip()
+    assert "Program Example" in result["teacher_document"].content_text
     assert "什么水平" not in result["teacher_message"]
 
 
@@ -312,6 +313,156 @@ def test_workflow_teaches_generated_board_one_h2_section_at_a_time(monkeypatch: 
     assert "第 2 小节" in followup["teacher_message"]
     assert "二、核心概念" in followup["teacher_message"]
     assert "一、问题入口" not in followup["teacher_message"]
+
+
+def test_workflow_generates_chart_image_for_data_rich_board(monkeypatch: pytest.MonkeyPatch) -> None:
+    package = build_initial_course_package()
+    lesson = create_empty_lesson("数据趋势")
+    package.lessons.append(lesson)
+    content_html = """
+    <h1>产品增长数据</h1>
+    <h2>一、用户增长趋势</h2>
+    <p>从年度数据看，2022 年活跃用户 120 万，2023 年活跃用户 180 万，2024 年活跃用户 260 万，整体呈持续增长趋势。</p>
+    """.strip()
+    chart_calls: list[dict[str, str]] = []
+
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_document_edit",
+        lambda **kwargs: DocumentEditOutput(
+            rationale="生成包含数据的板书",
+            replacement_html=content_html,
+        ),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_chart_image",
+        lambda **kwargs: chart_calls.append(kwargs) or "data:image/png;base64,ZmFrZQ==",
+    )
+
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "course_package": package,
+            "request": ChatRequest(message="请生成一版用户增长数据板书"),
+        }
+    )
+
+    assert result["document_updated"] is True
+    assert chart_calls
+    assert chart_calls[0]["chart_type"] == "折线图"
+    assert "2024 年活跃用户 260 万" in chart_calls[0]["source_excerpt"]
+    assert "AI 图表：折线图" in result["teacher_document"].content_html
+    assert '<img src="data:image/png;base64,ZmFrZQ=="' in result["teacher_document"].content_html
+
+
+def test_chart_fragment_rules_choose_pie_for_share_data() -> None:
+    document = build_document(
+        title="市场份额",
+        content_html="""
+<h1>市场份额</h1>
+<h2>渠道占比</h2>
+<p>本季度渠道占比数据为：线上 45%，门店 35%，代理商 20%。</p>
+""",
+    )
+
+    fragments = extract_chart_data_fragments(document, request_message="生成图表")
+
+    assert fragments
+    assert fragments[0].chart_type == "饼图 / 环形图"
+
+
+def test_workflow_records_section_followup_as_child_learning_need() -> None:
+    package = build_initial_course_package()
+    lesson = create_empty_lesson("开平方入门")
+    package.lessons.append(lesson)
+    lesson.board_document = build_document(
+        title="开平方入门",
+        content_html="""
+<h1>开平方入门</h1>
+<h2>一、乘法回顾</h2>
+<p>乘法可以理解为相同数量的重复累加。</p>
+<h2>二、根号开平方</h2>
+<p>开平方是在问哪个非负数平方以后等于被开方数。</p>
+""",
+        document_id=lesson.board_document.id,
+    )
+    lesson.board_teaching_progress = BoardTeachingProgress(
+        board_document_id=lesson.board_document.id,
+        board_snapshot_hash=_board_snapshot_hash(lesson.board_document),
+        current_section_index=1,
+        completed_section_indexes=[1],
+        waiting_for_continue=True,
+    )
+
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "course_package": package,
+            "request": ChatRequest(message="如果是负数被开方会怎么样？还有小数开方怎么算？"),
+        }
+    )
+
+    needs = result["learning_requirement_sheet"].learning_need_checklist
+    assert result["board_decision"].action == "no_change"
+    assert result["document_updated"] is False
+    assert any(need.startswith("2.1 ") and "负数" in need and "二、根号开平方" in need for need in needs)
+    assert any(need.startswith("2.2 ") and "小数开方" in need for need in needs)
+    assert result["board_edit_prompt"] is not None
+    assert result["board_edit_prompt"].topic == "如果是负数被开方会怎么样"
+    assert "虚数单位 i" in result["board_teaching_guide"].lecture_handout
+    assert "虚数单位 i" in result["teacher_message"]
+
+
+def test_confirming_section_followup_appends_numbered_child_section() -> None:
+    package = build_initial_course_package()
+    lesson = create_empty_lesson("开平方入门")
+    package.lessons.append(lesson)
+    lesson.board_document = build_document(
+        title="开平方入门",
+        content_html="""
+<h1>开平方入门</h1>
+<h2>一、乘法回顾</h2>
+<p>乘法可以理解为相同数量的重复累加。</p>
+<h2>二、根号开平方</h2>
+<p>开平方是在问哪个非负数平方以后等于被开方数。</p>
+""",
+        document_id=lesson.board_document.id,
+    )
+    lesson.board_teaching_progress = BoardTeachingProgress(
+        board_document_id=lesson.board_document.id,
+        board_snapshot_hash=_board_snapshot_hash(lesson.board_document),
+        current_section_index=1,
+        completed_section_indexes=[1],
+        waiting_for_continue=True,
+    )
+
+    first = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "course_package": package,
+            "request": ChatRequest(message="如果是负数被开方会怎么样？"),
+        }
+    )
+    lesson.learning_requirements = first["learning_requirement_sheet"]
+    lesson.board_teaching_guide = first["board_teaching_guide"]
+
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "course_package": package,
+            "request": ChatRequest(
+                message="如果是负数被开方会怎么样？",
+                board_edit_action="confirm",
+                board_edit_topic=first["board_edit_prompt"].topic,
+            ),
+        }
+    )
+
+    assert result["board_decision"].action == "append_section"
+    assert result["document_updated"] is True
+    assert "2.1 负数被开方会怎么样" in result["teacher_document"].content_text
+    assert "虚数单位 i" in result["teacher_document"].content_text
 
 
 def test_workflow_backfills_section_plans_for_legacy_board_teaching_guide() -> None:
@@ -385,11 +536,12 @@ def test_workflow_teaches_chinese_numbered_chapter_from_reference_without_filler
     )
 
     assert result["needs_clarification"] is False
-    assert result["board_decision"].action == "no_change"
+    assert result["board_decision"].action == "edit_board"
     assert result["selected_reference"] is not None
     assert result["selected_reference"].chapter_title == "第一章 概论"
-    assert result["document_updated"] is False
+    assert result["document_updated"] is True
     assert "模式识别第一章先建立三个问题" in result["board_teaching_guide"].lecture_handout
+    assert "模式识别第一章先建立三个问题" in result["teacher_document"].content_text
     assert "请补入一个最小例子" not in result["board_teaching_guide"].lecture_handout
     assert "模式是要识别的对象" in result["teacher_message"]
     assert "顺手告诉我" not in result["teacher_message"]
@@ -439,9 +591,9 @@ def test_workflow_turns_statistical_learning_reference_into_polished_handout(
     )
 
     lecture_handout = result["board_teaching_guide"].lecture_handout
-    assert result["board_decision"].action == "no_change"
-    assert result["document_updated"] is False
-    assert result["teacher_document"].content_text == ""
+    assert result["board_decision"].action == "edit_board"
+    assert result["document_updated"] is True
+    assert result["teacher_document"].content_text
     assert "训练误差小不等于测试误差小" in lecture_handout
     assert "经验风险" in lecture_handout
     assert "真实风险" in lecture_handout
@@ -494,8 +646,8 @@ def test_workflow_turns_density_estimation_reference_into_detailed_ten_part_hand
     )
 
     lecture_handout = result["board_teaching_guide"].lecture_handout
-    assert result["board_decision"].action == "no_change"
-    assert result["document_updated"] is False
+    assert result["board_decision"].action == "edit_board"
+    assert result["document_updated"] is True
     assert result["board_teaching_guide"] is not None
     assert len(result["board_teaching_guide"].section_plans) == 10
     assert len(lecture_handout) >= 4500
@@ -625,7 +777,7 @@ def test_default_single_resource_skips_preface_and_toc(tmp_path) -> None:
     assert result["reference_prompt"] is None
     assert result["selected_reference"] is not None
     assert result["selected_reference"].chapter_title == "第一章 概论"
-    assert result["board_edit_prompt"] is not None
+    assert result["board_edit_prompt"] is None
     assert result["document_updated"] is False
 
 
@@ -661,8 +813,45 @@ def test_workflow_defaults_brief_followup_to_single_uploaded_resource(tmp_path) 
     assert result["selected_reference"] is not None
     assert result["selected_reference"].resource_name == "学习资料.md"
     assert result["selected_reference"].chapter_title == "第一章 概论"
-    assert result["board_edit_prompt"] is not None
+    assert result["board_edit_prompt"] is None
     assert result["document_updated"] is False
+
+
+def test_empty_board_generates_directly_from_uploaded_chapter(tmp_path) -> None:
+    package = build_initial_course_package()
+    lesson = create_empty_lesson("资料学习")
+    package.lessons.append(lesson)
+    resource_path = tmp_path / "macro.md"
+    resource_path.write_text(
+        "\n".join(
+            [
+                "# 第一章 宏观经济学导论",
+                "第一章先解释宏观经济学研究整体经济运行，包括 GDP、失业、通货膨胀和经济增长。",
+                "课堂上要先说明总量指标为什么重要，再用一个家庭收入和全国总收入的类比帮助理解。",
+                "# 第二章 国民收入核算",
+                "第二章进入 GDP 的核算方法。",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    package.resources.append(build_resource_item(resource_path, "宏观经济学资料.md"))
+
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "course_package": package,
+            "request": ChatRequest(message="讲解第一章节"),
+        }
+    )
+
+    assert result["board_decision"].action == "edit_board"
+    assert result["reference_prompt"] is None
+    assert result["board_edit_prompt"] is None
+    assert result["selected_reference"] is not None
+    assert result["selected_reference"].chapter_title == "第一章 宏观经济学导论"
+    assert result["document_updated"] is True
+    assert "宏观经济学导论" in result["teacher_document"].content_text
+    assert "GDP" in result["teacher_document"].content_text
 
 
 def test_workflow_asks_which_file_when_multiple_resources_share_chapter_pointer(tmp_path) -> None:
@@ -713,13 +902,14 @@ def test_workflow_uses_named_file_when_multiple_resources_are_uploaded(tmp_path)
     )
 
     assert result["needs_clarification"] is False
-    assert result["board_decision"].action == "no_change"
+    assert result["board_decision"].action == "edit_board"
     assert result["reference_prompt"] is None
     assert result["selected_reference"] is not None
     assert result["selected_reference"].resource_name == "线性代数讲义.md"
     assert result["selected_reference"].chapter_title == "第一章 矩阵"
-    assert result["document_updated"] is False
+    assert result["document_updated"] is True
     assert "矩阵" in result["board_teaching_guide"].lecture_handout
+    assert "矩阵" in result["teacher_document"].content_text
 
 
 def test_workflow_can_answer_without_changing_the_board() -> None:
@@ -812,7 +1002,7 @@ def test_workflow_direct_start_after_brief_clarification_generates_board_for_bla
     assert result["teacher_document"].content_text == ""
     assert result["board_teaching_guide"] is not None
     assert result["board_teaching_guide"].lecture_handout
-    assert result["board_edit_prompt"] is not None
+    assert result["board_edit_prompt"] is None
 
 
 def test_workflow_formats_teacher_message_into_readable_paragraphs(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1516,6 +1706,59 @@ def test_build_resource_item_extracts_image_ocr_text(monkeypatch: pytest.MonkeyP
     reference = extract_reference_context(resource, resource.outline[0].id, user_query="正整数数列")
     assert reference is not None
     assert "正整数" in reference.full_text
+
+
+def test_build_resource_item_extracts_epub_outline_and_reference_context(tmp_path) -> None:
+    resource_path = tmp_path / "macro.epub"
+    chapter_html = """
+<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head><title>第一章 宏观经济学导论</title></head>
+  <body>
+    <h1>第一章 宏观经济学导论</h1>
+    <p>宏观经济学研究整体经济运行，关注国内生产总值、通货膨胀、失业率和经济增长。</p>
+    <p>学习这一章时，要先理解总量指标为什么能把千千万万个家庭、企业和政府行为连接起来。</p>
+    <h2>1.1 国内生产总值</h2>
+    <p>国内生产总值 GDP 衡量一定时期内一个经济体生产的最终产品和服务的市场价值。</p>
+  </body>
+</html>
+""".strip()
+    with ZipFile(resource_path, "w") as archive:
+        archive.writestr(
+            "META-INF/container.xml",
+            """
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>
+""".strip(),
+        )
+        archive.writestr(
+            "OEBPS/content.opf",
+            """
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+  <manifest>
+    <item id="chapter1" href="chapter1.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine>
+    <itemref idref="chapter1"/>
+  </spine>
+</package>
+""".strip(),
+        )
+        archive.writestr("OEBPS/chapter1.xhtml", chapter_html)
+
+    resource = build_resource_item(resource_path, "曼昆宏观经济学.epub")
+
+    assert resource.extracted_text_available is True
+    assert resource.outline
+    assert resource.outline[0].title == "第一章宏观经济学导论"
+    reference = extract_reference_context(resource, resource.outline[0].id, user_query="讲解第一章")
+    assert reference is not None
+    assert reference.chapter_title == "第一章宏观经济学导论"
+    assert "国内生产总值GDP" in reference.full_text
+    assert "曼昆宏观经济学.epub" not in reference.chunks[0].excerpt
 
 
 def test_build_resource_item_extracts_docx_outline_and_reference_context(tmp_path) -> None:

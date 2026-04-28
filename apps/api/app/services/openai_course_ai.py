@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import ssl
+import base64
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -61,6 +62,8 @@ REFERENCE_HANDOUT_QUALITY_STANDARD = (
     "worked intuition/example, important theorem or bound, method/application, common pitfalls, "
     "logic map, and classroom summary/check questions. Transform source excerpts into clean teaching prose; "
     "do not paste noisy OCR fragments, page numbers, broken formulas, or raw textbook paragraphs. "
+    "Do not treat file names, download-site names, z-library style suffixes, or repeated bibliography metadata as chapter content; "
+    "use them only as source labels and start the board from the actual extracted ideas. "
     "Avoid placeholder headings and filler such as 资料里的可讲片段, 可以从资料片段中选, 请补入一个最小例子, "
     "本章通常, or asks for later completion. Use concrete concepts, equations in readable text, examples, "
     "and answers/checks in the same response. For technical textbook chapters, especially pattern recognition, "
@@ -349,6 +352,7 @@ class OpenAIConfig(BaseModel):
     api_key: str | None = Field(default_factory=_shared_api_key)
     base_url: str | None = Field(default_factory=lambda: os.getenv("OPENAI_BASE_URL"))
     default_model: str = Field(default_factory=lambda: os.getenv("OPENAI_MODEL", DEFAULT_TEXT_MODEL))
+    image_model: str = Field(default_factory=lambda: os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-2"))
     pm_model: str | None = Field(default_factory=lambda: os.getenv("OPENAI_PM_MODEL"))
     board_model: str | None = Field(default_factory=lambda: os.getenv("OPENAI_BOARD_MODEL"))
     guide_model: str | None = Field(default_factory=lambda: os.getenv("OPENAI_GUIDE_MODEL"))
@@ -770,6 +774,7 @@ class OpenAICourseAI:
                 "guide": self.config.model_for("guide"),
                 "teacher": self.config.model_for("teacher"),
                 "lesson": self.config.model_for("lesson"),
+                "image": self.config.image_model,
                 "deepseek": self.deepseek_config.default_model,
                 "kimi": self.kimi_config.default_model,
                 "minimax": self.minimax_config.default_model,
@@ -988,6 +993,59 @@ class OpenAICourseAI:
                     parts.append(text)
             return "".join(parts)
         raise ValueError("Chat completion response did not include text content")
+
+    def generate_chart_image(
+        self,
+        *,
+        prompt: str,
+        chart_type: str,
+        source_excerpt: str,
+    ) -> str | None:
+        if self.client is None:
+            return None
+        model = self.config.image_model
+        payload: dict[str, Any] = {
+            "model": model,
+            "prompt": prompt,
+        }
+        image_size = os.getenv("OPENAI_IMAGE_SIZE")
+        image_quality = os.getenv("OPENAI_IMAGE_QUALITY")
+        if image_size:
+            payload["size"] = image_size
+        if image_quality:
+            payload["quality"] = image_quality
+        try:
+            result = self.client.images.generate(**payload)
+            image_items = getattr(result, "data", None) or []
+            if not image_items:
+                return None
+            first = image_items[0]
+            image_base64 = getattr(first, "b64_json", None)
+            image_url = getattr(first, "url", None)
+            if not image_base64 and isinstance(first, dict):
+                image_base64 = first.get("b64_json")
+                image_url = first.get("url")
+            if not image_base64 and image_url:
+                with urllib.request.urlopen(image_url, timeout=120, context=_URLLIB_SSL_CONTEXT) as response:
+                    image_base64 = base64.b64encode(response.read()).decode("ascii")
+            if not image_base64:
+                return None
+            ai_usage_logger.log_event(
+                "chart_image_generated",
+                model=model,
+                chart_type=chart_type,
+                source_excerpt=source_excerpt[:800],
+            )
+            return f"data:image/png;base64,{image_base64}"
+        except Exception as exc:
+            ai_usage_logger.log_event(
+                "chart_image_error",
+                model=model,
+                chart_type=chart_type,
+                error=str(exc),
+            )
+            logger.warning("OpenAI image generation failed, skipping chart image: %s", exc)
+            return None
 
     def _model_for(self, role: str) -> tuple[AIProvider, str]:
         selection = _text_model_selection.get()
@@ -1356,6 +1414,7 @@ class OpenAICourseAI:
                 "If not, set ready=false and ask 1 to 3 concise clarification questions in Chinese. "
                 "If ready, set ready=true. Always provide the best current LearningRequirementSheet. "
                 "Fill learning_need_checklist with 2 to 6 concrete learner needs derived from the user message, selected text, recent conversation, and board outline. "
+                "When the learner asks a new question while a numbered board section is being taught, preserve existing checklist items and add the new need as a child marker such as 4.1 or 4.2 when that marker is present in context. "
                 "The visible board is a single Word-like rich document."
             ),
             user_prompt=_json(
@@ -1394,7 +1453,8 @@ class OpenAICourseAI:
                 "Default ask-mode follow-up questions should be no_change: Board AI prepares an internal lecture handout and Teacher AI explains, without changing the visible board. "
                 "Use edit_board/append_section/create_new_lesson only when the learner explicitly asks to generate/rewrite/expand board or handout content, or when board_edit_action is confirm. "
                 "When board_edit_action is confirm, choose the best write strategy yourself: edit_board for in-place expansion, append_section for an extension chapter, or create_new_lesson for a genuinely separate topic. "
-                "Use append_section when the learner explicitly asks for a new page/section/chapter or when confirmed expansion should safely extend the current lesson."
+                "Use append_section when the learner explicitly asks for a new page/section/chapter or when confirmed expansion should safely extend the current lesson. "
+                "If the confirmed request corresponds to a learning_need_checklist child marker like 2.1, append it as a child subsection rather than rewriting the existing section."
             ),
             user_prompt=_json(
                 {
@@ -1455,6 +1515,7 @@ class OpenAICourseAI:
                 "If no selection is provided and the user asks to 扩展/扩写/展开/细化/丰富/更详细/细致讲解 the current board, handout, content, examples, or knowledge points, edit the existing document in place: preserve the original heading order, expand paragraphs and examples under the relevant headings, and return the complete updated document. Do not append a 补充章节/新增章节 unless they explicitly ask for 新增/追加/续写/新章节/页面/末尾. "
                 "If the user explicitly asks to add a new page, add several pages, append at the end, continue writing after the current board, or add a new section/chapter, return only the new HTML section/page content, set replace_whole false, and set target_action to append_section. "
                 "For append_section, write the actual expanded new section with concrete explanations, examples, checks, and teaching flow; never echo the user's instruction as board content. "
+                "If learning_requirement_sheet.learning_need_checklist contains a child marker such as 2.1/4.2 for the current request, use that marker in the appended heading and write it as a child subsection that connects back to the parent section. "
                 "When append_section continues or adds a chapter (续写章节/新章节/一节/整章), write a full chapter appended to the end of the current board: "
                 "use an h2 chapter title, about 8-10 h3 subsections, multiple developed paragraphs per subsection, concrete examples, exercises, and reference answers or a summary. "
                 "The appended chapter should be comparable in scale to an initial generated board/lesson, usually 2400-4500 Chinese characters, not just one or two short paragraphs. "
@@ -1467,6 +1528,8 @@ class OpenAICourseAI:
                 "Also return board_teaching_guide in Chinese, permanently bound to this board snapshot. "
                 "In board_teaching_guide, explain which board excerpts should be taught first, why they were selected, "
                 "which learner needs they correspond to, and what teaching flow Teacher AI should follow. "
+                "When the visible board contains quantitative data that should be visualized, keep the data fragment explicit and machine-readable enough for the chart image generator to extract it. "
+                "Use this chart selection policy: trend over time -> line chart; size comparison -> bar/horizontal bar; share/composition -> pie/donut; distribution -> histogram/box plot; two-variable relationship -> scatter; three-variable relationship -> bubble; whole over time -> area; multi-dimensional ability -> radar; object relations -> network graph; geographic data -> map; total plus growth rate -> combo chart. "
                 "Fill board_teaching_guide.lecture_handout as an internal lecture handout for Teacher AI. It may be richer than the visible board, but it must stay grounded in the document/reference and must not be treated as persisted board content. "
                 "Fill board_teaching_guide.section_plans by H2 section. Each section plan should tell Teacher AI the section title, "
                 "board summary, core knowledge points, teaching steps, teaching method, example or analogy, common pitfalls, "
@@ -1575,6 +1638,8 @@ class OpenAICourseAI:
                 "Return BoardTeachingGuide in Chinese. "
                 "Select the most important excerpts from the board, explain why they matter, map them to the learner's needs, "
                 "and provide a concise teacher_brief plus lecture_handout that can drive a live spoken explanation. "
+                "When the user asks a new follow-up during section-by-section teaching, prepare a temporary lecture_handout for that new need and show how it connects back to the current board section; do not require the visible board to contain the answer already. "
+                "When a selected board excerpt contains quantitative data, note what data fragment should be handed to the chart image generator and follow this chart policy: trend over time -> line chart; comparison -> bar/horizontal bar; composition -> pie/donut; distribution -> histogram/box plot; two variables -> scatter; three variables -> bubble; whole over time -> area; multiple abilities -> radar; object relations -> network graph; geographic data -> map; total plus growth rate -> combo chart. "
                 "lecture_handout is internal guidance for Teacher AI only; never rewrite the board itself. "
                 "Also fill section_plans by H2 section: each plan must include the section heading, board excerpt, core points, "
                 "teaching steps, teaching method, example or analogy, pitfalls, check question, and transition to the next section. "

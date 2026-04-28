@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 
 from app.models import BoardDecision, BoardDocument
+from app.services.chart_generation import augment_document_with_generated_charts
 from app.services.ai_workflow import (
     WorkflowState,
     _append_section_topic,
@@ -11,6 +12,7 @@ from app.services.ai_workflow import (
     _extract_focus_terms,
     _fallback_document_update,
     _is_append_document_request,
+    _is_section_followup_learning_need,
     _interactive_teaching_guide,
     _is_full_rewrite_request,
     _is_in_place_expansion_request,
@@ -213,7 +215,7 @@ def run_board_executor(state: WorkflowState) -> WorkflowState:
                 request=request,
                 requirements=requirements,
                 document=lesson.board_document,
-                prefer_existing=selected_reference is None,
+                prefer_existing=selected_reference is None and not _is_section_followup_learning_need(lesson, request),
                 selected_reference=selected_reference,
             ),
         }
@@ -225,6 +227,18 @@ def run_board_executor(state: WorkflowState) -> WorkflowState:
             requirements=requirements,
             reference_context=selected_reference,
         )
+        generated_lesson.board_document = augment_document_with_generated_charts(
+            generated_lesson.board_document,
+            request_message=request.message,
+        )
+        generated_lesson.teaching_guide = _interactive_teaching_guide(
+            lesson_id=generated_lesson.id,
+            lesson_title=generated_lesson.title,
+            document=generated_lesson.board_document,
+            requirements=requirements,
+        )
+        if generated_lesson.history_graph.commits:
+            generated_lesson.history_graph.commits[-1].snapshot = generated_lesson.board_document
         board_teaching_guide = _resolve_board_teaching_guide(
             lesson=generated_lesson,
             request=request,
@@ -366,6 +380,20 @@ def run_board_executor(state: WorkflowState) -> WorkflowState:
             requirements=requirements,
             document=next_document,
             prefer_existing=False,
+            selected_reference=selected_reference,
+        )
+
+    before_chart_document = next_document
+    next_document = augment_document_with_generated_charts(
+        next_document,
+        request_message=request.message,
+    )
+    if document_changed(before_chart_document, next_document):
+        board_teaching_guide = _bound_board_teaching_guide(
+            guidance=board_teaching_guide,
+            document=next_document,
+            requirements=requirements,
+            request_message=request.message,
             selected_reference=selected_reference,
         )
 

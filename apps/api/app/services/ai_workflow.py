@@ -1074,12 +1074,20 @@ def _reference_payload(
         "chapter_text_length": len(reference.full_text),
     }
     if include_full_text:
-        payload["chapter_text"] = reference.full_text
+        max_prompt_chars = 32000
+        payload["chapter_text"] = reference.full_text[:max_prompt_chars]
+        if len(reference.full_text) > max_prompt_chars:
+            payload["chapter_text_note"] = f"全文较长，已优先提供前 {max_prompt_chars} 字符供生成。"
     return payload
 
 
 def _learning_need_checklist(lesson: Lesson, request: ChatRequest, requirements: LearningRequirementSheet) -> list[str]:
     candidates: list[str] = []
+    supplemental_items = _section_followup_need_items(
+        lesson=lesson,
+        request=request,
+        existing_needs=requirements.learning_need_checklist,
+    )
     user_turns = [turn.content for turn in request.conversation if turn.role == "user"][-3:]
     for question in [*user_turns, request.message, *requirements.current_questions[-3:]]:
         cleaned = " ".join(str(question).split()).strip()
@@ -1101,13 +1109,14 @@ def _learning_need_checklist(lesson: Lesson, request: ChatRequest, requirements:
 
     needs: list[str] = []
     seen: set[str] = set()
-    for candidate in [*requirements.learning_need_checklist, *candidates]:
+    target_limit = 8 if supplemental_items else 6
+    for candidate in [*requirements.learning_need_checklist, *supplemental_items, *candidates]:
         cleaned = " ".join(str(candidate).split()).strip(" ：:，,。")
         if len(cleaned) < 4 or cleaned in seen:
             continue
         seen.add(cleaned)
         needs.append(cleaned)
-        if len(needs) >= 6:
+        if len(needs) >= target_limit:
             break
     while len(needs) < 2:
         fallback = f"围绕《{lesson.title}》把当前问题讲清楚" if not needs else "用一个例子或检查问题确认理解"
@@ -1116,7 +1125,143 @@ def _learning_need_checklist(lesson: Lesson, request: ChatRequest, requirements:
             seen.add(fallback)
         else:
             break
-    return needs[:6]
+    return needs[:target_limit]
+
+
+def _active_section_followup_context(lesson: Lesson) -> tuple[int, str, str] | None:
+    progress = lesson.board_teaching_progress
+    if progress is None:
+        return None
+    document = lesson.board_document
+    target_hash = _board_snapshot_hash(document)
+    if progress.board_document_id != document.id or progress.board_snapshot_hash != target_hash:
+        return None
+
+    guide = _current_board_teaching_guide(lesson, document)
+    if guide is not None and guide.section_plans:
+        index = max(0, min(progress.current_section_index, len(guide.section_plans) - 1))
+        plan = guide.section_plans[index]
+        body = plan.board_excerpt or "\n".join(plan.core_points)
+        return index + 1, plan.heading, body
+
+    sections = _board_h2_sections(document)
+    if not sections:
+        return None
+    index = max(0, min(progress.current_section_index, len(sections) - 1))
+    heading, body = sections[index]
+    return index + 1, heading, body
+
+
+def _is_section_followup_learning_need(lesson: Lesson, request: ChatRequest) -> bool:
+    if _active_section_followup_context(lesson) is None:
+        return False
+    if _is_teaching_control_request(request):
+        return False
+    if request.interaction_mode == "direct_edit":
+        return False
+    if request.board_edit_action is not None or request.scope_action is not None:
+        return False
+    if request.resource_reference_action is not None:
+        return False
+    message = request.message.strip()
+    if _is_low_information_request(message) or _is_vague_pointer_request(message):
+        return False
+    if _is_explicit_board_edit_request(message):
+        return False
+    compact = _compact_instruction_text(message)
+    question_signals = (
+        "如果",
+        "为什么",
+        "怎么",
+        "怎样",
+        "是什么",
+        "什么意思",
+        "会怎么样",
+        "会怎样",
+        "能不能",
+        "有没有",
+        "区别",
+        "关系",
+        "那",
+        "?",
+        "？",
+    )
+    return _is_explanation_request(message) or any(signal in compact for signal in question_signals)
+
+
+def _is_confirmed_section_followup_learning_need(lesson: Lesson, request: ChatRequest) -> bool:
+    return (
+        request.board_edit_action == "confirm"
+        and _active_section_followup_context(lesson) is not None
+        and bool((request.board_edit_topic or "").strip())
+        and not _is_explicit_board_edit_request(request.message)
+    )
+
+
+def _section_followup_topics(message: str) -> list[str]:
+    cleaned = " ".join(message.split()).strip(" ：:，,。！？!?；;")
+    if not cleaned:
+        return []
+    parts = re.split(
+        r"[？?；;！!\n]+|(?:另外|还有|以及|同时|顺便|再问一下|再问|还想问|还有就是)",
+        cleaned,
+    )
+    topics: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        topic = part.strip(" ：:，,。！？!?；;")
+        topic = re.sub(r"^(?:我想问|想问|问一下|请问|那|如果|假如|比如说|例如)\s*", "", topic).strip()
+        topic = re.sub(r"^(?:请|帮我|给我|为我)?(?:解释一下|解释|讲解一下|讲一下|讲讲)\s*", "", topic).strip()
+        if topic.startswith("是") and len(topic) >= 4:
+            topic = topic[1:].strip()
+        topic = topic.strip(" ：:，,。！？!?；;")
+        if len(topic) < 2:
+            continue
+        if topic in {"这个", "这里", "这块", "继续", "继续讲"}:
+            continue
+        if topic in seen:
+            continue
+        seen.add(topic)
+        topics.append(topic[:80])
+        if len(topics) >= 3:
+            break
+    if topics:
+        return topics
+
+    fallback = _clean_board_edit_topic(cleaned)
+    return [fallback] if fallback else []
+
+
+def _next_section_child_index(existing_needs: list[str], section_number: int) -> int:
+    child_indexes: list[int] = []
+    pattern = re.compile(rf"^\s*{section_number}\.(\d+)\b")
+    for need in existing_needs:
+        match = pattern.search(str(need))
+        if match:
+            child_indexes.append(int(match.group(1)))
+    return (max(child_indexes) + 1) if child_indexes else 1
+
+
+def _section_followup_need_items(
+    *,
+    lesson: Lesson,
+    request: ChatRequest,
+    existing_needs: list[str],
+) -> list[str]:
+    context = _active_section_followup_context(lesson)
+    if context is None or not _is_section_followup_learning_need(lesson, request):
+        return []
+    section_number, section_title, _ = context
+    topics = _section_followup_topics(request.message)
+    if not topics:
+        return []
+
+    child_index = _next_section_child_index(existing_needs, section_number)
+    items: list[str] = []
+    for offset, topic in enumerate(topics):
+        label = f"{section_number}.{child_index + offset}"
+        items.append(f"{label} 追问补充：{topic}（来源：第 {section_number} 小节《{section_title}》）")
+    return items
 
 
 def _draft_requirements(lesson: Lesson, request: ChatRequest) -> LearningRequirementSheet:
@@ -1386,6 +1531,8 @@ def _fallback_board_decision(
             return BoardDecision(action="create_new_lesson", reason="用户确认扩选版书，并明确要求拆成一节新课。")
         if request.scope_action == "append_section":
             return BoardDecision(action="append_section", reason="用户确认扩选版书，并选择在当前 lesson 中新增章节。")
+        if _is_section_followup_learning_need(lesson, request) or _is_confirmed_section_followup_learning_need(lesson, request):
+            return BoardDecision(action="append_section", reason="用户确认将分节授课中的追问沉淀到版书，默认追加为当前小节的子章节。")
         if _is_append_document_request(message):
             return BoardDecision(action="append_section", reason="用户确认扩选版书，且请求指向新增页面或章节。")
         if _is_in_place_expansion_request(message) or explicit_generation or is_document_empty(lesson.board_document):
@@ -1491,13 +1638,15 @@ def _should_offer_board_edit_prompt(
 ) -> bool:
     if request.interaction_mode == "direct_edit":
         return False
+    if is_document_empty(lesson.board_document):
+        return False
     if request.board_edit_action is not None or request.scope_action is not None:
         return False
     if _is_explicit_board_edit_request(request.message):
         return False
     if decision.action != "no_change":
         return False
-    if is_document_empty(lesson.board_document) and (_is_explanation_request(request.message) or _is_forced_start_request(request.message)):
+    if _is_section_followup_learning_need(lesson, request):
         return True
     if classify_scope(request.message, lesson) == "scope_escalation":
         return True
@@ -1683,6 +1832,58 @@ def _fallback_append_section_html(
 """.strip()
 
 
+def _fallback_section_followup_append_html(
+    *,
+    lesson: Lesson,
+    request: ChatRequest,
+    requirements: LearningRequirementSheet,
+) -> str:
+    context = _active_section_followup_context(lesson)
+    if context is None:
+        return _fallback_append_section_html(
+            request=request,
+            requirements=requirements,
+            selected_reference=None,
+        )
+    section_number, section_title, section_excerpt = context
+    labels = [
+        need
+        for need in requirements.learning_need_checklist
+        if re.match(rf"^\s*{section_number}\.\d+\b", need)
+    ]
+    topics = _section_followup_topics(request.message) or [request.board_edit_topic or request.message]
+    first_label_match = re.match(r"^\s*(\d+\.\d+)\s*(?:追问补充[：:]?)?\s*(.*?)(?:（|$)", labels[0]) if labels else None
+    child_label = first_label_match.group(1) if first_label_match else f"{section_number}.{_next_section_child_index(requirements.learning_need_checklist, section_number)}"
+    child_topic = (
+        first_label_match.group(2).strip(" ：:，,。")
+        if first_label_match and first_label_match.group(2).strip()
+        else topics[0]
+    )
+    escaped_label = html.escape(child_label)
+    escaped_topic = html.escape(child_topic)
+    escaped_section_title = html.escape(section_title)
+    escaped_excerpt = html.escape(section_excerpt[:360])
+    brief = html.escape(
+        _supplemental_teacher_brief(
+            request_message=request.message,
+            section_number=section_number,
+            section_title=section_title,
+            topics=topics,
+        )
+    )
+    return f"""
+<h2>{escaped_label} {escaped_topic}</h2>
+<p>这一节是从第 {section_number} 小节《{escaped_section_title}》讲解过程中自然长出的追问补充。原小节先讲到：{escaped_excerpt}</p>
+<p>{brief}</p>
+<h3>一、先回答这个新问题</h3>
+<p>先把结论说清楚，再说明它为什么会从原小节里冒出来。讲师应避免只说“这是新知识”，而要把它和前面的定义、规则或例子接起来。</p>
+<h3>二、和原小节的连接点</h3>
+<p>这类追问适合放成 {escaped_label}，因为它不是完全换课题，而是在原小节基础上补一个边界、反例或更高一级的概念。学习时先记住：新内容服务于理解原小节，不是把主线打散。</p>
+<h3>三、检查问题</h3>
+<p>你能用一句话说明“{escaped_topic}”和第 {section_number} 小节《{escaped_section_title}》之间的关系吗？如果能说出连接点，就说明这个子章节已经接回主线。</p>
+""".strip()
+
+
 def _plain_text_from_html_fragment(value: str) -> str:
     return html.unescape(re.sub(r"<[^>]+>", "", value or "")).strip()
 
@@ -1773,11 +1974,21 @@ def _fallback_document_update(
         )
 
     if decision.action == "append_section":
-        section_html = _fallback_append_section_html(
-            request=request,
-            requirements=requirements,
-            selected_reference=selected_reference,
-        )
+        if selected_reference is None and (
+            _is_section_followup_learning_need(lesson, request)
+            or _is_confirmed_section_followup_learning_need(lesson, request)
+        ):
+            section_html = _fallback_section_followup_append_html(
+                lesson=lesson,
+                request=request,
+                requirements=requirements,
+            )
+        else:
+            section_html = _fallback_append_section_html(
+                request=request,
+                requirements=requirements,
+                selected_reference=selected_reference,
+            )
         return append_html_section(lesson.board_document, section_html)
 
     topic = (
@@ -2448,6 +2659,123 @@ def _current_board_teaching_guide(lesson: Lesson, document: BoardDocument) -> Bo
     return None
 
 
+def _supplemental_teacher_brief(
+    *,
+    request_message: str,
+    section_number: int,
+    section_title: str,
+    topics: list[str],
+) -> str:
+    compact = _compact_instruction_text(request_message)
+    if "负数" in compact and any(term in compact for term in ("开方", "平方根", "根号", "被开方")):
+        return (
+            "核心说明：在实数范围内，负数不能开平方；为了让 x^2 = -1 这类方程有解，"
+            "数学引入虚数单位 i，并规定 i^2 = -1。所以当 a > 0 时，√(-a) 可以写成 i√a，"
+            "这就进入了复数的入门内容。讲的时候先把“实数范围内无解”和“扩展到复数后有解”分开，"
+            f"再接回第 {section_number} 小节《{section_title}》里的开方规则。"
+        )
+    topic_text = "；".join(topics) or request_message.strip()
+    return (
+        f"核心说明：这次追问“{topic_text}”是第 {section_number} 小节《{section_title}》的扩展学习需求。"
+        "讲师要先直接回答用户的问题，再说明它和当前板书小节的连接点；如果它已经超出当前板书，"
+        "要明确告诉用户这是外延知识，并用一个最小例子或检查问题收束。"
+    )
+
+
+def _supplemental_board_teaching_guide(
+    *,
+    lesson: Lesson,
+    document: BoardDocument,
+    requirements: LearningRequirementSheet,
+    request: ChatRequest,
+) -> BoardTeachingGuide:
+    context = _active_section_followup_context(lesson)
+    if context is None:
+        return _fallback_board_teaching_guide(
+            document=document,
+            requirements=requirements,
+            request_message=request.message,
+        )
+    section_number, section_title, section_excerpt = context
+    topics = _section_followup_topics(request.message) or [request.message.strip() or requirements.learning_goal]
+    labels = [
+        need
+        for need in requirements.learning_need_checklist
+        if re.match(rf"^\s*{section_number}\.\d+\b", need)
+    ]
+    if not labels:
+        labels = _section_followup_need_items(
+            lesson=lesson,
+            request=request,
+            existing_needs=requirements.learning_need_checklist,
+        )
+    teacher_brief = _supplemental_teacher_brief(
+        request_message=request.message,
+        section_number=section_number,
+        section_title=section_title,
+        topics=topics,
+    )
+    topic_text = "；".join(topics)
+    selected_items = [
+        BoardTeachingSelectedItem(
+            excerpt=teacher_brief[:420],
+            source_heading=f"{section_number}.x 追问补充",
+            reason="这条内容是版书 AI 为当前追问临时准备的讲解指导，供讲师先回答用户。",
+            mapped_needs=labels[:2] or requirements.learning_need_checklist[:1],
+            teaching_role="main_idea",
+            order_index=1,
+        )
+    ]
+    if section_excerpt.strip():
+        selected_items.append(
+            BoardTeachingSelectedItem(
+                excerpt=section_excerpt[:360],
+                source_heading=section_title,
+                reason="当前追问发生在这个小节讲解过程中，讲师需要把新问题接回原小节主线。",
+                mapped_needs=requirements.learning_need_checklist[:1],
+                teaching_role="why_it_matters",
+                order_index=2,
+            )
+        )
+
+    need_mappings = [
+        BoardNeedMapping(
+            need=need,
+            matched_excerpt=teacher_brief[:240],
+            source_heading=f"{section_number}.x 追问补充",
+            rationale="PM 已把授课中的新追问登记为当前小节的子学习需求，讲师先按内部讲义回答，是否写入版书由用户确认。",
+        )
+        for need in (labels or requirements.learning_need_checklist[:2])
+    ]
+    lecture_handout = "\n".join(
+        [
+            f"内部讲义：第 {section_number} 小节《{section_title}》追问补充",
+            f"用户问题：{request.message.strip()}",
+            f"学习需求标签：{'；'.join(labels) if labels else topic_text}",
+            teacher_brief,
+            f"当前小节依据：{section_excerpt[:260]}",
+            "讲解指导：先回答追问，再说明它和当前小节的关系；必要时说明这是外延知识，并提示可确认后扩选到板书子章节。",
+            "注意：这份讲义只供讲师讲解使用，不自动写入右侧版书。",
+        ]
+    )
+    return BoardTeachingGuide(
+        board_document_id=document.id,
+        board_snapshot_hash=_board_snapshot_hash(document),
+        board_title=document.title,
+        selected_items=selected_items,
+        need_mappings=need_mappings,
+        teaching_flow=[
+            f"先回答第 {section_number} 小节讲解中冒出的追问：{topic_text}",
+            f"再把答案接回《{section_title}》原来的板书内容。",
+            "最后询问是否要把这个扩展沉淀为右侧版书的子章节。",
+        ],
+        generation_rationale="分节授课过程中出现了新的学习需求，版书 AI 先生成临时讲解指导，不直接改动右侧版书。",
+        teacher_brief=teacher_brief,
+        lecture_handout=lecture_handout,
+        section_plans=_fallback_section_plans(document, requirements),
+    )
+
+
 def _relevant_lines(document: BoardDocument, request: ChatRequest) -> list[str]:
     if request.selection and request.selection.excerpt.strip():
         return [request.selection.excerpt.strip()]
@@ -2490,6 +2818,26 @@ def _resolve_board_teaching_guide(
     if existing is not None:
         return _bound_board_teaching_guide(
             guidance=existing,
+            document=document,
+            requirements=requirements,
+            request_message=request.message,
+            selected_reference=selected_reference,
+        )
+    if selected_reference is None and _is_section_followup_learning_need(lesson, request):
+        ai_guidance = openai_course_ai.generate_board_teaching_guide(
+            lesson_title=lesson.title,
+            request_message=request.message,
+            requirements=requirements,
+            document=document,
+        )
+        return _bound_board_teaching_guide(
+            guidance=ai_guidance
+            or _supplemental_board_teaching_guide(
+                lesson=lesson,
+                document=document,
+                requirements=requirements,
+                request=request,
+            ),
             document=document,
             requirements=requirements,
             request_message=request.message,

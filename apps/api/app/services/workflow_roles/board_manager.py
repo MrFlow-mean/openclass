@@ -11,8 +11,8 @@ from app.services.ai_workflow import (
     _is_append_document_request,
     _is_board_generation_request,
     _is_explicit_board_edit_request,
-    _is_explanation_request,
     _is_forced_start_request,
+    _extract_requested_outline_reference,
     _reference_context_for_match,
     _resource_file_clarification_question,
     _selected_reference_context,
@@ -32,6 +32,8 @@ def run_board_manager(state: WorkflowState) -> WorkflowState:
     requirements = state["learning_requirement_sheet"]
     matches = match_resources(state["course_package"], lesson, request, requirements)
     resources = _available_reference_resources(state["course_package"], lesson)
+    top_match = matches[0] if matches else None
+    second_match = matches[1] if len(matches) > 1 else None
 
     if request.interaction_mode == "direct_edit":
         if _is_append_document_request(request.message) and not is_document_empty(lesson.board_document):
@@ -94,6 +96,17 @@ def run_board_manager(state: WorkflowState) -> WorkflowState:
 
     if request.board_edit_action == "skip":
         decision = BoardDecision(action="no_change", reason="用户选择暂不把这次内容扩选到版书。")
+    elif (
+        is_document_empty(lesson.board_document)
+        and top_match is not None
+        and request.board_edit_action is None
+        and (
+            _is_board_generation_request(request.message)
+            or _is_forced_start_request(request.message)
+            or _extract_requested_outline_reference(request.message)[0] is not None
+        )
+    ):
+        decision = BoardDecision(action="edit_board", reason="当前版书为空，且用户已指向上传资料章节，直接生成初始版书。")
     elif is_document_empty(lesson.board_document) and _is_board_generation_request(request.message):
         decision = BoardDecision(action="edit_board", reason="用户明确要求生成讲义/板书，当前讲义为空，直接生成可写入版本。")
     elif _is_append_document_request(request.message):
@@ -113,8 +126,6 @@ def run_board_manager(state: WorkflowState) -> WorkflowState:
             "selected_reference": None,
         }
 
-    top_match = matches[0] if matches else None
-    second_match = matches[1] if len(matches) > 1 else None
     ambiguous_reference = (
         top_match is not None
         and second_match is not None

@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import html
 import mimetypes
+import posixpath
 import re
+import zipfile
+from xml.etree import ElementTree as ET
 from pathlib import Path
 
 from pypdf import PdfReader
@@ -426,6 +430,348 @@ def _extract_docx_section_text(file_path: Path, chapter: LibraryChapter) -> str:
     return str(target["title"])
 
 
+_EPUB_CHINESE_DIGITS = {
+    "零": 0,
+    "〇": 0,
+    "一": 1,
+    "二": 2,
+    "两": 2,
+    "三": 3,
+    "四": 4,
+    "五": 5,
+    "六": 6,
+    "七": 7,
+    "八": 8,
+    "九": 9,
+}
+_EPUB_CHINESE_UNITS = {"十": 10, "百": 100}
+_EPUB_NUMBER_PATTERN = r"(?:\d+|[一二三四五六七八九十百〇零两]+)"
+
+
+def _parse_epub_outline_number(value: str | None) -> int | None:
+    cleaned = (value or "").strip()
+    if not cleaned:
+        return None
+    if cleaned.isdigit():
+        return int(cleaned)
+
+    total = 0
+    current = 0
+    seen = False
+    for char in cleaned:
+        if char in _EPUB_CHINESE_DIGITS:
+            current = _EPUB_CHINESE_DIGITS[char]
+            seen = True
+            continue
+        unit = _EPUB_CHINESE_UNITS.get(char)
+        if unit is None:
+            return None
+        total += (current or 1) * unit
+        current = 0
+        seen = True
+    if not seen:
+        return None
+    return total + current
+
+
+def _extract_epub_requested_outline_reference(text: str) -> tuple[int | None, int | None]:
+    match = re.search(
+        rf"第\s*({_EPUB_NUMBER_PATTERN})\s*章(?:\s*第\s*({_EPUB_NUMBER_PATTERN})\s*[节讲部分])?",
+        text,
+    )
+    if match:
+        chapter_no = _parse_epub_outline_number(match.group(1))
+        section_no = _parse_epub_outline_number(match.group(2)) if match.group(2) else None
+        return chapter_no, section_no
+    english = re.search(r"\bchapter\s*(\d+)\s*(?:section\s*(\d+))?\b", text, flags=re.IGNORECASE)
+    if english:
+        return int(english.group(1)), int(english.group(2)) if english.group(2) else None
+    dotted = re.search(r"\b(\d+)\.(\d+)\b", text)
+    if dotted:
+        return int(dotted.group(1)), int(dotted.group(2))
+    return None, None
+
+
+def _epub_title_outline_reference(title: str) -> tuple[int | None, int | None]:
+    cleaned = title.strip()
+    chapter = re.search(rf"第\s*({_EPUB_NUMBER_PATTERN})\s*章", cleaned)
+    if chapter:
+        return _parse_epub_outline_number(chapter.group(1)), None
+    dotted = re.search(r"^\s*(\d+)\s*[.．]\s*(\d+)", cleaned)
+    if dotted:
+        return int(dotted.group(1)), int(dotted.group(2))
+    english = re.search(r"\bchapter\s*(\d+)\b", cleaned, flags=re.IGNORECASE)
+    if english:
+        return int(english.group(1)), None
+    return None, None
+
+
+def _epub_is_html_path(path: str) -> bool:
+    lowered = path.lower()
+    return lowered.endswith((".xhtml", ".html", ".htm"))
+
+
+def _decode_epub_bytes(data: bytes) -> str:
+    for encoding in ("utf-8", "utf-16", "gb18030", "latin-1"):
+        try:
+            return data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return data.decode("utf-8", errors="ignore")
+
+
+def _epub_text_from_html(raw_html: str) -> str:
+    cleaned = re.sub(r"(?is)<(script|style|head|nav)\b.*?</\1>", "\n", raw_html)
+    cleaned = re.sub(r"(?is)<br\b[^>]*>", "\n", cleaned)
+    cleaned = re.sub(r"(?is)</?(h[1-6]|p|div|section|article|li|tr|td|th|blockquote)\b[^>]*>", "\n", cleaned)
+    cleaned = re.sub(r"(?is)<[^>]+>", "", cleaned)
+    text = html.unescape(cleaned)
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    return _normalize_extracted_text("\n".join(lines))
+
+
+def _epub_fragment_text(fragment: str) -> str:
+    return _epub_text_from_html(fragment).strip()
+
+
+def _epub_html_title(raw_html: str, path: str) -> str:
+    for match in re.finditer(r"(?is)<h([1-6])\b[^>]*>(.*?)</h\1>", raw_html):
+        title = _epub_fragment_text(match.group(2))
+        if title:
+            return title[:120]
+    title_match = re.search(r"(?is)<title\b[^>]*>(.*?)</title>", raw_html)
+    if title_match:
+        title = _epub_fragment_text(title_match.group(1))
+        if title:
+            return title[:120]
+    return Path(path).stem.replace("_", " ").replace("-", " ").strip() or path
+
+
+def _epub_rootfile_path(archive: zipfile.ZipFile) -> str | None:
+    try:
+        container_xml = archive.read("META-INF/container.xml")
+    except KeyError:
+        return None
+    try:
+        root = ET.fromstring(container_xml)
+    except ET.ParseError:
+        return None
+    rootfile = root.find(".//{*}rootfile")
+    if rootfile is None:
+        return None
+    full_path = rootfile.attrib.get("full-path")
+    return full_path.strip() if full_path else None
+
+
+def _epub_reading_order_paths(archive: zipfile.ZipFile) -> list[str]:
+    rootfile_path = _epub_rootfile_path(archive)
+    if not rootfile_path:
+        return []
+    try:
+        opf_root = ET.fromstring(archive.read(rootfile_path))
+    except (KeyError, ET.ParseError):
+        return []
+
+    base_dir = posixpath.dirname(rootfile_path)
+    manifest: dict[str, tuple[str, str, str]] = {}
+    for item in opf_root.findall(".//{*}manifest/{*}item"):
+        item_id = item.attrib.get("id", "").strip()
+        href = item.attrib.get("href", "").strip()
+        media_type = item.attrib.get("media-type", "").strip()
+        properties = item.attrib.get("properties", "").strip()
+        if not item_id or not href:
+            continue
+        path = posixpath.normpath(posixpath.join(base_dir, href))
+        manifest[item_id] = (path, media_type, properties)
+
+    ordered: list[str] = []
+    for itemref in opf_root.findall(".//{*}spine/{*}itemref"):
+        item_id = itemref.attrib.get("idref", "").strip()
+        path, media_type, properties = manifest.get(item_id, ("", "", ""))
+        if not path:
+            continue
+        if "nav" in properties or "toc" in properties:
+            continue
+        if media_type in {"application/xhtml+xml", "text/html"} or _epub_is_html_path(path):
+            ordered.append(path)
+    return [path for path in ordered if path in archive.namelist()]
+
+
+def _epub_html_items(file_path: Path) -> list[dict[str, object]]:
+    try:
+        with zipfile.ZipFile(file_path) as archive:
+            paths = _epub_reading_order_paths(archive)
+            if not paths:
+                paths = [
+                    path
+                    for path in archive.namelist()
+                    if _epub_is_html_path(path) and not re.search(r"(?:^|/)(?:nav|toc|cover)\.", path, flags=re.IGNORECASE)
+                ]
+            items: list[dict[str, object]] = []
+            for order_index, path in enumerate(paths):
+                try:
+                    raw_html = _decode_epub_bytes(archive.read(path))
+                except KeyError:
+                    continue
+                text = _epub_text_from_html(raw_html)
+                if not text:
+                    continue
+                items.append(
+                    {
+                        "path": path,
+                        "title": _epub_html_title(raw_html, path),
+                        "text": text,
+                        "order_index": order_index,
+                    }
+                )
+            return items
+    except (zipfile.BadZipFile, OSError):
+        return []
+
+
+def _is_epub_separator_title(title: str) -> bool:
+    compact = re.sub(r"\s+", "", title).lower()
+    return compact in {"封面", "版权", "目录", "目次", "前言", "序", "绪言", "contents", "cover", "titlepage"}
+
+
+def _looks_like_epub_heading(line: str) -> bool:
+    cleaned = line.strip()
+    if len(cleaned) > 90:
+        return False
+    if _looks_like_reference_heading(cleaned):
+        return True
+    if re.match(r"^(?:chapter\s+\d+|\d+\s*[.．]\s*\d+|\d+\s+[A-Za-z\u4e00-\u9fff])", cleaned, flags=re.IGNORECASE):
+        return True
+    return False
+
+
+def _epub_sections(file_path: Path) -> list[dict[str, object]]:
+    items = _epub_html_items(file_path)
+    sections: list[dict[str, object]] = []
+    for item in items:
+        text = str(item["text"])
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        if not lines:
+            continue
+        heading_indexes = [index for index, line in enumerate(lines) if _looks_like_epub_heading(line)]
+        if not heading_indexes:
+            title = str(item["title"]).strip() or Path(str(item["path"])).stem
+            if _is_epub_separator_title(title) and len(lines) > 1:
+                title = next((line for line in lines if len(line) <= 80 and not _is_epub_separator_title(line)), title)
+            content = "\n".join(lines).strip()
+            if content:
+                sections.append(
+                    {
+                        "title": title[:120],
+                        "content": content,
+                        "level": 1,
+                        "order_index": int(item["order_index"]),
+                    }
+                )
+            continue
+
+        for local_index, line_index in enumerate(heading_indexes):
+            end = heading_indexes[local_index + 1] if local_index + 1 < len(heading_indexes) else len(lines)
+            title = lines[line_index].strip()
+            content = "\n".join(lines[line_index + 1 : end]).strip()
+            if _is_epub_separator_title(title) and not content:
+                continue
+            level = _toc_entry_level(title)
+            sections.append(
+                {
+                    "title": title[:120],
+                    "content": content or title,
+                    "level": level,
+                    "order_index": len(sections),
+                }
+            )
+    return sections
+
+
+def _read_epub_text(file_path: Path) -> str:
+    return _normalize_extracted_text("\n\n".join(str(item["text"]) for item in _epub_html_items(file_path)))
+
+
+def _extract_epub_outline(file_path: Path) -> list[LibraryChapter]:
+    chapters: list[LibraryChapter] = []
+    for section in _epub_sections(file_path):
+        title = str(section["title"]).strip()
+        if not title or _is_epub_separator_title(title):
+            continue
+        content = str(section["content"])
+        summary_seed = re.sub(r"\s+", " ", content).strip()[:120]
+        summary = summary_seed or f"来自 EPUB 标题“{title}”的章节摘要待进一步展开。"
+        chapters.append(
+            _chapter(
+                title=title,
+                summary=summary,
+                keywords=_keywords_from_text(f"{title}\n{content}"),
+                level=int(section["level"]),
+                locator_hint=title,
+                order_index=int(section["order_index"]),
+                scan_strategy="heading_section",
+            )
+        )
+    return chapters
+
+
+def _epub_section_with_children(sections: list[dict[str, object]], start_index: int) -> str:
+    target = sections[start_index]
+    target_level = int(target["level"])
+    def section_text(section: dict[str, object]) -> str:
+        title = str(section["title"]).strip()
+        content = str(section["content"]).strip()
+        if content.startswith(title):
+            return content
+        return f"{title}\n{content}".strip()
+
+    parts = [section_text(target)]
+    for section in sections[start_index + 1 :]:
+        if int(section["level"]) <= target_level:
+            break
+        parts.append(section_text(section))
+    return "\n\n".join(part for part in parts if part.strip())
+
+
+def _extract_epub_section_text(file_path: Path, chapter: LibraryChapter, user_query: str) -> tuple[str, str]:
+    sections = _epub_sections(file_path)
+    if not sections:
+        return chapter.title, _read_epub_text(file_path)
+
+    requested_chapter_no, requested_section_no = _extract_epub_requested_outline_reference(user_query)
+    if requested_chapter_no is not None:
+        fallback_index: int | None = None
+        for index, section in enumerate(sections):
+            chapter_no, section_no = _epub_title_outline_reference(str(section["title"]))
+            if chapter_no != requested_chapter_no:
+                continue
+            if requested_section_no is not None and section_no == requested_section_no:
+                return str(section["title"]), _epub_section_with_children(sections, index)
+            if requested_section_no is None and section_no is None:
+                return str(section["title"]), _epub_section_with_children(sections, index)
+            if fallback_index is None:
+                fallback_index = index
+        if fallback_index is not None:
+            section = sections[fallback_index]
+            return str(section["title"]), _epub_section_with_children(sections, fallback_index)
+
+    target_title = (chapter.locator_hint or chapter.title).strip()
+    for index, section in enumerate(sections):
+        if str(section["title"]).strip() == target_title:
+            return str(section["title"]), _epub_section_with_children(sections, index)
+
+    first_index = next(
+        (
+            index
+            for index, section in enumerate(sections)
+            if int(section["level"]) == 1 and not _is_epub_separator_title(str(section["title"]))
+        ),
+        0,
+    )
+    section = sections[first_index]
+    return str(section["title"]), _epub_section_with_children(sections, first_index)
+
+
 def _looks_like_reference_heading(line: str) -> bool:
     cleaned = line.strip()
     return bool(
@@ -654,6 +1000,8 @@ def _build_reference_context(
     normalized_text = _normalize_extracted_text(raw_text)
     compact = re.sub(r"\s+", " ", normalized_text).strip()
     if not compact:
+        return None
+    if not resource.extracted_text_available and len(compact) < 320:
         return None
 
     children = _child_chapters(resource, chapter)
@@ -1109,6 +1457,24 @@ def extract_outline(file_path: Path, original_name: str, mime_type: str) -> tupl
             text,
         )
 
+    if file_path.suffix.lower() == ".epub":
+        text = _read_epub_text(file_path)
+        outline = _extract_epub_outline(file_path)
+        if outline:
+            return outline, True, text[:200000] if text else None
+        if text:
+            return (
+                [
+                    _generic_chapter_from_text(
+                        Path(original_name).stem,
+                        text,
+                        summary_prefix="从 EPUB 资料中抽取到的内容摘要：",
+                    )
+                ],
+                True,
+                text[:200000],
+            )
+
     if file_path.suffix.lower() == ".pdf":
         reader = PdfReader(str(file_path))
         if reader.outline:
@@ -1246,6 +1612,18 @@ def extract_reference_context(
             raw_text = _extract_docx_section_text(file_path, chapter)
         else:
             raw_text = _read_docx_text(file_path)
+    elif suffix == ".epub":
+        chapter_title, raw_text = _extract_epub_section_text(file_path, chapter, user_query)
+        if chapter_title and chapter_title != chapter.title:
+            chapter = chapter.model_copy(
+                update={
+                    "title": chapter_title,
+                    "summary": _summary_snippet(raw_text, limit=180)
+                    or f"EPUB 章节“{chapter_title}”可作为本次讲解参考。",
+                    "keywords": _keywords_from_text(f"{chapter_title}\n{raw_text}"),
+                    "locator_hint": chapter_title,
+                }
+            )
     elif suffix == ".pdf":
         raw_text = _extract_pdf_chapter_text(file_path, chapter, user_query)
     else:
