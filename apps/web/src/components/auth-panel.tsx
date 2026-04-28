@@ -768,7 +768,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
               </div>
             ) : (
               <>
-                <div className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div className="mb-5 space-y-3">
                   {socialSignInOptions.map((option) => {
                     const provider = authProviders.find((item) => item.kind === "oauth" && item.id === option.id);
                     const isUnconfigured = provider ? !provider.configured : false;
@@ -781,12 +781,12 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                         type="button"
                         onClick={() => handleProviderSignIn(option)}
                         className={clsx(
-                          "flex min-h-12 w-full items-center justify-center gap-2 rounded-lg border px-3 py-3 text-center text-sm font-semibold leading-tight shadow-sm transition active:scale-[0.99]",
+                          "flex w-full items-center justify-center gap-3 rounded-lg border px-4 py-3.5 text-sm font-semibold shadow-sm transition active:scale-[0.99]",
                           option.className
                         )}
                       >
                         <SocialBrandIcon brand={option.brand} />
-                        <span className="min-w-0">{option.label}</span>
+                        <span className="whitespace-nowrap">{option.label}</span>
                         {isUnconfigured ? (
                           <span className={clsx("shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold", statusClassName)}>未配置</span>
                         ) : null}
