@@ -129,15 +129,10 @@ def test_workflow_starts_teaching_on_first_subject_only_learning_goal() -> None:
     assert "准备用在哪种场景" not in result["teacher_message"]
 
 
-def test_workflow_probes_learning_purpose_after_greeting_then_broad_math_goal(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_workflow_probes_learning_purpose_after_greeting_then_broad_math_goal() -> None:
     package = build_initial_course_package()
     lesson = create_empty_lesson("测试12")
     package.lessons.append(lesson)
-    monkeypatch.setattr(
-        openai_course_ai,
-        "generate_clarification_message",
-        lambda **kwargs: "数学这个范围很大，我先确认一下：你现在是几年级或什么水平，这次学数学主要为了什么目的，想先从代数、几何、函数、微积分还是概率统计哪一块开始？",
-    )
 
     result = course_workflow.invoke(
         {
@@ -160,9 +155,9 @@ def test_workflow_probes_learning_purpose_after_greeting_then_broad_math_goal(mo
     assert result["needs_clarification"] is True
     assert result["board_decision"].action == "clarify_request"
     assert "几年级" in result["teacher_message"] or "什么水平" in result["teacher_message"]
-    assert "目的" in result["teacher_message"] or "为了考试" in result["teacher_message"]
-    assert "哪一块" in result["teacher_message"]
+    assert "具体想学" in result["teacher_message"]
     assert "代数" in result["teacher_message"]
+    assert "教师模型" not in result["teacher_message"]
 
 
 def test_workflow_probes_math_background_for_first_advanced_subject_goal() -> None:

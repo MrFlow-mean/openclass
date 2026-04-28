@@ -3018,6 +3018,10 @@ def _is_broad_learning_goal_request(message: str) -> bool:
 def _is_math_learning_topic(text: str) -> bool:
     compact = _compact_instruction_text(text)
     math_terms = (
+        "数学",
+        "函数",
+        "几何",
+        "代数",
         "代数几何",
         "抽象代数",
         "线性代数",
@@ -3251,6 +3255,29 @@ def _overfitting_teacher_message() -> str:
     )
 
 
+def _fallback_clarification_message(state: WorkflowState) -> str:
+    request = state["request"]
+    status = state.get("learning_clarification")
+    requirements = state.get("learning_requirement_sheet")
+    lesson = state["lesson"]
+    missing = set(status.missing_items) if status is not None else set()
+    topic = _extract_topic_hint(request.message) or (
+        requirements.theme if requirements is not None and requirements.theme != lesson.title else ""
+    )
+
+    if "想学的主题" in missing:
+        return "你具体想学什么内容？可以直接说一个主题、章节，或者把卡住的题目发给我。"
+    if {"当前水平或背景", "学习目的或应用场景"} <= missing:
+        if _is_math_learning_topic(f"{topic}\n{request.message}"):
+            return "你当前是什么水平、几年级？另外你具体想学数学里的什么内容，比如函数、几何、代数、微积分、概率统计，还是某类题？"
+        return "你当前是什么水平或背景？这次具体想学什么内容，想达到什么目标？"
+    if "当前水平或背景" in missing:
+        return "你当前是什么水平、几年级，或者之前已经学到哪一部分了？"
+    if "学习目的或应用场景" in missing:
+        return "你这次具体想学什么内容，想达到什么目标？"
+    return "你具体想学什么内容？"
+
+
 def _fallback_teacher_message(state: WorkflowState) -> str:
     request = state["request"]
     decision = state["board_decision"]
@@ -3262,9 +3289,7 @@ def _fallback_teacher_message(state: WorkflowState) -> str:
     if decision.action == "clarify_request":
         if clarification_questions:
             return clarification_questions[0]
-        status = state.get("learning_clarification")
-        missing = "、".join(status.missing_items) if status is not None else "必要学习信息"
-        return f"教师模型暂时没有返回自然追问；当前还缺：{missing}。"
+        return _fallback_clarification_message(state)
     if decision.action == "await_reference_choice" and reference_prompt is not None:
         return reference_prompt.question
     if decision.action == "await_scope_choice":
