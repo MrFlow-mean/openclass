@@ -4190,7 +4190,13 @@ export function CourseStudio() {
                 <button
                   type="button"
                   onClick={() => setTopCollapsed(true)}
-                  className="rounded-md p-1.5 text-gray-500 transition-colors hover:bg-gray-100"
+                  aria-pressed={!topCollapsed}
+                  className={clsx(
+                    "rounded-md border p-1.5 transition-colors",
+                    !topCollapsed
+                      ? "border-gray-200 bg-gray-100 text-gray-700 shadow-sm"
+                      : "border-transparent bg-white text-gray-500 hover:border-gray-200 hover:bg-gray-50"
+                  )}
                   title="收起顶部与编辑工具栏"
                 >
                   <ChevronUp className="h-4.5 w-4.5" />
