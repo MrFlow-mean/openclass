@@ -4166,12 +4166,6 @@ export function CourseStudio() {
             </div>
 
             <div className="flex shrink-0 items-center gap-4">
-              <div className="flex items-center gap-2 rounded-md border border-green-100/50 bg-green-50/60 px-2 py-1">
-                <div className="h-1.5 w-1.5 rounded-full bg-green-500" />
-                <span className="text-[10px] font-bold uppercase tracking-widest text-green-700">
-                  Teacher AI Online
-                </span>
-              </div>
               <div className="ml-2 flex items-center gap-1 border-l border-gray-200 pl-4">
                 <button
                   type="button"
