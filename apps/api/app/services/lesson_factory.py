@@ -74,6 +74,8 @@ def _language_cafe_html() -> str:
 <p><strong>Serveur：</strong>Dans ce cas, vous avez raison de commencer par la tarte. Beaucoup de clients disent qu’ils reviendraient rien que pour elle.<br><strong>服务员：</strong>这样的话，您先尝苹果挞很对。很多客人说他们光是为了它也会再来。</p>
 <p><strong>Cliente：</strong>C’est noté. Et si mes amis venaient avec moi demain, nous commanderions sûrement plusieurs desserts à partager.<br><strong>顾客：</strong>我记住了。如果我的朋友们明天和我一起来，我们肯定会点几份甜点一起分享。</p>
 <p><strong>Serveur：</strong>Excellente idée. Je vous apporte ça tout de suite.<br><strong>服务员：</strong>好主意。我马上给您拿来。</p>
+<p><strong>Cliente：</strong>Merci beaucoup. Et après le dessert, je voudrais l'addition, s'il vous plaît.<br><strong>顾客：</strong>非常感谢。甜点之后我想买单，谢谢。</p>
+<p><strong>Serveur：</strong>Bien sûr, madame. Je vous apporterai l'addition avec plaisir.<br><strong>服务员：</strong>当然，女士。我很乐意把账单拿给您。</p>
 <p><strong>Cliente：</strong>Merci beaucoup. Je suis contente d’avoir trouvé ce café avant la pluie.<br><strong>顾客：</strong>非常感谢。我很高兴在下雨前找到了这家咖啡馆。</p>
 <h2>三、语法重点：过去将来时与条件式</h2>
 <p>法语里中文常说的“过去将来时”，很多时候会用 <strong>条件式现在时 conditionnel présent</strong> 来表达：站在过去某个时间点看未来将要发生的事。结构常见为：<strong>过去主句 + conditionnel présent</strong>。</p>
@@ -81,7 +83,7 @@ def _language_cafe_html() -> str:
 <p><strong>例句 2：</strong><em>J’avais dit à mes amis que nous reviendrions peut-être ici demain matin.</em> 我之前跟朋友说我们明天早上也许会再来这里。<em>avais dit</em> 是过去完成的说话动作，<em>reviendrions</em> 是当时说话内容里的未来。</p>
 <p><strong>例句 3：</strong><em>Si mes amis venaient avec moi demain, nous commanderions sûrement plusieurs desserts.</em> 如果我的朋友明天和我一起来，我们肯定会点几份甜点。这里是条件句：<em>si + imparfait</em>，主句用 <em>conditionnel présent</em>。</p>
 <h2>四、点餐表达整理</h2>
-<p><strong>礼貌点餐：</strong><em>Je vais prendre...</em> 我想要……；<em>Je voudrais...</em> 我想要……；<em>Qu’est-ce que vous me conseillez ?</em> 您推荐什么？</p>
+<p><strong>礼貌点餐：</strong><em>Je vais prendre...</em> 我想要……；<em>Je voudrais...</em> 我想要……；<em>Je voudrais l'addition, s'il vous plaît.</em> 我想买单，谢谢；<em>Qu’est-ce que vous me conseillez ?</em> 您推荐什么？</p>
 <p><strong>甜点与饮品：</strong><em>un café crème</em> 加奶咖啡；<em>une tarte aux pommes</em> 苹果挞；<em>un gâteau au chocolat</em> 巧克力蛋糕；<em>une carafe d’eau</em> 一壶水。</p>
 <p><strong>服务员常用语：</strong><em>Vous désirez aussi de l’eau ?</em> 您还需要水吗？<em>Je vous apporte ça tout de suite.</em> 我马上给您拿来。</p>
 <h2>五、替换练习</h2>
@@ -889,6 +891,50 @@ def _ring_algebra_geometry_html() -> str:
     return "\n".join(parts)
 
 
+def _is_virtual_memory_topic(topic: str) -> bool:
+    normalized = topic.lower()
+    return any(term in normalized for term in ("虚拟内存", "virtual memory", "页表", "tlb", "缺页", "地址空间"))
+
+
+def _virtual_memory_html() -> str:
+    return """
+<h1>虚拟内存：操作系统核心讲义</h1>
+<p><strong>学习目标：</strong>理解虚拟内存如何把程序看到的地址空间和真实物理内存隔开，并能说清地址转换、页表、TLB、缺页异常和页面置换之间的关系。</p>
+<h2>一、先抓主线：虚拟内存解决什么问题</h2>
+<p>虚拟内存让每个进程都像独占一大片连续内存。程序使用虚拟地址，硬件和操作系统再把虚拟地址翻译到物理内存。这样可以同时获得隔离、保护、按需加载和更灵活的内存管理。</p>
+<p>不要把虚拟内存理解成“假的内存”。它更像一层地址抽象：程序看到的是虚拟地址空间，真正的数据可能在物理内存中，也可能暂时在磁盘上的换页区域里。</p>
+<h2>二、地址空间：每个进程自己的地图</h2>
+<p>地址空间是一套进程可见的地址编号。不同进程可以使用相同的虚拟地址，但映射到不同的物理页，因此一个进程通常不能直接读写另一个进程的内存。</p>
+<p>这也是内存保护的基础：只要页表中没有授权映射，访问就会被硬件拦住，并交给操作系统处理。</p>
+<h2>三、分页：把内存切成固定大小的页</h2>
+<p>虚拟内存通常按页管理。虚拟地址被拆成虚拟页号和页内偏移，物理内存被拆成物理页框。页大小常见为 4KB，也可能更大。</p>
+<p>分页的好处是映射粒度稳定：操作系统不必移动整段连续内存，只要修改页表，就能把某个虚拟页指向某个物理页框。</p>
+<h2>四、页表：虚拟页到物理页的翻译表</h2>
+<p>页表记录虚拟页号到物理页框号的映射，还会带上有效位、读写权限、用户/内核权限、脏位和访问位等状态。地址转换时，MMU 根据页表项找到物理页框，再加上页内偏移得到物理地址。</p>
+<p>核心公式可以先记成：虚拟地址 = 虚拟页号 + 页内偏移；物理地址 = 物理页框号 + 同一个页内偏移。</p>
+<h2>五、TLB：给页表查询加速的缓存</h2>
+<p>如果每次访存都去内存里查页表，代价会很高。TLB 是 MMU 里的地址转换缓存，保存最近用过的虚拟页到物理页框映射。</p>
+<p>TLB 命中时，地址转换很快；TLB 未命中时，需要查页表并把结果放回 TLB。理解性能时，要同时看普通缓存命中和 TLB 命中。</p>
+<h2>六、缺页异常：需要的页暂时不在内存</h2>
+<p>如果页表项显示某个虚拟页当前不在物理内存中，就会触发缺页异常。CPU 转入内核，操作系统找到这个页在磁盘上的位置，选择一个空闲页框或淘汰旧页，把需要的页调入内存，然后恢复进程执行。</p>
+<p>缺页不是普通函数调用，而是一次硬件异常加操作系统处理。它能让程序按需加载数据，但频繁缺页会让程序非常慢。</p>
+<h2>七、页面置换：内存满了怎么办</h2>
+<p>当没有空闲页框时，操作系统需要选择一个页面换出。常见策略包括 FIFO、LRU 近似、Clock 算法等。好的策略尽量保留近期还会使用的页，减少未来缺页。</p>
+<p>如果工作集大于物理内存，系统可能反复换入换出，出现抖动。此时 CPU 看似忙着处理异常，真正业务进展很慢。</p>
+<h2>八、一个完整例子</h2>
+<p>程序访问虚拟地址 0x12345。硬件先拆出虚拟页号和偏移，查 TLB；如果 TLB 命中，就直接得到物理页框。如果未命中，就查页表；如果页表有效，就更新 TLB 再访问物理内存；如果页表无效，就触发缺页异常，由操作系统把页调入后重试。</p>
+<h2>九、练习</h2>
+<ol>
+<li>为什么两个进程可以使用相同虚拟地址却互不干扰？</li>
+<li>TLB 命中和页表命中有什么区别？</li>
+<li>缺页异常发生时，操作系统大致做哪几步？</li>
+<li>为什么工作集太大会导致抖动？</li>
+</ol>
+<h2>十、小结</h2>
+<p>虚拟内存的主线是：地址空间提供抽象，页表提供映射，TLB 提供加速，缺页异常提供按需调入，页面置换处理内存不足。把这五件事连起来，就能理解大多数虚拟内存题目。</p>
+""".strip()
+
+
 def _generic_lesson_html(topic: str, reference_context: ResourceReferenceContext | None = None) -> str:
     if reference_context is not None:
         return _reference_lesson_html(topic, reference_context)
@@ -956,6 +1002,9 @@ def build_document_for_topic(
     if any(keyword in normalized for keyword in ["dialogue", "对话", "咖啡", "café", "cafe", "点餐"]):
         title = "法国咖啡厅点餐情景对话（含过去将来时）"
         return build_document(title=title, content_html=_language_cafe_html())
+    if reference_context is None and _is_virtual_memory_topic(topic):
+        title = "虚拟内存"
+        return build_document(title=title, content_html=_virtual_memory_html())
     if reference_context is None and _is_ring_algebra_geometry_topic(topic):
         title = "抽象代数、交换代数与代数几何中的环"
         return build_document(title=title, content_html=_ring_algebra_geometry_html())

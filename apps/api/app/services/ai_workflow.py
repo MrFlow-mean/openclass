@@ -353,7 +353,11 @@ def _is_selection_enhancement_request(message: str) -> bool:
         "讲透",
         "详细解析",
         "详细讲解",
+        "详细",
+        "深入",
         "更详细",
+        "更细",
+        "讲得更细",
         "更全面",
         "更加全面",
         "完善全面",
@@ -426,7 +430,7 @@ def _clean_topic_hint(value: str) -> str | None:
 
 def _extract_topic_hint(text: str) -> str | None:
     patterns = [
-        r"(?:我要学|我要学习|我想要学|我想要学习|我想学|想要学|想要学习|想学|教我|学习|学一下|为我讲解|给我讲解|为我讲|给我讲|讲解|请讲|请解释|解释一下)\s*([^，。！？!?；;\n]{2,48})",
+        r"(?:我要学|我要学习|我想要学|我想要学习|我想学|想要学|想要学习|想学|教我|学习|学一下|为我讲解|给我讲解|为我讲|给我讲|讲解|讲一下|讲讲|请讲|请解释|解释一下|解释|说明一下|说明)\s*([^，。！？!?；;\n]{2,48})",
         r"什么是\s*([^，。！？!?；;\n]{2,48})",
         r"什么事\s*([^，。！？!?；;\n]{2,48})",
         r"啥是\s*([^，。！？!?；;\n]{2,48})",
@@ -456,6 +460,15 @@ def _clean_generation_topic_hint(value: str) -> str:
 
 
 def _extract_generation_topic_hint(text: str) -> str | None:
+    edit_match = re.search(
+        r"(?:把|将|帮我把|请把)\s*([^，。！？!?；;\n]{2,80}?)(?:这一节|这节|这个章节|这一章|这章|内容)?\s*(?:整理|改写|润色|扩写|完善|生成)",
+        text,
+    )
+    if edit_match:
+        topic = _clean_generation_topic_hint(edit_match.group(1))
+        if topic:
+            return topic
+
     topic_patterns = [
         r"主题[是为：:]\s*([^，。！？!?；;\n]{2,80})",
         r"(?:生成|整理|制作|创建|写出|写一份|写一版|写一篇|给我一份|给我一篇|给我生成|为我生成|请生成).*?(?:一份|一版|一篇|一个)?\s*(?:系统的|完整的|高质量的|教材式|教科书式|word\s*式|Word\s*式)?\s*([^，。！？!?；;\n]{2,80}?)(?:情景对话课文|对话课文|课文|情景对话|板书讲义|专题讲义|讲义|板书|课程|教案)",
@@ -745,38 +758,25 @@ def _available_reference_resources(course_package: CoursePackage, lesson: Lesson
     ]
 
 
+def _has_explicit_reference_intent(request: ChatRequest) -> bool:
+    if request.resource_reference_action is not None:
+        return True
+    if request.resource_chapter_id or request.resource_reference_resource_id or request.resource_reference_chapter_id:
+        return True
+
+    compact = re.sub(r"\s+", "", request.message).lower()
+    if any(term in compact for term in ("上传", "pdf", "文件", "资料", "参考", "原文", "课件", "教材")):
+        return True
+    return bool(re.search(r"(?:第[一二三四五六七八九十百\d]+[章节]|chapter\d+|section\d+)", compact, flags=re.IGNORECASE))
+
+
 def _is_resource_followup_request(message: str) -> bool:
     compact = re.sub(r"\s+", "", message).lower()
     if compact in {"你好", "您好", "嗨", "哈喽", "hello", "hi", "在吗"}:
         return False
-    if _is_explanation_request(message) or _is_board_generation_request(message) or _is_forced_start_request(message):
+    if any(term in compact for term in ("上传", "pdf", "文件", "资料", "参考", "原文", "课件", "教材")):
         return True
-    chapter_no, _ = _extract_requested_outline_reference(message)
-    if chapter_no is not None:
-        return True
-    resource_terms = [
-        "资料",
-        "文件",
-        "文章",
-        "教材",
-        "讲义",
-        "文档",
-        "内容",
-        "章节",
-        "这一章",
-        "这一节",
-        "这个部分",
-        "这部分",
-        "第一",
-        "第二",
-        "第三",
-        "第四",
-        "第五",
-        "chapter",
-        "section",
-    ]
-    teaching_terms = ["讲", "学", "教", "解释", "开始", "开讲", "整理"]
-    return any(term in compact for term in resource_terms) and any(term in compact for term in teaching_terms)
+    return bool(re.search(r"(?:第[一二三四五六七八九十百\d]+[章节]|chapter\d+|section\d+)", compact, flags=re.IGNORECASE))
 
 
 def _status_with_resource_context_default(
@@ -807,9 +807,7 @@ def _should_use_resource_followup_context(
 ) -> bool:
     if request.interaction_mode == "direct_edit" or request.selection is not None:
         return False
-    if request.resource_reference_action is not None:
-        return False
-    return bool(_available_reference_resources(course_package, lesson)) and _is_resource_followup_request(request.message)
+    return bool(_available_reference_resources(course_package, lesson)) and _has_explicit_reference_intent(request)
 
 
 def _chapter_overlap_score(
@@ -1436,6 +1434,11 @@ def _is_first_user_exchange(request: ChatRequest) -> bool:
     return not any(turn.role == "user" for turn in request.conversation)
 
 
+def _conversation_context(request: ChatRequest) -> str:
+    user_turns = [turn.content for turn in request.conversation if turn.role == "user"]
+    return "\n".join([*user_turns[-3:], request.message]).strip()
+
+
 def _should_ask_brief_clarification(
     *,
     request: ChatRequest,
@@ -1671,8 +1674,12 @@ def _fallback_board_decision(
         return BoardDecision(action="append_section", reason="用户选择在当前 lesson 中新增章节。")
     if request.scope_action == "patch_current_lesson":
         return BoardDecision(action="no_change", reason="用户选择先在当前课内简述，不直接改讲义。")
-    if is_document_empty(lesson.board_document) and explicit_generation:
-        return BoardDecision(action="edit_board", reason="用户明确要求生成讲义/板书，当前版书为空，直接生成可写入版本。")
+    if is_document_empty(lesson.board_document) and (
+        explicit_generation
+        or (_is_explanation_request(message) and _has_teachable_subject_signal(message, lesson, request))
+        or (_is_forced_start_request(message) and _has_teachable_subject_signal(_conversation_context(request), lesson, request))
+    ):
+        return BoardDecision(action="edit_board", reason="当前版书为空，用户已经给出可教学主题，直接生成可写入版本。")
     if _is_explicit_board_edit_request(message) and _is_in_place_expansion_request(message) and not is_document_empty(lesson.board_document):
         return BoardDecision(action="edit_board", reason="用户明确要求扩展当前板书内容，应在原有章节里就地扩写。")
     if _is_append_document_request(message) and not is_document_empty(lesson.board_document):
@@ -3205,6 +3212,11 @@ def _is_advanced_algebra_learning_topic(text: str) -> bool:
 
 def _teacher_learning_probe(state: WorkflowState) -> str | None:
     request = state["request"]
+    decision = state.get("board_decision")
+    if decision is not None and decision.action in {"edit_board", "append_section", "create_new_lesson"}:
+        return None
+    if _is_board_generation_request(request.message) or _is_explanation_request(request.message) or _is_forced_start_request(request.message):
+        return None
     status = state.get("learning_clarification")
     if status is None or status.forced_start:
         return None
@@ -3450,6 +3462,11 @@ def _teacher_brief_from_handout(handout: str) -> str:
     for raw in handout.splitlines():
         cleaned = raw.strip(" -•\t")
         if not cleaned or cleaned.startswith(("内部讲义", "用户问题", "学习需求", "讲解依据", "讲解顺序", "注意")):
+            continue
+        if cleaned.startswith("核心说明"):
+            lines.append(cleaned)
+            if len(lines) >= 3:
+                break
             continue
         concept_teaching = _fallback_concept_teaching_from_request(cleaned)
         if concept_teaching:

@@ -215,9 +215,10 @@ def test_workflow_updates_topic_and_starts_after_high_school_concept_answer() ->
     assert result["learning_requirement_sheet"].theme == "库仑力"
     assert result["learning_requirement_sheet"].level == "高中生"
     assert result["needs_clarification"] is False
-    assert result["board_decision"].action == "no_change"
+    assert result["board_decision"].action == "edit_board"
+    assert result["document_updated"] is True
+    assert "库仑力" in result["teacher_document"].content_text
     assert "库仑力" in result["teacher_message"]
-    assert "带电" in result["teacher_message"]
     assert "你当前是什么水平或背景？这次具体想学什么内容，想达到什么目标？" not in result["teacher_message"]
 
 
@@ -1073,8 +1074,8 @@ def test_workflow_expands_important_humanities_reference_content(
     )
 
     lecture_handout = result["board_teaching_guide"].lecture_handout
-    assert result["board_decision"].action == "no_change"
-    assert result["document_updated"] is False
+    assert result["board_decision"].action == "edit_board"
+    assert result["document_updated"] is True
     assert "商鞅变法" in lecture_handout
     assert "军功爵制" in lecture_handout
     assert "土地私有" in lecture_handout or "中央集权" in lecture_handout
@@ -1116,7 +1117,7 @@ def test_match_resources_uses_real_numbered_chapter_after_preface_and_toc(tmp_pa
     assert matches[0].chapter_title == "第一章 概论"
 
 
-def test_default_single_resource_skips_preface_and_toc(tmp_path) -> None:
+def test_plain_brief_followup_does_not_default_to_single_resource(tmp_path) -> None:
     package = build_initial_course_package()
     lesson = create_empty_lesson("资料学习")
     package.lessons.append(lesson)
@@ -1146,13 +1147,12 @@ def test_default_single_resource_skips_preface_and_toc(tmp_path) -> None:
 
     assert result["board_decision"].action == "no_change"
     assert result["reference_prompt"] is None
-    assert result["selected_reference"] is not None
-    assert result["selected_reference"].chapter_title == "第一章 概论"
+    assert result["selected_reference"] is None
     assert result["board_edit_prompt"] is None
     assert result["document_updated"] is False
 
 
-def test_workflow_defaults_brief_followup_to_single_uploaded_resource(tmp_path) -> None:
+def test_workflow_keeps_brief_followup_independent_from_single_uploaded_resource(tmp_path) -> None:
     package = build_initial_course_package()
     lesson = create_empty_lesson("资料学习")
     package.lessons.append(lesson)
@@ -1181,9 +1181,7 @@ def test_workflow_defaults_brief_followup_to_single_uploaded_resource(tmp_path) 
     assert result["needs_clarification"] is False
     assert result["board_decision"].action == "no_change"
     assert result["reference_prompt"] is None
-    assert result["selected_reference"] is not None
-    assert result["selected_reference"].resource_name == "学习资料.md"
-    assert result["selected_reference"].chapter_title == "第一章 概论"
+    assert result["selected_reference"] is None
     assert result["board_edit_prompt"] is None
     assert result["document_updated"] is False
 
@@ -1367,9 +1365,9 @@ def test_workflow_direct_start_after_brief_clarification_generates_board_for_bla
     )
 
     assert result["needs_clarification"] is False
-    assert result["board_decision"].action == "no_change"
-    assert result["document_updated"] is False
-    assert result["teacher_document"].content_text == ""
+    assert result["board_decision"].action == "edit_board"
+    assert result["document_updated"] is True
+    assert "中华人民共和国民法典" in result["teacher_document"].content_text
     assert result["board_teaching_guide"] is not None
     assert result["board_teaching_guide"].lecture_handout
     assert result["board_edit_prompt"] is None
@@ -2002,7 +2000,42 @@ def test_workflow_uses_fast_path_for_clear_generation_request(monkeypatch: pytes
     assert "不用背定义" in result["teacher_message"]
 
 
-def test_workflow_prompts_before_using_reference_when_one_candidate_is_clearly_best(tmp_path) -> None:
+@pytest.mark.parametrize(
+    ("message", "expected_terms"),
+    [
+        ("我想学抽象代数里的环，为我生成板书", ["环", "加法", "乘法", "单位元", "理想", "同态"]),
+        ("我是法语初学者，想学在法国餐厅点餐的对话，生成课文和练习", ["Bonjour", "Je voudrais", "l'addition", "练习"]),
+        ("讲一下虚拟内存", ["虚拟内存", "地址空间", "页表", "TLB", "缺页"]),
+    ],
+)
+def test_empty_board_directly_generates_subject_board_without_reference_pollution(
+    message: str,
+    expected_terms: list[str],
+) -> None:
+    package = build_initial_course_package()
+    lesson = create_empty_lesson("空白板书")
+    package.lessons.append(lesson)
+
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "course_package": package,
+            "request": ChatRequest(message=message),
+        }
+    )
+
+    assert result["board_decision"].action == "edit_board"
+    assert result["document_updated"] is True
+    assert result["reference_prompt"] is None
+    assert result["board_edit_prompt"] is None
+    assert result["selected_reference"] is None
+    for term in expected_terms:
+        assert term in result["teacher_document"].content_text
+    assert "当前需求已识别" not in result["teacher_message"]
+    assert "系统将基于" not in result["teacher_message"]
+
+
+def test_workflow_ignores_uploaded_reference_for_plain_board_generation(tmp_path) -> None:
     package = build_initial_course_package()
     lesson = package.lessons[0]
     resource_path = tmp_path / "memory-notes.md"
@@ -2020,14 +2053,14 @@ def test_workflow_prompts_before_using_reference_when_one_candidate_is_clearly_b
         }
     )
 
-    assert result["board_decision"].action == "await_reference_choice"
-    assert result["reference_prompt"] is not None
+    assert result["board_decision"].action == "edit_board"
+    assert result["reference_prompt"] is None
     assert result["selected_reference"] is None
-    assert result["reference_prompt"].chapter_title == "虚拟内存"
-    assert "参考这章正文" in result["reference_prompt"].question
+    assert result["document_updated"] is True
+    assert "虚拟内存" in result["teacher_document"].content_text
 
 
-def test_workflow_compares_current_board_with_resource_directory_before_generating(tmp_path) -> None:
+def test_workflow_does_not_compare_current_board_with_resource_directory_without_reference_intent(tmp_path) -> None:
     package = build_initial_course_package()
     lesson = create_empty_lesson("系统课")
     lesson.board_document = build_document(
@@ -2050,12 +2083,13 @@ def test_workflow_compares_current_board_with_resource_directory_before_generati
         }
     )
 
-    assert result["board_decision"].action == "await_reference_choice"
-    assert result["reference_prompt"] is not None
-    assert result["reference_prompt"].chapter_title == "Virtual Memory"
+    assert result["board_decision"].action == "edit_board"
+    assert result["reference_prompt"] is None
+    assert result["selected_reference"] is None
+    assert result["document_updated"] is True
 
 
-def test_workflow_prompts_for_reference_when_top_candidates_are_close(tmp_path) -> None:
+def test_workflow_does_not_prompt_for_close_reference_candidates_without_reference_intent(tmp_path) -> None:
     package = build_initial_course_package()
     lesson = package.lessons[0]
     first_path = tmp_path / "ring1.md"
@@ -2079,10 +2113,11 @@ def test_workflow_prompts_for_reference_when_top_candidates_are_close(tmp_path) 
         }
     )
 
-    assert result["board_decision"].action == "clarify_request"
-    assert result["needs_clarification"] is True
+    assert result["board_decision"].action == "edit_board"
+    assert result["needs_clarification"] is False
     assert result["reference_prompt"] is None
-    assert "哪一份资料" in result["teacher_message"]
+    assert result["selected_reference"] is None
+    assert result["document_updated"] is True
 
 
 def test_workflow_uses_selected_reference_after_user_confirms(tmp_path) -> None:

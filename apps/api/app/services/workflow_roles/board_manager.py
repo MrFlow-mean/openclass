@@ -8,6 +8,7 @@ from app.services.ai_workflow import (
     _build_board_edit_prompt,
     _build_scope_options,
     _fallback_board_decision,
+    _has_explicit_reference_intent,
     _is_append_document_request,
     _is_board_generation_request,
     _is_explicit_board_edit_request,
@@ -34,6 +35,7 @@ def run_board_manager(state: WorkflowState) -> WorkflowState:
     resources = _available_reference_resources(state["course_package"], lesson)
     top_match = matches[0] if matches else None
     second_match = matches[1] if len(matches) > 1 else None
+    explicit_reference_intent = _has_explicit_reference_intent(request)
 
     if request.interaction_mode == "direct_edit":
         if _is_append_document_request(request.message) and not is_document_empty(lesson.board_document):
@@ -100,6 +102,7 @@ def run_board_manager(state: WorkflowState) -> WorkflowState:
         is_document_empty(lesson.board_document)
         and top_match is not None
         and request.board_edit_action is None
+        and explicit_reference_intent
         and (
             _is_board_generation_request(request.message)
             or _is_forced_start_request(request.message)
@@ -113,7 +116,12 @@ def run_board_manager(state: WorkflowState) -> WorkflowState:
         decision = BoardDecision(action="append_section", reason="用户要求在现有讲义后新增页面或章节内容。")
     elif decision.action == "no_change" and _is_board_generation_request(request.message):
         decision = BoardDecision(action="edit_board", reason="用户明确要求生成讲义/对话内容，应直接产出文档。")
-    elif decision.action in {"edit_board", "append_section", "create_new_lesson"} and not _is_explicit_board_edit_request(request.message) and request.board_edit_action != "confirm":
+    elif (
+        not is_document_empty(lesson.board_document)
+        and decision.action in {"edit_board", "append_section", "create_new_lesson"}
+        and not _is_explicit_board_edit_request(request.message)
+        and request.board_edit_action != "confirm"
+    ):
         decision = BoardDecision(action="no_change", reason="普通追问默认先生成内部讲义讲解，不直接改动版书。")
 
     if decision.action == "await_scope_choice":
@@ -133,7 +141,11 @@ def run_board_manager(state: WorkflowState) -> WorkflowState:
         and top_match.is_high_overlap
         and abs(top_match.score - second_match.score) <= 0.06
     )
-    if request.resource_reference_action is None and decision.action in {"edit_board", "append_section", "create_new_lesson", "no_change"}:
+    if (
+        request.resource_reference_action is None
+        and explicit_reference_intent
+        and decision.action in {"edit_board", "append_section", "create_new_lesson", "no_change"}
+    ):
         if _should_clarify_resource_file(resources=resources, matches=matches, request=request):
             return {
                 "board_decision": BoardDecision(
