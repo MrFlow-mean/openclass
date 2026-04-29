@@ -8,6 +8,7 @@ from typing import Any
 
 from app.models import AIModelCatalog, AIModelOption, AIModelSelection, AIProvider
 
+OPENAI_GATEWAY_BASE_URL = "https://api.bupt8.com/v1"
 OPENAI_DEFAULT_TEXT_MODEL = "gpt-5-mini"
 OPENAI_DEFAULT_REALTIME_MODEL = "gpt-4o-realtime-preview"
 ANTHROPIC_DEFAULT_TEXT_MODEL = "claude-opus-4-7"
