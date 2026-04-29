@@ -5,8 +5,6 @@ from app.services.ai_workflow import (
     _fallback_teacher_message,
     _format_teacher_message,
     _reference_payload,
-    _section_teaching_turn,
-    _teacher_learning_probe,
     _teacher_message_from_talk_track,
 )
 from app.services.openai_course_ai import openai_course_ai
@@ -21,24 +19,8 @@ def run_teacher(state: WorkflowState) -> WorkflowState:
     teacher_talk_track = (state.get("teacher_talk_track") or "").strip()
     board_teaching_guide = state.get("board_teaching_guide")
 
-    if decision.action == "clarify_request":
-        ai_message = openai_course_ai.generate_clarification_message(
-            lesson_title=(state.get("generated_lesson") or state["lesson"]).title,
-            request_message=request.message,
-            requirements=requirements,
-            learning_clarification=state["learning_clarification"].model_dump(mode="json"),
-            clarification_questions=state.get("clarification_questions", []),
-            conversation=[turn.model_dump(mode="json") for turn in request.conversation],
-        )
-        return {"teacher_message": _format_teacher_message(ai_message or _fallback_teacher_message(state))}
-    if decision.action in {"await_scope_choice", "await_reference_choice"}:
+    if decision.action in {"clarify_request", "await_scope_choice", "await_reference_choice"}:
         return {"teacher_message": _format_teacher_message(_fallback_teacher_message(state))}
-    probe = _teacher_learning_probe(state)
-    if probe:
-        return {"teacher_message": _format_teacher_message(probe)}
-    section_turn = _section_teaching_turn(state)
-    if section_turn is not None:
-        return section_turn
     if teacher_talk_track and decision.action in {"edit_board", "append_section"}:
         return {"teacher_message": _format_teacher_message(_teacher_message_from_talk_track(state, teacher_talk_track))}
     if decision.action == "create_new_lesson":
@@ -55,7 +37,6 @@ def run_teacher(state: WorkflowState) -> WorkflowState:
         document_updated=state.get("document_updated", False),
         scope_options=state.get("scope_options", []),
         resource_matches=[match.model_dump(mode="json") for match in state.get("resource_matches", [])],
-        learning_clarification=state["learning_clarification"].model_dump(mode="json"),
         clarification_questions=state.get("clarification_questions", []),
         reference_prompt=reference_prompt.model_dump(mode="json") if reference_prompt else None,
         selected_reference=_reference_payload(selected_reference, include_full_text=False),
