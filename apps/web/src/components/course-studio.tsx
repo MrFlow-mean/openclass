@@ -46,6 +46,7 @@ import {
   LoaderCircle,
   Maximize2,
   MessageSquare,
+  Mic,
   Minus,
   PanelRight,
   PanelTop,
@@ -72,7 +73,6 @@ import {
   Underline,
   Undo2,
   Upload,
-  Volume2,
   X,
   ClipboardList,
   Columns2,
@@ -2659,7 +2659,7 @@ export function CourseStudio() {
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>("history");
   const [isCreatingLessonInline, setIsCreatingLessonInline] = useState(false);
   const [voiceActive, setVoiceActive] = useState(false);
-  const [voiceStatusText, setVoiceStatusText] = useState("点击麦克风，连接所选实时语音讲师");
+  const [voiceStatusText, setVoiceStatusText] = useState("实时语音默认待机，点击麦克风开始");
 
   useEffect(() => {
     async function load() {
@@ -3904,7 +3904,7 @@ export function CourseStudio() {
               beginGoogleAudioStreaming(socket, mediaStream, audioContext);
               setVoiceActive(true);
               setBusyAction((current) => (current === "voice-connect" ? null : current));
-              setVoiceStatusText(`Google Gemini Live 已连接，语音音色：${session.voice}`);
+              setVoiceStatusText(`Google Gemini Live 已连接，说话会进入 PM/板书管理/讲师工作流`);
               resolveStart();
               return;
             }
@@ -4648,8 +4648,8 @@ export function CourseStudio() {
                   className="flex h-10 w-full items-center justify-between gap-2 rounded-lg border border-gray-200 bg-gray-50 px-2.5 text-left transition-colors hover:border-gray-300 hover:bg-white"
                 >
                   <span className="flex min-w-0 items-center gap-2">
-                    <Volume2 className="h-4 w-4 shrink-0 text-gray-600" />
-                    <span className="truncate text-xs font-semibold text-gray-900">语音模型</span>
+                    <Radio className="h-4 w-4 shrink-0 text-gray-600" />
+                    <span className="truncate text-xs font-semibold text-gray-900">实时语音</span>
                   </span>
                   <ChevronDown
                     className={clsx(
@@ -4701,7 +4701,13 @@ export function CourseStudio() {
                   voiceActive ? "bg-gray-800 ring-2 ring-gray-200" : "bg-[#1a1a1a]"
                 )}
               >
-                {voiceActive ? <Radio className="h-4.5 w-4.5" /> : <Volume2 className="h-4.5 w-4.5" />}
+                {busyAction === "voice-connect" ? (
+                  <LoaderCircle className="h-4.5 w-4.5 animate-spin" />
+                ) : voiceActive ? (
+                  <Radio className="h-4.5 w-4.5" />
+                ) : (
+                  <Mic className="h-4.5 w-4.5" />
+                )}
               </button>
             </div>
             <p className="mb-2 truncate px-1 text-center text-[10px] leading-4 text-gray-500">{voiceStatusText}</p>
@@ -4770,7 +4776,7 @@ export function CourseStudio() {
                     ? "描述要怎么改这段板书，或直接说“重写整篇”..."
                     : composerSelection
                       ? "基于选中内容继续追问"
-                      : "提问或下达修改指令..."
+                      : "点击麦克风说话，或在这里输入"
                 }
                 className="custom-scrollbar block w-full resize-none border-0 bg-transparent px-3.5 py-2.5 text-[13px] leading-relaxed outline-none placeholder:text-gray-400 disabled:cursor-wait disabled:text-gray-400"
               />
