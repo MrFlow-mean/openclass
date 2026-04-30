@@ -27,7 +27,7 @@ def run_pm(state: WorkflowState) -> WorkflowState:
             "learning_clarification": draft_status,
             "needs_clarification": False,
             "clarification_questions": [],
-            "pm_reason": "用户通过选区编辑入口直接提交文档修改指令，跳过 PM 澄清。",
+            "pm_reason": "",
         }
 
     if _should_use_fast_pm_path(lesson=lesson, request=request, status=draft_status):
@@ -37,7 +37,7 @@ def run_pm(state: WorkflowState) -> WorkflowState:
             "learning_clarification": draft_status,
             "needs_clarification": needs_clarification,
             "clarification_questions": [],
-            "pm_reason": "优先走极速澄清策略；需要澄清时也只保留缺口状态，用户可见话术交给 Teacher AI 即时生成。",
+            "pm_reason": "",
         }
 
     assessment = openai_course_ai.assess_learning_requirements(
@@ -80,5 +80,5 @@ def run_pm(state: WorkflowState) -> WorkflowState:
         "learning_clarification": draft_status,
         "needs_clarification": needs_clarification,
         "clarification_questions": [],
-        "pm_reason": draft_status.reason,
+        "pm_reason": "",
     }

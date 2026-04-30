@@ -28,7 +28,7 @@ def run_board_manager(state: WorkflowState) -> WorkflowState:
 
     if request.interaction_mode == "direct_edit":
         return {
-            "board_decision": BoardDecision(action="edit_board", reason="用户通过选区编辑入口明确要求直接修改讲义。"),
+            "board_decision": BoardDecision(action="edit_board", reason=""),
             "scope_options": [],
             "resource_matches": matches,
             "reference_prompt": None,
@@ -37,7 +37,7 @@ def run_board_manager(state: WorkflowState) -> WorkflowState:
 
     if state.get("needs_clarification"):
         return {
-            "board_decision": BoardDecision(action="clarify_request", reason=state.get("pm_reason", "当前需求仍需要继续澄清。")),
+            "board_decision": BoardDecision(action="clarify_request", reason=state.get("pm_reason", "")),
             "scope_options": [],
             "resource_matches": matches,
             "reference_prompt": None,
@@ -64,9 +64,9 @@ def run_board_manager(state: WorkflowState) -> WorkflowState:
         or _is_explanation_request(request.message)
         or _is_forced_start_request(request.message)
     ):
-        decision = BoardDecision(action="edit_board", reason="当前讲义为空，先生成一版可讲的板书，再继续教学。")
+        decision = BoardDecision(action="edit_board", reason="")
     elif decision.action == "no_change" and _is_board_generation_request(request.message):
-        decision = BoardDecision(action="edit_board", reason="用户明确要求生成讲义/对话内容，应直接产出文档。")
+        decision = BoardDecision(action="edit_board", reason="")
 
     if decision.action == "await_scope_choice":
         return {
@@ -90,7 +90,7 @@ def run_board_manager(state: WorkflowState) -> WorkflowState:
             return {
                 "board_decision": BoardDecision(
                     action="await_reference_choice",
-                    reason="资料候选已经缩到很小范围，但前两项还比较接近，短确认一下更稳。",
+                    reason="",
                 ),
                 "scope_options": [],
                 "resource_matches": matches,

@@ -390,21 +390,15 @@ def _learning_clarification_status(
     can_start = progress >= 35 or forced_start or request.interaction_mode == "direct_edit"
     if progress >= 80:
         label = "需求已清楚"
-        reason = "当前主题、水平和应用场景已经足够明确，可以直接进入讲义生成或教学。"
     elif can_start:
         label = "可以先开始"
-        reason = "就算信息还不完整，也已经足够先讲起来，缺的部分可以由系统先做合理假设。"
     else:
         label = "建议补一句"
-        reason = "当前信息太少，不补一句就容易把讲法和深度带偏。"
-
-    if forced_start and progress < 80:
-        reason = "用户明确要求先开始教学，因此系统会按当前信息直接推进，缺的信息由系统先做保守假设。"
 
     return LearningClarificationStatus(
         progress=progress,
         label=label,
-        reason=reason,
+        reason="",
         missing_items=missing_items[:2],
         can_start=can_start,
         forced_start=forced_start,
@@ -697,20 +691,18 @@ def _draft_requirements(lesson: Lesson, request: ChatRequest) -> LearningRequire
     user_context = "\n".join([*user_turns[-3:], request.message]).strip()
     requirements.current_questions = [*user_turns[-3:], request.message][-4:]
     if request.selection:
-        requirements.current_questions.append(f"用户框选内容：{request.selection.excerpt[:80]}")
+        requirements.current_questions.append(request.selection.excerpt[:80])
 
     level_hint = _extract_level_hint(user_context)
     if level_hint:
         requirements.level = level_hint
-        requirements.known_background = f"用户自述或对话可推断：{level_hint}"
+        requirements.known_background = ""
 
     goal_hint = _extract_goal_or_scenario_hint(user_context)
     if goal_hint:
-        requirements.success_criteria = f"用户能把当前内容用于：{goal_hint}"
-        if not requirements.target_depth or "入门题" in requirements.target_depth:
-            requirements.target_depth = f"优先围绕“{goal_hint}”这个场景，把当前知识点讲明白并能立刻用起来。"
+        requirements.success_criteria = goal_hint
 
-    requirements.boundary = "优先围绕当前 lesson 的整篇文档主线；超出范围时先决定是仅讲解、补充章节还是新开 lesson。"
+    requirements.boundary = ""
     return normalize_requirements(requirements, lesson_title=lesson.title, document=lesson.board_document)
 
 
@@ -818,33 +810,33 @@ def _fallback_board_decision(
     explicit_generation = _is_board_generation_request(message)
 
     if request.scope_action == "create_new_lesson":
-        return BoardDecision(action="create_new_lesson", reason="用户明确要求把问题拆成一节新课。")
+        return BoardDecision(action="create_new_lesson", reason="")
     if request.scope_action == "append_section":
-        return BoardDecision(action="append_section", reason="用户选择在当前 lesson 中新增章节。")
+        return BoardDecision(action="append_section", reason="")
     if request.scope_action == "patch_current_lesson":
-        return BoardDecision(action="no_change", reason="用户选择先在当前课内简述，不直接改讲义。")
+        return BoardDecision(action="no_change", reason="")
     if is_document_empty(lesson.board_document) and (
         explicit_generation or _is_explanation_request(message) or _is_forced_start_request(message)
     ):
-        return BoardDecision(action="edit_board", reason="当前讲义为空，先生成一版可讲的板书，再继续教学。")
+        return BoardDecision(action="edit_board", reason="")
     if explicit_generation:
-        return BoardDecision(action="edit_board", reason="用户明确要求生成讲义/课文/对话内容，应直接产出整篇文档。")
+        return BoardDecision(action="edit_board", reason="")
     if scope_mode == "scope_escalation":
         if matches:
             return BoardDecision(
                 action="await_scope_choice",
-                reason=f"问题超出当前讲义范围，并且资料库里已有相关入口：{matches[0].resource_name} / {matches[0].chapter_title}。",
+                reason="",
             )
-        return BoardDecision(action="await_scope_choice", reason="问题已经超出当前 lesson，需要先选择推进方式。")
+        return BoardDecision(action="await_scope_choice", reason="")
     if any(keyword in message for keyword in ["新增章节", "补充一节", "展开讲", "扩展"]):
-        return BoardDecision(action="append_section", reason="用户希望把相关内容纳入当前 lesson 的新章节。")
+        return BoardDecision(action="append_section", reason="")
     if any(keyword in message for keyword in ["更易懂", "通俗", "改写", "整理", "练习", "习题", "例题", "总结", "补一段", "润色", "完善"]):
-        return BoardDecision(action="edit_board", reason="当前需求更适合先调整整篇讲义，再围绕更新后的结构讲解。")
+        return BoardDecision(action="edit_board", reason="")
     if any(keyword in message for keyword in ["解释", "讲解", "开讲", "直接讲", "讲一下", "讲讲", "为什么", "什么意思", "怎么理解"]):
-        return BoardDecision(action="no_change", reason="当前更像围绕现有讲义的讲解请求，不必先改文档。")
+        return BoardDecision(action="no_change", reason="")
     if requirements.output_preference and not is_document_empty(lesson.board_document):
-        return BoardDecision(action="no_change", reason="现有讲义已经能支撑这次讲解，先不改文档。")
-    return BoardDecision(action="edit_board", reason="默认先生成一版更完整的连续讲义，便于后续教学。")
+        return BoardDecision(action="no_change", reason="")
+    return BoardDecision(action="edit_board", reason="")
 
 
 def _fallback_selection_replacement(request: ChatRequest) -> str | None:

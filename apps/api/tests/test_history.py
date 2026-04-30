@@ -103,6 +103,8 @@ def test_workflow_asks_for_clarification_when_request_is_too_vague() -> None:
 
     assert result["needs_clarification"] is True
     assert result["board_decision"].action == "clarify_request"
+    assert result["board_decision"].reason == ""
+    assert result["learning_clarification"].reason == ""
     assert result.get("document_updated") is False
     assert result["teacher_message"] == ""
     assert "什么水平" not in result["teacher_message"]
@@ -203,7 +205,9 @@ def test_blank_lesson_does_not_receive_canned_board_or_dialog_when_model_is_unav
     )
 
     assert result["board_decision"].action == "edit_board"
+    assert result["board_decision"].reason == ""
     assert result["document_updated"] is False
+    assert result["learning_requirement_sheet"].boundary == ""
     assert result["teacher_document"].content_text == ""
     assert result["teacher_message"] == ""
     assert result["board_teaching_guide"].selected_items == []
