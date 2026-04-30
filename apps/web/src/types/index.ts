@@ -56,6 +56,20 @@ export interface BoardDocument {
   page_settings: DocumentPageSettings;
 }
 
+export type LearningNeedType = "main" | "subtopic" | "question" | "extension" | "deferred" | "new_topic";
+export type LearningNeedStatus = "active" | "answered" | "deferred";
+
+export interface LearningNeedCatalogItem {
+  id: string;
+  parent_id?: string | null;
+  section_path: string;
+  title: string;
+  content: string;
+  need_type: LearningNeedType;
+  linked_board_heading?: string | null;
+  status: LearningNeedStatus;
+}
+
 export interface LearningRequirementSheet {
   theme: string;
   learning_goal: string;
@@ -63,6 +77,7 @@ export interface LearningRequirementSheet {
   known_background: string;
   current_questions: string[];
   learning_need_checklist: string[];
+  learning_need_catalog?: LearningNeedCatalogItem[];
   target_depth: string;
   output_preference: string;
   boundary: string;

@@ -999,7 +999,10 @@ class OpenAICourseAI:
                 "You are PM AI for an AI Word-like teaching document product. "
                 "Return a LearningRequirementSheet in Chinese. Infer the learner's goal, level, desired depth, "
                 "output preference, document scope, and success criteria from the current rich document and request. "
-                "The board is now one continuous rich document, not separate blocks."
+                "The board is now one continuous rich document, not separate blocks. "
+                "Use learning_need_catalog as a mini table of contents for the generated board: top-level items mirror "
+                "major board sections, and related follow-up questions should become child items such as 7.1 or 7.2 "
+                "instead of starting a separate requirement sheet."
             ),
             user_prompt=_json(
                 {
@@ -1033,6 +1036,9 @@ class OpenAICourseAI:
                 "You are PM AI for an AI teaching workbench. Decide whether the learner's request is clear enough. "
                 "If not, set ready=false and ask 1 to 3 concise clarification questions in Chinese. "
                 "If ready, set ready=true. Always provide the best current LearningRequirementSheet. "
+                "Maintain exactly one cumulative learning_need_catalog for this lesson. Treat it like a mini table "
+                "of contents for the board: append related new needs under the most relevant existing section "
+                "using section_path values like 7.1 or 7.2; only mark clearly off-topic requests as new_topic or deferred. "
                 "The visible board is a single Word-like rich document."
             ),
             user_prompt=_json(
@@ -1224,6 +1230,8 @@ class OpenAICourseAI:
                 "Return BoardTeachingGuide in Chinese. "
                 "Select the most important excerpts from the board, explain why they matter, map them to the learner's needs, "
                 "and provide a concise teacher_brief that can drive a live spoken explanation. "
+                "Use learning_requirement_sheet.learning_need_catalog as the learner-facing mini table of contents; "
+                "need_mappings and section_plans should preserve its section_path order where possible. "
                 "Do not rewrite the board itself."
             ),
             user_prompt=_json(

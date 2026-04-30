@@ -101,6 +101,7 @@ import type {
   CoursePackage,
   DocumentPageSettings,
   LearningClarificationStatus,
+  LearningNeedCatalogItem,
   Lesson,
   ResourceMatch,
   ResourceReferenceContext,
@@ -936,6 +937,101 @@ function learningNeedChecklistFromCommit(commit: CommitRecord | null): string[] 
     return [];
   }
   return value.filter((item): item is string => typeof item === "string");
+}
+
+function learningNeedCatalogFromCommit(commit: CommitRecord | null): LearningNeedCatalogItem[] {
+  const value = commit?.metadata?.learning_need_catalog;
+  if (!Array.isArray(value)) {
+    return catalogFromChecklist(learningNeedChecklistFromCommit(commit));
+  }
+  return value
+    .map((item, index) => normalizeLearningNeedCatalogItem(item, index))
+    .filter((item): item is LearningNeedCatalogItem => item !== null);
+}
+
+function catalogFromChecklist(items: string[]): LearningNeedCatalogItem[] {
+  return items
+    .map((item, index): LearningNeedCatalogItem | null => {
+      const content = visibleLearningPurposeItem(item);
+      if (!content) {
+        return null;
+      }
+      return {
+        id: `need-${index + 1}`,
+        parent_id: null,
+        section_path: `${index + 1}`,
+        title: learningNeedTitle(content, index),
+        content,
+        need_type: "main",
+        linked_board_heading: null,
+        status: "active",
+      };
+    })
+    .filter((item): item is LearningNeedCatalogItem => item !== null);
+}
+
+function normalizeLearningNeedCatalogItem(value: unknown, index: number): LearningNeedCatalogItem | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const record = value as Partial<LearningNeedCatalogItem>;
+  const content = visibleLearningPurposeItem(record.content) ?? visibleLearningPurposeItem(record.title);
+  if (!content) {
+    return null;
+  }
+  return {
+    id: typeof record.id === "string" && record.id.trim() ? record.id : `need-${index + 1}`,
+    parent_id: typeof record.parent_id === "string" && record.parent_id.trim() ? record.parent_id : null,
+    section_path:
+      typeof record.section_path === "string" && record.section_path.trim()
+        ? record.section_path.trim()
+        : `${index + 1}`,
+    title: visibleLearningPurposeItem(record.title) ?? learningNeedTitle(content, index),
+    content,
+    need_type: isLearningNeedType(record.need_type) ? record.need_type : "main",
+    linked_board_heading:
+      typeof record.linked_board_heading === "string" && record.linked_board_heading.trim()
+        ? record.linked_board_heading.trim()
+        : null,
+    status: isLearningNeedStatus(record.status) ? record.status : "active",
+  };
+}
+
+function learningNeedTitle(value: string, index: number) {
+  const trimmed = value.trim();
+  const separator = ["：", ":", "，", ",", "。"].find((item) => trimmed.includes(item));
+  const title = separator ? trimmed.split(separator, 1)[0].trim() : trimmed;
+  return title.slice(0, 32) || `需求 ${index + 1}`;
+}
+
+function isLearningNeedType(value: unknown): value is LearningNeedCatalogItem["need_type"] {
+  return (
+    value === "main" ||
+    value === "subtopic" ||
+    value === "question" ||
+    value === "extension" ||
+    value === "deferred" ||
+    value === "new_topic"
+  );
+}
+
+function isLearningNeedStatus(value: unknown): value is LearningNeedCatalogItem["status"] {
+  return value === "active" || value === "answered" || value === "deferred";
+}
+
+function learningNeedTypeLabel(type: LearningNeedCatalogItem["need_type"]) {
+  return {
+    main: "主线",
+    subtopic: "小节",
+    question: "问题",
+    extension: "扩展",
+    deferred: "待处理",
+    new_topic: "新主题",
+  }[type];
+}
+
+function learningNeedDepth(sectionPath: string) {
+  return Math.max(0, sectionPath.split(".").filter(Boolean).length - 1);
 }
 
 function compactText(value: string, limit = 120) {
@@ -2715,12 +2811,13 @@ export function CourseStudio() {
       : [];
   const composerSelection = selection && !selectionPopover ? selection : null;
 
-  const learningNeedChecklistSource = previewCommit
-    ? learningNeedChecklistFromCommit(previewCommit)
-    : activeRequirements?.learning_need_checklist ?? [];
-  const learningNeedChecklist = learningNeedChecklistSource
-    .map((item) => visibleLearningPurposeItem(item))
-    .filter((item): item is string => item !== null);
+  const learningNeedCatalog = previewCommit
+    ? learningNeedCatalogFromCommit(previewCommit)
+    : activeRequirements?.learning_need_catalog?.length
+      ? activeRequirements.learning_need_catalog
+          .map((item, index) => normalizeLearningNeedCatalogItem(item, index))
+          .filter((item): item is LearningNeedCatalogItem => item !== null)
+      : catalogFromChecklist(activeRequirements?.learning_need_checklist ?? []);
   const clarityStatus: LearningClarificationStatus =
     previewLearningClarity ??
     learningClarity ?? {
@@ -4391,7 +4488,7 @@ export function CourseStudio() {
                       </span>
                     </span>
                     <span className="flex shrink-0 items-center gap-2 text-[11px] font-semibold text-blue-700">
-                      {learningNeedChecklist.length ? `${learningNeedChecklist.length} 项` : "暂无"}
+                      {learningNeedCatalog.length ? `${learningNeedCatalog.length} 项` : "暂无"}
                       {learningRequirementSheetOpen ? (
                         <ChevronUp className="h-3.5 w-3.5" />
                       ) : (
@@ -4405,17 +4502,27 @@ export function CourseStudio() {
                         <FileText className="h-3.5 w-3.5" />
                         PMAI 编辑文档
                       </div>
-                      {learningNeedChecklist.length ? (
+                      {learningNeedCatalog.length ? (
                         <ol className="space-y-2">
-                          {learningNeedChecklist.map((item, index) => (
+                          {learningNeedCatalog.map((item) => (
                             <li
-                              key={`${index}-${item}`}
-                              className="grid grid-cols-[1.5rem_minmax(0,1fr)] gap-2 text-xs leading-relaxed text-blue-900"
+                              key={item.id}
+                              className="grid grid-cols-[2rem_minmax(0,1fr)] gap-2 text-xs leading-relaxed text-blue-900"
+                              style={{ paddingLeft: `${learningNeedDepth(item.section_path) * 14}px` }}
                             >
-                              <span className="flex h-5 w-5 items-center justify-center rounded-full bg-blue-100 text-[10px] font-bold text-blue-700">
-                                {index + 1}
+                              <span className="flex h-5 min-w-7 items-center justify-center rounded-full bg-blue-100 px-1.5 text-[10px] font-bold text-blue-700">
+                                {item.section_path}
                               </span>
-                              <span>{item}</span>
+                              <span className="min-w-0">
+                                <span className="font-semibold">{item.title}</span>
+                                {item.content !== item.title ? (
+                                  <span className="mt-0.5 block text-blue-800/85">{item.content}</span>
+                                ) : null}
+                                <span className="mt-1 flex flex-wrap items-center gap-1.5 text-[10px] font-semibold text-blue-500">
+                                  <span>{learningNeedTypeLabel(item.need_type)}</span>
+                                  {item.linked_board_heading ? <span>对应：{item.linked_board_heading}</span> : null}
+                                </span>
+                              </span>
                             </li>
                           ))}
                         </ol>

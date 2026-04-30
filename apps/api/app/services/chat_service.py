@@ -64,6 +64,10 @@ def chat_flow_metadata(
         "board_action": board_decision.action,
         "selection": request.selection.model_dump(mode="json") if request.selection else None,
         "learning_need_checklist": workflow_result["learning_requirement_sheet"].learning_need_checklist,
+        "learning_need_catalog": [
+            item.model_dump(mode="json")
+            for item in workflow_result["learning_requirement_sheet"].learning_need_catalog
+        ],
         "learning_clarification": learning_clarification.model_dump(mode="json"),
         "board_edit_prompt": (
             workflow_result["board_edit_prompt"].model_dump(mode="json")

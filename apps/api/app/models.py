@@ -205,6 +205,21 @@ class PatchProposal(BaseModel):
     suggested_title: str | None = None
 
 
+LearningNeedType = Literal["main", "subtopic", "question", "extension", "deferred", "new_topic"]
+LearningNeedStatus = Literal["active", "answered", "deferred"]
+
+
+class LearningNeedCatalogItem(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("need"))
+    parent_id: str | None = None
+    section_path: str = ""
+    title: str
+    content: str
+    need_type: LearningNeedType = "main"
+    linked_board_heading: str | None = None
+    status: LearningNeedStatus = "active"
+
+
 class LearningRequirementSheet(BaseModel):
     theme: str
     learning_goal: str
@@ -212,12 +227,42 @@ class LearningRequirementSheet(BaseModel):
     known_background: str
     current_questions: list[str]
     learning_need_checklist: list[str] = Field(default_factory=list)
+    learning_need_catalog: list[LearningNeedCatalogItem] = Field(default_factory=list)
     target_depth: str
     output_preference: str
     boundary: str
     board_scope: list[str]
     success_criteria: str
     risk_notes: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def keep_need_views_in_sync(self) -> "LearningRequirementSheet":
+        if not self.learning_need_catalog and self.learning_need_checklist:
+            self.learning_need_catalog = [
+                LearningNeedCatalogItem(
+                    section_path=str(index + 1),
+                    title=_learning_need_title(item, index),
+                    content=item,
+                    need_type="main",
+                )
+                for index, item in enumerate(self.learning_need_checklist)
+            ]
+        if not self.learning_need_checklist and self.learning_need_catalog:
+            self.learning_need_checklist = [
+                item.content.strip() or item.title.strip()
+                for item in self.learning_need_catalog
+                if item.content.strip() or item.title.strip()
+            ]
+        return self
+
+
+def _learning_need_title(value: str, index: int) -> str:
+    trimmed = value.strip()
+    for separator in ("：", ":", "，", ",", "。"):
+        if separator in trimmed:
+            trimmed = trimmed.split(separator, 1)[0].strip()
+            break
+    return trimmed[:32] or f"需求 {index + 1}"
 
 
 class LearningClarificationStatus(BaseModel):

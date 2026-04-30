@@ -1,7 +1,7 @@
 import json
 import sqlite3
 
-from app.models import BoardTeachingProgress, ResourceLibraryItem
+from app.models import BoardTeachingProgress, LearningNeedCatalogItem, ResourceLibraryItem
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
 from app.services.lesson_factory import create_empty_lesson
 
@@ -164,6 +164,69 @@ def test_sqlite_store_prefers_learning_need_table_when_loading_lesson(tmp_path) 
 
     assert reloaded_lesson.learning_requirements is not None
     assert reloaded_lesson.learning_requirements.learning_need_checklist == ["数据库中的课堂需求清单"]
+
+
+def test_sqlite_store_round_trips_learning_need_catalog_as_mini_toc(tmp_path) -> None:
+    db_path = tmp_path / "openclass.sqlite3"
+    store = SqliteCourseStore(db_path, legacy_json_path=None)
+
+    workspace = store.load()
+    lesson = workspace.packages[0].lessons[0]
+    assert lesson.learning_requirements is not None
+    lesson.learning_requirements.learning_need_catalog = [
+        LearningNeedCatalogItem(
+            id="need-root-7",
+            section_path="7",
+            title="开方运算",
+            content="理解开方是平方的逆过程",
+            need_type="main",
+            linked_board_heading="七、开方运算",
+        ),
+        LearningNeedCatalogItem(
+            id="need-root-7-1",
+            parent_id="need-root-7",
+            section_path="7.1",
+            title="负数开方怎么办",
+            content="解释实数范围内负数不能开方，并预告虚数 i",
+            need_type="extension",
+            linked_board_heading="七、开方运算",
+        ),
+    ]
+    lesson.learning_requirements.learning_need_checklist = []
+    store.save(workspace)
+
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT item_id, parent_item_id, section_path, title, content, need_type, linked_board_heading, status
+            FROM lesson_learning_needs
+            WHERE lesson_id = ?
+            ORDER BY sort_order
+            """,
+            (lesson.id,),
+        ).fetchall()
+
+    reloaded = store.load()
+    catalog = reloaded.packages[0].lessons[0].learning_requirements.learning_need_catalog
+
+    assert tuple(rows[0]) == (
+        "need-root-7",
+        None,
+        "7",
+        "开方运算",
+        "理解开方是平方的逆过程",
+        "main",
+        "七、开方运算",
+        "active",
+    )
+    assert tuple(rows[1][2:6]) == ("7.1", "负数开方怎么办", "解释实数范围内负数不能开方，并预告虚数 i", "extension")
+    assert catalog[1].parent_id == "need-root-7"
+    assert catalog[1].section_path == "7.1"
+    assert catalog[1].need_type == "extension"
+    assert reloaded.packages[0].lessons[0].learning_requirements.learning_need_checklist == [
+        "理解开方是平方的逆过程",
+        "解释实数范围内负数不能开方，并预告虚数 i",
+    ]
 
 
 def test_sqlite_store_keeps_user_workspaces_isolated(tmp_path) -> None:
