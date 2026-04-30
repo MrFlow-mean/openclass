@@ -70,6 +70,21 @@ TEACHER_PARAGRAPH_MARKERS: tuple[str, ...] = (
     "关键概念",
     "小结",
 )
+LOW_INFORMATION_TERMS: set[str] = {
+    "你好",
+    "您好",
+    "嗨",
+    "哈喽",
+    "hello",
+    "hi",
+    "这里",
+    "这个",
+    "那个",
+    "不懂",
+    "没懂",
+    "这里没懂",
+    "这个没懂",
+}
 
 
 class WorkflowState(TypedDict, total=False):
@@ -105,6 +120,16 @@ def _extract_focus_terms(message: str) -> list[str]:
         return quoted[:4]
     candidates = re.findall(r"[A-Za-z\u4e00-\u9fff]{2,}", message)
     return candidates[:6]
+
+
+def _learning_topic_terms(message: str) -> list[str]:
+    terms: list[str] = []
+    for term in _extract_focus_terms(message):
+        cleaned = re.sub(r"\s+", "", term).lower()
+        if not cleaned or cleaned in LOW_INFORMATION_TERMS:
+            continue
+        terms.append(term)
+    return terms
 
 
 def _query_phrases(text: str) -> list[str]:
@@ -295,7 +320,7 @@ def _learning_clarification_status(
     missing_items: list[str] = []
     progress = 0
 
-    subject_terms = _extract_focus_terms(user_context) or _extract_focus_terms(requirements.learning_goal)
+    subject_terms = _learning_topic_terms(user_context) or _learning_topic_terms(requirements.learning_goal)
     if subject_terms or lesson.title in user_context:
         progress += 35
     else:
@@ -941,106 +966,70 @@ def _fallback_board_teaching_guide(
     selected_reference: ResourceReferenceContext | None = None,
 ) -> BoardTeachingGuide:
     needs = _requirement_needs(requirements)
+    selected_items: list[BoardTeachingSelectedItem] = []
     if is_document_empty(document) and selected_reference is not None:
         selected_items = [
             BoardTeachingSelectedItem(
                 excerpt=(chunk.excerpt or selected_reference.summary)[:240],
                 source_heading=chunk.title,
-                reason="当前板书还没有可讲内容，因此先直接用已锁定参考章节里的关键片段开讲。",
+                reason="",
                 mapped_needs=needs[:1],
                 teaching_role="main_idea" if index == 1 else ("why_it_matters" if index == 2 else "example"),
                 order_index=index,
             )
             for index, chunk in enumerate(selected_reference.chunks[:3], start=1)
         ]
-        if not selected_items:
-            selected_items = [
+        if not selected_items and selected_reference.summary.strip():
+            selected_items.append(
                 BoardTeachingSelectedItem(
                     excerpt=selected_reference.summary[:240],
                     source_heading=selected_reference.chapter_title,
-                    reason="当前板书为空，先用已确认的教材章节摘要起讲。",
+                    reason="",
                     mapped_needs=needs[:1],
                     teaching_role="main_idea",
                     order_index=1,
                 )
-            ]
-        need_mappings = [
-            BoardNeedMapping(
-                need=need,
-                matched_excerpt=selected_items[0].excerpt,
-                source_heading=selected_items[0].source_heading,
-                rationale="当前优先围绕已锁定的教材章节直接开讲，先满足核心学习需求。",
             )
-            for need in needs[:3]
-        ]
-        return BoardTeachingGuide(
-            board_document_id=document.id,
-            board_snapshot_hash=_board_snapshot_hash(document),
-            board_title=document.title,
-            selected_items=selected_items,
-            need_mappings=need_mappings,
-            teaching_flow=[
-                f"先根据《{selected_reference.resource_name}》的《{selected_reference.chapter_title}》讲主线。",
-                "再解释这一节为什么重要、它解决什么问题。",
-                "最后给一个例子、类比或检查问题。",
-            ],
-            generation_rationale="用户明确指定了教材章节且要求直接开讲，因此在不改板书正文的前提下，优先使用已锁定参考章节的核心片段组织讲解。",
-            teacher_brief=(
-                f"直接按《{selected_reference.chapter_title}》开讲："
-                "先说这节要解决的问题，再讲关键概念之间的关系，最后给一个例子帮助理解。"
-            ),
-        )
+    elif not is_document_empty(document):
+        focus_terms = {term.lower() for term in _query_phrases(f"{request_message}\n{requirements.learning_goal}")}
+        scored_segments: list[tuple[int, str | None, str]] = []
+        for heading, excerpt in _board_segments(document):
+            corpus = f"{heading or ''}\n{excerpt}".lower()
+            score = sum(1 for term in focus_terms if term in corpus)
+            if request_message.strip() and excerpt in request_message:
+                score += 2
+            scored_segments.append((score, heading, excerpt))
+        scored_segments.sort(key=lambda item: item[0], reverse=True)
 
-    focus_terms = {term.lower() for term in _query_phrases(f"{request_message}\n{requirements.learning_goal}")}
-    scored_segments: list[tuple[int, str | None, str]] = []
-    for heading, excerpt in _board_segments(document):
-        corpus = f"{heading or ''}\n{excerpt}".lower()
-        score = sum(1 for term in focus_terms if term in corpus)
-        if request_message.strip() and excerpt in request_message:
-            score += 2
-        scored_segments.append((score, heading, excerpt))
-    scored_segments.sort(key=lambda item: item[0], reverse=True)
-
-    chosen = scored_segments[:3] if scored_segments else [(0, document.title, document.content_text.strip() or document.title)]
-    selected_items: list[BoardTeachingSelectedItem] = []
-    for index, (_, heading, excerpt) in enumerate(chosen, start=1):
-        mapped_needs = _needs_for_excerpt(excerpt, needs)
-        role = ["main_idea", "why_it_matters", "example"][min(index - 1, 2)]
-        selected_items.append(
-            BoardTeachingSelectedItem(
-                excerpt=excerpt[:240],
-                source_heading=heading,
-                reason=f"这段和用户当前问题及学习目标重合度最高，适合作为第 {index} 个讲解重点。",
-                mapped_needs=mapped_needs,
-                teaching_role=role,
-                order_index=index,
+        for index, (_, heading, excerpt) in enumerate(scored_segments[:3], start=1):
+            mapped_needs = _needs_for_excerpt(excerpt, needs)
+            role = ["main_idea", "why_it_matters", "example"][min(index - 1, 2)]
+            selected_items.append(
+                BoardTeachingSelectedItem(
+                    excerpt=excerpt[:240],
+                    source_heading=heading,
+                    reason="",
+                    mapped_needs=mapped_needs,
+                    teaching_role=role,
+                    order_index=index,
+                )
             )
-        )
 
     need_mappings: list[BoardNeedMapping] = []
-    for need in needs[:3]:
-        matched = next(
-            (item for item in selected_items if need in item.mapped_needs),
-            selected_items[0],
-        )
-        need_mappings.append(
-            BoardNeedMapping(
-                need=need,
-                matched_excerpt=matched.excerpt,
-                source_heading=matched.source_heading,
-                rationale="优先把最能直接回应该学习需求的板书内容拿出来讲。",
+    if selected_items:
+        for need in needs[:3]:
+            matched = next(
+                (item for item in selected_items if need in item.mapped_needs),
+                selected_items[0],
             )
-        )
-
-    first = selected_items[0]
-    flow = [
-        f"先用“{first.excerpt[:28]}”带出主线，不照读定义。",
-        "再解释这件事为什么重要，和用户当前目标有什么关系。",
-    ]
-    if len(selected_items) > 1:
-        flow.append(f"然后接到“{selected_items[1].excerpt[:24]}”补充原因或关键关系。")
-    if len(selected_items) > 2:
-        flow.append(f"最后用“{selected_items[2].excerpt[:24]}”做例子、提醒或检查点。")
+            need_mappings.append(
+                BoardNeedMapping(
+                    need=need,
+                    matched_excerpt=matched.excerpt,
+                    source_heading=matched.source_heading,
+                    rationale="",
+                )
+            )
 
     return BoardTeachingGuide(
         board_document_id=document.id,
@@ -1048,12 +1037,24 @@ def _fallback_board_teaching_guide(
         board_title=document.title,
         selected_items=selected_items,
         need_mappings=need_mappings,
-        teaching_flow=flow,
-        generation_rationale="优先挑选与用户当前追问、学习目标和板书主线同时重合的内容，先讲主线，再讲原因，最后落到例子或检查点。",
-        teacher_brief=(
-            f"这次先抓“{first.excerpt[:36]}”这条主线，"
-            "不要按板书顺序念，而是先讲它在解决什么问题，再补一个例子或检查问题。"
-        ),
+        teaching_flow=[],
+        generation_rationale="",
+        teacher_brief="",
+    )
+
+
+def _guide_with_ai_fields_only(guidance: BoardTeachingGuide) -> BoardTeachingGuide:
+    return BoardTeachingGuide(
+        board_document_id=guidance.board_document_id,
+        board_snapshot_hash=guidance.board_snapshot_hash,
+        board_title=guidance.board_title,
+        selected_items=guidance.selected_items,
+        need_mappings=guidance.need_mappings,
+        teaching_flow=guidance.teaching_flow,
+        generation_rationale=guidance.generation_rationale,
+        teacher_brief=guidance.teacher_brief,
+        lecture_handout=guidance.lecture_handout,
+        section_plans=guidance.section_plans,
     )
 
 
@@ -1078,17 +1079,8 @@ def _bound_board_teaching_guide(
     payload["board_document_id"] = document.id
     payload["board_snapshot_hash"] = _board_snapshot_hash(document)
     payload["board_title"] = document.title
-    if not payload.get("selected_items"):
-        payload["selected_items"] = fallback.selected_items
-    if not payload.get("need_mappings"):
-        payload["need_mappings"] = fallback.need_mappings
-    if not payload.get("teaching_flow"):
-        payload["teaching_flow"] = fallback.teaching_flow
-    if not payload.get("generation_rationale"):
-        payload["generation_rationale"] = fallback.generation_rationale
-    if not payload.get("teacher_brief"):
-        payload["teacher_brief"] = fallback.teacher_brief
-    return BoardTeachingGuide.model_validate(payload)
+    bound_guidance = BoardTeachingGuide.model_validate(payload)
+    return _guide_with_ai_fields_only(bound_guidance)
 
 
 def _current_board_teaching_guide(lesson: Lesson, document: BoardDocument) -> BoardTeachingGuide | None:
@@ -1235,66 +1227,26 @@ def _format_teacher_message(message: str) -> str:
 
 
 def _teacher_intro(state: WorkflowState) -> str:
-    decision = state["board_decision"]
-    lesson_title = (state.get("generated_lesson") or state["lesson"]).title
-    if state.get("document_updated"):
-        return "右侧我先补好一版板书了，我们直接抓重点。"
-    if decision.action == "create_new_lesson":
-        return f"这个问题我已经拆成新课《{lesson_title}》，我们直接讲主线。"
-    return "我们直接抓这次最该讲的重点。"
+    _ = state
+    return ""
 
 
 def _teacher_message_from_talk_track(state: WorkflowState, talk_track: str) -> str:
-    selected_reference = state.get("selected_reference")
-    lines = [_teacher_intro(state), talk_track.strip()]
-    if selected_reference is not None:
-        lines.append(
-            f"这次还参考了《{selected_reference.resource_name}》的《{selected_reference.chapter_title}》，但我会用课堂口吻讲。"
-        )
-    return "\n".join(line for line in lines if line.strip())
+    _ = state
+    return talk_track.strip()
 
 
 def _fallback_teacher_message(state: WorkflowState) -> str:
-    request = state["request"]
     decision = state["board_decision"]
-    board_teaching_guide = state.get("board_teaching_guide")
     clarification_questions = state.get("clarification_questions", [])
-    reference_prompt = state.get("reference_prompt")
-    selected_reference = state.get("selected_reference")
-    lesson_title = (state.get("generated_lesson") or state["lesson"]).title
 
     if decision.action == "clarify_request":
         return "\n".join(clarification_questions)
-    if decision.action == "await_reference_choice" and reference_prompt is not None:
-        return reference_prompt.question
-    if decision.action == "await_scope_choice":
-        return f"这个问题已经超出《{lesson_title}》当前讲义范围。你想先在本课简述，还是单独开一节详细课？"
 
     talk_track = (state.get("teacher_talk_track") or "").strip()
     if talk_track:
-        return _teacher_message_from_talk_track(state, talk_track)
-
-    lines = [_teacher_intro(state)]
-    if board_teaching_guide is not None:
-        if board_teaching_guide.teacher_brief.strip():
-            lines.append(board_teaching_guide.teacher_brief.strip())
-        selected_items = board_teaching_guide.selected_items
-        need_mappings = board_teaching_guide.need_mappings
-        if selected_items:
-            first = selected_items[0]
-            if need_mappings:
-                lines.append(
-                    f"先把“{need_mappings[0].need[:28]}”这件事讲清楚，重点落在“{first.excerpt[:28]}”背后的意思，而不是照读原句。"
-                )
-            elif len(selected_items) > 1:
-                lines.append(
-                    f"先讲“{first.excerpt[:24]}”，再接“{selected_items[1].excerpt[:24]}”，这样主线会更顺。"
-                )
-    if selected_reference is not None:
-        lines.append(
-            f"这次也参考了《{selected_reference.resource_name}》的《{selected_reference.chapter_title}》，但讲法会更口语化。"
-        )
-    return "\n".join(lines)
+        return talk_track
+    return ""
 
 
 def _run_pm(state: WorkflowState) -> WorkflowState:

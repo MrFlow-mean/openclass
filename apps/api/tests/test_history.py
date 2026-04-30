@@ -104,7 +104,7 @@ def test_workflow_asks_for_clarification_when_request_is_too_vague() -> None:
     assert result["needs_clarification"] is True
     assert result["board_decision"].action == "clarify_request"
     assert result.get("document_updated") is False
-    assert result["teacher_message"].strip()
+    assert result["teacher_message"] == ""
     assert "什么水平" not in result["teacher_message"]
 
 
@@ -181,6 +181,33 @@ def test_clarification_turn_does_not_invent_canned_fallback_when_model_is_unavai
     assert result["clarification_questions"] == []
     assert result["teacher_message"] == ""
     assert forbidden not in result["teacher_message"]
+
+
+def test_blank_lesson_does_not_receive_canned_board_or_dialog_when_model_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package = build_initial_course_package()
+    lesson = create_empty_lesson("平方开方")
+    package.lessons.append(lesson)
+
+    monkeypatch.setattr(openai_course_ai, "generate_document_edit", lambda **kwargs: None)
+    monkeypatch.setattr(openai_course_ai, "generate_board_teaching_guide", lambda **kwargs: None)
+    monkeypatch.setattr(openai_course_ai, "generate_teacher_message", lambda **kwargs: None)
+
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "course_package": package,
+            "request": ChatRequest(message="帮我生成平方开方讲义"),
+        }
+    )
+
+    assert result["board_decision"].action == "edit_board"
+    assert result["document_updated"] is False
+    assert result["teacher_document"].content_text == ""
+    assert result["teacher_message"] == ""
+    assert result["board_teaching_guide"].selected_items == []
+    assert result["board_teaching_guide"].teacher_brief == ""
 
 
 def test_workflow_probes_level_and_goal_on_first_subject_only_learning_goal() -> None:

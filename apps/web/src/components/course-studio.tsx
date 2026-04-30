@@ -356,10 +356,7 @@ const DEFAULT_LESSON_COMPOSER_STATE: LessonComposerState = {
   includeSelectionInPrompt: true,
 };
 const AUTO_SAVE_DELAY_MS = 1600;
-const HIDDEN_LEARNING_PURPOSE_ITEMS = new Set([
-  "理解概念、能跟着连续讲义讲清楚并完成基础练习",
-  "用户能复述核心概念并完成一题相关练习",
-]);
+const HIDDEN_LEARNING_PURPOSE_PATTERNS = [/连续讲义.*基础练习/, /复述核心概念.*练习/];
 
 const DEFAULT_PAGE_SETTINGS: DocumentPageSettings = {
   margin_preset: "normal",
@@ -704,7 +701,7 @@ function createLessonComposerState(): LessonComposerState {
 
 function visibleLearningPurposeItem(value?: string | null): string | null {
   const trimmed = value?.trim();
-  if (!trimmed || HIDDEN_LEARNING_PURPOSE_ITEMS.has(trimmed)) {
+  if (!trimmed || HIDDEN_LEARNING_PURPOSE_PATTERNS.some((pattern) => pattern.test(trimmed))) {
     return null;
   }
   return trimmed;
@@ -829,30 +826,7 @@ function chatUserContentFromCommit(commit: CommitRecord): string | null {
   if (!userMessage) {
     return null;
   }
-
-  const scopeAction = metadataText(commit, "scope_action");
-  if (scopeAction) {
-    return `继续执行：${scopeAction}`;
-  }
-
-  const referenceAction = metadataText(commit, "resource_reference_action");
-  if (referenceAction === "confirm") {
-    return "继续执行：参考推荐章节生成讲义";
-  }
-  if (referenceAction === "skip") {
-    return "继续执行：先不参考推荐章节";
-  }
-
-  const boardEditAction = metadataText(commit, "board_edit_action");
-  const boardEditTopic = metadataText(commit, "board_edit_topic");
-  if (boardEditAction === "confirm") {
-    return `扩选板书：${boardEditTopic || userMessage}`;
-  }
-  if (boardEditAction === "skip") {
-    return `暂不扩选板书：${boardEditTopic || userMessage}`;
-  }
-
-  return metadataText(commit, "interaction_mode") === "direct_edit" ? `直接编辑讲义：${userMessage}` : userMessage;
+  return userMessage;
 }
 
 function buildLessonMessagesFromHistory(lesson: Lesson, commitId?: string | null): ChatMessage[] {
@@ -892,17 +866,6 @@ function buildLessonMessagesFromHistory(lesson: Lesson, commitId?: string | null
       );
     }
 
-    const createdLessonTitle = metadataText(commit, "created_lesson_title");
-    if (createdLessonTitle) {
-      messages.push(
-        createChatMessage(
-          "assistant",
-          `我已经为这个更大的知识问题新开了一节课：《${createdLessonTitle}》。`,
-          "ready",
-          `${commit.id}:created-lesson`
-        )
-      );
-    }
   });
 
   return messages;
@@ -2799,6 +2762,9 @@ export function CourseStudio() {
   const selectedRealtimeTransport = selectedRealtimeOption?.transport ?? "gemini_live_websocket";
   const isChatBusy = busyAction === "chat" || busyAction === "agent-edit";
   const activeRequirements = activeLesson?.learning_requirements ?? null;
+  const visibleLearningGoal = visibleLearningPurposeItem(activeRequirements?.learning_goal);
+  const visibleTargetDepth = visibleLearningPurposeItem(activeRequirements?.target_depth);
+  const visibleSuccessCriteria = visibleLearningPurposeItem(activeRequirements?.success_criteria);
   const isPreviewMode = Boolean(previewCommit);
   const previewLearningClarity = learningClarityFromCommit(previewCommit);
   const latestAssistantMessage = [...activeMessages].reverse().find((message) => message.role === "assistant");
@@ -3317,44 +3283,7 @@ export function CourseStudio() {
     }
 
     const isDirectEdit = payloadWithConversation.interaction_mode === "direct_edit";
-    const userMessageContent = payloadOverride?.scope_action
-      ? `继续执行：${payloadOverride.scope_action}`
-      : payloadOverride?.teaching_action === "continue"
-        ? "继续讲下一节"
-        : payloadOverride?.teaching_action === "restart"
-          ? "从第一节重新讲"
-          : payloadOverride?.board_edit_action === "confirm"
-            ? `扩选板书：${payloadOverride.board_edit_topic ?? payloadWithConversation.message}`
-            : payloadOverride?.board_edit_action === "skip"
-              ? `暂不扩选板书：${payloadOverride.board_edit_topic ?? payloadWithConversation.message}`
-              : payloadOverride?.resource_reference_action === "confirm"
-                ? "继续执行：参考推荐章节生成讲义"
-                : payloadOverride?.resource_reference_action === "skip"
-                  ? "继续执行：先不参考推荐章节"
-                  : isDirectEdit
-                    ? `直接编辑讲义：${payloadWithConversation.message}`
-                    : payloadWithConversation.message;
-    const pendingAssistantMessage = createChatMessage(
-      "assistant",
-      payloadOverride?.scope_action
-        ? "正在继续执行这一步，我会先把主线接上，再继续细化。"
-        : payloadOverride?.teaching_action === "continue"
-          ? "正在接着讲下一小节。"
-          : payloadOverride?.teaching_action === "restart"
-            ? "正在从第一小节重新讲。"
-            : payloadOverride?.board_edit_action === "confirm"
-              ? "正在把这次扩展落成版书内容，并同步准备讲解。"
-              : payloadOverride?.board_edit_action === "skip"
-                ? "好的，我会只按内部讲义继续讲解，不改右侧版书。"
-                : payloadOverride?.resource_reference_action === "confirm"
-                  ? "正在结合你确认的参考章节准备讲解。"
-                  : payloadOverride?.resource_reference_action === "skip"
-                    ? "正在按当前 lesson 主线准备讲解。"
-                    : isDirectEdit
-                      ? "正在改写右侧讲义，并同步准备更像真人老师的讲法。"
-                      : "正在整理学习需求并准备讲解。",
-      "pending"
-    );
+    const userMessageContent = payloadWithConversation.message;
     setBusyAction(isDirectEdit ? "agent-edit" : "chat");
     setError(null);
     if (!payloadOverride) {
@@ -3366,7 +3295,6 @@ export function CourseStudio() {
     updateLessonMessages(lessonId, (current) => [
       ...current,
       createChatMessage("user", userMessageContent, "ready", undefined, submittedSelection),
-      pendingAssistantMessage,
     ]);
 
     try {
@@ -3385,21 +3313,19 @@ export function CourseStudio() {
       setLastScopedRequest(response.scope_options.length ? payloadWithConversation : null);
       setLastReferenceRequest(response.reference_prompt ? payloadWithConversation : null);
       setLastBoardEditRequest(response.board_edit_prompt ? payloadWithConversation : null);
-      const assistantMessages = [
-        createChatMessage("assistant", response.teacher_message, "ready", undefined, null, response.teaching_progress ?? null),
-      ];
-      if (response.created_lesson) {
-        assistantMessages.push(
-          createChatMessage(
-            "assistant",
-            `我已经为这个更大的知识问题新开了一节课：《${response.created_lesson.title}》。`
-          )
-        );
-      }
-      updateLessonMessages(lessonId, (current) => [
-        ...current.filter((message) => message.id !== pendingAssistantMessage.id),
-        ...assistantMessages,
-      ]);
+      const assistantMessages = response.teacher_message.trim()
+        ? [
+            createChatMessage(
+              "assistant",
+              response.teacher_message,
+              "ready",
+              undefined,
+              null,
+              response.teaching_progress ?? null
+            ),
+          ]
+        : [];
+      updateLessonMessages(lessonId, (current) => [...current, ...assistantMessages]);
       if (options?.speakResponse) {
         speakControlledTeacherMessage(response.teacher_message);
         setVoiceStatusText("讲师回答已通过受控工作流播出，可以继续提问");
@@ -3414,16 +3340,6 @@ export function CourseStudio() {
           chatInput: submittedInput,
         }));
       }
-      updateLessonMessages(lessonId, (current) => [
-        ...current.filter((message) => message.id !== pendingAssistantMessage.id),
-        createChatMessage(
-          "assistant",
-          `这次没有顺利完成，我先把你的输入保留好了，可以直接重试。\n${
-            chatError instanceof Error ? chatError.message : "聊天失败"
-          }`,
-          "error"
-        ),
-      ]);
       setError(chatError instanceof Error ? chatError.message : "聊天失败");
     } finally {
       chatRequestInFlightRef.current = false;
@@ -4471,9 +4387,6 @@ export function CourseStudio() {
                     ) : null}
                   </div>
                 ) : null}
-                {clarityStatus.reason ? (
-                  <p className="mt-2 text-xs leading-6 text-blue-900">{clarityStatus.reason}</p>
-                ) : null}
                 <div className="mt-3 border-t border-blue-100 pt-3">
                   <button
                     type="button"
@@ -4647,9 +4560,9 @@ export function CourseStudio() {
               {!isPreviewMode && clarificationQuestions.length ? (
                 <div className="rounded-xl border border-sky-200 bg-sky-50 p-4">
                   <p className="text-[11px] font-bold uppercase tracking-widest text-sky-700">需求澄清</p>
-                  <p className="mt-2 text-xs leading-6 text-sky-900">
-                    {latestBoardDecision?.reason ?? "AI 还需要再确认一点学习目标，才能决定后面的讲义策略。"}
-                  </p>
+                  {latestBoardDecision?.reason ? (
+                    <p className="mt-2 text-xs leading-6 text-sky-900">{latestBoardDecision.reason}</p>
+                  ) : null}
                   <div className="mt-3 space-y-2">
                     {clarificationQuestions.map((question, index) => (
                       <div key={`${question}-${index}`} className="rounded-lg bg-white px-3 py-2 text-xs leading-6 text-gray-700">
@@ -5088,22 +5001,26 @@ export function CourseStudio() {
                     <BrainCircuit className="h-4 w-4 text-gray-400" />
                     <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">需求清单</p>
                   </div>
-                  <p className="mt-4 text-sm leading-7 text-gray-700">
-                    {activeRequirements?.learning_goal ?? "围绕当前板书主线推进学习。"}
-                  </p>
-                  <div className="mt-4 rounded-xl border border-gray-200 bg-white p-4">
-                    <p className="text-xs font-semibold text-gray-900">
-                      {activeRequirements?.target_depth ?? "先建立概念，再进入例题与练习"}
-                    </p>
-                    <p className="mt-2 text-[11px] leading-6 text-gray-500">
-                      {activeRequirements?.success_criteria ?? "先讲清当前问题，再决定是否要扩展讲义。"}
-                    </p>
-                  </div>
+                  {visibleLearningGoal ? (
+                    <p className="mt-4 text-sm leading-7 text-gray-700">{visibleLearningGoal}</p>
+                  ) : null}
+                  {visibleTargetDepth || visibleSuccessCriteria ? (
+                    <div className="mt-4 rounded-xl border border-gray-200 bg-white p-4">
+                      {visibleTargetDepth ? (
+                        <p className="text-xs font-semibold text-gray-900">{visibleTargetDepth}</p>
+                      ) : null}
+                      {visibleSuccessCriteria ? (
+                        <p className="mt-2 text-[11px] leading-6 text-gray-500">{visibleSuccessCriteria}</p>
+                      ) : null}
+                    </div>
+                  ) : null}
                   {latestBoardDecision ? (
                     <div className="mt-4 rounded-xl border border-gray-200 bg-white p-4">
                       <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">当前讲义决策</p>
                       <p className="mt-2 text-xs font-semibold text-gray-900">{latestBoardDecision.action}</p>
-                      <p className="mt-2 text-[11px] leading-6 text-gray-500">{latestBoardDecision.reason}</p>
+                      {latestBoardDecision.reason ? (
+                        <p className="mt-2 text-[11px] leading-6 text-gray-500">{latestBoardDecision.reason}</p>
+                      ) : null}
                     </div>
                   ) : null}
                 </div>

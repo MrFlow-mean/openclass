@@ -46,8 +46,6 @@ def normalize_requirements(
     normalized = LearningRequirementSheet.model_validate(requirements.model_dump(mode="json"))
     normalized.theme = lesson_title
     normalized.board_scope = _document_outline(document)
-    if not normalized.current_questions:
-        normalized.current_questions = [f"如何理解 {lesson_title}"]
     return normalized
 
 
