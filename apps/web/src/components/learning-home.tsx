@@ -50,6 +50,8 @@ import {
 import {
   FOLLOWED_UPDATE_KIND_LABELS,
   buildFollowedCourseUpdateItems,
+  creatorAvatarUrl,
+  type FollowedCourseUpdate,
 } from "@/lib/following";
 import {
   buildRecentFeed,
@@ -259,6 +261,60 @@ function activityTone(level: ActivityDay["level"]) {
     3: "bg-slate-700/70",
     4: "bg-slate-950",
   }[level];
+}
+
+function feedKindTone(kind: "commit" | "resource") {
+  return kind === "commit" ? "bg-rose-100 text-rose-700" : "bg-emerald-100 text-emerald-700";
+}
+
+function feedKindLabel(kind: "commit" | "resource") {
+  return kind === "commit" ? "Commit" : "Resource";
+}
+
+function feedPreviewHeading(kind: "commit" | "resource") {
+  return kind === "commit" ? "What's Changed" : "Resource Summary";
+}
+
+function followedUpdateTone(kind: FollowedCourseUpdate["updateKind"]) {
+  switch (kind) {
+    case "resource_added":
+      return "bg-emerald-100 text-emerald-700";
+    case "note_added":
+      return "bg-sky-100 text-sky-700";
+    case "course_revision":
+      return "bg-rose-100 text-rose-700";
+    case "new_lesson":
+    default:
+      return "bg-stone-100 text-stone-700";
+  }
+}
+
+function followedUpdateActionLabel(kind: FollowedCourseUpdate["updateKind"]) {
+  switch (kind) {
+    case "resource_added":
+      return "added resources to";
+    case "note_added":
+      return "published notes in";
+    case "course_revision":
+      return "updated";
+    case "new_lesson":
+    default:
+      return "published";
+  }
+}
+
+function followedUpdatePreviewHeading(kind: FollowedCourseUpdate["updateKind"]) {
+  switch (kind) {
+    case "resource_added":
+      return "Resource Notes";
+    case "note_added":
+      return "Class Notes";
+    case "course_revision":
+      return "What's Changed";
+    case "new_lesson":
+    default:
+      return "Highlights";
+  }
 }
 
 export function LearningHome() {
@@ -1102,123 +1158,118 @@ export function LearningHome() {
                           const hasCommitTimeline = item.kind === "commit" && Boolean(item.updates?.length);
 
                           return (
-                            <article
-                              key={item.id}
-                              className="rounded-[24px] border border-stone-200 bg-white p-4 shadow-[0_10px_30px_rgba(15,23,42,0.05)] sm:p-5"
-                            >
-                              <div className="flex items-start justify-between gap-4">
-                                <div className="flex min-w-0 gap-3">
-                                  <div
-                                    className={clsx(
-                                      "mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl text-white",
-                                      item.kind === "commit" ? "bg-rose-500" : "bg-emerald-500"
-                                    )}
+                              <article key={item.id} className="rounded-lg border border-stone-300 bg-white p-4 shadow-sm">
+                                <div className="flex items-start justify-between gap-4">
+                                  <div className="flex min-w-0 gap-3">
+                                    <div
+                                      className={clsx(
+                                        "mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-white",
+                                        item.kind === "commit" ? "bg-rose-500" : "bg-emerald-500"
+                                      )}
+                                    >
+                                      {item.kind === "commit" ? (
+                                        <BookText className="h-4 w-4" />
+                                      ) : (
+                                        <FolderClosed className="h-4 w-4" />
+                                      )}
+                                    </div>
+
+                                    <div className="min-w-0">
+                                      <p className="text-sm text-stone-600">
+                                        <span className="font-semibold text-stone-950">{item.actor}</span> {item.action}
+                                      </p>
+                                      <p className="mt-1 text-xs text-stone-400">{formatRelativeTime(item.timestamp)}</p>
+                                    </div>
+                                  </div>
+
+                                  <button
+                                    type="button"
+                                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-stone-400 transition hover:bg-stone-100 hover:text-stone-700"
+                                    aria-label="更多更新操作"
+                                    title="更多更新操作"
                                   >
-                                    {item.kind === "commit" ? (
-                                      <BookText className="h-4 w-4" />
-                                    ) : (
-                                      <FolderClosed className="h-4 w-4" />
-                                    )}
-                                  </div>
-
-                                  <div className="min-w-0">
-                                    <p className="text-sm text-stone-600">
-                                      <span className="font-semibold text-stone-950">{item.actor}</span> {item.action}
-                                    </p>
-                                    <p className="mt-1 text-xs text-stone-400">{formatRelativeTime(item.timestamp)}</p>
-                                  </div>
+                                    <MoreHorizontal className="h-4 w-4" />
+                                  </button>
                                 </div>
 
-                                <span className="rounded-full border border-stone-200 bg-stone-50 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-stone-400">
-                                  {item.kind === "commit" ? "Commit" : "Resource"}
-                                </span>
-                              </div>
+                                <h4 className="mt-4 text-lg font-semibold text-stone-950">{item.title}</h4>
+                                <div className="mt-2 flex flex-wrap items-center gap-2">
+                                  <span className={clsx("rounded-full px-2.5 py-1 text-[10px] font-semibold", feedKindTone(item.kind))}>
+                                    {feedKindLabel(item.kind)}
+                                  </span>
+                                  <span className="text-xs text-stone-400">{item.pills.slice(0, 2).join(" · ")}</span>
+                                </div>
 
-                              <h4
-                                className={clsx(
-                                  "mt-5 font-semibold text-stone-950",
-                                  hasCommitTimeline ? "text-xl sm:text-2xl" : "text-2xl sm:text-[2rem]"
-                                )}
-                              >
-                                {item.title}
-                              </h4>
-
-                              {hasCommitTimeline ? (
-                                <ol className="mt-5">
-                                  {item.updates?.map((update, updateIndex) => {
-                                    const isLast = updateIndex === (item.updates?.length ?? 0) - 1;
-
-                                    return (
-                                      <li key={update.id} className="relative flex gap-3 pb-5 last:pb-0">
-                                        {!isLast ? (
-                                          <span className="absolute left-[5px] top-4 h-full w-px bg-stone-200" />
-                                        ) : null}
-                                        <span className="relative mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full bg-rose-500 ring-4 ring-rose-50" />
-                                        <div className="min-w-0 flex-1">
-                                          <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-                                            {update.lessonTitle ? (
-                                              <p className="text-sm font-semibold text-stone-950">
-                                                {update.lessonTitle}
-                                              </p>
-                                            ) : null}
-                                            <span className="text-xs text-stone-400">
-                                              {formatRelativeTime(update.timestamp)}
-                                            </span>
-                                          </div>
-                                          <div className="mt-1 flex flex-wrap items-center gap-2">
-                                            <p className="text-sm font-medium text-stone-800">{update.title}</p>
-                                            <span className="rounded-full bg-stone-100 px-2 py-0.5 text-[10px] font-semibold text-stone-500">
-                                              {update.detailTitle}
-                                            </span>
-                                          </div>
-                                          <p className="mt-1 text-sm leading-6 text-stone-600">{update.detailBody}</p>
-                                        </div>
-                                      </li>
-                                    );
-                                  })}
-                                </ol>
-                              ) : (
-                                <div className="mt-4 rounded-[22px] border border-stone-200 bg-stone-50/90 p-4">
+                                <div className="mt-4 rounded-md bg-[#f6f8fa] p-4">
                                   <div className="border-b border-stone-200 pb-3">
-                                    <p className="text-base font-semibold text-stone-950">{item.detailTitle}</p>
+                                    <p className="text-base font-semibold text-stone-950">{feedPreviewHeading(item.kind)}</p>
                                   </div>
-                                  <p className="mt-3 text-sm leading-7 text-stone-600">{item.detailBody}</p>
-                                </div>
-                              )}
 
-                              <div className="mt-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                                <div className="flex flex-wrap gap-2">
+                                  {hasCommitTimeline ? (
+                                    <ol className="mt-3">
+                                      {item.updates?.map((update, updateIndex) => {
+                                        const isLast = updateIndex === (item.updates?.length ?? 0) - 1;
+
+                                        return (
+                                          <li key={update.id} className="relative flex gap-3 pb-4 last:pb-0">
+                                            {!isLast ? <span className="absolute left-[5px] top-4 h-full w-px bg-stone-200" /> : null}
+                                            <span className="relative mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full bg-rose-500 ring-4 ring-white" />
+                                            <div className="min-w-0 flex-1">
+                                              <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                                                <p className="text-sm font-semibold text-stone-950">
+                                                  {update.lessonTitle ?? update.title}
+                                                </p>
+                                                <span className="text-xs text-stone-400">{formatRelativeTime(update.timestamp)}</span>
+                                              </div>
+                                              <div className="mt-1 flex flex-wrap items-center gap-2">
+                                                <p className="text-sm font-medium text-stone-800">{update.title}</p>
+                                                <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-semibold text-stone-500">
+                                                  {update.detailTitle}
+                                                </span>
+                                              </div>
+                                              <p className="mt-1 text-sm leading-6 text-stone-600">{update.detailBody}</p>
+                                            </div>
+                                          </li>
+                                        );
+                                      })}
+                                    </ol>
+                                  ) : (
+                                    <div className="mt-3">
+                                      <p className="text-sm font-semibold text-stone-950">{item.detailTitle}</p>
+                                      <p className="mt-2 text-sm leading-7 text-stone-600">{item.detailBody}</p>
+                                    </div>
+                                  )}
+
+                                  {item.lessonId ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => void handleOpenLesson(item.lessonId!)}
+                                      className="mt-4 inline-flex items-center gap-2 text-xs font-semibold text-stone-800 underline underline-offset-2"
+                                    >
+                                      {buttonBusy ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : null}
+                                      <span>Read more</span>
+                                    </button>
+                                  ) : (
+                                    <Link
+                                      href="/studio"
+                                      className="mt-4 inline-flex text-xs font-semibold text-stone-800 underline underline-offset-2"
+                                    >
+                                      Read more
+                                    </Link>
+                                  )}
+                                </div>
+
+                                <div className="mt-4 flex flex-wrap items-center gap-2">
                                   {item.pills.map((pill, pillIndex) => (
                                     <span
                                       key={`${item.id}:pill:${pillIndex}:${pill}`}
-                                      className="rounded-full bg-stone-100 px-3 py-1 text-[11px] font-medium text-stone-500"
+                                      className="rounded-md border border-stone-200 bg-white px-2.5 py-1 text-[11px] font-medium text-stone-500"
                                     >
                                       {pill}
                                     </span>
                                   ))}
                                 </div>
-
-                                {item.lessonId ? (
-                                  <button
-                                    type="button"
-                                    onClick={() => void handleOpenLesson(item.lessonId!)}
-                                    className="inline-flex items-center gap-2 rounded-full border border-stone-200 bg-white px-4 py-2.5 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:text-stone-950"
-                                  >
-                                    {buttonBusy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : null}
-                                    <span>进入工作台</span>
-                                    {!buttonBusy ? <ArrowUpRight className="h-4 w-4" /> : null}
-                                  </button>
-                                ) : (
-                                  <Link
-                                    href="/studio"
-                                    className="inline-flex items-center gap-2 rounded-full border border-stone-200 bg-white px-4 py-2.5 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:text-stone-950"
-                                  >
-                                    查看资料入口
-                                    <ArrowUpRight className="h-4 w-4" />
-                                  </Link>
-                                )}
-                              </div>
-                            </article>
+                              </article>
                           );
                         })
                       ) : (
@@ -1807,34 +1858,64 @@ export function LearningHome() {
                   <Link
                     key={item.update.id}
                     href="/following"
-                    className="group flex gap-3 rounded-2xl border border-transparent p-2 transition hover:border-stone-100 hover:bg-stone-50"
+                    className="group block rounded-lg border border-stone-300 bg-white p-3 shadow-sm transition hover:border-stone-400"
                   >
-                    <div
-                      className={clsx(
-                        "flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl text-white",
-                        item.update.updateKind === "resource_added" ? "bg-emerald-500" : "bg-rose-500"
-                      )}
-                    >
-                      {item.update.updateKind === "resource_added" ? (
-                        <FolderClosed className="h-4 w-4" />
-                      ) : (
-                        <BookText className="h-4 w-4" />
-                      )}
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
-                        <p className="truncate text-sm font-semibold text-stone-950">{item.creator.name}</p>
-                        <span className="shrink-0 rounded-full bg-rose-50 px-2 py-0.5 text-[10px] font-semibold text-rose-600">
-                          {FOLLOWED_UPDATE_KIND_LABELS[item.update.updateKind]}
-                        </span>
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex min-w-0 gap-2.5">
+                        <Image
+                          src={creatorAvatarUrl(item.creator)}
+                          alt=""
+                          className="mt-0.5 h-8 w-8 shrink-0 rounded-full border border-stone-200 bg-stone-100"
+                          width={32}
+                          height={32}
+                          unoptimized
+                        />
+                        <div className="min-w-0">
+                          <p className="line-clamp-2 text-xs leading-5 text-stone-600">
+                            <span className="font-semibold text-stone-950">{item.creator.name}</span>{" "}
+                            {followedUpdateActionLabel(item.update.updateKind)}{" "}
+                            <span className="font-semibold text-stone-950">{item.update.courseTitle}</span>
+                          </p>
+                          <p className="mt-0.5 text-[11px] text-stone-400">{formatRelativeTime(item.update.updatedAt)}</p>
+                        </div>
                       </div>
-                      <p className="mt-1 line-clamp-1 text-sm font-semibold text-stone-800 group-hover:text-stone-950">
-                        {item.update.courseTitle}
-                      </p>
-                      <p className="mt-1 line-clamp-2 text-xs leading-5 text-stone-500">{item.update.summary}</p>
-                      <p className="mt-1 truncate text-[11px] text-stone-400">
-                        {item.update.moduleTitle} · {formatRelativeTime(item.update.updatedAt)}
-                      </p>
+
+                      <MoreHorizontal className="mt-1 h-4 w-4 shrink-0 text-stone-400" />
+                    </div>
+
+                    <p className="mt-3 line-clamp-2 text-sm font-semibold leading-5 text-stone-950 group-hover:text-stone-800">
+                      {item.update.moduleTitle}
+                    </p>
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <span
+                        className={clsx(
+                          "rounded-full px-2 py-0.5 text-[10px] font-semibold",
+                          followedUpdateTone(item.update.updateKind)
+                        )}
+                      >
+                        {FOLLOWED_UPDATE_KIND_LABELS[item.update.updateKind]}
+                      </span>
+                      <span className="text-[11px] text-stone-400">{item.update.lessonCount} 课</span>
+                    </div>
+
+                    <div className="mt-3 rounded-md bg-[#f6f8fa] p-3">
+                      <div className="border-b border-stone-200 pb-2">
+                        <p className="text-sm font-semibold text-stone-950">
+                          {followedUpdatePreviewHeading(item.update.updateKind)}
+                        </p>
+                      </div>
+                      <p className="mt-2 line-clamp-3 text-xs leading-5 text-stone-600">{item.update.summary}</p>
+                      <span className="mt-3 inline-flex text-[11px] font-semibold text-stone-800 underline underline-offset-2">
+                        Read more
+                      </span>
+                    </div>
+
+                    <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-stone-500">
+                      {item.update.tags.slice(0, 3).map((tag) => (
+                        <span key={`${item.update.id}:notification:${tag}`} className="rounded-md border border-stone-200 px-2 py-0.5">
+                          {tag}
+                        </span>
+                      ))}
                     </div>
                   </Link>
                 ))

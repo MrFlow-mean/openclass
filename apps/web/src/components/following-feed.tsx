@@ -7,13 +7,12 @@ import { useMemo, useState } from "react";
 import {
   Activity,
   ArrowLeft,
-  ArrowUpRight,
   BookText,
   Eye,
   FolderClosed,
-  GraduationCap,
   Heart,
   MessageCircle,
+  MoreHorizontal,
   Search,
 } from "lucide-react";
 
@@ -23,7 +22,6 @@ import {
   FOLLOWED_UPDATE_KIND_LABELS,
   buildFollowedCourseUpdateItems,
   creatorAvatarUrl,
-  updateCoverUrl,
   type FollowedCreator,
   type FollowedCourseUpdate,
   type FollowedCourseUpdateItem,
@@ -111,14 +109,42 @@ function updateTone(kind: FollowedCourseUpdate["updateKind"]) {
 function updateLabelTone(kind: FollowedCourseUpdate["updateKind"]) {
   switch (kind) {
     case "resource_added":
-      return "bg-emerald-50 text-emerald-700";
+      return "bg-emerald-100 text-emerald-700";
     case "note_added":
-      return "bg-sky-50 text-sky-700";
+      return "bg-sky-100 text-sky-700";
     case "course_revision":
-      return "bg-rose-50 text-rose-700";
+      return "bg-rose-100 text-rose-700";
     case "new_lesson":
     default:
       return "bg-stone-100 text-stone-700";
+  }
+}
+
+function updateActionLabel(kind: FollowedCourseUpdate["updateKind"]) {
+  switch (kind) {
+    case "resource_added":
+      return "added resources to";
+    case "note_added":
+      return "published notes in";
+    case "course_revision":
+      return "updated";
+    case "new_lesson":
+    default:
+      return "published";
+  }
+}
+
+function updatePreviewHeading(kind: FollowedCourseUpdate["updateKind"]) {
+  switch (kind) {
+    case "resource_added":
+      return "Resource Notes";
+    case "note_added":
+      return "Class Notes";
+    case "course_revision":
+      return "What's Changed";
+    case "new_lesson":
+    default:
+      return "Highlights";
   }
 }
 
@@ -299,105 +325,89 @@ function renderFeedCard(item: FollowedCourseUpdateItem) {
   return (
     <article
       key={update.id}
-      className="rounded-[24px] border border-stone-200 bg-white p-4 shadow-[0_10px_30px_rgba(15,23,42,0.05)] sm:p-5"
+      className="rounded-lg border border-stone-300 bg-white p-4 shadow-sm"
     >
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+      <div className="flex items-start justify-between gap-4">
         <div className="flex min-w-0 gap-3">
-          <div className="relative h-14 w-14 shrink-0 overflow-hidden rounded-2xl border border-stone-200 bg-stone-100">
+          <span className="relative h-10 w-10 shrink-0">
             <Image
-              src={updateCoverUrl(update)}
+              src={creatorAvatarUrl(creator)}
               alt=""
-              className="h-full w-full object-cover"
-              width={56}
-              height={56}
+              className="h-10 w-10 rounded-full border border-stone-200 bg-stone-100"
+              width={40}
+              height={40}
               unoptimized
             />
-            <div
+            <span
               className={clsx(
-                "absolute bottom-1 right-1 flex h-6 w-6 items-center justify-center rounded-full text-white ring-2 ring-white",
+                "absolute -bottom-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full text-white ring-2 ring-white",
                 updateTone(update.updateKind)
               )}
             >
-              {isResourceUpdate ? <FolderClosed className="h-3.5 w-3.5" /> : <BookText className="h-3.5 w-3.5" />}
-            </div>
-          </div>
+              {isResourceUpdate ? <FolderClosed className="h-3 w-3" /> : <BookText className="h-3 w-3" />}
+            </span>
+          </span>
 
           <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <Image
-                src={creatorAvatarUrl(creator)}
-                alt=""
-                className="h-6 w-6 rounded-full border border-stone-200 bg-stone-100"
-                width={24}
-                height={24}
-                unoptimized
-              />
-              <p className="truncate text-sm text-stone-600">
-                <span className="font-semibold text-stone-950">{creator.name}</span> 发布了项目更新
-              </p>
-            </div>
+            <p className="text-sm text-stone-600">
+              <span className="font-semibold text-stone-950">{creator.name}</span>{" "}
+              {updateActionLabel(update.updateKind)}{" "}
+              <span className="font-semibold text-stone-950">{update.courseTitle}</span>
+            </p>
             <p className="mt-1 text-xs text-stone-400">
               @{creator.handle} · {creator.field} · {formatRelativeTime(update.updatedAt)}
             </p>
           </div>
         </div>
 
+        <button
+          type="button"
+          className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-stone-400 transition hover:bg-stone-100 hover:text-stone-700"
+          aria-label="更多项目操作"
+          title="更多项目操作"
+        >
+          <MoreHorizontal className="h-4 w-4" />
+        </button>
+      </div>
+
+      <h2 className="mt-4 text-lg font-semibold text-stone-950">{update.moduleTitle}</h2>
+      <div className="mt-2 flex flex-wrap items-center gap-2">
         <span
-          className={clsx(
-            "w-fit rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em]",
-            updateLabelTone(update.updateKind)
-          )}
+          className={clsx("rounded-full px-2.5 py-1 text-[10px] font-semibold", updateLabelTone(update.updateKind))}
         >
           {FOLLOWED_UPDATE_KIND_LABELS[update.updateKind]}
         </span>
+        <span className="text-xs text-stone-400">{update.lessonCount} 课 · {update.views.toLocaleString("zh-CN")} views</span>
       </div>
 
-      <h2 className="mt-5 text-2xl font-semibold tracking-tight text-stone-950 sm:text-[2rem]">{update.courseTitle}</h2>
-
-      <div className="mt-4 rounded-[22px] border border-stone-200 bg-stone-50/90 p-4">
+      <div className="mt-4 rounded-md bg-[#f6f8fa] p-4">
         <div className="border-b border-stone-200 pb-3">
-          <p className="text-base font-semibold text-stone-950">{update.moduleTitle}</p>
+          <p className="text-base font-semibold text-stone-950">{updatePreviewHeading(update.updateKind)}</p>
         </div>
         <p className="mt-3 text-sm leading-7 text-stone-600">{update.summary}</p>
-      </div>
-
-      <div className="mt-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-        <div className="flex flex-wrap gap-2">
+        <ul className="mt-3 list-disc space-y-1 pl-5 text-sm leading-6 text-stone-600">
           {update.tags.map((tag) => (
-            <span key={`${update.id}:${tag}`} className="rounded-full bg-stone-100 px-3 py-1 text-[11px] font-medium text-stone-500">
-              {tag}
-            </span>
+            <li key={`${update.id}:tag:${tag}`}>{tag}</li>
           ))}
-        </div>
-
-        <div className="flex flex-wrap items-center gap-3 text-xs text-stone-500">
-          <span className="inline-flex items-center gap-1">
-            <GraduationCap className="h-3.5 w-3.5" />
-            {update.lessonCount} 课
-          </span>
-          <span className="inline-flex items-center gap-1">
-            <Eye className="h-3.5 w-3.5" />
-            {update.views.toLocaleString("zh-CN")}
-          </span>
-          <span className="inline-flex items-center gap-1">
-            <MessageCircle className="h-3.5 w-3.5" />
-            {update.comments.toLocaleString("zh-CN")}
-          </span>
-          <span className="inline-flex items-center gap-1">
-            <Heart className="h-3.5 w-3.5" />
-            {update.likes.toLocaleString("zh-CN")}
-          </span>
-        </div>
+        </ul>
+        <Link href="/" className="mt-4 inline-flex text-xs font-semibold text-stone-800 underline underline-offset-2">
+          Read more
+        </Link>
       </div>
 
-      <div className="mt-4 flex justify-end">
-        <Link
-          href="/"
-          className="inline-flex items-center gap-2 rounded-full border border-stone-200 bg-white px-4 py-2.5 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:text-stone-950"
-        >
-          发现更多项目
-          <ArrowUpRight className="h-4 w-4" />
-        </Link>
+      <div className="mt-4 flex flex-wrap items-center gap-2 text-xs text-stone-500">
+        <span className="inline-flex h-7 items-center gap-1 rounded-md border border-stone-200 bg-white px-2.5">
+          <Eye className="h-3.5 w-3.5" />
+          {update.views.toLocaleString("zh-CN")}
+        </span>
+        <span className="inline-flex h-7 items-center gap-1 rounded-md border border-stone-200 bg-white px-2.5">
+          <MessageCircle className="h-3.5 w-3.5" />
+          {update.comments.toLocaleString("zh-CN")}
+        </span>
+        <span className="inline-flex h-7 items-center gap-1 rounded-md border border-stone-200 bg-white px-2.5">
+          <Heart className="h-3.5 w-3.5" />
+          {update.likes.toLocaleString("zh-CN")}
+        </span>
       </div>
     </article>
   );
