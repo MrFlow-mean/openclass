@@ -913,7 +913,11 @@ def _is_unmodified_starter_lesson(lesson: Lesson) -> bool:
     return (
         lesson.title in STARTER_LESSON_TITLES
         and len(commits) == 1
-        and commits[0].message == f"Generated starter rich document for {lesson.title}"
+        and commits[0].message
+        in {
+            f"Generated starter rich document for {lesson.title}",
+            f"Created empty rich document for {lesson.title}",
+        }
     )
 
 

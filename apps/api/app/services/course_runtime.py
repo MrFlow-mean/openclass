@@ -4,7 +4,7 @@ from app.models import BoardDocument, LearningRequirementSheet, Lesson, Resource
 from app.services.lesson_factory import (
     build_requirements,
     build_teaching_guide,
-    create_lesson,
+    create_empty_lesson,
 )
 from app.services.openai_course_ai import build_generated_lesson, openai_course_ai
 
@@ -107,7 +107,7 @@ def build_lesson_for_topic(
         reference_context=_reference_context_payload(reference_context, include_full_text=True),
     )
     if generated is None:
-        return create_lesson(topic, requirements=requirements, reference_context=reference_context)
+        return create_empty_lesson(topic, requirements=requirements)
 
     document = BoardDocument(
         title=generated.title,

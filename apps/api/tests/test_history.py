@@ -9,7 +9,7 @@ from zipfile import ZipFile
 from app.models import BoardTeachingGuide, BoardTeachingProgress, BoardTeachingSelectedItem, ChatRequest, ConversationTurn, PatchOperation, SelectionRef
 from app.services.chart_generation import extract_chart_data_fragments
 from app.services.ai_workflow import _board_snapshot_hash, _is_append_document_request, classify_scope, course_workflow, match_resources
-from app.services.course_runtime import effective_requirements
+from app.services.course_runtime import build_lesson_for_topic, effective_requirements
 from app.services.course_store import build_initial_course_package
 from app.services.document_ops import apply_patch
 from app.services.history import create_branch, restore_commit
@@ -62,6 +62,31 @@ def test_create_empty_lesson_starts_with_blank_rich_document() -> None:
     assert lesson.board_document.title == "抽象代数导论"
     assert lesson.board_document.content_text == ""
     assert lesson.history_graph.commits[0].snapshot.content_text == ""
+
+
+def test_create_lesson_does_not_prebuild_topic_specific_content() -> None:
+    for topic in ["法语", "法国咖啡厅点餐", "勾股定理", "直角三角形基础"]:
+        lesson = create_lesson(topic)
+
+        assert lesson.board_document.title == topic
+        assert lesson.board_document.content_text == ""
+        assert "法国咖啡厅点餐" not in lesson.board_document.content_html
+        assert "Je pensais que je prendrais" not in lesson.board_document.content_html
+        assert "直角三角形" not in lesson.board_document.content_html
+        assert "a² + b² = c²" not in lesson.board_document.content_html
+
+
+def test_ai_lesson_generation_fallback_stays_blank_without_prebuilt_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(openai_course_ai, "generate_lesson_document", lambda **kwargs: None)
+
+    lesson = build_lesson_for_topic("法语咖啡厅点餐")
+
+    assert lesson.board_document.title == "法语咖啡厅点餐"
+    assert lesson.board_document.content_text == ""
+    assert "法国咖啡厅点餐" not in lesson.board_document.content_html
+    assert "Je pensais que je prendrais" not in lesson.board_document.content_html
 
 
 def test_workflow_asks_for_clarification_when_request_is_too_vague() -> None:
@@ -1923,7 +1948,7 @@ def test_replace_selection_in_document_preserves_rich_html_for_cross_block_selec
     assert "<p>量化金融入门讲义：给第一次接触的人</p>" not in updated.content_html
 
 
-def test_workflow_generates_initial_dialogue_document_for_blank_lesson() -> None:
+def test_workflow_does_not_use_prebuilt_dialogue_when_ai_edit_is_unavailable() -> None:
     package = build_initial_course_package()
     lesson = create_empty_lesson("板书测试")
     package.lessons.append(lesson)
@@ -1943,10 +1968,11 @@ def test_workflow_generates_initial_dialogue_document_for_blank_lesson() -> None
     )
 
     assert result["board_decision"].action == "edit_board"
-    assert result["document_updated"] is True
-    assert "咖啡厅" in result["teacher_document"].title
-    assert "完整双语对话" in result["teacher_document"].content_text
-    assert "Je pensais que je prendrais" in result["teacher_document"].content_text
+    assert result["document_updated"] is False
+    assert result["teacher_document"].content_text == ""
+    assert "咖啡厅" not in result["teacher_document"].title
+    assert "完整双语对话" not in result["teacher_document"].content_text
+    assert "Je pensais que je prendrais" not in result["teacher_document"].content_text
 
 
 def test_workflow_uses_fast_path_for_clear_generation_request(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -1122,7 +1122,7 @@ class OpenAICourseAI:
                 "If the user asks to generate or rewrite the lesson, return a complete handout-style HTML document with headings, long dialogue/body content, "
                 "explanations, examples, exercises, and answers. Do not split content into blocks or cards. "
                 "If selected_reference.chapter_text is provided, treat it as the full relevant chapter content and ground the handout in that chapter. "
-                "For French cafe dialogue lessons, the dialogue must be the main body and should be long enough for teaching. "
+                "Do not reuse any canned sample lesson, hard-coded topic template, or fixed example. Derive the structure and examples from the user's current request. "
                 "Also return board_teaching_guide in Chinese, permanently bound to this board snapshot. "
                 "In board_teaching_guide, explain which board excerpts should be taught first, why they were selected, "
                 "which learner needs they correspond to, and what teaching flow Teacher AI should follow. "
@@ -1253,9 +1253,8 @@ class OpenAICourseAI:
             system_prompt=(
                 "You are Board AI creating a brand-new Word-like rich teaching document. "
                 "Return one complete handout-style document, not blocks. Use HTML with h1/h2/h3/p/ol/ul/table when helpful. "
-                "The document should be long enough for a real lesson. For French cafe ordering lessons, include: title, scene, complete bilingual dialogue, "
-                "grammar focus, sentence analysis, vocabulary expressions, exercises, and answers. "
-                "The dialogue should be the main body, not a tiny sample. Avoid card-like fragmented notes. "
+                "The document should be long enough for a real lesson. Do not reuse any canned sample lesson, hard-coded topic template, or fixed example. "
+                "Derive the structure, examples, exercises, and pacing from the user's current topic and any reference context. Avoid card-like fragmented notes. "
                 "If reference_context.chapter_text is provided, treat it as the full relevant chapter content and ground the new lesson in that chapter."
             ),
             user_prompt=_json(prompt_payload),

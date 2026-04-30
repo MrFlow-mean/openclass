@@ -25,11 +25,10 @@ from app.services.course_runtime import (
     effective_requirements,
     normalize_requirements,
 )
-from app.services.lesson_factory import build_teaching_guide, create_lesson
+from app.services.lesson_factory import build_teaching_guide
 from app.services.openai_course_ai import openai_course_ai
 from app.services.resource_library import extract_reference_context
 from app.services.rich_document import (
-    append_html_section,
     is_document_empty,
     replace_selection_in_document,
 )
@@ -831,20 +830,13 @@ def _fallback_board_decision(
     return BoardDecision(action="edit_board", reason="默认先生成一版更完整的连续讲义，便于后续教学。")
 
 
-def _fallback_selection_replacement(request: ChatRequest) -> str:
+def _fallback_selection_replacement(request: ChatRequest) -> str | None:
     message = request.message.strip()
     for prefix in ["改成", "替换为", "改为", "换成"]:
         if message.startswith(prefix) and len(message) > len(prefix):
-            return message[len(prefix) :].strip(" ：:，,")
-    if _is_selection_enhancement_request(message):
-        return "补充解析：保留原有题干和解题方法，在原文基础上补上关键信息梳理、解题思路、关键步骤和易错提醒，让这段板书更完整。"
-    if any(keyword in message for keyword in ["更易懂", "通俗", "简单", "没懂", "解释"]):
-        return "换一种更好懂的说法：先交代这句话在整篇讲义里的作用，再用更口语的语言把它解释清楚。"
-    if any(keyword in message for keyword in ["总结", "概括", "压缩"]):
-        return "一句话总结：先说结论，再点明原因和使用场景。"
-    if any(keyword in message for keyword in ["润色", "校对", "优化"]):
-        return message
-    return message
+            replacement = message[len(prefix) :].strip(" ：:，,")
+            return replacement or None
+    return None
 
 
 def _normalize_for_match(text: str) -> str:
@@ -878,9 +870,12 @@ def _fallback_document_update(
     selected_reference: ResourceReferenceContext | None,
 ) -> BoardDocument:
     if request.selection and request.interaction_mode == "direct_edit" and not _is_full_rewrite_request(request.message):
+        fallback_replacement = _fallback_selection_replacement(request)
+        if fallback_replacement is None:
+            return lesson.board_document
         replacement_text = _merge_selection_edit(
             selection_text=request.selection.excerpt,
-            generated_text=_fallback_selection_replacement(request),
+            generated_text=fallback_replacement,
             request_message=request.message,
         )
         return replace_selection_in_document(
@@ -889,17 +884,8 @@ def _fallback_document_update(
             replacement_text=replacement_text,
         )
 
-    if decision.action == "append_section":
-        lead = selected_reference.teaching_points[0] if selected_reference and selected_reference.teaching_points else "这一节专门承接用户当前追问，把新问题接回原有主线。"
-        section_html = f"<h2>补充章节</h2><p>{lead}</p><p>{request.message}</p>"
-        return append_html_section(lesson.board_document, section_html)
-
-    generated = create_lesson(
-        request.message.strip() or lesson.title,
-        requirements=effective_requirements(lesson),
-        reference_context=selected_reference,
-    )
-    return generated.board_document.model_copy(update={"id": lesson.board_document.id})
+    _ = decision, selected_reference
+    return lesson.board_document
 
 
 def _board_snapshot_hash(document: BoardDocument) -> str:
