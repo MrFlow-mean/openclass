@@ -7,6 +7,7 @@ from typing import TypedDict
 from app.models import (
     BoardDecision,
     BoardDocument,
+    BoardEditPrompt,
     BoardNeedMapping,
     BoardTeachingGuide,
     BoardTeachingSelectedItem,
@@ -229,6 +230,48 @@ def _is_full_rewrite_request(message: str) -> bool:
     return any(keyword in compact for keyword in ["重写整篇", "重写全文", "重写整份", "整篇改写", "整体改写", "整体重写"])
 
 
+def _is_board_generation_confirmation_response(request: ChatRequest) -> bool:
+    compact = re.sub(r"\s+", "", request.message.lower())
+    if not compact:
+        return False
+    negative_terms = ["不", "否", "先不", "不要", "暂不", "不用", "取消"]
+    if any(term in compact for term in negative_terms):
+        return False
+    affirmative_terms = [
+        "是",
+        "是的",
+        "好",
+        "好的",
+        "可以",
+        "对",
+        "嗯",
+        "行",
+        "生成",
+        "开始生成",
+        "生成吧",
+        "确认",
+        "确定",
+    ]
+    if not any(term == compact or term in compact for term in affirmative_terms):
+        return False
+    recent_assistant_text = "\n".join(
+        turn.content for turn in request.conversation[-4:] if turn.role == "assistant"
+    )
+    recent_compact = re.sub(r"\s+", "", recent_assistant_text)
+    return "生成" in recent_compact and "板书" in recent_compact
+
+
+def _board_generation_confirmation_prompt(requirements: LearningRequirementSheet) -> BoardEditPrompt:
+    topic = requirements.theme or requirements.learning_goal or (requirements.current_questions[-1] if requirements.current_questions else "当前学习需求")
+    return BoardEditPrompt(
+        topic=topic,
+        question="学习需求清单已经整理到可以开始了。是否现在生成右侧板书和配套的板书讲解讲义？",
+        reason="",
+        confirm_label="生成板书",
+        skip_label="先不生成",
+    )
+
+
 def _is_explanation_request(message: str) -> bool:
     compact = re.sub(r"\s+", "", message)
     if _is_board_generation_request(message):
@@ -414,6 +457,8 @@ def _should_use_fast_pm_path(
 ) -> bool:
     _ = status
     if request.interaction_mode == "direct_edit" or request.selection is not None:
+        return True
+    if _is_board_generation_confirmation_response(request):
         return True
     if request.scope_action is not None or request.resource_reference_action is not None:
         return True

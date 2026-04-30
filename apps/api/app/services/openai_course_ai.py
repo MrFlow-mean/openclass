@@ -1026,6 +1026,7 @@ class OpenAICourseAI:
         lesson_tags: list[str],
         document_outline: list[str] | None = None,
         block_titles: list[str] | None = None,
+        board_is_empty: bool = False,
         user_message: str,
         selection_excerpt: str | None,
         conversation: list[dict[str, Any]],
@@ -1039,7 +1040,8 @@ class OpenAICourseAI:
                 "like a focused ChatGPT-style project manager, while you progressively organize their learning needs. "
                 "If the learning purpose is still unclear, set ready=false and write assistant_message as your next natural reply to the learner. "
                 "Ask only one useful next question when possible, and make it depend on the actual conversation rather than a reusable form. "
-                "If ready, set ready=true and leave assistant_message empty unless a short acknowledgement is necessary. "
+                "If ready and board_is_empty=true, do not start board work yet; set assistant_message to ask whether to generate the visible board and its paired board-teaching handout now. "
+                "If ready and board_is_empty=false, set assistant_message empty unless a short acknowledgement is necessary. "
                 "Always provide the best current LearningRequirementSheet from the conversation so far. "
                 "Maintain exactly one cumulative learning_need_catalog for this lesson. Treat it like a mini table "
                 "of contents for the board: append related new needs under the most relevant existing section "
@@ -1052,6 +1054,7 @@ class OpenAICourseAI:
                     "lesson_summary": lesson_summary,
                     "lesson_tags": lesson_tags,
                     "document_outline": outline,
+                    "board_is_empty": board_is_empty,
                     "conversation": conversation,
                     "user_message": user_message,
                     "selection_excerpt": selection_excerpt,

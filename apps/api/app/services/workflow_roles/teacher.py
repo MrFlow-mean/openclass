@@ -23,6 +23,9 @@ def run_teacher(state: WorkflowState) -> WorkflowState:
         pm_dialogue_message = (state.get("pm_dialogue_message") or "").strip()
         if pm_dialogue_message:
             return {"teacher_message": _format_teacher_message(pm_dialogue_message)}
+        board_edit_prompt = state.get("board_edit_prompt")
+        if board_edit_prompt is not None:
+            return {"teacher_message": _format_teacher_message(board_edit_prompt.question)}
         ai_message = openai_course_ai.generate_clarification_message(
             lesson_title=(state.get("generated_lesson") or state["lesson"]).title,
             request_message=request.message,

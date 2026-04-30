@@ -3,9 +3,11 @@ from __future__ import annotations
 from app.models import BoardDecision
 from app.services.ai_workflow import (
     WorkflowState,
+    _board_generation_confirmation_prompt,
     _build_reference_prompt,
     _build_scope_options,
     _fallback_board_decision,
+    _is_board_generation_confirmation_response,
     _is_board_generation_request,
     _is_explanation_request,
     _is_forced_start_request,
@@ -42,6 +44,34 @@ def run_board_manager(state: WorkflowState) -> WorkflowState:
             "resource_matches": matches,
             "reference_prompt": None,
             "selected_reference": None,
+        }
+
+    if request.board_edit_action == "confirm" or _is_board_generation_confirmation_response(request):
+        return {
+            "board_decision": BoardDecision(action="edit_board", reason=""),
+            "scope_options": [],
+            "resource_matches": matches,
+            "reference_prompt": None,
+            "selected_reference": _selected_reference_context(state["course_package"], lesson, request, requirements),
+        }
+
+    if request.board_edit_action == "skip":
+        return {
+            "board_decision": BoardDecision(action="no_change", reason=""),
+            "scope_options": [],
+            "resource_matches": matches,
+            "reference_prompt": None,
+            "selected_reference": None,
+        }
+
+    if is_document_empty(lesson.board_document):
+        return {
+            "board_decision": BoardDecision(action="clarify_request", reason=""),
+            "scope_options": [],
+            "resource_matches": matches,
+            "reference_prompt": None,
+            "selected_reference": None,
+            "board_edit_prompt": _board_generation_confirmation_prompt(requirements),
         }
 
     if _should_use_fast_board_path(lesson=lesson, request=request, requirements=requirements):

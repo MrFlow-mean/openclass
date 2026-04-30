@@ -238,7 +238,7 @@ def test_blank_board_pm_converses_and_tracks_requirements_before_board_ai(
     assert result["document_updated"] is False
 
 
-def test_blank_board_ready_pm_requirements_start_board_ai(
+def test_blank_board_ready_pm_requirements_ask_before_starting_board_ai(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     package = build_initial_course_package()
@@ -265,7 +265,7 @@ def test_blank_board_ready_pm_requirements_start_board_ai(
         lambda **kwargs: PMAssessmentOutput(
             ready=True,
             reason="",
-            assistant_message="",
+            assistant_message="需求清单已经整理好。是否生成板书和配套讲义？",
             clarification_questions=[],
             learning_requirement_sheet=requirements,
         ),
@@ -283,11 +283,34 @@ def test_blank_board_ready_pm_requirements_start_board_ai(
 
     monkeypatch.setattr(openai_course_ai, "generate_document_edit", fake_document_edit)
 
-    result = course_workflow.invoke(
+    first = course_workflow.invoke(
         {
             "lesson": lesson,
             "course_package": package,
             "request": ChatRequest(message="我想学平方和开方，初中基础，用来做题"),
+        }
+    )
+
+    assert first["needs_clarification"] is False
+    assert first["board_decision"].action == "clarify_request"
+    assert first["board_edit_prompt"] is not None
+    assert first["board_edit_prompt"].confirm_label == "生成板书"
+    assert first["document_updated"] is False
+    assert "是否生成" in first["teacher_message"]
+    assert captured_requirements == []
+
+    lesson.learning_requirements = first["learning_requirement_sheet"]
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "course_package": package,
+            "request": ChatRequest(
+                message="是，生成吧",
+                conversation=[
+                    ConversationTurn(role="user", content="我想学平方和开方，初中基础，用来做题"),
+                    ConversationTurn(role="assistant", content=first["teacher_message"]),
+                ],
+            ),
         }
     )
 
@@ -319,14 +342,14 @@ def test_blank_lesson_does_not_receive_canned_board_or_dialog_when_model_is_unav
         }
     )
 
-    assert result["board_decision"].action == "edit_board"
+    assert result["board_decision"].action == "clarify_request"
     assert result["board_decision"].reason == ""
     assert result["document_updated"] is False
     assert result["learning_requirement_sheet"].boundary == ""
     assert result["teacher_document"].content_text == ""
-    assert result["teacher_message"] == ""
-    assert result["board_teaching_guide"].selected_items == []
-    assert result["board_teaching_guide"].teacher_brief == ""
+    assert "是否现在生成" in result["teacher_message"]
+    assert result["board_edit_prompt"] is not None
+    assert result["board_teaching_guide"] is None
 
 
 def test_workflow_probes_level_and_goal_on_first_subject_only_learning_goal() -> None:

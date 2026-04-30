@@ -9,6 +9,7 @@ from app.services.ai_workflow import (
 )
 from app.services.course_runtime import normalize_requirements
 from app.services.openai_course_ai import openai_course_ai
+from app.services.rich_document import is_document_empty
 
 
 def run_pm(state: WorkflowState) -> WorkflowState:
@@ -20,6 +21,7 @@ def run_pm(state: WorkflowState) -> WorkflowState:
         request=request,
         requirements=draft_requirements,
     )
+    board_is_empty = is_document_empty(lesson.board_document)
 
     if request.interaction_mode == "direct_edit":
         return {
@@ -47,6 +49,7 @@ def run_pm(state: WorkflowState) -> WorkflowState:
         lesson_summary=lesson.summary,
         lesson_tags=lesson.tags,
         document_outline=draft_requirements.board_scope,
+        board_is_empty=board_is_empty,
         user_message=request.message,
         selection_excerpt=request.selection.excerpt if request.selection else None,
         conversation=[turn.model_dump(mode="json") for turn in request.conversation],
@@ -68,7 +71,7 @@ def run_pm(state: WorkflowState) -> WorkflowState:
         if status.progress >= 80 or status.forced_start:
             needs_clarification = False
         clarification_questions = assessment.clarification_questions[:3]
-        pm_dialogue_message = assessment.assistant_message.strip() if needs_clarification else ""
+        pm_dialogue_message = assessment.assistant_message.strip() if (needs_clarification or board_is_empty) else ""
         return {
             "learning_requirement_sheet": requirements,
             "learning_clarification": status,
