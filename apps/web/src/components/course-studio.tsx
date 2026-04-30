@@ -31,7 +31,6 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronUp,
-  Circle,
   Columns3,
   Download,
   FilePlus,
@@ -929,6 +928,14 @@ function learningClarityFromCommit(commit: CommitRecord | null): LearningClarifi
     can_start: record.can_start === true,
     forced_start: record.forced_start === true,
   };
+}
+
+function learningNeedChecklistFromCommit(commit: CommitRecord | null): string[] {
+  const value = commit?.metadata?.learning_need_checklist;
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter((item): item is string => typeof item === "string");
 }
 
 function compactText(value: string, limit = 120) {
@@ -2577,6 +2584,7 @@ export function CourseStudio() {
   const [, setResourceMatches] = useState<ResourceMatch[]>([]);
   const [clarificationQuestions, setClarificationQuestions] = useState<string[]>([]);
   const [learningClarity, setLearningClarity] = useState<LearningClarificationStatus | null>(null);
+  const [learningRequirementSheetOpen, setLearningRequirementSheetOpen] = useState(false);
   const [latestBoardDecision, setLatestBoardDecision] = useState<BoardDecision | null>(null);
   const [referencePrompt, setReferencePrompt] = useState<ResourceReferencePrompt | null>(null);
   const [boardEditPrompt, setBoardEditPrompt] = useState<BoardEditPrompt | null>(null);
@@ -2707,10 +2715,12 @@ export function CourseStudio() {
       : [];
   const composerSelection = selection && !selectionPopover ? selection : null;
 
-  const learningGoalItems = [
-    visibleLearningPurposeItem(activeRequirements?.learning_goal) ?? visibleLearningPurposeItem(activeLesson?.summary),
-    visibleLearningPurposeItem(activeRequirements?.success_criteria),
-  ].filter((item): item is string => item !== null);
+  const learningNeedChecklistSource = previewCommit
+    ? learningNeedChecklistFromCommit(previewCommit)
+    : activeRequirements?.learning_need_checklist ?? [];
+  const learningNeedChecklist = learningNeedChecklistSource
+    .map((item) => visibleLearningPurposeItem(item))
+    .filter((item): item is string => item !== null);
   const clarityStatus: LearningClarificationStatus =
     previewLearningClarity ??
     learningClarity ?? {
@@ -4367,20 +4377,54 @@ export function CourseStudio() {
                 {clarityStatus.reason ? (
                   <p className="mt-2 text-xs leading-6 text-blue-900">{clarityStatus.reason}</p>
                 ) : null}
-                {learningGoalItems.length ? (
-                  <ul className="mt-3 space-y-2">
-                    {learningGoalItems.map((item, index) => (
-                      <li key={item} className="flex items-start gap-2.5 text-xs leading-relaxed text-blue-800">
-                        {index === 0 ? (
-                          <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-blue-500" />
-                        ) : (
-                          <Circle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-blue-300" />
-                        )}
-                        <span>{item}</span>
-                      </li>
-                    ))}
-                  </ul>
-                ) : null}
+                <div className="mt-3 border-t border-blue-100 pt-3">
+                  <button
+                    type="button"
+                    onClick={() => setLearningRequirementSheetOpen((isOpen) => !isOpen)}
+                    aria-expanded={learningRequirementSheetOpen}
+                    className="flex w-full items-center justify-between gap-3 rounded-lg px-1 py-1.5 text-left text-blue-900 transition-colors hover:bg-white/60"
+                  >
+                    <span className="flex min-w-0 items-center gap-2">
+                      <ClipboardList className="h-3.5 w-3.5 shrink-0 text-blue-600" />
+                      <span className="truncate text-[11px] font-bold uppercase tracking-widest">
+                        学习需求清单
+                      </span>
+                    </span>
+                    <span className="flex shrink-0 items-center gap-2 text-[11px] font-semibold text-blue-700">
+                      {learningNeedChecklist.length ? `${learningNeedChecklist.length} 项` : "暂无"}
+                      {learningRequirementSheetOpen ? (
+                        <ChevronUp className="h-3.5 w-3.5" />
+                      ) : (
+                        <ChevronDown className="h-3.5 w-3.5" />
+                      )}
+                    </span>
+                  </button>
+                  {learningRequirementSheetOpen ? (
+                    <div className="mt-2 rounded-lg bg-white/80 px-3 py-3 shadow-inner">
+                      <div className="mb-2 flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-blue-500">
+                        <FileText className="h-3.5 w-3.5" />
+                        PMAI 编辑文档
+                      </div>
+                      {learningNeedChecklist.length ? (
+                        <ol className="space-y-2">
+                          {learningNeedChecklist.map((item, index) => (
+                            <li
+                              key={`${index}-${item}`}
+                              className="grid grid-cols-[1.5rem_minmax(0,1fr)] gap-2 text-xs leading-relaxed text-blue-900"
+                            >
+                              <span className="flex h-5 w-5 items-center justify-center rounded-full bg-blue-100 text-[10px] font-bold text-blue-700">
+                                {index + 1}
+                              </span>
+                              <span>{item}</span>
+                            </li>
+                          ))}
+                        </ol>
+                      ) : (
+                        <p className="text-xs leading-6 text-blue-700">PMAI 暂未写入学习需求清单。</p>
+                      )}
+                    </div>
+                  ) : null}
+                </div>
               </div>
 
               <div className="space-y-6">
