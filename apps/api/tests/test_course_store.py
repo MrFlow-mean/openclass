@@ -166,6 +166,45 @@ def test_sqlite_store_prefers_learning_need_table_when_loading_lesson(tmp_path) 
     assert reloaded_lesson.learning_requirements.learning_need_checklist == ["数据库中的课堂需求清单"]
 
 
+def test_sqlite_store_hydrates_old_learning_need_rows_as_catalog_items(tmp_path) -> None:
+    db_path = tmp_path / "openclass.sqlite3"
+    store = SqliteCourseStore(db_path, legacy_json_path=None)
+
+    workspace = store.load()
+    lesson = workspace.packages[0].lessons[0]
+    assert lesson.learning_requirements is not None
+    lesson.learning_requirements.learning_need_checklist = ["说清楚平方与开方的关系"]
+    store.save(workspace)
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE lesson_learning_needs
+            SET item_id = NULL, section_path = NULL, title = NULL
+            WHERE lesson_id = ?
+            """,
+            (lesson.id,),
+        )
+
+    SqliteCourseStore(db_path, legacy_json_path=None)
+
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT item_id, section_path, title, content
+            FROM lesson_learning_needs
+            WHERE lesson_id = ?
+            """,
+            (lesson.id,),
+        ).fetchone()
+
+    assert row is not None
+    assert row[0] == f"need_{lesson.id}_1"
+    assert row[1] == "1"
+    assert row[2] == "说清楚平方与开方的关系"
+    assert row[3] == "说清楚平方与开方的关系"
+
+
 def test_sqlite_store_round_trips_learning_need_catalog_as_mini_toc(tmp_path) -> None:
     db_path = tmp_path / "openclass.sqlite3"
     store = SqliteCourseStore(db_path, legacy_json_path=None)

@@ -318,6 +318,7 @@ class SqliteCourseStore:
             if column not in need_columns:
                 conn.execute(f"ALTER TABLE lesson_learning_needs ADD COLUMN {column} {column_sql}")
         self._backfill_lesson_learning_needs(conn)
+        self._hydrate_lesson_learning_need_rows(conn)
 
     def _backfill_lesson_learning_needs(self, conn: sqlite3.Connection) -> None:
         for row in conn.execute("SELECT id, learning_requirements_json, created_at, updated_at FROM lessons").fetchall():
@@ -355,6 +356,38 @@ class SqliteCourseStore:
                         row["updated_at"],
                     ),
                 )
+
+    def _hydrate_lesson_learning_need_rows(self, conn: sqlite3.Connection) -> None:
+        rows = conn.execute(
+            """
+            SELECT lesson_id, sort_order, item_id, section_path, title, content, need_type, status
+            FROM lesson_learning_needs
+            ORDER BY lesson_id, sort_order
+            """
+        ).fetchall()
+        for index, row in enumerate(rows):
+            sort_order = int(row["sort_order"])
+            content = str(row["content"] or "").strip()
+            conn.execute(
+                """
+                UPDATE lesson_learning_needs
+                SET item_id = ?,
+                    section_path = ?,
+                    title = ?,
+                    need_type = ?,
+                    status = ?
+                WHERE lesson_id = ? AND sort_order = ?
+                """,
+                (
+                    row["item_id"] or f"need_{row['lesson_id']}_{sort_order + 1}",
+                    row["section_path"] or str(sort_order + 1),
+                    row["title"] or _learning_need_title(content, index),
+                    _valid_need_type(row["need_type"]),
+                    _valid_need_status(row["status"]),
+                    row["lesson_id"],
+                    sort_order,
+                ),
+            )
 
     def _has_any_packages(self, conn: sqlite3.Connection) -> bool:
         row = conn.execute("SELECT 1 FROM course_packages LIMIT 1").fetchone()
