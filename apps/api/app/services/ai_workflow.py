@@ -1454,40 +1454,51 @@ def _fallback_teacher_message(state: WorkflowState) -> str:
     return ""
 
 
-def _run_pm(state: WorkflowState) -> WorkflowState:
-    from app.services.workflow_roles.pm import run_pm
-
-    return run_pm(state)
-
-
-def _run_board_manager(state: WorkflowState) -> WorkflowState:
-    from app.services.workflow_roles.board_manager import run_board_manager
-
-    return run_board_manager(state)
-
-
-def _run_board_executor(state: WorkflowState) -> WorkflowState:
-    from app.services.workflow_roles.board_executor import run_board_executor
-
-    return run_board_executor(state)
-
-
-def _run_teacher(state: WorkflowState) -> WorkflowState:
-    from app.services.workflow_roles.teacher import run_teacher
-
-    return run_teacher(state)
+def _reset_workflow_message() -> str:
+    return "旧版流程已移除，新的产品使用流程和工作架构等待接入。"
 
 
 class SimpleCourseWorkflow:
     def invoke(self, initial_state: WorkflowState) -> WorkflowState:
         state: WorkflowState = dict(initial_state)
-        state.update(_run_pm(state))
-        state.update(_run_board_manager(state))
-        state.update(_run_board_executor(state))
-        state.update(_run_teacher(state))
-        state.setdefault("board_edit_prompt", None)
-        state.setdefault("board_teaching_progress", None)
-        state.setdefault("teaching_progress", None)
+        lesson = state["lesson"]
+        request = state["request"]
+        requirements = _draft_requirements(lesson, request)
+        state.update(
+            {
+                "learning_requirement_sheet": requirements,
+                "learning_clarification": _learning_clarification_status(
+                    lesson=lesson,
+                    request=request,
+                    requirements=requirements,
+                ),
+                "needs_clarification": False,
+                "clarification_questions": [],
+                "board_decision": BoardDecision(
+                    action="no_change",
+                    reason="旧版角色流程节点已删除，等待新的产品工作架构接入。",
+                ),
+                "teaching_guide": _interactive_teaching_guide(
+                    lesson_id=lesson.id,
+                    lesson_title=lesson.title,
+                    document=lesson.board_document,
+                    requirements=requirements,
+                ),
+                "teacher_message": _reset_workflow_message(),
+                "teacher_document": lesson.board_document,
+                "document_updated": False,
+                "scope_options": [],
+                "resource_matches": [],
+                "reference_prompt": None,
+                "selected_reference": None,
+                "generated_lesson": None,
+                "teacher_talk_track": None,
+                "board_teaching_guide": None,
+                "board_edit_prompt": None,
+                "board_teaching_progress": None,
+                "teaching_progress": None,
+            }
+        )
         return state
 
 

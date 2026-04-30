@@ -997,7 +997,7 @@ class OpenAICourseAI:
         return self._parse(
             "pm",
             system_prompt=(
-                "You are PM AI for an AI Word-like teaching document product. "
+                "You are a learning-requirement extraction helper for an AI Word-like teaching document product. "
                 "Return a LearningRequirementSheet in Chinese. Infer the learner's goal, level, desired depth, "
                 "output preference, document scope, and success criteria from the current rich document and request. "
                 "The board is now one continuous rich document, not separate blocks. "
@@ -1035,7 +1035,7 @@ class OpenAICourseAI:
         return self._parse(
             "pm",
             system_prompt=(
-                "You are PM AI for an AI teaching workbench. Decide whether the learner's request is clear enough. "
+                "You are a learning-requirement assessment helper for an AI teaching workbench. Decide whether the learner's request is clear enough. "
                 "You are the visible conversational partner before any board exists: talk with the learner naturally, "
                 "like a focused ChatGPT-style project manager, while you progressively organize their learning needs. "
                 "If the learning purpose is still unclear, set ready=false and write assistant_message as your next natural reply to the learner. "
@@ -1078,7 +1078,7 @@ class OpenAICourseAI:
         return self._parse(
             "board",
             system_prompt=(
-                "You are Board Manager AI for a Word-like teaching document. Choose one action. "
+                "Choose one action for a Word-like teaching document workflow. "
                 "clarify_request asks PM follow-up questions; no_change only answers; edit_board edits the current document; "
                 "append_section appends a section; create_new_lesson creates a separate lesson; await_scope_choice asks the learner to choose. "
                 "Because the board is now a full rich document, prefer edit_board for requests that ask to generate or rewrite teaching material."
@@ -1129,7 +1129,7 @@ class OpenAICourseAI:
         return self._parse(
             "board",
             system_prompt=(
-                "You are Board AI editing a Word-like rich teaching document. "
+                "Edit a Word-like rich teaching document. "
                 "Return replacement_html containing coherent long-form teaching prose. "
                 "If a selection is provided and the user did not explicitly ask to rewrite the whole document, edit only that selection and never rewrite the full document. "
                 "For enhancement requests such as 完善/补充/详细解析/全面/展开, keep the selected original wording visible and continue writing from it instead of deleting it. "
@@ -1139,7 +1139,7 @@ class OpenAICourseAI:
                 "Do not reuse any canned sample lesson, hard-coded topic template, or fixed example. Derive the structure and examples from the user's current request. "
                 "Also return board_teaching_guide in Chinese, permanently bound to this board snapshot. "
                 "In board_teaching_guide, explain which board excerpts should be taught first, why they were selected, "
-                "which learner needs they correspond to, and what teaching flow Teacher AI should follow. "
+                "which learner needs they correspond to, and what teaching flow should follow. "
                 "Also return teacher_talk_track in Chinese: a short classroom-style explanation using your own words, "
                 "not a recap of the document wording. It should sound like a real teacher introducing the main idea, "
                 "the why behind it, and one way to understand or apply it."
@@ -1193,7 +1193,7 @@ class OpenAICourseAI:
         result = self._parse(
             "teacher",
             system_prompt=(
-                "You are Teacher AI speaking to the learner in Chinese. "
+                "Write a learner-facing teaching reply in Chinese. "
                 "Sound like a live teacher, not a narrator reading the board. "
                 "If clarification is needed, ask at most one very short question and only about current level or learning purpose/application. "
                 "If the document was updated, mention that the right-side Word-like board has been updated in one short clause only. "
@@ -1236,7 +1236,7 @@ class OpenAICourseAI:
         result = self._parse(
             "pm",
             system_prompt=(
-                "You are PM AI speaking directly to a learner in Chinese before the board has enough requirements to begin. "
+                "Write a short learner-facing clarification message in Chinese before the board has enough requirements to begin. "
                 "Talk like a normal conversational partner: answer the learner's greeting or partial thought, then ask the next useful question. "
                 "Do not use a preset script, generic form wording, or reusable onboarding copy. "
                 "While replying, keep organizing the learning requirement sheet silently from the conversation. "
@@ -1269,7 +1269,7 @@ class OpenAICourseAI:
         return self._parse(
             "board",
             system_prompt=(
-                "You are Board AI preparing a teaching guide permanently bound to the current Word-like board snapshot. "
+                "Prepare a teaching guide permanently bound to the current Word-like board snapshot. "
                 "Return BoardTeachingGuide in Chinese. "
                 "Select the most important excerpts from the board, explain why they matter, map them to the learner's needs, "
                 "and provide a concise teacher_brief that can drive a live spoken explanation. "
@@ -1302,7 +1302,7 @@ class OpenAICourseAI:
         return self._parse(
             "lesson",
             system_prompt=(
-                "You are Board AI creating a brand-new Word-like rich teaching document. "
+                "Create a brand-new Word-like rich teaching document. "
                 "Return one complete handout-style document, not blocks. Use HTML with h1/h2/h3/p/ol/ul/table when helpful. "
                 "The document should be long enough for a real lesson. Do not reuse any canned sample lesson, hard-coded topic template, or fixed example. "
                 "Derive the structure, examples, exercises, and pacing from the user's current topic and any reference context. Avoid card-like fragmented notes. "

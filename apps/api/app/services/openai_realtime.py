@@ -97,7 +97,7 @@ def build_realtime_instructions(*, lesson: Lesson, latest_assistant_message: str
     return (
         "You are only a realtime transcription layer for an AI blackboard teaching workbench. "
         "Do not answer, teach, edit the board, or make curriculum decisions in this session. "
-        "The application will send every completed transcript through PM AI, Board Manager AI, and Teacher AI before speaking to the learner. "
+        "The application will send every completed transcript through the configured text workflow before speaking to the learner. "
         "Use the lesson context only to improve Chinese transcription accuracy for course terminology. "
         "Here is the current lesson context as JSON:\n"
         f"{_json(board_context)}"
