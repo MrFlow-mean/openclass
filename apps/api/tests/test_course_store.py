@@ -101,6 +101,71 @@ def test_sqlite_store_round_trips_board_teaching_progress(tmp_path) -> None:
     assert progress.waiting_for_continue is True
 
 
+def test_sqlite_store_persists_learning_need_checklist_as_lesson_companion(tmp_path) -> None:
+    db_path = tmp_path / "openclass.sqlite3"
+    store = SqliteCourseStore(db_path, legacy_json_path=None)
+
+    workspace = store.load()
+    lesson = workspace.packages[0].lessons[0]
+    assert lesson.learning_requirements is not None
+    lesson.learning_requirements.learning_need_checklist = [
+        "从零理解这节课的核心概念",
+        "能把知识点用于一道基础题",
+    ]
+    store.save(workspace)
+
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT content FROM lesson_learning_needs
+            WHERE lesson_id = ?
+            ORDER BY sort_order
+            """,
+            (lesson.id,),
+        ).fetchall()
+
+    reloaded = store.load()
+    reloaded_lesson = reloaded.packages[0].lessons[0]
+
+    assert [row[0] for row in rows] == [
+        "从零理解这节课的核心概念",
+        "能把知识点用于一道基础题",
+    ]
+    assert reloaded_lesson.learning_requirements is not None
+    assert reloaded_lesson.learning_requirements.learning_need_checklist == [
+        "从零理解这节课的核心概念",
+        "能把知识点用于一道基础题",
+    ]
+
+
+def test_sqlite_store_prefers_learning_need_table_when_loading_lesson(tmp_path) -> None:
+    db_path = tmp_path / "openclass.sqlite3"
+    store = SqliteCourseStore(db_path, legacy_json_path=None)
+
+    workspace = store.load()
+    lesson = workspace.packages[0].lessons[0]
+    assert lesson.learning_requirements is not None
+    lesson.learning_requirements.learning_need_checklist = ["旧的 JSON 清单"]
+    store.save(workspace)
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DELETE FROM lesson_learning_needs WHERE lesson_id = ?", (lesson.id,))
+        conn.execute(
+            """
+            INSERT INTO lesson_learning_needs(
+                lesson_id, sort_order, content, source_role, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (lesson.id, 0, "数据库中的课堂需求清单", "pm_ai", lesson.created_at, lesson.updated_at),
+        )
+
+    reloaded = store.load()
+    reloaded_lesson = reloaded.packages[0].lessons[0]
+
+    assert reloaded_lesson.learning_requirements is not None
+    assert reloaded_lesson.learning_requirements.learning_need_checklist == ["数据库中的课堂需求清单"]
+
+
 def test_sqlite_store_keeps_user_workspaces_isolated(tmp_path) -> None:
     db_path = tmp_path / "openclass.sqlite3"
     store = SqliteCourseStore(db_path, legacy_json_path=None)
