@@ -1215,6 +1215,40 @@ class OpenAICourseAI:
         )
         return result.teacher_message if result else None
 
+    def generate_clarification_message(
+        self,
+        *,
+        lesson_title: str,
+        request_message: str,
+        conversation: list[dict[str, Any]],
+        requirements: LearningRequirementSheet,
+        learning_clarification: dict[str, Any],
+        clarification_questions: list[str],
+    ) -> str | None:
+        result = self._parse(
+            "teacher",
+            system_prompt=(
+                "You are Teacher AI speaking directly to a learner in Chinese. "
+                "The workflow says the request may need one more clarification, but you must compose the visible reply yourself from the actual conversation. "
+                "Do not use a preset script, generic form wording, or reusable onboarding copy. "
+                "If the learner has already named a subject, start with a tiny teaching foothold in that subject, then ask one natural, context-specific follow-up only if it truly helps. "
+                "If the message is only a greeting or too vague to teach, ask one concrete question that invites the learner to name the topic. "
+                "Keep it short, warm, and specific to this lesson. Do not mention internal schemas or workflow state."
+            ),
+            user_prompt=_json(
+                {
+                    "lesson_title": lesson_title,
+                    "user_message": request_message,
+                    "conversation": conversation,
+                    "learning_requirement_sheet": requirements.model_dump(mode="json"),
+                    "learning_clarification": learning_clarification,
+                    "pm_candidate_questions": clarification_questions,
+                }
+            ),
+            schema=TeacherMessageOutput,
+        )
+        return result.teacher_message if result else None
+
     def generate_board_teaching_guide(
         self,
         *,

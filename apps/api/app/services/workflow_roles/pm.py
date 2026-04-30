@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from app.services.ai_workflow import (
     WorkflowState,
-    _clarification_questions_for_status,
     _draft_requirements,
     _learning_clarification_status,
     _should_ask_brief_clarification,
@@ -33,13 +32,12 @@ def run_pm(state: WorkflowState) -> WorkflowState:
 
     if _should_use_fast_pm_path(lesson=lesson, request=request, status=draft_status):
         needs_clarification = _should_ask_brief_clarification(request=request, status=draft_status)
-        questions = _clarification_questions_for_status(draft_status) if needs_clarification else []
         return {
             "learning_requirement_sheet": draft_requirements,
             "learning_clarification": draft_status,
             "needs_clarification": needs_clarification,
-            "clarification_questions": questions[:1],
-            "pm_reason": "优先走极速澄清策略：能直接讲就不追问，只有明显会讲偏时才补一句。",
+            "clarification_questions": [],
+            "pm_reason": "优先走极速澄清策略；需要澄清时也只保留缺口状态，用户可见话术交给 Teacher AI 即时生成。",
         }
 
     assessment = openai_course_ai.assess_learning_requirements(
@@ -68,8 +66,6 @@ def run_pm(state: WorkflowState) -> WorkflowState:
         if status.progress >= 80 or status.forced_start:
             needs_clarification = False
         clarification_questions = assessment.clarification_questions[:3]
-        if needs_clarification and not clarification_questions:
-            clarification_questions = _clarification_questions_for_status(status)
         return {
             "learning_requirement_sheet": requirements,
             "learning_clarification": status,
@@ -79,11 +75,10 @@ def run_pm(state: WorkflowState) -> WorkflowState:
         }
 
     needs_clarification = _should_ask_brief_clarification(request=request, status=draft_status)
-    questions = _clarification_questions_for_status(draft_status) if needs_clarification else []
     return {
         "learning_requirement_sheet": draft_requirements,
         "learning_clarification": draft_status,
         "needs_clarification": needs_clarification,
-        "clarification_questions": questions[:1],
+        "clarification_questions": [],
         "pm_reason": draft_status.reason,
     }

@@ -690,15 +690,7 @@ def _draft_requirements(lesson: Lesson, request: ChatRequest) -> LearningRequire
 
 
 def _clarification_questions_for_status(status: LearningClarificationStatus) -> list[str]:
-    missing = set(status.missing_items)
-    if "想学的主题" in missing:
-        return ["你现在最想学的具体内容是什么？"]
-    if "当前水平或背景" in missing and "学习目的或应用场景" in missing:
-        return ["你现在大概什么水平，准备用在哪种场景里？"]
-    if "当前水平或背景" in missing:
-        return ["你现在大概什么水平？"]
-    if "学习目的或应用场景" in missing:
-        return ["你准备把这个内容用在哪种场景里？"]
+    _ = status
     return []
 
 
@@ -1272,7 +1264,7 @@ def _fallback_teacher_message(state: WorkflowState) -> str:
     lesson_title = (state.get("generated_lesson") or state["lesson"]).title
 
     if decision.action == "clarify_request":
-        return (clarification_questions or ["你现在最想先学的具体内容是什么？"])[0]
+        return "\n".join(clarification_questions)
     if decision.action == "await_reference_choice" and reference_prompt is not None:
         return reference_prompt.question
     if decision.action == "await_scope_choice":

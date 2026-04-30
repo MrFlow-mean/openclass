@@ -128,6 +128,61 @@ def test_workflow_asks_for_topic_keyword_on_greeting_without_level_refrain() -> 
     assert "什么水平" not in result["teacher_message"]
 
 
+def test_subject_only_clarification_is_written_by_teacher_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    package = build_initial_course_package()
+    lesson = create_empty_lesson("测试1")
+    package.lessons.append(lesson)
+    calls: list[dict[str, object]] = []
+
+    def fake_clarification(**kwargs):
+        calls.append(kwargs)
+        return "数学这个范围很大，我先帮你把入口收窄一点：这次更想从平方开方、函数，还是几何题开始？"
+
+    monkeypatch.setattr(openai_course_ai, "generate_clarification_message", fake_clarification)
+
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "course_package": package,
+            "request": ChatRequest(message="我想学数学"),
+        }
+    )
+
+    forbidden = "你现在大概" + "什么水平，准备用在" + "哪种场景里？"
+    assert result["needs_clarification"] is True
+    assert result["board_decision"].action == "clarify_request"
+    assert result["clarification_questions"] == []
+    assert calls
+    assert calls[0]["request_message"] == "我想学数学"
+    assert result["teacher_message"] == "数学这个范围很大，我先帮你把入口收窄一点：这次更想从平方开方、函数，还是几何题开始？"
+    assert forbidden not in result["teacher_message"]
+
+
+def test_clarification_turn_does_not_invent_canned_fallback_when_model_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package = build_initial_course_package()
+    lesson = create_empty_lesson("测试1")
+    package.lessons.append(lesson)
+
+    monkeypatch.setattr(openai_course_ai, "generate_clarification_message", lambda **kwargs: None)
+
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "course_package": package,
+            "request": ChatRequest(message="我想学数学"),
+        }
+    )
+
+    forbidden = "你现在大概" + "什么水平，准备用在" + "哪种场景里？"
+    assert result["needs_clarification"] is True
+    assert result["board_decision"].action == "clarify_request"
+    assert result["clarification_questions"] == []
+    assert result["teacher_message"] == ""
+    assert forbidden not in result["teacher_message"]
+
+
 def test_workflow_probes_level_and_goal_on_first_subject_only_learning_goal() -> None:
     package = build_initial_course_package()
     lesson = package.lessons[0]
