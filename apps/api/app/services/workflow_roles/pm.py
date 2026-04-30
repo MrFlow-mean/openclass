@@ -28,6 +28,7 @@ def run_pm(state: WorkflowState) -> WorkflowState:
             "needs_clarification": False,
             "clarification_questions": [],
             "pm_reason": "",
+            "pm_dialogue_message": "",
         }
 
     if _should_use_fast_pm_path(lesson=lesson, request=request, status=draft_status):
@@ -38,6 +39,7 @@ def run_pm(state: WorkflowState) -> WorkflowState:
             "needs_clarification": needs_clarification,
             "clarification_questions": [],
             "pm_reason": "",
+            "pm_dialogue_message": "",
         }
 
     assessment = openai_course_ai.assess_learning_requirements(
@@ -66,12 +68,14 @@ def run_pm(state: WorkflowState) -> WorkflowState:
         if status.progress >= 80 or status.forced_start:
             needs_clarification = False
         clarification_questions = assessment.clarification_questions[:3]
+        pm_dialogue_message = assessment.assistant_message.strip() if needs_clarification else ""
         return {
             "learning_requirement_sheet": requirements,
             "learning_clarification": status,
             "needs_clarification": needs_clarification,
             "clarification_questions": clarification_questions,
             "pm_reason": assessment.reason,
+            "pm_dialogue_message": pm_dialogue_message,
         }
 
     needs_clarification = _should_ask_brief_clarification(request=request, status=draft_status)
@@ -81,4 +85,5 @@ def run_pm(state: WorkflowState) -> WorkflowState:
         "needs_clarification": needs_clarification,
         "clarification_questions": [],
         "pm_reason": "",
+        "pm_dialogue_message": "",
     }

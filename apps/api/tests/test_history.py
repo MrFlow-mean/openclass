@@ -6,7 +6,7 @@ from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from zipfile import ZipFile
 
-from app.models import BoardTeachingGuide, BoardTeachingProgress, BoardTeachingSelectedItem, ChatRequest, ConversationTurn, PatchOperation, SelectionRef
+from app.models import BoardTeachingGuide, BoardTeachingProgress, BoardTeachingSelectedItem, ChatRequest, ConversationTurn, LearningRequirementSheet, PatchOperation, SelectionRef
 from app.services.chart_generation import extract_chart_data_fragments
 from app.services.ai_workflow import _board_snapshot_hash, _is_append_document_request, classify_scope, course_workflow, match_resources
 from app.services.course_runtime import build_lesson_for_topic, effective_requirements
@@ -14,7 +14,7 @@ from app.services.course_store import build_initial_course_package
 from app.services.document_ops import apply_patch
 from app.services.history import create_branch, restore_commit
 from app.services.lesson_factory import create_empty_lesson, create_lesson
-from app.services.openai_course_ai import DocumentEditOutput, openai_course_ai
+from app.services.openai_course_ai import DocumentEditOutput, PMAssessmentOutput, openai_course_ai
 from app.services.resource_library import _keywords_from_text, build_resource_item, extract_reference_context
 from app.services.rich_document import build_document, export_docx, import_docx, replace_selection_in_document
 
@@ -183,6 +183,121 @@ def test_clarification_turn_does_not_invent_canned_fallback_when_model_is_unavai
     assert result["clarification_questions"] == []
     assert result["teacher_message"] == ""
     assert forbidden not in result["teacher_message"]
+
+
+def test_blank_board_pm_converses_and_tracks_requirements_before_board_ai(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package = build_initial_course_package()
+    lesson = create_empty_lesson("测试k")
+    package.lessons.append(lesson)
+    pm_message = "你好，我在。你这节课想先学哪个主题？"
+    requirements = LearningRequirementSheet(
+        theme="测试k",
+        learning_goal="",
+        level="",
+        known_background="",
+        current_questions=["你好"],
+        learning_need_checklist=["确认这节课要学习的主题"],
+        target_depth="",
+        output_preference="",
+        boundary="",
+        board_scope=[],
+        success_criteria="",
+    )
+
+    monkeypatch.setattr(
+        openai_course_ai,
+        "assess_learning_requirements",
+        lambda **kwargs: PMAssessmentOutput(
+            ready=False,
+            reason="",
+            assistant_message=pm_message,
+            clarification_questions=["这节课想先学哪个主题？"],
+            learning_requirement_sheet=requirements,
+        ),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_clarification_message",
+        lambda **kwargs: pytest.fail("PM assessment message should be used directly"),
+    )
+
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "course_package": package,
+            "request": ChatRequest(message="你好"),
+        }
+    )
+
+    assert result["needs_clarification"] is True
+    assert result["board_decision"].action == "clarify_request"
+    assert result["teacher_message"] == pm_message
+    assert result["learning_requirement_sheet"].learning_need_checklist == ["确认这节课要学习的主题"]
+    assert result["document_updated"] is False
+
+
+def test_blank_board_ready_pm_requirements_start_board_ai(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package = build_initial_course_package()
+    lesson = create_empty_lesson("测试k")
+    package.lessons.append(lesson)
+    requirements = LearningRequirementSheet(
+        theme="平方开方",
+        learning_goal="学习平方和开方",
+        level="初中",
+        known_background="",
+        current_questions=["我想学平方和开方，初中基础，用来做题"],
+        learning_need_checklist=["理解平方和开方的关系", "会做基础计算题"],
+        target_depth="会做基础计算题",
+        output_preference="讲义和例题",
+        boundary="",
+        board_scope=[],
+        success_criteria="做题",
+    )
+    captured_requirements: list[LearningRequirementSheet] = []
+
+    monkeypatch.setattr(
+        openai_course_ai,
+        "assess_learning_requirements",
+        lambda **kwargs: PMAssessmentOutput(
+            ready=True,
+            reason="",
+            assistant_message="",
+            clarification_questions=[],
+            learning_requirement_sheet=requirements,
+        ),
+    )
+
+    def fake_document_edit(**kwargs):
+        captured_requirements.append(kwargs["requirements"])
+        return DocumentEditOutput(
+            rationale="",
+            replacement_html="<h1>平方和开方</h1><p>平方和开方互为逆向关系。</p>",
+            replacement_text="平方和开方\n平方和开方互为逆向关系。",
+            teacher_talk_track="平方和开方可以先看成一组相反方向的运算。",
+            replace_whole=True,
+        )
+
+    monkeypatch.setattr(openai_course_ai, "generate_document_edit", fake_document_edit)
+
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "course_package": package,
+            "request": ChatRequest(message="我想学平方和开方，初中基础，用来做题"),
+        }
+    )
+
+    assert result["needs_clarification"] is False
+    assert result["board_decision"].action == "edit_board"
+    assert result["document_updated"] is True
+    assert captured_requirements
+    assert captured_requirements[0].learning_need_checklist == ["理解平方和开方的关系", "会做基础计算题"]
+    assert "平方和开方互为逆向关系" in result["teacher_document"].content_text
+    assert result["teacher_message"] == "平方和开方可以先看成一组相反方向的运算。"
 
 
 def test_blank_lesson_does_not_receive_canned_board_or_dialog_when_model_is_unavailable(

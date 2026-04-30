@@ -137,6 +137,7 @@ class TeacherMessageOutput(BaseModel):
 class PMAssessmentOutput(BaseModel):
     ready: bool
     reason: str
+    assistant_message: str = ""
     clarification_questions: list[str] = Field(default_factory=list)
     learning_requirement_sheet: LearningRequirementSheet
 
@@ -1034,8 +1035,12 @@ class OpenAICourseAI:
             "pm",
             system_prompt=(
                 "You are PM AI for an AI teaching workbench. Decide whether the learner's request is clear enough. "
-                "If not, set ready=false and ask 1 to 3 concise clarification questions in Chinese. "
-                "If ready, set ready=true. Always provide the best current LearningRequirementSheet. "
+                "You are the visible conversational partner before any board exists: talk with the learner naturally, "
+                "like a focused ChatGPT-style project manager, while you progressively organize their learning needs. "
+                "If the learning purpose is still unclear, set ready=false and write assistant_message as your next natural reply to the learner. "
+                "Ask only one useful next question when possible, and make it depend on the actual conversation rather than a reusable form. "
+                "If ready, set ready=true and leave assistant_message empty unless a short acknowledgement is necessary. "
+                "Always provide the best current LearningRequirementSheet from the conversation so far. "
                 "Maintain exactly one cumulative learning_need_catalog for this lesson. Treat it like a mini table "
                 "of contents for the board: append related new needs under the most relevant existing section "
                 "using section_path values like 7.1 or 7.2; only mark clearly off-topic requests as new_topic or deferred. "
@@ -1226,13 +1231,14 @@ class OpenAICourseAI:
         clarification_questions: list[str],
     ) -> str | None:
         result = self._parse(
-            "teacher",
+            "pm",
             system_prompt=(
-                "You are Teacher AI speaking directly to a learner in Chinese. "
-                "The workflow says the request may need one more clarification, but you must compose the visible reply yourself from the actual conversation. "
+                "You are PM AI speaking directly to a learner in Chinese before the board has enough requirements to begin. "
+                "Talk like a normal conversational partner: answer the learner's greeting or partial thought, then ask the next useful question. "
                 "Do not use a preset script, generic form wording, or reusable onboarding copy. "
-                "If the learner has already named a subject, start with a tiny teaching foothold in that subject, then ask one natural, context-specific follow-up only if it truly helps. "
-                "If the message is only a greeting or too vague to teach, ask one concrete question that invites the learner to name the topic. "
+                "While replying, keep organizing the learning requirement sheet silently from the conversation. "
+                "If the learner has already named a subject, acknowledge that subject and ask one natural, context-specific follow-up only if it truly helps. "
+                "If the message is only a greeting or too vague to plan from, ask one concrete question that invites the learner to name the topic. "
                 "Keep it short, warm, and specific to this lesson. Do not mention internal schemas or workflow state."
             ),
             user_prompt=_json(

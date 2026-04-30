@@ -20,6 +20,9 @@ def run_teacher(state: WorkflowState) -> WorkflowState:
     board_teaching_guide = state.get("board_teaching_guide")
 
     if decision.action == "clarify_request":
+        pm_dialogue_message = (state.get("pm_dialogue_message") or "").strip()
+        if pm_dialogue_message:
+            return {"teacher_message": _format_teacher_message(pm_dialogue_message)}
         ai_message = openai_course_ai.generate_clarification_message(
             lesson_title=(state.get("generated_lesson") or state["lesson"]).title,
             request_message=request.message,

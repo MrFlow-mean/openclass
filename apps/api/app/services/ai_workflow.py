@@ -96,6 +96,7 @@ class WorkflowState(TypedDict, total=False):
     learning_clarification: LearningClarificationStatus
     clarification_questions: list[str]
     pm_reason: str
+    pm_dialogue_message: str
     board_decision: BoardDecision
     teaching_guide: TeachingGuide
     teacher_message: str
@@ -411,7 +412,14 @@ def _should_use_fast_pm_path(
     request: ChatRequest,
     status: LearningClarificationStatus,
 ) -> bool:
-    return True
+    _ = status
+    if request.interaction_mode == "direct_edit" or request.selection is not None:
+        return True
+    if request.scope_action is not None or request.resource_reference_action is not None:
+        return True
+    if request.board_edit_action is not None or request.teaching_action is not None:
+        return True
+    return not is_document_empty(lesson.board_document)
 
 
 def _should_use_fast_board_path(
