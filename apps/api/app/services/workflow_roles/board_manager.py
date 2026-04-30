@@ -7,6 +7,7 @@ from app.services.ai_workflow import (
     _build_reference_prompt,
     _build_scope_options,
     _fallback_board_decision,
+    _has_reference_intent,
     _is_board_generation_confirmation_response,
     _is_board_generation_request,
     _is_explanation_request,
@@ -64,7 +65,11 @@ def run_board_manager(state: WorkflowState) -> WorkflowState:
             "selected_reference": None,
         }
 
-    if is_document_empty(lesson.board_document):
+    if is_document_empty(lesson.board_document) and not (
+        _is_board_generation_request(request.message)
+        or _is_explanation_request(request.message)
+        or _is_forced_start_request(request.message)
+    ):
         return {
             "board_decision": BoardDecision(action="clarify_request", reason=""),
             "scope_options": [],
@@ -115,7 +120,12 @@ def run_board_manager(state: WorkflowState) -> WorkflowState:
         and top_match.is_high_overlap
         and abs(top_match.score - second_match.score) <= 0.06
     )
-    if request.resource_reference_action is None and decision.action in {"edit_board", "append_section", "create_new_lesson", "no_change"}:
+    reference_intent = _has_reference_intent(request)
+    if (
+        request.resource_reference_action is None
+        and reference_intent
+        and decision.action in {"edit_board", "append_section", "create_new_lesson", "no_change"}
+    ):
         if ambiguous_reference and top_match is not None:
             return {
                 "board_decision": BoardDecision(
@@ -127,8 +137,10 @@ def run_board_manager(state: WorkflowState) -> WorkflowState:
                 "reference_prompt": _build_reference_prompt(top_match),
                 "selected_reference": None,
             }
-        if top_match is not None and (
-            top_match.is_high_overlap or _should_auto_attach_reference_for_direct_teaching(request=request, decision=decision, top_match=top_match)
+        if top_match is not None and _should_auto_attach_reference_for_direct_teaching(
+            request=request,
+            decision=decision,
+            top_match=top_match,
         ):
             return {
                 "board_decision": decision,

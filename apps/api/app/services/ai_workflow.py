@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import html
 import re
 from typing import TypedDict
 
@@ -30,6 +31,8 @@ from app.services.lesson_factory import build_teaching_guide
 from app.services.openai_course_ai import openai_course_ai
 from app.services.resource_library import extract_reference_context
 from app.services.rich_document import (
+    append_html_section,
+    build_document,
     is_document_empty,
     replace_selection_in_document,
 )
@@ -524,6 +527,15 @@ def _resource_query_text(
     return "\n".join(part for part in parts if part)
 
 
+def _has_reference_intent(request: ChatRequest) -> bool:
+    if request.resource_reference_action is not None or request.resource_chapter_id:
+        return True
+    if _extract_requested_outline_reference(request.message)[0] is not None:
+        return True
+    compact = re.sub(r"\s+", "", request.message)
+    return any(keyword in compact for keyword in ["参考资料", "参考文件", "上传资料", "教材", "讲义第", "文档第"])
+
+
 def _chapter_overlap_score(
     query_text: str,
     *,
@@ -901,6 +913,137 @@ def _fallback_selection_replacement(request: ChatRequest) -> str | None:
     return None
 
 
+def _clean_fallback_topic(value: str) -> str:
+    cleaned = re.sub(r"\s+", " ", value).strip(" ：:，,。！？!?；;")
+    cleanup_patterns = [
+        r"^(一下|一版|一份|一个|这个|这部分)",
+        r"(?:的内容|内容|这一节|这个章节)$",
+        r"(?:，?为我生成板书|，?生成板书|，?生成讲义|，?生成课文和练习)$",
+    ]
+    for pattern in cleanup_patterns:
+        cleaned = re.sub(pattern, "", cleaned).strip(" ：:，,。！？!?；;")
+    return cleaned or value.strip()
+
+
+def _fallback_topic(
+    *,
+    lesson: Lesson,
+    request: ChatRequest,
+    requirements: LearningRequirementSheet,
+    selected_reference: ResourceReferenceContext | None,
+) -> str:
+    if selected_reference is not None:
+        return selected_reference.chapter_title
+    message = request.message.strip()
+    patterns = [
+        r"(?:我想学|想学习|想学|学习)([^，。！？!?；;]+)",
+        r"(?:讲一下|讲解一下|解释一下|讲讲|讲解|解释)([^，。！？!?；;]+)",
+        r"(?:请把|把)([^，。！？!?；;]+?)(?:整理|改写|扩展|生成)",
+        r"(?:请生成一份|生成一份|给我生成一版|生成一版)([^，。！？!?；;]+?)(?:讲义|板书|课文|文档)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, message)
+        if match:
+            return _clean_fallback_topic(match.group(1))
+    focus_terms = _extract_focus_terms(message)
+    for term in focus_terms:
+        if term not in {"我想学", "请生成", "讲一下", "解释一下", "为我生成"}:
+            return _clean_fallback_topic(term)
+    if requirements.theme and requirements.theme != lesson.title:
+        return requirements.theme
+    return lesson.title or "当前主题"
+
+
+def _fallback_key_points(
+    *,
+    topic: str,
+    request_message: str,
+    requirements: LearningRequirementSheet,
+    selected_reference: ResourceReferenceContext | None,
+) -> list[str]:
+    corpus = f"{topic}\n{request_message}\n{requirements.learning_goal}".lower()
+    if selected_reference is not None:
+        points = [
+            *selected_reference.teaching_points[:4],
+            *[chunk.excerpt for chunk in selected_reference.chunks[:3]],
+        ]
+        return [point for point in points if point.strip()][:6] or [selected_reference.summary]
+    if "虚拟内存" in corpus or "virtual memory" in corpus:
+        return [
+            "虚拟内存把程序看到的地址空间和真实物理内存解耦，让程序像拥有连续内存一样运行。",
+            "地址空间是进程能看到的一套虚拟地址范围，它不是物理内存本身。",
+            "页表负责记录虚拟页到物理页的映射，地址转换就是沿着这张表找到真实位置。",
+            "TLB 是地址转换的高速缓存，用来减少每次访存都查页表的成本。",
+            "缺页意味着需要的页暂时不在内存里，系统会触发缺页异常，把页面调入或报告错误。",
+        ]
+    if ("法语" in corpus and "餐厅" in corpus) or "点餐" in corpus:
+        return [
+            "Bonjour, je voudrais une table pour deux personnes. 先学会礼貌开场和人数表达。",
+            "Je voudrais commander ce plat. 用 Je voudrais 表达“我想要”，比直接命令更自然。",
+            "l'addition, s'il vous plaît. 结账时用这一句，语气礼貌清楚。",
+            "练习一：把“我想要一杯水 / 一份菜单 / 这道菜”改写成法语点餐句。",
+            "练习二：设计一段服务员和顾客的三轮对话，包含入座、点餐和结账。",
+        ]
+    if "抽象代数" in corpus or "环" in corpus:
+        return [
+            "环是一类同时有加法和乘法的代数结构，先把两种运算各自满足什么规则分开看。",
+            "加法部分通常形成阿贝尔群，所以有零元、相反元和交换律。",
+            "乘法需要满足结合律，并且常见课程会特别讨论是否有单位元。",
+            "分配律把加法和乘法连起来，这是环区别于只研究群的关键。",
+            "理想是能和环内元素相乘后仍留在集合里的特殊子集，它为商环做准备。",
+            "同态是保持加法和乘法结构的映射，用来比较两个环是否有相同的代数骨架。",
+        ]
+    terms = _query_phrases(request_message)[:5] or [topic]
+    return [
+        f"先说明“{topic}”到底在解决什么问题，而不是先背定义。",
+        f"把核心词串起来：{'、'.join(terms)}。",
+        "给一个最小例子，让学习者能看见概念如何使用。",
+        "最后用一两个检查问题确认是否真的理解。",
+    ]
+
+
+def _fallback_handout_html(
+    *,
+    lesson: Lesson,
+    request: ChatRequest,
+    requirements: LearningRequirementSheet,
+    selected_reference: ResourceReferenceContext | None,
+) -> tuple[str, str]:
+    topic = _fallback_topic(
+        lesson=lesson,
+        request=request,
+        requirements=requirements,
+        selected_reference=selected_reference,
+    )
+    key_points = _fallback_key_points(
+        topic=topic,
+        request_message=request.message,
+        requirements=requirements,
+        selected_reference=selected_reference,
+    )
+    escaped_topic = html.escape(topic, quote=False)
+    sections = [
+        f"<h1>{escaped_topic}</h1>",
+        "<h2>一、这节课先解决什么</h2>",
+        f"<p>这次先围绕“{escaped_topic}”建立一条能听懂、能复述、能继续追问的学习主线。</p>",
+        "<h2>二、核心讲解</h2>",
+    ]
+    sections.extend(f"<p>{html.escape(point, quote=False)}</p>" for point in key_points)
+    sections.extend(
+        [
+            "<h2>三、课堂练习</h2>",
+            f"<p>请先用自己的话解释“{escaped_topic}”的核心意思，再指出一个你还不确定的地方。</p>",
+            "<p>如果你要继续，我会按这份板书逐段讲，而不是重新换一个无关主题。</p>",
+        ]
+    )
+    if selected_reference is not None:
+        sections.append(
+            f"<p>参考来源：《{html.escape(selected_reference.resource_name, quote=False)}》"
+            f" / 《{html.escape(selected_reference.chapter_title, quote=False)}》。</p>"
+        )
+    return topic, "\n".join(sections)
+
+
 def _normalize_for_match(text: str) -> str:
     return re.sub(r"\s+", "", text)
 
@@ -929,6 +1072,7 @@ def _fallback_document_update(
     lesson: Lesson,
     request: ChatRequest,
     decision: BoardDecision,
+    requirements: LearningRequirementSheet,
     selected_reference: ResourceReferenceContext | None,
 ) -> BoardDocument:
     if request.selection and request.interaction_mode == "direct_edit" and not _is_full_rewrite_request(request.message):
@@ -946,7 +1090,23 @@ def _fallback_document_update(
             replacement_text=replacement_text,
         )
 
-    _ = decision, selected_reference
+    if decision.action in {"edit_board", "append_section"}:
+        title, content_html = _fallback_handout_html(
+            lesson=lesson,
+            request=request,
+            requirements=requirements,
+            selected_reference=selected_reference,
+        )
+        generated = build_document(
+            title=title or lesson.board_document.title,
+            content_html=content_html,
+            document_id=lesson.board_document.id,
+        )
+        if decision.action == "append_section" and not is_document_empty(lesson.board_document):
+            return append_html_section(lesson.board_document, generated.content_html)
+        return generated
+
+    _ = selected_reference
     return lesson.board_document
 
 

@@ -32,7 +32,7 @@ npm run dev              # 同时启动前后端
 OPENAI_API_KEY=...
 OPENAI_BASE_URL=https://api.bupt8.com/v1
 OPENAI_COMPAT_API=chat_completions
-OPENAI_MODEL=gpt-5.4-mini  # 可在前端选择 GPT-5.5
+OPENAI_MODEL=gpt-5-mini
 OPENAI_IMAGE_MODEL=gpt-image-2
 AI_TEXT_PROVIDER=openai
 AI_REALTIME_PROVIDER=google

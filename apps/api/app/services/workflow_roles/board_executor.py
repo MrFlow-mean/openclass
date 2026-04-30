@@ -147,6 +147,7 @@ def run_board_executor(state: WorkflowState) -> WorkflowState:
             lesson=lesson,
             request=request,
             decision=decision,
+            requirements=requirements,
             selected_reference=selected_reference,
         )
         teacher_talk_track = None
