@@ -3,7 +3,6 @@ from __future__ import annotations
 from app.models import ChatRequest, ChatResponse, CourseGraphEdge, Lesson, SelectionRef
 from app.services.ai_logging import ai_usage_logger, log_ai_interaction_message
 from app.services.ai_workflow import course_workflow
-from app.services.openai_course_ai import bind_text_model_selection
 from app.services.route_context import bind_ai_request_context
 from app.services.workspace_state import (
     commit_document_snapshot,
@@ -167,10 +166,9 @@ def process_chat_on_lesson(lesson_id: str, request: ChatRequest, *, user_id: str
 
         try:
             workflow_package = package_context_for_lesson(workspace, package, lesson_id)
-            with bind_text_model_selection(request.text_model):
-                workflow_result = course_workflow.invoke(
-                    {"lesson": lesson, "course_package": workflow_package, "request": request}
-                )
+            workflow_result = course_workflow.invoke(
+                {"lesson": lesson, "course_package": workflow_package, "request": request}
+            )
             lesson.learning_requirements = workflow_result["learning_requirement_sheet"]
             lesson.summary = workflow_result["learning_requirement_sheet"].learning_goal
             lesson.board_teaching_guide = workflow_result.get("board_teaching_guide")
