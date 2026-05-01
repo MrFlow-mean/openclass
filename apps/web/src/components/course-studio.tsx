@@ -4157,7 +4157,7 @@ export function CourseStudio() {
                     </span>
                   </button>
                 ))}
-                {isCreatingLessonInline ? (
+                {isCreatingLessonInline && (activeLesson || openLessons.length > 0) ? (
                   <InlineNameForm
                     label="新页面名称"
                     placeholder="课程导读 / 第一讲 / 练习讲义"
@@ -4268,17 +4268,28 @@ export function CourseStudio() {
               上方这条页签栏已经是当前课程包的页面区了。点右上角的加号，或者直接从下面创建第一张课程页面。
             </p>
             <div className="mt-8 flex justify-center">
-              <button
-                type="button"
-                onClick={() => {
-                  setTopCollapsed(false);
-                  setIsCreatingLessonInline(true);
-                }}
-                className="inline-flex items-center gap-2 rounded-full bg-stone-950 px-5 py-3 text-sm font-medium text-white transition hover:bg-stone-800"
-              >
-                <Plus className="h-4 w-4" />
-                新建第一页
-              </button>
+              {isCreatingLessonInline ? (
+                <InlineNameForm
+                  label="第一页名称"
+                  placeholder="课程导读 / 第一讲 / 练习讲义"
+                  isBusy={busyAction === "generate"}
+                  className="w-full max-w-sm"
+                  onCancel={() => setIsCreatingLessonInline(false)}
+                  onSubmit={handleCreateLessonFromName}
+                />
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTopCollapsed(false);
+                    setIsCreatingLessonInline(true);
+                  }}
+                  className="inline-flex items-center gap-2 rounded-full bg-stone-950 px-5 py-3 text-sm font-medium text-white transition hover:bg-stone-800"
+                >
+                  <Plus className="h-4 w-4" />
+                  新建第一页
+                </button>
+              )}
             </div>
           </div>
         </section>
