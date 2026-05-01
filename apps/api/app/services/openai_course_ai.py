@@ -61,6 +61,7 @@ def _load_root_dotenv() -> None:
 
 _load_root_dotenv()
 DEFAULT_TEXT_MODEL = "gpt-5-mini"
+DEFAULT_PM_MODEL = "gpt-5.4-nano"
 _text_model_selection: ContextVar[AIModelSelection | None] = ContextVar(
     "text_model_selection", default=None
 )
@@ -184,7 +185,7 @@ class OpenAIConfig(BaseModel):
     api_key: str | None = Field(default_factory=lambda: os.getenv("OPENAI_API_KEY"))
     base_url: str | None = Field(default_factory=lambda: os.getenv("OPENAI_BASE_URL"))
     default_model: str = Field(default_factory=lambda: os.getenv("OPENAI_MODEL", DEFAULT_TEXT_MODEL))
-    pm_model: str | None = Field(default_factory=lambda: os.getenv("OPENAI_PM_MODEL"))
+    pm_model: str | None = Field(default_factory=lambda: os.getenv("OPENAI_PM_MODEL", DEFAULT_PM_MODEL))
     board_model: str | None = Field(default_factory=lambda: os.getenv("OPENAI_BOARD_MODEL"))
     guide_model: str | None = Field(default_factory=lambda: os.getenv("OPENAI_GUIDE_MODEL"))
     teacher_model: str | None = Field(default_factory=lambda: os.getenv("OPENAI_TEACHER_MODEL"))
@@ -822,6 +823,8 @@ class OpenAICourseAI:
 
     def _model_for(self, role: str) -> tuple[AIProvider, str]:
         selection = _text_model_selection.get()
+        if role == "pm":
+            return "openai", self.config.model_for("pm")
         if selection:
             return selection.provider, selection.model
 
@@ -1040,9 +1043,10 @@ class OpenAICourseAI:
                 "like a focused ChatGPT-style project manager, while you progressively organize their learning needs. "
                 "If the learning purpose is still unclear, set ready=false and write assistant_message as your next natural reply to the learner. "
                 "Ask only one useful next question when possible, and make it depend on the actual conversation rather than a reusable form. "
-                "If ready and board_is_empty=true, do not start board work yet; set assistant_message to ask whether to generate the visible board and its paired board-teaching handout now. "
+                "If ready and board_is_empty=true, do not ask for confirmation again; set assistant_message to a short acknowledgement that the board can now start. "
                 "If ready and board_is_empty=false, set assistant_message empty unless a short acknowledgement is necessary. "
                 "Always provide the best current LearningRequirementSheet from the conversation so far. "
+                "Treat corrections such as 'actually I do not want math, I want chemistry' as replacements of the active requirement, not as parallel requirements. "
                 "Maintain exactly one cumulative learning_need_catalog for this lesson. Treat it like a mini table "
                 "of contents for the board: append related new needs under the most relevant existing section "
                 "using section_path values like 7.1 or 7.2; only mark clearly off-topic requests as new_topic or deferred. "

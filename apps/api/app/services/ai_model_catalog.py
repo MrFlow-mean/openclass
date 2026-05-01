@@ -10,10 +10,10 @@ from app.models import AIModelCatalog, AIModelOption, AIModelSelection, AIProvid
 
 OPENAI_GATEWAY_BASE_URL = "https://api.bupt8.com/v1"
 OPENAI_DEFAULT_TEXT_MODEL = "gpt-5-mini"
-OPENAI_DEFAULT_REALTIME_MODEL = "gpt-4o-realtime-preview"
+OPENAI_DEFAULT_REALTIME_MODEL = "gpt-realtime-mini"
 ANTHROPIC_DEFAULT_TEXT_MODEL = "claude-opus-4-7"
 GOOGLE_DEFAULT_TEXT_MODEL = "gemini-3.1-pro-preview"
-GOOGLE_DEFAULT_REALTIME_MODEL = "gemini-3.1-flash-live-preview"
+GOOGLE_DEFAULT_REALTIME_MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
 DEEPSEEK_DEFAULT_TEXT_MODEL = "deepseek-v4-pro"
 KIMI_DEFAULT_TEXT_MODEL = "kimi-k2.6"
 MINIMAX_DEFAULT_TEXT_MODEL = "MiniMax-M2.7"
@@ -345,7 +345,9 @@ def build_model_catalog() -> AIModelCatalog:
             default=text_default.provider == "openai",
         ),
         _option(provider="openai", model="gpt-5.3", capability="text"),
+        _option(provider="openai", model="gpt-5.4-nano", label="OpenAI GPT-5.4 Nano", capability="text"),
         _option(provider="openai", model="gpt-5-mini", capability="text"),
+        _option(provider="openai", model="gpt-5-nano", label="OpenAI GPT-5 Nano", capability="text"),
         _option(
             provider="anthropic",
             model=os.getenv("ANTHROPIC_MODEL", ANTHROPIC_DEFAULT_TEXT_MODEL),
@@ -428,7 +430,29 @@ def build_model_catalog() -> AIModelCatalog:
         ),
         _option(
             provider="openai",
+            model="gpt-realtime",
+            label="OpenAI gpt-realtime",
+            capability="realtime",
+            transport="openai_webrtc",
+        ),
+        _option(
+            provider="openai",
+            model="gpt-realtime-mini",
+            label="OpenAI gpt-realtime-mini",
+            capability="realtime",
+            transport="openai_webrtc",
+        ),
+        _option(
+            provider="openai",
             model="gpt-4o-realtime-preview",
+            label="OpenAI GPT-4o Realtime Preview",
+            capability="realtime",
+            transport="openai_webrtc",
+        ),
+        _option(
+            provider="openai",
+            model="gpt-4o-mini-realtime-preview",
+            label="OpenAI GPT-4o Mini Realtime Preview",
             capability="realtime",
             transport="openai_webrtc",
         ),
@@ -442,13 +466,36 @@ def build_model_catalog() -> AIModelCatalog:
         ),
         _option(
             provider="google",
-            model="gemini-3.1-flash-live-preview",
+            model="gemini-2.5-flash-native-audio-preview-12-2025",
+            label="Google Gemini 2.5 Flash Native Audio Preview",
+            capability="realtime",
+            transport="gemini_live_websocket",
+        ),
+        _option(
+            provider="google",
+            model="gemini-live-2.5-flash-preview",
+            label="Google Gemini 2.5 Flash Live Preview",
             capability="realtime",
             transport="gemini_live_websocket",
         ),
         _option(
             provider="google",
             model="gemini-2.5-flash-live-preview",
+            label="Google Gemini 2.5 Flash Live Preview",
+            capability="realtime",
+            transport="gemini_live_websocket",
+        ),
+        _option(
+            provider="google",
+            model="gemini-2.0-flash-live-001",
+            label="Google Gemini 2.0 Flash Live",
+            capability="realtime",
+            transport="gemini_live_websocket",
+        ),
+        _option(
+            provider="google",
+            model="gemini-3.1-flash-live-preview",
+            label="Google Gemini 3.1 Flash Live Preview",
             capability="realtime",
             transport="gemini_live_websocket",
         ),

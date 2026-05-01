@@ -1,7 +1,6 @@
 import json
 
 import pytest
-from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 import app.main as main_module
@@ -18,6 +17,7 @@ from app.routers.auth import current_user
 from app.services import chat_service, workspace_state
 from app.services.ai_logging import ai_usage_logger
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
+from app.services.openai_course_ai import openai_course_ai
 from app.services.resource_library import build_resource_item
 
 
@@ -42,6 +42,13 @@ def _seed_test_user_workspace(store: SqliteCourseStore):
     return workspace
 
 
+def _disable_course_ai(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(openai_course_ai, "assess_learning_requirements", lambda **kwargs: None)
+    monkeypatch.setattr(openai_course_ai, "generate_document_edit", lambda **kwargs: None)
+    monkeypatch.setattr(openai_course_ai, "generate_board_teaching_guide", lambda **kwargs: None)
+    monkeypatch.setattr(openai_course_ai, "generate_teaching_guide", lambda **kwargs: None)
+
+
 @pytest.fixture
 def isolated_ai_log(monkeypatch: pytest.MonkeyPatch, tmp_path):
     log_path = tmp_path / "logs" / "ai-usage.jsonl"
@@ -50,7 +57,8 @@ def isolated_ai_log(monkeypatch: pytest.MonkeyPatch, tmp_path):
     return log_path
 
 
-def test_chat_route_logs_reset_request_and_response(monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path) -> None:
+def test_chat_route_logs_pm_workflow_request_and_response(monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path) -> None:
+    _disable_course_ai(monkeypatch)
     store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
     monkeypatch.setattr(workspace_state, "STORE", store)
 
@@ -61,8 +69,8 @@ def test_chat_route_logs_reset_request_and_response(monkeypatch: pytest.MonkeyPa
         user_id=TEST_USER.id,
     )
 
-    assert response.board_decision.action == "no_change"
-    assert "旧版角色流程节点已删除" in response.board_decision.reason
+    assert response.board_decision.action == "edit_board"
+    assert "开始生成板书" in response.board_decision.reason
     assert response.board_edit_prompt is None
     assert response.resource_matches == []
     assert response.selected_reference is None
@@ -89,8 +97,8 @@ def test_chat_route_logs_reset_request_and_response(monkeypatch: pytest.MonkeyPa
     assert interaction_messages[1]["payload"]["channel"] == "text"
     assert interaction_messages[1]["payload"]["direction"] == "output"
     assert flow_commit.metadata["kind"] == "chat_flow"
-    assert flow_commit.metadata["board_action"] == "no_change"
-    assert flow_commit.metadata["board_teaching_guide"] is None
+    assert flow_commit.metadata["board_action"] == "edit_board"
+    assert flow_commit.metadata["board_teaching_guide"] is not None
 
     branched_package = documents_router.create_lesson_branch(
         lesson_id,
@@ -176,6 +184,7 @@ def test_document_save_beacon_accepts_plain_text_json(monkeypatch: pytest.Monkey
 def test_chat_route_does_not_match_references_after_reset(
     monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
 ) -> None:
+    _disable_course_ai(monkeypatch)
     store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
     monkeypatch.setattr(workspace_state, "STORE", store)
 
@@ -198,27 +207,30 @@ def test_chat_route_does_not_match_references_after_reset(
         user_id=TEST_USER.id,
     )
 
-    assert response.board_decision.action == "no_change"
+    assert response.board_decision.action == "edit_board"
     assert response.resource_matches == []
     assert response.selected_reference is None
 
 
-def test_realtime_transcript_route_is_removed(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+def test_realtime_transcript_route_logs_voice_event(monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path) -> None:
     store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
     monkeypatch.setattr(workspace_state, "STORE", store)
     lesson = _seed_test_user_workspace(store).packages[0].lessons[0]
 
-    with pytest.raises(HTTPException) as exc_info:
-        realtime_router.log_realtime_event(
-            lesson.id,
-            RealtimeTranscriptLogRequest(
-                client_session_id="realtime_session_1",
-                lesson_title="勾股定理",
-                role="assistant",
-                transport_event_type="response.audio_transcript.done",
-                transcript="我们先从直角三角形开始。",
-            ),
-            user=TEST_USER,
-        )
+    response = realtime_router.log_realtime_event(
+        lesson.id,
+        RealtimeTranscriptLogRequest(
+            client_session_id="realtime_session_1",
+            lesson_title="勾股定理",
+            role="assistant",
+            transport_event_type="response.audio_transcript.done",
+            transcript="我们先从直角三角形开始。",
+        ),
+        user=TEST_USER,
+    )
 
-    assert exc_info.value.status_code == 410
+    assert response == {"status": "ok"}
+    entries = _read_log_entries(isolated_ai_log)
+    event_types = [entry["event_type"] for entry in entries]
+    assert "realtime_transcript" in event_types
+    assert "ai_interaction_message" in event_types

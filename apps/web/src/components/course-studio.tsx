@@ -376,12 +376,12 @@ const FALLBACK_MODEL_CATALOG: AIModelCatalog = {
   text: [
     {
       provider: "openai",
-      model: "gpt-5.5",
-      label: "GPT-5.5",
+      model: "gpt-5.4-nano",
+      label: "GPT-5.4 Nano",
       capability: "text",
       enabled: true,
       configured: true,
-      default: false,
+      default: true,
     },
     {
       provider: "openai",
@@ -403,6 +403,15 @@ const FALLBACK_MODEL_CATALOG: AIModelCatalog = {
     },
     {
       provider: "openai",
+      model: "gpt-5-mini",
+      label: "GPT-5 Mini",
+      capability: "text",
+      enabled: true,
+      configured: true,
+      default: false,
+    },
+    {
+      provider: "google",
       model: "gemini-3.1-pro-preview",
       label: "Gemini 3.1 Pro Preview",
       capability: "text",
@@ -411,16 +420,86 @@ const FALLBACK_MODEL_CATALOG: AIModelCatalog = {
       default: false,
     },
     {
-      provider: "openai",
+      provider: "google",
       model: "gemini-3-flash-preview",
       label: "Gemini 3 Flash Preview",
       capability: "text",
       enabled: true,
       configured: true,
-      default: true,
+      default: false,
     },
   ],
   realtime: [
+    {
+      provider: "openai",
+      model: "gpt-realtime",
+      label: "OpenAI gpt-realtime",
+      capability: "realtime",
+      enabled: true,
+      configured: true,
+      default: false,
+      transport: "openai_webrtc",
+    },
+    {
+      provider: "openai",
+      model: "gpt-realtime-mini",
+      label: "OpenAI gpt-realtime-mini",
+      capability: "realtime",
+      enabled: true,
+      configured: true,
+      default: true,
+      transport: "openai_webrtc",
+    },
+    {
+      provider: "openai",
+      model: "gpt-4o-realtime-preview",
+      label: "OpenAI GPT-4o Realtime Preview",
+      capability: "realtime",
+      enabled: true,
+      configured: true,
+      default: false,
+      transport: "openai_webrtc",
+    },
+    {
+      provider: "openai",
+      model: "gpt-4o-mini-realtime-preview",
+      label: "OpenAI GPT-4o Mini Realtime Preview",
+      capability: "realtime",
+      enabled: true,
+      configured: true,
+      default: false,
+      transport: "openai_webrtc",
+    },
+    {
+      provider: "google",
+      model: "gemini-2.5-flash-native-audio-preview-12-2025",
+      label: "Google Gemini 2.5 Flash Native Audio",
+      capability: "realtime",
+      enabled: true,
+      configured: true,
+      default: false,
+      transport: "gemini_live_websocket",
+    },
+    {
+      provider: "google",
+      model: "gemini-live-2.5-flash-preview",
+      label: "Google Gemini 2.5 Flash Live",
+      capability: "realtime",
+      enabled: true,
+      configured: true,
+      default: false,
+      transport: "gemini_live_websocket",
+    },
+    {
+      provider: "google",
+      model: "gemini-2.0-flash-live-001",
+      label: "Google Gemini 2.0 Flash Live",
+      capability: "realtime",
+      enabled: true,
+      configured: true,
+      default: false,
+      transport: "gemini_live_websocket",
+    },
     {
       provider: "google",
       model: "gemini-3.1-flash-live-preview",
@@ -428,13 +507,13 @@ const FALLBACK_MODEL_CATALOG: AIModelCatalog = {
       capability: "realtime",
       enabled: true,
       configured: true,
-      default: true,
+      default: false,
       transport: "gemini_live_websocket",
     },
   ],
   defaults: {
-    text: { provider: "openai", model: "gemini-3-flash-preview" },
-    realtime: { provider: "google", model: "gemini-3.1-flash-live-preview" },
+    text: { provider: "openai", model: "gpt-5.4-nano" },
+    realtime: { provider: "openai", model: "gpt-realtime-mini" },
   },
 };
 
@@ -4017,7 +4096,7 @@ export function CourseStudio() {
       peerConnection.onconnectionstatechange = () => {
         if (peerConnection.connectionState === "connected") {
           setVoiceActive(true);
-          setVoiceStatusText(`${realtimeLabel} 已连接，说话后会先进入 PM/版书管理/讲师工作流`);
+          setVoiceStatusText(`${realtimeLabel} 已连接，说话后会先进入 PM/板书管理/讲师工作流`);
           setBusyAction((current) => (current === "voice-connect" ? null : current));
           return;
         }

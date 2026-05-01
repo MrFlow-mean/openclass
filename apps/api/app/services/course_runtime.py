@@ -45,7 +45,7 @@ def normalize_requirements(
 ) -> LearningRequirementSheet:
     normalized = LearningRequirementSheet.model_validate(requirements.model_dump(mode="json"))
     _clear_legacy_default_requirements(normalized)
-    normalized.theme = lesson_title
+    normalized.theme = normalized.theme.strip() or lesson_title
     normalized.board_scope = _document_outline(document)
     return normalized
 

@@ -6,7 +6,7 @@ def _models_by_provider(catalog, capability: str, provider: str) -> list[str]:
     return [option.model for option in options if option.provider == provider]
 
 
-def test_catalog_keeps_model_selection_available_after_classroom_ai_reset(monkeypatch) -> None:
+def test_catalog_keeps_model_selection_available_for_pm_workflow(monkeypatch) -> None:
     monkeypatch.setenv("AI_MODEL_DISCOVERY_ENABLED", "0")
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("OPENAI_MODEL", "gpt-5")
@@ -22,8 +22,10 @@ def test_catalog_keeps_model_selection_available_after_classroom_ai_reset(monkey
     assert catalog.defaults["text"].model == "gpt-5"
     assert "gpt-5" in _models_by_provider(catalog, "text", "openai")
     assert "gpt-5.3" in _models_by_provider(catalog, "text", "openai")
+    assert "gpt-5.4-nano" in _models_by_provider(catalog, "text", "openai")
     assert "gpt-5-mini" in _models_by_provider(catalog, "text", "openai")
     assert _models_by_provider(catalog, "realtime", "openai")[0] == "legacy-openai-realtime"
+    assert "gpt-realtime-mini" in _models_by_provider(catalog, "realtime", "openai")
 
 
 def test_catalog_defaults_to_selected_google_provider(monkeypatch) -> None:
@@ -41,7 +43,8 @@ def test_catalog_defaults_to_selected_google_provider(monkeypatch) -> None:
     assert catalog.defaults["text"].provider == "google"
     assert catalog.defaults["text"].model == "gemini-3.1-pro-preview"
     assert catalog.defaults["realtime"].provider == "google"
-    assert catalog.defaults["realtime"].model == "gemini-3.1-flash-live-preview"
+    assert catalog.defaults["realtime"].model == "gemini-2.5-flash-native-audio-preview-12-2025"
+    assert "gemini-2.5-flash-native-audio-preview-12-2025" in _models_by_provider(catalog, "realtime", "google")
     assert "gemini-3.1-flash-live-preview" in _models_by_provider(catalog, "realtime", "google")
 
 

@@ -40,8 +40,8 @@ def health() -> dict[str, object]:
     return {
         "status": "ok",
         "classroom_ai": {
-            "status": "removed",
-            "detail": "旧版课堂 AI 主链路已删除，等待新架构接入。",
+            "status": "pm_requirement_workflow_active",
+            "detail": "PM 对话、学习需求清单和板书生成入口已启用。",
         },
     }
 
