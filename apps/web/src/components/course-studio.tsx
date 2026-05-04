@@ -1439,7 +1439,7 @@ function ChatBubble({
               第 {teachingProgress.section_index + 1}/{teachingProgress.section_count} 节
               {teachingProgress.current_section_title ? `：${teachingProgress.current_section_title}` : ""}
             </span>
-            {teachingProgress.has_next_section && onContinueTeaching ? (
+            {teachingProgress.has_next_section && teachingProgress.waiting_for_continue && onContinueTeaching ? (
               <button
                 type="button"
                 onClick={onContinueTeaching}
@@ -3454,6 +3454,7 @@ export function CourseStudio() {
       resource_reference_action: action,
       resource_reference_resource_id: referencePrompt.resource_id,
       resource_reference_chapter_id: referencePrompt.chapter_id,
+      resource_reference_chunk_id: referencePrompt.chunk_id ?? null,
     });
     setReferencePrompt(null);
     setLastReferenceRequest(null);

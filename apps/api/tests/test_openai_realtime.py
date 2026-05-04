@@ -2,6 +2,7 @@ import json
 
 import pytest
 
+from app.models import BoardTeachingGuide, BoardTeachingProgress, ReadingCompanionRule, ReadingCompanionTurn
 from app.services.lesson_factory import create_lesson
 from app.services.ai_logging import ai_log_context, ai_usage_logger
 from app.services.openai_realtime import OpenAIRealtimeTeacher
@@ -70,6 +71,55 @@ def test_realtime_call_uses_requested_model_and_lesson_context(isolated_ai_log) 
     assert entry["event_type"] == "openai_realtime_session"
     assert entry["context"]["trace_id"] == "realtime_test"
     assert entry["payload"]["answer_sdp"].startswith("v=0")
+
+
+def test_realtime_instructions_switch_to_reading_companion_mode(isolated_ai_log) -> None:
+    teacher = OpenAIRealtimeTeacher()
+    teacher.client = _FakeClient()
+    lesson = create_lesson("酒店英语对话")
+    lesson.board_teaching_guide = BoardTeachingGuide(
+        board_document_id=lesson.board_document.id,
+        board_snapshot_hash="reading-hash",
+        board_title="酒店英语对话",
+        reading_companion=True,
+        reading_rule=ReadingCompanionRule(
+            user_role="客人",
+            assistant_role="服务员",
+            rule_text="我是客人你是服务员，我们轮流读。",
+            matching_policy="允许轻微口误，但必须对应当前台词。",
+            focus_excerpt="客人：你好，我想订一间房。\n服务员：您好，请问您想订哪一天的房间？",
+            valid_user_inputs=["你好，我想订一间房。"],
+            turns=[
+                ReadingCompanionTurn(order_index=0, speaker="客人", text="你好，我想订一间房。", role="user"),
+                ReadingCompanionTurn(
+                    order_index=1,
+                    speaker="服务员",
+                    text="您好，请问您想订哪一天的房间？",
+                    role="assistant",
+                ),
+            ],
+        ),
+    )
+    lesson.board_teaching_progress = BoardTeachingProgress(
+        board_document_id=lesson.board_document.id,
+        board_snapshot_hash="reading-hash",
+        current_section_index=0,
+    )
+
+    teacher.create_call(
+        lesson=lesson,
+        offer_sdp="offer-sdp",
+        latest_assistant_message="已进入陪读模式。",
+    )
+
+    assert teacher.client.realtime.calls.payload is not None
+    session = teacher.client.realtime.calls.payload["session"]
+    prompt = session["audio"]["input"]["transcription"]["prompt"]
+    assert "陪读/轮读/角色扮演朗读" in prompt
+    assert "valid_user_inputs" in prompt
+    assert "这句话是什么意思" not in prompt
+    assert "客人" in prompt
+    assert "服务员" in prompt
 
 
 def test_realtime_base_url_defaults_to_gateway_not_api_key(monkeypatch: pytest.MonkeyPatch) -> None:

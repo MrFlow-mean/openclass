@@ -55,6 +55,8 @@ ScopeAction = Literal[
 BoardAction = Literal[
     "clarify_request",
     "no_change",
+    "teach_realtime",
+    "reading_companion",
     "edit_board",
     "append_section",
     "create_new_lesson",
@@ -359,6 +361,24 @@ class LibraryChapter(BaseModel):
     scan_strategy: ResourceScanStrategy = "outline_only"
 
 
+class OCRChunkLocator(BaseModel):
+    x: float
+    y: float
+    width: float
+    height: float
+    page: int | None = None
+
+
+class ResourceOCRChunk(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("ocrchunk"))
+    text: str
+    summary: str = ""
+    terms: list[str] = Field(default_factory=list)
+    embedding: dict[str, float] = Field(default_factory=dict)
+    locator: OCRChunkLocator | None = None
+    order_index: int = 0
+
+
 class ResourceLibraryItem(BaseModel):
     id: str = Field(default_factory=lambda: new_id("resource"))
     name: str
@@ -371,6 +391,7 @@ class ResourceLibraryItem(BaseModel):
     concept_index: dict[str, list[str]] = Field(default_factory=dict)
     extracted_text_available: bool = False
     text_content: str | None = None
+    ocr_chunks: list[ResourceOCRChunk] = Field(default_factory=list)
     source_path: str | None = None
 
 
@@ -460,6 +481,9 @@ class ResourceMatch(BaseModel):
     reason: str
     score: float = 0.0
     is_high_overlap: bool = False
+    matched_chunk_id: str | None = None
+    matched_excerpt: str | None = None
+    chunk_locator: OCRChunkLocator | None = None
 
 
 class ResourceReferencePrompt(BaseModel):
@@ -467,6 +491,7 @@ class ResourceReferencePrompt(BaseModel):
     chapter_id: str
     resource_name: str
     chapter_title: str
+    chunk_id: str | None = None
     question: str
     reason: str
     confirm_label: str = "参考这一章节"
@@ -478,6 +503,7 @@ class ResourceContextChunk(BaseModel):
     title: str
     excerpt: str
     teaching_hint: str
+    locator: OCRChunkLocator | None = None
 
 
 class ResourceReferenceContext(BaseModel):
@@ -489,6 +515,20 @@ class ResourceReferenceContext(BaseModel):
     teaching_points: list[str] = Field(default_factory=list)
     chunks: list[ResourceContextChunk] = Field(default_factory=list)
     full_text: str = Field(default="", exclude=True, repr=False)
+
+
+class TeachingLocationContext(BaseModel):
+    source: Literal["selection", "board", "resource", "ocr", "unknown"]
+    target_text: str = ""
+    surrounding_text: str = ""
+    heading: str | None = None
+    resource_id: str | None = None
+    chapter_id: str | None = None
+    chunk_id: str | None = None
+    locator: OCRChunkLocator | None = None
+    reason: str = ""
+    score: float = 0.0
+    needs_clarification: bool = False
 
 
 class BoardDecision(BaseModel):
@@ -524,6 +564,7 @@ class BoardSectionTeachingPlan(BaseModel):
     order_index: int = 0
     heading: str
     board_excerpt: str = ""
+    spoken_script: str = ""
     core_points: list[str] = Field(default_factory=list)
     teaching_steps: list[str] = Field(default_factory=list)
     teaching_method: str = ""
@@ -533,10 +574,37 @@ class BoardSectionTeachingPlan(BaseModel):
     transition_to_next: str = ""
 
 
+ReadingCompanionTurnRole = Literal["user", "assistant", "other"]
+
+
+class ReadingCompanionTurn(BaseModel):
+    order_index: int = 0
+    speaker: str = ""
+    text: str
+    role: ReadingCompanionTurnRole = "other"
+
+
+class ReadingCompanionRule(BaseModel):
+    mode: str = "role_play_dialogue"
+    user_role: str = ""
+    assistant_role: str = ""
+    rule_text: str = ""
+    matching_policy: str = ""
+    context_before: str = ""
+    focus_excerpt: str = ""
+    context_after: str = ""
+    source_label: str = ""
+    valid_user_inputs: list[str] = Field(default_factory=list)
+    turns: list[ReadingCompanionTurn] = Field(default_factory=list)
+
+
 class BoardTeachingGuide(BaseModel):
     board_document_id: str = ""
     board_snapshot_hash: str = ""
     board_title: str = ""
+    realtime_lecture: bool = False
+    reading_companion: bool = False
+    reading_rule: ReadingCompanionRule | None = None
     selected_items: list[BoardTeachingSelectedItem] = Field(default_factory=list)
     need_mappings: list[BoardNeedMapping] = Field(default_factory=list)
     teaching_flow: list[str] = Field(default_factory=list)
@@ -572,6 +640,7 @@ class ChatRequest(BaseModel):
     resource_reference_action: ResourceReferenceAction | None = None
     resource_reference_resource_id: str | None = None
     resource_reference_chapter_id: str | None = None
+    resource_reference_chunk_id: str | None = None
     board_edit_action: BoardEditConfirmationAction | None = None
     board_edit_topic: str | None = None
     teaching_action: TeachingAction | None = None
@@ -682,6 +751,7 @@ class ChatResponse(BaseModel):
     board_edit_prompt: BoardEditPrompt | None = None
     selected_reference: ResourceReferenceContext | None = None
     created_lesson: LessonView | None = None
+    teaching_location: TeachingLocationContext | None = None
     teaching_progress: SectionTeachingProgressView | None = None
     course_package: CoursePackageView
 

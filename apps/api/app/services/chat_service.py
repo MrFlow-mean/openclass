@@ -31,6 +31,8 @@ def chat_flow_label(request: ChatRequest, action: str, *, auto_applied: bool) ->
         prefix = {
             "clarify_request": "AI 澄清",
             "no_change": "AI 讲解",
+            "teach_realtime": "AI 讲解模式",
+            "reading_companion": "AI 陪读模式",
             "edit_board": "AI 文档生成",
             "append_section": "AI 追加章节",
             "create_new_lesson": "AI 新开课程",
@@ -60,6 +62,7 @@ def chat_flow_metadata(
         "board_edit_action": request.board_edit_action,
         "board_edit_topic": request.board_edit_topic,
         "teaching_action": request.teaching_action,
+        "resource_reference_chunk_id": request.resource_reference_chunk_id,
         "board_action": board_decision.action,
         "selection": request.selection.model_dump(mode="json") if request.selection else None,
         "learning_need_checklist": workflow_result["learning_requirement_sheet"].learning_need_checklist,
@@ -86,6 +89,11 @@ def chat_flow_metadata(
         "teaching_progress": (
             workflow_result["teaching_progress"].model_dump(mode="json")
             if workflow_result.get("teaching_progress") is not None
+            else None
+        ),
+        "teaching_location": (
+            workflow_result["teaching_location"].model_dump(mode="json")
+            if workflow_result.get("teaching_location") is not None
             else None
         ),
         "created_lesson_id": created_lesson.id if created_lesson else None,
@@ -158,6 +166,7 @@ def process_chat_on_lesson(lesson_id: str, request: ChatRequest, *, user_id: str
             resource_reference_action=request.resource_reference_action,
             resource_reference_resource_id=request.resource_reference_resource_id,
             resource_reference_chapter_id=request.resource_reference_chapter_id,
+            resource_reference_chunk_id=request.resource_reference_chunk_id,
             board_edit_action=request.board_edit_action,
             board_edit_topic=request.board_edit_topic,
             teaching_action=request.teaching_action,
@@ -241,6 +250,7 @@ def process_chat_on_lesson(lesson_id: str, request: ChatRequest, *, user_id: str
                 board_edit_prompt=workflow_result.get("board_edit_prompt"),
                 selected_reference=response_selected_reference,
                 created_lesson=lesson_view(created_lesson) if created_lesson else None,
+                teaching_location=workflow_result.get("teaching_location"),
                 teaching_progress=workflow_result.get("teaching_progress"),
                 course_package=package_view_for_lesson(workspace, package, package.active_lesson_id),
             )
@@ -262,6 +272,7 @@ def process_chat_on_lesson(lesson_id: str, request: ChatRequest, *, user_id: str
             reference_prompt=response.reference_prompt,
             board_edit_prompt=response.board_edit_prompt,
             selected_reference=response.selected_reference,
+            teaching_location=response.teaching_location,
             created_lesson=response.created_lesson,
         )
         log_ai_interaction_message(
