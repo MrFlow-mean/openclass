@@ -28,7 +28,6 @@ import {
   Bold,
   BookOpen,
   BrainCircuit,
-  CheckCircle2,
   ChevronDown,
   ChevronUp,
   Columns3,
@@ -81,17 +80,13 @@ import {
   Link as LinkIcon,
 } from "lucide-react";
 
-import { api, getApiWebSocketUrl } from "@/lib/api";
+import { api } from "@/lib/api";
 import { BranchSequenceSelector, type BranchSequenceOption } from "@/components/branch-sequence-selector";
 import { InlineNameForm } from "@/components/inline-name-form";
 import { ResourceUploadDropzone } from "@/components/resource-upload-dropzone";
 import { MATH_TEXT_SERIALIZERS, normalizeEditorMath } from "@/lib/math-content";
 import { useRealtimeLogQueue } from "@/hooks/use-realtime-log-queue";
-import { pcmFloatToBase64, playPcmBase64, resampleLinear } from "@/lib/realtime-audio";
 import type {
-  AIModelCatalog,
-  AIModelOption,
-  AIModelSelection,
   BoardEditPrompt,
   BoardDecision,
   BoardDocument,
@@ -145,33 +140,6 @@ type WordRibbonTab = "home" | "insert" | "page";
 type SelectionPopoverPosition = {
   top: number;
   left: number;
-};
-type GoogleRealtimeAudioMessage = {
-  setupComplete?: Record<string, unknown>;
-  error?: {
-    code?: number;
-    message?: string;
-    status?: string;
-  };
-  serverContent?: {
-    modelTurn?: {
-      parts?: Array<{
-        inlineData?: {
-          mimeType?: string;
-          data?: string;
-        };
-        text?: string;
-      }>;
-    };
-    inputTranscription?: {
-      text?: string;
-    };
-    outputTranscription?: {
-      text?: string;
-    };
-    turnComplete?: boolean;
-    interrupted?: boolean;
-  };
 };
 type AutoSaveStatus = "idle" | "pending" | "saving" | "saved" | "error";
 type AutoSaveReason =
@@ -372,286 +340,9 @@ const DEFAULT_PAGE_SETTINGS: DocumentPageSettings = {
   footer_text: "",
 };
 
-const FALLBACK_MODEL_CATALOG: AIModelCatalog = {
-  text: [
-    {
-      provider: "openai",
-      model: "gpt-5.4-nano",
-      label: "GPT-5.4 Nano",
-      capability: "text",
-      enabled: true,
-      configured: true,
-      default: true,
-    },
-    {
-      provider: "openai",
-      model: "gpt-5.4",
-      label: "GPT-5.4",
-      capability: "text",
-      enabled: true,
-      configured: true,
-      default: false,
-    },
-    {
-      provider: "openai",
-      model: "gpt-5.4-mini",
-      label: "GPT-5.4 Mini",
-      capability: "text",
-      enabled: true,
-      configured: true,
-      default: false,
-    },
-    {
-      provider: "openai",
-      model: "gpt-5-mini",
-      label: "GPT-5 Mini",
-      capability: "text",
-      enabled: true,
-      configured: true,
-      default: false,
-    },
-    {
-      provider: "google",
-      model: "gemini-3.1-pro-preview",
-      label: "Gemini 3.1 Pro Preview",
-      capability: "text",
-      enabled: true,
-      configured: true,
-      default: false,
-    },
-    {
-      provider: "google",
-      model: "gemini-3-flash-preview",
-      label: "Gemini 3 Flash Preview",
-      capability: "text",
-      enabled: true,
-      configured: true,
-      default: false,
-    },
-  ],
-  realtime: [
-    {
-      provider: "openai",
-      model: "gpt-realtime",
-      label: "OpenAI gpt-realtime",
-      capability: "realtime",
-      enabled: true,
-      configured: true,
-      default: false,
-      transport: "openai_webrtc",
-    },
-    {
-      provider: "openai",
-      model: "gpt-realtime-mini",
-      label: "OpenAI gpt-realtime-mini",
-      capability: "realtime",
-      enabled: true,
-      configured: true,
-      default: true,
-      transport: "openai_webrtc",
-    },
-    {
-      provider: "openai",
-      model: "gpt-4o-realtime-preview",
-      label: "OpenAI GPT-4o Realtime Preview",
-      capability: "realtime",
-      enabled: true,
-      configured: true,
-      default: false,
-      transport: "openai_webrtc",
-    },
-    {
-      provider: "openai",
-      model: "gpt-4o-mini-realtime-preview",
-      label: "OpenAI GPT-4o Mini Realtime Preview",
-      capability: "realtime",
-      enabled: true,
-      configured: true,
-      default: false,
-      transport: "openai_webrtc",
-    },
-    {
-      provider: "google",
-      model: "gemini-2.5-flash-native-audio-preview-12-2025",
-      label: "Google Gemini 2.5 Flash Native Audio",
-      capability: "realtime",
-      enabled: true,
-      configured: true,
-      default: false,
-      transport: "gemini_live_websocket",
-    },
-    {
-      provider: "google",
-      model: "gemini-live-2.5-flash-preview",
-      label: "Google Gemini 2.5 Flash Live",
-      capability: "realtime",
-      enabled: true,
-      configured: true,
-      default: false,
-      transport: "gemini_live_websocket",
-    },
-    {
-      provider: "google",
-      model: "gemini-2.0-flash-live-001",
-      label: "Google Gemini 2.0 Flash Live",
-      capability: "realtime",
-      enabled: true,
-      configured: true,
-      default: false,
-      transport: "gemini_live_websocket",
-    },
-    {
-      provider: "google",
-      model: "gemini-3.1-flash-live-preview",
-      label: "Google Gemini 3.1 Flash Live",
-      capability: "realtime",
-      enabled: true,
-      configured: true,
-      default: false,
-      transport: "gemini_live_websocket",
-    },
-  ],
-  defaults: {
-    text: { provider: "openai", model: "gpt-5.4-nano" },
-    realtime: { provider: "openai", model: "gpt-realtime-mini" },
-  },
-};
+const OPENAI_REALTIME_LABEL = "OpenAI 实时语音";
 
-const PROVIDER_LABELS: Record<AIModelSelection["provider"], string> = {
-  openai: "OpenAI",
-  anthropic: "Anthropic",
-  google: "Google",
-  deepseek: "DeepSeek",
-  kimi: "Kimi",
-  minimax: "MiniMax",
-  openai_compatible: "OpenAI 兼容",
-  anthropic_compatible: "Anthropic 兼容",
-};
-const TEXT_MODEL_STORAGE_KEY = "blackboard-ai:selected-text-model";
-const REALTIME_MODEL_STORAGE_KEY = "blackboard-ai:selected-realtime-model";
-const DISABLED_TEXT_MODEL_PROVIDERS = new Set<AIModelSelection["provider"]>();
-const DISABLED_REALTIME_MODEL_PROVIDERS = new Set<AIModelSelection["provider"]>();
-
-function modelSelectionKey(selection: AIModelSelection): string {
-  return `${selection.provider}:${selection.model}`;
-}
-
-function modelOptionKey(option: AIModelOption): string {
-  return `${option.provider}:${option.model}`;
-}
-
-function findModelOption(options: AIModelOption[], selection: AIModelSelection | null): AIModelOption | null {
-  if (!selection) {
-    return null;
-  }
-  return options.find((option) => modelOptionKey(option) === modelSelectionKey(selection)) ?? null;
-}
-
-function findEnabledModelOption(options: AIModelOption[], selection: AIModelSelection | null): AIModelOption | null {
-  const option = findModelOption(options, selection);
-  return option?.enabled ? option : null;
-}
-
-function normalizeCourseStudioModelCatalog(catalog: AIModelCatalog): AIModelCatalog {
-  return {
-    ...catalog,
-    text: catalog.text.map((option) =>
-      DISABLED_TEXT_MODEL_PROVIDERS.has(option.provider)
-        ? { ...option, enabled: false, configured: false, default: false }
-        : option
-    ),
-    realtime: catalog.realtime.map((option) =>
-      DISABLED_REALTIME_MODEL_PROVIDERS.has(option.provider)
-        ? { ...option, enabled: false, configured: false, default: false }
-        : option
-    ),
-  };
-}
-
-function modelButtonLabel(option: AIModelOption | null, fallback: AIModelSelection | null): string {
-  if (option) {
-    return option.label;
-  }
-  if (!fallback) {
-    return "未选择";
-  }
-  return `${PROVIDER_LABELS[fallback.provider]} ${fallback.model}`;
-}
-
-function optionToSelection(option: AIModelOption): AIModelSelection {
-  return {
-    provider: option.provider,
-    model: option.model,
-  };
-}
-
-function isModelSelection(value: unknown): value is AIModelSelection {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-  const candidate = value as Partial<AIModelSelection>;
-  return (
-    typeof candidate.provider === "string" &&
-    candidate.provider in PROVIDER_LABELS &&
-    typeof candidate.model === "string" &&
-    candidate.model.trim().length > 0
-  );
-}
-
-function readStoredModelSelection(key: string): AIModelSelection | null {
-  if (typeof window === "undefined") {
-    return null;
-  }
-  try {
-    const raw = window.localStorage.getItem(key);
-    if (!raw) {
-      return null;
-    }
-    const parsed = JSON.parse(raw) as unknown;
-    return isModelSelection(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-async function websocketMessageText(data: MessageEvent["data"]): Promise<string> {
-  if (typeof data === "string") {
-    return data;
-  }
-  if (data instanceof Blob) {
-    return data.text();
-  }
-  if (data instanceof ArrayBuffer) {
-    return new TextDecoder().decode(data);
-  }
-  if (ArrayBuffer.isView(data)) {
-    return new TextDecoder().decode(data);
-  }
-  return String(data);
-}
-
-function googleRealtimeErrorMessage(error: GoogleRealtimeAudioMessage["error"]): string {
-  const rawMessage = error?.message?.trim() ?? "";
-  const status = error?.status?.trim() ?? "";
-  const lowerMessage = rawMessage.toLowerCase();
-  const lowerStatus = status.toLowerCase();
-
-  if (error?.code === 401 || lowerStatus.includes("unauthenticated")) {
-    return "Google Gemini Live 认证失败。请检查统一模型 API Key 是否正确。";
-  }
-  if (error?.code === 403 || lowerStatus.includes("permission") || lowerMessage.includes("permission denied")) {
-    return "Google Gemini Live 权限被拒绝。请检查 Google API Key 是否启用了 Gemini API，并确认该 key 可使用 Live API。";
-  }
-  if (error?.code === 429 || lowerStatus.includes("quota") || lowerMessage.includes("quota")) {
-    return "Google Gemini Live 配额不足或请求过于频繁，请稍后重试或检查 Google API 配额。";
-  }
-  if (rawMessage) {
-    return `Google Gemini Live 连接失败：${rawMessage}`;
-  }
-  return "Google Gemini Live 连接失败。";
-}
-
-function realtimeConnectionErrorMessage(error: unknown, selection: AIModelSelection): string {
+function realtimeConnectionErrorMessage(error: unknown): string {
   const errorName = typeof error === "object" && error && "name" in error ? String(error.name) : "";
   const rawMessage = error instanceof Error ? error.message.trim() : "";
   const lowerMessage = rawMessage.toLowerCase();
@@ -673,30 +364,7 @@ function realtimeConnectionErrorMessage(error: unknown, selection: AIModelSelect
   if (rawMessage) {
     return rawMessage;
   }
-  return `连接 ${PROVIDER_LABELS[selection.provider]} 实时语音失败`;
-}
-
-function persistModelSelection(key: string, selection: AIModelSelection) {
-  if (typeof window === "undefined") {
-    return;
-  }
-  window.localStorage.setItem(key, JSON.stringify(selection));
-}
-
-function resolveModelSelection(
-  options: AIModelOption[],
-  preferred: AIModelSelection | null,
-  fallback: AIModelSelection
-): AIModelSelection {
-  if (preferred && findEnabledModelOption(options, preferred)) {
-    return preferred;
-  }
-  if (findEnabledModelOption(options, fallback)) {
-    return fallback;
-  }
-  const defaultOption =
-    options.find((option) => option.default && option.enabled) ?? options.find((option) => option.enabled) ?? options[0];
-  return defaultOption ? optionToSelection(defaultOption) : fallback;
+  return `连接 ${OPENAI_REALTIME_LABEL}失败`;
 }
 
 const PAGE_SIZE_OPTIONS = [
@@ -2668,15 +2336,6 @@ export function CourseStudio() {
   const realtimePeerRef = useRef<RTCPeerConnection | null>(null);
   const realtimeChannelRef = useRef<RTCDataChannel | null>(null);
   const realtimeStreamRef = useRef<MediaStream | null>(null);
-  const googleRealtimeSocketRef = useRef<WebSocket | null>(null);
-  const googleAudioContextRef = useRef<AudioContext | null>(null);
-  const googleAudioProcessorRef = useRef<ScriptProcessorNode | null>(null);
-  const googleAudioSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
-  const googlePlaybackContextRef = useRef<AudioContext | null>(null);
-  const googlePlaybackTimeRef = useRef(0);
-  const googlePlaybackSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
-  const googleInputTranscriptRef = useRef("");
-  const googleOutputTranscriptRef = useRef("");
   const openAIResponseInProgressRef = useRef(false);
   const realtimeLessonIdRef = useRef<string | null>(null);
   const realtimeClientSessionIdRef = useRef<string | null>(null);
@@ -2701,14 +2360,6 @@ export function CourseStudio() {
   });
 
   const [coursePackage, setCoursePackage] = useState<CoursePackage | null>(null);
-  const [modelCatalog, setModelCatalog] = useState<AIModelCatalog>(() =>
-    normalizeCourseStudioModelCatalog(FALLBACK_MODEL_CATALOG)
-  );
-  const [selectedTextModel, setSelectedTextModel] = useState<AIModelSelection>(FALLBACK_MODEL_CATALOG.defaults.text);
-  const [selectedRealtimeModel, setSelectedRealtimeModel] = useState<AIModelSelection>(
-    FALLBACK_MODEL_CATALOG.defaults.realtime
-  );
-  const [openModelMenu, setOpenModelMenu] = useState<"text" | "realtime" | null>(null);
   const [draftDocument, setDraftDocument] = useState<BoardDocument | null>(null);
   const [isDocumentDirty, setIsDocumentDirty] = useState(false);
   const [, setAutoSaveStatus] = useState<AutoSaveStatus>("idle");
@@ -2772,43 +2423,6 @@ export function CourseStudio() {
     void load();
   }, []);
 
-  useEffect(() => {
-    async function loadModelCatalog() {
-      try {
-        const catalog = normalizeCourseStudioModelCatalog(await api.getAIModels());
-        setModelCatalog(catalog);
-        setSelectedTextModel(
-          resolveModelSelection(catalog.text, readStoredModelSelection(TEXT_MODEL_STORAGE_KEY), catalog.defaults.text)
-        );
-        setSelectedRealtimeModel(
-          resolveModelSelection(
-            catalog.realtime,
-            readStoredModelSelection(REALTIME_MODEL_STORAGE_KEY),
-            catalog.defaults.realtime
-          )
-        );
-      } catch {
-        const fallbackCatalog = normalizeCourseStudioModelCatalog(FALLBACK_MODEL_CATALOG);
-        setModelCatalog(fallbackCatalog);
-        setSelectedTextModel(
-          resolveModelSelection(
-            fallbackCatalog.text,
-            readStoredModelSelection(TEXT_MODEL_STORAGE_KEY),
-            fallbackCatalog.defaults.text
-          )
-        );
-        setSelectedRealtimeModel(
-          resolveModelSelection(
-            fallbackCatalog.realtime,
-            readStoredModelSelection(REALTIME_MODEL_STORAGE_KEY),
-            fallbackCatalog.defaults.realtime
-          )
-        );
-      }
-    }
-    void loadModelCatalog();
-  }, []);
-
   const lessonMap = new Map<string, Lesson>();
   coursePackage?.lessons.forEach((lesson) => lessonMap.set(lesson.id, lesson));
 
@@ -2836,9 +2450,6 @@ export function CourseStudio() {
   const chatInput = activeComposerState.chatInput;
   const composerMode = activeComposerState.composerMode;
   const includeSelectionInPrompt = activeComposerState.includeSelectionInPrompt;
-  const selectedTextOption = findModelOption(modelCatalog.text, selectedTextModel);
-  const selectedRealtimeOption = findModelOption(modelCatalog.realtime, selectedRealtimeModel);
-  const selectedRealtimeTransport = selectedRealtimeOption?.transport ?? "gemini_live_websocket";
   const isChatBusy = busyAction === "chat" || busyAction === "agent-edit";
   const activeRequirements = activeLesson?.learning_requirements ?? null;
   const visibleLearningGoal = visibleLearningPurposeItem(activeRequirements?.learning_goal);
@@ -3346,7 +2957,6 @@ export function CourseStudio() {
       } satisfies ChatRequestPayload);
     const payloadWithConversation: ChatRequestPayload = {
       ...payload,
-      text_model: payload.text_model ?? selectedTextModel,
       conversation: activeMessages.slice(-8).map(({ role, content }) => ({ role, content })),
     };
     const submittedSelection = payloadWithConversation.selection ?? null;
@@ -3665,40 +3275,6 @@ export function CourseStudio() {
     }
   }
 
-  function stopGoogleQueuedPlayback() {
-    googlePlaybackSourcesRef.current.forEach((source) => {
-      try {
-        source.stop();
-      } catch {
-        // Already ended or never started.
-      }
-      try {
-        source.disconnect();
-      } catch {
-        // Already disconnected.
-      }
-    });
-    googlePlaybackSourcesRef.current.clear();
-    const playbackContext = googlePlaybackContextRef.current;
-    googlePlaybackTimeRef.current = playbackContext?.currentTime ?? 0;
-  }
-
-  function queueGooglePlayback(base64: string, mimeType?: string) {
-    const playbackContext = googlePlaybackContextRef.current;
-    if (!playbackContext) {
-      return;
-    }
-    const source = playPcmBase64(base64, mimeType, playbackContext, googlePlaybackTimeRef);
-    googlePlaybackSourcesRef.current.add(source);
-    source.addEventListener(
-      "ended",
-      () => {
-        googlePlaybackSourcesRef.current.delete(source);
-      },
-      { once: true }
-    );
-  }
-
   function resetOpenAIRemoteAudioPlayback() {
     const remoteAudio = remoteAudioRef.current;
     const remoteStream = remoteAudio?.srcObject;
@@ -3715,21 +3291,6 @@ export function CourseStudio() {
     void flushRealtimeLogQueue();
     realtimeChannelRef.current?.close();
     realtimeChannelRef.current = null;
-    googleRealtimeSocketRef.current?.close();
-    googleRealtimeSocketRef.current = null;
-
-    googleAudioProcessorRef.current?.disconnect();
-    googleAudioProcessorRef.current = null;
-    googleAudioSourceRef.current?.disconnect();
-    googleAudioSourceRef.current = null;
-    void googleAudioContextRef.current?.close().catch(() => undefined);
-    googleAudioContextRef.current = null;
-    stopGoogleQueuedPlayback();
-    void googlePlaybackContextRef.current?.close().catch(() => undefined);
-    googlePlaybackContextRef.current = null;
-    googlePlaybackTimeRef.current = 0;
-    googleInputTranscriptRef.current = "";
-    googleOutputTranscriptRef.current = "";
     openAIResponseInProgressRef.current = false;
 
     if (realtimePeerRef.current) {
@@ -3815,188 +3376,6 @@ export function CourseStudio() {
     );
   }
 
-  function flushGoogleRealtimeTranscripts(lessonId: string) {
-    const userTranscript = googleInputTranscriptRef.current.trim();
-    const assistantTranscript = googleOutputTranscriptRef.current.trim();
-    if (userTranscript) {
-      handleRealtimeUserTranscript(lessonId, userTranscript, "google.input_transcription");
-      googleInputTranscriptRef.current = "";
-    }
-    if (assistantTranscript) {
-      enqueueRealtimeLogEvent(lessonId, "assistant", "google.output_transcription", assistantTranscript);
-      googleOutputTranscriptRef.current = "";
-    }
-  }
-
-  function beginGoogleAudioStreaming(socket: WebSocket, mediaStream: MediaStream, audioContext: AudioContext) {
-    const source = audioContext.createMediaStreamSource(mediaStream);
-    const processor = audioContext.createScriptProcessor(4096, 1, 1);
-    source.connect(processor);
-    processor.connect(audioContext.destination);
-    googleAudioSourceRef.current = source;
-    googleAudioProcessorRef.current = processor;
-    processor.onaudioprocess = (event) => {
-      if (socket.readyState !== WebSocket.OPEN) {
-        return;
-      }
-      const input = event.inputBuffer.getChannelData(0);
-      const resampled = resampleLinear(input, audioContext.sampleRate, 16000);
-      socket.send(
-        JSON.stringify({
-          realtimeInput: {
-            audio: {
-              mimeType: "audio/pcm;rate=16000",
-              data: pcmFloatToBase64(resampled),
-            },
-          },
-        })
-      );
-    };
-  }
-
-  function handleGoogleRealtimeMessage(message: GoogleRealtimeAudioMessage) {
-    const lessonId = realtimeLessonIdRef.current;
-    if (!lessonId) {
-      return;
-    }
-    const serverContent = message.serverContent;
-    if (!serverContent) {
-      return;
-    }
-    const inputText = serverContent.inputTranscription?.text;
-    if (inputText) {
-      googleInputTranscriptRef.current += inputText;
-    }
-    if (serverContent.interrupted) {
-      stopGoogleQueuedPlayback();
-      googleOutputTranscriptRef.current = "";
-      setVoiceStatusText("检测到插话，已停止上一段回答");
-    }
-    const outputText = serverContent.outputTranscription?.text;
-    if (outputText && !serverContent.interrupted) {
-      googleOutputTranscriptRef.current += outputText;
-    }
-    serverContent.modelTurn?.parts?.forEach((part) => {
-      const inlineData = part.inlineData;
-      if (!inlineData?.data || serverContent.interrupted) {
-        return;
-      }
-      queueGooglePlayback(inlineData.data, inlineData.mimeType);
-    });
-    if (serverContent.turnComplete) {
-      flushGoogleRealtimeTranscripts(lessonId);
-    }
-  }
-
-  function selectTextModel(option: AIModelOption) {
-    if (!option.enabled) {
-      return;
-    }
-    const nextSelection = optionToSelection(option);
-    setSelectedTextModel(nextSelection);
-    persistModelSelection(TEXT_MODEL_STORAGE_KEY, nextSelection);
-    setOpenModelMenu(null);
-  }
-
-  function selectRealtimeModel(option: AIModelOption) {
-    if (!option.enabled) {
-      return;
-    }
-    if (voiceActive || busyAction === "voice-connect") {
-      stopRealtimeSession("已切换实时语音模型，当前会话已断开");
-    }
-    const nextSelection = optionToSelection(option);
-    setSelectedRealtimeModel(nextSelection);
-    persistModelSelection(REALTIME_MODEL_STORAGE_KEY, nextSelection);
-    setOpenModelMenu(null);
-  }
-
-  async function startGoogleRealtimeSession(
-    lesson: Lesson,
-    mediaStream: MediaStream,
-    clientSessionId: string
-  ) {
-    const session = await api.createGoogleRealtimeSession(lesson.id, {
-      latest_assistant_message: latestAssistantMessage?.content ?? null,
-      client_session_id: clientSessionId,
-      realtime_model: selectedRealtimeModel,
-    });
-    const audioContext = new AudioContext();
-    const playbackContext = new AudioContext();
-    googleAudioContextRef.current = audioContext;
-    googlePlaybackContextRef.current = playbackContext;
-    googlePlaybackTimeRef.current = playbackContext.currentTime;
-    await audioContext.resume();
-    await playbackContext.resume();
-
-    const socket = new WebSocket(getApiWebSocketUrl(session.websocket_url));
-    googleRealtimeSocketRef.current = socket;
-    await new Promise<void>((resolve, reject) => {
-      let streamingStarted = false;
-      let settled = false;
-      const resolveStart = () => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        resolve();
-      };
-      const rejectStart = (message: string) => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        reject(new Error(message));
-      };
-      socket.onopen = () => {
-        socket.send(JSON.stringify(session.setup));
-      };
-      socket.onerror = () => {
-        rejectStart("Google Gemini Live WebSocket 连接失败");
-      };
-      socket.onclose = (event) => {
-        if (!streamingStarted) {
-          rejectStart(
-            `Google Gemini Live WebSocket 在初始化前关闭（${event.code}${event.reason ? `：${event.reason}` : ""}）`
-          );
-        }
-        if (googleRealtimeSocketRef.current === socket) {
-          stopRealtimeSession("Google Gemini Live 会话已结束");
-        }
-      };
-      socket.onmessage = (event) => {
-        void (async () => {
-          try {
-            const messageText = await websocketMessageText(event.data);
-            const payload = JSON.parse(messageText) as GoogleRealtimeAudioMessage;
-            if (payload.error) {
-              const message = googleRealtimeErrorMessage(payload.error);
-              if (!streamingStarted) {
-                rejectStart(message);
-                return;
-              }
-              stopRealtimeSession("Google Gemini Live 会话已结束");
-              setError(message);
-              return;
-            }
-            if (payload.setupComplete && !streamingStarted) {
-              streamingStarted = true;
-              beginGoogleAudioStreaming(socket, mediaStream, audioContext);
-              setVoiceActive(true);
-              setBusyAction((current) => (current === "voice-connect" ? null : current));
-              setVoiceStatusText(`Google Gemini Live 已连接，说话会进入 PM/板书管理/讲师工作流`);
-              resolveStart();
-              return;
-            }
-            handleGoogleRealtimeMessage(payload);
-          } catch {
-            // ignore malformed realtime events
-          }
-        })();
-      };
-    });
-  }
-
   useEffect(() => {
     return () => {
       flushAutoSaveWithBeaconEffectEvent();
@@ -4046,16 +3425,12 @@ export function CourseStudio() {
       setError("当前浏览器无法访问麦克风。请使用支持麦克风的浏览器，并通过 localhost 或 HTTPS 打开页面。");
       return;
     }
-    if (selectedRealtimeOption && !selectedRealtimeOption.enabled) {
-      setError(`当前未配置 ${PROVIDER_LABELS[selectedRealtimeModel.provider]} 的实时语音 API Key。`);
-      return;
-    }
     if (!(await flushAutoSave("voice"))) {
       return;
     }
 
     setBusyAction("voice-connect");
-    const realtimeLabel = modelButtonLabel(selectedRealtimeOption, selectedRealtimeModel);
+    const realtimeLabel = OPENAI_REALTIME_LABEL;
     setVoiceStatusText(`正在连接 ${realtimeLabel}…`);
     setError(null);
 
@@ -4073,11 +3448,6 @@ export function CourseStudio() {
       realtimeLessonIdRef.current = activeLesson.id;
       realtimeClientSessionIdRef.current = clientSessionId;
       realtimeLessonTitleRef.current = activeLesson.title;
-
-      if (selectedRealtimeTransport === "gemini_live_websocket" || selectedRealtimeModel.provider === "google") {
-        await startGoogleRealtimeSession(activeLesson, mediaStream, clientSessionId);
-        return;
-      }
 
       const peerConnection = new RTCPeerConnection();
       realtimePeerRef.current = peerConnection;
@@ -4156,7 +3526,6 @@ export function CourseStudio() {
         offer_sdp: offer.sdp ?? "",
         latest_assistant_message: latestAssistantMessage?.content ?? null,
         client_session_id: clientSessionId,
-        realtime_model: selectedRealtimeModel,
       });
 
       await peerConnection.setRemoteDescription({
@@ -4164,10 +3533,10 @@ export function CourseStudio() {
         sdp: realtimeResponse.answer_sdp,
       });
 
-      setVoiceStatusText(`${PROVIDER_LABELS[realtimeResponse.provider]} ${realtimeResponse.model} 已就绪，正在受控转写`);
+      setVoiceStatusText("OpenAI 实时语音已就绪，正在受控转写");
     } catch (voiceError) {
       stopRealtimeSession("语音连接失败");
-      setError(realtimeConnectionErrorMessage(voiceError, selectedRealtimeModel));
+      setError(realtimeConnectionErrorMessage(voiceError));
     }
   }
 
@@ -4676,113 +4045,14 @@ export function CourseStudio() {
           </div>
 
           <div className="shrink-0 border-t border-gray-100 bg-white px-3 py-3">
-            <div className="mb-2 grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_40px] items-center gap-2">
-              <div className="relative">
-                <button
-                  type="button"
-                  aria-expanded={openModelMenu === "text"}
-                  aria-label={`文本生成，当前模型 ${modelButtonLabel(selectedTextOption, selectedTextModel)}`}
-                  onClick={() => setOpenModelMenu((current) => (current === "text" ? null : "text"))}
-                  className="flex h-10 w-full items-center justify-between gap-2 rounded-lg border border-gray-200 bg-gray-50 px-2.5 text-left transition-colors hover:border-gray-300 hover:bg-white"
-                >
-                  <span className="flex min-w-0 items-center gap-2">
-                    <BrainCircuit className="h-4 w-4 shrink-0 text-gray-600" />
-                    <span className="truncate text-xs font-semibold text-gray-900">文本生成</span>
-                  </span>
-                  <ChevronDown
-                    className={clsx(
-                      "h-4 w-4 shrink-0 text-gray-500 transition-transform",
-                      openModelMenu === "text" && "rotate-180"
-                    )}
-                  />
-                </button>
-
-                {openModelMenu === "text" ? (
-                  <div className="absolute bottom-full left-0 z-30 mb-2 max-h-[360px] w-[min(336px,calc(100vw-2rem))] overflow-y-auto rounded-lg border border-gray-200 bg-white p-2 shadow-xl">
-                    <div className="space-y-1">
-                      {modelCatalog.text.map((option) => {
-                        const selected = modelOptionKey(option) === modelSelectionKey(selectedTextModel);
-                        return (
-                          <button
-                            key={`text-${modelOptionKey(option)}`}
-                            type="button"
-                            onClick={() => selectTextModel(option)}
-                            disabled={!option.enabled}
-                            className={clsx(
-                              "flex w-full items-center justify-between gap-2 rounded-md px-2 py-2 text-left transition-colors",
-                              selected ? "bg-gray-100 text-gray-950" : "text-gray-700 hover:bg-gray-50",
-                              !option.enabled && "cursor-not-allowed opacity-50 hover:bg-transparent"
-                            )}
-                          >
-                            <span className="min-w-0">
-                              <span className="block truncate text-xs font-semibold">{option.label}</span>
-                              <span className="block truncate text-[11px] text-gray-400">
-                                {PROVIDER_LABELS[option.provider]} / {option.model}
-                                {option.configured ? "" : " / 未配置"}
-                              </span>
-                            </span>
-                            {selected ? <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" /> : null}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                ) : null}
+            <div className="mb-2 flex items-center gap-2">
+              <div className="flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 px-2.5 py-2">
+                <BrainCircuit className="h-4 w-4 shrink-0 text-gray-600" />
+                <span className="min-w-0 truncate text-xs font-semibold text-gray-900">文本生成</span>
+                <span className="h-3 w-px shrink-0 bg-gray-200" />
+                <Radio className="h-4 w-4 shrink-0 text-gray-600" />
+                <span className="min-w-0 truncate text-xs font-semibold text-gray-900">实时语音</span>
               </div>
-
-              <div className="relative">
-                <button
-                  type="button"
-                  aria-expanded={openModelMenu === "realtime"}
-                  aria-label={`语音模型，当前模型 ${modelButtonLabel(selectedRealtimeOption, selectedRealtimeModel)}`}
-                  onClick={() => setOpenModelMenu((current) => (current === "realtime" ? null : "realtime"))}
-                  className="flex h-10 w-full items-center justify-between gap-2 rounded-lg border border-gray-200 bg-gray-50 px-2.5 text-left transition-colors hover:border-gray-300 hover:bg-white"
-                >
-                  <span className="flex min-w-0 items-center gap-2">
-                    <Radio className="h-4 w-4 shrink-0 text-gray-600" />
-                    <span className="truncate text-xs font-semibold text-gray-900">实时语音</span>
-                  </span>
-                  <ChevronDown
-                    className={clsx(
-                      "h-4 w-4 shrink-0 text-gray-500 transition-transform",
-                      openModelMenu === "realtime" && "rotate-180"
-                    )}
-                  />
-                </button>
-
-                {openModelMenu === "realtime" ? (
-                  <div className="absolute bottom-full right-0 z-30 mb-2 max-h-[280px] w-[min(336px,calc(100vw-2rem))] overflow-y-auto rounded-lg border border-gray-200 bg-white p-2 shadow-xl">
-                    <div className="space-y-1">
-                      {modelCatalog.realtime.map((option) => {
-                        const selected = modelOptionKey(option) === modelSelectionKey(selectedRealtimeModel);
-                        return (
-                          <button
-                            key={`realtime-${modelOptionKey(option)}`}
-                            type="button"
-                            onClick={() => selectRealtimeModel(option)}
-                            disabled={!option.enabled}
-                            className={clsx(
-                              "flex w-full items-center justify-between gap-2 rounded-md px-2 py-2 text-left transition-colors",
-                              selected ? "bg-gray-100 text-gray-950" : "text-gray-700 hover:bg-gray-50",
-                              !option.enabled && "cursor-not-allowed opacity-50 hover:bg-transparent"
-                            )}
-                          >
-                            <span className="min-w-0">
-                              <span className="block truncate text-xs font-semibold">{option.label}</span>
-                              <span className="block truncate text-[11px] text-gray-400">
-                                {PROVIDER_LABELS[option.provider]} / {option.model}
-                                {option.configured ? "" : " / 未配置"}
-                              </span>
-                            </span>
-                            {selected ? <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" /> : null}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                ) : null}
-              </div>
-
               <button
                 type="button"
                 onClick={() => void handleVoiceToggle()}

@@ -49,7 +49,6 @@ from app.services.ai_model_catalog import (
     KIMI_DEFAULT_TEXT_MODEL,
     MINIMAX_DEFAULT_TEXT_MODEL,
     OPENAI_COMPATIBLE_DEFAULT_TEXT_MODEL,
-    default_text_selection,
 )
 from app.services.lesson_factory import slugify
 from app.services.rich_document import build_document
@@ -891,31 +890,12 @@ class OpenAICourseAI:
         raise ValueError("Chat completion response did not include text content")
 
     def _model_for(self, role: str) -> tuple[AIProvider, str]:
-        selection = _text_model_selection.get()
         if role == "pm":
             return "openai", self.config.model_for("pm")
         if role == "catalog":
             return "openai", self.config.model_for("catalog")
         if role == "board":
             return "openai", self.config.model_for("board")
-        if selection:
-            return selection.provider, selection.model
-
-        default_selection = default_text_selection()
-        if default_selection.provider == "anthropic":
-            return "anthropic", default_selection.model or self.anthropic_config.default_model
-        if default_selection.provider == "google":
-            return "google", default_selection.model or self.google_config.default_model
-        if default_selection.provider == "deepseek":
-            return "deepseek", default_selection.model or self.deepseek_config.default_model
-        if default_selection.provider == "kimi":
-            return "kimi", default_selection.model or self.kimi_config.default_model
-        if default_selection.provider == "minimax":
-            return "minimax", default_selection.model or self.minimax_config.default_model
-        if default_selection.provider == "openai_compatible":
-            return "openai_compatible", default_selection.model or self.openai_compatible_config.default_model
-        if default_selection.provider == "anthropic_compatible":
-            return "anthropic_compatible", default_selection.model or self.anthropic_compatible_config.default_model
         return "openai", self.config.model_for(role)
 
     def _log_event_name(self, provider: AIProvider, suffix: str) -> str:

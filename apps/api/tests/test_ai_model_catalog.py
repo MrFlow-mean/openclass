@@ -6,7 +6,7 @@ def _models_by_provider(catalog, capability: str, provider: str) -> list[str]:
     return [option.model for option in options if option.provider == provider]
 
 
-def test_catalog_keeps_model_selection_available_for_pm_workflow(monkeypatch) -> None:
+def test_catalog_exposes_only_openai_defaults(monkeypatch) -> None:
     monkeypatch.setenv("AI_MODEL_DISCOVERY_ENABLED", "0")
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("OPENAI_MODEL", "gpt-5")
@@ -21,15 +21,12 @@ def test_catalog_keeps_model_selection_available_for_pm_workflow(monkeypatch) ->
     assert catalog.defaults["text"].provider == "openai"
     assert catalog.defaults["text"].model == "gpt-5"
     assert "gpt-5" in _models_by_provider(catalog, "text", "openai")
-    assert "gpt-5.3" in _models_by_provider(catalog, "text", "openai")
-    assert "gpt-5.4-mini" in _models_by_provider(catalog, "text", "openai")
-    assert "gpt-5.4-nano" in _models_by_provider(catalog, "text", "openai")
-    assert "gpt-5-mini" in _models_by_provider(catalog, "text", "openai")
     assert _models_by_provider(catalog, "realtime", "openai")[0] == "legacy-openai-realtime"
-    assert "gpt-realtime-mini" in _models_by_provider(catalog, "realtime", "openai")
+    assert len(catalog.text) == 1
+    assert len(catalog.realtime) == 1
 
 
-def test_catalog_defaults_to_selected_google_provider(monkeypatch) -> None:
+def test_catalog_ignores_non_openai_provider_env(monkeypatch) -> None:
     monkeypatch.setenv("AI_MODEL_DISCOVERY_ENABLED", "0")
     monkeypatch.setenv("GOOGLE_API_KEY", "google-key")
     monkeypatch.setenv("AI_TEXT_PROVIDER", "google")
@@ -41,15 +38,13 @@ def test_catalog_defaults_to_selected_google_provider(monkeypatch) -> None:
 
     catalog = ai_model_catalog.build_model_catalog()
 
-    assert catalog.defaults["text"].provider == "google"
-    assert catalog.defaults["text"].model == "gemini-3.1-pro-preview"
-    assert catalog.defaults["realtime"].provider == "google"
-    assert catalog.defaults["realtime"].model == "gemini-2.5-flash-native-audio-preview-12-2025"
-    assert "gemini-2.5-flash-native-audio-preview-12-2025" in _models_by_provider(catalog, "realtime", "google")
-    assert "gemini-3.1-flash-live-preview" in _models_by_provider(catalog, "realtime", "google")
+    assert catalog.defaults["text"].provider == "openai"
+    assert catalog.defaults["realtime"].provider == "openai"
+    assert _models_by_provider(catalog, "text", "google") == []
+    assert _models_by_provider(catalog, "realtime", "google") == []
 
 
-def test_catalog_includes_configured_custom_text_providers(monkeypatch) -> None:
+def test_catalog_hides_configured_custom_text_providers(monkeypatch) -> None:
     monkeypatch.setenv("AI_MODEL_DISCOVERY_ENABLED", "0")
     monkeypatch.setenv("AI_TEXT_PROVIDER", "kimi")
     monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek-key")
@@ -64,19 +59,6 @@ def test_catalog_includes_configured_custom_text_providers(monkeypatch) -> None:
 
     catalog = ai_model_catalog.build_model_catalog()
 
-    assert catalog.defaults["text"].provider == "kimi"
-    assert catalog.defaults["text"].model == "kimi-k2.6"
-    assert "deepseek-v4-pro" in _models_by_provider(catalog, "text", "deepseek")
-    assert "kimi-k2.6" in _models_by_provider(catalog, "text", "kimi")
-    assert "MiniMax-M2.7" in _models_by_provider(catalog, "text", "minimax")
-
-    enabled = {
-        (option.provider, option.model): option.enabled
-        for option in catalog.text
-        if option.provider in {"deepseek", "kimi", "minimax", "openai_compatible", "anthropic_compatible"}
-    }
-    assert enabled[("deepseek", "deepseek-v4-pro")]
-    assert enabled[("kimi", "kimi-k2.6")]
-    assert enabled[("minimax", "MiniMax-M2.7")]
-    assert enabled[("openai_compatible", "router-model")]
-    assert enabled[("anthropic_compatible", "claude-router")]
+    assert catalog.defaults["text"].provider == "openai"
+    assert all(option.provider == "openai" for option in catalog.text)
+    assert all(option.provider == "openai" for option in catalog.realtime)

@@ -26,7 +26,7 @@ from app.services.openai_course_ai import (
     ResourceRelevanceOutput,
     openai_course_ai,
 )
-from app.services.openai_realtime import google_realtime_teacher, openai_realtime_teacher
+from app.services.openai_realtime import openai_realtime_teacher
 
 
 def _user() -> UserView:
@@ -615,35 +615,26 @@ def test_realtime_routes_create_sessions_and_log_events(monkeypatch: pytest.Monk
     lesson = package.lessons[0]
     monkeypatch.setattr(realtime_router, "_lesson_for_user", lambda lesson_id, user_id: (package, lesson))
     monkeypatch.setattr(openai_realtime_teacher, "create_call", lambda **kwargs: "answer-sdp")
-    monkeypatch.setattr(
-        google_realtime_teacher,
-        "create_live_session",
-        lambda **kwargs: {
-            "provider": "google",
-            "model": kwargs["model_selection"].model,
-            "voice": "Aoede",
-            "setup": {"setup": {"model": "models/test"}},
-        },
-    )
 
     openai_response = realtime_router.connect_realtime_session(
         lesson.id,
         RealtimeConnectRequest(
             offer_sdp="v=0",
-            realtime_model=AIModelSelection(provider="openai", model="gpt-realtime-mini"),
+            realtime_model=AIModelSelection(provider="google", model="gemini-live"),
         ),
         user=user,
     )
-    google_response = realtime_router.create_google_realtime_session(
-        lesson.id,
-        GoogleRealtimeSessionRequest(
-            realtime_model=AIModelSelection(
-                provider="google",
-                model="gemini-2.5-flash-native-audio-preview-12-2025",
-            )
-        ),
-        user=user,
-    )
+    with pytest.raises(Exception) as google_error:
+        realtime_router.create_google_realtime_session(
+            lesson.id,
+            GoogleRealtimeSessionRequest(
+                realtime_model=AIModelSelection(
+                    provider="google",
+                    model="gemini-2.5-flash-native-audio-preview-12-2025",
+                )
+            ),
+            user=user,
+        )
     log_response = realtime_router.log_realtime_event(
         lesson.id,
         RealtimeTranscriptLogRequest(
@@ -656,6 +647,5 @@ def test_realtime_routes_create_sessions_and_log_events(monkeypatch: pytest.Monk
 
     assert openai_response.answer_sdp == "answer-sdp"
     assert openai_response.model == "gpt-realtime-mini"
-    assert google_response.websocket_url == f"/api/lessons/{lesson.id}/realtime/google/ws"
-    assert google_response.model == "gemini-2.5-flash-native-audio-preview-12-2025"
+    assert "当前仅支持 OpenAI 实时语音模型" in str(google_error.value.detail)
     assert log_response == {"status": "ok"}

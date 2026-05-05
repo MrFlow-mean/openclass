@@ -4,7 +4,7 @@ import clsx from "clsx";
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import type { LucideIcon } from "lucide-react";
 import {
   AtSign,
@@ -27,13 +27,12 @@ import {
   RotateCcw,
   Send,
   ShieldCheck,
-  Sparkles,
   UserRound,
 } from "lucide-react";
 
 import { api, OPENCLASS_AUTH_TOKEN_STORAGE_KEY } from "@/lib/api";
 import { userAccountLabel, userPublicEmail } from "@/lib/account";
-import type { AIModelCatalog, AIModelOption, UserView } from "@/types";
+import type { UserView } from "@/types";
 
 type SettingsSectionId =
   | "profile"
@@ -43,7 +42,6 @@ type SettingsSectionId =
   | "billing"
   | "email"
   | "password"
-  | "models"
   | "security";
 
 type SettingsNavItem = {
@@ -85,8 +83,6 @@ export type ProfileSettings = {
   emailCourseDigest: boolean;
   emailAiSummary: boolean;
   emailSecurityAlerts: boolean;
-  preferredTextModel: string;
-  preferredRealtimeModel: string;
   hideLocalPaths: boolean;
   confirmExternalLinks: boolean;
   clearSessionOnExit: boolean;
@@ -117,7 +113,6 @@ const settingsAccountNav: SettingsNavItem[] = [
   { id: "billing", label: "计费和许可", icon: CreditCard },
   { id: "email", label: "电子邮件", icon: Mail },
   { id: "password", label: "密码和身份验证", icon: KeyRound },
-  { id: "models", label: "AI 模型", icon: Sparkles },
   { id: "security", label: "代码安全", icon: ShieldCheck },
 ];
 
@@ -129,7 +124,6 @@ const sectionTitles: Record<SettingsSectionId, { title: string; eyebrow: string 
   billing: { title: "计费和许可", eyebrow: "License" },
   email: { title: "电子邮件", eyebrow: "Email" },
   password: { title: "密码和身份验证", eyebrow: "Authentication" },
-  models: { title: "AI 模型", eyebrow: "Models" },
   security: { title: "代码安全", eyebrow: "Security" },
 };
 
@@ -166,8 +160,6 @@ export const DEFAULT_PROFILE_SETTINGS: ProfileSettings = {
   emailCourseDigest: true,
   emailAiSummary: false,
   emailSecurityAlerts: true,
-  preferredTextModel: "auto",
-  preferredRealtimeModel: "auto",
   hideLocalPaths: true,
   confirmExternalLinks: true,
   clearSessionOnExit: false,
@@ -236,19 +228,6 @@ function formatAccountDate(value: string | null | undefined) {
   }).format(date);
 }
 
-function modelValue(model: AIModelOption) {
-  return `${model.provider}:${model.model}`;
-}
-
-function modelLabel(model: AIModelOption) {
-  const provider = model.provider.toUpperCase();
-  return `${model.label || model.model} · ${provider}`;
-}
-
-function configuredModels(models: AIModelOption[]) {
-  return models.filter((model) => model.configured);
-}
-
 export function ProfileSettingsPanel({
   avatarUrl,
   favoriteCount,
@@ -263,9 +242,6 @@ export function ProfileSettingsPanel({
   const [currentUser, setCurrentUser] = useState<UserView | null>(null);
   const [isLoadingUser, setIsLoadingUser] = useState(true);
   const [userError, setUserError] = useState<string | null>(null);
-  const [modelCatalog, setModelCatalog] = useState<AIModelCatalog | null>(null);
-  const [isLoadingModels, setIsLoadingModels] = useState(true);
-  const [modelError, setModelError] = useState<string | null>(null);
   const [passwordMessage, setPasswordMessage] = useState<string | null>(null);
   const [notificationPermission, setNotificationPermission] =
     useState<BrowserNotificationPermission>("unsupported");
@@ -311,41 +287,13 @@ export function ProfileSettingsPanel({
       }
     }
 
-    async function loadModels() {
-      try {
-        const catalog = await api.getAIModels();
-        if (isDisposed) {
-          return;
-        }
-        setModelCatalog(catalog);
-        setModelError(null);
-      } catch (error) {
-        if (!isDisposed) {
-          setModelCatalog(null);
-          setModelError(error instanceof Error ? error.message : "无法读取模型配置");
-        }
-      } finally {
-        if (!isDisposed) {
-          setIsLoadingModels(false);
-        }
-      }
-    }
-
     void loadAccount();
-    void loadModels();
 
     return () => {
       isDisposed = true;
     };
   }, []);
 
-  const textModels = useMemo(() => configuredModels(modelCatalog?.text ?? []), [modelCatalog]);
-  const realtimeModels = useMemo(() => configuredModels(modelCatalog?.realtime ?? []), [modelCatalog]);
-  const defaultTextModel = useMemo(() => modelCatalog?.text.find((model) => model.default) ?? null, [modelCatalog]);
-  const defaultRealtimeModel = useMemo(
-    () => modelCatalog?.realtime.find((model) => model.default) ?? null,
-    [modelCatalog]
-  );
   const normalizedHandle = settings.handle.trim().toLowerCase();
   const isHandleValid = /^[a-z0-9][a-z0-9-]{2,31}$/.test(normalizedHandle);
   const publicProfileUrl = `openclass.local/${normalizedHandle || DEFAULT_PROFILE_SETTINGS.handle}`;
@@ -1247,68 +1195,6 @@ export function ProfileSettingsPanel({
     );
   }
 
-  function renderModelsSection() {
-    return (
-      <form className="max-w-3xl space-y-7" onSubmit={handleSave}>
-        <section className={settingSectionClass}>
-          {isLoadingModels ? (
-            <div className="inline-flex items-center gap-2 text-sm text-stone-500">
-              <LoaderCircle className="h-4 w-4 animate-spin" />
-              正在读取模型
-            </div>
-          ) : modelError ? (
-            <p className="text-sm text-red-600">{modelError}</p>
-          ) : (
-            <div className="grid gap-3 sm:grid-cols-2">
-              <ModelSummary title="文本默认" model={defaultTextModel} />
-              <ModelSummary title="实时语音默认" model={defaultRealtimeModel} />
-            </div>
-          )}
-        </section>
-
-        <label className="block">
-          <span className="block text-sm font-semibold text-stone-950">偏好文本模型</span>
-          <select
-            className={`${settingsInputClass} mt-2 max-w-xl`}
-            value={settings.preferredTextModel}
-            onChange={(event) => updateSetting("preferredTextModel", event.target.value)}
-          >
-            <option value="auto">自动</option>
-            {textModels.map((model) => (
-              <option key={modelValue(model)} value={modelValue(model)}>
-                {modelLabel(model)}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <label className="block">
-          <span className="block text-sm font-semibold text-stone-950">偏好实时语音模型</span>
-          <select
-            className={`${settingsInputClass} mt-2 max-w-xl`}
-            value={settings.preferredRealtimeModel}
-            onChange={(event) => updateSetting("preferredRealtimeModel", event.target.value)}
-          >
-            <option value="auto">自动</option>
-            {realtimeModels.map((model) => (
-              <option key={modelValue(model)} value={modelValue(model)}>
-                {modelLabel(model)}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <section className="space-y-2">
-          {(modelCatalog?.text ?? []).slice(0, 6).map((model) => (
-            <ModelRow key={modelValue(model)} model={model} />
-          ))}
-        </section>
-
-        {renderSaveFooter()}
-      </form>
-    );
-  }
-
   function renderSecuritySection() {
     return (
       <form className="max-w-3xl space-y-6" onSubmit={handleSave}>
@@ -1357,8 +1243,6 @@ export function ProfileSettingsPanel({
         return renderEmailSection();
       case "password":
         return renderPasswordSection();
-      case "models":
-        return renderModelsSection();
       case "security":
         return renderSecuritySection();
       default:
@@ -1510,34 +1394,6 @@ function UsageMeter({ label, max, value }: { label: string; max: number; value: 
       <div className="h-2 overflow-hidden rounded-full bg-stone-200">
         <div className="h-full rounded-full bg-sky-500" style={{ width: `${percentage}%` }} />
       </div>
-    </div>
-  );
-}
-
-function ModelSummary({ model, title }: { model: AIModelOption | null; title: string }) {
-  return (
-    <div className="rounded-md border border-stone-200 bg-white px-4 py-3">
-      <p className="text-xs font-semibold text-stone-500">{title}</p>
-      <p className="mt-1 truncate text-sm font-semibold text-stone-950">{model ? modelLabel(model) : "未配置"}</p>
-    </div>
-  );
-}
-
-function ModelRow({ model }: { model: AIModelOption }) {
-  return (
-    <div className="flex items-center justify-between gap-3 rounded-md border border-stone-200 bg-white px-4 py-3">
-      <div className="min-w-0">
-        <p className="truncate text-sm font-semibold text-stone-950">{modelLabel(model)}</p>
-        <p className="mt-1 text-xs text-stone-500">{model.capability === "realtime" ? "实时语音" : "文本生成"}</p>
-      </div>
-      <span
-        className={clsx(
-          "shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold",
-          model.configured ? "bg-emerald-50 text-emerald-700" : "bg-stone-100 text-stone-500"
-        )}
-      >
-        {model.configured ? "已配置" : "未配置"}
-      </span>
     </div>
   );
 }

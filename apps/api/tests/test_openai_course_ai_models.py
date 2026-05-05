@@ -31,13 +31,13 @@ def test_catalog_role_uses_openai_mini_by_default(monkeypatch) -> None:
     assert ai._model_for("board") == ("openai", "gpt-5.5")
 
 
-def test_board_role_ignores_frontend_text_selection(monkeypatch) -> None:
+def test_all_runtime_roles_ignore_frontend_text_selection(monkeypatch) -> None:
     monkeypatch.delenv("OPENAI_BOARD_MODEL", raising=False)
     ai = OpenAICourseAI()
 
     with bind_text_model_selection(AIModelSelection(provider="google", model="gemini-test")):
         assert ai._model_for("board") == ("openai", "gpt-5.5")
-        assert ai._model_for("guide") == ("google", "gemini-test")
+        assert ai._model_for("guide") == ("openai", "gpt-5-mini")
 
 
 def test_resource_catalog_methods_use_catalog_role(monkeypatch) -> None:

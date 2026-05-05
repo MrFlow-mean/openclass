@@ -144,34 +144,14 @@ def _normalize_provider(value: str | None, default: AIProvider) -> AIProvider:
 
 
 def default_text_selection() -> AIModelSelection:
-    provider = _normalize_provider(os.getenv("AI_TEXT_PROVIDER"), "openai")
-    if provider == "anthropic":
-        model = os.getenv("ANTHROPIC_MODEL", ANTHROPIC_DEFAULT_TEXT_MODEL)
-    elif provider == "google":
-        model = os.getenv("GOOGLE_TEXT_MODEL", GOOGLE_DEFAULT_TEXT_MODEL)
-    elif provider == "deepseek":
-        model = _deepseek_model()
-    elif provider == "kimi":
-        model = _kimi_model()
-    elif provider == "minimax":
-        model = _minimax_model()
-    elif provider == "openai_compatible":
-        model = _custom_openai_model()
-    elif provider == "anthropic_compatible":
-        model = _custom_anthropic_model()
-    else:
-        model = os.getenv("OPENAI_MODEL", OPENAI_DEFAULT_TEXT_MODEL)
-    return AIModelSelection(provider=provider, model=model)
+    return AIModelSelection(provider="openai", model=os.getenv("OPENAI_MODEL", OPENAI_DEFAULT_TEXT_MODEL))
 
 
 def default_realtime_selection() -> AIModelSelection:
-    provider = _normalize_provider(os.getenv("AI_REALTIME_PROVIDER"), "openai")
-    if provider == "google":
-        model = os.getenv("GOOGLE_REALTIME_MODEL", GOOGLE_DEFAULT_REALTIME_MODEL)
-    else:
-        model = os.getenv("OPENAI_REALTIME_MODEL", OPENAI_DEFAULT_REALTIME_MODEL)
-        provider = "openai"
-    return AIModelSelection(provider=provider, model=model)
+    return AIModelSelection(
+        provider="openai",
+        model=os.getenv("OPENAI_REALTIME_MODEL", OPENAI_DEFAULT_REALTIME_MODEL),
+    )
 
 
 def provider_is_configured(provider: AIProvider) -> bool:
@@ -326,16 +306,6 @@ def _custom_options(env_name: str, capability: str) -> list[AIModelOption]:
 def build_model_catalog() -> AIModelCatalog:
     text_default = default_text_selection()
     realtime_default = default_realtime_selection()
-    discovered_openai_models = _read_openai_compatible_models(
-        api_key=os.getenv("OPENAI_API_KEY"),
-        base_url=os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
-    )
-    custom_openai_base_url = _custom_openai_base_url()
-    discovered_custom_openai_models = _read_openai_compatible_models(
-        api_key=_custom_openai_api_key() if custom_openai_base_url else None,
-        base_url=custom_openai_base_url,
-    )
-
     text_options = [
         _option(
             provider="openai",
@@ -344,81 +314,7 @@ def build_model_catalog() -> AIModelCatalog:
             capability="text",
             default=text_default.provider == "openai",
         ),
-        _option(provider="openai", model="gpt-5.3", capability="text"),
-        _option(provider="openai", model="gpt-5.4-mini", label="OpenAI GPT-5.4 Mini", capability="text"),
-        _option(provider="openai", model="gpt-5.4-nano", label="OpenAI GPT-5.4 Nano", capability="text"),
-        _option(provider="openai", model="gpt-5-mini", capability="text"),
-        _option(provider="openai", model="gpt-5-nano", label="OpenAI GPT-5 Nano", capability="text"),
-        _option(
-            provider="anthropic",
-            model=os.getenv("ANTHROPIC_MODEL", ANTHROPIC_DEFAULT_TEXT_MODEL),
-            label="Anthropic Claude Opus 4.7",
-            capability="text",
-            default=text_default.provider == "anthropic",
-        ),
-        _option(provider="anthropic", model="claude-opus-4-7", label="Anthropic Claude Opus 4.7", capability="text"),
-        _option(provider="anthropic", model="claude-sonnet-4-6", label="Anthropic Claude Sonnet 4.6", capability="text"),
-        _option(provider="anthropic", model="claude-opus-4-1-20250805", capability="text"),
-        _option(provider="anthropic", model="claude-sonnet-4-20250514", capability="text"),
-        _option(provider="anthropic", model="claude-3-5-haiku-20241022", capability="text"),
-        _option(
-            provider="google",
-            model=os.getenv("GOOGLE_TEXT_MODEL", GOOGLE_DEFAULT_TEXT_MODEL),
-            label="Google Gemini 3.1 Pro Preview",
-            capability="text",
-            default=text_default.provider == "google",
-        ),
-        _option(provider="google", model="gemini-3.1-pro-preview", label="Google Gemini 3.1 Pro Preview", capability="text"),
-        _option(provider="google", model="gemini-3-flash-preview", label="Google Gemini 3 Flash Preview", capability="text"),
-        _option(provider="google", model="gemini-2.5-flash", capability="text"),
-        _option(
-            provider="deepseek",
-            model=_deepseek_model(),
-            label="DeepSeek 默认文本模型",
-            capability="text",
-            default=text_default.provider == "deepseek",
-        ),
-        _option(provider="deepseek", model="deepseek-v4-pro", capability="text"),
-        _option(provider="deepseek", model="deepseek-v4-flash", capability="text"),
-        _option(provider="deepseek", model="deepseek-chat", capability="text"),
-        _option(provider="deepseek", model="deepseek-reasoner", capability="text"),
-        _option(
-            provider="kimi",
-            model=_kimi_model(),
-            label="Kimi 默认文本模型",
-            capability="text",
-            default=text_default.provider == "kimi",
-        ),
-        _option(provider="kimi", model="kimi-k2.6", capability="text"),
-        _option(provider="kimi", model="kimi-k2-0905-preview", capability="text"),
-        _option(provider="kimi", model="kimi-k2-turbo-preview", capability="text"),
-        _option(
-            provider="minimax",
-            model=_minimax_model(),
-            label="MiniMax 默认文本模型",
-            capability="text",
-            default=text_default.provider == "minimax",
-        ),
-        _option(provider="minimax", model="MiniMax-M2.7", capability="text"),
-        _option(provider="minimax", model="MiniMax-M2", capability="text"),
-        _option(
-            provider="openai_compatible",
-            model=_custom_openai_model(),
-            label="自定义 OpenAI 兼容模型",
-            capability="text",
-            default=text_default.provider == "openai_compatible",
-        ),
-        _option(
-            provider="anthropic_compatible",
-            model=_custom_anthropic_model(),
-            label="自定义 Anthropic 兼容模型",
-            capability="text",
-            default=text_default.provider == "anthropic_compatible",
-        ),
     ]
-    text_options.extend(_discovered_openai_text_options(discovered_openai_models))
-    text_options.extend(_discovered_openai_text_options(discovered_custom_openai_models, provider="openai_compatible"))
-    text_options.extend(_custom_options("AI_TEXT_MODELS_JSON", "text"))
 
     realtime_options = [
         _option(
@@ -429,80 +325,7 @@ def build_model_catalog() -> AIModelCatalog:
             default=realtime_default.provider == "openai",
             transport="openai_webrtc",
         ),
-        _option(
-            provider="openai",
-            model="gpt-realtime",
-            label="OpenAI gpt-realtime",
-            capability="realtime",
-            transport="openai_webrtc",
-        ),
-        _option(
-            provider="openai",
-            model="gpt-realtime-mini",
-            label="OpenAI gpt-realtime-mini",
-            capability="realtime",
-            transport="openai_webrtc",
-        ),
-        _option(
-            provider="openai",
-            model="gpt-4o-realtime-preview",
-            label="OpenAI GPT-4o Realtime Preview",
-            capability="realtime",
-            transport="openai_webrtc",
-        ),
-        _option(
-            provider="openai",
-            model="gpt-4o-mini-realtime-preview",
-            label="OpenAI GPT-4o Mini Realtime Preview",
-            capability="realtime",
-            transport="openai_webrtc",
-        ),
-        _option(
-            provider="google",
-            model=os.getenv("GOOGLE_REALTIME_MODEL", GOOGLE_DEFAULT_REALTIME_MODEL),
-            label="Google 默认实时语音",
-            capability="realtime",
-            default=realtime_default.provider == "google",
-            transport="gemini_live_websocket",
-        ),
-        _option(
-            provider="google",
-            model="gemini-2.5-flash-native-audio-preview-12-2025",
-            label="Google Gemini 2.5 Flash Native Audio Preview",
-            capability="realtime",
-            transport="gemini_live_websocket",
-        ),
-        _option(
-            provider="google",
-            model="gemini-live-2.5-flash-preview",
-            label="Google Gemini 2.5 Flash Live Preview",
-            capability="realtime",
-            transport="gemini_live_websocket",
-        ),
-        _option(
-            provider="google",
-            model="gemini-2.5-flash-live-preview",
-            label="Google Gemini 2.5 Flash Live Preview",
-            capability="realtime",
-            transport="gemini_live_websocket",
-        ),
-        _option(
-            provider="google",
-            model="gemini-2.0-flash-live-001",
-            label="Google Gemini 2.0 Flash Live",
-            capability="realtime",
-            transport="gemini_live_websocket",
-        ),
-        _option(
-            provider="google",
-            model="gemini-3.1-flash-live-preview",
-            label="Google Gemini 3.1 Flash Live Preview",
-            capability="realtime",
-            transport="gemini_live_websocket",
-        ),
     ]
-    realtime_options.extend(_discovered_openai_realtime_options(discovered_openai_models))
-    realtime_options.extend(_custom_options("AI_REALTIME_MODELS_JSON", "realtime"))
 
     return AIModelCatalog(
         text=_dedupe_options(text_options),
