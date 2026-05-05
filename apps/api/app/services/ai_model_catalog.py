@@ -345,6 +345,7 @@ def build_model_catalog() -> AIModelCatalog:
             default=text_default.provider == "openai",
         ),
         _option(provider="openai", model="gpt-5.3", capability="text"),
+        _option(provider="openai", model="gpt-5.4-mini", label="OpenAI GPT-5.4 Mini", capability="text"),
         _option(provider="openai", model="gpt-5.4-nano", label="OpenAI GPT-5.4 Nano", capability="text"),
         _option(provider="openai", model="gpt-5-mini", capability="text"),
         _option(provider="openai", model="gpt-5-nano", label="OpenAI GPT-5 Nano", capability="text"),

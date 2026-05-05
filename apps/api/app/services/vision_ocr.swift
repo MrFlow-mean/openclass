@@ -7,11 +7,14 @@ struct OCRLine: Codable {
     let text: String
     let x: Double
     let y: Double
+    let width: Double
+    let height: Double
+    let page: Int?
 }
 
 struct OCRPayload: Codable {
     let text: String
-    let lines: [String]
+    let lines: [OCRLine]
 }
 
 enum VisionOCRError: Error {
@@ -60,12 +63,15 @@ func recognizeText(from cgImage: CGImage) throws -> [OCRLine] {
         return OCRLine(
             text: candidate.string,
             x: Double(box.minX),
-            y: Double(box.midY)
+            y: Double(box.midY),
+            width: Double(box.width),
+            height: Double(box.height),
+            page: nil
         )
     }
 }
 
-func orderedTextLines(_ lines: [OCRLine]) -> [String] {
+func orderedTextLines(_ lines: [OCRLine]) -> [OCRLine] {
     let xSorted = lines.sorted { left, right in
         if abs(left.x - right.x) > 0.001 {
             return left.x < right.x
@@ -96,7 +102,7 @@ func orderedTextLines(_ lines: [OCRLine]) -> [String] {
                     return left.x < right.x
                 }
             }
-            return (topToBottom(leftColumn) + topToBottom(rightColumn)).map(\.text)
+            return topToBottom(leftColumn) + topToBottom(rightColumn)
         }
     }
 
@@ -106,7 +112,7 @@ func orderedTextLines(_ lines: [OCRLine]) -> [String] {
         }
         return left.x < right.x
     }
-    return ordered.map(\.text)
+    return ordered
 }
 
 func renderPDFPage(_ page: PDFPage) throws -> CGImage {
@@ -139,7 +145,7 @@ do {
         let startPage = min(requestedStart, document.pageCount)
         let endPage = min(requestedEnd, document.pageCount)
 
-        var textLines: [String] = []
+        var textLines: [OCRLine] = []
         var processedPages = 0
         if startPage <= endPage {
             for pageNumber in startPage...endPage {
@@ -149,7 +155,16 @@ do {
                 guard let page = document.page(at: pageNumber - 1) else {
                     continue
                 }
-                let pageLines = try orderedTextLines(recognizeText(from: renderPDFPage(page)))
+                let pageLines = try orderedTextLines(recognizeText(from: renderPDFPage(page))).map { line in
+                    OCRLine(
+                        text: line.text,
+                        x: line.x,
+                        y: line.y,
+                        width: line.width,
+                        height: line.height,
+                        page: pageNumber
+                    )
+                }
                 if !pageLines.isEmpty {
                     textLines.append(contentsOf: pageLines)
                 }
@@ -159,7 +174,7 @@ do {
 
         try encodeAndPrint(
             OCRPayload(
-                text: textLines.joined(separator: "\n"),
+                text: textLines.map(\.text).joined(separator: "\n"),
                 lines: textLines
             )
         )
@@ -173,7 +188,7 @@ do {
     let textLines = try orderedTextLines(recognizeText(from: cgImage(from: image)))
     try encodeAndPrint(
         OCRPayload(
-            text: textLines.joined(separator: "\n"),
+            text: textLines.map(\.text).joined(separator: "\n"),
             lines: textLines
         )
     )

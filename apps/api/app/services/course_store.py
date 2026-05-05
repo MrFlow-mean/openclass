@@ -23,7 +23,7 @@ from app.models import (
 from app.services.lesson_factory import build_requirements, create_lesson
 
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 STARTER_PACKAGE_TITLES = {"开放课堂课程工作台", "OpenClass 课程工作台"}
 STARTER_LESSON_TITLES = {"勾股定理", "直角三角形基础", "欧几里得几何导论"}
 
@@ -242,6 +242,7 @@ class SqliteCourseStore:
                 concept_index_json TEXT NOT NULL,
                 extracted_text_available INTEGER NOT NULL,
                 text_content TEXT,
+                ocr_chunks_json TEXT NOT NULL DEFAULT '[]',
                 source_path TEXT
             );
 
@@ -295,6 +296,8 @@ class SqliteCourseStore:
         }
         if "scope_lesson_id" not in resource_columns:
             conn.execute("ALTER TABLE resources ADD COLUMN scope_lesson_id TEXT")
+        if "ocr_chunks_json" not in resource_columns:
+            conn.execute("ALTER TABLE resources ADD COLUMN ocr_chunks_json TEXT NOT NULL DEFAULT '[]'")
         package_columns = {
             row["name"]
             for row in conn.execute("PRAGMA table_info(course_packages)").fetchall()
@@ -655,6 +658,7 @@ class SqliteCourseStore:
             concept_index=_loads(row["concept_index_json"], {}),
             extracted_text_available=bool(row["extracted_text_available"]),
             text_content=row["text_content"],
+            ocr_chunks=_loads(row["ocr_chunks_json"], []),
             source_path=row["source_path"],
         )
 
@@ -870,8 +874,8 @@ class SqliteCourseStore:
             """
             INSERT INTO resources(
                 id, package_id, sort_order, name, mime_type, resource_type, size_bytes,
-                uploaded_at, scope_lesson_id, concept_index_json, extracted_text_available, text_content, source_path
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                uploaded_at, scope_lesson_id, concept_index_json, extracted_text_available, text_content, ocr_chunks_json, source_path
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 resource.id,
@@ -886,6 +890,7 @@ class SqliteCourseStore:
                 _dumps(resource.concept_index),
                 int(resource.extracted_text_available),
                 resource.text_content,
+                _dumps([chunk.model_dump(mode="json") for chunk in resource.ocr_chunks]),
                 resource.source_path,
             ),
         )

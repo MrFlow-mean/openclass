@@ -14,7 +14,7 @@
   <array>
     <string>/bin/zsh</string>
     <string>-lc</string>
-    <string>cd "__LAUNCH_DIR__" &amp;&amp; export NEXT_TELEMETRY_DISABLED=1 NODE_ENV=production; while true; do if [[ ! -f "__LAUNCH_DIR__/apps/web/.next/BUILD_ID" ]]; then npm run build:web; fi; echo "[openclass-web] $(date '+%Y-%m-%d %H:%M:%S') starting Next.js production server on :3000"; npm --prefix apps/web run start; code=$?; echo "[openclass-web] $(date '+%Y-%m-%d %H:%M:%S') server exited with code $code; restarting in 5s"; sleep 5; done</string>
+    <string>cd "__LAUNCH_DIR__" &amp;&amp; export NEXT_TELEMETRY_DISABLED=1 NODE_ENV=production; while true; do if [[ ! -f "__LAUNCH_DIR__/apps/web/.next/BUILD_ID" ]]; then npm run build:web; fi; pids="$(lsof -tiTCP:3000 -sTCP:LISTEN 2&gt;/dev/null || true)"; if [[ -n "$pids" ]]; then echo "[openclass-web] $(date '+%Y-%m-%d %H:%M:%S') stopping stale process on :3000: $pids"; print -r -- "$pids" | xargs kill &gt;/dev/null 2&gt;&amp;1 || true; sleep 1; pids="$(lsof -tiTCP:3000 -sTCP:LISTEN 2&gt;/dev/null || true)"; if [[ -n "$pids" ]]; then echo "[openclass-web] $(date '+%Y-%m-%d %H:%M:%S') force-stopping stale process on :3000: $pids"; print -r -- "$pids" | xargs kill -9 &gt;/dev/null 2&gt;&amp;1 || true; fi; fi; echo "[openclass-web] $(date '+%Y-%m-%d %H:%M:%S') starting Next.js production server on :3000"; npm --prefix apps/web run start; code=$?; echo "[openclass-web] $(date '+%Y-%m-%d %H:%M:%S') server exited with code $code; restarting in 5s"; sleep 5; done</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>

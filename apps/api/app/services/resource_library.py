@@ -3,17 +3,21 @@ from __future__ import annotations
 import mimetypes
 import re
 from pathlib import Path
+from typing import Any
 
 from pypdf import PdfReader
 from docx import Document as DocxDocument
 
 from app.models import (
+    OCRChunkLocator,
     LibraryChapter,
     ResourceContextChunk,
     ResourceLibraryItem,
+    ResourceOCRChunk,
     ResourceReferenceContext,
 )
-from app.services.image_ocr import extract_image_text
+from app.services.image_ocr import extract_image_ocr_result, extract_image_text
+from app.services.openai_course_ai import openai_course_ai
 
 
 def _chapter(
@@ -175,6 +179,39 @@ def _extract_markdown_outline(text: str) -> list[LibraryChapter]:
     return chapters
 
 
+def _outline_from_ai(resource_name: str, mime_type: str, text: str) -> list[LibraryChapter]:
+    compact = re.sub(r"\s+", " ", text or "").strip()
+    if len(compact) < 40:
+        return []
+    ai_outline = openai_course_ai.generate_resource_outline(
+        resource_name=resource_name,
+        mime_type=mime_type,
+        extracted_text=compact,
+    )
+    if ai_outline is None or not ai_outline.chapters:
+        return []
+    chapters: list[LibraryChapter] = []
+    for index, chapter in enumerate(ai_outline.chapters):
+        title = chapter.title.strip()
+        if not title:
+            continue
+        level = min(max(int(chapter.level or 1), 1), 3)
+        summary = chapter.summary.strip() or f"来自资料“{resource_name}”的目录章节。"
+        keywords = [item.strip().lower() for item in chapter.keywords if item.strip()]
+        chapters.append(
+            _chapter(
+                title=title,
+                summary=summary,
+                keywords=keywords or _keywords_from_text(f"{title}\n{summary}")[:6],
+                level=level,
+                locator_hint=title,
+                order_index=index,
+                scan_strategy="heading_section",
+            )
+        )
+    return chapters
+
+
 def _keywords_from_text(text: str) -> list[str]:
     stopwords = {
         "the",
@@ -219,6 +256,88 @@ def _keywords_from_text(text: str) -> list[str]:
             continue
         counts[token] = counts.get(token, 0) + 1
     return [token for token, _ in sorted(counts.items(), key=lambda item: item[1], reverse=True)[:8]]
+
+
+def _term_embedding(terms: list[str]) -> dict[str, float]:
+    weights: dict[str, float] = {}
+    for term in terms:
+        normalized = term.strip().lower()
+        if not normalized:
+            continue
+        weights[normalized] = weights.get(normalized, 0.0) + 1.0
+    return weights
+
+
+def _normalize_ocr_line(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "text": str(item.get("text") or "").strip(),
+        "x": float(item.get("x") or 0.0),
+        "y": float(item.get("y") or 0.0),
+        "width": float(item.get("width") or 0.0),
+        "height": float(item.get("height") or 0.0),
+        "page": int(item["page"]) if item.get("page") not in (None, "") else None,
+    }
+
+
+def _build_image_ocr_chunks(lines: list[dict[str, Any]]) -> list[ResourceOCRChunk]:
+    normalized = [_normalize_ocr_line(item) for item in lines if str(item.get("text") or "").strip()]
+    if not normalized:
+        return []
+    normalized.sort(key=lambda line: (line["page"] or 1, -line["y"], line["x"]))
+    chunks: list[ResourceOCRChunk] = []
+    current_group: list[dict[str, Any]] = []
+    group_index = 0
+    last_page = normalized[0]["page"] or 1
+    last_y = normalized[0]["y"]
+    for line in normalized:
+        page = line["page"] or 1
+        if (
+            current_group
+            and (page != last_page or abs(float(line["y"]) - float(last_y)) > 0.06 or len(current_group) >= 3)
+        ):
+            chunk = _ocr_group_to_chunk(current_group, order_index=group_index)
+            if chunk is not None:
+                chunks.append(chunk)
+                group_index += 1
+            current_group = []
+        current_group.append(line)
+        last_page = page
+        last_y = line["y"]
+    if current_group:
+        chunk = _ocr_group_to_chunk(current_group, order_index=group_index)
+        if chunk is not None:
+            chunks.append(chunk)
+    return chunks
+
+
+def _ocr_group_to_chunk(group: list[dict[str, Any]], *, order_index: int) -> ResourceOCRChunk | None:
+    text = " ".join(str(item["text"]).strip() for item in group if str(item["text"]).strip()).strip()
+    if not text:
+        return None
+    xs = [float(item["x"]) for item in group]
+    ys = [float(item["y"]) for item in group]
+    widths = [float(item["width"]) for item in group]
+    heights = [float(item["height"]) for item in group]
+    min_x = min(xs) if xs else 0.0
+    max_x = max((x + w) for x, w in zip(xs, widths, strict=False)) if xs else min_x
+    max_y = max((y + h / 2) for y, h in zip(ys, heights, strict=False)) if ys else 0.0
+    min_y = min((y - h / 2) for y, h in zip(ys, heights, strict=False)) if ys else 0.0
+    locator = OCRChunkLocator(
+        x=min(max(min_x, 0.0), 1.0),
+        y=min(max((min_y + max_y) / 2, 0.0), 1.0),
+        width=min(max(max_x - min_x, 0.0), 1.0),
+        height=min(max(max_y - min_y, 0.0), 1.0),
+        page=group[0].get("page"),
+    )
+    terms = _keywords_from_text(text)
+    return ResourceOCRChunk(
+        text=text,
+        summary=text[:120],
+        terms=terms,
+        embedding=_term_embedding(terms),
+        locator=locator,
+        order_index=order_index,
+    )
 
 
 def _generic_chapter_from_text(title: str, text: str, *, summary_prefix: str) -> LibraryChapter:
@@ -365,20 +484,31 @@ def _build_reference_context(
     chapter: LibraryChapter,
     query: str,
     raw_text: str,
+    *,
+    preferred_chunk_id: str | None = None,
 ) -> ResourceReferenceContext | None:
     compact = re.sub(r"\s+", " ", raw_text).strip()
     if not compact:
         return None
 
-    passages = _rank_passages(compact[:12000], query, anchor=chapter.title)
-    chunks = [
-        ResourceContextChunk(
-            title=f"{chapter.title} / 参考片段 {index}",
-            excerpt=passage[:240],
-            teaching_hint=_build_teaching_hint(chapter.title, passage),
+    chunks: list[ResourceContextChunk]
+    if resource.resource_type == "image" and resource.ocr_chunks:
+        chunks = _image_reference_chunks(
+            chapter_title=chapter.title,
+            query=query,
+            ocr_chunks=resource.ocr_chunks,
+            preferred_chunk_id=preferred_chunk_id,
         )
-        for index, passage in enumerate(passages[:3], start=1)
-    ]
+    else:
+        passages = _rank_passages(compact[:12000], query, anchor=chapter.title)
+        chunks = [
+            ResourceContextChunk(
+                title=f"{chapter.title} / 参考片段 {index}",
+                excerpt=passage[:240],
+                teaching_hint=_build_teaching_hint(chapter.title, passage),
+            )
+            for index, passage in enumerate(passages[:3], start=1)
+        ]
     teaching_points = [
         f"先说明“{chapter.title}”这一章想解决的核心问题，再接回用户当前问题。",
         f"不要照搬原文，优先把 {', '.join(_keywords_from_text(compact)[:3]) or chapter.title} 之间的关系讲顺。",
@@ -398,6 +528,45 @@ def _build_reference_context(
         chunks=chunks,
         full_text=raw_text.strip(),
     )
+
+
+def _image_reference_chunks(
+    *,
+    chapter_title: str,
+    query: str,
+    ocr_chunks: list[ResourceOCRChunk],
+    preferred_chunk_id: str | None,
+) -> list[ResourceContextChunk]:
+    ordered = ocr_chunks
+    if preferred_chunk_id:
+        preferred = [chunk for chunk in ocr_chunks if chunk.id == preferred_chunk_id]
+        others = [chunk for chunk in ocr_chunks if chunk.id != preferred_chunk_id]
+        ordered = preferred + others
+    query_terms = set(_keywords_from_text(query))
+    scored: list[tuple[float, ResourceOCRChunk]] = []
+    for chunk in ordered:
+        lowered = chunk.text.lower()
+        score = 0.0
+        for term in query_terms:
+            if term in lowered:
+                score += 1.5
+        for term in chunk.terms:
+            if term and term in query:
+                score += 0.6
+        if preferred_chunk_id and chunk.id == preferred_chunk_id:
+            score += 5.0
+        scored.append((score, chunk))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    top_chunks = [chunk for _, chunk in scored[:3]] or ordered[:3]
+    return [
+        ResourceContextChunk(
+            title=f"{chapter_title} / 图片片段 {index}",
+            excerpt=chunk.text[:240],
+            teaching_hint=_build_teaching_hint(chapter_title, chunk.text),
+            locator=chunk.locator,
+        )
+        for index, chunk in enumerate(top_chunks, start=1)
+    ]
 
 
 def _extract_markdown_section_text(file_path: Path, chapter: LibraryChapter) -> str:
@@ -478,11 +647,23 @@ def _outline_entries_to_chapters(entries: list[tuple[str, int, int | None]], tot
     return chapters
 
 
-def extract_outline(file_path: Path, original_name: str, mime_type: str) -> tuple[list[LibraryChapter], bool, str | None]:
+def extract_outline(
+    file_path: Path, original_name: str, mime_type: str
+) -> tuple[list[LibraryChapter], bool, str | None, list[ResourceOCRChunk]]:
     name_lower = original_name.lower()
     if mime_type.startswith("image/"):
         generic_title = Path(original_name).stem
-        extracted_text = extract_image_text(file_path)
+        ocr_result = extract_image_ocr_result(file_path)
+        extracted_text = (
+            str(ocr_result.get("text") or "").strip()
+            if isinstance(ocr_result, dict)
+            else extract_image_text(file_path)
+        )
+        ocr_chunks = (
+            _build_image_ocr_chunks(list(ocr_result.get("lines") or []))
+            if isinstance(ocr_result, dict)
+            else []
+        )
         if extracted_text:
             return (
                 [
@@ -494,6 +675,7 @@ def extract_outline(file_path: Path, original_name: str, mime_type: str) -> tupl
                 ],
                 True,
                 extracted_text,
+                ocr_chunks,
             )
         return (
             [
@@ -507,13 +689,17 @@ def extract_outline(file_path: Path, original_name: str, mime_type: str) -> tupl
             ],
             False,
             None,
+            ocr_chunks,
         )
 
     if mime_type in {"text/plain", "text/markdown"} or file_path.suffix.lower() in {".md", ".txt"}:
         text = _read_text_file(file_path)
         outline = _extract_markdown_outline(text)
         if outline:
-            return outline, True, text
+            return outline, True, text, []
+        ai_outline = _outline_from_ai(original_name, mime_type, text)
+        if ai_outline:
+            return ai_outline, True, text, []
         return (
             [
                 _generic_chapter_from_text(
@@ -524,13 +710,17 @@ def extract_outline(file_path: Path, original_name: str, mime_type: str) -> tupl
             ],
             True,
             text,
+            [],
         )
 
     if file_path.suffix.lower() == ".docx":
         text = _read_docx_text(file_path)
         outline = _extract_docx_outline(file_path)
         if outline:
-            return outline, True, text
+            return outline, True, text, []
+        ai_outline = _outline_from_ai(original_name, mime_type, text)
+        if ai_outline:
+            return ai_outline, True, text, []
         return (
             [
                 _generic_chapter_from_text(
@@ -541,6 +731,7 @@ def extract_outline(file_path: Path, original_name: str, mime_type: str) -> tupl
             ],
             True,
             text,
+            [],
         )
 
     if file_path.suffix.lower() == ".pdf":
@@ -564,7 +755,7 @@ def extract_outline(file_path: Path, original_name: str, mime_type: str) -> tupl
             _walk_outline(list(reader.outline))
             chapters = _outline_entries_to_chapters(entries, len(reader.pages))
             if chapters:
-                return chapters, True, None
+                return chapters, True, None, []
         extracted_text = []
         for page in reader.pages[:2]:
             try:
@@ -573,6 +764,9 @@ def extract_outline(file_path: Path, original_name: str, mime_type: str) -> tupl
                 continue
         joined_text = "\n".join(extracted_text).strip()
         if joined_text:
+            ai_outline = _outline_from_ai(original_name, mime_type, joined_text)
+            if ai_outline:
+                return ai_outline, True, joined_text, []
             return (
                 [
                     _generic_chapter_from_text(
@@ -583,9 +777,10 @@ def extract_outline(file_path: Path, original_name: str, mime_type: str) -> tupl
                 ],
                 True,
                 None,
+                [],
             )
         if "csapp" in name_lower or "computer systems" in name_lower:
-            return _curated_csapp_outline(), True, None
+            return _curated_csapp_outline(), True, None, []
 
     generic_title = Path(original_name).stem
     return (
@@ -600,12 +795,13 @@ def extract_outline(file_path: Path, original_name: str, mime_type: str) -> tupl
         ],
         False,
         None,
+        [],
     )
 
 
 def build_resource_item(file_path: Path, original_name: str) -> ResourceLibraryItem:
     mime_type = mimetypes.guess_type(original_name)[0] or "application/octet-stream"
-    outline, extracted, text_content = extract_outline(file_path, original_name, mime_type)
+    outline, extracted, text_content, ocr_chunks = extract_outline(file_path, original_name, mime_type)
     outline = _attach_outline_hierarchy(outline)
     concept_index: dict[str, list[str]] = {}
     for chapter in outline:
@@ -622,6 +818,7 @@ def build_resource_item(file_path: Path, original_name: str) -> ResourceLibraryI
         concept_index=concept_index,
         extracted_text_available=extracted,
         text_content=text_content,
+        ocr_chunks=ocr_chunks,
         source_path=str(file_path),
     )
 
@@ -631,6 +828,7 @@ def extract_reference_context(
     chapter_id: str,
     *,
     user_query: str,
+    preferred_chunk_id: str | None = None,
 ) -> ResourceReferenceContext | None:
     chapter = next((candidate for candidate in resource.outline if candidate.id == chapter_id), None)
     if chapter is None:
@@ -642,6 +840,7 @@ def extract_reference_context(
             chapter,
             user_query,
             raw_text=resource.text_content,
+            preferred_chunk_id=preferred_chunk_id,
         )
 
     if not resource.source_path:
@@ -650,6 +849,7 @@ def extract_reference_context(
             chapter,
             user_query,
             raw_text=resource.text_content or f"{chapter.title}\n{chapter.summary}\n{' '.join(chapter.keywords)}",
+            preferred_chunk_id=preferred_chunk_id,
         )
 
     file_path = Path(resource.source_path)
@@ -660,6 +860,7 @@ def extract_reference_context(
                 chapter,
                 user_query,
                 raw_text=resource.text_content,
+                preferred_chunk_id=preferred_chunk_id,
             )
         return None
 
@@ -680,4 +881,10 @@ def extract_reference_context(
     else:
         raw_text = resource.text_content or f"{chapter.title}\n{chapter.summary}\n{' '.join(chapter.keywords)}"
 
-    return _build_reference_context(resource, chapter, user_query, raw_text)
+    return _build_reference_context(
+        resource,
+        chapter,
+        user_query,
+        raw_text,
+        preferred_chunk_id=preferred_chunk_id,
+    )

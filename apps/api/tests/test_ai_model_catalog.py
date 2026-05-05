@@ -22,6 +22,7 @@ def test_catalog_keeps_model_selection_available_for_pm_workflow(monkeypatch) ->
     assert catalog.defaults["text"].model == "gpt-5"
     assert "gpt-5" in _models_by_provider(catalog, "text", "openai")
     assert "gpt-5.3" in _models_by_provider(catalog, "text", "openai")
+    assert "gpt-5.4-mini" in _models_by_provider(catalog, "text", "openai")
     assert "gpt-5.4-nano" in _models_by_provider(catalog, "text", "openai")
     assert "gpt-5-mini" in _models_by_provider(catalog, "text", "openai")
     assert _models_by_provider(catalog, "realtime", "openai")[0] == "legacy-openai-realtime"

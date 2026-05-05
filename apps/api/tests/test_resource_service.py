@@ -1,5 +1,9 @@
+import pytest
+
 from app.models import CoursePackage, ResourceLibraryItem, WorkspaceState
 from app.services.lesson_factory import create_empty_lesson
+from app.services import resource_library
+from app.services.resource_library import build_resource_item
 from app.services.resource_service import delete_uploaded_resource_file, remove_resource_from_package
 from app.services.workspace_state import package_context_for_lesson, package_view_for_lesson
 
@@ -119,3 +123,38 @@ def test_course_package_resources_are_shared_across_lessons() -> None:
 
     assert [resource.id for resource in view.resources] == ["package_resource"]
     assert [resource.id for resource in context.resources] == ["package_resource"]
+
+
+def test_build_resource_item_uses_catalog_ai_when_no_explicit_outline(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    source = tmp_path / "notes.txt"
+    source.write_text(
+        "这是关于函数与极限的学习资料，先讲极限定义，再讲连续与导数，最后讲应用题。",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        resource_library,
+        "_outline_from_ai",
+        lambda resource_name, mime_type, text: [
+            resource_library._chapter(  # noqa: SLF001
+                title="极限定义",
+                summary="理解极限的基本概念与记号。",
+                keywords=["极限", "定义"],
+                level=1,
+                order_index=0,
+                scan_strategy="heading_section",
+            ),
+            resource_library._chapter(  # noqa: SLF001
+                title="连续与导数",
+                summary="从连续过渡到导数。",
+                keywords=["连续", "导数"],
+                level=1,
+                order_index=1,
+                scan_strategy="heading_section",
+            ),
+        ],
+    )
+
+    resource = build_resource_item(source, "notes.txt")
+
+    assert resource.extracted_text_available is True
+    assert [chapter.title for chapter in resource.outline[:2]] == ["极限定义", "连续与导数"]
