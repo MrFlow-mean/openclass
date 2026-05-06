@@ -74,9 +74,9 @@ def test_catalog_defaults_to_configured_google_when_openai_is_missing(monkeypatc
     assert catalog.defaults["realtime"].model == "gemini-3.1-flash-live-preview"
 
 
-def test_single_key_mode_routes_text_models_through_openai_provider(monkeypatch) -> None:
+def test_single_key_mode_keeps_text_models_on_official_openai(monkeypatch) -> None:
     monkeypatch.setenv("AI_SINGLE_API_KEY_MODE", "true")
-    monkeypatch.setenv("AI_API_KEY", "one-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
     monkeypatch.setenv("AI_TEXT_PROVIDER", "google")
     monkeypatch.setenv("GOOGLE_TEXT_MODEL", "gemini-3-flash-preview")
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
@@ -92,24 +92,22 @@ def test_single_key_mode_routes_text_models_through_openai_provider(monkeypatch)
     catalog = ai_model_catalog.build_model_catalog()
 
     assert catalog.defaults["text"].provider == "openai"
-    assert catalog.defaults["text"].model == "gemini-3-flash-preview"
+    assert catalog.defaults["text"].model == "gpt-5.4-mini"
     assert _models_by_provider(catalog, "text", "openai") == [
         "gpt-5.5",
         "gpt-5.4",
         "gpt-5.4-mini",
-        "gemini-3.1-pro-preview",
-        "gemini-3-flash-preview",
     ]
     assert _models_by_provider(catalog, "text", "google") == []
     openai_realtime = next(option for option in catalog.realtime if option.provider == "openai")
     assert openai_realtime.model == "gpt-realtime-1.5"
-    assert not openai_realtime.enabled
+    assert openai_realtime.enabled
 
 
 def test_single_key_mode_does_not_use_shared_key_for_google_realtime(monkeypatch) -> None:
     monkeypatch.setenv("AI_SINGLE_API_KEY_MODE", "true")
-    monkeypatch.setenv("AI_API_KEY", "one-key")
-    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.gateway.example.com/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.router.example/v1")
     monkeypatch.setenv("AI_REALTIME_PROVIDER", "google")
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
@@ -130,10 +128,10 @@ def test_catalog_includes_official_and_configured_custom_text_providers(monkeypa
     monkeypatch.setenv("KIMI_API_KEY", "kimi-key")
     monkeypatch.setenv("MINIMAX_API_KEY", "minimax-key")
     monkeypatch.setenv("OPENAI_COMPATIBLE_API_KEY", "custom-openai-key")
-    monkeypatch.setenv("OPENAI_COMPATIBLE_BASE_URL", "https://gateway.example.com/v1")
+    monkeypatch.setenv("OPENAI_COMPATIBLE_BASE_URL", "https://router.example.com/v1")
     monkeypatch.setenv("OPENAI_COMPATIBLE_MODEL", "router-model")
     monkeypatch.setenv("ANTHROPIC_COMPATIBLE_API_KEY", "custom-anthropic-key")
-    monkeypatch.setenv("ANTHROPIC_COMPATIBLE_BASE_URL", "https://anthropic-gateway.example.com")
+    monkeypatch.setenv("ANTHROPIC_COMPATIBLE_BASE_URL", "https://anthropic-router.example.com")
     monkeypatch.setenv("ANTHROPIC_COMPATIBLE_MODEL", "claude-router")
 
     catalog = ai_model_catalog.build_model_catalog()

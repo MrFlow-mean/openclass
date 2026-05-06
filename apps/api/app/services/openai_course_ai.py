@@ -47,7 +47,7 @@ from app.services.ai_model_catalog import (
     MINIMAX_DEFAULT_TEXT_MODEL,
     OPENAI_DEFAULT_TEXT_MODEL,
     OPENAI_COMPATIBLE_DEFAULT_TEXT_MODEL,
-    OPENAI_GATEWAY_BASE_URL,
+    OPENAI_OFFICIAL_BASE_URL,
     OPENAI_IMAGE_MODEL,
     default_text_selection,
 )
@@ -109,16 +109,10 @@ def _env_any(*names: str) -> str | None:
 
 
 def _shared_api_key() -> str | None:
-    return _env_any("AI_API_KEY", "OPENAI_API_KEY")
-
-
-def _single_api_key_mode() -> bool:
-    return (os.getenv("AI_SINGLE_API_KEY_MODE") or "").strip().lower() in {"1", "true", "yes", "on"}
+    return os.getenv("OPENAI_API_KEY")
 
 
 def _google_api_key() -> str | None:
-    if _single_api_key_mode():
-        return _shared_api_key()
     return _env_any("GOOGLE_API_KEY", "GEMINI_API_KEY")
 
 
@@ -352,7 +346,7 @@ def bind_text_model_selection(selection: AIModelSelection | None):
 
 class OpenAIConfig(BaseModel):
     api_key: str | None = Field(default_factory=_shared_api_key)
-    base_url: str | None = Field(default_factory=lambda: os.getenv("OPENAI_BASE_URL") or OPENAI_GATEWAY_BASE_URL)
+    base_url: str | None = Field(default_factory=lambda: os.getenv("OPENAI_BASE_URL") or OPENAI_OFFICIAL_BASE_URL)
     default_model: str = Field(default_factory=lambda: os.getenv("OPENAI_MODEL", DEFAULT_TEXT_MODEL))
     image_model: str = Field(default_factory=lambda: os.getenv("OPENAI_IMAGE_MODEL", OPENAI_IMAGE_MODEL))
     pm_model: str | None = Field(default_factory=lambda: os.getenv("OPENAI_PM_MODEL"))
@@ -738,7 +732,7 @@ class OpenAICourseAI:
         )
         self.google_client = (
             GoogleTextClient(self.google_config)
-            if self.google_config.enabled and not _single_api_key_mode()
+            if self.google_config.enabled
             else None
         )
 

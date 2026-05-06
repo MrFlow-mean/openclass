@@ -6,7 +6,7 @@ from typing import Any
 
 from app.models import AIModelCatalog, AIModelOption, AIModelSelection, AIProvider
 
-OPENAI_GATEWAY_BASE_URL = "https://api.bupt8.com/v1"
+OPENAI_OFFICIAL_BASE_URL = "https://api.openai.com/v1"
 OPENAI_PREMIUM_TEXT_MODEL = "gpt-5.5"
 OPENAI_ECONOMY_TEXT_MODEL = "gpt-5.4"
 OPENAI_FAST_TEXT_MODEL = "gpt-5.4-mini"
@@ -31,15 +31,6 @@ MINIMAX_FAST_TEXT_MODEL = "MiniMax-M2.7-highspeed"
 MINIMAX_DEFAULT_TEXT_MODEL = MINIMAX_FAST_TEXT_MODEL
 OPENAI_COMPATIBLE_DEFAULT_TEXT_MODEL = OPENAI_FAST_TEXT_MODEL
 ANTHROPIC_COMPATIBLE_DEFAULT_TEXT_MODEL = ANTHROPIC_FAST_TEXT_MODEL
-
-SINGLE_KEY_TEXT_MODELS: tuple[tuple[str, str], ...] = (
-    (OPENAI_PREMIUM_TEXT_MODEL, "GPT-5.5"),
-    (OPENAI_ECONOMY_TEXT_MODEL, "GPT-5.4"),
-    (OPENAI_FAST_TEXT_MODEL, "GPT-5.4 Mini"),
-    (GOOGLE_ECONOMY_TEXT_MODEL, "Gemini 3.1 Pro Preview"),
-    (GOOGLE_FAST_TEXT_MODEL, "Gemini 3 Flash Preview"),
-)
-
 
 PROVIDER_LABELS: dict[AIProvider, str] = {
     "openai": "OpenAI",
@@ -80,6 +71,8 @@ CURATED_TEXT_MODELS: dict[AIProvider, tuple[tuple[str, str], ...]] = {
     ),
 }
 
+SINGLE_KEY_TEXT_MODELS: tuple[tuple[str, str], ...] = CURATED_TEXT_MODELS["openai"]
+
 
 def _env_any(*names: str) -> str | None:
     for name in names:
@@ -98,17 +91,17 @@ def _single_api_key_mode() -> bool:
 
 
 def _shared_api_key() -> str | None:
-    return _env_any("AI_API_KEY", "OPENAI_API_KEY")
+    return os.getenv("OPENAI_API_KEY")
 
 
 def _openai_realtime_api_key() -> str | None:
     explicit_key = _normalize_optional_secret(os.getenv("OPENAI_REALTIME_API_KEY"))
     if explicit_key:
         return explicit_key
-    base_url = (_env_any("OPENAI_REALTIME_BASE_URL", "OPENAI_BASE_URL") or OPENAI_GATEWAY_BASE_URL).lower()
+    base_url = (_env_any("OPENAI_REALTIME_BASE_URL", "OPENAI_BASE_URL") or OPENAI_OFFICIAL_BASE_URL).lower()
     if _single_api_key_mode() and "api.openai.com" not in base_url:
         return None
-    return _normalize_optional_secret(_env_any("OPENAI_API_KEY", "AI_API_KEY"))
+    return _normalize_optional_secret(os.getenv("OPENAI_API_KEY"))
 
 
 def _google_realtime_api_key() -> str | None:
@@ -216,16 +209,7 @@ def _normalize_provider(value: str | None, default: AIProvider) -> AIProvider:
 def default_text_selection() -> AIModelSelection:
     provider = _normalize_provider(os.getenv("AI_TEXT_PROVIDER"), "openai")
     if _single_api_key_mode():
-        if provider == "google":
-            model = os.getenv("GOOGLE_TEXT_MODEL", GOOGLE_DEFAULT_TEXT_MODEL)
-        elif provider == "deepseek":
-            model = _deepseek_model()
-        elif provider == "kimi":
-            model = _kimi_model()
-        elif provider == "minimax":
-            model = _minimax_model()
-        else:
-            model = os.getenv("OPENAI_MODEL", OPENAI_DEFAULT_TEXT_MODEL)
+        model = os.getenv("OPENAI_MODEL", OPENAI_DEFAULT_TEXT_MODEL)
         return AIModelSelection(provider="openai", model=model)
     if provider == "anthropic":
         model = os.getenv("ANTHROPIC_MODEL", ANTHROPIC_DEFAULT_TEXT_MODEL)
@@ -319,8 +303,6 @@ def _custom_options(env_name: str, capability: str) -> list[AIModelOption]:
         if not isinstance(value, dict):
             continue
         provider = _normalize_provider(str(value.get("provider") or ""), "openai")
-        if capability == "text" and _single_api_key_mode():
-            provider = "openai"
         if capability == "realtime" and provider not in {"openai", "google"}:
             continue
         model = str(value.get("model") or "").strip()

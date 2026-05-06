@@ -292,8 +292,7 @@ def test_openai_compat_chat_completions_mode_parses_json(isolated_ai_log) -> Non
     assert entries[0]["payload"]["output_text"] == '{"title":"勾股定理"}'
 
 
-def test_openai_defaults_to_bupt_gateway_and_gpt_image_2(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("AI_API_KEY", raising=False)
+def test_openai_defaults_to_official_openai_and_gpt_image_2(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     monkeypatch.delenv("OPENAI_COMPAT_API", raising=False)
@@ -301,7 +300,7 @@ def test_openai_defaults_to_bupt_gateway_and_gpt_image_2(monkeypatch: pytest.Mon
 
     ai = OpenAICourseAI()
 
-    assert ai.config.base_url == "https://api.bupt8.com/v1"
+    assert ai.config.base_url == "https://api.openai.com/v1"
     assert ai.config.compat_api == "chat_completions"
     assert ai.config.image_model == "gpt-image-2"
 

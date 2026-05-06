@@ -53,15 +53,15 @@ npm run dev              # 同时启动前后端
 
 ```bash
 OPENAI_API_KEY=...
-OPENAI_BASE_URL=https://api.bupt8.com/v1
+OPENAI_BASE_URL=https://api.openai.com/v1
 OPENAI_COMPAT_API=chat_completions
 OPENAI_MODEL=gpt-5.4-mini  # 可在前端选择 GPT-5.5
 OPENAI_IMAGE_MODEL=gpt-image-2
 AI_TEXT_PROVIDER=openai
-AI_REALTIME_PROVIDER=google
+AI_REALTIME_PROVIDER=openai
 ```
 
-OpenAI/GPT 文本与 GPT Image 2 默认走 `https://api.bupt8.com/v1` 这个 OpenAI-compatible gateway；其他 provider（Anthropic / Google / DeepSeek / Kimi / MiniMax / 自定义兼容网关）和默认模型见 `.env.example`。
+OpenAI/GPT 文本、GPT Image 2 和 OpenAI Realtime 默认走官方 OpenAI API：`https://api.openai.com/v1`。其他 provider（Anthropic / Google / DeepSeek / Kimi / MiniMax / 自定义兼容网关）和默认模型见 `.env.example`。
 
 前端"选择模型"调 `/api/ai-models`，未配置 key 的 provider 会标为未配置；没有可用文本模型时后端回退到本地启发式逻辑，方便离线开发。
 
@@ -91,7 +91,7 @@ OpenClass is an AI course workspace for curriculum design, lesson authoring, and
 - Versioning and branching: use commit / branch / restore for each lesson to explore different explanations and safely roll back.
 - Course graph: connect lessons, concepts, and teaching paths with structured relationships.
 - Realtime voice teaching: extend written lesson content into live explanation with OpenAI Realtime or Google Gemini Live.
-- Multi-provider AI support: OpenAI, Anthropic, Google, DeepSeek, Kimi, MiniMax, custom OpenAI-compatible gateways, and custom Anthropic-compatible gateways.
+- Multi-provider AI support: OpenAI, Anthropic, Google, DeepSeek, Kimi, MiniMax, custom OpenAI-compatible services, and custom Anthropic-compatible services.
 
 ## Product Workflow
 
@@ -126,15 +126,15 @@ Minimal configuration:
 
 ```bash
 OPENAI_API_KEY=...
-OPENAI_BASE_URL=https://api.bupt8.com/v1
+OPENAI_BASE_URL=https://api.openai.com/v1
 OPENAI_COMPAT_API=chat_completions
-OPENAI_MODEL=gpt-5-mini
+OPENAI_MODEL=gpt-5.4-mini
 OPENAI_IMAGE_MODEL=gpt-image-2
 AI_TEXT_PROVIDER=openai
 AI_REALTIME_PROVIDER=openai
 ```
 
-OpenAI/GPT text and GPT Image 2 default to the `https://api.bupt8.com/v1` OpenAI-compatible gateway. Other providers and default models are documented in `.env.example`.
+OpenAI/GPT text, GPT Image 2, and OpenAI Realtime default to the official OpenAI API: `https://api.openai.com/v1`. Other providers and default models are documented in `.env.example`.
 
 The frontend model picker reads `/api/ai-models`. Providers without configured keys are shown as unavailable. If no text model is available, the backend falls back to local heuristic behavior for offline development.
 

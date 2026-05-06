@@ -14,7 +14,7 @@ from app.models import AIModelSelection, Lesson
 from app.services.ai_model_catalog import (
     GOOGLE_DEFAULT_REALTIME_MODEL,
     OPENAI_DEFAULT_REALTIME_MODEL,
-    OPENAI_GATEWAY_BASE_URL,
+    OPENAI_OFFICIAL_BASE_URL,
 )
 from app.services.ai_logging import ai_usage_logger
 
@@ -37,14 +37,14 @@ def _json(data: Any) -> str:
 def _env_realtime_or_shared(name: str, shared_name: str) -> str | None:
     if name in os.environ:
         return _normalize_optional_api_key(os.getenv(name))
-    return _normalize_optional_api_key(os.getenv(shared_name) or os.getenv("AI_API_KEY"))
+    return _normalize_optional_api_key(os.getenv(shared_name))
 
 
 def _env_realtime_base_url() -> str:
     return (
         os.getenv("OPENAI_REALTIME_BASE_URL")
         or os.getenv("OPENAI_BASE_URL")
-        or OPENAI_GATEWAY_BASE_URL
+        or OPENAI_OFFICIAL_BASE_URL
     )
 
 
