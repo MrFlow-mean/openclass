@@ -141,6 +141,14 @@ export interface LessonHistoryGraph {
   current_branch: string;
 }
 
+export interface RealtimeTranscriptTurn {
+  role: "user" | "assistant";
+  content: string;
+  client_session_id?: string | null;
+  transport_event_type: string;
+  created_at: string;
+}
+
 export interface Lesson {
   id: string;
   title: string;
@@ -150,6 +158,7 @@ export interface Lesson {
   board_document: BoardDocument;
   learning_requirements?: LearningRequirementSheet | null;
   history_graph: LessonHistoryGraph;
+  realtime_transcript?: RealtimeTranscriptTurn[];
   created_at: string;
   updated_at: string;
 }
@@ -468,6 +477,13 @@ export interface RealtimeEventLogPayload {
   role: "user" | "assistant";
   transport_event_type: string;
   transcript: string;
+}
+
+export interface RealtimeEventLogResponse {
+  status: string;
+  learning_requirement_sheet?: LearningRequirementSheet | null;
+  ready_for_next_step?: boolean;
+  course_package?: CoursePackage | null;
 }
 
 export interface DocumentSavePayload {

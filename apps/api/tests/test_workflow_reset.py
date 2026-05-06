@@ -14,6 +14,7 @@ from app.models import (
     ResourceOCRChunk,
     SelectionRef,
     UserView,
+    WorkspaceState,
 )
 from app.routers import realtime as realtime_router
 from app.services.ai_workflow import course_workflow
@@ -613,7 +614,11 @@ def test_realtime_routes_create_sessions_and_log_events(monkeypatch: pytest.Monk
     user = _user()
     package = build_initial_course_package()
     lesson = package.lessons[0]
+    workspace = WorkspaceState(packages=[package], active_package_id=package.id)
     monkeypatch.setattr(realtime_router, "_lesson_for_user", lambda lesson_id, user_id: (package, lesson))
+    monkeypatch.setattr(realtime_router, "load_workspace_for_user", lambda user_id: workspace)
+    monkeypatch.setattr(realtime_router, "save_workspace_for_user", lambda user_id, next_workspace: None)
+    monkeypatch.setattr(realtime_router.openai_course_ai, "assess_learning_requirements", lambda **kwargs: None)
     monkeypatch.setattr(openai_realtime_teacher, "create_call", lambda **kwargs: "answer-sdp")
 
     openai_response = realtime_router.connect_realtime_session(
@@ -646,6 +651,6 @@ def test_realtime_routes_create_sessions_and_log_events(monkeypatch: pytest.Monk
     )
 
     assert openai_response.answer_sdp == "answer-sdp"
-    assert openai_response.model == "gpt-realtime-mini"
+    assert openai_response.model == "gpt-4o-realtime-preview"
     assert "当前仅支持 OpenAI 实时语音模型" in str(google_error.value.detail)
-    assert log_response == {"status": "ok"}
+    assert log_response.status == "ok"

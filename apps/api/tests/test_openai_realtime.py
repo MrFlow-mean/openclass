@@ -59,12 +59,14 @@ def test_realtime_call_uses_requested_model_and_lesson_context(isolated_ai_log) 
     assert teacher.client.realtime.calls.payload is not None
     session = teacher.client.realtime.calls.payload["session"]
     assert isinstance(session, dict)
-    assert session["type"] == "transcription"
+    assert session["type"] == "realtime"
     assert session["model"] == "gpt-realtime-1.5"
+    assert session["output_modalities"] == ["audio"]
+    assert session["audio"]["output"]["voice"] == "marin"
     assert session["audio"]["input"]["transcription"]["language"] == "zh"
     assert "勾股定理" in session["audio"]["input"]["transcription"]["prompt"]
-    assert session["audio"]["input"]["turn_detection"]["create_response"] is False
-    assert "output" not in session["audio"]
+    assert session["audio"]["input"]["turn_detection"]["create_response"] is True
+    assert "实时语音 PM AI" in session["instructions"]
     entries = _read_log_entries(isolated_ai_log)
     assert len(entries) == 1
     entry = entries[0]
@@ -114,12 +116,10 @@ def test_realtime_instructions_switch_to_reading_companion_mode(isolated_ai_log)
 
     assert teacher.client.realtime.calls.payload is not None
     session = teacher.client.realtime.calls.payload["session"]
-    prompt = session["audio"]["input"]["transcription"]["prompt"]
-    assert "陪读/轮读/角色扮演朗读" in prompt
-    assert "valid_user_inputs" in prompt
-    assert "这句话是什么意思" not in prompt
-    assert "客人" in prompt
-    assert "服务员" in prompt
+    prompt = session["instructions"]
+    assert "实时语音 PM AI" in prompt
+    assert "学习需求" in prompt
+    assert "后台会把你和用户的完整转写交给 GPT-5.4 nano" in prompt
 
 
 def test_realtime_base_url_defaults_to_gateway_not_api_key(monkeypatch: pytest.MonkeyPatch) -> None:

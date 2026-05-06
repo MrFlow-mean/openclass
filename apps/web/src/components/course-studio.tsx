@@ -98,6 +98,7 @@ import type {
   LearningClarificationStatus,
   LearningNeedCatalogItem,
   Lesson,
+  RealtimeEventLogResponse,
   ResourceMatch,
   ResourceReferenceContext,
   ResourceReferencePrompt,
@@ -340,7 +341,7 @@ const DEFAULT_PAGE_SETTINGS: DocumentPageSettings = {
   footer_text: "",
 };
 
-const OPENAI_REALTIME_LABEL = "OpenAI 实时语音";
+const OPENAI_REALTIME_LABEL = "OpenAI 4o 实时语音 PM";
 
 function realtimeConnectionErrorMessage(error: unknown): string {
   const errorName = typeof error === "object" && error && "name" in error ? String(error.name) : "";
@@ -2350,6 +2351,18 @@ export function CourseStudio() {
   const isPreviewModeRef = useRef(false);
   const getRealtimeClientSessionId = useCallback(() => realtimeClientSessionIdRef.current, []);
   const getRealtimeLessonTitle = useCallback(() => realtimeLessonTitleRef.current, []);
+  function handleRealtimeLogResponse(lessonId: string, response: RealtimeEventLogResponse) {
+    if (response.course_package) {
+      updateCoursePackage(response.course_package, { activeLessonId: lessonId });
+    }
+    if (response.learning_requirement_sheet && response.course_package) {
+      setVoiceStatusText(
+        response.ready_for_next_step
+          ? "学习需求清单已足够，可以进入下一步生成"
+          : "后台 PM 已根据实时对话更新学习需求清单"
+      );
+    }
+  }
   const {
     enqueueRealtimeLogEvent,
     flushRealtimeLogQueue,
@@ -2357,6 +2370,7 @@ export function CourseStudio() {
   } = useRealtimeLogQueue({
     getClientSessionId: getRealtimeClientSessionId,
     getLessonTitle: getRealtimeLessonTitle,
+    onEventLogged: handleRealtimeLogResponse,
   });
 
   const [coursePackage, setCoursePackage] = useState<CoursePackage | null>(null);
@@ -3363,17 +3377,8 @@ export function CourseStudio() {
       return;
     }
     enqueueRealtimeLogEvent(lessonId, "user", eventType, normalized);
-    if (chatRequestInFlightRef.current) {
-      setVoiceStatusText("正在处理上一句语音，请稍等片刻");
-      return;
-    }
-    void handleSubmitChat(
-      {
-        message: normalized,
-        interaction_mode: "ask",
-      },
-      { speakResponse: true }
-    );
+    updateLessonMessages(lessonId, (current) => [...current, createChatMessage("user", normalized)]);
+    setVoiceStatusText("后台 PM 正在根据实时对话整理学习需求清单");
   }
 
   useEffect(() => {
@@ -3467,7 +3472,7 @@ export function CourseStudio() {
       peerConnection.onconnectionstatechange = () => {
         if (peerConnection.connectionState === "connected") {
           setVoiceActive(true);
-          setVoiceStatusText(`${realtimeLabel} 已连接，说话后会先进入 PM/板书管理/讲师工作流`);
+          setVoiceStatusText(`${realtimeLabel} 已连接，可以直接说你的学习需求`);
           setBusyAction((current) => (current === "voice-connect" ? null : current));
           return;
         }
@@ -3513,6 +3518,10 @@ export function CourseStudio() {
           }
           if (payload.type === "response.audio_transcript.done") {
             enqueueRealtimeLogEvent(lessonId, "assistant", payload.type, payload.transcript);
+            updateLessonMessages(lessonId, (current) => [
+              ...current,
+              createChatMessage("assistant", payload.transcript ?? ""),
+            ]);
           }
         } catch {
           // ignore
@@ -3533,7 +3542,7 @@ export function CourseStudio() {
         sdp: realtimeResponse.answer_sdp,
       });
 
-      setVoiceStatusText("OpenAI 实时语音已就绪，正在受控转写");
+      setVoiceStatusText("OpenAI 4o 实时语音 PM 已就绪，后台 nano 会同步整理需求清单");
     } catch (voiceError) {
       stopRealtimeSession("语音连接失败");
       setError(realtimeConnectionErrorMessage(voiceError));

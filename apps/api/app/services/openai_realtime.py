@@ -77,73 +77,6 @@ def _normalize_optional_api_key(value: str | None) -> str | None:
 
 
 def build_realtime_instructions(*, lesson: Lesson, latest_assistant_message: str | None) -> str:
-    guide = lesson.board_teaching_guide
-    if guide and guide.reading_companion and guide.reading_rule:
-        prog = lesson.board_teaching_progress
-        rule = guide.reading_rule
-        turns = rule.turns
-        idx = 0
-        if prog is not None:
-            idx = max(0, min(prog.current_section_index, len(turns)))
-        companion_context = {
-            "lesson_title": lesson.title,
-            "mode": rule.mode,
-            "user_role": rule.user_role,
-            "assistant_role": rule.assistant_role,
-            "rule_text": rule.rule_text,
-            "matching_policy": rule.matching_policy,
-            "source_label": rule.source_label,
-            "context_before": rule.context_before[:1200],
-            "focus_excerpt": rule.focus_excerpt[:4500],
-            "context_after": rule.context_after[:1200],
-            "current_turn_index": idx,
-            "turns": [turn.model_dump(mode="json") for turn in turns],
-            "valid_user_inputs": rule.valid_user_inputs,
-            "latest_teacher_message": latest_assistant_message,
-        }
-        return (
-            "你是 OpenClass 的实时陪读讲师，当前处于「陪读/轮读/角色扮演朗读」模式。"
-            "你的任务不是讲解、改写或扩展课文，而是按 companion_context 里的规则和 turns 与学习者轮流读。"
-            "当学习者输入合规：如果内容对应当前或相邻的 user_role 台词，就只输出下一句 assistant_role 台词，并推进到下一轮。"
-            "合规允许轻微漏词、口误、同义转写和语音识别小错误，但必须语义对应 valid_user_inputs 中当前或附近的台词。"
-            "当学习者输入不合规，例如提问、要求解释、要求改写、跳到无关内容或说停止，就退出陪读循环；"
-            "退出时用一句自然中文说明已回到普通学习工作流，并根据该输入按学习需求/意图处理，不要继续输出角色台词。"
-            "不要暴露 JSON 字段名，不要说你在匹配规则。"
-            "上下文 JSON：\n"
-            f"{_json(companion_context)}"
-        )
-    if guide and guide.realtime_lecture and guide.section_plans:
-        prog = lesson.board_teaching_progress
-        plans = guide.section_plans
-        idx = 0
-        if prog is not None:
-            idx = max(0, min(prog.current_section_index, len(plans) - 1))
-        section = plans[idx]
-        lecture_context = {
-            "lesson_title": lesson.title,
-            "learning_requirements": (
-                lesson.learning_requirements.model_dump(mode="json") if lesson.learning_requirements else None
-            ),
-            "board_teaching_progress": prog.model_dump(mode="json") if prog else None,
-            "current_section_index": idx,
-            "section_total": len(plans),
-            "current_heading": section.heading,
-            "spoken_script": section.spoken_script,
-            "teacher_brief": guide.teacher_brief,
-            "lecture_handout_excerpt": guide.lecture_handout[:1600],
-            "latest_teacher_message": latest_assistant_message,
-        }
-        return (
-            "你是 OpenClass 的实时语音讲师，当前处于「分段朗读讲义」模式。全程使用自然、清晰的简体中文口语。"
-            "首要任务：完整朗读 lecture_context 中的 spoken_script（口播正文）。可以做极少量起承转合用语，但不要删减关键句，不要擅自改写事实与推理顺序，"
-            "不要说「根据 JSON」或暴露内部字段名。"
-            "读完后：若还未到最后一段（下一索引仍小于总段数），明确提示学习者说一声「继续」或使用界面上的继续，再读下一段；不要抢先朗读未给出的段落。"
-            "若学习者中途提问，先简短回答，再回到当前段的朗读任务。"
-            "不要把 learning_requirements 整段照念，仅用于把握难度与术语。"
-            "上下文 JSON：\n"
-            f"{_json(lecture_context)}"
-        )
-
     board_context = {
         "lesson_title": lesson.title,
         "lesson_summary": lesson.summary,
@@ -162,15 +95,14 @@ def build_realtime_instructions(*, lesson: Lesson, latest_assistant_message: str
     }
 
     return (
-        "You are the realtime PM entry for OpenClass, an AI course workbench. "
-        "Before a board document exists, your job is to talk naturally with the learner, identify what they want to learn, "
-        "their current level/background, the scenario or purpose, the expected output format, and any must-cover points. "
-        "Ask at most one or two high-value follow-up questions, and stop asking when the requirements are sufficient or the learner says to start immediately. "
-        "When the learner corrects themselves, replace the active requirement instead of keeping both. "
-        "Do not deliver a long lesson in the realtime layer; once the need is clear, acknowledge that the board generation can start. "
-        "The backend will persist every completed transcript into the lesson's LearningRequirementSheet. "
-        "Use the lesson context to keep Chinese transcription and course terminology accurate. "
-        "Here is the current lesson context as JSON:\n"
+        "你是 OpenClass 的实时语音 PM AI，负责和学习者自然对话，探寻学习需求。"
+        "你的目标不是直接生成讲义，也不是长篇讲课，而是快速弄清楚：学习主题、当前水平/已学背景、学习目的或使用场景、"
+        "希望的讲义形态、目标深度、必须覆盖或避免的内容。"
+        "每轮最多问一个高价值问题；如果用户已经说得足够清楚，就简短确认“需求已经够了，后台会整理需求清单并进入下一步”。"
+        "当用户纠正自己时，以最新表达为准，替换旧需求。"
+        "不要暴露 JSON、模型名、后台流程或字段名；用自然简体中文口语交流。"
+        "后台会把你和用户的完整转写交给 GPT-5.4 nano 整理成 LearningRequirementSheet，所以你只需要把对话推进清楚。"
+        "当前课程上下文 JSON：\n"
         f"{_json(board_context)}"
     )
 
@@ -236,8 +168,10 @@ class OpenAIRealtimeTeacher:
             latest_assistant_message=latest_assistant_message,
         )
         session = {
-            "type": "transcription",
+            "type": "realtime",
             "model": model,
+            "instructions": instructions,
+            "output_modalities": ["audio"],
             "audio": {
                 "input": {
                     "noise_reduction": {"type": "near_field"},
@@ -248,12 +182,15 @@ class OpenAIRealtimeTeacher:
                     },
                     "turn_detection": {
                         "type": "server_vad",
-                        "create_response": False,
-                        "interrupt_response": False,
+                        "create_response": True,
+                        "interrupt_response": True,
                         "prefix_padding_ms": 300,
                         "silence_duration_ms": 650,
                     },
-                }
+                },
+                "output": {
+                    "voice": self.config.voice,
+                },
             },
         }
         if not self.client:

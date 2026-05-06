@@ -10,6 +10,7 @@ import type {
   RealtimeConnectPayload,
   RealtimeConnectResponse,
   RealtimeEventLogPayload,
+  RealtimeEventLogResponse,
   ScopeAction,
   WorkspaceState,
   UserView,
@@ -402,7 +403,7 @@ export const api = {
     });
   },
   logRealtimeEvent(lessonId: string, payload: RealtimeEventLogPayload) {
-    return request<{ status: string }>(`/api/lessons/${lessonId}/realtime/events`, {
+    return request<RealtimeEventLogResponse>(`/api/lessons/${lessonId}/realtime/events`, {
       method: "POST",
       body: JSON.stringify(payload),
     });
