@@ -2338,6 +2338,8 @@ export function CourseStudio() {
   const realtimeChannelRef = useRef<RTCDataChannel | null>(null);
   const realtimeStreamRef = useRef<MediaStream | null>(null);
   const openAIResponseInProgressRef = useRef(false);
+  const scriptedRealtimeResponseInProgressRef = useRef(false);
+  const scriptedRealtimeResponseClearTimerRef = useRef<number | null>(null);
   const realtimeLessonIdRef = useRef<string | null>(null);
   const realtimeClientSessionIdRef = useRef<string | null>(null);
   const realtimeLessonTitleRef = useRef<string | null>(null);
@@ -3038,8 +3040,11 @@ export function CourseStudio() {
         : [];
       updateLessonMessages(lessonId, (current) => [...current, ...assistantMessages]);
       if (options?.speakResponse) {
-        speakControlledTeacherMessage(response.teacher_message);
-        setVoiceStatusText("讲师回答已通过受控工作流播出，可以继续提问");
+        if (speakRealtimeTeacherMessage(response.teacher_message, lessonId)) {
+          setVoiceStatusText("讲师回答正通过实时语音播出，可以继续提问");
+        }
+      } else if (voiceActive) {
+        speakRealtimeTeacherMessage(response.teacher_message, lessonId);
       }
       if (!payloadWithConversation.scope_action) {
         clearSelection();
@@ -3314,6 +3319,11 @@ export function CourseStudio() {
     realtimeChannelRef.current?.close();
     realtimeChannelRef.current = null;
     openAIResponseInProgressRef.current = false;
+    scriptedRealtimeResponseInProgressRef.current = false;
+    if (scriptedRealtimeResponseClearTimerRef.current !== null) {
+      window.clearTimeout(scriptedRealtimeResponseClearTimerRef.current);
+      scriptedRealtimeResponseClearTimerRef.current = null;
+    }
 
     if (realtimePeerRef.current) {
       realtimePeerRef.current.ontrack = null;
@@ -3364,20 +3374,61 @@ export function CourseStudio() {
     stopRealtimeSession(statusText);
   });
 
-  function speakControlledTeacherMessage(content: string) {
-    if (typeof window === "undefined" || !("speechSynthesis" in window)) {
-      return;
-    }
+  function speakRealtimeTeacherMessage(content: string, lessonId: string) {
     const text = content.trim();
     if (!text) {
-      return;
+      return false;
     }
-    window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = "zh-CN";
-    utterance.rate = 1;
-    utterance.pitch = 1;
-    window.speechSynthesis.speak(utterance);
+    const dataChannel = realtimeChannelRef.current;
+    if (
+      !dataChannel ||
+      dataChannel.readyState !== "open" ||
+      realtimeLessonIdRef.current !== lessonId
+    ) {
+      return false;
+    }
+    if (openAIResponseInProgressRef.current) {
+      dataChannel.send(JSON.stringify({ type: "response.cancel" }));
+      openAIResponseInProgressRef.current = false;
+    }
+    resetOpenAIRemoteAudioPlayback();
+    if (scriptedRealtimeResponseClearTimerRef.current !== null) {
+      window.clearTimeout(scriptedRealtimeResponseClearTimerRef.current);
+      scriptedRealtimeResponseClearTimerRef.current = null;
+    }
+    scriptedRealtimeResponseInProgressRef.current = true;
+    dataChannel.send(
+      JSON.stringify({
+        type: "conversation.item.create",
+        item: {
+          type: "message",
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: [
+                "请用中文自然口语朗读并讲解下面这段 AI 讲师回复。",
+                "这是系统已经生成好的讲解内容，请保持原意，不要追问需求，不要提到 JSON、后台流程或模型名。",
+                "可以把书面连接词改得更口语，但不要额外扩展新知识。",
+                "",
+                text,
+              ].join("\n"),
+            },
+          ],
+        },
+      })
+    );
+    dataChannel.send(
+      JSON.stringify({
+        type: "response.create",
+        response: {
+          modalities: ["audio"],
+          instructions: "用自然语速、清晰中文，把上一条文本作为课堂讲解播出。",
+        },
+      })
+    );
+    setVoiceStatusText("正在用 realtime 语音讲解最新内容");
+    return true;
   }
 
   function handleRealtimeUserTranscript(lessonId: string, transcript: string, eventType: string) {
@@ -3508,11 +3559,25 @@ export function CourseStudio() {
           }
           if (payload.type === "response.done" || payload.type === "response.audio.done") {
             openAIResponseInProgressRef.current = false;
+            if (scriptedRealtimeResponseInProgressRef.current) {
+              if (scriptedRealtimeResponseClearTimerRef.current !== null) {
+                window.clearTimeout(scriptedRealtimeResponseClearTimerRef.current);
+              }
+              scriptedRealtimeResponseClearTimerRef.current = window.setTimeout(() => {
+                scriptedRealtimeResponseInProgressRef.current = false;
+                scriptedRealtimeResponseClearTimerRef.current = null;
+              }, 1500);
+            }
           }
           if (payload.type === "input_audio_buffer.speech_started") {
             if (openAIResponseInProgressRef.current && dataChannel.readyState === "open") {
               dataChannel.send(JSON.stringify({ type: "response.cancel" }));
               openAIResponseInProgressRef.current = false;
+              scriptedRealtimeResponseInProgressRef.current = false;
+              if (scriptedRealtimeResponseClearTimerRef.current !== null) {
+                window.clearTimeout(scriptedRealtimeResponseClearTimerRef.current);
+                scriptedRealtimeResponseClearTimerRef.current = null;
+              }
             }
             resetOpenAIRemoteAudioPlayback();
           }
@@ -3528,6 +3593,15 @@ export function CourseStudio() {
           }
           if (payload.type === "response.audio_transcript.done") {
             enqueueRealtimeLogEvent(lessonId, "assistant", payload.type, payload.transcript);
+            if (scriptedRealtimeResponseInProgressRef.current) {
+              scriptedRealtimeResponseInProgressRef.current = false;
+              if (scriptedRealtimeResponseClearTimerRef.current !== null) {
+                window.clearTimeout(scriptedRealtimeResponseClearTimerRef.current);
+                scriptedRealtimeResponseClearTimerRef.current = null;
+              }
+              setVoiceStatusText("最新讲解已通过 realtime 语音播出");
+              return;
+            }
             updateLessonMessages(lessonId, (current) => [
               ...current,
               createChatMessage("assistant", payload.transcript ?? ""),
