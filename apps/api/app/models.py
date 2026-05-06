@@ -55,6 +55,8 @@ ScopeAction = Literal[
 BoardAction = Literal[
     "clarify_request",
     "no_change",
+    "teach_realtime",
+    "reading_companion",
     "edit_board",
     "append_section",
     "create_new_lesson",
@@ -205,6 +207,21 @@ class PatchProposal(BaseModel):
     suggested_title: str | None = None
 
 
+LearningNeedType = Literal["main", "subtopic", "question", "extension", "deferred", "new_topic"]
+LearningNeedStatus = Literal["active", "answered", "deferred"]
+
+
+class LearningNeedCatalogItem(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("need"))
+    parent_id: str | None = None
+    section_path: str = ""
+    title: str
+    content: str
+    need_type: LearningNeedType = "main"
+    linked_board_heading: str | None = None
+    status: LearningNeedStatus = "active"
+
+
 class LearningRequirementSheet(BaseModel):
     theme: str
     learning_goal: str
@@ -212,12 +229,42 @@ class LearningRequirementSheet(BaseModel):
     known_background: str
     current_questions: list[str]
     learning_need_checklist: list[str] = Field(default_factory=list)
+    learning_need_catalog: list[LearningNeedCatalogItem] = Field(default_factory=list)
     target_depth: str
     output_preference: str
     boundary: str
     board_scope: list[str]
     success_criteria: str
     risk_notes: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def keep_need_views_in_sync(self) -> "LearningRequirementSheet":
+        if not self.learning_need_catalog and self.learning_need_checklist:
+            self.learning_need_catalog = [
+                LearningNeedCatalogItem(
+                    section_path=str(index + 1),
+                    title=_learning_need_title(item, index),
+                    content=item,
+                    need_type="main",
+                )
+                for index, item in enumerate(self.learning_need_checklist)
+            ]
+        if not self.learning_need_checklist and self.learning_need_catalog:
+            self.learning_need_checklist = [
+                item.content.strip() or item.title.strip()
+                for item in self.learning_need_catalog
+                if item.content.strip() or item.title.strip()
+            ]
+        return self
+
+
+def _learning_need_title(value: str, index: int) -> str:
+    trimmed = value.strip()
+    for separator in ("：", ":", "，", ",", "。"):
+        if separator in trimmed:
+            trimmed = trimmed.split(separator, 1)[0].strip()
+            break
+    return trimmed[:32] or f"需求 {index + 1}"
 
 
 class LearningClarificationStatus(BaseModel):
@@ -273,6 +320,14 @@ class LessonHistoryGraph(BaseModel):
     current_branch: str = "main"
 
 
+class RealtimeTranscriptTurn(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+    client_session_id: str | None = None
+    transport_event_type: str = ""
+    created_at: str = Field(default_factory=now_iso)
+
+
 class Lesson(BaseModel):
     id: str = Field(default_factory=lambda: new_id("lesson"))
     title: str
@@ -285,6 +340,7 @@ class Lesson(BaseModel):
     learning_requirements: LearningRequirementSheet | None = None
     teaching_guide: TeachingGuide
     history_graph: LessonHistoryGraph
+    realtime_transcript: list[RealtimeTranscriptTurn] = Field(default_factory=list)
     created_at: str = Field(default_factory=now_iso)
     updated_at: str = Field(default_factory=now_iso)
 
@@ -314,6 +370,24 @@ class LibraryChapter(BaseModel):
     scan_strategy: ResourceScanStrategy = "outline_only"
 
 
+class OCRChunkLocator(BaseModel):
+    x: float
+    y: float
+    width: float
+    height: float
+    page: int | None = None
+
+
+class ResourceOCRChunk(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("ocrchunk"))
+    text: str
+    summary: str = ""
+    terms: list[str] = Field(default_factory=list)
+    embedding: dict[str, float] = Field(default_factory=dict)
+    locator: OCRChunkLocator | None = None
+    order_index: int = 0
+
+
 class ResourceLibraryItem(BaseModel):
     id: str = Field(default_factory=lambda: new_id("resource"))
     name: str
@@ -326,6 +400,7 @@ class ResourceLibraryItem(BaseModel):
     concept_index: dict[str, list[str]] = Field(default_factory=dict)
     extracted_text_available: bool = False
     text_content: str | None = None
+    ocr_chunks: list[ResourceOCRChunk] = Field(default_factory=list)
     source_path: str | None = None
 
 
@@ -415,6 +490,9 @@ class ResourceMatch(BaseModel):
     reason: str
     score: float = 0.0
     is_high_overlap: bool = False
+    matched_chunk_id: str | None = None
+    matched_excerpt: str | None = None
+    chunk_locator: OCRChunkLocator | None = None
 
 
 class ResourceReferencePrompt(BaseModel):
@@ -422,6 +500,7 @@ class ResourceReferencePrompt(BaseModel):
     chapter_id: str
     resource_name: str
     chapter_title: str
+    chunk_id: str | None = None
     question: str
     reason: str
     confirm_label: str = "参考这一章节"
@@ -433,6 +512,7 @@ class ResourceContextChunk(BaseModel):
     title: str
     excerpt: str
     teaching_hint: str
+    locator: OCRChunkLocator | None = None
 
 
 class ResourceReferenceContext(BaseModel):
@@ -444,6 +524,20 @@ class ResourceReferenceContext(BaseModel):
     teaching_points: list[str] = Field(default_factory=list)
     chunks: list[ResourceContextChunk] = Field(default_factory=list)
     full_text: str = Field(default="", exclude=True, repr=False)
+
+
+class TeachingLocationContext(BaseModel):
+    source: Literal["selection", "board", "resource", "ocr", "unknown"]
+    target_text: str = ""
+    surrounding_text: str = ""
+    heading: str | None = None
+    resource_id: str | None = None
+    chapter_id: str | None = None
+    chunk_id: str | None = None
+    locator: OCRChunkLocator | None = None
+    reason: str = ""
+    score: float = 0.0
+    needs_clarification: bool = False
 
 
 class BoardDecision(BaseModel):
@@ -479,6 +573,7 @@ class BoardSectionTeachingPlan(BaseModel):
     order_index: int = 0
     heading: str
     board_excerpt: str = ""
+    spoken_script: str = ""
     core_points: list[str] = Field(default_factory=list)
     teaching_steps: list[str] = Field(default_factory=list)
     teaching_method: str = ""
@@ -488,10 +583,37 @@ class BoardSectionTeachingPlan(BaseModel):
     transition_to_next: str = ""
 
 
+ReadingCompanionTurnRole = Literal["user", "assistant", "other"]
+
+
+class ReadingCompanionTurn(BaseModel):
+    order_index: int = 0
+    speaker: str = ""
+    text: str
+    role: ReadingCompanionTurnRole = "other"
+
+
+class ReadingCompanionRule(BaseModel):
+    mode: str = "role_play_dialogue"
+    user_role: str = ""
+    assistant_role: str = ""
+    rule_text: str = ""
+    matching_policy: str = ""
+    context_before: str = ""
+    focus_excerpt: str = ""
+    context_after: str = ""
+    source_label: str = ""
+    valid_user_inputs: list[str] = Field(default_factory=list)
+    turns: list[ReadingCompanionTurn] = Field(default_factory=list)
+
+
 class BoardTeachingGuide(BaseModel):
     board_document_id: str = ""
     board_snapshot_hash: str = ""
     board_title: str = ""
+    realtime_lecture: bool = False
+    reading_companion: bool = False
+    reading_rule: ReadingCompanionRule | None = None
     selected_items: list[BoardTeachingSelectedItem] = Field(default_factory=list)
     need_mappings: list[BoardNeedMapping] = Field(default_factory=list)
     teaching_flow: list[str] = Field(default_factory=list)
@@ -527,6 +649,7 @@ class ChatRequest(BaseModel):
     resource_reference_action: ResourceReferenceAction | None = None
     resource_reference_resource_id: str | None = None
     resource_reference_chapter_id: str | None = None
+    resource_reference_chunk_id: str | None = None
     board_edit_action: BoardEditConfirmationAction | None = None
     board_edit_topic: str | None = None
     teaching_action: TeachingAction | None = None
@@ -542,6 +665,7 @@ class LessonView(BaseModel):
     board_document: BoardDocument
     learning_requirements: LearningRequirementSheet | None = None
     history_graph: LessonHistoryGraph
+    realtime_transcript: list[RealtimeTranscriptTurn] = Field(default_factory=list)
     created_at: str
     updated_at: str
 
@@ -637,6 +761,7 @@ class ChatResponse(BaseModel):
     board_edit_prompt: BoardEditPrompt | None = None
     selected_reference: ResourceReferenceContext | None = None
     created_lesson: LessonView | None = None
+    teaching_location: TeachingLocationContext | None = None
     teaching_progress: SectionTeachingProgressView | None = None
     course_package: CoursePackageView
 
@@ -736,3 +861,10 @@ class RealtimeTranscriptLogRequest(BaseModel):
     role: Literal["user", "assistant"]
     transport_event_type: str
     transcript: str
+
+
+class RealtimeTranscriptLogResponse(BaseModel):
+    status: str
+    learning_requirement_sheet: LearningRequirementSheet | None = None
+    ready_for_next_step: bool = False
+    course_package: CoursePackageView | None = None

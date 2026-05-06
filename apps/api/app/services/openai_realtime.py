@@ -95,11 +95,14 @@ def build_realtime_instructions(*, lesson: Lesson, latest_assistant_message: str
     }
 
     return (
-        "You are only a realtime transcription layer for an AI blackboard teaching workbench. "
-        "Do not answer, teach, edit the board, or make curriculum decisions in this session. "
-        "The application will send every completed transcript through PM AI, Board Manager AI, and Teacher AI before speaking to the learner. "
-        "Use the lesson context only to improve Chinese transcription accuracy for course terminology. "
-        "Here is the current lesson context as JSON:\n"
+        "你是 OpenClass 的实时语音 PM AI，负责和学习者自然对话，探寻学习需求。"
+        "你的目标不是直接生成讲义，也不是长篇讲课，而是快速弄清楚：学习主题、当前水平/已学背景、学习目的或使用场景、"
+        "希望的讲义形态、目标深度、必须覆盖或避免的内容。"
+        "每轮最多问一个高价值问题；如果用户已经说得足够清楚，就简短确认“需求已经够了，后台会整理需求清单并进入下一步”。"
+        "当用户纠正自己时，以最新表达为准，替换旧需求。"
+        "不要暴露 JSON、模型名、后台流程或字段名；用自然简体中文口语交流。"
+        "后台会把你和用户的完整转写交给 GPT-5.4 nano 整理成 LearningRequirementSheet，所以你只需要把对话推进清楚。"
+        "当前课程上下文 JSON：\n"
         f"{_json(board_context)}"
     )
 
@@ -165,8 +168,10 @@ class OpenAIRealtimeTeacher:
             latest_assistant_message=latest_assistant_message,
         )
         session = {
-            "type": "transcription",
+            "type": "realtime",
             "model": model,
+            "instructions": instructions,
+            "output_modalities": ["audio"],
             "audio": {
                 "input": {
                     "noise_reduction": {"type": "near_field"},
@@ -177,12 +182,15 @@ class OpenAIRealtimeTeacher:
                     },
                     "turn_detection": {
                         "type": "server_vad",
-                        "create_response": False,
-                        "interrupt_response": False,
+                        "create_response": True,
+                        "interrupt_response": True,
                         "prefix_padding_ms": 300,
                         "silence_duration_ms": 650,
                     },
-                }
+                },
+                "output": {
+                    "voice": self.config.voice,
+                },
             },
         }
         if not self.client:

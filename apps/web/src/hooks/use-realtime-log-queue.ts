@@ -1,7 +1,7 @@
 import { useCallback, useRef } from "react";
 
 import { api } from "@/lib/api";
-import type { RealtimeEventLogPayload } from "@/types";
+import type { RealtimeEventLogPayload, RealtimeEventLogResponse } from "@/types";
 
 type QueuedRealtimeLogEvent = {
   lessonId: string;
@@ -11,11 +11,13 @@ type QueuedRealtimeLogEvent = {
 type UseRealtimeLogQueueOptions = {
   getClientSessionId: () => string | null;
   getLessonTitle: () => string | null;
+  onEventLogged?: (lessonId: string, response: RealtimeEventLogResponse) => void;
 };
 
 export function useRealtimeLogQueue({
   getClientSessionId,
   getLessonTitle,
+  onEventLogged,
 }: UseRealtimeLogQueueOptions) {
   const queueRef = useRef<QueuedRealtimeLogEvent[]>([]);
   const flushInFlightRef = useRef(false);
@@ -28,7 +30,8 @@ export function useRealtimeLogQueue({
     try {
       while (queueRef.current.length > 0) {
         const nextEvent = queueRef.current[0];
-        await api.logRealtimeEvent(nextEvent.lessonId, nextEvent.payload);
+        const response = await api.logRealtimeEvent(nextEvent.lessonId, nextEvent.payload);
+        onEventLogged?.(nextEvent.lessonId, response);
         queueRef.current.shift();
       }
     } catch {
@@ -36,7 +39,7 @@ export function useRealtimeLogQueue({
     } finally {
       flushInFlightRef.current = false;
     }
-  }, []);
+  }, [onEventLogged]);
 
   const flushRealtimeLogQueueWithBeacon = useCallback(() => {
     if (flushInFlightRef.current || queueRef.current.length === 0) {

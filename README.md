@@ -32,10 +32,10 @@ npm run dev              # 同时启动前后端
 OPENAI_API_KEY=...
 OPENAI_BASE_URL=https://api.bupt8.com/v1
 OPENAI_COMPAT_API=chat_completions
-OPENAI_MODEL=gpt-5.4-mini  # 可在前端选择 GPT-5.5
+OPENAI_MODEL=gpt-5-mini
 OPENAI_IMAGE_MODEL=gpt-image-2
 AI_TEXT_PROVIDER=openai
-AI_REALTIME_PROVIDER=google
+AI_REALTIME_PROVIDER=openai
 ```
 
 OpenAI/GPT 文本与 GPT Image 2 默认走 `https://api.bupt8.com/v1` 这个 OpenAI-compatible gateway；其他 provider（Anthropic / Google / DeepSeek / Kimi / MiniMax / 自定义兼容网关）和默认模型见 `.env.example`。

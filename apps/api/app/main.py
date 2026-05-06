@@ -8,8 +8,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.models import AIModelCatalog
 from app.routers import auth, chat, documents, realtime, resources, workspace
 from app.services.ai_model_catalog import build_model_catalog
-from app.services.openai_course_ai import openai_course_ai
-from app.services.openai_realtime import google_realtime_teacher, openai_realtime_teacher
 from app.services.workspace_state import ensure_data_dirs
 
 ensure_data_dirs()
@@ -41,10 +39,9 @@ app.include_router(resources.router)
 def health() -> dict[str, object]:
     return {
         "status": "ok",
-        "openai": openai_course_ai.status(),
-        "realtime": {
-            "openai": openai_realtime_teacher.status(),
-            "google": google_realtime_teacher.status(),
+        "classroom_ai": {
+            "status": "pm_requirement_workflow_active",
+            "detail": "PM 对话、学习需求清单和板书生成入口已启用。",
         },
     }
 

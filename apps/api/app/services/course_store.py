@@ -15,14 +15,16 @@ from app.models import (
     CoursePackage,
     Lesson,
     LessonHistoryGraph,
+    LearningNeedCatalogItem,
     LibraryChapter,
+    RealtimeTranscriptTurn,
     ResourceLibraryItem,
     WorkspaceState,
 )
-from app.services.lesson_factory import create_lesson
+from app.services.lesson_factory import build_requirements, create_lesson
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 8
 STARTER_PACKAGE_TITLES = {"开放课堂课程工作台", "OpenClass 课程工作台"}
 STARTER_LESSON_TITLES = {"勾股定理", "直角三角形基础", "欧几里得几何导论"}
 
@@ -140,6 +142,7 @@ class SqliteCourseStore:
                 board_teaching_progress_json TEXT,
                 learning_requirements_json TEXT,
                 teaching_guide_json TEXT NOT NULL,
+                realtime_transcript_json TEXT NOT NULL DEFAULT '[]',
                 current_branch TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
@@ -192,6 +195,26 @@ class SqliteCourseStore:
             CREATE INDEX IF NOT EXISTS idx_lesson_commits_lesson
                 ON lesson_commits(lesson_id, sort_order);
 
+            CREATE TABLE IF NOT EXISTS lesson_learning_needs (
+                lesson_id TEXT NOT NULL REFERENCES lessons(id) ON DELETE CASCADE,
+                sort_order INTEGER NOT NULL,
+                item_id TEXT,
+                parent_item_id TEXT,
+                section_path TEXT,
+                title TEXT,
+                content TEXT NOT NULL,
+                need_type TEXT NOT NULL DEFAULT 'main',
+                linked_board_heading TEXT,
+                status TEXT NOT NULL DEFAULT 'active',
+                source_role TEXT NOT NULL DEFAULT 'pm_ai',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (lesson_id, sort_order)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_lesson_learning_needs_lesson
+                ON lesson_learning_needs(lesson_id, sort_order);
+
             CREATE TABLE IF NOT EXISTS lesson_commit_parents (
                 commit_id TEXT NOT NULL REFERENCES lesson_commits(id) ON DELETE CASCADE,
                 parent_id TEXT NOT NULL,
@@ -221,6 +244,7 @@ class SqliteCourseStore:
                 concept_index_json TEXT NOT NULL,
                 extracted_text_available INTEGER NOT NULL,
                 text_content TEXT,
+                ocr_chunks_json TEXT NOT NULL DEFAULT '[]',
                 source_path TEXT
             );
 
@@ -268,18 +292,109 @@ class SqliteCourseStore:
         }
         if "board_teaching_progress_json" not in lesson_columns:
             conn.execute("ALTER TABLE lessons ADD COLUMN board_teaching_progress_json TEXT")
+        if "realtime_transcript_json" not in lesson_columns:
+            conn.execute("ALTER TABLE lessons ADD COLUMN realtime_transcript_json TEXT NOT NULL DEFAULT '[]'")
         resource_columns = {
             row["name"]
             for row in conn.execute("PRAGMA table_info(resources)").fetchall()
         }
         if "scope_lesson_id" not in resource_columns:
             conn.execute("ALTER TABLE resources ADD COLUMN scope_lesson_id TEXT")
+        if "ocr_chunks_json" not in resource_columns:
+            conn.execute("ALTER TABLE resources ADD COLUMN ocr_chunks_json TEXT NOT NULL DEFAULT '[]'")
         package_columns = {
             row["name"]
             for row in conn.execute("PRAGMA table_info(course_packages)").fetchall()
         }
         if "owner_user_id" not in package_columns:
             conn.execute("ALTER TABLE course_packages ADD COLUMN owner_user_id TEXT")
+        need_columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(lesson_learning_needs)").fetchall()
+        }
+        need_column_sql = {
+            "item_id": "TEXT",
+            "parent_item_id": "TEXT",
+            "section_path": "TEXT",
+            "title": "TEXT",
+            "need_type": "TEXT NOT NULL DEFAULT 'main'",
+            "linked_board_heading": "TEXT",
+            "status": "TEXT NOT NULL DEFAULT 'active'",
+        }
+        for column, column_sql in need_column_sql.items():
+            if column not in need_columns:
+                conn.execute(f"ALTER TABLE lesson_learning_needs ADD COLUMN {column} {column_sql}")
+        self._backfill_lesson_learning_needs(conn)
+        self._hydrate_lesson_learning_need_rows(conn)
+
+    def _backfill_lesson_learning_needs(self, conn: sqlite3.Connection) -> None:
+        for row in conn.execute("SELECT id, learning_requirements_json, created_at, updated_at FROM lessons").fetchall():
+            existing = conn.execute(
+                "SELECT 1 FROM lesson_learning_needs WHERE lesson_id = ? LIMIT 1",
+                (row["id"],),
+            ).fetchone()
+            if existing is not None:
+                continue
+            payload = _loads_optional(row["learning_requirements_json"])
+            if not isinstance(payload, dict):
+                continue
+            catalog_items = _normalized_need_catalog_items(payload)
+            for index, item in enumerate(catalog_items):
+                conn.execute(
+                    """
+                    INSERT INTO lesson_learning_needs(
+                        lesson_id, sort_order, item_id, parent_item_id, section_path, title, content,
+                        need_type, linked_board_heading, status, source_role, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        row["id"],
+                        index,
+                        item.id,
+                        item.parent_id,
+                        item.section_path,
+                        item.title,
+                        item.content,
+                        item.need_type,
+                        item.linked_board_heading,
+                        item.status,
+                        "pm_ai",
+                        row["created_at"],
+                        row["updated_at"],
+                    ),
+                )
+
+    def _hydrate_lesson_learning_need_rows(self, conn: sqlite3.Connection) -> None:
+        rows = conn.execute(
+            """
+            SELECT lesson_id, sort_order, item_id, section_path, title, content, need_type, status
+            FROM lesson_learning_needs
+            ORDER BY lesson_id, sort_order
+            """
+        ).fetchall()
+        for index, row in enumerate(rows):
+            sort_order = int(row["sort_order"])
+            content = str(row["content"] or "").strip()
+            conn.execute(
+                """
+                UPDATE lesson_learning_needs
+                SET item_id = ?,
+                    section_path = ?,
+                    title = ?,
+                    need_type = ?,
+                    status = ?
+                WHERE lesson_id = ? AND sort_order = ?
+                """,
+                (
+                    row["item_id"] or f"need_{row['lesson_id']}_{sort_order + 1}",
+                    row["section_path"] or str(sort_order + 1),
+                    row["title"] or _learning_need_title(content, index),
+                    _valid_need_type(row["need_type"]),
+                    _valid_need_status(row["status"]),
+                    row["lesson_id"],
+                    sort_order,
+                ),
+            )
 
     def _has_any_packages(self, conn: sqlite3.Connection) -> bool:
         row = conn.execute("SELECT 1 FROM course_packages LIMIT 1").fetchone()
@@ -435,6 +550,20 @@ class SqliteCourseStore:
             commits=commits,
             current_branch=row["current_branch"],
         )
+        learning_requirements = _loads_optional(row["learning_requirements_json"])
+        learning_need_catalog = self._read_lesson_learning_need_catalog(conn, lesson_id)
+        if learning_need_catalog:
+            if not isinstance(learning_requirements, dict):
+                learning_requirements = build_requirements(row["title"]).model_dump(mode="json")
+            learning_requirements["learning_need_catalog"] = [
+                item.model_dump(mode="json") for item in learning_need_catalog
+            ]
+            learning_requirements["learning_need_checklist"] = [
+                item.content.strip() or item.title.strip()
+                for item in learning_need_catalog
+                if item.content.strip() or item.title.strip()
+            ]
+
         return Lesson(
             id=lesson_id,
             title=row["title"],
@@ -444,12 +573,35 @@ class SqliteCourseStore:
             board_document=_document_from_row(row, "board"),
             board_teaching_guide=_loads_optional(row["board_teaching_guide_json"]),
             board_teaching_progress=_loads_optional(row["board_teaching_progress_json"]),
-            learning_requirements=_loads_optional(row["learning_requirements_json"]),
+            learning_requirements=learning_requirements,
             teaching_guide=_loads(row["teaching_guide_json"], {}),
             history_graph=history_graph,
+            realtime_transcript=[
+                RealtimeTranscriptTurn.model_validate(item)
+                for item in _loads(row["realtime_transcript_json"], [])
+                if isinstance(item, dict)
+            ],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
+
+    def _read_lesson_learning_need_catalog(
+        self,
+        conn: sqlite3.Connection,
+        lesson_id: str,
+    ) -> list[LearningNeedCatalogItem]:
+        rows = conn.execute(
+            """
+            SELECT * FROM lesson_learning_needs
+            WHERE lesson_id = ?
+            ORDER BY sort_order, content
+            """,
+            (lesson_id,),
+        ).fetchall()
+        return [
+            _catalog_item_from_row(row, lesson_id=lesson_id, index=index)
+            for index, row in enumerate(rows)
+        ]
 
     def _read_commit(self, conn: sqlite3.Connection, row: sqlite3.Row) -> CommitRecord:
         parent_ids = [
@@ -515,6 +667,7 @@ class SqliteCourseStore:
             concept_index=_loads(row["concept_index_json"], {}),
             extracted_text_available=bool(row["extracted_text_available"]),
             text_content=row["text_content"],
+            ocr_chunks=_loads(row["ocr_chunks_json"], []),
             source_path=row["source_path"],
         )
 
@@ -607,8 +760,8 @@ class SqliteCourseStore:
                 board_document_id, board_document_title, board_content_json,
                 board_content_html, board_content_text, board_page_settings_json,
                 board_teaching_guide_json, board_teaching_progress_json, learning_requirements_json, teaching_guide_json,
-                current_branch, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                realtime_transcript_json, current_branch, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 lesson.id,
@@ -628,6 +781,7 @@ class SqliteCourseStore:
                 _dumps_optional(lesson.board_teaching_progress),
                 _dumps_optional(lesson.learning_requirements),
                 _dumps(lesson.teaching_guide.model_dump(mode="json")),
+                _dumps([turn.model_dump(mode="json") for turn in lesson.realtime_transcript]),
                 lesson.history_graph.current_branch,
                 lesson.created_at,
                 lesson.updated_at,
@@ -643,6 +797,36 @@ class SqliteCourseStore:
                 ) VALUES (?, ?, ?, ?, ?)
                 """,
                 (lesson.id, branch.name, branch.head_commit_id, branch.base_commit_id, branch.created_at),
+            )
+        self._insert_lesson_learning_needs(conn, lesson)
+
+    def _insert_lesson_learning_needs(self, conn: sqlite3.Connection, lesson: Lesson) -> None:
+        if lesson.learning_requirements is None:
+            return
+        catalog_items = _normalized_need_catalog_items(lesson.learning_requirements.model_dump(mode="json"))
+        for index, item in enumerate(catalog_items):
+            conn.execute(
+                """
+                INSERT INTO lesson_learning_needs(
+                    lesson_id, sort_order, item_id, parent_item_id, section_path, title, content,
+                    need_type, linked_board_heading, status, source_role, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    lesson.id,
+                    index,
+                    item.id,
+                    item.parent_id,
+                    item.section_path,
+                    item.title,
+                    item.content,
+                    item.need_type,
+                    item.linked_board_heading,
+                    item.status,
+                    "pm_ai",
+                    lesson.created_at,
+                    lesson.updated_at,
+                ),
             )
 
     def _insert_commit(
@@ -700,8 +884,8 @@ class SqliteCourseStore:
             """
             INSERT INTO resources(
                 id, package_id, sort_order, name, mime_type, resource_type, size_bytes,
-                uploaded_at, scope_lesson_id, concept_index_json, extracted_text_available, text_content, source_path
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                uploaded_at, scope_lesson_id, concept_index_json, extracted_text_available, text_content, ocr_chunks_json, source_path
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 resource.id,
@@ -716,6 +900,7 @@ class SqliteCourseStore:
                 _dumps(resource.concept_index),
                 int(resource.extracted_text_available),
                 resource.text_content,
+                _dumps([chunk.model_dump(mode="json") for chunk in resource.ocr_chunks]),
                 resource.source_path,
             ),
         )
@@ -844,6 +1029,101 @@ def _loads_optional(raw: str | None) -> Any:
     return json.loads(raw)
 
 
+def _normalized_need_items(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    items: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        text = item.strip()
+        if text:
+            items.append(text)
+    return items
+
+
+def _normalized_need_catalog_items(value: Any) -> list[LearningNeedCatalogItem]:
+    if not isinstance(value, dict):
+        return []
+    raw_catalog = value.get("learning_need_catalog")
+    catalog_items: list[LearningNeedCatalogItem] = []
+    if isinstance(raw_catalog, list):
+        for index, raw_item in enumerate(raw_catalog):
+            if not isinstance(raw_item, dict):
+                continue
+            content = str(raw_item.get("content") or raw_item.get("title") or "").strip()
+            title = str(raw_item.get("title") or "").strip() or _learning_need_title(content, index)
+            if not content and not title:
+                continue
+            try:
+                catalog_items.append(
+                    LearningNeedCatalogItem.model_validate(
+                        {
+                            **raw_item,
+                            "section_path": str(raw_item.get("section_path") or index + 1),
+                            "title": title,
+                            "content": content or title,
+                        }
+                    )
+                )
+            except Exception:
+                catalog_items.append(
+                    LearningNeedCatalogItem(
+                        section_path=str(index + 1),
+                        title=title,
+                        content=content or title,
+                    )
+                )
+    if catalog_items:
+        return catalog_items
+    return [
+        LearningNeedCatalogItem(
+            section_path=str(index + 1),
+            title=_learning_need_title(item, index),
+            content=item,
+            need_type="main",
+        )
+        for index, item in enumerate(_normalized_need_items(value.get("learning_need_checklist")))
+    ]
+
+
+def _catalog_item_from_row(
+    row: sqlite3.Row,
+    *,
+    lesson_id: str,
+    index: int,
+) -> LearningNeedCatalogItem:
+    content = str(row["content"] or "").strip()
+    title = str(row["title"] or "").strip() or _learning_need_title(content, index)
+    return LearningNeedCatalogItem(
+        id=str(row["item_id"] or f"need_{lesson_id}_{index + 1}"),
+        parent_id=row["parent_item_id"],
+        section_path=str(row["section_path"] or index + 1),
+        title=title,
+        content=content or title,
+        need_type=_valid_need_type(row["need_type"]),
+        linked_board_heading=row["linked_board_heading"],
+        status=_valid_need_status(row["status"]),
+    )
+
+
+def _learning_need_title(value: str, index: int) -> str:
+    trimmed = value.strip()
+    for separator in ("：", ":", "，", ",", "。"):
+        if separator in trimmed:
+            trimmed = trimmed.split(separator, 1)[0].strip()
+            break
+    return trimmed[:32] or f"需求 {index + 1}"
+
+
+def _valid_need_type(value: Any) -> str:
+    return value if value in {"main", "subtopic", "question", "extension", "deferred", "new_topic"} else "main"
+
+
+def _valid_need_status(value: Any) -> str:
+    return value if value in {"active", "answered", "deferred"} else "active"
+
+
 def _contains_legacy_blocks(raw_data: object) -> bool:
     if not isinstance(raw_data, dict):
         return False
@@ -913,7 +1193,11 @@ def _is_unmodified_starter_lesson(lesson: Lesson) -> bool:
     return (
         lesson.title in STARTER_LESSON_TITLES
         and len(commits) == 1
-        and commits[0].message == f"Generated starter rich document for {lesson.title}"
+        and commits[0].message
+        in {
+            f"Generated starter rich document for {lesson.title}",
+            f"Created empty rich document for {lesson.title}",
+        }
     )
 
 

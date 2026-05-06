@@ -1,5 +1,4 @@
 import type {
-  AIModelCatalog,
   AdminOverview,
   AuthProviderView,
   AuthSessionResponse,
@@ -8,11 +7,10 @@ import type {
   CoursePackage,
   DocumentAIEditPayload,
   DocumentSavePayload,
-  GoogleRealtimeSessionPayload,
-  GoogleRealtimeSessionResponse,
   RealtimeConnectPayload,
   RealtimeConnectResponse,
   RealtimeEventLogPayload,
+  RealtimeEventLogResponse,
   ScopeAction,
   WorkspaceState,
   UserView,
@@ -234,9 +232,6 @@ export const api = {
   getAdminOverview() {
     return request<AdminOverview>("/api/admin/overview");
   },
-  getAIModels() {
-    return request<AIModelCatalog>("/api/ai-models");
-  },
   getWorkspace() {
     return request<WorkspaceState>("/api/workspace");
   },
@@ -407,14 +402,8 @@ export const api = {
       body: JSON.stringify(payload),
     });
   },
-  createGoogleRealtimeSession(lessonId: string, payload: GoogleRealtimeSessionPayload) {
-    return request<GoogleRealtimeSessionResponse>(`/api/lessons/${lessonId}/realtime/google/session`, {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
-  },
   logRealtimeEvent(lessonId: string, payload: RealtimeEventLogPayload) {
-    return request<{ status: string }>(`/api/lessons/${lessonId}/realtime/events`, {
+    return request<RealtimeEventLogResponse>(`/api/lessons/${lessonId}/realtime/events`, {
       method: "POST",
       body: JSON.stringify(payload),
     });

@@ -8,6 +8,8 @@ export type ScopeAction =
 export type BoardAction =
   | "clarify_request"
   | "no_change"
+  | "teach_realtime"
+  | "reading_companion"
   | "edit_board"
   | "append_section"
   | "create_new_lesson"
@@ -56,6 +58,20 @@ export interface BoardDocument {
   page_settings: DocumentPageSettings;
 }
 
+export type LearningNeedType = "main" | "subtopic" | "question" | "extension" | "deferred" | "new_topic";
+export type LearningNeedStatus = "active" | "answered" | "deferred";
+
+export interface LearningNeedCatalogItem {
+  id: string;
+  parent_id?: string | null;
+  section_path: string;
+  title: string;
+  content: string;
+  need_type: LearningNeedType;
+  linked_board_heading?: string | null;
+  status: LearningNeedStatus;
+}
+
 export interface LearningRequirementSheet {
   theme: string;
   learning_goal: string;
@@ -63,6 +79,7 @@ export interface LearningRequirementSheet {
   known_background: string;
   current_questions: string[];
   learning_need_checklist: string[];
+  learning_need_catalog?: LearningNeedCatalogItem[];
   target_depth: string;
   output_preference: string;
   boundary: string;
@@ -124,6 +141,14 @@ export interface LessonHistoryGraph {
   current_branch: string;
 }
 
+export interface RealtimeTranscriptTurn {
+  role: "user" | "assistant";
+  content: string;
+  client_session_id?: string | null;
+  transport_event_type: string;
+  created_at: string;
+}
+
 export interface Lesson {
   id: string;
   title: string;
@@ -133,6 +158,7 @@ export interface Lesson {
   board_document: BoardDocument;
   learning_requirements?: LearningRequirementSheet | null;
   history_graph: LessonHistoryGraph;
+  realtime_transcript?: RealtimeTranscriptTurn[];
   created_at: string;
   updated_at: string;
 }
@@ -293,6 +319,17 @@ export interface ResourceMatch {
   reason: string;
   score: number;
   is_high_overlap: boolean;
+  matched_chunk_id?: string | null;
+  matched_excerpt?: string | null;
+  chunk_locator?: OCRChunkLocator | null;
+}
+
+export interface OCRChunkLocator {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  page?: number | null;
 }
 
 export interface ResourceReferencePrompt {
@@ -300,6 +337,7 @@ export interface ResourceReferencePrompt {
   chapter_id: string;
   resource_name: string;
   chapter_title: string;
+  chunk_id?: string | null;
   question: string;
   reason: string;
   confirm_label: string;
@@ -319,6 +357,7 @@ export interface ResourceContextChunk {
   title: string;
   excerpt: string;
   teaching_hint: string;
+  locator?: OCRChunkLocator | null;
 }
 
 export interface ResourceReferenceContext {
@@ -329,6 +368,20 @@ export interface ResourceReferenceContext {
   summary: string;
   teaching_points: string[];
   chunks: ResourceContextChunk[];
+}
+
+export interface TeachingLocationContext {
+  source: "selection" | "board" | "resource" | "ocr" | "unknown";
+  target_text: string;
+  surrounding_text: string;
+  heading?: string | null;
+  resource_id?: string | null;
+  chapter_id?: string | null;
+  chunk_id?: string | null;
+  locator?: OCRChunkLocator | null;
+  reason: string;
+  score: number;
+  needs_clarification: boolean;
 }
 
 export interface BoardDecision {
@@ -356,6 +409,7 @@ export interface ChatRequestPayload {
   resource_reference_action?: ResourceReferenceAction | null;
   resource_reference_resource_id?: string | null;
   resource_reference_chapter_id?: string | null;
+  resource_reference_chunk_id?: string | null;
   board_edit_action?: BoardEditConfirmationAction | null;
   board_edit_topic?: string | null;
   teaching_action?: "continue" | "restart" | null;
@@ -384,6 +438,7 @@ export interface ChatResponse {
   board_edit_prompt?: BoardEditPrompt | null;
   selected_reference?: ResourceReferenceContext | null;
   created_lesson?: Lesson | null;
+  teaching_location?: TeachingLocationContext | null;
   teaching_progress?: SectionTeachingProgress | null;
   course_package: CoursePackage;
 }
@@ -422,6 +477,13 @@ export interface RealtimeEventLogPayload {
   role: "user" | "assistant";
   transport_event_type: string;
   transcript: string;
+}
+
+export interface RealtimeEventLogResponse {
+  status: string;
+  learning_requirement_sheet?: LearningRequirementSheet | null;
+  ready_for_next_step?: boolean;
+  course_package?: CoursePackage | null;
 }
 
 export interface DocumentSavePayload {
