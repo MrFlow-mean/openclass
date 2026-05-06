@@ -1,8 +1,13 @@
+<a id="中文"></a>
+
+<p align="center">
+  <a href="#中文"><img alt="中文" src="https://img.shields.io/badge/语言-中文-blue?style=for-the-badge"></a>
+  <a href="#english"><img alt="English" src="https://img.shields.io/badge/Language-English-green?style=for-the-badge"></a>
+</p>
+
 # 开放课堂（OpenClass）
 
 开放课堂（OpenClass）是一个面向课程设计、讲义创作和课堂讲解的 AI 课程工作台。它把 AI 对话、富文本讲义编辑、资料库、版本历史、课程图谱和实时语音讲解放进同一个工作空间，帮助老师、教研团队和知识创作者更快地把零散资料整理成可讲、可改、可复用的课程内容。
-
-English version: [OpenClass](#openclass-english)
 
 ## 产品能力
 
@@ -66,7 +71,14 @@ OpenAI/GPT 文本与 GPT Image 2 默认走 `https://api.bupt8.com/v1` 这个 Ope
 
 ---
 
-# OpenClass (English)
+<a id="english"></a>
+
+<p align="center">
+  <a href="#中文"><img alt="中文" src="https://img.shields.io/badge/语言-中文-blue?style=for-the-badge"></a>
+  <a href="#english"><img alt="English" src="https://img.shields.io/badge/Language-English-green?style=for-the-badge"></a>
+</p>
+
+# OpenClass
 
 OpenClass is an AI course workspace for curriculum design, lesson authoring, and live teaching preparation. It brings AI chat, rich-text lesson editing, a resource library, version history, course graphs, and realtime voice explanation into one workspace so teachers, curriculum teams, and knowledge creators can turn scattered materials into teachable, editable, and reusable course content.
 
