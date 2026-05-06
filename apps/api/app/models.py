@@ -320,6 +320,14 @@ class LessonHistoryGraph(BaseModel):
     current_branch: str = "main"
 
 
+class RealtimeTranscriptTurn(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+    client_session_id: str | None = None
+    transport_event_type: str = ""
+    created_at: str = Field(default_factory=now_iso)
+
+
 class Lesson(BaseModel):
     id: str = Field(default_factory=lambda: new_id("lesson"))
     title: str
@@ -332,6 +340,7 @@ class Lesson(BaseModel):
     learning_requirements: LearningRequirementSheet | None = None
     teaching_guide: TeachingGuide
     history_graph: LessonHistoryGraph
+    realtime_transcript: list[RealtimeTranscriptTurn] = Field(default_factory=list)
     created_at: str = Field(default_factory=now_iso)
     updated_at: str = Field(default_factory=now_iso)
 
@@ -656,6 +665,7 @@ class LessonView(BaseModel):
     board_document: BoardDocument
     learning_requirements: LearningRequirementSheet | None = None
     history_graph: LessonHistoryGraph
+    realtime_transcript: list[RealtimeTranscriptTurn] = Field(default_factory=list)
     created_at: str
     updated_at: str
 
@@ -851,3 +861,10 @@ class RealtimeTranscriptLogRequest(BaseModel):
     role: Literal["user", "assistant"]
     transport_event_type: str
     transcript: str
+
+
+class RealtimeTranscriptLogResponse(BaseModel):
+    status: str
+    learning_requirement_sheet: LearningRequirementSheet | None = None
+    ready_for_next_step: bool = False
+    course_package: CoursePackageView | None = None

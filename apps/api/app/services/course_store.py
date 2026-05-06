@@ -17,13 +17,14 @@ from app.models import (
     LessonHistoryGraph,
     LearningNeedCatalogItem,
     LibraryChapter,
+    RealtimeTranscriptTurn,
     ResourceLibraryItem,
     WorkspaceState,
 )
 from app.services.lesson_factory import build_requirements, create_lesson
 
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 STARTER_PACKAGE_TITLES = {"开放课堂课程工作台", "OpenClass 课程工作台"}
 STARTER_LESSON_TITLES = {"勾股定理", "直角三角形基础", "欧几里得几何导论"}
 
@@ -141,6 +142,7 @@ class SqliteCourseStore:
                 board_teaching_progress_json TEXT,
                 learning_requirements_json TEXT,
                 teaching_guide_json TEXT NOT NULL,
+                realtime_transcript_json TEXT NOT NULL DEFAULT '[]',
                 current_branch TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
@@ -290,6 +292,8 @@ class SqliteCourseStore:
         }
         if "board_teaching_progress_json" not in lesson_columns:
             conn.execute("ALTER TABLE lessons ADD COLUMN board_teaching_progress_json TEXT")
+        if "realtime_transcript_json" not in lesson_columns:
+            conn.execute("ALTER TABLE lessons ADD COLUMN realtime_transcript_json TEXT NOT NULL DEFAULT '[]'")
         resource_columns = {
             row["name"]
             for row in conn.execute("PRAGMA table_info(resources)").fetchall()
@@ -572,6 +576,11 @@ class SqliteCourseStore:
             learning_requirements=learning_requirements,
             teaching_guide=_loads(row["teaching_guide_json"], {}),
             history_graph=history_graph,
+            realtime_transcript=[
+                RealtimeTranscriptTurn.model_validate(item)
+                for item in _loads(row["realtime_transcript_json"], [])
+                if isinstance(item, dict)
+            ],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
@@ -751,8 +760,8 @@ class SqliteCourseStore:
                 board_document_id, board_document_title, board_content_json,
                 board_content_html, board_content_text, board_page_settings_json,
                 board_teaching_guide_json, board_teaching_progress_json, learning_requirements_json, teaching_guide_json,
-                current_branch, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                realtime_transcript_json, current_branch, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 lesson.id,
@@ -772,6 +781,7 @@ class SqliteCourseStore:
                 _dumps_optional(lesson.board_teaching_progress),
                 _dumps_optional(lesson.learning_requirements),
                 _dumps(lesson.teaching_guide.model_dump(mode="json")),
+                _dumps([turn.model_dump(mode="json") for turn in lesson.realtime_transcript]),
                 lesson.history_graph.current_branch,
                 lesson.created_at,
                 lesson.updated_at,

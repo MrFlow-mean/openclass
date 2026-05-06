@@ -10,7 +10,7 @@ from app.models import AIModelCatalog, AIModelOption, AIModelSelection, AIProvid
 
 OPENAI_GATEWAY_BASE_URL = "https://api.bupt8.com/v1"
 OPENAI_DEFAULT_TEXT_MODEL = "gpt-5-mini"
-OPENAI_DEFAULT_REALTIME_MODEL = "gpt-realtime-mini"
+OPENAI_DEFAULT_REALTIME_MODEL = "gpt-4o-realtime-preview"
 ANTHROPIC_DEFAULT_TEXT_MODEL = "claude-opus-4-7"
 GOOGLE_DEFAULT_TEXT_MODEL = "gemini-3.1-pro-preview"
 GOOGLE_DEFAULT_REALTIME_MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
