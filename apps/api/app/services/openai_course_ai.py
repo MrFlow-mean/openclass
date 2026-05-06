@@ -68,7 +68,6 @@ _load_root_dotenv()
 DEFAULT_TEXT_MODEL = "gpt-5-mini"
 DEFAULT_PM_MODEL = "gpt-5.4-nano"
 DEFAULT_CATALOG_MODEL = "gpt-5.4-mini"
-DEFAULT_BOARD_MODEL = "gpt-5.5"
 _text_model_selection: ContextVar[AIModelSelection | None] = ContextVar(
     "text_model_selection", default=None
 )
@@ -253,8 +252,6 @@ class OpenAIConfig(BaseModel):
     default_model: str = Field(default_factory=lambda: os.getenv("OPENAI_MODEL", DEFAULT_TEXT_MODEL))
     pm_model: str | None = Field(default_factory=lambda: os.getenv("OPENAI_PM_MODEL", DEFAULT_PM_MODEL))
     catalog_model: str | None = Field(default_factory=lambda: os.getenv("OPENAI_CATALOG_MODEL", DEFAULT_CATALOG_MODEL))
-    board_model: str | None = Field(default_factory=lambda: os.getenv("OPENAI_BOARD_MODEL", DEFAULT_BOARD_MODEL))
-    guide_model: str | None = Field(default_factory=lambda: os.getenv("OPENAI_GUIDE_MODEL"))
     teacher_model: str | None = Field(default_factory=lambda: os.getenv("OPENAI_TEACHER_MODEL"))
     lesson_model: str | None = Field(default_factory=lambda: os.getenv("OPENAI_LESSON_MODEL"))
     fallback_model: str = Field(default_factory=lambda: os.getenv("OPENAI_FALLBACK_MODEL", DEFAULT_TEXT_MODEL))
@@ -274,8 +271,6 @@ class DeepSeekConfig(BaseModel):
     base_url: str = Field(default_factory=lambda: os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"))
     default_model: str = Field(default_factory=lambda: os.getenv("DEEPSEEK_MODEL", DEEPSEEK_DEFAULT_TEXT_MODEL))
     pm_model: str | None = Field(default_factory=lambda: os.getenv("DEEPSEEK_PM_MODEL"))
-    board_model: str | None = Field(default_factory=lambda: os.getenv("DEEPSEEK_BOARD_MODEL"))
-    guide_model: str | None = Field(default_factory=lambda: os.getenv("DEEPSEEK_GUIDE_MODEL"))
     teacher_model: str | None = Field(default_factory=lambda: os.getenv("DEEPSEEK_TEACHER_MODEL"))
     lesson_model: str | None = Field(default_factory=lambda: os.getenv("DEEPSEEK_LESSON_MODEL"))
     fallback_model: str = Field(default_factory=lambda: os.getenv("DEEPSEEK_FALLBACK_MODEL", "deepseek-chat"))
@@ -295,8 +290,6 @@ class KimiConfig(BaseModel):
     base_url: str = Field(default_factory=lambda: _env_any("KIMI_BASE_URL", "MOONSHOT_BASE_URL") or "https://api.moonshot.ai/v1")
     default_model: str = Field(default_factory=lambda: _env_any("KIMI_MODEL", "MOONSHOT_MODEL") or KIMI_DEFAULT_TEXT_MODEL)
     pm_model: str | None = Field(default_factory=lambda: _env_any("KIMI_PM_MODEL", "MOONSHOT_PM_MODEL"))
-    board_model: str | None = Field(default_factory=lambda: _env_any("KIMI_BOARD_MODEL", "MOONSHOT_BOARD_MODEL"))
-    guide_model: str | None = Field(default_factory=lambda: _env_any("KIMI_GUIDE_MODEL", "MOONSHOT_GUIDE_MODEL"))
     teacher_model: str | None = Field(default_factory=lambda: _env_any("KIMI_TEACHER_MODEL", "MOONSHOT_TEACHER_MODEL"))
     lesson_model: str | None = Field(default_factory=lambda: _env_any("KIMI_LESSON_MODEL", "MOONSHOT_LESSON_MODEL"))
     fallback_model: str = Field(default_factory=lambda: _env_any("KIMI_FALLBACK_MODEL", "MOONSHOT_FALLBACK_MODEL") or KIMI_DEFAULT_TEXT_MODEL)
@@ -316,8 +309,6 @@ class MiniMaxConfig(BaseModel):
     base_url: str = Field(default_factory=lambda: os.getenv("MINIMAX_BASE_URL", "https://api.minimax.io/v1"))
     default_model: str = Field(default_factory=lambda: os.getenv("MINIMAX_MODEL", MINIMAX_DEFAULT_TEXT_MODEL))
     pm_model: str | None = Field(default_factory=lambda: os.getenv("MINIMAX_PM_MODEL"))
-    board_model: str | None = Field(default_factory=lambda: os.getenv("MINIMAX_BOARD_MODEL"))
-    guide_model: str | None = Field(default_factory=lambda: os.getenv("MINIMAX_GUIDE_MODEL"))
     teacher_model: str | None = Field(default_factory=lambda: os.getenv("MINIMAX_TEACHER_MODEL"))
     lesson_model: str | None = Field(default_factory=lambda: os.getenv("MINIMAX_LESSON_MODEL"))
     fallback_model: str = Field(default_factory=lambda: os.getenv("MINIMAX_FALLBACK_MODEL", "MiniMax-M2"))
@@ -348,12 +339,6 @@ class OpenAICompatibleConfig(BaseModel):
         or OPENAI_COMPATIBLE_DEFAULT_TEXT_MODEL
     )
     pm_model: str | None = Field(default_factory=lambda: _env_any("OPENAI_COMPATIBLE_PM_MODEL", "CUSTOM_OPENAI_PM_MODEL"))
-    board_model: str | None = Field(
-        default_factory=lambda: _env_any("OPENAI_COMPATIBLE_BOARD_MODEL", "CUSTOM_OPENAI_BOARD_MODEL")
-    )
-    guide_model: str | None = Field(
-        default_factory=lambda: _env_any("OPENAI_COMPATIBLE_GUIDE_MODEL", "CUSTOM_OPENAI_GUIDE_MODEL")
-    )
     teacher_model: str | None = Field(
         default_factory=lambda: _env_any("OPENAI_COMPATIBLE_TEACHER_MODEL", "CUSTOM_OPENAI_TEACHER_MODEL")
     )
@@ -666,8 +651,6 @@ class OpenAICourseAI:
             "models": {
                 "pm": self.config.model_for("pm"),
                 "catalog": self.config.model_for("catalog"),
-                "board": self.config.model_for("board"),
-                "guide": self.config.model_for("guide"),
                 "teacher": self.config.model_for("teacher"),
                 "lesson": self.config.model_for("lesson"),
                 "deepseek": self.deepseek_config.default_model,
@@ -894,8 +877,6 @@ class OpenAICourseAI:
             return "openai", self.config.model_for("pm")
         if role == "catalog":
             return "openai", self.config.model_for("catalog")
-        if role == "board":
-            return "openai", self.config.model_for("board")
         return "openai", self.config.model_for(role)
 
     def _log_event_name(self, provider: AIProvider, suffix: str) -> str:
@@ -1230,7 +1211,7 @@ class OpenAICourseAI:
         resource_matches: list[dict[str, Any]],
     ) -> BoardDecision | None:
         return self._parse(
-            "board",
+            "pm",
             system_prompt=(
                 "Choose one action for a Word-like teaching document workflow. "
                 "clarify_request asks PM follow-up questions; no_change only answers; edit_board edits the current document; "
@@ -1281,7 +1262,7 @@ class OpenAICourseAI:
         log_payload = dict(prompt_payload)
         log_payload["selected_reference"] = _redact_reference_payload(selected_reference)
         return self._parse(
-            "board",
+            "teacher",
             system_prompt=(
                 "Edit a Word-like rich teaching document. "
                 "Return replacement_html containing coherent long-form teaching prose. "
@@ -1313,7 +1294,7 @@ class OpenAICourseAI:
         document: BoardDocument,
     ) -> TeachingGuide | None:
         return self._parse(
-            "guide",
+            "teacher",
             system_prompt=(
                 "You are generating an internal teaching guide for a continuous Word-like board document. "
                 "Return a TeachingGuide in Chinese. Mappings may use synthetic ids such as section_1. "
@@ -1422,7 +1403,7 @@ class OpenAICourseAI:
         document: BoardDocument,
     ) -> BoardTeachingGuide | None:
         return self._parse(
-            "board",
+            "teacher",
             system_prompt=(
                 "Prepare a teaching guide permanently bound to the current Word-like board snapshot. "
                 "Return BoardTeachingGuide in Chinese. "
@@ -1518,7 +1499,7 @@ class OpenAICourseAI:
         document: BoardDocument,
     ) -> BoardTeachingGuide | None:
         parsed = self._parse(
-            "board",
+            "teacher",
             system_prompt=(
                 "你是讲义生成撰稿人，为实时语音讲师准备可直接朗读的中文讲解稿。"
                 "把 teaching_location.target_text 作为讲解焦点，必须用 teaching_location.surrounding_text 交代它在原文中的位置和作用，"
@@ -1647,7 +1628,7 @@ class OpenAICourseAI:
         reading_context: dict[str, str],
     ) -> BoardTeachingGuide | None:
         parsed = self._parse(
-            "board",
+            "teacher",
             system_prompt=(
                 "你是 OpenClass 的陪读规则编译器。"
                 "你的任务不是讲解、改写或扩写，而是把用户的陪读/轮读/角色扮演要求整理成可执行规则。"
