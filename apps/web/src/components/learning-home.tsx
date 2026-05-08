@@ -1380,8 +1380,8 @@ export function LearningHome() {
         </div>
       ) : null}
 
-      <div className="hidden xl:block">
-        <div className="fixed right-8 top-6 z-40 w-[27rem]">{renderNotificationPanel()}</div>
+      <div className="fixed right-4 top-4 z-[130] w-[calc(100vw-2rem)] max-w-[27rem] xl:right-8 xl:top-6">
+        {renderNotificationPanel()}
       </div>
     </div>
   );
@@ -1777,10 +1777,10 @@ export function LearningHome() {
   function renderNotificationPanel() {
     return (
       <div className="flex flex-col items-end gap-4">
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-start justify-end gap-3">
           <Link
             href="/trending"
-            className="group relative flex h-11 items-center gap-2 rounded-full border border-orange-100 bg-white px-3 text-sm font-semibold text-stone-700 shadow-[0_10px_24px_rgba(249,115,22,0.10)] transition hover:-translate-y-0.5 hover:bg-orange-500 hover:text-white hover:shadow-[0_14px_28px_rgba(249,115,22,0.18)]"
+            className="group relative hidden h-11 items-center gap-2 rounded-full border border-orange-100 bg-white px-3 text-sm font-semibold text-stone-700 shadow-[0_10px_24px_rgba(249,115,22,0.10)] transition hover:-translate-y-0.5 hover:bg-orange-500 hover:text-white hover:shadow-[0_14px_28px_rgba(249,115,22,0.18)] sm:flex"
             aria-label="打开热门项目"
           >
             <span className="relative flex h-8 w-8 items-center justify-center rounded-full bg-orange-50 text-orange-500 transition group-hover:bg-white group-hover:text-orange-500">
@@ -1790,7 +1790,7 @@ export function LearningHome() {
           </Link>
           <Link
             href="/profile?tab=stars"
-            className="group relative flex h-11 items-center gap-2 rounded-full border border-amber-100 bg-white px-3 text-sm font-semibold text-stone-700 shadow-[0_10px_24px_rgba(245,158,11,0.10)] transition hover:-translate-y-0.5 hover:bg-amber-500 hover:text-white hover:shadow-[0_14px_28px_rgba(245,158,11,0.18)]"
+            className="group relative hidden h-11 items-center gap-2 rounded-full border border-amber-100 bg-white px-3 text-sm font-semibold text-stone-700 shadow-[0_10px_24px_rgba(245,158,11,0.10)] transition hover:-translate-y-0.5 hover:bg-amber-500 hover:text-white hover:shadow-[0_14px_28px_rgba(245,158,11,0.18)] sm:flex"
             aria-label="打开 Stars 收藏"
           >
             <span className="relative flex h-8 w-8 items-center justify-center rounded-full bg-amber-50 text-amber-500 transition group-hover:bg-white group-hover:text-amber-500">
@@ -1805,7 +1805,7 @@ export function LearningHome() {
           </Link>
           <Link
             href="/following"
-            className="group relative flex h-11 items-center gap-2 rounded-full border border-rose-100 bg-white px-3 text-sm font-semibold text-stone-700 shadow-[0_10px_24px_rgba(244,63,94,0.10)] transition hover:-translate-y-0.5 hover:bg-rose-500 hover:text-white hover:shadow-[0_14px_28px_rgba(244,63,94,0.18)]"
+            className="group relative hidden h-11 items-center gap-2 rounded-full border border-rose-100 bg-white px-3 text-sm font-semibold text-stone-700 shadow-[0_10px_24px_rgba(244,63,94,0.10)] transition hover:-translate-y-0.5 hover:bg-rose-500 hover:text-white hover:shadow-[0_14px_28px_rgba(244,63,94,0.18)] sm:flex"
             aria-label="打开关注动态"
           >
             <span className="relative flex h-8 w-8 items-center justify-center rounded-full bg-rose-50 text-rose-500 transition group-hover:bg-white group-hover:text-rose-500">
