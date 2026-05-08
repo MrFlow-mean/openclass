@@ -58,23 +58,11 @@ logger = logging.getLogger(__name__)
 _URLLIB_SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
 
 REFERENCE_HANDOUT_QUALITY_STANDARD = (
-    "Quality bar for chapter handouts: write like a polished teacher-prepared lecture handout, "
-    "not like copied source notes. For a full chapter, organize about 10 coherent H2 sections, similar to a teacher's chapter plan: "
-    "chapter positioning, problem formulation, key definitions, core tension, evidence or reasoning chain, "
-    "worked intuition/example, method/application, common pitfalls, logic map, and classroom summary/check questions. "
-    "Transform source excerpts into clean teaching prose; "
-    "do not paste noisy OCR fragments, page numbers, broken formulas, or raw textbook paragraphs. "
-    "Do not treat file names, download-site names, z-library style suffixes, or repeated bibliography metadata as chapter content; "
-    "use them only as source labels and start the board from the actual extracted ideas. "
-    "Avoid placeholder headings and filler such as 资料里的可讲片段, 可以从资料片段中选, 请补入一个最小例子, "
-    "本章通常, or asks for later completion. Use concrete concepts, readable symbolic relations when present, examples, "
-    "and answers/checks in the same response. Ground depth in the dominant material shape: conceptual (definitions and relations), "
-    "procedural (ordered steps, checks, failure modes), quantitative (readable notation and reasoning), argumentative (claims, evidence, limits), "
-    "case-based (general pattern from concrete specifics), textual (interpretation and evidence, not outline-only headings). "
-    "Do not merely summarize or rearrange the source; expand with motivation, connection, worked intuition, and classroom checks. "
-    "Keep the fine-grained chapter splitting, but make every section "
-    "substantial: a full chapter handout should usually run to substantial length in the teaching language with developed "
-    "multi-paragraph explanations under each important heading, not a sparse outline or bullet plan."
+    "Chapter handout quality: polished teaching prose, not pasted notes. Roughly ten coherent H2 sections from framing through summary and checks. "
+    "Strip OCR noise, page numbers, broken formulas, and filename or downloader cruft; cite sources without treating metadata as lesson body. "
+    "No placeholder headings or deferrals. Match depth to material shape—conceptual, procedural, quantitative, argumentative, case-based, textual—"
+    "with real paragraphs under each heading, not outline-only labels. Do not merely summarize the source; add motivation, links, worked intuition, "
+    "and classroom checks. Use substantial length in the teaching language for a full chapter."
 )
 
 

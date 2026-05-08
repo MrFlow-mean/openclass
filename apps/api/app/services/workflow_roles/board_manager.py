@@ -112,7 +112,7 @@ def run_board_manager(state: WorkflowState) -> WorkflowState:
     elif _is_append_document_request(request.message):
         decision = BoardDecision(action="append_section", reason="用户要求在现有讲义后新增页面或章节内容。")
     elif decision.action == "no_change" and _is_board_generation_request(request.message):
-        decision = BoardDecision(action="edit_board", reason="用户明确要求生成讲义/对话内容，应直接产出文档。")
+        decision = BoardDecision(action="edit_board", reason="用户明确要求生成讲义或板书，应直接产出文档。")
     elif decision.action in {"edit_board", "append_section", "create_new_lesson"} and not _is_explicit_board_edit_request(request.message) and request.board_edit_action != "confirm":
         decision = BoardDecision(action="no_change", reason="普通追问默认先生成内部讲义讲解，不直接改动版书。")
 

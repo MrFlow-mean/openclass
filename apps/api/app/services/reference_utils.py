@@ -7,7 +7,6 @@ from app.models import ResourceReferenceContext
 
 def _strip_reference_noise(value: str) -> str:
     text = value or ""
-    text = re.sub(r"[^。！？.!?\n]{0,80}(?:PDF\s*)?抽取噪声[^。！？.!?\n]*(?:[。！？.!?]|$)", "", text)
     text = re.sub(r"(?:（\d+\s*-\s*\d+）\s*){2,}", "", text)
     text = re.sub(r"\bc\d+；）。max\s*p（x\d+,\d+）。", "", text, flags=re.IGNORECASE)
     return text
