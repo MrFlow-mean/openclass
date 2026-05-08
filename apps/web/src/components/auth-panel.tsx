@@ -90,32 +90,11 @@ const socialSignInOptions: SocialSignInOption[] = [
     brand: "wechat",
   },
   {
-    id: "apple",
-    label: "使用 Apple 登录",
-    providerLabel: "Apple 账号",
-    className: "border-[#1f1a17] bg-[#1f1a17] text-white hover:bg-black",
-    brand: "apple",
-  },
-  {
     id: "github",
     label: "使用 GitHub 登录",
     providerLabel: "GitHub 账号",
     className: "border-[#24292f] bg-[#24292f] text-white hover:bg-black",
     brand: "github",
-  },
-  {
-    id: "microsoft",
-    label: "使用 Microsoft 登录",
-    providerLabel: "Microsoft 账号",
-    className: "border-[#e8dfd2] bg-white text-[#5c4c3c] hover:border-[#d2a878] hover:bg-[#fcfbf9]",
-    brand: "microsoft",
-  },
-  {
-    id: "x",
-    label: "使用 X 登录",
-    providerLabel: "X 账号",
-    className: "border-black bg-black text-white hover:bg-[#1f1a17]",
-    brand: "x",
   },
 ];
 
