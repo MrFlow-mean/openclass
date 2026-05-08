@@ -38,6 +38,15 @@ npm run verify           # 提交前 gate：lint + typecheck + test:api + build:
 - 课程包持久化用 `SqliteCourseStore`；新增写路径复用 service 层事务，不要恢复 `store.json` 写入。
 - 任何改动课程包 / lesson / 文档 / 版本历史 / 资源库的操作必须在事务内。
 - 返回前端前剥离资料原文与本地路径。
+
+## AI 生成架构约束
+
+- 核心 service 不允许写入 demo 专属、教材专属、学科专属的生成内容。
+- 禁止在生产代码中硬编码具体课程模板，例如法语咖啡厅对话、CSAPP 目录、模式识别章节、统计学习理论章节等。
+- 生产逻辑只能基于用户输入、上传资料、课程 metadata、AI 结构化输出和通用规则。
+- 学科示例只能放在 tests、fixtures、demo seed data 或文档中，不能影响真实用户请求。
+- 如果需要术语同义词、章节目录或知识点扩展，应从资料抽取或由 AI 生成，不应写死在 workflow / factory / resource library 中。
+
 ## AI 产品抽象与反硬编码规则
 
 OpenClass 是面向任意课程、任意资料、任意学习目标的通用 AI 课程工作台，不是关键词模板机。开发时必须优先保证系统的通用性、可维护性和可扩展性。

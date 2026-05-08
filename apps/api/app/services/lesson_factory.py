@@ -25,31 +25,39 @@ def slugify(value: str) -> str:
 
 
 def _clean_topic(topic: str) -> str:
-    return re.sub(r"\s+", " ", topic or "").strip() or "新的课程"
+    return re.sub(r"\s+", " ", topic or "").strip() or "新学习主题"
 
 
 def build_requirements(topic: str) -> LearningRequirementSheet:
-    clean_topic = _clean_topic(topic)
+    normalized_topic = _clean_topic(topic)
+
     return LearningRequirementSheet(
-        theme=clean_topic,
-        learning_goal=f"围绕“{clean_topic}”建立可讲解、可练习、可迁移的理解。",
-        level="待确认，可从入门讲起并按反馈调整",
-        known_background="学习者背景尚未完全确认，需要在讲解中保留必要的前置说明。",
+        theme=normalized_topic,
+        learning_goal=f"围绕“{normalized_topic}”建立可讲授、可复习、可练习的结构化讲义",
+        level="根据用户背景和资料难度动态调整",
+        known_background="用户背景尚未完全明确，先采用循序渐进的讲解方式",
         current_questions=[
-            f"“{clean_topic}”要解决的核心问题是什么？",
-            "需要先理解哪些关键概念或步骤？",
-            "如何通过例子或练习检查是否真的掌握？",
+            f"“{normalized_topic}”的核心问题是什么",
+            "它包含哪些关键概念、步骤或例子",
+            "学习后如何检查是否真正理解",
         ],
         learning_need_checklist=[
-            "明确学习目标和使用场景",
-            "建立核心概念之间的关系",
-            "用例子、练习或材料证据检验理解",
+            "建立主题主线",
+            "拆解关键概念",
+            "补充必要例子",
+            "给出练习或检查问题",
         ],
-        target_depth="先形成可复述的主线，再根据学习者目标继续加深。",
-        output_preference="连续讲义：主线、概念、解释、例子、练习、答案与总结。",
-        boundary="不预设特定学科模板；讲解深度由用户目标、资料上下文和学习反馈决定。",
-        board_scope=["问题主线", "核心概念", "解释过程", "例子或证据", "练习与总结"],
-        success_criteria="学习者能复述主线，解释关键关系，并完成一个迁移性检查任务。",
+        target_depth="能复述核心内容，并能用例子解释或完成基础练习",
+        output_preference="连续讲义：主线、概念、例子、练习、总结",
+        boundary="优先围绕当前主题展开，不自动跳到无关领域",
+        board_scope=[
+            "主题定位",
+            "核心概念",
+            "重点展开",
+            "例子或应用",
+            "练习与总结",
+        ],
+        success_criteria="用户能说清主线、解释关键概念，并完成至少一个检查问题",
     )
 
 

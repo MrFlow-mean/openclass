@@ -686,8 +686,6 @@ def _epub_section_body_score(sections: list[dict[str, object]], index: int) -> t
     if len(compact) <= 80 and outline_markers >= 2:
         return (-1, len(compact))
     score = min(len(compact), 2000)
-    if any(term in compact.lower() for term in ("gdp", "国内生产总值", "生产函数", "边际产量", "通货膨胀", "失业率")):
-        score += 500
     if outline_markers >= 2:
         score -= 200
     return (score, len(compact))

@@ -68,11 +68,11 @@ REFERENCE_HANDOUT_QUALITY_STANDARD = (
     "use them only as source labels and start the board from the actual extracted ideas. "
     "Avoid placeholder headings and filler such as 资料里的可讲片段, 可以从资料片段中选, 请补入一个最小例子, "
     "本章通常, or asks for later completion. Use concrete concepts, readable symbolic relations when present, examples, "
-    "and answers/checks in the same response. Do not merely summarize or rearrange the source. Identify the core knowledge "
-    "points and actively expand them: explain why each point is introduced, what problem it solves, how it connects to "
-    "earlier/later material, what evidence or reasoning supports it, one small worked example or close explanation, "
-    "common misunderstandings, and a classroom check. Keep the fine-grained chapter splitting, but make every section "
-    "substantial: a full chapter handout should usually be several thousand Chinese characters with developed "
+    "and answers/checks in the same response. For technical materials, do not merely summarize or rearrange the source; "
+    "identify core knowledge points and expand them with motivations, connections, evidence, worked intuition where appropriate, "
+    "misunderstandings, and classroom checks. For humanities and social-science materials, do not stay at outline level; "
+    "develop interpretation, evidence, and classroom-ready prose. Keep the fine-grained chapter splitting, but make every section "
+    "substantial: a full chapter handout should usually run to substantial length in the teaching language with developed "
     "multi-paragraph explanations under each important heading, not a sparse outline or bullet plan."
 )
 
