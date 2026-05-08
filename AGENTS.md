@@ -46,6 +46,7 @@ npm run verify           # 提交前 gate：lint + typecheck + test:api + build:
 - 生产逻辑只能基于用户输入、上传资料、课程 metadata、AI 结构化输出和通用规则。
 - 学科示例只能放在 tests、fixtures、demo seed data 或文档中，不能影响真实用户请求。
 - 如果需要术语同义词、章节目录或知识点扩展，应从资料抽取或由 AI 生成，不应写死在 workflow / factory / resource library 中。
+- 禁止把固定讲义全文或「关键词→专用模板」写进核心 service 作为默认行为；任何课程级示例只能放在 tests、fixtures 或文档中，不得影响真实用户请求。
 
 ## AI 产品抽象与反硬编码规则
 
