@@ -912,7 +912,7 @@ export function LearningHome() {
                     {standalonePackage && busyKey === `package:${standalonePackage.id}` ? (
                       <LoaderCircle className="h-4 w-4 animate-spin" />
                     ) : (
-                      <BookOpen className="h-4 w-4" />
+                      <Plus className="h-4 w-4" />
                     )}
                   </button>
                 </div>
