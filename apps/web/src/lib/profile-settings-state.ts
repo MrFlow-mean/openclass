@@ -64,7 +64,7 @@ export const DEFAULT_PROFILE_SETTINGS: ProfileSettings = {
   website: "",
   company: "",
   location: "",
-  learningFocus: "数学、AI 课程设计、课堂讲义",
+  learningFocus: "概念解释、资料扩讲、练习训练",
   socialLinks: ["", "", "", ""],
   theme: "system",
   density: "comfortable",

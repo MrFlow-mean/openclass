@@ -76,6 +76,13 @@ def _normalize_optional_api_key(value: str | None) -> str | None:
     return normalized
 
 
+def _normalize_transcription_language(value: str | None) -> str | None:
+    normalized = (value or "").strip().lower()
+    if not normalized or normalized in {"auto", "automatic", "none", "null"}:
+        return None
+    return normalized
+
+
 def build_realtime_instructions(*, lesson: Lesson, latest_assistant_message: str | None) -> str:
     board_context = {
         "lesson_title": lesson.title,
@@ -114,6 +121,11 @@ class OpenAIRealtimeConfig(BaseModel):
             "OPENAI_REALTIME_TRANSCRIPTION_MODEL", "gpt-4o-mini-transcribe"
         )
     )
+    transcription_language: str | None = Field(
+        default_factory=lambda: _normalize_transcription_language(
+            os.getenv("OPENAI_REALTIME_TRANSCRIPTION_LANGUAGE")
+        )
+    )
 
     @property
     def enabled(self) -> bool:
@@ -139,6 +151,7 @@ class OpenAIRealtimeTeacher:
             "provider": "openai",
             "model": self.config.model,
             "voice": self.config.voice,
+            "transcription_language": self.config.transcription_language or "auto",
         }
 
     def _build_instructions(self, *, lesson: Lesson, latest_assistant_message: str | None) -> str:
@@ -164,17 +177,20 @@ class OpenAIRealtimeTeacher:
             lesson=lesson,
             latest_assistant_message=latest_assistant_message,
         )
+        transcription: dict[str, Any] = {
+            "model": self.config.transcription_model,
+            "prompt": instructions,
+        }
+        if self.config.transcription_language:
+            transcription["language"] = self.config.transcription_language
+
         session = {
             "type": "transcription",
             "model": model,
             "audio": {
                 "input": {
                     "noise_reduction": {"type": "near_field"},
-                    "transcription": {
-                        "model": self.config.transcription_model,
-                        "language": "zh",
-                        "prompt": instructions,
-                    },
+                    "transcription": transcription,
                     "turn_detection": {
                         "type": "server_vad",
                         "create_response": False,

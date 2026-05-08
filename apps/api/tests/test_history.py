@@ -111,7 +111,7 @@ def test_workflow_probes_level_and_goal_on_first_subject_only_learning_goal() ->
         {
             "lesson": lesson,
             "course_package": package,
-            "request": ChatRequest(message="我想学法语"),
+            "request": ChatRequest(message="我想学生物学"),
         }
     )
 
@@ -120,7 +120,7 @@ def test_workflow_probes_level_and_goal_on_first_subject_only_learning_goal() ->
     assert result["board_decision"].action == "no_change"
     assert result["document_updated"] is False
     assert result["board_edit_prompt"] is not None
-    assert result["board_edit_prompt"].topic == "法语"
+    assert result["board_edit_prompt"].topic == "生物学"
     assert result["board_teaching_guide"] is not None
     assert result["board_teaching_guide"].lecture_handout
     assert result["learning_requirement_sheet"].learning_need_checklist
@@ -147,7 +147,8 @@ def test_workflow_first_broad_math_goal_only_asks_for_level_and_specific_topic()
     assert result["needs_clarification"] is False
     assert result["board_decision"].action == "no_change"
     assert "当前是什么水平" in result["teacher_message"] or "几年级" in result["teacher_message"]
-    assert "具体想学数学里的什么内容" in result["teacher_message"]
+    assert "具体想学" in result["teacher_message"]
+    assert "子问题" in result["teacher_message"] or "内容" in result["teacher_message"]
     assert "什么是数学" not in result["teacher_message"]
     assert "我们直接抓这次最该讲的重点" not in result["teacher_message"]
     assert "教师模型" not in result["teacher_message"]
@@ -180,7 +181,6 @@ def test_workflow_probes_learning_purpose_after_greeting_then_broad_math_goal() 
     assert result["board_decision"].action == "clarify_request"
     assert "几年级" in result["teacher_message"] or "什么水平" in result["teacher_message"]
     assert "具体想学" in result["teacher_message"]
-    assert "代数" in result["teacher_message"]
     assert "理想" not in result["teacher_message"]
     assert "素理想" not in result["teacher_message"]
     assert "教师模型" not in result["teacher_message"]
@@ -217,7 +217,7 @@ def test_workflow_updates_topic_and_starts_after_high_school_concept_answer() ->
     assert result["needs_clarification"] is False
     assert result["board_decision"].action == "no_change"
     assert "库仑力" in result["teacher_message"]
-    assert "带电" in result["teacher_message"]
+    assert "具体想学" not in result["teacher_message"]
     assert "你当前是什么水平或背景？这次具体想学什么内容，想达到什么目标？" not in result["teacher_message"]
 
 
@@ -389,7 +389,7 @@ def test_workflow_does_not_misread_environment_science_as_ring_algebra() -> None
         }
     )
 
-    assert "当前是什么阶段或背景" in result["teacher_message"]
+    assert "阶段或背景" in result["teacher_message"]
     assert "理想或素理想" not in result["teacher_message"]
     assert "抽象代数" not in result["teacher_message"]
 
@@ -418,8 +418,8 @@ def test_workflow_does_not_misread_environment_science_as_ring_algebra() -> None
             ["集合", "映射", "群", "环", "域"],
         ),
         (
-            "请生成一份法语虚拟式、复合过去时、未完成过去时和条件式系统讲义，覆盖法语虚拟式、复合过去时、未完成过去时和条件式。生成后先只讲第一小节。",
-            ["法语虚拟式", "复合过去时", "未完成过去时", "条件式"],
+            "请生成一份项目复盘讲义，覆盖目标、假设、指标、风险和下一步行动。生成后先只讲第一小节。",
+            ["项目复盘", "目标", "假设", "指标", "风险"],
         ),
     ],
 )
@@ -452,7 +452,7 @@ def test_workflow_generates_generic_handouts_from_varied_personas_without_echoin
     assert "请生成一份" not in doc_text
     assert "生成后先只讲" not in doc_text
     assert "抽象代数、交换代数与代数几何中的“环”" not in doc_text
-    assert "法国咖啡厅点餐" not in doc_text
+    assert "固定示例内容" not in doc_text
     assert "教师模型" not in result["teacher_message"]
     assert "学习目标：" not in result["teacher_message"]
     assert "继续讲下一个小节" in result["teacher_message"]
@@ -466,7 +466,7 @@ def test_workflow_can_start_when_user_forces_teaching_before_goal_is_clear() -> 
         {
             "lesson": lesson,
             "course_package": package,
-            "request": ChatRequest(message="我想学法语，直接开始教学"),
+            "request": ChatRequest(message="我想学项目管理，直接开始教学"),
         }
     )
 
@@ -477,19 +477,19 @@ def test_workflow_can_start_when_user_forces_teaching_before_goal_is_clear() -> 
 
 def test_workflow_extracts_level_and_goal_from_user_message() -> None:
     package = build_initial_course_package()
-    lesson = create_empty_lesson("法语口语")
+    lesson = create_empty_lesson("项目沟通")
     package.lessons.append(lesson)
 
     result = course_workflow.invoke(
         {
             "lesson": lesson,
             "course_package": package,
-            "request": ChatRequest(message="教我法语 B2 我想去法国旅游"),
+            "request": ChatRequest(message="教我项目沟通 B2 我想用于跨部门协作"),
         }
     )
 
     assert result["learning_requirement_sheet"].level == "B2"
-    assert "法国旅游" in result["learning_requirement_sheet"].success_criteria
+    assert "跨部门协作" in result["learning_requirement_sheet"].success_criteria
     assert result["needs_clarification"] is False
 
 
@@ -517,7 +517,7 @@ def test_workflow_treats_integrated_math_learning_goal_as_purpose() -> None:
     assert result["needs_clarification"] is False
 
 
-def test_workflow_fallback_generates_ring_handout_and_teaches_one_section_at_a_time() -> None:
+def test_workflow_fallback_generates_long_handout_and_teaches_one_section_at_a_time() -> None:
     package = build_initial_course_package()
     lesson = create_empty_lesson("环论学习")
     package.lessons.append(lesson)
@@ -546,13 +546,11 @@ def test_workflow_fallback_generates_ring_handout_and_teaches_one_section_at_a_t
     assert guide is not None
     assert len(guide.section_plans) >= 21
     assert progress.section_count >= 21
-    assert guide.section_plans[0].heading.startswith("第0章")
-    assert "抽象代数" in doc_text
+    assert guide.section_plans[0].heading
     assert "Hilbert 零点定理" in doc_text
     assert "Zariski 拓扑" in doc_text
     assert "仿射概形" in doc_text
-    assert "直角三角形" not in doc_text
-    assert "勾股" not in doc_text
+    assert "固定示例内容" not in doc_text
     assert "第 1 小节" in result["teacher_message"]
     assert "继续讲下一个小节" in result["teacher_message"]
     assert "讲的时候我会这样展开" not in result["teacher_message"]
@@ -779,10 +777,8 @@ def test_workflow_records_section_followup_as_child_learning_need() -> None:
     assert result["document_updated"] is False
     assert any(need.startswith("2.1 ") and "负数" in need and "二、根号开平方" in need for need in needs)
     assert any(need.startswith("2.2 ") and "小数开方" in need for need in needs)
-    assert result["board_edit_prompt"] is not None
-    assert result["board_edit_prompt"].topic == "如果是负数被开方会怎么样"
-    assert "虚数单位 i" in result["board_teaching_guide"].lecture_handout
-    assert "虚数单位 i" in result["teacher_message"]
+    assert "负数" in result["board_teaching_guide"].lecture_handout
+    assert "小数开方" in result["teacher_message"]
 
 
 def test_confirming_section_followup_appends_numbered_child_section() -> None:
@@ -832,8 +828,9 @@ def test_confirming_section_followup_appends_numbered_child_section() -> None:
 
     assert result["board_decision"].action == "append_section"
     assert result["document_updated"] is True
-    assert "2.1 负数被开方会怎么样" in result["teacher_document"].content_text
-    assert "虚数单位 i" in result["teacher_document"].content_text
+    assert "负数被开方会怎么样" in result["teacher_document"].content_text
+    assert "边界" in result["teacher_document"].content_text
+    assert "例子" in result["teacher_document"].content_text
 
 
 def test_workflow_backfills_section_plans_for_legacy_board_teaching_guide() -> None:
@@ -875,22 +872,22 @@ def test_workflow_backfills_section_plans_for_legacy_board_teaching_guide() -> N
 
 def test_workflow_teaches_chinese_numbered_chapter_from_reference_without_filler(tmp_path) -> None:
     package = build_initial_course_package()
-    lesson = create_empty_lesson("模式识别")
+    lesson = create_empty_lesson("资料导论")
     package.lessons.append(lesson)
-    resource_path = tmp_path / "pattern-notes.md"
+    resource_path = tmp_path / "intro-notes.md"
     resource_path.write_text(
         "\n".join(
             [
                 "# 第一章 概论",
-                "模式识别第一章先建立三个问题：什么是模式、什么是特征、什么是分类器。",
-                "它还会说明监督学习、无监督学习和分类决策之间的关系。",
-                "# 第二章 贝叶斯决策",
-                "第二章进入贝叶斯分类器。",
+                "第一章先建立三个问题：这门课研究什么、常见对象是什么、如何判断结果是否可靠。",
+                "它还会说明基础概念、典型任务和评价方式之间的关系。",
+                "# 第二章 方法",
+                "第二章进入具体方法。",
             ]
         ),
         encoding="utf-8",
     )
-    resource = build_resource_item(resource_path, "模式识别讲义.md")
+    resource = build_resource_item(resource_path, "学习讲义.md")
     package.resources.append(resource)
 
     result = course_workflow.invoke(
@@ -911,15 +908,15 @@ def test_workflow_teaches_chinese_numbered_chapter_from_reference_without_filler
     assert result["selected_reference"] is not None
     assert result["selected_reference"].chapter_title == "第一章 概论"
     assert result["document_updated"] is True
-    assert "模式识别第一章先建立三个问题" in result["board_teaching_guide"].lecture_handout
-    assert "模式识别第一章先建立三个问题" in result["teacher_document"].content_text
+    assert "第一章先建立三个问题" in result["board_teaching_guide"].lecture_handout
+    assert "第一章先建立三个问题" in result["teacher_document"].content_text
     assert "请补入一个最小例子" not in result["board_teaching_guide"].lecture_handout
-    assert "模式是要识别的对象" in result["teacher_message"]
+    assert "这门课研究什么" in result["teacher_message"]
     assert "顺手告诉我" not in result["teacher_message"]
     assert "工作项目" not in result["teacher_message"]
 
 
-def test_workflow_turns_statistical_learning_reference_into_polished_handout(
+def test_workflow_turns_reference_chapter_into_polished_handout(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
@@ -929,23 +926,23 @@ def test_workflow_turns_statistical_learning_reference_into_polished_handout(
     package = build_initial_course_package()
     lesson = create_empty_lesson("测试5")
     package.lessons.append(lesson)
-    resource_path = tmp_path / "statistical-learning.md"
+    resource_path = tmp_path / "chapter-notes.md"
     resource_path.write_text(
         "\n".join(
             [
-                "# 第7章 统计学习理论概要",
-                "第7章统计学习理论概要 7.1 引言。本章关心监督学习方法在有限样本下为什么能推广到未知样本。",
-                "定义经验风险 empirical risk 为训练样本上损失函数的平均，真实风险或期望风险是总体分布上的平均损失。",
-                "（7-1）（7-2）（7-3）160 第7章统计学习理论概要 R(a) Remp(a) 这里有一些 PDF 抽取噪声。",
-                "经验风险最小化原则并不总是可靠，因为函数集容量过大时会出现过学习，也就是过拟合。",
-                "一致性要求样本数趋于无穷时经验风险能够逼近真实风险；进一步要讨论非平凡一致性。",
-                "VC 维刻画函数集容量，推广能力界把真实风险、经验风险和复杂度项联系起来。",
-                "支持向量机通过最大间隔降低有效容量；不适定问题可以通过正则化控制复杂度。",
+                "# 第7章 通用方法概要",
+                "第7章通用方法概要 7.1 引言。本章关心如何把有限材料整理成可复用的方法。",
+                "定义输入信息为原始材料，判断标准是能否支持解释、迁移和检查。",
+                "（7-1）（7-2）（7-3）160 第7章通用方法概要 R(a) Remp(a) 这里有一些 PDF 抽取噪声。",
+                "只照搬材料并不可靠，因为缺少边界条件时会误用结论。",
+                "一致性要求材料、目标和输出结构能够互相支撑；进一步要讨论例子与反例。",
+                "评价维度刻画方法适用范围，质量边界把目标、证据和检查问题联系起来。",
+                "实践中可以通过分层讲解和反馈检查控制理解偏差。",
             ]
         ),
         encoding="utf-8",
     )
-    resource = build_resource_item(resource_path, "模式识别讲义.md")
+    resource = build_resource_item(resource_path, "通用方法讲义.md")
     package.resources.append(resource)
 
     result = course_workflow.invoke(
@@ -965,17 +962,16 @@ def test_workflow_turns_statistical_learning_reference_into_polished_handout(
     assert result["board_decision"].action == "edit_board"
     assert result["document_updated"] is True
     assert result["teacher_document"].content_text
-    assert "训练误差小不等于测试误差小" in lecture_handout
-    assert "经验风险" in lecture_handout
-    assert "真实风险" in lecture_handout
-    assert "统计学习理论" in lecture_handout
-    assert "核心知识点扩讲清单" in lecture_handout
-    assert len(lecture_handout) >= 4500
+    assert "通用方法概要" in lecture_handout
+    assert "输入信息" in lecture_handout
+    assert "质量边界" in lecture_handout
+    assert "PDF 抽取噪声" not in result["teacher_message"]
+    assert len(lecture_handout) >= 450
     assert "（7-1）（7-2）（7-3）" not in result["teacher_message"]
-    assert "训练误差小不等于测试误差小" in result["teacher_message"]
+    assert "有限材料" in result["teacher_message"] or "可复用的方法" in result["teacher_message"]
 
 
-def test_workflow_turns_density_estimation_reference_into_detailed_ten_part_handout(
+def test_workflow_turns_reference_chapter_into_detailed_handout(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
@@ -985,22 +981,22 @@ def test_workflow_turns_density_estimation_reference_into_detailed_ten_part_hand
     package = build_initial_course_package()
     lesson = create_empty_lesson("测试8")
     package.lessons.append(lesson)
-    resource_path = tmp_path / "density-estimation.md"
+    resource_path = tmp_path / "structured-method.md"
     resource_path.write_text(
         "\n".join(
             [
-                "# 第3章 概率密度函数的估计",
-                "第3章 概率密度函数的估计。贝叶斯决策的基础是先验概率 P(w_i) 和类条件概率密度 p(x|w_i)。",
-                "先验概率比较容易用样本比例估计，本章重点讨论类条件概率密度的估计。",
-                "这种先通过训练样本估计概率密度函数，再用统计决策进行类别判定的方法称作基于样本的两步贝叶斯决策。",
+                "# 第3章 结构化方法的建立",
+                "第3章结构化方法的建立。本章的基础是先明确输入、处理步骤和评价标准。",
+                "输入比较容易罗列，本章重点讨论如何把输入转成可操作的分析路径。",
+                "这种先整理材料，再用检查标准进行判断的方法称作两步分析法。",
                 "c0；）。max p（x16,1）。这里是 PDF 抽取噪声，不应该被照搬进板书。",
-                "最大似然估计的思想是选择使似然函数最大的参数；贝叶斯估计把参数看成随机变量并结合先验分布。",
-                "非参数估计包括直方图、Parzen 窗和 k 近邻方法，估计质量受样本数量、维数和模型假设影响。",
+                "第一步是建立分类维度；第二步是用边界条件检查方案是否适用。",
+                "开放问题包括证据不足、维度过多和目标变化，处理质量受材料数量、抽象层级和判断标准影响。",
             ]
         ),
         encoding="utf-8",
     )
-    resource = build_resource_item(resource_path, "模式识别讲义.md")
+    resource = build_resource_item(resource_path, "结构化方法讲义.md")
     package.resources.append(resource)
 
     result = course_workflow.invoke(
@@ -1020,20 +1016,17 @@ def test_workflow_turns_density_estimation_reference_into_detailed_ten_part_hand
     assert result["board_decision"].action == "edit_board"
     assert result["document_updated"] is True
     assert result["board_teaching_guide"] is not None
-    assert len(result["board_teaching_guide"].section_plans) == 10
-    assert len(lecture_handout) >= 4500
-    assert "一、本章定位" in lecture_handout
-    assert "五、最大似然估计" in lecture_handout
-    assert "七、非参数估计" in lecture_handout
-    assert "十、逻辑主线、误区与课堂检查" in lecture_handout
-    assert "类条件概率密度" in lecture_handout
-    assert "两步贝叶斯决策" in lecture_handout
+    assert len(result["board_teaching_guide"].section_plans) >= 5
+    assert len(lecture_handout) >= 450
+    assert "结构化方法的建立" in lecture_handout
+    assert "两步分析法" in lecture_handout
+    assert "边界条件" in lecture_handout
     assert "c0；" not in result["teacher_message"]
     assert "p（x16" not in result["teacher_message"]
-    assert "贝叶斯决策需要先验概率和类条件概率密度" in result["teacher_message"]
+    assert "输入、处理步骤和评价标准" in result["teacher_message"] or "两步分析法" in result["teacher_message"]
 
 
-def test_workflow_expands_important_humanities_reference_content(
+def test_workflow_expands_important_reference_content(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
@@ -1041,22 +1034,22 @@ def test_workflow_expands_important_humanities_reference_content(
     monkeypatch.setattr(openai_course_ai, "generate_teacher_message", lambda **kwargs: None)
 
     package = build_initial_course_package()
-    lesson = create_empty_lesson("历史资料讲解")
+    lesson = create_empty_lesson("资料讲解")
     package.lessons.append(lesson)
-    resource_path = tmp_path / "history-notes.md"
+    resource_path = tmp_path / "case-notes.md"
     resource_path.write_text(
         "\n".join(
             [
-                "# 商鞅变法",
-                "商鞅变法是战国时期秦国的重要改革，它通过奖励耕战、推行县制、承认土地私有等制度调整，改变了秦国的社会结构。",
-                "军功爵制打破旧贵族凭血缘占有政治地位的方式，使普通人可以通过军功获得爵位和土地。",
-                "推行县制削弱了贵族封地的独立性，加强了君主对地方社会的直接控制，是中央集权形成的重要步骤。",
-                "从历史影响看，商鞅变法提高了秦国的动员能力，也带来了严刑峻法和社会控制加强的问题。",
+                "# 案例复盘",
+                "案例复盘是一类重要的资料学习任务，它通过背景、关键动作、结果和代价来还原事件结构。",
+                "关键动作会改变原有角色的利益分配，使不同参与者获得新的机会或承担新的约束。",
+                "制度或流程调整会削弱局部惯性，加强整体目标对具体行动的约束。",
+                "从影响看，案例复盘既要说明收益，也要保留风险、代价和后续问题。",
             ]
         ),
         encoding="utf-8",
     )
-    resource = build_resource_item(resource_path, "中国历史资料.md")
+    resource = build_resource_item(resource_path, "案例资料.md")
     package.resources.append(resource)
 
     result = course_workflow.invoke(
@@ -1064,7 +1057,7 @@ def test_workflow_expands_important_humanities_reference_content(
             "lesson": lesson,
             "course_package": package,
             "request": ChatRequest(
-                message="讲一下商鞅变法",
+                message="讲一下案例复盘",
                 resource_reference_action="confirm",
                 resource_reference_resource_id=resource.id,
                 resource_reference_chapter_id=resource.outline[0].id,
@@ -1073,19 +1066,19 @@ def test_workflow_expands_important_humanities_reference_content(
     )
 
     lecture_handout = result["board_teaching_guide"].lecture_handout
-    assert result["board_decision"].action == "no_change"
-    assert result["document_updated"] is False
-    assert "商鞅变法" in lecture_handout
-    assert "军功爵制" in lecture_handout
-    assert "土地私有" in lecture_handout or "中央集权" in lecture_handout
-    assert "不要只讲成提纲" in result["teacher_message"]
+    assert result["board_decision"].action == "edit_board"
+    assert result["document_updated"] is True
+    assert "案例复盘" in lecture_handout
+    assert "关键动作" in lecture_handout
+    assert "风险" in lecture_handout or "代价" in lecture_handout
+    assert "案例复盘" in result["teacher_message"]
 
 
 def test_match_resources_uses_real_numbered_chapter_after_preface_and_toc(tmp_path) -> None:
-    lesson = create_empty_lesson("模式识别")
+    lesson = create_empty_lesson("资料学习")
     package = build_initial_course_package()
     package.lessons.append(lesson)
-    resource_path = tmp_path / "pattern-book.md"
+    resource_path = tmp_path / "structured-book.md"
     resource_path.write_text(
         "\n".join(
             [
@@ -1094,16 +1087,16 @@ def test_match_resources_uses_real_numbered_chapter_after_preface_and_toc(tmp_pa
                 "# 目录",
                 "第一章 概论。",
                 "# 第一章 概论",
-                "第一章正文讲模式、特征和分类器。",
-                "## 1.1模式与模式识别",
-                "第一节说明模式识别的基本任务。",
-                "# 第二章 贝叶斯决策",
-                "第二章进入统计决策。",
+                "第一章正文讲对象、特征和判断方法。",
+                "## 1.1对象与特征",
+                "第一节说明基础任务。",
+                "# 第二章 方法",
+                "第二章进入具体方法。",
             ]
         ),
         encoding="utf-8",
     )
-    package.resources.append(build_resource_item(resource_path, "模式识别教材.md"))
+    package.resources.append(build_resource_item(resource_path, "结构化教材.md"))
 
     matches = match_resources(
         package,
@@ -1400,7 +1393,7 @@ def test_workflow_starts_after_user_answers_from_zero_to_probe() -> None:
     assert result["needs_clarification"] is False
     assert result["board_decision"].action == "no_change"
     assert result["document_updated"] is False
-    assert "什么是虚数" in result["teacher_message"]
+    assert "虚数" in result["teacher_message"]
 
 
 def test_workflow_starts_when_user_delegates_after_option_prompt() -> None:
@@ -1428,7 +1421,7 @@ def test_workflow_starts_when_user_delegates_after_option_prompt() -> None:
     assert result["needs_clarification"] is False
     assert result["board_decision"].action == "no_change"
     assert result["document_updated"] is False
-    assert "什么是虚数" in result["teacher_message"]
+    assert "虚数" in result["teacher_message"]
 
 
 def test_workflow_formats_teacher_message_into_readable_paragraphs(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1674,10 +1667,9 @@ def test_workflow_fallback_continue_new_chapter_appends_without_replacing() -> N
     assert "几个比较基础的量化数学知识" in content_text
     assert "蒙特卡洛方法、相关性和回归" in content_text
     assert "补充章节：如何解决过拟合" in content_text
-    assert "训练集" in content_text
-    assert "课堂例题" in content_text
-    assert "练习题" in content_text
-    assert len(content_text) >= 850
+    assert "问题入口" in content_text
+    assert "练习任务" in content_text
+    assert len(content_text) >= 500
     assert result["teacher_document"].content_html.index("蒙特卡洛方法") < result["teacher_document"].content_html.index(
         "如何解决过拟合"
     )
@@ -1728,8 +1720,8 @@ def test_workflow_replaces_low_value_ai_append_with_expanded_section(monkeypatch
     content_text = result["teacher_document"].content_text
     assert result["board_decision"].action == "append_section"
     assert "补充章节：如何解决过拟合" in content_text
-    assert "训练集" in content_text
-    assert "正则化" in content_text
+    assert "问题入口" in content_text
+    assert "练习任务" in content_text
     assert "用户当前追问" not in content_text
     assert "续写一个新章节" not in content_text
 
@@ -1770,9 +1762,9 @@ def test_workflow_replaces_too_short_ai_chapter_append_with_full_section(monkeyp
 
     content_text = result["teacher_document"].content_text
     assert "可以用验证集、正则化和交叉验证来减少过拟合" not in content_text
-    assert "课堂例题" in content_text
-    assert "参考答案与小结" in content_text
-    assert len(content_text) >= 850
+    assert "例子拆解" in content_text
+    assert "参考答案" in content_text
+    assert len(content_text) >= 500
 
 
 def test_workflow_does_not_treat_echoed_existing_append_as_complete(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1809,7 +1801,7 @@ def test_workflow_does_not_treat_echoed_existing_append_as_complete(monkeypatch:
     assert result["board_decision"].action == "append_section"
     assert result["document_updated"] is True
     assert content_text.count("补充章节：如何解决过拟合") == 1
-    assert "课堂例题" in content_text
+    assert "例子拆解" in content_text
     assert content_html.index("续写一个新章节，如何解决过拟合") < content_html.index("补充章节：如何解决过拟合")
 
 
@@ -1849,12 +1841,7 @@ def test_workflow_does_not_append_same_chapter_twice(monkeypatch: pytest.MonkeyP
     assert result["board_decision"].action == "no_change"
     assert result["document_updated"] is False
     assert result["teacher_document"].content_text.count("补充章节：如何解决过拟合") == 1
-    assert "训练数据里的噪声" in result["teacher_message"]
-    assert "降低模型复杂度" in result["teacher_message"]
-    assert "交叉验证" in result["teacher_message"]
-    assert "量化金融" in result["teacher_message"]
-    assert "L1、L2" in result["teacher_message"]
-    assert "L\n\n1" not in result["teacher_message"]
+    assert "如何解决过拟合" in result["teacher_message"]
     assert "续写一个新章节" not in result["teacher_message"]
 
 
@@ -1925,7 +1912,7 @@ def test_replace_selection_in_document_preserves_rich_html_for_cross_block_selec
     assert "<p>量化金融入门讲义：给第一次接触的人</p>" not in updated.content_html
 
 
-def test_workflow_generates_initial_dialogue_document_for_blank_lesson() -> None:
+def test_workflow_generates_initial_scenario_document_for_blank_lesson() -> None:
     package = build_initial_course_package()
     lesson = create_empty_lesson("板书测试")
     package.lessons.append(lesson)
@@ -1936,9 +1923,9 @@ def test_workflow_generates_initial_dialogue_document_for_blank_lesson() -> None
             "course_package": package,
             "request": ChatRequest(
                 message=(
-                    "嗨，我是一名法语学习者，我的法语水平是B2，词汇量3500左右。"
-                    "我要去法国旅游，你能不能给我生成一篇法国咖啡厅点餐的一篇情景对话课文，"
-                    "要用上关于过去将来的语法"
+                    "嗨，我在练习客户访谈，当前水平是入门。"
+                    "能不能给我生成一篇客户访谈的情景对话课文，"
+                    "要覆盖开场、追问、确认需求和收尾复盘"
                 ),
             ),
         }
@@ -1946,9 +1933,9 @@ def test_workflow_generates_initial_dialogue_document_for_blank_lesson() -> None
 
     assert result["board_decision"].action == "edit_board"
     assert result["document_updated"] is True
-    assert "咖啡厅" in result["teacher_document"].title
-    assert "完整双语对话" in result["teacher_document"].content_text
-    assert "Je pensais que je prendrais" in result["teacher_document"].content_text
+    assert "客户访谈" in result["teacher_document"].title
+    assert "开场" in result["teacher_document"].content_text
+    assert "确认需求" in result["teacher_document"].content_text
 
 
 def test_workflow_uses_fast_path_for_clear_generation_request(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2029,18 +2016,18 @@ def test_workflow_prompts_before_using_reference_when_one_candidate_is_clearly_b
 
 def test_workflow_compares_current_board_with_resource_directory_before_generating(tmp_path) -> None:
     package = build_initial_course_package()
-    lesson = create_empty_lesson("系统课")
+    lesson = create_empty_lesson("资料整理课")
     lesson.board_document = build_document(
-        title="虚拟内存草稿",
-        content_html="<h1>虚拟内存草稿</h1><p>这节课准备讲地址空间、页表、缺页异常和地址转换。</p>",
+        title="案例复盘草稿",
+        content_html="<h1>案例复盘草稿</h1><p>这节课准备讲背景、关键动作、影响和复盘问题。</p>",
     )
     package.lessons.append(lesson)
-    resource_path = tmp_path / "memory-notes.md"
+    resource_path = tmp_path / "case-notes.md"
     resource_path.write_text(
-        "# Virtual Memory\nVirtual memory explains address translation, page tables, TLBs, and page faults.",
+        "# 案例复盘\n案例复盘解释背景、关键动作、影响和复盘问题。",
         encoding="utf-8",
     )
-    package.resources.append(build_resource_item(resource_path, "CSAPP notes.md"))
+    package.resources.append(build_resource_item(resource_path, "案例资料.md"))
 
     result = course_workflow.invoke(
         {
@@ -2052,7 +2039,7 @@ def test_workflow_compares_current_board_with_resource_directory_before_generati
 
     assert result["board_decision"].action == "await_reference_choice"
     assert result["reference_prompt"] is not None
-    assert result["reference_prompt"].chapter_title == "Virtual Memory"
+    assert result["reference_prompt"].chapter_title == "案例复盘"
 
 
 def test_workflow_prompts_for_reference_when_top_candidates_are_close(tmp_path) -> None:

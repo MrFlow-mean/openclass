@@ -167,61 +167,6 @@ def _attach_outline_hierarchy(chapters: list[LibraryChapter]) -> list[LibraryCha
     return enriched
 
 
-def _curated_csapp_outline() -> list[LibraryChapter]:
-    return [
-        _chapter("Computer Systems Tour", "系统总览，建立整本书的坐标系。", ["system", "overview", "csapp", "系统总览"], order_index=0),
-        _chapter(
-            "Representing and Manipulating Information",
-            "机器如何表达整数、浮点数和位级运算。",
-            ["bits", "representation", "floating point", "信息表示", "浮点数"],
-            order_index=1,
-        ),
-        _chapter(
-            "Machine-Level Representation",
-            "程序如何变成汇编和机器级行为。",
-            ["assembly", "machine-level", "stack", "汇编", "机器级表示"],
-            order_index=2,
-        ),
-        _chapter(
-            "Processor Architecture",
-            "处理器、流水线与性能。",
-            ["processor", "pipeline", "architecture", "处理器", "流水线"],
-            order_index=3,
-        ),
-        _chapter(
-            "Optimizing Program Performance",
-            "性能优化与基准意识。",
-            ["optimization", "performance", "cache", "性能优化"],
-            order_index=4,
-        ),
-        _chapter(
-            "The Memory Hierarchy",
-            "缓存与内存层次。",
-            ["cache", "memory hierarchy", "latency", "缓存", "内存层次"],
-            order_index=5,
-        ),
-        _chapter("Linking", "目标文件、静态链接与动态链接。", ["linking", "symbol", "loader", "链接"], order_index=6),
-        _chapter(
-            "Exceptional Control Flow",
-            "进程、信号和异常控制流。",
-            ["process", "signal", "exception", "异常控制流", "进程"],
-            order_index=7,
-        ),
-        _chapter(
-            "Virtual Memory",
-            "地址空间与虚拟内存机制。",
-            ["virtual memory", "address space", "page", "虚拟内存", "地址空间", "页表"],
-            order_index=8,
-        ),
-        _chapter(
-            "System-Level I/O",
-            "Unix I/O 与网络编程基础。",
-            ["io", "network", "socket", "输入输出", "网络编程"],
-            order_index=9,
-        ),
-    ]
-
-
 def _markdown_sections(text: str) -> list[dict[str, object]]:
     lines = text.splitlines()
     headings: list[tuple[int, int, str]] = []
@@ -939,79 +884,25 @@ def _outline_chunk(chapter: LibraryChapter, children: list[LibraryChapter]) -> R
     )
 
 
-def _pattern_recognition_teaching_points(chapter_title: str, text: str) -> list[str]:
-    compact = re.sub(r"\s+", "", text)
-    compact_title = re.sub(r"\s+", "", chapter_title)
-    if "概论" not in compact_title and "第一章" not in compact_title and "第1章" not in compact_title:
-        return []
-    if not {"模式识别", "监督", "非监督"} <= set(re.findall(r"模式识别|监督|非监督", compact)):
-        return []
-    return [
-        "先讲“模式”不是单个样本，而是一类对象、过程或事件背后的规律和特征组合。",
-        "再讲“模式识别”的任务：从观测对象提取特征，并把对象归入类别，或在没有标签时发现聚类结构。",
-        "接着区分监督模式识别和非监督模式识别：前者有已知类别样本训练分类器，后者按相似性自学习聚类。",
-        "最后串起典型系统流程：信息获取与预处理 -> 特征提取与选择 -> 分类器设计或聚类分析 -> 分类决策/结果解释。",
+def _generic_teaching_points(
+    *,
+    chapter: LibraryChapter,
+    children: list[LibraryChapter],
+    text: str,
+) -> list[str]:
+    keywords = _keywords_from_text(f"{chapter.title}\n{text}")[:5]
+    points = [
+        f"先说明“{chapter.title}”这一节在资料结构中要解决的核心问题。",
+        "把抽取到的关键术语、材料证据或推理步骤组织成一条可复述的学习主线。",
+        "优先解释概念之间的关系、适用条件和容易混淆的边界，而不是照搬原文段落。",
+        "讲解时配一个最小例子、对比或检查问题，用来验证学习者是否能迁移。",
     ]
-
-
-def _statistical_learning_teaching_points(chapter_title: str, text: str) -> list[str]:
-    compact = re.sub(r"\s+", "", f"{chapter_title}\n{text}").lower()
-    if "统计学习理论" not in compact and "statisticallearning" not in compact:
-        return []
-    if not any(term in compact for term in ("经验风险", "真实风险", "期望风险", "vc", "推广能力", "一致性")):
-        return []
-    return [
-        "先把本章定位讲清：它关心训练误差小为什么不一定代表测试误差小。",
-        "再区分损失函数、真实风险和经验风险，说明经验风险最小化为什么只是可计算替代。",
-        "接着用过学习/过拟合说明函数集合太复杂时，训练集会被噪声牵着走。",
-        "然后引出一致性、函数集容量与 VC 维，把“复杂度”变成可以讨论的对象。",
-        "最后落到推广能力界、SVM 最大间隔和正则化：这些方法本质上都是在控制复杂度。",
-    ]
-
-
-def _humanities_teaching_points(chapter_title: str, text: str) -> list[str]:
-    corpus = f"{chapter_title}\n{text}"
-    compact = re.sub(r"\s+", "", corpus)
-    humanities_markers = (
-        "文学",
-        "历史",
-        "哲学",
-        "政治",
-        "法律",
-        "社会",
-        "文化",
-        "教育",
-        "伦理",
-        "艺术",
-        "语文",
-        "诗歌",
-        "小说",
-        "制度",
-        "思想",
-        "观点",
-        "论证",
-        "叙事",
-        "人物",
-        "原因",
-        "影响",
-        "意义",
-        "评价",
-        "改革",
-        "变法",
-        "革命",
-        "战争",
-    )
-    technical_markers = ("统计学习理论", "模式识别", "机器学习", "算法", "公式", "定理", "计算机")
-    if any(marker in compact for marker in technical_markers):
-        return []
-    if sum(1 for marker in humanities_markers if marker in compact) < 2:
-        return []
-    return [
-        "先识别材料中的核心观点、事件、人物、制度、文本细节或论证环节，不要只按标题概括。",
-        "每个重要内容都要扩讲：交代背景，翻译材料原意，说明因果链、论证链或文本细读链。",
-        "历史/政治/法律类材料要讲清原因、过程、结果和影响；文学/哲学类材料要讲清关键词、文本细节和思想关系。",
-        "最后设计检查问题，让学生能从材料证据出发分析，而不是只背空泛结论。",
-    ]
+    if children:
+        child_titles = "、".join(child.title for child in children[:4])
+        points.insert(1, f"参考子目录顺序组织讲解：{child_titles}。")
+    if keywords:
+        points.insert(2, f"围绕 {', '.join(keywords[:3])} 的关系展开，不把关键词拆成孤立卡片。")
+    return points
 
 
 def _build_reference_context(
@@ -1041,14 +932,7 @@ def _build_reference_context(
     if outline is not None:
         chunks.insert(0, outline)
 
-    teaching_points = [
-        *_pattern_recognition_teaching_points(chapter.title, compact),
-        *_statistical_learning_teaching_points(chapter.title, compact),
-        *_humanities_teaching_points(chapter.title, compact),
-        f"先说明“{chapter.title}”这一章想解决的核心问题，再接回用户当前问题。",
-        f"优先把 {', '.join(_keywords_from_text(compact)[:3]) or chapter.title} 之间的关系讲顺。",
-        "先给定义或直觉，再补一个可用于讲课的例子或对比。",
-    ]
+    teaching_points = _generic_teaching_points(chapter=chapter, children=children, text=compact)
     unique_points: list[str] = []
     seen_points: set[str] = set()
     for point in teaching_points:
@@ -1416,7 +1300,6 @@ def _toc_entries_to_chapters(reader: PdfReader, toc_pages: list[tuple[int, str]]
 
 
 def extract_outline(file_path: Path, original_name: str, mime_type: str) -> tuple[list[LibraryChapter], bool, str | None]:
-    name_lower = original_name.lower()
     if mime_type.startswith("image/"):
         generic_title = Path(original_name).stem
         extracted_text = extract_image_text(file_path)
@@ -1544,9 +1427,6 @@ def extract_outline(file_path: Path, original_name: str, mime_type: str) -> tupl
                 True,
                 None,
             )
-        if "csapp" in name_lower or "computer systems" in name_lower:
-            return _curated_csapp_outline(), True, None
-
     generic_title = Path(original_name).stem
     return (
         [

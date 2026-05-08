@@ -60,7 +60,7 @@ def test_realtime_call_uses_requested_model_and_lesson_context(isolated_ai_log) 
     assert isinstance(session, dict)
     assert session["type"] == "transcription"
     assert session["model"] == "gpt-realtime-1.5"
-    assert session["audio"]["input"]["transcription"]["language"] == "zh"
+    assert "language" not in session["audio"]["input"]["transcription"]
     assert "勾股定理" in session["audio"]["input"]["transcription"]["prompt"]
     assert session["audio"]["input"]["turn_detection"]["create_response"] is False
     assert "output" not in session["audio"]
@@ -70,6 +70,26 @@ def test_realtime_call_uses_requested_model_and_lesson_context(isolated_ai_log) 
     assert entry["event_type"] == "openai_realtime_session"
     assert entry["context"]["trace_id"] == "realtime_test"
     assert entry["payload"]["answer_sdp"].startswith("v=0")
+
+
+def test_realtime_call_uses_configured_transcription_language(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log
+) -> None:
+    monkeypatch.setenv("OPENAI_REALTIME_TRANSCRIPTION_LANGUAGE", "zh")
+    teacher = OpenAIRealtimeTeacher()
+    teacher.client = _FakeClient()
+    lesson = create_lesson("线性代数")
+
+    teacher.create_call(
+        lesson=lesson,
+        offer_sdp="offer-sdp",
+        latest_assistant_message=None,
+    )
+
+    assert teacher.client.realtime.calls.payload is not None
+    session = teacher.client.realtime.calls.payload["session"]
+    assert isinstance(session, dict)
+    assert session["audio"]["input"]["transcription"]["language"] == "zh"
 
 
 def test_realtime_base_url_defaults_to_official_openai(monkeypatch: pytest.MonkeyPatch) -> None:
