@@ -10,6 +10,7 @@ import secrets
 import sqlite3
 import ssl
 import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -452,9 +453,20 @@ class AuthService:
         conn.execute("PRAGMA synchronous = NORMAL")
         return conn
 
+    @contextmanager
+    def _connection(self) -> sqlite3.Connection:
+        # sqlite3.Connection's context manager commits/rolls back but does not close.
+        # If we don't explicitly close, long-running uvicorn processes leak fds and
+        # eventually fail with "unable to open database file".
+        conn = self._connect()
+        try:
+            yield conn
+        finally:
+            conn.close()
+
     def _initialize(self) -> None:
         with self._lock:
-            with self._connect() as conn:
+            with self._connection() as conn:
                 conn.executescript(
                     """
                     CREATE TABLE IF NOT EXISTS users (
@@ -571,7 +583,7 @@ class AuthService:
         created_at = _now_iso()
 
         with self._lock:
-            with self._connect() as conn:
+            with self._connection() as conn:
                 with conn:
                     user_count = conn.execute("SELECT count(*) FROM users").fetchone()[0]
                     role = "admin" if user_count == 0 or (account.email and account.email in _admin_emails()) else "user"
@@ -610,7 +622,7 @@ class AuthService:
     def login(self, identifier: str, password: str, *, guest_token: str | None = None) -> tuple[str, UserView]:
         account = _normalize_account_identifier(identifier)
         with self._lock:
-            with self._connect() as conn:
+            with self._connection() as conn:
                 if account.kind == "phone":
                     row = conn.execute("SELECT * FROM users WHERE phone = ?", (account.phone,)).fetchone()
                 else:
@@ -640,7 +652,7 @@ class AuthService:
         now = _now_iso()
 
         with self._lock:
-            with self._connect() as conn:
+            with self._connection() as conn:
                 with conn:
                     identity = conn.execute(
                         """
@@ -725,7 +737,7 @@ class AuthService:
     def get_user_by_token(self, token: str) -> UserView:
         token_hash = self._token_hash(token)
         with self._lock:
-            with self._connect() as conn:
+            with self._connection() as conn:
                 row = conn.execute(
                     """
                     SELECT users.*
@@ -760,7 +772,7 @@ class AuthService:
         token = secrets.token_urlsafe(SESSION_TOKEN_BYTES)
         now = _now_iso()
         with self._lock:
-            with self._connect() as conn:
+            with self._connection() as conn:
                 with conn:
                     conn.execute(
                         """
@@ -773,7 +785,7 @@ class AuthService:
 
     def overview(self) -> AdminOverview:
         with self._lock:
-            with self._connect() as conn:
+            with self._connection() as conn:
                 users = [
                     _user_view(row, self._identities_for_user(conn, row["id"]))
                     for row in conn.execute("SELECT * FROM users ORDER BY created_at DESC, email").fetchall()
@@ -859,7 +871,7 @@ class AuthService:
             params["response_mode"] = provider.response_mode
 
         with self._lock:
-            with self._connect() as conn:
+            with self._connection() as conn:
                 with conn:
                     conn.execute(
                         """
@@ -983,7 +995,7 @@ class AuthService:
             return None
         token_hash = self._token_hash(guest_token)
         with self._lock:
-            with self._connect() as conn:
+            with self._connection() as conn:
                 row = conn.execute(
                     "SELECT guest_user_id FROM auth_guest_sessions WHERE token_hash = ?",
                     (token_hash,),
@@ -1081,7 +1093,7 @@ class AuthService:
 
     def _consume_oauth_state(self, provider_id: str, state: str) -> tuple[str, str, str | None, str | None]:
         with self._lock:
-            with self._connect() as conn:
+            with self._connection() as conn:
                 with conn:
                     row = conn.execute(
                         "SELECT * FROM auth_oauth_states WHERE state = ? AND provider = ?",
