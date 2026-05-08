@@ -20,6 +20,7 @@ import {
   FolderClosed,
   GitFork,
   GraduationCap,
+  Languages,
   Layers,
   LoaderCircle,
   MoreHorizontal,
@@ -37,6 +38,12 @@ import { InlineNameForm } from "@/components/inline-name-form";
 import { useInterfaceLanguage } from "@/contexts/interface-language-context";
 import { api } from "@/lib/api";
 import { homeRelativeFormat } from "@/lib/i18n/product-ui";
+import {
+  PROFILE_SETTINGS_CHANGED_EVENT,
+  PROFILE_SETTINGS_STORAGE_KEY,
+  readStoredProfileSettings,
+  type InterfaceLanguage,
+} from "@/lib/profile-settings-state";
 import {
   DEFAULT_COLLECTED_COURSE_IDS,
   OPEN_COURSE_COLLECTION_STORAGE_KEY,
@@ -283,7 +290,7 @@ function followedUpdatePreviewHeading(kind: FollowedCourseUpdate["updateKind"]) 
 
 export function LearningHome() {
   const router = useRouter();
-  const { texts: txt, intlLocale } = useInterfaceLanguage();
+  const { language, texts: txt, intlLocale } = useInterfaceLanguage();
   const h = txt.home;
   const errMsgs = useRef(h);
 
@@ -713,6 +720,25 @@ export function LearningHome() {
       persistCollectedCourseIds(next);
       return next;
     });
+  }
+
+  function handleToggleInterfaceLanguage() {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const nextLanguage: InterfaceLanguage = language === "en" ? "zh-CN" : "en";
+    const nextSettings = {
+      ...readStoredProfileSettings(),
+      interfaceLanguage: nextLanguage,
+    };
+
+    try {
+      window.localStorage.setItem(PROFILE_SETTINGS_STORAGE_KEY, JSON.stringify(nextSettings));
+      window.dispatchEvent(new CustomEvent(PROFILE_SETTINGS_CHANGED_EVENT, { detail: nextSettings }));
+    } catch {
+      // Browser storage can be unavailable in private browsing contexts.
+    }
   }
 
   const feedFilters = useMemo(
@@ -1792,19 +1818,32 @@ export function LearningHome() {
             </span>
             <span>动态</span>
           </Link>
-          <button
-            type="button"
-            onClick={() => setNotificationOpen((current) => !current)}
-            className="relative rounded-full border border-stone-200 bg-white p-3 text-stone-700 shadow-[0_10px_24px_rgba(15,23,42,0.08)] transition hover:shadow-[0_14px_28px_rgba(15,23,42,0.12)]"
-            aria-label="切换消息面板"
-          >
-            <Bell className="h-5 w-5" />
-            {followingUnreadCount ? (
-              <span className="absolute -right-1 -top-1 min-w-5 rounded-full bg-rose-500 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white ring-2 ring-white">
-                {followingBadge}
-              </span>
-            ) : null}
-          </button>
+          <div className="flex flex-col items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setNotificationOpen((current) => !current)}
+              className="relative rounded-full border border-stone-200 bg-white p-3 text-stone-700 shadow-[0_10px_24px_rgba(15,23,42,0.08)] transition hover:shadow-[0_14px_28px_rgba(15,23,42,0.12)]"
+              aria-label={h.notificationToggleAria}
+              title={h.notificationToggleAria}
+            >
+              <Bell className="h-5 w-5" />
+              {followingUnreadCount ? (
+                <span className="absolute -right-1 -top-1 min-w-5 rounded-full bg-rose-500 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white ring-2 ring-white">
+                  {followingBadge}
+                </span>
+              ) : null}
+            </button>
+            <button
+              type="button"
+              onClick={handleToggleInterfaceLanguage}
+              className="group flex h-8 items-center gap-1.5 rounded-full border border-stone-200 bg-white px-2.5 text-[11px] font-semibold text-stone-600 shadow-[0_8px_18px_rgba(15,23,42,0.07)] transition hover:-translate-y-0.5 hover:border-sky-200 hover:bg-sky-50 hover:text-sky-700"
+              aria-label={language === "en" ? h.languageSwitchToChinese : h.languageSwitchToEnglish}
+              title={language === "en" ? h.languageSwitchToChinese : h.languageSwitchToEnglish}
+            >
+              <Languages className="h-3.5 w-3.5" />
+              <span>{language === "en" ? "中" : "EN"}</span>
+            </button>
+          </div>
           <Link
             href="/profile"
             className="h-11 w-11 overflow-hidden rounded-full border-2 border-white bg-stone-200 shadow-[0_10px_24px_rgba(15,23,42,0.08)] transition hover:scale-[1.03]"
