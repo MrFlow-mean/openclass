@@ -5,6 +5,8 @@ import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
 import { LoaderCircle, ShieldCheck } from "lucide-react";
 
+import { useInterfaceLanguage } from "@/contexts/interface-language-context";
+
 import { api, clearAuthToken, readAuthToken, readEffectiveAuthToken } from "@/lib/api";
 import type { UserView } from "@/types";
 
@@ -23,6 +25,8 @@ function loginHref() {
 
 export function AuthGate({ adminOnly = false, children }: AuthGateProps) {
   const router = useRouter();
+  const { texts: txt } = useInterfaceLanguage();
+  const a = txt.auth;
   const [user, setUser] = useState<UserView | null>(null);
   const [isChecking, setIsChecking] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -46,7 +50,7 @@ export function AuthGate({ adminOnly = false, children }: AuthGateProps) {
           return;
         }
         if (adminOnly && currentUser.role !== "admin") {
-          setError("当前账号没有管理员权限。");
+          setError(a.noAdminPermission);
           return;
         }
         setUser(currentUser);
@@ -67,7 +71,7 @@ export function AuthGate({ adminOnly = false, children }: AuthGateProps) {
     return () => {
       disposed = true;
     };
-  }, [adminOnly, router]);
+  }, [adminOnly, router, a.noAdminPermission]);
 
   if (error) {
     return (
@@ -84,7 +88,7 @@ export function AuthGate({ adminOnly = false, children }: AuthGateProps) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-[#f7f5ef] text-stone-500">
         <LoaderCircle className="mr-2 h-4 w-4 animate-spin" />
-        正在检查登录状态
+        {a.checking}
       </main>
     );
   }

@@ -4,7 +4,7 @@ import clsx from "clsx";
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useDeferredValue, useEffect, useMemo, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   ArrowUpRight,
@@ -34,7 +34,9 @@ import {
 import { AccountMenu } from "@/components/account-menu";
 import { BrandMark } from "@/components/brand-mark";
 import { InlineNameForm } from "@/components/inline-name-form";
+import { useInterfaceLanguage } from "@/contexts/interface-language-context";
 import { api } from "@/lib/api";
+import { homeRelativeFormat } from "@/lib/i18n/product-ui";
 import {
   DEFAULT_COLLECTED_COURSE_IDS,
   OPEN_COURSE_COLLECTION_STORAGE_KEY,
@@ -83,7 +85,7 @@ type LessonMenuState = {
   left: number;
 };
 
-function countOpenCourseFacet(courses: OpenCourse[], getValue: (course: OpenCourse) => string) {
+function countOpenCourseFacet(courses: OpenCourse[], getValue: (course: OpenCourse) => string, collatorLocale: string) {
   const counts = new Map<string, number>();
 
   courses.forEach((course) => {
@@ -95,7 +97,7 @@ function countOpenCourseFacet(courses: OpenCourse[], getValue: (course: OpenCour
     if (right.count !== left.count) {
       return right.count - left.count;
     }
-    return left.value.localeCompare(right.value, "zh-CN");
+    return left.value.localeCompare(right.value, collatorLocale);
   });
 }
 
@@ -125,44 +127,6 @@ function matchesQuery(query: string, ...values: Array<string | null | undefined>
   }
 
   return values.some((value) => value?.toLowerCase().includes(query));
-}
-
-function formatRelativeTime(value: string | Date | null | undefined) {
-  if (!value) {
-    return "刚刚";
-  }
-
-  const date = value instanceof Date ? value : new Date(value);
-  const timestamp = date.getTime();
-
-  if (Number.isNaN(timestamp)) {
-    return "刚刚";
-  }
-
-  const minutes = Math.floor((Date.now() - timestamp) / 60000);
-
-  if (minutes <= 0) {
-    return "刚刚";
-  }
-
-  if (minutes < 60) {
-    return `${minutes} 分钟前`;
-  }
-
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) {
-    return `${hours} 小时前`;
-  }
-
-  const days = Math.floor(hours / 24);
-  if (days < 7) {
-    return `${days} 天前`;
-  }
-
-  return new Intl.DateTimeFormat("zh-CN", {
-    month: "numeric",
-    day: "numeric",
-  }).format(date);
 }
 
 function dayKey(date: Date) {
@@ -319,6 +283,19 @@ function followedUpdatePreviewHeading(kind: FollowedCourseUpdate["updateKind"]) 
 
 export function LearningHome() {
   const router = useRouter();
+  const { texts: txt, intlLocale } = useInterfaceLanguage();
+  const h = txt.home;
+  const errMsgs = useRef(h);
+
+  useEffect(() => {
+    errMsgs.current = h;
+  });
+
+  const homeRelFmt = useMemo(
+    () => (value: string | Date | null | undefined) => homeRelativeFormat(value, txt.homeRelative, txt.lang),
+    [txt]
+  );
+
   const [workspaceState, setWorkspaceState] = useState<WorkspaceState | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -367,7 +344,7 @@ export function LearningHome() {
         if (isDisposed) {
           return;
         }
-        setError(loadError instanceof Error ? loadError.message : "加载主页数据失败");
+        setError(loadError instanceof Error ? loadError.message : errMsgs.current.loadError);
       } finally {
         if (!isDisposed) {
           setIsLoading(false);
@@ -476,7 +453,7 @@ export function LearningHome() {
   const standaloneLessonItems: LessonShelfItem[] = sortByUpdatedAt(standalonePackage?.lessons ?? []).map((lesson) => ({
     lesson,
     packageId: standalonePackage?.id ?? "standalone",
-    packageTitle: standalonePackage?.title ?? "单独课程",
+    packageTitle: standalonePackage?.title ?? h.standaloneFallbackTitle,
     isPackaged: false,
   }));
   const filteredLessonItems = standaloneLessonItems.filter(({ lesson, packageTitle }) =>
@@ -493,12 +470,12 @@ export function LearningHome() {
 
   const matchingOpenCourses = useMemo(() => searchOpenCourses(deferredQuery), [deferredQuery]);
   const categoryFacetCounts = useMemo(
-    () => countOpenCourseFacet(matchingOpenCourses, (course) => course.category),
-    [matchingOpenCourses]
+    () => countOpenCourseFacet(matchingOpenCourses, (course) => course.category, intlLocale),
+    [matchingOpenCourses, intlLocale]
   );
   const languageFacetCounts = useMemo(
-    () => countOpenCourseFacet(matchingOpenCourses, (course) => course.language),
-    [matchingOpenCourses]
+    () => countOpenCourseFacet(matchingOpenCourses, (course) => course.language, intlLocale),
+    [matchingOpenCourses, intlLocale]
   );
   const openCourseResults = useMemo(() => {
     const facetedCourses = matchingOpenCourses.filter((course) => {
@@ -535,7 +512,7 @@ export function LearningHome() {
       await api.openLesson(lessonId);
       router.push("/studio");
     } catch (actionError) {
-      setError(actionError instanceof Error ? actionError.message : "打开课程失败");
+      setError(actionError instanceof Error ? actionError.message : errMsgs.current.lessonOpenError);
     } finally {
       setBusyKey(null);
     }
@@ -559,7 +536,7 @@ export function LearningHome() {
       setError(null);
       router.push("/studio");
     } catch (actionError) {
-      setError(actionError instanceof Error ? actionError.message : "打开单独课程工作台失败");
+      setError(actionError instanceof Error ? actionError.message : errMsgs.current.openStandaloneFail);
     } finally {
       setBusyKey(null);
     }
@@ -578,7 +555,7 @@ export function LearningHome() {
       setWorkspaceState(payload);
       setError(null);
     } catch (actionError) {
-      setError(actionError instanceof Error ? actionError.message : "移动课程失败");
+      setError(actionError instanceof Error ? actionError.message : errMsgs.current.moveLessonFail);
     } finally {
       setBusyKey(null);
     }
@@ -597,7 +574,7 @@ export function LearningHome() {
       setWorkspaceState(payload);
       setError(null);
     } catch (actionError) {
-      setError(actionError instanceof Error ? actionError.message : "删除课程失败");
+      setError(actionError instanceof Error ? actionError.message : errMsgs.current.deleteLessonFail);
     } finally {
       setBusyKey(null);
     }
@@ -618,7 +595,7 @@ export function LearningHome() {
       setIsCreatingPackageInline(false);
       setError(null);
     } catch (actionError) {
-      setError(actionError instanceof Error ? actionError.message : "新建课程包失败");
+      setError(actionError instanceof Error ? actionError.message : errMsgs.current.createPackageFail);
     } finally {
       setBusyKey(null);
     }
@@ -642,7 +619,7 @@ export function LearningHome() {
       setWorkspaceState(payload);
       setError(null);
     } catch (actionError) {
-      setError(actionError instanceof Error ? actionError.message : "打开课程包失败");
+      setError(actionError instanceof Error ? actionError.message : errMsgs.current.openPackageFail);
     } finally {
       setBusyKey(null);
     }
@@ -664,7 +641,7 @@ export function LearningHome() {
       setWorkspaceState(payload);
       setError(null);
     } catch (actionError) {
-      setError(actionError instanceof Error ? actionError.message : "重命名课程包失败");
+      setError(actionError instanceof Error ? actionError.message : errMsgs.current.renamePackageFail);
     } finally {
       setBusyKey(null);
     }
@@ -692,7 +669,7 @@ export function LearningHome() {
       setPackageLessonsExpanded(false);
       setError(null);
     } catch (actionError) {
-      setError(actionError instanceof Error ? actionError.message : "删除课程包失败");
+      setError(actionError instanceof Error ? actionError.message : errMsgs.current.deletePackageFail);
     } finally {
       setBusyKey(null);
     }
@@ -721,7 +698,7 @@ export function LearningHome() {
       if (shareError instanceof DOMException && shareError.name === "AbortError") {
         return;
       }
-      setError(shareError instanceof Error ? shareError.message : "分享课程包失败");
+      setError(shareError instanceof Error ? shareError.message : errMsgs.current.sharePackageFail);
     }
   }
 
@@ -738,11 +715,14 @@ export function LearningHome() {
     });
   }
 
-  const feedFilters = [
-    { id: "all" as const, label: "全部" },
-    { id: "commit" as const, label: "我的" },
-    { id: "resource" as const, label: "热门" },
-  ];
+  const feedFilters = useMemo(
+    () => [
+      { id: "all" as const, label: h.filterAll },
+      { id: "commit" as const, label: h.filterMine },
+      { id: "resource" as const, label: h.filterTrending },
+    ],
+    [h]
+  );
 
   return (
     <div className="relative min-h-screen overflow-hidden bg-[#f7f5ef] text-[#171717]">
@@ -764,8 +744,8 @@ export function LearningHome() {
                   size={88}
                 />
                 <div className="min-w-0">
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-stone-400">AI 课程工作台</p>
-                  <h1 className="mt-1 truncate text-2xl font-semibold tracking-tight text-stone-950">开放课堂</h1>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-stone-400">{h.brandSubtitle}</p>
+                  <h1 className="mt-1 truncate text-2xl font-semibold tracking-tight text-stone-950">{h.brandTitle}</h1>
                 </div>
               </div>
               <div className="flex shrink-0 items-center gap-1">
@@ -775,12 +755,12 @@ export function LearningHome() {
 
             <div className="mb-6 shrink-0">
               <div className="mb-3 flex items-center justify-between px-2">
-                <h2 className="text-[11px] font-semibold uppercase tracking-[0.24em] text-stone-400">课程包</h2>
+                <h2 className="text-[11px] font-semibold uppercase tracking-[0.24em] text-stone-400">{h.coursePackages}</h2>
                 <button
                   type="button"
                   onClick={() => setIsCreatingPackageInline(true)}
                   className="rounded-xl p-1.5 text-stone-400 transition hover:bg-stone-200/60 hover:text-stone-950"
-                  aria-label="添加课程包"
+                  aria-label={h.addPackageAria}
                 >
                   {busyKey === "package:create" ? (
                     <LoaderCircle className="h-4 w-4 animate-spin" />
@@ -851,9 +831,9 @@ export function LearningHome() {
                               >
                                 {isActive
                                   ? packageLessonsExpanded
-                                    ? "已选中，右侧正在展示包内单课；再点可取消选中。"
-                                    : "已选中，再点可展开包内单课列表。"
-                                  : packageItem.summary || "空课程包，点一下先选中它。"}
+                                    ? h.packageSelectedExpanded
+                                    : h.packageSelectedCollapsed
+                                  : packageItem.summary || h.emptyPackage}
                               </p>
                             </div>
                           </div>
@@ -872,14 +852,14 @@ export function LearningHome() {
                   })
                 ) : isCreatingPackageInline ? null : (
                   <div className="rounded-2xl border border-dashed border-stone-300 bg-white/70 px-4 py-6 text-sm text-stone-500">
-                    还没有课程包，先点右上角的加号创建一个空课程包。
+                    {h.noPackages}
                   </div>
                 )}
                 {isCreatingPackageInline ? (
                   <div data-package-selection-root>
                     <InlineNameForm
-                      label="课程包名称"
-                      placeholder="输入课程包名称"
+                      label={h.packageNameLabel}
+                      placeholder={h.packageNamePlaceholder}
                       isBusy={busyKey === "package:create"}
                       onCancel={() => setIsCreatingPackageInline(false)}
                       onSubmit={handleCreatePackage}
@@ -891,17 +871,17 @@ export function LearningHome() {
 
             <div className="flex min-h-0 flex-1 flex-col">
               <div className="mb-3 flex items-center justify-between px-2">
-                <h2 className="text-[11px] font-semibold uppercase tracking-[0.24em] text-stone-400">单独课程</h2>
+                <h2 className="text-[11px] font-semibold uppercase tracking-[0.24em] text-stone-400">{h.standaloneLessons}</h2>
                 <div className="flex items-center gap-2">
                   <span className="rounded-full border border-stone-200 bg-white px-3 py-1 text-[10px] font-medium text-stone-500">
-                    默认仅显示未入包课程
+                    {h.standaloneHint}
                   </span>
                   <button
                     type="button"
                     onClick={() => void handleOpenStandaloneWorkspace()}
                     disabled={standalonePackage ? busyKey === `package:${standalonePackage.id}` : false}
                     className="rounded-xl p-1.5 text-stone-400 transition hover:bg-stone-200/60 hover:text-stone-950"
-                    aria-label="进入单独课程工作台"
+                    aria-label={h.standaloneWorkspaceAria}
                   >
                     {standalonePackage && busyKey === `package:${standalonePackage.id}` ? (
                       <LoaderCircle className="h-4 w-4 animate-spin" />
@@ -957,8 +937,8 @@ export function LearningHome() {
                               "flex h-8 w-8 items-center justify-center rounded-lg text-stone-400 transition hover:bg-stone-100 hover:text-stone-950",
                               isMenuOpen && "bg-stone-100 text-stone-950"
                             )}
-                            aria-label="打开课程操作菜单"
-                            title="更多操作"
+                            aria-label={h.lessonMenuAria}
+                            title={h.lessonMoreTitle}
                           >
                             <MoreHorizontal className="h-4 w-4" />
                           </button>
@@ -984,7 +964,7 @@ export function LearningHome() {
                               <div className="flex items-center justify-between gap-3">
                                 <p className="truncate text-sm font-medium text-stone-950">{lesson.title}</p>
                                 <span className="shrink-0 text-[10px] text-stone-400">
-                                  {formatRelativeTime(lesson.updated_at)}
+                                  {homeRelFmt(lesson.updated_at)}
                                 </span>
                               </div>
                               <p className="mt-1 line-clamp-2 text-xs leading-5 text-stone-500">{lesson.summary}</p>
@@ -996,9 +976,7 @@ export function LearningHome() {
                   })
                 ) : (
                   <div className="rounded-2xl border border-dashed border-stone-300 bg-white/70 px-4 py-6 text-sm text-stone-500">
-                    {standaloneLessonItems.length
-                      ? "还没有匹配到课程。试试换个关键词，或者去工作台创建一节新课。"
-                      : "现在没有未被存入课程包的单独课程。你可以先新建课程，或者把包内课程移回单独课程池。"}
+                    {standaloneLessonItems.length ? h.noLessonMatch : h.noStandalone}
                   </div>
                 )}
               </div>
@@ -1024,7 +1002,7 @@ export function LearningHome() {
                   type="text"
                   value={searchQuery}
                   onChange={(event) => setSearchQuery(event.target.value)}
-                  placeholder="搜索别人的开源课程、作者、主题或知识方向..."
+                  placeholder={h.searchPlaceholder}
                   className="w-full rounded-[28px] border border-white/70 bg-white/80 py-4 pl-11 pr-24 text-sm text-stone-950 shadow-[0_18px_40px_rgba(15,23,42,0.06)] outline-none transition placeholder:text-stone-400 focus:border-stone-950 focus:bg-white"
                 />
                 <div className="pointer-events-none absolute inset-y-0 right-4 flex items-center">
@@ -1044,12 +1022,12 @@ export function LearningHome() {
                 <div>
                   <h3 className="flex items-center gap-2 text-base font-semibold text-stone-950">
                     <Activity className="h-4 w-4" />
-                    学习活跃度
+                    {h.activityTitle}
                   </h3>
-                  <p className="mt-1 text-sm text-stone-500">过去 32 周内课程编辑、提交与资料接入的活动分布。</p>
+                  <p className="mt-1 text-sm text-stone-500">{h.activitySubtitle}</p>
                 </div>
                 <span className="text-xs font-medium text-stone-500">
-                  累计 {activity.total.toLocaleString("zh-CN")} 次活动
+                  {h.activityTotal(activity.total)}
                 </span>
               </div>
 
@@ -1061,7 +1039,7 @@ export function LearningHome() {
                         <div
                           key={day.key}
                           className={clsx("h-3 w-3 rounded-[3px]", activityTone(day.level))}
-                          title={`${day.key} · ${day.count} 次活动`}
+                          title={h.activityDayTitle(day.key, day.count)}
                         />
                       ))}
                     </div>
@@ -1080,9 +1058,9 @@ export function LearningHome() {
                   <span>More</span>
                 </div>
                 <p>
-                  最近一次活跃：
+                  {h.lastActivePrefix}
                   <span className="ml-1 text-stone-500">
-                    {activity.recentActiveDay ? formatRelativeTime(activity.recentActiveDay.date) : "暂无记录"}
+                    {activity.recentActiveDay ? homeRelFmt(activity.recentActiveDay.date) : h.noActivityYet}
                   </span>
                 </p>
               </div>
@@ -1101,10 +1079,10 @@ export function LearningHome() {
                         type="button"
                         onClick={() => setFeedCollapsed((current) => !current)}
                         className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-stone-200 bg-white text-stone-600 transition hover:border-stone-300 hover:text-stone-950"
-                        aria-label={feedCollapsed ? "展开 Feed" : "收起 Feed"}
+                        aria-label={feedCollapsed ? h.feedExpandAria : h.feedCollapseAria}
                         aria-expanded={!feedCollapsed}
                         aria-controls="learning-home-feed-content"
-                        title={feedCollapsed ? "展开 Feed" : "收起 Feed"}
+                        title={feedCollapsed ? h.feedExpandAria : h.feedCollapseAria}
                       >
                         <ChevronDown
                           className={clsx(
@@ -1115,7 +1093,7 @@ export function LearningHome() {
                       </button>
                     </div>
                     <p className="mt-1 text-sm text-stone-500">
-                      最近的课程提交、资料收录和工作台推进会按时间排在这里。
+                      {h.feedSubtitle}
                     </p>
                   </div>
 
@@ -1178,15 +1156,15 @@ export function LearningHome() {
                                       <p className="text-sm text-stone-600">
                                         <span className="font-semibold text-stone-950">{item.actor}</span> {item.action}
                                       </p>
-                                      <p className="mt-1 text-xs text-stone-400">{formatRelativeTime(item.timestamp)}</p>
+                                      <p className="mt-1 text-xs text-stone-400">{homeRelFmt(item.timestamp)}</p>
                                     </div>
                                   </div>
 
                                   <button
                                     type="button"
                                     className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-stone-400 transition hover:bg-stone-100 hover:text-stone-700"
-                                    aria-label="更多更新操作"
-                                    title="更多更新操作"
+                                    aria-label={h.moreUpdatesAria}
+                                    title={h.moreUpdatesAria}
                                   >
                                     <MoreHorizontal className="h-4 w-4" />
                                   </button>
@@ -1219,7 +1197,7 @@ export function LearningHome() {
                                                 <p className="text-sm font-semibold text-stone-950">
                                                   {update.lessonTitle ?? update.title}
                                                 </p>
-                                                <span className="text-xs text-stone-400">{formatRelativeTime(update.timestamp)}</span>
+                                                <span className="text-xs text-stone-400">{homeRelFmt(update.timestamp)}</span>
                                               </div>
                                               <div className="mt-1 flex flex-wrap items-center gap-2">
                                                 <p className="text-sm font-medium text-stone-800">{update.title}</p>
@@ -1274,7 +1252,7 @@ export function LearningHome() {
                         })
                       ) : (
                         <div className="rounded-[24px] border border-dashed border-stone-300 bg-white/70 px-5 py-8 text-sm text-stone-500">
-                          还没有可以展示的更新。新建课程、编辑文稿或上传资料后，这里会自动变成最近活动流。
+                          {h.feedEmpty}
                         </div>
                       )}
                     </div>
@@ -1300,10 +1278,10 @@ export function LearningHome() {
               type="button"
               disabled
               className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-stone-300"
-              title="分享功能稍后提供"
+              title={h.shareLater}
             >
               <Share2 className="h-4 w-4" />
-              分享
+              {h.share}
             </button>
 
             <div className="my-1 h-px bg-stone-100" />
@@ -1326,7 +1304,7 @@ export function LearningHome() {
               className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-stone-700 transition hover:bg-stone-50 disabled:cursor-not-allowed disabled:opacity-50"
             >
               <FolderClosed className="h-4 w-4" />
-              <span className="flex-1">移动到课程包</span>
+              <span className="flex-1">{h.moveToPackage}</span>
               <ChevronRight className="h-4 w-4 text-stone-400" />
             </button>
 
@@ -1343,7 +1321,7 @@ export function LearningHome() {
               ) : (
                 <Trash2 className="h-4 w-4" />
               )}
-              删除
+              {h.delete}
             </button>
           </div>
         </div>
@@ -1370,7 +1348,7 @@ export function LearningHome() {
                 </button>
               ))
             ) : (
-              <p className="px-3 py-2 text-sm text-stone-400">暂无可移动课程包</p>
+              <p className="px-3 py-2 text-sm text-stone-400">{h.noMovablePackages}</p>
             )}
           </div>
         </div>
@@ -1563,7 +1541,7 @@ export function LearningHome() {
                                 {course.lessons} lessons
                               </span>
                               <span>{course.license}</span>
-                              <span>Updated {formatRelativeTime(course.updatedAt)}</span>
+                              <span>Updated {homeRelFmt(course.updatedAt)}</span>
                             </div>
                           </div>
                         </div>
@@ -1748,7 +1726,7 @@ export function LearningHome() {
                         <div className="flex items-center justify-between gap-2">
                           <p className="truncate text-sm font-semibold">{lesson.title}</p>
                           <span className={clsx("shrink-0 text-[10px]", isPreviewActive ? "text-white/70" : "text-stone-400")}>
-                            {formatRelativeTime(lesson.updated_at)}
+                            {homeRelFmt(lesson.updated_at)}
                           </span>
                         </div>
                         <p className={clsx("mt-1 line-clamp-2 text-xs leading-5", isPreviewActive ? "text-white/75" : "text-stone-500")}>
@@ -1876,7 +1854,7 @@ export function LearningHome() {
                             {followedUpdateActionLabel(item.update.updateKind)}{" "}
                             <span className="font-semibold text-stone-950">{item.update.courseTitle}</span>
                           </p>
-                          <p className="mt-0.5 text-[11px] text-stone-400">{formatRelativeTime(item.update.updatedAt)}</p>
+                          <p className="mt-0.5 text-[11px] text-stone-400">{homeRelFmt(item.update.updatedAt)}</p>
                         </div>
                       </div>
 

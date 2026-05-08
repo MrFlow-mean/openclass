@@ -4,7 +4,7 @@ import clsx from "clsx";
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
   ArrowUpRight,
@@ -35,7 +35,9 @@ import {
   readStoredProfileSettings,
   type ProfileSettings,
 } from "@/components/profile-settings-panel";
+import { useInterfaceLanguage } from "@/contexts/interface-language-context";
 import { api } from "@/lib/api";
+import { homeRelativeFormat } from "@/lib/i18n/product-ui";
 import {
   DEFAULT_COLLECTED_COURSE_IDS,
   OPEN_COURSE_COLLECTION_STORAGE_KEY,
@@ -55,44 +57,6 @@ type ProfileHomeProps = {
 };
 
 const PROFILE_AVATAR_URL = "https://api.dicebear.com/9.x/glass/svg?seed=kai-fang-ke-tang";
-
-function formatRelativeTime(value: string | Date | null | undefined) {
-  if (!value) {
-    return "刚刚";
-  }
-
-  const date = value instanceof Date ? value : new Date(value);
-  const timestamp = date.getTime();
-
-  if (Number.isNaN(timestamp)) {
-    return "刚刚";
-  }
-
-  const minutes = Math.floor((Date.now() - timestamp) / 60000);
-
-  if (minutes <= 0) {
-    return "刚刚";
-  }
-
-  if (minutes < 60) {
-    return `${minutes} 分钟前`;
-  }
-
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) {
-    return `${hours} 小时前`;
-  }
-
-  const days = Math.floor(hours / 24);
-  if (days < 7) {
-    return `${days} 天前`;
-  }
-
-  return new Intl.DateTimeFormat("zh-CN", {
-    month: "numeric",
-    day: "numeric",
-  }).format(date);
-}
 
 function getPackageUpdatedAt(coursePackage: CoursePackage) {
   const timestamps = [
@@ -158,6 +122,22 @@ function persistCollectedCourseIds(courseIds: Set<string>) {
 
 export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
   const router = useRouter();
+  const { texts: txt } = useInterfaceLanguage();
+  const ph = txt.profileHome;
+
+  const relFmt = useMemo(
+    () => (value: string | Date | null | undefined) => homeRelativeFormat(value, txt.homeRelative, txt.lang),
+    [txt]
+  );
+
+  const loadWorkspaceErrorRef = useRef(ph.loadWorkspaceError);
+  const lessonOpenErrRef = useRef(ph.lessonOpenError);
+
+  useEffect(() => {
+    loadWorkspaceErrorRef.current = ph.loadWorkspaceError;
+    lessonOpenErrRef.current = ph.lessonOpenError;
+  });
+
   const [activeTab, setActiveTab] = useState<ProfileTab>(initialTab);
   const [profileSettings, setProfileSettings] = useState<ProfileSettings>(DEFAULT_PROFILE_SETTINGS);
   const [workspaceState, setWorkspaceState] = useState<WorkspaceState | null>(null);
@@ -185,7 +165,7 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
         setError(null);
       } catch (loadError) {
         if (!isDisposed) {
-          setError(loadError instanceof Error ? loadError.message : "加载个人项目失败");
+          setError(loadError instanceof Error ? loadError.message : loadWorkspaceErrorRef.current);
         }
       } finally {
         if (!isDisposed) {
@@ -321,21 +301,27 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
       item.coursePackage.lessons.map((lesson) => lesson.title).join(" ")
     );
   });
-  const repositoryTypeFilters = [
-    { id: "all" as const, label: "全部", count: repositoryItems.length },
-    { id: "lessons" as const, label: "单独课程", count: standaloneLessonProjects.length },
-    { id: "packages" as const, label: "课程包", count: coursePackageProjects.length },
-  ];
+  const repositoryTypeFilters = useMemo(
+    () => [
+      { id: "all" as const, label: ph.repoFilterAll, count: repositoryItems.length },
+      { id: "lessons" as const, label: ph.repoFilterLessons, count: standaloneLessonProjects.length },
+      { id: "packages" as const, label: ph.repoFilterPackages, count: coursePackageProjects.length },
+    ],
+    [ph, repositoryItems.length, standaloneLessonProjects.length, coursePackageProjects.length]
+  );
   const repositoryCount = repositoryItems.length;
   const filteredFavoriteProjects = favoriteProjects.filter((course) =>
     matchesQuery(starQuery, courseFullName(course), course.summary, course.topics.join(" "), course.language)
   );
 
-  const profileTabs = [
-    { id: "settings" as const, label: "个人设置", icon: Settings, count: null },
-    { id: "repositories" as const, label: "Repositories", icon: FolderClosed, count: repositoryCount },
-    { id: "stars" as const, label: "Stars", icon: Star, count: favoriteProjects.length },
-  ];
+  const profileTabs = useMemo(
+    () => [
+      { id: "settings" as const, label: ph.tabSettings, icon: Settings, count: null },
+      { id: "repositories" as const, label: ph.tabRepositories, icon: FolderClosed, count: repositoryCount },
+      { id: "stars" as const, label: ph.tabStars, icon: Star, count: favoriteProjects.length },
+    ],
+    [ph, repositoryCount, favoriteProjects.length]
+  );
   const profileDisplayName = profileSettings.displayName.trim() || DEFAULT_PROFILE_SETTINGS.displayName;
   const profileHandle = profileSettings.handle.trim() || DEFAULT_PROFILE_SETTINGS.handle;
   const profileBio = profileSettings.bio.trim() || DEFAULT_PROFILE_SETTINGS.bio;
@@ -369,7 +355,7 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
       await api.openLesson(lessonId);
       router.push("/studio");
     } catch (openError) {
-      setError(openError instanceof Error ? openError.message : "打开课程失败");
+      setError(openError instanceof Error ? openError.message : lessonOpenErrRef.current);
     } finally {
       setOpeningLessonId(null);
     }
@@ -397,7 +383,7 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
           >
             <ArrowLeft className="h-4 w-4" />
             <BrandMark alt="" className="h-5 w-5 rounded bg-white" size={40} />
-            开放课堂
+            {ph.backToBrand}
           </Link>
 
           <div className="flex items-center gap-2">
@@ -406,13 +392,13 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
               className="inline-flex items-center gap-2 rounded-md border border-stone-200 bg-white px-3 py-2 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:text-stone-950"
             >
               <BookOpen className="h-4 w-4" />
-              工作台
+              {ph.workspace}
             </Link>
             <AccountMenu compact />
           </div>
         </div>
 
-        <nav className="mx-auto flex max-w-6xl gap-1 overflow-x-auto px-4 sm:px-6" aria-label="个人主页内容导航">
+        <nav className="mx-auto flex max-w-6xl gap-1 overflow-x-auto px-4 sm:px-6" aria-label={ph.navAria}>
           {profileTabs.map((tab) => {
             const Icon = tab.icon;
             const isActive = activeTab === tab.id;
@@ -454,7 +440,7 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
           <div className="flex items-start gap-4 lg:block">
             <Image
               src={PROFILE_AVATAR_URL}
-              alt="开放课堂用户头像"
+              alt={ph.avatarAlt}
               className="h-24 w-24 rounded-full border-4 border-white bg-stone-200 shadow-[0_16px_34px_rgba(15,23,42,0.08)] lg:h-48 lg:w-48"
               width={192}
               height={192}
@@ -669,7 +655,7 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
               </span>
             </div>
             <p className="mt-2 line-clamp-2 text-sm leading-6 text-stone-600">
-              {lesson.summary || "单独课程文档，可进入工作台继续编辑、分支和讲解。"}
+              {lesson.summary || ph.lessonStandaloneHint}
             </p>
 
             <div className="mt-3 flex flex-wrap gap-1.5">
@@ -689,7 +675,9 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
                 单独课程
               </span>
               <span>{lesson.history_graph.commits.length} commits</span>
-              <span>Updated {formatRelativeTime(lesson.updated_at)}</span>
+              <span>
+                {ph.updated} {relFmt(lesson.updated_at)}
+              </span>
             </div>
           </div>
 
@@ -770,7 +758,9 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
                 {coursePackage.lessons.length} lessons
               </span>
               <span>{coursePackage.resources.length} resources</span>
-              <span>Updated {updatedAt ? formatRelativeTime(updatedAt) : "暂无更新"}</span>
+              <span>
+                {ph.updated} {updatedAt ? relFmt(updatedAt) : ph.noUpdatesYet}
+              </span>
             </div>
           </div>
 
@@ -815,7 +805,7 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
                         </span>
                       </div>
                       <p className="mt-1 line-clamp-1 text-xs leading-5 text-stone-500">
-                        {lesson.summary || lesson.board_document.title || "课程文档，可进入工作台继续编辑。"}
+                        {lesson.summary || lesson.board_document.title || ph.lessonDocHint}
                       </p>
                     </div>
 
@@ -875,7 +865,9 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
                   <GitFork className="h-3.5 w-3.5" />
                   {formatCompactNumber(course.forks)}
                 </span>
-                <span>Updated {formatRelativeTime(course.updatedAt)}</span>
+                <span>
+                  {ph.updated} {relFmt(course.updatedAt)}
+                </span>
               </div>
             </div>
           </div>

@@ -31,8 +31,19 @@ import {
   UserRound,
 } from "lucide-react";
 
+import { useInterfaceLanguage } from "@/contexts/interface-language-context";
 import { api, OPENCLASS_AUTH_TOKEN_STORAGE_KEY } from "@/lib/api";
 import { userAccountLabel, userPublicEmail } from "@/lib/account";
+import type { InterfaceLanguage } from "@/lib/profile-settings-state";
+import {
+  DEFAULT_PROFILE_SETTINGS,
+  INTERFACE_LANGUAGE_OPTIONS,
+  PROFILE_SETTINGS_CHANGED_EVENT,
+  PROFILE_SETTINGS_STORAGE_KEY,
+  normalizeProfileSettings,
+  readStoredProfileSettings,
+  type ProfileSettings,
+} from "@/lib/profile-settings-state";
 import type { AIModelCatalog, AIModelOption, UserView } from "@/types";
 
 type SettingsSectionId =
@@ -52,46 +63,7 @@ type SettingsNavItem = {
   icon: LucideIcon;
 };
 
-export type ProfileSettings = {
-  displayName: string;
-  handle: string;
-  profileVisibility: "private" | "workspace" | "public";
-  publicEmail: string;
-  showPublicEmail: boolean;
-  showSocialLinks: boolean;
-  showRepositoriesOnProfile: boolean;
-  showStarsOnProfile: boolean;
-  bio: string;
-  website: string;
-  company: string;
-  location: string;
-  learningFocus: string;
-  socialLinks: string[];
-  theme: "system" | "light" | "warm";
-  density: "comfortable" | "compact";
-  startPage: "home" | "studio" | "profile";
-  reduceMotion: boolean;
-  highContrast: boolean;
-  largeText: boolean;
-  visibleFocus: boolean;
-  courseActivityNotifications: boolean;
-  weeklyDigestNotifications: boolean;
-  aiResultNotifications: boolean;
-  resourceNotifications: boolean;
-  browserNotifications: boolean;
-  notificationFrequency: "instant" | "hourly" | "daily";
-  quietStart: string;
-  quietEnd: string;
-  emailCourseDigest: boolean;
-  emailAiSummary: boolean;
-  emailSecurityAlerts: boolean;
-  preferredTextModel: string;
-  preferredRealtimeModel: string;
-  hideLocalPaths: boolean;
-  confirmExternalLinks: boolean;
-  clearSessionOnExit: boolean;
-  allowCourseDiscovery: boolean;
-};
+export type { ProfileSettings };
 
 type ProfileSettingsPanelProps = {
   avatarUrl: string;
@@ -103,75 +75,12 @@ type ProfileSettingsPanelProps = {
 type SaveStatus = "idle" | "saved" | "error";
 type BrowserNotificationPermission = NotificationPermission | "unsupported";
 
-export const PROFILE_SETTINGS_STORAGE_KEY = "openclass.profile.settings";
-export const PROFILE_SETTINGS_CHANGED_EVENT = "openclass.profile.settings.changed";
-
-const settingsPrimaryNav: SettingsNavItem[] = [
-  { id: "profile", label: "公开资料", icon: UserRound },
-  { id: "account", label: "账户", icon: CircleUserRound },
-  { id: "appearance", label: "外观", icon: Palette },
-  { id: "notifications", label: "通知", icon: Bell },
-];
-
-const settingsAccountNav: SettingsNavItem[] = [
-  { id: "billing", label: "计费和许可", icon: CreditCard },
-  { id: "email", label: "电子邮件", icon: Mail },
-  { id: "password", label: "密码和身份验证", icon: KeyRound },
-  { id: "models", label: "AI 模型", icon: Sparkles },
-  { id: "security", label: "代码安全", icon: ShieldCheck },
-];
-
-const sectionTitles: Record<SettingsSectionId, { title: string; eyebrow: string }> = {
-  profile: { title: "公开资料", eyebrow: "Profile" },
-  account: { title: "账户概览", eyebrow: "Account" },
-  appearance: { title: "外观", eyebrow: "Appearance" },
-  notifications: { title: "通知", eyebrow: "Notifications" },
-  billing: { title: "计费和许可", eyebrow: "License" },
-  email: { title: "电子邮件", eyebrow: "Email" },
-  password: { title: "密码和身份验证", eyebrow: "Authentication" },
-  models: { title: "AI 模型", eyebrow: "Models" },
-  security: { title: "代码安全", eyebrow: "Security" },
-};
-
-export const DEFAULT_PROFILE_SETTINGS: ProfileSettings = {
-  displayName: "Flow-mean",
-  handle: "blackboard-student",
-  profileVisibility: "workspace",
-  publicEmail: "",
-  showPublicEmail: false,
-  showSocialLinks: true,
-  showRepositoriesOnProfile: true,
-  showStarsOnProfile: true,
-  bio: "管理自己的课程项目，Stars 收藏值得继续学习的他人开源课程。",
-  website: "",
-  company: "",
-  location: "",
-  learningFocus: "数学、AI 课程设计、课堂讲义",
-  socialLinks: ["", "", "", ""],
-  theme: "system",
-  density: "comfortable",
-  startPage: "home",
-  reduceMotion: false,
-  highContrast: false,
-  largeText: false,
-  visibleFocus: true,
-  courseActivityNotifications: true,
-  weeklyDigestNotifications: true,
-  aiResultNotifications: true,
-  resourceNotifications: false,
-  browserNotifications: false,
-  notificationFrequency: "instant",
-  quietStart: "22:00",
-  quietEnd: "08:00",
-  emailCourseDigest: true,
-  emailAiSummary: false,
-  emailSecurityAlerts: true,
-  preferredTextModel: "auto",
-  preferredRealtimeModel: "auto",
-  hideLocalPaths: true,
-  confirmExternalLinks: true,
-  clearSessionOnExit: false,
-  allowCourseDiscovery: false,
+export {
+  DEFAULT_PROFILE_SETTINGS,
+  PROFILE_SETTINGS_CHANGED_EVENT,
+  PROFILE_SETTINGS_STORAGE_KEY,
+  normalizeProfileSettings,
+  readStoredProfileSettings,
 };
 
 const settingsInputClass =
@@ -179,35 +88,20 @@ const settingsInputClass =
 
 const settingSectionClass = "border-b border-stone-200 pb-7";
 
-export function normalizeProfileSettings(raw: Partial<ProfileSettings> | null): ProfileSettings {
-  const next = {
-    ...DEFAULT_PROFILE_SETTINGS,
-    ...(raw ?? {}),
-  };
+const SETTINGS_PRIMARY_ICONS: Record<"profile" | "account" | "appearance" | "notifications", LucideIcon> = {
+  profile: UserRound,
+  account: CircleUserRound,
+  appearance: Palette,
+  notifications: Bell,
+};
 
-  return {
-    ...next,
-    socialLinks: Array.from({ length: 4 }, (_, index) =>
-      typeof raw?.socialLinks?.[index] === "string" ? raw.socialLinks[index] : DEFAULT_PROFILE_SETTINGS.socialLinks[index]
-    ),
-  };
-}
-
-export function readStoredProfileSettings() {
-  if (typeof window === "undefined") {
-    return DEFAULT_PROFILE_SETTINGS;
-  }
-
-  try {
-    const stored = window.localStorage.getItem(PROFILE_SETTINGS_STORAGE_KEY);
-    if (!stored) {
-      return DEFAULT_PROFILE_SETTINGS;
-    }
-    return normalizeProfileSettings(JSON.parse(stored) as Partial<ProfileSettings>);
-  } catch {
-    return DEFAULT_PROFILE_SETTINGS;
-  }
-}
+const SETTINGS_ACCOUNT_ICONS: Record<"billing" | "email" | "password" | "models" | "security", LucideIcon> = {
+  billing: CreditCard,
+  email: Mail,
+  password: KeyRound,
+  models: Sparkles,
+  security: ShieldCheck,
+};
 
 function getNotificationPermission(): BrowserNotificationPermission {
   if (typeof window === "undefined" || !("Notification" in window)) {
@@ -217,17 +111,17 @@ function getNotificationPermission(): BrowserNotificationPermission {
   return Notification.permission;
 }
 
-function formatAccountDate(value: string | null | undefined) {
+function formatAccountDate(value: string | null | undefined, intlLocale: string, missingLabel: string) {
   if (!value) {
-    return "未记录";
+    return missingLabel;
   }
 
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {
-    return "未记录";
+    return missingLabel;
   }
 
-  return new Intl.DateTimeFormat("zh-CN", {
+  return new Intl.DateTimeFormat(intlLocale, {
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
@@ -256,6 +150,44 @@ export function ProfileSettingsPanel({
   repositoryCount,
 }: ProfileSettingsPanelProps) {
   const router = useRouter();
+  const { texts: txt, intlLocale } = useInterfaceLanguage();
+  const s = txt.settings;
+
+  const settingsPrimaryNav = useMemo<SettingsNavItem[]>(
+    () =>
+      txt.nav.primary.map((item) => ({
+        id: item.id,
+        label: item.label,
+        icon: SETTINGS_PRIMARY_ICONS[item.id],
+      })),
+    [txt]
+  );
+
+  const settingsAccountNav = useMemo<SettingsNavItem[]>(
+    () =>
+      txt.nav.account.map((item) => ({
+        id: item.id,
+        label: item.label,
+        icon: SETTINGS_ACCOUNT_ICONS[item.id],
+      })),
+    [txt]
+  );
+
+  const sectionTitles = useMemo(
+    (): Record<SettingsSectionId, { title: string; eyebrow: string }> => ({
+      profile: { title: txt.sectionTitles.profile, eyebrow: txt.sectionEyebrows.profile },
+      account: { title: txt.sectionTitles.account, eyebrow: txt.sectionEyebrows.account },
+      appearance: { title: txt.sectionTitles.appearance, eyebrow: txt.sectionEyebrows.appearance },
+      notifications: { title: txt.sectionTitles.notifications, eyebrow: txt.sectionEyebrows.notifications },
+      billing: { title: txt.sectionTitles.billing, eyebrow: txt.sectionEyebrows.billing },
+      email: { title: txt.sectionTitles.email, eyebrow: txt.sectionEyebrows.email },
+      password: { title: txt.sectionTitles.password, eyebrow: txt.sectionEyebrows.password },
+      models: { title: txt.sectionTitles.models, eyebrow: txt.sectionEyebrows.models },
+      security: { title: txt.sectionTitles.security, eyebrow: txt.sectionEyebrows.security },
+    }),
+    [txt]
+  );
+
   const [activeSection, setActiveSection] = useState<SettingsSectionId>("profile");
   const [settings, setSettings] = useState<ProfileSettings>(DEFAULT_PROFILE_SETTINGS);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
@@ -302,7 +234,7 @@ export function ProfileSettingsPanel({
       } catch (error) {
         if (!isDisposed) {
           setCurrentUser(null);
-          setUserError(error instanceof Error ? error.message : "无法读取账户信息");
+          setUserError(error instanceof Error ? error.message : s.account.fetchErrorFallback);
         }
       } finally {
         if (!isDisposed) {
@@ -322,7 +254,7 @@ export function ProfileSettingsPanel({
       } catch (error) {
         if (!isDisposed) {
           setModelCatalog(null);
-          setModelError(error instanceof Error ? error.message : "无法读取模型配置");
+          setModelError(error instanceof Error ? error.message : s.models.fetchErrorFallback);
         }
       } finally {
         if (!isDisposed) {
@@ -337,7 +269,8 @@ export function ProfileSettingsPanel({
     return () => {
       isDisposed = true;
     };
-  }, []);
+     
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps -- fetch once per mount; error fallbacks reflect language when reopening Settings
 
   const textModels = useMemo(() => configuredModels(modelCatalog?.text ?? []), [modelCatalog]);
   const realtimeModels = useMemo(() => configuredModels(modelCatalog?.realtime ?? []), [modelCatalog]);
@@ -389,7 +322,7 @@ export function ProfileSettingsPanel({
 
     if (activeSection === "profile" && !isHandleValid) {
       setSaveStatus("error");
-      setSaveMessage("用户名需为 3-32 位小写字母、数字或连字符，并以字母或数字开头。");
+      setSaveMessage(s.handleError);
       return;
     }
 
@@ -397,10 +330,10 @@ export function ProfileSettingsPanel({
       window.localStorage.setItem(PROFILE_SETTINGS_STORAGE_KEY, JSON.stringify(settings));
       window.dispatchEvent(new CustomEvent(PROFILE_SETTINGS_CHANGED_EVENT, { detail: settings }));
       setSaveStatus("saved");
-      setSaveMessage("已保存到本机");
+      setSaveMessage(txt.save.saved);
     } catch {
       setSaveStatus("error");
-      setSaveMessage("保存失败，请检查浏览器存储权限。");
+      setSaveMessage(txt.save.saveFail);
     }
   }
 
@@ -422,26 +355,26 @@ export function ProfileSettingsPanel({
   async function handleRequestNotificationPermission() {
     if (typeof window === "undefined" || !("Notification" in window)) {
       setNotificationPermission("unsupported");
-      setNotificationMessage("当前浏览器不支持桌面通知。");
+      setNotificationMessage(s.notifications.unsupportedBrowser);
       return;
     }
 
     try {
       const permission = await Notification.requestPermission();
       setNotificationPermission(permission);
-      setNotificationMessage(permission === "granted" ? "桌面通知已启用。" : "浏览器没有授予桌面通知权限。");
+      setNotificationMessage(permission === "granted" ? s.notifications.enabledOk : s.notifications.denied);
       if (permission === "granted") {
         updateSetting("browserNotifications", true);
       }
     } catch {
-      setNotificationMessage("通知权限请求失败。");
+      setNotificationMessage(s.notifications.requestFail);
     }
   }
 
   async function handleSendTestNotification() {
     if (typeof window === "undefined" || !("Notification" in window)) {
       setNotificationPermission("unsupported");
-      setNotificationMessage("当前浏览器不支持桌面通知。");
+      setNotificationMessage(s.notifications.unsupportedBrowser);
       return;
     }
 
@@ -452,18 +385,18 @@ export function ProfileSettingsPanel({
     }
 
     if (permission !== "granted") {
-      setNotificationMessage("需要先允许浏览器通知。");
+      setNotificationMessage(s.notifications.needAllowFirst);
       return;
     }
 
     try {
-      new Notification("开放课堂通知测试", {
-        body: `课程活动、AI 结果和资料库变化会按 ${settings.quietStart}-${settings.quietEnd} 的免打扰时段过滤。`,
+      new Notification(s.notifications.testTitle, {
+        body: s.notifications.testBody(settings.quietStart, settings.quietEnd),
         tag: "openclass-notification-test",
       });
-      setNotificationMessage("测试通知已发送。");
+      setNotificationMessage(s.notifications.testSent);
     } catch {
-      setNotificationMessage("测试通知发送失败。");
+      setNotificationMessage(s.notifications.testSendFail);
     }
   }
 
@@ -480,16 +413,16 @@ export function ProfileSettingsPanel({
     const confirmPassword = String(formData.get("confirmPassword") ?? "");
 
     if (newPassword.length < 8) {
-      setPasswordMessage("新密码至少需要 8 位。");
+      setPasswordMessage(s.password.tooShort);
       return;
     }
 
     if (newPassword !== confirmPassword) {
-      setPasswordMessage("两次输入的新密码不一致。");
+      setPasswordMessage(s.password.mismatch);
       return;
     }
 
-    setPasswordMessage("当前版本还没有开放密码修改接口。");
+    setPasswordMessage(s.password.notAvailable);
   }
 
   function renderSettingsMenuItem(item: SettingsNavItem) {
@@ -521,11 +454,11 @@ export function ProfileSettingsPanel({
           {saveStatus === "saved" ? (
             <span className="inline-flex items-center gap-1.5 font-medium text-emerald-700">
               <Check className="h-4 w-4" />
-              {saveMessage ?? "已保存到本机"}
+              {saveMessage ?? txt.save.saved}
             </span>
           ) : null}
           {saveStatus === "error" ? (
-            <span className="font-medium text-red-600">{saveMessage ?? "保存失败，请检查浏览器存储权限。"}</span>
+            <span className="font-medium text-red-600">{saveMessage ?? txt.save.saveFail}</span>
           ) : null}
           {saveStatus === "idle" ? options.helper : null}
         </div>
@@ -539,7 +472,7 @@ export function ProfileSettingsPanel({
               : "bg-emerald-600 hover:bg-emerald-700"
           )}
         >
-          保存设置
+          {txt.save.button}
         </button>
       </div>
     );
@@ -557,6 +490,7 @@ export function ProfileSettingsPanel({
   }
 
   function renderProfileSection() {
+    const p = s.profile;
     return (
       <form className="max-w-5xl space-y-7" onSubmit={handleSave}>
         <section className={clsx(settingSectionClass, "grid gap-5 lg:grid-cols-[minmax(0,1fr)_22rem]")}>
@@ -564,7 +498,7 @@ export function ProfileSettingsPanel({
             <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
               <Image
                 src={avatarUrl}
-                alt="用户头像"
+                alt={p.avatarAlt}
                 className="h-20 w-20 rounded-full border-4 border-white bg-stone-200 shadow-[0_16px_34px_rgba(15,23,42,0.08)]"
                 width={80}
                 height={80}
@@ -575,13 +509,16 @@ export function ProfileSettingsPanel({
                   {settings.displayName || DEFAULT_PROFILE_SETTINGS.displayName}
                 </h3>
                 <p className="mt-1 text-sm text-stone-500">@{settings.handle || DEFAULT_PROFILE_SETTINGS.handle}</p>
-                <p className="mt-2 text-xs font-medium text-stone-500">公开链接：{publicProfileUrl}</p>
+                <p className="mt-2 text-xs font-medium text-stone-500">
+                  {p.publicLinkPrefix}
+                  {publicProfileUrl}
+                </p>
               </div>
             </div>
 
             <div>
               <div className="mb-2 flex items-center justify-between gap-3 text-sm">
-                <span className="font-semibold text-stone-950">资料完整度</span>
+                <span className="font-semibold text-stone-950">{p.completeness}</span>
                 <span className="text-stone-500">{profileCompleteness}%</span>
               </div>
               <div className="h-2 overflow-hidden rounded-full bg-stone-200">
@@ -590,12 +527,12 @@ export function ProfileSettingsPanel({
             </div>
 
             <SegmentedSetting
-              label="公开范围"
+              label={p.visibilityLabel}
               value={settings.profileVisibility}
               options={[
-                { value: "private", label: "仅自己" },
-                { value: "workspace", label: "工作区" },
-                { value: "public", label: "公开" },
+                { value: "private", label: p.visPrivate },
+                { value: "workspace", label: p.visWorkspace },
+                { value: "public", label: p.visPublic },
               ]}
               onChange={(value) => updateSetting("profileVisibility", value as ProfileSettings["profileVisibility"])}
             />
@@ -604,7 +541,7 @@ export function ProfileSettingsPanel({
           <div className="rounded-md border border-stone-200 bg-white p-4">
             <div className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.14em] text-stone-400">
               <Eye className="h-3.5 w-3.5" />
-              Preview
+              {p.previewEyebrow}
             </div>
             <div className="flex items-start gap-3">
               <Image
@@ -622,7 +559,7 @@ export function ProfileSettingsPanel({
                 <p className="mt-0.5 truncate text-sm text-stone-500">@{settings.handle || DEFAULT_PROFILE_SETTINGS.handle}</p>
               </div>
             </div>
-            <p className="mt-4 line-clamp-3 text-sm leading-6 text-stone-600">{settings.bio || "还没有填写个人简介。"}</p>
+            <p className="mt-4 line-clamp-3 text-sm leading-6 text-stone-600">{settings.bio || p.bioPlaceholder}</p>
             <div className="mt-4 space-y-2 text-xs text-stone-500">
               {settings.location ? (
                 <p className="flex items-center gap-2">
@@ -659,7 +596,7 @@ export function ProfileSettingsPanel({
         <div className="grid max-w-3xl gap-5 sm:grid-cols-2">
           <label className="block">
             <span className="flex items-center justify-between gap-3 text-sm font-semibold text-stone-950">
-              姓名
+              {p.nameLabel}
               <span className="text-xs font-medium text-stone-400">{settings.displayName.length}/40</span>
             </span>
             <input
@@ -671,7 +608,7 @@ export function ProfileSettingsPanel({
           </label>
 
           <label className="block">
-            <span className="block text-sm font-semibold text-stone-950">用户名</span>
+            <span className="block text-sm font-semibold text-stone-950">{p.usernameLabel}</span>
             <input
               className={clsx(`${settingsInputClass} mt-2`, !isHandleValid && "border-red-300 focus:border-red-500 focus:ring-red-100")}
               maxLength={32}
@@ -687,26 +624,26 @@ export function ProfileSettingsPanel({
               }
             />
             <span className={clsx("mt-2 block text-xs leading-5", isHandleValid ? "text-stone-500" : "text-red-600")}>
-              3-32 位小写字母、数字或连字符。
+              {p.usernameHint}
             </span>
           </label>
         </div>
 
         <label className="block max-w-3xl">
-          <span className="block text-sm font-semibold text-stone-950">公开电子邮件</span>
+          <span className="block text-sm font-semibold text-stone-950">{p.publicEmailLabel}</span>
           <select
             className={`${settingsInputClass} mt-2 max-w-xl`}
             value={settings.publicEmail}
             onChange={(event) => updateSetting("publicEmail", event.target.value)}
           >
-            <option value="">不公开</option>
+            <option value="">{p.publicEmailHidden}</option>
             {userPublicEmail(currentUser) ? <option value={userPublicEmail(currentUser)}>{userPublicEmail(currentUser)}</option> : null}
           </select>
         </label>
 
         <label className="block max-w-3xl">
           <span className="flex items-center justify-between gap-3 text-sm font-semibold text-stone-950">
-            个人简介
+            {p.bioLabel}
             <span className="text-xs font-medium text-stone-400">{settings.bio.length}/160</span>
           </span>
           <textarea
@@ -714,12 +651,12 @@ export function ProfileSettingsPanel({
             maxLength={160}
             value={settings.bio}
             onChange={(event) => updateSetting("bio", event.target.value)}
-            placeholder="请简单介绍一下你自己。"
+            placeholder={p.bioInputPlaceholder}
           />
         </label>
 
         <label className="block max-w-3xl">
-          <span className="block text-sm font-semibold text-stone-950">学习方向</span>
+          <span className="block text-sm font-semibold text-stone-950">{p.focusLabel}</span>
           <input
             className={`${settingsInputClass} mt-2`}
             value={settings.learningFocus}
@@ -729,7 +666,7 @@ export function ProfileSettingsPanel({
 
         <div className="grid max-w-3xl gap-5 sm:grid-cols-2">
           <label className="block">
-            <span className="block text-sm font-semibold text-stone-950">URL</span>
+            <span className="block text-sm font-semibold text-stone-950">{p.urlLabel}</span>
             <input
               className={`${settingsInputClass} mt-2`}
               value={settings.website}
@@ -739,18 +676,18 @@ export function ProfileSettingsPanel({
           </label>
 
           <label className="block">
-            <span className="block text-sm font-semibold text-stone-950">地点</span>
+            <span className="block text-sm font-semibold text-stone-950">{p.locationLabel}</span>
             <input
               className={`${settingsInputClass} mt-2`}
               value={settings.location}
               onChange={(event) => updateSetting("location", event.target.value)}
-              placeholder="Shanghai"
+              placeholder={p.locationPlaceholder}
             />
           </label>
         </div>
 
         <label className="block max-w-3xl">
-          <span className="block text-sm font-semibold text-stone-950">机构</span>
+          <span className="block text-sm font-semibold text-stone-950">{p.companyLabel}</span>
           <input
             className={`${settingsInputClass} mt-2 max-w-xl`}
             value={settings.company}
@@ -759,7 +696,7 @@ export function ProfileSettingsPanel({
         </label>
 
         <div className="max-w-3xl">
-          <h3 className="text-sm font-semibold text-stone-950">社交账号</h3>
+          <h3 className="text-sm font-semibold text-stone-950">{p.socialTitle}</h3>
           <div className="mt-2 space-y-2">
             {settings.socialLinks.map((link, index) => (
               <div key={index} className="flex max-w-2xl items-center gap-2">
@@ -768,7 +705,7 @@ export function ProfileSettingsPanel({
                   className={settingsInputClass}
                   value={link}
                   onChange={(event) => updateSocialLink(index, event.target.value)}
-                  placeholder={`链接到社交个人资料 ${index + 1}`}
+                  placeholder={p.socialPlaceholder(index + 1)}
                 />
               </div>
             ))}
@@ -777,26 +714,26 @@ export function ProfileSettingsPanel({
 
         <section className="max-w-3xl space-y-5 border-y border-stone-200 py-5">
           <ToggleSetting
-            title="公开邮箱"
-            description="在公开资料中显示已选择的邮箱。"
+            title={p.toggleEmail}
+            description={p.toggleEmailDesc}
             enabled={settings.showPublicEmail}
             onChange={(value) => updateSetting("showPublicEmail", value)}
           />
           <ToggleSetting
-            title="公开社交账号"
-            description="在个人主页展示社交链接。"
+            title={p.toggleSocial}
+            description={p.toggleSocialDesc}
             enabled={settings.showSocialLinks}
             onChange={(value) => updateSetting("showSocialLinks", value)}
           />
           <ToggleSetting
-            title="展示个人项目"
-            description="在个人主页侧栏显示 repositories 数量。"
+            title={p.toggleRepos}
+            description={p.toggleReposDesc}
             enabled={settings.showRepositoriesOnProfile}
             onChange={(value) => updateSetting("showRepositoriesOnProfile", value)}
           />
           <ToggleSetting
-            title="展示 Stars 收藏"
-            description="在个人主页侧栏显示收藏课程数量。"
+            title={p.toggleStars}
+            description={p.toggleStarsDesc}
             enabled={settings.showStarsOnProfile}
             onChange={(value) => updateSetting("showStarsOnProfile", value)}
           />
@@ -806,7 +743,7 @@ export function ProfileSettingsPanel({
           disabled: !isHandleValid,
           helper: (
             <span className="text-stone-500">
-              {isHandleValid ? `公开资料会预览到 ${publicProfileUrl}` : "请先修正用户名。"}
+              {isHandleValid ? p.saveHelperOk(publicProfileUrl) : p.saveHelperInvalid}
             </span>
           ),
         })}
@@ -815,20 +752,22 @@ export function ProfileSettingsPanel({
   }
 
   function renderAccountSection() {
+    const a = s.account;
     return (
       <div className="max-w-3xl space-y-7">
         <section className={settingSectionClass}>
           {isLoadingUser ? (
             <div className="inline-flex items-center gap-2 text-sm text-stone-500">
               <LoaderCircle className="h-4 w-4 animate-spin" />
-              正在读取账户信息
+              {a.loading}
             </div>
           ) : currentUser ? (
             <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
               <div className="min-w-0">
                 <p className="truncate text-lg font-semibold text-stone-950">{userAccountLabel(currentUser)}</p>
                 <p className="mt-1 text-sm text-stone-500">
-                  {currentUser.role === "admin" ? "管理员" : "普通用户"} · 创建于 {formatAccountDate(currentUser.created_at)}
+                  {`${currentUser.role === "admin" ? a.roleAdmin : a.roleMember} · ${a.createdLabel} `}
+                  {formatAccountDate(currentUser.created_at, intlLocale, a.dateMissing)}
                 </p>
               </div>
               <button
@@ -836,43 +775,46 @@ export function ProfileSettingsPanel({
                 onClick={handleSignOut}
                 className="inline-flex h-10 items-center justify-center rounded-md border border-stone-200 bg-white px-4 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:text-stone-950"
               >
-                退出登录
+                {a.signOut}
               </button>
             </div>
           ) : (
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <p className="text-sm text-stone-600">{userError || "当前没有登录账户。"}</p>
+              <p className="text-sm text-stone-600">{userError || a.guestMessage}</p>
               <Link
                 href="/login"
                 className="inline-flex h-10 items-center justify-center rounded-md bg-stone-950 px-4 text-sm font-semibold text-white"
               >
-                去登录
+                {a.goLogin}
               </Link>
             </div>
           )}
         </section>
 
         <section className="grid gap-3 sm:grid-cols-3">
-          <MetricTile label="个人项目" value={repositoryCount} />
-          <MetricTile label="Stars 收藏" value={favoriteCount} />
-          <MetricTile label="上次登录" value={currentUser?.last_login_at ? formatAccountDate(currentUser.last_login_at) : "未记录"} />
+          <MetricTile label={a.metricRepos} value={repositoryCount} />
+          <MetricTile label={a.metricStars} value={favoriteCount} />
+          <MetricTile
+            label={a.metricLastLogin}
+            value={currentUser?.last_login_at ? formatAccountDate(currentUser.last_login_at, intlLocale, a.dateMissing) : a.dateMissing}
+          />
         </section>
 
         <section className="space-y-3">
-          <h3 className="text-sm font-semibold text-stone-950">快捷入口</h3>
+          <h3 className="text-sm font-semibold text-stone-950">{a.shortcutsTitle}</h3>
           <div className="flex flex-wrap gap-2">
             <Link
               href="/studio"
               className="inline-flex h-10 items-center rounded-md border border-stone-200 bg-white px-4 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:text-stone-950"
             >
-              课程工作台
+              {a.openStudio}
             </Link>
             {currentUser?.role === "admin" ? (
               <Link
                 href="/admin"
                 className="inline-flex h-10 items-center rounded-md border border-stone-200 bg-white px-4 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:text-stone-950"
               >
-                管理后台
+                {a.openAdmin}
               </Link>
             ) : null}
           </div>
@@ -884,25 +826,48 @@ export function ProfileSettingsPanel({
   function renderAppearanceSection() {
     return (
       <form className="max-w-5xl space-y-7" onSubmit={handleSave}>
+        <section className="border-b border-stone-200 pb-7">
+          <SegmentedSetting
+            label={txt.appearance.interfaceLanguageLabel}
+            value={settings.interfaceLanguage}
+            options={INTERFACE_LANGUAGE_OPTIONS}
+            onChange={(value) => {
+              const nextLang = (value === "en" ? "en" : "zh-CN") as InterfaceLanguage;
+              setSettings((current) => {
+                const next = { ...current, interfaceLanguage: nextLang };
+                try {
+                  window.localStorage.setItem(PROFILE_SETTINGS_STORAGE_KEY, JSON.stringify(next));
+                  window.dispatchEvent(new CustomEvent(PROFILE_SETTINGS_CHANGED_EVENT, { detail: next }));
+                } catch {
+                  // ignore quota / privacy errors
+                }
+                setSaveStatus("idle");
+                setSaveMessage(null);
+                return next;
+              });
+            }}
+          />
+        </section>
+
         <section className={clsx(settingSectionClass, "grid gap-5 lg:grid-cols-[minmax(0,1fr)_22rem]")}>
           <div>
-            <h3 className="text-sm font-semibold text-stone-950">主题</h3>
+            <h3 className="text-sm font-semibold text-stone-950">{txt.appearance.theme}</h3>
             <div className="mt-3 grid gap-3 sm:grid-cols-3">
               <ThemeOption
                 active={settings.theme === "system"}
-                label="跟随系统"
+                label={txt.appearance.themeSystem}
                 swatches={["#f8fafc", "#0f172a", "#0ea5e9"]}
                 onClick={() => updateSetting("theme", "system")}
               />
               <ThemeOption
                 active={settings.theme === "light"}
-                label="明亮"
+                label={txt.appearance.themeLight}
                 swatches={["#ffffff", "#e7eef8", "#2563eb"]}
                 onClick={() => updateSetting("theme", "light")}
               />
               <ThemeOption
                 active={settings.theme === "warm"}
-                label="暖色纸面"
+                label={txt.appearance.themeWarm}
                 swatches={["#fff7ed", "#f5d0a5", "#059669"]}
                 onClick={() => updateSetting("theme", "warm")}
               />
@@ -919,7 +884,7 @@ export function ProfileSettingsPanel({
           >
             <div className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.14em] text-stone-400">
               <MonitorSmartphone className="h-3.5 w-3.5" />
-              Live Preview
+              {txt.appearance.livePreview}
             </div>
             <div className={clsx("rounded-md border bg-white p-3", settings.density === "compact" ? "space-y-2" : "space-y-3")}>
               <p className={clsx("font-semibold text-stone-950", settings.largeText ? "text-base" : "text-sm")}>
@@ -929,8 +894,10 @@ export function ProfileSettingsPanel({
                 {settings.bio || DEFAULT_PROFILE_SETTINGS.bio}
               </p>
               <div className="flex flex-wrap gap-1.5">
-                <span className="rounded-full bg-sky-50 px-2 py-1 text-[11px] font-semibold text-sky-700">AI 课程</span>
-                <span className="rounded-full bg-emerald-50 px-2 py-1 text-[11px] font-semibold text-emerald-700">讲义</span>
+                <span className="rounded-full bg-sky-50 px-2 py-1 text-[11px] font-semibold text-sky-700">{txt.appearance.previewTagAi}</span>
+                <span className="rounded-full bg-emerald-50 px-2 py-1 text-[11px] font-semibold text-emerald-700">
+                  {txt.appearance.previewTagLesson}
+                </span>
               </div>
             </div>
           </div>
@@ -938,22 +905,22 @@ export function ProfileSettingsPanel({
 
         <section className="grid gap-6 border-b border-stone-200 pb-7 lg:grid-cols-2">
           <SegmentedSetting
-            label="界面密度"
+            label={txt.appearance.density}
             value={settings.density}
             options={[
-              { value: "comfortable", label: "舒展" },
-              { value: "compact", label: "紧凑" },
+              { value: "comfortable", label: txt.appearance.densityComfortable },
+              { value: "compact", label: txt.appearance.densityCompact },
             ]}
             onChange={(value) => updateSetting("density", value as ProfileSettings["density"])}
           />
 
           <SegmentedSetting
-            label="默认入口"
+            label={txt.appearance.startPage}
             value={settings.startPage}
             options={[
-              { value: "home", label: "学习首页" },
-              { value: "studio", label: "课程工作台" },
-              { value: "profile", label: "个人主页" },
+              { value: "home", label: txt.appearance.startHome },
+              { value: "studio", label: txt.appearance.startStudio },
+              { value: "profile", label: txt.appearance.startProfile },
             ]}
             onChange={(value) => updateSetting("startPage", value as ProfileSettings["startPage"])}
           />
@@ -962,8 +929,8 @@ export function ProfileSettingsPanel({
         <section className="space-y-5 border-b border-stone-200 pb-7">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <h3 className="text-sm font-semibold text-stone-950">阅读辅助</h3>
-              <p className="mt-1 text-sm text-stone-500">这些选项会立即作用于个人主页和设置页。</p>
+              <h3 className="text-sm font-semibold text-stone-950">{txt.appearance.readingAssistTitle}</h3>
+              <p className="mt-1 text-sm text-stone-500">{txt.appearance.readingAssistSubtitle}</p>
             </div>
             <button
               type="button"
@@ -971,60 +938,61 @@ export function ProfileSettingsPanel({
               className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-stone-200 bg-white px-3 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:text-stone-950"
             >
               <RotateCcw className="h-4 w-4" />
-              重置外观
+              {txt.appearance.resetAppearance}
             </button>
           </div>
           <ToggleSetting
-            title="减少动态效果"
-            description="降低动画和过渡频率。"
+            title={txt.appearance.reduceMotion}
+            description={txt.appearance.reduceMotionDesc}
             enabled={settings.reduceMotion}
             onChange={(value) => updateSetting("reduceMotion", value)}
           />
           <ToggleSetting
-            title="高对比度"
-            description="提高文字和边框对比度。"
+            title={txt.appearance.highContrast}
+            description={txt.appearance.highContrastDesc}
             enabled={settings.highContrast}
             onChange={(value) => updateSetting("highContrast", value)}
           />
           <ToggleSetting
-            title="放大正文"
-            description="提高课程列表和设置页正文尺寸。"
+            title={txt.appearance.largeText}
+            description={txt.appearance.largeTextDesc}
             enabled={settings.largeText}
             onChange={(value) => updateSetting("largeText", value)}
           />
           <ToggleSetting
-            title="突出键盘焦点"
-            description="让键盘导航状态更容易被看见。"
+            title={txt.appearance.visibleFocus}
+            description={txt.appearance.visibleFocusDesc}
             enabled={settings.visibleFocus}
             onChange={(value) => updateSetting("visibleFocus", value)}
           />
         </section>
 
-        {renderSaveFooter({ helper: <span className="text-stone-500">外观会立即预览，保存后下次打开仍然保留。</span> })}
+        {renderSaveFooter({ helper: <span className="text-stone-500">{txt.appearance.saveHelper}</span> })}
       </form>
     );
   }
 
   function renderNotificationsSection() {
+    const n = s.notifications;
     return (
       <form className="max-w-5xl space-y-7" onSubmit={handleSave}>
         <section className={clsx(settingSectionClass, "grid gap-4 lg:grid-cols-[minmax(0,1fr)_18rem]")}>
           <div>
-            <h3 className="text-sm font-semibold text-stone-950">通知中心</h3>
+            <h3 className="text-sm font-semibold text-stone-950">{n.centerTitle}</h3>
             <p className="mt-1 text-sm leading-6 text-stone-500">
-              已开启 {enabledNotificationCount} 个通知来源，免打扰时段为 {settings.quietStart}-{settings.quietEnd}。
+              {n.centerSummary(enabledNotificationCount, settings.quietStart, settings.quietEnd)}
             </p>
           </div>
           <div className="rounded-md border border-stone-200 bg-white px-4 py-3">
-            <p className="text-xs font-semibold text-stone-500">浏览器权限</p>
+            <p className="text-xs font-semibold text-stone-500">{n.browserPermTitle}</p>
             <p className="mt-1 text-sm font-semibold text-stone-950">
               {notificationPermission === "unsupported"
-                ? "不支持"
+                ? n.permUnsupported
                 : notificationPermission === "granted"
-                  ? "已允许"
+                  ? n.permGranted
                   : notificationPermission === "denied"
-                    ? "已拒绝"
-                    : "未询问"}
+                    ? n.permDenied
+                    : n.permDefault}
             </p>
           </div>
         </section>
@@ -1032,18 +1000,18 @@ export function ProfileSettingsPanel({
         <section className="grid gap-6 border-b border-stone-200 pb-7 lg:grid-cols-[minmax(0,1fr)_18rem]">
           <div className="space-y-5">
             <ToggleSetting
-              title="桌面通知"
-              description="允许浏览器弹出课程和 AI 任务提醒。"
+              title={n.desktopTitle}
+              description={n.desktopDesc}
               enabled={settings.browserNotifications}
               onChange={(value) => updateSetting("browserNotifications", value)}
             />
             <SegmentedSetting
-              label="提醒频率"
+              label={n.frequencyLabel}
               value={settings.notificationFrequency}
               options={[
-                { value: "instant", label: "即时" },
-                { value: "hourly", label: "每小时" },
-                { value: "daily", label: "每日摘要" },
+                { value: "instant", label: n.freqInstant },
+                { value: "hourly", label: n.freqHourly },
+                { value: "daily", label: n.freqDaily },
               ]}
               onChange={(value) => updateSetting("notificationFrequency", value as ProfileSettings["notificationFrequency"])}
             />
@@ -1056,7 +1024,7 @@ export function ProfileSettingsPanel({
               className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-md border border-stone-200 bg-white px-4 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:text-stone-950"
             >
               <Bell className="h-4 w-4" />
-              允许浏览器通知
+              {n.allowBrowserBtn}
             </button>
             <button
               type="button"
@@ -1064,7 +1032,7 @@ export function ProfileSettingsPanel({
               className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-md bg-stone-950 px-4 text-sm font-semibold text-white transition hover:bg-stone-800"
             >
               <Send className="h-4 w-4" />
-              发送测试通知
+              {n.sendTestBtn}
             </button>
             {notificationMessage ? <p className="text-sm leading-6 text-stone-500">{notificationMessage}</p> : null}
           </div>
@@ -1072,26 +1040,26 @@ export function ProfileSettingsPanel({
 
         <section className="grid gap-5 lg:grid-cols-2">
           <ToggleSetting
-            title="课程活动"
-            description="课程包、讲义和资料更新。"
+            title={n.courseActivityTitle}
+            description={n.courseActivityDesc}
             enabled={settings.courseActivityNotifications}
             onChange={(value) => updateSetting("courseActivityNotifications", value)}
           />
           <ToggleSetting
-            title="每周摘要"
-            description="Stars 收藏和个人项目的周报。"
+            title={n.weeklyTitle}
+            description={n.weeklyDesc}
             enabled={settings.weeklyDigestNotifications}
             onChange={(value) => updateSetting("weeklyDigestNotifications", value)}
           />
           <ToggleSetting
-            title="AI 生成结果"
-            description="长任务结束后提醒。"
+            title={n.aiTitle}
+            description={n.aiDesc}
             enabled={settings.aiResultNotifications}
             onChange={(value) => updateSetting("aiResultNotifications", value)}
           />
           <ToggleSetting
-            title="资料库变化"
-            description="上传资料解析完成或失败。"
+            title={n.resourceTitle}
+            description={n.resourceDesc}
             enabled={settings.resourceNotifications}
             onChange={(value) => updateSetting("resourceNotifications", value)}
           />
@@ -1101,7 +1069,7 @@ export function ProfileSettingsPanel({
           <label className="block">
             <span className="flex items-center gap-2 text-sm font-semibold text-stone-950">
               <Clock3 className="h-4 w-4 text-stone-500" />
-              免打扰开始
+              {n.quietStart}
             </span>
             <input
               type="time"
@@ -1113,7 +1081,7 @@ export function ProfileSettingsPanel({
           <label className="block">
             <span className="flex items-center gap-2 text-sm font-semibold text-stone-950">
               <Clock3 className="h-4 w-4 text-stone-500" />
-              免打扰结束
+              {n.quietEnd}
             </span>
             <input
               type="time"
@@ -1124,30 +1092,31 @@ export function ProfileSettingsPanel({
           </label>
         </section>
 
-        {renderSaveFooter({ helper: <span className="text-stone-500">浏览器权限由当前浏览器控制，其他通知偏好保存到本机。</span> })}
+        {renderSaveFooter({ helper: <span className="text-stone-500">{n.saveFooter}</span> })}
       </form>
     );
   }
 
   function renderBillingSection() {
+    const b = s.billing;
     return (
       <div className="max-w-3xl space-y-7">
         <section className={settingSectionClass}>
           <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <p className="text-lg font-semibold text-stone-950">开放课堂本地工作台</p>
-              <p className="mt-1 text-sm text-stone-500">Community License</p>
+              <p className="text-lg font-semibold text-stone-950">{b.productTitle}</p>
+              <p className="mt-1 text-sm text-stone-500">{b.licenseSubtitle}</p>
             </div>
             <span className="inline-flex w-fit items-center rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">
-              已启用
+              {b.enabledBadge}
             </span>
           </div>
         </section>
 
         <section className="space-y-4">
-          <UsageMeter label="个人项目" value={repositoryCount} max={50} />
-          <UsageMeter label="Stars 收藏" value={favoriteCount} max={100} />
-          <UsageMeter label="本地席位" value={currentUser ? 1 : 0} max={1} />
+          <UsageMeter label={s.account.metricRepos} value={repositoryCount} max={50} />
+          <UsageMeter label={s.account.metricStars} value={favoriteCount} max={100} />
+          <UsageMeter label={b.seatLabel} value={currentUser ? 1 : 0} max={1} />
         </section>
 
         <section className="flex flex-wrap gap-2">
@@ -1155,13 +1124,13 @@ export function ProfileSettingsPanel({
             href="/admin"
             className="inline-flex h-10 items-center rounded-md border border-stone-200 bg-white px-4 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:text-stone-950"
           >
-            查看后台
+            {b.viewAdmin}
           </Link>
           <Link
             href="/"
             className="inline-flex h-10 items-center rounded-md border border-stone-200 bg-white px-4 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:text-stone-950"
           >
-            返回学习首页
+            {b.backHome}
           </Link>
         </section>
       </div>
@@ -1169,30 +1138,35 @@ export function ProfileSettingsPanel({
   }
 
   function renderEmailSection() {
+    const e = s.email;
     return (
       <form className="max-w-3xl space-y-6" onSubmit={handleSave}>
         <section className={settingSectionClass}>
           <label className="block">
-            <span className="block text-sm font-semibold text-stone-950">主邮箱</span>
-            <input className={`${settingsInputClass} mt-2 max-w-xl bg-stone-50`} value={userPublicEmail(currentUser) || "未绑定邮箱"} readOnly />
+            <span className="block text-sm font-semibold text-stone-950">{e.primaryLabel}</span>
+            <input
+              className={`${settingsInputClass} mt-2 max-w-xl bg-stone-50`}
+              value={userPublicEmail(currentUser) || e.unbound}
+              readOnly
+            />
           </label>
         </section>
 
         <ToggleSetting
-          title="课程摘要邮件"
-          description="每周发送学习项目和 Stars 收藏变化。"
+          title={e.digestTitle}
+          description={e.digestDesc}
           enabled={settings.emailCourseDigest}
           onChange={(value) => updateSetting("emailCourseDigest", value)}
         />
         <ToggleSetting
-          title="AI 任务邮件"
-          description="长时间生成任务完成后发送。"
+          title={e.aiMailTitle}
+          description={e.aiMailDesc}
           enabled={settings.emailAiSummary}
           onChange={(value) => updateSetting("emailAiSummary", value)}
         />
         <ToggleSetting
-          title="安全邮件"
-          description="登录、权限和账户安全变化。"
+          title={e.securityTitle}
+          description={e.securityDesc}
           enabled={settings.emailSecurityAlerts}
           onChange={(value) => updateSetting("emailSecurityAlerts", value)}
         />
@@ -1203,18 +1177,19 @@ export function ProfileSettingsPanel({
   }
 
   function renderPasswordSection() {
+    const p = s.password;
     return (
       <form className="max-w-3xl space-y-6" onSubmit={handlePasswordSubmit}>
         <label className="block">
-          <span className="block text-sm font-semibold text-stone-950">当前密码</span>
+          <span className="block text-sm font-semibold text-stone-950">{p.currentLabel}</span>
           <input className={`${settingsInputClass} mt-2 max-w-xl`} type="password" name="currentPassword" autoComplete="current-password" />
         </label>
         <label className="block">
-          <span className="block text-sm font-semibold text-stone-950">新密码</span>
+          <span className="block text-sm font-semibold text-stone-950">{p.newLabel}</span>
           <input className={`${settingsInputClass} mt-2 max-w-xl`} type="password" name="newPassword" autoComplete="new-password" />
         </label>
         <label className="block">
-          <span className="block text-sm font-semibold text-stone-950">确认新密码</span>
+          <span className="block text-sm font-semibold text-stone-950">{p.confirmLabel}</span>
           <input className={`${settingsInputClass} mt-2 max-w-xl`} type="password" name="confirmPassword" autoComplete="new-password" />
         </label>
 
@@ -1222,8 +1197,8 @@ export function ProfileSettingsPanel({
           <div className="flex items-start gap-3">
             <LockKeyhole className="mt-0.5 h-4 w-4 text-stone-500" />
             <div>
-              <p className="text-sm font-semibold text-stone-950">会话保护</p>
-              <p className="mt-1 text-sm leading-6 text-stone-500">当前登录令牌仅保存在本机浏览器中。</p>
+              <p className="text-sm font-semibold text-stone-950">{p.sessionTitle}</p>
+              <p className="mt-1 text-sm leading-6 text-stone-500">{p.sessionDesc}</p>
             </div>
           </div>
           <button
@@ -1231,7 +1206,7 @@ export function ProfileSettingsPanel({
             onClick={handleSignOut}
             className="inline-flex h-10 items-center justify-center rounded-md border border-stone-200 bg-white px-4 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:text-stone-950"
           >
-            退出所有本机会话
+            {p.signOutEverywhere}
           </button>
         </section>
 
@@ -1241,39 +1216,40 @@ export function ProfileSettingsPanel({
           type="submit"
           className="inline-flex h-10 items-center justify-center rounded-md bg-stone-950 px-4 text-sm font-semibold text-white transition hover:bg-stone-800"
         >
-          更新密码
+          {p.updateSubmit}
         </button>
       </form>
     );
   }
 
   function renderModelsSection() {
+    const m = s.models;
     return (
       <form className="max-w-3xl space-y-7" onSubmit={handleSave}>
         <section className={settingSectionClass}>
           {isLoadingModels ? (
             <div className="inline-flex items-center gap-2 text-sm text-stone-500">
               <LoaderCircle className="h-4 w-4 animate-spin" />
-              正在读取模型
+              {m.loading}
             </div>
           ) : modelError ? (
             <p className="text-sm text-red-600">{modelError}</p>
           ) : (
             <div className="grid gap-3 sm:grid-cols-2">
-              <ModelSummary title="文本默认" model={defaultTextModel} />
-              <ModelSummary title="实时语音默认" model={defaultRealtimeModel} />
+              <ModelSummary title={m.textDefaultTitle} model={defaultTextModel} emptyLabel={m.modelNotConfigured} />
+              <ModelSummary title={m.realtimeDefaultTitle} model={defaultRealtimeModel} emptyLabel={m.modelNotConfigured} />
             </div>
           )}
         </section>
 
         <label className="block">
-          <span className="block text-sm font-semibold text-stone-950">偏好文本模型</span>
+          <span className="block text-sm font-semibold text-stone-950">{m.textPrefLabel}</span>
           <select
             className={`${settingsInputClass} mt-2 max-w-xl`}
             value={settings.preferredTextModel}
             onChange={(event) => updateSetting("preferredTextModel", event.target.value)}
           >
-            <option value="auto">自动</option>
+            <option value="auto">{m.autoOption}</option>
             {textModels.map((model) => (
               <option key={modelValue(model)} value={modelValue(model)}>
                 {modelLabel(model)}
@@ -1283,13 +1259,13 @@ export function ProfileSettingsPanel({
         </label>
 
         <label className="block">
-          <span className="block text-sm font-semibold text-stone-950">偏好实时语音模型</span>
+          <span className="block text-sm font-semibold text-stone-950">{m.realtimePrefLabel}</span>
           <select
             className={`${settingsInputClass} mt-2 max-w-xl`}
             value={settings.preferredRealtimeModel}
             onChange={(event) => updateSetting("preferredRealtimeModel", event.target.value)}
           >
-            <option value="auto">自动</option>
+            <option value="auto">{m.autoOption}</option>
             {realtimeModels.map((model) => (
               <option key={modelValue(model)} value={modelValue(model)}>
                 {modelLabel(model)}
@@ -1310,29 +1286,30 @@ export function ProfileSettingsPanel({
   }
 
   function renderSecuritySection() {
+    const sec = s.security;
     return (
       <form className="max-w-3xl space-y-6" onSubmit={handleSave}>
         <ToggleSetting
-          title="隐藏本地路径"
-          description="在个人页和导出信息中避免展示本机文件路径。"
+          title={sec.hidePathsTitle}
+          description={sec.hidePathsDesc}
           enabled={settings.hideLocalPaths}
           onChange={(value) => updateSetting("hideLocalPaths", value)}
         />
         <ToggleSetting
-          title="打开外部链接前确认"
-          description="跳转到外部学习资源前显示确认。"
+          title={sec.confirmLinksTitle}
+          description={sec.confirmLinksDesc}
           enabled={settings.confirmExternalLinks}
           onChange={(value) => updateSetting("confirmExternalLinks", value)}
         />
         <ToggleSetting
-          title="关闭页面时清理会话"
-          description="离开浏览器后清除本机登录令牌。"
+          title={sec.clearSessionTitle}
+          description={sec.clearSessionDesc}
           enabled={settings.clearSessionOnExit}
           onChange={(value) => updateSetting("clearSessionOnExit", value)}
         />
         <ToggleSetting
-          title="允许课程被发现"
-          description="公开资料页展示课程项目摘要。"
+          title={sec.discoveryTitle}
+          description={sec.discoveryDesc}
           enabled={settings.allowCourseDiscovery}
           onChange={(value) => updateSetting("allowCourseDiscovery", value)}
         />
@@ -1369,10 +1346,10 @@ export function ProfileSettingsPanel({
   return (
     <div className="mx-auto grid max-w-6xl gap-6 px-4 py-6 sm:px-6 md:grid-cols-[15rem_minmax(0,1fr)]">
       <aside className="h-fit md:sticky md:top-28">
-        <nav className="space-y-5" aria-label="个人设置导航">
+        <nav className="space-y-5" aria-label={txt.nav.navAria}>
           <section className="space-y-1">{settingsPrimaryNav.map((item) => renderSettingsMenuItem(item))}</section>
           <section className="border-t border-stone-200 pt-4">
-            <h2 className="mb-2 px-3 text-xs font-semibold text-stone-500">使用权</h2>
+            <h2 className="mb-2 px-3 text-xs font-semibold text-stone-500">{txt.nav.entitlementLabel}</h2>
             <div className="space-y-1">{settingsAccountNav.map((item) => renderSettingsMenuItem(item))}</div>
           </section>
         </nav>
@@ -1462,7 +1439,7 @@ function SegmentedSetting({
 }: {
   label: string;
   onChange: (value: string) => void;
-  options: Array<{ label: string; value: string }>;
+  options: ReadonlyArray<{ label: string; value: string }>;
   value: string;
 }) {
   return (
@@ -1514,21 +1491,31 @@ function UsageMeter({ label, max, value }: { label: string; max: number; value: 
   );
 }
 
-function ModelSummary({ model, title }: { model: AIModelOption | null; title: string }) {
+function ModelSummary({
+  emptyLabel,
+  model,
+  title,
+}: {
+  emptyLabel: string;
+  model: AIModelOption | null;
+  title: string;
+}) {
   return (
     <div className="rounded-md border border-stone-200 bg-white px-4 py-3">
       <p className="text-xs font-semibold text-stone-500">{title}</p>
-      <p className="mt-1 truncate text-sm font-semibold text-stone-950">{model ? modelLabel(model) : "未配置"}</p>
+      <p className="mt-1 truncate text-sm font-semibold text-stone-950">{model ? modelLabel(model) : emptyLabel}</p>
     </div>
   );
 }
 
 function ModelRow({ model }: { model: AIModelOption }) {
+  const { texts: txt } = useInterfaceLanguage();
+  const m = txt.settings.models;
   return (
     <div className="flex items-center justify-between gap-3 rounded-md border border-stone-200 bg-white px-4 py-3">
       <div className="min-w-0">
         <p className="truncate text-sm font-semibold text-stone-950">{modelLabel(model)}</p>
-        <p className="mt-1 text-xs text-stone-500">{model.capability === "realtime" ? "实时语音" : "文本生成"}</p>
+        <p className="mt-1 text-xs text-stone-500">{model.capability === "realtime" ? m.capabilityRealtime : m.capabilityText}</p>
       </div>
       <span
         className={clsx(
@@ -1536,7 +1523,7 @@ function ModelRow({ model }: { model: AIModelOption }) {
           model.configured ? "bg-emerald-50 text-emerald-700" : "bg-stone-100 text-stone-500"
         )}
       >
-        {model.configured ? "已配置" : "未配置"}
+        {model.configured ? m.modelConfigured : m.modelNotConfigured}
       </span>
     </div>
   );

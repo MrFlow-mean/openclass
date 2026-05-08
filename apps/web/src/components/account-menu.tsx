@@ -7,12 +7,16 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { ChevronDown, LogOut, ShieldCheck, UserRound } from "lucide-react";
 
+import { useInterfaceLanguage } from "@/contexts/interface-language-context";
+
 import { api, clearAuthToken } from "@/lib/api";
 import { userAccountLabel, userDisplayName, userInitial } from "@/lib/account";
 import type { UserView } from "@/types";
 
 export function AccountMenu({ compact = false }: { compact?: boolean }) {
   const router = useRouter();
+  const { texts: txt } = useInterfaceLanguage();
+  const m = txt.accountMenu;
   const [user, setUser] = useState<UserView | null>(null);
   const [open, setOpen] = useState(false);
 
@@ -93,14 +97,14 @@ export function AccountMenu({ compact = false }: { compact?: boolean }) {
               </span>
               <div className="min-w-0">
                 <p className="truncate text-sm font-semibold text-stone-950">{userDisplayName(user)}</p>
-                <p className="mt-1 break-all text-xs text-stone-500">{user ? userAccountLabel(user) : "正在读取账号"}</p>
+                <p className="mt-1 break-all text-xs text-stone-500">{user ? userAccountLabel(user) : m.loadingAccount}</p>
                 {user ? <p className="mt-1 break-all font-mono text-[11px] text-stone-400">ID {user.id}</p> : null}
               </div>
             </div>
             {user ? (
               <div className="mt-3 flex flex-wrap gap-1.5">
                 <span className="rounded-full border border-stone-200 bg-stone-50 px-2 py-0.5 text-[11px] font-semibold text-stone-600">
-                  {user.role === "guest" ? "游客模式" : user.role === "admin" ? "管理员" : "普通用户"}
+                  {user.role === "guest" ? m.guestBadge : user.role === "admin" ? m.adminBadge : m.memberBadge}
                 </span>
                 {user.auth_identities.map((identity) => (
                   <span
@@ -123,7 +127,7 @@ export function AccountMenu({ compact = false }: { compact?: boolean }) {
                 onClick={handleLoginToSave}
               >
                 <UserRound className="h-4 w-4 text-stone-400" />
-                登录以保存
+                {m.loginToSave}
               </button>
             ) : (
               <Link
@@ -133,7 +137,7 @@ export function AccountMenu({ compact = false }: { compact?: boolean }) {
                 onClick={() => setOpen(false)}
               >
                 <UserRound className="h-4 w-4 text-stone-400" />
-                个人账号
+                {m.profileLink}
               </Link>
             )}
             {user?.role === "admin" ? (
@@ -144,7 +148,7 @@ export function AccountMenu({ compact = false }: { compact?: boolean }) {
                 onClick={() => setOpen(false)}
               >
                 <ShieldCheck className="h-4 w-4 text-stone-400" />
-                管理员后台
+                {m.adminLink}
               </Link>
             ) : null}
             <button
@@ -154,7 +158,7 @@ export function AccountMenu({ compact = false }: { compact?: boolean }) {
               role="menuitem"
             >
               <LogOut className="h-4 w-4" />
-              {isGuest ? "结束游客访问" : "退出登录"}
+              {isGuest ? m.signOutGuest : m.signOut}
             </button>
           </div>
         </div>

@@ -1,3 +1,4 @@
+import { InterfaceLanguageProvider } from "@/contexts/interface-language-context";
 import type { Metadata } from "next";
 import "katex/dist/katex.min.css";
 import "./globals.css";
@@ -23,8 +24,10 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="zh-CN" className="h-full antialiased">
-      <body className="min-h-full flex flex-col">{children}</body>
+    <html lang="zh-CN" suppressHydrationWarning className="h-full antialiased">
+      <body className="min-h-full flex flex-col">
+        <InterfaceLanguageProvider>{children}</InterfaceLanguageProvider>
+      </body>
     </html>
   );
 }
