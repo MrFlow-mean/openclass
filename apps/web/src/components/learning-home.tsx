@@ -18,13 +18,13 @@ import {
   Eye,
   Flame,
   FolderClosed,
-  FolderPlus,
   GitFork,
   GraduationCap,
   Layers,
   LoaderCircle,
   MoreHorizontal,
   PencilLine,
+  Plus,
   Search,
   Share2,
   Star,
@@ -759,13 +759,13 @@ export function LearningHome() {
                 <button
                   type="button"
                   onClick={() => setIsCreatingPackageInline(true)}
-                  className="rounded-xl p-1.5 text-stone-400 transition hover:bg-stone-200/60 hover:text-stone-950"
+                  className="flex h-8 w-8 items-center justify-center rounded-full border border-stone-200 bg-white text-stone-500 shadow-sm transition hover:border-stone-300 hover:bg-stone-50 hover:text-stone-950"
                   aria-label={h.addPackageAria}
                 >
                   {busyKey === "package:create" ? (
                     <LoaderCircle className="h-4 w-4 animate-spin" />
                   ) : (
-                    <FolderPlus className="h-4 w-4" />
+                    <Plus className="h-4 w-4" strokeWidth={2.2} />
                   )}
                 </button>
               </div>
