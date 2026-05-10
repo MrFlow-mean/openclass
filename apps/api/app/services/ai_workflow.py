@@ -40,6 +40,7 @@ from app.services.rich_document import (
     is_document_empty,
     replace_selection_in_document,
 )
+from app.services.learning_workflow.roles.pm_interviewer import generate_pm_interview_message
 
 
 HIGH_OVERLAP_THRESHOLD = 0.72
@@ -1357,13 +1358,13 @@ def _clarification_hint_questions(state: WorkflowState, *extra: str | None) -> l
 
 def _generate_ai_clarification_message(state: WorkflowState, *extra_hints: str | None) -> str | None:
     request = state["request"]
-    return openai_course_ai.generate_clarification_message(
+    return generate_pm_interview_message(
         lesson_title=(state.get("generated_lesson") or state["lesson"]).title,
         request_message=request.message,
         requirements=state["learning_requirement_sheet"],
         learning_clarification=state["learning_clarification"].model_dump(mode="json"),
         clarification_questions=_clarification_hint_questions(state, *extra_hints),
-        conversation=[turn.model_dump(mode="json") for turn in request.conversation],
+        conversation=request.conversation,
     )
 
 
@@ -1433,7 +1434,7 @@ def _concept_hint_from_request(text: str) -> str | None:
     return topic
 
 
-def _run_pm(state: WorkflowState) -> WorkflowState:
+def _run_requirement_state_draft(state: WorkflowState) -> WorkflowState:
     lesson = state["lesson"]
     request = state["request"]
     requirements = _draft_requirements(lesson, request)
@@ -1776,7 +1777,7 @@ def _run_teacher(state: WorkflowState) -> WorkflowState:
 class SimpleCourseWorkflow:
     def invoke(self, state: WorkflowState) -> WorkflowState:
         current: WorkflowState = dict(state)
-        for step in (_run_pm, _run_board_manager, _run_board_executor, _run_teacher):
+        for step in (_run_requirement_state_draft, _run_board_manager, _run_board_executor, _run_teacher):
             current.update(step(current))
         current.setdefault("scope_options", [])
         current.setdefault("resource_matches", [])

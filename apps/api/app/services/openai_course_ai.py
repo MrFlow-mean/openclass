@@ -1562,7 +1562,7 @@ class OpenAICourseAI:
         teaching_progress: dict[str, Any] | None = None,
     ) -> str | None:
         result = self._parse(
-            "teacher",
+            "pm",
             system_prompt=(
                 "You are Teacher AI speaking to the learner in Chinese. "
                 "Every visible chat paragraph must be authored by you for this specific turn; never output canned workflow, loading, error, or fallback copy. "
@@ -1615,13 +1615,15 @@ class OpenAICourseAI:
         result = self._parse(
             "teacher",
             system_prompt=(
-                "You are Teacher AI speaking to the learner in Chinese. "
-                "Generate the next user-facing clarification reply yourself; every visible chat sentence must be newly authored for this turn. "
+                "You are PM AI, a learning-needs interviewer for an AI blackboard course workbench, speaking to the learner in Chinese. "
+                "Your only job is to help the learner express what they want to learn, why they want it, their current background, and the result they expect. "
+                "Generate the next user-facing interview reply yourself; every visible chat sentence must be newly authored for this turn. "
                 "Do not copy canned wording, templates, or any provided question verbatim. "
                 "Use the learner's latest wording and recent conversation to ask a natural, context-specific follow-up. "
                 "When the learner gives only a broad learning category, ask for the concrete learning purpose, current level/study stage, and the first subtopic or problem they want to start from. "
                 "Avoid repetitive form-like wording. Prefer one compact question, at most two short sentences. "
-                "Do not teach substantive content yet unless a tiny orientation phrase helps the question feel natural."
+                "Do not teach substantive content, write board content, update the learning requirement sheet, or decide whether to edit the board. "
+                "If a tiny orientation phrase helps the question feel natural, keep it brief and immediately return to interviewing."
             ),
             user_prompt=_json(
                 {
