@@ -55,6 +55,7 @@ def chat_flow_metadata(
         "kind": "chat_flow",
         "user_message": request.message,
         "assistant_message": teacher_message,
+        "assistant_message_source": workflow_result.get("teacher_message_source", "none"),
         "interaction_mode": request.interaction_mode,
         "scope_action": request.scope_action,
         "resource_reference_action": request.resource_reference_action,
@@ -92,6 +93,8 @@ def chat_flow_metadata(
 
 
 def chat_flow_message(request: ChatRequest, teacher_message: str) -> str:
+    if not teacher_message.strip():
+        return f"用户：{short_text(request.message)}"
     return f"用户：{short_text(request.message)}\nAI：{short_text(teacher_message, 120)}"
 
 
@@ -249,6 +252,7 @@ def process_chat_on_lesson(lesson_id: str, request: ChatRequest, *, user_id: str
         ai_usage_logger.log_event(
             "chat_response",
             teacher_message=response.teacher_message,
+            teacher_message_source=workflow_result.get("teacher_message_source", "none"),
             learning_requirement_sheet=response.learning_requirement_sheet,
             learning_clarification=response.learning_clarification,
             board_decision=response.board_decision,
@@ -262,16 +266,18 @@ def process_chat_on_lesson(lesson_id: str, request: ChatRequest, *, user_id: str
             selected_reference=response.selected_reference,
             created_lesson=response.created_lesson,
         )
-        log_ai_interaction_message(
-            channel="text",
-            direction="output",
-            role="assistant",
-            transport="chat_response",
-            content=response.teacher_message,
-            metadata={
-                "board_action": response.board_decision.action,
-                "needs_clarification": response.needs_clarification,
-                "created_lesson_id": response.created_lesson.id if response.created_lesson else None,
-            },
-        )
+        if response.teacher_message.strip():
+            log_ai_interaction_message(
+                channel="text",
+                direction="output",
+                role="assistant",
+                transport="chat_response",
+                content=response.teacher_message,
+                metadata={
+                    "board_action": response.board_decision.action,
+                    "needs_clarification": response.needs_clarification,
+                    "created_lesson_id": response.created_lesson.id if response.created_lesson else None,
+                    "message_source": workflow_result.get("teacher_message_source", "none"),
+                },
+            )
         return response

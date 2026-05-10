@@ -44,6 +44,10 @@ def _seed_test_user_workspace(store: SqliteCourseStore):
     return workspace
 
 
+def _fake_teacher_message(**kwargs) -> str:
+    return "AI生成：这是一段测试讲解。"
+
+
 @pytest.fixture
 def isolated_ai_log(monkeypatch: pytest.MonkeyPatch, tmp_path):
     log_path = tmp_path / "logs" / "ai-usage.jsonl"
@@ -404,6 +408,7 @@ def test_chat_route_logs_request_and_response(monkeypatch: pytest.MonkeyPatch, i
     store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
     monkeypatch.setattr(workspace_state, "STORE", store)
     monkeypatch.setattr(openai_course_ai, "client", None)
+    monkeypatch.setattr(openai_course_ai, "generate_teacher_message", _fake_teacher_message)
 
     lesson_id = _seed_test_user_workspace(store).packages[0].lessons[0].id
     response = chat_service.process_chat_on_lesson(
@@ -439,6 +444,7 @@ def test_chat_route_logs_request_and_response(monkeypatch: pytest.MonkeyPatch, i
     assert flow_commit.metadata["kind"] == "chat_flow"
     assert flow_commit.metadata["user_message"] == "请解释一下勾股定理的核心公式"
     assert flow_commit.metadata["assistant_message"] == response.teacher_message
+    assert flow_commit.metadata["assistant_message_source"] == "ai"
     assert flow_commit.metadata["board_action"] == response.board_decision.action
     assert flow_commit.metadata["board_teaching_guide"]["board_document_id"] == updated_lesson.board_document.id
 
@@ -529,6 +535,7 @@ def test_chat_route_reuses_workflow_runtime_without_extra_refresh(
     store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
     monkeypatch.setattr(workspace_state, "STORE", store)
     monkeypatch.setattr(openai_course_ai, "client", None)
+    monkeypatch.setattr(openai_course_ai, "generate_teacher_message", _fake_teacher_message)
 
     lesson_id = _seed_test_user_workspace(store).packages[0].lessons[0].id
     response = chat_service.process_chat_on_lesson(

@@ -729,6 +729,27 @@ function metadataBool(commit: CommitRecord, key: string): boolean {
   return commit.metadata?.[key] === true;
 }
 
+const LEGACY_NON_AI_ASSISTANT_PATTERNS = [
+  "给我一个关键词",
+  "从那里开讲",
+  "我们先找一个小入口",
+  "这次没有拿到可用的临场讲解内容",
+  "没有写入板书",
+  "模型没有返回可用",
+  "请求已发出，生成讲义可能需要",
+] as const;
+
+function isDisplayableAssistantContent(content: string | null, source?: string | null): content is string {
+  const text = content?.trim();
+  if (!text) {
+    return false;
+  }
+  if (source && source !== "ai") {
+    return false;
+  }
+  return !LEGACY_NON_AI_ASSISTANT_PATTERNS.some((pattern) => text.includes(pattern));
+}
+
 function selectionFromMetadata(value: unknown): SelectionRef | null {
   if (!value || typeof value !== "object") {
     return null;
@@ -879,7 +900,8 @@ function buildLessonMessagesFromHistory(lesson: Lesson, commitId?: string | null
     }
 
     const assistantMessage = metadataText(commit, "assistant_message");
-    if (assistantMessage) {
+    const assistantMessageSource = metadataText(commit, "assistant_message_source");
+    if (isDisplayableAssistantContent(assistantMessage, assistantMessageSource)) {
       messages.push(
         createChatMessage(
           "assistant",
@@ -888,18 +910,6 @@ function buildLessonMessagesFromHistory(lesson: Lesson, commitId?: string | null
           `${commit.id}:assistant`,
           null,
           teachingProgressFromMetadata(commit.metadata?.teaching_progress)
-        )
-      );
-    }
-
-    const createdLessonTitle = metadataText(commit, "created_lesson_title");
-    if (createdLessonTitle) {
-      messages.push(
-        createChatMessage(
-          "assistant",
-          `我已经为这个更大的知识问题新开了一节课：《${createdLessonTitle}》。`,
-          "ready",
-          `${commit.id}:created-lesson`
         )
       );
     }
@@ -1220,6 +1230,7 @@ function ChatBubble({
   const isError = message.status === "error";
   const selectedExcerpt = message.selection?.excerpt ? selectionPreviewText(message.selection.excerpt) : "";
   const teachingProgress = message.teachingProgress;
+  const hasContent = message.content.trim().length > 0;
   return (
     <div className="flex flex-col gap-2">
       <div className={clsx("flex items-center gap-2", !isAssistant && "justify-end")}>
@@ -1270,43 +1281,40 @@ function ChatBubble({
           </div>
         </div>
       ) : null}
-      <div
-        className={clsx(
-          "max-w-[94%] rounded-2xl p-4 text-[13px] leading-relaxed shadow-sm",
-          isPending
-            ? "rounded-tl-sm border border-blue-200 bg-blue-50 text-blue-950"
-            : isError
-              ? "rounded-tl-sm border border-rose-200 bg-rose-50 text-rose-800"
-              : isAssistant
-            ? "rounded-tl-sm border border-gray-100 bg-gray-50 text-gray-800"
-            : "ml-auto rounded-tr-sm bg-[#1a1a1a] text-white"
-        )}
-      >
-        {message.content}
-        {isPending ? (
-          <p className="mt-3 text-[11px] font-medium text-blue-700">
-            请求已发出，生成讲义可能需要几十秒到几分钟。
-          </p>
-        ) : null}
-        {isAssistant && teachingProgress && !isPending && !isError ? (
-          <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-gray-200 pt-3 text-[11px] text-gray-500">
-            <span>
-              第 {teachingProgress.section_index + 1}/{teachingProgress.section_count} 节
-              {teachingProgress.current_section_title ? `：${teachingProgress.current_section_title}` : ""}
-            </span>
-            {teachingProgress.has_next_section && onContinueTeaching ? (
-              <button
-                type="button"
-                onClick={onContinueTeaching}
-                className="inline-flex h-7 items-center gap-1 rounded-md border border-gray-200 bg-white px-2.5 font-semibold text-gray-700 transition hover:border-gray-300 hover:text-gray-950"
-              >
-                <ArrowRight className="h-3.5 w-3.5" />
-                继续下一节
-              </button>
-            ) : null}
-          </div>
-        ) : null}
-      </div>
+      {hasContent ? (
+        <div
+          className={clsx(
+            "max-w-[94%] rounded-2xl p-4 text-[13px] leading-relaxed shadow-sm",
+            isPending
+              ? "rounded-tl-sm border border-blue-200 bg-blue-50 text-blue-950"
+              : isError
+                ? "rounded-tl-sm border border-rose-200 bg-rose-50 text-rose-800"
+                : isAssistant
+              ? "rounded-tl-sm border border-gray-100 bg-gray-50 text-gray-800"
+              : "ml-auto rounded-tr-sm bg-[#1a1a1a] text-white"
+          )}
+        >
+          {message.content}
+          {isAssistant && teachingProgress && !isPending && !isError ? (
+            <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-gray-200 pt-3 text-[11px] text-gray-500">
+              <span>
+                第 {teachingProgress.section_index + 1}/{teachingProgress.section_count} 节
+                {teachingProgress.current_section_title ? `：${teachingProgress.current_section_title}` : ""}
+              </span>
+              {teachingProgress.has_next_section && onContinueTeaching ? (
+                <button
+                  type="button"
+                  onClick={onContinueTeaching}
+                  className="inline-flex h-7 items-center gap-1 rounded-md border border-gray-200 bg-white px-2.5 font-semibold text-gray-700 transition hover:border-gray-300 hover:text-gray-950"
+                >
+                  <ArrowRight className="h-3.5 w-3.5" />
+                  继续下一节
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -3229,23 +3237,7 @@ export function CourseStudio() {
                     : payloadWithConversation.message;
     const pendingAssistantMessage = createChatMessage(
       "assistant",
-      payloadOverride?.scope_action
-        ? "正在继续执行这一步，我会先把主线接上，再继续细化。"
-        : payloadOverride?.teaching_action === "continue"
-          ? "正在接着讲下一小节。"
-          : payloadOverride?.teaching_action === "restart"
-            ? "正在从第一小节重新讲。"
-            : payloadOverride?.board_edit_action === "confirm"
-              ? "正在把这次扩展落成版书内容，并同步准备讲解。"
-              : payloadOverride?.board_edit_action === "skip"
-                ? "好的，我会只按内部讲义继续讲解，不改右侧版书。"
-                : payloadOverride?.resource_reference_action === "confirm"
-                  ? "正在结合你确认的参考章节准备讲解。"
-                  : payloadOverride?.resource_reference_action === "skip"
-                    ? "正在按当前 lesson 主线准备讲解。"
-                    : isDirectEdit
-                      ? "正在改写右侧讲义，并同步准备更像真人老师的讲法。"
-                      : "正在整理学习需求并准备讲解。",
+      "",
       "pending"
     );
     setBusyAction(isDirectEdit ? "agent-edit" : "chat");
@@ -3278,23 +3270,19 @@ export function CourseStudio() {
       setLastScopedRequest(response.scope_options.length ? payloadWithConversation : null);
       setLastReferenceRequest(response.reference_prompt ? payloadWithConversation : null);
       setLastBoardEditRequest(response.board_edit_prompt ? payloadWithConversation : null);
-      const assistantMessages = [
-        createChatMessage("assistant", response.teacher_message, "ready", undefined, null, response.teaching_progress ?? null),
-      ];
-      if (response.created_lesson) {
+      const teacherMessage = response.teacher_message.trim();
+      const assistantMessages: ChatMessage[] = [];
+      if (teacherMessage) {
         assistantMessages.push(
-          createChatMessage(
-            "assistant",
-            `我已经为这个更大的知识问题新开了一节课：《${response.created_lesson.title}》。`
-          )
+          createChatMessage("assistant", teacherMessage, "ready", undefined, null, response.teaching_progress ?? null)
         );
       }
       updateLessonMessages(lessonId, (current) => [
         ...current.filter((message) => message.id !== pendingAssistantMessage.id),
         ...assistantMessages,
       ]);
-      if (options?.speakResponse) {
-        speakControlledTeacherMessage(response.teacher_message);
+      if (options?.speakResponse && teacherMessage) {
+        speakControlledTeacherMessage(teacherMessage);
         setVoiceStatusText("讲师回答已通过受控工作流播出，可以继续提问");
       }
       if (!payloadWithConversation.scope_action) {
@@ -3309,13 +3297,6 @@ export function CourseStudio() {
       }
       updateLessonMessages(lessonId, (current) => [
         ...current.filter((message) => message.id !== pendingAssistantMessage.id),
-        createChatMessage(
-          "assistant",
-          `这次没有顺利完成，我先把你的输入保留好了，可以直接重试。\n${
-            chatError instanceof Error ? chatError.message : "聊天失败"
-          }`,
-          "error"
-        ),
       ]);
       setError(chatError instanceof Error ? chatError.message : "聊天失败");
     } finally {

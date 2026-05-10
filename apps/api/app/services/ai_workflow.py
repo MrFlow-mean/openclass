@@ -58,6 +58,7 @@ class WorkflowState(TypedDict, total=False):
     board_decision: BoardDecision
     teaching_guide: TeachingGuide
     teacher_message: str
+    teacher_message_source: str
     teacher_document: BoardDocument
     document_updated: bool
     scope_options: list[ScopeOption]
@@ -963,8 +964,7 @@ def _document_edit_has_content(ai_edit: Any | None) -> bool:
 
 
 def _document_generation_failure_message(decision: BoardDecision) -> str:
-    action_label = "追加" if decision.action == "append_section" else "生成"
-    return f"这次没有写入板书：模型没有返回可用的{action_label}内容。当前板书已保留，请重新生成或补充更明确的资料后再试。"
+    return ""
 
 
 def _reference_document_update(
@@ -1313,6 +1313,14 @@ def _format_teacher_message(message: str) -> str:
     return "\n\n".join(paragraphs)
 
 
+def _teacher_message_result(message: str | None, *, source: str = "ai", extra: WorkflowState | None = None) -> WorkflowState:
+    formatted = _format_teacher_message(message or "")
+    result: WorkflowState = dict(extra or {})
+    result["teacher_message"] = formatted
+    result["teacher_message_source"] = source if formatted else "none"
+    return result
+
+
 def _teacher_learning_probe(state: WorkflowState) -> str | None:
     status = state["learning_clarification"]
     request = state["request"]
@@ -1332,6 +1340,31 @@ def _teacher_learning_probe(state: WorkflowState) -> str | None:
     if status.progress >= 35:
         return f"关于“{topic}”，请补一句你的起点或这次最想先解决的具体问题。"
     return None
+
+
+def _clarification_hint_questions(state: WorkflowState, *extra: str | None) -> list[str]:
+    hints: list[str] = []
+    hints.extend(question for question in state.get("clarification_questions", []) if question)
+    reference_prompt = state.get("reference_prompt")
+    if reference_prompt is not None:
+        hints.append(reference_prompt.question)
+    board_edit_prompt = state.get("board_edit_prompt")
+    if board_edit_prompt is not None:
+        hints.append(board_edit_prompt.question)
+    hints.extend(value for value in extra if value)
+    return _dedupe(hints, limit=6)
+
+
+def _generate_ai_clarification_message(state: WorkflowState, *extra_hints: str | None) -> str | None:
+    request = state["request"]
+    return openai_course_ai.generate_clarification_message(
+        lesson_title=(state.get("generated_lesson") or state["lesson"]).title,
+        request_message=request.message,
+        requirements=state["learning_requirement_sheet"],
+        learning_clarification=state["learning_clarification"].model_dump(mode="json"),
+        clarification_questions=_clarification_hint_questions(state, *extra_hints),
+        conversation=[turn.model_dump(mode="json") for turn in request.conversation],
+    )
 
 
 def _teacher_message_from_talk_track(state: WorkflowState, talk_track: str) -> str:
@@ -1356,25 +1389,6 @@ def _section_progress_view(progress: BoardTeachingProgress | None, guide: BoardT
         current_section_title=title,
         has_next_section=bool(plans and index < len(plans) - 1),
         waiting_for_continue=progress.waiting_for_continue if progress else False,
-    )
-
-
-def _section_teacher_message(
-    *,
-    guide: BoardTeachingGuide,
-    progress: BoardTeachingProgress,
-) -> str:
-    plans = guide.section_plans
-    if not plans:
-        return guide.teacher_brief or guide.lecture_handout
-    index = max(0, min(progress.current_section_index, len(plans) - 1))
-    plan = plans[index]
-    excerpt = plan.board_excerpt or plan.heading
-    next_hint = "继续讲下一个小节" if index < len(plans) - 1 else "这一轮已经讲到最后一个小节"
-    return (
-        f"第 {index + 1} 小节，我们先讲“{plan.heading}”。\n\n"
-        f"{_plain_teaching_from_excerpt(excerpt)}\n\n"
-        f"你可以先回答这个检查问题：{plan.check_question or '这节解决了什么问题？'}。如果节奏可以，就说“{next_hint}”。"
     )
 
 
@@ -1411,51 +1425,12 @@ def _section_teaching_turn(state: WorkflowState) -> WorkflowState | None:
     return {
         "board_teaching_progress": progress,
         "teaching_progress": _section_progress_view(progress, guide),
-        "teacher_message": _format_teacher_message(_section_teacher_message(guide=guide, progress=progress)),
     }
 
 
-def _plain_teaching_from_excerpt(excerpt: str) -> str:
-    compact = _compact_teaching_line(excerpt, limit=220)
-    if not compact:
-        return "这次没有拿到可用的临场讲解内容，请重新发送问题或补充材料片段。"
-    return compact
-
-
-def _fallback_concept_teaching_from_request(text: str) -> str | None:
+def _concept_hint_from_request(text: str) -> str | None:
     topic = _append_section_topic(text, build_requirements("补充内容")) if _is_append_document_request(text) else _extract_topic_hint(text)
-    if not topic:
-        return None
-    return f"关于“{topic}”，这次没有拿到可用的临场讲解内容，请重新发送问题或要求写入板书。"
-
-
-def _fallback_clarification_message(state: WorkflowState) -> str:
-    questions = state.get("clarification_questions") or []
-    if questions:
-        return questions[0]
-    missing = state["learning_clarification"].missing_items
-    if "想学的主题" in missing:
-        return "请直接发这次要学的内容、材料片段或卡住的题目。"
-    topic = state["learning_requirement_sheet"].theme
-    return f"关于“{topic}”，请补一句你的起点或这次最想先解决的具体问题。"
-
-
-def _fallback_teacher_message(state: WorkflowState) -> str:
-    decision = state["board_decision"]
-    request = state["request"]
-    if decision.action == "clarify_request":
-        return _fallback_clarification_message(state)
-    if decision.action == "await_reference_choice" and state.get("reference_prompt"):
-        return state["reference_prompt"].question
-    if state.get("board_edit_prompt") and decision.action == "no_change" and state["learning_clarification"].progress < 80:
-        return _teacher_learning_probe(state) or state["board_edit_prompt"].question
-    guide = state.get("board_teaching_guide")
-    if guide and guide.teacher_brief:
-        return _plain_teaching_from_excerpt(guide.teacher_brief)
-    concept = _fallback_concept_teaching_from_request(request.message)
-    if concept:
-        return concept
-    return "这次没有拿到可用的临场讲解内容，请重新发送问题或补充材料片段。"
+    return topic
 
 
 def _run_pm(state: WorkflowState) -> WorkflowState:
@@ -1754,24 +1729,16 @@ def _run_teacher(state: WorkflowState) -> WorkflowState:
     talk_track = (state.get("teacher_talk_track") or "").strip()
 
     if decision.action == "clarify_request":
-        ai_message = openai_course_ai.generate_clarification_message(
-            lesson_title=(state.get("generated_lesson") or state["lesson"]).title,
-            request_message=request.message,
-            requirements=state["learning_requirement_sheet"],
-            learning_clarification=state["learning_clarification"].model_dump(mode="json"),
-            clarification_questions=state.get("clarification_questions", []),
-            conversation=[turn.model_dump(mode="json") for turn in request.conversation],
-        )
-        return {"teacher_message": _format_teacher_message(ai_message or _fallback_teacher_message(state))}
+        return _teacher_message_result(_generate_ai_clarification_message(state), source="ai")
     if decision.action in {"await_scope_choice", "await_reference_choice"}:
-        return {"teacher_message": _format_teacher_message(_fallback_teacher_message(state))}
+        return _teacher_message_result(_generate_ai_clarification_message(state), source="ai")
 
-    if talk_track and decision.action in {"edit_board", "append_section"}:
-        return {"teacher_message": _format_teacher_message(_teacher_message_from_talk_track(state, talk_track))}
+    if talk_track and state.get("document_updated") and decision.action in {"edit_board", "append_section"}:
+        return _teacher_message_result(_teacher_message_from_talk_track(state, talk_track), source="ai")
 
     section_turn = _section_teaching_turn(state)
     if section_turn is not None:
-        return section_turn
+        state = {**state, **section_turn}
 
     probe = _teacher_learning_probe(state)
 
@@ -1780,12 +1747,11 @@ def _run_teacher(state: WorkflowState) -> WorkflowState:
         request.message,
         state["learning_requirement_sheet"],
     ):
-        message = _fallback_concept_teaching_from_request(request.message) or _fallback_teacher_message(state)
-        return {"teacher_message": _format_teacher_message(message)}
+        probe = probe or _concept_hint_from_request(request.message)
 
     guide = state.get("board_teaching_guide")
     if guide is None:
-        return {"teacher_message": _format_teacher_message(_fallback_teacher_message(state))}
+        return _teacher_message_result(_generate_ai_clarification_message(state, probe), source="ai", extra=section_turn)
 
     ai_message = openai_course_ai.generate_teacher_message(
         lesson_title=state["lesson"].title,
@@ -1800,8 +1766,11 @@ def _run_teacher(state: WorkflowState) -> WorkflowState:
         clarification_questions=state.get("clarification_questions", []),
         reference_prompt=state["reference_prompt"].model_dump(mode="json") if state.get("reference_prompt") else None,
         selected_reference=_reference_payload(state.get("selected_reference"), include_full_text=False),
+        teaching_progress=state["teaching_progress"].model_dump(mode="json") if state.get("teaching_progress") else None,
     )
-    return {"teacher_message": _format_teacher_message(ai_message or probe or _fallback_teacher_message(state))}
+    if ai_message:
+        return _teacher_message_result(ai_message, source="ai", extra=section_turn)
+    return _teacher_message_result(_generate_ai_clarification_message(state, probe), source="ai", extra=section_turn)
 
 
 class SimpleCourseWorkflow:

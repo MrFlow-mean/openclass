@@ -1559,11 +1559,13 @@ class OpenAICourseAI:
         clarification_questions: list[str],
         reference_prompt: dict[str, Any] | None,
         selected_reference: dict[str, Any] | None,
+        teaching_progress: dict[str, Any] | None = None,
     ) -> str | None:
         result = self._parse(
             "teacher",
             system_prompt=(
                 "You are Teacher AI speaking to the learner in Chinese. "
+                "Every visible chat paragraph must be authored by you for this specific turn; never output canned workflow, loading, error, or fallback copy. "
                 "Start with the subject matter itself, not workflow status, board status, or what you are about to do. "
                 "Sound like a live teacher, not a narrator reading the board. "
                 "When the first learner turn is a broad learning goal and the learner's level/background is missing, do not teach a generic orientation; ask a natural diagnostic question about study stage, concrete subtopic, and purpose first. "
@@ -1593,6 +1595,7 @@ class OpenAICourseAI:
                     "clarification_questions": clarification_questions,
                     "reference_prompt": reference_prompt,
                     "selected_reference": selected_reference,
+                    "teaching_progress": teaching_progress,
                 }
             ),
             schema=TeacherMessageOutput,
@@ -1613,9 +1616,10 @@ class OpenAICourseAI:
             "teacher",
             system_prompt=(
                 "You are Teacher AI speaking to the learner in Chinese. "
-                "Generate the next user-facing clarification reply yourself; do not copy canned wording, templates, or any provided question verbatim. "
+                "Generate the next user-facing clarification reply yourself; every visible chat sentence must be newly authored for this turn. "
+                "Do not copy canned wording, templates, or any provided question verbatim. "
                 "Use the learner's latest wording and recent conversation to ask a natural, context-specific follow-up. "
-                "When the learner gives only a broad subject such as math, language, programming, or finance, ask for the concrete learning purpose, current level/study stage, and the first subtopic or problem they want to start from. "
+                "When the learner gives only a broad learning category, ask for the concrete learning purpose, current level/study stage, and the first subtopic or problem they want to start from. "
                 "Avoid repetitive form-like wording. Prefer one compact question, at most two short sentences. "
                 "Do not teach substantive content yet unless a tiny orientation phrase helps the question feel natural."
             ),

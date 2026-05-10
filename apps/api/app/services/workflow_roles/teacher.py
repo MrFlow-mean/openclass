@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from app.services.ai_workflow import (
     WorkflowState,
-    _fallback_teacher_message,
-    _format_teacher_message,
+    _generate_ai_clarification_message,
     _reference_payload,
     _section_teaching_turn,
+    _teacher_message_result,
     _teacher_learning_probe,
     _teacher_message_from_talk_track,
 )
@@ -30,21 +30,17 @@ def run_teacher(state: WorkflowState) -> WorkflowState:
             clarification_questions=state.get("clarification_questions", []),
             conversation=[turn.model_dump(mode="json") for turn in request.conversation],
         )
-        return {"teacher_message": _format_teacher_message(ai_message or _fallback_teacher_message(state))}
+        return _teacher_message_result(ai_message, source="ai")
     if decision.action in {"await_scope_choice", "await_reference_choice"}:
-        return {"teacher_message": _format_teacher_message(_fallback_teacher_message(state))}
+        return _teacher_message_result(_generate_ai_clarification_message(state), source="ai")
     probe = _teacher_learning_probe(state)
-    if probe:
-        return {"teacher_message": _format_teacher_message(probe)}
     section_turn = _section_teaching_turn(state)
     if section_turn is not None:
-        return section_turn
-    if teacher_talk_track and decision.action in {"edit_board", "append_section"}:
-        return {"teacher_message": _format_teacher_message(_teacher_message_from_talk_track(state, teacher_talk_track))}
-    if decision.action == "create_new_lesson":
-        return {"teacher_message": _format_teacher_message(_fallback_teacher_message(state))}
+        state = {**state, **section_turn}
+    if teacher_talk_track and state.get("document_updated") and decision.action in {"edit_board", "append_section"}:
+        return _teacher_message_result(_teacher_message_from_talk_track(state, teacher_talk_track), source="ai")
     if board_teaching_guide is None:
-        return {"teacher_message": _format_teacher_message(_fallback_teacher_message(state))}
+        return _teacher_message_result(_generate_ai_clarification_message(state, probe), source="ai", extra=section_turn)
 
     ai_message = openai_course_ai.generate_teacher_message(
         lesson_title=(state.get("generated_lesson") or state["lesson"]).title,
@@ -59,5 +55,8 @@ def run_teacher(state: WorkflowState) -> WorkflowState:
         clarification_questions=state.get("clarification_questions", []),
         reference_prompt=reference_prompt.model_dump(mode="json") if reference_prompt else None,
         selected_reference=_reference_payload(selected_reference, include_full_text=False),
+        teaching_progress=state["teaching_progress"].model_dump(mode="json") if state.get("teaching_progress") else None,
     )
-    return {"teacher_message": _format_teacher_message(ai_message or _fallback_teacher_message(state))}
+    if ai_message:
+        return _teacher_message_result(ai_message, source="ai", extra=section_turn)
+    return _teacher_message_result(_generate_ai_clarification_message(state, probe), source="ai", extra=section_turn)

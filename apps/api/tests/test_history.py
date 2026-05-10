@@ -1,3 +1,5 @@
+import re
+
 import pytest
 from docx import Document as DocxDocument
 from docx.enum.section import WD_ORIENT
@@ -22,6 +24,53 @@ from app.services.rich_document import build_document, export_docx, import_docx,
 @pytest.fixture(autouse=True)
 def disable_openai_for_tests(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(openai_course_ai, "client", None)
+
+    def fake_teacher_message(**kwargs) -> str:
+        def clean_ai_text(value: str) -> str:
+            sentences = re.split(r"(?<=[。！？!?])", value.replace(" PDF ", "PDF"))
+            return "".join(
+                sentence
+                for sentence in sentences
+                if not any(noise in sentence for noise in ("PDF抽取噪声", "PDF 抽取噪声", "（7-1）", "c0；", "p（x16"))
+            )
+
+        requirements = kwargs.get("requirements")
+        guide = kwargs.get("board_teaching_guide")
+        clarity = kwargs.get("learning_clarification") or {}
+        progress = kwargs.get("teaching_progress") or {}
+        request_message = kwargs.get("request_message") or ""
+        topic = getattr(requirements, "theme", "") or kwargs.get("lesson_title") or kwargs.get("request_message") or "当前主题"
+        if progress and guide is not None and ("继续" in request_message or "重新讲" in request_message):
+            index = max(0, min(progress.get("section_index", 0), len(guide.section_plans) - 1))
+            if guide.section_plans:
+                plan = guide.section_plans[index]
+                return f"AI生成：第 {index + 1} 小节讲“{plan.heading}”。{plan.board_excerpt or plan.heading}"
+        if kwargs.get("selected_reference") and guide is not None and guide.lecture_handout:
+            return f"AI生成：关于“{topic}”，{clean_ai_text(guide.lecture_handout)}"
+        if any(signal in request_message for signal in ("？", "?", "什么", "怎么", "如何")):
+            if guide is not None and guide.lecture_handout and "续写一个新章节" not in guide.lecture_handout:
+                return f"AI生成：关于“{topic}”，{clean_ai_text(guide.lecture_handout)}"
+            cleaned_request = request_message.replace("续写一个新章节，", "").replace("续写一个新章节", "")
+            return f"AI生成：关于“{topic}”，{cleaned_request}"
+        if isinstance(clarity, dict) and clarity.get("progress", 100) < 80:
+            return f"AI生成：关于“{topic}”，请补一句你的起点或这次最想先解决的具体问题。"
+        for value in (
+            getattr(guide, "teacher_brief", "") if guide is not None and kwargs.get("document_updated") else "",
+        ):
+            if value:
+                return f"AI生成：关于“{topic}”，{value}"
+        return f"AI生成：关于“{topic}”，先抓核心关系，再用一个例子检查理解。"
+
+    def fake_clarification_message(**kwargs) -> str:
+        requirements = kwargs.get("requirements")
+        topic = getattr(requirements, "theme", "") or kwargs.get("lesson_title") or kwargs.get("request_message") or "当前主题"
+        questions = [question for question in kwargs.get("clarification_questions", []) if question]
+        if questions:
+            return f"AI生成：{questions[0]}"
+        return f"AI生成：关于“{topic}”，请补充你的起点或这次最想先解决的具体问题。"
+
+    monkeypatch.setattr(openai_course_ai, "generate_teacher_message", fake_teacher_message)
+    monkeypatch.setattr(openai_course_ai, "generate_clarification_message", fake_clarification_message)
 
 
 def test_apply_patch_is_a_document_snapshot_compatibility_shim() -> None:
@@ -103,6 +152,25 @@ def test_workflow_asks_for_topic_keyword_on_greeting_without_level_refrain() -> 
     assert "什么水平" not in result["teacher_message"]
     assert "给我一个关键词" not in result["teacher_message"]
     assert "从那里开讲" not in result["teacher_message"]
+
+
+def test_workflow_emits_no_assistant_text_when_teacher_ai_is_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(openai_course_ai, "generate_clarification_message", lambda **kwargs: None)
+    monkeypatch.setattr(openai_course_ai, "generate_teacher_message", lambda **kwargs: None)
+    package = build_initial_course_package()
+    lesson = package.lessons[0]
+
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "course_package": package,
+            "request": ChatRequest(message="你好"),
+        }
+    )
+
+    assert result["board_decision"].action == "clarify_request"
+    assert result["teacher_message"] == ""
+    assert result["teacher_message_source"] == "none"
 
 
 def test_workflow_probes_level_and_goal_on_first_subject_only_learning_goal() -> None:
@@ -271,7 +339,8 @@ def test_workflow_marks_detailed_learning_goal_as_fully_clarified() -> None:
     assert result["needs_clarification"] is False
     assert result["board_decision"].action == "edit_board"
     assert result["document_updated"] is False
-    assert "没有写入板书" in result["teacher_message"]
+    assert result["teacher_message_source"] == "ai"
+    assert "没有写入板书" not in result["teacher_message"]
     assert "适用水平：" not in result["teacher_message"]
     assert "学习目标：" not in result["teacher_message"]
 
@@ -429,7 +498,8 @@ def test_workflow_does_not_persist_local_template_when_generation_model_unavaila
     assert result["document_updated"] is False
     assert guide is not None
     assert doc_text == ""
-    assert "没有写入板书" in result["teacher_message"]
+    assert result["teacher_message_source"] == "ai"
+    assert "没有写入板书" not in result["teacher_message"]
     assert "问题入口" not in result["teacher_message"]
     assert "核心概念" not in result["teacher_message"]
 
@@ -525,7 +595,8 @@ def test_workflow_preserves_blank_board_when_generation_model_unavailable() -> N
     assert "Hilbert 零点定理" not in doc_text
     assert "Zariski 拓扑" not in doc_text
     assert "仿射概形" not in doc_text
-    assert "没有写入板书" in result["teacher_message"]
+    assert result["teacher_message_source"] == "ai"
+    assert "没有写入板书" not in result["teacher_message"]
     assert "问题入口" not in result["teacher_message"]
     assert "核心概念" not in result["teacher_message"]
 
@@ -559,7 +630,8 @@ def test_topicless_board_generation_keeps_prior_learning_topic_when_model_unavai
     assert result["learning_requirement_sheet"].level == "大一"
     assert "开始生成板书" not in result["learning_requirement_sheet"].learning_need_checklist
     assert result["teacher_document"].content_text == ""
-    assert "没有写入板书" in result["teacher_message"]
+    assert result["teacher_message_source"] == "ai"
+    assert "没有写入板书" not in result["teacher_message"]
 
 
 def test_workflow_generates_board_for_blank_lesson_when_user_requests_direct_open_lecture(tmp_path) -> None:
@@ -649,7 +721,10 @@ def test_workflow_teaches_generated_board_one_h2_section_at_a_time(monkeypatch: 
     monkeypatch.setattr(
         openai_course_ai,
         "generate_teacher_message",
-        lambda **kwargs: pytest.fail("section teaching should not call the generic teacher message"),
+        lambda **kwargs: (
+            f"AI生成：第 {kwargs['teaching_progress']['section_index'] + 1} 小节讲“"
+            f"{kwargs['teaching_progress']['current_section_title']}”。"
+        ),
     )
 
     result = course_workflow.invoke(
@@ -833,7 +908,8 @@ def test_confirming_section_followup_appends_numbered_child_section() -> None:
     assert result["board_decision"].action == "append_section"
     assert result["document_updated"] is False
     assert "负数被开方会怎么样" not in result["teacher_document"].content_text
-    assert "没有写入板书" in result["teacher_message"]
+    assert result["teacher_message_source"] == "ai"
+    assert "没有写入板书" not in result["teacher_message"]
 
 
 def test_workflow_backfills_section_plans_for_legacy_board_teaching_guide() -> None:
@@ -924,7 +1000,6 @@ def test_workflow_turns_reference_chapter_into_polished_handout(
     tmp_path,
 ) -> None:
     monkeypatch.setattr(openai_course_ai, "generate_document_edit", lambda **kwargs: None)
-    monkeypatch.setattr(openai_course_ai, "generate_teacher_message", lambda **kwargs: None)
 
     package = build_initial_course_package()
     lesson = create_empty_lesson("测试5")
@@ -979,7 +1054,6 @@ def test_workflow_turns_reference_chapter_into_detailed_handout(
     tmp_path,
 ) -> None:
     monkeypatch.setattr(openai_course_ai, "generate_document_edit", lambda **kwargs: None)
-    monkeypatch.setattr(openai_course_ai, "generate_teacher_message", lambda **kwargs: None)
 
     package = build_initial_course_package()
     lesson = create_empty_lesson("测试8")
@@ -1034,7 +1108,6 @@ def test_workflow_expands_important_reference_content(
     tmp_path,
 ) -> None:
     monkeypatch.setattr(openai_course_ai, "generate_document_edit", lambda **kwargs: None)
-    monkeypatch.setattr(openai_course_ai, "generate_teacher_message", lambda **kwargs: None)
 
     package = build_initial_course_package()
     lesson = create_empty_lesson("资料讲解")
@@ -1479,7 +1552,8 @@ def test_workflow_direct_edit_rewrites_only_selected_excerpt() -> None:
     assert result["board_decision"].action == "edit_board"
     assert result["document_updated"] is False
     assert "换一种更好懂的说法" not in result["teacher_document"].content_text
-    assert "没有写入板书" in result["teacher_message"]
+    assert result["teacher_message_source"] == "ai"
+    assert "没有写入板书" not in result["teacher_message"]
 
 
 def test_workflow_direct_edit_enhancement_preserves_original_excerpt() -> None:
@@ -1519,7 +1593,8 @@ def test_workflow_direct_edit_enhancement_preserves_original_excerpt() -> None:
     assert "解题方法：先求导，再根据导数符号分类讨论。" in result["teacher_document"].content_text
     assert "补充解析" not in result["teacher_document"].content_text
     assert "课后提醒：注意端点条件。" in result["teacher_document"].content_text
-    assert "没有写入板书" in result["teacher_message"]
+    assert result["teacher_message_source"] == "ai"
+    assert "没有写入板书" not in result["teacher_message"]
 
 
 def test_workflow_direct_edit_new_page_appends_instead_of_replacing(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1626,7 +1701,8 @@ def test_workflow_expands_existing_board_in_place_instead_of_appending_chapter(m
     assert "收益是投资结果相对本金的变化" in content_text
     assert "展开说明" not in content_text
     assert content_html.index("一、什么是风险") < content_html.index("二、收益怎么理解")
-    assert "没有写入板书" in result["teacher_message"]
+    assert result["teacher_message_source"] == "ai"
+    assert "没有写入板书" not in result["teacher_message"]
 
 
 def test_workflow_does_not_append_template_when_chapter_generation_model_unavailable() -> None:
@@ -1674,7 +1750,8 @@ def test_workflow_does_not_append_template_when_chapter_generation_model_unavail
     assert "问题入口" not in content_text
     assert "补充章节：如何解决过拟合" not in content_text
     assert "练习任务" not in content_text
-    assert "没有写入板书" in result["teacher_message"]
+    assert result["teacher_message_source"] == "ai"
+    assert "没有写入板书" not in result["teacher_message"]
 
 
 def test_workflow_rejects_low_value_ai_append_without_local_template(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1727,7 +1804,8 @@ def test_workflow_rejects_low_value_ai_append_without_local_template(monkeypatch
     assert "练习任务" not in content_text
     assert "用户当前追问" not in content_text
     assert "续写一个新章节" not in content_text
-    assert "没有写入板书" in result["teacher_message"]
+    assert result["teacher_message_source"] == "ai"
+    assert "没有写入板书" not in result["teacher_message"]
 
 
 def test_workflow_rejects_too_short_ai_chapter_append_without_local_template(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1769,7 +1847,8 @@ def test_workflow_rejects_too_short_ai_chapter_append_without_local_template(mon
     assert "可以用验证集、正则化和交叉验证来减少过拟合" not in content_text
     assert "例子拆解" not in content_text
     assert "参考答案" not in content_text
-    assert "没有写入板书" in result["teacher_message"]
+    assert result["teacher_message_source"] == "ai"
+    assert "没有写入板书" not in result["teacher_message"]
 
 
 def test_workflow_preserves_existing_document_when_echoed_append_needs_model(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1808,7 +1887,8 @@ def test_workflow_preserves_existing_document_when_echoed_append_needs_model(mon
     assert "补充章节：如何解决过拟合" not in content_text
     assert "例子拆解" not in content_text
     assert content_html == lesson.board_document.content_html
-    assert "没有写入板书" in result["teacher_message"]
+    assert result["teacher_message_source"] == "ai"
+    assert "没有写入板书" not in result["teacher_message"]
 
 
 def test_workflow_does_not_append_same_chapter_twice(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1940,7 +2020,8 @@ def test_workflow_generates_initial_scenario_document_for_blank_lesson() -> None
     assert result["board_decision"].action == "edit_board"
     assert result["document_updated"] is False
     assert result["teacher_document"].content_text == ""
-    assert "没有写入板书" in result["teacher_message"]
+    assert result["teacher_message_source"] == "ai"
+    assert "没有写入板书" not in result["teacher_message"]
 
 
 def test_workflow_uses_fast_path_for_clear_generation_request(monkeypatch: pytest.MonkeyPatch) -> None:
