@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import html
 import re
 from typing import Any, TypedDict
 
@@ -29,7 +28,7 @@ from app.models import (
     TeachingGuide,
 )
 from app.services.chart_generation import augment_document_with_generated_charts
-from app.services.fallback_generator import generic_handout_fallback_html, reference_document_fallback_html
+from app.services.fallback_generator import reference_document_fallback_html
 from app.services.lesson_factory import build_requirements, build_teaching_guide
 from app.services.openai_course_ai import openai_course_ai
 from app.services.resource_library import extract_reference_context
@@ -222,6 +221,32 @@ def _is_low_information_request(message: str) -> bool:
     return len(compact) <= 4 or _is_vague_pointer_request(message)
 
 
+def _is_teaching_control_text(message: str) -> bool:
+    compact = _compact_request_text(message)
+    return compact in {"继续", "继续下一节", "下一节", "讲下一节", "继续讲"} or "继续讲下一个" in compact
+
+
+def _is_topicless_board_generation_request(message: str) -> bool:
+    compact = _compact_request_text(message)
+    return compact in {
+        "开始生成板书",
+        "生成板书",
+        "开始写板书",
+        "写板书",
+        "开始生成讲义",
+        "生成讲义",
+        "写讲义",
+        "整理成板书",
+        "整理成讲义",
+        "生成文档",
+        "写文档",
+    }
+
+
+def _is_topicless_control_request(message: str) -> bool:
+    return _is_teaching_control_text(message) or _is_topicless_board_generation_request(message)
+
+
 def _clean_topic_hint(value: str) -> str | None:
     cleaned = re.sub(r"\s+", " ", value or "").strip()
     cleaned = re.sub(r"^(什么是|什么事|何为|一下|一下子|关于)", "", cleaned).strip()
@@ -266,6 +291,8 @@ def _extract_topic_hint(text: str) -> str | None:
     generated = _extract_generation_topic_hint(text)
     if generated:
         return generated
+    if _is_topicless_control_request(text):
+        return None
     patterns = (
         r"(?:我想学|我要学|想学习|学习|教我|我要了解)(.+)",
         r"(?:讲解|讲一下|解释一下|为我讲|帮我讲)(.+)",
@@ -278,6 +305,8 @@ def _extract_topic_hint(text: str) -> str | None:
         topic = _clean_topic_hint(match.group(1))
         if topic:
             return topic
+    if _extract_level_hint(text):
+        return None
     terms = _extract_focus_terms(text)
     return terms[0] if len(terms) == 1 and not _is_low_information_request(text) else None
 
@@ -346,18 +375,24 @@ def _learning_clarification_status(
 ) -> LearningClarificationStatus:
     message = request.message or ""
     forced = _is_forced_start_request(message)
-    topic = _extract_topic_hint(message) or (requirements.theme if not _is_low_information_request(message) else None)
+    topic = _extract_topic_hint(message)
+    if topic is None and (_is_topicless_control_request(message) or not _is_low_information_request(message)):
+        topic = requirements.theme
     level = _extract_level_hint(message)
     goal = _extract_goal_or_scenario_hint(message)
     missing: list[str] = []
     if not topic and _is_low_information_request(message):
         missing.append("想学的主题")
-    if topic and not level and not forced:
+    if topic and not level and not forced and not _is_topicless_control_request(message):
         missing.append("当前水平或背景")
-    if topic and not goal and not forced and not level:
+    if topic and not goal and not forced and not level and not _is_topicless_control_request(message):
         missing.append("学习目的或应用场景")
 
-    if forced:
+    if _is_teaching_control_text(message):
+        progress = 100 if topic else 45
+    elif _is_topicless_board_generation_request(message):
+        progress = 95 if topic else 45
+    elif forced:
         progress = 55 if topic else 45
     elif not topic and _is_low_information_request(message):
         progress = 0
@@ -382,8 +417,14 @@ def _learning_clarification_status(
 
 
 def _draft_requirements(lesson: Lesson, request: ChatRequest) -> LearningRequirementSheet:
-    topic = _extract_topic_hint(request.message) or (_conversation_topic_hint(request) if _is_forced_start_request(request.message) else None) or lesson.title
-    requirements = build_requirements(topic)
+    explicit_topic = _extract_topic_hint(request.message)
+    conversation_topic = _conversation_topic_hint(request)
+    existing = lesson.learning_requirements
+    topic = explicit_topic or conversation_topic or (existing.theme if existing else None) or lesson.title
+    if existing is not None and existing.theme == topic:
+        requirements = LearningRequirementSheet.model_validate(existing.model_dump(mode="json"))
+    else:
+        requirements = build_requirements(topic)
     level = _extract_level_hint(request.message)
     goal = _extract_goal_or_scenario_hint(request.message)
     if level:
@@ -779,7 +820,7 @@ def _build_board_edit_prompt(
 
 
 def _board_edit_prompt_topic(request: ChatRequest, requirements: LearningRequirementSheet) -> str:
-    return _extract_topic_hint(request.message) or requirements.theme
+    return request.board_edit_topic or _extract_topic_hint(request.message) or requirements.theme
 
 
 def _should_offer_board_edit_prompt(
@@ -832,6 +873,8 @@ def _should_use_fast_board_path(
 
 
 def _important_terms_from_request(message: str) -> list[str]:
+    if _is_topicless_control_request(message):
+        return []
     terms: list[str] = []
     coverage = re.search(r"(?:覆盖|包括|重点讲|围绕)(.+)", message or "")
     if coverage:
@@ -913,51 +956,59 @@ def _append_request_already_applied(document: BoardDocument, message: str, requi
     return any(marker in compact_doc for marker in heading_markers)
 
 
-def _fallback_append_section_html(message: str, requirements: LearningRequirementSheet) -> str:
-    topic = _append_section_topic(message, requirements)
-    terms = _important_terms_from_request(message)
-    content = generic_handout_fallback_html(topic, key_terms=terms, section_count=max(5, _requested_section_count(message)))
-    safe_topic = html.escape(topic)
-    return re.sub(
-        rf"^<h1>{re.escape(safe_topic)}</h1>",
-        f"<h2>补充章节：{safe_topic}</h2>",
-        content,
-        count=1,
-    )
+def _document_edit_has_content(ai_edit: Any | None) -> bool:
+    if ai_edit is None:
+        return False
+    return bool(html_to_text(ai_edit.replacement_html).strip() or ai_edit.replacement_text.strip())
 
 
-def _fallback_expand_existing_document(document: BoardDocument, request: ChatRequest) -> BoardDocument:
-    if not document.content_html.strip():
-        return document
-    addition = "<p>展开说明：这里补充本段的核心问题、关键条件、推理步骤、例子和检查问题，帮助学习者把原有内容迁移到新场景。</p>"
-    html_content = re.sub(r"(</p>)", rf"\1{addition}", document.content_html, count=1, flags=re.IGNORECASE)
-    if html_content == document.content_html:
-        html_content = f"{document.content_html}\n{addition}"
-    return build_document(
-        title=document.title,
-        content_html=html_content,
-        document_id=document.id,
-        page_settings=document.page_settings,
-    )
+def _document_generation_failure_message(decision: BoardDecision) -> str:
+    action_label = "追加" if decision.action == "append_section" else "生成"
+    return f"这次没有写入板书：模型没有返回可用的{action_label}内容。当前板书已保留，请重新生成或补充更明确的资料后再试。"
 
 
-def _fallback_document_update(
+def _reference_document_update(
+    *,
+    lesson: Lesson,
+    requirements: LearningRequirementSheet,
+    selected_reference: ResourceReferenceContext,
+) -> BoardDocument:
+    title = selected_reference.chapter_title or requirements.theme
+    content_html = reference_document_fallback_html(requirements.theme, selected_reference)
+    return build_document(title=title, content_html=content_html, document_id=lesson.board_document.id)
+
+
+def _failed_document_generation_result(
     *,
     lesson: Lesson,
     request: ChatRequest,
     requirements: LearningRequirementSheet,
+    decision: BoardDecision,
     selected_reference: ResourceReferenceContext | None,
-) -> BoardDocument:
-    topic = _board_edit_prompt_topic(request, requirements)
-    if selected_reference is not None:
-        content_html = reference_document_fallback_html(topic, selected_reference)
-    else:
-        content_html = generic_handout_fallback_html(
-            topic,
-            key_terms=_important_terms_from_request(request.message),
-            section_count=_requested_section_count(request.message),
-        )
-    return build_document(title=topic, content_html=content_html, document_id=lesson.board_document.id)
+) -> WorkflowState:
+    guide = _interactive_teaching_guide(
+        lesson_id=lesson.id,
+        lesson_title=lesson.title,
+        document=lesson.board_document,
+        requirements=requirements,
+    )
+    board_guide = _resolve_board_teaching_guide(
+        lesson=lesson,
+        request=request,
+        requirements=requirements,
+        document=lesson.board_document,
+        selected_reference=selected_reference,
+    )
+    return {
+        "teaching_guide": guide,
+        "teacher_document": lesson.board_document,
+        "document_updated": False,
+        "generated_lesson": None,
+        "teacher_talk_track": _document_generation_failure_message(decision),
+        "board_teaching_guide": board_guide,
+        "board_teaching_progress": lesson.board_teaching_progress,
+        "teaching_progress": _section_progress_view(lesson.board_teaching_progress, board_guide),
+    }
 
 
 def _board_snapshot_hash(document: BoardDocument) -> str:
@@ -972,7 +1023,7 @@ def _board_h2_sections(document: BoardDocument) -> list[tuple[str, str]]:
         lines = [line.strip() for line in document.content_text.splitlines() if line.strip()]
         if not lines:
             return []
-        return [(line, "") for line in lines[:8]]
+        return [(line, lines[index + 1] if index + 1 < len(lines) else "") for index, line in enumerate(lines[:8])]
     sections: list[tuple[str, str]] = []
     for index, match in enumerate(matches):
         start = match.end()
@@ -1288,8 +1339,7 @@ def _teacher_message_from_talk_track(state: WorkflowState, talk_track: str) -> s
 
 
 def _is_continue_teaching_request(message: str) -> bool:
-    compact = _compact_request_text(message)
-    return compact in {"继续", "继续下一节", "下一节", "讲下一节", "继续讲"} or "继续讲下一个" in compact
+    return _is_teaching_control_text(message)
 
 
 def _is_teaching_control_request(request: ChatRequest) -> bool:
@@ -1368,7 +1418,7 @@ def _section_teaching_turn(state: WorkflowState) -> WorkflowState | None:
 def _plain_teaching_from_excerpt(excerpt: str) -> str:
     compact = _compact_teaching_line(excerpt, limit=220)
     if not compact:
-        return "这一节先建立问题入口，再补关键关系和检查问题。"
+        return "这一节先围绕当前材料讲清楚，再用一个检查问题确认理解。"
     return f"这部分的主线是：{compact}。先抓它要解决的问题，再看关键条件如何连接，最后用一个小例子确认能不能迁移。"
 
 
@@ -1405,7 +1455,7 @@ def _fallback_teacher_message(state: WorkflowState) -> str:
     concept = _fallback_concept_teaching_from_request(request.message)
     if concept:
         return concept
-    return "我先按当前板书和学习目标讲主线：先确定问题入口，再解释关键关系，最后用一个检查问题确认理解。"
+    return "我先按当前板书和学习目标讲清楚这一轮最该解决的内容，再用一个检查问题确认理解。"
 
 
 def _run_pm(state: WorkflowState) -> WorkflowState:
@@ -1590,25 +1640,61 @@ def _run_board_executor(state: WorkflowState) -> WorkflowState:
         selected_reference=_reference_payload(selected_reference, include_full_text=True),
     )
 
-    if request.selection and decision.action == "edit_board":
+    if ai_edit is not None and not _document_edit_has_content(ai_edit):
+        ai_edit = None
+
+    if ai_edit is None and selected_reference is not None and decision.action == "edit_board" and request.selection is None:
+        next_document = _reference_document_update(
+            lesson=lesson,
+            requirements=requirements,
+            selected_reference=selected_reference,
+        )
+    elif request.selection and decision.action == "edit_board" and ai_edit is None:
+        return _failed_document_generation_result(
+            lesson=lesson,
+            request=request,
+            requirements=requirements,
+            decision=decision,
+            selected_reference=selected_reference,
+        )
+    elif request.selection and decision.action == "edit_board":
         next_document = _merge_selection_edit(lesson.board_document, request, ai_edit)
     elif decision.action == "append_section":
-        section_html = ai_edit.replacement_html if ai_edit else _fallback_append_section_html(request.message, requirements)
+        if ai_edit is None:
+            return _failed_document_generation_result(
+                lesson=lesson,
+                request=request,
+                requirements=requirements,
+                decision=decision,
+                selected_reference=selected_reference,
+            )
+        section_html = ai_edit.replacement_html
         section_text = html_to_text(section_html)
         if (
-            not ai_edit
-            or not section_text.strip()
+            not section_text.strip()
             or request.message.strip() in section_text
             or (request.interaction_mode != "direct_edit" and len(_compact_request_text(section_text)) < 500)
         ):
-            section_html = _fallback_append_section_html(request.message, requirements)
+            return _failed_document_generation_result(
+                lesson=lesson,
+                request=request,
+                requirements=requirements,
+                decision=decision,
+                selected_reference=selected_reference,
+            )
         next_document = append_html_section(lesson.board_document, section_html)
     elif _is_in_place_expansion_request(request.message) and (
         ai_edit is None
         or ai_edit.target_action == "append_section"
         or "补充章节" in html_to_text(ai_edit.replacement_html)[:80]
     ):
-        next_document = _fallback_expand_existing_document(lesson.board_document, request)
+        return _failed_document_generation_result(
+            lesson=lesson,
+            request=request,
+            requirements=requirements,
+            decision=decision,
+            selected_reference=selected_reference,
+        )
     elif ai_edit is not None:
         next_document = build_document(
             title=ai_edit.suggested_title or lesson.board_document.title,
@@ -1618,10 +1704,11 @@ def _run_board_executor(state: WorkflowState) -> WorkflowState:
             page_settings=lesson.board_document.page_settings,
         )
     else:
-        next_document = _fallback_document_update(
+        return _failed_document_generation_result(
             lesson=lesson,
             request=request,
             requirements=requirements,
+            decision=decision,
             selected_reference=selected_reference,
         )
 

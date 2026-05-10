@@ -41,22 +41,11 @@ def build_requirements(topic: str) -> LearningRequirementSheet:
             "它包含哪些关键概念、步骤或例子",
             "学习后如何检查是否真正理解",
         ],
-        learning_need_checklist=[
-            "建立主题主线",
-            "拆解关键概念",
-            "补充必要例子",
-            "给出练习或检查问题",
-        ],
+        learning_need_checklist=[],
         target_depth="能复述核心内容，并能用例子解释或完成基础练习",
-        output_preference="连续讲义：主线、概念、例子、练习、总结",
+        output_preference="根据用户目标、资料结构和交互意图动态决定输出形态",
         boundary="优先围绕当前主题展开，不自动跳到无关领域",
-        board_scope=[
-            "主题定位",
-            "核心概念",
-            "重点展开",
-            "例子或应用",
-            "练习与总结",
-        ],
+        board_scope=[],
         success_criteria="用户能说清主线、解释关键概念，并完成至少一个检查问题",
     )
 
@@ -90,7 +79,7 @@ def build_teaching_guide(
         structure_note="按学习目标、资料证据和当前板书顺序组织讲解。",
         pacing="先讲主线，再讲关键关系，最后用例子或练习检查理解。",
         mappings=mappings,
-        strategy="根据学习者反馈动态调整深度，不绑定特定学科或固定课程模板。",
+        strategy="根据学习者反馈动态调整深度，不绑定特定学科或预设课程结构。",
     )
 
 

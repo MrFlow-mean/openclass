@@ -13,7 +13,7 @@ from app.services.course_runtime import effective_requirements
 from app.services.course_store import build_initial_course_package
 from app.services.document_ops import apply_patch
 from app.services.history import create_branch, restore_commit
-from app.services.lesson_factory import create_empty_lesson, create_lesson
+from app.services.lesson_factory import build_requirements, create_empty_lesson, create_lesson
 from app.services.openai_course_ai import DocumentEditOutput, openai_course_ai
 from app.services.resource_library import _keywords_from_text, build_resource_item, extract_reference_context
 from app.services.rich_document import build_document, export_docx, import_docx, replace_selection_in_document
@@ -268,7 +268,8 @@ def test_workflow_marks_detailed_learning_goal_as_fully_clarified() -> None:
     assert result["learning_clarification"].progress == 100
     assert result["needs_clarification"] is False
     assert result["board_decision"].action == "edit_board"
-    assert result["document_updated"] is True
+    assert result["document_updated"] is False
+    assert "没有写入板书" in result["teacher_message"]
     assert "适用水平：" not in result["teacher_message"]
     assert "学习目标：" not in result["teacher_message"]
 
@@ -395,38 +396,17 @@ def test_workflow_does_not_misread_environment_science_as_ring_algebra() -> None
 
 
 @pytest.mark.parametrize(
-    ("message", "must_terms"),
+    "message",
     [
-        (
-            "请生成一份虚拟内存讲义，覆盖地址空间、页表、TLB、缺页异常、页面置换，生成后先只讲第一小节。",
-            ["虚拟内存", "地址空间", "页表", "TLB", "页面置换"],
-        ),
-        (
-            "请生成一份法国大革命讲义，覆盖三级会议、攻占巴士底狱、雅各宾派、拿破仑，生成后先只讲第一小节。",
-            ["法国大革命", "三级会议", "攻占巴士底狱", "雅各宾派", "拿破仑"],
-        ),
-        (
-            "请生成一份合同法要约与承诺专题讲义，覆盖要约、承诺、撤回、撤销和案例判断，生成后先只讲第一小节。",
-            ["合同法要约与承诺", "要约", "承诺", "撤回", "撤销"],
-        ),
-        (
-            "请生成一份 p-value 与显著性检验讲义，覆盖零假设、备择假设、一类错误、置信区间，生成后先只讲第一小节。",
-            ["p-value", "显著性检验", "零假设", "备择假设", "置信区间"],
-        ),
-        (
-            "请生成一份集合、映射、群、环、域系统讲义，覆盖集合、映射、群、环、域，为大学数学打基础。生成后先只讲第一小节。",
-            ["集合", "映射", "群", "环", "域"],
-        ),
-        (
-            "请生成一份项目复盘讲义，覆盖目标、假设、指标、风险和下一步行动。生成后先只讲第一小节。",
-            ["项目复盘", "目标", "假设", "指标", "风险"],
-        ),
+        "请生成一份虚拟内存讲义，覆盖地址空间、页表、TLB、缺页异常、页面置换，生成后先只讲第一小节。",
+        "请生成一份法国大革命讲义，覆盖三级会议、攻占巴士底狱、雅各宾派、拿破仑，生成后先只讲第一小节。",
+        "请生成一份合同法要约与承诺专题讲义，覆盖要约、承诺、撤回、撤销和案例判断，生成后先只讲第一小节。",
+        "请生成一份 p-value 与显著性检验讲义，覆盖零假设、备择假设、一类错误、置信区间，生成后先只讲第一小节。",
+        "请生成一份集合、映射、群、环、域系统讲义，覆盖集合、映射、群、环、域，为大学数学打基础。生成后先只讲第一小节。",
+        "请生成一份项目复盘讲义，覆盖目标、假设、指标、风险和下一步行动。生成后先只讲第一小节。",
     ],
 )
-def test_workflow_generates_generic_handouts_from_varied_personas_without_echoing_prompt(
-    message: str,
-    must_terms: list[str],
-) -> None:
+def test_workflow_does_not_persist_local_template_when_generation_model_unavailable(message: str) -> None:
     package = build_initial_course_package()
     lesson = create_empty_lesson("跨学科生成测试")
     package.lessons.append(lesson)
@@ -443,19 +423,12 @@ def test_workflow_generates_generic_handouts_from_varied_personas_without_echoin
     guide = result["board_teaching_guide"]
 
     assert result["board_decision"].action == "edit_board"
-    assert result["document_updated"] is True
+    assert result["document_updated"] is False
     assert guide is not None
-    assert len(guide.section_plans) >= 8
-    assert result["board_teaching_progress"].waiting_for_continue is True
-    for term in must_terms:
-        assert term in doc_text
-    assert "请生成一份" not in doc_text
-    assert "生成后先只讲" not in doc_text
-    assert "抽象代数、交换代数与代数几何中的“环”" not in doc_text
-    assert "固定示例内容" not in doc_text
-    assert "教师模型" not in result["teacher_message"]
-    assert "学习目标：" not in result["teacher_message"]
-    assert "继续讲下一个小节" in result["teacher_message"]
+    assert doc_text == ""
+    assert "没有写入板书" in result["teacher_message"]
+    assert "问题入口" not in result["teacher_message"]
+    assert "核心概念" not in result["teacher_message"]
 
 
 def test_workflow_can_start_when_user_forces_teaching_before_goal_is_clear() -> None:
@@ -517,7 +490,7 @@ def test_workflow_treats_integrated_math_learning_goal_as_purpose() -> None:
     assert result["needs_clarification"] is False
 
 
-def test_workflow_fallback_generates_long_handout_and_teaches_one_section_at_a_time() -> None:
+def test_workflow_preserves_blank_board_when_generation_model_unavailable() -> None:
     package = build_initial_course_package()
     lesson = create_empty_lesson("环论学习")
     package.lessons.append(lesson)
@@ -542,20 +515,48 @@ def test_workflow_fallback_generates_long_handout_and_teaches_one_section_at_a_t
     progress = result["teaching_progress"]
 
     assert result["board_decision"].action == "edit_board"
-    assert result["document_updated"] is True
+    assert result["document_updated"] is False
     assert guide is not None
-    assert len(guide.section_plans) >= 21
-    assert progress.section_count >= 21
-    assert guide.section_plans[0].heading
-    assert "Hilbert 零点定理" in doc_text
-    assert "Zariski 拓扑" in doc_text
-    assert "仿射概形" in doc_text
-    assert "固定示例内容" not in doc_text
-    assert "第 1 小节" in result["teacher_message"]
-    assert "继续讲下一个小节" in result["teacher_message"]
-    assert "讲的时候我会这样展开" not in result["teacher_message"]
-    assert "讲解节奏" not in result["teacher_message"]
-    assert result["board_teaching_progress"].waiting_for_continue is True
+    assert progress.section_count == 0
+    assert doc_text == ""
+    assert "Hilbert 零点定理" not in doc_text
+    assert "Zariski 拓扑" not in doc_text
+    assert "仿射概形" not in doc_text
+    assert "没有写入板书" in result["teacher_message"]
+    assert "问题入口" not in result["teacher_message"]
+    assert "核心概念" not in result["teacher_message"]
+
+
+def test_topicless_board_generation_keeps_prior_learning_topic_when_model_unavailable() -> None:
+    package = build_initial_course_package()
+    lesson = create_empty_lesson("测试2")
+    lesson.learning_requirements = build_requirements("线性代数")
+    lesson.learning_requirements.level = "大一"
+    lesson.learning_requirements.known_background = "用户自述背景：大一"
+    package.lessons.append(lesson)
+
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "course_package": package,
+            "request": ChatRequest(
+                message="开始生成板书",
+                conversation=[
+                    ConversationTurn(role="user", content="我想学线性代数"),
+                    ConversationTurn(role="assistant", content="我们可以从线性代数开始。"),
+                    ConversationTurn(role="user", content="我是大一新生"),
+                ],
+            ),
+        }
+    )
+
+    assert result["board_decision"].action == "edit_board"
+    assert result["document_updated"] is False
+    assert result["learning_requirement_sheet"].theme == "线性代数"
+    assert result["learning_requirement_sheet"].level == "大一"
+    assert "开始生成板书" not in result["learning_requirement_sheet"].learning_need_checklist
+    assert result["teacher_document"].content_text == ""
+    assert "没有写入板书" in result["teacher_message"]
 
 
 def test_workflow_generates_board_for_blank_lesson_when_user_requests_direct_open_lecture(tmp_path) -> None:
@@ -629,9 +630,9 @@ def test_workflow_teaches_generated_board_one_h2_section_at_a_time(monkeypatch: 
     package.lessons.append(lesson)
     content_html = """
     <h1>分节讲义</h1>
-    <h2>一、问题入口</h2><p>先说明为什么要学这个主题。</p>
-    <h2>二、核心概念</h2><p>解释最重要的定义和边界。</p>
-    <h2>三、例子拆解</h2><p>用一个最小例子走完整流程。</p>
+    <h2>一、学习动机</h2><p>先说明为什么要学这个主题。</p>
+    <h2>二、判断标准</h2><p>解释最重要的定义和边界。</p>
+    <h2>三、迁移任务</h2><p>用一个最小例子走完整流程。</p>
     <h2>四、检查练习</h2><p>让学生自己判断是否掌握。</p>
     """.strip()
     monkeypatch.setattr(
@@ -659,12 +660,12 @@ def test_workflow_teaches_generated_board_one_h2_section_at_a_time(monkeypatch: 
     guide = result["board_teaching_guide"]
     progress = result["board_teaching_progress"]
     assert guide is not None
-    assert [plan.heading for plan in guide.section_plans] == ["一、问题入口", "二、核心概念", "三、例子拆解", "四、检查练习"]
+    assert [plan.heading for plan in guide.section_plans] == ["一、学习动机", "二、判断标准", "三、迁移任务", "四、检查练习"]
     assert progress.current_section_index == 0
     assert result["teaching_progress"].has_next_section is True
     assert "第 1 小节" in result["teacher_message"]
-    assert "一、问题入口" in result["teacher_message"]
-    assert "二、核心概念" not in result["teacher_message"]
+    assert "一、学习动机" in result["teacher_message"]
+    assert "二、判断标准" not in result["teacher_message"]
 
     lesson.board_document = result["teacher_document"]
     lesson.board_teaching_guide = guide
@@ -678,10 +679,10 @@ def test_workflow_teaches_generated_board_one_h2_section_at_a_time(monkeypatch: 
     )
 
     assert followup["board_teaching_progress"].current_section_index == 1
-    assert followup["teaching_progress"].current_section_title == "二、核心概念"
+    assert followup["teaching_progress"].current_section_title == "二、判断标准"
     assert "第 2 小节" in followup["teacher_message"]
-    assert "二、核心概念" in followup["teacher_message"]
-    assert "一、问题入口" not in followup["teacher_message"]
+    assert "二、判断标准" in followup["teacher_message"]
+    assert "一、学习动机" not in followup["teacher_message"]
 
 
 def test_workflow_generates_chart_image_for_data_rich_board(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -827,10 +828,9 @@ def test_confirming_section_followup_appends_numbered_child_section() -> None:
     )
 
     assert result["board_decision"].action == "append_section"
-    assert result["document_updated"] is True
-    assert "负数被开方会怎么样" in result["teacher_document"].content_text
-    assert "边界" in result["teacher_document"].content_text
-    assert "例子" in result["teacher_document"].content_text
+    assert result["document_updated"] is False
+    assert "负数被开方会怎么样" not in result["teacher_document"].content_text
+    assert "没有写入板书" in result["teacher_message"]
 
 
 def test_workflow_backfills_section_plans_for_legacy_board_teaching_guide() -> None:
@@ -1474,9 +1474,9 @@ def test_workflow_direct_edit_rewrites_only_selected_excerpt() -> None:
 
     assert result["needs_clarification"] is False
     assert result["board_decision"].action == "edit_board"
-    assert result["document_updated"] is True
-    assert excerpt not in result["teacher_document"].content_text
-    assert "换一种更好懂的说法" in result["teacher_document"].content_text
+    assert result["document_updated"] is False
+    assert "换一种更好懂的说法" not in result["teacher_document"].content_text
+    assert "没有写入板书" in result["teacher_message"]
 
 
 def test_workflow_direct_edit_enhancement_preserves_original_excerpt() -> None:
@@ -1511,11 +1511,12 @@ def test_workflow_direct_edit_enhancement_preserves_original_excerpt() -> None:
 
     assert result["needs_clarification"] is False
     assert result["board_decision"].action == "edit_board"
-    assert result["document_updated"] is True
+    assert result["document_updated"] is False
     assert "题干：已知函数 f(x) 在区间上单调递增，求参数 a 的取值范围。" in result["teacher_document"].content_text
     assert "解题方法：先求导，再根据导数符号分类讨论。" in result["teacher_document"].content_text
-    assert "补充解析" in result["teacher_document"].content_text
+    assert "补充解析" not in result["teacher_document"].content_text
     assert "课后提醒：注意端点条件。" in result["teacher_document"].content_text
+    assert "没有写入板书" in result["teacher_message"]
 
 
 def test_workflow_direct_edit_new_page_appends_instead_of_replacing(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1616,15 +1617,16 @@ def test_workflow_expands_existing_board_in_place_instead_of_appending_chapter(m
     content_text = result["teacher_document"].content_text
     content_html = result["teacher_document"].content_html
     assert result["board_decision"].action == "edit_board"
-    assert result["document_updated"] is True
+    assert result["document_updated"] is False
     assert "补充章节" not in content_text
     assert "风险不是一定亏钱" in content_text
     assert "收益是投资结果相对本金的变化" in content_text
-    assert "展开说明" in content_text
+    assert "展开说明" not in content_text
     assert content_html.index("一、什么是风险") < content_html.index("二、收益怎么理解")
+    assert "没有写入板书" in result["teacher_message"]
 
 
-def test_workflow_fallback_continue_new_chapter_appends_without_replacing() -> None:
+def test_workflow_does_not_append_template_when_chapter_generation_model_unavailable() -> None:
     package = build_initial_course_package()
     lesson = create_empty_lesson("测试2")
     package.lessons.append(lesson)
@@ -1663,19 +1665,16 @@ def test_workflow_fallback_continue_new_chapter_appends_without_replacing() -> N
 
     content_text = result["teacher_document"].content_text
     assert result["board_decision"].action == "append_section"
-    assert result["document_updated"] is True
+    assert result["document_updated"] is False
     assert "几个比较基础的量化数学知识" in content_text
     assert "蒙特卡洛方法、相关性和回归" in content_text
-    assert "补充章节：如何解决过拟合" in content_text
-    assert "问题入口" in content_text
-    assert "练习任务" in content_text
-    assert len(content_text) >= 500
-    assert result["teacher_document"].content_html.index("蒙特卡洛方法") < result["teacher_document"].content_html.index(
-        "如何解决过拟合"
-    )
+    assert "问题入口" not in content_text
+    assert "补充章节：如何解决过拟合" not in content_text
+    assert "练习任务" not in content_text
+    assert "没有写入板书" in result["teacher_message"]
 
 
-def test_workflow_replaces_low_value_ai_append_with_expanded_section(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_workflow_rejects_low_value_ai_append_without_local_template(monkeypatch: pytest.MonkeyPatch) -> None:
     package = build_initial_course_package()
     lesson = create_empty_lesson("测试2")
     package.lessons.append(lesson)
@@ -1719,14 +1718,16 @@ def test_workflow_replaces_low_value_ai_append_with_expanded_section(monkeypatch
 
     content_text = result["teacher_document"].content_text
     assert result["board_decision"].action == "append_section"
-    assert "补充章节：如何解决过拟合" in content_text
-    assert "问题入口" in content_text
-    assert "练习任务" in content_text
+    assert result["document_updated"] is False
+    assert "补充章节：如何解决过拟合" not in content_text
+    assert "问题入口" not in content_text
+    assert "练习任务" not in content_text
     assert "用户当前追问" not in content_text
     assert "续写一个新章节" not in content_text
+    assert "没有写入板书" in result["teacher_message"]
 
 
-def test_workflow_replaces_too_short_ai_chapter_append_with_full_section(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_workflow_rejects_too_short_ai_chapter_append_without_local_template(monkeypatch: pytest.MonkeyPatch) -> None:
     package = build_initial_course_package()
     lesson = create_empty_lesson("测试2")
     package.lessons.append(lesson)
@@ -1761,13 +1762,14 @@ def test_workflow_replaces_too_short_ai_chapter_append_with_full_section(monkeyp
     )
 
     content_text = result["teacher_document"].content_text
+    assert result["document_updated"] is False
     assert "可以用验证集、正则化和交叉验证来减少过拟合" not in content_text
-    assert "例子拆解" in content_text
-    assert "参考答案" in content_text
-    assert len(content_text) >= 500
+    assert "例子拆解" not in content_text
+    assert "参考答案" not in content_text
+    assert "没有写入板书" in result["teacher_message"]
 
 
-def test_workflow_does_not_treat_echoed_existing_append_as_complete(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_workflow_preserves_existing_document_when_echoed_append_needs_model(monkeypatch: pytest.MonkeyPatch) -> None:
     package = build_initial_course_package()
     lesson = create_empty_lesson("测试2")
     package.lessons.append(lesson)
@@ -1799,10 +1801,11 @@ def test_workflow_does_not_treat_echoed_existing_append_as_complete(monkeypatch:
     content_text = result["teacher_document"].content_text
     content_html = result["teacher_document"].content_html
     assert result["board_decision"].action == "append_section"
-    assert result["document_updated"] is True
-    assert content_text.count("补充章节：如何解决过拟合") == 1
-    assert "例子拆解" in content_text
-    assert content_html.index("续写一个新章节，如何解决过拟合") < content_html.index("补充章节：如何解决过拟合")
+    assert result["document_updated"] is False
+    assert "补充章节：如何解决过拟合" not in content_text
+    assert "例子拆解" not in content_text
+    assert content_html == lesson.board_document.content_html
+    assert "没有写入板书" in result["teacher_message"]
 
 
 def test_workflow_does_not_append_same_chapter_twice(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1932,10 +1935,9 @@ def test_workflow_generates_initial_scenario_document_for_blank_lesson() -> None
     )
 
     assert result["board_decision"].action == "edit_board"
-    assert result["document_updated"] is True
-    assert "客户访谈" in result["teacher_document"].title
-    assert "开场" in result["teacher_document"].content_text
-    assert "确认需求" in result["teacher_document"].content_text
+    assert result["document_updated"] is False
+    assert result["teacher_document"].content_text == ""
+    assert "没有写入板书" in result["teacher_message"]
 
 
 def test_workflow_uses_fast_path_for_clear_generation_request(monkeypatch: pytest.MonkeyPatch) -> None:

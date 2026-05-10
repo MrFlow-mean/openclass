@@ -9,8 +9,9 @@ from app.services.ai_workflow import (
     _append_section_topic,
     _board_h2_sections,
     _bound_board_teaching_guide,
+    _document_edit_has_content,
     _extract_focus_terms,
-    _fallback_document_update,
+    _failed_document_generation_result,
     _is_append_document_request,
     _is_section_followup_learning_need,
     _interactive_teaching_guide,
@@ -304,6 +305,8 @@ def run_board_executor(state: WorkflowState) -> WorkflowState:
         selected_reference=_reference_payload(selected_reference, include_full_text=True),
     )
 
+    if ai_edit is not None and not _document_edit_has_content(ai_edit):
+        ai_edit = None
     if ai_edit is not None and decision.action == "append_section" and _append_edit_needs_fallback(
         document=lesson.board_document,
         request_message=request.message,
@@ -366,20 +369,11 @@ def run_board_executor(state: WorkflowState) -> WorkflowState:
             selected_reference=selected_reference,
         )
     else:
-        next_document = _fallback_document_update(
+        return _failed_document_generation_result(
             lesson=lesson,
             request=request,
             decision=decision,
             requirements=requirements,
-            selected_reference=selected_reference,
-        )
-        teacher_talk_track = None
-        board_teaching_guide = _resolve_board_teaching_guide(
-            lesson=lesson,
-            request=request,
-            requirements=requirements,
-            document=next_document,
-            prefer_existing=False,
             selected_reference=selected_reference,
         )
 
