@@ -1330,7 +1330,7 @@ def _teacher_learning_probe(state: WorkflowState) -> str | None:
         return None
     topic = _extract_topic_hint(request.message) or state["learning_requirement_sheet"].theme
     if status.progress >= 35:
-        return f"可以从“{topic}”开始。为了把例子和深度对准，你当前是什么水平、阶段或背景（比如高中、本科、研究生、工作场景或从零开始）？具体想学哪个子问题，还是更想解决概念理解、材料讲解、练习训练或实际应用？"
+        return f"关于“{topic}”，请补一句你的起点或这次最想先解决的具体问题。"
     return None
 
 
@@ -1418,15 +1418,15 @@ def _section_teaching_turn(state: WorkflowState) -> WorkflowState | None:
 def _plain_teaching_from_excerpt(excerpt: str) -> str:
     compact = _compact_teaching_line(excerpt, limit=220)
     if not compact:
-        return "这一节先围绕当前材料讲清楚，再用一个检查问题确认理解。"
-    return f"这部分的主线是：{compact}。先抓它要解决的问题，再看关键条件如何连接，最后用一个小例子确认能不能迁移。"
+        return "这次没有拿到可用的临场讲解内容，请重新发送问题或补充材料片段。"
+    return compact
 
 
 def _fallback_concept_teaching_from_request(text: str) -> str | None:
     topic = _append_section_topic(text, build_requirements("补充内容")) if _is_append_document_request(text) else _extract_topic_hint(text)
     if not topic:
         return None
-    return f"先抓“{topic}”这个入口：它不是孤立名词，而是一个需要放进问题、条件和判断标准里理解的概念。我们先说它解决什么问题，再补它和相邻概念的关系，最后用一个最小例子检查能不能迁移。"
+    return f"关于“{topic}”，这次没有拿到可用的临场讲解内容，请重新发送问题或要求写入板书。"
 
 
 def _fallback_clarification_message(state: WorkflowState) -> str:
@@ -1435,9 +1435,9 @@ def _fallback_clarification_message(state: WorkflowState) -> str:
         return questions[0]
     missing = state["learning_clarification"].missing_items
     if "想学的主题" in missing:
-        return "你想先学哪个主题、章节或具体问题？给我一个关键词，我就从那里开讲。"
+        return "请直接发这次要学的内容、材料片段或卡住的题目。"
     topic = state["learning_requirement_sheet"].theme
-    return f"我们可以从“{topic}”开始。你当前是什么水平、阶段或背景？具体想学哪个子问题，这次更想达到什么目标？"
+    return f"关于“{topic}”，请补一句你的起点或这次最想先解决的具体问题。"
 
 
 def _fallback_teacher_message(state: WorkflowState) -> str:
@@ -1455,7 +1455,7 @@ def _fallback_teacher_message(state: WorkflowState) -> str:
     concept = _fallback_concept_teaching_from_request(request.message)
     if concept:
         return concept
-    return "我先按当前板书和学习目标讲清楚这一轮最该解决的内容，再用一个检查问题确认理解。"
+    return "这次没有拿到可用的临场讲解内容，请重新发送问题或补充材料片段。"
 
 
 def _run_pm(state: WorkflowState) -> WorkflowState:
@@ -1754,7 +1754,15 @@ def _run_teacher(state: WorkflowState) -> WorkflowState:
     talk_track = (state.get("teacher_talk_track") or "").strip()
 
     if decision.action == "clarify_request":
-        return {"teacher_message": _format_teacher_message(_fallback_teacher_message(state))}
+        ai_message = openai_course_ai.generate_clarification_message(
+            lesson_title=(state.get("generated_lesson") or state["lesson"]).title,
+            request_message=request.message,
+            requirements=state["learning_requirement_sheet"],
+            learning_clarification=state["learning_clarification"].model_dump(mode="json"),
+            clarification_questions=state.get("clarification_questions", []),
+            conversation=[turn.model_dump(mode="json") for turn in request.conversation],
+        )
+        return {"teacher_message": _format_teacher_message(ai_message or _fallback_teacher_message(state))}
     if decision.action in {"await_scope_choice", "await_reference_choice"}:
         return {"teacher_message": _format_teacher_message(_fallback_teacher_message(state))}
 
@@ -1766,8 +1774,6 @@ def _run_teacher(state: WorkflowState) -> WorkflowState:
         return section_turn
 
     probe = _teacher_learning_probe(state)
-    if probe:
-        return {"teacher_message": _format_teacher_message(probe)}
 
     if decision.action == "no_change" and _append_request_already_applied(
         lesson.board_document,
@@ -1795,7 +1801,7 @@ def _run_teacher(state: WorkflowState) -> WorkflowState:
         reference_prompt=state["reference_prompt"].model_dump(mode="json") if state.get("reference_prompt") else None,
         selected_reference=_reference_payload(state.get("selected_reference"), include_full_text=False),
     )
-    return {"teacher_message": _format_teacher_message(ai_message or _fallback_teacher_message(state))}
+    return {"teacher_message": _format_teacher_message(ai_message or probe or _fallback_teacher_message(state))}
 
 
 class SimpleCourseWorkflow:

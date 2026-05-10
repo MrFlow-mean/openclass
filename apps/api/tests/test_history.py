@@ -101,6 +101,8 @@ def test_workflow_asks_for_topic_keyword_on_greeting_without_level_refrain() -> 
     assert result.get("document_updated") is False
     assert "想学的主题" in result["learning_clarification"].missing_items
     assert "什么水平" not in result["teacher_message"]
+    assert "给我一个关键词" not in result["teacher_message"]
+    assert "从那里开讲" not in result["teacher_message"]
 
 
 def test_workflow_probes_level_and_goal_on_first_subject_only_learning_goal() -> None:
@@ -125,8 +127,9 @@ def test_workflow_probes_level_and_goal_on_first_subject_only_learning_goal() ->
     assert result["board_teaching_guide"].lecture_handout
     assert result["learning_requirement_sheet"].learning_need_checklist
     assert result["teacher_message"].strip()
-    assert "当前是什么阶段" in result["teacher_message"] or "当前是什么水平" in result["teacher_message"]
-    assert "具体想学" in result["teacher_message"]
+    assert "生物学" in result["teacher_message"]
+    assert "起点" in result["teacher_message"] or "具体问题" in result["teacher_message"]
+    assert "比如高中" not in result["teacher_message"]
 
 
 def test_workflow_first_broad_math_goal_only_asks_for_level_and_specific_topic() -> None:
@@ -146,9 +149,8 @@ def test_workflow_first_broad_math_goal_only_asks_for_level_and_specific_topic()
     assert result["learning_clarification"].progress == 35
     assert result["needs_clarification"] is False
     assert result["board_decision"].action == "no_change"
-    assert "当前是什么水平" in result["teacher_message"] or "几年级" in result["teacher_message"]
-    assert "具体想学" in result["teacher_message"]
-    assert "子问题" in result["teacher_message"] or "内容" in result["teacher_message"]
+    assert "数学" in result["teacher_message"]
+    assert "起点" in result["teacher_message"] or "具体问题" in result["teacher_message"]
     assert "什么是数学" not in result["teacher_message"]
     assert "我们直接抓这次最该讲的重点" not in result["teacher_message"]
     assert "教师模型" not in result["teacher_message"]
@@ -169,7 +171,7 @@ def test_workflow_probes_learning_purpose_after_greeting_then_broad_math_goal() 
                     ConversationTurn(role="user", content="你好"),
                     ConversationTurn(
                         role="assistant",
-                        content="我们先找一个小入口：你指的是哪一句、哪个概念，或者想先学什么主题？给我一个关键词，我就从那里开讲。",
+                        content="请直接发这次要学的内容、材料片段或卡住的题目。",
                     ),
                 ],
             ),
@@ -179,8 +181,10 @@ def test_workflow_probes_learning_purpose_after_greeting_then_broad_math_goal() 
     assert result["learning_requirement_sheet"].theme == "数学"
     assert result["needs_clarification"] is True
     assert result["board_decision"].action == "clarify_request"
-    assert "几年级" in result["teacher_message"] or "什么水平" in result["teacher_message"]
-    assert "具体想学" in result["teacher_message"]
+    assert "数学" in result["teacher_message"]
+    assert "起点" in result["teacher_message"] or "具体问题" in result["teacher_message"]
+    assert "给我一个关键词" not in result["teacher_message"]
+    assert "从那里开讲" not in result["teacher_message"]
     assert "理想" not in result["teacher_message"]
     assert "素理想" not in result["teacher_message"]
     assert "教师模型" not in result["teacher_message"]
@@ -221,7 +225,7 @@ def test_workflow_updates_topic_and_starts_after_high_school_concept_answer() ->
     assert "你当前是什么水平或背景？这次具体想学什么内容，想达到什么目标？" not in result["teacher_message"]
 
 
-def test_workflow_probes_math_background_for_first_advanced_subject_goal() -> None:
+def test_workflow_probes_background_for_first_advanced_subject_goal() -> None:
     package = build_initial_course_package()
     lesson = create_empty_lesson("测试9")
     package.lessons.append(lesson)
@@ -240,9 +244,7 @@ def test_workflow_probes_math_background_for_first_advanced_subject_goal() -> No
     assert result["needs_clarification"] is False
     assert result["board_decision"].action == "no_change"
     assert "代数几何的环" in result["teacher_message"]
-    assert "高中" in result["teacher_message"]
-    assert "本科" in result["teacher_message"]
-    assert "研究生" in result["teacher_message"]
+    assert "起点" in result["teacher_message"] or "具体问题" in result["teacher_message"]
     assert "测试9" not in result["teacher_message"]
 
 
@@ -390,7 +392,8 @@ def test_workflow_does_not_misread_environment_science_as_ring_algebra() -> None
         }
     )
 
-    assert "阶段或背景" in result["teacher_message"]
+    assert "环境科学" in result["teacher_message"]
+    assert "起点" in result["teacher_message"] or "具体问题" in result["teacher_message"]
     assert "理想或素理想" not in result["teacher_message"]
     assert "抽象代数" not in result["teacher_message"]
 

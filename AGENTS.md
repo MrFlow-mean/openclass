@@ -18,6 +18,118 @@
 ├── pyproject.toml        # 后端依赖 + pytest（单一来源）
 └── .env.example          # 环境变量示例
 ```
+## 不要做
+
+- 不要在 router 里直接拼 SQL 或绕过 service 事务。
+- 不要把 SQLite 文件、上传文件、日志放在 repo / `.next/` / 临时目录 / 会被部署覆盖的位置。
+- 不要在线上手改 sqlite，除非已停服务并备份。
+- 不要让多个独立后端进程同时写同一 sqlite。
+- 不要在迁移到 SQLite 时顺手大改前端 UI；先收口存储与一致性。
+- 不要为了单个 demo、单份资料或单次测试把特殊规则写进核心 service；其余见「AI 生成架构约束」。
+
+## OpenClass 宪法：通用能力优先
+
+OpenClass 是通用 AI 课程工作台，不是学科模板系统。最高优先级是保持系统通用性。
+
+核心原则：
+
+- 不要为案例写代码，要为能力写代码。
+- 核心代码只处理通用学习能力、内容形态、资料结构、用户意图、文档操作和模型调用。
+- 具体学科、具体教材、具体考试、具体语法点、demo 样例不得进入核心默认路径。
+
+核心代码严禁加入：
+
+- 学科关键词分支
+- 教材关键词分支
+- 固定讲义 HTML
+- 固定课程模板
+- demo 内容
+- 针对单一测试样例的分支
+
+严禁出现类似逻辑：
+
+```python
+if "法语" in topic:
+if "数学" in topic:
+if "文科" in topic:
+if "计算机" in topic:
+if "考试" in topic:
+if "高考" in user_message:
+if "CSAPP" in resource_name:
+if "统计学习理论" in chapter_title:
+```
+
+允许的抽象：
+
+- `request.intent == "generate_dialogue_practice"`
+- `document_shape == "procedural"`
+- `reference_context.has_numbered_sections`
+- `user_goal == "exam_review"`
+
+这些是通用教学形态、资料结构或用户目标，不是具体学科、教材或样例特例。
+
+修改前必须先判断需求属于哪一类：
+
+1. 通用能力
+2. 内容形态
+3. UI 交互
+4. prompt 质量
+5. schema / 数据结构
+6. 资料解析
+7. 专属插件 / adapter
+8. 测试样例
+
+如果你认为需要特殊处理，必须先回答：
+
+1. 这是通用能力，还是某个特例？
+2. 能不能用内容形态抽象解决？
+3. 能不能放进 prompt，而不是 Python/TypeScript 核心代码？
+4. 能不能放进 plugin / adapter，而不是默认核心路径？
+5. 换成任意主题后，这段逻辑是否仍然成立？
+
+改动前必填自检表：
+
+```text
+需求：
+要改的文件：
+问题属于：
+[ ] 通用产品能力
+[ ] 内容形态抽象
+[ ] prompt 质量问题
+[ ] schema / 数据结构问题
+[ ] UI 交互问题
+[ ] 资料解析问题
+[ ] 特定教材 adapter
+[ ] demo / 测试样例
+
+是否引入以下内容：
+[ ] 学科关键词
+[ ] 教材关键词
+[ ] 固定 HTML
+[ ] 固定讲义内容
+[ ] demo 内容
+[ ] 针对单一测试样例的分支
+```
+
+如果上面任何一项为是，必须停止，重新设计。
+
+文件边界：
+
+- `lesson_factory.py`：只做 lesson、requirements、teaching guide 初始化。
+- `fallback_generator.py`：只做领域无关 fallback，不得成为模板仓库。
+- `renderer.py`：只做渲染路径选择，不写具体课程内容。
+- `ai_workflow.py`：只做通用流程编排，不写学科知识。
+- `resource_library.py`：只做通用资料解析，不内置教材目录。
+- `openai_course_ai.py`：只做模型调用、prompt、schema 解析，不写学科分支。
+- `course-studio.tsx`：只做顶层组合，不继续堆状态、effect、realtime、editor、model selection 逻辑。
+
+修改后必须说明：
+
+1. 改了哪些文件。
+2. 为什么这些改动是通用的。
+3. 有没有新增领域硬编码。
+4. 有没有让某个文件继续膨胀。
+5. 如何验证。
 
 ## 常用命令（仓库根执行）
 
@@ -41,28 +153,11 @@ npm run verify           # 提交前 gate：lint + typecheck + test:api + build:
 
 ## AI 生成架构约束
 
-- 核心 service 不得写入 demo、教材、学科专属生成逻辑；不得把固定讲义全文或「关键词→专用模板」作为默认路径。
+- 核心 service 必须遵守「OpenClass 宪法：通用能力优先」。
+- 不得写入 demo、教材、学科专属生成逻辑；不得把固定讲义全文或「关键词→专用模板」作为默认路径。
 - 线上行为只能由用户输入、上传资料、课程 metadata、模型输出与通用规则驱动。
 - 术语表、章节目录、知识点扩展从资料或模型来，不写死在 workflow / factory / resource_library。
 - 任何课程级示例与 fixture 仅允许在 tests、fixtures、文档中出现，不得污染真实请求的默认逻辑。
-
-## AI 产品抽象与反硬编码规则
-
-OpenClass 是通用课程工作台，不是关键词模板机。上文「AI 生成架构约束」为硬约束；本节只保留职责与改前改后流程。
-
-### 文件职责
-
-- `lesson_factory.py`：lesson、需求表、teaching guide 的通用初始化。
-- `ai_workflow.py`：通用意图与流程路由。
-- `openai_course_ai.py`：通用 prompt 与解析；质量标准用常量表达，禁止堆学科分支。
-- `resource_library.py`：通用解析与章节抽取；禁止内置某本教材的专用目录。
-- `openai_realtime.py`：语音与转写提示来自 lesson / 用户 / 配置。
-- router 只做 HTTP；service 承载业务，不在此写具体课程内容。
-
-### 修改前与修改后
-
-改前说明：问题层级、涉及文件、职责边界、是否会引入关键词或模板硬编码、是否有更通用方案；未完成不要写代码。  
-改后自查：是否新增学科/课程/demo 进 core、分支是否膨胀、换任意学习目标是否仍成立。教学形态抽象为概念、流程、练习、案例、章节讲义等通用结构即可。
 
 ## 数据存储
 
@@ -186,17 +281,8 @@ ssh root@188.166.185.136 'cd /opt/openclass && docker compose stop api web'
 - 跑 `npm run verify`（或至少 `lint:web` + `typecheck:web` + 受影响的 `test:api`）。
 - 不要提交 `.env`、`.venv/`、`apps/api/data/` 下的运行数据、`node_modules/`、`.next/`。
 
-## 不要做
-
-- 不要在 router 里直接拼 SQL 或绕过 service 事务。
-- 不要把 SQLite 文件、上传文件、日志放在 repo / `.next/` / 临时目录 / 会被部署覆盖的位置。
-- 不要在线上手改 sqlite，除非已停服务并备份。
-- 不要让多个独立后端进程同时写同一 sqlite。
-- 不要在迁移到 SQLite 时顺手大改前端 UI；先收口存储与一致性。
-- 不要为了单个 demo、单份资料或单次测试把特殊规则写进核心 service；其余见「AI 生成架构约束」。
 
 ## 风格
 
 - 注释只解释非显而易见的意图或约束，不复述代码。
 - 不主动新建 README / 文档；扩充本指南或对应 README 即可。
-
