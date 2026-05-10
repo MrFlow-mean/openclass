@@ -4092,7 +4092,7 @@ export function CourseStudio() {
     if (!(await flushAutoSave("return-home"))) {
       return;
     }
-    router.push("/");
+    router.push("/home");
   }
 
   if (isLoading) {
