@@ -634,6 +634,33 @@ def test_topicless_board_generation_keeps_prior_learning_topic_when_model_unavai
     assert "没有写入板书" not in result["teacher_message"]
 
 
+def test_requirement_manager_extracts_learning_sheet_from_dialogue_history() -> None:
+    package = build_initial_course_package()
+    lesson = create_empty_lesson("访谈测试")
+    package.lessons.append(lesson)
+
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "course_package": package,
+            "request": ChatRequest(
+                message="可以开始生成讲义",
+                conversation=[
+                    ConversationTurn(role="user", content="我想学项目沟通"),
+                    ConversationTurn(role="assistant", content="我们先确认你的学习目标。"),
+                    ConversationTurn(role="user", content="我是初学者，准备做团队汇报"),
+                ],
+            ),
+        }
+    )
+
+    requirements = result["learning_requirement_sheet"]
+    assert requirements.theme == "项目沟通"
+    assert requirements.level == "初学者"
+    assert "初学者" in requirements.known_background
+    assert "团队汇报" in requirements.success_criteria
+
+
 def test_workflow_generates_board_for_blank_lesson_when_user_requests_direct_open_lecture(tmp_path) -> None:
     package = build_initial_course_package()
     lesson = create_empty_lesson("cs测试2")
@@ -2032,7 +2059,7 @@ def test_workflow_uses_fast_path_for_clear_generation_request(monkeypatch: pytes
     monkeypatch.setattr(
         openai_course_ai,
         "assess_learning_requirements",
-        lambda **kwargs: pytest.fail("clear generation request should skip PM AI assessment"),
+        lambda **kwargs: pytest.fail("clear generation request should skip Requirement Manager AI assessment"),
     )
     monkeypatch.setattr(
         openai_course_ai,

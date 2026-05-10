@@ -1353,9 +1353,9 @@ class OpenAICourseAI:
         return self._parse(
             "pm",
             system_prompt=(
-                "You are PM AI for an AI Word-like teaching document product. "
-                "Return a LearningRequirementSheet in Chinese. Infer the learner's goal, level, desired depth, "
-                "output preference, document scope, and success criteria from the current rich document and request. "
+                "You are Requirement Manager AI for an AI Word-like teaching document product. "
+                "Return a LearningRequirementSheet in Chinese. Extract important learning-needs information from the current rich document and request: "
+                "the learner's goal, level, desired depth, output preference, document scope, and success criteria. "
                 "The board is now one continuous rich document, not separate blocks."
             ),
             user_prompt=_json(
@@ -1387,10 +1387,11 @@ class OpenAICourseAI:
         return self._parse(
             "pm",
             system_prompt=(
-                "You are PM AI for an AI teaching workbench. Decide whether the learner's request is clear enough. "
+                "You are Requirement Manager AI for an AI teaching workbench. Read the conversation log and decide whether the learner's request is clear enough. "
                 "If not, set ready=false and ask 1 to 3 concise clarification questions in Chinese. "
                 "If ready, set ready=true. Always provide the best current LearningRequirementSheet. "
                 "Fill learning_need_checklist with 2 to 6 concrete learner needs derived from the user message, selected text, recent conversation, and board outline. "
+                "Do not write board content, teach the lesson, or decide whether the board should be edited. "
                 "When the learner asks a new question while a numbered board section is being taught, preserve existing checklist items and add the new need as a child marker such as 4.1 or 4.2 when that marker is present in context. "
                 "The visible board is a single Word-like rich document."
             ),

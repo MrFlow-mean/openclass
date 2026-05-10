@@ -29,6 +29,8 @@ from app.models import (
 )
 from app.services.chart_generation import augment_document_with_generated_charts
 from app.services.fallback_generator import reference_document_fallback_html
+from app.services.learning_workflow.roles.pm_interviewer import generate_pm_interview_message
+from app.services.learning_workflow.roles.requirement_manager import draft_requirement_state
 from app.services.lesson_factory import build_requirements, build_teaching_guide
 from app.services.openai_course_ai import openai_course_ai
 from app.services.resource_library import extract_reference_context
@@ -40,7 +42,6 @@ from app.services.rich_document import (
     is_document_empty,
     replace_selection_in_document,
 )
-from app.services.learning_workflow.roles.pm_interviewer import generate_pm_interview_message
 
 
 HIGH_OVERLAP_THRESHOLD = 0.72
@@ -307,20 +308,12 @@ def _extract_topic_hint(text: str) -> str | None:
         topic = _clean_topic_hint(match.group(1))
         if topic:
             return topic
+    if _is_board_generation_request(text):
+        return None
     if _extract_level_hint(text):
         return None
     terms = _extract_focus_terms(text)
     return terms[0] if len(terms) == 1 and not _is_low_information_request(text) else None
-
-
-def _conversation_topic_hint(request: ChatRequest) -> str | None:
-    for turn in reversed(request.conversation):
-        if turn.role != "user":
-            continue
-        topic = _extract_topic_hint(turn.content)
-        if topic:
-            return topic
-    return None
 
 
 def _extract_level_hint(text: str) -> str | None:
@@ -335,140 +328,6 @@ def _extract_level_hint(text: str) -> str | None:
         if match:
             return match.group(1)
     return None
-
-
-def _extract_goal_or_scenario_hint(text: str) -> str | None:
-    goals: list[str] = []
-    patterns = (
-        r"(?:准备|备考)([^，。！？\n]{2,40})",
-        r"(?:为了|准备|用于|用来|目标是)([^，。！？\n]{2,40})",
-        r"(?:想|希望|要)(?:会|能|把|理解|知道|掌握|理清|学会)([^，。！？\n]{2,50})",
-    )
-    for pattern in patterns:
-        match = re.search(pattern, text or "")
-        if match:
-            goals.append(match.group(1).strip())
-    goal_match = re.search(r"([^，。！？\n]{0,24}(?:考试|项目|论文|工作|展示|面试|旅游|研究|作业|实验|复盘|汇报|阅读))", text or "")
-    if goal_match:
-        goals.insert(0, goal_match.group(1).strip())
-    goals = [goal for goal in _dedupe(goals, limit=3) if goal]
-    return "；".join(goals) if goals else None
-
-
-def _learning_need_checklist(
-    lesson: Lesson,
-    request: ChatRequest,
-    requirements: LearningRequirementSheet,
-) -> list[str]:
-    base = list(requirements.learning_need_checklist or [])
-    topic = _extract_topic_hint(request.message)
-    if topic:
-        base.append(f"围绕“{topic}”建立清晰主线")
-    for term in _important_terms_from_request(request.message)[:6]:
-        base.append(f"解释“{term}”的作用、关系和使用边界")
-    return _dedupe(base, limit=12)
-
-
-def _learning_clarification_status(
-    *,
-    lesson: Lesson,
-    request: ChatRequest,
-    requirements: LearningRequirementSheet,
-) -> LearningClarificationStatus:
-    message = request.message or ""
-    forced = _is_forced_start_request(message)
-    topic = _extract_topic_hint(message)
-    if topic is None and (_is_topicless_control_request(message) or not _is_low_information_request(message)):
-        topic = requirements.theme
-    level = _extract_level_hint(message)
-    goal = _extract_goal_or_scenario_hint(message)
-    missing: list[str] = []
-    if not topic and _is_low_information_request(message):
-        missing.append("想学的主题")
-    if topic and not level and not forced and not _is_topicless_control_request(message):
-        missing.append("当前水平或背景")
-    if topic and not goal and not forced and not level and not _is_topicless_control_request(message):
-        missing.append("学习目的或应用场景")
-
-    if _is_teaching_control_text(message):
-        progress = 100 if topic else 45
-    elif _is_topicless_board_generation_request(message):
-        progress = 95 if topic else 45
-    elif forced:
-        progress = 55 if topic else 45
-    elif not topic and _is_low_information_request(message):
-        progress = 0
-    elif topic and level and goal:
-        progress = 100
-    elif level and goal:
-        progress = 95
-    elif topic and (level or goal):
-        progress = 95 if level else 80
-    elif topic:
-        progress = 35
-    else:
-        progress = 55
-    return LearningClarificationStatus(
-        progress=progress,
-        label="已明确" if progress >= 80 else "需要少量澄清" if progress >= 35 else "需要确认入口",
-        reason="根据用户输入中是否包含主题、背景和目标进行领域无关判断。",
-        missing_items=missing,
-        can_start=bool(topic) or forced,
-        forced_start=forced,
-    )
-
-
-def _draft_requirements(lesson: Lesson, request: ChatRequest) -> LearningRequirementSheet:
-    explicit_topic = _extract_topic_hint(request.message)
-    conversation_topic = _conversation_topic_hint(request)
-    existing = lesson.learning_requirements
-    topic = explicit_topic or conversation_topic or (existing.theme if existing else None) or lesson.title
-    if existing is not None and existing.theme == topic:
-        requirements = LearningRequirementSheet.model_validate(existing.model_dump(mode="json"))
-    else:
-        requirements = build_requirements(topic)
-    level = _extract_level_hint(request.message)
-    goal = _extract_goal_or_scenario_hint(request.message)
-    if level:
-        requirements.level = level
-        requirements.known_background = f"用户自述背景：{level}"
-    if goal:
-        requirements.success_criteria = f"围绕用户目标完成可验证学习：{goal}"
-    requirements.learning_need_checklist = _learning_need_checklist(lesson, request, requirements)
-    requirements.learning_need_checklist = _dedupe(
-        [
-            *requirements.learning_need_checklist,
-            *_section_followup_need_items(lesson=lesson, request=request, requirements=requirements),
-        ],
-        limit=16,
-    )
-    return requirements
-
-
-def _should_ask_brief_clarification(
-    *,
-    request: ChatRequest,
-    status: LearningClarificationStatus,
-) -> bool:
-    if status.forced_start:
-        return False
-    if _is_explanation_request(request.message) and not _is_low_information_request(request.message):
-        return False
-    if status.progress < 20:
-        return True
-    if request.conversation and status.progress < 60 and not _is_board_generation_request(request.message):
-        return True
-    return False
-
-
-def _should_use_fast_pm_path(
-    *,
-    lesson: Lesson,
-    request: ChatRequest,
-    status: LearningClarificationStatus,
-) -> bool:
-    return _is_board_generation_request(request.message) or _is_forced_start_request(request.message) or status.progress >= 35
-
 
 def _available_reference_resources(course_package: CoursePackage, lesson: Lesson) -> list[ResourceLibraryItem]:
     return [
@@ -1437,21 +1296,23 @@ def _concept_hint_from_request(text: str) -> str | None:
 def _run_requirement_state_draft(state: WorkflowState) -> WorkflowState:
     lesson = state["lesson"]
     request = state["request"]
-    requirements = _draft_requirements(lesson, request)
-    status = _learning_clarification_status(lesson=lesson, request=request, requirements=requirements)
-    if _should_use_resource_followup_context(course_package=state["course_package"], lesson=lesson, request=request):
-        status = _status_with_resource_context_default(
-            status,
-            resource_count=len(_available_reference_resources(state["course_package"], lesson)),
-        )
-    needs_clarification = _should_ask_brief_clarification(request=request, status=status)
-    return {
-        "learning_requirement_sheet": requirements,
-        "learning_clarification": status,
-        "needs_clarification": needs_clarification,
-        "clarification_questions": [],
-        "pm_reason": status.reason,
-    }
+    resource_context_active = _should_use_resource_followup_context(
+        course_package=state["course_package"],
+        lesson=lesson,
+        request=request,
+    )
+    return draft_requirement_state(
+        lesson=lesson,
+        request=request,
+        resource_context_active=resource_context_active,
+        resource_count=len(_available_reference_resources(state["course_package"], lesson)),
+        important_terms=_important_terms_from_request,
+        section_followup_need_items=lambda lesson, request, requirements: _section_followup_need_items(
+            lesson=lesson,
+            request=request,
+            requirements=requirements,
+        ),
+    )
 
 
 def _run_board_manager(state: WorkflowState) -> WorkflowState:
