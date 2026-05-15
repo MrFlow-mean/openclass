@@ -7,6 +7,7 @@ from app.services.course_runtime import build_lesson_for_topic, effective_requir
 from app.services.document_ops import apply_patch
 from app.services.history import create_branch, restore_commit
 from app.services.lesson_factory import create_empty_lesson, create_lesson
+from app.services.openai_course_ai import GeneratedCatalogChapter, GeneratedResourceCatalog, OpenAICourseAI
 from app.services.resource_library import build_resource_item, extract_reference_context
 from app.services.rich_document import build_document, export_docx, import_docx, replace_selection_in_document
 
@@ -186,6 +187,32 @@ def test_build_resource_item_extracts_markdown_outline_and_reference_context(tmp
     assert context is not None
     assert context.chapter_title == "第一章"
     assert "第一章正文" in context.full_text
+
+
+def test_build_resource_item_uses_catalog_ai_when_material_has_no_outline(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    def _fake_outline(self, *, resource_name: str, extracted_text: str, max_chapters: int = 8):
+        return GeneratedResourceCatalog(
+            chapters=[
+                GeneratedCatalogChapter(
+                    title="学习入口",
+                    summary="从资料正文生成的目录入口。",
+                    keywords=["入口"],
+                    level=1,
+                )
+            ]
+        )
+
+    monkeypatch.setattr(OpenAICourseAI, "generate_resource_outline", _fake_outline)
+    resource_path = tmp_path / "plain.txt"
+    resource_path.write_text("这是一段没有标题的资料正文。" * 20, encoding="utf-8")
+
+    resource = build_resource_item(resource_path, "plain.txt")
+
+    assert resource.outline[0].title == "学习入口"
+    assert resource.outline[0].scan_strategy == "fulltext_match"
 
 
 def test_docx_import_export_roundtrip(tmp_path) -> None:

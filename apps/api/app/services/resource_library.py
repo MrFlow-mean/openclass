@@ -278,6 +278,48 @@ def _generic_chapter_from_text(title: str, text: str, *, summary_prefix: str) ->
     )
 
 
+def _ai_generated_outline(original_name: str, text: str) -> list[LibraryChapter]:
+    normalized_text = _normalize_extracted_text(text)
+    if len(normalized_text) < 80:
+        return []
+    try:
+        from app.services.openai_course_ai import openai_course_ai
+
+        generated = openai_course_ai.generate_resource_outline(
+            resource_name=original_name,
+            extracted_text=normalized_text,
+        )
+    except Exception:
+        return []
+    if generated is None:
+        return []
+
+    chapters: list[LibraryChapter] = []
+    seen_titles: set[str] = set()
+    for index, item in enumerate(generated.chapters):
+        title = re.sub(r"\s+", " ", item.title).strip()
+        summary = re.sub(r"\s+", " ", item.summary).strip()
+        if not title or title.lower() in seen_titles:
+            continue
+        seen_titles.add(title.lower())
+        chapters.append(
+            _chapter(
+                title=title[:80],
+                summary=summary[:220] or f"从资料“{original_name}”生成的目录入口。",
+                keywords=[
+                    keyword[:40]
+                    for keyword in (item.keywords or _keywords_from_text(f"{title}\n{summary}"))[:8]
+                    if keyword.strip()
+                ],
+                level=max(1, min(item.level, 4)),
+                locator_hint=title,
+                order_index=index,
+                scan_strategy="fulltext_match",
+            )
+        )
+    return chapters
+
+
 def _read_text_file(file_path: Path) -> str:
     return file_path.read_text(encoding="utf-8", errors="ignore")
 
@@ -1302,6 +1344,9 @@ def extract_outline(file_path: Path, original_name: str, mime_type: str) -> tupl
         generic_title = Path(original_name).stem
         extracted_text = extract_image_text(file_path)
         if extracted_text:
+            ai_outline = _ai_generated_outline(original_name, extracted_text)
+            if ai_outline:
+                return ai_outline, True, extracted_text
             return (
                 [
                     _generic_chapter_from_text(
@@ -1332,6 +1377,9 @@ def extract_outline(file_path: Path, original_name: str, mime_type: str) -> tupl
         outline = _extract_markdown_outline(text)
         if outline:
             return outline, True, text
+        ai_outline = _ai_generated_outline(original_name, text)
+        if ai_outline:
+            return ai_outline, True, text
         return (
             [
                 _generic_chapter_from_text(
@@ -1349,6 +1397,9 @@ def extract_outline(file_path: Path, original_name: str, mime_type: str) -> tupl
         outline = _extract_docx_outline(file_path)
         if outline:
             return outline, True, text
+        ai_outline = _ai_generated_outline(original_name, text)
+        if ai_outline:
+            return ai_outline, True, text
         return (
             [
                 _generic_chapter_from_text(
@@ -1367,6 +1418,9 @@ def extract_outline(file_path: Path, original_name: str, mime_type: str) -> tupl
         if outline:
             return outline, True, text[:200000] if text else None
         if text:
+            ai_outline = _ai_generated_outline(original_name, text)
+            if ai_outline:
+                return ai_outline, True, text[:200000]
             return (
                 [
                     _generic_chapter_from_text(
@@ -1414,6 +1468,9 @@ def extract_outline(file_path: Path, original_name: str, mime_type: str) -> tupl
                 continue
         joined_text = "\n".join(extracted_text).strip()
         if joined_text:
+            ai_outline = _ai_generated_outline(original_name, joined_text)
+            if ai_outline:
+                return ai_outline, True, None
             return (
                 [
                     _generic_chapter_from_text(

@@ -10,9 +10,10 @@ OPENAI_OFFICIAL_BASE_URL = "https://api.openai.com/v1"
 OPENAI_PREMIUM_TEXT_MODEL = "gpt-5.5"
 OPENAI_ECONOMY_TEXT_MODEL = "gpt-5.4"
 OPENAI_FAST_TEXT_MODEL = "gpt-5.4-mini"
-OPENAI_DEFAULT_TEXT_MODEL = OPENAI_FAST_TEXT_MODEL
+OPENAI_DEFAULT_TEXT_MODEL = OPENAI_PREMIUM_TEXT_MODEL
+OPENAI_DEFAULT_CATALOG_MODEL = OPENAI_FAST_TEXT_MODEL
 OPENAI_IMAGE_MODEL = "gpt-image-2"
-OPENAI_DEFAULT_REALTIME_MODEL = "gpt-realtime-1.5"
+OPENAI_DEFAULT_REALTIME_MODEL = "gpt-realtime-2"
 ANTHROPIC_ECONOMY_TEXT_MODEL = "claude-haiku-4-5"
 ANTHROPIC_FAST_TEXT_MODEL = "claude-sonnet-4-6"
 ANTHROPIC_DEFAULT_TEXT_MODEL = ANTHROPIC_FAST_TEXT_MODEL
@@ -46,8 +47,6 @@ PROVIDER_LABELS: dict[AIProvider, str] = {
 CURATED_TEXT_MODELS: dict[AIProvider, tuple[tuple[str, str], ...]] = {
     "openai": (
         (OPENAI_PREMIUM_TEXT_MODEL, "OpenAI GPT-5.5"),
-        (OPENAI_ECONOMY_TEXT_MODEL, "OpenAI GPT-5.4"),
-        (OPENAI_FAST_TEXT_MODEL, "OpenAI GPT-5.4 Mini"),
     ),
     "anthropic": (
         (ANTHROPIC_ECONOMY_TEXT_MODEL, "Anthropic Claude Haiku 4.5"),
@@ -68,6 +67,12 @@ CURATED_TEXT_MODELS: dict[AIProvider, tuple[tuple[str, str], ...]] = {
     "minimax": (
         (MINIMAX_ECONOMY_TEXT_MODEL, "MiniMax M2.7"),
         (MINIMAX_FAST_TEXT_MODEL, "MiniMax M2.7 Highspeed"),
+    ),
+}
+
+CURATED_REALTIME_MODELS: dict[AIProvider, tuple[tuple[str, str, str], ...]] = {
+    "openai": (
+        (OPENAI_DEFAULT_REALTIME_MODEL, "OpenAI GPT Realtime 2", "openai_webrtc"),
     ),
 }
 
@@ -207,7 +212,7 @@ def default_text_selection() -> AIModelSelection:
 
 
 def default_realtime_selection() -> AIModelSelection:
-    provider = _normalize_provider(os.getenv("AI_REALTIME_PROVIDER"), "google")
+    provider = _normalize_provider(os.getenv("AI_REALTIME_PROVIDER"), "openai")
     if provider == "openai":
         return AIModelSelection(
             provider="openai",
@@ -236,7 +241,7 @@ def _option(
     default: bool = False,
     transport: str | None = None,
 ) -> AIModelOption:
-    configured = False if capability == "realtime" else _provider_enabled(provider)
+    configured = _provider_enabled(provider)
     return AIModelOption(
         provider=provider,
         model=model,
@@ -379,8 +384,30 @@ def build_model_catalog() -> AIModelCatalog:
     for option in text_options:
         option.default = _option_matches_selection(option, text_default)
 
-    realtime_options: list[AIModelOption] = []
-    realtime_default = requested_realtime_default
+    realtime_options = [
+        _option(
+            provider=provider,
+            model=model,
+            label=label,
+            capability="realtime",
+            default=False,
+            transport=transport,
+        )
+        for provider, models in CURATED_REALTIME_MODELS.items()
+        for model, label, transport in models
+    ]
+    realtime_options.extend(_custom_options("AI_REALTIME_MODELS_JSON", "realtime"))
+    realtime_options = _dedupe_options(realtime_options)
+    realtime_default = _catalog_default_selection(
+        requested=requested_realtime_default,
+        options=realtime_options,
+        curated_models={
+            provider: tuple((model, label) for model, label, _transport in models)
+            for provider, models in CURATED_REALTIME_MODELS.items()
+        },
+    )
+    for option in realtime_options:
+        option.default = _option_matches_selection(option, realtime_default)
 
     return AIModelCatalog(
         text=text_options,

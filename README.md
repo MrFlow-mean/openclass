@@ -52,12 +52,15 @@ npm run dev              # 同时启动前后端
 ```bash
 OPENAI_API_KEY=...
 OPENAI_COMPAT_API=chat_completions
-OPENAI_MODEL=gpt-5.4-mini  # 可在前端选择 GPT-5.5
+OPENAI_MODEL=gpt-5.5
+OPENAI_CATALOG_MODEL=gpt-5.4-mini
+OPENAI_REALTIME_MODEL=gpt-realtime-2
 OPENAI_IMAGE_MODEL=gpt-image-2
 AI_TEXT_PROVIDER=openai
+AI_REALTIME_PROVIDER=openai
 ```
 
-OpenAI/GPT 文本和 GPT Image 2 默认走官方 OpenAI API：`https://api.openai.com/v1`。其他 provider（Anthropic / Google / DeepSeek / Kimi / MiniMax / 自定义兼容网关）和默认模型见 `.env.example`。
+OpenAI/GPT 文本交互和 GPT Image 2 默认走官方 OpenAI API：`https://api.openai.com/v1`。交互 AI 文本默认用 GPT-5.5，语音交互默认用 GPT Realtime 2；上传资料的目录 AI 通过 `OPENAI_CATALOG_MODEL` 独立配置，默认用 GPT-5.4 mini。其他 provider（Anthropic / Google / DeepSeek / Kimi / MiniMax / 自定义兼容网关）和默认模型见 `.env.example`。
 
 前端"选择模型"调 `/api/ai-models`，未配置 key 的 provider 会标为未配置。旧聊天、文档 AI 改写和实时语音接口当前会返回已移除状态，等待新的产品工作架构接入。
 
@@ -121,12 +124,15 @@ Minimal configuration:
 ```bash
 OPENAI_API_KEY=...
 OPENAI_COMPAT_API=chat_completions
-OPENAI_MODEL=gpt-5.4-mini
+OPENAI_MODEL=gpt-5.5
+OPENAI_CATALOG_MODEL=gpt-5.4-mini
+OPENAI_REALTIME_MODEL=gpt-realtime-2
 OPENAI_IMAGE_MODEL=gpt-image-2
 AI_TEXT_PROVIDER=openai
+AI_REALTIME_PROVIDER=openai
 ```
 
-OpenAI/GPT text and GPT Image 2 default to the official OpenAI API: `https://api.openai.com/v1`. Other providers and default models are documented in `.env.example`.
+OpenAI/GPT text interaction and GPT Image 2 default to the official OpenAI API: `https://api.openai.com/v1`. Text interaction defaults to GPT-5.5, voice interaction defaults to GPT Realtime 2, and the uploaded-material directory AI uses `OPENAI_CATALOG_MODEL`, defaulting to GPT-5.4 mini. Other providers and default models are documented in `.env.example`.
 
 The frontend model picker reads `/api/ai-models`. Providers without configured keys are shown as unavailable. The old chat, document AI editing, and realtime voice endpoints currently report that the workflow runtime has been removed until the new product architecture is connected.
 

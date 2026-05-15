@@ -10,6 +10,7 @@ from app.models import (
     ChatRequest,
     CreateBranchRequest,
     DocumentSaveRequest,
+    RealtimeConnectRequest,
     RealtimeTranscriptLogRequest,
     UserView,
 )
@@ -19,7 +20,12 @@ from app.routers import realtime as realtime_router
 from app.services.ai_logging import ai_log_context, ai_usage_logger
 from app.services import chat_service, workspace_state
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
-from app.services.openai_course_ai import OpenAICourseAI, bind_text_model_selection, openai_course_ai
+from app.services.openai_course_ai import (
+    GeneratedResourceCatalog,
+    OpenAICourseAI,
+    bind_text_model_selection,
+    openai_course_ai,
+)
 from app.services.resource_library import build_resource_item
 
 
@@ -407,6 +413,55 @@ def test_anthropic_compatible_provider_routes_to_selected_client(isolated_ai_log
     assert entries[0]["payload"]["model"] == "claude-router"
 
 
+def test_catalog_role_uses_dedicated_openai_model_even_with_text_selection(isolated_ai_log) -> None:
+    class _FakeResponses:
+        def __init__(self) -> None:
+            self.payload = None
+
+        def parse(self, **kwargs):
+            self.payload = kwargs
+
+            class _Response:
+                id = "catalog_123"
+                usage = {"input_tokens": 5, "output_tokens": 8}
+
+                def __init__(self) -> None:
+                    payload = {
+                        "chapters": [
+                            {
+                                "title": "入口",
+                                "summary": "资料的起点。",
+                                "keywords": ["入口"],
+                                "level": 1,
+                            }
+                        ]
+                    }
+                    self.output_text = json.dumps(payload, ensure_ascii=False)
+                    self.output_parsed = GeneratedResourceCatalog.model_validate(payload)
+
+            return _Response()
+
+    class _FakeClient:
+        def __init__(self) -> None:
+            self.responses = _FakeResponses()
+
+    ai = OpenAICourseAI()
+    ai.client = _FakeClient()
+    ai.config.default_model = "gpt-5.5"
+    ai.config.catalog_model = "gpt-5.4-mini"
+    ai.config.compat_api = "responses"
+
+    with bind_text_model_selection(AIModelSelection(provider="openai", model="gpt-5.5")):
+        result = ai.generate_resource_outline(
+            resource_name="material.txt",
+            extracted_text="入口说明。" * 80,
+        )
+
+    assert result is not None
+    assert result.chapters[0].title == "入口"
+    assert ai.client.responses.payload["model"] == "gpt-5.4-mini"
+
+
 def test_chat_route_runs_generic_workflow(monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path) -> None:
     store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
     monkeypatch.setattr(workspace_state, "STORE", store)
@@ -565,3 +620,34 @@ def test_realtime_transcript_route_logs_transcript(
     assert entries[0]["event_type"] == "ai_interaction_message"
     assert entries[0]["payload"]["channel"] == "realtime"
     assert entries[0]["payload"]["content"] == "测试转写"
+
+
+def test_openai_realtime_connect_uses_selected_model(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    lesson = _seed_test_user_workspace(store).packages[0].lessons[0]
+
+    captured: dict[str, str | None] = {}
+
+    def _fake_create_call(**kwargs):
+        captured.update(kwargs)
+        return "v=0\ns=openclass-test"
+
+    monkeypatch.setattr(realtime_router, "_create_openai_realtime_call", _fake_create_call)
+
+    response = realtime_router.connect_realtime_session(
+        lesson.id,
+        RealtimeConnectRequest(
+            offer_sdp="v=0\ns=offer",
+            latest_assistant_message="上一句讲解",
+            client_session_id="realtime_session_1",
+            realtime_model=AIModelSelection(provider="openai", model="gpt-realtime-2"),
+        ),
+        user=TEST_USER,
+    )
+
+    assert response.provider == "openai"
+    assert response.model == "gpt-realtime-2"
+    assert response.answer_sdp.startswith("v=0")
+    assert captured["model"] == "gpt-realtime-2"
+    assert captured["lesson_title"] == lesson.title

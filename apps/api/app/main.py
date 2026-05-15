@@ -47,7 +47,7 @@ def health() -> dict[str, object]:
         },
         "realtime": {
             "status": "transcript_logging",
-            "connect": "pending",
+            "connect": "openai_webrtc",
         },
     }
 
