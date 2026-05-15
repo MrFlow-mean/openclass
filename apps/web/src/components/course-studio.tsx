@@ -124,7 +124,7 @@ declare module "@tiptap/core" {
   }
 }
 
-const AI_WORKFLOW_AVAILABLE = false;
+const AI_WORKFLOW_AVAILABLE = true;
 
 type ChatMessage = {
   id: string;
