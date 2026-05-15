@@ -124,6 +124,8 @@ declare module "@tiptap/core" {
   }
 }
 
+const AI_WORKFLOW_AVAILABLE = false;
+
 type ChatMessage = {
   id: string;
   role: "user" | "assistant";
@@ -4284,7 +4286,7 @@ export function CourseStudio() {
 
       {renderErrorBanner()}
 
-      {selection && selectionPopover ? (
+      {AI_WORKFLOW_AVAILABLE && selection && selectionPopover ? (
         <div
           className="fixed z-[90] flex -translate-x-1/2 items-center overflow-hidden rounded-xl border border-gray-200 bg-white text-[13px] font-medium text-gray-800 shadow-lg"
           style={{ left: selectionPopover.left, top: selectionPopover.top }}
@@ -4296,7 +4298,7 @@ export function CourseStudio() {
             className="inline-flex h-10 items-center gap-2 px-3.5 transition-colors hover:bg-gray-50"
           >
             <TextQuote className="h-4 w-4" />
-            询问 PM AI
+            引用到输入框
           </button>
           {selection.kind === "board" && !isPreviewMode ? (
             <>
@@ -4307,7 +4309,7 @@ export function CourseStudio() {
                 className="inline-flex h-10 items-center gap-2 px-3.5 transition-colors hover:bg-amber-50 hover:text-amber-700"
               >
                 <PencilLine className="h-4 w-4" />
-                编辑板书
+                编辑文档
               </button>
             </>
           ) : null}
@@ -4317,10 +4319,13 @@ export function CourseStudio() {
       <div
         ref={mainContainerRef}
         className={clsx(
-          "grid min-h-0 flex-1 grid-cols-[380px_minmax(0,1fr)] overflow-hidden transition-[grid-template-columns] duration-300",
-          rightSidebarOpen && "xl:grid-cols-[380px_minmax(0,1fr)_360px]"
+          "grid min-h-0 flex-1 overflow-hidden transition-[grid-template-columns] duration-300",
+          AI_WORKFLOW_AVAILABLE ? "grid-cols-[380px_minmax(0,1fr)]" : "grid-cols-[minmax(0,1fr)]",
+          rightSidebarOpen &&
+            (AI_WORKFLOW_AVAILABLE ? "xl:grid-cols-[380px_minmax(0,1fr)_360px]" : "xl:grid-cols-[minmax(0,1fr)_360px]")
         )}
       >
+        {AI_WORKFLOW_AVAILABLE ? (
         <aside className="flex h-full min-h-0 flex-col border-r border-gray-200 bg-white">
           <div className="flex-1 overflow-y-auto p-6 custom-scrollbar">
             <div className="space-y-6">
@@ -4776,6 +4781,7 @@ export function CourseStudio() {
             </div>
           </div>
         </aside>
+        ) : null}
 
         <section className="relative z-10 flex min-w-0 flex-col overflow-hidden bg-white shadow-[0_0_20px_rgba(0,0,0,0.02)]">
           {isPreviewMode ? (

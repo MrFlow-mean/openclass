@@ -58,18 +58,16 @@ def isolated_ai_log(monkeypatch: pytest.MonkeyPatch, tmp_path):
 
 
 def test_openai_parse_logs_prompt_and_output(isolated_ai_log) -> None:
+    class _Output(BaseModel):
+        title: str
+
     class _LessonOutput:
         id = "resp_123"
-        output_text = '{"title":"勾股定理"}'
+        output_text = '{"title":"工作台标题"}'
         usage = {"total_tokens": 42}
 
         def __init__(self) -> None:
-            self.output_parsed = {
-                "title": "勾股定理",
-                "summary": "理解三边关系",
-                "tags": ["勾股定理"],
-                "blocks": [],
-            }
+            self.output_parsed = _Output(title="工作台标题")
 
     class _FakeResponses:
         def __init__(self) -> None:
@@ -90,7 +88,12 @@ def test_openai_parse_logs_prompt_and_output(isolated_ai_log) -> None:
     ai.config.compat_api = "responses"
 
     with ai_log_context(trace_id="trace_unit", route="unit_test"):
-        generated = ai.generate_lesson_document(topic="勾股定理")
+        generated = ai._parse(
+            "lesson",
+            system_prompt="Return a structured title.",
+            user_prompt='{"request":"unit"}',
+            schema=_Output,
+        )
 
     assert generated is not None
     entries = _read_log_entries(isolated_ai_log)
@@ -100,7 +103,7 @@ def test_openai_parse_logs_prompt_and_output(isolated_ai_log) -> None:
     assert entry["context"]["trace_id"] == "trace_unit"
     assert entry["payload"]["model"] == "gpt-5.3"
     assert entry["payload"]["user_prompt"]
-    assert entry["payload"]["parsed_output"]["title"] == "勾股定理"
+    assert entry["payload"]["parsed_output"]["title"] == "工作台标题"
 
 
 def test_openai_parse_retries_model_not_found_with_fallback(isolated_ai_log) -> None:

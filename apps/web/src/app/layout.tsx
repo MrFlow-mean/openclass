@@ -8,7 +8,7 @@ export const metadata: Metadata = {
     default: "开放课堂",
     template: "%s | 开放课堂",
   },
-  description: "面向课程主页、课程共编、版本回溯和 AI 讲解的一体化学习产品。",
+  description: "面向课程主页、资料管理、富文本讲义编辑和版本回溯的课程工作台。",
   icons: {
     icon: [
       { url: "/favicon.ico", sizes: "any" },

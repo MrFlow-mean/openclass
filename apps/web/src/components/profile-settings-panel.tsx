@@ -1224,6 +1224,7 @@ export function ProfileSettingsPanel({
 
   function renderModelsSection() {
     const m = s.models;
+    const hasRealtimeModelSettings = Boolean(defaultRealtimeModel) || realtimeModels.length > 0;
     return (
       <form className="max-w-3xl space-y-7" onSubmit={handleSave}>
         <section className={settingSectionClass}>
@@ -1235,9 +1236,11 @@ export function ProfileSettingsPanel({
           ) : modelError ? (
             <p className="text-sm text-red-600">{modelError}</p>
           ) : (
-            <div className="grid gap-3 sm:grid-cols-2">
+            <div className={clsx("grid gap-3", hasRealtimeModelSettings && "sm:grid-cols-2")}>
               <ModelSummary title={m.textDefaultTitle} model={defaultTextModel} emptyLabel={m.modelNotConfigured} />
-              <ModelSummary title={m.realtimeDefaultTitle} model={defaultRealtimeModel} emptyLabel={m.modelNotConfigured} />
+              {hasRealtimeModelSettings ? (
+                <ModelSummary title={m.realtimeDefaultTitle} model={defaultRealtimeModel} emptyLabel={m.modelNotConfigured} />
+              ) : null}
             </div>
           )}
         </section>
@@ -1258,21 +1261,23 @@ export function ProfileSettingsPanel({
           </select>
         </label>
 
-        <label className="block">
-          <span className="block text-sm font-semibold text-stone-950">{m.realtimePrefLabel}</span>
-          <select
-            className={`${settingsInputClass} mt-2 max-w-xl`}
-            value={settings.preferredRealtimeModel}
-            onChange={(event) => updateSetting("preferredRealtimeModel", event.target.value)}
-          >
-            <option value="auto">{m.autoOption}</option>
-            {realtimeModels.map((model) => (
-              <option key={modelValue(model)} value={modelValue(model)}>
-                {modelLabel(model)}
-              </option>
-            ))}
-          </select>
-        </label>
+        {hasRealtimeModelSettings ? (
+          <label className="block">
+            <span className="block text-sm font-semibold text-stone-950">{m.realtimePrefLabel}</span>
+            <select
+              className={`${settingsInputClass} mt-2 max-w-xl`}
+              value={settings.preferredRealtimeModel}
+              onChange={(event) => updateSetting("preferredRealtimeModel", event.target.value)}
+            >
+              <option value="auto">{m.autoOption}</option>
+              {realtimeModels.map((model) => (
+                <option key={modelValue(model)} value={modelValue(model)}>
+                  {modelLabel(model)}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
 
         <section className="space-y-2">
           {(modelCatalog?.text ?? []).slice(0, 6).map((model) => (
