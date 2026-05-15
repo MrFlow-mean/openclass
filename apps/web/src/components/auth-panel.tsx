@@ -2,7 +2,6 @@
 
 import clsx from "clsx";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import type { CSSProperties, FormEvent } from "react";
 import { useEffect, useState } from "react";
 import {
@@ -320,6 +319,17 @@ function loginDestination(user: UserView, nextPath: string | null) {
   return user.role === "admin" && destination === "/" ? "/admin" : destination;
 }
 
+function navigateAfterAuth(path: string, mode: "assign" | "replace" = "assign") {
+  if (typeof window === "undefined") {
+    return;
+  }
+  if (mode === "replace") {
+    window.location.replace(path);
+    return;
+  }
+  window.location.assign(path);
+}
+
 function AuthInput({
   autoComplete,
   Icon,
@@ -559,7 +569,6 @@ function ProductShowcase() {
 }
 
 export function AuthPanel({ initialMode }: AuthPanelProps) {
-  const router = useRouter();
   const [mode, setMode] = useState(initialMode);
   const [accountIdentifier, setAccountIdentifier] = useState("");
   const [password, setPassword] = useState("");
@@ -610,8 +619,8 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
       return;
     }
     const nextPath = new URLSearchParams(window.location.search).get("next");
-    router.replace(loginDestination(currentUser, nextPath));
-  }, [currentUser, router]);
+    navigateAfterAuth(loginDestination(currentUser, nextPath), "replace");
+  }, [currentUser]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -625,7 +634,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
       storeAuthToken(payload.token);
       setCurrentUser(payload.user);
       const nextPath = new URLSearchParams(window.location.search).get("next");
-      router.push(loginDestination(payload.user, nextPath));
+      navigateAfterAuth(loginDestination(payload.user, nextPath));
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : "操作失败");
     } finally {
@@ -646,7 +655,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
       const payload = await api.startGuestSession();
       storeGuestAuthToken(payload.token);
       const nextPath = loginRedirectPath(new URLSearchParams(window.location.search).get("next"));
-      router.push(nextPath);
+      navigateAfterAuth(nextPath);
     } catch (guestError) {
       setError(guestError instanceof Error ? guestError.message : "游客访问失败");
     } finally {
