@@ -663,6 +663,14 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
     }
   }
 
+  async function handleHomeAccess() {
+    if (currentUser) {
+      navigateAfterAuth(loginDestination(currentUser, "/"));
+      return;
+    }
+    await handleGuestAccess();
+  }
+
   function handleProviderSignIn(option: SocialSignInOption) {
     setError(null);
     const provider = authProviders.find((item) => item.id === option.id);
@@ -694,7 +702,13 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
         <section className="relative z-20 flex w-full flex-col justify-center border-[#f0e8dc] bg-[#fcfbf9] px-6 py-8 shadow-[20px_0_40px_-15px_rgba(58,49,43,0.06)] sm:px-12 sm:py-10 lg:w-[45%] lg:border-r lg:px-16 lg:py-0 xl:w-[40%] xl:px-24">
           <div className="w-full max-w-[21rem] sm:mx-auto sm:max-w-[28rem]">
             <div className="mb-6 flex items-center justify-between gap-4 sm:mb-8">
-              <Link href="/" className="flex min-w-0 items-center gap-3" aria-label="回到学习主页">
+              <button
+                type="button"
+                onClick={() => void handleHomeAccess()}
+                disabled={isLoading}
+                className="flex min-w-0 items-center gap-3 text-left disabled:cursor-wait disabled:opacity-70"
+                aria-label="进入产品主页"
+              >
                 <BrandMark
                   alt=""
                   className="h-10 w-10 rounded-lg border border-[#ebe2d2] bg-white shadow-lg shadow-[#3a312b]/10"
@@ -702,14 +716,16 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                   size={80}
                 />
                 <span className="auth-display truncate text-2xl font-bold text-[#3a312b]">开放课堂</span>
-              </Link>
-              <Link
-                href="/"
-                className="inline-flex h-9 shrink-0 items-center gap-2 rounded-lg border border-[#ebe2d2] bg-white px-3 text-sm font-semibold text-[#5c4c3c] transition hover:border-[#d2a878] hover:text-[#3a312b]"
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleHomeAccess()}
+                disabled={isLoading}
+                className="inline-flex h-9 shrink-0 items-center gap-2 rounded-lg border border-[#ebe2d2] bg-white px-3 text-sm font-semibold text-[#5c4c3c] transition hover:border-[#d2a878] hover:text-[#3a312b] disabled:cursor-wait disabled:opacity-70"
               >
                 <ArrowLeft className="h-4 w-4" />
                 主页
-              </Link>
+              </button>
             </div>
 
             <div className="mb-6 sm:mb-7">
