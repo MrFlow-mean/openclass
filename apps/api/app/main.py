@@ -9,7 +9,6 @@ from app.models import AIModelCatalog
 from app.routers import auth, chat, documents, realtime, resources, workspace
 from app.services.ai_model_catalog import build_model_catalog
 from app.services.openai_course_ai import openai_course_ai
-from app.services.openai_realtime import google_realtime_teacher, openai_realtime_teacher
 from app.services.workspace_state import ensure_data_dirs
 
 ensure_data_dirs()
@@ -42,10 +41,8 @@ def health() -> dict[str, object]:
     return {
         "status": "ok",
         "openai": openai_course_ai.status(),
-        "realtime": {
-            "openai": openai_realtime_teacher.status(),
-            "google": google_realtime_teacher.status(),
-        },
+        "workflow": {"status": "removed"},
+        "realtime": {"status": "removed"},
     }
 
 

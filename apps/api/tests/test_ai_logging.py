@@ -1,6 +1,7 @@
 import json
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
@@ -404,57 +405,21 @@ def test_anthropic_compatible_provider_routes_to_selected_client(isolated_ai_log
     assert entries[0]["payload"]["model"] == "claude-router"
 
 
-def test_chat_route_logs_request_and_response(monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path) -> None:
+def test_chat_route_reports_removed_workflow(monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path) -> None:
     store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
     monkeypatch.setattr(workspace_state, "STORE", store)
-    monkeypatch.setattr(openai_course_ai, "client", None)
-    monkeypatch.setattr(openai_course_ai, "generate_teacher_message", _fake_teacher_message)
 
     lesson_id = _seed_test_user_workspace(store).packages[0].lessons[0].id
-    response = chat_service.process_chat_on_lesson(
-        lesson_id,
-        ChatRequest(message="请解释一下勾股定理的核心公式"),
-        user_id=TEST_USER.id,
-    )
+    with pytest.raises(HTTPException) as exc_info:
+        chat_service.process_chat_on_lesson(
+            lesson_id,
+            ChatRequest(message="请解释一下核心公式"),
+            user_id=TEST_USER.id,
+        )
 
-    assert response.teacher_message
-    entries = _read_log_entries(isolated_ai_log)
-    event_types = [entry["event_type"] for entry in entries]
-    assert "chat_request" in event_types
-    assert "chat_response" in event_types
-    assert "ai_interaction_message" in event_types
-
-    chat_request = next(entry for entry in entries if entry["event_type"] == "chat_request")
-    chat_response = next(entry for entry in entries if entry["event_type"] == "chat_response")
-    interaction_messages = [
-        entry for entry in entries if entry["event_type"] == "ai_interaction_message"
-    ]
-    updated_lesson = next(lesson for lesson in response.course_package.lessons if lesson.id == lesson_id)
-    flow_commit = updated_lesson.history_graph.commits[-1]
-    assert chat_request["payload"]["message"] == "请解释一下勾股定理的核心公式"
-    assert chat_response["payload"]["teacher_message"] == response.teacher_message
-    assert chat_request["context"]["trace_id"] == chat_response["context"]["trace_id"]
-    assert len(interaction_messages) == 2
-    assert interaction_messages[0]["payload"]["channel"] == "text"
-    assert interaction_messages[0]["payload"]["direction"] == "input"
-    assert interaction_messages[0]["payload"]["content"] == "请解释一下勾股定理的核心公式"
-    assert interaction_messages[1]["payload"]["channel"] == "text"
-    assert interaction_messages[1]["payload"]["direction"] == "output"
-    assert interaction_messages[1]["payload"]["content"] == response.teacher_message
-    assert flow_commit.metadata["kind"] == "chat_flow"
-    assert flow_commit.metadata["user_message"] == "请解释一下勾股定理的核心公式"
-    assert flow_commit.metadata["assistant_message"] == response.teacher_message
-    assert flow_commit.metadata["assistant_message_source"] == "ai"
-    assert flow_commit.metadata["board_action"] == response.board_decision.action
-    assert flow_commit.metadata["board_teaching_guide"]["board_document_id"] == updated_lesson.board_document.id
-
-    branched_package = documents_router.create_lesson_branch(
-        lesson_id,
-        CreateBranchRequest(name="flow-branch", from_commit_id=flow_commit.id),
-        user=TEST_USER,
-    )
-    branched_lesson = next(lesson for lesson in branched_package.lessons if lesson.id == lesson_id)
-    assert branched_lesson.history_graph.branches["flow-branch"].base_commit_id == flow_commit.id
+    assert exc_info.value.status_code == 410
+    assert "工作流程运行框架已移除" in str(exc_info.value.detail)
+    assert _read_log_entries(isolated_ai_log) == []
 
 
 def test_document_save_route_keeps_autosave_metadata(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
@@ -529,84 +494,68 @@ def test_document_save_beacon_accepts_plain_text_json(monkeypatch: pytest.Monkey
     assert commit["metadata"]["autosave_reason"] == "pagehide"
 
 
-def test_chat_route_reuses_workflow_runtime_without_extra_refresh(
+def test_document_ai_edit_reports_removed_workflow(
     monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
 ) -> None:
     store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
     monkeypatch.setattr(workspace_state, "STORE", store)
-    monkeypatch.setattr(openai_course_ai, "client", None)
-    monkeypatch.setattr(openai_course_ai, "generate_teacher_message", _fake_teacher_message)
 
     lesson_id = _seed_test_user_workspace(store).packages[0].lessons[0].id
-    response = chat_service.process_chat_on_lesson(
-        lesson_id,
-        ChatRequest(message="请解释一下勾股定理的核心公式"),
-        user_id=TEST_USER.id,
-    )
+    with pytest.raises(HTTPException) as exc_info:
+        chat_service.document_ai_edit_request(
+            lesson_id,
+            "改写选中内容",
+            "原文",
+            [],
+            user_id=TEST_USER.id,
+        )
 
-    assert response.teacher_message
+    assert exc_info.value.status_code == 410
+    assert _read_log_entries(isolated_ai_log) == []
 
 
-def test_chat_route_hides_reference_box_for_explanation_only_turn(
+def test_chat_http_endpoint_returns_gone_for_removed_workflow(
     monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
 ) -> None:
     store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
     monkeypatch.setattr(workspace_state, "STORE", store)
-    monkeypatch.setattr(openai_course_ai, "client", None)
 
     workspace = _seed_test_user_workspace(store)
-    package = workspace.packages[0]
-    resource_path = tmp_path / "pythagorean.md"
-    resource_path.write_text(
-        "# 勾股定理\n勾股定理说明直角三角形两条直角边的平方和等于斜边的平方。\n\n## 应用\n可以用来计算距离。",
-        encoding="utf-8",
-    )
-    resource = build_resource_item(resource_path, "勾股定理笔记.md")
-    resource.scope_lesson_id = package.lessons[0].id
-    package.resources.append(resource)
-    store.save_for_user(TEST_USER.id, workspace)
+    lesson_id = workspace.packages[0].lessons[0].id
 
-    lesson_id = store.load_for_user(TEST_USER.id).packages[0].lessons[0].id
-    response = chat_service.process_chat_on_lesson(
-        lesson_id,
-        ChatRequest(message="请解释一下勾股定理的核心公式"),
-        user_id=TEST_USER.id,
-    )
+    main_module.app.dependency_overrides[current_user] = lambda: TEST_USER
+    try:
+        response = TestClient(main_module.app).post(
+            f"/api/lessons/{lesson_id}/chat",
+            json={"message": "请解释一下核心公式"},
+        )
+    finally:
+        main_module.app.dependency_overrides.pop(current_user, None)
 
-    assert response.board_decision.action == "no_change"
-    assert response.resource_matches
-    assert response.selected_reference is None
+    assert response.status_code == 410
+    assert "工作流程运行框架已移除" in response.json()["detail"]
+    assert _read_log_entries(isolated_ai_log) == []
 
 
-def test_realtime_transcript_route_logs_each_message(
+def test_realtime_transcript_route_reports_removed_workflow(
     monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
 ) -> None:
     store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
     monkeypatch.setattr(workspace_state, "STORE", store)
     lesson = _seed_test_user_workspace(store).packages[0].lessons[0]
 
-    result = realtime_router.log_realtime_event(
-        lesson.id,
-        RealtimeTranscriptLogRequest(
-            client_session_id="realtime_session_1",
-            lesson_title="勾股定理",
-            role="assistant",
-            transport_event_type="response.audio_transcript.done",
-            transcript="我们先从直角三角形开始。",
-        ),
-        user=TEST_USER,
-    )
+    with pytest.raises(HTTPException) as exc_info:
+        realtime_router.log_realtime_event(
+            lesson.id,
+            RealtimeTranscriptLogRequest(
+                client_session_id="realtime_session_1",
+                lesson_title="测试课",
+                role="assistant",
+                transport_event_type="response.audio_transcript.done",
+                transcript="测试转写",
+            ),
+            user=TEST_USER,
+        )
 
-    assert result["status"] == "ok"
-    entries = _read_log_entries(isolated_ai_log)
-    assert len(entries) == 2
-    transcript_entry = next(entry for entry in entries if entry["event_type"] == "realtime_transcript")
-    interaction_entry = next(
-        entry for entry in entries if entry["event_type"] == "ai_interaction_message"
-    )
-    assert transcript_entry["context"]["trace_id"] == "realtime_session_1"
-    assert transcript_entry["payload"]["role"] == "assistant"
-    assert transcript_entry["payload"]["transcript"] == "我们先从直角三角形开始。"
-    assert interaction_entry["payload"]["channel"] == "voice"
-    assert interaction_entry["payload"]["direction"] == "output"
-    assert interaction_entry["payload"]["content"] == "我们先从直角三角形开始。"
+    assert exc_info.value.status_code == 410
+    assert _read_log_entries(isolated_ai_log) == []

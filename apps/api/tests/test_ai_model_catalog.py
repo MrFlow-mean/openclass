@@ -28,13 +28,12 @@ def test_catalog_keeps_curated_openai_models_only(monkeypatch) -> None:
 
     assert _models_by_provider(catalog, "text", "openai") == ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"]
     assert catalog.defaults["text"].model == "gpt-5.4-mini"
-    assert _models_by_provider(catalog, "realtime", "openai") == ["legacy-openai-realtime"]
-    assert _models_by_provider(catalog, "realtime", "google") == ["gemini-3.1-flash-live-preview"]
+    assert catalog.realtime == []
     assert catalog.defaults["realtime"].provider == "openai"
     assert catalog.defaults["realtime"].model == "legacy-openai-realtime"
 
 
-def test_catalog_realtime_includes_supported_voice_providers(monkeypatch) -> None:
+def test_catalog_realtime_options_are_removed_with_backend_runtime(monkeypatch) -> None:
     monkeypatch.delenv("AI_SINGLE_API_KEY_MODE", raising=False)
     monkeypatch.delenv("AI_REALTIME_MODELS_JSON", raising=False)
     monkeypatch.delenv("OPENAI_REALTIME_MODEL", raising=False)
@@ -42,9 +41,7 @@ def test_catalog_realtime_includes_supported_voice_providers(monkeypatch) -> Non
 
     catalog = ai_model_catalog.build_model_catalog()
 
-    assert {option.provider for option in catalog.realtime} == {"openai", "google"}
-    assert _models_by_provider(catalog, "realtime", "openai") == ["gpt-realtime-1.5"]
-    assert _models_by_provider(catalog, "realtime", "google") == ["gemini-3.1-flash-live-preview"]
+    assert catalog.realtime == []
 
 
 def test_catalog_defaults_to_configured_google_when_openai_is_missing(monkeypatch) -> None:
@@ -99,9 +96,7 @@ def test_single_key_mode_keeps_text_models_on_official_openai(monkeypatch) -> No
         "gpt-5.4-mini",
     ]
     assert _models_by_provider(catalog, "text", "google") == []
-    openai_realtime = next(option for option in catalog.realtime if option.provider == "openai")
-    assert openai_realtime.model == "gpt-realtime-1.5"
-    assert openai_realtime.enabled
+    assert catalog.realtime == []
 
 
 def test_single_key_mode_does_not_use_shared_key_for_google_realtime(monkeypatch) -> None:
@@ -117,8 +112,7 @@ def test_single_key_mode_does_not_use_shared_key_for_google_realtime(monkeypatch
 
     catalog = ai_model_catalog.build_model_catalog()
 
-    google_realtime = next(option for option in catalog.realtime if option.provider == "google")
-    assert not google_realtime.enabled
+    assert catalog.realtime == []
 
 
 def test_catalog_includes_official_and_configured_custom_text_providers(monkeypatch) -> None:
