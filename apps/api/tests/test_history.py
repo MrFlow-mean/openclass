@@ -26,6 +26,25 @@ def test_workflow_runtime_creates_generic_board_entry() -> None:
     assert result.board_decision.action == "edit_board"
     assert result.learning_requirement_sheet.learning_need_checklist
     assert "学习入口" in lesson.board_document.content_text
+    assert "学习需求清单" not in lesson.board_document.content_text
+    assert "定位当前学习请求" not in lesson.board_document.content_text
+
+
+def test_workflow_does_not_render_requirement_sheet_as_board_template() -> None:
+    lesson = create_empty_lesson("测试2")
+
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "request": ChatRequest(message="你好"),
+            "resources": [],
+        }
+    )
+
+    assert result.board_decision.action == "no_change"
+    assert result.document_changed is False
+    assert lesson.board_document.content_text == ""
+    assert "具体主题" in result.teacher_message
 
 
 def test_workflow_teaches_from_relevant_board_without_editing() -> None:

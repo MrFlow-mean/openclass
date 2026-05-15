@@ -36,6 +36,19 @@ from app.services.rich_document import (
 _WORD_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_\-]{1,}")
 _CJK_RE = re.compile(r"[\u3400-\u9fff]+")
 _SPACE_RE = re.compile(r"\s+")
+_LOW_SUBSTANCE_MESSAGES = {
+    "hi",
+    "hello",
+    "hey",
+    "你好",
+    "您好",
+    "嗨",
+    "哈喽",
+    "继续",
+    "继续讲",
+    "继续下一节",
+    "下一节",
+}
 
 
 @dataclass
@@ -119,6 +132,13 @@ def _message_topic(lesson: Lesson, request: ChatRequest) -> str:
     return lesson.title
 
 
+def _is_low_substance_message(message: str) -> bool:
+    normalized = _SPACE_RE.sub("", (message or "").strip().lower())
+    if not normalized:
+        return True
+    return normalized in _LOW_SUBSTANCE_MESSAGES
+
+
 def _update_requirements(lesson: Lesson, request: ChatRequest) -> LearningRequirementSheet:
     base = effective_requirements(lesson)
     topic = _message_topic(lesson, request)
@@ -131,10 +151,9 @@ def _update_requirements(lesson: Lesson, request: ChatRequest) -> LearningRequir
         ],
         limit=8,
     )
-    checklist_seed = [
-        *base.learning_need_checklist,
-        f"定位当前学习请求：{topic}",
-    ]
+    checklist_seed = [*base.learning_need_checklist]
+    if not _is_low_substance_message(topic):
+        checklist_seed.append(topic)
     if selected:
         checklist_seed.append(f"结合用户选中的板书片段：{selected}")
     if request.resource_reference_action == "confirm":
@@ -144,7 +163,7 @@ def _update_requirements(lesson: Lesson, request: ChatRequest) -> LearningRequir
 
     return LearningRequirementSheet(
         theme=lesson.title,
-        learning_goal=f"围绕“{topic}”形成可讲解、可记录、可继续追问的学习路径",
+        learning_goal=topic if not _is_low_substance_message(topic) else "等待具体学习主题",
         level=base.level or "根据用户背景和当前资料动态调整",
         known_background=base.known_background or "用户背景由后续互动继续补全",
         current_questions=current_questions or [topic],
@@ -267,18 +286,10 @@ def _request_section_html(
     requirements: LearningRequirementSheet,
 ) -> str:
     topic = html.escape(_message_topic(lesson, request))
-    goal = html.escape(_compact(requirements.learning_goal, limit=260))
-    questions = requirements.current_questions[:3] or [request.message]
-    checklist = requirements.learning_need_checklist[:4]
-    parts = [f"<h1>{topic}</h1>", f"<p>{goal}</p>"]
-    if questions:
-        parts.append("<h2>当前问题</h2>")
-        for question in questions:
-            parts.append(f"<p>{html.escape(_compact(question, limit=220))}</p>")
-    if checklist:
-        parts.append("<h2>学习需求清单</h2>")
-        for item in checklist:
-            parts.append(f"<p>{html.escape(_compact(item, limit=220))}</p>")
+    selected = _compact(request.selection.excerpt, limit=260) if request.selection else ""
+    parts = [f"<h1>{topic}</h1>"]
+    if selected:
+        parts.append(f"<blockquote>{html.escape(selected)}</blockquote>")
     return "\n".join(parts)
 
 
@@ -326,12 +337,19 @@ def _teacher_after_board_write(
         suffix = f" 这次优先抓住：{point_text}" if point_text else ""
         return (
             f"我已把“{_compact(reference_context.chapter_title, limit=80)}”整理进当前板书，"
-            f"接下来会按你的学习需求清单来讲。{suffix}"
+            f"接下来会按这段资料和你的目标来讲。{suffix}"
         )
     return (
-        f"我已先把本轮学习请求整理成可讲解的板书入口。"
-        f"当前目标是：{_compact(requirements.learning_goal, limit=180)}"
+        "我已先把本轮学习主题记录到板书里。"
+        f"接下来会围绕“{_compact(requirements.learning_goal, limit=120)}”继续展开。"
     )
+
+
+def _empty_board_prompt_message(request: ChatRequest) -> str:
+    message = _compact(request.message, limit=80)
+    if _is_low_substance_message(message):
+        return "当前板书还没有可继续讲的内容。你给我一个具体主题、问题或上传资料，我再开始讲解和写板书。"
+    return f"我可以从“{message}”开始，但不会把需求清单当成讲义模板写进板书。你可以让我生成讲义、上传资料，或直接说从零开始讲。"
 
 
 def _teaching_progress(document: BoardDocument) -> SectionTeachingProgressView | None:
@@ -480,6 +498,17 @@ class GenericCourseWorkflow:
                 teaching_progress=_teaching_progress(lesson.board_document),
             )
 
+        if is_document_empty(lesson.board_document) and _is_low_substance_message(request.message):
+            refresh_lesson_runtime(lesson, requirements=requirements)
+            return WorkflowResult(
+                teacher_message=_empty_board_prompt_message(request),
+                learning_requirement_sheet=lesson.learning_requirements or requirements,
+                learning_clarification=_clarification_status(requirements, can_start=False, reason="当前输入还不足以生成真实板书内容。"),
+                board_decision=BoardDecision(action="no_change", reason="空板书上不把低信息量输入渲染成模板内容。"),
+                resource_matches=resource_matches,
+                teaching_progress=None,
+            )
+
         before = lesson.board_document
         next_document = _append_or_replace_document(before, _request_section_html(lesson, request, requirements))
         refresh_lesson_runtime(lesson, document=next_document, requirements=requirements)
@@ -493,8 +522,8 @@ class GenericCourseWorkflow:
             teaching_progress=_teaching_progress(lesson.board_document),
             document_changed=changed,
             commit_label="Workflow board update",
-            commit_message="Updated board from the learning requirement workflow",
-            commit_metadata={"kind": "workflow_requirement_board_update"},
+            commit_message="Recorded a learning topic from the integrated workflow",
+            commit_metadata={"kind": "workflow_topic_board_entry"},
         )
 
 
