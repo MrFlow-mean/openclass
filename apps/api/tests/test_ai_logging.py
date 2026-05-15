@@ -1,7 +1,6 @@
 import json
 
 import pytest
-from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
@@ -408,20 +407,20 @@ def test_anthropic_compatible_provider_routes_to_selected_client(isolated_ai_log
     assert entries[0]["payload"]["model"] == "claude-router"
 
 
-def test_chat_route_reports_removed_workflow(monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path) -> None:
+def test_chat_route_runs_generic_workflow(monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path) -> None:
     store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
     monkeypatch.setattr(workspace_state, "STORE", store)
 
     lesson_id = _seed_test_user_workspace(store).packages[0].lessons[0].id
-    with pytest.raises(HTTPException) as exc_info:
-        chat_service.process_chat_on_lesson(
-            lesson_id,
-            ChatRequest(message="请解释一下核心公式"),
-            user_id=TEST_USER.id,
-        )
+    response = chat_service.process_chat_on_lesson(
+        lesson_id,
+        ChatRequest(message="请解释一下当前主题的核心问题"),
+        user_id=TEST_USER.id,
+    )
 
-    assert exc_info.value.status_code == 410
-    assert "工作流程运行框架已移除" in str(exc_info.value.detail)
+    assert response.board_decision.action in {"edit_board", "append_section", "no_change"}
+    assert response.learning_requirement_sheet.learning_need_checklist
+    assert response.teacher_message
     assert _read_log_entries(isolated_ai_log) == []
 
 
@@ -497,27 +496,27 @@ def test_document_save_beacon_accepts_plain_text_json(monkeypatch: pytest.Monkey
     assert commit["metadata"]["autosave_reason"] == "pagehide"
 
 
-def test_document_ai_edit_reports_removed_workflow(
+def test_document_ai_edit_uses_generic_direct_edit_workflow(
     monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
 ) -> None:
     store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
     monkeypatch.setattr(workspace_state, "STORE", store)
 
     lesson_id = _seed_test_user_workspace(store).packages[0].lessons[0].id
-    with pytest.raises(HTTPException) as exc_info:
-        chat_service.document_ai_edit_request(
-            lesson_id,
-            "改写选中内容",
-            "原文",
-            [],
-            user_id=TEST_USER.id,
-        )
+    response = chat_service.document_ai_edit_request(
+        lesson_id,
+        "改写选中内容",
+        "原文",
+        [],
+        user_id=TEST_USER.id,
+    )
 
-    assert exc_info.value.status_code == 410
+    assert response.board_decision.action == "edit_board"
+    assert response.teacher_message
     assert _read_log_entries(isolated_ai_log) == []
 
 
-def test_chat_http_endpoint_returns_gone_for_removed_workflow(
+def test_chat_http_endpoint_runs_generic_workflow(
     monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
 ) -> None:
     store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
@@ -535,30 +534,34 @@ def test_chat_http_endpoint_returns_gone_for_removed_workflow(
     finally:
         main_module.app.dependency_overrides.pop(current_user, None)
 
-    assert response.status_code == 410
-    assert "工作流程运行框架已移除" in response.json()["detail"]
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["teacher_message"]
+    assert payload["learning_requirement_sheet"]["learning_need_checklist"]
     assert _read_log_entries(isolated_ai_log) == []
 
 
-def test_realtime_transcript_route_reports_removed_workflow(
+def test_realtime_transcript_route_logs_transcript(
     monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
 ) -> None:
     store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
     monkeypatch.setattr(workspace_state, "STORE", store)
     lesson = _seed_test_user_workspace(store).packages[0].lessons[0]
 
-    with pytest.raises(HTTPException) as exc_info:
-        realtime_router.log_realtime_event(
-            lesson.id,
-            RealtimeTranscriptLogRequest(
-                client_session_id="realtime_session_1",
-                lesson_title="测试课",
-                role="assistant",
-                transport_event_type="response.audio_transcript.done",
-                transcript="测试转写",
-            ),
-            user=TEST_USER,
-        )
+    response = realtime_router.log_realtime_event(
+        lesson.id,
+        RealtimeTranscriptLogRequest(
+            client_session_id="realtime_session_1",
+            lesson_title="测试课",
+            role="assistant",
+            transport_event_type="response.audio_transcript.done",
+            transcript="测试转写",
+        ),
+        user=TEST_USER,
+    )
 
-    assert exc_info.value.status_code == 410
-    assert _read_log_entries(isolated_ai_log) == []
+    assert response == {"status": "logged"}
+    entries = _read_log_entries(isolated_ai_log)
+    assert entries[0]["event_type"] == "ai_interaction_message"
+    assert entries[0]["payload"]["channel"] == "realtime"
+    assert entries[0]["payload"]["content"] == "测试转写"

@@ -1,7 +1,7 @@
 import pytest
 
-from app.models import PatchOperation
-from app.services.ai_workflow import WORKFLOW_REMOVED_DETAIL, course_workflow
+from app.models import ChatRequest, PatchOperation
+from app.services.ai_workflow import course_workflow
 from app.services.chart_generation import extract_chart_data_fragments
 from app.services.course_runtime import build_lesson_for_topic, effective_requirements, refresh_lesson_runtime
 from app.services.document_ops import apply_patch
@@ -11,13 +11,88 @@ from app.services.resource_library import build_resource_item, extract_reference
 from app.services.rich_document import build_document, export_docx, import_docx, replace_selection_in_document
 
 
-def test_workflow_runtime_is_removed() -> None:
-    lesson = create_lesson("测试主题")
+def test_workflow_runtime_creates_generic_board_entry() -> None:
+    lesson = create_empty_lesson("测试主题")
 
-    with pytest.raises(RuntimeError) as exc_info:
-        course_workflow.invoke({"lesson": lesson})
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "request": ChatRequest(message="我想先建立一个学习入口"),
+            "resources": [],
+        }
+    )
 
-    assert str(exc_info.value) == WORKFLOW_REMOVED_DETAIL
+    assert result.board_decision.action == "edit_board"
+    assert result.learning_requirement_sheet.learning_need_checklist
+    assert "学习入口" in lesson.board_document.content_text
+
+
+def test_workflow_teaches_from_relevant_board_without_editing() -> None:
+    lesson = create_empty_lesson("工作流")
+    lesson.board_document = build_document(title="工作流", content_text="入口条件\n处理步骤\n输出结果")
+
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "request": ChatRequest(message="处理步骤怎么理解"),
+            "resources": [],
+        }
+    )
+
+    assert result.board_decision.action == "no_change"
+    assert result.document_changed is False
+    assert "处理步骤" in result.teacher_message
+
+
+def test_workflow_asks_before_using_matched_resource(tmp_path) -> None:
+    resource_path = tmp_path / "resource.md"
+    resource_path.write_text(
+        "# 入口条件\n这里说明如何识别进入学习流程前需要确认的信息。",
+        encoding="utf-8",
+    )
+    resource = build_resource_item(resource_path, "resource.md")
+    lesson = create_empty_lesson("工作流")
+
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "request": ChatRequest(message="入口条件怎么整理"),
+            "resources": [resource],
+        }
+    )
+
+    assert result.board_decision.action == "await_reference_choice"
+    assert result.reference_prompt is not None
+    assert result.reference_prompt.chapter_id == resource.outline[0].id
+    assert result.document_changed is False
+
+
+def test_workflow_writes_board_after_confirmed_resource(tmp_path) -> None:
+    resource_path = tmp_path / "resource.md"
+    resource_path.write_text(
+        "# 输出结果\n这里说明学习流程最后应该留下可复习的记录。",
+        encoding="utf-8",
+    )
+    resource = build_resource_item(resource_path, "resource.md")
+    lesson = create_empty_lesson("工作流")
+
+    result = course_workflow.invoke(
+        {
+            "lesson": lesson,
+            "request": ChatRequest(
+                message="输出结果怎么整理",
+                resource_reference_action="confirm",
+                resource_reference_resource_id=resource.id,
+                resource_reference_chapter_id=resource.outline[0].id,
+            ),
+            "resources": [resource],
+        }
+    )
+
+    assert result.board_decision.action == "edit_board"
+    assert result.selected_reference is not None
+    assert result.document_changed is True
+    assert "可复习的记录" in lesson.board_document.content_text
 
 
 def test_build_lesson_for_topic_creates_blank_lesson_without_ai_runtime() -> None:
