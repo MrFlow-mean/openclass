@@ -1,6 +1,7 @@
 import json
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
@@ -10,7 +11,6 @@ from app.models import (
     ChatRequest,
     CreateBranchRequest,
     DocumentSaveRequest,
-    RealtimeConnectRequest,
     RealtimeTranscriptLogRequest,
     UserView,
 )
@@ -462,20 +462,20 @@ def test_catalog_role_uses_dedicated_openai_model_even_with_text_selection(isola
     assert ai.client.responses.payload["model"] == "gpt-5.4-mini"
 
 
-def test_chat_route_runs_generic_workflow(monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path) -> None:
+def test_chat_route_reports_removed_workflow(monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path) -> None:
     store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
     monkeypatch.setattr(workspace_state, "STORE", store)
 
     lesson_id = _seed_test_user_workspace(store).packages[0].lessons[0].id
-    response = chat_service.process_chat_on_lesson(
-        lesson_id,
-        ChatRequest(message="请解释一下当前主题的核心问题"),
-        user_id=TEST_USER.id,
-    )
+    with pytest.raises(HTTPException) as exc_info:
+        chat_service.process_chat_on_lesson(
+            lesson_id,
+            ChatRequest(message="请解释一下当前主题的核心问题"),
+            user_id=TEST_USER.id,
+        )
 
-    assert response.board_decision.action in {"edit_board", "append_section", "no_change"}
-    assert response.learning_requirement_sheet.learning_need_checklist
-    assert response.teacher_message
+    assert exc_info.value.status_code == 410
+    assert "工作流程运行框架已移除" in str(exc_info.value.detail)
     assert _read_log_entries(isolated_ai_log) == []
 
 
@@ -551,27 +551,28 @@ def test_document_save_beacon_accepts_plain_text_json(monkeypatch: pytest.Monkey
     assert commit["metadata"]["autosave_reason"] == "pagehide"
 
 
-def test_document_ai_edit_uses_generic_direct_edit_workflow(
+def test_document_ai_edit_reports_removed_workflow(
     monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
 ) -> None:
     store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
     monkeypatch.setattr(workspace_state, "STORE", store)
 
     lesson_id = _seed_test_user_workspace(store).packages[0].lessons[0].id
-    response = chat_service.document_ai_edit_request(
-        lesson_id,
-        "改写选中内容",
-        "原文",
-        [],
-        user_id=TEST_USER.id,
-    )
+    with pytest.raises(HTTPException) as exc_info:
+        chat_service.document_ai_edit_request(
+            lesson_id,
+            "改写选中内容",
+            "原文",
+            [],
+            user_id=TEST_USER.id,
+        )
 
-    assert response.board_decision.action == "edit_board"
-    assert response.teacher_message
+    assert exc_info.value.status_code == 410
+    assert "工作流程运行框架已移除" in str(exc_info.value.detail)
     assert _read_log_entries(isolated_ai_log) == []
 
 
-def test_chat_http_endpoint_runs_generic_workflow(
+def test_chat_http_endpoint_returns_gone_for_removed_workflow(
     monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
 ) -> None:
     store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
@@ -589,65 +590,30 @@ def test_chat_http_endpoint_runs_generic_workflow(
     finally:
         main_module.app.dependency_overrides.pop(current_user, None)
 
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["teacher_message"]
-    assert payload["learning_requirement_sheet"]["learning_need_checklist"]
+    assert response.status_code == 410
+    assert "工作流程运行框架已移除" in response.json()["detail"]
     assert _read_log_entries(isolated_ai_log) == []
 
 
-def test_realtime_transcript_route_logs_transcript(
+def test_realtime_transcript_route_reports_removed_workflow(
     monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
 ) -> None:
     store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
     monkeypatch.setattr(workspace_state, "STORE", store)
     lesson = _seed_test_user_workspace(store).packages[0].lessons[0]
 
-    response = realtime_router.log_realtime_event(
-        lesson.id,
-        RealtimeTranscriptLogRequest(
-            client_session_id="realtime_session_1",
-            lesson_title="测试课",
-            role="assistant",
-            transport_event_type="response.audio_transcript.done",
-            transcript="测试转写",
-        ),
-        user=TEST_USER,
-    )
+    with pytest.raises(HTTPException) as exc_info:
+        realtime_router.log_realtime_event(
+            lesson.id,
+            RealtimeTranscriptLogRequest(
+                client_session_id="realtime_session_1",
+                lesson_title="测试课",
+                role="assistant",
+                transport_event_type="response.audio_transcript.done",
+                transcript="测试转写",
+            ),
+            user=TEST_USER,
+        )
 
-    assert response == {"status": "logged"}
-    entries = _read_log_entries(isolated_ai_log)
-    assert entries[0]["event_type"] == "ai_interaction_message"
-    assert entries[0]["payload"]["channel"] == "realtime"
-    assert entries[0]["payload"]["content"] == "测试转写"
-
-
-def test_openai_realtime_connect_uses_selected_model(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
-    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
-    monkeypatch.setattr(workspace_state, "STORE", store)
-    lesson = _seed_test_user_workspace(store).packages[0].lessons[0]
-
-    captured: dict[str, str | None] = {}
-
-    def _fake_create_call(**kwargs):
-        captured.update(kwargs)
-        return "v=0\ns=openclass-test"
-
-    monkeypatch.setattr(realtime_router, "_create_openai_realtime_call", _fake_create_call)
-
-    response = realtime_router.connect_realtime_session(
-        lesson.id,
-        RealtimeConnectRequest(
-            offer_sdp="v=0\ns=offer",
-            latest_assistant_message="上一句讲解",
-            client_session_id="realtime_session_1",
-            realtime_model=AIModelSelection(provider="openai", model="gpt-realtime-2"),
-        ),
-        user=TEST_USER,
-    )
-
-    assert response.provider == "openai"
-    assert response.model == "gpt-realtime-2"
-    assert response.answer_sdp.startswith("v=0")
-    assert captured["model"] == "gpt-realtime-2"
-    assert captured["lesson_title"] == lesson.title
+    assert exc_info.value.status_code == 410
+    assert _read_log_entries(isolated_ai_log) == []

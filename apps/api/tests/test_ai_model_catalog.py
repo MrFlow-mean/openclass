@@ -28,12 +28,12 @@ def test_catalog_keeps_curated_openai_models_only(monkeypatch) -> None:
 
     assert _models_by_provider(catalog, "text", "openai") == ["gpt-5.5"]
     assert catalog.defaults["text"].model == "gpt-5.5"
-    assert _models_by_provider(catalog, "realtime", "openai") == ["gpt-realtime-2"]
+    assert catalog.realtime == []
     assert catalog.defaults["realtime"].provider == "openai"
-    assert catalog.defaults["realtime"].model == "gpt-realtime-2"
+    assert catalog.defaults["realtime"].model == "legacy-openai-realtime"
 
 
-def test_catalog_realtime_options_use_openai_realtime_2(monkeypatch) -> None:
+def test_catalog_realtime_options_are_removed_with_backend_runtime(monkeypatch) -> None:
     monkeypatch.delenv("AI_SINGLE_API_KEY_MODE", raising=False)
     monkeypatch.delenv("AI_REALTIME_MODELS_JSON", raising=False)
     monkeypatch.delenv("OPENAI_REALTIME_MODEL", raising=False)
@@ -44,7 +44,7 @@ def test_catalog_realtime_options_use_openai_realtime_2(monkeypatch) -> None:
 
     assert catalog.defaults["realtime"].provider == "openai"
     assert catalog.defaults["realtime"].model == "gpt-realtime-2"
-    assert _models_by_provider(catalog, "realtime", "openai") == ["gpt-realtime-2"]
+    assert catalog.realtime == []
 
 
 def test_catalog_defaults_to_configured_google_when_openai_is_missing(monkeypatch) -> None:
@@ -95,7 +95,7 @@ def test_single_key_mode_keeps_text_models_on_official_openai(monkeypatch) -> No
     assert catalog.defaults["text"].model == "gpt-5.5"
     assert _models_by_provider(catalog, "text", "openai") == ["gpt-5.5"]
     assert _models_by_provider(catalog, "text", "google") == []
-    assert _models_by_provider(catalog, "realtime", "openai") == ["gpt-realtime-2"]
+    assert catalog.realtime == []
 
 
 def test_single_key_mode_does_not_use_shared_key_for_google_realtime(monkeypatch) -> None:
@@ -111,7 +111,7 @@ def test_single_key_mode_does_not_use_shared_key_for_google_realtime(monkeypatch
 
     catalog = ai_model_catalog.build_model_catalog()
 
-    assert _models_by_provider(catalog, "realtime", "openai") == ["gpt-realtime-2"]
+    assert catalog.realtime == []
 
 
 def test_catalog_includes_official_and_configured_custom_text_providers(monkeypatch) -> None:

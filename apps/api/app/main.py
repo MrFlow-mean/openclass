@@ -41,14 +41,8 @@ def health() -> dict[str, object]:
     return {
         "status": "ok",
         "openai": openai_course_ai.status(),
-        "workflow": {
-            "status": "integrated",
-            "entrypoint": "/api/lessons/{lesson_id}/chat",
-        },
-        "realtime": {
-            "status": "transcript_logging",
-            "connect": "openai_webrtc",
-        },
+        "workflow": {"status": "removed"},
+        "realtime": {"status": "removed"},
     }
 
 
