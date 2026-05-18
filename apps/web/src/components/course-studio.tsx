@@ -31,7 +31,6 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronUp,
-  Circle,
   Columns3,
   Download,
   FilePlus,
@@ -102,8 +101,6 @@ import type {
   CoursePackage,
   DocumentPageSettings,
   LearningClarificationStatus,
-  LearningRequirementChecklistItem,
-  LearningRequirementSheet,
   Lesson,
   ResourceMatch,
   ResourceReferenceContext,
@@ -351,10 +348,6 @@ const DEFAULT_LESSON_COMPOSER_STATE: LessonComposerState = {
   includeSelectionInPrompt: true,
 };
 const AUTO_SAVE_DELAY_MS = 1600;
-const HIDDEN_LEARNING_PURPOSE_ITEMS = new Set([
-  "理解概念、能跟着连续讲义讲清楚并完成基础练习",
-  "用户能复述核心概念并完成一题相关练习",
-]);
 
 const DEFAULT_PAGE_SETTINGS: DocumentPageSettings = {
   margin_preset: "normal",
@@ -659,75 +652,6 @@ function createClientSessionId(prefix: string): string {
 
 function createLessonComposerState(): LessonComposerState {
   return { ...DEFAULT_LESSON_COMPOSER_STATE };
-}
-
-function visibleLearningPurposeItem(value?: string | null): string | null {
-  const trimmed = value?.trim();
-  if (!trimmed || HIDDEN_LEARNING_PURPOSE_ITEMS.has(trimmed)) {
-    return null;
-  }
-  return trimmed;
-}
-
-function learningNeedChecklistKey(value: string) {
-  return value.replace(/\s+/g, "").toLocaleLowerCase();
-}
-
-function uniqueVisibleLearningNeedItems(values: Array<string | null | undefined>): string[] {
-  const seen = new Set<string>();
-  return values.flatMap((value) => {
-    const visible = visibleLearningPurposeItem(value);
-    if (!visible) {
-      return [];
-    }
-    const key = learningNeedChecklistKey(visible);
-    if (seen.has(key)) {
-      return [];
-    }
-    seen.add(key);
-    return [visible];
-  });
-}
-
-function buildVisibleLearningNeedChecklist(
-  requirements: LearningRequirementSheet | null,
-  clarityItems: LearningRequirementChecklistItem[],
-  fallbackItems: LearningRequirementChecklistItem[]
-): LearningRequirementChecklistItem[] {
-  const clarityByTitle = new Map<string, LearningRequirementChecklistItem>();
-  clarityItems.forEach((item) => {
-    const visibleTitle = visibleLearningPurposeItem(item.title);
-    if (visibleTitle) {
-      clarityByTitle.set(learningNeedChecklistKey(visibleTitle), {
-        ...item,
-        title: visibleTitle,
-      });
-    }
-  });
-
-  const sheetTitles = uniqueVisibleLearningNeedItems(requirements?.learning_need_checklist ?? []);
-  if (sheetTitles.length) {
-    return sheetTitles.slice(0, 8).map((title) => {
-      const clarityItem = clarityByTitle.get(learningNeedChecklistKey(title));
-      return {
-        title,
-        is_clear: clarityItem?.is_clear ?? true,
-        evidence: clarityItem?.evidence ?? "",
-      };
-    });
-  }
-
-  const visibleClarityItems = Array.from(clarityByTitle.values());
-  if (visibleClarityItems.length) {
-    return visibleClarityItems.slice(0, 8);
-  }
-
-  return fallbackItems
-    .flatMap((item) => {
-      const visibleTitle = visibleLearningPurposeItem(item.title);
-      return visibleTitle ? [{ ...item, title: visibleTitle }] : [];
-    })
-    .slice(0, 8);
 }
 
 function formatDate(value: string) {
@@ -2689,34 +2613,6 @@ export function CourseStudio() {
       next_question: "",
       ready_for_board: false,
     };
-  const fallbackQuestionItems = (activeRequirements?.current_questions ?? [])
-    .map((item) => visibleLearningPurposeItem(item))
-    .filter((item): item is string => item !== null)
-    .slice(0, 3)
-    .map((item) => ({
-      title: item,
-      is_clear: false,
-      evidence: "",
-    }));
-  const fallbackClarityItems = fallbackQuestionItems.length
-    ? fallbackQuestionItems
-    : [
-        visibleLearningPurposeItem(activeRequirements?.learning_goal) ??
-          visibleLearningPurposeItem(activeLesson?.summary),
-        visibleLearningPurposeItem(activeRequirements?.success_criteria),
-      ]
-        .filter((item): item is string => item !== null)
-        .map((item) => ({
-          title: item,
-          is_clear: false,
-          evidence: "",
-        }));
-  const clarityChecklistItems = clarityStatus.checklist.length ? clarityStatus.checklist : fallbackClarityItems;
-  const visibleLearningNeedChecklist = buildVisibleLearningNeedChecklist(
-    activeRequirements,
-    clarityChecklistItems,
-    fallbackClarityItems
-  );
   const showReadyForBoardCard = !isPreviewMode && (clarityStatus.ready_for_board || clarityStatus.progress >= 100);
   const clarityBarTone =
     clarityStatus.progress >= 90
@@ -4348,37 +4244,6 @@ export function CourseStudio() {
                 {clarityStatus.reason ? (
                   <p className="mt-2 text-xs leading-6 text-blue-900">{clarityStatus.reason}</p>
                 ) : null}
-                <div className="mt-3">
-                  <p className="text-[10px] font-bold uppercase tracking-widest text-blue-700">
-                    用户学习需求清单
-                  </p>
-                  {visibleLearningNeedChecklist.length ? (
-                    <ul className="mt-2 space-y-2">
-                      {visibleLearningNeedChecklist.map((item) => (
-                        <li
-                          key={`${item.title}:${item.evidence}`}
-                          className="flex items-start gap-2.5 text-xs leading-relaxed text-blue-900"
-                        >
-                          {item.is_clear ? (
-                            <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-blue-500" />
-                          ) : (
-                            <Circle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-blue-300" />
-                          )}
-                          <span className="min-w-0">
-                            <span className="block break-words text-blue-900">{item.title}</span>
-                            {item.evidence ? (
-                              <span className="mt-1 block break-words text-[11px] leading-5 text-blue-700/70">
-                                {item.evidence}
-                              </span>
-                            ) : null}
-                          </span>
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <p className="mt-2 text-xs leading-6 text-blue-800/75">还没有形成学习需求清单。</p>
-                  )}
-                </div>
                 {clarityStatus.next_question && !clarityStatus.ready_for_board ? (
                   <p className="mt-3 rounded-lg bg-white/70 px-3 py-2 text-xs leading-5 text-blue-900">
                     {clarityStatus.next_question}
