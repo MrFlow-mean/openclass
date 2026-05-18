@@ -83,7 +83,7 @@ import {
 
 import { api, getApiWebSocketUrl } from "@/lib/api";
 import { BranchSequenceSelector, type BranchSequenceOption } from "@/components/branch-sequence-selector";
-import { CourseChatMessage, type CourseChatMessageView } from "@/components/course-chat-message";
+import { CourseChatMessage, type CourseChatMessageView } from "@/components/chatbot";
 import { InlineNameForm } from "@/components/inline-name-form";
 import { ResourceUploadDropzone } from "@/components/resource-upload-dropzone";
 import { MATH_TEXT_SERIALIZERS, normalizeEditorMath } from "@/lib/math-content";
