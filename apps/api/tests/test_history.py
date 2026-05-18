@@ -1,7 +1,6 @@
 import pytest
 
 from app.models import LearningRequirementSheet, PatchOperation
-from app.services.ai_workflow import WORKFLOW_REMOVED_DETAIL, course_workflow
 from app.services.chart_generation import extract_chart_data_fragments
 from app.services.course_runtime import (
     build_lesson_for_topic,
@@ -15,15 +14,6 @@ from app.services.lesson_factory import create_empty_lesson, create_lesson
 from app.services.openai_course_ai import GeneratedCatalogChapter, GeneratedResourceCatalog, OpenAICourseAI
 from app.services.resource_library import build_resource_item, extract_reference_context
 from app.services.rich_document import build_document, export_docx, import_docx, replace_selection_in_document
-
-
-def test_workflow_runtime_is_removed() -> None:
-    lesson = create_empty_lesson("测试主题")
-
-    with pytest.raises(RuntimeError) as exc_info:
-        course_workflow.invoke({"lesson": lesson})
-
-    assert str(exc_info.value) == WORKFLOW_REMOVED_DETAIL
 
 
 def test_build_lesson_for_topic_creates_blank_lesson_without_ai_runtime() -> None:

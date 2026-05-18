@@ -11,9 +11,10 @@ from app.models import (
     UserView,
 )
 from app.routers.auth import current_user
-from app.services.ai_workflow import WORKFLOW_REMOVED_DETAIL
 
 router = APIRouter()
+
+REALTIME_REMOVED_DETAIL = "实时语音后端运行路径已移除；当前课程对话入口是 /api/lessons/{lesson_id}/chat。"
 
 
 @router.post("/api/lessons/{lesson_id}/realtime/connect", response_model=RealtimeConnectResponse)
@@ -22,7 +23,7 @@ def connect_realtime_session(
     request: RealtimeConnectRequest,
     user: UserView = Depends(current_user),
 ) -> RealtimeConnectResponse:
-    raise HTTPException(status_code=410, detail=WORKFLOW_REMOVED_DETAIL)
+    raise HTTPException(status_code=410, detail=REALTIME_REMOVED_DETAIL)
 
 
 @router.post("/api/lessons/{lesson_id}/realtime/google/session", response_model=GoogleRealtimeSessionResponse)
@@ -31,7 +32,7 @@ def create_google_realtime_session(
     request: GoogleRealtimeSessionRequest,
     user: UserView = Depends(current_user),
 ) -> GoogleRealtimeSessionResponse:
-    raise HTTPException(status_code=410, detail=WORKFLOW_REMOVED_DETAIL)
+    raise HTTPException(status_code=410, detail=REALTIME_REMOVED_DETAIL)
 
 
 @router.websocket("/api/lessons/{lesson_id}/realtime/google/ws")
@@ -41,12 +42,12 @@ async def proxy_google_realtime_session(websocket: WebSocket, lesson_id: str) ->
         {
             "error": {
                 "code": 410,
-                "status": "WORKFLOW_REMOVED",
-                "message": WORKFLOW_REMOVED_DETAIL,
+                "status": "REALTIME_REMOVED",
+                "message": REALTIME_REMOVED_DETAIL,
             }
         }
     )
-    await websocket.close(code=1011, reason="Workflow removed")
+    await websocket.close(code=1011, reason="Realtime removed")
 
 
 @router.post("/api/lessons/{lesson_id}/realtime/events")
@@ -55,4 +56,4 @@ def log_realtime_event(
     request: RealtimeTranscriptLogRequest,
     user: UserView = Depends(current_user),
 ) -> dict[str, str]:
-    raise HTTPException(status_code=410, detail=WORKFLOW_REMOVED_DETAIL)
+    raise HTTPException(status_code=410, detail=REALTIME_REMOVED_DETAIL)

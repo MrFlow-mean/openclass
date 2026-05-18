@@ -118,7 +118,6 @@ if "统计学习理论" in chapter_title:
 - `lesson_factory.py`：只做 lesson、requirements、teaching guide 初始化。
 - `fallback_generator.py`：只做领域无关 fallback，不得成为模板仓库。
 - `renderer.py`：只做渲染路径选择，不写具体课程内容。
-- `ai_workflow.py`：只做通用流程编排，不写学科知识。
 - `resource_library.py`：只做通用资料解析，不内置教材目录。
 - `openai_course_ai.py`：只做模型调用、prompt、schema 解析，不写学科分支。
 - `course-studio.tsx`：只做顶层组合，不继续堆状态、effect、realtime、editor、model selection 逻辑。
