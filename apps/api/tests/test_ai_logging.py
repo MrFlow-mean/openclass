@@ -21,6 +21,7 @@ from app.services.ai_logging import ai_log_context, ai_usage_logger
 from app.services import chat_service, workspace_state
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
 from app.services.openai_course_ai import (
+    CourseChatReply,
     GeneratedResourceCatalog,
     OpenAICourseAI,
     bind_text_model_selection,
@@ -462,20 +463,28 @@ def test_catalog_role_uses_dedicated_openai_model_even_with_text_selection(isola
     assert ai.client.responses.payload["model"] == "gpt-5.4-mini"
 
 
-def test_chat_route_reports_removed_workflow(monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path) -> None:
+def test_chat_route_returns_generic_teacher_reply(monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path) -> None:
     store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
     monkeypatch.setattr(workspace_state, "STORE", store)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_teacher_chat",
+        lambda **kwargs: CourseChatReply(teacher_message="AI生成：这是一段测试讲解。"),
+    )
 
     lesson_id = _seed_test_user_workspace(store).packages[0].lessons[0].id
-    with pytest.raises(HTTPException) as exc_info:
-        chat_service.process_chat_on_lesson(
-            lesson_id,
-            ChatRequest(message="请解释一下当前主题的核心问题"),
-            user_id=TEST_USER.id,
-        )
+    response = chat_service.process_chat_on_lesson(
+        lesson_id,
+        ChatRequest(message="请解释一下当前主题的核心问题"),
+        user_id=TEST_USER.id,
+    )
 
-    assert exc_info.value.status_code == 410
-    assert "工作流程运行框架已移除" in str(exc_info.value.detail)
+    assert response.teacher_message == "AI生成：这是一段测试讲解。"
+    lesson = response.course_package.lessons[0]
+    commit = lesson.history_graph.commits[-1]
+    assert commit.metadata["kind"] == "chat_flow"
+    assert commit.metadata["user_message"] == "请解释一下当前主题的核心问题"
+    assert commit.metadata["assistant_message_source"] == "ai"
     assert _read_log_entries(isolated_ai_log) == []
 
 
@@ -551,32 +560,44 @@ def test_document_save_beacon_accepts_plain_text_json(monkeypatch: pytest.Monkey
     assert commit["metadata"]["autosave_reason"] == "pagehide"
 
 
-def test_document_ai_edit_reports_removed_workflow(
+def test_document_ai_edit_returns_chat_guidance(
     monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
 ) -> None:
     store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
     monkeypatch.setattr(workspace_state, "STORE", store)
+    captured: dict[str, str | None] = {}
+
+    def _fake_chat(**kwargs):
+        captured["selection_excerpt"] = kwargs.get("selection_excerpt")
+        captured["interaction_mode"] = kwargs.get("interaction_mode")
+        return CourseChatReply(teacher_message="AI生成：这是修改建议。")
+
+    monkeypatch.setattr(openai_course_ai, "generate_teacher_chat", _fake_chat)
 
     lesson_id = _seed_test_user_workspace(store).packages[0].lessons[0].id
-    with pytest.raises(HTTPException) as exc_info:
-        chat_service.document_ai_edit_request(
-            lesson_id,
-            "改写选中内容",
-            "原文",
-            [],
-            user_id=TEST_USER.id,
-        )
+    response = chat_service.document_ai_edit_request(
+        lesson_id,
+        "改写选中内容",
+        "原文",
+        [],
+        user_id=TEST_USER.id,
+    )
 
-    assert exc_info.value.status_code == 410
-    assert "工作流程运行框架已移除" in str(exc_info.value.detail)
+    assert response.teacher_message == "AI生成：这是修改建议。"
+    assert captured == {"selection_excerpt": "原文", "interaction_mode": "direct_edit"}
     assert _read_log_entries(isolated_ai_log) == []
 
 
-def test_chat_http_endpoint_returns_gone_for_removed_workflow(
+def test_chat_http_endpoint_returns_teacher_reply(
     monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
 ) -> None:
     store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
     monkeypatch.setattr(workspace_state, "STORE", store)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_teacher_chat",
+        lambda **kwargs: CourseChatReply(teacher_message="AI生成：HTTP 路由回复。"),
+    )
 
     workspace = _seed_test_user_workspace(store)
     lesson_id = workspace.packages[0].lessons[0].id
@@ -590,8 +611,8 @@ def test_chat_http_endpoint_returns_gone_for_removed_workflow(
     finally:
         main_module.app.dependency_overrides.pop(current_user, None)
 
-    assert response.status_code == 410
-    assert "工作流程运行框架已移除" in response.json()["detail"]
+    assert response.status_code == 200
+    assert response.json()["teacher_message"] == "AI生成：HTTP 路由回复。"
     assert _read_log_entries(isolated_ai_log) == []
 
 

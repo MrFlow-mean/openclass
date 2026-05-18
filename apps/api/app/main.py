@@ -41,7 +41,7 @@ def health() -> dict[str, object]:
     return {
         "status": "ok",
         "openai": openai_course_ai.status(),
-        "workflow": {"status": "removed"},
+        "workflow": {"status": "chat_active", "legacy_course_workflow": "removed"},
         "realtime": {"status": "removed"},
     }
 

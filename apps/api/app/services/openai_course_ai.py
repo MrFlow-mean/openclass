@@ -129,6 +129,10 @@ class ParsedAIResponse:
     usage: Any = None
 
 
+class CourseChatReply(BaseModel):
+    teacher_message: str
+
+
 @contextmanager
 def bind_text_model_selection(selection: AIModelSelection | None):
     token = _text_model_selection.set(selection)
@@ -638,6 +642,51 @@ class OpenAICourseAI:
             return None
         result.chapters = result.chapters[:max_chapters]
         return result
+
+    def generate_teacher_chat(
+        self,
+        *,
+        lesson_title: str,
+        learning_goal: str,
+        board_summary: str,
+        resource_summary: str,
+        conversation_summary: str,
+        user_message: str,
+        selection_excerpt: str | None = None,
+        interaction_mode: str = "ask",
+    ) -> CourseChatReply | None:
+        system_prompt = (
+            "你是 OpenClass 的通用 AI 课程讲师。你的任务是像成熟聊天机器人一样进行自然、连续、"
+            "有帮助的你问我答交流。\n"
+            "规则：\n"
+            "1. 只根据用户问题、当前课程上下文、讲义摘要、引用选区、资料摘要和最近对话回答。\n"
+            "2. 不要假装已经修改讲义；如果用户要求改文档，只先给出可执行的修改建议或确认问题。\n"
+            "3. 回答要直接、清楚、可继续追问；必要时用短列表、步骤或检查问题。\n"
+            "4. 如果上下文不足，先给出当前可回答部分，再问一个最关键的澄清问题。\n"
+            "5. 不写任何固定学科模板，不根据学科名或教材名走特殊规则。"
+        )
+        user_prompt = _json(
+            {
+                "lesson_title": lesson_title,
+                "learning_goal": learning_goal,
+                "board_summary": board_summary,
+                "resource_summary": resource_summary,
+                "recent_conversation": conversation_summary,
+                "selection_excerpt": selection_excerpt.strip() if selection_excerpt else "无选中引用",
+                "interaction_mode": interaction_mode,
+                "user_message": user_message,
+                "response_contract": {
+                    "teacher_message": "面向学习者的自然语言回复，支持 Markdown 风格的短段落和列表。",
+                },
+            }
+        )
+        result = self._parse(
+            "teacher",
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            schema=CourseChatReply,
+        )
+        return result if isinstance(result, CourseChatReply) else None
 
     def _call_parse(
         self,

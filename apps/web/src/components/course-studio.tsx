@@ -60,7 +60,6 @@ import {
   RectangleVertical,
   Rows3,
   Send,
-  Sparkles,
   Stamp,
   Table2,
   TableCellsMerge,
@@ -84,6 +83,7 @@ import {
 
 import { api, getApiWebSocketUrl } from "@/lib/api";
 import { BranchSequenceSelector, type BranchSequenceOption } from "@/components/branch-sequence-selector";
+import { CourseChatMessage, type CourseChatMessageView } from "@/components/course-chat-message";
 import { InlineNameForm } from "@/components/inline-name-form";
 import { ResourceUploadDropzone } from "@/components/resource-upload-dropzone";
 import { MATH_TEXT_SERIALIZERS, normalizeEditorMath } from "@/lib/math-content";
@@ -124,14 +124,7 @@ declare module "@tiptap/core" {
   }
 }
 
-type ChatMessage = {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  status?: "ready" | "pending" | "error";
-  selection?: SelectionRef | null;
-  teachingProgress?: SectionTeachingProgress | null;
-};
+type ChatMessage = CourseChatMessageView;
 
 type LessonMessageMap = Record<string, ChatMessage[]>;
 type LessonComposerState = {
@@ -751,14 +744,6 @@ function teachingProgressFromMetadata(value: unknown): SectionTeachingProgress |
   };
 }
 
-function selectionPreviewLabel(selection: SelectionRef): string {
-  return selection.kind === "board" ? "选中的讲义" : "引用的对话";
-}
-
-function selectionPreviewText(excerpt: string): string {
-  return excerpt.replace(/\s+/g, " ").trim();
-}
-
 function currentHeadCommitId(lesson: Lesson): string | null {
   const branch = lesson.history_graph.branches[lesson.history_graph.current_branch];
   return (
@@ -1177,108 +1162,6 @@ function WordPageZoomControls({
       >
         <Plus className="h-3.5 w-3.5" />
       </button>
-    </div>
-  );
-}
-
-function ChatBubble({
-  message,
-  onContinueTeaching,
-}: {
-  message: ChatMessage;
-  onContinueTeaching?: () => void;
-}) {
-  const [isSelectionExpanded, setIsSelectionExpanded] = useState(false);
-  const isAssistant = message.role === "assistant";
-  const isPending = message.status === "pending";
-  const isError = message.status === "error";
-  const selectedExcerpt = message.selection?.excerpt ? selectionPreviewText(message.selection.excerpt) : "";
-  const teachingProgress = message.teachingProgress;
-  const hasContent = message.content.trim().length > 0;
-  return (
-    <div className="flex flex-col gap-2">
-      <div className={clsx("flex items-center gap-2", !isAssistant && "justify-end")}>
-        {isPending ? (
-          <LoaderCircle className="h-3.5 w-3.5 animate-spin text-blue-600" />
-        ) : isAssistant ? (
-          <Sparkles className="h-3.5 w-3.5 text-gray-800" />
-        ) : (
-          <MessageSquare className="h-3.5 w-3.5 text-gray-800" />
-        )}
-        <span className="text-[10px] font-bold uppercase tracking-wider text-gray-500">
-          {isPending ? "AI 讲师处理中" : isAssistant ? "AI 讲师" : "用户"}
-        </span>
-      </div>
-      {message.selection && selectedExcerpt ? (
-        <div
-          className={clsx(
-            "max-w-[94%] rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-gray-700 shadow-sm",
-            !isAssistant && "ml-auto"
-          )}
-        >
-          <div className="flex items-start gap-2">
-            <TextQuote className="mt-0.5 h-3.5 w-3.5 shrink-0 text-gray-400" />
-            <div className="min-w-0">
-              <p className="text-[10px] font-semibold text-gray-500">{selectionPreviewLabel(message.selection)}</p>
-              <p
-                className={clsx(
-                  "mt-1 whitespace-pre-wrap break-words pr-1 text-[12px] leading-5",
-                  isSelectionExpanded ? "custom-scrollbar max-h-40 overflow-y-auto" : "max-h-10 overflow-hidden"
-                )}
-              >
-                “{selectedExcerpt}”
-              </p>
-              <button
-                type="button"
-                aria-expanded={isSelectionExpanded}
-                onClick={() => setIsSelectionExpanded((current) => !current)}
-                className="mt-2 inline-flex h-6 items-center gap-1 rounded-md px-1.5 text-[11px] font-semibold text-gray-500 transition hover:bg-white hover:text-gray-900"
-              >
-                {isSelectionExpanded ? (
-                  <ChevronUp className="h-3.5 w-3.5" />
-                ) : (
-                  <ChevronDown className="h-3.5 w-3.5" />
-                )}
-                {isSelectionExpanded ? "收起" : "展开"}
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
-      {hasContent ? (
-        <div
-          className={clsx(
-            "max-w-[94%] rounded-2xl p-4 text-[13px] leading-relaxed shadow-sm",
-            isPending
-              ? "rounded-tl-sm border border-blue-200 bg-blue-50 text-blue-950"
-              : isError
-                ? "rounded-tl-sm border border-rose-200 bg-rose-50 text-rose-800"
-                : isAssistant
-              ? "rounded-tl-sm border border-gray-100 bg-gray-50 text-gray-800"
-              : "ml-auto rounded-tr-sm bg-[#1a1a1a] text-white"
-          )}
-        >
-          {message.content}
-          {isAssistant && teachingProgress && !isPending && !isError ? (
-            <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-gray-200 pt-3 text-[11px] text-gray-500">
-              <span>
-                第 {teachingProgress.section_index + 1}/{teachingProgress.section_count} 节
-                {teachingProgress.current_section_title ? `：${teachingProgress.current_section_title}` : ""}
-              </span>
-              {teachingProgress.has_next_section && onContinueTeaching ? (
-                <button
-                  type="button"
-                  onClick={onContinueTeaching}
-                  className="inline-flex h-7 items-center gap-1 rounded-md border border-gray-200 bg-white px-2.5 font-semibold text-gray-700 transition hover:border-gray-300 hover:text-gray-950"
-                >
-                  <ArrowRight className="h-3.5 w-3.5" />
-                  继续下一节
-                </button>
-              ) : null}
-            </div>
-          ) : null}
-        </div>
-      ) : null}
     </div>
   );
 }
@@ -2490,6 +2373,7 @@ export function CourseStudio() {
   const router = useRouter();
   const mainContainerRef = useRef<HTMLDivElement | null>(null);
   const chatInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const chatScrollEndRef = useRef<HTMLDivElement | null>(null);
   const chatRequestInFlightRef = useRef(false);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const realtimePeerRef = useRef<RTCPeerConnection | null>(null);
@@ -2656,6 +2540,7 @@ export function CourseStudio() {
     : [];
   const displayedMessages =
     activeLesson && previewCommit ? buildLessonMessagesFromHistory(activeLesson, previewCommit.id) : activeMessages;
+
   const activeComposerState = activeLesson
     ? lessonComposerStates[activeLesson.id] ?? DEFAULT_LESSON_COMPOSER_STATE
     : DEFAULT_LESSON_COMPOSER_STATE;
@@ -2666,6 +2551,11 @@ export function CourseStudio() {
   const selectedRealtimeOption = findModelOption(modelCatalog.realtime, selectedRealtimeModel);
   const selectedRealtimeTransport = selectedRealtimeOption?.transport ?? "gemini_live_websocket";
   const isChatBusy = busyAction === "chat" || busyAction === "agent-edit";
+
+  useEffect(() => {
+    chatScrollEndRef.current?.scrollIntoView({ block: "end" });
+  }, [activeLesson?.id, displayedMessages.length, isChatBusy]);
+
   const activeRequirements = activeLesson?.learning_requirements ?? null;
   const isPreviewMode = Boolean(previewCommit);
   const previewLearningClarity = learningClarityFromCommit(previewCommit);
@@ -4339,7 +4229,7 @@ export function CourseStudio() {
                 ) : null}
               </div>
 
-              <div className="space-y-6">
+              <div className="space-y-5">
                 {previewCommit ? (
                   <div className="rounded-xl border border-violet-200 bg-violet-50 px-4 py-3 text-xs leading-6 text-violet-800">
                     正在查看 {previewCommit.label} 时的交流记录。
@@ -4363,7 +4253,7 @@ export function CourseStudio() {
                       }
                     }}
                   >
-                    <ChatBubble
+                    <CourseChatMessage
                       message={message}
                       onContinueTeaching={
                         !isPreviewMode &&
@@ -4376,6 +4266,7 @@ export function CourseStudio() {
                     />
                   </div>
                 ))}
+                <div ref={chatScrollEndRef} aria-hidden="true" />
               </div>
 
               {!isPreviewMode && scopeOptions.length ? (
@@ -4662,7 +4553,7 @@ export function CourseStudio() {
                     ? "描述要怎么改这段板书，或直接说“重写整篇”..."
                     : composerSelection
                       ? "基于选中内容继续追问"
-                      : "提问或下达修改指令..."
+                      : "给 OpenClass 发消息..."
                 }
                 className="custom-scrollbar block w-full resize-none border-0 bg-transparent px-3.5 py-2.5 text-[13px] leading-relaxed outline-none placeholder:text-gray-400 disabled:cursor-wait disabled:text-gray-400"
               />
