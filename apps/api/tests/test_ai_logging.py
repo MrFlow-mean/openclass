@@ -125,7 +125,9 @@ def test_openai_parse_logs_prompt_and_output(isolated_ai_log) -> None:
     ai.config.lesson_model = "gpt-5.3"
     ai.config.compat_api = "responses"
 
-    with ai_log_context(trace_id="trace_unit", route="unit_test"):
+    with ai_log_context(trace_id="trace_unit", route="unit_test"), bind_text_model_selection(
+        AIModelSelection(provider="openai", model="gpt-5.3")
+    ):
         generated = ai._parse(
             "lesson",
             system_prompt="Return a structured title.",
@@ -181,7 +183,9 @@ def test_openai_parse_retries_model_not_found_with_fallback(isolated_ai_log) -> 
     ai.config.fallback_model = "gpt-5.4"
     ai.config.compat_api = "responses"
 
-    with ai_log_context(trace_id="trace_retry", route="unit_test"):
+    with ai_log_context(trace_id="trace_retry", route="unit_test"), bind_text_model_selection(
+        AIModelSelection(provider="openai", model="gpt-5.3")
+    ):
         result = ai._parse("pm", "system", "user", _Output)
 
     assert result is not None
@@ -326,7 +330,9 @@ def test_openai_compat_chat_completions_mode_parses_json(isolated_ai_log) -> Non
     ai.config.default_model = "gpt-5.4"
     ai.config.pm_model = "gpt-5.4"
 
-    with ai_log_context(trace_id="trace_chat_compat", route="unit_test"):
+    with ai_log_context(trace_id="trace_chat_compat", route="unit_test"), bind_text_model_selection(
+        AIModelSelection(provider="openai", model="gpt-5.4")
+    ):
         result = ai._parse("pm", "system", "user", _Output)
 
     assert result is not None
