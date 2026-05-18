@@ -6,6 +6,7 @@ from app.models import (
     ConversationTurn,
     LearningClarificationStatus,
     LearningRequirementChecklistItem,
+    LearningRequirementKeyFact,
     LearningRequirementSheet,
     Lesson,
     ResourceLibraryItem,
@@ -60,6 +61,7 @@ def _fallback_update(*, lesson: Lesson, conversation: list[ConversationTurn]) ->
         return LearningRequirementUpdate(
             progress=15,
             summary="用户还没有透露足够具体的学习需求。",
+            key_facts=[],
             checklist=[
                 LearningRequirementChecklistItem(
                     title="明确一个具体学习目标",
@@ -76,6 +78,13 @@ def _fallback_update(*, lesson: Lesson, conversation: list[ConversationTurn]) ->
     return LearningRequirementUpdate(
         progress=55,
         summary=f"用户提出了一个待整理的学习请求：{compact_goal}",
+        key_facts=[
+            LearningRequirementKeyFact(
+                label="用户当前表达",
+                value=compact_goal,
+                evidence="来自用户最近一轮输入。",
+            )
+        ],
         checklist=[
             LearningRequirementChecklistItem(
                 title="捕捉到一条可继续澄清的学习请求",
@@ -95,6 +104,15 @@ def _fallback_update(*, lesson: Lesson, conversation: list[ConversationTurn]) ->
 
 
 def _normalize_update(update: LearningRequirementUpdate) -> LearningRequirementUpdate:
+    key_facts = [
+        LearningRequirementKeyFact(
+            label=_compact_text(item.label, limit=40),
+            value=_compact_text(item.value, limit=140),
+            evidence=_compact_text(item.evidence, limit=120),
+        )
+        for item in update.key_facts
+        if item.label.strip() and item.value.strip()
+    ][:5]
     checklist = [
         LearningRequirementChecklistItem(
             title=_compact_text(item.title, limit=80),
@@ -123,6 +141,7 @@ def _normalize_update(update: LearningRequirementUpdate) -> LearningRequirementU
     return LearningRequirementUpdate(
         progress=progress,
         summary=_compact_text(update.summary, limit=220),
+        key_facts=key_facts,
         checklist=checklist,
         missing_items=[_compact_text(item, limit=80) for item in update.missing_items if item.strip()][:5],
         next_question=_compact_text(update.next_question, limit=160),
@@ -153,6 +172,7 @@ def _clarification_from_update(update: LearningRequirementUpdate) -> LearningCla
         can_start=ready,
         forced_start=False,
         summary=update.summary,
+        key_facts=update.key_facts,
         checklist=update.checklist,
         next_question=update.next_question,
         ready_for_board=ready,

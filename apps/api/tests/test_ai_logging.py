@@ -12,6 +12,7 @@ from app.models import (
     CreateBranchRequest,
     DocumentSaveRequest,
     LearningRequirementChecklistItem,
+    LearningRequirementKeyFact,
     RealtimeTranscriptLogRequest,
     UserView,
 )
@@ -61,6 +62,13 @@ def _fake_requirement_update(**kwargs) -> LearningRequirementUpdate:
     return LearningRequirementUpdate(
         progress=100,
         summary="用户已经说明当前学习目标，可以进入后续板书阶段。",
+        key_facts=[
+            LearningRequirementKeyFact(
+                label="学习请求",
+                value="用户提出了当前要解决的学习问题。",
+                evidence="来自用户输入。",
+            )
+        ],
         checklist=[
             LearningRequirementChecklistItem(
                 title="用户已经说明当前学习目标",
@@ -511,7 +519,9 @@ def test_chat_route_returns_generic_teacher_reply(monkeypatch: pytest.MonkeyPatc
     assert commit.metadata["user_message"] == "请解释一下当前主题的核心问题"
     assert commit.metadata["assistant_message_source"] == "ai"
     assert commit.metadata["learning_clarification"]["ready_for_board"] is True
+    assert commit.metadata["learning_clarification"]["key_facts"][0]["label"] == "学习请求"
     assert response.learning_clarification.progress == 100
+    assert response.learning_clarification.key_facts[0].value == "用户提出了当前要解决的学习问题。"
     assert response.learning_clarification.checklist[0].is_clear is True
     assert _read_log_entries(isolated_ai_log) == []
 
@@ -538,6 +548,7 @@ def test_requirement_manager_keeps_low_substance_chat_unclear(
     assert response.learning_clarification.progress < 50
     assert response.learning_clarification.ready_for_board is False
     assert response.learning_clarification.next_question
+    assert response.learning_clarification.key_facts == []
     assert response.learning_clarification.checklist
     assert response.learning_clarification.checklist[0].is_clear is False
     assert response.learning_clarification.missing_items == ["具体学习目标"]

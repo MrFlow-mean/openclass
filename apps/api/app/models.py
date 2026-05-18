@@ -226,6 +226,12 @@ class LearningRequirementChecklistItem(BaseModel):
     evidence: str = ""
 
 
+class LearningRequirementKeyFact(BaseModel):
+    label: str
+    value: str
+    evidence: str = ""
+
+
 class LearningClarificationStatus(BaseModel):
     progress: int = Field(ge=0, le=100)
     label: str
@@ -234,6 +240,7 @@ class LearningClarificationStatus(BaseModel):
     can_start: bool = False
     forced_start: bool = False
     summary: str = ""
+    key_facts: list[LearningRequirementKeyFact] = Field(default_factory=list)
     checklist: list[LearningRequirementChecklistItem] = Field(default_factory=list)
     next_question: str = ""
     ready_for_board: bool = False

@@ -77,6 +77,12 @@ export interface LearningRequirementChecklistItem {
   evidence: string;
 }
 
+export interface LearningRequirementKeyFact {
+  label: string;
+  value: string;
+  evidence: string;
+}
+
 export interface LearningClarificationStatus {
   progress: number;
   label: string;
@@ -85,6 +91,7 @@ export interface LearningClarificationStatus {
   can_start: boolean;
   forced_start: boolean;
   summary: string;
+  key_facts: LearningRequirementKeyFact[];
   checklist: LearningRequirementChecklistItem[];
   next_question: string;
   ready_for_board: boolean;

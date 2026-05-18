@@ -102,6 +102,7 @@ import type {
   CoursePackage,
   DocumentPageSettings,
   LearningClarificationStatus,
+  LearningRequirementKeyFact,
   Lesson,
   ResourceMatch,
   ResourceReferenceContext,
@@ -888,6 +889,26 @@ function learningClarityFromCommit(commit: CommitRecord | null): LearningClarifi
     can_start: record.can_start === true,
     forced_start: record.forced_start === true,
     summary: typeof record.summary === "string" ? record.summary : "",
+    key_facts: Array.isArray(record.key_facts)
+      ? record.key_facts
+          .flatMap((item) => {
+            if (!item || typeof item !== "object") {
+              return [];
+            }
+            const raw = item as unknown as Record<string, unknown>;
+            if (typeof raw.label !== "string" || typeof raw.value !== "string") {
+              return [];
+            }
+            return [
+              {
+                label: raw.label,
+                value: raw.value,
+                evidence: typeof raw.evidence === "string" ? raw.evidence : "",
+              },
+            ];
+          })
+          .slice(0, 5)
+      : [],
     checklist: Array.isArray(record.checklist)
       ? record.checklist
           .flatMap((item) => {
@@ -2601,6 +2622,7 @@ export function CourseStudio() {
       can_start: false,
       forced_start: false,
       summary: "",
+      key_facts: [],
       checklist: [],
       next_question: "",
       ready_for_board: false,
@@ -2616,6 +2638,17 @@ export function CourseStudio() {
       evidence: "",
     }));
   const clarityChecklistItems = clarityStatus.checklist.length ? clarityStatus.checklist : fallbackClarityItems;
+  const clarityKeyFacts: LearningRequirementKeyFact[] = clarityStatus.key_facts.length
+    ? clarityStatus.key_facts
+    : clarityStatus.checklist
+        .filter((item) => item.is_clear && item.evidence.trim())
+        .slice(0, 5)
+        .map((item) => ({
+          label: item.title,
+          value: item.evidence,
+          evidence: "",
+        }));
+  const unclearClarityItems = clarityChecklistItems.filter((item) => !item.is_clear).slice(0, 3);
   const showReadyForBoardCard = !isPreviewMode && (clarityStatus.ready_for_board || clarityStatus.progress >= 100);
   const clarityBarTone =
     clarityStatus.progress >= 90
@@ -4247,24 +4280,53 @@ export function CourseStudio() {
                 {clarityStatus.reason ? (
                   <p className="mt-2 text-xs leading-6 text-blue-900">{clarityStatus.reason}</p>
                 ) : null}
-                {clarityChecklistItems.length ? (
-                  <ul className="mt-3 space-y-2">
-                    {clarityChecklistItems.map((item) => (
-                      <li key={item.title} className="flex items-start gap-2.5 text-xs leading-relaxed text-blue-800">
-                        {item.is_clear ? (
+                <div className="mt-3">
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-blue-700">
+                    用户透露的关键信息
+                  </p>
+                  {clarityKeyFacts.length ? (
+                    <ul className="mt-2 space-y-2">
+                      {clarityKeyFacts.map((fact) => (
+                        <li
+                          key={`${fact.label}:${fact.value}`}
+                          className="flex items-start gap-2.5 text-xs leading-relaxed text-blue-900"
+                        >
                           <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-blue-500" />
-                        ) : (
+                          <span className="min-w-0">
+                            <span className="block font-semibold text-blue-950">{fact.label}</span>
+                            <span className="block break-words text-blue-800">{fact.value}</span>
+                            {fact.evidence ? (
+                              <span className="mt-1 block break-words text-[11px] leading-5 text-blue-700/70">
+                                {fact.evidence}
+                              </span>
+                            ) : null}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="mt-2 text-xs leading-6 text-blue-800/75">还没有捕捉到具体学习信息。</p>
+                  )}
+                </div>
+                {unclearClarityItems.length ? (
+                  <div className="mt-3">
+                    <p className="text-[10px] font-bold uppercase tracking-widest text-blue-700">还需确认</p>
+                    <ul className="mt-2 space-y-2">
+                      {unclearClarityItems.map((item) => (
+                        <li key={item.title} className="flex items-start gap-2.5 text-xs leading-relaxed text-blue-800">
                           <Circle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-blue-300" />
-                        )}
-                        <span>
-                          <span className="block">{item.title}</span>
-                          {item.evidence ? (
-                            <span className="mt-1 block text-[11px] leading-5 text-blue-700/75">{item.evidence}</span>
-                          ) : null}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
+                          <span className="min-w-0">
+                            <span className="block break-words">{item.title}</span>
+                            {item.evidence ? (
+                              <span className="mt-1 block break-words text-[11px] leading-5 text-blue-700/75">
+                                {item.evidence}
+                              </span>
+                            ) : null}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
                 ) : null}
                 {clarityStatus.next_question && !clarityStatus.ready_for_board ? (
                   <p className="mt-3 rounded-lg bg-white/70 px-3 py-2 text-xs leading-5 text-blue-900">

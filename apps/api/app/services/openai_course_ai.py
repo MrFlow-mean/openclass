@@ -24,6 +24,7 @@ from app.models import (
     AIModelSelection,
     AIProvider,
     LearningRequirementChecklistItem,
+    LearningRequirementKeyFact,
 )
 from app.services.ai_logging import ai_usage_logger
 from app.services.ai_model_catalog import (
@@ -137,6 +138,7 @@ class CourseChatReply(BaseModel):
 class LearningRequirementUpdate(BaseModel):
     progress: int = Field(ge=0, le=100)
     summary: str
+    key_facts: list[LearningRequirementKeyFact] = Field(default_factory=list)
     checklist: list[LearningRequirementChecklistItem] = Field(default_factory=list)
     missing_items: list[str] = Field(default_factory=list)
     next_question: str = ""
@@ -715,11 +717,14 @@ class OpenAICourseAI:
             "也不生成板书。\n"
             "任务：从最近对话和课程上下文中动态判断用户当前学习需求是否足够清晰。\n"
             "规则：\n"
-            "1. checklist 必须是 3 到 5 个当前最关键的动态需求项，不使用固定栏目模板。\n"
-            "2. 每个已明确项必须有来自对话或上下文的简短 evidence；不确定就 is_clear=false。\n"
-            "3. 不要猜用户没有透露的信息；缺失内容写入 missing_items 或 next_question。\n"
-            "4. ready_for_board 仅在这些动态需求足以支撑后续生成有用板书时为 true。\n"
-            "5. 不写任何主题、资料或样例专属规则。"
+            "1. key_facts 只写用户已经透露的关键信息，每项包含 label、value、evidence；"
+            "label 用中文短标签，value 保留用户透露的具体内容；"
+            "不要把缺失信息、教师追问或推测写进去；没有就返回空数组。\n"
+            "2. checklist 必须是 3 到 5 个当前最关键的动态需求项，不使用固定栏目模板。\n"
+            "3. checklist 每个已明确项必须有来自对话或上下文的简短 evidence；不确定就 is_clear=false。\n"
+            "4. 不要猜用户没有透露的信息；缺失内容写入 missing_items 或 next_question。\n"
+            "5. ready_for_board 仅在这些动态需求足以支撑后续生成有用板书时为 true。\n"
+            "6. 不写任何主题、资料或样例专属规则。"
         )
         user_prompt = _json(
             {
@@ -734,6 +739,7 @@ class OpenAICourseAI:
                 "response_contract": {
                     "progress": "0-100 的整体清晰度；ready_for_board=true 时必须为 100。",
                     "summary": "用户当前学习目的的一句话摘要；不清楚时说明仍需澄清。",
+                    "key_facts": "用户已经透露的 0-5 条关键信息，每项包含 label、value、evidence，只能来自用户原话或上下文。",
                     "checklist": "3-5 个动态需求项，每项包含 title、is_clear、evidence。",
                     "missing_items": "仍缺少的信息，不能脑补。",
                     "next_question": "未清晰时建议下一轮只追问一个最有价值的问题。",
