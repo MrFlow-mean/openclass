@@ -102,7 +102,8 @@ import type {
   CoursePackage,
   DocumentPageSettings,
   LearningClarificationStatus,
-  LearningRequirementKeyFact,
+  LearningRequirementChecklistItem,
+  LearningRequirementSheet,
   Lesson,
   ResourceMatch,
   ResourceReferenceContext,
@@ -666,6 +667,67 @@ function visibleLearningPurposeItem(value?: string | null): string | null {
     return null;
   }
   return trimmed;
+}
+
+function learningNeedChecklistKey(value: string) {
+  return value.replace(/\s+/g, "").toLocaleLowerCase();
+}
+
+function uniqueVisibleLearningNeedItems(values: Array<string | null | undefined>): string[] {
+  const seen = new Set<string>();
+  return values.flatMap((value) => {
+    const visible = visibleLearningPurposeItem(value);
+    if (!visible) {
+      return [];
+    }
+    const key = learningNeedChecklistKey(visible);
+    if (seen.has(key)) {
+      return [];
+    }
+    seen.add(key);
+    return [visible];
+  });
+}
+
+function buildVisibleLearningNeedChecklist(
+  requirements: LearningRequirementSheet | null,
+  clarityItems: LearningRequirementChecklistItem[],
+  fallbackItems: LearningRequirementChecklistItem[]
+): LearningRequirementChecklistItem[] {
+  const clarityByTitle = new Map<string, LearningRequirementChecklistItem>();
+  clarityItems.forEach((item) => {
+    const visibleTitle = visibleLearningPurposeItem(item.title);
+    if (visibleTitle) {
+      clarityByTitle.set(learningNeedChecklistKey(visibleTitle), {
+        ...item,
+        title: visibleTitle,
+      });
+    }
+  });
+
+  const sheetTitles = uniqueVisibleLearningNeedItems(requirements?.learning_need_checklist ?? []);
+  if (sheetTitles.length) {
+    return sheetTitles.slice(0, 8).map((title) => {
+      const clarityItem = clarityByTitle.get(learningNeedChecklistKey(title));
+      return {
+        title,
+        is_clear: clarityItem?.is_clear ?? true,
+        evidence: clarityItem?.evidence ?? "",
+      };
+    });
+  }
+
+  const visibleClarityItems = Array.from(clarityByTitle.values());
+  if (visibleClarityItems.length) {
+    return visibleClarityItems.slice(0, 8);
+  }
+
+  return fallbackItems
+    .flatMap((item) => {
+      const visibleTitle = visibleLearningPurposeItem(item.title);
+      return visibleTitle ? [{ ...item, title: visibleTitle }] : [];
+    })
+    .slice(0, 8);
 }
 
 function formatDate(value: string) {
@@ -2650,17 +2712,11 @@ export function CourseStudio() {
           evidence: "",
         }));
   const clarityChecklistItems = clarityStatus.checklist.length ? clarityStatus.checklist : fallbackClarityItems;
-  const clarityKeyFacts: LearningRequirementKeyFact[] = clarityStatus.key_facts.length
-    ? clarityStatus.key_facts
-    : clarityStatus.checklist
-        .filter((item) => item.is_clear && item.evidence.trim())
-        .slice(0, 5)
-        .map((item) => ({
-          label: item.title,
-          value: item.evidence,
-          evidence: "",
-        }));
-  const unclearClarityItems = clarityChecklistItems.filter((item) => !item.is_clear).slice(0, 3);
+  const visibleLearningNeedChecklist = buildVisibleLearningNeedChecklist(
+    activeRequirements,
+    clarityChecklistItems,
+    fallbackClarityItems
+  );
   const showReadyForBoardCard = !isPreviewMode && (clarityStatus.ready_for_board || clarityStatus.progress >= 100);
   const clarityBarTone =
     clarityStatus.progress >= 90
@@ -4294,43 +4350,24 @@ export function CourseStudio() {
                 ) : null}
                 <div className="mt-3">
                   <p className="text-[10px] font-bold uppercase tracking-widest text-blue-700">
-                    用户透露的关键信息
+                    用户学习需求清单
                   </p>
-                  {clarityKeyFacts.length ? (
+                  {visibleLearningNeedChecklist.length ? (
                     <ul className="mt-2 space-y-2">
-                      {clarityKeyFacts.map((fact) => (
+                      {visibleLearningNeedChecklist.map((item) => (
                         <li
-                          key={`${fact.label}:${fact.value}`}
+                          key={`${item.title}:${item.evidence}`}
                           className="flex items-start gap-2.5 text-xs leading-relaxed text-blue-900"
                         >
-                          <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-blue-500" />
+                          {item.is_clear ? (
+                            <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-blue-500" />
+                          ) : (
+                            <Circle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-blue-300" />
+                          )}
                           <span className="min-w-0">
-                            <span className="block font-semibold text-blue-950">{fact.label}</span>
-                            <span className="block break-words text-blue-800">{fact.value}</span>
-                            {fact.evidence ? (
-                              <span className="mt-1 block break-words text-[11px] leading-5 text-blue-700/70">
-                                {fact.evidence}
-                              </span>
-                            ) : null}
-                          </span>
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <p className="mt-2 text-xs leading-6 text-blue-800/75">还没有捕捉到具体学习信息。</p>
-                  )}
-                </div>
-                {unclearClarityItems.length ? (
-                  <div className="mt-3">
-                    <p className="text-[10px] font-bold uppercase tracking-widest text-blue-700">还需确认</p>
-                    <ul className="mt-2 space-y-2">
-                      {unclearClarityItems.map((item) => (
-                        <li key={item.title} className="flex items-start gap-2.5 text-xs leading-relaxed text-blue-800">
-                          <Circle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-blue-300" />
-                          <span className="min-w-0">
-                            <span className="block break-words">{item.title}</span>
+                            <span className="block break-words text-blue-900">{item.title}</span>
                             {item.evidence ? (
-                              <span className="mt-1 block break-words text-[11px] leading-5 text-blue-700/75">
+                              <span className="mt-1 block break-words text-[11px] leading-5 text-blue-700/70">
                                 {item.evidence}
                               </span>
                             ) : null}
@@ -4338,8 +4375,10 @@ export function CourseStudio() {
                         </li>
                       ))}
                     </ul>
-                  </div>
-                ) : null}
+                  ) : (
+                    <p className="mt-2 text-xs leading-6 text-blue-800/75">还没有形成学习需求清单。</p>
+                  )}
+                </div>
                 {clarityStatus.next_question && !clarityStatus.ready_for_board ? (
                   <p className="mt-3 rounded-lg bg-white/70 px-3 py-2 text-xs leading-5 text-blue-900">
                     {clarityStatus.next_question}
