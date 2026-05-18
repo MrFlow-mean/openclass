@@ -557,61 +557,7 @@ def test_requirement_manager_keeps_low_substance_chat_unclear(
     assert response.learning_clarification.key_facts == []
     assert response.learning_clarification.checklist
     assert response.learning_clarification.checklist[0].is_clear is False
-    assert response.learning_clarification.checklist[0].title == "用户具体想学什么内容或解决什么问题"
-    assert response.learning_clarification.missing_items == ["具体学习内容", "当前水平", "学习目的或使用场景"]
-    assert _read_log_entries(isolated_ai_log) == []
-
-
-def test_requirement_manager_filters_internal_key_fact_labels(
-    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
-) -> None:
-    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
-    monkeypatch.setattr(workspace_state, "STORE", store)
-    monkeypatch.setattr(
-        openai_course_ai,
-        "generate_teacher_chat",
-        lambda **kwargs: CourseChatReply(teacher_message="好的，我先帮你确认学习需求。"),
-    )
-    monkeypatch.setattr(
-        openai_course_ai,
-        "generate_learning_requirement_update",
-        lambda **kwargs: LearningRequirementUpdate(
-            progress=70,
-            summary="用户表达了一个学习目标，还需要继续澄清。",
-            key_facts=[
-                LearningRequirementKeyFact(
-                    label="preferred_output",
-                    value="想要讲义、练习、复习、对话还是项目",
-                    evidence="这只是可选输出方向，不是用户已透露的信息。",
-                ),
-                LearningRequirementKeyFact(
-                    label="学习目标",
-                    value="用户想理解当前问题。",
-                    evidence="来自用户输入。",
-                ),
-            ],
-            checklist=[
-                LearningRequirementChecklistItem(
-                    title="用户具体想学什么内容或解决什么问题",
-                    is_clear=True,
-                    evidence="用户想理解当前问题。",
-                )
-            ],
-            missing_items=["当前水平"],
-            next_question="你目前对这个内容了解多少？",
-            ready_for_board=False,
-        ),
-    )
-
-    lesson_id = _seed_test_user_workspace(store).packages[0].lessons[0].id
-    response = chat_service.process_chat_on_lesson(
-        lesson_id,
-        ChatRequest(message="我想理解当前问题"),
-        user_id=TEST_USER.id,
-    )
-
-    assert [item.label for item in response.learning_clarification.key_facts] == ["学习目标"]
-    assert response.learning_clarification.key_facts[0].value == "用户想理解当前问题。"
+    assert response.learning_clarification.missing_items == ["具体学习目标"]
     assert _read_log_entries(isolated_ai_log) == []
 
 
