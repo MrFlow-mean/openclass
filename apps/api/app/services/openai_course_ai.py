@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 from app.models import (
     AIModelSelection,
     AIProvider,
+    LearningRequirementChecklistItem,
 )
 from app.services.ai_logging import ai_usage_logger
 from app.services.ai_model_catalog import (
@@ -131,6 +132,15 @@ class ParsedAIResponse:
 
 class CourseChatReply(BaseModel):
     teacher_message: str
+
+
+class LearningRequirementUpdate(BaseModel):
+    progress: int = Field(ge=0, le=100)
+    summary: str
+    checklist: list[LearningRequirementChecklistItem] = Field(default_factory=list)
+    missing_items: list[str] = Field(default_factory=list)
+    next_question: str = ""
+    ready_for_board: bool = False
 
 
 @contextmanager
@@ -663,7 +673,7 @@ class OpenAICourseAI:
             "2. 不要假装已经修改讲义；如果用户要求改文档，只先给出可执行的修改建议或确认问题。\n"
             "3. 回答要直接、清楚、可继续追问；必要时用短列表、步骤或检查问题。\n"
             "4. 如果上下文不足，先给出当前可回答部分，再问一个最关键的澄清问题。\n"
-            "5. 不写任何固定学科模板，不根据学科名或教材名走特殊规则。"
+            "5. 不写任何固定主题模板，不根据主题名、资料名或样例走特殊规则。"
         )
         user_prompt = _json(
             {
@@ -687,6 +697,57 @@ class OpenAICourseAI:
             schema=CourseChatReply,
         )
         return result if isinstance(result, CourseChatReply) else None
+
+    def generate_learning_requirement_update(
+        self,
+        *,
+        lesson_title: str,
+        existing_summary: str,
+        existing_checklist: list[str],
+        board_summary: str,
+        resource_summary: str,
+        conversation_summary: str,
+        user_message: str,
+        teacher_message: str,
+    ) -> LearningRequirementUpdate | None:
+        system_prompt = (
+            "你是 OpenClass 的学习需求清单管理 AI，只在后端更新结构化状态，不直接和用户聊天，"
+            "也不生成板书。\n"
+            "任务：从最近对话和课程上下文中动态判断用户当前学习需求是否足够清晰。\n"
+            "规则：\n"
+            "1. checklist 必须是 3 到 5 个当前最关键的动态需求项，不使用固定栏目模板。\n"
+            "2. 每个已明确项必须有来自对话或上下文的简短 evidence；不确定就 is_clear=false。\n"
+            "3. 不要猜用户没有透露的信息；缺失内容写入 missing_items 或 next_question。\n"
+            "4. ready_for_board 仅在这些动态需求足以支撑后续生成有用板书时为 true。\n"
+            "5. 不写任何主题、资料或样例专属规则。"
+        )
+        user_prompt = _json(
+            {
+                "lesson_title": lesson_title,
+                "existing_summary": existing_summary,
+                "existing_checklist": existing_checklist,
+                "board_summary": board_summary,
+                "resource_summary": resource_summary,
+                "recent_conversation": conversation_summary,
+                "current_user_message": user_message,
+                "current_teacher_message": teacher_message,
+                "response_contract": {
+                    "progress": "0-100 的整体清晰度；ready_for_board=true 时必须为 100。",
+                    "summary": "用户当前学习目的的一句话摘要；不清楚时说明仍需澄清。",
+                    "checklist": "3-5 个动态需求项，每项包含 title、is_clear、evidence。",
+                    "missing_items": "仍缺少的信息，不能脑补。",
+                    "next_question": "未清晰时建议下一轮只追问一个最有价值的问题。",
+                    "ready_for_board": "是否足够进入后续板书生成阶段。",
+                },
+            }
+        )
+        result = self._parse(
+            "pm",
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            schema=LearningRequirementUpdate,
+        )
+        return result if isinstance(result, LearningRequirementUpdate) else None
 
     def _call_parse(
         self,

@@ -7,7 +7,6 @@ from app.models import (
     ChatRequest,
     ChatResponse,
     ConversationTurn,
-    LearningClarificationStatus,
     Lesson,
     ResourceLibraryItem,
     SelectionRef,
@@ -15,6 +14,7 @@ from app.models import (
 from app.services import workspace_state
 from app.services.course_runtime import effective_requirements
 from app.services.history import commit_operations
+from app.services.learning_requirement_manager import update_learning_requirements_from_chat
 from app.services.openai_course_ai import openai_course_ai
 
 
@@ -57,26 +57,6 @@ def _selection_excerpt(selection: SelectionRef | None, fallback: str | None = No
     excerpt = selection.excerpt if selection else fallback
     compact = _compact_text(excerpt, limit=1200)
     return compact or None
-
-
-def _clarification_status(lesson: Lesson) -> LearningClarificationStatus:
-    requirements = effective_requirements(lesson)
-    progress = 70 if lesson.board_document.content_text.strip() else 40
-    missing_items: list[str] = []
-    if not requirements.known_background.strip():
-        missing_items.append("学习背景")
-    if not requirements.current_questions:
-        missing_items.append("当前问题")
-    if missing_items:
-        progress = min(progress, 55)
-    return LearningClarificationStatus(
-        progress=progress,
-        label="可继续对话" if progress >= 60 else "可先问答",
-        reason="聊天机器人会基于当前课程、讲义、资料和最近对话持续回答。",
-        missing_items=missing_items,
-        can_start=True,
-        forced_start=False,
-    )
 
 
 def _fallback_teacher_message(
@@ -128,6 +108,19 @@ def _chat_response(
             request=request,
             selection_excerpt=selection_excerpt,
         )
+    requirement_conversation = [
+        *request.conversation,
+        ConversationTurn(role="user", content=request.message),
+        ConversationTurn(role="assistant", content=teacher_message),
+    ]
+    requirements, learning_clarification = update_learning_requirements_from_chat(
+        lesson=lesson,
+        resources=visible_package.resources,
+        conversation=requirement_conversation,
+        user_message=request.message,
+        teacher_message=teacher_message,
+    )
+    lesson.learning_requirements = requirements
 
     commit_operations(
         lesson,
@@ -142,6 +135,7 @@ def _chat_response(
             "assistant_message_source": teacher_message_source,
             "interaction_mode": request.interaction_mode,
             "selection": request.selection.model_dump(mode="json") if request.selection else None,
+            "learning_clarification": learning_clarification.model_dump(mode="json"),
         },
     )
     workspace_state.normalize_package_state(package)
@@ -149,7 +143,7 @@ def _chat_response(
     return ChatResponse(
         teacher_message=teacher_message,
         learning_requirement_sheet=requirements,
-        learning_clarification=_clarification_status(lesson),
+        learning_clarification=learning_clarification,
         board_decision=BoardDecision(action="no_change", reason="本轮是通用问答聊天，不自动修改讲义。"),
         needs_clarification=False,
         clarification_questions=[],

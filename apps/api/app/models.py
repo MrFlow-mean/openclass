@@ -220,6 +220,12 @@ class LearningRequirementSheet(BaseModel):
     risk_notes: list[str] = Field(default_factory=list)
 
 
+class LearningRequirementChecklistItem(BaseModel):
+    title: str
+    is_clear: bool = False
+    evidence: str = ""
+
+
 class LearningClarificationStatus(BaseModel):
     progress: int = Field(ge=0, le=100)
     label: str
@@ -227,6 +233,10 @@ class LearningClarificationStatus(BaseModel):
     missing_items: list[str] = Field(default_factory=list)
     can_start: bool = False
     forced_start: bool = False
+    summary: str = ""
+    checklist: list[LearningRequirementChecklistItem] = Field(default_factory=list)
+    next_question: str = ""
+    ready_for_board: bool = False
 
 
 class TeachingGuideMapping(BaseModel):

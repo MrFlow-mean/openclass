@@ -11,6 +11,7 @@ from app.models import (
     ChatRequest,
     CreateBranchRequest,
     DocumentSaveRequest,
+    LearningRequirementChecklistItem,
     RealtimeTranscriptLogRequest,
     UserView,
 )
@@ -23,6 +24,7 @@ from app.services.course_store import SqliteCourseStore, build_initial_workspace
 from app.services.openai_course_ai import (
     CourseChatReply,
     GeneratedResourceCatalog,
+    LearningRequirementUpdate,
     OpenAICourseAI,
     bind_text_model_selection,
     openai_course_ai,
@@ -53,6 +55,28 @@ def _seed_test_user_workspace(store: SqliteCourseStore):
 
 def _fake_teacher_message(**kwargs) -> str:
     return "AI生成：这是一段测试讲解。"
+
+
+def _fake_requirement_update(**kwargs) -> LearningRequirementUpdate:
+    return LearningRequirementUpdate(
+        progress=100,
+        summary="用户已经说明当前学习目标，可以进入后续板书阶段。",
+        checklist=[
+            LearningRequirementChecklistItem(
+                title="用户已经说明当前学习目标",
+                is_clear=True,
+                evidence="用户提出了当前要解决的学习问题。",
+            ),
+            LearningRequirementChecklistItem(
+                title="后续板书可以围绕该目标组织",
+                is_clear=True,
+                evidence="对话已经给出可继续展开的学习方向。",
+            ),
+        ],
+        missing_items=[],
+        next_question="",
+        ready_for_board=True,
+    )
 
 
 @pytest.fixture
@@ -471,6 +495,7 @@ def test_chat_route_returns_generic_teacher_reply(monkeypatch: pytest.MonkeyPatc
         "generate_teacher_chat",
         lambda **kwargs: CourseChatReply(teacher_message="AI生成：这是一段测试讲解。"),
     )
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
 
     lesson_id = _seed_test_user_workspace(store).packages[0].lessons[0].id
     response = chat_service.process_chat_on_lesson(
@@ -485,6 +510,37 @@ def test_chat_route_returns_generic_teacher_reply(monkeypatch: pytest.MonkeyPatc
     assert commit.metadata["kind"] == "chat_flow"
     assert commit.metadata["user_message"] == "请解释一下当前主题的核心问题"
     assert commit.metadata["assistant_message_source"] == "ai"
+    assert commit.metadata["learning_clarification"]["ready_for_board"] is True
+    assert response.learning_clarification.progress == 100
+    assert response.learning_clarification.checklist[0].is_clear is True
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_requirement_manager_keeps_low_substance_chat_unclear(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_teacher_chat",
+        lambda **kwargs: CourseChatReply(teacher_message="你好，我们可以先明确学习目标。"),
+    )
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", lambda **kwargs: None)
+
+    lesson_id = _seed_test_user_workspace(store).packages[0].lessons[0].id
+    response = chat_service.process_chat_on_lesson(
+        lesson_id,
+        ChatRequest(message="你好"),
+        user_id=TEST_USER.id,
+    )
+
+    assert response.learning_clarification.progress < 50
+    assert response.learning_clarification.ready_for_board is False
+    assert response.learning_clarification.next_question
+    assert response.learning_clarification.checklist
+    assert response.learning_clarification.checklist[0].is_clear is False
+    assert response.learning_clarification.missing_items == ["具体学习目标"]
     assert _read_log_entries(isolated_ai_log) == []
 
 
@@ -573,6 +629,7 @@ def test_document_ai_edit_returns_chat_guidance(
         return CourseChatReply(teacher_message="AI生成：这是修改建议。")
 
     monkeypatch.setattr(openai_course_ai, "generate_teacher_chat", _fake_chat)
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
 
     lesson_id = _seed_test_user_workspace(store).packages[0].lessons[0].id
     response = chat_service.document_ai_edit_request(
@@ -598,6 +655,7 @@ def test_chat_http_endpoint_returns_teacher_reply(
         "generate_teacher_chat",
         lambda **kwargs: CourseChatReply(teacher_message="AI生成：HTTP 路由回复。"),
     )
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
 
     workspace = _seed_test_user_workspace(store)
     lesson_id = workspace.packages[0].lessons[0].id

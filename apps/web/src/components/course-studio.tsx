@@ -887,6 +887,28 @@ function learningClarityFromCommit(commit: CommitRecord | null): LearningClarifi
       : [],
     can_start: record.can_start === true,
     forced_start: record.forced_start === true,
+    summary: typeof record.summary === "string" ? record.summary : "",
+    checklist: Array.isArray(record.checklist)
+      ? record.checklist
+          .flatMap((item) => {
+            if (!item || typeof item !== "object") {
+              return [];
+            }
+            const raw = item as unknown as Record<string, unknown>;
+            if (typeof raw.title !== "string") {
+              return [];
+            }
+            return [
+              {
+                title: raw.title,
+                is_clear: raw.is_clear === true,
+                evidence: typeof raw.evidence === "string" ? raw.evidence : "",
+              },
+            ];
+          })
+      : [],
+    next_question: typeof record.next_question === "string" ? record.next_question : "",
+    ready_for_board: record.ready_for_board === true,
   };
 }
 
@@ -2569,10 +2591,6 @@ export function CourseStudio() {
       : [];
   const composerSelection = selection && !selectionPopover ? selection : null;
 
-  const learningGoalItems = [
-    visibleLearningPurposeItem(activeRequirements?.learning_goal) ?? visibleLearningPurposeItem(activeLesson?.summary),
-    visibleLearningPurposeItem(activeRequirements?.success_criteria),
-  ].filter((item): item is string => item !== null);
   const clarityStatus: LearningClarificationStatus =
     previewLearningClarity ??
     learningClarity ?? {
@@ -2582,7 +2600,23 @@ export function CourseStudio() {
       missing_items: [],
       can_start: false,
       forced_start: false,
+      summary: "",
+      checklist: [],
+      next_question: "",
+      ready_for_board: false,
     };
+  const fallbackClarityItems = [
+    visibleLearningPurposeItem(activeRequirements?.learning_goal) ?? visibleLearningPurposeItem(activeLesson?.summary),
+    visibleLearningPurposeItem(activeRequirements?.success_criteria),
+  ]
+    .filter((item): item is string => item !== null)
+    .map((item, index) => ({
+      title: item,
+      is_clear: index === 0,
+      evidence: "",
+    }));
+  const clarityChecklistItems = clarityStatus.checklist.length ? clarityStatus.checklist : fallbackClarityItems;
+  const showReadyForBoardCard = !isPreviewMode && (clarityStatus.ready_for_board || clarityStatus.progress >= 100);
   const clarityBarTone =
     clarityStatus.progress >= 90
       ? "bg-emerald-500"
@@ -4213,21 +4247,50 @@ export function CourseStudio() {
                 {clarityStatus.reason ? (
                   <p className="mt-2 text-xs leading-6 text-blue-900">{clarityStatus.reason}</p>
                 ) : null}
-                {learningGoalItems.length ? (
+                {clarityChecklistItems.length ? (
                   <ul className="mt-3 space-y-2">
-                    {learningGoalItems.map((item, index) => (
-                      <li key={item} className="flex items-start gap-2.5 text-xs leading-relaxed text-blue-800">
-                        {index === 0 ? (
+                    {clarityChecklistItems.map((item) => (
+                      <li key={item.title} className="flex items-start gap-2.5 text-xs leading-relaxed text-blue-800">
+                        {item.is_clear ? (
                           <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-blue-500" />
                         ) : (
                           <Circle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-blue-300" />
                         )}
-                        <span>{item}</span>
+                        <span>
+                          <span className="block">{item.title}</span>
+                          {item.evidence ? (
+                            <span className="mt-1 block text-[11px] leading-5 text-blue-700/75">{item.evidence}</span>
+                          ) : null}
+                        </span>
                       </li>
                     ))}
                   </ul>
                 ) : null}
+                {clarityStatus.next_question && !clarityStatus.ready_for_board ? (
+                  <p className="mt-3 rounded-lg bg-white/70 px-3 py-2 text-xs leading-5 text-blue-900">
+                    {clarityStatus.next_question}
+                  </p>
+                ) : null}
               </div>
+
+              {showReadyForBoardCard ? (
+                <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+                  <p className="text-[11px] font-bold uppercase tracking-widest text-emerald-700">学习需求已清晰</p>
+                  <p className="mt-2 text-sm leading-6 text-emerald-950">
+                    {clarityStatus.summary || clarityStatus.reason}
+                  </p>
+                  <p className="mt-2 text-xs leading-6 text-emerald-900/80">
+                    接下来将基于这份学习需求生成板书，是否开始？
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => undefined}
+                    className="mt-3 inline-flex h-9 items-center justify-center rounded-lg bg-emerald-600 px-3 text-xs font-semibold text-white shadow-sm transition hover:bg-emerald-700"
+                  >
+                    开始生成板书
+                  </button>
+                </div>
+              ) : null}
 
               <div className="space-y-5">
                 {previewCommit ? (

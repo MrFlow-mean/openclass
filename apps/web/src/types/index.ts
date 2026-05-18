@@ -71,6 +71,12 @@ export interface LearningRequirementSheet {
   risk_notes: string[];
 }
 
+export interface LearningRequirementChecklistItem {
+  title: string;
+  is_clear: boolean;
+  evidence: string;
+}
+
 export interface LearningClarificationStatus {
   progress: number;
   label: string;
@@ -78,6 +84,10 @@ export interface LearningClarificationStatus {
   missing_items: string[];
   can_start: boolean;
   forced_start: boolean;
+  summary: string;
+  checklist: LearningRequirementChecklistItem[];
+  next_question: string;
+  ready_for_board: boolean;
 }
 
 export interface TeachingGuideMapping {
