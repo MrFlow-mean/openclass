@@ -33,20 +33,20 @@ def build_requirements(topic: str) -> LearningRequirementSheet:
 
     return LearningRequirementSheet(
         theme=normalized_topic,
-        learning_goal=f"围绕“{normalized_topic}”建立可讲授、可复习、可练习的结构化讲义",
-        level="根据用户背景和资料难度动态调整",
-        known_background="用户背景尚未完全明确，先采用循序渐进的讲解方式",
+        learning_goal="先澄清用户具体想学什么、当前水平、学习目的和使用场景，再决定讲解与板书方式。",
+        level="待确认用户在这个领域的已有基础、熟悉程度和卡点。",
+        known_background="用户背景尚未明确，需要通过对话了解已有经验、相关资料和学习约束。",
         current_questions=[
-            f"“{normalized_topic}”的核心问题是什么",
-            "它包含哪些关键概念、步骤或例子",
-            "学习后如何检查是否真正理解",
+            "你具体想学什么内容，或想解决哪个问题？",
+            "你在这个领域目前是什么水平，已经掌握了哪些基础？",
+            "你为什么学，之后要面对什么任务、场景或输出要求？",
         ],
         learning_need_checklist=[],
-        target_depth="能复述核心内容，并能用例子解释或完成基础练习",
+        target_depth="根据用户水平和目标场景动态决定讲到入门、理解、练习还是应用。",
         output_preference="根据用户目标、资料结构和交互意图动态决定输出形态",
         boundary="优先围绕当前主题展开，不自动跳到无关领域",
         board_scope=[],
-        success_criteria="用户能说清主线、解释关键概念，并完成至少一个检查问题",
+        success_criteria="用户能说明具体内容、已有基础、学习目的或应用场景后，再生成匹配的讲义与练习。",
     )
 
 

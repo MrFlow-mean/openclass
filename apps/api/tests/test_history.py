@@ -27,6 +27,12 @@ def test_build_lesson_for_topic_creates_blank_lesson_without_ai_runtime() -> Non
     assert lesson.title == "新的学习页"
     assert lesson.board_document.content_text == ""
     assert lesson.summary
+    assert "具体想学什么" in lesson.learning_requirements.learning_goal
+    assert lesson.learning_requirements.current_questions == [
+        "你具体想学什么内容，或想解决哪个问题？",
+        "你在这个领域目前是什么水平，已经掌握了哪些基础？",
+        "你为什么学，之后要面对什么任务、场景或输出要求？",
+    ]
 
 
 def test_refresh_lesson_runtime_uses_local_lesson_factory_only() -> None:
