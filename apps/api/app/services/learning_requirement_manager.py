@@ -17,6 +17,13 @@ from app.services.openai_course_ai import LearningRequirementUpdate, openai_cour
 
 MAX_CONTEXT_CHARS = 1800
 MAX_TURNS = 10
+INTERNAL_KEY_FACT_LABELS = {
+    "preferredoutput",
+    "outputpreference",
+    "输出偏好",
+    "输出形式",
+    "输出形态",
+}
 
 
 def _compact_text(value: str | None, *, limit: int = MAX_CONTEXT_CHARS) -> str:
@@ -64,12 +71,22 @@ def _fallback_update(*, lesson: Lesson, conversation: list[ConversationTurn]) ->
             key_facts=[],
             checklist=[
                 LearningRequirementChecklistItem(
-                    title="明确一个具体学习目标",
+                    title="用户具体想学什么内容或解决什么问题",
                     is_clear=False,
                     evidence="最近对话还没有说明要围绕哪个主题、资料或问题学习。",
-                )
+                ),
+                LearningRequirementChecklistItem(
+                    title="用户在这个领域目前是什么水平",
+                    is_clear=False,
+                    evidence="最近对话还没有说明已有基础、经验或卡点。",
+                ),
+                LearningRequirementChecklistItem(
+                    title="用户为什么学以及要面对什么场景",
+                    is_clear=False,
+                    evidence="最近对话还没有说明学习目的、任务场景或输出要求。",
+                ),
             ],
-            missing_items=["具体学习目标"],
+            missing_items=["具体学习内容", "当前水平", "学习目的或使用场景"],
             next_question="你想围绕哪个主题、资料或具体问题开始学习？",
             ready_for_board=False,
         )
@@ -87,20 +104,32 @@ def _fallback_update(*, lesson: Lesson, conversation: list[ConversationTurn]) ->
         ],
         checklist=[
             LearningRequirementChecklistItem(
-                title="捕捉到一条可继续澄清的学习请求",
+                title="已捕捉到用户具体想学的入口",
                 is_clear=True,
                 evidence=compact_goal,
             ),
             LearningRequirementChecklistItem(
-                title="补充生成板书所需的关键约束",
+                title="用户在这个领域目前是什么水平",
                 is_clear=False,
-                evidence="对话中还没有足够信息说明期望深度、使用方式或输出偏好。",
+                evidence="对话中还没有足够信息说明已有基础、经验或卡点。",
+            ),
+            LearningRequirementChecklistItem(
+                title="用户为什么学以及要面对什么场景",
+                is_clear=False,
+                evidence="对话中还没有足够信息说明学习目的、任务场景或输出要求。",
             ),
         ],
-        missing_items=["生成板书前仍需补充关键约束"],
-        next_question="你希望这份内容更偏讲解、复习、练习，还是解决某个具体问题？",
+        missing_items=["当前水平", "学习目的或使用场景"],
+        next_question="你现在对这个内容大概是什么水平：完全入门、了解一点，还是已经在解决具体问题？",
         ready_for_board=False,
     )
+
+
+def _is_internal_key_fact(item: LearningRequirementKeyFact) -> bool:
+    compact_label = re.sub(r"[\s_-]+", "", item.label).strip().lower()
+    if compact_label in INTERNAL_KEY_FACT_LABELS:
+        return True
+    return "preferredoutput" in compact_label or "outputpreference" in compact_label
 
 
 def _normalize_update(update: LearningRequirementUpdate) -> LearningRequirementUpdate:
@@ -111,7 +140,7 @@ def _normalize_update(update: LearningRequirementUpdate) -> LearningRequirementU
             evidence=_compact_text(item.evidence, limit=120),
         )
         for item in update.key_facts
-        if item.label.strip() and item.value.strip()
+        if item.label.strip() and item.value.strip() and not _is_internal_key_fact(item)
     ][:5]
     checklist = [
         LearningRequirementChecklistItem(
