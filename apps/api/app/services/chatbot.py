@@ -34,7 +34,7 @@ def _board_summary(lesson: Lesson) -> str:
     content = _compact_text(document.content_text, limit=MAX_CONTEXT_CHARS)
     if content:
         return content
-    return "当前板书暂无可讲解正文。"
+    return document.title or lesson.title
 
 
 def _resource_summary(resources: list[ResourceLibraryItem]) -> str:
@@ -68,12 +68,12 @@ def _fallback_teacher_message(
     message = _compact_text(request.message, limit=600)
     board_summary = _board_summary(lesson)
     parts = [
-        f"你问的是“{message}”。",
-        f"当前板书可讲解内容是：{board_summary}",
+        f"我先根据当前课程上下文回答：你问的是“{message}”。",
+        f"当前讲义线索是：{board_summary}",
     ]
     if selection_excerpt:
         parts.append(f"你引用的内容是：{selection_excerpt}")
-    parts.append("我只能讲解当前板书中已有的内容；如果要讲新的内容，需要先把它生成或补充到板书里。")
+    parts.append("如果你希望我继续，可以直接追问“再具体一点”“举个例子”或“按步骤讲”。")
     return "\n\n".join(parts)
 
 

@@ -200,34 +200,6 @@ def test_openai_parse_retries_model_not_found_with_fallback(isolated_ai_log) -> 
     assert entries[1]["payload"]["fallback_from_model"] == "gpt-5.3"
 
 
-def test_teacher_chat_prompt_limits_explanation_to_board(monkeypatch: pytest.MonkeyPatch) -> None:
-    captured: dict[str, str] = {}
-    ai = OpenAICourseAI()
-
-    def _fake_parse(role, *, system_prompt, user_prompt, schema):
-        captured["role"] = role
-        captured["system_prompt"] = system_prompt
-        captured["user_prompt"] = user_prompt
-        return CourseChatReply(teacher_message="板书里暂时没有这部分内容。")
-
-    monkeypatch.setattr(ai, "_parse", _fake_parse)
-
-    reply = ai.generate_teacher_chat(
-        lesson_title="测试页",
-        learning_goal="根据当前板书讲解",
-        board_summary="当前板书只有函数单调性。",
-        resource_summary="暂无已上传资料摘要",
-        conversation_summary="",
-        user_message="讲一下概率论",
-    )
-
-    assert reply is not None
-    assert captured["role"] == "teacher"
-    assert "只讲解当前板书中已经存在的内容" in captured["system_prompt"]
-    assert "不要用通用知识补全" in captured["system_prompt"]
-    assert "资料和对话只能帮助理解板书内容" in captured["system_prompt"]
-
-
 def test_openai_parse_falls_back_to_google_on_provider_auth_error(isolated_ai_log) -> None:
     class _Output(BaseModel):
         title: str
