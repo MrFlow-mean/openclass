@@ -200,6 +200,33 @@ def test_openai_parse_retries_model_not_found_with_fallback(isolated_ai_log) -> 
     assert entries[1]["payload"]["fallback_from_model"] == "gpt-5.3"
 
 
+def test_teacher_chat_prompt_uses_course_teacher_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, str] = {}
+    ai = OpenAICourseAI()
+
+    def _fake_parse(role, *, system_prompt, user_prompt, schema):
+        captured["role"] = role
+        captured["system_prompt"] = system_prompt
+        captured["user_prompt"] = user_prompt
+        return CourseChatReply(teacher_message="你好，我是 OpenClass 的课程讲师。")
+
+    monkeypatch.setattr(ai, "_parse", _fake_parse)
+
+    reply = ai.generate_teacher_chat(
+        lesson_title="测试页",
+        learning_goal="先澄清学习需求。",
+        board_summary="测试页",
+        resource_summary="暂无已上传资料摘要",
+        conversation_summary="",
+        user_message="你好",
+    )
+
+    assert reply is not None
+    assert captured["role"] == "teacher"
+    assert captured["system_prompt"].startswith("你是 OpenClass 的课程讲师。")
+    assert "AI 课程讲师" not in captured["system_prompt"]
+
+
 def test_openai_parse_falls_back_to_google_on_provider_auth_error(isolated_ai_log) -> None:
     class _Output(BaseModel):
         title: str

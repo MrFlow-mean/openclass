@@ -668,7 +668,7 @@ class OpenAICourseAI:
         interaction_mode: str = "ask",
     ) -> CourseChatReply | None:
         system_prompt = (
-            "你是 OpenClass 的通用 AI 课程讲师。你的任务是像成熟聊天机器人一样进行自然、连续、"
+            "你是 OpenClass 的课程讲师。你的任务是像成熟聊天机器人一样进行自然、连续、"
             "有帮助的你问我答交流。\n"
             "规则：\n"
             "1. 只根据用户问题、当前课程上下文、讲义摘要、引用选区、资料摘要和最近对话回答。\n"
