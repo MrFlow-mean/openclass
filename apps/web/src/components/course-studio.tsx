@@ -2620,7 +2620,6 @@ export function CourseStudio() {
       : clarityStatus.can_start
         ? "bg-blue-500"
         : "bg-amber-500";
-  const showClarityBadges = Boolean(clarityStatus.label || clarityStatus.forced_start);
 
   useEffect(() => {
     activeLessonRef.current = activeLesson;
@@ -4227,27 +4226,8 @@ export function CourseStudio() {
                     style={{ width: `${clarityStatus.progress}%` }}
                   />
                 </div>
-                {showClarityBadges ? (
-                  <div className="mt-3 flex flex-wrap items-center gap-2">
-                    {clarityStatus.label ? (
-                      <span className="rounded-full bg-blue-100 px-2.5 py-1 text-[10px] font-bold uppercase tracking-widest text-blue-700">
-                        {clarityStatus.label}
-                      </span>
-                    ) : null}
-                    {clarityStatus.forced_start ? (
-                      <span className="rounded-full bg-amber-100 px-2.5 py-1 text-[10px] font-bold uppercase tracking-widest text-amber-700">
-                        已按当前信息开始
-                      </span>
-                    ) : null}
-                  </div>
-                ) : null}
                 {clarityStatus.reason ? (
                   <p className="mt-2 text-xs leading-6 text-blue-900">{clarityStatus.reason}</p>
-                ) : null}
-                {clarityStatus.next_question && !clarityStatus.ready_for_board ? (
-                  <p className="mt-3 rounded-lg bg-white/70 px-3 py-2 text-xs leading-5 text-blue-900">
-                    {clarityStatus.next_question}
-                  </p>
                 ) : null}
               </div>
 
