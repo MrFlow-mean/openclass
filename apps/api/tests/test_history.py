@@ -1,9 +1,14 @@
 import pytest
 
-from app.models import PatchOperation
+from app.models import LearningRequirementSheet, PatchOperation
 from app.services.ai_workflow import WORKFLOW_REMOVED_DETAIL, course_workflow
 from app.services.chart_generation import extract_chart_data_fragments
-from app.services.course_runtime import build_lesson_for_topic, effective_requirements, refresh_lesson_runtime
+from app.services.course_runtime import (
+    build_lesson_for_topic,
+    effective_requirements,
+    normalize_requirements,
+    refresh_lesson_runtime,
+)
 from app.services.document_ops import apply_patch
 from app.services.history import create_branch, restore_commit
 from app.services.lesson_factory import create_empty_lesson, create_lesson
@@ -45,6 +50,39 @@ def test_refresh_lesson_runtime_uses_local_lesson_factory_only() -> None:
     assert lesson.learning_requirements.theme == "本地文档"
     assert lesson.teaching_guide.lesson_id == lesson.id
     assert effective_requirements(lesson).board_scope == ["第一段", "第二段"]
+
+
+def test_normalize_requirements_migrates_legacy_default_clarification() -> None:
+    requirements = LearningRequirementSheet(
+        theme="旧页面",
+        learning_goal="围绕“旧页面”建立可讲授、可复习、可练习的结构化讲义",
+        level="根据用户背景和资料难度动态调整",
+        known_background="用户背景尚未完全明确，先采用循序渐进的讲解方式",
+        current_questions=[
+            "“旧页面”的核心问题是什么",
+            "它包含哪些关键概念、步骤或例子",
+            "学习后如何检查是否真正理解",
+        ],
+        learning_need_checklist=[],
+        target_depth="能复述核心内容，并能用例子解释或完成基础练习",
+        output_preference="根据用户目标、资料结构和交互意图动态决定输出形态",
+        boundary="优先围绕当前主题展开，不自动跳到无关领域",
+        board_scope=[],
+        success_criteria="用户能说清主线、解释关键概念，并完成至少一个检查问题",
+    )
+    normalized = normalize_requirements(
+        requirements,
+        lesson_title="旧页面",
+        document=build_document(title="旧页面"),
+    )
+
+    assert normalized.current_questions == [
+        "你具体想学什么内容，或想解决哪个问题？",
+        "你在这个领域目前是什么水平，已经掌握了哪些基础？",
+        "你为什么学，之后要面对什么任务、场景或输出要求？",
+    ]
+    assert "具体想学什么" in normalized.learning_goal
+    assert "应用场景" in normalized.success_criteria
 
 
 def test_apply_patch_is_a_document_snapshot_compatibility_shim() -> None:

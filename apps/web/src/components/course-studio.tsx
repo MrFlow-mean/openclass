@@ -2627,16 +2627,28 @@ export function CourseStudio() {
       next_question: "",
       ready_for_board: false,
     };
-  const fallbackClarityItems = [
-    visibleLearningPurposeItem(activeRequirements?.learning_goal) ?? visibleLearningPurposeItem(activeLesson?.summary),
-    visibleLearningPurposeItem(activeRequirements?.success_criteria),
-  ]
+  const fallbackQuestionItems = (activeRequirements?.current_questions ?? [])
+    .map((item) => visibleLearningPurposeItem(item))
     .filter((item): item is string => item !== null)
-    .map((item, index) => ({
+    .slice(0, 3)
+    .map((item) => ({
       title: item,
-      is_clear: index === 0,
+      is_clear: false,
       evidence: "",
     }));
+  const fallbackClarityItems = fallbackQuestionItems.length
+    ? fallbackQuestionItems
+    : [
+        visibleLearningPurposeItem(activeRequirements?.learning_goal) ??
+          visibleLearningPurposeItem(activeLesson?.summary),
+        visibleLearningPurposeItem(activeRequirements?.success_criteria),
+      ]
+        .filter((item): item is string => item !== null)
+        .map((item) => ({
+          title: item,
+          is_clear: false,
+          evidence: "",
+        }));
   const clarityChecklistItems = clarityStatus.checklist.length ? clarityStatus.checklist : fallbackClarityItems;
   const clarityKeyFacts: LearningRequirementKeyFact[] = clarityStatus.key_facts.length
     ? clarityStatus.key_facts

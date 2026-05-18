@@ -22,6 +22,24 @@ def normalize_requirements(
 ) -> LearningRequirementSheet:
     normalized = LearningRequirementSheet.model_validate(requirements.model_dump(mode="json"))
     normalized.theme = lesson_title
+    default_requirements = build_requirements(lesson_title)
+    legacy_questions = [
+        f"“{lesson_title}”的核心问题是什么",
+        "它包含哪些关键概念、步骤或例子",
+        "学习后如何检查是否真正理解",
+    ]
+    legacy_defaults = {
+        "learning_goal": f"围绕“{lesson_title}”建立可讲授、可复习、可练习的结构化讲义",
+        "level": "根据用户背景和资料难度动态调整",
+        "known_background": "用户背景尚未完全明确，先采用循序渐进的讲解方式",
+        "target_depth": "能复述核心内容，并能用例子解释或完成基础练习",
+        "success_criteria": "用户能说清主线、解释关键概念，并完成至少一个检查问题",
+    }
+    for field_name, legacy_value in legacy_defaults.items():
+        if getattr(normalized, field_name) == legacy_value:
+            setattr(normalized, field_name, getattr(default_requirements, field_name))
+    if normalized.current_questions == legacy_questions:
+        normalized.current_questions = list(default_requirements.current_questions)
     normalized.board_scope = _document_outline(document)
     if not normalized.current_questions:
         normalized.current_questions = [f"如何理解 {lesson_title}"]
