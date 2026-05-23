@@ -65,7 +65,7 @@ BoardAction = Literal[
 SelectionKind = Literal["chat", "board"]
 BoardFocusSource = Literal["board", "resource", "chat"]
 BoardFocusLocationStatus = Literal["missing", "selected", "resolved", "ambiguous"]
-BoardSegmentKind = Literal["heading", "paragraph", "list", "table", "code", "image", "other"]
+BoardSegmentKind = Literal["heading", "paragraph", "list", "table", "code", "image", "formula", "other"]
 BoardTaskAction = Literal[
     "generate_board",
     "explain_target",
@@ -236,6 +236,27 @@ class BoardSegmentIndex(BaseModel):
     document_id: str
     document_title: str = ""
     segments: list[BoardSegment] = Field(default_factory=list)
+
+
+class DocumentSegmentSearchResult(BaseModel):
+    package_id: str
+    package_title: str
+    lesson_id: str
+    lesson_title: str
+    document_id: str
+    document_title: str
+    segment_id: str
+    kind: BoardSegmentKind
+    heading_path: list[str] = Field(default_factory=list)
+    order_index: int = 0
+    text: str = ""
+    text_hash: str = ""
+
+
+class DocumentSegmentSearchResponse(BaseModel):
+    query: str = ""
+    kind: BoardSegmentKind | None = None
+    results: list[DocumentSegmentSearchResult] = Field(default_factory=list)
 
 
 class BoardFocusRef(BaseModel):
@@ -756,6 +777,7 @@ class DocumentSaveRequest(BaseModel):
     label: str = "Manual document edit"
     message: str = "Saved rich document changes from the editor"
     metadata: dict[str, Any] = Field(default_factory=dict)
+    base_commit_id: str | None = None
 
 
 class DocumentAIEditRequest(BaseModel):

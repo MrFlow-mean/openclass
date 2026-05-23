@@ -4,15 +4,17 @@ import json
 import shutil
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 
 from app.models import (
+    BoardSegmentKind,
     ChatResponse,
     CoursePackageView,
     CreateBranchRequest,
     DocumentAIEditRequest,
     DocumentSaveRequest,
+    DocumentSegmentSearchResponse,
     ManualCommitRequest,
     RestoreCommitRequest,
     SwitchBranchRequest,
@@ -21,8 +23,8 @@ from app.models import (
 from app.routers.auth import current_user
 from app.services.chat_service import document_ai_edit_request
 from app.services.course_runtime import refresh_lesson_runtime
-from app.services.history import create_branch, restore_commit, switch_branch
-from app.services.rich_document import export_docx, import_docx
+from app.services.history import create_branch, current_head_commit, restore_commit, switch_branch
+from app.services.rich_document import document_changed, export_docx, import_docx
 from app.services.route_context import bind_ai_request_context
 from app.services.workspace_state import (
     EXPORT_DIR,
@@ -32,15 +34,38 @@ from app.services.workspace_state import (
     load_workspace_for_user,
     package_view_for_lesson,
     save_workspace_for_user,
+    search_document_segments_for_user,
 )
 
 router = APIRouter()
+
+
+@router.get("/api/documents/search", response_model=DocumentSegmentSearchResponse)
+def search_documents(
+    q: str = "",
+    kind: BoardSegmentKind | None = None,
+    limit: int = Query(20, ge=1, le=100),
+    user: UserView = Depends(current_user),
+) -> DocumentSegmentSearchResponse:
+    return DocumentSegmentSearchResponse(
+        query=q,
+        kind=kind,
+        results=search_document_segments_for_user(user.id, q, kind=kind, limit=limit),
+    )
 
 
 def _save_document_request(lesson_id: str, request: DocumentSaveRequest, user_id: str) -> CoursePackageView:
     workspace = load_workspace_for_user(user_id)
     package, lesson = find_lesson_package(workspace, lesson_id)
     package.active_lesson_id = lesson.id
+    current_head = current_head_commit(lesson)
+    is_autosave = request.metadata.get("autosave") is True or request.metadata.get("kind") == "auto_document_save"
+    if request.base_commit_id and request.base_commit_id != current_head.id:
+        if is_autosave:
+            return package_view_for_lesson(workspace, package, lesson.id)
+        raise HTTPException(status_code=409, detail="文档已在本次保存前更新，请刷新后再保存")
+    if not document_changed(lesson.board_document, request.document):
+        return package_view_for_lesson(workspace, package, lesson.id)
     with bind_ai_request_context(
         "/api/lessons/{lesson_id}/document/save",
         lesson=lesson,

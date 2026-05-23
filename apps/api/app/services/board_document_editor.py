@@ -13,6 +13,7 @@ from app.models import (
 from app.services.openai_course_ai import BoardDocumentEditResult, openai_course_ai
 from app.services.rich_document import (
     build_document,
+    document_to_markdown,
     document_changed,
     html_to_text,
     is_document_empty,
@@ -65,7 +66,7 @@ def generate_from_requirements(
             "板书文档编辑 AI 没有返回生成结果。",
         )
 
-    content_text, content_html = _edit_payload(result)
+    content_text, content_html = _edit_payload(result, prefer_content_html=False)
     if not content_text and not content_html:
         return _no_change(
             lesson,
@@ -153,7 +154,7 @@ def _apply_edit_result(
     result: BoardDocumentEditResult,
     selection_excerpt: str | None,
 ) -> BoardDocument:
-    content_text, content_html = _edit_payload(result)
+    content_text, content_html = _edit_payload(result, prefer_content_html=True)
     if not content_text and not content_html:
         return lesson.board_document
 
@@ -234,18 +235,18 @@ def _no_change(lesson: Lesson, reason: str) -> BoardDocumentEditOutcome:
     )
 
 
-def _edit_payload(result: BoardDocumentEditResult) -> tuple[str, str]:
+def _edit_payload(result: BoardDocumentEditResult, *, prefer_content_html: bool) -> tuple[str, str]:
     content_text = result.content_text.strip()
     content_html = result.content_html.strip()
     if not content_text and content_html:
         content_text = html_to_text(content_html)
-    if content_text:
+    if content_text and (not content_html or not prefer_content_html):
         content_html = text_to_html(content_text)
     return content_text, content_html
 
 
 def _document_text(document: BoardDocument) -> str:
-    return document.content_text or html_to_text(document.content_html)
+    return document_to_markdown(document) or document.content_text or html_to_text(document.content_html)
 
 
 def _target_excerpt(*, selection_excerpt: str | None, focus: BoardFocusRef | None) -> str | None:

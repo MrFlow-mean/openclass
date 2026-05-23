@@ -4,6 +4,7 @@ import sqlite3
 from app.models import BoardTeachingProgress, ResourceLibraryItem
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
 from app.services.lesson_factory import create_empty_lesson
+from app.services.rich_document import build_document
 
 
 def _append_lesson(workspace, title: str = "测试页面"):
@@ -51,6 +52,65 @@ def test_sqlite_store_round_trips_workspace_without_store_json(tmp_path) -> None
     assert package_count == 1
     assert lesson_count == 1
     assert commit_count == 1
+
+
+def test_sqlite_store_indexes_and_searches_board_document_segments(tmp_path) -> None:
+    db_path = tmp_path / "openclass.sqlite3"
+    store = SqliteCourseStore(db_path, legacy_json_path=None)
+
+    workspace = build_initial_workspace_state()
+    lesson = _append_lesson(workspace, "可检索页面")
+    lesson.board_document = build_document(
+        title="结构化文档",
+        content_text="## 检索标题\n\nThis paragraph has a retrieval anchor.\n\n$$\nE=mc^2\n$$",
+        content_json={
+            "type": "doc",
+            "content": [
+                {
+                    "type": "heading",
+                    "attrs": {"level": 2},
+                    "content": [{"type": "text", "text": "检索标题"}],
+                },
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "This paragraph has a retrieval anchor and "},
+                        {"type": "inlineMath", "attrs": {"latex": "x^2+y^2"}},
+                        {"type": "text", "text": "."},
+                    ],
+                },
+                {"type": "blockMath", "attrs": {"latex": "E=mc^2"}},
+            ],
+        },
+    )
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    store.save_for_user("user_a", workspace)
+
+    text_results = store.search_document_segments("retrieval anchor", owner_user_id="user_a")
+    formula_results = store.search_document_segments("", owner_user_id="user_a", kind="formula")
+    other_user_results = store.search_document_segments("retrieval anchor", owner_user_id="user_b")
+
+    assert [result.lesson_id for result in text_results] == [lesson.id]
+    assert text_results[0].heading_path == ["检索标题"]
+    assert "x^2+y^2" in text_results[0].text
+    assert [result.text for result in formula_results] == ["E=mc^2"]
+    assert other_user_results == []
+
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT kind, text
+            FROM board_document_segments
+            WHERE lesson_id = ?
+            ORDER BY order_index
+            """,
+            (lesson.id,),
+        ).fetchall()
+    assert rows == [
+        ("heading", "检索标题"),
+        ("paragraph", "This paragraph has a retrieval anchor and x^2+y^2 ."),
+        ("formula", "E=mc^2"),
+    ]
 
 
 def test_sqlite_store_imports_and_archives_legacy_store_json(tmp_path) -> None:

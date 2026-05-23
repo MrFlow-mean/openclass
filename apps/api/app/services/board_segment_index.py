@@ -17,6 +17,7 @@ INDEXABLE_NODE_TYPES = {
     "table",
     "codeBlock",
     "image",
+    "blockMath",
 }
 
 
@@ -89,7 +90,7 @@ def _collect_segments(
             )
         return
 
-    if node_type in {"paragraph", "codeBlock", "image"}:
+    if node_type in {"paragraph", "codeBlock", "image", "blockMath"}:
         text = compact_segment_text(_node_text(node), limit=1200)
         if text or node_type == "image":
             _append_segment(
@@ -156,6 +157,11 @@ def _append_segment(
 
 
 def _node_text(node: dict[str, Any]) -> str:
+    node_type = node.get("type")
+    if node_type in {"inlineMath", "blockMath"}:
+        attrs = node.get("attrs")
+        latex = attrs.get("latex") if isinstance(attrs, dict) else ""
+        return str(latex or "").strip()
     text = node.get("text")
     if isinstance(text, str):
         return text
@@ -189,6 +195,8 @@ def _segment_kind(node_type: str) -> BoardSegmentKind:
         return "table"
     if node_type == "image":
         return "image"
+    if node_type in {"inlineMath", "blockMath"}:
+        return "formula"
     if node_type in INDEXABLE_NODE_TYPES:
         return node_type  # type: ignore[return-value]
     return "other"

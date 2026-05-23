@@ -1,7 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import clsx from "clsx";
+import katex from "katex";
 import {
   ArrowRight,
   Check,
@@ -51,6 +52,78 @@ function splitMarkdownBlocks(content: string): Array<{ kind: "text" | "code"; va
   return blocks.length ? blocks : [{ kind: "text", value: content }];
 }
 
+type MathSegment =
+  | {
+      kind: "text";
+      value: string;
+    }
+  | {
+      kind: "math";
+      displayMode: boolean;
+      value: string;
+    };
+
+const CHAT_MATH_PATTERN = /\\\((.+?)\\\)|\\\[([\s\S]+?)\\\]|\$\$([\s\S]+?)\$\$|\$(?!\d+\$)([^$\n]+?)\$(?!\d)/g;
+
+function splitMathSegments(content: string): MathSegment[] {
+  const segments: MathSegment[] = [];
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+
+  CHAT_MATH_PATTERN.lastIndex = 0;
+  while ((match = CHAT_MATH_PATTERN.exec(content)) !== null) {
+    if (match.index > cursor) {
+      segments.push({ kind: "text", value: content.slice(cursor, match.index) });
+    }
+    segments.push({
+      kind: "math",
+      displayMode: Boolean(match[2] || match[3]),
+      value: (match[1] ?? match[2] ?? match[3] ?? match[4] ?? "").trim(),
+    });
+    cursor = CHAT_MATH_PATTERN.lastIndex;
+  }
+
+  if (cursor < content.length) {
+    segments.push({ kind: "text", value: content.slice(cursor) });
+  }
+
+  return segments.length ? segments : [{ kind: "text", value: content }];
+}
+
+function renderMath(latex: string, displayMode: boolean) {
+  return katex.renderToString(latex, {
+    displayMode,
+    throwOnError: false,
+    strict: "ignore",
+  });
+}
+
+function TextWithMath({ content }: { content: string }) {
+  const nodes: ReactNode[] = [];
+
+  splitMathSegments(content).forEach((segment, index) => {
+    if (segment.kind === "text") {
+      if (segment.value) {
+        nodes.push(segment.value);
+      }
+      return;
+    }
+
+    nodes.push(
+      <span
+        key={`math-${index}`}
+        className={clsx(
+          "max-w-full overflow-x-auto align-middle",
+          segment.displayMode ? "my-2 block" : "inline-block"
+        )}
+        dangerouslySetInnerHTML={{ __html: renderMath(segment.value, segment.displayMode) }}
+      />
+    );
+  });
+
+  return <>{nodes}</>;
+}
+
 function ChatMessageContent({ content }: { content: string }) {
   return (
     <div className="space-y-3">
@@ -71,7 +144,7 @@ function ChatMessageContent({ content }: { content: string }) {
           .filter(Boolean)
           .map((paragraph, paragraphIndex) => (
             <p key={`${block.kind}-${index}-${paragraphIndex}`} className="whitespace-pre-wrap break-words">
-              {paragraph}
+              <TextWithMath content={paragraph} />
             </p>
           ));
       })}

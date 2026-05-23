@@ -16,6 +16,7 @@ from app.services.resource_library import _epub_section_body_score, build_resour
 from app.services.board_segment_index import build_board_segment_index
 from app.services.rich_document import (
     build_document,
+    document_to_markdown,
     export_docx,
     import_docx,
     replace_selection_in_document,
@@ -226,6 +227,26 @@ def test_build_document_converts_markdown_to_word_like_rich_nodes() -> None:
         for mark in child.get("marks", [])
         if isinstance(mark, dict)
     )
+
+
+def test_document_to_markdown_preserves_rich_structure_for_ai_edit_context() -> None:
+    document = build_document(
+        title="Doc",
+        content_html=(
+            "<h2>Dialogue</h2>"
+            "<p><strong>Speaker A:</strong> Hello there.</p>"
+            "<ul><li><strong>Goal:</strong> Keep structure</li></ul>"
+            "<table><tbody><tr><th>Term</th><th>Meaning</th></tr>"
+            "<tr><td>hello</td><td>greeting</td></tr></tbody></table>"
+        ),
+    )
+
+    markdown = document_to_markdown(document)
+
+    assert "## Dialogue" in markdown
+    assert "**Speaker A:** Hello there." in markdown
+    assert "- **Goal:** Keep structure" in markdown
+    assert "| Term | Meaning |" in markdown
 
 
 def test_replace_selection_preserves_existing_rich_document_structure() -> None:

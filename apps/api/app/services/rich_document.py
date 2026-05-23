@@ -640,6 +640,123 @@ def html_to_tiptap_doc(content_html: str) -> dict[str, Any]:
     return {"type": "doc", "content": nodes or [{"type": "paragraph"}]}
 
 
+def _markdown_escape(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("|", "\\|")
+
+
+def _markdown_inline(nodes: list[dict[str, Any]]) -> str:
+    parts: list[str] = []
+    for node in nodes:
+        node_type = node.get("type")
+        if node_type == "text":
+            text = str(node.get("text") or "")
+            mark_types = [
+                mark.get("type")
+                for mark in node.get("marks", [])
+                if isinstance(mark, dict)
+            ]
+            if "code" in mark_types:
+                text = f"`{text}`"
+            if "bold" in mark_types:
+                text = f"**{text}**"
+            if "italic" in mark_types:
+                text = f"*{text}*"
+            parts.append(text)
+        elif node_type == "hardBreak":
+            parts.append("\n")
+        elif node_type == "inlineMath":
+            latex = str(node.get("attrs", {}).get("latex") or "").strip()
+            if latex:
+                parts.append(f"${latex}$")
+        elif isinstance(node.get("content"), list):
+            parts.append(_markdown_inline(node["content"]))
+    return "".join(parts)
+
+
+def _markdown_blocks(nodes: list[dict[str, Any]], *, list_depth: int = 0) -> list[str]:
+    blocks: list[str] = []
+    for node in nodes:
+        node_type = node.get("type")
+        content = node.get("content", [])
+        if not isinstance(content, list):
+            content = []
+        if node_type == "heading":
+            level = int(node.get("attrs", {}).get("level") or 1)
+            blocks.append(f"{'#' * min(max(level, 1), 6)} {_markdown_inline(content).strip()}".rstrip())
+        elif node_type == "paragraph":
+            blocks.append(_markdown_inline(content).strip())
+        elif node_type == "blockquote":
+            quoted = _markdown_blocks(content)
+            blocks.extend(f"> {line}" if line else ">" for line in quoted)
+        elif node_type in {"bulletList", "orderedList"}:
+            for index, item in enumerate(content, start=1):
+                if not isinstance(item, dict):
+                    continue
+                item_blocks = _markdown_blocks(item.get("content", []), list_depth=list_depth + 1)
+                if not item_blocks:
+                    continue
+                marker = "-" if node_type == "bulletList" else f"{index}."
+                indent = "  " * list_depth
+                blocks.append(f"{indent}{marker} {item_blocks[0]}")
+                blocks.extend(f"{indent}  {line}" for line in item_blocks[1:])
+        elif node_type == "table":
+            rows: list[list[str]] = []
+            for row in content:
+                if not isinstance(row, dict) or row.get("type") != "tableRow":
+                    continue
+                cells: list[str] = []
+                for cell in row.get("content", []):
+                    if not isinstance(cell, dict):
+                        continue
+                    cell_text = " ".join(
+                        line.strip()
+                        for line in _markdown_blocks(cell.get("content", []))
+                        if line.strip()
+                    )
+                    cells.append(_markdown_escape(cell_text))
+                if cells:
+                    rows.append(cells)
+            if rows:
+                width = max(len(row) for row in rows)
+                normalized_rows = [row + [""] * (width - len(row)) for row in rows]
+                blocks.append("| " + " | ".join(normalized_rows[0]) + " |")
+                blocks.append("| " + " | ".join("---" for _ in range(width)) + " |")
+                for row in normalized_rows[1:]:
+                    blocks.append("| " + " | ".join(row) + " |")
+        elif node_type == "blockMath":
+            latex = str(node.get("attrs", {}).get("latex") or "").strip()
+            if latex:
+                blocks.append(f"$$\n{latex}\n$$")
+        elif node_type == "pageBreak":
+            blocks.append("---")
+        elif node_type == "image":
+            attrs = node.get("attrs", {})
+            src = str(attrs.get("src") or "").strip()
+            alt = str(attrs.get("alt") or "").strip()
+            if src:
+                blocks.append(f"![{alt}]({src})")
+        elif content:
+            blocks.extend(_markdown_blocks(content, list_depth=list_depth))
+    return blocks
+
+
+def document_to_markdown(document: BoardDocument) -> str:
+    source_json = document.content_json if isinstance(document.content_json, dict) else {}
+    content = source_json.get("content")
+    if isinstance(content, list) and content:
+        markdown = "\n\n".join(line for line in _markdown_blocks(content) if line is not None).strip()
+        if markdown:
+            return markdown
+    if document.content_html.strip():
+        parsed = html_to_tiptap_doc(document.content_html)
+        parsed_content = parsed.get("content", [])
+        if isinstance(parsed_content, list):
+            markdown = "\n\n".join(line for line in _markdown_blocks(parsed_content) if line is not None).strip()
+            if markdown:
+                return markdown
+    return document.content_text.strip()
+
+
 def build_document(
     *,
     title: str,

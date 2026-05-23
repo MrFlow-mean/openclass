@@ -7,8 +7,10 @@ from dotenv import load_dotenv
 from fastapi import HTTPException
 
 from app.models import (
+    BoardSegmentKind,
     CoursePackage,
     CoursePackageView,
+    DocumentSegmentSearchResult,
     Lesson,
     LessonView,
     ResourceLibraryItem,
@@ -68,6 +70,16 @@ def load_workspace_for_user(user_id: str) -> WorkspaceState:
 
 def save_workspace_for_user(user_id: str, workspace: WorkspaceState) -> None:
     STORE.save_for_user(user_id, workspace)
+
+
+def search_document_segments_for_user(
+    user_id: str,
+    query: str = "",
+    *,
+    kind: BoardSegmentKind | None = None,
+    limit: int = 20,
+) -> list[DocumentSegmentSearchResult]:
+    return STORE.search_document_segments(query, owner_user_id=user_id, kind=kind, limit=limit)
 
 
 def get_package(workspace: WorkspaceState, package_id: str) -> CoursePackage:

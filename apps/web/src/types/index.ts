@@ -485,6 +485,7 @@ export interface DocumentSavePayload {
   label?: string;
   message?: string;
   metadata?: Record<string, unknown>;
+  base_commit_id?: string | null;
 }
 
 export interface DocumentAIEditPayload {

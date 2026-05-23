@@ -384,6 +384,109 @@ def test_openai_compat_chat_completions_mode_parses_json(isolated_ai_log) -> Non
     assert entries[0]["payload"]["output_text"] == '{"title":"勾股定理"}'
 
 
+def test_chat_completions_accepts_jsonish_object_response(isolated_ai_log) -> None:
+    class _Output(BaseModel):
+        title: str
+
+    class _Message:
+        content = '{title:"勾股定理"}'
+
+    class _Choice:
+        message = _Message()
+
+    class _Response:
+        id = "chatcmpl_jsonish"
+        choices = [_Choice()]
+        usage = {"total_tokens": 12}
+
+    class _FakeChatCompletions:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def create(self, **kwargs):
+            self.calls += 1
+            return _Response()
+
+    class _FakeChat:
+        def __init__(self) -> None:
+            self.completions = _FakeChatCompletions()
+
+    class _FakeClient:
+        def __init__(self) -> None:
+            self.chat = _FakeChat()
+
+    ai = OpenAICourseAI()
+    ai.client = _FakeClient()
+    ai.config.compat_api = "chat_completions"
+    ai.config.default_model = "gpt-5.4"
+    ai.config.pm_model = "gpt-5.4"
+
+    with bind_text_model_selection(AIModelSelection(provider="openai", model="gpt-5.4")):
+        result = ai._parse("pm", "system", "user", _Output)
+
+    assert result is not None
+    assert result.title == "勾股定理"
+    assert ai.client.chat.completions.calls == 1
+
+
+def test_chat_completions_repairs_unparseable_structured_response(isolated_ai_log) -> None:
+    class _Output(BaseModel):
+        title: str
+
+    class _Message:
+        def __init__(self, content: str) -> None:
+            self.content = content
+
+    class _Choice:
+        def __init__(self, content: str) -> None:
+            self.message = _Message(content)
+
+    class _Response:
+        def __init__(self, content: str, response_id: str) -> None:
+            self.id = response_id
+            self.choices = [_Choice(content)]
+            self.usage = {"total_tokens": 12}
+
+    class _FakeChatCompletions:
+        def __init__(self) -> None:
+            self.payloads = []
+
+        def create(self, **kwargs):
+            self.payloads.append(kwargs)
+            if len(self.payloads) == 1:
+                return _Response("勾股定理", "chatcmpl_bad")
+            return _Response('{"title":"勾股定理"}', "chatcmpl_repaired")
+
+    class _FakeChat:
+        def __init__(self) -> None:
+            self.completions = _FakeChatCompletions()
+
+    class _FakeClient:
+        def __init__(self) -> None:
+            self.chat = _FakeChat()
+
+    ai = OpenAICourseAI()
+    ai.client = _FakeClient()
+    ai.config.compat_api = "chat_completions"
+    ai.config.default_model = "gpt-5.4"
+    ai.config.pm_model = "gpt-5.4"
+
+    with bind_text_model_selection(AIModelSelection(provider="openai", model="gpt-5.4")):
+        result = ai._parse("pm", "system", "user", _Output)
+
+    assert result is not None
+    assert result.title == "勾股定理"
+    assert len(ai.client.chat.completions.payloads) == 2
+    repair_messages = ai.client.chat.completions.payloads[1]["messages"]
+    assert repair_messages[-2]["role"] == "assistant"
+    assert repair_messages[-2]["content"] == "勾股定理"
+
+    entries = _read_log_entries(isolated_ai_log)
+    assert entries[0]["event_type"] == "openai_text_call"
+    assert entries[0]["payload"]["response_id"] == "chatcmpl_repaired"
+    assert entries[0]["payload"]["output_text"] == '{"title":"勾股定理"}'
+
+
 def test_openai_defaults_to_official_openai_and_gpt_image_2(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
@@ -1691,6 +1794,97 @@ def test_document_save_route_keeps_autosave_metadata(monkeypatch: pytest.MonkeyP
     assert commit.metadata["autosave_reason"] == "pagehide"
 
 
+def test_stale_autosave_does_not_overwrite_newer_board_commit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    base_commit_id = lesson.history_graph.commits[-1].id
+    stale_document = lesson.board_document.model_copy(deep=True)
+    stale_document.content_html = "<p>旧草稿自动保存</p>"
+    stale_document.content_text = "旧草稿自动保存"
+
+    lesson.board_document = build_document(
+        title=lesson.board_document.title,
+        content_text="AI 编辑后的新版书内容",
+        document_id=lesson.board_document.id,
+        page_settings=lesson.board_document.page_settings,
+    )
+    workspace_state.commit_document_snapshot(
+        lesson,
+        label="Board target edit",
+        message="Edited selected board content",
+        metadata={"kind": "board_document_edit"},
+    )
+    store.save_for_user(TEST_USER.id, workspace)
+    newer_head_id = lesson.history_graph.commits[-1].id
+
+    package = documents_router.save_document(
+        lesson.id,
+        DocumentSaveRequest(
+            document=stale_document,
+            label="Auto Save",
+            message="Auto-saved Word-like rich document changes from the editor",
+            metadata={
+                "kind": "auto_document_save",
+                "autosave": True,
+                "autosave_reason": "debounce",
+                "source": "word_board_editor",
+            },
+            base_commit_id=base_commit_id,
+        ),
+        user=TEST_USER,
+    )
+
+    updated_lesson = next(current for current in package.lessons if current.id == lesson.id)
+    assert updated_lesson.board_document.content_text == "AI 编辑后的新版书内容"
+    assert updated_lesson.history_graph.commits[-1].id == newer_head_id
+    assert len(updated_lesson.history_graph.commits) == 2
+
+
+def test_stale_manual_document_save_is_rejected(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    base_commit_id = lesson.history_graph.commits[-1].id
+    stale_document = lesson.board_document.model_copy(deep=True)
+    stale_document.content_text = "手动保存的旧草稿"
+
+    lesson.board_document = build_document(
+        title=lesson.board_document.title,
+        content_text="服务端已有更新",
+        document_id=lesson.board_document.id,
+        page_settings=lesson.board_document.page_settings,
+    )
+    workspace_state.commit_document_snapshot(
+        lesson,
+        label="Board target edit",
+        message="Edited selected board content",
+        metadata={"kind": "board_document_edit"},
+    )
+    store.save_for_user(TEST_USER.id, workspace)
+
+    with pytest.raises(HTTPException) as exc_info:
+        documents_router.save_document(
+            lesson.id,
+            DocumentSaveRequest(
+                document=stale_document,
+                label="Manual document edit",
+                message="Saved Word-like rich document changes from the editor",
+                metadata={"kind": "manual_document_save"},
+                base_commit_id=base_commit_id,
+            ),
+            user=TEST_USER,
+        )
+
+    assert exc_info.value.status_code == 409
+
+
 def test_document_save_beacon_accepts_plain_text_json(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
     monkeypatch.setattr(workspace_state, "STORE", store)
@@ -1889,6 +2083,57 @@ def test_document_ai_edit_updates_selected_board_content(
     assert commit.metadata["task_requirement_sheet"]["action_type"] == "rewrite_target"
     assert commit.metadata["active_requirement_sheet_after"] is None
     assert captured == {"selection_excerpt": "原文", "intent": "edit_existing_document"}
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_document_ai_edit_uses_rich_markdown_context_and_keeps_html_marks(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    captured: dict[str, str | None] = {}
+
+    def _fake_board_edit(**kwargs):
+        captured["current_document_text"] = kwargs.get("current_document_text")
+        captured["selection_excerpt"] = kwargs.get("selection_excerpt")
+        return BoardDocumentEditResult(
+            operation="replace_selection",
+            content_text="Speaker A: Simpler target.",
+            content_html="<p><strong>Speaker A:</strong> Simpler target.</p>",
+            summary="改写了选中内容。",
+        )
+
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _fake_board_edit)
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.board_document = build_document(
+        title="已有板书",
+        content_html=(
+            "<h2>Dialogue</h2>"
+            "<p><strong>Speaker A:</strong> Original target.</p>"
+            "<ul><li><strong>Goal:</strong> Keep structure</li></ul>"
+        ),
+    )
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.document_ai_edit_request(
+        lesson.id,
+        "改写选中内容",
+        "Speaker A: Original target.",
+        [],
+        user_id=TEST_USER.id,
+    )
+
+    updated_document = response.course_package.lessons[0].board_document
+    assert captured["selection_excerpt"] == "Speaker A: Original target."
+    assert "## Dialogue" in (captured["current_document_text"] or "")
+    assert "**Speaker A:** Original target." in (captured["current_document_text"] or "")
+    assert "<h2>Dialogue</h2>" in updated_document.content_html
+    assert "<strong>Speaker A:</strong> Simpler target." in updated_document.content_html
+    assert "<strong>Goal:</strong> Keep structure" in updated_document.content_html
     assert _read_log_entries(isolated_ai_log) == []
 
 

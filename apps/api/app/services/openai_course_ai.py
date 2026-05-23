@@ -6,6 +6,7 @@ import os
 import re
 import ssl
 import base64
+import ast
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -105,6 +106,39 @@ def _compact_json(data: Any) -> str:
     return json.dumps(data, ensure_ascii=False, separators=(",", ":"))
 
 
+def _json_loads_lenient(value: str) -> Any:
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError as exc:
+        first_error = exc
+
+    try:
+        parsed = ast.literal_eval(value)
+        if isinstance(parsed, dict | list):
+            return parsed
+    except (SyntaxError, ValueError):
+        pass
+
+    quoted_keys = re.sub(
+        r"([{\[,]\s*)([A-Za-z_][A-Za-z0-9_]*)\s*:",
+        lambda match: f'{match.group(1)}"{match.group(2)}":',
+        value,
+    )
+    if quoted_keys != value:
+        try:
+            return json.loads(quoted_keys)
+        except json.JSONDecodeError:
+            pass
+        try:
+            parsed = ast.literal_eval(quoted_keys)
+            if isinstance(parsed, dict | list):
+                return parsed
+        except (SyntaxError, ValueError):
+            pass
+
+    raise first_error
+
+
 def _extract_json_object(text: str) -> Any:
     stripped = text.strip()
     if not stripped:
@@ -113,15 +147,22 @@ def _extract_json_object(text: str) -> Any:
         stripped = re.sub(r"^```(?:json)?\s*", "", stripped, flags=re.IGNORECASE)
         stripped = re.sub(r"\s*```$", "", stripped)
     try:
-        return json.loads(stripped)
+        return _json_loads_lenient(stripped)
     except json.JSONDecodeError:
         pass
 
     start = stripped.find("{")
     end = stripped.rfind("}")
     if start >= 0 and end > start:
-        return json.loads(stripped[start : end + 1])
+        return _json_loads_lenient(stripped[start : end + 1])
     raise ValueError("Model response did not contain a JSON object")
+
+
+class AIOutputParseError(ValueError):
+    def __init__(self, message: str, *, output_text: str | None = None, repair_output_text: str | None = None) -> None:
+        super().__init__(message)
+        self.output_text = output_text
+        self.repair_output_text = repair_output_text
 
 
 @dataclass
@@ -1030,8 +1071,53 @@ class OpenAICourseAI:
             response = client.chat.completions.create(model=model, messages=messages)
 
         output_text = self._chat_completion_text(response)
+        try:
+            output_parsed = schema.model_validate(_extract_json_object(output_text))
+        except Exception as exc:
+            repair_prompt = (
+                "The previous response could not be parsed as valid JSON. "
+                "Reformat the same answer as valid JSON that matches this JSON schema. "
+                "Do not add new content. Return only JSON:\n"
+                f"{_compact_json(schema_payload)}"
+            )
+            try:
+                repair_response = client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        *messages,
+                        {"role": "assistant", "content": output_text},
+                        {"role": "user", "content": repair_prompt},
+                    ],
+                    response_format={
+                        "type": "json_schema",
+                        "json_schema": {
+                            "name": schema.__name__,
+                            "schema": schema_payload,
+                            "strict": True,
+                        },
+                    },
+                )
+            except Exception as repair_request_exc:
+                raise AIOutputParseError(str(exc), output_text=output_text) from repair_request_exc
+
+            repair_output_text = self._chat_completion_text(repair_response)
+            try:
+                output_parsed = schema.model_validate(_extract_json_object(repair_output_text))
+            except Exception as repair_parse_exc:
+                raise AIOutputParseError(
+                    str(repair_parse_exc),
+                    output_text=output_text,
+                    repair_output_text=repair_output_text,
+                ) from repair_parse_exc
+            return ParsedAIResponse(
+                output_parsed=output_parsed,
+                id=getattr(repair_response, "id", None),
+                output_text=repair_output_text,
+                usage=getattr(repair_response, "usage", None),
+            )
+
         return ParsedAIResponse(
-            output_parsed=schema.model_validate(_extract_json_object(output_text)),
+            output_parsed=output_parsed,
             id=getattr(response, "id", None),
             output_text=output_text,
             usage=getattr(response, "usage", None),
@@ -1427,6 +1513,8 @@ class OpenAICourseAI:
                 self._log_event_name(provider, "_error"),
                 **call_details,
                 error=str(exc),
+                output_text=getattr(exc, "output_text", None),
+                repair_output_text=getattr(exc, "repair_output_text", None),
             )
             logger.warning("%s %s call failed, falling back to heuristic flow: %s", provider, role, exc)
             return None

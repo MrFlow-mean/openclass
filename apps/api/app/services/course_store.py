@@ -9,19 +9,22 @@ from typing import Any
 
 from app.models import (
     BoardDocument,
+    BoardSegmentKind,
     BranchRef,
     CommitRecord,
     CourseGraphEdge,
     CoursePackage,
+    DocumentSegmentSearchResult,
     Lesson,
     LessonHistoryGraph,
     LibraryChapter,
     ResourceLibraryItem,
     WorkspaceState,
 )
+from app.services.document_segment_store import DocumentSegmentStore
 from app.services.rich_document import upgrade_markdown_like_document
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 def _active_package_setting_key(owner_user_id: str | None) -> str:
@@ -35,6 +38,7 @@ class SqliteCourseStore:
         self.path = path
         self.legacy_json_path = legacy_json_path
         self._lock = threading.RLock()
+        self._document_segments = DocumentSegmentStore()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
@@ -79,6 +83,24 @@ class SqliteCourseStore:
             with self._connect() as conn:
                 with conn:
                     self._replace_workspace(conn, workspace, owner_user_id=owner_user_id)
+
+    def search_document_segments(
+        self,
+        query: str = "",
+        *,
+        owner_user_id: str | None = None,
+        kind: BoardSegmentKind | None = None,
+        limit: int = 20,
+    ) -> list[DocumentSegmentSearchResult]:
+        with self._lock:
+            with self._connect() as conn:
+                return self._document_segments.search(
+                    conn,
+                    query,
+                    owner_user_id=owner_user_id,
+                    kind=kind,
+                    limit=limit,
+                )
 
     def _initialize(self) -> None:
         with self._lock:
@@ -141,6 +163,30 @@ class SqliteCourseStore:
 
             CREATE INDEX IF NOT EXISTS idx_lessons_package
                 ON lessons(package_id, sort_order);
+
+            CREATE TABLE IF NOT EXISTS board_document_segments (
+                lesson_id TEXT NOT NULL REFERENCES lessons(id) ON DELETE CASCADE,
+                document_id TEXT NOT NULL,
+                segment_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                order_index INTEGER NOT NULL,
+                heading_path_json TEXT NOT NULL,
+                text TEXT NOT NULL,
+                text_hash TEXT NOT NULL,
+                parent_id TEXT,
+                before_segment_id TEXT,
+                after_segment_id TEXT,
+                PRIMARY KEY (lesson_id, segment_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_board_document_segments_lesson
+                ON board_document_segments(lesson_id, order_index);
+
+            CREATE INDEX IF NOT EXISTS idx_board_document_segments_kind
+                ON board_document_segments(kind, lesson_id);
+
+            CREATE INDEX IF NOT EXISTS idx_board_document_segments_hash
+                ON board_document_segments(text_hash);
 
             CREATE TABLE IF NOT EXISTS package_open_lessons (
                 package_id TEXT NOT NULL REFERENCES course_packages(id) ON DELETE CASCADE,
@@ -244,6 +290,8 @@ class SqliteCourseStore:
             """
         )
         self._migrate_schema(conn)
+        self._document_segments.create_fts_schema(conn)
+        self._document_segments.backfill(conn, _document_from_row)
         conn.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_course_packages_owner
@@ -520,6 +568,7 @@ class SqliteCourseStore:
         owner_user_id: str | None = None,
     ) -> None:
         setting_key = _active_package_setting_key(owner_user_id)
+        self._document_segments.delete_for_owner(conn, owner_user_id)
         if owner_user_id is None:
             conn.execute("DELETE FROM workspace_settings")
             conn.execute("DELETE FROM course_packages")
@@ -627,6 +676,7 @@ class SqliteCourseStore:
                 lesson.updated_at,
             ),
         )
+        self._document_segments.replace_segments(conn, lesson.id, document)
         for commit_index, commit in enumerate(lesson.history_graph.commits):
             self._insert_commit(conn, lesson.id, commit, commit_index)
         for branch in lesson.history_graph.branches.values():
