@@ -240,6 +240,45 @@ def test_chatbot_reply_prompt_uses_chatbot_identity(monkeypatch: pytest.MonkeyPa
     assert "AI Chatbot" not in captured["system_prompt"]
 
 
+def test_board_document_generation_prompt_requests_substantial_default_length(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, str] = {}
+    ai = OpenAICourseAI()
+
+    def _fake_parse(role, *, system_prompt, user_prompt, schema):
+        captured["role"] = role
+        captured["system_prompt"] = system_prompt
+        captured["user_prompt"] = user_prompt
+        return BoardDocumentEditResult(
+            operation="replace_document",
+            title="通用主题板书",
+            content_text="# 通用主题板书\n## 第一节\n正文",
+            summary="生成了完整板书。",
+            section_titles=["第一节"],
+        )
+
+    monkeypatch.setattr(ai, "_parse", _fake_parse)
+
+    result = ai.generate_board_document_edit(
+        intent="generate_from_requirements",
+        lesson_title="测试页",
+        learning_requirement_context={"summary": "用户已经给出学习目标。"},
+        current_document_title="空白板书",
+        current_document_text="",
+        resource_summary="暂无已上传资料摘要",
+        conversation_summary="",
+        user_instruction="开始生成板书",
+    )
+
+    assert result is not None
+    assert captured["role"] == "board"
+    assert "完整文档篇幅生成" in captured["system_prompt"]
+    assert "6-8 个主要 H2 小节" in captured["system_prompt"]
+    assert "不少于 3000 个中文字符" in captured["system_prompt"]
+    assert "较完整篇幅展开" in captured["user_prompt"]
+
+
 def test_openai_parse_falls_back_to_google_on_provider_auth_error(isolated_ai_log) -> None:
     class _Output(BaseModel):
         title: str

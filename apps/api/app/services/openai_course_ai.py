@@ -785,7 +785,9 @@ class OpenAICourseAI:
             "规则：\n"
             "1. 只根据学习需求清单、用户指令、当前板书、选区、资料摘要和最近对话写入文档内容。\n"
             "2. intent=generate_from_requirements 时，输出一份完整板书，operation 使用 replace_document，"
-            "content_text 必须包含清晰章节标题。\n"
+            "content_text 必须包含清晰章节标题；默认按一节可直接教学的完整文档篇幅生成，"
+            "优先组织 6-8 个主要 H2 小节，整篇通常不少于 3000 个中文字符，"
+            "除非用户明确要求短版、速览或只要大纲。\n"
             "3. intent=edit_existing_document 时，有选区就优先 replace_selection；需要新增内容时用 append_section；"
             "不要擅自整体覆盖已有文档。\n"
             "4. content_text 是可直接进入文档的正文；可用 Markdown 表达标题、粗体、列表和表格，"
@@ -809,7 +811,10 @@ class OpenAICourseAI:
                 "response_contract": {
                     "operation": "replace_document、replace_selection 或 append_section。",
                     "title": "文档标题；局部编辑时可沿用当前标题。",
-                    "content_text": "完整生成时是整份板书；局部替换时是替换片段；追加时是追加片段。",
+                    "content_text": (
+                        "完整生成时是整份板书，默认按一节可直接教学的较完整篇幅展开；"
+                        "局部替换时是替换片段；追加时是追加片段。"
+                    ),
                     "content_html": "可选 HTML，与 content_text 表达同一内容。",
                     "summary": "一句话说明本次生成或编辑了什么。",
                     "chatbot_message": "可直接展示给学习者的自然语言短回复，说明本次动作结果，不要套用固定格式。",
