@@ -21,8 +21,9 @@ def normalize_requirements(
     document: BoardDocument,
 ) -> LearningRequirementSheet:
     normalized = LearningRequirementSheet.model_validate(requirements.model_dump(mode="json"))
-    normalized.theme = lesson_title
     default_requirements = build_requirements(lesson_title)
+    if not normalized.theme.strip():
+        normalized.theme = lesson_title
     legacy_questions = [
         f"“{lesson_title}”的核心问题是什么",
         "它包含哪些关键概念、步骤或例子",
@@ -42,13 +43,23 @@ def normalize_requirements(
         normalized.current_questions = list(default_requirements.current_questions)
     normalized.board_scope = _document_outline(document)
     if not normalized.current_questions:
-        normalized.current_questions = [f"如何理解 {lesson_title}"]
+        normalized.current_questions = [f"如何理解 {normalized.theme or lesson_title}"]
     return normalized
 
 
 def effective_requirements(lesson: Lesson) -> LearningRequirementSheet:
     base = lesson.learning_requirements or build_requirements(lesson.title)
     return normalize_requirements(base, lesson_title=lesson.title, document=lesson.board_document)
+
+
+def active_task_requirements(lesson: Lesson) -> LearningRequirementSheet | None:
+    if lesson.learning_requirements is None:
+        return None
+    return normalize_requirements(
+        lesson.learning_requirements,
+        lesson_title=lesson.title,
+        document=lesson.board_document,
+    )
 
 
 def build_internal_teaching_guide(
@@ -69,13 +80,14 @@ def refresh_lesson_runtime(
     requirements: LearningRequirementSheet | None = None,
 ) -> Lesson:
     current_document = document or lesson.board_document
+    should_persist_requirements = requirements is not None or lesson.learning_requirements is not None
     normalized = normalize_requirements(
         requirements or effective_requirements(lesson),
         lesson_title=lesson.title,
         document=current_document,
     )
     lesson.board_document = current_document
-    lesson.learning_requirements = normalized
+    lesson.learning_requirements = normalized if should_persist_requirements else None
     lesson.teaching_guide = build_internal_teaching_guide(
         lesson_id=lesson.id,
         lesson_title=lesson.title,

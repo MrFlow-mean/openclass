@@ -8,12 +8,14 @@ from pydantic import BaseModel
 import app.main as main_module
 from app.models import (
     AIModelSelection,
+    BoardTeachingProgress,
     ChatRequest,
     CreateBranchRequest,
     DocumentSaveRequest,
     LearningRequirementChecklistItem,
     LearningRequirementKeyFact,
     RealtimeTranscriptLogRequest,
+    SelectionRef,
     UserView,
 )
 from app.routers.auth import current_user
@@ -21,15 +23,19 @@ from app.routers import documents as documents_router
 from app.routers import realtime as realtime_router
 from app.services.ai_logging import ai_log_context, ai_usage_logger
 from app.services import chat_service, workspace_state
+from app.services.course_runtime import refresh_lesson_runtime
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
+from app.services.lesson_factory import create_empty_lesson
 from app.services.openai_course_ai import (
-    CourseChatReply,
+    BoardDocumentEditResult,
+    ChatbotReply,
     GeneratedResourceCatalog,
     LearningRequirementUpdate,
     OpenAICourseAI,
     bind_text_model_selection,
     openai_course_ai,
 )
+from app.services.rich_document import build_document
 from app.services.resource_library import build_resource_item
 
 
@@ -50,11 +56,17 @@ def _read_log_entries(path):
 def _seed_test_user_workspace(store: SqliteCourseStore):
     workspace = build_initial_workspace_state()
     workspace.packages[0].title = "测试课程工作台"
+    lesson = create_empty_lesson("测试页面")
+    package = workspace.packages[0]
+    package.lessons.append(lesson)
+    package.open_lesson_ids.append(lesson.id)
+    package.workspace_tab_order.append(lesson.id)
+    package.active_lesson_id = lesson.id
     store.save_for_user(TEST_USER.id, workspace)
     return workspace
 
 
-def _fake_teacher_message(**kwargs) -> str:
+def _fake_chatbot_message(**kwargs) -> str:
     return "AI生成：这是一段测试讲解。"
 
 
@@ -67,6 +79,7 @@ def _fake_requirement_update(**kwargs) -> LearningRequirementUpdate:
                 label="学习请求",
                 value="用户提出了当前要解决的学习问题。",
                 evidence="来自用户输入。",
+                category="other",
             )
         ],
         checklist=[
@@ -200,7 +213,7 @@ def test_openai_parse_retries_model_not_found_with_fallback(isolated_ai_log) -> 
     assert entries[1]["payload"]["fallback_from_model"] == "gpt-5.3"
 
 
-def test_teacher_chat_prompt_uses_course_teacher_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_chatbot_reply_prompt_uses_chatbot_identity(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, str] = {}
     ai = OpenAICourseAI()
 
@@ -208,11 +221,11 @@ def test_teacher_chat_prompt_uses_course_teacher_identity(monkeypatch: pytest.Mo
         captured["role"] = role
         captured["system_prompt"] = system_prompt
         captured["user_prompt"] = user_prompt
-        return CourseChatReply(teacher_message="你好，我是 OpenClass 的课程讲师。")
+        return ChatbotReply(chatbot_message="你好，我是 OpenClass 的 Chatbot。")
 
     monkeypatch.setattr(ai, "_parse", _fake_parse)
 
-    reply = ai.generate_teacher_chat(
+    reply = ai.generate_chatbot_reply(
         lesson_title="测试页",
         learning_goal="先澄清学习需求。",
         board_summary="测试页",
@@ -222,9 +235,9 @@ def test_teacher_chat_prompt_uses_course_teacher_identity(monkeypatch: pytest.Mo
     )
 
     assert reply is not None
-    assert captured["role"] == "teacher"
-    assert captured["system_prompt"].startswith("你是 OpenClass 的课程讲师。")
-    assert "AI 课程讲师" not in captured["system_prompt"]
+    assert captured["role"] == "chatbot"
+    assert captured["system_prompt"].startswith("你是 OpenClass 的 Chatbot，")
+    assert "AI Chatbot" not in captured["system_prompt"]
 
 
 def test_openai_parse_falls_back_to_google_on_provider_auth_error(isolated_ai_log) -> None:
@@ -528,13 +541,13 @@ def test_catalog_role_uses_dedicated_openai_model_even_with_text_selection(isola
     assert ai.client.responses.payload["model"] == "gpt-5.4-mini"
 
 
-def test_chat_route_returns_generic_teacher_reply(monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path) -> None:
+def test_chat_route_returns_chatbot_reply(monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path) -> None:
     store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
     monkeypatch.setattr(workspace_state, "STORE", store)
     monkeypatch.setattr(
         openai_course_ai,
-        "generate_teacher_chat",
-        lambda **kwargs: CourseChatReply(teacher_message="AI生成：这是一段测试讲解。"),
+        "generate_chatbot_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="AI生成：这是一段测试讲解。"),
     )
     monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
 
@@ -545,17 +558,75 @@ def test_chat_route_returns_generic_teacher_reply(monkeypatch: pytest.MonkeyPatc
         user_id=TEST_USER.id,
     )
 
-    assert response.teacher_message == "AI生成：这是一段测试讲解。"
+    assert response.chatbot_message == "AI生成：这是一段测试讲解。"
     lesson = response.course_package.lessons[0]
     commit = lesson.history_graph.commits[-1]
     assert commit.metadata["kind"] == "chat_flow"
     assert commit.metadata["user_message"] == "请解释一下当前主题的核心问题"
-    assert commit.metadata["assistant_message_source"] == "ai"
+    assert commit.metadata["assistant_message_source"] == "chatbot"
     assert commit.metadata["learning_clarification"]["ready_for_board"] is True
     assert commit.metadata["learning_clarification"]["key_facts"][0]["label"] == "学习请求"
     assert response.learning_clarification.progress == 100
     assert response.learning_clarification.key_facts[0].value == "用户提出了当前要解决的学习问题。"
     assert response.learning_clarification.checklist[0].is_clear is True
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_chatbot_runtime_empty_reply_does_not_show_canned_template(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    monkeypatch.setattr(openai_course_ai, "generate_chatbot_reply", lambda **kwargs: None)
+
+    captured: dict[str, str] = {}
+
+    def _fake_requirement_update(**kwargs):
+        captured["chatbot_message"] = kwargs["chatbot_message"]
+        return LearningRequirementUpdate(
+            progress=45,
+            summary="用户已经提出学习请求，但还需要确认下一步重点。",
+            key_facts=[
+                LearningRequirementKeyFact(
+                    category="learning",
+                    label="学习请求",
+                    value="用户提出了一个学习问题。",
+                    evidence="来自用户输入。",
+                )
+            ],
+            checklist=[
+                LearningRequirementChecklistItem(
+                    title="用户已经给出学习请求",
+                    is_clear=True,
+                    evidence="来自用户输入。",
+                ),
+                LearningRequirementChecklistItem(
+                    title="下一步重点仍需确认",
+                    is_clear=False,
+                    evidence="用户还没有说明希望先看例子、步骤还是应用。",
+                ),
+            ],
+            missing_items=["下一步讲解重点"],
+            next_question="你希望我先从概念、步骤，还是一个具体例子开始？",
+            ready_for_board=False,
+        )
+
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
+
+    lesson_id = _seed_test_user_workspace(store).packages[0].lessons[0].id
+    response = chat_service.process_chat_on_lesson(
+        lesson_id,
+        ChatRequest(message="我想学一个新内容"),
+        user_id=TEST_USER.id,
+    )
+
+    assert captured["chatbot_message"] == ""
+    assert response.chatbot_message == ""
+    assert "如果你希望我继续" not in response.chatbot_message
+    assert "再具体一点" not in response.chatbot_message
+    commit = response.course_package.lessons[0].history_graph.commits[-1]
+    assert commit.metadata["assistant_message"] == response.chatbot_message
+    assert commit.metadata["assistant_message_source"] == "chatbot_empty"
     assert _read_log_entries(isolated_ai_log) == []
 
 
@@ -566,8 +637,8 @@ def test_requirement_manager_keeps_low_substance_chat_unclear(
     monkeypatch.setattr(workspace_state, "STORE", store)
     monkeypatch.setattr(
         openai_course_ai,
-        "generate_teacher_chat",
-        lambda **kwargs: CourseChatReply(teacher_message="你好，我们可以先明确学习目标。"),
+        "generate_chatbot_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="你好，我们可以先明确学习目标。"),
     )
     monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", lambda **kwargs: None)
 
@@ -589,6 +660,949 @@ def test_requirement_manager_keeps_low_substance_chat_unclear(
     assert _read_log_entries(isolated_ai_log) == []
 
 
+def test_requirement_manager_records_learning_content_from_first_intent(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_chatbot_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="好的，我先确认你的学习目标。"),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_learning_requirement_update",
+        lambda **kwargs: LearningRequirementUpdate(
+            progress=10,
+            summary="用户想学习一个主题，但还需要澄清水平和用途。",
+            key_facts=[],
+            checklist=[
+                LearningRequirementChecklistItem(
+                    title="用户具体想学什么内容或解决什么问题",
+                    is_clear=False,
+                    evidence="模型没有结构化提取。",
+                )
+            ],
+            missing_items=["当前水平", "学习目的或使用场景"],
+            next_question="你目前是什么水平？",
+            ready_for_board=False,
+        ),
+    )
+
+    lesson_id = _seed_test_user_workspace(store).packages[0].lessons[0].id
+    response = chat_service.process_chat_on_lesson(
+        lesson_id,
+        ChatRequest(message="你好，我想学一门新的内容"),
+        user_id=TEST_USER.id,
+    )
+
+    assert response.learning_clarification.key_facts[0].label == "学习内容"
+    assert response.learning_clarification.key_facts[0].value == "一门新的内容"
+    commit = response.course_package.lessons[0].history_graph.commits[-1]
+    assert commit.metadata["learning_clarification"]["key_facts"][0]["label"] == "学习内容"
+    assert commit.metadata["learning_clarification"]["key_facts"][0]["value"] == "一门新的内容"
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_requirement_theme_uses_learning_content_not_lesson_title(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_chatbot_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="好的，我先按你的目标开始。"),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_learning_requirement_update",
+        lambda **kwargs: LearningRequirementUpdate(
+            progress=60,
+            summary="高中生想学习反应平衡，用于预习。",
+            key_facts=[
+                LearningRequirementKeyFact(
+                    label="学习内容",
+                    value="反应平衡",
+                    evidence="用户说想学习反应平衡。",
+                    category="learning",
+                )
+            ],
+            checklist=[
+                LearningRequirementChecklistItem(
+                    title="学习主题",
+                    is_clear=True,
+                    evidence="用户说明了要学习的内容。",
+                )
+            ],
+            missing_items=["当前水平"],
+            next_question="你目前是什么水平？",
+            ready_for_board=False,
+        ),
+    )
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.title = "化学测试"
+    lesson.board_document.title = "化学测试"
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="我是高中生，我想学习化学中的反应平衡"),
+        user_id=TEST_USER.id,
+    )
+
+    assert response.learning_requirement_sheet.theme == "反应平衡"
+    assert response.course_package.lessons[0].learning_requirements.theme == "反应平衡"
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_requirement_manager_does_not_extract_learning_content_from_student_identity(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_chatbot_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="好的，我先确认你的学习目标。"),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_learning_requirement_update",
+        lambda **kwargs: LearningRequirementUpdate(
+            progress=35,
+            summary="用户说明了身份和学习主题。",
+            key_facts=[],
+            checklist=[
+                LearningRequirementChecklistItem(
+                    title="具体学习内容",
+                    is_clear=True,
+                    evidence="用户说了想学什么。",
+                )
+            ],
+            missing_items=["学习目的或使用场景"],
+            next_question="你希望用于什么场景？",
+            ready_for_board=False,
+        ),
+    )
+
+    lesson_id = _seed_test_user_workspace(store).packages[0].lessons[0].id
+    response = chat_service.process_chat_on_lesson(
+        lesson_id,
+        ChatRequest(message="我是大学生，我想学一门新的内容"),
+        user_id=TEST_USER.id,
+    )
+
+    assert response.learning_clarification.key_facts[0].label == "学习内容"
+    assert response.learning_clarification.key_facts[0].value == "一门新的内容"
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_requirement_manager_keeps_structured_learning_fact_over_identity_phrase(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_chatbot_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="好的，我先记录你的学习需求。"),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_learning_requirement_update",
+        lambda **kwargs: LearningRequirementUpdate(
+            progress=100,
+            summary="用户需要一篇面向真实场景的对话课文。",
+            key_facts=[
+                LearningRequirementKeyFact(
+                    category="learning",
+                    label="学习主题",
+                    value="真实场景对话课文",
+                    evidence="用户要求生成一篇情景对话课文。",
+                )
+            ],
+            checklist=[
+                LearningRequirementChecklistItem(
+                    title="学习主题",
+                    is_clear=True,
+                    evidence="用户说明了要生成的内容。",
+                )
+            ],
+            missing_items=[],
+            next_question="",
+            ready_for_board=True,
+        ),
+    )
+
+    lesson_id = _seed_test_user_workspace(store).packages[0].lessons[0].id
+    response = chat_service.process_chat_on_lesson(
+        lesson_id,
+        ChatRequest(message="我是一名学习者，请给我生成一篇真实场景对话课文"),
+        user_id=TEST_USER.id,
+    )
+
+    assert response.learning_clarification.key_facts[0].label == "学习内容"
+    assert response.learning_clarification.key_facts[0].value == "真实场景对话课文"
+    assert response.learning_requirement_sheet.theme == "真实场景对话课文"
+    assert response.learning_requirement_sheet.theme != "者"
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_requirement_manager_direct_teaching_start_does_not_keep_clarifying(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_chatbot_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="好的，我们从第一小节开始讲。"),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_learning_requirement_update",
+        lambda **kwargs: LearningRequirementUpdate(
+            progress=40,
+            summary="用户已有学习主题，要求按零基础直接开始讲解。",
+            key_facts=[
+                LearningRequirementKeyFact(
+                    label="学习内容",
+                    value="一个通用主题",
+                    evidence="来自前文。",
+                    category="learning",
+                ),
+                LearningRequirementKeyFact(
+                    label="当前水平",
+                    value="0基础",
+                    evidence="用户说按0基础。",
+                    category="level",
+                ),
+            ],
+            checklist=[
+                LearningRequirementChecklistItem(
+                    title="学习主题",
+                    is_clear=True,
+                    evidence="已有学习内容。",
+                ),
+                LearningRequirementChecklistItem(
+                    title="当前水平",
+                    is_clear=True,
+                    evidence="用户要求按0基础讲。",
+                ),
+            ],
+            missing_items=["具体子知识点偏好"],
+            next_question="你想先讲哪个子知识点？",
+            ready_for_board=False,
+        ),
+    )
+
+    def _unexpected_board_edit(**kwargs):
+        raise AssertionError("existing board content must not be overwritten from a direct teaching request")
+
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _unexpected_board_edit)
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.board_document = build_document(title="已有板书", content_text="已有内容")
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    store.save_for_user(TEST_USER.id, workspace)
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="你就当我是0基础，直接为我开始讲解"),
+        user_id=TEST_USER.id,
+    )
+
+    assert response.chatbot_message == "好的，我们从第一小节开始讲。"
+    assert response.learning_clarification.label == "可以开始讲解"
+    assert response.learning_clarification.can_start is True
+    assert response.learning_clarification.forced_start is True
+    assert response.learning_clarification.ready_for_board is False
+    assert response.learning_clarification.progress == 90
+    assert response.learning_clarification.missing_items == []
+    assert response.learning_clarification.next_question == ""
+    assert response.board_decision.action == "no_change"
+    assert response.course_package.lessons[0].board_document.content_text == "已有内容"
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_direct_teaching_on_blank_board_auto_generates_board_and_guide(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_chatbot_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="AI生成：第一小节讲解。"),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_learning_requirement_update",
+        lambda **kwargs: LearningRequirementUpdate(
+            progress=40,
+            summary="用户要求直接开始讲解一个通用主题。",
+            key_facts=[
+                LearningRequirementKeyFact(
+                    label="学习内容",
+                    value="一个通用主题",
+                    evidence="用户说要直接讲解。",
+                    category="learning",
+                )
+            ],
+            checklist=[
+                LearningRequirementChecklistItem(
+                    title="学习主题",
+                    is_clear=True,
+                    evidence="用户说明了要学的内容。",
+                )
+            ],
+            missing_items=["具体子知识点偏好"],
+            next_question="你想先讲哪个子知识点？",
+            ready_for_board=False,
+        ),
+    )
+
+    def _fake_board_edit(**kwargs):
+        captured["intent"] = kwargs.get("intent")
+        captured["user_instruction"] = kwargs.get("user_instruction")
+        return BoardDocumentEditResult(
+            operation="replace_document",
+            title="通用主题板书",
+            content_text=(
+                "# 通用主题板书\n"
+                "## 第一节\n"
+                "这是一段足够长的第一节讲解正文，用来形成稳定的小节计划。\n"
+                "## 第二节\n"
+                "这是一段足够长的第二节讲解正文，用来形成稳定的小节计划。"
+            ),
+            summary="生成了通用主题板书。",
+            section_titles=["第一节", "第二节"],
+        )
+
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _fake_board_edit)
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.board_document = build_document(title="空白板书")
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="直接为我讲解一个通用主题"),
+        user_id=TEST_USER.id,
+    )
+
+    assert captured == {
+        "intent": "generate_from_requirements",
+        "user_instruction": "直接为我讲解一个通用主题",
+    }
+    assert response.chatbot_message == "AI生成：第一小节讲解。"
+    assert response.board_decision.action == "edit_board"
+    updated_lesson = response.course_package.lessons[0]
+    assert "第一节" in updated_lesson.board_document.content_text
+    assert "第二节" in updated_lesson.board_document.content_text
+    commit = updated_lesson.history_graph.commits[-1]
+    assert commit.metadata["kind"] == "chat_flow"
+    assert commit.metadata["auto_board_generation"] is True
+    assert commit.metadata["board_generation_action"] == "auto_start_from_teaching"
+    assert commit.metadata["board_edit_operation"] == "replace_document"
+    saved_lesson = store.load_for_user(TEST_USER.id).packages[0].lessons[0]
+    assert saved_lesson.learning_requirements is None
+    assert saved_lesson.board_teaching_guide is not None
+    assert [plan.heading for plan in saved_lesson.board_teaching_guide.section_plans] == ["第一节", "第二节"]
+    assert saved_lesson.board_teaching_progress is None
+
+    continue_response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="继续下一节", teaching_action="continue"),
+        user_id=TEST_USER.id,
+    )
+
+    assert continue_response.teaching_progress is not None
+    assert continue_response.teaching_progress.section_index == 0
+    assert continue_response.teaching_progress.current_section_title == "第一节"
+    assert continue_response.teaching_progress.has_next_section is True
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_low_information_chat_does_not_auto_generate_blank_board(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_chatbot_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="你好，我们可以先明确学习目标。"),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_learning_requirement_update",
+        lambda **kwargs: LearningRequirementUpdate(
+            progress=15,
+            summary="用户还没有透露足够具体的学习需求。",
+            key_facts=[],
+            checklist=[
+                LearningRequirementChecklistItem(
+                    title="用户具体想学什么内容或解决什么问题",
+                    is_clear=False,
+                    evidence="最近对话还没有说明学习主题。",
+                )
+            ],
+            missing_items=["具体学习内容"],
+            next_question="你想围绕哪个主题、资料或具体问题开始学习？",
+            ready_for_board=False,
+        ),
+    )
+
+    def _unexpected_board_edit(**kwargs):
+        raise AssertionError("low-information chat must not trigger board generation")
+
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _unexpected_board_edit)
+
+    lesson_id = _seed_test_user_workspace(store).packages[0].lessons[0].id
+    response = chat_service.process_chat_on_lesson(
+        lesson_id,
+        ChatRequest(message="你好"),
+        user_id=TEST_USER.id,
+    )
+
+    updated_lesson = response.course_package.lessons[0]
+    assert updated_lesson.board_document.content_text == ""
+    assert response.board_decision.action == "no_change"
+    assert "右侧板书" not in response.chatbot_message
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_requirement_manager_progress_does_not_drop_for_same_topic(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_chatbot_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="好的，我会继续帮你推进。"),
+    )
+    updates = iter(
+        [
+            LearningRequirementUpdate(
+                progress=50,
+                summary="用户说明了学习主题。",
+                key_facts=[
+                    LearningRequirementKeyFact(
+                        label="学习内容",
+                        value="一个通用主题",
+                        evidence="用户说明了学习主题。",
+                        category="learning",
+                    )
+                ],
+                checklist=[
+                    LearningRequirementChecklistItem(title="学习主题", is_clear=True, evidence="来自用户。")
+                ],
+                missing_items=["学习场景"],
+                next_question="你是为什么学？",
+                ready_for_board=False,
+            ),
+            LearningRequirementUpdate(
+                progress=30,
+                summary="用户继续围绕同一主题补充了学习场景。",
+                key_facts=[
+                    LearningRequirementKeyFact(
+                        label="学习内容",
+                        value="一个通用主题",
+                        evidence="来自前文。",
+                        category="learning",
+                    ),
+                    LearningRequirementKeyFact(
+                        label="面向场景",
+                        value="预习",
+                        evidence="来自用户。",
+                        category="scenario",
+                    ),
+                ],
+                checklist=[
+                    LearningRequirementChecklistItem(title="学习主题", is_clear=True, evidence="来自前文。"),
+                    LearningRequirementChecklistItem(title="学习场景", is_clear=True, evidence="来自用户。"),
+                ],
+                missing_items=["当前水平"],
+                next_question="你目前是什么水平？",
+                ready_for_board=False,
+            ),
+        ]
+    )
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", lambda **kwargs: next(updates))
+
+    lesson_id = _seed_test_user_workspace(store).packages[0].lessons[0].id
+    first = chat_service.process_chat_on_lesson(
+        lesson_id,
+        ChatRequest(message="我想学习一个通用主题"),
+        user_id=TEST_USER.id,
+    )
+    second = chat_service.process_chat_on_lesson(
+        lesson_id,
+        ChatRequest(
+            message="我是为了预习",
+            conversation=[
+                {"role": "user", "content": "我想学习一个通用主题"},
+                {"role": "assistant", "content": first.chatbot_message},
+            ],
+        ),
+        user_id=TEST_USER.id,
+    )
+
+    assert first.learning_clarification.progress == 50
+    assert second.learning_clarification.progress == 50
+    assert second.learning_clarification.key_facts[0].value == "一个通用主题"
+    assert second.learning_clarification.key_facts[1].value == "预习"
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_requirement_manager_immediate_board_request_sets_progress_to_complete(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_chatbot_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="好的，我会按当前信息准备板书。"),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_learning_requirement_update",
+        lambda **kwargs: LearningRequirementUpdate(
+            progress=35,
+            summary="用户还没有补齐全部学习背景。",
+            key_facts=[
+                LearningRequirementKeyFact(
+                    label="当前请求",
+                    value="用户希望进入板书生成。",
+                    evidence="来自用户输入。",
+                    category="other",
+                )
+            ],
+            checklist=[
+                LearningRequirementChecklistItem(
+                    title="用户具体想学什么或解决什么问题",
+                    is_clear=False,
+                    evidence="还需要从上下文继续确认。",
+                )
+            ],
+            missing_items=["当前水平"],
+            next_question="你目前对这个内容了解多少？",
+            ready_for_board=False,
+        ),
+    )
+
+    lesson_id = _seed_test_user_workspace(store).packages[0].lessons[0].id
+    response = chat_service.process_chat_on_lesson(
+        lesson_id,
+        ChatRequest(message="不用再问了，直接生成版书"),
+        user_id=TEST_USER.id,
+    )
+
+    assert response.learning_clarification.progress == 100
+    assert response.learning_clarification.ready_for_board is True
+    assert response.learning_clarification.can_start is True
+    assert response.learning_clarification.forced_start is True
+    assert response.learning_clarification.missing_items == []
+    assert response.learning_clarification.next_question == ""
+    commit = response.course_package.lessons[0].history_graph.commits[-1]
+    assert commit.metadata["learning_clarification"]["progress"] == 100
+    assert commit.metadata["learning_clarification"]["forced_start"] is True
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_requirement_manager_explicit_board_generation_sets_progress_to_complete(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_chatbot_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="好的，我会开始讲解并准备板书。"),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_learning_requirement_update",
+        lambda **kwargs: LearningRequirementUpdate(
+            progress=45,
+            summary="用户已有学习主题，希望进入讲解和板书生成。",
+            key_facts=[
+                LearningRequirementKeyFact(
+                    label="学习内容",
+                    value="一门新的内容",
+                    evidence="来自前文。",
+                    category="learning",
+                )
+            ],
+            checklist=[
+                LearningRequirementChecklistItem(
+                    title="具体学习内容",
+                    is_clear=True,
+                    evidence="已有学习内容。",
+                )
+            ],
+            missing_items=["当前水平"],
+            next_question="你目前是什么水平？",
+            ready_for_board=False,
+        ),
+    )
+
+    lesson_id = _seed_test_user_workspace(store).packages[0].lessons[0].id
+    response = chat_service.process_chat_on_lesson(
+        lesson_id,
+        ChatRequest(message="先为我讲解，生成板书"),
+        user_id=TEST_USER.id,
+    )
+
+    assert response.learning_clarification.progress == 100
+    assert response.learning_clarification.ready_for_board is True
+    assert response.learning_clarification.forced_start is True
+    assert response.learning_clarification.next_question == ""
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_requirement_manager_start_generation_request_uses_existing_requirement_context(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_chatbot_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="好的，我会按当前学习需求开始生成。"),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_learning_requirement_update",
+        lambda **kwargs: LearningRequirementUpdate(
+            progress=60,
+            summary="用户已有学习内容、水平和输出需求，但还没有指定全部细节。",
+            key_facts=[
+                LearningRequirementKeyFact(
+                    label="学习内容",
+                    value="一门新的内容",
+                    evidence="来自前文。",
+                    category="learning",
+                ),
+                LearningRequirementKeyFact(
+                    label="当前水平",
+                    value="中级",
+                    evidence="来自前文。",
+                    category="level",
+                ),
+                LearningRequirementKeyFact(
+                    label="学习内容需求",
+                    value="生成一份练习材料",
+                    evidence="来自前文。",
+                    category="output",
+                ),
+            ],
+            checklist=[
+                LearningRequirementChecklistItem(
+                    title="具体学习内容",
+                    is_clear=True,
+                    evidence="已有学习内容。",
+                )
+            ],
+            missing_items=["具体场景"],
+            next_question="你希望面向什么场景？",
+            ready_for_board=False,
+        ),
+    )
+
+    lesson_id = _seed_test_user_workspace(store).packages[0].lessons[0].id
+    response = chat_service.process_chat_on_lesson(
+        lesson_id,
+        ChatRequest(message="看你发挥，开始生成"),
+        user_id=TEST_USER.id,
+    )
+
+    assert response.learning_clarification.progress == 100
+    assert response.learning_clarification.ready_for_board is True
+    assert response.learning_clarification.can_start is True
+    assert response.learning_clarification.forced_start is True
+    assert response.learning_clarification.missing_items == []
+    assert response.learning_clarification.next_question == ""
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_generation_control_request_hands_off_without_chatbot_board_content(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_chatbot_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="AI生成：已记录生成意图，等待写入右侧文档。"),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_learning_requirement_update",
+        lambda **kwargs: LearningRequirementUpdate(
+            progress=65,
+            summary="用户允许系统决定未指定细节，并希望基于当前需求进入生成。",
+            key_facts=[
+                LearningRequirementKeyFact(
+                    label="法语水平",
+                    value="B2",
+                    evidence="来自前文。",
+                    category="level",
+                ),
+                LearningRequirementKeyFact(
+                    label="词汇量",
+                    value="3500",
+                    evidence="来自前文。",
+                    category="vocabulary",
+                ),
+                LearningRequirementKeyFact(
+                    label="学习需求",
+                    value="生成一篇情景对话",
+                    evidence="来自前文。",
+                    category="output",
+                ),
+            ],
+            checklist=[
+                LearningRequirementChecklistItem(
+                    title="用户允许系统决定未指定细节",
+                    is_clear=True,
+                    evidence="用户说可以看系统发挥。",
+                )
+            ],
+            missing_items=["具体场景"],
+            next_question="你希望面向什么场景？",
+            ready_for_board=False,
+        ),
+    )
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.board_document = build_document(title="空白板书")
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    lesson.history_graph.commits[-1].metadata["learning_clarification"] = {
+        "progress": 40,
+        "label": "继续澄清",
+        "reason": "用户还没有指定全部细节。",
+        "missing_items": ["具体场景"],
+        "can_start": False,
+        "forced_start": False,
+        "summary": "用户需要一篇情景对话。",
+        "key_facts": [
+            {"label": "学习内容", "value": "法语", "evidence": "来自用户。"},
+            {"label": "当前水平", "value": "B2", "evidence": "来自用户。"},
+            {"label": "词汇量", "value": "3500", "evidence": "来自用户。"},
+        ],
+        "checklist": [],
+        "next_question": "你希望面向什么场景？",
+        "ready_for_board": False,
+    }
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="都行，看你发挥，直接生成"),
+        user_id=TEST_USER.id,
+    )
+
+    assert response.chatbot_message == "AI生成：已记录生成意图，等待写入右侧文档。"
+    assert response.board_decision.action == "no_change"
+    assert response.learning_clarification.ready_for_board is True
+    assert response.learning_clarification.forced_start is True
+    assert response.learning_clarification.missing_items == []
+    assert response.learning_clarification.next_question == ""
+    assert response.learning_requirement_sheet.level == "B2"
+    assert response.learning_requirement_sheet.current_questions == []
+    labels = [fact.label for fact in response.learning_clarification.key_facts]
+    values = [fact.value for fact in response.learning_clarification.key_facts]
+    assert labels[:4] == ["学习内容", "当前水平", "词汇量", "输出需求"]
+    assert values[:4] == ["法语", "B2", "3500", "生成一篇情景对话"]
+    updated_lesson = response.course_package.lessons[0]
+    assert updated_lesson.board_document.content_text == ""
+    commit = updated_lesson.history_graph.commits[-1]
+    assert commit.metadata["assistant_message_source"] == "chatbot"
+    assert "法语情景对话" not in commit.metadata["assistant_message"]
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_document_artifact_request_hands_off_before_chatbot_generation(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_chatbot_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="AI生成：我会把生成任务交给右侧文档。"),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_learning_requirement_update",
+        lambda **kwargs: LearningRequirementUpdate(
+            progress=100,
+            summary="用户希望生成一篇面向真实任务的情景对话课文。",
+            key_facts=[
+                LearningRequirementKeyFact(
+                    category="learning",
+                    label="学习内容",
+                    value="面向真实任务的情景对话课文",
+                    evidence="用户要求生成一篇情景对话课文。",
+                ),
+                LearningRequirementKeyFact(
+                    category="output",
+                    label="输出需求",
+                    value="生成一篇课文",
+                    evidence="用户要求生成一篇课文。",
+                ),
+            ],
+            checklist=[
+                LearningRequirementChecklistItem(
+                    title="用户已说明要生成的内容形态",
+                    is_clear=True,
+                    evidence="用户要求生成一篇情景对话课文。",
+                )
+            ],
+            missing_items=[],
+            next_question="",
+            ready_for_board=True,
+        ),
+    )
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.board_document = build_document(title="空白板书")
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="请给我生成一篇用于真实任务的情景对话课文"),
+        user_id=TEST_USER.id,
+    )
+
+    assert response.chatbot_message == "AI生成：我会把生成任务交给右侧文档。"
+    assert response.board_decision.action == "no_change"
+    assert response.course_package.lessons[0].board_document.content_text == ""
+    commit = response.course_package.lessons[0].history_graph.commits[-1]
+    assert commit.metadata["assistant_message_source"] == "chatbot"
+    assert response.chatbot_message == commit.metadata["assistant_message"]
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_accepting_defaults_without_explicit_generation_stays_in_chatbot(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_chatbot_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="好的，我会继续帮你把需求讲清楚。"),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_learning_requirement_update",
+        lambda **kwargs: LearningRequirementUpdate(
+            progress=70,
+            summary="用户接受系统建议，但没有明确要求生成板书。",
+            key_facts=[
+                LearningRequirementKeyFact(
+                    category="learning",
+                    label="学习内容",
+                    value="一个通用主题",
+                    evidence="来自前文。",
+                )
+            ],
+            checklist=[
+                LearningRequirementChecklistItem(
+                    title="用户已确认学习内容",
+                    is_clear=True,
+                    evidence="来自前文。",
+                )
+            ],
+            missing_items=["输出要求"],
+            next_question="你希望最后得到什么形式的内容？",
+            ready_for_board=False,
+        ),
+    )
+
+    lesson_id = _seed_test_user_workspace(store).packages[0].lessons[0].id
+    response = chat_service.process_chat_on_lesson(
+        lesson_id,
+        ChatRequest(message="都行，看你发挥"),
+        user_id=TEST_USER.id,
+    )
+
+    assert response.chatbot_message == "好的，我会继续帮你把需求讲清楚。"
+    assert response.learning_clarification.forced_start is False
+    assert response.board_decision.action == "no_change"
+    commit = response.course_package.lessons[0].history_graph.commits[-1]
+    assert commit.metadata["assistant_message_source"] == "chatbot"
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_requirement_manager_prefers_structured_key_fact_categories(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_chatbot_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="好的，我先确认这些需求。"),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_learning_requirement_update",
+        lambda **kwargs: LearningRequirementUpdate(
+            progress=100,
+            summary="用户已经提供学习内容、水平、能力指标、场景和输出需求。",
+            key_facts=[
+                LearningRequirementKeyFact(category="learning", label="目标", value="一个通用主题", evidence="来自用户。"),
+                LearningRequirementKeyFact(category="level", label="能力", value="进阶", evidence="来自用户。"),
+                LearningRequirementKeyFact(category="vocabulary", label="数量", value="3500", evidence="来自用户。"),
+                LearningRequirementKeyFact(category="scenario", label="用途", value="真实任务", evidence="来自用户。"),
+                LearningRequirementKeyFact(category="output", label="交付", value="生成一套练习", evidence="来自用户。"),
+            ],
+            checklist=[
+                LearningRequirementChecklistItem(
+                    title="用户已经提供关键需求",
+                    is_clear=True,
+                    evidence="来自用户。",
+                )
+            ],
+            missing_items=[],
+            next_question="",
+            ready_for_board=True,
+        ),
+    )
+
+    lesson_id = _seed_test_user_workspace(store).packages[0].lessons[0].id
+    response = chat_service.process_chat_on_lesson(
+        lesson_id,
+        ChatRequest(message="我已经说明需求"),
+        user_id=TEST_USER.id,
+    )
+
+    facts = response.learning_clarification.key_facts
+    assert [fact.category for fact in facts[:5]] == ["learning", "level", "vocabulary", "scenario", "output"]
+    assert [fact.label for fact in facts[:5]] == ["学习内容", "当前水平", "词汇量", "面向场景", "输出需求"]
+    assert response.learning_requirement_sheet.level == "进阶"
+    assert response.learning_requirement_sheet.output_preference == "生成一套练习"
+    assert _read_log_entries(isolated_ai_log) == []
+
+
 def test_requirement_manager_filters_internal_key_fact_labels(
     monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
 ) -> None:
@@ -596,8 +1610,8 @@ def test_requirement_manager_filters_internal_key_fact_labels(
     monkeypatch.setattr(workspace_state, "STORE", store)
     monkeypatch.setattr(
         openai_course_ai,
-        "generate_teacher_chat",
-        lambda **kwargs: CourseChatReply(teacher_message="好的，我先帮你确认学习需求。"),
+        "generate_chatbot_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="好的，我先帮你确认学习需求。"),
     )
     monkeypatch.setattr(
         openai_course_ai,
@@ -615,6 +1629,7 @@ def test_requirement_manager_filters_internal_key_fact_labels(
                     label="学习目标",
                     value="用户想理解当前问题。",
                     evidence="来自用户输入。",
+                    category="learning",
                 ),
             ],
             checklist=[
@@ -637,8 +1652,8 @@ def test_requirement_manager_filters_internal_key_fact_labels(
         user_id=TEST_USER.id,
     )
 
-    assert [item.label for item in response.learning_clarification.key_facts] == ["学习目标"]
-    assert response.learning_clarification.key_facts[0].value == "用户想理解当前问题。"
+    assert [item.label for item in response.learning_clarification.key_facts] == ["学习内容"]
+    assert response.learning_clarification.key_facts[0].value == "当前问题"
     assert _read_log_entries(isolated_ai_log) == []
 
 
@@ -714,44 +1729,359 @@ def test_document_save_beacon_accepts_plain_text_json(monkeypatch: pytest.Monkey
     assert commit["metadata"]["autosave_reason"] == "pagehide"
 
 
-def test_document_ai_edit_returns_chat_guidance(
+def test_board_generation_from_ready_sheet_writes_empty_document_without_chat_board_content(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    captured: dict[str, object] = {}
+
+    def _fake_board_edit(**kwargs):
+        captured["intent"] = kwargs.get("intent")
+        captured["learning_requirement_context"] = kwargs.get("learning_requirement_context")
+        return BoardDocumentEditResult(
+            operation="replace_document",
+            title="生成后的板书",
+            content_text="# 生成后的板书\n## 第一节\n**讲解重点:** 这是一段足够长的第一节正文，用来避免被识别成额外章节并保持测试稳定。\n## 第二节\n这是一段足够长的第二节正文，用来避免被识别成额外章节并保持测试稳定。",
+            content_html="<p>不应采用模型 HTML</p>",
+            summary="生成了完整板书。",
+            section_titles=["第一节", "第二节"],
+        )
+
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _fake_board_edit)
+
+    def _unexpected_chatbot_reply(**kwargs):
+        raise AssertionError("board generation must not ask the chatbot to generate board-like content")
+
+    monkeypatch.setattr(openai_course_ai, "generate_chatbot_reply", _unexpected_chatbot_reply)
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.board_document = build_document(title="空白板书")
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    lesson.history_graph.commits[-1].metadata["learning_clarification"] = {
+        "progress": 100,
+        "label": "需求已清晰",
+        "reason": "用户已说明学习需求。",
+        "missing_items": [],
+        "can_start": True,
+        "forced_start": False,
+        "summary": "用户已说明学习需求。",
+        "key_facts": [{"label": "学习内容", "value": "一个通用主题", "evidence": "来自用户。"}],
+        "checklist": [{"title": "学习内容", "is_clear": True, "evidence": "来自用户。"}],
+        "next_question": "",
+        "ready_for_board": True,
+    }
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="开始生成板书", board_generation_action="start"),
+        user_id=TEST_USER.id,
+    )
+
+    assert captured["intent"] == "generate_from_requirements"
+    context = captured["learning_requirement_context"]
+    assert isinstance(context, dict)
+    assert context["key_facts"][0]["label"] == "学习内容"
+    updated_lesson = response.course_package.lessons[0]
+    assert "第一节" in updated_lesson.board_document.content_text
+    assert "不应采用模型 HTML" not in updated_lesson.board_document.content_html
+    assert "<strong>讲解重点:</strong>" in updated_lesson.board_document.content_html
+    saved_lesson = store.load_for_user(TEST_USER.id).packages[0].lessons[0]
+    assert saved_lesson.board_teaching_guide is not None
+    assert [plan.heading for plan in saved_lesson.board_teaching_guide.section_plans] == ["第一节", "第二节"]
+    assert "检查问题" in saved_lesson.board_teaching_guide.lecture_handout
+    assert response.board_decision.action == "edit_board"
+    assert response.active_requirement_sheet is None
+    assert response.requirement_cleared is True
+    assert response.teaching_progress is None
+    assert response.chatbot_message == "生成了完整板书。"
+    commit = updated_lesson.history_graph.commits[-1]
+    assert commit.metadata["kind"] == "board_document_generation"
+    assert commit.metadata["requirement_cleared"] is True
+    assert commit.metadata["task_requirement_sheet"]["action_type"] == "generate_board"
+    assert commit.metadata["active_requirement_sheet_after"] is None
+    assert "teaching_progress" not in commit.metadata
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_board_generation_does_not_overwrite_existing_document(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+
+    def _unexpected_board_edit(**kwargs):
+        raise AssertionError("non-empty documents must not be overwritten by board generation")
+
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _unexpected_board_edit)
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.board_document = build_document(title="已有板书", content_text="已有内容")
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="开始生成板书", board_generation_action="start"),
+        user_id=TEST_USER.id,
+    )
+
+    updated_lesson = response.course_package.lessons[0]
+    assert updated_lesson.board_document.content_text == "已有内容"
+    assert response.board_decision.action == "no_change"
+    assert response.chatbot_message == ""
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_document_ai_edit_updates_selected_board_content(
     monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
 ) -> None:
     store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
     monkeypatch.setattr(workspace_state, "STORE", store)
     captured: dict[str, str | None] = {}
 
-    def _fake_chat(**kwargs):
+    def _fake_board_edit(**kwargs):
         captured["selection_excerpt"] = kwargs.get("selection_excerpt")
-        captured["interaction_mode"] = kwargs.get("interaction_mode")
-        return CourseChatReply(teacher_message="AI生成：这是修改建议。")
+        captured["intent"] = kwargs.get("intent")
+        return BoardDocumentEditResult(
+            operation="replace_selection",
+            content_text="改写后的内容",
+            summary="改写了选中内容。",
+        )
 
-    monkeypatch.setattr(openai_course_ai, "generate_teacher_chat", _fake_chat)
+    def _unexpected_chatbot_reply(**kwargs):
+        raise AssertionError("direct document edits should use the board document editor AI")
+
+    monkeypatch.setattr(openai_course_ai, "generate_chatbot_reply", _unexpected_chatbot_reply)
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _fake_board_edit)
     monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
 
-    lesson_id = _seed_test_user_workspace(store).packages[0].lessons[0].id
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.board_document = build_document(title="已有板书", content_html="<p>原文</p>")
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    store.save_for_user(TEST_USER.id, workspace)
     response = chat_service.document_ai_edit_request(
-        lesson_id,
+        lesson.id,
         "改写选中内容",
         "原文",
         [],
         user_id=TEST_USER.id,
     )
 
-    assert response.teacher_message == "AI生成：这是修改建议。"
-    assert captured == {"selection_excerpt": "原文", "interaction_mode": "direct_edit"}
+    assert response.chatbot_message == "改写了选中内容。"
+    assert response.board_decision.action == "edit_board"
+    assert response.active_requirement_sheet is None
+    assert response.requirement_cleared is True
+    assert response.resolved_focus is not None
+    updated_lesson = response.course_package.lessons[0]
+    assert updated_lesson.learning_requirements is None
+    assert updated_lesson.board_document.content_text == "改写后的内容"
+    commit = updated_lesson.history_graph.commits[-1]
+    assert commit.metadata["kind"] == "board_document_edit"
+    assert commit.metadata["board_edit_operation"] == "replace_selection"
+    assert commit.metadata["requirement_cleared"] is True
+    assert commit.metadata["task_requirement_sheet"]["action_type"] == "rewrite_target"
+    assert commit.metadata["active_requirement_sheet_after"] is None
+    assert captured == {"selection_excerpt": "原文", "intent": "edit_existing_document"}
     assert _read_log_entries(isolated_ai_log) == []
 
 
-def test_chat_http_endpoint_returns_teacher_reply(
+def test_selected_simplify_request_in_chat_routes_to_board_editor(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    captured: dict[str, str | None] = {}
+
+    def _fake_board_edit(**kwargs):
+        captured["selection_excerpt"] = kwargs.get("selection_excerpt")
+        captured["intent"] = kwargs.get("intent")
+        captured["user_instruction"] = kwargs.get("user_instruction")
+        return BoardDocumentEditResult(
+            operation="replace_selection",
+            content_text="更简单的说法",
+            summary="把选中内容改得更简单。",
+            chatbot_message="AI生成：选中内容已经简化。",
+        )
+
+    def _unexpected_chatbot_reply(**kwargs):
+        raise AssertionError("selected simplify requests must use the board document editor AI")
+
+    monkeypatch.setattr(openai_course_ai, "generate_chatbot_reply", _unexpected_chatbot_reply)
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _fake_board_edit)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_learning_requirement_update",
+        lambda **kwargs: LearningRequirementUpdate(
+            progress=100,
+            summary="用户要求简化选中的板书内容。",
+            key_facts=[
+                LearningRequirementKeyFact(
+                    label="局部编辑",
+                    value="简化选中内容",
+                    evidence="用户说把这里改的简单点。",
+                    category="other",
+                )
+            ],
+            checklist=[
+                LearningRequirementChecklistItem(
+                    title="目标位置来自选区",
+                    is_clear=True,
+                    evidence="请求携带选中内容。",
+                )
+            ],
+            missing_items=[],
+            next_question="",
+            ready_for_board=True,
+            action_type="simplify_target",
+            action_instruction="把选中内容改得更简单。",
+            target_hint="选中内容",
+        ),
+    )
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.board_document = build_document(
+        title="已有板书",
+        content_text="# 主线\n## 第一节\n原文复杂句子\n## 第二节\n其他内容",
+    )
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(
+            message="把这里改的简单点",
+            selection=SelectionRef(kind="board", excerpt="原文复杂句子", lesson_id=lesson.id),
+        ),
+        user_id=TEST_USER.id,
+    )
+
+    assert response.chatbot_message == "AI生成：选中内容已经简化。"
+    assert response.board_decision.action == "edit_board"
+    assert response.resolved_focus is not None
+    assert response.requirement_cleared is True
+    updated_lesson = response.course_package.lessons[0]
+    assert "更简单的说法" in updated_lesson.board_document.content_text
+    assert "原文复杂句子" not in updated_lesson.board_document.content_text
+    commit = updated_lesson.history_graph.commits[-1]
+    assert commit.metadata["kind"] == "board_document_edit"
+    assert commit.metadata["task_requirement_sheet"]["action_type"] == "simplify_target"
+    assert commit.metadata["assistant_message_source"] == "board_document_editor_ai"
+    assert captured == {
+        "selection_excerpt": "原文复杂句子",
+        "intent": "edit_existing_document",
+        "user_instruction": "把这里改的简单点",
+    }
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_targeted_explanation_uses_resolved_board_focus_and_clears_task_sheet(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    captured: dict[str, str | None] = {}
+
+    def _fake_chatbot_reply(**kwargs):
+        captured["selection_excerpt"] = kwargs.get("selection_excerpt")
+        return ChatbotReply(chatbot_message="AI生成：针对目标文段的讲解。")
+
+    def _unexpected_board_edit(**kwargs):
+        raise AssertionError("targeted explanation must not edit the board")
+
+    monkeypatch.setattr(openai_course_ai, "generate_chatbot_reply", _fake_chatbot_reply)
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _unexpected_board_edit)
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.board_document = build_document(
+        title="已有板书",
+        content_text="# 主线\n## 形成机制\n这里说明影响因素和形成过程。\n## 示例\n这里给出一个例子。",
+    )
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="帮我讲一下为什么会这样"),
+        user_id=TEST_USER.id,
+    )
+
+    assert response.chatbot_message == "AI生成：针对目标文段的讲解。"
+    assert response.board_decision.action == "no_change"
+    assert response.resolved_focus is not None
+    assert response.requirement_cleared is True
+    assert response.course_package.lessons[0].learning_requirements is None
+    assert "目标文段" in (captured["selection_excerpt"] or "")
+    commit = response.course_package.lessons[0].history_graph.commits[-1]
+    assert commit.metadata["kind"] == "chat_flow"
+    assert commit.metadata["requirement_cleared"] is True
+    assert commit.metadata["task_requirement_sheet"]["action_type"] == "explain_target"
+    assert commit.metadata["active_requirement_sheet_after"] is None
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_board_teaching_continue_advances_to_next_section(
     monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
 ) -> None:
     store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
     monkeypatch.setattr(workspace_state, "STORE", store)
     monkeypatch.setattr(
         openai_course_ai,
-        "generate_teacher_chat",
-        lambda **kwargs: CourseChatReply(teacher_message="AI生成：HTTP 路由回复。"),
+        "generate_chatbot_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="AI生成：第二节讲解。"),
+    )
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    document = build_document(
+        title="分节板书",
+        content_text="# 分节板书\n## 第一节\n这是一段足够长的第一节正文，用来避免被识别成额外章节并保持测试稳定。\n## 第二节\n这是一段足够长的第二节正文，用来避免被识别成额外章节并保持测试稳定。",
+    )
+    refresh_lesson_runtime(lesson, document=document, requirements=lesson.learning_requirements)
+    lesson.board_teaching_progress = BoardTeachingProgress(
+        board_document_id=document.id,
+        board_snapshot_hash="hash-1",
+        current_section_index=0,
+        completed_section_indexes=[0],
+        waiting_for_continue=True,
+    )
+    lesson.history_graph.commits[-1].snapshot = document
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="继续下一节", teaching_action="continue"),
+        user_id=TEST_USER.id,
+    )
+
+    assert response.teaching_progress is not None
+    assert response.teaching_progress.section_index == 1
+    assert response.teaching_progress.has_next_section is False
+    assert "AI生成：第二节讲解。" in response.chatbot_message
+    commit = response.course_package.lessons[0].history_graph.commits[-1]
+    assert commit.metadata["teaching_progress"]["section_index"] == 1
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_chat_http_endpoint_returns_chatbot_reply(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_chatbot_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="AI生成：HTTP 路由回复。"),
     )
     monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
 
@@ -768,7 +2098,7 @@ def test_chat_http_endpoint_returns_teacher_reply(
         main_module.app.dependency_overrides.pop(current_user, None)
 
     assert response.status_code == 200
-    assert response.json()["teacher_message"] == "AI生成：HTTP 路由回复。"
+    assert response.json()["chatbot_message"] == "AI生成：HTTP 路由回复。"
     assert _read_log_entries(isolated_ai_log) == []
 
 

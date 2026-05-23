@@ -4,6 +4,7 @@ from app.models import (
     BoardDocument,
     BranchRef,
     CommitRecord,
+    LearningRequirementSheet,
     Lesson,
     PatchOperation,
     now_iso,
@@ -78,6 +79,13 @@ def switch_branch(lesson: Lesson, branch_name: str) -> Lesson:
 
 def restore_commit(lesson: Lesson, commit_id: str, label: str) -> Lesson:
     commit = get_commit(lesson, commit_id)
+    if isinstance(commit.metadata, dict) and "active_requirement_sheet_after" in commit.metadata:
+        raw_requirements = commit.metadata.get("active_requirement_sheet_after")
+        lesson.learning_requirements = (
+            LearningRequirementSheet.model_validate(raw_requirements)
+            if isinstance(raw_requirements, dict)
+            else None
+        )
     return commit_operations(
         lesson,
         operations=[],
@@ -88,5 +96,10 @@ def restore_commit(lesson: Lesson, commit_id: str, label: str) -> Lesson:
             "kind": "restore_snapshot",
             "restored_commit_id": commit.id,
             "restored_commit_label": commit.label,
+            "active_requirement_sheet_after": (
+                lesson.learning_requirements.model_dump(mode="json")
+                if lesson.learning_requirements is not None
+                else None
+            ),
         },
     )

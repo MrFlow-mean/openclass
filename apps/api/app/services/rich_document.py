@@ -38,6 +38,42 @@ _MATH_RUN_RE = re.compile(r"[A-Za-z0-9\\_{}^()+\-−*/=·∞→←≤≥≈≠±
 _DELIMITED_MATH_RE = re.compile(r"\\\((.+?)\\\)|\$(?!\d+\$)([^$\n]+?)\$(?!\d)")
 _TRAILING_SENTENCE_MARKS_RE = re.compile(r"[\s.,，。；;:：]+$")
 _LEADING_SENTENCE_MARKS_RE = re.compile(r"^[\s.,，。；;:：]+")
+_MARKDOWN_INLINE_RE = re.compile(r"(\*\*[^*\n]+?\*\*|\*[^*\n]+?\*)")
+_MARKDOWN_HEADING_RE = re.compile(r"^(#{1,3})\s+(.+)$")
+_MARKDOWN_BULLET_RE = re.compile(r"^[-*]\s+(.+)$")
+_MARKDOWN_ORDERED_RE = re.compile(r"^\d+[.、]\s+(.+)$")
+_MARKDOWN_TABLE_SEPARATOR_RE = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$")
+_VOID_HTML_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"}
+_HTML_BLOCK_TAGS = {
+    "address",
+    "article",
+    "aside",
+    "blockquote",
+    "div",
+    "figure",
+    "footer",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "header",
+    "li",
+    "main",
+    "nav",
+    "ol",
+    "p",
+    "section",
+    "table",
+    "tbody",
+    "td",
+    "tfoot",
+    "th",
+    "thead",
+    "tr",
+    "ul",
+}
 _LATEX_SYMBOLS = {
     r"\to": "→",
     r"\leftarrow": "←",
@@ -93,48 +129,514 @@ def html_to_text(content_html: str) -> str:
     return "\n".join(compact_lines).strip()
 
 
+def _inline_nodes(value: str) -> list[dict[str, Any]]:
+    nodes: list[dict[str, Any]] = []
+    cursor = 0
+    for match in _MARKDOWN_INLINE_RE.finditer(value):
+        if match.start() > cursor:
+            nodes.append({"type": "text", "text": value[cursor : match.start()]})
+        token = match.group(0)
+        if token.startswith("**") and token.endswith("**"):
+            text = token[2:-2]
+            mark = "bold"
+        else:
+            text = token[1:-1]
+            mark = "italic"
+        if text:
+            nodes.append({"type": "text", "text": text, "marks": [{"type": mark}]})
+        cursor = match.end()
+    if cursor < len(value):
+        nodes.append({"type": "text", "text": value[cursor:]})
+    return nodes
+
+
+def _inline_html(value: str) -> str:
+    parts: list[str] = []
+    for node in _inline_nodes(value):
+        text = html.escape(str(node.get("text") or ""))
+        mark_names = {mark.get("type") for mark in node.get("marks", []) if isinstance(mark, dict)}
+        if "bold" in mark_names:
+            text = f"<strong>{text}</strong>"
+        if "italic" in mark_names:
+            text = f"<em>{text}</em>"
+        parts.append(text)
+    return "".join(parts)
+
+
+def _paragraph_node(value: str) -> dict[str, Any]:
+    content = _inline_nodes(value)
+    if not content:
+        return {"type": "paragraph"}
+    return {"type": "paragraph", "content": content}
+
+
+def _split_markdown_table_row(value: str) -> list[str]:
+    stripped = value.strip().strip("|")
+    return [cell.strip() for cell in stripped.split("|")]
+
+
+def _is_markdown_table(lines: list[str], index: int) -> bool:
+    if index + 1 >= len(lines):
+        return False
+    header = lines[index].strip()
+    separator = lines[index + 1].strip()
+    return "|" in header and bool(_MARKDOWN_TABLE_SEPARATOR_RE.match(separator))
+
+
+def _table_node(rows: list[list[str]]) -> dict[str, Any]:
+    table_rows: list[dict[str, Any]] = []
+    for row_index, row in enumerate(rows):
+        cell_type = "tableHeader" if row_index == 0 else "tableCell"
+        table_rows.append(
+            {
+                "type": "tableRow",
+                "content": [
+                    {
+                        "type": cell_type,
+                        "content": [_paragraph_node(cell)],
+                    }
+                    for cell in row
+                ],
+            }
+        )
+    return {"type": "table", "content": table_rows}
+
+
+def _table_html(rows: list[list[str]]) -> str:
+    html_rows: list[str] = []
+    for row_index, row in enumerate(rows):
+        tag = "th" if row_index == 0 else "td"
+        html_rows.append("<tr>" + "".join(f"<{tag}>{_inline_html(cell)}</{tag}>" for cell in row) + "</tr>")
+    return "<table><tbody>" + "".join(html_rows) + "</tbody></table>"
+
+
 def text_to_html(content_text: str) -> str:
     parts: list[str] = []
-    for raw_line in content_text.splitlines():
-        line = raw_line.strip()
+    lines = content_text.splitlines()
+    index = 0
+    while index < len(lines):
+        line = lines[index].strip()
         if not line:
+            index += 1
             continue
-        escaped = html.escape(line)
-        if line.startswith("# "):
-            parts.append(f"<h1>{html.escape(line[2:].strip())}</h1>")
-        elif line.startswith("## "):
-            parts.append(f"<h2>{html.escape(line[3:].strip())}</h2>")
-        elif re.match(r"^\d+[.、]\s+", line):
-            parts.append(f"<p>{escaped}</p>")
+
+        if _is_markdown_table(lines, index):
+            rows = [_split_markdown_table_row(line)]
+            index += 2
+            while index < len(lines) and "|" in lines[index].strip():
+                rows.append(_split_markdown_table_row(lines[index]))
+                index += 1
+            parts.append(_table_html(rows))
+            continue
+
+        heading_match = _MARKDOWN_HEADING_RE.match(line)
+        if heading_match:
+            level = min(len(heading_match.group(1)), 3)
+            parts.append(f"<h{level}>{_inline_html(heading_match.group(2).strip())}</h{level}>")
+            index += 1
+            continue
+
+        bullet_match = _MARKDOWN_BULLET_RE.match(line)
+        if bullet_match:
+            items: list[str] = []
+            while index < len(lines):
+                item_match = _MARKDOWN_BULLET_RE.match(lines[index].strip())
+                if not item_match:
+                    break
+                items.append(item_match.group(1).strip())
+                index += 1
+            parts.append("<ul>" + "".join(f"<li>{_inline_html(item)}</li>" for item in items) + "</ul>")
+            continue
+
+        ordered_match = _MARKDOWN_ORDERED_RE.match(line)
+        if ordered_match:
+            items = []
+            while index < len(lines):
+                item_match = _MARKDOWN_ORDERED_RE.match(lines[index].strip())
+                if not item_match:
+                    break
+                items.append(item_match.group(1).strip())
+                index += 1
+            parts.append("<ol>" + "".join(f"<li>{_inline_html(item)}</li>" for item in items) + "</ol>")
+            continue
+
+        if line.startswith(">"):
+            parts.append(f"<blockquote>{_inline_html(line.lstrip('>').strip())}</blockquote>")
         else:
-            parts.append(f"<p>{escaped}</p>")
+            parts.append(f"<p>{_inline_html(line)}</p>")
+        index += 1
     return "\n".join(parts) or "<p></p>"
 
 
 def text_to_tiptap_doc(content_text: str) -> dict[str, Any]:
     nodes: list[dict[str, Any]] = []
-    for raw_line in content_text.splitlines():
-        line = raw_line.strip()
+    lines = content_text.splitlines()
+    index = 0
+    while index < len(lines):
+        line = lines[index].strip()
         if not line:
+            index += 1
             continue
-        if line.startswith("# "):
+
+        if _is_markdown_table(lines, index):
+            rows = [_split_markdown_table_row(line)]
+            index += 2
+            while index < len(lines) and "|" in lines[index].strip():
+                rows.append(_split_markdown_table_row(lines[index]))
+                index += 1
+            nodes.append(_table_node(rows))
+            continue
+
+        heading_match = _MARKDOWN_HEADING_RE.match(line)
+        if heading_match:
+            level = min(len(heading_match.group(1)), 3)
             nodes.append(
                 {
                     "type": "heading",
-                    "attrs": {"level": 1},
-                    "content": [{"type": "text", "text": line[2:].strip()}],
+                    "attrs": {"level": level},
+                    "content": _inline_nodes(heading_match.group(2).strip()),
                 }
             )
-        elif line.startswith("## "):
-            nodes.append(
-                {
-                    "type": "heading",
-                    "attrs": {"level": 2},
-                    "content": [{"type": "text", "text": line[3:].strip()}],
-                }
-            )
+            index += 1
+            continue
+
+        bullet_match = _MARKDOWN_BULLET_RE.match(line)
+        if bullet_match:
+            items: list[dict[str, Any]] = []
+            while index < len(lines):
+                item_match = _MARKDOWN_BULLET_RE.match(lines[index].strip())
+                if not item_match:
+                    break
+                items.append({"type": "listItem", "content": [_paragraph_node(item_match.group(1).strip())]})
+                index += 1
+            nodes.append({"type": "bulletList", "content": items})
+            continue
+
+        ordered_match = _MARKDOWN_ORDERED_RE.match(line)
+        if ordered_match:
+            items = []
+            while index < len(lines):
+                item_match = _MARKDOWN_ORDERED_RE.match(lines[index].strip())
+                if not item_match:
+                    break
+                items.append({"type": "listItem", "content": [_paragraph_node(item_match.group(1).strip())]})
+                index += 1
+            nodes.append({"type": "orderedList", "content": items})
+            continue
+
+        if line.startswith(">"):
+            nodes.append({"type": "blockquote", "content": [_paragraph_node(line.lstrip(">").strip())]})
         else:
-            nodes.append({"type": "paragraph", "content": [{"type": "text", "text": line}]})
+            nodes.append(_paragraph_node(line))
+        index += 1
+    return {"type": "doc", "content": nodes or [{"type": "paragraph"}]}
+
+
+class _HTMLTreeParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.root: dict[str, Any] = {"tag": "root", "attrs": {}, "children": []}
+        self._stack: list[dict[str, Any]] = [self.root]
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        normalized_tag = tag.lower()
+        node = {
+            "tag": normalized_tag,
+            "attrs": {key.lower(): value or "" for key, value in attrs},
+            "children": [],
+        }
+        self._stack[-1]["children"].append(node)
+        if normalized_tag not in _VOID_HTML_TAGS:
+            self._stack.append(node)
+
+    def handle_endtag(self, tag: str) -> None:
+        normalized_tag = tag.lower()
+        for index in range(len(self._stack) - 1, 0, -1):
+            if self._stack[index].get("tag") == normalized_tag:
+                self._stack = self._stack[:index]
+                return
+
+    def handle_data(self, data: str) -> None:
+        if data:
+            self._stack[-1]["children"].append(data)
+
+
+def _style_map(attrs: dict[str, str]) -> dict[str, str]:
+    styles: dict[str, str] = {}
+    for item in attrs.get("style", "").split(";"):
+        if ":" not in item:
+            continue
+        key, value = item.split(":", 1)
+        key = key.strip().lower()
+        value = value.strip()
+        if key and value:
+            styles[key] = value
+    return styles
+
+
+def _block_attrs(attrs: dict[str, str]) -> dict[str, Any]:
+    styles = _style_map(attrs)
+    text_align = styles.get("text-align") or attrs.get("align", "")
+    if text_align in {"left", "center", "right", "justify"}:
+        return {"textAlign": text_align}
+    return {}
+
+
+def _text_style_attrs(attrs: dict[str, str]) -> dict[str, str]:
+    styles = _style_map(attrs)
+    text_style: dict[str, str] = {}
+    if styles.get("font-size"):
+        text_style["fontSize"] = styles["font-size"]
+    if styles.get("font-family"):
+        text_style["fontFamily"] = styles["font-family"]
+    return text_style
+
+
+def _with_mark(marks: list[dict[str, Any]], mark_type: str, attrs: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    next_marks = [dict(mark) for mark in marks]
+    if mark_type == "textStyle" and attrs:
+        for mark in next_marks:
+            if mark.get("type") == "textStyle":
+                mark["attrs"] = {**mark.get("attrs", {}), **attrs}
+                return next_marks
+    if not any(mark.get("type") == mark_type for mark in next_marks):
+        mark: dict[str, Any] = {"type": mark_type}
+        if attrs:
+            mark["attrs"] = attrs
+        next_marks.append(mark)
+    return next_marks
+
+
+def _text_node(text: str, marks: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not text:
+        return None
+    node: dict[str, Any] = {"type": "text", "text": text}
+    if marks:
+        node["marks"] = [dict(mark) for mark in marks]
+    return node
+
+
+def _trim_inline_content(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    trimmed = [dict(node) for node in nodes]
+    while trimmed and trimmed[0].get("type") == "text":
+        text = str(trimmed[0].get("text") or "").lstrip()
+        if text:
+            trimmed[0]["text"] = text
+            break
+        trimmed.pop(0)
+    while trimmed and trimmed[-1].get("type") == "text":
+        text = str(trimmed[-1].get("text") or "").rstrip()
+        if text:
+            trimmed[-1]["text"] = text
+            break
+        trimmed.pop()
+    return trimmed
+
+
+def _text_block_node(node_type: str, attrs: dict[str, Any], content: list[dict[str, Any]]) -> dict[str, Any]:
+    node: dict[str, Any] = {"type": node_type}
+    if attrs:
+        node["attrs"] = attrs
+    trimmed = _trim_inline_content(content)
+    if trimmed:
+        node["content"] = trimmed
+    return node
+
+
+def _html_inline_nodes(children: list[Any], marks: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    active_marks = marks or []
+    nodes: list[dict[str, Any]] = []
+    for child in children:
+        if isinstance(child, str):
+            text = child.replace("\xa0", " ")
+            text_node = _text_node(text, active_marks)
+            if text_node:
+                nodes.append(text_node)
+            continue
+        if not isinstance(child, dict):
+            continue
+        tag = child.get("tag", "")
+        attrs = child.get("attrs", {})
+        child_children = child.get("children", [])
+        node_type = (attrs.get("data-type") or "").strip()
+        if node_type == "inline-math":
+            latex = html.unescape((attrs.get("data-latex") or "").strip())
+            if latex:
+                nodes.append({"type": "inlineMath", "attrs": {"latex": latex}})
+            continue
+        if tag == "br":
+            nodes.append({"type": "hardBreak"})
+            continue
+        child_marks = active_marks
+        if tag in {"strong", "b"}:
+            child_marks = _with_mark(child_marks, "bold")
+        elif tag in {"em", "i"}:
+            child_marks = _with_mark(child_marks, "italic")
+        elif tag == "u":
+            child_marks = _with_mark(child_marks, "underline")
+        elif tag in {"s", "strike", "del"}:
+            child_marks = _with_mark(child_marks, "strike")
+        elif tag == "code":
+            child_marks = _with_mark(child_marks, "code")
+        text_style = _text_style_attrs(attrs)
+        if text_style:
+            child_marks = _with_mark(child_marks, "textStyle", text_style)
+        nodes.extend(_html_inline_nodes(child_children, child_marks))
+    return nodes
+
+
+def _has_block_children(children: list[Any]) -> bool:
+    return any(isinstance(child, dict) and child.get("tag") in _HTML_BLOCK_TAGS for child in children)
+
+
+def _html_table_cell_node(cell: dict[str, Any]) -> dict[str, Any]:
+    cell_type = "tableHeader" if cell.get("tag") == "th" else "tableCell"
+    content = _html_children_to_blocks(cell.get("children", []))
+    if not content:
+        content = [_text_block_node("paragraph", {}, _html_inline_nodes(cell.get("children", [])))]
+    return {"type": cell_type, "content": content}
+
+
+def _html_table_rows(children: list[Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for child in children:
+        if not isinstance(child, dict):
+            continue
+        tag = child.get("tag")
+        if tag in {"thead", "tbody", "tfoot"}:
+            rows.extend(_html_table_rows(child.get("children", [])))
+            continue
+        if tag != "tr":
+            continue
+        cells = [
+            _html_table_cell_node(cell)
+            for cell in child.get("children", [])
+            if isinstance(cell, dict) and cell.get("tag") in {"th", "td"}
+        ]
+        if cells:
+            rows.append({"type": "tableRow", "content": cells})
+    return rows
+
+
+def _html_list_item_node(item: dict[str, Any]) -> dict[str, Any]:
+    content: list[dict[str, Any]] = []
+    inline_children: list[Any] = []
+    for child in item.get("children", []):
+        if isinstance(child, str):
+            inline_children.append(child)
+            continue
+        if not isinstance(child, dict):
+            continue
+        if child.get("tag") in _HTML_BLOCK_TAGS:
+            if inline_children:
+                paragraph = _text_block_node("paragraph", {}, _html_inline_nodes(inline_children))
+                if paragraph.get("content"):
+                    content.append(paragraph)
+                inline_children = []
+            content.extend(_html_node_to_blocks(child))
+        else:
+            inline_children.append(child)
+    if inline_children:
+        paragraph = _text_block_node("paragraph", {}, _html_inline_nodes(inline_children))
+        if paragraph.get("content"):
+            content.append(paragraph)
+    return {"type": "listItem", "content": content or [{"type": "paragraph"}]}
+
+
+def _html_node_to_blocks(node: dict[str, Any]) -> list[dict[str, Any]]:
+    tag = node.get("tag", "")
+    attrs = node.get("attrs", {})
+    children = node.get("children", [])
+    node_type = (attrs.get("data-type") or "").strip()
+    if node_type == "page-break":
+        return [{"type": "pageBreak"}]
+    if node_type == "block-math":
+        latex = html.unescape((attrs.get("data-latex") or "").strip())
+        return [{"type": "blockMath", "attrs": {"latex": latex}}] if latex else []
+    if tag in {"h1", "h2", "h3", "h4", "h5", "h6"}:
+        level = min(int(tag[1]), 3)
+        return [
+            _text_block_node(
+                "heading",
+                {"level": level, **_block_attrs(attrs)},
+                _html_inline_nodes(children),
+            )
+        ]
+    if tag == "p":
+        return [_text_block_node("paragraph", _block_attrs(attrs), _html_inline_nodes(children))]
+    if tag == "blockquote":
+        content = _html_children_to_blocks(children) if _has_block_children(children) else [
+            _text_block_node("paragraph", {}, _html_inline_nodes(children))
+        ]
+        return [{"type": "blockquote", "content": content or [{"type": "paragraph"}]}]
+    if tag in {"ul", "ol"}:
+        items = [
+            _html_list_item_node(child)
+            for child in children
+            if isinstance(child, dict) and child.get("tag") == "li"
+        ]
+        return [{"type": "bulletList" if tag == "ul" else "orderedList", "content": items}] if items else []
+    if tag == "table":
+        rows = _html_table_rows(children)
+        return [{"type": "table", "content": rows}] if rows else []
+    if tag == "tr":
+        cells = [
+            _html_table_cell_node(child)
+            for child in children
+            if isinstance(child, dict) and child.get("tag") in {"th", "td"}
+        ]
+        return [{"type": "tableRow", "content": cells}] if cells else []
+    if tag in {"thead", "tbody", "tfoot"}:
+        return _html_children_to_blocks(children)
+    if tag in {"td", "th"}:
+        return [_html_table_cell_node(node)]
+    if tag == "li":
+        return [_html_list_item_node(node)]
+    if tag == "img":
+        src = (attrs.get("src") or "").strip()
+        alt = (attrs.get("alt") or "").strip()
+        return [{"type": "image", "attrs": {"src": src, "alt": alt}}] if src else []
+    if _has_block_children(children):
+        return _html_children_to_blocks(children)
+    inline = _html_inline_nodes(children)
+    if inline:
+        return [_text_block_node("paragraph", {}, inline)]
+    return []
+
+
+def _html_children_to_blocks(children: list[Any]) -> list[dict[str, Any]]:
+    nodes: list[dict[str, Any]] = []
+    inline_children: list[Any] = []
+    for child in children:
+        if isinstance(child, str):
+            if child.strip():
+                inline_children.append(child)
+            continue
+        if not isinstance(child, dict):
+            continue
+        if child.get("tag") in _HTML_BLOCK_TAGS or (child.get("attrs", {}).get("data-type") or "").strip() in {
+            "block-math",
+            "page-break",
+        }:
+            if inline_children:
+                paragraph = _text_block_node("paragraph", {}, _html_inline_nodes(inline_children))
+                if paragraph.get("content"):
+                    nodes.append(paragraph)
+                inline_children = []
+            nodes.extend(_html_node_to_blocks(child))
+        else:
+            inline_children.append(child)
+    if inline_children:
+        paragraph = _text_block_node("paragraph", {}, _html_inline_nodes(inline_children))
+        if paragraph.get("content"):
+            nodes.append(paragraph)
+    return nodes
+
+
+def html_to_tiptap_doc(content_html: str) -> dict[str, Any]:
+    parser = _HTMLTreeParser()
+    parser.feed(content_html)
+    nodes = _html_children_to_blocks(parser.root["children"])
     return {"type": "doc", "content": nodes or [{"type": "paragraph"}]}
 
 
@@ -155,7 +657,9 @@ def build_document(
         normalized_html = text_to_html(normalized_text)
     if not normalized_text and not normalized_html:
         normalized_html = "<p></p>"
-    normalized_json = content_json or text_to_tiptap_doc(normalized_text)
+    normalized_json = content_json or (
+        html_to_tiptap_doc(normalized_html) if normalized_html.strip() else text_to_tiptap_doc(normalized_text)
+    )
     kwargs: dict[str, Any] = {
         "title": title,
         "content_json": normalized_json,
@@ -166,6 +670,32 @@ def build_document(
     if document_id:
         kwargs["id"] = document_id
     return BoardDocument(**kwargs)
+
+
+def _looks_like_markdown_document(content_text: str) -> bool:
+    lines = [line.strip() for line in content_text.splitlines() if line.strip()]
+    if not lines:
+        return False
+    for index, line in enumerate(lines):
+        if _MARKDOWN_HEADING_RE.match(line) or _MARKDOWN_BULLET_RE.match(line) or _MARKDOWN_ORDERED_RE.match(line):
+            return True
+        if _MARKDOWN_INLINE_RE.search(line):
+            return True
+        if _is_markdown_table(lines, index):
+            return True
+    return False
+
+
+def upgrade_markdown_like_document(document: BoardDocument) -> BoardDocument:
+    if not _looks_like_markdown_document(document.content_text):
+        return document
+    upgraded = build_document(
+        title=document.title,
+        content_text=document.content_text,
+        document_id=document.id,
+        page_settings=document.page_settings,
+    )
+    return upgraded
 
 
 def is_document_empty(document: BoardDocument) -> bool:

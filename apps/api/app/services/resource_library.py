@@ -721,15 +721,54 @@ def _epub_section_with_children(sections: list[dict[str, object]], start_index: 
     return "\n\n".join(part for part in parts if part.strip())
 
 
+def _generic_outline_marker_count(text: str) -> int:
+    count = 0
+    for line in text.splitlines():
+        compact = re.sub(r"\s+", "", line)
+        if not 2 <= len(compact) <= 36:
+            continue
+        if re.match(r"^[【\[\(（].{1,34}[】\]\)）]$", compact):
+            count += 1
+            continue
+        if re.match(r"^(?:第?[一二三四五六七八九十百千万\d]+[章节部分讲课、.．)]|[A-Za-z][.)])", compact):
+            count += 1
+    return count
+
+
+def _continuous_explanatory_sentence_count(text: str) -> int:
+    segments = re.split(r"[。！？!?；;]\s*", text)
+    return sum(1 for segment in segments if len(re.sub(r"\s+", "", segment)) >= 18)
+
+
+def _body_text_density(text: str) -> float:
+    compact = re.sub(r"\s+", "", text)
+    if not compact:
+        return 0.0
+    body_chars = 0
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        line_compact = re.sub(r"\s+", "", stripped)
+        if len(line_compact) <= 36 and _generic_outline_marker_count(stripped):
+            continue
+        body_chars += len(line_compact)
+    return body_chars / len(compact)
+
+
 def _epub_section_body_score(sections: list[dict[str, object]], index: int) -> tuple[int, int]:
     text = _epub_section_with_children(sections, index)
     compact = re.sub(r"\s+", "", text)
-    outline_markers = sum(1 for marker in ("【学习精要】", "【习题解析】", "【补充训练】") if marker in text)
-    if len(compact) <= 80 and outline_markers >= 2:
+    outline_markers = _generic_outline_marker_count(text)
+    explanatory_sentences = _continuous_explanatory_sentence_count(text)
+    body_density = _body_text_density(text)
+    if len(compact) <= 80 and outline_markers >= 2 and explanatory_sentences == 0:
         return (-1, len(compact))
     score = min(len(compact), 2000)
-    if outline_markers >= 2:
+    if outline_markers >= 2 and explanatory_sentences <= 1:
         score -= 200
+    if body_density < 0.45:
+        score -= 120
     return (score, len(compact))
 
 

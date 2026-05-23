@@ -12,11 +12,18 @@ export type BoardAction =
   | "append_section"
   | "create_new_lesson"
   | "await_scope_choice"
-  | "await_reference_choice";
+  | "await_reference_choice"
+  | "await_focus_choice";
 
 export type ResourceReferenceAction = "confirm" | "skip";
 export type BoardEditConfirmationAction = "confirm" | "skip";
 export type ChatInteractionMode = "ask" | "direct_edit";
+export type BoardTaskAction =
+  | "generate_board"
+  | "explain_target"
+  | "rewrite_target"
+  | "expand_target"
+  | "simplify_target";
 export type AIProvider =
   | "openai"
   | "anthropic"
@@ -69,6 +76,11 @@ export interface LearningRequirementSheet {
   board_scope: string[];
   success_criteria: string;
   risk_notes: string[];
+  target_location?: BoardFocusRef | null;
+  location_status?: "missing" | "selected" | "resolved" | "ambiguous";
+  action_type?: BoardTaskAction | null;
+  action_instruction?: string;
+  location_clarification_question?: string;
 }
 
 export interface LearningRequirementChecklistItem {
@@ -81,6 +93,7 @@ export interface LearningRequirementKeyFact {
   label: string;
   value: string;
   evidence: string;
+  category?: "learning" | "level" | "vocabulary" | "scenario" | "output" | "other" | null;
 }
 
 export interface LearningClarificationStatus {
@@ -288,6 +301,27 @@ export interface SelectionRef {
   excerpt: string;
   lesson_id?: string | null;
   block_id?: string | null;
+  document_id?: string | null;
+  segment_id?: string | null;
+  heading_path?: string[];
+  before_text?: string;
+  after_text?: string;
+  text_hash?: string | null;
+}
+
+export interface BoardFocusRef {
+  source: "board" | "resource" | "chat";
+  lesson_id?: string | null;
+  document_id?: string | null;
+  segment_id?: string | null;
+  kind?: "heading" | "paragraph" | "list" | "table" | "code" | "image" | "other" | null;
+  heading_path: string[];
+  excerpt: string;
+  before_text: string;
+  after_text: string;
+  text_hash?: string | null;
+  confidence: number;
+  reason: string;
 }
 
 export interface ConversationTurn {
@@ -375,6 +409,7 @@ export interface ChatRequestPayload {
   resource_reference_chapter_id?: string | null;
   board_edit_action?: BoardEditConfirmationAction | null;
   board_edit_topic?: string | null;
+  board_generation_action?: "start" | null;
   teaching_action?: "continue" | "restart" | null;
   conversation?: ConversationTurn[];
 }
@@ -388,8 +423,9 @@ export interface SectionTeachingProgress {
 }
 
 export interface ChatResponse {
-  teacher_message: string;
+  chatbot_message: string;
   learning_requirement_sheet: LearningRequirementSheet;
+  active_requirement_sheet?: LearningRequirementSheet | null;
   learning_clarification: LearningClarificationStatus;
   board_decision: BoardDecision;
   needs_clarification: boolean;
@@ -400,6 +436,9 @@ export interface ChatResponse {
   reference_prompt?: ResourceReferencePrompt | null;
   board_edit_prompt?: BoardEditPrompt | null;
   selected_reference?: ResourceReferenceContext | null;
+  resolved_focus?: BoardFocusRef | null;
+  focus_candidates?: BoardFocusRef[];
+  requirement_cleared?: boolean;
   created_lesson?: Lesson | null;
   teaching_progress?: SectionTeachingProgress | null;
   course_package: CoursePackage;

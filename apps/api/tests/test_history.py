@@ -1,6 +1,6 @@
 import pytest
 
-from app.models import LearningRequirementSheet, PatchOperation
+from app.models import BoardDocument, LearningRequirementSheet, PatchOperation
 from app.services.chart_generation import extract_chart_data_fragments
 from app.services.course_runtime import (
     build_lesson_for_topic,
@@ -12,8 +12,16 @@ from app.services.document_ops import apply_patch
 from app.services.history import create_branch, restore_commit
 from app.services.lesson_factory import create_empty_lesson, create_lesson
 from app.services.openai_course_ai import GeneratedCatalogChapter, GeneratedResourceCatalog, OpenAICourseAI
-from app.services.resource_library import build_resource_item, extract_reference_context
-from app.services.rich_document import build_document, export_docx, import_docx, replace_selection_in_document
+from app.services.resource_library import _epub_section_body_score, build_resource_item, extract_reference_context
+from app.services.board_segment_index import build_board_segment_index
+from app.services.rich_document import (
+    build_document,
+    export_docx,
+    import_docx,
+    replace_selection_in_document,
+    upgrade_markdown_like_document,
+)
+from app.services.segment_resolver import resolve_board_focus
 
 
 def test_build_lesson_for_topic_creates_blank_lesson_without_ai_runtime() -> None:
@@ -132,6 +140,147 @@ def test_replace_selection_in_document_replaces_exact_block_without_nested_parag
     assert "<p><p>" not in replaced.content_html
 
 
+def test_board_segment_index_builds_machine_directory_from_rich_document() -> None:
+    document = build_document(
+        title="定位测试",
+        content_text="# 主线\n## 形成机制\n这里说明影响因素和形成过程。\n## 示例\n这里给出一个例子。",
+    )
+
+    index = build_board_segment_index(document)
+
+    assert index.document_id == document.id
+    assert any(segment.kind == "heading" and segment.text == "形成机制" for segment in index.segments)
+    paragraph = next(segment for segment in index.segments if "影响因素" in segment.text)
+    assert paragraph.heading_path == ["主线", "形成机制"]
+    assert paragraph.before_segment_id
+    assert paragraph.after_segment_id
+
+
+def test_segment_resolver_uses_generic_semantic_aliases_without_selection() -> None:
+    lesson = create_empty_lesson("定位测试")
+    lesson.board_document = build_document(
+        title="定位测试",
+        content_text="# 主线\n## 形成机制\n这里说明影响因素和形成过程。\n## 示例\n这里给出一个例子。",
+    )
+
+    resolution = resolve_board_focus(
+        lesson=lesson,
+        user_message="帮我讲一下为什么会这样",
+        action_type="explain_target",
+    )
+
+    assert resolution.resolved
+    assert resolution.focus is not None
+    assert "影响因素" in resolution.focus.excerpt or "形成机制" in resolution.focus.excerpt
+
+
+def _collect_node_types(node: dict) -> list[str]:
+    node_type = node.get("type")
+    result = [node_type] if isinstance(node_type, str) else []
+    for child in node.get("content", []):
+        if isinstance(child, dict):
+            result.extend(_collect_node_types(child))
+    return result
+
+
+def _collect_mark_types(node: dict) -> list[str]:
+    result = [
+        mark.get("type", "")
+        for mark in node.get("marks", [])
+        if isinstance(mark, dict)
+    ]
+    for child in node.get("content", []):
+        if isinstance(child, dict):
+            result.extend(_collect_mark_types(child))
+    return result
+
+
+def test_build_document_converts_markdown_to_word_like_rich_nodes() -> None:
+    document = build_document(
+        title="Doc",
+        content_text=(
+            "## Dialogue\n"
+            "**Speaker A:** Hello there.\n"
+            "**Speaker B:** Nice to meet you.\n"
+            "- **Goal:** Practice a short exchange\n"
+            "\n"
+            "| Term | Meaning |\n"
+            "| --- | --- |\n"
+            "| hello | greeting |"
+        ),
+    )
+
+    node_types = _collect_node_types(document.content_json)
+
+    assert "<strong>Speaker A:</strong> Hello there." in document.content_html
+    assert "<ul><li><strong>Goal:</strong> Practice a short exchange</li></ul>" in document.content_html
+    assert "<table>" in document.content_html
+    assert "heading" in node_types
+    assert "bulletList" in node_types
+    assert "table" in node_types
+    assert any(
+        mark.get("type") == "bold"
+        for node in document.content_json["content"]
+        for child in node.get("content", [])
+        if isinstance(child, dict)
+        for mark in child.get("marks", [])
+        if isinstance(mark, dict)
+    )
+
+
+def test_replace_selection_preserves_existing_rich_document_structure() -> None:
+    document = build_document(
+        title="Doc",
+        content_text=(
+            "## Dialogue\n"
+            "**Speaker A:** Original target.\n"
+            "- **Goal:** Keep structure\n"
+            "\n"
+            "| Term | Meaning |\n"
+            "| --- | --- |\n"
+            "| target | selected line |"
+        ),
+    )
+
+    updated = replace_selection_in_document(
+        document,
+        selection_text="Speaker A: Original target.",
+        replacement_text="Speaker A: Simpler target.",
+    )
+    node_types = _collect_node_types(updated.content_json)
+
+    assert "Speaker A: Simpler target." in updated.content_text
+    assert "Original target" not in updated.content_text
+    assert "<h2>" in updated.content_html
+    assert "<strong>Goal:</strong> Keep structure" in updated.content_html
+    assert "heading" in node_types
+    assert "bulletList" in node_types
+    assert "table" in node_types
+    assert "bold" in _collect_mark_types(updated.content_json)
+
+
+def test_upgrade_markdown_like_document_repairs_legacy_plain_paragraphs() -> None:
+    legacy = BoardDocument(
+        title="Doc",
+        content_text="## Section\n**Speaker:** Editable line",
+        content_html="<h2>Section</h2><p>**Speaker:** Editable line</p>",
+        content_json={
+            "type": "doc",
+            "content": [
+                {"type": "heading", "attrs": {"level": 2}, "content": [{"type": "text", "text": "Section"}]},
+                {"type": "paragraph", "content": [{"type": "text", "text": "**Speaker:** Editable line"}]},
+            ],
+        },
+    )
+
+    upgraded = upgrade_markdown_like_document(legacy)
+
+    assert "<strong>Speaker:</strong> Editable line" in upgraded.content_html
+    paragraph = upgraded.content_json["content"][1]
+    assert paragraph["content"][0]["text"] == "Speaker:"
+    assert paragraph["content"][0]["marks"][0]["type"] == "bold"
+
+
 def test_build_resource_item_extracts_markdown_outline_and_reference_context(tmp_path) -> None:
     resource_path = tmp_path / "resource.md"
     resource_path.write_text(
@@ -146,6 +295,26 @@ def test_build_resource_item_extracts_markdown_outline_and_reference_context(tmp
     assert context is not None
     assert context.chapter_title == "第一章"
     assert "第一章正文" in context.full_text
+
+
+def test_epub_section_scoring_penalizes_generic_structural_shells() -> None:
+    shell_sections = [
+        {
+            "title": "结构页",
+            "level": 1,
+            "content": "【目标】\n【练习】\n【复盘】",
+        }
+    ]
+    body_sections = [
+        {
+            "title": "正文页",
+            "level": 1,
+            "content": "这里先说明一个核心概念如何在真实任务中使用，并进一步解释它和后续练习之间的关系。然后给出一个可以复述的判断标准。",
+        }
+    ]
+
+    assert _epub_section_body_score(shell_sections, 0)[0] < 0
+    assert _epub_section_body_score(body_sections, 0)[0] > _epub_section_body_score(shell_sections, 0)[0]
 
 
 def test_build_resource_item_uses_catalog_ai_when_material_has_no_outline(

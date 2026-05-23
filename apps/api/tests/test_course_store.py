@@ -6,13 +6,35 @@ from app.services.course_store import SqliteCourseStore, build_initial_workspace
 from app.services.lesson_factory import create_empty_lesson
 
 
+def _append_lesson(workspace, title: str = "测试页面"):
+    lesson = create_empty_lesson(title)
+    package = workspace.packages[0]
+    package.lessons.append(lesson)
+    package.open_lesson_ids.append(lesson.id)
+    package.workspace_tab_order.append(lesson.id)
+    package.active_lesson_id = lesson.id
+    return lesson
+
+
+def test_initial_workspace_has_no_subject_demo_lessons() -> None:
+    workspace = build_initial_workspace_state()
+
+    assert len(workspace.packages) == 1
+    assert workspace.packages[0].lessons == []
+    assert workspace.packages[0].course_graph == []
+    assert workspace.packages[0].open_lesson_ids == []
+    assert workspace.packages[0].active_lesson_id is None
+    assert workspace.packages[0].workspace_tab_order == []
+
+
 def test_sqlite_store_round_trips_workspace_without_store_json(tmp_path) -> None:
     db_path = tmp_path / "openclass.sqlite3"
     store = SqliteCourseStore(db_path, legacy_json_path=None)
 
     workspace = store.load()
+    lesson = _append_lesson(workspace)
     workspace.packages[0].title = "多人课程工作台"
-    workspace.packages[0].lessons[0].board_document.content_text = "数据库保存后的讲义"
+    lesson.board_document.content_text = "数据库保存后的讲义"
     store.save(workspace)
 
     reloaded = store.load()
@@ -27,8 +49,8 @@ def test_sqlite_store_round_trips_workspace_without_store_json(tmp_path) -> None
         lesson_count = conn.execute("SELECT count(*) FROM lessons").fetchone()[0]
         commit_count = conn.execute("SELECT count(*) FROM lesson_commits").fetchone()[0]
     assert package_count == 1
-    assert lesson_count == 3
-    assert commit_count == 3
+    assert lesson_count == 1
+    assert commit_count == 1
 
 
 def test_sqlite_store_imports_and_archives_legacy_store_json(tmp_path) -> None:
@@ -60,7 +82,7 @@ def test_sqlite_store_round_trips_resource_lesson_scope(tmp_path) -> None:
 
     workspace = store.load()
     package = workspace.packages[0]
-    lesson = package.lessons[0]
+    lesson = _append_lesson(workspace)
     package.resources.append(
         ResourceLibraryItem(
             name="lesson-only.png",
@@ -82,7 +104,7 @@ def test_sqlite_store_round_trips_board_teaching_progress(tmp_path) -> None:
     store = SqliteCourseStore(db_path, legacy_json_path=None)
 
     workspace = store.load()
-    lesson = workspace.packages[0].lessons[0]
+    lesson = _append_lesson(workspace)
     lesson.board_teaching_progress = BoardTeachingProgress(
         board_document_id=lesson.board_document.id,
         board_snapshot_hash="hash-1",
@@ -142,23 +164,18 @@ def test_sqlite_store_creates_empty_account_workspace(tmp_path) -> None:
     assert workspace.packages[0].workspace_tab_order == []
 
 
-def test_sqlite_store_removes_only_unmodified_starter_lessons_from_account_workspace(tmp_path) -> None:
+def test_sqlite_store_preserves_user_lessons_in_account_workspace(tmp_path) -> None:
     db_path = tmp_path / "openclass.sqlite3"
     store = SqliteCourseStore(db_path, legacy_json_path=None)
 
     workspace = build_initial_workspace_state()
-    user_lesson = create_empty_lesson("在测试1")
-    package = workspace.packages[0]
-    package.lessons.append(user_lesson)
-    package.open_lesson_ids.append(user_lesson.id)
-    package.workspace_tab_order.append(user_lesson.id)
-    package.active_lesson_id = user_lesson.id
+    user_lesson = _append_lesson(workspace, "用户页面")
     store.save_for_user("guest_preview", workspace)
 
     reloaded = store.load_for_user("guest_preview")
     package = reloaded.packages[0]
 
-    assert [lesson.title for lesson in package.lessons] == ["在测试1"]
+    assert [lesson.title for lesson in package.lessons] == ["用户页面"]
     assert package.open_lesson_ids == [user_lesson.id]
     assert package.workspace_tab_order == [user_lesson.id]
     assert package.active_lesson_id == user_lesson.id

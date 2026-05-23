@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import certifi
 from dotenv import load_dotenv
@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 from app.models import (
     AIModelSelection,
     AIProvider,
+    BoardTaskAction,
     LearningRequirementChecklistItem,
     LearningRequirementKeyFact,
 )
@@ -131,8 +132,21 @@ class ParsedAIResponse:
     usage: Any = None
 
 
-class CourseChatReply(BaseModel):
-    teacher_message: str
+class ChatbotReply(BaseModel):
+    chatbot_message: str
+
+
+BoardDocumentEditOperation = Literal["replace_document", "replace_selection", "append_section"]
+
+
+class BoardDocumentEditResult(BaseModel):
+    operation: BoardDocumentEditOperation = "replace_document"
+    title: str = ""
+    content_text: str = ""
+    content_html: str = ""
+    summary: str = ""
+    chatbot_message: str = ""
+    section_titles: list[str] = Field(default_factory=list)
 
 
 class LearningRequirementUpdate(BaseModel):
@@ -143,6 +157,9 @@ class LearningRequirementUpdate(BaseModel):
     missing_items: list[str] = Field(default_factory=list)
     next_question: str = ""
     ready_for_board: bool = False
+    action_type: BoardTaskAction | None = None
+    action_instruction: str = ""
+    target_hint: str = ""
 
 
 @contextmanager
@@ -162,7 +179,7 @@ class OpenAIConfig(BaseModel):
     pm_model: str | None = Field(default_factory=lambda: os.getenv("OPENAI_PM_MODEL"))
     board_model: str | None = Field(default_factory=lambda: os.getenv("OPENAI_BOARD_MODEL"))
     guide_model: str | None = Field(default_factory=lambda: os.getenv("OPENAI_GUIDE_MODEL"))
-    teacher_model: str | None = Field(default_factory=lambda: os.getenv("OPENAI_TEACHER_MODEL"))
+    chatbot_model: str | None = Field(default_factory=lambda: os.getenv("OPENAI_CHATBOT_MODEL"))
     lesson_model: str | None = Field(default_factory=lambda: os.getenv("OPENAI_LESSON_MODEL"))
     catalog_model: str | None = Field(
         default_factory=lambda: os.getenv("OPENAI_CATALOG_MODEL", OPENAI_DEFAULT_CATALOG_MODEL)
@@ -186,7 +203,7 @@ class DeepSeekConfig(BaseModel):
     pm_model: str | None = Field(default_factory=lambda: os.getenv("DEEPSEEK_PM_MODEL"))
     board_model: str | None = Field(default_factory=lambda: os.getenv("DEEPSEEK_BOARD_MODEL"))
     guide_model: str | None = Field(default_factory=lambda: os.getenv("DEEPSEEK_GUIDE_MODEL"))
-    teacher_model: str | None = Field(default_factory=lambda: os.getenv("DEEPSEEK_TEACHER_MODEL"))
+    chatbot_model: str | None = Field(default_factory=lambda: os.getenv("DEEPSEEK_CHATBOT_MODEL"))
     lesson_model: str | None = Field(default_factory=lambda: os.getenv("DEEPSEEK_LESSON_MODEL"))
     catalog_model: str | None = Field(default_factory=lambda: os.getenv("DEEPSEEK_CATALOG_MODEL"))
     fallback_model: str = Field(default_factory=lambda: os.getenv("DEEPSEEK_FALLBACK_MODEL", "deepseek-chat"))
@@ -208,7 +225,7 @@ class KimiConfig(BaseModel):
     pm_model: str | None = Field(default_factory=lambda: _env_any("KIMI_PM_MODEL", "MOONSHOT_PM_MODEL"))
     board_model: str | None = Field(default_factory=lambda: _env_any("KIMI_BOARD_MODEL", "MOONSHOT_BOARD_MODEL"))
     guide_model: str | None = Field(default_factory=lambda: _env_any("KIMI_GUIDE_MODEL", "MOONSHOT_GUIDE_MODEL"))
-    teacher_model: str | None = Field(default_factory=lambda: _env_any("KIMI_TEACHER_MODEL", "MOONSHOT_TEACHER_MODEL"))
+    chatbot_model: str | None = Field(default_factory=lambda: _env_any("KIMI_CHATBOT_MODEL", "MOONSHOT_CHATBOT_MODEL"))
     lesson_model: str | None = Field(default_factory=lambda: _env_any("KIMI_LESSON_MODEL", "MOONSHOT_LESSON_MODEL"))
     catalog_model: str | None = Field(default_factory=lambda: _env_any("KIMI_CATALOG_MODEL", "MOONSHOT_CATALOG_MODEL"))
     fallback_model: str = Field(default_factory=lambda: _env_any("KIMI_FALLBACK_MODEL", "MOONSHOT_FALLBACK_MODEL") or KIMI_DEFAULT_TEXT_MODEL)
@@ -230,7 +247,7 @@ class MiniMaxConfig(BaseModel):
     pm_model: str | None = Field(default_factory=lambda: os.getenv("MINIMAX_PM_MODEL"))
     board_model: str | None = Field(default_factory=lambda: os.getenv("MINIMAX_BOARD_MODEL"))
     guide_model: str | None = Field(default_factory=lambda: os.getenv("MINIMAX_GUIDE_MODEL"))
-    teacher_model: str | None = Field(default_factory=lambda: os.getenv("MINIMAX_TEACHER_MODEL"))
+    chatbot_model: str | None = Field(default_factory=lambda: os.getenv("MINIMAX_CHATBOT_MODEL"))
     lesson_model: str | None = Field(default_factory=lambda: os.getenv("MINIMAX_LESSON_MODEL"))
     catalog_model: str | None = Field(default_factory=lambda: os.getenv("MINIMAX_CATALOG_MODEL"))
     fallback_model: str = Field(default_factory=lambda: os.getenv("MINIMAX_FALLBACK_MODEL", "MiniMax-M2"))
@@ -267,8 +284,8 @@ class OpenAICompatibleConfig(BaseModel):
     guide_model: str | None = Field(
         default_factory=lambda: _env_any("OPENAI_COMPATIBLE_GUIDE_MODEL", "CUSTOM_OPENAI_GUIDE_MODEL")
     )
-    teacher_model: str | None = Field(
-        default_factory=lambda: _env_any("OPENAI_COMPATIBLE_TEACHER_MODEL", "CUSTOM_OPENAI_TEACHER_MODEL")
+    chatbot_model: str | None = Field(
+        default_factory=lambda: _env_any("OPENAI_COMPATIBLE_CHATBOT_MODEL", "CUSTOM_OPENAI_CHATBOT_MODEL")
     )
     lesson_model: str | None = Field(
         default_factory=lambda: _env_any("OPENAI_COMPATIBLE_LESSON_MODEL", "CUSTOM_OPENAI_LESSON_MODEL")
@@ -655,7 +672,7 @@ class OpenAICourseAI:
         result.chapters = result.chapters[:max_chapters]
         return result
 
-    def generate_teacher_chat(
+    def generate_chatbot_reply(
         self,
         *,
         lesson_title: str,
@@ -666,18 +683,24 @@ class OpenAICourseAI:
         user_message: str,
         selection_excerpt: str | None = None,
         interaction_mode: str = "ask",
-    ) -> CourseChatReply | None:
+    ) -> ChatbotReply | None:
         system_prompt = (
-            "你是 OpenClass 的课程讲师。你的任务是像成熟聊天机器人一样进行自然、连续、"
-            "有帮助的你问我答交流。\n"
+            "你是 OpenClass 的 Chatbot，负责左侧聊天框里的自然、连续、有帮助的你问我答交流。\n"
             "规则：\n"
             "1. 只根据用户问题、当前课程上下文、讲义摘要、引用选区、资料摘要和最近对话回答。\n"
-            "2. 不要假装已经修改讲义；如果用户要求改文档，只先给出可执行的修改建议或确认问题。\n"
-            "3. 回答要直接、清楚、可继续追问；必要时用短列表、步骤或检查问题。\n"
-            "4. 如果学习需求还不清楚，先说明澄清是为了匹配讲解深度、材料组织和练习方式，"
+            "2. Chatbot 不生成整篇文档、板书、讲义、课文、练习、试题、对话稿等长篇产物；"
+            "这类内容只能写入右侧文档区。用户要求生成可写入文档的内容时，"
+            "只做简短承接、确认或引导，不要把正文铺在聊天框里。\n"
+            "3. 不要假装已经修改讲义；如果用户要求改文档，只先给出可执行的修改建议或确认问题。\n"
+            "4. 回答要直接、清楚、可继续追问；必要时用短列表、步骤或检查问题；"
+            "除非是在讲解既有文档内容，否则回复保持短小。\n"
+            "5. 如果学习需求还不清楚，先说明澄清是为了匹配讲解深度、材料组织和练习方式，"
             "再从具体想学什么、当前水平、学习目的/使用场景中选择最缺的一项追问。\n"
-            "5. 每次最多追问一个主问题；可以给 2-3 个可选回答方向，但不要像机械问卷或客服套话。\n"
-            "6. 不写任何固定主题模板，不根据主题名、资料名或样例走特殊规则。"
+            "6. 如果用户明确说“直接讲、开始讲、从零开始、当我是零基础、不要再问”等教学启动意图，"
+            "并且已经有可识别的学习主题，就先讲一个最基础的小节；结尾只用一个理解检查或继续提示，"
+            "不要再把子知识点偏好当成开始前的必答条件。\n"
+            "7. 每次最多追问一个主问题；可以给 2-3 个可选回答方向，但不要像机械问卷或客服套话。\n"
+            "8. 不写任何固定主题模板，不根据主题名、资料名或样例走特殊规则。"
         )
         user_prompt = _json(
             {
@@ -690,17 +713,76 @@ class OpenAICourseAI:
                 "interaction_mode": interaction_mode,
                 "user_message": user_message,
                 "response_contract": {
-                    "teacher_message": "面向学习者的自然语言回复，支持 Markdown 风格的短段落和列表。",
+                    "chatbot_message": "面向学习者的自然语言短回复；不要输出整篇可写入文档区的正文。",
                 },
             }
         )
         result = self._parse(
-            "teacher",
+            "chatbot",
             system_prompt=system_prompt,
             user_prompt=user_prompt,
-            schema=CourseChatReply,
+            schema=ChatbotReply,
         )
-        return result if isinstance(result, CourseChatReply) else None
+        return result if isinstance(result, ChatbotReply) else None
+
+    def generate_board_document_edit(
+        self,
+        *,
+        intent: str,
+        lesson_title: str,
+        learning_requirement_context: dict[str, Any],
+        current_document_title: str,
+        current_document_text: str,
+        resource_summary: str,
+        conversation_summary: str,
+        user_instruction: str,
+        selection_excerpt: str | None = None,
+    ) -> BoardDocumentEditResult | None:
+        system_prompt = (
+            "你是 OpenClass 的板书文档编辑 AI，只负责生成或编辑板书文档，不负责学习需求澄清，"
+            "也不扮演 Chatbot。\n"
+            "规则：\n"
+            "1. 只根据学习需求清单、用户指令、当前板书、选区、资料摘要和最近对话写入文档内容。\n"
+            "2. intent=generate_from_requirements 时，输出一份完整板书，operation 使用 replace_document，"
+            "content_text 必须包含清晰章节标题。\n"
+            "3. intent=edit_existing_document 时，有选区就优先 replace_selection；需要新增内容时用 append_section；"
+            "不要擅自整体覆盖已有文档。\n"
+            "4. content_text 是可直接进入文档的正文；可用 Markdown 表达标题、粗体、列表和表格，"
+            "不要用代码块包裹全文。content_html 通常留空；后端会把 content_text 规范化为可编辑富文本。\n"
+            "5. 完整生成时，每个主要 H2 小节都要有可讲解密度：核心解释、必要步骤或推理、"
+            "至少一个例子或类比、常见误区/注意点、一个检查问题。不要只写目录式提纲。\n"
+            "6. section_titles 写入本次文档的主要 H2 章节标题，用于后续分节讲解。\n"
+            "7. 不写任何固定主题模板，不根据主题名、资料名或样例走特殊规则。"
+        )
+        user_prompt = _json(
+            {
+                "intent": intent,
+                "lesson_title": lesson_title,
+                "learning_requirement_context": learning_requirement_context,
+                "current_document_title": current_document_title,
+                "current_document_text": current_document_text,
+                "resource_summary": resource_summary,
+                "recent_conversation": conversation_summary,
+                "selection_excerpt": selection_excerpt.strip() if selection_excerpt else "无选中引用",
+                "user_instruction": user_instruction,
+                "response_contract": {
+                    "operation": "replace_document、replace_selection 或 append_section。",
+                    "title": "文档标题；局部编辑时可沿用当前标题。",
+                    "content_text": "完整生成时是整份板书；局部替换时是替换片段；追加时是追加片段。",
+                    "content_html": "可选 HTML，与 content_text 表达同一内容。",
+                    "summary": "一句话说明本次生成或编辑了什么。",
+                    "chatbot_message": "可直接展示给学习者的自然语言短回复，说明本次动作结果，不要套用固定格式。",
+                    "section_titles": "主要章节标题数组，用于分节讲解。",
+                },
+            }
+        )
+        result = self._parse(
+            "board",
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            schema=BoardDocumentEditResult,
+        )
+        return result if isinstance(result, BoardDocumentEditResult) else None
 
     def generate_learning_requirement_update(
         self,
@@ -712,17 +794,18 @@ class OpenAICourseAI:
         resource_summary: str,
         conversation_summary: str,
         user_message: str,
-        teacher_message: str,
+        chatbot_message: str,
     ) -> LearningRequirementUpdate | None:
         system_prompt = (
             "你是 OpenClass 的学习需求清单管理 AI，只在后端更新结构化状态，不直接和用户聊天，"
             "也不生成板书。\n"
             "任务：从最近对话和课程上下文中动态判断用户当前学习需求是否足够清晰。\n"
             "规则：\n"
-            "1. key_facts 只写用户已经透露的关键信息，每项包含 label、value、evidence；"
-            "label 用中文短标签，value 保留用户透露的具体内容；"
+            "1. key_facts 只写用户已经透露的关键信息，每项包含 category、label、value、evidence；"
+            "category 必须是 learning、level、vocabulary、scenario、output、other 之一，"
+            "label 只做中文展示短标签，value 保留用户透露的具体内容；"
             "不要使用 preferred_output、output_preference 等内部字段名，也不要记录输出形式偏好；"
-            "不要把缺失信息、教师追问、系统默认选项或推测写进去；没有就返回空数组。\n"
+            "不要把缺失信息、Chatbot 追问、系统默认选项或推测写进去；没有就返回空数组。\n"
             "2. checklist 必须是 3 到 5 个当前最关键的动态需求项，不使用固定栏目模板。\n"
             "3. 优先判断三类通用信息是否足够：用户具体想学什么或解决什么问题、用户当前水平/已有基础、"
             "用户为什么学以及要面对什么任务或使用场景；若对话中已有其他更关键约束，可以动态替换或合并。\n"
@@ -730,7 +813,10 @@ class OpenAICourseAI:
             "5. 不要猜用户没有透露的信息；缺失内容写入 missing_items 或 next_question。\n"
             "6. next_question 只问下一轮最有价值的一个问题，语言自然，避免机械套话。\n"
             "7. ready_for_board 仅在这些动态需求足以支撑后续生成有用板书时为 true。\n"
-            "8. 不写任何主题、资料或样例专属规则。"
+            "8. 如果用户表达的是对现有板书局部内容的动作，额外填写 action_type、action_instruction、target_hint："
+            "action_type 只能是 generate_board、explain_target、rewrite_target、expand_target、simplify_target；"
+            "target_hint 只写用户给出的定位线索，不猜具体段落 ID。\n"
+            "9. 不写任何主题、资料或样例专属规则。"
         )
         user_prompt = _json(
             {
@@ -741,15 +827,18 @@ class OpenAICourseAI:
                 "resource_summary": resource_summary,
                 "recent_conversation": conversation_summary,
                 "current_user_message": user_message,
-                "current_teacher_message": teacher_message,
+                "current_chatbot_message": chatbot_message,
                 "response_contract": {
                     "progress": "0-100 的整体清晰度；ready_for_board=true 时必须为 100。",
                     "summary": "用户当前学习目的的一句话摘要；不清楚时说明仍需澄清。",
-                    "key_facts": "用户已经透露的 0-5 条关键信息，每项包含 label、value、evidence，只能来自用户原话或上下文。",
+                    "key_facts": "用户已经透露的 0-5 条关键信息，每项包含 category、label、value、evidence，只能来自用户原话或上下文。",
                     "checklist": "3-5 个动态需求项，每项包含 title、is_clear、evidence。",
                     "missing_items": "仍缺少的信息，不能脑补。",
                     "next_question": "未清晰时建议下一轮只追问一个最有价值的问题。",
                     "ready_for_board": "是否足够进入后续板书生成阶段。",
+                    "action_type": "可选。本轮任务动作类型：generate_board、explain_target、rewrite_target、expand_target、simplify_target。",
+                    "action_instruction": "可选。本轮要如何讲解或如何编写，必须来自用户表达。",
+                    "target_hint": "可选。用户给出的目标位置描述、标题、前后文或选区摘要。",
                 },
             }
         )

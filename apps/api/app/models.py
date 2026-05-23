@@ -60,8 +60,19 @@ BoardAction = Literal[
     "create_new_lesson",
     "await_scope_choice",
     "await_reference_choice",
+    "await_focus_choice",
 ]
 SelectionKind = Literal["chat", "board"]
+BoardFocusSource = Literal["board", "resource", "chat"]
+BoardFocusLocationStatus = Literal["missing", "selected", "resolved", "ambiguous"]
+BoardSegmentKind = Literal["heading", "paragraph", "list", "table", "code", "image", "other"]
+BoardTaskAction = Literal[
+    "generate_board",
+    "explain_target",
+    "rewrite_target",
+    "expand_target",
+    "simplify_target",
+]
 ConversationRole = Literal["user", "assistant"]
 AIProvider = Literal[
     "openai",
@@ -80,6 +91,8 @@ BoardEditConfirmationAction = Literal["confirm", "skip"]
 ResourceScanStrategy = Literal["outline_only", "heading_section", "page_window", "fulltext_match"]
 ChatInteractionMode = Literal["ask", "direct_edit"]
 TeachingAction = Literal["continue", "restart"]
+BoardGenerationAction = Literal["start"]
+LearningRequirementFactCategory = Literal["learning", "level", "vocabulary", "scenario", "output", "other"]
 DocumentMarginPreset = Literal["narrow", "normal", "wide"]
 DocumentOrientation = Literal["portrait", "landscape"]
 DocumentPageSize = Literal["a4", "letter", "a3"]
@@ -205,6 +218,41 @@ class PatchProposal(BaseModel):
     suggested_title: str | None = None
 
 
+class BoardSegment(BaseModel):
+    segment_id: str
+    document_id: str
+    kind: BoardSegmentKind
+    heading_path: list[str] = Field(default_factory=list)
+    order_index: int = 0
+    text: str = ""
+    html: str = ""
+    text_hash: str = ""
+    parent_id: str | None = None
+    before_segment_id: str | None = None
+    after_segment_id: str | None = None
+
+
+class BoardSegmentIndex(BaseModel):
+    document_id: str
+    document_title: str = ""
+    segments: list[BoardSegment] = Field(default_factory=list)
+
+
+class BoardFocusRef(BaseModel):
+    source: BoardFocusSource = "board"
+    lesson_id: str | None = None
+    document_id: str | None = None
+    segment_id: str | None = None
+    kind: BoardSegmentKind | None = None
+    heading_path: list[str] = Field(default_factory=list)
+    excerpt: str = ""
+    before_text: str = ""
+    after_text: str = ""
+    text_hash: str | None = None
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    reason: str = ""
+
+
 class LearningRequirementSheet(BaseModel):
     theme: str
     learning_goal: str
@@ -218,6 +266,11 @@ class LearningRequirementSheet(BaseModel):
     board_scope: list[str]
     success_criteria: str
     risk_notes: list[str] = Field(default_factory=list)
+    target_location: BoardFocusRef | None = None
+    location_status: BoardFocusLocationStatus = "missing"
+    action_type: BoardTaskAction | None = None
+    action_instruction: str = ""
+    location_clarification_question: str = ""
 
 
 class LearningRequirementChecklistItem(BaseModel):
@@ -230,6 +283,7 @@ class LearningRequirementKeyFact(BaseModel):
     label: str
     value: str
     evidence: str = ""
+    category: LearningRequirementFactCategory | None = None
 
 
 class LearningClarificationStatus(BaseModel):
@@ -388,6 +442,12 @@ class SelectionRef(BaseModel):
     excerpt: str
     lesson_id: str | None = None
     block_id: str | None = None
+    document_id: str | None = None
+    segment_id: str | None = None
+    heading_path: list[str] = Field(default_factory=list)
+    before_text: str = ""
+    after_text: str = ""
+    text_hash: str | None = None
 
 
 class ConversationTurn(BaseModel):
@@ -513,7 +573,7 @@ class BoardTeachingGuide(BaseModel):
     need_mappings: list[BoardNeedMapping] = Field(default_factory=list)
     teaching_flow: list[str] = Field(default_factory=list)
     generation_rationale: str = ""
-    teacher_brief: str = ""
+    chatbot_brief: str = ""
     lecture_handout: str = ""
     section_plans: list[BoardSectionTeachingPlan] = Field(default_factory=list)
 
@@ -546,6 +606,7 @@ class ChatRequest(BaseModel):
     resource_reference_chapter_id: str | None = None
     board_edit_action: BoardEditConfirmationAction | None = None
     board_edit_topic: str | None = None
+    board_generation_action: BoardGenerationAction | None = None
     teaching_action: TeachingAction | None = None
     conversation: list[ConversationTurn] = Field(default_factory=list)
 
@@ -641,8 +702,9 @@ class AdminOverview(BaseModel):
 
 
 class ChatResponse(BaseModel):
-    teacher_message: str
+    chatbot_message: str
     learning_requirement_sheet: LearningRequirementSheet
+    active_requirement_sheet: LearningRequirementSheet | None = None
     learning_clarification: LearningClarificationStatus
     board_decision: BoardDecision
     needs_clarification: bool = False
@@ -653,6 +715,9 @@ class ChatResponse(BaseModel):
     reference_prompt: ResourceReferencePrompt | None = None
     board_edit_prompt: BoardEditPrompt | None = None
     selected_reference: ResourceReferenceContext | None = None
+    resolved_focus: BoardFocusRef | None = None
+    focus_candidates: list[BoardFocusRef] = Field(default_factory=list)
+    requirement_cleared: bool = False
     created_lesson: LessonView | None = None
     teaching_progress: SectionTeachingProgressView | None = None
     course_package: CoursePackageView

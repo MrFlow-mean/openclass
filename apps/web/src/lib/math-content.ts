@@ -2,9 +2,8 @@ import type { Editor as TiptapEditor } from "@tiptap/core";
 import type { Mark, Node as ProseMirrorNode, Schema } from "@tiptap/pm/model";
 
 const CJK_TEXT = /[\u3400-\u9fff]/;
-const MATH_SIGNAL =
-  /[\\_^=·*/∞→←≤≥≈≠±]|\b(?:lim|sin|cos|tan|ln|log|sqrt|exp)\b|\d+\s*\/\s*\d+|[A-Za-z]\s*\([^)]*\)|[A-Za-z]\s*\^\s*\{?[-+\w/]+\}?/;
-const MATH_RUN = /[A-Za-z0-9\\_{}^()+\-−*/=·∞→←≤≥≈≠±<>|'\s.]+/g;
+const STRONG_MATH_SIGNAL =
+  /\\[A-Za-z]+|[=≤≥≈≠∞±]|[A-Za-z0-9]\s*[_^]\s*\{?[-+\w/]+\}?|\d+\s*[+\-−*/]\s*\d+|\b(?:lim|sin|cos|tan|ln|log|sqrt|exp)_?\b/;
 const DELIMITED_MATH = /\\\((.+?)\\\)|\$(?!\d+\$)([^$\n]+?)\$(?!\d)/g;
 const TRAILING_SENTENCE_MARKS = /[\s.,，。；;:：]+$/;
 const LEADING_SENTENCE_MARKS = /^[\s.,，。；;:：]+/;
@@ -15,8 +14,8 @@ type MathSegment = {
   latex: string;
 };
 
-function hasMathSignal(value: string) {
-  return MATH_SIGNAL.test(value);
+function hasStrongMathSignal(value: string) {
+  return STRONG_MATH_SIGNAL.test(value);
 }
 
 function normalizeLimitSubscript(value: string) {
@@ -71,7 +70,7 @@ function formulaOnlyLatex(text: string) {
     return normalizeLatex(delimited[1]);
   }
 
-  if (!compact || CJK_TEXT.test(compact) || !hasMathSignal(compact)) {
+  if (!compact || CJK_TEXT.test(compact) || !hasStrongMathSignal(compact)) {
     return null;
   }
 
@@ -94,36 +93,6 @@ function mathSegments(text: string): MathSegment[] {
       start: rawStart,
       end: rawStart + raw.length,
       latex: normalizeLatex(latex),
-    });
-  }
-
-  for (const match of text.matchAll(MATH_RUN)) {
-    const raw = match[0];
-    const rawStart = match.index ?? 0;
-    const leadingTrimmed = raw.replace(LEADING_SENTENCE_MARKS, "");
-    const leadingOffset = raw.length - leadingTrimmed.length;
-    const candidate = leadingTrimmed.replace(TRAILING_SENTENCE_MARKS, "");
-    const trailingOffset = leadingTrimmed.length - candidate.length;
-
-    if (!candidate || CJK_TEXT.test(candidate) || !hasMathSignal(candidate)) {
-      continue;
-    }
-
-    const start = rawStart + leadingOffset;
-    const end = rawStart + raw.length - trailingOffset;
-
-    if (end <= start) {
-      continue;
-    }
-
-    if (segments.some((segment) => start < segment.end && end > segment.start)) {
-      continue;
-    }
-
-    segments.push({
-      start,
-      end,
-      latex: normalizeLatex(candidate),
     });
   }
 

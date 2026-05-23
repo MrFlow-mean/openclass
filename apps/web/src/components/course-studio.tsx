@@ -63,7 +63,6 @@ import {
   Table2,
   TableCellsMerge,
   TableCellsSplit,
-  Target,
   TextQuote,
   TextCursorInput,
   Trash2,
@@ -84,9 +83,11 @@ import { api, getApiWebSocketUrl } from "@/lib/api";
 import { BranchSequenceSelector, type BranchSequenceOption } from "@/components/branch-sequence-selector";
 import { CourseChatMessage, type CourseChatMessageView } from "@/components/chatbot";
 import { InlineNameForm } from "@/components/inline-name-form";
+import { LearningClarityCard } from "@/components/learning-clarity-card";
 import { ResourceUploadDropzone } from "@/components/resource-upload-dropzone";
 import { MATH_TEXT_SERIALIZERS, normalizeEditorMath } from "@/lib/math-content";
 import { useRealtimeLogQueue } from "@/hooks/use-realtime-log-queue";
+import { useResizablePanelWidth } from "@/hooks/use-resizable-panel-width";
 import { pcmFloatToBase64, playPcmBase64, resampleLinear } from "@/lib/realtime-audio";
 import type {
   AIModelCatalog,
@@ -101,6 +102,7 @@ import type {
   CoursePackage,
   DocumentPageSettings,
   LearningClarificationStatus,
+  LearningRequirementKeyFact,
   Lesson,
   ResourceMatch,
   ResourceReferenceContext,
@@ -186,6 +188,11 @@ type AutoSaveReason =
   | "delete-resource"
   | "voice"
   | "pagehide";
+
+const CHAT_PANEL_WIDTH_STORAGE_KEY = "openclass:studio:chat-panel-width";
+const CHAT_PANEL_DEFAULT_WIDTH = 380;
+const CHAT_PANEL_MIN_WIDTH = 300;
+const CHAT_PANEL_MAX_WIDTH = 640;
 
 const FontSize = Extension.create({
   name: "fontSize",
@@ -673,6 +680,11 @@ function metadataBool(commit: CommitRecord, key: string): boolean {
   return commit.metadata?.[key] === true;
 }
 
+function metadataLearningClarificationForcedStart(commit: CommitRecord): boolean {
+  const value = commit.metadata?.learning_clarification;
+  return Boolean(value && typeof value === "object" && (value as { forced_start?: unknown }).forced_start === true);
+}
+
 const LEGACY_NON_AI_ASSISTANT_PATTERNS = [
   "给我一个关键词",
   "从那里开讲",
@@ -688,7 +700,7 @@ function isDisplayableAssistantContent(content: string | null, source?: string |
   if (!text) {
     return false;
   }
-  if (source && source !== "ai") {
+  if (source && !["ai", "chatbot", "board_document_editor_ai", "workflow"].includes(source)) {
     return false;
   }
   return !LEGACY_NON_AI_ASSISTANT_PATTERNS.some((pattern) => text.includes(pattern));
@@ -709,6 +721,12 @@ function selectionFromMetadata(value: unknown): SelectionRef | null {
     excerpt,
     lesson_id: typeof raw.lesson_id === "string" ? raw.lesson_id : null,
     block_id: typeof raw.block_id === "string" ? raw.block_id : null,
+    document_id: typeof raw.document_id === "string" ? raw.document_id : null,
+    segment_id: typeof raw.segment_id === "string" ? raw.segment_id : null,
+    heading_path: Array.isArray(raw.heading_path) ? raw.heading_path.filter((item): item is string => typeof item === "string") : [],
+    before_text: typeof raw.before_text === "string" ? raw.before_text : "",
+    after_text: typeof raw.after_text === "string" ? raw.after_text : "",
+    text_hash: typeof raw.text_hash === "string" ? raw.text_hash : null,
   };
 }
 
@@ -809,6 +827,10 @@ function chatUserContentFromCommit(commit: CommitRecord): string | null {
     return `暂不扩选板书：${boardEditTopic || userMessage}`;
   }
 
+  if (metadataText(commit, "board_generation_action") === "start") {
+    return "开始生成板书";
+  }
+
   return metadataText(commit, "interaction_mode") === "direct_edit" ? `直接编辑讲义：${userMessage}` : userMessage;
 }
 
@@ -818,7 +840,10 @@ function buildLessonMessagesFromHistory(lesson: Lesson, commitId?: string | null
   const messages: ChatMessage[] = [];
 
   lesson.history_graph.commits.forEach((commit) => {
-    if (!lineageIds.has(commit.id) || commit.metadata?.kind !== "chat_flow") {
+    if (
+      !lineageIds.has(commit.id) ||
+      !["chat_flow", "board_document_generation", "board_document_edit"].includes(String(commit.metadata?.kind ?? ""))
+    ) {
       return;
     }
 
@@ -837,7 +862,9 @@ function buildLessonMessagesFromHistory(lesson: Lesson, commitId?: string | null
 
     const assistantMessage = metadataText(commit, "assistant_message");
     const assistantMessageSource = metadataText(commit, "assistant_message_source");
-    if (isDisplayableAssistantContent(assistantMessage, assistantMessageSource)) {
+    const legacyChatbotGeneratedDuringHandoff =
+      metadataLearningClarificationForcedStart(commit) && assistantMessageSource === "ai";
+    if (!legacyChatbotGeneratedDuringHandoff && isDisplayableAssistantContent(assistantMessage, assistantMessageSource)) {
       messages.push(
         createChatMessage(
           "assistant",
@@ -890,6 +917,7 @@ function learningClarityFromCommit(commit: CommitRecord | null): LearningClarifi
                 label: raw.label,
                 value: raw.value,
                 evidence: typeof raw.evidence === "string" ? raw.evidence : "",
+                category: typeof raw.category === "string" ? (raw.category as LearningRequirementKeyFact["category"]) : null,
               },
             ];
           })
@@ -976,6 +1004,22 @@ function documentsEqual(left: BoardDocument | null | undefined, right: BoardDocu
   );
 }
 
+function htmlToPlainText(value: string) {
+  return value
+    .replace(/<\/(h[1-6]|p|li|blockquote|tr)>/gi, "\n")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .trim();
+}
+
+function isBoardDocumentEmpty(document: BoardDocument | null | undefined) {
+  if (!document) {
+    return true;
+  }
+  return !document.content_text.trim() && !htmlToPlainText(document.content_html).trim();
+}
+
 function sameSelection(
   left: SelectionRef | null,
   right: SelectionRef | null
@@ -987,6 +1031,11 @@ function sameSelection(
     left.kind === right.kind &&
     left.lesson_id === right.lesson_id &&
     left.block_id === right.block_id &&
+    left.document_id === right.document_id &&
+    left.segment_id === right.segment_id &&
+    left.before_text === right.before_text &&
+    left.after_text === right.after_text &&
+    left.text_hash === right.text_hash &&
     left.excerpt === right.excerpt
   );
 }
@@ -1318,7 +1367,15 @@ function WordBoardEditor({
   readOnly: boolean;
   toolbarCollapsed: boolean;
   onDocumentChange: (document: BoardDocument) => void;
-  onSelectionChange: (selection: { excerpt: string; position: SelectionPopoverPosition | null } | null) => void;
+  onSelectionChange: (
+    selection: {
+      excerpt: string;
+      position: SelectionPopoverPosition | null;
+      documentId: string;
+      beforeText: string;
+      afterText: string;
+    } | null
+  ) => void;
   onImportDocx: (file: File) => void;
   onExportDocx: () => void;
 }) {
@@ -1332,9 +1389,9 @@ function WordBoardEditor({
   const [tableHasHeaderRow, setTableHasHeaderRow] = useState(true);
   const [isTableActive, setIsTableActive] = useState(false);
   const [pageZoom, setPageZoom] = useState(PAGE_ZOOM_DEFAULT);
-  const editorContent =
-    document.content_html.trim() ||
-    (document.content_json && Object.keys(document.content_json).length ? document.content_json : "<p></p>");
+  const documentJson =
+    document.content_json && Object.keys(document.content_json).length ? document.content_json : null;
+  const editorContent = documentJson ?? (document.content_html.trim() || "<p></p>");
   const latestDocumentRef = useRef(document);
   const latestReadOnlyRef = useRef(readOnly);
   const latestOnDocumentChangeRef = useRef(onDocumentChange);
@@ -1403,9 +1460,18 @@ function WordBoardEditor({
       latestOnSelectionChangeRef.current(null);
       return;
     }
+    const beforeText = currentEditor.state.doc
+      .textBetween(Math.max(0, from - 240), from, " ")
+      .trim();
+    const afterText = currentEditor.state.doc
+      .textBetween(to, Math.min(currentEditor.state.doc.content.size, to + 240), " ")
+      .trim();
     latestOnSelectionChangeRef.current({
       excerpt,
       position: popoverPositionFromDomSelection(),
+      documentId: latestDocumentRef.current.id,
+      beforeText,
+      afterText,
     });
   }, []);
 
@@ -1426,14 +1492,16 @@ function WordBoardEditor({
       editor.setEditable(!readOnly);
     }
     const incomingHtml = document.content_html.trim();
-    const matchesIncomingDocument = incomingHtml
-      ? editor.getHTML() === incomingHtml
-      : JSON.stringify(editor.getJSON()) === JSON.stringify(document.content_json ?? {});
+    const matchesIncomingDocument = documentJson
+      ? JSON.stringify(editor.getJSON()) === JSON.stringify(documentJson)
+      : incomingHtml
+        ? editor.getHTML() === incomingHtml
+        : false;
     if (!matchesIncomingDocument) {
       editor.commands.setContent(editorContent, { emitUpdate: false });
       normalizeEditorMath(editor);
     }
-  }, [document.id, document.content_html, document.content_json, editor, editorContent, readOnly]);
+  }, [document.id, document.content_html, documentJson, editor, editorContent, readOnly]);
 
   const currentFontSize =
     ((editor?.getAttributes("textStyle").fontSize as string | null) ?? "14px").replace("px", "");
@@ -2474,10 +2542,20 @@ export function CourseStudio() {
   const [lessonMessages, setLessonMessages] = useState<LessonMessageMap>({});
   const [topCollapsed, setTopCollapsed] = useState(true);
   const [rightSidebarOpen, setRightSidebarOpen] = useState(false);
+  const {
+    width: chatPanelWidth,
+    isResizing: isChatPanelResizing,
+    dragHandleProps: chatPanelResizeHandleProps,
+  } = useResizablePanelWidth({
+    storageKey: CHAT_PANEL_WIDTH_STORAGE_KEY,
+    defaultWidth: CHAT_PANEL_DEFAULT_WIDTH,
+    minWidth: CHAT_PANEL_MIN_WIDTH,
+    maxWidth: CHAT_PANEL_MAX_WIDTH,
+  });
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>("history");
   const [isCreatingLessonInline, setIsCreatingLessonInline] = useState(false);
   const [voiceActive, setVoiceActive] = useState(false);
-  const [voiceStatusText, setVoiceStatusText] = useState("点击麦克风，连接所选实时语音讲师");
+  const [voiceStatusText, setVoiceStatusText] = useState("点击麦克风，连接实时语音 Chatbot");
 
   useEffect(() => {
     async function load() {
@@ -2559,6 +2637,7 @@ export function CourseStudio() {
     previewCommitId && activeLesson
       ? activeLesson.history_graph.commits.find((commit) => commit.id === previewCommitId) ?? null
       : null;
+  const activeHeadCommit = activeLesson ? getLessonCommit(activeLesson, currentHeadCommitId(activeLesson)) : null;
 
   const displayedDocument = previewCommit?.snapshot ?? draftDocument ?? activeLesson?.board_document ?? null;
   const openLessons = (coursePackage?.workspace_tab_order
@@ -2588,6 +2667,9 @@ export function CourseStudio() {
   const activeRequirements = activeLesson?.learning_requirements ?? null;
   const isPreviewMode = Boolean(previewCommit);
   const previewLearningClarity = learningClarityFromCommit(previewCommit);
+  const persistedLearningClarity = learningClarityFromCommit(activeHeadCommit);
+  const currentRequirementCleared =
+    !isPreviewMode && !activeRequirements && activeHeadCommit?.metadata?.requirement_cleared === true;
   const latestAssistantMessage = [...activeMessages].reverse().find((message) => message.role === "assistant");
   const relatedEdges =
     activeLesson && coursePackage
@@ -2600,7 +2682,8 @@ export function CourseStudio() {
 
   const clarityStatus: LearningClarificationStatus =
     previewLearningClarity ??
-    learningClarity ?? {
+    (currentRequirementCleared ? null : learningClarity) ??
+    (currentRequirementCleared ? null : persistedLearningClarity) ?? {
       progress: 0,
       label: "",
       reason: "",
@@ -2613,14 +2696,14 @@ export function CourseStudio() {
       next_question: "",
       ready_for_board: false,
     };
-  const showReadyForBoardCard = !isPreviewMode && (clarityStatus.ready_for_board || clarityStatus.progress >= 100);
+  const showReadyForBoardCard =
+    !isPreviewMode && isBoardDocumentEmpty(displayedDocument) && (clarityStatus.ready_for_board || clarityStatus.progress >= 100);
   const clarityBarTone =
     clarityStatus.progress >= 90
       ? "bg-emerald-500"
       : clarityStatus.can_start
         ? "bg-blue-500"
         : "bg-amber-500";
-
   useEffect(() => {
     activeLessonRef.current = activeLesson;
     draftDocumentRef.current = draftDocument;
@@ -3154,20 +3237,20 @@ export function CourseStudio() {
       setLastScopedRequest(response.scope_options.length ? payloadWithConversation : null);
       setLastReferenceRequest(response.reference_prompt ? payloadWithConversation : null);
       setLastBoardEditRequest(response.board_edit_prompt ? payloadWithConversation : null);
-      const teacherMessage = response.teacher_message.trim();
+      const chatbotMessage = response.chatbot_message.trim();
       const assistantMessages: ChatMessage[] = [];
-      if (teacherMessage) {
+      if (chatbotMessage) {
         assistantMessages.push(
-          createChatMessage("assistant", teacherMessage, "ready", undefined, null, response.teaching_progress ?? null)
+          createChatMessage("assistant", chatbotMessage, "ready", undefined, null, response.teaching_progress ?? null)
         );
       }
       updateLessonMessages(lessonId, (current) => [
         ...current.filter((message) => message.id !== pendingAssistantMessage.id),
         ...assistantMessages,
       ]);
-      if (options?.speakResponse && teacherMessage) {
-        speakControlledTeacherMessage(teacherMessage);
-        setVoiceStatusText("讲师回答已通过受控工作流播出，可以继续提问");
+      if (options?.speakResponse && chatbotMessage) {
+        speakControlledChatbotMessage(chatbotMessage);
+        setVoiceStatusText("Chatbot 回复已通过受控工作流播出，可以继续提问");
       }
       if (!payloadWithConversation.scope_action) {
         clearSelection();
@@ -3530,7 +3613,7 @@ export function CourseStudio() {
     disposeRealtimeSession();
   });
 
-  function stopRealtimeSession(statusText = "语音讲师已断开") {
+  function stopRealtimeSession(statusText = "语音 Chatbot 已断开") {
     disposeRealtimeSession();
     window.speechSynthesis?.cancel();
     setVoiceActive(false);
@@ -3542,7 +3625,7 @@ export function CourseStudio() {
     stopRealtimeSession(statusText);
   });
 
-  function speakControlledTeacherMessage(content: string) {
+  function speakControlledChatbotMessage(content: string) {
     if (typeof window === "undefined" || !("speechSynthesis" in window)) {
       return;
     }
@@ -3798,7 +3881,7 @@ export function CourseStudio() {
       return;
     }
     if (voiceActive || busyAction === "voice-connect") {
-      stopRealtimeSession("语音讲师已手动断开");
+      stopRealtimeSession("语音 Chatbot 已手动断开");
       return;
     }
     if (!activeLesson) {
@@ -3859,7 +3942,7 @@ export function CourseStudio() {
       peerConnection.onconnectionstatechange = () => {
         if (peerConnection.connectionState === "connected") {
           setVoiceActive(true);
-          setVoiceStatusText(`${realtimeLabel} 已连接，说话后会先进入 PM/版书管理/讲师工作流`);
+          setVoiceStatusText(`${realtimeLabel} 已连接，说话后会先进入 Chatbot 工作流`);
           setBusyAction((current) => (current === "voice-connect" ? null : current));
           return;
         }
@@ -4200,55 +4283,36 @@ export function CourseStudio() {
 
       <div
         ref={mainContainerRef}
+        style={{ "--chat-panel-width": `${chatPanelWidth}px` } as CSSProperties}
         className={clsx(
-          "grid min-h-0 flex-1 grid-cols-[380px_minmax(0,1fr)] overflow-hidden transition-[grid-template-columns] duration-300",
-          rightSidebarOpen && "xl:grid-cols-[380px_minmax(0,1fr)_360px]"
+          "grid min-h-0 flex-1 grid-cols-[var(--chat-panel-width)_minmax(0,1fr)] overflow-hidden transition-[grid-template-columns]",
+          isChatPanelResizing ? "duration-0" : "duration-300",
+          rightSidebarOpen && "xl:grid-cols-[var(--chat-panel-width)_minmax(0,1fr)_360px]"
         )}
       >
-        <aside className="flex h-full min-h-0 flex-col border-r border-gray-200 bg-white">
+        <aside className="relative flex h-full min-h-0 flex-col border-r border-gray-200 bg-white">
+          <div
+            {...chatPanelResizeHandleProps}
+            className={clsx(
+              "group absolute inset-y-0 right-[-6px] z-30 flex w-3 cursor-col-resize items-center justify-center outline-none",
+              isChatPanelResizing && "bg-gray-100/60"
+            )}
+          >
+            <span
+              className={clsx(
+                "h-14 w-1 rounded-full bg-gray-200 opacity-0 transition group-hover:opacity-100 group-focus-visible:opacity-100",
+                isChatPanelResizing && "bg-gray-400 opacity-100"
+              )}
+            />
+          </div>
           <div className="flex-1 overflow-y-auto p-6 custom-scrollbar">
             <div className="space-y-6">
-              <div className="rounded-xl border border-blue-100/50 bg-[#f4f6ff] p-4">
-                <div className="mb-3 flex items-start justify-between gap-3">
-                  <div className="flex items-center gap-2">
-                    <Target className="h-3.5 w-3.5 text-blue-600" />
-                    <h3 className="text-[11px] font-bold uppercase tracking-widest text-blue-900">
-                      学习目的澄清
-                    </h3>
-                  </div>
-                  <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-bold text-blue-800 shadow-sm">
-                    {clarityStatus.progress}%
-                  </span>
-                </div>
-                <div className="h-2 overflow-hidden rounded-full bg-white shadow-inner">
-                  <div
-                    className={clsx("h-full rounded-full transition-all duration-500", clarityBarTone)}
-                    style={{ width: `${clarityStatus.progress}%` }}
-                  />
-                </div>
-                {clarityStatus.reason ? (
-                  <p className="mt-2 text-xs leading-6 text-blue-900">{clarityStatus.reason}</p>
-                ) : null}
-              </div>
-
-              {showReadyForBoardCard ? (
-                <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
-                  <p className="text-[11px] font-bold uppercase tracking-widest text-emerald-700">学习需求已清晰</p>
-                  <p className="mt-2 text-sm leading-6 text-emerald-950">
-                    {clarityStatus.summary || clarityStatus.reason}
-                  </p>
-                  <p className="mt-2 text-xs leading-6 text-emerald-900/80">
-                    接下来将基于这份学习需求生成板书，是否开始？
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() => undefined}
-                    className="mt-3 inline-flex h-9 items-center justify-center rounded-lg bg-emerald-600 px-3 text-xs font-semibold text-white shadow-sm transition hover:bg-emerald-700"
-                  >
-                    开始生成板书
-                  </button>
-                </div>
-              ) : null}
+              <LearningClarityCard
+                barTone={clarityBarTone}
+                clarityStatus={clarityStatus}
+                lesson={currentRequirementCleared ? null : activeLesson}
+                targetCommitId={currentRequirementCleared ? null : previewCommit?.id ?? activeHeadCommit?.id ?? null}
+              />
 
               <div className="space-y-5">
                 {previewCommit ? (
@@ -4287,6 +4351,31 @@ export function CourseStudio() {
                     />
                   </div>
                 ))}
+                {showReadyForBoardCard ? (
+                  <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+                    <p className="text-[11px] font-bold uppercase tracking-widest text-emerald-700">学习需求已清晰</p>
+                    <p className="mt-2 text-sm leading-6 text-emerald-950">
+                      {clarityStatus.summary || clarityStatus.reason}
+                    </p>
+                    <p className="mt-2 text-xs leading-6 text-emerald-900/80">
+                      接下来将基于这份学习需求生成板书，是否开始？
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void handleSubmitChat({
+                          message: "开始生成板书",
+                          interaction_mode: "ask",
+                          board_generation_action: "start",
+                        })
+                      }
+                      disabled={isChatBusy}
+                      className="mt-3 inline-flex h-9 items-center justify-center rounded-lg bg-emerald-600 px-3 text-xs font-semibold text-white shadow-sm transition hover:bg-emerald-700"
+                    >
+                      开始生成板书
+                    </button>
+                  </div>
+                ) : null}
                 <div ref={chatScrollEndRef} aria-hidden="true" />
               </div>
 
@@ -4684,7 +4773,10 @@ export function CourseStudio() {
                 {
                   kind: "board",
                   lesson_id: activeLesson.id,
+                  document_id: payload.documentId,
                   excerpt: payload.excerpt,
+                  before_text: payload.beforeText,
+                  after_text: payload.afterText,
                 },
                 payload.position
               );
@@ -4806,14 +4898,14 @@ export function CourseStudio() {
                     <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">需求清单</p>
                   </div>
                   <p className="mt-4 text-sm leading-7 text-gray-700">
-                    {activeRequirements?.learning_goal ?? "围绕当前板书主线推进学习。"}
+                    {activeRequirements?.learning_goal ?? "等待下一次任务需求：说明要操作的位置、动作类型，以及希望怎么讲解或怎么编写。"}
                   </p>
                   <div className="mt-4 rounded-xl border border-gray-200 bg-white p-4">
                     <p className="text-xs font-semibold text-gray-900">
-                      {activeRequirements?.target_depth ?? "先建立概念，再进入例题与练习"}
+                      {activeRequirements?.action_type ?? activeRequirements?.target_depth ?? "暂无待执行任务"}
                     </p>
                     <p className="mt-2 text-[11px] leading-6 text-gray-500">
-                      {activeRequirements?.success_criteria ?? "先讲清当前问题，再决定是否要扩展讲义。"}
+                      {activeRequirements?.action_instruction || activeRequirements?.success_criteria || "执行完成后，当前清单会归档到历史并清空。"}
                     </p>
                   </div>
                   {latestBoardDecision ? (

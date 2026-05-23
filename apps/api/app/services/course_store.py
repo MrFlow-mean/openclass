@@ -19,12 +19,9 @@ from app.models import (
     ResourceLibraryItem,
     WorkspaceState,
 )
-from app.services.lesson_factory import create_lesson
-
+from app.services.rich_document import upgrade_markdown_like_document
 
 SCHEMA_VERSION = 4
-STARTER_PACKAGE_TITLES = {"开放课堂课程工作台", "OpenClass 课程工作台"}
-STARTER_LESSON_TITLES = {"勾股定理", "直角三角形基础", "欧几里得几何导论"}
 
 
 def _active_package_setting_key(owner_user_id: str | None) -> str:
@@ -75,10 +72,7 @@ class SqliteCourseStore:
                             build_empty_account_workspace_state(),
                             owner_user_id=owner_user_id,
                         )
-                    workspace = self._read_workspace(conn, owner_user_id=owner_user_id)
-                    if _remove_unmodified_starter_lessons(workspace):
-                        self._replace_workspace(conn, workspace, owner_user_id=owner_user_id)
-                    return workspace
+                    return self._read_workspace(conn, owner_user_id=owner_user_id)
 
     def save_for_user(self, owner_user_id: str, workspace: WorkspaceState) -> None:
         with self._lock:
@@ -810,13 +804,15 @@ def _ordered_values(conn: sqlite3.Connection, table: str, package_id: str) -> li
 
 def _document_from_row(row: sqlite3.Row, prefix: str) -> BoardDocument:
     title_key = "board_document_title" if prefix == "board" else f"{prefix}_title"
-    return BoardDocument(
-        id=row[f"{prefix}_document_id"],
-        title=row[title_key],
-        content_json=_loads(row[f"{prefix}_content_json"], {"type": "doc", "content": [{"type": "paragraph"}]}),
-        content_html=row[f"{prefix}_content_html"],
-        content_text=row[f"{prefix}_content_text"],
-        page_settings=_loads(row[f"{prefix}_page_settings_json"], {}),
+    return upgrade_markdown_like_document(
+        BoardDocument(
+            id=row[f"{prefix}_document_id"],
+            title=row[title_key],
+            content_json=_loads(row[f"{prefix}_content_json"], {"type": "doc", "content": [{"type": "paragraph"}]}),
+            content_html=row[f"{prefix}_content_html"],
+            content_text=row[f"{prefix}_content_text"],
+            page_settings=_loads(row[f"{prefix}_page_settings_json"], {}),
+        )
     )
 
 
@@ -864,35 +860,8 @@ def _contains_legacy_blocks(raw_data: object) -> bool:
     return False
 
 
-def build_initial_course_package() -> CoursePackage:
-    lesson_a = create_lesson("勾股定理")
-    lesson_b = create_lesson("直角三角形基础")
-    lesson_c = create_lesson("欧几里得几何导论")
-    return CoursePackage(
-        title="开放课堂课程工作台",
-        summary="把 lesson 当作可编辑、可分支、可讲解的课程资产。",
-        lessons=[lesson_a, lesson_b, lesson_c],
-        course_graph=[
-            CourseGraphEdge(
-                source_lesson_id=lesson_b.id,
-                target_lesson_id=lesson_a.id,
-                relationship="recommended_next",
-            ),
-            CourseGraphEdge(
-                source_lesson_id=lesson_a.id,
-                target_lesson_id=lesson_c.id,
-                relationship="deep_dive",
-            ),
-        ],
-        open_lesson_ids=[lesson_a.id, lesson_b.id],
-        active_lesson_id=lesson_a.id,
-        workspace_tab_order=[lesson_a.id, lesson_b.id],
-    )
-
-
 def build_initial_workspace_state() -> WorkspaceState:
-    package = build_initial_course_package()
-    return WorkspaceState(packages=[package], active_package_id=package.id)
+    return build_empty_account_workspace_state()
 
 
 def build_empty_account_workspace_state() -> WorkspaceState:
@@ -906,41 +875,3 @@ def build_empty_account_workspace_state() -> WorkspaceState:
         workspace_tab_order=[],
     )
     return WorkspaceState(packages=[package], active_package_id=package.id)
-
-
-def _is_unmodified_starter_lesson(lesson: Lesson) -> bool:
-    commits = lesson.history_graph.commits
-    return (
-        lesson.title in STARTER_LESSON_TITLES
-        and len(commits) == 1
-        and commits[0].message == f"Generated starter rich document for {lesson.title}"
-    )
-
-
-def _remove_unmodified_starter_lessons(workspace: WorkspaceState) -> bool:
-    changed = False
-    for package in workspace.packages:
-        if package.title not in STARTER_PACKAGE_TITLES:
-            continue
-        starter_lesson_ids = {
-            lesson.id for lesson in package.lessons if _is_unmodified_starter_lesson(lesson)
-        }
-        if not starter_lesson_ids:
-            continue
-
-        package.lessons = [lesson for lesson in package.lessons if lesson.id not in starter_lesson_ids]
-        package.course_graph = [
-            edge
-            for edge in package.course_graph
-            if edge.source_lesson_id not in starter_lesson_ids and edge.target_lesson_id not in starter_lesson_ids
-        ]
-        package.open_lesson_ids = [
-            lesson_id for lesson_id in package.open_lesson_ids if lesson_id not in starter_lesson_ids
-        ]
-        package.workspace_tab_order = [
-            lesson_id for lesson_id in package.workspace_tab_order if lesson_id not in starter_lesson_ids
-        ]
-        if package.active_lesson_id in starter_lesson_ids:
-            package.active_lesson_id = package.workspace_tab_order[0] if package.workspace_tab_order else None
-        changed = True
-    return changed

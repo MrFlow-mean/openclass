@@ -16,7 +16,7 @@ from app.models import (
     WorkspaceStateView,
 )
 from app.services.course_store import SqliteCourseStore
-from app.services.course_runtime import effective_requirements
+from app.services.course_runtime import active_task_requirements
 from app.services.history import commit_operations
 
 BASE_DIR = Path(__file__).resolve().parents[2]
@@ -198,7 +198,7 @@ def package_view(
     isolate_lesson_resources: bool = False,
 ) -> CoursePackageView:
     lessons_for_view = [
-        lesson.model_copy(update={"learning_requirements": effective_requirements(lesson)})
+        lesson.model_copy(update={"learning_requirements": active_task_requirements(lesson)})
         for lesson in package.lessons
     ]
     visible_package = package.model_copy(
