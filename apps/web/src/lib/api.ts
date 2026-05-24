@@ -207,6 +207,116 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+type ChatStreamHandlers = {
+  onPhase?: (label: string) => void;
+  onChatDelta?: (delta: string) => void;
+  onDocumentDelta?: (delta: string) => void;
+  onFinal?: (response: ChatResponse) => void;
+};
+
+function parseSseBlock(block: string): { event: string; data: string } | null {
+  let event = "message";
+  const dataLines: string[] = [];
+  for (const line of block.split(/\r?\n/)) {
+    if (line.startsWith("event:")) {
+      event = line.slice("event:".length).trim();
+    } else if (line.startsWith("data:")) {
+      dataLines.push(line.slice("data:".length).trimStart());
+    }
+  }
+  if (!dataLines.length) {
+    return null;
+  }
+  return { event, data: dataLines.join("\n") };
+}
+
+function handleChatStreamBlock(block: string, handlers: ChatStreamHandlers) {
+  const parsed = parseSseBlock(block);
+  if (!parsed) {
+    return;
+  }
+  const payload = JSON.parse(parsed.data) as Record<string, unknown>;
+  if (parsed.event === "phase") {
+    const label = typeof payload.label === "string" ? payload.label : "";
+    if (label) {
+      handlers.onPhase?.(label);
+    }
+    return;
+  }
+  if (parsed.event === "chat_delta") {
+    const delta = typeof payload.delta === "string" ? payload.delta : "";
+    if (delta) {
+      handlers.onChatDelta?.(delta);
+    }
+    return;
+  }
+  if (parsed.event === "document_delta") {
+    const delta = typeof payload.delta === "string" ? payload.delta : "";
+    if (delta) {
+      handlers.onDocumentDelta?.(delta);
+    }
+    return;
+  }
+  if (parsed.event === "final") {
+    handlers.onFinal?.(payload as unknown as ChatResponse);
+    return;
+  }
+  if (parsed.event === "error") {
+    const message = typeof payload.message === "string" ? payload.message : "聊天失败";
+    throw new Error(message);
+  }
+}
+
+async function streamRequest(path: string, payload: unknown, handlers: ChatStreamHandlers): Promise<ChatResponse> {
+  const response = await fetch(`${getApiBase()}${path}`, {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify(payload),
+    cache: "no-store",
+  });
+  if (!response.ok || !response.body) {
+    const text = await response.text();
+    throw new Error(text || `Request failed with ${response.status}`);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let finalResponse: ChatResponse | null = null;
+  const streamHandlers: ChatStreamHandlers = {
+    ...handlers,
+    onFinal(responsePayload) {
+      finalResponse = responsePayload;
+      handlers.onFinal?.(responsePayload);
+    },
+  };
+
+  while (true) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
+    let boundary = buffer.indexOf("\n\n");
+    while (boundary >= 0) {
+      const block = buffer.slice(0, boundary).trim();
+      buffer = buffer.slice(boundary + 2);
+      if (block) {
+        handleChatStreamBlock(block, streamHandlers);
+      }
+      boundary = buffer.indexOf("\n\n");
+    }
+    if (done) {
+      break;
+    }
+  }
+  const rest = buffer.trim();
+  if (rest) {
+    handleChatStreamBlock(rest, streamHandlers);
+  }
+  if (!finalResponse) {
+    throw new Error("聊天流没有返回最终结果");
+  }
+  return finalResponse;
+}
+
 export const api = {
   register(identifier: string, password: string) {
     return request<AuthSessionResponse>("/api/auth/register", {
@@ -400,6 +510,9 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload),
     });
+  },
+  streamChatOnLesson(lessonId: string, payload: ChatRequestPayload, handlers: ChatStreamHandlers) {
+    return streamRequest(`/api/lessons/${lessonId}/chat/stream`, payload, handlers);
   },
   connectRealtime(lessonId: string, payload: RealtimeConnectPayload) {
     return request<RealtimeConnectResponse>(`/api/lessons/${lessonId}/realtime/connect`, {

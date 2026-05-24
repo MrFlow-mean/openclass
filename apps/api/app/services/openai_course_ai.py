@@ -11,6 +11,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -57,6 +58,8 @@ DEFAULT_TEXT_MODEL = OPENAI_DEFAULT_TEXT_MODEL
 _text_model_selection: ContextVar[AIModelSelection | None] = ContextVar(
     "text_model_selection", default=None
 )
+AIStreamObserver = Callable[[dict[str, Any]], None]
+_ai_stream_observer: ContextVar[AIStreamObserver | None] = ContextVar("ai_stream_observer", default=None)
 
 
 def _env_any(*names: str) -> str | None:
@@ -104,6 +107,72 @@ def _compact_json(data: Any) -> str:
 
 def _elapsed_ms(started_at: float) -> int:
     return max(0, round((time.perf_counter() - started_at) * 1000))
+
+
+def _decode_partial_json_string(raw: str) -> str:
+    decoded: list[str] = []
+    index = 0
+    while index < len(raw):
+        char = raw[index]
+        if char != "\\":
+            decoded.append(char)
+            index += 1
+            continue
+        if index + 1 >= len(raw):
+            break
+        escaped = raw[index + 1]
+        if escaped == "n":
+            decoded.append("\n")
+            index += 2
+            continue
+        if escaped == "r":
+            decoded.append("\r")
+            index += 2
+            continue
+        if escaped == "t":
+            decoded.append("\t")
+            index += 2
+            continue
+        if escaped in {'"', "\\", "/"}:
+            decoded.append(escaped)
+            index += 2
+            continue
+        if escaped == "u":
+            hex_value = raw[index + 2 : index + 6]
+            if len(hex_value) < 4 or not re.fullmatch(r"[0-9a-fA-F]{4}", hex_value):
+                break
+            decoded.append(chr(int(hex_value, 16)))
+            index += 6
+            continue
+        decoded.append(escaped)
+        index += 2
+    return "".join(decoded)
+
+
+def _partial_json_string_field_value(text: str, field_name: str) -> str:
+    match = re.search(rf'"{re.escape(field_name)}"\s*:\s*"', text)
+    if not match:
+        return ""
+    index = match.end()
+    raw_chars: list[str] = []
+    escaped = False
+    while index < len(text):
+        char = text[index]
+        if escaped:
+            raw_chars.append(char)
+            escaped = False
+            index += 1
+            continue
+        if char == "\\":
+            raw_chars.append(char)
+            escaped = True
+            index += 1
+            continue
+        if char == '"':
+            break
+        raw_chars.append(char)
+        index += 1
+    return _decode_partial_json_string("".join(raw_chars))
 
 
 def _json_loads_lenient(value: str) -> Any:
@@ -210,6 +279,15 @@ def bind_text_model_selection(selection: AIModelSelection | None):
         yield
     finally:
         _text_model_selection.reset(token)
+
+
+@contextmanager
+def bind_ai_output_stream(observer: AIStreamObserver | None) -> Iterator[None]:
+    token = _ai_stream_observer.set(observer)
+    try:
+        yield
+    finally:
+        _ai_stream_observer.reset(token)
 
 
 class OpenAIConfig(BaseModel):
@@ -899,6 +977,7 @@ class OpenAICourseAI:
     def _call_parse(
         self,
         *,
+        role: str,
         provider: AIProvider,
         model: str,
         system_prompt: str,
@@ -934,6 +1013,7 @@ class OpenAICourseAI:
             )
         if provider == "deepseek":
             return self._call_openai_parse(
+                role=role,
                 model=model,
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
@@ -943,6 +1023,7 @@ class OpenAICourseAI:
             )
         if provider == "kimi":
             return self._call_openai_parse(
+                role=role,
                 model=model,
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
@@ -952,6 +1033,7 @@ class OpenAICourseAI:
             )
         if provider == "minimax":
             return self._call_openai_parse(
+                role=role,
                 model=model,
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
@@ -961,6 +1043,7 @@ class OpenAICourseAI:
             )
         if provider == "openai_compatible":
             return self._call_openai_parse(
+                role=role,
                 model=model,
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
@@ -969,6 +1052,7 @@ class OpenAICourseAI:
                 config=self.openai_compatible_config,
             )
         return self._call_openai_parse(
+            role=role,
             model=model,
             system_prompt=system_prompt,
             user_prompt=user_prompt,
@@ -980,6 +1064,7 @@ class OpenAICourseAI:
     def _call_openai_parse(
         self,
         *,
+        role: str,
         model: str,
         system_prompt: str,
         user_prompt: str,
@@ -990,8 +1075,24 @@ class OpenAICourseAI:
         client = client or self.client
         config = config or self.config
         assert client is not None
-        if config.compat_api.strip().lower() in {"chat", "chat_completions", "chat-completions"}:
+        compat_mode = config.compat_api.strip().lower()
+        observer = _ai_stream_observer.get()
+        stream_field = "chatbot_message" if role == "chatbot" else "content_text" if role == "board" else None
+        if observer and stream_field and compat_mode not in {"chat", "chat_completions", "chat-completions"}:
+            try:
+                return self._call_openai_chat_parse(
+                    role=role,
+                    model=model,
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    schema=schema,
+                    client=client,
+                )
+            except Exception:
+                pass
+        if compat_mode in {"chat", "chat_completions", "chat-completions"}:
             return self._call_openai_chat_parse(
+                role=role,
                 model=model,
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
@@ -1011,6 +1112,7 @@ class OpenAICourseAI:
             if not self._should_retry_openai_chat_parse(exc):
                 raise
             return self._call_openai_chat_parse(
+                role=role,
                 model=model,
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
@@ -1037,6 +1139,7 @@ class OpenAICourseAI:
     def _call_openai_chat_parse(
         self,
         *,
+        role: str,
         model: str,
         system_prompt: str,
         user_prompt: str,
@@ -1057,6 +1160,37 @@ class OpenAICourseAI:
             },
             {"role": "user", "content": user_prompt},
         ]
+        observer = _ai_stream_observer.get()
+        stream_field = "chatbot_message" if role == "chatbot" else "content_text" if role == "board" else None
+        if observer and stream_field:
+            try:
+                output_text = self._stream_openai_chat_completion(
+                    client=client,
+                    model=model,
+                    messages=messages,
+                    schema=schema,
+                    schema_payload=schema_payload,
+                    role=role,
+                    field_name=stream_field,
+                    use_response_format=True,
+                )
+            except Exception as exc:
+                if not self._should_retry_openai_chat_without_schema(exc):
+                    raise
+                output_text = self._stream_openai_chat_completion(
+                    client=client,
+                    model=model,
+                    messages=messages,
+                    schema=schema,
+                    schema_payload=schema_payload,
+                    role=role,
+                    field_name=stream_field,
+                    use_response_format=False,
+                )
+            return ParsedAIResponse(
+                output_parsed=schema.model_validate(_extract_json_object(output_text)),
+                output_text=output_text,
+            )
         try:
             response = client.chat.completions.create(
                 model=model,
@@ -1128,6 +1262,58 @@ class OpenAICourseAI:
             usage=getattr(response, "usage", None),
         )
 
+    def _stream_openai_chat_completion(
+        self,
+        *,
+        client: Any,
+        model: str,
+        messages: list[dict[str, str]],
+        schema: type[BaseModel],
+        schema_payload: dict[str, Any],
+        role: str,
+        field_name: str,
+        use_response_format: bool,
+    ) -> str:
+        observer = _ai_stream_observer.get()
+        kwargs: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "stream": True,
+        }
+        if use_response_format:
+            kwargs["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": schema.__name__,
+                    "schema": schema_payload,
+                    "strict": True,
+                },
+            }
+        stream = client.chat.completions.create(**kwargs)
+        output_parts: list[str] = []
+        last_visible_value = ""
+        for chunk in stream:
+            delta_text = self._chat_completion_stream_delta(chunk)
+            if not delta_text:
+                continue
+            output_parts.append(delta_text)
+            output_text = "".join(output_parts)
+            visible_value = _partial_json_string_field_value(output_text, field_name)
+            if observer and visible_value.startswith(last_visible_value):
+                visible_delta = visible_value[len(last_visible_value) :]
+                if visible_delta:
+                    observer(
+                        {
+                            "type": "field_delta",
+                            "role": role,
+                            "field": field_name,
+                            "delta": visible_delta,
+                            "value": visible_value,
+                        }
+                    )
+                    last_visible_value = visible_value
+        return "".join(output_parts)
+
     def _should_retry_openai_chat_without_schema(self, exc: Exception) -> bool:
         message = str(exc).lower()
         return "response_format" in message or "json_schema" in message or "schema" in message
@@ -1151,6 +1337,27 @@ class OpenAICourseAI:
                     parts.append(text)
             return "".join(parts)
         raise ValueError("Chat completion response did not include text content")
+
+    def _chat_completion_stream_delta(self, chunk: Any) -> str:
+        choices = chunk.get("choices") if isinstance(chunk, dict) else getattr(chunk, "choices", None)
+        if not choices:
+            return ""
+        first_choice = choices[0]
+        delta = first_choice.get("delta") if isinstance(first_choice, dict) else getattr(first_choice, "delta", None)
+        content = delta.get("content") if isinstance(delta, dict) else getattr(delta, "content", None)
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: list[str] = []
+            for part in content:
+                if isinstance(part, dict):
+                    text = part.get("text")
+                else:
+                    text = getattr(part, "text", None)
+                if isinstance(text, str):
+                    parts.append(text)
+            return "".join(parts)
+        return ""
 
     def generate_chart_image(
         self,
@@ -1358,6 +1565,7 @@ class OpenAICourseAI:
             fallback_started_at = time.perf_counter()
             try:
                 response = self._call_parse(
+                    role=role,
                     provider=fallback_provider,
                     model=fallback_model,
                     system_prompt=system_prompt,
@@ -1413,6 +1621,16 @@ class OpenAICourseAI:
             "system_prompt": system_prompt,
             "user_prompt": log_user_prompt or user_prompt,
         }
+        observer = _ai_stream_observer.get()
+        if observer:
+            observer(
+                {
+                    "type": "role_start",
+                    "role": role,
+                    "provider": provider,
+                    "model": requested_model,
+                }
+            )
         if not self._provider_available(provider):
             ai_usage_logger.log_event(
                 self._log_event_name(provider, "_skipped"),
@@ -1437,6 +1655,7 @@ class OpenAICourseAI:
         primary_started_at = time.perf_counter()
         try:
             response = self._call_parse(
+                role=role,
                 provider=provider,
                 model=requested_model,
                 system_prompt=system_prompt,
@@ -1467,6 +1686,7 @@ class OpenAICourseAI:
                 retry_started_at = time.perf_counter()
                 try:
                     response = self._call_parse(
+                        role=role,
                         provider=provider,
                         model=fallback_model,
                         system_prompt=system_prompt,

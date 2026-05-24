@@ -5,6 +5,7 @@ import { useState, type Dispatch, type MutableRefObject, type SetStateAction } f
 import { api } from "@/lib/api";
 import {
   createChatMessage,
+  isBoardDocumentEmpty,
   type ChatMessage,
   type LessonComposerState,
 } from "@/components/course-studio/history-utils";
@@ -12,6 +13,7 @@ import type { AutoSaveReason } from "@/hooks/course-studio/use-board-draft";
 import type { CoursePackageApplyOptions } from "@/hooks/course-studio/use-course-workspace";
 import type {
   AIModelSelection,
+  BoardDocument,
   BoardDecision,
   BoardEditPrompt,
   ChatRequestPayload,
@@ -30,6 +32,7 @@ type UseLessonChatAgentOptions = {
   activeMessages: ChatMessage[];
   activeComposerState: LessonComposerState;
   composerSelection: SelectionRef | null;
+  currentBoardDocument: BoardDocument | null;
   selectedTextModel: AIModelSelection;
   isPreviewMode: boolean;
   chatRequestInFlightRef: MutableRefObject<boolean>;
@@ -38,6 +41,7 @@ type UseLessonChatAgentOptions = {
   updateCoursePackage: (nextPackage: CoursePackage, options?: CoursePackageApplyOptions) => void;
   updateLessonMessages: (lessonId: string, updater: (messages: ChatMessage[]) => ChatMessage[]) => void;
   updateLessonComposerState: (lessonId: string, updater: (current: LessonComposerState) => LessonComposerState) => void;
+  setStreamingDocumentPreview: (document: BoardDocument) => void;
   clearSelection: () => void;
   setError: Dispatch<SetStateAction<string | null>>;
   setBusyAction: Dispatch<SetStateAction<string | null>>;
@@ -50,6 +54,7 @@ export function useLessonChatAgent({
   activeMessages,
   activeComposerState,
   composerSelection,
+  currentBoardDocument,
   selectedTextModel,
   isPreviewMode,
   chatRequestInFlightRef,
@@ -58,6 +63,7 @@ export function useLessonChatAgent({
   updateCoursePackage,
   updateLessonMessages,
   updateLessonComposerState,
+  setStreamingDocumentPreview,
   clearSelection,
   setError,
   setBusyAction,
@@ -80,6 +86,61 @@ export function useLessonChatAgent({
   const composerMode = activeComposerState.composerMode;
   const includeSelectionInPrompt = activeComposerState.includeSelectionInPrompt;
   const isChatBusy = busyAction === "chat" || busyAction === "agent-edit";
+
+  function updatePendingAssistant(
+    lessonId: string,
+    messageId: string,
+    patch: Partial<Pick<ChatMessage, "content" | "statusLabel">>
+  ) {
+    updateLessonMessages(lessonId, (current) =>
+      current.map((message) => (message.id === messageId ? { ...message, ...patch } : message))
+    );
+  }
+
+  function escapeHtml(value: string) {
+    return value
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  function streamingTextToHtml(contentText: string) {
+    const blocks = contentText
+      .split(/\n{2,}/)
+      .map((block) => block.trim())
+      .filter(Boolean);
+    if (!blocks.length) {
+      return "<p></p>";
+    }
+    return blocks
+      .map((block) => {
+        const lines = block.split(/\r?\n/);
+        if (lines.every((line) => /^\s*[-*]\s+/.test(line))) {
+          return `<ul>${lines
+            .map((line) => `<li>${escapeHtml(line.replace(/^\s*[-*]\s+/, ""))}</li>`)
+            .join("")}</ul>`;
+        }
+        const headingMatch = /^#{1,6}\s+(.+)$/.exec(block);
+        if (headingMatch) {
+          return `<h2>${escapeHtml(headingMatch[1])}</h2>`;
+        }
+        return `<p>${escapeHtml(block).replace(/\r?\n/g, "<br>")}</p>`;
+      })
+      .join("");
+  }
+
+  function shouldStreamDocumentPreview(payload: ChatRequestPayload, document: BoardDocument | null) {
+    if (payload.interaction_mode === "direct_edit" || payload.board_edit_action) {
+      return false;
+    }
+    return (
+      payload.board_generation_action === "start" ||
+      payload.resource_reference_action === "confirm" ||
+      isBoardDocumentEmpty(document)
+    );
+  }
 
   function resetAgentState() {
     setScopeOptions([]);
@@ -123,12 +184,6 @@ export function useLessonChatAgent({
       return;
     }
 
-    chatRequestInFlightRef.current = true;
-    if (!(await flushAutoSave("chat"))) {
-      chatRequestInFlightRef.current = false;
-      return;
-    }
-
     const isDirectEdit = payloadWithConversation.interaction_mode === "direct_edit";
     const userMessageContent = payloadOverride?.scope_action
       ? `继续执行：${payloadOverride.scope_action}`
@@ -147,7 +202,18 @@ export function useLessonChatAgent({
                   : isDirectEdit
                     ? `直接编辑讲义：${payloadWithConversation.message}`
                     : payloadWithConversation.message;
-    const pendingAssistantMessage = createChatMessage("assistant", "", "pending");
+    const userMessage = createChatMessage("user", userMessageContent, "ready", undefined, submittedSelection);
+    const pendingAssistantMessage: ChatMessage = {
+      ...createChatMessage("assistant", "", "pending"),
+      statusLabel: "正在保存当前文档",
+    };
+    const baseStreamingDocument = currentBoardDocument ?? activeLesson.board_document;
+    const canStreamDocumentPreview = shouldStreamDocumentPreview(payloadWithConversation, baseStreamingDocument);
+    let requestStarted = false;
+    let streamedChatContent = "";
+    let streamedDocumentText = "";
+
+    chatRequestInFlightRef.current = true;
     setBusyAction(isDirectEdit ? "agent-edit" : "chat");
     setError(null);
     if (!payloadOverride) {
@@ -158,12 +224,49 @@ export function useLessonChatAgent({
     }
     updateLessonMessages(lessonId, (current) => [
       ...current,
-      createChatMessage("user", userMessageContent, "ready", undefined, submittedSelection),
+      userMessage,
       pendingAssistantMessage,
     ]);
 
     try {
-      const response = await api.chatOnLesson(lessonId, payloadWithConversation);
+      if (!(await flushAutoSave("chat"))) {
+        updateLessonMessages(lessonId, (current) =>
+          current.filter((message) => message.id !== pendingAssistantMessage.id && message.id !== userMessage.id)
+        );
+        if (!payloadOverride) {
+          updateLessonComposerState(lessonId, (current) => ({
+            ...current,
+            chatInput: submittedInput,
+          }));
+        }
+        return;
+      }
+      requestStarted = true;
+      updatePendingAssistant(lessonId, pendingAssistantMessage.id, { statusLabel: "正在回复" });
+      const response = await api.streamChatOnLesson(lessonId, payloadWithConversation, {
+        onPhase(label) {
+          updatePendingAssistant(lessonId, pendingAssistantMessage.id, { statusLabel: label });
+        },
+        onChatDelta(delta) {
+          streamedChatContent += delta;
+          updatePendingAssistant(lessonId, pendingAssistantMessage.id, {
+            content: streamedChatContent,
+            statusLabel: "正在回复",
+          });
+        },
+        onDocumentDelta(delta) {
+          if (!canStreamDocumentPreview) {
+            return;
+          }
+          streamedDocumentText += delta;
+          setStreamingDocumentPreview({
+            ...baseStreamingDocument,
+            content_json: {},
+            content_html: streamingTextToHtml(streamedDocumentText),
+            content_text: streamedDocumentText,
+          });
+        },
+      });
       updateCoursePackage(response.course_package, {
         activeLessonId: response.created_lesson ? undefined : lessonId,
       });
@@ -202,9 +305,12 @@ export function useLessonChatAgent({
           chatInput: submittedInput,
         }));
       }
-      updateLessonMessages(lessonId, (current) => [
-        ...current.filter((message) => message.id !== pendingAssistantMessage.id),
-      ]);
+      updateLessonMessages(lessonId, (current) =>
+        current.filter(
+          (message) =>
+            message.id !== pendingAssistantMessage.id && (requestStarted || message.id !== userMessage.id)
+        )
+      );
       setError(chatError instanceof Error ? chatError.message : "聊天失败");
     } finally {
       chatRequestInFlightRef.current = false;

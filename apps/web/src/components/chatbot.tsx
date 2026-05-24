@@ -22,6 +22,7 @@ export type CourseChatMessageView = {
   role: "user" | "assistant";
   content: string;
   status?: "ready" | "pending" | "error";
+  statusLabel?: string;
   selection?: SelectionRef | null;
   teachingProgress?: SectionTeachingProgress | null;
 };
@@ -192,7 +193,7 @@ export function CourseChatMessage({
       <div className={clsx("min-w-0 max-w-[86%] space-y-2", isAssistant && "max-w-[calc(100%-2.5rem)] flex-1")}>
         <div className={clsx("flex items-center gap-2 text-[11px] text-gray-500", !isAssistant && "justify-end")}>
           {!isAssistant ? <MessageSquare className="h-3.5 w-3.5" /> : null}
-          <span className="font-medium">{isPending ? "正在思考" : isAssistant ? "OpenClass" : "你"}</span>
+          <span className="font-medium">{isPending ? message.statusLabel || "正在思考" : isAssistant ? "OpenClass" : "你"}</span>
         </div>
 
         {message.selection && selectedExcerpt ? (

@@ -147,6 +147,19 @@ export function useBoardDraft({
     [clearAutoSaveTimer]
   );
 
+  const setStreamingDocumentPreview = useCallback(
+    (document: BoardDocument) => {
+      clearAutoSaveTimer();
+      documentDraftVersionRef.current += 1;
+      draftDocumentRef.current = document;
+      isDocumentDirtyRef.current = false;
+      setDraftDocument(document);
+      setIsDocumentDirty(false);
+      setAutoSaveStatus("idle");
+    },
+    [clearAutoSaveTimer]
+  );
+
   const applyAutoSavedPackage = useCallback(
     (nextPackage: CoursePackage, lessonId: string, savedVersion: number) => {
       const currentActiveLessonId = activeLessonRef.current?.id ?? null;
@@ -390,6 +403,7 @@ export function useBoardDraft({
     isPreviewing,
     resetToLesson,
     setPreviewDocument,
+    setStreamingDocumentPreview,
     flushAutoSave,
     flushAutoSaveWithBeacon,
     handleLocalDocumentChange,
