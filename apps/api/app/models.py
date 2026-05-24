@@ -557,6 +557,10 @@ class BoardEditPrompt(BaseModel):
     skip_label: str = "否"
 
 
+# Reserved AI teaching workflow schema.
+# Current public routes preserve these fields for stored lesson compatibility,
+# but realtime teaching execution is disabled and the next orchestration layer
+# should decide whether these models still match the product workflow.
 class BoardTeachingSelectedItem(BaseModel):
     excerpt: str
     source_heading: str | None = None

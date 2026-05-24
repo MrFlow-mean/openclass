@@ -8,8 +8,8 @@ import {
   getLessonCommit,
   nextBranchName,
 } from "@/components/course-studio/history-utils";
-import type { AutoSaveReason } from "@/components/course-studio/use-board-draft";
-import type { AppliedCoursePackage, CoursePackageApplyOptions } from "@/components/course-studio/use-course-workspace";
+import type { AutoSaveReason } from "@/hooks/course-studio/use-board-draft";
+import type { AppliedCoursePackage, CoursePackageApplyOptions } from "@/hooks/course-studio/use-course-workspace";
 import type { BoardDocument, CommitRecord, CoursePackage, Lesson } from "@/types";
 
 type UseLessonHistoryOptions = {

@@ -8,7 +8,7 @@ import {
   currentHeadCommitId,
   documentsEqual,
 } from "@/components/course-studio/history-utils";
-import type { AppliedCoursePackage, CoursePackageApplyOptions } from "@/components/course-studio/use-course-workspace";
+import type { AppliedCoursePackage, CoursePackageApplyOptions } from "@/hooks/course-studio/use-course-workspace";
 import type { BoardDocument, CoursePackage, Lesson } from "@/types";
 
 export type AutoSaveStatus = "idle" | "pending" | "saving" | "saved" | "error";

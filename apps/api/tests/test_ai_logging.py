@@ -274,8 +274,8 @@ def test_board_document_generation_prompt_requests_substantial_default_length(
     assert result is not None
     assert captured["role"] == "board"
     assert "完整文档篇幅生成" in captured["system_prompt"]
-    assert "6-8 个主要 H2 小节" in captured["system_prompt"]
-    assert "不少于 3000 个中文字符" in captured["system_prompt"]
+    assert "多个相互衔接的 H2 小节" in captured["system_prompt"]
+    assert "足以支撑一节课直接教学" in captured["system_prompt"]
     assert "较完整篇幅展开" in captured["user_prompt"]
 
 

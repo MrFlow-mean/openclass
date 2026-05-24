@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from dotenv import load_dotenv
 from fastapi import HTTPException
 
 from app.models import (
@@ -18,20 +17,13 @@ from app.models import (
     WorkspaceStateView,
 )
 from app.services.course_store import SqliteCourseStore
+from app.services.config import API_BASE_DIR as BASE_DIR, DATA_DIR, ROOT_DIR, load_root_dotenv
 from app.services.course_runtime import active_task_requirements
 from app.services.history import commit_operations
 
-BASE_DIR = Path(__file__).resolve().parents[2]
-ROOT_DIR = BASE_DIR.parents[1]
-DATA_DIR = BASE_DIR / "data"
-
 
 def _load_root_dotenv() -> None:
-    root_env = ROOT_DIR / ".env"
-    if root_env.exists():
-        load_dotenv(root_env)
-        return
-    load_dotenv()
+    load_root_dotenv()
 
 
 def _path_from_env(name: str, default: Path) -> Path:
@@ -56,20 +48,28 @@ def ensure_data_dirs() -> None:
     EXPORT_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def get_store() -> SqliteCourseStore:
+    return STORE
+
+
+def get_course_store() -> SqliteCourseStore:
+    return get_store()
+
+
 def load_workspace() -> WorkspaceState:
-    return STORE.load()
+    return get_store().load()
 
 
 def save_workspace(workspace: WorkspaceState) -> None:
-    STORE.save(workspace)
+    get_store().save(workspace)
 
 
 def load_workspace_for_user(user_id: str) -> WorkspaceState:
-    return STORE.load_for_user(user_id)
+    return get_store().load_for_user(user_id)
 
 
 def save_workspace_for_user(user_id: str, workspace: WorkspaceState) -> None:
-    STORE.save_for_user(user_id, workspace)
+    get_store().save_for_user(user_id, workspace)
 
 
 def search_document_segments_for_user(
@@ -79,7 +79,7 @@ def search_document_segments_for_user(
     kind: BoardSegmentKind | None = None,
     limit: int = 20,
 ) -> list[DocumentSegmentSearchResult]:
-    return STORE.search_document_segments(query, owner_user_id=user_id, kind=kind, limit=limit)
+    return get_store().search_document_segments(query, owner_user_id=user_id, kind=kind, limit=limit)
 
 
 def get_package(workspace: WorkspaceState, package_id: str) -> CoursePackage:

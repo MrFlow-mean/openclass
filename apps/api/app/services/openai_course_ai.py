@@ -13,11 +13,9 @@ import urllib.request
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Literal
 
 import certifi
-from dotenv import load_dotenv
 from openai import OpenAI
 from pydantic import BaseModel, Field
 
@@ -43,17 +41,14 @@ from app.services.ai_model_catalog import (
     OPENAI_IMAGE_MODEL,
     default_text_selection,
 )
+from app.services.config import load_root_dotenv
 
 logger = logging.getLogger(__name__)
 _URLLIB_SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
 
 
 def _load_root_dotenv() -> None:
-    root_env = Path(__file__).resolve().parents[4] / ".env"
-    if root_env.exists():
-        load_dotenv(root_env)
-        return
-    load_dotenv()
+    load_root_dotenv()
 
 
 _load_root_dotenv()
@@ -786,7 +781,7 @@ class OpenAICourseAI:
             "1. 只根据学习需求清单、用户指令、当前板书、选区、资料摘要和最近对话写入文档内容。\n"
             "2. intent=generate_from_requirements 时，输出一份完整板书，operation 使用 replace_document，"
             "content_text 必须包含清晰章节标题；默认按一节可直接教学的完整文档篇幅生成，"
-            "优先组织 6-8 个主要 H2 小节，整篇通常不少于 3000 个中文字符，"
+            "优先组织多个相互衔接的 H2 小节，篇幅要足以支撑一节课直接教学，"
             "除非用户明确要求短版、速览或只要大纲。\n"
             "3. intent=edit_existing_document 时，有选区就优先 replace_selection；需要新增内容时用 append_section；"
             "不要擅自整体覆盖已有文档。\n"

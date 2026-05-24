@@ -11,7 +11,7 @@ import {
   websocketMessageText,
   type GoogleRealtimeAudioMessage,
 } from "@/components/course-studio/model-catalog";
-import type { AutoSaveReason } from "@/components/course-studio/use-board-draft";
+import type { AutoSaveReason } from "@/hooks/course-studio/use-board-draft";
 import { useRealtimeLogQueue } from "@/hooks/use-realtime-log-queue";
 import { pcmFloatToBase64, playPcmBase64, resampleLinear } from "@/lib/realtime-audio";
 import type { AIModelOption, AIModelSelection, Lesson } from "@/types";

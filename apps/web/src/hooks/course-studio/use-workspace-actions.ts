@@ -3,8 +3,8 @@
 import type { Dispatch, SetStateAction } from "react";
 
 import { api } from "@/lib/api";
-import type { AutoSaveReason } from "@/components/course-studio/use-board-draft";
-import type { CoursePackageApplyOptions } from "@/components/course-studio/use-course-workspace";
+import type { AutoSaveReason } from "@/hooks/course-studio/use-board-draft";
+import type { CoursePackageApplyOptions } from "@/hooks/course-studio/use-course-workspace";
 import type { CoursePackage, Lesson } from "@/types";
 
 type UseWorkspaceActionsOptions = {

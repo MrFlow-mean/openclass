@@ -14,8 +14,10 @@
     "build:web": "npm --prefix apps/web run build",
     "lint:web": "npm --prefix apps/web run lint",
     "typecheck:web": "npm --prefix apps/web run typecheck",
+    "guard:file-sizes": "node scripts/check-file-sizes.mjs",
+    "test:e2e": "npm --prefix apps/web run test:e2e",
     "test:api": ".venv/bin/python -m pytest",
-    "verify": "npm run lint:web && npm run typecheck:web && npm run test:api && npm run build:web"
+    "verify": "npm run guard:file-sizes && npm run lint:web && npm run typecheck:web && npm run test:api && npm run build:web"
   },
   "overrides": {
     "postcss": "8.5.10"

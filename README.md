@@ -55,7 +55,18 @@ AI_REALTIME_PROVIDER=openai
 
 OpenAI/GPT 文本交互和 GPT Image 2 默认走官方 OpenAI API：`https://api.openai.com/v1`。交互 AI 文本默认用 GPT-5.5，语音交互默认用 GPT Realtime 2；上传资料的目录 AI 通过 `OPENAI_CATALOG_MODEL` 独立配置，默认用 GPT-5.4 mini。其他 provider（Anthropic / Google / DeepSeek / Kimi / MiniMax / 自定义兼容网关）和默认模型见 `.env.example`。
 
-前端"选择模型"调 `/api/ai-models`，未配置 key 的 provider 会标为未配置。旧聊天、文档 AI 改写和实时语音接口当前会返回已移除状态，等待新的产品工作架构接入。
+前端"选择模型"调 `/api/ai-models`，未配置 key 的 provider 会标为未配置。当前保留并启用的是模型目录、课程聊天入口、文档保存/导入/导出和资料解析等工作台能力；旧的 realtime 语音运行路径会明确返回 410 removed。`BoardTeachingGuide` / `BoardTeachingProgress` 等教学工作流 schema 仅作为历史兼容和 future workflow 预留，不代表完整 AI 教学编排已经接回。
+
+## 测试
+
+```bash
+npm run lint:web
+npm run typecheck:web
+npm run test:api
+npm run build:web
+npm run test:e2e          # Playwright 主流程，默认启动 127.0.0.1:3110 / 127.0.0.1:8110
+npm run verify            # 文件尺寸安全线 + 前端 lint/typecheck + 后端测试 + 前端构建
+```
 
 ## 协作
 
