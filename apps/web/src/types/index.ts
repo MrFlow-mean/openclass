@@ -81,6 +81,17 @@ export interface LearningRequirementSheet {
   action_type?: BoardTaskAction | null;
   action_instruction?: string;
   location_clarification_question?: string;
+  interaction_rule_draft?: InteractionRuleDraft | null;
+}
+
+export interface InteractionRuleDraft {
+  should_start: boolean;
+  rule_text: string;
+  interaction_goal: string;
+  target_hint: string;
+  expected_user_behavior: string;
+  assistant_behavior: string;
+  reference_instruction: string;
 }
 
 export interface LearningRequirementChecklistItem {
@@ -162,6 +173,7 @@ export interface Lesson {
   tags: string[];
   board_document: BoardDocument;
   learning_requirements?: LearningRequirementSheet | null;
+  active_interaction_session?: InteractionSession | null;
   history_graph: LessonHistoryGraph;
   created_at: string;
   updated_at: string;
@@ -324,6 +336,33 @@ export interface BoardFocusRef {
   reason: string;
 }
 
+export interface InteractionSession {
+  id: string;
+  status: "active" | "paused";
+  rule_text: string;
+  interaction_goal: string;
+  target_focus?: BoardFocusRef | null;
+  reference_context: string;
+  expected_user_behavior: string;
+  assistant_behavior: string;
+  progress_note: string;
+  pause_reason: string;
+  turn_count: number;
+}
+
+export interface InteractionTurnDecision {
+  route:
+    | "continue_rule"
+    | "rule_violation"
+    | "side_learning_request"
+    | "resume_rule"
+    | "exit_rule"
+    | "new_task";
+  reason: string;
+  progress_note: string;
+  user_intent: string;
+}
+
 export interface ConversationTurn {
   role: "user" | "assistant";
   content: string;
@@ -426,6 +465,8 @@ export interface ChatResponse {
   chatbot_message: string;
   learning_requirement_sheet: LearningRequirementSheet;
   active_requirement_sheet?: LearningRequirementSheet | null;
+  active_interaction_session?: InteractionSession | null;
+  interaction_decision?: InteractionTurnDecision | null;
   learning_clarification: LearningClarificationStatus;
   board_decision: BoardDecision;
   needs_clarification: boolean;

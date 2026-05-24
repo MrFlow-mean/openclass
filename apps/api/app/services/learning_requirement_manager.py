@@ -421,6 +421,10 @@ def _merge_update_with_existing_facts(update: LearningRequirementUpdate, *, less
         missing_items=update.missing_items,
         next_question=update.next_question,
         ready_for_board=update.ready_for_board,
+        action_type=update.action_type,
+        action_instruction=update.action_instruction,
+        target_hint=update.target_hint,
+        interaction_rule_draft=update.interaction_rule_draft,
     )
 
 
@@ -503,6 +507,7 @@ def _normalize_update(update: LearningRequirementUpdate, *, user_message: str = 
         action_type=update.action_type,
         action_instruction=_compact_text(update.action_instruction, limit=240),
         target_hint=_compact_text(update.target_hint, limit=240),
+        interaction_rule_draft=update.interaction_rule_draft,
     )
 
 
@@ -536,6 +541,7 @@ def _apply_update_to_requirements(
     )
     updated.action_type = action_type
     updated.action_instruction = update.action_instruction or _compact_text(user_message, limit=240)
+    updated.interaction_rule_draft = update.interaction_rule_draft
     if update.target_hint and updated.target_location is None:
         updated.location_clarification_question = ""
     if forced_board_generation:

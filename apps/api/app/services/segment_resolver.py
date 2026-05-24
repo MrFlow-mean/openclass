@@ -132,7 +132,11 @@ def _matching_segment(
         match = next((segment for segment in segments if segment.text_hash == selection.text_hash), None)
         if match:
             return match
-    exact_matches = [segment for segment in segments if excerpt in segment.text or segment.text in excerpt]
+    exact_matches = [
+        segment
+        for segment in segments
+        if excerpt in segment.text or _segment_text_is_selection(segment.text, excerpt)
+    ]
     if len(exact_matches) == 1:
         return exact_matches[0]
     if selection and selection.heading_path:
@@ -141,6 +145,15 @@ def _matching_segment(
             if " / ".join(segment.heading_path) == heading_key:
                 return segment
     return exact_matches[0] if exact_matches else None
+
+
+def _segment_text_is_selection(segment_text: str, excerpt: str) -> bool:
+    compact_segment = compact_segment_text(segment_text, limit=1200)
+    compact_excerpt = compact_segment_text(excerpt, limit=1200)
+    if not compact_segment or compact_segment not in compact_excerpt:
+        return False
+    minimum_length = min(len(compact_excerpt), max(8, int(len(compact_excerpt) * 0.6)))
+    return len(compact_segment) >= minimum_length
 
 
 def _candidate_focuses(

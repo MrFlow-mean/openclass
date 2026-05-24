@@ -13,6 +13,7 @@ from app.services.history import create_branch, restore_commit
 from app.services.lesson_factory import create_empty_lesson, create_lesson
 from app.services.openai_course_ai import GeneratedCatalogChapter, GeneratedResourceCatalog, OpenAICourseAI
 from app.services.resource_library import _epub_section_body_score, build_resource_item, extract_reference_context
+from app.services.resource_resolver import resolve_resource_reference
 from app.services.board_segment_index import build_board_segment_index
 from app.services.rich_document import (
     build_document,
@@ -229,6 +230,43 @@ def test_build_document_converts_markdown_to_word_like_rich_nodes() -> None:
     )
 
 
+def test_build_document_converts_display_math_delimiters_to_block_math() -> None:
+    document = build_document(
+        title="Doc",
+        content_text=(
+            "## Formula\n"
+            "\\[\n"
+            "\\lim_{x \\to a} \\frac{f(x)}{g(x)} = \\lim_{x \\to a} \\frac{f'(x)}{g'(x)}\n"
+            "\\]\n"
+            "After formula."
+        ),
+    )
+
+    node_types = _collect_node_types(document.content_json)
+
+    assert "blockMath" in node_types
+    assert "\\[" not in document.content_html
+    assert 'data-type="block-math"' in document.content_html
+    assert "\\lim_{x \\to a}" in document.content_html
+
+
+def test_build_document_converts_inline_display_delimiters_to_inline_math() -> None:
+    document = build_document(
+        title="Doc",
+        content_text=(
+            "条件：即 \\[\\lim_{x \\to a} \\frac{f(x)}{g(x)}\\] 必须存在。\n"
+            "1. \\[\\lim_{x \\to 0} \\frac{\\tan x}{x}\\]"
+        ),
+    )
+
+    node_types = _collect_node_types(document.content_json)
+
+    assert "inlineMath" in node_types
+    assert "\\[" not in document.content_html
+    assert 'data-type="inline-math"' in document.content_html
+    assert "\\lim_{x \\to a}" in document.content_html
+
+
 def test_document_to_markdown_preserves_rich_structure_for_ai_edit_context() -> None:
     document = build_document(
         title="Doc",
@@ -302,6 +340,31 @@ def test_upgrade_markdown_like_document_repairs_legacy_plain_paragraphs() -> Non
     assert paragraph["content"][0]["marks"][0]["type"] == "bold"
 
 
+def test_upgrade_markdown_like_document_repairs_legacy_display_math() -> None:
+    legacy = BoardDocument(
+        title="Doc",
+        content_text="\\[\n\\lim_{x \\to 0} \\frac{\\sin x}{x}\n\\]",
+        content_html="<p>\\[</p><p>\\lim_{x \\to 0} \\frac{\\sin x}{x}</p><p>\\]</p>",
+        content_json={
+            "type": "doc",
+            "content": [
+                {"type": "paragraph", "content": [{"type": "text", "text": "\\["}]},
+                {
+                    "type": "paragraph",
+                    "content": [{"type": "text", "text": "\\lim_{x \\to 0} \\frac{\\sin x}{x}"}],
+                },
+                {"type": "paragraph", "content": [{"type": "text", "text": "\\]"}]},
+            ],
+        },
+    )
+
+    upgraded = upgrade_markdown_like_document(legacy)
+
+    assert "blockMath" in _collect_node_types(upgraded.content_json)
+    assert "\\[" not in upgraded.content_html
+    assert 'data-type="block-math"' in upgraded.content_html
+
+
 def test_build_resource_item_extracts_markdown_outline_and_reference_context(tmp_path) -> None:
     resource_path = tmp_path / "resource.md"
     resource_path.write_text(
@@ -316,6 +379,26 @@ def test_build_resource_item_extracts_markdown_outline_and_reference_context(tmp
     assert context is not None
     assert context.chapter_title == "第一章"
     assert "第一章正文" in context.full_text
+
+
+def test_resource_resolver_selects_relevant_uploaded_chapter(tmp_path) -> None:
+    resource_path = tmp_path / "resource.md"
+    resource_path.write_text(
+        "# 第一章\n这是第一章正文，解释资料里的核心概念。\n\n## 第二节\n这里是其他材料。",
+        encoding="utf-8",
+    )
+    resource = build_resource_item(resource_path, "resource.md")
+
+    resolution = resolve_resource_reference(
+        resources=[resource],
+        user_message="根据上传资料讲一下第一章",
+        allow_direct_reference=True,
+    )
+
+    assert resolution.selected_reference is not None
+    assert resolution.selected_reference.chapter_title == "第一章"
+    assert "第一章正文" in resolution.selected_reference.full_text
+    assert resolution.matches
 
 
 def test_epub_section_scoring_penalizes_generic_structural_shells() -> None:

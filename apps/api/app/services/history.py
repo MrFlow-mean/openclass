@@ -4,6 +4,7 @@ from app.models import (
     BoardDocument,
     BranchRef,
     CommitRecord,
+    InteractionSession,
     LearningRequirementSheet,
     Lesson,
     PatchOperation,
@@ -86,6 +87,13 @@ def restore_commit(lesson: Lesson, commit_id: str, label: str) -> Lesson:
             if isinstance(raw_requirements, dict)
             else None
         )
+    if isinstance(commit.metadata, dict) and "active_interaction_session_after" in commit.metadata:
+        raw_session = commit.metadata.get("active_interaction_session_after")
+        lesson.active_interaction_session = (
+            InteractionSession.model_validate(raw_session)
+            if isinstance(raw_session, dict)
+            else None
+        )
     return commit_operations(
         lesson,
         operations=[],
@@ -99,6 +107,11 @@ def restore_commit(lesson: Lesson, commit_id: str, label: str) -> Lesson:
             "active_requirement_sheet_after": (
                 lesson.learning_requirements.model_dump(mode="json")
                 if lesson.learning_requirements is not None
+                else None
+            ),
+            "active_interaction_session_after": (
+                lesson.active_interaction_session.model_dump(mode="json")
+                if lesson.active_interaction_session is not None
                 else None
             ),
         },

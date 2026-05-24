@@ -12,6 +12,9 @@ from app.models import (
     ChatRequest,
     CreateBranchRequest,
     DocumentSaveRequest,
+    InteractionRuleDraft,
+    InteractionSession,
+    InteractionTurnDecision,
     LearningRequirementChecklistItem,
     LearningRequirementKeyFact,
     RealtimeTranscriptLogRequest,
@@ -2320,6 +2323,438 @@ def test_targeted_explanation_uses_resolved_board_focus_and_clears_task_sheet(
     assert commit.metadata["requirement_cleared"] is True
     assert commit.metadata["task_requirement_sheet"]["action_type"] == "explain_target"
     assert commit.metadata["active_requirement_sheet_after"] is None
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_rule_based_interaction_start_creates_session_and_clears_task_sheet(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    captured_contexts: list[dict | None] = []
+
+    def _fake_chatbot_reply(**kwargs):
+        captured_contexts.append(kwargs.get("interaction_context"))
+        return ChatbotReply(chatbot_message="AI生成：已按你的规则开始互动。")
+
+    monkeypatch.setattr(openai_course_ai, "generate_chatbot_reply", _fake_chatbot_reply)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_learning_requirement_update",
+        lambda **kwargs: LearningRequirementUpdate(
+            progress=100,
+            summary="用户要求按自定义规则和原文互动。",
+            key_facts=[],
+            checklist=[
+                LearningRequirementChecklistItem(
+                    title="用户给出互动规则",
+                    is_clear=True,
+                    evidence="来自用户输入。",
+                )
+            ],
+            missing_items=[],
+            next_question="",
+            ready_for_board=True,
+            interaction_rule_draft=InteractionRuleDraft(
+                should_start=True,
+                rule_text="按用户指定的规则参考原文逐轮互动。",
+                interaction_goal="围绕选中原文进行规则互动。",
+                target_hint="选中内容",
+                expected_user_behavior="用户每轮按规则给出输入。",
+                assistant_behavior="Chatbot 每轮参考规则和原文回应。",
+                reference_instruction="优先参考选中原文。",
+            ),
+        ),
+    )
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.board_document = build_document(
+        title="已有板书",
+        content_text="# 原文\n## 第一段\n目标原文内容\n## 第二段\n其他内容",
+    )
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(
+            message="我们按这个规则和选中内容互动",
+            selection=SelectionRef(kind="board", excerpt="目标原文内容", lesson_id=lesson.id),
+        ),
+        user_id=TEST_USER.id,
+    )
+
+    assert response.requirement_cleared is True
+    assert response.active_requirement_sheet is None
+    assert response.active_interaction_session is not None
+    assert response.active_interaction_session.rule_text == "按用户指定的规则参考原文逐轮互动。"
+    assert response.active_interaction_session.target_focus is not None
+    assert "目标原文内容" in response.active_interaction_session.reference_context
+    assert captured_contexts[-1] is not None
+    assert captured_contexts[-1]["rule_text"] == "按用户指定的规则参考原文逐轮互动。"
+    updated_lesson = response.course_package.lessons[0]
+    assert updated_lesson.learning_requirements is None
+    assert updated_lesson.active_interaction_session is not None
+    commit = updated_lesson.history_graph.commits[-1]
+    assert commit.metadata["kind"] == "interaction_flow"
+    assert commit.metadata["requirement_cleared"] is True
+    assert commit.metadata["active_requirement_sheet_after"] is None
+    assert commit.metadata["active_interaction_session_after"]["status"] == "active"
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_active_rule_interaction_continues_with_rule_context(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    captured: dict[str, object | None] = {}
+
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_interaction_turn_decision",
+        lambda **kwargs: InteractionTurnDecision(
+            route="continue_rule",
+            reason="用户输入仍在当前互动规则内。",
+            progress_note="已经完成第一轮互动。",
+            user_intent="继续互动",
+        ),
+    )
+
+    def _fake_chatbot_reply(**kwargs):
+        captured["interaction_context"] = kwargs.get("interaction_context")
+        return ChatbotReply(chatbot_message="AI生成：按规则继续。")
+
+    monkeypatch.setattr(openai_course_ai, "generate_chatbot_reply", _fake_chatbot_reply)
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.active_interaction_session = InteractionSession(
+        status="active",
+        rule_text="按用户指定规则逐轮互动。",
+        interaction_goal="完成一段规则互动。",
+        reference_context="目标原文内容",
+        expected_user_behavior="用户按规则输入。",
+        assistant_behavior="Chatbot 按规则回应。",
+        turn_count=1,
+    )
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="这是我的下一轮输入"),
+        user_id=TEST_USER.id,
+    )
+
+    assert response.chatbot_message == "AI生成：按规则继续。"
+    assert response.interaction_decision is not None
+    assert response.interaction_decision.route == "continue_rule"
+    assert response.active_interaction_session is not None
+    assert response.active_interaction_session.status == "active"
+    assert response.active_interaction_session.turn_count == 2
+    assert response.active_interaction_session.progress_note == "已经完成第一轮互动。"
+    context = captured["interaction_context"]
+    assert isinstance(context, dict)
+    assert context["rule_text"] == "按用户指定规则逐轮互动。"
+    assert context["turn_decision"]["route"] == "continue_rule"
+    commit = response.course_package.lessons[0].history_graph.commits[-1]
+    assert commit.metadata["kind"] == "interaction_flow"
+    assert commit.metadata["interaction_decision"]["route"] == "continue_rule"
+    assert commit.metadata["active_interaction_session_after"]["turn_count"] == 2
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_rule_violation_keeps_session_active(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_interaction_turn_decision",
+        lambda **kwargs: InteractionTurnDecision(
+            route="rule_violation",
+            reason="用户输入不符合当前互动规则。",
+            progress_note="等待用户修正本轮输入。",
+            user_intent="规则内输入偏离",
+        ),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_chatbot_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="AI生成：这是规则内纠错。"),
+    )
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.active_interaction_session = InteractionSession(
+        status="active",
+        rule_text="按用户指定规则逐轮互动。",
+        interaction_goal="完成一段规则互动。",
+        reference_context="目标原文内容",
+        expected_user_behavior="用户按规则输入。",
+        assistant_behavior="Chatbot 按规则回应。",
+    )
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="偏离规则的输入"),
+        user_id=TEST_USER.id,
+    )
+
+    assert response.interaction_decision is not None
+    assert response.interaction_decision.route == "rule_violation"
+    assert response.active_interaction_session is not None
+    assert response.active_interaction_session.status == "active"
+    assert response.active_interaction_session.turn_count == 1
+    assert response.course_package.lessons[0].active_interaction_session is not None
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_side_learning_request_pauses_interaction_session(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_interaction_turn_decision",
+        lambda **kwargs: InteractionTurnDecision(
+            route="side_learning_request",
+            reason="用户临时询问原文内容。",
+            progress_note="互动暂停在当前轮。",
+            user_intent="临时讲解",
+        ),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_chatbot_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="AI生成：这是临时讲解。"),
+    )
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.active_interaction_session = InteractionSession(
+        status="active",
+        rule_text="按用户指定规则逐轮互动。",
+        interaction_goal="完成一段规则互动。",
+        reference_context="目标原文内容",
+        expected_user_behavior="用户按规则输入。",
+        assistant_behavior="Chatbot 按规则回应。",
+    )
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="先解释一下这里的一个词"),
+        user_id=TEST_USER.id,
+    )
+
+    assert response.interaction_decision is not None
+    assert response.interaction_decision.route == "side_learning_request"
+    assert response.active_interaction_session is not None
+    assert response.active_interaction_session.status == "paused"
+    assert response.active_interaction_session.pause_reason == "用户临时询问原文内容。"
+    assert response.course_package.lessons[0].active_interaction_session is not None
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_paused_interaction_can_resume_and_exit(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    decisions = iter(
+        [
+            InteractionTurnDecision(
+                route="resume_rule",
+                reason="用户要恢复互动。",
+                progress_note="恢复到暂停前进度。",
+                user_intent="恢复互动",
+            ),
+            InteractionTurnDecision(
+                route="exit_rule",
+                reason="用户结束互动。",
+                progress_note="互动结束。",
+                user_intent="结束互动",
+            ),
+        ]
+    )
+    monkeypatch.setattr(openai_course_ai, "generate_interaction_turn_decision", lambda **kwargs: next(decisions))
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_chatbot_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="AI生成：互动状态已处理。"),
+    )
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.active_interaction_session = InteractionSession(
+        status="paused",
+        rule_text="按用户指定规则逐轮互动。",
+        interaction_goal="完成一段规则互动。",
+        reference_context="目标原文内容",
+        expected_user_behavior="用户按规则输入。",
+        assistant_behavior="Chatbot 按规则回应。",
+        pause_reason="临时讲解",
+        turn_count=2,
+    )
+    store.save_for_user(TEST_USER.id, workspace)
+
+    resumed = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="继续刚才的互动"),
+        user_id=TEST_USER.id,
+    )
+    assert resumed.interaction_decision is not None
+    assert resumed.interaction_decision.route == "resume_rule"
+    assert resumed.active_interaction_session is not None
+    assert resumed.active_interaction_session.status == "active"
+    assert resumed.active_interaction_session.turn_count == 3
+
+    exited = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="结束这个互动"),
+        user_id=TEST_USER.id,
+    )
+    assert exited.interaction_decision is not None
+    assert exited.interaction_decision.route == "exit_rule"
+    assert exited.active_interaction_session is None
+    assert exited.course_package.lessons[0].active_interaction_session is None
+    commit = exited.course_package.lessons[0].history_graph.commits[-1]
+    assert commit.metadata["active_interaction_session_after"] is None
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_chatbot_uses_confirmed_uploaded_resource_context_without_editing_board(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    captured: dict[str, str | None] = {}
+
+    def _fake_chatbot_reply(**kwargs):
+        captured["selection_excerpt"] = kwargs.get("selection_excerpt")
+        captured["resource_summary"] = kwargs.get("resource_summary")
+        return ChatbotReply(chatbot_message="AI生成：参考上传资料讲解第一章。")
+
+    def _unexpected_board_edit(**kwargs):
+        raise AssertionError("resource-backed explanation must not edit the board")
+
+    monkeypatch.setattr(openai_course_ai, "generate_chatbot_reply", _fake_chatbot_reply)
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _unexpected_board_edit)
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
+
+    workspace = _seed_test_user_workspace(store)
+    package = workspace.packages[0]
+    lesson = package.lessons[0]
+    lesson.board_document = build_document(title="已有板书", content_text="已有板书内容")
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    resource_path = tmp_path / "resource.md"
+    resource_path.write_text(
+        "# 第一章\n这是上传资料第一章正文，说明核心概念和学习主线。",
+        encoding="utf-8",
+    )
+    resource = build_resource_item(resource_path, "resource.md")
+    resource.scope_lesson_id = lesson.id
+    package.resources.append(resource)
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="根据上传资料讲一下第一章"),
+        user_id=TEST_USER.id,
+    )
+
+    assert response.chatbot_message == "AI生成：参考上传资料讲解第一章。"
+    assert response.board_decision.action == "no_change"
+    assert response.selected_reference is not None
+    assert response.selected_reference.chapter_title == "第一章"
+    assert response.resource_matches
+    assert "参考资料" in (captured["selection_excerpt"] or "")
+    assert "上传资料第一章正文" in (captured["selection_excerpt"] or "")
+    assert response.course_package.lessons[0].board_document.content_text == "已有板书内容"
+    commit = response.course_package.lessons[0].history_graph.commits[-1]
+    assert commit.metadata["selected_reference"]["chapter_title"] == "第一章"
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_learning_request_generates_board_after_resource_reference_confirmation(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    captured: dict[str, str | None] = {}
+
+    def _fake_board_edit(**kwargs):
+        captured["resource_summary"] = kwargs.get("resource_summary")
+        captured["intent"] = kwargs.get("intent")
+        return BoardDocumentEditResult(
+            operation="replace_document",
+            title="第一章板书",
+            content_text="# 第一章板书\n## 核心概念\n根据资料生成的板书内容。",
+            summary="已参考上传资料生成第一章板书。",
+            chatbot_message="AI生成：已参考上传资料生成第一章板书。",
+            section_titles=["核心概念"],
+        )
+
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_chatbot_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="确认参考资料。"),
+    )
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _fake_board_edit)
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
+
+    workspace = _seed_test_user_workspace(store)
+    package = workspace.packages[0]
+    lesson = package.lessons[0]
+    resource_path = tmp_path / "resource.md"
+    resource_path.write_text(
+        "# 第一章\n这是第一章资料正文，可以辅助生成板书建议。",
+        encoding="utf-8",
+    )
+    resource = build_resource_item(resource_path, "resource.md")
+    resource.scope_lesson_id = lesson.id
+    package.resources.append(resource)
+    store.save_for_user(TEST_USER.id, workspace)
+
+    first = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="我要学第一章"),
+        user_id=TEST_USER.id,
+    )
+
+    assert first.board_decision.action == "await_reference_choice"
+    assert first.reference_prompt is not None
+    assert first.resource_matches
+    assert first.course_package.lessons[0].board_document.content_text == ""
+
+    confirmed = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(
+            message="我要学第一章",
+            resource_reference_action="confirm",
+            resource_reference_resource_id=first.reference_prompt.resource_id,
+            resource_reference_chapter_id=first.reference_prompt.chapter_id,
+        ),
+        user_id=TEST_USER.id,
+    )
+
+    assert confirmed.chatbot_message == "AI生成：已参考上传资料生成第一章板书。"
+    assert confirmed.board_decision.action == "edit_board"
+    assert confirmed.selected_reference is not None
+    assert confirmed.requirement_cleared is True
+    assert "第一章资料正文" in (captured["resource_summary"] or "")
+    assert "根据资料生成的板书内容" in confirmed.course_package.lessons[0].board_document.content_text
+    commit = confirmed.course_package.lessons[0].history_graph.commits[-1]
+    assert commit.metadata["kind"] == "board_document_generation"
+    assert commit.metadata["resource_backed_generation"] is True
+    assert commit.metadata["selected_reference"]["chapter_title"] == "第一章"
+    assert commit.metadata["active_requirement_sheet_after"] is None
+    assert captured["intent"] == "generate_from_requirements"
     assert _read_log_entries(isolated_ai_log) == []
 
 

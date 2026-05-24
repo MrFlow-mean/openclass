@@ -35,7 +35,9 @@ _HTML_BLOCK_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 _MATH_RUN_RE = re.compile(r"[A-Za-z0-9\\_{}^()+\-−*/=·∞→←≤≥≈≠±<>|'\s.]+")
-_DELIMITED_MATH_RE = re.compile(r"\\\((.+?)\\\)|\$(?!\d+\$)([^$\n]+?)\$(?!\d)")
+_DELIMITED_MATH_RE = re.compile(
+    r"\\\[([\s\S]+?)\\\]|\\\((.+?)\\\)|\$\$([\s\S]+?)\$\$|\$(?!\d+\$)([^$\n]+?)\$(?!\d)"
+)
 _TRAILING_SENTENCE_MARKS_RE = re.compile(r"[\s.,，。；;:：]+$")
 _LEADING_SENTENCE_MARKS_RE = re.compile(r"^[\s.,，。；;:：]+")
 _MARKDOWN_INLINE_RE = re.compile(r"(\*\*[^*\n]+?\*\*|\*[^*\n]+?\*)")
@@ -129,7 +131,7 @@ def html_to_text(content_html: str) -> str:
     return "\n".join(compact_lines).strip()
 
 
-def _inline_nodes(value: str) -> list[dict[str, Any]]:
+def _markdown_text_nodes(value: str) -> list[dict[str, Any]]:
     nodes: list[dict[str, Any]] = []
     cursor = 0
     for match in _MARKDOWN_INLINE_RE.finditer(value):
@@ -150,9 +152,28 @@ def _inline_nodes(value: str) -> list[dict[str, Any]]:
     return nodes
 
 
+def _inline_nodes(value: str) -> list[dict[str, Any]]:
+    nodes: list[dict[str, Any]] = []
+    cursor = 0
+    for match in _DELIMITED_MATH_RE.finditer(value):
+        if match.start() > cursor:
+            nodes.extend(_markdown_text_nodes(value[cursor : match.start()]))
+        latex = match.group(1) or match.group(2) or match.group(3) or match.group(4) or ""
+        if latex.strip():
+            nodes.append({"type": "inlineMath", "attrs": {"latex": _normalize_latex(latex)}})
+        cursor = match.end()
+    if cursor < len(value):
+        nodes.extend(_markdown_text_nodes(value[cursor:]))
+    return nodes
+
+
 def _inline_html(value: str) -> str:
     parts: list[str] = []
     for node in _inline_nodes(value):
+        if node.get("type") == "inlineMath":
+            latex = str(node.get("attrs", {}).get("latex") or "")
+            parts.append(f'<span data-type="inline-math" data-latex="{html.escape(latex, quote=True)}"></span>')
+            continue
         text = html.escape(str(node.get("text") or ""))
         mark_names = {mark.get("type") for mark in node.get("marks", []) if isinstance(mark, dict)}
         if "bold" in mark_names:
@@ -181,6 +202,26 @@ def _is_markdown_table(lines: list[str], index: int) -> bool:
     header = lines[index].strip()
     separator = lines[index + 1].strip()
     return "|" in header and bool(_MARKDOWN_TABLE_SEPARATOR_RE.match(separator))
+
+
+def _display_math_block(lines: list[str], index: int) -> tuple[str, int] | None:
+    line = lines[index].strip()
+    delimiters = [(r"\[", r"\]"), ("$$", "$$")]
+    for opener, closer in delimiters:
+        if line == opener:
+            formula_lines: list[str] = []
+            cursor = index + 1
+            while cursor < len(lines):
+                current = lines[cursor].strip()
+                if current == closer:
+                    latex = "\n".join(formula_lines).strip()
+                    return (latex, cursor + 1) if latex else None
+                formula_lines.append(lines[cursor])
+                cursor += 1
+            return None
+        if line.startswith(opener) and line.endswith(closer) and len(line) > len(opener) + len(closer):
+            return line[len(opener) : -len(closer)].strip(), index + 1
+    return None
 
 
 def _table_node(rows: list[list[str]]) -> dict[str, Any]:
@@ -218,6 +259,14 @@ def text_to_html(content_text: str) -> str:
         line = lines[index].strip()
         if not line:
             index += 1
+            continue
+
+        display_math = _display_math_block(lines, index)
+        if display_math:
+            latex, index = display_math
+            parts.append(
+                f'<div data-type="block-math" data-latex="{html.escape(_normalize_latex(latex), quote=True)}"></div>'
+            )
             continue
 
         if _is_markdown_table(lines, index):
@@ -276,6 +325,12 @@ def text_to_tiptap_doc(content_text: str) -> dict[str, Any]:
         line = lines[index].strip()
         if not line:
             index += 1
+            continue
+
+        display_math = _display_math_block(lines, index)
+        if display_math:
+            latex, index = display_math
+            nodes.append({"type": "blockMath", "attrs": {"latex": _normalize_latex(latex)}})
             continue
 
         if _is_markdown_table(lines, index):
@@ -794,6 +849,8 @@ def _looks_like_markdown_document(content_text: str) -> bool:
     if not lines:
         return False
     for index, line in enumerate(lines):
+        if _display_math_block(lines, index):
+            return True
         if _MARKDOWN_HEADING_RE.match(line) or _MARKDOWN_BULLET_RE.match(line) or _MARKDOWN_ORDERED_RE.match(line):
             return True
         if _MARKDOWN_INLINE_RE.search(line):
@@ -1238,7 +1295,7 @@ def _math_segments(text: str) -> list[tuple[int, int, str]]:
     segments: list[tuple[int, int, str]] = []
 
     for match in _DELIMITED_MATH_RE.finditer(text):
-        latex = match.group(1) or match.group(2) or ""
+        latex = match.group(1) or match.group(2) or match.group(3) or match.group(4) or ""
         if latex.strip():
             segments.append((match.start(), match.end(), _normalize_latex(latex)))
 

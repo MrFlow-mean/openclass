@@ -73,6 +73,15 @@ BoardTaskAction = Literal[
     "expand_target",
     "simplify_target",
 ]
+InteractionSessionStatus = Literal["active", "paused"]
+InteractionTurnRoute = Literal[
+    "continue_rule",
+    "rule_violation",
+    "side_learning_request",
+    "resume_rule",
+    "exit_rule",
+    "new_task",
+]
 ConversationRole = Literal["user", "assistant"]
 AIProvider = Literal[
     "openai",
@@ -274,6 +283,37 @@ class BoardFocusRef(BaseModel):
     reason: str = ""
 
 
+class InteractionRuleDraft(BaseModel):
+    should_start: bool = False
+    rule_text: str = ""
+    interaction_goal: str = ""
+    target_hint: str = ""
+    expected_user_behavior: str = ""
+    assistant_behavior: str = ""
+    reference_instruction: str = ""
+
+
+class InteractionSession(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("interaction"))
+    status: InteractionSessionStatus = "active"
+    rule_text: str = ""
+    interaction_goal: str = ""
+    target_focus: BoardFocusRef | None = None
+    reference_context: str = ""
+    expected_user_behavior: str = ""
+    assistant_behavior: str = ""
+    progress_note: str = ""
+    pause_reason: str = ""
+    turn_count: int = Field(default=0, ge=0)
+
+
+class InteractionTurnDecision(BaseModel):
+    route: InteractionTurnRoute
+    reason: str = ""
+    progress_note: str = ""
+    user_intent: str = ""
+
+
 class LearningRequirementSheet(BaseModel):
     theme: str
     learning_goal: str
@@ -292,6 +332,7 @@ class LearningRequirementSheet(BaseModel):
     action_type: BoardTaskAction | None = None
     action_instruction: str = ""
     location_clarification_question: str = ""
+    interaction_rule_draft: InteractionRuleDraft | None = None
 
 
 class LearningRequirementChecklistItem(BaseModel):
@@ -375,6 +416,7 @@ class Lesson(BaseModel):
     board_teaching_guide: BoardTeachingGuide | None = None
     board_teaching_progress: BoardTeachingProgress | None = None
     learning_requirements: LearningRequirementSheet | None = None
+    active_interaction_session: InteractionSession | None = None
     teaching_guide: TeachingGuide
     history_graph: LessonHistoryGraph
     created_at: str = Field(default_factory=now_iso)
@@ -644,6 +686,7 @@ class LessonView(BaseModel):
     tags: list[str] = Field(default_factory=list)
     board_document: BoardDocument
     learning_requirements: LearningRequirementSheet | None = None
+    active_interaction_session: InteractionSession | None = None
     history_graph: LessonHistoryGraph
     created_at: str
     updated_at: str
@@ -730,6 +773,8 @@ class ChatResponse(BaseModel):
     chatbot_message: str
     learning_requirement_sheet: LearningRequirementSheet
     active_requirement_sheet: LearningRequirementSheet | None = None
+    active_interaction_session: InteractionSession | None = None
+    interaction_decision: InteractionTurnDecision | None = None
     learning_clarification: LearningClarificationStatus
     board_decision: BoardDecision
     needs_clarification: bool = False

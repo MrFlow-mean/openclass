@@ -4,7 +4,7 @@ import type { Mark, Node as ProseMirrorNode, Schema } from "@tiptap/pm/model";
 const CJK_TEXT = /[\u3400-\u9fff]/;
 const STRONG_MATH_SIGNAL =
   /\\[A-Za-z]+|[=≤≥≈≠∞±]|[A-Za-z0-9]\s*[_^]\s*\{?[-+\w/]+\}?|\d+\s*[+\-−*/]\s*\d+|\b(?:lim|sin|cos|tan|ln|log|sqrt|exp)_?\b/;
-const DELIMITED_MATH = /\\\((.+?)\\\)|\$(?!\d+\$)([^$\n]+?)\$(?!\d)/g;
+const DELIMITED_MATH = /\\\[([\s\S]+?)\\\]|\\\((.+?)\\\)|\$\$([\s\S]+?)\$\$|\$(?!\d+\$)([^$\n]+?)\$(?!\d)/g;
 const TRAILING_SENTENCE_MARKS = /[\s.,，。；;:：]+$/;
 const LEADING_SENTENCE_MARKS = /^[\s.,，。；;:：]+/;
 
@@ -83,7 +83,7 @@ function mathSegments(text: string): MathSegment[] {
   for (const match of text.matchAll(DELIMITED_MATH)) {
     const raw = match[0];
     const rawStart = match.index ?? 0;
-    const latex = match[1] ?? match[2];
+    const latex = match[1] ?? match[2] ?? match[3] ?? match[4];
 
     if (!latex?.trim()) {
       continue;
@@ -97,6 +97,54 @@ function mathSegments(text: string): MathSegment[] {
   }
 
   return segments.sort((left, right) => left.start - right.start);
+}
+
+function topLevelBlockMathDelimiterReplacements(doc: ProseMirrorNode, blockMath: Schema["nodes"][string]) {
+  const children: Array<{ node: ProseMirrorNode; offset: number; index: number }> = [];
+  doc.forEach((node, offset, index) => {
+    children.push({ node, offset, index });
+  });
+
+  const replacements: Array<{ pos: number; size: number; latex: string }> = [];
+  let cursor = 0;
+  while (cursor < children.length) {
+    const openerText = children[cursor].node.type.name === "paragraph" ? children[cursor].node.textContent.trim() : "";
+    const closerText = openerText === "\\[" ? "\\]" : openerText === "$$" ? "$$" : null;
+    if (!closerText) {
+      cursor += 1;
+      continue;
+    }
+
+    const formulaParts: string[] = [];
+    let closerIndex = -1;
+    for (let index = cursor + 1; index < children.length; index += 1) {
+      const current = children[index];
+      const text = current.node.type.name === "paragraph" ? current.node.textContent.trim() : "";
+      if (text === closerText) {
+        closerIndex = index;
+        break;
+      }
+      formulaParts.push(current.node.textContent);
+    }
+
+    const latex = normalizeLatex(formulaParts.join("\n"));
+    if (
+      closerIndex > cursor + 1 &&
+      latex &&
+      hasStrongMathSignal(latex) &&
+      doc.canReplaceWith(children[cursor].index, children[closerIndex].index + 1, blockMath)
+    ) {
+      const start = children[cursor].offset;
+      const end = children[closerIndex].offset + children[closerIndex].node.nodeSize;
+      replacements.push({ pos: start, size: end - start, latex });
+      cursor = closerIndex + 1;
+      continue;
+    }
+
+    cursor += 1;
+  }
+
+  return replacements;
 }
 
 function nodesForTextWithMath(schema: Schema, text: string, marks: readonly Mark[]) {
@@ -134,6 +182,17 @@ export function normalizeEditorMath(editor: TiptapEditor) {
 
   let tr = editor.state.tr;
   let changed = false;
+
+  const delimitedBlockReplacements = topLevelBlockMathDelimiterReplacements(tr.doc, blockMath);
+  for (const replacement of delimitedBlockReplacements.reverse()) {
+    tr = tr.replaceWith(
+      replacement.pos,
+      replacement.pos + replacement.size,
+      blockMath.create({ latex: replacement.latex })
+    );
+    changed = true;
+  }
+
   const blockReplacements: Array<{ pos: number; size: number; latex: string }> = [];
 
   tr.doc.descendants((node, pos, parent, index) => {

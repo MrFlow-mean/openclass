@@ -11,10 +11,10 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
+from collections.abc import Callable, Iterator
 from typing import Any, Literal
 
 import certifi
@@ -25,6 +25,9 @@ from app.models import (
     AIModelSelection,
     AIProvider,
     BoardTaskAction,
+    InteractionRuleDraft,
+    InteractionSession,
+    InteractionTurnDecision,
     LearningRequirementChecklistItem,
     LearningRequirementKeyFact,
 )
@@ -270,6 +273,7 @@ class LearningRequirementUpdate(BaseModel):
     action_type: BoardTaskAction | None = None
     action_instruction: str = ""
     target_hint: str = ""
+    interaction_rule_draft: InteractionRuleDraft | None = None
 
 
 @contextmanager
@@ -802,6 +806,7 @@ class OpenAICourseAI:
         user_message: str,
         selection_excerpt: str | None = None,
         interaction_mode: str = "ask",
+        interaction_context: dict[str, Any] | None = None,
     ) -> ChatbotReply | None:
         system_prompt = (
             "你是 OpenClass 的 Chatbot，负责左侧聊天框里的自然、连续、有帮助的你问我答交流。\n"
@@ -819,7 +824,9 @@ class OpenAICourseAI:
             "并且已经有可识别的学习主题，就先讲一个最基础的小节；结尾只用一个理解检查或继续提示，"
             "不要再把子知识点偏好当成开始前的必答条件。\n"
             "7. 每次最多追问一个主问题；可以给 2-3 个可选回答方向，但不要像机械问卷或客服套话。\n"
-            "8. 不写任何固定主题模板，不根据主题名、资料名或样例走特殊规则。"
+            "8. 如果 interaction_context 存在，说明系统正在执行用户指定的通用互动规则；"
+            "回复必须同时参考互动规则、原文内容、互动进度和用户当前输入，但不要输出系统字段名。\n"
+            "9. 不写任何固定主题模板，不根据主题名、资料名或样例走特殊规则。"
         )
         user_prompt = _json(
             {
@@ -830,6 +837,7 @@ class OpenAICourseAI:
                 "recent_conversation": conversation_summary,
                 "selection_excerpt": selection_excerpt.strip() if selection_excerpt else "无选中引用",
                 "interaction_mode": interaction_mode,
+                "interaction_context": interaction_context or None,
                 "user_message": user_message,
                 "response_contract": {
                     "chatbot_message": "面向学习者的自然语言短回复；不要输出整篇可写入文档区的正文。",
@@ -843,6 +851,55 @@ class OpenAICourseAI:
             schema=ChatbotReply,
         )
         return result if isinstance(result, ChatbotReply) else None
+
+    def generate_interaction_turn_decision(
+        self,
+        *,
+        lesson_title: str,
+        session: InteractionSession,
+        board_summary: str,
+        resource_summary: str,
+        conversation_summary: str,
+        user_message: str,
+        selection_excerpt: str | None = None,
+    ) -> InteractionTurnDecision | None:
+        system_prompt = (
+            "你是 OpenClass 的互动规则路由 AI，只做结构化判断，不直接和用户聊天。\n"
+            "任务：根据当前互动会话、原文上下文、最近对话和用户输入，判断本轮应该如何路由。\n"
+            "规则：\n"
+            "1. route 只能是 continue_rule、rule_violation、side_learning_request、resume_rule、exit_rule、new_task。\n"
+            "2. continue_rule 表示用户输入符合当前互动规则，应继续按规则互动。\n"
+            "3. rule_violation 表示用户仍在当前互动里，但输入不符合规则，应让 Chatbot 在规则内纠错。\n"
+            "4. side_learning_request 表示用户临时询问原文、词句、概念、步骤或原因，应暂停互动并讲解。\n"
+            "5. resume_rule 表示用户想恢复 paused 状态的互动。\n"
+            "6. exit_rule 表示用户明确结束当前互动规则。\n"
+            "7. new_task 表示用户开启了新的生成、编辑、定位或学习任务。\n"
+            "8. progress_note 只记录通用进度，不写固定场景模板或样例内容。"
+        )
+        user_prompt = _json(
+            {
+                "lesson_title": lesson_title,
+                "interaction_session": session.model_dump(mode="json"),
+                "board_summary": board_summary,
+                "resource_summary": resource_summary,
+                "recent_conversation": conversation_summary,
+                "selection_excerpt": selection_excerpt.strip() if selection_excerpt else "无选中引用",
+                "user_message": user_message,
+                "response_contract": {
+                    "route": "continue_rule、rule_violation、side_learning_request、resume_rule、exit_rule 或 new_task。",
+                    "reason": "本轮路由理由；用于内部记录，不面向用户。",
+                    "progress_note": "本轮后应保存的互动进度摘要；没有变化可沿用原摘要。",
+                    "user_intent": "对用户本轮意图的简短结构化描述。",
+                },
+            }
+        )
+        result = self._parse(
+            "pm",
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            schema=InteractionTurnDecision,
+        )
+        return result if isinstance(result, InteractionTurnDecision) else None
 
     def generate_board_document_edit(
         self,
@@ -940,7 +997,10 @@ class OpenAICourseAI:
             "8. 如果用户表达的是对现有板书局部内容的动作，额外填写 action_type、action_instruction、target_hint："
             "action_type 只能是 generate_board、explain_target、rewrite_target、expand_target、simplify_target；"
             "target_hint 只写用户给出的定位线索，不猜具体段落 ID。\n"
-            "9. 不写任何主题、资料或样例专属规则。"
+            "9. 如果用户表达的是希望系统按照某种规则进行连续对话或学习互动，"
+            "填写 interaction_rule_draft；它只描述用户给出的通用互动规则、目标、目标线索、用户应如何输入、"
+            "Chatbot 应如何输出，不写任何具体主题或样例专属分支。\n"
+            "10. 不写任何主题、资料或样例专属规则。"
         )
         user_prompt = _json(
             {
@@ -963,6 +1023,10 @@ class OpenAICourseAI:
                     "action_type": "可选。本轮任务动作类型：generate_board、explain_target、rewrite_target、expand_target、simplify_target。",
                     "action_instruction": "可选。本轮要如何讲解或如何编写，必须来自用户表达。",
                     "target_hint": "可选。用户给出的目标位置描述、标题、前后文或选区摘要。",
+                    "interaction_rule_draft": (
+                        "可选。用户要求按规则互动时填写 should_start=true、rule_text、interaction_goal、"
+                        "target_hint、expected_user_behavior、assistant_behavior、reference_instruction。"
+                    ),
                 },
             }
         )

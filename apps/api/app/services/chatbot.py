@@ -9,10 +9,15 @@ from app.models import (
     ChatRequest,
     ChatResponse,
     ConversationTurn,
+    InteractionSession,
+    InteractionTurnDecision,
     LearningClarificationStatus,
     LearningRequirementSheet,
     Lesson,
     ResourceLibraryItem,
+    ResourceMatch,
+    ResourceReferenceContext,
+    ResourceReferencePrompt,
     SelectionRef,
 )
 from app.services import workspace_state
@@ -21,6 +26,14 @@ from app.services.board_teaching import build_board_teaching_guide, teach_first_
 from app.services.course_runtime import effective_requirements
 from app.services.course_runtime import refresh_lesson_runtime
 from app.services.history import commit_operations
+from app.services.interaction_rules import (
+    apply_interaction_decision,
+    build_interaction_start,
+    decide_interaction_turn,
+    interaction_context_payload,
+    interaction_session_metadata,
+    should_start_interaction,
+)
 from app.services.learning_requirement_manager import (
     is_generation_control_request,
     update_learning_requirements_from_chat,
@@ -28,6 +41,7 @@ from app.services.learning_requirement_manager import (
 from app.services.openai_course_ai import openai_course_ai
 from app.services.rich_document import is_document_empty
 from app.services.route_context import bind_ai_request_context
+from app.services.resource_resolver import ResourceResolution, resolve_resource_reference
 from app.services.segment_resolver import FocusResolution, focus_context, resolve_board_focus
 
 
@@ -38,6 +52,8 @@ EXPAND_REQUEST_PATTERN = re.compile(r"(扩写|扩展|补充|增加|添加)")
 SIMPLIFY_REQUEST_PATTERN = re.compile(r"(简化|简单(?:一点|点|些)?|更简单|通俗|更容易懂|更好懂|好理解|容易理解|降低难度|浅显)")
 REWRITE_REQUEST_PATTERN = re.compile(r"(改写|重写|修改|编辑|润色|优化|改(?:得|的)?(?:简单|通俗|容易|好懂)|换(?:个|一种)说法)")
 TARGET_LOCATION_HINT_PATTERN = re.compile(r"(选中|这一段|这段|这部分|这里|前面|上面|下面|第.{0,8}[章节部分段]|定义|概念|例子|示例|结论|总结|表格|为什么)")
+RESOURCE_REFERENCE_HINT_PATTERN = re.compile(r"(资料|材料|文档|上传|教材|课本|原文|参考|根据|来自|文件|PDF|Word|章节|小节|第.{0,8}[章节部分])", re.IGNORECASE)
+LEARNING_START_REQUEST_PATTERN = re.compile(r"(我要学|我想学|想学习|学习一下|开始学|帮我学|学一学)")
 EDIT_ACTIONS: set[BoardTaskAction] = {"rewrite_target", "expand_target", "simplify_target"}
 DOCUMENT_GENERATION_ACTIONS = r"(生成|写|撰写|创建|整理|制作|设计|输出|产出|编写)"
 DOCUMENT_ARTIFACT_NOUNS = (
@@ -77,6 +93,17 @@ def _resource_summary(resources: list[ResourceLibraryItem]) -> str:
     return "\n".join(lines) or "暂无已上传资料摘要"
 
 
+def _resource_summary_with_reference(
+    resources: list[ResourceLibraryItem],
+    reference: ResourceReferenceContext | None,
+) -> str:
+    parts = [_resource_summary(resources)]
+    reference_excerpt = _resource_context_excerpt(reference)
+    if reference_excerpt:
+        parts.append(reference_excerpt)
+    return "\n\n".join(parts)
+
+
 def _conversation_summary(conversation: list[ConversationTurn]) -> str:
     turns = conversation[-MAX_CONVERSATION_TURNS:]
     return "\n".join(f"{turn.role}: {_compact_text(turn.content, limit=500)}" for turn in turns if turn.content.strip())
@@ -109,6 +136,8 @@ def _infer_board_task_action(request: ChatRequest, *, has_selection: bool, docum
             return "simplify_target"
         if EXPAND_REQUEST_PATTERN.search(message):
             return "expand_target"
+    if not has_selection and RESOURCE_REFERENCE_HINT_PATTERN.search(message):
+        return None
     if EXPLAIN_REQUEST_PATTERN.search(message) and (has_selection or TARGET_LOCATION_HINT_PATTERN.search(message)):
         return "explain_target"
     if has_selection and not document_empty:
@@ -219,6 +248,79 @@ def _generate_focus_candidate_message(
     return chatbot_message, "chatbot" if chatbot_message else "chatbot_empty"
 
 
+def _requests_resource_backed_answer(text: str) -> bool:
+    compact = _compact_text(text, limit=280)
+    return bool(compact and RESOURCE_REFERENCE_HINT_PATTERN.search(compact))
+
+
+def _requests_learning_start(text: str) -> bool:
+    compact = _compact_text(text, limit=280)
+    return bool(compact and LEARNING_START_REQUEST_PATTERN.search(compact))
+
+
+def _should_prompt_resource_reference(text: str) -> bool:
+    return (
+        _requests_resource_backed_answer(text)
+        or _requests_document_artifact_generation(text)
+        or is_generation_control_request(text)
+        or _requests_learning_start(text)
+    )
+
+
+def _should_generate_board_after_reference_confirmation(text: str) -> bool:
+    return (
+        _requests_document_artifact_generation(text)
+        or is_generation_control_request(text)
+        or _requests_learning_start(text)
+    )
+
+
+def _resource_context_excerpt(reference: ResourceReferenceContext | None) -> str | None:
+    if reference is None:
+        return None
+    lines = [
+        f"参考资料：{reference.resource_name} / {reference.chapter_title}",
+        f"资料摘要：{reference.summary}",
+    ]
+    if reference.teaching_points:
+        lines.append("讲解要点：" + "；".join(reference.teaching_points[:4]))
+    for chunk in reference.chunks[:4]:
+        lines.append(f"{chunk.title}：{_compact_text(chunk.excerpt, limit=520)}")
+    return "\n".join(line for line in lines if line.strip())
+
+
+def _merge_selection_and_reference(
+    selection_excerpt: str | None,
+    reference: ResourceReferenceContext | None,
+) -> str | None:
+    reference_excerpt = _resource_context_excerpt(reference)
+    return "\n\n".join(part for part in [selection_excerpt, reference_excerpt] if part)
+
+
+def _reference_metadata(
+    *,
+    resolution: ResourceResolution,
+) -> dict[str, object]:
+    return {
+        "resource_matches": [match.model_dump(mode="json") for match in resolution.matches],
+        "reference_prompt": (
+            resolution.reference_prompt.model_dump(mode="json") if resolution.reference_prompt else None
+        ),
+        "selected_reference": (
+            {
+                "resource_id": resolution.selected_reference.resource_id,
+                "chapter_id": resolution.selected_reference.chapter_id,
+                "resource_name": resolution.selected_reference.resource_name,
+                "chapter_title": resolution.selected_reference.chapter_title,
+                "summary": resolution.selected_reference.summary,
+            }
+            if resolution.selected_reference
+            else None
+        ),
+        "resource_resolution_status": resolution.status,
+    }
+
+
 def _has_identified_learning_topic(learning_clarification: LearningClarificationStatus) -> bool:
     return any(
         item.category == "learning" and item.value.strip()
@@ -277,28 +379,384 @@ def _response(
     teaching_progress=None,
     resolved_focus: BoardFocusRef | None = None,
     focus_candidates: list[BoardFocusRef] | None = None,
+    resource_matches: list[ResourceMatch] | None = None,
+    reference_prompt: ResourceReferencePrompt | None = None,
+    selected_reference: ResourceReferenceContext | None = None,
+    interaction_decision: InteractionTurnDecision | None = None,
     requirement_cleared: bool = False,
 ) -> ChatResponse:
     return ChatResponse(
         chatbot_message=chatbot_message,
         learning_requirement_sheet=requirements,
         active_requirement_sheet=lesson.learning_requirements,
+        active_interaction_session=lesson.active_interaction_session,
+        interaction_decision=interaction_decision,
         learning_clarification=learning_clarification,
         board_decision=board_decision,
         needs_clarification=False,
         clarification_questions=[],
         patch_proposal=None,
         scope_options=[],
-        resource_matches=[],
-        reference_prompt=None,
+        resource_matches=resource_matches or [],
+        reference_prompt=reference_prompt,
         board_edit_prompt=None,
-        selected_reference=None,
+        selected_reference=selected_reference,
         resolved_focus=resolved_focus,
         focus_candidates=focus_candidates or [],
         requirement_cleared=requirement_cleared,
         created_lesson=None,
         teaching_progress=teaching_progress,
         course_package=workspace_state.package_view_for_lesson(workspace, package, lesson.id),
+    )
+
+
+def _generate_interaction_chatbot_message(
+    *,
+    lesson: Lesson,
+    requirements: LearningRequirementSheet,
+    resources: list[ResourceLibraryItem],
+    conversation: list[ConversationTurn],
+    request: ChatRequest,
+    session: InteractionSession,
+    decision: InteractionTurnDecision | None,
+) -> tuple[str, str]:
+    ai_reply = openai_course_ai.generate_chatbot_reply(
+        lesson_title=lesson.title,
+        learning_goal=session.interaction_goal or requirements.learning_goal,
+        board_summary=_board_summary(lesson),
+        resource_summary=_resource_summary(resources),
+        conversation_summary=_conversation_summary(conversation),
+        user_message=request.message,
+        selection_excerpt=session.reference_context,
+        interaction_mode="interaction_rule",
+        interaction_context=interaction_context_payload(session=session, decision=decision),
+    )
+    chatbot_message = (ai_reply.chatbot_message if ai_reply else "").strip()
+    return chatbot_message, "chatbot_interaction" if chatbot_message else "chatbot_empty"
+
+
+def _handle_existing_interaction_session(
+    *,
+    workspace,
+    package,
+    lesson: Lesson,
+    user_id: str,
+    request: ChatRequest,
+    requirements: LearningRequirementSheet,
+    resources: list[ResourceLibraryItem],
+    selection_excerpt: str | None,
+) -> ChatResponse | None:
+    session_before = lesson.active_interaction_session
+    if session_before is None:
+        return None
+
+    learning_clarification = _latest_learning_clarification(lesson, requirements=requirements)
+    decision = decide_interaction_turn(
+        lesson=lesson,
+        session=session_before,
+        resource_summary=_resource_summary(resources),
+        conversation_summary=_conversation_summary(request.conversation),
+        user_message=request.message,
+        selection_excerpt=selection_excerpt,
+    )
+    if decision is None:
+        chatbot_message = ""
+        lesson.active_interaction_session = session_before
+        commit_operations(
+            lesson,
+            [],
+            label="Interaction turn",
+            message="Recorded an interaction-rule turn without a route decision",
+            new_document=lesson.board_document,
+            metadata={
+                "kind": "interaction_flow",
+                "user_message": request.message,
+                "assistant_message": chatbot_message,
+                "assistant_message_source": "interaction_decision_empty",
+                "interaction_mode": request.interaction_mode,
+                "selection": request.selection.model_dump(mode="json") if request.selection else None,
+                **_task_metadata(
+                    requirements=requirements,
+                    learning_clarification=learning_clarification,
+                    requirement_cleared=False,
+                ),
+                **interaction_session_metadata(before=session_before, after=session_before),
+            },
+        )
+        workspace_state.normalize_package_state(package)
+        workspace_state.save_workspace_for_user(user_id, workspace)
+        return _response(
+            workspace=workspace,
+            package=package,
+            lesson=lesson,
+            chatbot_message=chatbot_message,
+            learning_clarification=learning_clarification,
+            requirements=requirements,
+            board_decision=BoardDecision(action="no_change", reason=""),
+        )
+
+    session_after = apply_interaction_decision(session_before, decision)
+    reply_session = session_after or session_before
+    lesson.active_interaction_session = session_after
+    chatbot_message, chatbot_message_source = _generate_interaction_chatbot_message(
+        lesson=lesson,
+        requirements=requirements,
+        resources=resources,
+        conversation=request.conversation,
+        request=request,
+        session=reply_session,
+        decision=decision,
+    )
+    commit_operations(
+        lesson,
+        [],
+        label="Interaction turn",
+        message="Recorded an interaction-rule chat turn",
+        new_document=lesson.board_document,
+        metadata={
+            "kind": "interaction_flow",
+            "user_message": request.message,
+            "assistant_message": chatbot_message,
+            "assistant_message_source": chatbot_message_source,
+            "interaction_mode": request.interaction_mode,
+            "selection": request.selection.model_dump(mode="json") if request.selection else None,
+            **_task_metadata(
+                requirements=requirements,
+                learning_clarification=learning_clarification,
+                requirement_cleared=False,
+            ),
+            **interaction_session_metadata(before=session_before, after=session_after, decision=decision),
+        },
+    )
+    workspace_state.normalize_package_state(package)
+    workspace_state.save_workspace_for_user(user_id, workspace)
+    return _response(
+        workspace=workspace,
+        package=package,
+        lesson=lesson,
+        chatbot_message=chatbot_message,
+        learning_clarification=learning_clarification,
+        requirements=requirements,
+        board_decision=BoardDecision(action="no_change", reason=decision.reason),
+        interaction_decision=decision,
+    )
+
+
+def _maybe_start_interaction_session(
+    *,
+    workspace,
+    package,
+    lesson: Lesson,
+    user_id: str,
+    request: ChatRequest,
+    requirements: LearningRequirementSheet,
+    learning_clarification: LearningClarificationStatus,
+    resources: list[ResourceLibraryItem],
+    selection_text: str | None,
+) -> ChatResponse | None:
+    if request.interaction_mode == "direct_edit":
+        return None
+    if not should_start_interaction(requirements.interaction_rule_draft):
+        return None
+
+    start_resolution = build_interaction_start(
+        lesson=lesson,
+        draft=requirements.interaction_rule_draft,
+        user_message=request.message,
+        selection=request.selection,
+        selection_text=selection_text,
+    )
+    if start_resolution.session is None and start_resolution.focus_resolution is not None:
+        chatbot_message, chatbot_message_source = _generate_focus_candidate_message(
+            lesson=lesson,
+            requirements=requirements,
+            resources=resources,
+            conversation=request.conversation,
+            request=request,
+            resolution=start_resolution.focus_resolution,
+        )
+        lesson.learning_requirements = requirements
+        commit_operations(
+            lesson,
+            [],
+            label="Interaction focus clarification",
+            message="Asked the learner to confirm the source content for an interaction rule",
+            new_document=lesson.board_document,
+            metadata={
+                "kind": "interaction_flow",
+                "user_message": request.message,
+                "assistant_message": chatbot_message,
+                "assistant_message_source": chatbot_message_source,
+                "interaction_mode": request.interaction_mode,
+                "selection": request.selection.model_dump(mode="json") if request.selection else None,
+                **_task_metadata(
+                    requirements=requirements,
+                    learning_clarification=learning_clarification,
+                    focus=None,
+                    focus_candidates=start_resolution.focus_resolution.candidates,
+                    requirement_cleared=False,
+                ),
+                **interaction_session_metadata(before=None, after=None),
+            },
+        )
+        workspace_state.normalize_package_state(package)
+        workspace_state.save_workspace_for_user(user_id, workspace)
+        return _response(
+            workspace=workspace,
+            package=package,
+            lesson=lesson,
+            chatbot_message=chatbot_message,
+            learning_clarification=learning_clarification,
+            requirements=requirements,
+            board_decision=BoardDecision(
+                action="await_focus_choice",
+                reason=start_resolution.focus_resolution.question,
+            ),
+            focus_candidates=start_resolution.focus_resolution.candidates,
+        )
+
+    if start_resolution.session is None:
+        return None
+
+    session_before = lesson.active_interaction_session
+    lesson.active_interaction_session = start_resolution.session
+    chatbot_message, chatbot_message_source = _generate_interaction_chatbot_message(
+        lesson=lesson,
+        requirements=requirements,
+        resources=resources,
+        conversation=request.conversation,
+        request=request,
+        session=start_resolution.session,
+        decision=None,
+    )
+    _clear_task_requirements(lesson)
+    commit_operations(
+        lesson,
+        [],
+        label="Interaction session start",
+        message="Started a rule-based interaction session",
+        new_document=lesson.board_document,
+        metadata={
+            "kind": "interaction_flow",
+            "user_message": request.message,
+            "assistant_message": chatbot_message,
+            "assistant_message_source": chatbot_message_source,
+            "interaction_mode": request.interaction_mode,
+            "selection": request.selection.model_dump(mode="json") if request.selection else None,
+            **_task_metadata(
+                requirements=requirements,
+                learning_clarification=learning_clarification,
+                focus=start_resolution.session.target_focus,
+                focus_candidates=(
+                    start_resolution.focus_resolution.candidates
+                    if start_resolution.focus_resolution
+                    else []
+                ),
+                requirement_cleared=True,
+            ),
+            **interaction_session_metadata(
+                before=session_before,
+                after=start_resolution.session,
+            ),
+        },
+    )
+    workspace_state.normalize_package_state(package)
+    workspace_state.save_workspace_for_user(user_id, workspace)
+    return _response(
+        workspace=workspace,
+        package=package,
+        lesson=lesson,
+        chatbot_message=chatbot_message,
+        learning_clarification=learning_clarification,
+        requirements=requirements,
+        board_decision=BoardDecision(
+            action="no_change",
+            reason=start_resolution.session.interaction_goal,
+        ),
+        resolved_focus=start_resolution.session.target_focus,
+        focus_candidates=(
+            start_resolution.focus_resolution.candidates
+            if start_resolution.focus_resolution
+            else []
+        ),
+        requirement_cleared=True,
+    )
+
+
+def _generate_board_from_confirmed_resource(
+    *,
+    workspace,
+    package,
+    lesson: Lesson,
+    user_id: str,
+    request: ChatRequest,
+    requirements: LearningRequirementSheet,
+    learning_clarification: LearningClarificationStatus,
+    resource_resolution: ResourceResolution,
+    resource_summary_for_turn: str,
+    conversation_summary: str,
+) -> ChatResponse:
+    requirements = _with_task_details(
+        requirements,
+        action_type="generate_board",
+        instruction=request.message,
+    )
+    edit_outcome = generate_from_requirements(
+        lesson=lesson,
+        requirements=requirements,
+        clarification=learning_clarification,
+        resource_summary=resource_summary_for_turn,
+        conversation_summary=conversation_summary,
+        user_instruction=request.message,
+    )
+    chatbot_message = edit_outcome.chatbot_message
+    if edit_outcome.changed:
+        refresh_lesson_runtime(lesson, document=edit_outcome.new_document, requirements=requirements)
+        requirements = lesson.learning_requirements
+        lesson.board_teaching_guide = build_board_teaching_guide(lesson)
+        lesson.board_teaching_progress = None
+    requirement_cleared = edit_outcome.changed
+    commit_operations(
+        lesson,
+        [],
+        label="Resource-backed board generation",
+        message="Generated board document from a confirmed uploaded resource chapter",
+        new_document=lesson.board_document,
+        metadata={
+            "kind": "board_document_generation",
+            "resource_backed_generation": True,
+            "user_message": request.message,
+            "assistant_message": chatbot_message,
+            "assistant_message_source": edit_outcome.assistant_message_source,
+            "interaction_mode": request.interaction_mode,
+            "resource_reference_action": request.resource_reference_action,
+            "board_generation_action": "resource_reference_confirm",
+            "board_edit_operation": edit_outcome.operation,
+            "board_edit_summary": edit_outcome.summary,
+            "board_section_titles": edit_outcome.section_titles,
+            **_task_metadata(
+                requirements=requirements,
+                learning_clarification=learning_clarification,
+                requirement_cleared=requirement_cleared,
+            ),
+            **_reference_metadata(resolution=resource_resolution),
+        },
+    )
+    if requirement_cleared:
+        _clear_task_requirements(lesson)
+    workspace_state.normalize_package_state(package)
+    workspace_state.save_workspace_for_user(user_id, workspace)
+    return _response(
+        workspace=workspace,
+        package=package,
+        lesson=lesson,
+        chatbot_message=chatbot_message,
+        learning_clarification=learning_clarification,
+        requirements=requirements,
+        board_decision=edit_outcome.board_decision,
+        resource_matches=resource_resolution.matches,
+        selected_reference=resource_resolution.selected_reference,
+        requirement_cleared=requirement_cleared,
     )
 
 
@@ -319,6 +777,37 @@ def _chat_response(
         has_selection=bool(selection_excerpt),
         document_empty=is_document_empty(lesson.board_document),
     )
+    resource_resolution = resolve_resource_reference(
+        resources=visible_package.resources,
+        user_message=request.message,
+        reference_action=request.resource_reference_action,
+        reference_resource_id=request.resource_reference_resource_id,
+        reference_chapter_id=request.resource_reference_chapter_id,
+        allow_direct_reference=(
+            _requests_resource_backed_answer(request.message)
+            and request.interaction_mode != "direct_edit"
+            and action_type not in EDIT_ACTIONS
+            and request.board_generation_action != "start"
+            and not _requests_document_artifact_generation(request.message)
+            and not _requests_learning_start(request.message)
+        ),
+    )
+    selected_reference = resource_resolution.selected_reference
+    selection_or_reference_excerpt = _merge_selection_and_reference(selection_excerpt, selected_reference)
+    resource_summary_for_turn = _resource_summary_with_reference(visible_package.resources, selected_reference)
+
+    interaction_response = _handle_existing_interaction_session(
+        workspace=workspace,
+        package=package,
+        lesson=lesson,
+        user_id=user_id,
+        request=request,
+        requirements=requirements,
+        resources=visible_package.resources,
+        selection_excerpt=selection_or_reference_excerpt,
+    )
+    if interaction_response is not None:
+        return interaction_response
 
     if request.board_generation_action == "start":
         learning_clarification = _latest_learning_clarification(lesson, requirements=requirements)
@@ -569,6 +1058,19 @@ def _chat_response(
             user_message=request.message,
             chatbot_message="",
         )
+        interaction_start_response = _maybe_start_interaction_session(
+            workspace=workspace,
+            package=package,
+            lesson=lesson,
+            user_id=user_id,
+            request=request,
+            requirements=requirements,
+            learning_clarification=learning_clarification,
+            resources=visible_package.resources,
+            selection_text=selection_text,
+        )
+        if interaction_start_response is not None:
+            return interaction_start_response
         action_type = _prefer_requirement_action(action_type, requirements.action_type)
         resolution = resolve_board_focus(
             lesson=lesson,
@@ -757,15 +1259,68 @@ def _chat_response(
             user_message=request.message,
             chatbot_message="",
         )
+        if resource_resolution.reference_prompt is not None and request.resource_reference_action is None:
+            lesson.learning_requirements = requirements
+            chatbot_message = resource_resolution.reference_prompt.question
+            commit_operations(
+                lesson,
+                [],
+                label="Resource reference prompt",
+                message="Asked the learner to confirm a relevant resource chapter before continuing",
+                new_document=lesson.board_document,
+                metadata={
+                    "kind": "chat_flow",
+                    "user_message": request.message,
+                    "assistant_message": chatbot_message,
+                    "assistant_message_source": "resource_resolver",
+                    "interaction_mode": request.interaction_mode,
+                    "selection": request.selection.model_dump(mode="json") if request.selection else None,
+                    **_task_metadata(
+                        requirements=requirements,
+                        learning_clarification=learning_clarification,
+                        requirement_cleared=False,
+                    ),
+                    **_reference_metadata(resolution=resource_resolution),
+                },
+            )
+            workspace_state.normalize_package_state(package)
+            workspace_state.save_workspace_for_user(user_id, workspace)
+            return _response(
+                workspace=workspace,
+                package=package,
+                lesson=lesson,
+                chatbot_message=chatbot_message,
+                learning_clarification=learning_clarification,
+                requirements=requirements,
+                board_decision=BoardDecision(
+                    action="await_reference_choice",
+                    reason=resource_resolution.reference_prompt.reason,
+                ),
+                resource_matches=resource_resolution.matches,
+                reference_prompt=resource_resolution.reference_prompt,
+            )
+        if request.resource_reference_action == "confirm" and selected_reference is not None:
+            return _generate_board_from_confirmed_resource(
+                workspace=workspace,
+                package=package,
+                lesson=lesson,
+                user_id=user_id,
+                request=request,
+                requirements=requirements,
+                learning_clarification=learning_clarification,
+                resource_resolution=resource_resolution,
+                resource_summary_for_turn=resource_summary_for_turn,
+                conversation_summary=_conversation_summary(request.conversation),
+            )
         lesson.learning_requirements = requirements
         ai_reply = openai_course_ai.generate_chatbot_reply(
             lesson_title=lesson.title,
             learning_goal=learning_clarification.summary or requirements.learning_goal,
             board_summary=_board_summary(lesson),
-            resource_summary=_resource_summary(visible_package.resources),
+            resource_summary=resource_summary_for_turn,
             conversation_summary=_conversation_summary(request.conversation),
             user_message=request.message,
-            selection_excerpt=selection_excerpt,
+            selection_excerpt=selection_or_reference_excerpt,
             interaction_mode=request.interaction_mode,
         )
         chatbot_message = (ai_reply.chatbot_message if ai_reply else "").strip()
@@ -789,6 +1344,7 @@ def _chat_response(
                     learning_clarification=learning_clarification,
                     requirement_cleared=False,
                 ),
+                **_reference_metadata(resolution=resource_resolution),
             },
         )
         workspace_state.normalize_package_state(package)
@@ -801,16 +1357,92 @@ def _chat_response(
             learning_clarification=learning_clarification,
             requirements=requirements,
             board_decision=BoardDecision(action="no_change", reason="本轮是需求确认到板书生成的交接，不自动写入板书。"),
+            resource_matches=resource_resolution.matches,
+            selected_reference=selected_reference,
+        )
+
+    if (
+        resource_resolution.reference_prompt is not None
+        and request.resource_reference_action is None
+        and _should_prompt_resource_reference(request.message)
+    ):
+        learning_clarification = _latest_learning_clarification(lesson, requirements=requirements)
+        chatbot_message = resource_resolution.reference_prompt.question
+        commit_operations(
+            lesson,
+            [],
+            label="Resource reference prompt",
+            message="Asked the learner to confirm a relevant resource chapter before answering",
+            new_document=lesson.board_document,
+            metadata={
+                "kind": "chat_flow",
+                "user_message": request.message,
+                "assistant_message": chatbot_message,
+                "assistant_message_source": "resource_resolver",
+                "interaction_mode": request.interaction_mode,
+                "selection": request.selection.model_dump(mode="json") if request.selection else None,
+                **_task_metadata(
+                    requirements=requirements,
+                    learning_clarification=learning_clarification,
+                    requirement_cleared=False,
+                ),
+                **_reference_metadata(resolution=resource_resolution),
+            },
+        )
+        workspace_state.normalize_package_state(package)
+        workspace_state.save_workspace_for_user(user_id, workspace)
+        return _response(
+            workspace=workspace,
+            package=package,
+            lesson=lesson,
+            chatbot_message=chatbot_message,
+            learning_clarification=learning_clarification,
+            requirements=requirements,
+            board_decision=BoardDecision(
+                action="await_reference_choice",
+                reason=resource_resolution.reference_prompt.reason,
+            ),
+            resource_matches=resource_resolution.matches,
+            reference_prompt=resource_resolution.reference_prompt,
+        )
+
+    if (
+        request.resource_reference_action == "confirm"
+        and selected_reference is not None
+        and _should_generate_board_after_reference_confirmation(request.message)
+    ):
+        requirement_conversation = [
+            *request.conversation,
+            ConversationTurn(role="user", content=request.message),
+        ]
+        requirements, learning_clarification = update_learning_requirements_from_chat(
+            lesson=lesson,
+            resources=visible_package.resources,
+            conversation=requirement_conversation,
+            user_message=request.message,
+            chatbot_message="",
+        )
+        return _generate_board_from_confirmed_resource(
+            workspace=workspace,
+            package=package,
+            lesson=lesson,
+            user_id=user_id,
+            request=request,
+            requirements=requirements,
+            learning_clarification=learning_clarification,
+            resource_resolution=resource_resolution,
+            resource_summary_for_turn=resource_summary_for_turn,
+            conversation_summary=_conversation_summary(request.conversation),
         )
 
     ai_reply = openai_course_ai.generate_chatbot_reply(
         lesson_title=lesson.title,
         learning_goal=requirements.learning_goal,
         board_summary=_board_summary(lesson),
-        resource_summary=_resource_summary(visible_package.resources),
+        resource_summary=resource_summary_for_turn,
         conversation_summary=_conversation_summary(request.conversation),
         user_message=request.message,
-        selection_excerpt=selection_excerpt,
+        selection_excerpt=selection_or_reference_excerpt,
         interaction_mode=request.interaction_mode,
     )
     chatbot_message = (ai_reply.chatbot_message if ai_reply else "").strip()
@@ -830,6 +1462,20 @@ def _chat_response(
     )
     lesson.learning_requirements = requirements
 
+    interaction_start_response = _maybe_start_interaction_session(
+        workspace=workspace,
+        package=package,
+        lesson=lesson,
+        user_id=user_id,
+        request=request,
+        requirements=requirements,
+        learning_clarification=learning_clarification,
+        resources=visible_package.resources,
+        selection_text=selection_text,
+    )
+    if interaction_start_response is not None:
+        return interaction_start_response
+
     board_decision = BoardDecision(action="no_change", reason="本轮是通用问答聊天，不自动修改讲义。")
     board_edit_metadata: dict[str, object] = {}
     requirement_cleared = False
@@ -846,7 +1492,7 @@ def _chat_response(
             lesson=lesson,
             requirements=requirements,
             clarification=learning_clarification,
-            resource_summary=_resource_summary(visible_package.resources),
+            resource_summary=resource_summary_for_turn,
             conversation_summary=_conversation_summary(requirement_conversation),
             user_instruction=request.message,
         )
@@ -883,6 +1529,7 @@ def _chat_response(
                 learning_clarification=learning_clarification,
                 requirement_cleared=requirement_cleared,
             ),
+            **_reference_metadata(resolution=resource_resolution),
             **board_edit_metadata,
         },
     )
@@ -898,6 +1545,8 @@ def _chat_response(
         learning_clarification=learning_clarification,
         requirements=requirements,
         board_decision=board_decision,
+        resource_matches=resource_resolution.matches,
+        selected_reference=selected_reference,
         requirement_cleared=requirement_cleared,
     )
 
