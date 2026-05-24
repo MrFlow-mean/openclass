@@ -7,6 +7,7 @@ import re
 import ssl
 import base64
 import ast
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -99,6 +100,10 @@ def _json(data: Any) -> str:
 
 def _compact_json(data: Any) -> str:
     return json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+
+
+def _elapsed_ms(started_at: float) -> int:
+    return max(0, round((time.perf_counter() - started_at) * 1000))
 
 
 def _json_loads_lenient(value: str) -> Any:
@@ -1350,6 +1355,7 @@ class OpenAICourseAI:
                 "provider": fallback_provider,
                 "model": fallback_model,
             }
+            fallback_started_at = time.perf_counter()
             try:
                 response = self._call_parse(
                     provider=fallback_provider,
@@ -1363,6 +1369,7 @@ class OpenAICourseAI:
                     **fallback_details,
                     fallback_from_provider=failed_provider,
                     fallback_from_model=failed_model,
+                    duration_ms=_elapsed_ms(fallback_started_at),
                     response_id=getattr(response, "id", None),
                     output_text=getattr(response, "output_text", None),
                     usage=getattr(response, "usage", None),
@@ -1375,6 +1382,7 @@ class OpenAICourseAI:
                     **fallback_details,
                     fallback_from_provider=failed_provider,
                     fallback_from_model=failed_model,
+                    duration_ms=_elapsed_ms(fallback_started_at),
                     error=str(fallback_exc),
                 )
                 logger.warning(
@@ -1409,6 +1417,7 @@ class OpenAICourseAI:
             ai_usage_logger.log_event(
                 self._log_event_name(provider, "_skipped"),
                 **call_details,
+                duration_ms=0,
                 reason="client_disabled",
             )
             provider_fallback = self._try_provider_fallback(
@@ -1425,6 +1434,7 @@ class OpenAICourseAI:
                 return provider_fallback
             return None
 
+        primary_started_at = time.perf_counter()
         try:
             response = self._call_parse(
                 provider=provider,
@@ -1436,6 +1446,7 @@ class OpenAICourseAI:
             ai_usage_logger.log_event(
                 self._log_event_name(provider, ""),
                 **call_details,
+                duration_ms=_elapsed_ms(primary_started_at),
                 response_id=getattr(response, "id", None),
                 output_text=getattr(response, "output_text", None),
                 usage=getattr(response, "usage", None),
@@ -1443,14 +1454,17 @@ class OpenAICourseAI:
             )
             return response.output_parsed
         except Exception as exc:  # pragma: no cover - network/runtime dependent
+            primary_duration_ms = _elapsed_ms(primary_started_at)
             fallback_model = self._fallback_model_for(provider, exc, requested_model)
             if fallback_model:
                 ai_usage_logger.log_event(
                     self._log_event_name(provider, "_retry"),
                     **call_details,
+                    duration_ms=primary_duration_ms,
                     retry_model=fallback_model,
                     error=str(exc),
                 )
+                retry_started_at = time.perf_counter()
                 try:
                     response = self._call_parse(
                         provider=provider,
@@ -1463,6 +1477,7 @@ class OpenAICourseAI:
                         self._log_event_name(provider, ""),
                         **{**call_details, "model": fallback_model},
                         fallback_from_model=requested_model,
+                        duration_ms=_elapsed_ms(retry_started_at),
                         response_id=getattr(response, "id", None),
                         output_text=getattr(response, "output_text", None),
                         usage=getattr(response, "usage", None),
@@ -1474,6 +1489,7 @@ class OpenAICourseAI:
                         self._log_event_name(provider, "_error"),
                         **{**call_details, "model": fallback_model},
                         fallback_from_model=requested_model,
+                        duration_ms=_elapsed_ms(retry_started_at),
                         error=str(retry_exc),
                     )
                     logger.warning(
@@ -1512,6 +1528,7 @@ class OpenAICourseAI:
             ai_usage_logger.log_event(
                 self._log_event_name(provider, "_error"),
                 **call_details,
+                duration_ms=primary_duration_ms,
                 error=str(exc),
                 output_text=getattr(exc, "output_text", None),
                 repair_output_text=getattr(exc, "repair_output_text", None),

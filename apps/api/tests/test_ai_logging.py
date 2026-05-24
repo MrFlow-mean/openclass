@@ -21,7 +21,7 @@ from app.models import (
 from app.routers.auth import current_user
 from app.routers import documents as documents_router
 from app.routers import realtime as realtime_router
-from app.services.ai_logging import ai_log_context, ai_usage_logger
+from app.services.ai_logging import ai_log_context, ai_usage_logger, current_ai_log_context
 from app.services import chat_service, workspace_state
 from app.services.course_runtime import refresh_lesson_runtime
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
@@ -155,6 +155,8 @@ def test_openai_parse_logs_prompt_and_output(isolated_ai_log) -> None:
     assert entry["event_type"] == "openai_text_call"
     assert entry["context"]["trace_id"] == "trace_unit"
     assert entry["payload"]["model"] == "gpt-5.3"
+    assert isinstance(entry["payload"]["duration_ms"], int)
+    assert entry["payload"]["duration_ms"] >= 0
     assert entry["payload"]["user_prompt"]
     assert entry["payload"]["parsed_output"]["title"] == "工作台标题"
 
@@ -208,8 +210,10 @@ def test_openai_parse_retries_model_not_found_with_fallback(isolated_ai_log) -> 
     entries = _read_log_entries(isolated_ai_log)
     assert [entry["event_type"] for entry in entries] == ["openai_text_call_retry", "openai_text_call"]
     assert entries[0]["payload"]["model"] == "gpt-5.3"
+    assert isinstance(entries[0]["payload"]["duration_ms"], int)
     assert entries[0]["payload"]["retry_model"] == "gpt-5.4"
     assert entries[1]["payload"]["model"] == "gpt-5.4"
+    assert isinstance(entries[1]["payload"]["duration_ms"], int)
     assert entries[1]["payload"]["fallback_from_model"] == "gpt-5.3"
 
 
@@ -686,11 +690,13 @@ def test_catalog_role_uses_dedicated_openai_model_even_with_text_selection(isola
 def test_chat_route_returns_chatbot_reply(monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path) -> None:
     store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
     monkeypatch.setattr(workspace_state, "STORE", store)
-    monkeypatch.setattr(
-        openai_course_ai,
-        "generate_chatbot_reply",
-        lambda **kwargs: ChatbotReply(chatbot_message="AI生成：这是一段测试讲解。"),
-    )
+    captured_context: dict[str, object] = {}
+
+    def _fake_chatbot_reply(**kwargs):
+        captured_context.update(current_ai_log_context())
+        return ChatbotReply(chatbot_message="AI生成：这是一段测试讲解。")
+
+    monkeypatch.setattr(openai_course_ai, "generate_chatbot_reply", _fake_chatbot_reply)
     monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
 
     lesson_id = _seed_test_user_workspace(store).packages[0].lessons[0].id
@@ -710,6 +716,10 @@ def test_chat_route_returns_chatbot_reply(monkeypatch: pytest.MonkeyPatch, isola
     assert commit.metadata["learning_clarification"]["key_facts"][0]["label"] == "学习请求"
     assert response.learning_clarification.progress == 100
     assert response.learning_clarification.key_facts[0].value == "用户提出了当前要解决的学习问题。"
+    assert captured_context["route"] == "/api/lessons/{lesson_id}/chat"
+    assert captured_context["lesson_id"] == lesson_id
+    assert captured_context["user_id"] == TEST_USER.id
+    assert str(captured_context["trace_id"]).startswith("chat_")
     assert response.learning_clarification.checklist[0].is_clear is True
     assert _read_log_entries(isolated_ai_log) == []
 
