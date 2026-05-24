@@ -1,12 +1,18 @@
 from app.services import ai_model_catalog
 
 
+def _disable_realtime(monkeypatch) -> None:
+    monkeypatch.delenv("OPENCLASS_REALTIME_ENABLED", raising=False)
+    monkeypatch.delenv("OPENCLASS_REALTIME_TOOLS_ENABLED", raising=False)
+
+
 def _models_by_provider(catalog, capability: str, provider: str) -> list[str]:
     options = catalog.text if capability == "text" else catalog.realtime
     return [option.model for option in options if option.provider == provider]
 
 
 def test_catalog_keeps_curated_openai_models_only(monkeypatch) -> None:
+    _disable_realtime(monkeypatch)
     monkeypatch.delenv("AI_SINGLE_API_KEY_MODE", raising=False)
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
@@ -34,6 +40,7 @@ def test_catalog_keeps_curated_openai_models_only(monkeypatch) -> None:
 
 
 def test_catalog_realtime_options_are_removed_with_backend_runtime(monkeypatch) -> None:
+    _disable_realtime(monkeypatch)
     monkeypatch.delenv("AI_SINGLE_API_KEY_MODE", raising=False)
     monkeypatch.delenv("AI_REALTIME_MODELS_JSON", raising=False)
     monkeypatch.delenv("OPENAI_REALTIME_MODEL", raising=False)
@@ -47,7 +54,28 @@ def test_catalog_realtime_options_are_removed_with_backend_runtime(monkeypatch) 
     assert catalog.realtime == []
 
 
+def test_catalog_exposes_openai_realtime_when_runtime_enabled(monkeypatch) -> None:
+    monkeypatch.setenv("OPENCLASS_REALTIME_ENABLED", "true")
+    monkeypatch.delenv("OPENCLASS_REALTIME_TOOLS_ENABLED", raising=False)
+    monkeypatch.delenv("AI_SINGLE_API_KEY_MODE", raising=False)
+    monkeypatch.delenv("AI_REALTIME_MODELS_JSON", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+    monkeypatch.setenv("AI_REALTIME_PROVIDER", "openai")
+    monkeypatch.setenv("OPENAI_REALTIME_MODEL", "gpt-realtime-2")
+
+    catalog = ai_model_catalog.build_model_catalog()
+
+    assert catalog.defaults["realtime"].provider == "openai"
+    assert catalog.defaults["realtime"].model == "gpt-realtime-2"
+    assert _models_by_provider(catalog, "realtime", "openai") == ["gpt-realtime-2"]
+    option = catalog.realtime[0]
+    assert option.enabled is True
+    assert option.configured is True
+    assert option.transport == "openai_webrtc"
+
+
 def test_catalog_defaults_to_configured_google_when_openai_is_missing(monkeypatch) -> None:
+    _disable_realtime(monkeypatch)
     monkeypatch.delenv("AI_SINGLE_API_KEY_MODE", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_REALTIME_API_KEY", raising=False)
@@ -75,6 +103,7 @@ def test_catalog_defaults_to_configured_google_when_openai_is_missing(monkeypatc
 
 
 def test_single_key_mode_keeps_text_models_on_official_openai(monkeypatch) -> None:
+    _disable_realtime(monkeypatch)
     monkeypatch.setenv("AI_SINGLE_API_KEY_MODE", "true")
     monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
     monkeypatch.setenv("AI_TEXT_PROVIDER", "google")
@@ -99,6 +128,7 @@ def test_single_key_mode_keeps_text_models_on_official_openai(monkeypatch) -> No
 
 
 def test_single_key_mode_does_not_use_shared_key_for_google_realtime(monkeypatch) -> None:
+    _disable_realtime(monkeypatch)
     monkeypatch.setenv("AI_SINGLE_API_KEY_MODE", "true")
     monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
     monkeypatch.setenv("OPENAI_BASE_URL", "https://api.router.example/v1")

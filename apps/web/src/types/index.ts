@@ -497,6 +497,9 @@ export interface RealtimeConnectResponse {
   provider: AIProvider;
   model: string;
   voice: string;
+  call_id?: string | null;
+  tools_enabled?: boolean;
+  client_session_id?: string | null;
 }
 
 export interface GoogleRealtimeSessionPayload {
@@ -516,9 +519,12 @@ export interface GoogleRealtimeSessionResponse {
 export interface RealtimeEventLogPayload {
   client_session_id?: string | null;
   lesson_title?: string | null;
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "tool";
   transport_event_type: string;
   transcript: string;
+  tool_name?: string | null;
+  tool_call_id?: string | null;
+  tool_status?: string | null;
 }
 
 export interface DocumentSavePayload {

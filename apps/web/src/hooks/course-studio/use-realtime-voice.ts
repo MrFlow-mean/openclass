@@ -443,6 +443,8 @@ export function useRealtimeVoice({
           const payload = JSON.parse(messageEvent.data) as {
             type?: string;
             transcript?: string;
+            name?: string;
+            call_id?: string;
           };
           if (payload.type === "response.created") {
             openAIResponseInProgressRef.current = true;
@@ -458,7 +460,18 @@ export function useRealtimeVoice({
             resetOpenAIRemoteAudioPlayback();
           }
           const lessonId = realtimeLessonIdRef.current;
-          if (!lessonId || !payload.type || !payload.transcript) {
+          if (!lessonId || !payload.type) {
+            return;
+          }
+          if (payload.type.includes("function_call") && payload.name) {
+            enqueueRealtimeLogEvent(
+              lessonId,
+              "tool",
+              payload.type,
+              `${payload.name}${payload.call_id ? ` (${payload.call_id})` : ""}`
+            );
+          }
+          if (!payload.transcript) {
             return;
           }
           if (
@@ -484,13 +497,20 @@ export function useRealtimeVoice({
         client_session_id: clientSessionId,
         realtime_model: selectedRealtimeModel,
       });
+      if (realtimeResponse.client_session_id) {
+        realtimeClientSessionIdRef.current = realtimeResponse.client_session_id;
+      }
 
       await peerConnection.setRemoteDescription({
         type: "answer",
         sdp: realtimeResponse.answer_sdp,
       });
 
-      setVoiceStatusText(`${PROVIDER_LABELS[realtimeResponse.provider]} ${realtimeResponse.model} 已就绪，正在受控转写`);
+      setVoiceStatusText(
+        `${PROVIDER_LABELS[realtimeResponse.provider]} ${realtimeResponse.model} 已就绪${
+          realtimeResponse.tools_enabled ? "，可调用 Chatbot 工具" : "，正在受控转写"
+        }`
+      );
     } catch (voiceError) {
       stopRealtimeSession("语音连接失败");
       setError(realtimeConnectionErrorMessage(voiceError, selectedRealtimeModel));

@@ -65,7 +65,9 @@ export function useModelCatalog() {
 
   const selectedTextOption = findModelOption(modelCatalog.text, selectedTextModel);
   const selectedRealtimeOption = findModelOption(modelCatalog.realtime, selectedRealtimeModel);
-  const selectedRealtimeTransport = selectedRealtimeOption?.transport ?? "gemini_live_websocket";
+  const selectedRealtimeTransport =
+    selectedRealtimeOption?.transport ??
+    (selectedRealtimeModel.provider === "openai" ? "openai_webrtc" : "gemini_live_websocket");
 
   function selectTextModel(option: AIModelOption) {
     if (!option.enabled) {

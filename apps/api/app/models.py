@@ -83,6 +83,7 @@ InteractionTurnRoute = Literal[
     "new_task",
 ]
 ConversationRole = Literal["user", "assistant"]
+RealtimeTranscriptRole = Literal["user", "assistant", "tool"]
 AIProvider = Literal[
     "openai",
     "anthropic",
@@ -867,6 +868,9 @@ class RealtimeConnectResponse(BaseModel):
     provider: str = "openai"
     model: str
     voice: str
+    call_id: str | None = None
+    tools_enabled: bool = False
+    client_session_id: str | None = None
 
 
 class GoogleRealtimeSessionRequest(BaseModel):
@@ -886,6 +890,9 @@ class GoogleRealtimeSessionResponse(BaseModel):
 class RealtimeTranscriptLogRequest(BaseModel):
     client_session_id: str | None = None
     lesson_title: str | None = None
-    role: Literal["user", "assistant"]
+    role: RealtimeTranscriptRole
     transport_event_type: str
     transcript: str
+    tool_name: str | None = None
+    tool_call_id: str | None = None
+    tool_status: str | None = None

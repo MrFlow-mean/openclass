@@ -2834,6 +2834,7 @@ def test_chat_http_endpoint_returns_chatbot_reply(
 def test_realtime_transcript_route_reports_removed_workflow(
     monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
 ) -> None:
+    monkeypatch.delenv("OPENCLASS_REALTIME_ENABLED", raising=False)
     store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
     monkeypatch.setattr(workspace_state, "STORE", store)
     lesson = _seed_test_user_workspace(store).packages[0].lessons[0]

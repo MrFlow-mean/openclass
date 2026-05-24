@@ -11,10 +11,19 @@ from app.models import (
     UserView,
 )
 from app.routers.auth import current_user
+from app.services.openai_realtime import (
+    RealtimeServiceError,
+    connect_openai_realtime_session,
+    log_realtime_transcript_event,
+)
 
 router = APIRouter()
 
-REALTIME_REMOVED_DETAIL = "实时语音后端运行路径已移除；当前课程对话入口是 /api/lessons/{lesson_id}/chat。"
+REALTIME_DISABLED_DETAIL = "实时语音后端运行路径未启用；当前课程对话入口是 /api/lessons/{lesson_id}/chat。"
+
+
+def _realtime_error(exc: RealtimeServiceError) -> HTTPException:
+    return HTTPException(status_code=exc.status_code, detail=exc.detail)
 
 
 @router.post("/api/lessons/{lesson_id}/realtime/connect", response_model=RealtimeConnectResponse)
@@ -23,7 +32,10 @@ def connect_realtime_session(
     request: RealtimeConnectRequest,
     user: UserView = Depends(current_user),
 ) -> RealtimeConnectResponse:
-    raise HTTPException(status_code=410, detail=REALTIME_REMOVED_DETAIL)
+    try:
+        return connect_openai_realtime_session(lesson_id, request, user_id=user.id)
+    except RealtimeServiceError as exc:
+        raise _realtime_error(exc) from exc
 
 
 @router.post("/api/lessons/{lesson_id}/realtime/google/session", response_model=GoogleRealtimeSessionResponse)
@@ -32,7 +44,7 @@ def create_google_realtime_session(
     request: GoogleRealtimeSessionRequest,
     user: UserView = Depends(current_user),
 ) -> GoogleRealtimeSessionResponse:
-    raise HTTPException(status_code=410, detail=REALTIME_REMOVED_DETAIL)
+    raise HTTPException(status_code=410, detail=REALTIME_DISABLED_DETAIL)
 
 
 @router.websocket("/api/lessons/{lesson_id}/realtime/google/ws")
@@ -42,8 +54,8 @@ async def proxy_google_realtime_session(websocket: WebSocket, lesson_id: str) ->
         {
             "error": {
                 "code": 410,
-                "status": "REALTIME_REMOVED",
-                "message": REALTIME_REMOVED_DETAIL,
+                "status": "REALTIME_DISABLED",
+                "message": REALTIME_DISABLED_DETAIL,
             }
         }
     )
@@ -56,4 +68,7 @@ def log_realtime_event(
     request: RealtimeTranscriptLogRequest,
     user: UserView = Depends(current_user),
 ) -> dict[str, str]:
-    raise HTTPException(status_code=410, detail=REALTIME_REMOVED_DETAIL)
+    try:
+        return log_realtime_transcript_event(lesson_id, request, user_id=user.id)
+    except RealtimeServiceError as exc:
+        raise _realtime_error(exc) from exc

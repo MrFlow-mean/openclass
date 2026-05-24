@@ -276,6 +276,15 @@ class LearningRequirementUpdate(BaseModel):
     interaction_rule_draft: InteractionRuleDraft | None = None
 
 
+class ComplexProblemSolution(BaseModel):
+    summary: str = ""
+    answer: str = ""
+    confidence: Literal["low", "medium", "high"] = "medium"
+    limits: str = ""
+    model: str = ""
+    reasoning_effort: str = ""
+
+
 @contextmanager
 def bind_text_model_selection(selection: AIModelSelection | None):
     token = _text_model_selection.set(selection)
@@ -739,6 +748,8 @@ class OpenAICourseAI:
                 "catalog": self.config.catalog_model or self.config.default_model,
                 "fallback": self.config.fallback_model,
                 "image": self.config.image_model,
+                "strong_reasoning": os.getenv("OPENAI_STRONG_REASONING_MODEL", "gpt-5.5"),
+                "pro_reasoning": os.getenv("OPENAI_PRO_REASONING_MODEL", "gpt-5.5-pro"),
                 "deepseek": self.deepseek_config.default_model,
                 "kimi": self.kimi_config.default_model,
                 "minimax": self.minimax_config.default_model,
@@ -851,6 +862,112 @@ class OpenAICourseAI:
             schema=ChatbotReply,
         )
         return result if isinstance(result, ChatbotReply) else None
+
+    def solve_complex_problem(
+        self,
+        *,
+        lesson_title: str,
+        question: str,
+        target_excerpt: str = "",
+        board_summary: str = "",
+        resource_summary: str = "",
+        conversation_summary: str = "",
+        desired_output: str = "",
+        high_value: bool = False,
+    ) -> ComplexProblemSolution | None:
+        if not self.client:
+            ai_usage_logger.log_event(
+                "openai_strong_reasoning_skipped",
+                model=os.getenv("OPENAI_STRONG_REASONING_MODEL", "gpt-5.5"),
+                reason="client_disabled",
+            )
+            return None
+        model = os.getenv("OPENAI_STRONG_REASONING_MODEL", "gpt-5.5")
+        if high_value and (os.getenv("OPENCLASS_STRONG_REASONING_ALLOW_PRO") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }:
+            model = os.getenv("OPENAI_PRO_REASONING_MODEL", "gpt-5.5-pro")
+        reasoning_effort = os.getenv("OPENAI_STRONG_REASONING_EFFORT", "high")
+        system_prompt = (
+            "你是 OpenClass Chatbot 的隐藏强推理工具，只提供解题材料，不直接面向学习者发言。\n"
+            "规则：\n"
+            "1. 只解决用户问题本身，不修改板书、不生成整篇文档、不扮演新的 AI 角色。\n"
+            "2. 根据课程标题、目标片段、板书摘要、资料摘要和最近对话进行严谨分析。\n"
+            "3. 输出要便于 Chatbot 直接转述：给出结论、关键依据、必要步骤和不确定性。\n"
+            "4. 不写任何学科、教材、考试或样例专属分支；换成任意主题后规则仍成立。"
+        )
+        user_prompt = _json(
+            {
+                "lesson_title": lesson_title,
+                "question": question,
+                "target_excerpt": target_excerpt or "无",
+                "board_summary": board_summary or "无",
+                "resource_summary": resource_summary or "无",
+                "recent_conversation": conversation_summary or "无",
+                "desired_output": desired_output or "由 Chatbot 用适合学习者的方式讲解。",
+                "response_contract": {
+                    "summary": "一句话概括强推理结果。",
+                    "answer": "给 Chatbot 的可转述答案材料；不要泄露内部推理链。",
+                    "confidence": "low、medium 或 high。",
+                    "limits": "必要的不确定性或前提；没有则留空。",
+                    "model": "实际使用的强推理模型。",
+                    "reasoning_effort": "实际 reasoning effort。",
+                },
+            }
+        )
+        started_at = time.perf_counter()
+        try:
+            response = self.client.responses.parse(
+                model=model,
+                reasoning={"effort": reasoning_effort},
+                input=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                text_format=ComplexProblemSolution,
+            )
+            parsed = response.output_parsed
+            if not isinstance(parsed, ComplexProblemSolution):
+                ai_usage_logger.log_event(
+                    "openai_strong_reasoning_empty",
+                    provider="openai",
+                    role="strong_reasoning",
+                    model=model,
+                    reasoning_effort=reasoning_effort,
+                    duration_ms=_elapsed_ms(started_at),
+                    response_id=getattr(response, "id", None),
+                    usage=getattr(response, "usage", None),
+                )
+                return None
+            parsed.model = parsed.model or model
+            parsed.reasoning_effort = parsed.reasoning_effort or reasoning_effort
+            ai_usage_logger.log_event(
+                "openai_strong_reasoning_call",
+                provider="openai",
+                role="strong_reasoning",
+                model=model,
+                reasoning_effort=reasoning_effort,
+                duration_ms=_elapsed_ms(started_at),
+                response_id=getattr(response, "id", None),
+                usage=getattr(response, "usage", None),
+                parsed_output=parsed,
+            )
+            return parsed
+        except Exception as exc:  # pragma: no cover - network/runtime dependent
+            ai_usage_logger.log_event(
+                "openai_strong_reasoning_error",
+                provider="openai",
+                role="strong_reasoning",
+                model=model,
+                reasoning_effort=reasoning_effort,
+                duration_ms=_elapsed_ms(started_at),
+                error=str(exc),
+            )
+            logger.warning("OpenAI strong reasoning call failed: %s", exc)
+            return None
 
     def generate_interaction_turn_decision(
         self,

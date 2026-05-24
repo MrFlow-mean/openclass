@@ -159,7 +159,7 @@ npm run verify           # 提交前 gate：file-size guard + lint + typecheck +
 - 线上行为只能由用户输入、上传资料、课程 metadata、模型输出与通用规则驱动。
 - 术语表、章节目录、知识点扩展从资料或模型来，不写死在 workflow / factory / resource_library。
 - 任何课程级示例与 fixture 仅允许在 tests、fixtures、文档中出现，不得污染真实请求的默认逻辑。
-- 当前真实启用的 AI 入口以 `/api/ai-models`、`/api/lessons/{lesson_id}/chat` 和文档相关 service 为准；realtime 路由明确返回 410 removed。`BoardTeachingGuide` / `BoardTeachingProgress` 一类类型属于保留兼容 / future workflow schema，不能当作已完整接入的教学运行框架。
+- 当前真实启用的 AI 入口以 `/api/ai-models`、`/api/lessons/{lesson_id}/chat` 和文档相关 service 为准；realtime 后端默认关闭，只有 `OPENCLASS_REALTIME_ENABLED=true` 时才会接入 OpenAI WebRTC，且仍作为同一个 Chatbot 的实时形态。`BoardTeachingGuide` / `BoardTeachingProgress` 一类类型属于保留兼容 / future workflow schema，不能当作已完整接入的教学运行框架。
 
 ## 数据存储
 

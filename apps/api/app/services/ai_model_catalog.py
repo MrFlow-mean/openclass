@@ -95,6 +95,10 @@ def _single_api_key_mode() -> bool:
     return _env_truthy("AI_SINGLE_API_KEY_MODE")
 
 
+def realtime_runtime_enabled() -> bool:
+    return _env_truthy("OPENCLASS_REALTIME_ENABLED")
+
+
 def _shared_api_key() -> str | None:
     return os.getenv("OPENAI_API_KEY")
 
@@ -180,6 +184,14 @@ def _provider_enabled(provider: AIProvider) -> bool:
     return False
 
 
+def _realtime_provider_enabled(provider: AIProvider) -> bool:
+    if not realtime_runtime_enabled():
+        return False
+    if provider == "openai":
+        return _provider_enabled("openai")
+    return False
+
+
 def _normalize_provider(value: str | None, default: AIProvider) -> AIProvider:
     normalized = (value or "").strip().lower()
     if normalized in PROVIDER_LABELS:
@@ -241,7 +253,7 @@ def _option(
     default: bool = False,
     transport: str | None = None,
 ) -> AIModelOption:
-    configured = False if capability == "realtime" else _provider_enabled(provider)
+    configured = _realtime_provider_enabled(provider) if capability == "realtime" else _provider_enabled(provider)
     return AIModelOption(
         provider=provider,
         model=model,
@@ -386,6 +398,32 @@ def build_model_catalog() -> AIModelCatalog:
 
     realtime_options: list[AIModelOption] = []
     realtime_default = requested_realtime_default
+    if realtime_runtime_enabled():
+        realtime_options = [
+            _option(
+                provider=provider,
+                model=model,
+                label=label,
+                capability="realtime",
+                default=False,
+                transport=transport,
+            )
+            for provider, models in CURATED_REALTIME_MODELS.items()
+            for model, label, transport in models
+        ]
+        realtime_options.extend(_custom_options("AI_REALTIME_MODELS_JSON", "realtime"))
+        realtime_options = _dedupe_options(realtime_options)
+        realtime_default = _catalog_default_selection(
+            requested=requested_realtime_default,
+            options=realtime_options,
+            curated_models={
+                provider: tuple((model, label) for model, label, _transport in models)
+                for provider, models in CURATED_REALTIME_MODELS.items()
+            },
+            provider_enabled=_realtime_provider_enabled,
+        )
+        for option in realtime_options:
+            option.default = _option_matches_selection(option, realtime_default)
 
     return AIModelCatalog(
         text=text_options,

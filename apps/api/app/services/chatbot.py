@@ -65,6 +65,11 @@ DOCUMENT_ARTIFACT_REQUEST_PATTERN = re.compile(
     r"|"
     rf"{DOCUMENT_ARTIFACT_NOUNS}.{{0,24}}{DOCUMENT_GENERATION_ACTIONS}"
 )
+COMPLEX_REASONING_REQUEST_PATTERN = re.compile(
+    r"(深入|深度|严谨|复杂|难题|多步骤|推理|推导|证明|系统分析|仔细分析|完整分析|高质量|complex|reasoning)",
+    re.IGNORECASE,
+)
+PRO_REASONING_REQUEST_PATTERN = re.compile(r"(最高|最强|pro|专家级|特别难|高风险|高价值)", re.IGNORECASE)
 
 
 def _compact_text(value: str | None, *, limit: int = MAX_CONTEXT_CHARS) -> str:
@@ -107,6 +112,55 @@ def _resource_summary_with_reference(
 def _conversation_summary(conversation: list[ConversationTurn]) -> str:
     turns = conversation[-MAX_CONVERSATION_TURNS:]
     return "\n".join(f"{turn.role}: {_compact_text(turn.content, limit=500)}" for turn in turns if turn.content.strip())
+
+
+def _requests_complex_reasoning(text: str) -> bool:
+    compact = _compact_text(text, limit=280)
+    return bool(compact and COMPLEX_REASONING_REQUEST_PATTERN.search(compact))
+
+
+def _chatbot_message_with_solver_context(
+    *,
+    lesson: Lesson,
+    request: ChatRequest,
+    user_message: str,
+    target_excerpt: str | None,
+    board_summary: str,
+    resource_summary: str,
+    conversation_summary: str,
+) -> tuple[str, dict[str, object]]:
+    if not _requests_complex_reasoning(request.message) or not getattr(openai_course_ai, "client", None):
+        return user_message, {}
+    solution = openai_course_ai.solve_complex_problem(
+        lesson_title=lesson.title,
+        question=request.message,
+        target_excerpt=_compact_text(target_excerpt, limit=1600),
+        board_summary=_compact_text(board_summary, limit=2400),
+        resource_summary=_compact_text(resource_summary, limit=1600),
+        conversation_summary=conversation_summary,
+        desired_output="给 Chatbot 的隐藏解题材料，由 Chatbot 面向学习者直接讲答案。",
+        high_value=bool(PRO_REASONING_REQUEST_PATTERN.search(request.message)),
+    )
+    if solution is None:
+        return user_message, {}
+    solver_context = (
+        "隐藏强推理工具已给出解题材料。请仍以 OpenClass Chatbot 的口吻直接回答学习者，"
+        "不要提到另一个模型或内部工具。\n"
+        f"结论摘要：{solution.summary}\n"
+        f"可转述答案材料：{solution.answer}\n"
+        f"不确定性或前提：{solution.limits or '无'}\n"
+        f"置信度：{solution.confidence}"
+    )
+    metadata = {
+        "strong_reasoning_tool": {
+            "model": solution.model,
+            "reasoning_effort": solution.reasoning_effort,
+            "confidence": solution.confidence,
+            "summary": solution.summary,
+            "limits": solution.limits,
+        }
+    }
+    return f"{user_message}\n\n{solver_context}", metadata
 
 
 def _selection_excerpt(selection: SelectionRef | None, fallback: str | None = None) -> str | None:
@@ -1192,13 +1246,22 @@ def _chat_response(
             )
 
         focus_excerpt = focus_context(resolution.focus) if resolution.focus else ""
+        solver_user_message, solver_metadata = _chatbot_message_with_solver_context(
+            lesson=lesson,
+            request=request,
+            user_message=request.message,
+            target_excerpt=focus_excerpt,
+            board_summary=_board_summary(lesson),
+            resource_summary=_resource_summary(visible_package.resources),
+            conversation_summary=_conversation_summary(request.conversation),
+        )
         ai_reply = openai_course_ai.generate_chatbot_reply(
             lesson_title=lesson.title,
             learning_goal=requirements.learning_goal,
             board_summary=_board_summary(lesson),
             resource_summary=_resource_summary(visible_package.resources),
             conversation_summary=_conversation_summary(request.conversation),
-            user_message=request.message,
+            user_message=solver_user_message,
             selection_excerpt=focus_excerpt,
             interaction_mode=request.interaction_mode,
         )
@@ -1226,6 +1289,7 @@ def _chat_response(
                     focus_candidates=resolution.candidates,
                     requirement_cleared=requirement_cleared,
                 ),
+                **solver_metadata,
             },
         )
         if requirement_cleared:
@@ -1435,13 +1499,22 @@ def _chat_response(
             conversation_summary=_conversation_summary(request.conversation),
         )
 
+    solver_user_message, solver_metadata = _chatbot_message_with_solver_context(
+        lesson=lesson,
+        request=request,
+        user_message=request.message,
+        target_excerpt=selection_or_reference_excerpt,
+        board_summary=_board_summary(lesson),
+        resource_summary=resource_summary_for_turn,
+        conversation_summary=_conversation_summary(request.conversation),
+    )
     ai_reply = openai_course_ai.generate_chatbot_reply(
         lesson_title=lesson.title,
         learning_goal=requirements.learning_goal,
         board_summary=_board_summary(lesson),
         resource_summary=resource_summary_for_turn,
         conversation_summary=_conversation_summary(request.conversation),
-        user_message=request.message,
+        user_message=solver_user_message,
         selection_excerpt=selection_or_reference_excerpt,
         interaction_mode=request.interaction_mode,
     )
@@ -1531,6 +1604,7 @@ def _chat_response(
             ),
             **_reference_metadata(resolution=resource_resolution),
             **board_edit_metadata,
+            **solver_metadata,
         },
     )
     if requirement_cleared:
