@@ -12,9 +12,24 @@ EXPLAIN_CONFIDENCE_THRESHOLD = 0.65
 ORDINAL_LOCATION_PATTERN = re.compile(
     r"(?:第\s*)?(?P<number>[0-9０-９一二三四五六七八九十两]+)\s*(?P<unit>小节|章节|章|节|部分|段)"
 )
+STRUCTURED_TARGET_PATTERN = re.compile(
+    r"(?:第\s*)?(?P<number>[0-9０-９一二三四五六七八九十两]+)\s*(?:个|道)?\s*"
+    r"(?P<unit>空|题|问题|项|条|选项|句|行)"
+)
 HEADING_ORDINAL_PATTERN = re.compile(
     r"^\s*(?:第\s*)?(?P<number>[0-9０-９一二三四五六七八九十两]+)\s*(?:[.．、:：)）]|章|节|部分|段|小节)"
 )
+NUMBERED_ITEM_PATTERN = re.compile(
+    r"(?:(?<=^)|(?<=[\n\r。；;]))\s*"
+    r"(?P<label>[0-9０-９一二三四五六七八九十两]+)"
+    r"\s*[.．、:：)）]\s*(?P<body>[^\n\r。；;]+)"
+)
+BLANK_MARKER_PATTERN = re.compile(
+    r"(?:[\(（]\s*(?P<paren>[0-9０-９一二三四五六七八九十两]+)\s*[\)）]"
+    r"|(?P<prefix>[0-9０-９一二三四五六七八九十两]+)\s*[.．、:：)）])"
+    r"\s*[_＿—-]{2,}"
+)
+SENTENCE_SPLIT_PATTERN = re.compile(r"[^。！？!?；;.\n\r]+[。！？!?；;.]?")
 
 GENERIC_CONCEPT_GROUPS: tuple[tuple[str, ...], ...] = (
     ("为什么", "原因", "机制", "形成", "影响因素", "来源"),
@@ -39,6 +54,12 @@ class FocusResolution:
         return self.focus is not None and self.status in {"selected", "resolved"}
 
 
+@dataclass(frozen=True)
+class StructuredTarget:
+    number: int
+    unit: str
+
+
 def resolve_board_focus(
     *,
     lesson: Lesson,
@@ -57,6 +78,21 @@ def resolve_board_focus(
             segments=index.segments,
         )
         return FocusResolution(focus=focus, candidates=[focus], status="selected")
+
+    structured_candidates = _structured_candidate_focuses(
+        lesson=lesson,
+        user_message=user_message,
+        segments=index.segments,
+    )
+    if structured_candidates:
+        if len(structured_candidates) == 1:
+            return FocusResolution(focus=structured_candidates[0], candidates=structured_candidates, status="resolved")
+        return FocusResolution(
+            focus=None,
+            candidates=structured_candidates[:3],
+            status="ambiguous",
+            question="我按编号内容找到了几个可能的位置。请确认你要讲解或操作的是哪一处。",
+        )
 
     ordinal_candidates = _ordinal_candidate_focuses(lesson=lesson, user_message=user_message, segments=index.segments)
     if ordinal_candidates:
@@ -214,6 +250,154 @@ def _candidate_focuses(
     return focuses
 
 
+def _structured_candidate_focuses(
+    *,
+    lesson: Lesson,
+    user_message: str,
+    segments: list[BoardSegment],
+) -> list[BoardFocusRef]:
+    target = _structured_target_from_message(user_message)
+    if target is None:
+        return []
+
+    if target.unit in {"项", "条", "选项"}:
+        list_candidates = _list_item_candidate_focuses(lesson=lesson, target=target, segments=segments)
+        if list_candidates:
+            return list_candidates
+
+    candidates: list[BoardFocusRef] = []
+    seen: set[tuple[str | None, str]] = set()
+    for segment in segments:
+        excerpts = _structured_excerpts_for_segment(segment.text, target)
+        for excerpt, reason in excerpts:
+            key = (segment.segment_id, excerpt)
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append(
+                _focus_from_segment_excerpt(
+                    lesson=lesson,
+                    segment=segment,
+                    segments=segments,
+                    excerpt=excerpt,
+                    confidence=0.94,
+                    reason=reason,
+                )
+            )
+    return candidates[:5]
+
+
+def _structured_target_from_message(text: str) -> StructuredTarget | None:
+    compact = compact_segment_text(text, limit=160)
+    match = STRUCTURED_TARGET_PATTERN.search(compact)
+    if not match:
+        return None
+    number = _parse_ordinal_number(match.group("number"))
+    if number is None:
+        return None
+    return StructuredTarget(number=number, unit=match.group("unit"))
+
+
+def _structured_excerpts_for_segment(text: str, target: StructuredTarget) -> list[tuple[str, str]]:
+    if target.unit == "空":
+        return _blank_excerpts_for_segment(text, target.number)
+    if target.unit in {"题", "问题", "项", "条", "选项"}:
+        return _numbered_item_excerpts_for_segment(text, target.number)
+    if target.unit == "句":
+        return _nth_sentence_excerpt_for_segment(text, target.number)
+    if target.unit == "行":
+        return _nth_line_excerpt_for_segment(text, target.number)
+    return []
+
+
+def _blank_excerpts_for_segment(text: str, ordinal: int) -> list[tuple[str, str]]:
+    excerpts: list[tuple[str, str]] = []
+    for match in BLANK_MARKER_PATTERN.finditer(text):
+        raw_number = match.group("paren") or match.group("prefix") or ""
+        if _parse_ordinal_number(raw_number) != ordinal:
+            continue
+        excerpts.append(
+            (
+                _bounded_excerpt(text, match.start(), match.end()),
+                "根据用户给出的编号空格定位到对应内容单元。",
+            )
+        )
+    return excerpts
+
+
+def _numbered_item_excerpts_for_segment(text: str, ordinal: int) -> list[tuple[str, str]]:
+    excerpts: list[tuple[str, str]] = []
+    for match in NUMBERED_ITEM_PATTERN.finditer(text):
+        if _parse_ordinal_number(match.group("label")) != ordinal:
+            continue
+        excerpts.append(
+            (
+                compact_segment_text(match.group(0), limit=500),
+                "根据用户给出的编号定位到对应条目。",
+            )
+        )
+    return excerpts
+
+
+def _nth_sentence_excerpt_for_segment(text: str, ordinal: int) -> list[tuple[str, str]]:
+    sentences = [match.group(0).strip() for match in SENTENCE_SPLIT_PATTERN.finditer(text) if match.group(0).strip()]
+    if 1 <= ordinal <= len(sentences):
+        return [(compact_segment_text(sentences[ordinal - 1], limit=500), "根据用户给出的句子序号定位。")]
+    return []
+
+
+def _nth_line_excerpt_for_segment(text: str, ordinal: int) -> list[tuple[str, str]]:
+    lines = [line.strip() for line in re.split(r"[\n\r]+", text) if line.strip()]
+    if 1 <= ordinal <= len(lines):
+        return [(compact_segment_text(lines[ordinal - 1], limit=500), "根据用户给出的行号定位。")]
+    return []
+
+
+def _list_item_candidate_focuses(
+    *,
+    lesson: Lesson,
+    target: StructuredTarget,
+    segments: list[BoardSegment],
+) -> list[BoardFocusRef]:
+    list_segments = [segment for segment in segments if segment.kind == "list" and segment.text.strip()]
+    if 1 <= target.number <= len(list_segments):
+        segment = list_segments[target.number - 1]
+        return [
+            _focus_from_segment(
+                lesson=lesson,
+                segment=segment,
+                segments=segments,
+                confidence=0.9,
+                reason="根据用户给出的条目序号定位到列表项。",
+            )
+        ]
+    return []
+
+
+def _bounded_excerpt(text: str, start: int, end: int) -> str:
+    left = max(
+        text.rfind("。", 0, start),
+        text.rfind("！", 0, start),
+        text.rfind("？", 0, start),
+        text.rfind("!", 0, start),
+        text.rfind("?", 0, start),
+        text.rfind(".", 0, start),
+        text.rfind(";", 0, start),
+        text.rfind("；", 0, start),
+        text.rfind("\n", 0, start),
+        text.rfind("\r", 0, start),
+    )
+    right_candidates = [
+        index
+        for marker in ("。", "！", "？", "!", "?", ".", ";", "；", "\n", "\r")
+        for index in [text.find(marker, end)]
+        if index >= 0
+    ]
+    left = left + 1 if left >= 0 else max(0, start - 180)
+    right = min(right_candidates) + 1 if right_candidates else min(len(text), end + 220)
+    return compact_segment_text(text[left:right], limit=500)
+
+
 def _ordinal_candidate_focuses(
     *,
     lesson: Lesson,
@@ -343,6 +527,30 @@ def _focus_from_segment(
         text_hash=segment.text_hash,
         confidence=max(0.0, min(1.0, confidence)),
         reason=reason,
+    )
+
+
+def _focus_from_segment_excerpt(
+    *,
+    lesson: Lesson,
+    segment: BoardSegment,
+    segments: list[BoardSegment],
+    excerpt: str,
+    confidence: float,
+    reason: str,
+) -> BoardFocusRef:
+    focus = _focus_from_segment(
+        lesson=lesson,
+        segment=segment,
+        segments=segments,
+        confidence=confidence,
+        reason=reason,
+    )
+    return focus.model_copy(
+        update={
+            "excerpt": excerpt,
+            "text_hash": segment_text_hash(excerpt),
+        }
     )
 
 

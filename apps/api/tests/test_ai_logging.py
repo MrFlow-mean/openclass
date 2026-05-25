@@ -2537,6 +2537,156 @@ def test_selected_simplify_request_in_chat_routes_to_board_editor(
     assert _read_log_entries(isolated_ai_log) == []
 
 
+def test_numbered_blank_edit_routes_to_board_editor(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    captured: dict[str, str | None] = {}
+
+    def _fake_board_edit(**kwargs):
+        captured["selection_excerpt"] = kwargs.get("selection_excerpt")
+        captured["intent"] = kwargs.get("intent")
+        captured["user_instruction"] = kwargs.get("user_instruction")
+        return BoardDocumentEditResult(
+            operation="replace_selection",
+            content_text="You should list all your tasks and then (3)______ which responsibilities deserve immediate attention.",
+            summary="已调整编号空格。",
+            chatbot_message="AI生成：第3个空已经调整。",
+        )
+
+    def _unexpected_chatbot_reply(**kwargs):
+        raise AssertionError("resolved numbered edits should use the board document editor AI")
+
+    monkeypatch.setattr(openai_course_ai, "generate_chatbot_reply", _unexpected_chatbot_reply)
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _fake_board_edit)
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.board_document = build_document(
+        title="已有板书",
+        content_text=(
+            "# 练习\n"
+            "Many learners make a plan first. You should list all your tasks and then (3)______ "
+            "which ones are most important. Focus on those first.\n"
+            "3. A. decide  B. discuss  C. discover  D. differ"
+        ),
+    )
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="把第三个空改得更难一些"),
+        user_id=TEST_USER.id,
+    )
+
+    assert response.chatbot_message == "AI生成：第3个空已经调整。"
+    assert response.board_decision.action == "edit_board"
+    assert response.resolved_focus is not None
+    assert "(3)______ which ones are most important" in response.resolved_focus.excerpt
+    assert captured == {
+        "selection_excerpt": "You should list all your tasks and then (3)______ which ones are most important.",
+        "intent": "edit_existing_document",
+        "user_instruction": "把第三个空改得更难一些",
+    }
+    updated_lesson = response.course_package.lessons[0]
+    assert "which responsibilities deserve immediate attention" in updated_lesson.board_document.content_text
+    commit = updated_lesson.history_graph.commits[-1]
+    assert commit.metadata["kind"] == "board_document_edit"
+    assert commit.metadata["task_requirement_sheet"]["action_type"] == "rewrite_target"
+    assert commit.metadata["requirement_cleared"] is True
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_ambiguous_numbered_edit_asks_for_focus_confirmation(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+
+    def _fake_chatbot_reply(**kwargs):
+        return ChatbotReply(chatbot_message="请确认要修改哪一个编号位置。")
+
+    def _unexpected_board_edit(**kwargs):
+        raise AssertionError("ambiguous numbered edits must not modify the board")
+
+    monkeypatch.setattr(openai_course_ai, "generate_chatbot_reply", _fake_chatbot_reply)
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _unexpected_board_edit)
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.board_document = build_document(
+        title="已有板书",
+        content_text="# 第一组\n3）第一组目标\n# 第二组\n3）第二组目标",
+    )
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="修改第3题"),
+        user_id=TEST_USER.id,
+    )
+
+    assert response.chatbot_message == "请确认要修改哪一个编号位置。"
+    assert response.board_decision.action == "await_focus_choice"
+    assert len(response.focus_candidates) == 2
+    assert response.course_package.lessons[0].board_document.content_text == lesson.board_document.content_text
+    commit = response.course_package.lessons[0].history_graph.commits[-1]
+    assert commit.metadata["kind"] == "chat_flow"
+    assert commit.metadata["focus_candidates"]
+    assert commit.metadata["requirement_cleared"] is False
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_numbered_target_explanation_uses_structured_focus(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    captured: dict[str, str | None] = {}
+
+    def _fake_chatbot_reply(**kwargs):
+        captured["selection_excerpt"] = kwargs.get("selection_excerpt")
+        return ChatbotReply(chatbot_message="AI生成：这是第3题讲解。")
+
+    def _unexpected_board_edit(**kwargs):
+        raise AssertionError("numbered explanations must not edit the board")
+
+    monkeypatch.setattr(openai_course_ai, "generate_chatbot_reply", _fake_chatbot_reply)
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _unexpected_board_edit)
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.board_document = build_document(
+        title="已有板书",
+        content_text="# 练习\n1）第一题内容\n2）第二题内容\n3）第三题内容",
+    )
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="讲解第3题"),
+        user_id=TEST_USER.id,
+    )
+
+    assert response.chatbot_message == "AI生成：这是第3题讲解。"
+    assert response.board_decision.action == "no_change"
+    assert response.resolved_focus is not None
+    assert response.resolved_focus.excerpt == "3）第三题内容"
+    assert "3）第三题内容" in (captured["selection_excerpt"] or "")
+    commit = response.course_package.lessons[0].history_graph.commits[-1]
+    assert commit.metadata["kind"] == "chat_flow"
+    assert commit.metadata["task_requirement_sheet"]["action_type"] == "explain_target"
+    assert commit.metadata["requirement_cleared"] is True
+    assert _read_log_entries(isolated_ai_log) == []
+
+
 def test_targeted_explanation_uses_resolved_board_focus_and_clears_task_sheet(
     monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
 ) -> None:

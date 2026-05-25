@@ -200,6 +200,25 @@ def test_segment_resolver_uses_numbered_heading_location_without_selection() -> 
     assert resolution.focus.excerpt == "4. 检查问题"
 
 
+def test_segment_resolver_uses_numbered_list_item_location_without_selection() -> None:
+    lesson = create_empty_lesson("定位测试")
+    lesson.board_document = build_document(
+        title="定位测试",
+        content_text="# 清单\n1. 确认目标\n2. 拆分任务\n3. 回顾结果",
+    )
+
+    resolution = resolve_board_focus(
+        lesson=lesson,
+        user_message="修改第2项",
+        action_type="rewrite_target",
+    )
+
+    assert resolution.resolved
+    assert resolution.focus is not None
+    assert resolution.focus.kind == "list"
+    assert resolution.focus.excerpt == "拆分任务"
+
+
 def _collect_node_types(node: dict) -> list[str]:
     node_type = node.get("type")
     result = [node_type] if isinstance(node_type, str) else []

@@ -54,8 +54,15 @@ APPEND_REQUEST_PATTERN = re.compile(
 )
 EXPAND_REQUEST_PATTERN = re.compile(r"(扩写|扩展|补充|增加|添加)")
 SIMPLIFY_REQUEST_PATTERN = re.compile(r"(简化|简单(?:一点|点|些)?|更简单|通俗|更容易懂|更好懂|好理解|容易理解|降低难度|浅显)")
-REWRITE_REQUEST_PATTERN = re.compile(r"(改写|重写|修改|编辑|润色|优化|改(?:得|的)?(?:简单|通俗|容易|好懂)|换(?:个|一种)说法)")
-TARGET_LOCATION_HINT_PATTERN = re.compile(r"(选中|这一段|这段|这部分|这里|前面|上面|下面|第.{0,8}[章节部分段]|定义|概念|例子|示例|结论|总结|表格|为什么)")
+REWRITE_REQUEST_PATTERN = re.compile(
+    r"(改写|重写|修改|编辑|润色|优化|"
+    r"改(?:得|的)?(?:简单|通俗|容易|好懂|清楚|更清楚|更难|难一点|有难度|更有区分度)|"
+    r"(?:提高|增加|提升).{0,6}难度|换(?:个|一种)说法)"
+)
+TARGET_LOCATION_HINT_PATTERN = re.compile(
+    r"(选中|这一段|这段|这部分|这里|前面|上面|下面|"
+    r"第.{0,8}[章节部分段空题项条句行]|定义|概念|例子|示例|结论|总结|表格|为什么)"
+)
 RESOURCE_REFERENCE_HINT_PATTERN = re.compile(r"(资料|材料|文档|上传|教材|课本|原文|参考|根据|来自|文件|PDF|Word|章节|小节|第.{0,8}[章节部分])", re.IGNORECASE)
 EXPLICIT_RESOURCE_REFERENCE_PATTERN = re.compile(r"(资料|材料|上传|教材|课本|原文|参考|根据|来自|文件|PDF|Word)", re.IGNORECASE)
 LEARNING_START_REQUEST_PATTERN = re.compile(r"(我要学|我想学|想学习|学习一下|开始学|帮我学|学一学)")

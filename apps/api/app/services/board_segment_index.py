@@ -103,7 +103,20 @@ def _collect_segments(
             )
         return
 
-    if node_type in {"bulletList", "orderedList", "table"}:
+    if node_type in {"bulletList", "orderedList"}:
+        children = node.get("content")
+        if isinstance(children, list):
+            for child in children:
+                if isinstance(child, dict):
+                    _collect_segments(
+                        child,
+                        document=document,
+                        heading_path=heading_path,
+                        segments=segments,
+                    )
+        return
+
+    if node_type in {"listItem", "table"}:
         text = compact_segment_text(_node_text(node), limit=1600)
         if text:
             _append_segment(
