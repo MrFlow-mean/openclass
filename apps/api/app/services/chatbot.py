@@ -35,6 +35,7 @@ from app.services.interaction_rules import (
     should_start_interaction,
 )
 from app.services.learning_requirement_manager import (
+    is_explicit_board_generation_request,
     is_generation_control_request,
     update_learning_requirements_from_chat,
 )
@@ -429,24 +430,13 @@ def _reference_metadata(
     }
 
 
-def _has_identified_learning_topic(learning_clarification: LearningClarificationStatus) -> bool:
-    return any(
-        item.category == "learning" and item.value.strip()
-        for item in learning_clarification.key_facts
-    )
-
-
-def _should_auto_generate_board_from_teaching_start(
+def _should_generate_board_from_explicit_request(
     *,
     lesson: Lesson,
-    learning_clarification: LearningClarificationStatus,
+    request: ChatRequest,
 ) -> bool:
-    return (
-        is_document_empty(lesson.board_document)
-        and learning_clarification.forced_start
-        and learning_clarification.can_start
-        and not learning_clarification.ready_for_board
-        and _has_identified_learning_topic(learning_clarification)
+    return is_document_empty(lesson.board_document) and is_explicit_board_generation_request(
+        request.message
     )
 
 
@@ -1511,6 +1501,67 @@ def _chat_response(
                 resource_summary_for_turn=resource_summary_for_turn,
                 conversation_summary=_conversation_summary(request.conversation),
             )
+        if _should_generate_board_from_explicit_request(lesson=lesson, request=request):
+            requirements = _with_task_details(
+                requirements,
+                action_type="generate_board",
+                instruction=request.message,
+            )
+            edit_outcome = generate_from_requirements(
+                lesson=lesson,
+                requirements=requirements,
+                clarification=learning_clarification,
+                resource_summary=resource_summary_for_turn,
+                conversation_summary=_conversation_summary(requirement_conversation),
+                user_instruction=request.message,
+            )
+            if edit_outcome.changed:
+                refresh_lesson_runtime(lesson, document=edit_outcome.new_document, requirements=requirements)
+                requirements = lesson.learning_requirements
+                lesson.board_teaching_guide = build_board_teaching_guide(lesson)
+                lesson.board_teaching_progress = None
+            requirement_cleared = edit_outcome.changed
+            commit_operations(
+                lesson,
+                [],
+                label="Board document generation",
+                message="Generated board document from an explicit learner request",
+                new_document=lesson.board_document,
+                metadata={
+                    "kind": "board_document_generation",
+                    "user_message": request.message,
+                    "assistant_message": edit_outcome.chatbot_message,
+                    "assistant_message_source": edit_outcome.assistant_message_source,
+                    "interaction_mode": request.interaction_mode,
+                    "selection": request.selection.model_dump(mode="json") if request.selection else None,
+                    "board_generation_action": "explicit_board_request",
+                    "board_edit_operation": edit_outcome.operation,
+                    "board_edit_summary": edit_outcome.summary,
+                    "board_section_titles": edit_outcome.section_titles,
+                    **_task_metadata(
+                        requirements=requirements,
+                        learning_clarification=learning_clarification,
+                        requirement_cleared=requirement_cleared,
+                    ),
+                    **_reference_metadata(resolution=resource_resolution),
+                },
+            )
+            if requirement_cleared:
+                _clear_task_requirements(lesson)
+            workspace_state.normalize_package_state(package)
+            workspace_state.save_workspace_for_user(user_id, workspace)
+            return _response(
+                workspace=workspace,
+                package=package,
+                lesson=lesson,
+                chatbot_message=edit_outcome.chatbot_message,
+                learning_clarification=learning_clarification,
+                requirements=requirements,
+                board_decision=edit_outcome.board_decision,
+                resource_matches=resource_resolution.matches,
+                selected_reference=selected_reference,
+                requirement_cleared=requirement_cleared,
+            )
         lesson.learning_requirements = requirements
         ai_reply = openai_course_ai.generate_chatbot_reply(
             lesson_title=lesson.title,
@@ -1685,39 +1736,7 @@ def _chat_response(
         return interaction_start_response
 
     board_decision = BoardDecision(action="no_change", reason="本轮是通用问答聊天，不自动修改讲义。")
-    board_edit_metadata: dict[str, object] = {}
     requirement_cleared = False
-    if _should_auto_generate_board_from_teaching_start(
-        lesson=lesson,
-        learning_clarification=learning_clarification,
-    ):
-        requirements = _with_task_details(
-            requirements,
-            action_type="generate_board",
-            instruction=request.message,
-        )
-        edit_outcome = generate_from_requirements(
-            lesson=lesson,
-            requirements=requirements,
-            clarification=learning_clarification,
-            resource_summary=resource_summary_for_turn,
-            conversation_summary=_conversation_summary(requirement_conversation),
-            user_instruction=request.message,
-        )
-        board_decision = edit_outcome.board_decision
-        if edit_outcome.changed:
-            refresh_lesson_runtime(lesson, document=edit_outcome.new_document, requirements=requirements)
-            requirements = lesson.learning_requirements
-            lesson.board_teaching_guide = build_board_teaching_guide(lesson)
-            lesson.board_teaching_progress = None
-            requirement_cleared = True
-            board_edit_metadata = {
-                "auto_board_generation": True,
-                "board_generation_action": "auto_start_from_teaching",
-                "board_edit_operation": edit_outcome.operation,
-                "board_edit_summary": edit_outcome.summary,
-                "board_section_titles": edit_outcome.section_titles,
-            }
 
     commit_operations(
         lesson,
@@ -1738,7 +1757,6 @@ def _chat_response(
                 requirement_cleared=requirement_cleared,
             ),
             **_reference_metadata(resolution=resource_resolution),
-            **board_edit_metadata,
             **solver_metadata,
         },
     )

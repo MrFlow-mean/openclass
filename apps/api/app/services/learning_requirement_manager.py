@@ -43,7 +43,7 @@ IMMEDIATE_GENERATION_REQUEST_PATTERN = re.compile(
     r"不用再?问|别再?问|不需要再?问|无需再?问)"
 )
 TEACHING_START_REQUEST_PATTERN = re.compile(
-    r"(直接.{0,12}(开始)?讲|开始.{0,8}讲|先讲|从零开始|零基础|0基础|"
+    r"(直接.{0,12}(开始)?讲|开始.{0,8}讲|先讲|从零开始|"
     r"当我是.{0,12}基础|你自己.{0,8}安排|不用再?问|别再?问|不需要再?问|无需再?问)"
 )
 LEARNING_CONTENT_LABELS = {
@@ -165,6 +165,10 @@ def _requests_immediate_board_generation(text: str) -> bool:
     ):
         return False
     return True
+
+
+def is_explicit_board_generation_request(text: str) -> bool:
+    return _requests_immediate_board_generation(text)
 
 
 def _requests_immediate_generation(text: str) -> bool:
@@ -633,9 +637,7 @@ def update_learning_requirements_from_chat(
         user_message=user_message,
     )
     update = _merge_update_with_existing_facts(update, lesson=lesson)
-    forced_board_generation = _requests_immediate_board_generation(user_message) or (
-        _requests_immediate_generation(user_message) and _has_actionable_generation_context(update)
-    )
+    forced_board_generation = _requests_immediate_board_generation(user_message)
     forced_teaching_start = (
         not forced_board_generation
         and _requests_teaching_start(user_message)
