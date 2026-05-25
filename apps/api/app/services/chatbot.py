@@ -38,7 +38,7 @@ from app.services.learning_requirement_manager import (
     is_generation_control_request,
     update_learning_requirements_from_chat,
 )
-from app.services.openai_course_ai import openai_course_ai
+from app.services.openai_course_ai import bind_text_model_selection, openai_course_ai
 from app.services.rich_document import is_document_empty
 from app.services.route_context import bind_ai_request_context
 from app.services.resource_resolver import ResourceResolution, resolve_resource_reference
@@ -1767,7 +1767,8 @@ def process_chat_on_lesson(lesson_id: str, request: ChatRequest, *, user_id: str
         lesson_id=lesson_id,
         user_id=user_id,
     ):
-        return _chat_response(lesson_id=lesson_id, request=request, user_id=user_id)
+        with bind_text_model_selection(request.text_model):
+            return _chat_response(lesson_id=lesson_id, request=request, user_id=user_id)
 
 
 def document_ai_edit_request(

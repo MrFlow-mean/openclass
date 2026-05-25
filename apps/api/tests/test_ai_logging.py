@@ -727,6 +727,40 @@ def test_chat_route_returns_chatbot_reply(monkeypatch: pytest.MonkeyPatch, isola
     assert _read_log_entries(isolated_ai_log) == []
 
 
+def test_chat_route_binds_requested_text_model_selection(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    captured_models: dict[str, tuple[str, str]] = {}
+
+    def _fake_chatbot_reply(**kwargs):
+        captured_models["chatbot"] = openai_course_ai._model_for("chatbot")
+        return ChatbotReply(chatbot_message="AI生成：这是一段测试讲解。")
+
+    def _fake_requirement_update_with_model(**kwargs):
+        captured_models["pm"] = openai_course_ai._model_for("pm")
+        return _fake_requirement_update(**kwargs)
+
+    monkeypatch.setattr(openai_course_ai, "generate_chatbot_reply", _fake_chatbot_reply)
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update_with_model)
+
+    lesson_id = _seed_test_user_workspace(store).packages[0].lessons[0].id
+    response = chat_service.process_chat_on_lesson(
+        lesson_id,
+        ChatRequest(
+            message="请解释一下当前主题的核心问题",
+            text_model=AIModelSelection(provider="deepseek", model="deepseek-v4-pro"),
+        ),
+        user_id=TEST_USER.id,
+    )
+
+    assert response.chatbot_message == "AI生成：这是一段测试讲解。"
+    assert captured_models["chatbot"] == ("deepseek", "deepseek-v4-pro")
+    assert captured_models["pm"] == ("deepseek", "deepseek-v4-pro")
+    assert _read_log_entries(isolated_ai_log) == []
+
+
 def test_chatbot_runtime_empty_reply_does_not_show_canned_template(
     monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
 ) -> None:
