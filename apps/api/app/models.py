@@ -68,6 +68,7 @@ BoardFocusLocationStatus = Literal["missing", "selected", "resolved", "ambiguous
 BoardSegmentKind = Literal["heading", "paragraph", "list", "table", "code", "image", "formula", "other"]
 BoardTaskAction = Literal[
     "generate_board",
+    "append_section",
     "explain_target",
     "rewrite_target",
     "expand_target",

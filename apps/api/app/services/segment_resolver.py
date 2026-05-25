@@ -9,6 +9,12 @@ from app.services.board_segment_index import build_board_segment_index, compact_
 
 EDIT_CONFIDENCE_THRESHOLD = 0.85
 EXPLAIN_CONFIDENCE_THRESHOLD = 0.65
+ORDINAL_LOCATION_PATTERN = re.compile(
+    r"(?:第\s*)?(?P<number>[0-9０-９一二三四五六七八九十两]+)\s*(?P<unit>小节|章节|章|节|部分|段)"
+)
+HEADING_ORDINAL_PATTERN = re.compile(
+    r"^\s*(?:第\s*)?(?P<number>[0-9０-９一二三四五六七八九十两]+)\s*(?:[.．、:：)）]|章|节|部分|段|小节)"
+)
 
 GENERIC_CONCEPT_GROUPS: tuple[tuple[str, ...], ...] = (
     ("为什么", "原因", "机制", "形成", "影响因素", "来源"),
@@ -51,6 +57,17 @@ def resolve_board_focus(
             segments=index.segments,
         )
         return FocusResolution(focus=focus, candidates=[focus], status="selected")
+
+    ordinal_candidates = _ordinal_candidate_focuses(lesson=lesson, user_message=user_message, segments=index.segments)
+    if ordinal_candidates:
+        if len(ordinal_candidates) == 1:
+            return FocusResolution(focus=ordinal_candidates[0], candidates=ordinal_candidates, status="resolved")
+        return FocusResolution(
+            focus=None,
+            candidates=ordinal_candidates[:3],
+            status="ambiguous",
+            question="我按编号找到了几个可能的位置。请确认你要讲解或操作的是哪一段。",
+        )
 
     candidates = _candidate_focuses(lesson=lesson, user_message=user_message, segments=index.segments)
     if not candidates:
@@ -195,6 +212,106 @@ def _candidate_focuses(
             )
         )
     return focuses
+
+
+def _ordinal_candidate_focuses(
+    *,
+    lesson: Lesson,
+    user_message: str,
+    segments: list[BoardSegment],
+) -> list[BoardFocusRef]:
+    ordinal = _ordinal_from_message(user_message)
+    if ordinal is None:
+        return []
+
+    headings = [segment for segment in segments if segment.kind == "heading"]
+    if not headings:
+        return []
+
+    marker_matches = [
+        segment
+        for segment in headings
+        if _heading_starts_with_ordinal(segment.text, ordinal)
+    ]
+    if marker_matches:
+        return [
+            _focus_from_segment(
+                lesson=lesson,
+                segment=segment,
+                segments=segments,
+                confidence=0.88,
+                reason="根据用户给出的编号与板书标题编号定位。",
+            )
+            for segment in marker_matches[:5]
+        ]
+
+    ordered_headings = [
+        segment
+        for segment in headings
+        if not _looks_like_document_title(lesson=lesson, segment=segment)
+    ]
+    if 1 <= ordinal <= len(ordered_headings):
+        return [
+            _focus_from_segment(
+                lesson=lesson,
+                segment=ordered_headings[ordinal - 1],
+                segments=segments,
+                confidence=0.82,
+                reason="根据板书标题顺序定位到对应位置。",
+            )
+        ]
+    return []
+
+
+def _ordinal_from_message(text: str) -> int | None:
+    compact = compact_segment_text(text, limit=160)
+    match = ORDINAL_LOCATION_PATTERN.search(compact)
+    if not match:
+        return None
+    return _parse_ordinal_number(match.group("number"))
+
+
+def _heading_starts_with_ordinal(text: str, ordinal: int) -> bool:
+    match = HEADING_ORDINAL_PATTERN.search(text)
+    if not match:
+        return False
+    return _parse_ordinal_number(match.group("number")) == ordinal
+
+
+def _parse_ordinal_number(value: str) -> int | None:
+    normalized = value.translate(str.maketrans("０１２３４５６７８９", "0123456789")).strip()
+    if normalized.isdigit():
+        number = int(normalized)
+        return number if number > 0 else None
+
+    digits = {
+        "一": 1,
+        "二": 2,
+        "两": 2,
+        "三": 3,
+        "四": 4,
+        "五": 5,
+        "六": 6,
+        "七": 7,
+        "八": 8,
+        "九": 9,
+    }
+    if normalized == "十":
+        return 10
+    if "十" in normalized:
+        head, _, tail = normalized.partition("十")
+        tens = digits.get(head, 1) if head else 1
+        ones = digits.get(tail, 0) if tail else 0
+        number = tens * 10 + ones
+        return number if number > 0 else None
+    return digits.get(normalized)
+
+
+def _looks_like_document_title(*, lesson: Lesson, segment: BoardSegment) -> bool:
+    if segment.order_index != 0:
+        return False
+    title = compact_segment_text(lesson.board_document.title or lesson.title, limit=120)
+    return bool(title and compact_segment_text(segment.text, limit=120) == title)
 
 
 def _focus_from_segment(

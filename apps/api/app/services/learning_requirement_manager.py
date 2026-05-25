@@ -108,6 +108,9 @@ QUESTION_LEARNING_CONTENT_PATTERNS = [
     re.compile(r"(?:什么是|请解释|解释一下|讲解一下|讲解)(?P<target>[^，。！？!?；;\n]{1,80})"),
 ]
 EXPLAIN_ACTION_PATTERN = re.compile(r"(讲解|解释|说明|讲一下|解释一下|帮我理解)")
+APPEND_ACTION_PATTERN = re.compile(
+    r"(续写|继续写|接着写|往后写|后续|新增|追加|新加|新章节|新小节|下一节|下一章|下一部分|末尾)"
+)
 EXPAND_ACTION_PATTERN = re.compile(r"(扩写|扩展|补充|增加|添加)")
 SIMPLIFY_ACTION_PATTERN = re.compile(r"(简化|简单一点|通俗|更容易懂|更好懂)")
 REWRITE_ACTION_PATTERN = re.compile(r"(改写|重写|修改|编辑|润色|优化)")
@@ -196,6 +199,8 @@ def _infer_action_type(
     compact = _compact_text(text, limit=280)
     if forced_board_generation:
         return "generate_board"
+    if APPEND_ACTION_PATTERN.search(compact):
+        return "append_section"
     if SIMPLIFY_ACTION_PATTERN.search(compact):
         return "simplify_target"
     if EXPAND_ACTION_PATTERN.search(compact):

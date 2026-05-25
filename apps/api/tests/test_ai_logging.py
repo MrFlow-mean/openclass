@@ -28,7 +28,7 @@ from app.services.ai_logging import ai_log_context, ai_usage_logger, current_ai_
 from app.services import chat_service, workspace_state
 from app.services.course_runtime import refresh_lesson_runtime
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
-from app.services.lesson_factory import create_empty_lesson
+from app.services.lesson_factory import build_requirements, create_empty_lesson
 from app.services.openai_course_ai import (
     BoardDocumentEditResult,
     ChatbotReply,
@@ -2323,6 +2323,163 @@ def test_targeted_explanation_uses_resolved_board_focus_and_clears_task_sheet(
     assert commit.metadata["requirement_cleared"] is True
     assert commit.metadata["task_requirement_sheet"]["action_type"] == "explain_target"
     assert commit.metadata["active_requirement_sheet_after"] is None
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_numbered_target_explanation_skips_requirement_update(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    captured: dict[str, str | None] = {}
+
+    def _fake_chatbot_reply(**kwargs):
+        captured["selection_excerpt"] = kwargs.get("selection_excerpt")
+        return ChatbotReply(chatbot_message="AI生成：这是第四节讲解。")
+
+    def _unexpected_requirement_update(**kwargs):
+        raise AssertionError("numbered target explanation should not run the requirement updater")
+
+    monkeypatch.setattr(openai_course_ai, "generate_chatbot_reply", _fake_chatbot_reply)
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _unexpected_requirement_update)
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.board_document = build_document(
+        title="已有板书",
+        content_text=(
+            "# 主线\n"
+            "## 1. 起点\n第一节正文。\n"
+            "## 2. 推进\n第二节正文。\n"
+            "## 3. 例子\n第三节正文。\n"
+            "## 4. 检查问题\n第四节正文。"
+        ),
+    )
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="为我讲解第4节"),
+        user_id=TEST_USER.id,
+    )
+
+    assert response.chatbot_message == "AI生成：这是第四节讲解。"
+    assert response.resolved_focus is not None
+    assert response.resolved_focus.excerpt == "4. 检查问题"
+    assert "4. 检查问题" in (captured["selection_excerpt"] or "")
+    commit = response.course_package.lessons[0].history_graph.commits[-1]
+    assert commit.metadata["kind"] == "chat_flow"
+    assert commit.metadata["task_requirement_sheet"]["action_type"] == "explain_target"
+    assert commit.metadata["requirement_cleared"] is True
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_append_section_request_writes_to_existing_board_without_requirement_update(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    captured: dict[str, str | None] = {}
+
+    def _fake_board_edit(**kwargs):
+        captured["intent"] = kwargs.get("intent")
+        captured["selection_excerpt"] = kwargs.get("selection_excerpt")
+        captured["user_instruction"] = kwargs.get("user_instruction")
+        return BoardDocumentEditResult(
+            operation="replace_document",
+            content_text="## 新增章节\n这是追加到末尾的新内容。",
+            summary="已在右侧板书末尾续写。",
+            chatbot_message="AI生成：已续写到右侧板书。",
+            section_titles=["新增章节"],
+        )
+
+    def _unexpected_requirement_update(**kwargs):
+        raise AssertionError("append requests should not run the requirement updater before writing")
+
+    def _unexpected_chatbot_reply(**kwargs):
+        raise AssertionError("append requests should use the board document editor AI")
+
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _fake_board_edit)
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _unexpected_requirement_update)
+    monkeypatch.setattr(openai_course_ai, "generate_chatbot_reply", _unexpected_chatbot_reply)
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.board_document = build_document(title="已有板书", content_text="# 已有板书\n## 第一节\n已有内容。")
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="在右侧续写板书"),
+        user_id=TEST_USER.id,
+    )
+
+    updated_lesson = response.course_package.lessons[0]
+    assert response.chatbot_message == "AI生成：已续写到右侧板书。"
+    assert response.board_decision.action == "edit_board"
+    assert response.requirement_cleared is True
+    assert updated_lesson.learning_requirements is None
+    assert "已有内容" in updated_lesson.board_document.content_text
+    assert "这是追加到末尾的新内容" in updated_lesson.board_document.content_text
+    commit = updated_lesson.history_graph.commits[-1]
+    assert commit.metadata["kind"] == "board_document_edit"
+    assert commit.metadata["board_edit_operation"] == "append_section"
+    assert commit.metadata["task_requirement_sheet"]["action_type"] == "append_section"
+    assert commit.metadata["active_requirement_sheet_after"] is None
+    assert captured == {
+        "intent": "edit_existing_document",
+        "selection_excerpt": None,
+        "user_instruction": "在右侧续写板书",
+    }
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_followup_write_executes_existing_append_requirement(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+
+    def _fake_board_edit(**kwargs):
+        return BoardDocumentEditResult(
+            operation="append_section",
+            content_text="## 继续内容\n按前文需求追加的内容。",
+            summary="已按前文需求续写。",
+            chatbot_message="AI生成：已按前文需求续写。",
+            section_titles=["继续内容"],
+        )
+
+    def _unexpected_requirement_update(**kwargs):
+        raise AssertionError("follow-up execution should reuse the active task sheet")
+
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _fake_board_edit)
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _unexpected_requirement_update)
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.board_document = build_document(title="已有板书", content_text="# 已有板书\n## 第一节\n已有内容。")
+    requirements = build_requirements(lesson.title)
+    requirements.action_type = "expand_target"
+    requirements.action_instruction = "在右侧续写板书"
+    requirements.learning_goal = "用户希望基于当前文档继续写后续章节。"
+    lesson.learning_requirements = requirements
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="写啊"),
+        user_id=TEST_USER.id,
+    )
+
+    updated_lesson = response.course_package.lessons[0]
+    assert response.chatbot_message == "AI生成：已按前文需求续写。"
+    assert "按前文需求追加的内容" in updated_lesson.board_document.content_text
+    commit = updated_lesson.history_graph.commits[-1]
+    assert commit.metadata["board_edit_operation"] == "append_section"
+    assert commit.metadata["task_requirement_sheet"]["action_type"] == "append_section"
     assert _read_log_entries(isolated_ai_log) == []
 
 

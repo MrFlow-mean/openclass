@@ -176,6 +176,30 @@ def test_segment_resolver_uses_generic_semantic_aliases_without_selection() -> N
     assert "影响因素" in resolution.focus.excerpt or "形成机制" in resolution.focus.excerpt
 
 
+def test_segment_resolver_uses_numbered_heading_location_without_selection() -> None:
+    lesson = create_empty_lesson("定位测试")
+    lesson.board_document = build_document(
+        title="定位测试",
+        content_text=(
+            "# 主线\n"
+            "## 1. 起点\n第一节正文。\n"
+            "## 2. 推进\n第二节正文。\n"
+            "## 3. 例子\n第三节正文。\n"
+            "## 4. 检查问题\n第四节正文。"
+        ),
+    )
+
+    resolution = resolve_board_focus(
+        lesson=lesson,
+        user_message="为我讲解第4节",
+        action_type="explain_target",
+    )
+
+    assert resolution.resolved
+    assert resolution.focus is not None
+    assert resolution.focus.excerpt == "4. 检查问题"
+
+
 def _collect_node_types(node: dict) -> list[str]:
     node_type = node.get("type")
     result = [node_type] if isinstance(node_type, str) else []

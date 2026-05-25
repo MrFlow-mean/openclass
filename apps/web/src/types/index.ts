@@ -20,6 +20,7 @@ export type BoardEditConfirmationAction = "confirm" | "skip";
 export type ChatInteractionMode = "ask" | "direct_edit";
 export type BoardTaskAction =
   | "generate_board"
+  | "append_section"
   | "explain_target"
   | "rewrite_target"
   | "expand_target"

@@ -48,13 +48,20 @@ from app.services.segment_resolver import FocusResolution, focus_context, resolv
 MAX_CONTEXT_CHARS = 1800
 MAX_CONVERSATION_TURNS = 8
 EXPLAIN_REQUEST_PATTERN = re.compile(r"(讲解|解释|说明|讲一下|解释一下|帮我理解)")
+APPEND_REQUEST_PATTERN = re.compile(
+    r"(续写|继续写|接着写|往后写|后续|新增|追加|新加|新章节|新小节|下一节|下一章|下一部分|末尾)"
+)
 EXPAND_REQUEST_PATTERN = re.compile(r"(扩写|扩展|补充|增加|添加)")
 SIMPLIFY_REQUEST_PATTERN = re.compile(r"(简化|简单(?:一点|点|些)?|更简单|通俗|更容易懂|更好懂|好理解|容易理解|降低难度|浅显)")
 REWRITE_REQUEST_PATTERN = re.compile(r"(改写|重写|修改|编辑|润色|优化|改(?:得|的)?(?:简单|通俗|容易|好懂)|换(?:个|一种)说法)")
 TARGET_LOCATION_HINT_PATTERN = re.compile(r"(选中|这一段|这段|这部分|这里|前面|上面|下面|第.{0,8}[章节部分段]|定义|概念|例子|示例|结论|总结|表格|为什么)")
 RESOURCE_REFERENCE_HINT_PATTERN = re.compile(r"(资料|材料|文档|上传|教材|课本|原文|参考|根据|来自|文件|PDF|Word|章节|小节|第.{0,8}[章节部分])", re.IGNORECASE)
+EXPLICIT_RESOURCE_REFERENCE_PATTERN = re.compile(r"(资料|材料|上传|教材|课本|原文|参考|根据|来自|文件|PDF|Word)", re.IGNORECASE)
 LEARNING_START_REQUEST_PATTERN = re.compile(r"(我要学|我想学|想学习|学习一下|开始学|帮我学|学一学)")
+FOLLOWUP_EXECUTION_PATTERN = re.compile(r"^(写啊|写|开始|执行|可以|好的|好|就这样|按这个来|照这个来|继续)$")
+INTERACTION_RULE_REQUEST_PATTERN = re.compile(r"(规则|互动|轮流|你问我答|按.{0,12}来)")
 EDIT_ACTIONS: set[BoardTaskAction] = {"rewrite_target", "expand_target", "simplify_target"}
+DOCUMENT_WRITE_ACTIONS: set[BoardTaskAction] = {*EDIT_ACTIONS, "append_section"}
 DOCUMENT_GENERATION_ACTIONS = r"(生成|写|撰写|创建|整理|制作|设计|输出|产出|编写)"
 DOCUMENT_ARTIFACT_NOUNS = (
     r"(文档|讲义|板书|版书|课文|文章|作文|报告|对话|练习|题目|试题|测验|课程|"
@@ -169,16 +176,56 @@ def _selection_excerpt(selection: SelectionRef | None, fallback: str | None = No
     return compact or None
 
 
+def _has_explicit_resource_reference(text: str) -> bool:
+    compact = _compact_text(text, limit=280)
+    return bool(compact and EXPLICIT_RESOURCE_REFERENCE_PATTERN.search(compact))
+
+
+def _requests_append_section(text: str) -> bool:
+    compact = _compact_text(text, limit=280)
+    return bool(compact and APPEND_REQUEST_PATTERN.search(compact))
+
+
+def _is_followup_execution_request(text: str) -> bool:
+    compact = _compact_text(text, limit=80)
+    return bool(compact and FOLLOWUP_EXECUTION_PATTERN.search(compact))
+
+
+def _requirements_imply_append(requirements: LearningRequirementSheet) -> bool:
+    if requirements.action_type == "append_section":
+        return True
+    action_text = " ".join(
+        part
+        for part in [
+            requirements.action_instruction,
+            requirements.learning_goal,
+            *requirements.learning_need_checklist,
+        ]
+        if part
+    )
+    return _requests_append_section(action_text)
+
+
+def _should_preserve_requirement_update_for_action(request: ChatRequest) -> bool:
+    return bool(INTERACTION_RULE_REQUEST_PATTERN.search(_compact_text(request.message, limit=280)))
+
+
 def _infer_board_task_action(request: ChatRequest, *, has_selection: bool, document_empty: bool) -> BoardTaskAction | None:
     if request.board_generation_action == "start":
         return "generate_board"
     message = _compact_text(request.message, limit=280)
     if request.interaction_mode == "direct_edit":
+        if _requests_append_section(message):
+            return "append_section"
         if SIMPLIFY_REQUEST_PATTERN.search(message):
             return "simplify_target"
         if EXPAND_REQUEST_PATTERN.search(message):
             return "expand_target"
         return "rewrite_target"
+    if not has_selection and _has_explicit_resource_reference(message):
+        return None
+    if _requests_append_section(message) and not document_empty:
+        return "append_section"
     if REWRITE_REQUEST_PATTERN.search(message):
         if SIMPLIFY_REQUEST_PATTERN.search(message):
             return "simplify_target"
@@ -190,10 +237,10 @@ def _infer_board_task_action(request: ChatRequest, *, has_selection: bool, docum
             return "simplify_target"
         if EXPAND_REQUEST_PATTERN.search(message):
             return "expand_target"
-    if not has_selection and RESOURCE_REFERENCE_HINT_PATTERN.search(message):
-        return None
     if EXPLAIN_REQUEST_PATTERN.search(message) and (has_selection or TARGET_LOCATION_HINT_PATTERN.search(message)):
         return "explain_target"
+    if not has_selection and RESOURCE_REFERENCE_HINT_PATTERN.search(message):
+        return None
     if has_selection and not document_empty:
         return "explain_target"
     return None
@@ -202,7 +249,14 @@ def _infer_board_task_action(request: ChatRequest, *, has_selection: bool, docum
 def _prefer_requirement_action(
     inferred: BoardTaskAction | None,
     requirement_action: BoardTaskAction | None,
+    *,
+    request_message: str,
+    requirements: LearningRequirementSheet,
 ) -> BoardTaskAction | None:
+    if inferred is None and _is_followup_execution_request(request_message) and _requirements_imply_append(requirements):
+        return "append_section"
+    if requirement_action == "append_section":
+        return requirement_action
     if requirement_action in EDIT_ACTIONS:
         return requirement_action
     if requirement_action == "explain_target" and inferred is None:
@@ -608,7 +662,7 @@ def _maybe_start_interaction_session(
     resources: list[ResourceLibraryItem],
     selection_text: str | None,
 ) -> ChatResponse | None:
-    if request.interaction_mode == "direct_edit":
+    if request.interaction_mode == "direct_edit" and action_type != "append_section":
         return None
     if not should_start_interaction(requirements.interaction_rule_draft):
         return None
@@ -831,6 +885,12 @@ def _chat_response(
         has_selection=bool(selection_excerpt),
         document_empty=is_document_empty(lesson.board_document),
     )
+    action_type = _prefer_requirement_action(
+        action_type,
+        requirements.action_type,
+        request_message=request.message,
+        requirements=requirements,
+    )
     resource_resolution = resolve_resource_reference(
         resources=visible_package.resources,
         user_message=request.message,
@@ -840,7 +900,7 @@ def _chat_response(
         allow_direct_reference=(
             _requests_resource_backed_answer(request.message)
             and request.interaction_mode != "direct_edit"
-            and action_type not in EDIT_ACTIONS
+            and action_type not in DOCUMENT_WRITE_ACTIONS
             and request.board_generation_action != "start"
             and not _requests_document_artifact_generation(request.message)
             and not _requests_learning_start(request.message)
@@ -969,7 +1029,7 @@ def _chat_response(
             teaching_progress=teaching_result.progress_view,
         )
 
-    if request.interaction_mode == "direct_edit":
+    if request.interaction_mode == "direct_edit" and action_type != "append_section":
         requirement_conversation = [
             *request.conversation,
             ConversationTurn(role="user", content=request.message),
@@ -981,7 +1041,12 @@ def _chat_response(
             user_message=request.message,
             chatbot_message="",
         )
-        action_type = _prefer_requirement_action(action_type, requirements.action_type) or "rewrite_target"
+        action_type = _prefer_requirement_action(
+            action_type,
+            requirements.action_type,
+            request_message=request.message,
+            requirements=requirements,
+        ) or "rewrite_target"
         resolution = resolve_board_focus(
             lesson=lesson,
             user_message=request.message,
@@ -1100,32 +1165,102 @@ def _chat_response(
             requirement_cleared=requirement_cleared,
         )
 
-    if action_type in {*EDIT_ACTIONS, "explain_target"} and not is_document_empty(lesson.board_document):
-        requirement_conversation = [
-            *request.conversation,
-            ConversationTurn(role="user", content=request.message),
-        ]
-        requirements, learning_clarification = update_learning_requirements_from_chat(
-            lesson=lesson,
-            resources=visible_package.resources,
-            conversation=requirement_conversation,
-            user_message=request.message,
-            chatbot_message="",
-        )
-        interaction_start_response = _maybe_start_interaction_session(
-            workspace=workspace,
-            package=package,
-            lesson=lesson,
-            user_id=user_id,
-            request=request,
-            requirements=requirements,
-            learning_clarification=learning_clarification,
-            resources=visible_package.resources,
-            selection_text=selection_text,
-        )
-        if interaction_start_response is not None:
-            return interaction_start_response
-        action_type = _prefer_requirement_action(action_type, requirements.action_type)
+    if action_type in {*DOCUMENT_WRITE_ACTIONS, "explain_target"} and not is_document_empty(lesson.board_document):
+        if _should_preserve_requirement_update_for_action(request):
+            requirement_conversation = [
+                *request.conversation,
+                ConversationTurn(role="user", content=request.message),
+            ]
+            requirements, learning_clarification = update_learning_requirements_from_chat(
+                lesson=lesson,
+                resources=visible_package.resources,
+                conversation=requirement_conversation,
+                user_message=request.message,
+                chatbot_message="",
+            )
+            interaction_start_response = _maybe_start_interaction_session(
+                workspace=workspace,
+                package=package,
+                lesson=lesson,
+                user_id=user_id,
+                request=request,
+                requirements=requirements,
+                learning_clarification=learning_clarification,
+                resources=visible_package.resources,
+                selection_text=selection_text,
+            )
+            if interaction_start_response is not None:
+                return interaction_start_response
+            action_type = _prefer_requirement_action(
+                action_type,
+                requirements.action_type,
+                request_message=request.message,
+                requirements=requirements,
+            )
+        else:
+            learning_clarification = _latest_learning_clarification(lesson, requirements=requirements)
+
+        if action_type == "append_section":
+            requirements = _with_task_details(
+                requirements,
+                action_type=action_type,
+                instruction=request.message,
+            )
+            edit_outcome = edit_existing_document(
+                lesson=lesson,
+                requirements=requirements,
+                clarification=learning_clarification,
+                resource_summary=_resource_summary(visible_package.resources),
+                conversation_summary=_conversation_summary(request.conversation),
+                user_instruction=request.message,
+                selection_excerpt=None,
+                focus=None,
+            )
+            if edit_outcome.changed:
+                refresh_lesson_runtime(lesson, document=edit_outcome.new_document, requirements=requirements)
+                requirements = lesson.learning_requirements
+                lesson.board_teaching_guide = build_board_teaching_guide(lesson)
+                lesson.board_teaching_progress = None
+            requirement_cleared = edit_outcome.changed
+            commit_operations(
+                lesson,
+                [],
+                label="Board document edit",
+                message="Appended new board content at the end of the current document",
+                new_document=lesson.board_document,
+                metadata={
+                    "kind": "board_document_edit",
+                    "user_message": request.message,
+                    "assistant_message": edit_outcome.chatbot_message,
+                    "assistant_message_source": edit_outcome.assistant_message_source,
+                    "interaction_mode": request.interaction_mode,
+                    "selection": request.selection.model_dump(mode="json") if request.selection else None,
+                    "selection_text": None,
+                    "board_edit_operation": edit_outcome.operation,
+                    "board_edit_summary": edit_outcome.summary,
+                    "board_section_titles": edit_outcome.section_titles,
+                    **_task_metadata(
+                        requirements=requirements,
+                        learning_clarification=learning_clarification,
+                        requirement_cleared=requirement_cleared,
+                    ),
+                },
+            )
+            if requirement_cleared:
+                _clear_task_requirements(lesson)
+            workspace_state.normalize_package_state(package)
+            workspace_state.save_workspace_for_user(user_id, workspace)
+            return _response(
+                workspace=workspace,
+                package=package,
+                lesson=lesson,
+                chatbot_message=edit_outcome.chatbot_message,
+                requirements=requirements,
+                learning_clarification=learning_clarification,
+                board_decision=edit_outcome.board_decision,
+                requirement_cleared=requirement_cleared,
+            )
+
         resolution = resolve_board_focus(
             lesson=lesson,
             user_message=request.message,

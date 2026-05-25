@@ -103,7 +103,8 @@ def edit_existing_document(
     focus: BoardFocusRef | None = None,
 ) -> BoardDocumentEditOutcome:
     target_excerpt = _target_excerpt(selection_excerpt=selection_excerpt, focus=focus)
-    if not target_excerpt and not is_document_empty(lesson.board_document):
+    is_append_request = requirements.action_type == "append_section"
+    if not target_excerpt and not is_document_empty(lesson.board_document) and not is_append_request:
         return _no_change(
             lesson,
             "已有板书的局部编辑需要先解析目标位置。",
@@ -126,10 +127,12 @@ def edit_existing_document(
             "板书文档编辑 AI 没有返回编辑结果。",
         )
 
+    operation = "append_section" if is_append_request else result.operation
     new_document = _apply_edit_result(
         lesson=lesson,
         result=result,
         selection_excerpt=target_excerpt,
+        operation_override=operation,
     )
     if not document_changed(lesson.board_document, new_document):
         return _no_change(
@@ -140,7 +143,7 @@ def edit_existing_document(
     return _changed(
         lesson=lesson,
         new_document=new_document,
-        operation=result.operation,
+        operation=operation,
         summary=result.summary.strip(),
         chatbot_message=result.chatbot_message.strip() or result.summary.strip(),
         section_titles=result.section_titles,
@@ -153,12 +156,14 @@ def _apply_edit_result(
     lesson: Lesson,
     result: BoardDocumentEditResult,
     selection_excerpt: str | None,
+    operation_override: str | None = None,
 ) -> BoardDocument:
     content_text, content_html = _edit_payload(result, prefer_content_html=True)
     if not content_text and not content_html:
         return lesson.board_document
 
-    if result.operation == "append_section":
+    operation = operation_override or result.operation
+    if operation == "append_section":
         next_text = "\n\n".join(
             part for part in [_document_text(lesson.board_document).strip(), content_text] if part
         )
@@ -172,7 +177,7 @@ def _apply_edit_result(
             page_settings=lesson.board_document.page_settings,
         )
 
-    if result.operation == "replace_selection" and selection_excerpt:
+    if operation == "replace_selection" and selection_excerpt:
         return replace_selection_in_document(
             lesson.board_document,
             selection_text=selection_excerpt,
