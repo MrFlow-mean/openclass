@@ -72,6 +72,8 @@ DOCUMENT_ARTIFACT_REQUEST_PATTERN = re.compile(
     rf"{DOCUMENT_GENERATION_ACTIONS}.{{0,48}}{DOCUMENT_ARTIFACT_NOUNS}"
     r"|"
     rf"{DOCUMENT_ARTIFACT_NOUNS}.{{0,24}}{DOCUMENT_GENERATION_ACTIONS}"
+    r"|"
+    rf"{DOCUMENT_GENERATION_ACTIONS}.{{0,12}}(?:一|几|若干|多)?(?:篇|份|个|套|道|组|页|段|部分)[^吧吗呢啊。！？!?；;\n]{{2,80}}"
 )
 COMPLEX_REASONING_REQUEST_PATTERN = re.compile(
     r"(深入|深度|严谨|复杂|难题|多步骤|推理|推导|证明|系统分析|仔细分析|完整分析|高质量|complex|reasoning)",
@@ -272,6 +274,18 @@ def _requests_document_artifact_generation(text: str) -> bool:
     return bool(DOCUMENT_ARTIFACT_REQUEST_PATTERN.search(compact))
 
 
+def _has_actionable_generation_context(
+    requirements: LearningRequirementSheet,
+    learning_clarification: LearningClarificationStatus,
+) -> bool:
+    if requirements.action_type == "generate_board" and requirements.action_instruction.strip():
+        return True
+    return any(
+        fact.value.strip() and fact.category in {"learning", "level", "vocabulary", "scenario", "output"}
+        for fact in learning_clarification.key_facts
+    )
+
+
 def _with_task_details(
     requirements: LearningRequirementSheet,
     *,
@@ -434,9 +448,16 @@ def _should_generate_board_from_explicit_request(
     *,
     lesson: Lesson,
     request: ChatRequest,
+    requirements: LearningRequirementSheet,
+    learning_clarification: LearningClarificationStatus,
 ) -> bool:
-    return is_document_empty(lesson.board_document) and is_explicit_board_generation_request(
-        request.message
+    if not is_document_empty(lesson.board_document):
+        return False
+    if is_explicit_board_generation_request(request.message) or _requests_document_artifact_generation(request.message):
+        return True
+    return is_generation_control_request(request.message) and _has_actionable_generation_context(
+        requirements,
+        learning_clarification,
     )
 
 
@@ -1501,7 +1522,12 @@ def _chat_response(
                 resource_summary_for_turn=resource_summary_for_turn,
                 conversation_summary=_conversation_summary(request.conversation),
             )
-        if _should_generate_board_from_explicit_request(lesson=lesson, request=request):
+        if _should_generate_board_from_explicit_request(
+            lesson=lesson,
+            request=request,
+            requirements=requirements,
+            learning_clarification=learning_clarification,
+        ):
             requirements = _with_task_details(
                 requirements,
                 action_type="generate_board",

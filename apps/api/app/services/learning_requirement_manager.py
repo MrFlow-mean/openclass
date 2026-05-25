@@ -637,7 +637,9 @@ def update_learning_requirements_from_chat(
         user_message=user_message,
     )
     update = _merge_update_with_existing_facts(update, lesson=lesson)
-    forced_board_generation = _requests_immediate_board_generation(user_message)
+    forced_board_generation = _requests_immediate_board_generation(user_message) or (
+        _requests_immediate_generation(user_message) and _has_actionable_generation_context(update)
+    )
     forced_teaching_start = (
         not forced_board_generation
         and _requests_teaching_start(user_message)

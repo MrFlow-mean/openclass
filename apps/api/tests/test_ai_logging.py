@@ -995,11 +995,10 @@ def test_requirement_manager_keeps_structured_learning_fact_over_identity_phrase
 ) -> None:
     store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
     monkeypatch.setattr(workspace_state, "STORE", store)
-    monkeypatch.setattr(
-        openai_course_ai,
-        "generate_chatbot_reply",
-        lambda **kwargs: ChatbotReply(chatbot_message="好的，我先记录你的学习需求。"),
-    )
+    def _unexpected_chatbot_reply(**kwargs):
+        raise AssertionError("document artifact request should write the blank document directly")
+
+    monkeypatch.setattr(openai_course_ai, "generate_chatbot_reply", _unexpected_chatbot_reply)
     monkeypatch.setattr(
         openai_course_ai,
         "generate_learning_requirement_update",
@@ -1027,6 +1026,17 @@ def test_requirement_manager_keeps_structured_learning_fact_over_identity_phrase
         ),
     )
 
+    def _fake_board_edit(**kwargs):
+        return BoardDocumentEditResult(
+            operation="replace_document",
+            title="真实场景对话课文",
+            content_text="# 真实场景对话课文\n## 第一节\n这是一段面向真实场景的右侧文档内容。",
+            summary="已生成右侧文档。",
+            section_titles=["第一节"],
+        )
+
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _fake_board_edit)
+
     lesson_id = _seed_test_user_workspace(store).packages[0].lessons[0].id
     response = chat_service.process_chat_on_lesson(
         lesson_id,
@@ -1038,6 +1048,8 @@ def test_requirement_manager_keeps_structured_learning_fact_over_identity_phrase
     assert response.learning_clarification.key_facts[0].value == "真实场景对话课文"
     assert response.learning_requirement_sheet.theme == "真实场景对话课文"
     assert response.learning_requirement_sheet.theme != "者"
+    assert response.board_decision.action == "edit_board"
+    assert "真实场景对话课文" in response.course_package.lessons[0].board_document.content_text
     assert _read_log_entries(isolated_ai_log) == []
 
 
@@ -1628,16 +1640,17 @@ def test_requirement_manager_explicit_board_generation_sets_progress_to_complete
     assert _read_log_entries(isolated_ai_log) == []
 
 
-def test_requirement_manager_start_generation_request_uses_existing_requirement_context(
+def test_requirement_manager_start_generation_request_writes_blank_document_from_context(
     monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
 ) -> None:
     store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
     monkeypatch.setattr(workspace_state, "STORE", store)
-    monkeypatch.setattr(
-        openai_course_ai,
-        "generate_chatbot_reply",
-        lambda **kwargs: ChatbotReply(chatbot_message="好的，我会按当前学习需求开始生成。"),
-    )
+    captured: dict[str, object] = {}
+
+    def _unexpected_chatbot_reply(**kwargs):
+        raise AssertionError("generation control should write the blank document instead of handoff chat")
+
+    monkeypatch.setattr(openai_course_ai, "generate_chatbot_reply", _unexpected_chatbot_reply)
     monkeypatch.setattr(
         openai_course_ai,
         "generate_learning_requirement_update",
@@ -1677,6 +1690,19 @@ def test_requirement_manager_start_generation_request_uses_existing_requirement_
         ),
     )
 
+    def _fake_board_edit(**kwargs):
+        captured["intent"] = kwargs.get("intent")
+        captured["user_instruction"] = kwargs.get("user_instruction")
+        return BoardDocumentEditResult(
+            operation="replace_document",
+            title="生成后的文档",
+            content_text="# 生成后的文档\n## 第一节\n这是一段根据已有学习需求生成的右侧文档内容。",
+            summary="已生成右侧文档。",
+            section_titles=["第一节"],
+        )
+
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _fake_board_edit)
+
     lesson_id = _seed_test_user_workspace(store).packages[0].lessons[0].id
     response = chat_service.process_chat_on_lesson(
         lesson_id,
@@ -1684,26 +1710,33 @@ def test_requirement_manager_start_generation_request_uses_existing_requirement_
         user_id=TEST_USER.id,
     )
 
-    assert response.learning_clarification.progress == 60
-    assert response.learning_clarification.ready_for_board is False
-    assert response.learning_clarification.can_start is False
-    assert response.learning_clarification.forced_start is False
-    assert response.learning_clarification.missing_items == ["具体场景"]
-    assert response.learning_clarification.next_question == "你希望面向什么场景？"
+    assert captured == {
+        "intent": "generate_from_requirements",
+        "user_instruction": "看你发挥，开始生成",
+    }
+    assert response.learning_clarification.progress == 100
+    assert response.learning_clarification.ready_for_board is True
+    assert response.learning_clarification.can_start is True
+    assert response.learning_clarification.forced_start is True
+    assert response.learning_clarification.missing_items == []
+    assert response.learning_clarification.next_question == ""
+    assert response.board_decision.action == "edit_board"
+    assert "第一节" in response.course_package.lessons[0].board_document.content_text
+    assert response.requirement_cleared is True
     assert _read_log_entries(isolated_ai_log) == []
 
 
-def test_generation_control_request_hands_off_without_chatbot_board_content(
+def test_generation_control_request_writes_blank_document_from_existing_context(
     monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
 ) -> None:
     store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
     monkeypatch.setattr(workspace_state, "STORE", store)
+    captured: dict[str, object] = {}
 
-    monkeypatch.setattr(
-        openai_course_ai,
-        "generate_chatbot_reply",
-        lambda **kwargs: ChatbotReply(chatbot_message="AI生成：已记录生成意图，等待写入右侧文档。"),
-    )
+    def _unexpected_chatbot_reply(**kwargs):
+        raise AssertionError("direct generation should not ask Chatbot to produce board-like content")
+
+    monkeypatch.setattr(openai_course_ai, "generate_chatbot_reply", _unexpected_chatbot_reply)
     monkeypatch.setattr(
         openai_course_ai,
         "generate_learning_requirement_update",
@@ -1712,20 +1745,14 @@ def test_generation_control_request_hands_off_without_chatbot_board_content(
             summary="用户允许系统决定未指定细节，并希望基于当前需求进入生成。",
             key_facts=[
                 LearningRequirementKeyFact(
-                    label="法语水平",
-                    value="B2",
+                    label="当前水平",
+                    value="中级",
                     evidence="来自前文。",
                     category="level",
                 ),
                 LearningRequirementKeyFact(
-                    label="词汇量",
-                    value="3500",
-                    evidence="来自前文。",
-                    category="vocabulary",
-                ),
-                LearningRequirementKeyFact(
                     label="学习需求",
-                    value="生成一篇情景对话",
+                    value="生成一份练习材料",
                     evidence="来自前文。",
                     category="output",
                 ),
@@ -1743,6 +1770,19 @@ def test_generation_control_request_hands_off_without_chatbot_board_content(
         ),
     )
 
+    def _fake_board_edit(**kwargs):
+        captured["intent"] = kwargs.get("intent")
+        captured["user_instruction"] = kwargs.get("user_instruction")
+        return BoardDocumentEditResult(
+            operation="replace_document",
+            title="练习材料",
+            content_text="# 练习材料\n## 第一节\n这是一段根据当前需求生成的练习材料。",
+            summary="已生成练习材料。",
+            section_titles=["第一节"],
+        )
+
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _fake_board_edit)
+
     workspace = _seed_test_user_workspace(store)
     lesson = workspace.packages[0].lessons[0]
     lesson.board_document = build_document(title="空白板书")
@@ -1756,9 +1796,8 @@ def test_generation_control_request_hands_off_without_chatbot_board_content(
         "forced_start": False,
         "summary": "用户需要一篇情景对话。",
         "key_facts": [
-            {"label": "学习内容", "value": "法语", "evidence": "来自用户。"},
-            {"label": "当前水平", "value": "B2", "evidence": "来自用户。"},
-            {"label": "词汇量", "value": "3500", "evidence": "来自用户。"},
+            {"label": "学习内容", "value": "一个通用主题", "evidence": "来自用户。"},
+            {"label": "当前水平", "value": "中级", "evidence": "来自用户。"},
         ],
         "checklist": [],
         "next_question": "你希望面向什么场景？",
@@ -1772,37 +1811,36 @@ def test_generation_control_request_hands_off_without_chatbot_board_content(
         user_id=TEST_USER.id,
     )
 
-    assert response.chatbot_message == "AI生成：已记录生成意图，等待写入右侧文档。"
-    assert response.board_decision.action == "no_change"
-    assert response.learning_clarification.ready_for_board is False
-    assert response.learning_clarification.forced_start is False
-    assert response.learning_clarification.missing_items == ["具体场景"]
-    assert response.learning_clarification.next_question == "你希望面向什么场景？"
-    assert response.learning_requirement_sheet.level == "B2"
-    assert response.learning_requirement_sheet.current_questions == ["你希望面向什么场景？"]
-    labels = [fact.label for fact in response.learning_clarification.key_facts]
-    values = [fact.value for fact in response.learning_clarification.key_facts]
-    assert labels[:4] == ["学习内容", "当前水平", "词汇量", "输出需求"]
-    assert values[:4] == ["法语", "B2", "3500", "生成一篇情景对话"]
+    assert captured == {
+        "intent": "generate_from_requirements",
+        "user_instruction": "都行，看你发挥，直接生成",
+    }
+    assert response.board_decision.action == "edit_board"
+    assert response.learning_clarification.ready_for_board is True
+    assert response.learning_clarification.forced_start is True
+    assert response.learning_clarification.missing_items == []
+    assert response.learning_clarification.next_question == ""
+    assert response.learning_requirement_sheet.level == "中级"
     updated_lesson = response.course_package.lessons[0]
-    assert updated_lesson.board_document.content_text == ""
+    assert "练习材料" in updated_lesson.board_document.content_text
     commit = updated_lesson.history_graph.commits[-1]
-    assert commit.metadata["assistant_message_source"] == "chatbot"
-    assert "法语情景对话" not in commit.metadata["assistant_message"]
+    assert commit.metadata["kind"] == "board_document_generation"
+    assert commit.metadata["assistant_message_source"] == "board_document_editor_ai"
+    assert commit.metadata["requirement_cleared"] is True
     assert _read_log_entries(isolated_ai_log) == []
 
 
-def test_document_artifact_request_hands_off_before_chatbot_generation(
+def test_document_artifact_request_writes_blank_document_without_chatbot_generation(
     monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
 ) -> None:
     store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
     monkeypatch.setattr(workspace_state, "STORE", store)
+    captured: dict[str, object] = {}
 
-    monkeypatch.setattr(
-        openai_course_ai,
-        "generate_chatbot_reply",
-        lambda **kwargs: ChatbotReply(chatbot_message="AI生成：我会把生成任务交给右侧文档。"),
-    )
+    def _unexpected_chatbot_reply(**kwargs):
+        raise AssertionError("document artifact generation should be written by the document editor")
+
+    monkeypatch.setattr(openai_course_ai, "generate_chatbot_reply", _unexpected_chatbot_reply)
     monkeypatch.setattr(
         openai_course_ai,
         "generate_learning_requirement_update",
@@ -1836,6 +1874,19 @@ def test_document_artifact_request_hands_off_before_chatbot_generation(
         ),
     )
 
+    def _fake_board_edit(**kwargs):
+        captured["intent"] = kwargs.get("intent")
+        captured["user_instruction"] = kwargs.get("user_instruction")
+        return BoardDocumentEditResult(
+            operation="replace_document",
+            title="任务材料",
+            content_text="# 任务材料\n## 第一节\n这是一段面向真实任务的右侧文档内容。",
+            summary="已生成任务材料。",
+            section_titles=["第一节"],
+        )
+
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _fake_board_edit)
+
     workspace = _seed_test_user_workspace(store)
     lesson = workspace.packages[0].lessons[0]
     lesson.board_document = build_document(title="空白板书")
@@ -1848,12 +1899,17 @@ def test_document_artifact_request_hands_off_before_chatbot_generation(
         user_id=TEST_USER.id,
     )
 
-    assert response.chatbot_message == "AI生成：我会把生成任务交给右侧文档。"
-    assert response.board_decision.action == "no_change"
-    assert response.course_package.lessons[0].board_document.content_text == ""
+    assert captured == {
+        "intent": "generate_from_requirements",
+        "user_instruction": "请给我生成一篇用于真实任务的情景对话课文",
+    }
+    assert response.chatbot_message == "已生成任务材料。"
+    assert response.board_decision.action == "edit_board"
+    assert "任务材料" in response.course_package.lessons[0].board_document.content_text
     commit = response.course_package.lessons[0].history_graph.commits[-1]
-    assert commit.metadata["assistant_message_source"] == "chatbot"
-    assert response.chatbot_message == commit.metadata["assistant_message"]
+    assert commit.metadata["kind"] == "board_document_generation"
+    assert commit.metadata["assistant_message_source"] == "board_document_editor_ai"
+    assert commit.metadata["requirement_cleared"] is True
     assert _read_log_entries(isolated_ai_log) == []
 
 
