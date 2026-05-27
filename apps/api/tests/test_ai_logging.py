@@ -2969,6 +2969,84 @@ def test_rule_based_interaction_start_creates_session_and_clears_task_sheet(
     assert _read_log_entries(isolated_ai_log) == []
 
 
+def test_rule_based_interaction_start_uses_whole_document_for_broad_reference(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    captured_contexts: list[dict | None] = []
+
+    def _fake_chatbot_reply(**kwargs):
+        captured_contexts.append(kwargs.get("interaction_context"))
+        if kwargs.get("interaction_context"):
+            return ChatbotReply(chatbot_message="AI生成：按角色规则回应下一句。")
+        return ChatbotReply(chatbot_message="AI生成：普通聊天先给出下一句。")
+
+    monkeypatch.setattr(openai_course_ai, "generate_chatbot_reply", _fake_chatbot_reply)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_learning_requirement_update",
+        lambda **kwargs: LearningRequirementUpdate(
+            progress=100,
+            summary="用户要求基于已有对话逐句轮流练习。",
+            key_facts=[],
+            checklist=[
+                LearningRequirementChecklistItem(
+                    title="用户给出互动规则",
+                    is_clear=True,
+                    evidence="来自用户输入。",
+                )
+            ],
+            missing_items=[],
+            next_question="",
+            ready_for_board=True,
+            interaction_rule_draft=InteractionRuleDraft(
+                should_start=True,
+                rule_text="按用户指定的角色分工逐句轮流练习。",
+                interaction_goal="通过一人一句的方式练习已有对话。",
+                target_hint="已有对话全文",
+                expected_user_behavior="用户输入自己角色的下一句。",
+                assistant_behavior="Chatbot 输入另一个角色的下一句。",
+                reference_instruction="依据当前已有对话推进。",
+            ),
+        ),
+    )
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.board_document = build_document(
+        title="已有板书",
+        content_text=(
+            "# 情景对话\n"
+            "A: Bonjour, je vous appelle au sujet de l'annonce.\n"
+            "B: Bonjour. Oui, elle est encore disponible.\n"
+        ),
+    )
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="我一句你一句轮流练习这篇对话"),
+        user_id=TEST_USER.id,
+    )
+
+    assert response.chatbot_message == "AI生成：按角色规则回应下一句。"
+    assert response.focus_candidates == []
+    assert response.requirement_cleared is True
+    assert response.active_interaction_session is not None
+    assert response.active_interaction_session.target_focus is None
+    assert "Bonjour. Oui, elle est encore disponible." in response.active_interaction_session.reference_context
+    assert captured_contexts[-1] is not None
+    assert captured_contexts[-1]["reference_context"] == response.active_interaction_session.reference_context
+    updated_lesson = response.course_package.lessons[0]
+    commit = updated_lesson.history_graph.commits[-1]
+    assert commit.label == "Interaction session start"
+    assert commit.metadata["focus_candidates"] == []
+    assert commit.metadata["active_interaction_session_after"]["target_focus"] is None
+    assert _read_log_entries(isolated_ai_log) == []
+
+
 def test_active_rule_interaction_continues_with_rule_context(
     monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
 ) -> None:

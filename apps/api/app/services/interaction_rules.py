@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from app.models import (
@@ -15,6 +16,12 @@ from app.services.openai_course_ai import openai_course_ai
 from app.services.segment_resolver import FocusResolution, focus_context, resolve_board_focus
 
 
+EXPLICIT_INTERACTION_FOCUS_PATTERN = re.compile(
+    r"(选中|这一段|这段|这部分|这里|前面|上面|下面|"
+    r"第.{0,8}[章节部分段空题项条句行]|标题|小节|章节)"
+)
+
+
 @dataclass(frozen=True)
 class InteractionStartResolution:
     session: InteractionSession | None
@@ -23,6 +30,20 @@ class InteractionStartResolution:
 
 def should_start_interaction(draft: InteractionRuleDraft | None) -> bool:
     return bool(draft and draft.should_start and draft.rule_text.strip())
+
+
+def _should_resolve_interaction_focus(
+    *,
+    selected_excerpt: str,
+    target_query: str,
+    user_message: str,
+) -> bool:
+    if selected_excerpt:
+        return True
+    if not target_query:
+        return False
+    focus_hint_text = f"{target_query}\n{user_message}"
+    return bool(EXPLICIT_INTERACTION_FOCUS_PATTERN.search(focus_hint_text))
 
 
 def build_interaction_start(
@@ -37,7 +58,11 @@ def build_interaction_start(
     focus: BoardFocusRef | None = None
     target_query = compact_segment_text(draft.target_hint or "", limit=500)
     selected_excerpt = compact_segment_text(selection.excerpt if selection else selection_text, limit=1200)
-    if selected_excerpt or target_query:
+    if _should_resolve_interaction_focus(
+        selected_excerpt=selected_excerpt,
+        target_query=target_query,
+        user_message=user_message,
+    ):
         focus_resolution = resolve_board_focus(
             lesson=lesson,
             user_message=target_query or user_message,
