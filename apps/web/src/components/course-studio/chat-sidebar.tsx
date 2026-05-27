@@ -38,6 +38,7 @@ import type {
   ResourceReferencePrompt,
   ScopeOption,
   SelectionRef,
+  StrongReasoningPrompt,
 } from "@/types";
 import type { ChatMessage, LessonComposerState } from "@/components/course-studio/history-utils";
 
@@ -58,6 +59,7 @@ type CourseStudioChatSidebarProps = {
   scopeOptions: ScopeOption[];
   referencePrompt: ResourceReferencePrompt | null;
   boardEditPrompt: BoardEditPrompt | null;
+  strongReasoningPrompt: StrongReasoningPrompt | null;
   clarificationQuestions: string[];
   latestBoardDecision: BoardDecision | null;
   selectedReference: ResourceReferenceContext | null;
@@ -83,6 +85,7 @@ type CourseStudioChatSidebarProps = {
   onScopeAction: (option: ScopeOption) => void | Promise<void>;
   onReferenceAction: (action: "confirm" | "skip") => void | Promise<void>;
   onBoardEditAction: (action: "confirm" | "skip") => void | Promise<void>;
+  onStrongReasoningAction: (action: "confirm" | "skip") => void | Promise<void>;
   onSelectTextModel: (option: AIModelOption) => void;
   onSelectRealtimeModel: (option: AIModelOption) => void;
   onVoiceToggle: () => void | Promise<void>;
@@ -107,6 +110,7 @@ export function CourseStudioChatSidebar({
   scopeOptions,
   referencePrompt,
   boardEditPrompt,
+  strongReasoningPrompt,
   clarificationQuestions,
   latestBoardDecision,
   selectedReference,
@@ -132,6 +136,7 @@ export function CourseStudioChatSidebar({
   onScopeAction,
   onReferenceAction,
   onBoardEditAction,
+  onStrongReasoningAction,
   onSelectTextModel,
   onSelectRealtimeModel,
   onVoiceToggle,
@@ -272,6 +277,42 @@ export function CourseStudioChatSidebar({
                   <span className="block text-sm font-semibold text-gray-900">
                     {referencePrompt.skip_label}
                   </span>
+                </button>
+              </div>
+            </div>
+          ) : null}
+
+          {!isPreviewMode && strongReasoningPrompt ? (
+            <div className="rounded-xl border border-indigo-200 bg-indigo-50 p-4">
+              <div className="flex items-start gap-3">
+                <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white text-indigo-700 shadow-sm">
+                  <BrainCircuit className="h-4 w-4" />
+                </span>
+                <div className="min-w-0">
+                  <p className="text-[11px] font-bold uppercase tracking-widest text-indigo-700">深度推理建议</p>
+                  <p className="mt-2 text-sm leading-6 text-indigo-950">{strongReasoningPrompt.question}</p>
+                  <p className="mt-2 text-xs leading-6 text-indigo-900/80">{strongReasoningPrompt.reason}</p>
+                  {strongReasoningPrompt.model_label ? (
+                    <p className="mt-2 text-[11px] font-semibold text-indigo-800">
+                      模型：{strongReasoningPrompt.model_label}
+                    </p>
+                  ) : null}
+                </div>
+              </div>
+              <div className="mt-3 grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => void onStrongReasoningAction("confirm")}
+                  className="w-full rounded-xl border border-indigo-200 bg-white px-4 py-3 text-center text-sm font-semibold text-gray-900 transition hover:border-indigo-300"
+                >
+                  {strongReasoningPrompt.confirm_label}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void onStrongReasoningAction("skip")}
+                  className="w-full rounded-xl border border-indigo-200 bg-white px-4 py-3 text-center text-sm font-semibold text-gray-900 transition hover:border-indigo-300"
+                >
+                  {strongReasoningPrompt.skip_label}
                 </button>
               </div>
             </div>

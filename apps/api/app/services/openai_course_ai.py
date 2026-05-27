@@ -891,6 +891,16 @@ class OpenAICourseAI:
         }:
             model = os.getenv("OPENAI_PRO_REASONING_MODEL", "gpt-5.5-pro")
         reasoning_effort = os.getenv("OPENAI_STRONG_REASONING_EFFORT", "high")
+        observer = _ai_stream_observer.get()
+        if observer:
+            observer(
+                {
+                    "type": "role_start",
+                    "role": "strong_reasoning",
+                    "provider": "openai",
+                    "model": model,
+                }
+            )
         system_prompt = (
             "你是 OpenClass Chatbot 的隐藏强推理工具，只提供解题材料，不直接面向学习者发言。\n"
             "规则：\n"

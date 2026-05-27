@@ -17,6 +17,7 @@ export type BoardAction =
 
 export type ResourceReferenceAction = "confirm" | "skip";
 export type BoardEditConfirmationAction = "confirm" | "skip";
+export type StrongReasoningAction = "confirm" | "skip";
 export type ChatInteractionMode = "ask" | "direct_edit";
 export type BoardTaskAction =
   | "generate_board"
@@ -406,6 +407,14 @@ export interface BoardEditPrompt {
   skip_label: string;
 }
 
+export interface StrongReasoningPrompt {
+  question: string;
+  reason: string;
+  confirm_label: string;
+  skip_label: string;
+  model_label?: string | null;
+}
+
 export interface ResourceContextChunk {
   title: string;
   excerpt: string;
@@ -449,6 +458,7 @@ export interface ChatRequestPayload {
   resource_reference_chapter_id?: string | null;
   board_edit_action?: BoardEditConfirmationAction | null;
   board_edit_topic?: string | null;
+  strong_reasoning_action?: StrongReasoningAction | null;
   board_generation_action?: "start" | null;
   teaching_action?: "continue" | "restart" | null;
   conversation?: ConversationTurn[];
@@ -477,6 +487,7 @@ export interface ChatResponse {
   resource_matches: ResourceMatch[];
   reference_prompt?: ResourceReferencePrompt | null;
   board_edit_prompt?: BoardEditPrompt | null;
+  strong_reasoning_prompt?: StrongReasoningPrompt | null;
   selected_reference?: ResourceReferenceContext | null;
   resolved_focus?: BoardFocusRef | null;
   focus_candidates?: BoardFocusRef[];

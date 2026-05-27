@@ -32,6 +32,7 @@ from app.services.lesson_factory import build_requirements, create_empty_lesson
 from app.services.openai_course_ai import (
     BoardDocumentEditResult,
     ChatbotReply,
+    ComplexProblemSolution,
     GeneratedResourceCatalog,
     LearningRequirementUpdate,
     OpenAICourseAI,
@@ -2731,6 +2732,140 @@ def test_targeted_explanation_uses_resolved_board_focus_and_clears_task_sheet(
     assert commit.metadata["requirement_cleared"] is True
     assert commit.metadata["task_requirement_sheet"]["action_type"] == "explain_target"
     assert commit.metadata["active_requirement_sheet_after"] is None
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_complex_request_prompts_for_strong_reasoning_before_solving(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    monkeypatch.setattr(openai_course_ai, "client", object())
+    captured: dict[str, str] = {}
+
+    def _fake_chatbot_reply(**kwargs):
+        captured["user_message"] = kwargs["user_message"]
+        return ChatbotReply(chatbot_message="AI生成：建议先确认深度推理。")
+
+    def _unexpected_solver(**kwargs):
+        raise AssertionError("strong reasoning must wait for explicit confirmation")
+
+    monkeypatch.setattr(openai_course_ai, "generate_chatbot_reply", _fake_chatbot_reply)
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
+    monkeypatch.setattr(openai_course_ai, "solve_complex_problem", _unexpected_solver)
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="这是一道复杂难题，请完整推导并严谨证明"),
+        user_id=TEST_USER.id,
+    )
+
+    assert response.chatbot_message == "AI生成：建议先确认深度推理。"
+    assert response.strong_reasoning_prompt is not None
+    assert response.strong_reasoning_prompt.confirm_label == "确认推理"
+    assert "请不要解题" in captured["user_message"]
+    commit = response.course_package.lessons[0].history_graph.commits[-1]
+    assert commit.label == "Strong reasoning prompt"
+    assert commit.metadata["strong_reasoning_prompt"]["confirm_label"] == "确认推理"
+    assert commit.metadata["strong_reasoning_action"] is None
+    assert "strong_reasoning_tool" not in commit.metadata
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_confirmed_strong_reasoning_uses_solver_then_chatbot(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    monkeypatch.setattr(openai_course_ai, "client", object())
+    captured: dict[str, str] = {}
+
+    def _fake_solver(**kwargs):
+        captured["target_excerpt"] = kwargs["target_excerpt"]
+        return ComplexProblemSolution(
+            summary="强推理摘要",
+            answer="强推理可转述答案",
+            confidence="high",
+            limits="",
+            model="gpt-5.5",
+            reasoning_effort="high",
+        )
+
+    def _fake_chatbot_reply(**kwargs):
+        captured["chatbot_user_message"] = kwargs["user_message"]
+        return ChatbotReply(chatbot_message="AI生成：这是深度推理后的讲解。")
+
+    monkeypatch.setattr(openai_course_ai, "solve_complex_problem", _fake_solver)
+    monkeypatch.setattr(openai_course_ai, "generate_chatbot_reply", _fake_chatbot_reply)
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.board_document = build_document(
+        title="已有板书",
+        content_text="# 题目\n这是需要多步推导的题目原文。",
+    )
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(
+            message="请完整推导这道复杂难题",
+            selection=SelectionRef(kind="board", excerpt="这是需要多步推导的题目原文。", lesson_id=lesson.id),
+            strong_reasoning_action="confirm",
+        ),
+        user_id=TEST_USER.id,
+    )
+
+    assert response.chatbot_message == "AI生成：这是深度推理后的讲解。"
+    assert response.strong_reasoning_prompt is None
+    assert "题目原文" in captured["target_excerpt"]
+    assert "强推理可转述答案" in captured["chatbot_user_message"]
+    commit = response.course_package.lessons[0].history_graph.commits[-1]
+    assert commit.metadata["strong_reasoning_action"] == "confirm"
+    assert commit.metadata["strong_reasoning_tool"]["model"] == "gpt-5.5"
+    assert commit.metadata["strong_reasoning_tool"]["confidence"] == "high"
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_skipped_strong_reasoning_answers_without_solver(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    monkeypatch.setattr(openai_course_ai, "client", object())
+
+    def _unexpected_solver(**kwargs):
+        raise AssertionError("skip must not call the strong reasoning solver")
+
+    monkeypatch.setattr(openai_course_ai, "solve_complex_problem", _unexpected_solver)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_chatbot_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="AI生成：普通讲解。"),
+    )
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="这是一道复杂难题，请完整推导", strong_reasoning_action="skip"),
+        user_id=TEST_USER.id,
+    )
+
+    assert response.chatbot_message == "AI生成：普通讲解。"
+    assert response.strong_reasoning_prompt is None
+    commit = response.course_package.lessons[0].history_graph.commits[-1]
+    assert commit.metadata["strong_reasoning_action"] == "skip"
+    assert "strong_reasoning_tool" not in commit.metadata
     assert _read_log_entries(isolated_ai_log) == []
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 
 from app.models import (
@@ -19,6 +20,7 @@ from app.models import (
     ResourceReferenceContext,
     ResourceReferencePrompt,
     SelectionRef,
+    StrongReasoningPrompt,
 )
 from app.services import workspace_state
 from app.services.board_document_editor import edit_existing_document, generate_from_requirements
@@ -136,6 +138,85 @@ def _requests_complex_reasoning(text: str) -> bool:
     return bool(compact and COMPLEX_REASONING_REQUEST_PATTERN.search(compact))
 
 
+def _strong_reasoning_allowed_pro() -> bool:
+    return (os.getenv("OPENCLASS_STRONG_REASONING_ALLOW_PRO") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _strong_reasoning_model_label(*, high_value: bool) -> str:
+    if high_value and _strong_reasoning_allowed_pro():
+        return os.getenv("OPENAI_PRO_REASONING_MODEL", "gpt-5.5-pro")
+    return os.getenv("OPENAI_STRONG_REASONING_MODEL", "gpt-5.5")
+
+
+def _should_offer_strong_reasoning(*, request: ChatRequest, target_excerpt: str | None) -> bool:
+    if request.strong_reasoning_action is not None:
+        return False
+    if not getattr(openai_course_ai, "client", None):
+        return False
+    if _requests_complex_reasoning(request.message):
+        return True
+    compact_message = _compact_text(request.message, limit=280)
+    compact_target = _compact_text(target_excerpt, limit=2400)
+    if len(compact_target) >= 700 and re.search(r"(讲解|解释|分析|推导|证明|求解|解答|思路)", compact_message):
+        return True
+    return False
+
+
+def _build_strong_reasoning_prompt(request: ChatRequest) -> StrongReasoningPrompt:
+    high_value = bool(PRO_REASONING_REQUEST_PATTERN.search(request.message))
+    model_label = _strong_reasoning_model_label(high_value=high_value)
+    return StrongReasoningPrompt(
+        question="这道题可能需要更严谨的多步推理。要启用深度推理模型先完整求解，再由 Chatbot 为你讲解吗？",
+        reason="检测到本轮问题包含复杂推导、证明或高难度分析信号。确认后会先调用隐藏强推理模型，不会直接修改板书。",
+        confirm_label="确认推理",
+        skip_label="先不用",
+        model_label=model_label,
+    )
+
+
+def _strong_reasoning_prompt_metadata(
+    *,
+    prompt: StrongReasoningPrompt | None,
+    action: str | None,
+) -> dict[str, object]:
+    return {
+        "strong_reasoning_prompt": prompt.model_dump(mode="json") if prompt else None,
+        "strong_reasoning_action": action,
+    }
+
+
+def _generate_strong_reasoning_recommendation(
+    *,
+    lesson: Lesson,
+    requirements: LearningRequirementSheet,
+    resources: list[ResourceLibraryItem],
+    conversation: list[ConversationTurn],
+    request: ChatRequest,
+    target_excerpt: str | None,
+) -> tuple[str, str]:
+    ai_reply = openai_course_ai.generate_chatbot_reply(
+        lesson_title=lesson.title,
+        learning_goal=requirements.learning_goal,
+        board_summary=_board_summary(lesson),
+        resource_summary=_resource_summary(resources),
+        conversation_summary=_conversation_summary(conversation),
+        user_message=(
+            f"用户原始请求：{request.message}\n"
+            "系统判断这可能需要深度推理模型辅助。请不要解题、不要给最终结论、不要展开证明。"
+            "只用自然语言说明建议先启用深度推理，并提示用户可以点击确认继续。"
+        ),
+        selection_excerpt=target_excerpt,
+        interaction_mode=request.interaction_mode,
+    )
+    chatbot_message = (ai_reply.chatbot_message if ai_reply else "").strip()
+    return chatbot_message, "chatbot" if chatbot_message else "chatbot_empty"
+
+
 def _chatbot_message_with_solver_context(
     *,
     lesson: Lesson,
@@ -146,7 +227,9 @@ def _chatbot_message_with_solver_context(
     resource_summary: str,
     conversation_summary: str,
 ) -> tuple[str, dict[str, object]]:
-    if not _requests_complex_reasoning(request.message) or not getattr(openai_course_ai, "client", None):
+    if request.strong_reasoning_action != "confirm":
+        return user_message, {}
+    if not getattr(openai_course_ai, "client", None):
         return user_message, {}
     solution = openai_course_ai.solve_complex_problem(
         lesson_title=lesson.title,
@@ -159,7 +242,18 @@ def _chatbot_message_with_solver_context(
         high_value=bool(PRO_REASONING_REQUEST_PATTERN.search(request.message)),
     )
     if solution is None:
-        return user_message, {}
+        solver_context = (
+            "用户已确认深度推理，但隐藏强推理工具暂不可用或没有返回可用结果。"
+            "请不要暴露内部错误；自然说明当前无法启用深度推理，并继续给出普通讲解或下一步建议。"
+        )
+        return f"{user_message}\n\n{solver_context}", {
+            "strong_reasoning_tool": {
+                "status": "unavailable",
+                "model": _strong_reasoning_model_label(
+                    high_value=bool(PRO_REASONING_REQUEST_PATTERN.search(request.message))
+                ),
+            }
+        }
     solver_context = (
         "隐藏强推理工具已给出解题材料。请仍以 OpenClass Chatbot 的口吻直接回答学习者，"
         "不要提到另一个模型或内部工具。\n"
@@ -507,6 +601,7 @@ def _response(
     focus_candidates: list[BoardFocusRef] | None = None,
     resource_matches: list[ResourceMatch] | None = None,
     reference_prompt: ResourceReferencePrompt | None = None,
+    strong_reasoning_prompt: StrongReasoningPrompt | None = None,
     selected_reference: ResourceReferenceContext | None = None,
     interaction_decision: InteractionTurnDecision | None = None,
     requirement_cleared: bool = False,
@@ -526,6 +621,7 @@ def _response(
         resource_matches=resource_matches or [],
         reference_prompt=reference_prompt,
         board_edit_prompt=None,
+        strong_reasoning_prompt=strong_reasoning_prompt,
         selected_reference=selected_reference,
         resolved_focus=resolved_focus,
         focus_candidates=focus_candidates or [],
@@ -1409,6 +1505,58 @@ def _chat_response(
             )
 
         focus_excerpt = focus_context(resolution.focus) if resolution.focus else ""
+        if _should_offer_strong_reasoning(request=request, target_excerpt=focus_excerpt):
+            strong_prompt = _build_strong_reasoning_prompt(request)
+            chatbot_message, chatbot_message_source = _generate_strong_reasoning_recommendation(
+                lesson=lesson,
+                requirements=requirements,
+                resources=visible_package.resources,
+                conversation=request.conversation,
+                request=request,
+                target_excerpt=focus_excerpt,
+            )
+            lesson.learning_requirements = requirements
+            commit_operations(
+                lesson,
+                [],
+                label="Strong reasoning prompt",
+                message="Asked the learner to confirm strong reasoning before solving a complex target",
+                new_document=lesson.board_document,
+                metadata={
+                    "kind": "chat_flow",
+                    "user_message": request.message,
+                    "assistant_message": chatbot_message,
+                    "assistant_message_source": chatbot_message_source,
+                    "interaction_mode": request.interaction_mode,
+                    "selection": request.selection.model_dump(mode="json") if request.selection else None,
+                    **_task_metadata(
+                        requirements=requirements,
+                        learning_clarification=learning_clarification,
+                        focus=resolution.focus,
+                        focus_candidates=resolution.candidates,
+                        requirement_cleared=False,
+                    ),
+                    **_strong_reasoning_prompt_metadata(
+                        prompt=strong_prompt,
+                        action=request.strong_reasoning_action,
+                    ),
+                },
+            )
+            workspace_state.normalize_package_state(package)
+            workspace_state.save_workspace_for_user(user_id, workspace)
+            return _response(
+                workspace=workspace,
+                package=package,
+                lesson=lesson,
+                chatbot_message=chatbot_message,
+                requirements=requirements,
+                learning_clarification=learning_clarification,
+                board_decision=BoardDecision(action="no_change", reason=strong_prompt.reason),
+                resolved_focus=resolution.focus,
+                focus_candidates=resolution.candidates,
+                strong_reasoning_prompt=strong_prompt,
+            )
+
         solver_user_message, solver_metadata = _chatbot_message_with_solver_context(
             lesson=lesson,
             request=request,
@@ -1451,6 +1599,10 @@ def _chat_response(
                     focus=resolution.focus,
                     focus_candidates=resolution.candidates,
                     requirement_cleared=requirement_cleared,
+                ),
+                **_strong_reasoning_prompt_metadata(
+                    prompt=None,
+                    action=request.strong_reasoning_action,
                 ),
                 **solver_metadata,
             },
@@ -1728,6 +1880,70 @@ def _chat_response(
             conversation_summary=_conversation_summary(request.conversation),
         )
 
+    if _should_offer_strong_reasoning(request=request, target_excerpt=selection_or_reference_excerpt):
+        strong_prompt = _build_strong_reasoning_prompt(request)
+        chatbot_message, chatbot_message_source = _generate_strong_reasoning_recommendation(
+            lesson=lesson,
+            requirements=requirements,
+            resources=visible_package.resources,
+            conversation=request.conversation,
+            request=request,
+            target_excerpt=selection_or_reference_excerpt,
+        )
+        requirement_conversation = [
+            *request.conversation,
+            ConversationTurn(role="user", content=request.message),
+        ]
+        if chatbot_message:
+            requirement_conversation.append(ConversationTurn(role="assistant", content=chatbot_message))
+        requirements, learning_clarification = update_learning_requirements_from_chat(
+            lesson=lesson,
+            resources=visible_package.resources,
+            conversation=requirement_conversation,
+            user_message=request.message,
+            chatbot_message=chatbot_message,
+        )
+        lesson.learning_requirements = requirements
+        commit_operations(
+            lesson,
+            [],
+            label="Strong reasoning prompt",
+            message="Asked the learner to confirm strong reasoning before solving a complex request",
+            new_document=lesson.board_document,
+            metadata={
+                "kind": "chat_flow",
+                "user_message": request.message,
+                "assistant_message": chatbot_message,
+                "assistant_message_source": chatbot_message_source,
+                "interaction_mode": request.interaction_mode,
+                "selection": request.selection.model_dump(mode="json") if request.selection else None,
+                **_task_metadata(
+                    requirements=requirements,
+                    learning_clarification=learning_clarification,
+                    requirement_cleared=False,
+                ),
+                **_reference_metadata(resolution=resource_resolution),
+                **_strong_reasoning_prompt_metadata(
+                    prompt=strong_prompt,
+                    action=request.strong_reasoning_action,
+                ),
+            },
+        )
+        workspace_state.normalize_package_state(package)
+        workspace_state.save_workspace_for_user(user_id, workspace)
+        return _response(
+            workspace=workspace,
+            package=package,
+            lesson=lesson,
+            chatbot_message=chatbot_message,
+            learning_clarification=learning_clarification,
+            requirements=requirements,
+            board_decision=BoardDecision(action="no_change", reason=strong_prompt.reason),
+            resource_matches=resource_resolution.matches,
+            selected_reference=selected_reference,
+            strong_reasoning_prompt=strong_prompt,
+        )
+
     solver_user_message, solver_metadata = _chatbot_message_with_solver_context(
         lesson=lesson,
         request=request,
@@ -1776,7 +1992,13 @@ def _chat_response(
         selection_text=selection_text,
         visible_chatbot_message=chatbot_message,
         visible_chatbot_message_source=chatbot_message_source,
-        extra_metadata=solver_metadata,
+        extra_metadata={
+            **_strong_reasoning_prompt_metadata(
+                prompt=None,
+                action=request.strong_reasoning_action,
+            ),
+            **solver_metadata,
+        },
     )
     if interaction_start_response is not None:
         return interaction_start_response
@@ -1803,6 +2025,10 @@ def _chat_response(
                 requirement_cleared=requirement_cleared,
             ),
             **_reference_metadata(resolution=resource_resolution),
+            **_strong_reasoning_prompt_metadata(
+                prompt=None,
+                action=request.strong_reasoning_action,
+            ),
             **solver_metadata,
         },
     )

@@ -25,6 +25,7 @@ import type {
   ResourceReferencePrompt,
   ScopeOption,
   SelectionRef,
+  StrongReasoningPrompt,
 } from "@/types";
 
 type UseLessonChatAgentOptions = {
@@ -77,10 +78,12 @@ export function useLessonChatAgent({
   const [latestBoardDecision, setLatestBoardDecision] = useState<BoardDecision | null>(null);
   const [referencePrompt, setReferencePrompt] = useState<ResourceReferencePrompt | null>(null);
   const [boardEditPrompt, setBoardEditPrompt] = useState<BoardEditPrompt | null>(null);
+  const [strongReasoningPrompt, setStrongReasoningPrompt] = useState<StrongReasoningPrompt | null>(null);
   const [selectedReference, setSelectedReference] = useState<ResourceReferenceContext | null>(null);
   const [lastScopedRequest, setLastScopedRequest] = useState<ChatRequestPayload | null>(null);
   const [lastReferenceRequest, setLastReferenceRequest] = useState<ChatRequestPayload | null>(null);
   const [lastBoardEditRequest, setLastBoardEditRequest] = useState<ChatRequestPayload | null>(null);
+  const [lastStrongReasoningRequest, setLastStrongReasoningRequest] = useState<ChatRequestPayload | null>(null);
 
   const chatInput = activeComposerState.chatInput;
   const composerMode = activeComposerState.composerMode;
@@ -150,10 +153,12 @@ export function useLessonChatAgent({
     setLatestBoardDecision(null);
     setReferencePrompt(null);
     setBoardEditPrompt(null);
+    setStrongReasoningPrompt(null);
     setSelectedReference(null);
     setLastScopedRequest(null);
     setLastReferenceRequest(null);
     setLastBoardEditRequest(null);
+    setLastStrongReasoningRequest(null);
     clearSelection();
   }
 
@@ -193,15 +198,19 @@ export function useLessonChatAgent({
           ? "从第一节重新讲"
           : payloadOverride?.board_edit_action === "confirm"
             ? `扩选板书：${payloadOverride.board_edit_topic ?? payloadWithConversation.message}`
-            : payloadOverride?.board_edit_action === "skip"
-              ? `暂不扩选板书：${payloadOverride.board_edit_topic ?? payloadWithConversation.message}`
-              : payloadOverride?.resource_reference_action === "confirm"
-                ? "继续执行：参考推荐章节生成讲义"
-                : payloadOverride?.resource_reference_action === "skip"
-                  ? "继续执行：先不参考推荐章节"
-                  : isDirectEdit
-                    ? `直接编辑讲义：${payloadWithConversation.message}`
-                    : payloadWithConversation.message;
+          : payloadOverride?.board_edit_action === "skip"
+            ? `暂不扩选板书：${payloadOverride.board_edit_topic ?? payloadWithConversation.message}`
+            : payloadOverride?.resource_reference_action === "confirm"
+              ? "继续执行：参考推荐章节生成讲义"
+              : payloadOverride?.resource_reference_action === "skip"
+                ? "继续执行：先不参考推荐章节"
+                : payloadOverride?.strong_reasoning_action === "confirm"
+                  ? "继续执行：确认深度推理"
+                  : payloadOverride?.strong_reasoning_action === "skip"
+                    ? "继续执行：先不用深度推理"
+                    : isDirectEdit
+                      ? `直接编辑讲义：${payloadWithConversation.message}`
+                      : payloadWithConversation.message;
     const userMessage = createChatMessage("user", userMessageContent, "ready", undefined, submittedSelection);
     const pendingAssistantMessage: ChatMessage = {
       ...createChatMessage("assistant", "", "pending"),
@@ -277,10 +286,12 @@ export function useLessonChatAgent({
       setResourceMatches(response.resource_matches);
       setReferencePrompt(response.reference_prompt ?? null);
       setBoardEditPrompt(response.board_edit_prompt ?? null);
+      setStrongReasoningPrompt(response.strong_reasoning_prompt ?? null);
       setSelectedReference(response.selected_reference ?? null);
       setLastScopedRequest(response.scope_options.length ? payloadWithConversation : null);
       setLastReferenceRequest(response.reference_prompt ? payloadWithConversation : null);
       setLastBoardEditRequest(response.board_edit_prompt ? payloadWithConversation : null);
+      setLastStrongReasoningRequest(response.strong_reasoning_prompt ? payloadWithConversation : null);
       const chatbotMessage = response.chatbot_message.trim();
       const assistantMessages: ChatMessage[] = [];
       if (chatbotMessage) {
@@ -371,6 +382,18 @@ export function useLessonChatAgent({
     setLastBoardEditRequest(null);
   }
 
+  async function handleStrongReasoningAction(action: "confirm" | "skip") {
+    if (!strongReasoningPrompt || !lastStrongReasoningRequest) {
+      return;
+    }
+    await handleSubmitChat({
+      ...lastStrongReasoningRequest,
+      strong_reasoning_action: action,
+    });
+    setStrongReasoningPrompt(null);
+    setLastStrongReasoningRequest(null);
+  }
+
   async function handleContinueTeaching() {
     if (!activeLesson) {
       return;
@@ -393,12 +416,14 @@ export function useLessonChatAgent({
     latestBoardDecision,
     referencePrompt,
     boardEditPrompt,
+    strongReasoningPrompt,
     selectedReference,
     resetAgentState,
     handleSubmitChat,
     handleScopeAction,
     handleReferenceAction,
     handleBoardEditAction,
+    handleStrongReasoningAction,
     handleContinueTeaching,
   };
 }

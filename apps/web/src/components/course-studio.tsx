@@ -187,11 +187,13 @@ export function CourseStudio() {
     latestBoardDecision,
     referencePrompt,
     boardEditPrompt,
+    strongReasoningPrompt,
     selectedReference,
     handleSubmitChat,
     handleScopeAction,
     handleReferenceAction,
     handleBoardEditAction,
+    handleStrongReasoningAction,
     handleContinueTeaching,
   } = chatAgent;
   const voice = useRealtimeVoice({
@@ -488,6 +490,7 @@ export function CourseStudio() {
           scopeOptions={scopeOptions}
           referencePrompt={referencePrompt}
           boardEditPrompt={boardEditPrompt}
+          strongReasoningPrompt={strongReasoningPrompt}
           clarificationQuestions={clarificationQuestions}
           latestBoardDecision={latestBoardDecision}
           selectedReference={selectedReference}
@@ -513,6 +516,7 @@ export function CourseStudio() {
           onScopeAction={(option) => handleScopeAction(option)}
           onReferenceAction={(action) => handleReferenceAction(action)}
           onBoardEditAction={(action) => handleBoardEditAction(action)}
+          onStrongReasoningAction={(action) => handleStrongReasoningAction(action)}
           onSelectTextModel={selectTextModel}
           onSelectRealtimeModel={handleSelectRealtimeModel}
           onVoiceToggle={handleVoiceToggle}

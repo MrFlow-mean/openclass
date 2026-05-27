@@ -26,6 +26,7 @@ def _chat_stream_events(lesson_id: str, request: ChatRequest, *, user_id: str) -
         "chatbot": "正在回复",
         "pm": "正在整理学习需求",
         "board": "正在生成右侧文档",
+        "strong_reasoning": "正在深度推理",
     }
 
     def emit(event: str, data: object) -> None:

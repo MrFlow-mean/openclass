@@ -99,6 +99,7 @@ AIModelCapability = Literal["text", "realtime"]
 AIRealtimeTransport = Literal["openai_webrtc", "gemini_live_websocket"]
 ResourceReferenceAction = Literal["confirm", "skip"]
 BoardEditConfirmationAction = Literal["confirm", "skip"]
+StrongReasoningAction = Literal["confirm", "skip"]
 ResourceScanStrategy = Literal["outline_only", "heading_section", "page_window", "fulltext_match"]
 ChatInteractionMode = Literal["ask", "direct_edit"]
 TeachingAction = Literal["continue", "restart"]
@@ -601,6 +602,14 @@ class BoardEditPrompt(BaseModel):
     skip_label: str = "否"
 
 
+class StrongReasoningPrompt(BaseModel):
+    question: str
+    reason: str
+    confirm_label: str = "确认推理"
+    skip_label: str = "先不用"
+    model_label: str | None = None
+
+
 # Reserved AI teaching workflow schema.
 # Current public routes preserve these fields for stored lesson compatibility,
 # but realtime teaching execution is disabled and the next orchestration layer
@@ -675,6 +684,7 @@ class ChatRequest(BaseModel):
     resource_reference_chapter_id: str | None = None
     board_edit_action: BoardEditConfirmationAction | None = None
     board_edit_topic: str | None = None
+    strong_reasoning_action: StrongReasoningAction | None = None
     board_generation_action: BoardGenerationAction | None = None
     teaching_action: TeachingAction | None = None
     conversation: list[ConversationTurn] = Field(default_factory=list)
@@ -786,6 +796,7 @@ class ChatResponse(BaseModel):
     resource_matches: list[ResourceMatch] = Field(default_factory=list)
     reference_prompt: ResourceReferencePrompt | None = None
     board_edit_prompt: BoardEditPrompt | None = None
+    strong_reasoning_prompt: StrongReasoningPrompt | None = None
     selected_reference: ResourceReferenceContext | None = None
     resolved_focus: BoardFocusRef | None = None
     focus_candidates: list[BoardFocusRef] = Field(default_factory=list)
