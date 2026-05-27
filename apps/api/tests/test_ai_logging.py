@@ -2963,6 +2963,8 @@ def test_rule_based_interaction_start_creates_session_and_clears_task_sheet(
     assert updated_lesson.active_interaction_session is not None
     commit = updated_lesson.history_graph.commits[-1]
     assert commit.metadata["kind"] == "interaction_flow"
+    assert commit.metadata["assistant_message"] == "AI生成：已按你的规则开始互动。"
+    assert commit.metadata["assistant_message_source"] == "chatbot_interaction"
     assert commit.metadata["requirement_cleared"] is True
     assert commit.metadata["active_requirement_sheet_after"] is None
     assert commit.metadata["active_interaction_session_after"]["status"] == "active"
@@ -3031,17 +3033,18 @@ def test_rule_based_interaction_start_uses_whole_document_for_broad_reference(
         user_id=TEST_USER.id,
     )
 
-    assert response.chatbot_message == "AI生成：按角色规则回应下一句。"
+    assert response.chatbot_message == "AI生成：普通聊天先给出下一句。"
     assert response.focus_candidates == []
     assert response.requirement_cleared is True
     assert response.active_interaction_session is not None
     assert response.active_interaction_session.target_focus is None
     assert "Bonjour. Oui, elle est encore disponible." in response.active_interaction_session.reference_context
-    assert captured_contexts[-1] is not None
-    assert captured_contexts[-1]["reference_context"] == response.active_interaction_session.reference_context
+    assert captured_contexts == [None]
     updated_lesson = response.course_package.lessons[0]
     commit = updated_lesson.history_graph.commits[-1]
     assert commit.label == "Interaction session start"
+    assert commit.metadata["assistant_message"] == "AI生成：普通聊天先给出下一句。"
+    assert commit.metadata["assistant_message_source"] == "chatbot"
     assert commit.metadata["focus_candidates"] == []
     assert commit.metadata["active_interaction_session_after"]["target_focus"] is None
     assert _read_log_entries(isolated_ai_log) == []

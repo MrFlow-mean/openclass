@@ -679,8 +679,11 @@ def _maybe_start_interaction_session(
     learning_clarification: LearningClarificationStatus,
     resources: list[ResourceLibraryItem],
     selection_text: str | None,
+    visible_chatbot_message: str | None = None,
+    visible_chatbot_message_source: str | None = None,
+    extra_metadata: dict[str, object] | None = None,
 ) -> ChatResponse | None:
-    if request.interaction_mode == "direct_edit" and action_type != "append_section":
+    if request.interaction_mode == "direct_edit":
         return None
     if not should_start_interaction(requirements.interaction_rule_draft):
         return None
@@ -693,6 +696,8 @@ def _maybe_start_interaction_session(
         selection_text=selection_text,
     )
     if start_resolution.session is None and start_resolution.focus_resolution is not None:
+        if visible_chatbot_message is not None:
+            return None
         chatbot_message, chatbot_message_source = _generate_focus_candidate_message(
             lesson=lesson,
             requirements=requirements,
@@ -746,15 +751,19 @@ def _maybe_start_interaction_session(
 
     session_before = lesson.active_interaction_session
     lesson.active_interaction_session = start_resolution.session
-    chatbot_message, chatbot_message_source = _generate_interaction_chatbot_message(
-        lesson=lesson,
-        requirements=requirements,
-        resources=resources,
-        conversation=request.conversation,
-        request=request,
-        session=start_resolution.session,
-        decision=None,
-    )
+    if visible_chatbot_message is None:
+        chatbot_message, chatbot_message_source = _generate_interaction_chatbot_message(
+            lesson=lesson,
+            requirements=requirements,
+            resources=resources,
+            conversation=request.conversation,
+            request=request,
+            session=start_resolution.session,
+            decision=None,
+        )
+    else:
+        chatbot_message = visible_chatbot_message
+        chatbot_message_source = visible_chatbot_message_source or "chatbot"
     _clear_task_requirements(lesson)
     commit_operations(
         lesson,
@@ -784,6 +793,7 @@ def _maybe_start_interaction_session(
                 before=session_before,
                 after=start_resolution.session,
             ),
+            **(extra_metadata or {}),
         },
     )
     workspace_state.normalize_package_state(package)
@@ -1764,6 +1774,9 @@ def _chat_response(
         learning_clarification=learning_clarification,
         resources=visible_package.resources,
         selection_text=selection_text,
+        visible_chatbot_message=chatbot_message,
+        visible_chatbot_message_source=chatbot_message_source,
+        extra_metadata=solver_metadata,
     )
     if interaction_start_response is not None:
         return interaction_start_response
