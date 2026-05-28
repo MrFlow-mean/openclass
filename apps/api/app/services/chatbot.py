@@ -42,6 +42,12 @@ from app.services.learning_requirement_manager import (
     update_learning_requirements_from_chat,
 )
 from app.services.openai_course_ai import bind_text_model_selection, openai_course_ai
+from app.services.resource_document_import import (
+    apply_resource_document_import,
+    requests_resource_document_import,
+    resource_import_operation,
+    select_resource_import_payload,
+)
 from app.services.rich_document import is_document_empty
 from app.services.route_context import bind_ai_request_context
 from app.services.resource_resolver import ResourceResolution, resolve_resource_reference
@@ -632,6 +638,209 @@ def _response(
     )
 
 
+def _generate_resource_import_chatbot_message(
+    *,
+    lesson: Lesson,
+    requirements: LearningRequirementSheet,
+    resources: list[ResourceLibraryItem],
+    conversation: list[ConversationTurn],
+    request: ChatRequest,
+    result_context: str,
+    imported_excerpt: str | None = None,
+) -> tuple[str, str]:
+    ai_reply = openai_course_ai.generate_chatbot_reply(
+        lesson_title=lesson.title,
+        learning_goal=requirements.learning_goal,
+        board_summary=_board_summary(lesson),
+        resource_summary=_resource_summary(resources),
+        conversation_summary=_conversation_summary(conversation),
+        user_message=(
+            f"用户原始请求：{request.message}\n"
+            "系统已经判断这是一条资料导入黑板的通用文档操作。"
+            "请只根据下面的实际处理结果自然回复用户，不要要求用户再点击资料库按钮，也不要输出被导入的全文。\n"
+            f"实际处理结果：{result_context}"
+        ),
+        selection_excerpt=_compact_text(imported_excerpt, limit=1200) if imported_excerpt else None,
+        interaction_mode=request.interaction_mode,
+    )
+    chatbot_message = (ai_reply.chatbot_message if ai_reply else "").strip()
+    return chatbot_message, "chatbot" if chatbot_message else "chatbot_empty"
+
+
+def _handle_resource_document_import_request(
+    *,
+    workspace,
+    package,
+    lesson: Lesson,
+    user_id: str,
+    request: ChatRequest,
+    requirements: LearningRequirementSheet,
+    resources: list[ResourceLibraryItem],
+    resource_resolution: ResourceResolution,
+) -> ChatResponse | None:
+    if not requests_resource_document_import(request.message, resources=resources):
+        return None
+
+    learning_clarification = _latest_learning_clarification(lesson, requirements=requirements)
+    operation = resource_import_operation(lesson=lesson, user_message=request.message)
+
+    if operation is None:
+        result_context = "当前黑板已有内容，系统还没有执行导入；需要用户说明是追加到现有内容后面，还是替换当前黑板。"
+        chatbot_message, chatbot_message_source = _generate_resource_import_chatbot_message(
+            lesson=lesson,
+            requirements=requirements,
+            resources=resources,
+            conversation=request.conversation,
+            request=request,
+            result_context=result_context,
+        )
+        commit_operations(
+            lesson,
+            [],
+            label="Resource document import",
+            message="Asked the learner how to apply an uploaded resource to a non-empty board",
+            new_document=lesson.board_document,
+            metadata={
+                "kind": "board_document_import",
+                "import_status": "await_write_mode",
+                "user_message": request.message,
+                "assistant_message": chatbot_message,
+                "assistant_message_source": chatbot_message_source,
+                "interaction_mode": request.interaction_mode,
+                "selection": request.selection.model_dump(mode="json") if request.selection else None,
+                **_task_metadata(
+                    requirements=requirements,
+                    learning_clarification=learning_clarification,
+                    requirement_cleared=False,
+                ),
+                **_reference_metadata(resolution=resource_resolution),
+            },
+        )
+        workspace_state.normalize_package_state(package)
+        workspace_state.save_workspace_for_user(user_id, workspace)
+        return _response(
+            workspace=workspace,
+            package=package,
+            lesson=lesson,
+            chatbot_message=chatbot_message,
+            requirements=requirements,
+            learning_clarification=learning_clarification,
+            board_decision=BoardDecision(action="no_change", reason="已有黑板内容，需要先确认导入方式。"),
+            resource_matches=resource_resolution.matches,
+            selected_reference=resource_resolution.selected_reference,
+        )
+
+    payload = select_resource_import_payload(
+        resources=resources,
+        user_message=request.message,
+        resource_resolution=resource_resolution,
+        operation=operation,
+    )
+    if payload is None:
+        result_context = "系统还不能唯一确定要导入哪份资料，或者当前资料没有可写入的已抽取文本；本轮没有修改黑板。"
+        chatbot_message, chatbot_message_source = _generate_resource_import_chatbot_message(
+            lesson=lesson,
+            requirements=requirements,
+            resources=resources,
+            conversation=request.conversation,
+            request=request,
+            result_context=result_context,
+        )
+        commit_operations(
+            lesson,
+            [],
+            label="Resource document import",
+            message="Could not resolve a resource document import request",
+            new_document=lesson.board_document,
+            metadata={
+                "kind": "board_document_import",
+                "import_status": "unresolved",
+                "user_message": request.message,
+                "assistant_message": chatbot_message,
+                "assistant_message_source": chatbot_message_source,
+                "interaction_mode": request.interaction_mode,
+                "selection": request.selection.model_dump(mode="json") if request.selection else None,
+                **_task_metadata(
+                    requirements=requirements,
+                    learning_clarification=learning_clarification,
+                    requirement_cleared=False,
+                ),
+                **_reference_metadata(resolution=resource_resolution),
+            },
+        )
+        workspace_state.normalize_package_state(package)
+        workspace_state.save_workspace_for_user(user_id, workspace)
+        return _response(
+            workspace=workspace,
+            package=package,
+            lesson=lesson,
+            chatbot_message=chatbot_message,
+            requirements=requirements,
+            learning_clarification=learning_clarification,
+            board_decision=BoardDecision(action="no_change", reason="没有解析出可导入的资料内容。"),
+            resource_matches=resource_resolution.matches,
+            selected_reference=resource_resolution.selected_reference,
+        )
+
+    apply_resource_document_import(lesson=lesson, payload=payload, requirements=lesson.learning_requirements)
+    operation_label = "追加到当前黑板末尾" if payload.operation == "append_section" else "替换当前黑板内容"
+    result_context = (
+        f"已将资料“{payload.resource.name}”的{payload.import_scope}内容{operation_label}；"
+        f"导入文本长度约 {len(payload.content_text)} 个字符。"
+    )
+    chatbot_message, chatbot_message_source = _generate_resource_import_chatbot_message(
+        lesson=lesson,
+        requirements=requirements,
+        resources=resources,
+        conversation=request.conversation,
+        request=request,
+        result_context=result_context,
+        imported_excerpt=payload.content_text,
+    )
+    commit_operations(
+        lesson,
+        [],
+        label="Resource document import",
+        message="Imported uploaded resource text into the board document",
+        new_document=lesson.board_document,
+        metadata={
+            "kind": "board_document_import",
+            "import_status": "imported",
+            "user_message": request.message,
+            "assistant_message": chatbot_message,
+            "assistant_message_source": chatbot_message_source,
+            "interaction_mode": request.interaction_mode,
+            "selection": request.selection.model_dump(mode="json") if request.selection else None,
+            "resource_id": payload.resource.id,
+            "resource_name": payload.resource.name,
+            "resource_import_scope": payload.import_scope,
+            "board_edit_operation": payload.operation,
+            **_task_metadata(
+                requirements=requirements,
+                learning_clarification=learning_clarification,
+                requirement_cleared=False,
+            ),
+            **_reference_metadata(resolution=resource_resolution),
+        },
+    )
+    workspace_state.normalize_package_state(package)
+    workspace_state.save_workspace_for_user(user_id, workspace)
+    return _response(
+        workspace=workspace,
+        package=package,
+        lesson=lesson,
+        chatbot_message=chatbot_message,
+        requirements=requirements,
+        learning_clarification=learning_clarification,
+        board_decision=BoardDecision(
+            action="append_section" if payload.operation == "append_section" else "edit_board",
+            reason="已按用户要求把上传资料导入黑板。",
+        ),
+        resource_matches=resource_resolution.matches,
+        selected_reference=payload.selected_reference or resource_resolution.selected_reference,
+    )
+
+
 def _generate_interaction_chatbot_message(
     *,
     lesson: Lesson,
@@ -1033,6 +1242,19 @@ def _chat_response(
     selected_reference = resource_resolution.selected_reference
     selection_or_reference_excerpt = _merge_selection_and_reference(selection_excerpt, selected_reference)
     resource_summary_for_turn = _resource_summary_with_reference(visible_package.resources, selected_reference)
+
+    resource_import_response = _handle_resource_document_import_request(
+        workspace=workspace,
+        package=package,
+        lesson=lesson,
+        user_id=user_id,
+        request=request,
+        requirements=requirements,
+        resources=visible_package.resources,
+        resource_resolution=resource_resolution,
+    )
+    if resource_import_response is not None:
+        return resource_import_response
 
     interaction_response = _handle_existing_interaction_session(
         workspace=workspace,
