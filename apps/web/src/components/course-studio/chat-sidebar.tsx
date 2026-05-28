@@ -145,6 +145,8 @@ export function CourseStudioChatSidebar({
   onUpdateComposerState,
   onAdjustComposerHeight,
 }: CourseStudioChatSidebarProps) {
+  const voiceStartDisabled = !voiceActive && !selectedRealtimeOption?.enabled;
+
   return (
     <aside className="relative flex h-full min-h-0 flex-col border-r border-gray-200 bg-white">
       <div
@@ -397,16 +399,20 @@ export function CourseStudioChatSidebar({
           <button
             type="button"
             onClick={() => void onVoiceToggle()}
+            disabled={voiceStartDisabled}
             title={voiceStatusText}
             className={clsx(
-              "flex h-10 w-10 items-center justify-center rounded-xl text-white shadow-sm transition-all hover:scale-105 hover:shadow-md",
-              voiceActive ? "bg-gray-800 ring-2 ring-gray-200" : "bg-[#1a1a1a]"
+              "flex h-10 w-10 items-center justify-center rounded-xl text-white shadow-sm transition-all",
+              voiceStartDisabled
+                ? "cursor-not-allowed bg-gray-200 text-gray-500 shadow-none"
+                : "hover:scale-105 hover:shadow-md",
+              voiceActive ? "bg-gray-800 ring-2 ring-gray-200" : !voiceStartDisabled && "bg-[#1a1a1a]"
             )}
           >
             {voiceActive ? <Radio className="h-4.5 w-4.5" /> : <Volume2 className="h-4.5 w-4.5" />}
           </button>
         </div>
-        <p className="mb-2 truncate px-1 text-center text-[10px] leading-4 text-gray-500">{voiceStatusText}</p>
+        <p className="mb-2 min-h-4 px-1 text-center text-[10px] leading-4 text-gray-500">{voiceStatusText}</p>
         <audio ref={remoteAudioRef} autoPlay className="hidden" />
 
         <div
@@ -598,6 +604,11 @@ function ModelPicker({
       {openModelMenu === kind ? (
         <div className="absolute bottom-full left-0 z-30 mb-2 max-h-[360px] w-[min(336px,calc(100vw-2rem))] overflow-y-auto rounded-lg border border-gray-200 bg-white p-2 shadow-xl">
           <div className="space-y-1">
+            {options.length === 0 ? (
+              <p className="px-2 py-2 text-xs leading-5 text-gray-500">
+                {kind === "realtime" ? "实时语音未启用" : "暂无可用模型"}
+              </p>
+            ) : null}
             {options.map((option) => {
               const selected = modelOptionKey(option) === modelSelectionKey(selectedModel);
               return (

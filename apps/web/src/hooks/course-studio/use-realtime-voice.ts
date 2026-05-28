@@ -34,6 +34,31 @@ function createClientSessionId(prefix: string): string {
   return `${prefix}_${crypto.randomUUID()}`;
 }
 
+function realtimeReadyStatus(option: AIModelOption | null | undefined): string {
+  if (!option) {
+    return "实时语音未启用";
+  }
+  if (!option.enabled) {
+    return `${PROVIDER_LABELS[option.provider]} 实时语音未配置`;
+  }
+  return "点击麦克风，连接实时语音 Chatbot";
+}
+
+function realtimeUnavailableMessage(option: AIModelOption | null | undefined): string {
+  if (!option) {
+    return "实时语音未启用。请开启 OPENCLASS_REALTIME_ENABLED 并重启后端。";
+  }
+  return `当前未配置 ${PROVIDER_LABELS[option.provider]} 的实时语音 API Key。`;
+}
+
+function isAutomaticRealtimeStatus(value: string): boolean {
+  return (
+    value === "实时语音未启用" ||
+    value === "点击麦克风，连接实时语音 Chatbot" ||
+    value.endsWith("实时语音未配置")
+  );
+}
+
 export function useRealtimeVoice({
   activeLesson,
   latestAssistantMessageContent,
@@ -72,7 +97,7 @@ export function useRealtimeVoice({
   });
 
   const [voiceActive, setVoiceActive] = useState(false);
-  const [voiceStatusText, setVoiceStatusText] = useState("点击麦克风，连接实时语音 Chatbot");
+  const [voiceStatusText, setVoiceStatusText] = useState(() => realtimeReadyStatus(selectedRealtimeOption));
 
   function stopGoogleQueuedPlayback() {
     googlePlaybackSourcesRef.current.forEach((source) => {
@@ -368,12 +393,14 @@ export function useRealtimeVoice({
     if (!activeLesson) {
       return;
     }
-    if (!navigator.mediaDevices?.getUserMedia) {
-      setError("当前浏览器无法访问麦克风。请使用支持麦克风的浏览器，并通过 localhost 或 HTTPS 打开页面。");
+    if (!selectedRealtimeOption?.enabled) {
+      const message = realtimeUnavailableMessage(selectedRealtimeOption);
+      setVoiceStatusText(message);
+      setError(message);
       return;
     }
-    if (selectedRealtimeOption && !selectedRealtimeOption.enabled) {
-      setError(`当前未配置 ${PROVIDER_LABELS[selectedRealtimeModel.provider]} 的实时语音 API Key。`);
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setError("当前浏览器无法访问麦克风。请使用支持麦克风的浏览器，并通过 localhost 或 HTTPS 打开页面。");
       return;
     }
     if (!(await flushAutoSave("voice"))) {
@@ -561,10 +588,15 @@ export function useRealtimeVoice({
     stopRealtimeSessionEvent("已切换课程，语音会话已自动断开");
   }, [activeLesson?.id]);
 
+  const idleVoiceStatusText =
+    !voiceActive && busyAction !== "voice-connect" && isAutomaticRealtimeStatus(voiceStatusText)
+      ? realtimeReadyStatus(selectedRealtimeOption)
+      : voiceStatusText;
+
   return {
     remoteAudioRef,
     voiceActive,
-    voiceStatusText,
+    voiceStatusText: idleVoiceStatusText,
     setVoiceStatusText,
     handleVoiceToggle,
     stopRealtimeSession,
