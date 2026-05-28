@@ -6,6 +6,9 @@ type ResizablePanelWidthOptions = {
   minWidth: number;
   maxWidth: number;
   keyboardStep?: number;
+  resizeDirection?: "left" | "right";
+  ariaLabel?: string;
+  title?: string;
 };
 
 function clampPanelWidth(width: number, minWidth: number, maxWidth: number) {
@@ -18,6 +21,9 @@ export function useResizablePanelWidth({
   minWidth,
   maxWidth,
   keyboardStep = 24,
+  resizeDirection = "right",
+  ariaLabel = "调整面板宽度",
+  title = "调整面板宽度",
 }: ResizablePanelWidthOptions) {
   const [width, setWidth] = useState(() => {
     const fallbackWidth = clampPanelWidth(defaultWidth, minWidth, maxWidth);
@@ -68,7 +74,8 @@ export function useResizablePanelWidth({
       if (!start) {
         return;
       }
-      updateWidth(start.width + event.clientX - start.x);
+      const delta = event.clientX - start.x;
+      updateWidth(resizeDirection === "left" ? start.width - delta : start.width + delta);
     }
 
     function handlePointerUp() {
@@ -89,7 +96,7 @@ export function useResizablePanelWidth({
       window.removeEventListener("pointermove", handlePointerMove);
       window.removeEventListener("pointerup", handlePointerUp);
     };
-  }, [isResizing, updateWidth]);
+  }, [isResizing, resizeDirection, updateWidth]);
 
   function handlePointerDown(event: PointerEvent<HTMLElement>) {
     if (event.button !== 0) {
@@ -103,11 +110,15 @@ export function useResizablePanelWidth({
   function handleKeyDown(event: KeyboardEvent<HTMLElement>) {
     if (event.key === "ArrowLeft") {
       event.preventDefault();
-      updateWidth((currentWidth) => currentWidth - keyboardStep);
+      updateWidth((currentWidth) =>
+        resizeDirection === "left" ? currentWidth + keyboardStep : currentWidth - keyboardStep
+      );
     }
     if (event.key === "ArrowRight") {
       event.preventDefault();
-      updateWidth((currentWidth) => currentWidth + keyboardStep);
+      updateWidth((currentWidth) =>
+        resizeDirection === "left" ? currentWidth - keyboardStep : currentWidth + keyboardStep
+      );
     }
     if (event.key === "Home") {
       event.preventDefault();
@@ -129,8 +140,8 @@ export function useResizablePanelWidth({
       "aria-valuemin": minWidth,
       "aria-valuemax": maxWidth,
       "aria-valuenow": width,
-      "aria-label": "调整 Chatbot 宽度",
-      title: "调整 Chatbot 宽度",
+      "aria-label": ariaLabel,
+      title,
       onPointerDown: handlePointerDown,
       onKeyDown: handleKeyDown,
     },
