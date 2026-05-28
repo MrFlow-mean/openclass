@@ -27,6 +27,25 @@ def get_commit(lesson: Lesson, commit_id: str) -> CommitRecord:
     raise ValueError(f"Unknown commit {commit_id}")
 
 
+def restore_lesson_runtime_from_commit(lesson: Lesson, commit: CommitRecord) -> None:
+    if not isinstance(commit.metadata, dict):
+        return
+    if "active_requirement_sheet_after" in commit.metadata:
+        raw_requirements = commit.metadata.get("active_requirement_sheet_after")
+        lesson.learning_requirements = (
+            LearningRequirementSheet.model_validate(raw_requirements)
+            if isinstance(raw_requirements, dict)
+            else None
+        )
+    if "active_interaction_session_after" in commit.metadata:
+        raw_session = commit.metadata.get("active_interaction_session_after")
+        lesson.active_interaction_session = (
+            InteractionSession.model_validate(raw_session)
+            if isinstance(raw_session, dict)
+            else None
+        )
+
+
 def commit_operations(
     lesson: Lesson,
     operations: list[PatchOperation],
@@ -65,6 +84,7 @@ def create_branch(lesson: Lesson, branch_name: str, from_commit_id: str | None =
     )
     lesson.history_graph.current_branch = branch_name
     lesson.board_document = source_commit.snapshot
+    restore_lesson_runtime_from_commit(lesson, source_commit)
     lesson.updated_at = now_iso()
     return lesson
 
@@ -74,26 +94,14 @@ def switch_branch(lesson: Lesson, branch_name: str) -> Lesson:
     source_commit = get_commit(lesson, branch.head_commit_id)
     lesson.history_graph.current_branch = branch_name
     lesson.board_document = source_commit.snapshot
+    restore_lesson_runtime_from_commit(lesson, source_commit)
     lesson.updated_at = now_iso()
     return lesson
 
 
 def restore_commit(lesson: Lesson, commit_id: str, label: str) -> Lesson:
     commit = get_commit(lesson, commit_id)
-    if isinstance(commit.metadata, dict) and "active_requirement_sheet_after" in commit.metadata:
-        raw_requirements = commit.metadata.get("active_requirement_sheet_after")
-        lesson.learning_requirements = (
-            LearningRequirementSheet.model_validate(raw_requirements)
-            if isinstance(raw_requirements, dict)
-            else None
-        )
-    if isinstance(commit.metadata, dict) and "active_interaction_session_after" in commit.metadata:
-        raw_session = commit.metadata.get("active_interaction_session_after")
-        lesson.active_interaction_session = (
-            InteractionSession.model_validate(raw_session)
-            if isinstance(raw_session, dict)
-            else None
-        )
+    restore_lesson_runtime_from_commit(lesson, commit)
     return commit_operations(
         lesson,
         operations=[],

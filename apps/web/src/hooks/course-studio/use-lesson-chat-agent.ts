@@ -4,8 +4,14 @@ import { useState, type Dispatch, type MutableRefObject, type SetStateAction } f
 
 import { api } from "@/lib/api";
 import {
+  buildConversationBeforeChatCommit,
+  buildLessonMessagesFromHistory,
+  chatEditBaseCommitId,
+  chatInteractionModeForCommit,
+  chatSelectionForCommit,
   createChatMessage,
   isBoardDocumentEmpty,
+  nextBranchName,
   type ChatMessage,
   type LessonComposerState,
 } from "@/components/course-studio/history-utils";
@@ -17,6 +23,7 @@ import type {
   BoardDecision,
   BoardEditPrompt,
   ChatRequestPayload,
+  ConversationTurn,
   CoursePackage,
   LearningClarificationStatus,
   Lesson,
@@ -39,7 +46,7 @@ type UseLessonChatAgentOptions = {
   chatRequestInFlightRef: MutableRefObject<boolean>;
   flushAutoSave: (reason: AutoSaveReason) => Promise<boolean>;
   exitPreviewMode: () => void;
-  updateCoursePackage: (nextPackage: CoursePackage, options?: CoursePackageApplyOptions) => void;
+  updateCoursePackage: (nextPackage: CoursePackage, options?: CoursePackageApplyOptions) => CoursePackageApplyResult;
   updateLessonMessages: (lessonId: string, updater: (messages: ChatMessage[]) => ChatMessage[]) => void;
   updateLessonComposerState: (lessonId: string, updater: (current: LessonComposerState) => LessonComposerState) => void;
   setStreamingDocumentPreview: (document: BoardDocument) => void;
@@ -48,6 +55,20 @@ type UseLessonChatAgentOptions = {
   setBusyAction: Dispatch<SetStateAction<string | null>>;
   busyAction: string | null;
   onSpeakResponse: (content: string) => void;
+};
+
+type SubmitChatOptions = {
+  speakResponse?: boolean;
+  conversationOverride?: ConversationTurn[];
+  lessonOverride?: Lesson;
+  messagesOverride?: ChatMessage[];
+  boardDocumentOverride?: BoardDocument | null;
+  rebuildMessagesAfterResponse?: boolean;
+};
+
+type CoursePackageApplyResult = {
+  coursePackage: CoursePackage;
+  activeLesson: Lesson | null;
 };
 
 export function useLessonChatAgent({
@@ -162,14 +183,16 @@ export function useLessonChatAgent({
     clearSelection();
   }
 
-  async function handleSubmitChat(payloadOverride?: ChatRequestPayload, options?: { speakResponse?: boolean }) {
-    if (!activeLesson || chatRequestInFlightRef.current || isChatBusy) {
+  async function handleSubmitChat(payloadOverride?: ChatRequestPayload, options?: SubmitChatOptions) {
+    const requestLesson = options?.lessonOverride ?? activeLesson;
+    if (!requestLesson || chatRequestInFlightRef.current || isChatBusy) {
       return;
     }
     if (isPreviewMode) {
       exitPreviewMode();
     }
-    const lessonId = activeLesson.id;
+    const lessonId = requestLesson.id;
+    const requestMessages = options?.messagesOverride ?? activeMessages;
     const submittedInput = chatInput;
     const payload =
       payloadOverride ??
@@ -181,7 +204,10 @@ export function useLessonChatAgent({
     const payloadWithConversation: ChatRequestPayload = {
       ...payload,
       text_model: payload.text_model ?? selectedTextModel,
-      conversation: activeMessages.slice(-8).map(({ role, content }) => ({ role, content })),
+      conversation:
+        payload.conversation ??
+        options?.conversationOverride ??
+        requestMessages.slice(-8).map(({ role, content }) => ({ role, content })),
     };
     const submittedSelection = payloadWithConversation.selection ?? null;
 
@@ -216,7 +242,7 @@ export function useLessonChatAgent({
       ...createChatMessage("assistant", "", "pending"),
       statusLabel: "正在保存当前文档",
     };
-    const baseStreamingDocument = currentBoardDocument ?? activeLesson.board_document;
+    const baseStreamingDocument = options?.boardDocumentOverride ?? currentBoardDocument ?? requestLesson.board_document;
     const canStreamDocumentPreview = shouldStreamDocumentPreview(payloadWithConversation, baseStreamingDocument);
     let requestStarted = false;
     let streamedChatContent = "";
@@ -232,7 +258,7 @@ export function useLessonChatAgent({
       }));
     }
     updateLessonMessages(lessonId, (current) => [
-      ...current,
+      ...(options?.messagesOverride ?? current),
       userMessage,
       pendingAssistantMessage,
     ]);
@@ -278,6 +304,7 @@ export function useLessonChatAgent({
       });
       updateCoursePackage(response.course_package, {
         activeLessonId: response.created_lesson ? undefined : lessonId,
+        rebuildMessageLessonIds: options?.rebuildMessagesAfterResponse ? [lessonId] : undefined,
       });
       setLatestBoardDecision(response.board_decision);
       setClarificationQuestions(response.clarification_questions);
@@ -299,10 +326,15 @@ export function useLessonChatAgent({
           createChatMessage("assistant", chatbotMessage, "ready", undefined, null, response.teaching_progress ?? null)
         );
       }
-      updateLessonMessages(lessonId, (current) => [
-        ...current.filter((message) => message.id !== pendingAssistantMessage.id),
-        ...assistantMessages,
-      ]);
+      if (options?.rebuildMessagesAfterResponse) {
+        const nextLesson = response.course_package.lessons.find((lesson) => lesson.id === lessonId) ?? null;
+        updateLessonMessages(lessonId, () => (nextLesson ? buildLessonMessagesFromHistory(nextLesson) : assistantMessages));
+      } else {
+        updateLessonMessages(lessonId, (current) => [
+          ...current.filter((message) => message.id !== pendingAssistantMessage.id),
+          ...assistantMessages,
+        ]);
+      }
       if (options?.speakResponse && chatbotMessage) {
         onSpeakResponse(chatbotMessage);
       }
@@ -327,6 +359,61 @@ export function useLessonChatAgent({
       chatRequestInFlightRef.current = false;
       setBusyAction(null);
     }
+  }
+
+  async function handleEditChatTurn(commitId: string, nextContent: string) {
+    if (!activeLesson || chatRequestInFlightRef.current || isChatBusy) {
+      return;
+    }
+    const message = nextContent.trim();
+    const baseCommitId = chatEditBaseCommitId(activeLesson, commitId);
+    if (!message || !baseCommitId) {
+      return;
+    }
+    if (!(await flushAutoSave("branch"))) {
+      return;
+    }
+    if (isPreviewMode) {
+      exitPreviewMode();
+    }
+
+    const sourceLesson = activeLesson;
+    const conversation = buildConversationBeforeChatCommit(sourceLesson, commitId);
+    const interactionMode = chatInteractionModeForCommit(sourceLesson, commitId);
+    const selection = chatSelectionForCommit(sourceLesson, commitId);
+    const branchName = nextBranchName(sourceLesson);
+    setBusyAction("branch");
+    let branchedLesson: Lesson | null = null;
+    try {
+      const branchedPackage = await api.createBranch(sourceLesson.id, branchName, baseCommitId);
+      const applied = updateCoursePackage(branchedPackage, {
+        activeLessonId: sourceLesson.id,
+        rebuildMessageLessonIds: [sourceLesson.id],
+      });
+      branchedLesson = applied.activeLesson;
+    } catch (branchError) {
+      setError(branchError instanceof Error ? branchError.message : "创建对话分支失败");
+      return;
+    } finally {
+      setBusyAction(null);
+    }
+
+    const messagesBeforeEdit = branchedLesson ? buildLessonMessagesFromHistory(branchedLesson) : [];
+    await handleSubmitChat(
+      {
+        message,
+        interaction_mode: interactionMode,
+        selection,
+        conversation,
+      },
+      {
+        conversationOverride: conversation,
+        lessonOverride: branchedLesson ?? sourceLesson,
+        messagesOverride: messagesBeforeEdit,
+        boardDocumentOverride: branchedLesson?.board_document ?? sourceLesson.board_document,
+        rebuildMessagesAfterResponse: true,
+      }
+    );
   }
 
   async function handleScopeAction(option: ScopeOption) {
@@ -420,6 +507,7 @@ export function useLessonChatAgent({
     selectedReference,
     resetAgentState,
     handleSubmitChat,
+    handleEditChatTurn,
     handleScopeAction,
     handleReferenceAction,
     handleBoardEditAction,

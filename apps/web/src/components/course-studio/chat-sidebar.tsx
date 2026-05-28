@@ -81,6 +81,8 @@ type CourseStudioChatSidebarProps = {
   includeSelectionInPrompt: boolean;
   onApplySelection: (selection: SelectionRef, popoverPosition: ReturnType<typeof popoverPositionFromDomSelection>) => void;
   onContinueTeaching: () => void;
+  onEditChatTurn: (commitId: string, nextContent: string) => void | Promise<void>;
+  onSwitchChatBranch: (branchName: string) => void | Promise<void>;
   onSubmitChat: (payload?: ChatRequestPayload) => void | Promise<void>;
   onScopeAction: (option: ScopeOption) => void | Promise<void>;
   onReferenceAction: (action: "confirm" | "skip") => void | Promise<void>;
@@ -132,6 +134,8 @@ export function CourseStudioChatSidebar({
   includeSelectionInPrompt,
   onApplySelection,
   onContinueTeaching,
+  onEditChatTurn,
+  onSwitchChatBranch,
   onSubmitChat,
   onScopeAction,
   onReferenceAction,
@@ -198,6 +202,13 @@ export function CourseStudioChatSidebar({
               >
                 <CourseChatMessage
                   message={message}
+                  isBusy={isChatBusy}
+                  onEditMessage={
+                    !isPreviewMode && message.commitId
+                      ? (_message, nextContent) => onEditChatTurn(message.commitId!, nextContent)
+                      : undefined
+                  }
+                  onSwitchBranch={!isPreviewMode ? onSwitchChatBranch : undefined}
                   onContinueTeaching={
                     !isPreviewMode &&
                     index === displayedMessages.length - 1 &&

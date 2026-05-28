@@ -9,7 +9,7 @@ from app.services.course_runtime import (
     refresh_lesson_runtime,
 )
 from app.services.document_ops import apply_patch
-from app.services.history import create_branch, restore_commit
+from app.services.history import commit_operations, create_branch, restore_commit, switch_branch
 from app.services.lesson_factory import create_empty_lesson, create_lesson
 from app.services.openai_course_ai import GeneratedCatalogChapter, GeneratedResourceCatalog, OpenAICourseAI
 from app.services.resource_library import _epub_section_body_score, build_resource_item, extract_reference_context
@@ -109,6 +109,50 @@ def test_branch_and_restore_keep_history() -> None:
     restore_metadata = lesson.history_graph.commits[-1].metadata
     assert restore_metadata["kind"] == "restore_snapshot"
     assert restore_metadata["restored_commit_id"] == first_commit_id
+
+
+def test_branch_switch_restores_runtime_state_from_commit_metadata() -> None:
+    lesson = create_lesson("分支状态测试")
+    first_requirements = LearningRequirementSheet.model_validate(lesson.learning_requirements.model_dump(mode="json"))
+    first_requirements.learning_goal = "第一轮学习目标"
+    lesson.learning_requirements = first_requirements
+    commit_operations(
+        lesson,
+        [],
+        "First chat",
+        "First chat update",
+        metadata={
+            "kind": "chat_flow",
+            "user_message": "第一轮问题",
+            "active_requirement_sheet_after": first_requirements.model_dump(mode="json"),
+            "active_interaction_session_after": None,
+        },
+    )
+    first_chat_commit_id = lesson.history_graph.commits[-1].id
+
+    second_requirements = LearningRequirementSheet.model_validate(first_requirements.model_dump(mode="json"))
+    second_requirements.learning_goal = "第二轮学习目标"
+    lesson.learning_requirements = second_requirements
+    commit_operations(
+        lesson,
+        [],
+        "Second chat",
+        "Second chat update",
+        metadata={
+            "kind": "chat_flow",
+            "user_message": "第二轮问题",
+            "active_requirement_sheet_after": second_requirements.model_dump(mode="json"),
+            "active_interaction_session_after": None,
+        },
+    )
+
+    create_branch(lesson, "edited-from-first", first_chat_commit_id)
+    assert lesson.learning_requirements is not None
+    assert lesson.learning_requirements.learning_goal == "第一轮学习目标"
+
+    switch_branch(lesson, "main")
+    assert lesson.learning_requirements is not None
+    assert lesson.learning_requirements.learning_goal == "第二轮学习目标"
 
 
 def test_create_empty_lesson_starts_with_blank_rich_document() -> None:

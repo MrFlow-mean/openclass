@@ -5,6 +5,7 @@ import type {
   BoardDocument,
   ChatInteractionMode,
   CommitRecord,
+  ConversationTurn,
   LearningClarificationStatus,
   LearningRequirementKeyFact,
   Lesson,
@@ -12,7 +13,20 @@ import type {
   SectionTeachingProgress,
 } from "@/types";
 
-export type ChatMessage = CourseChatMessageView;
+export type ChatBranchAlternative = {
+  order: number;
+  commitId: string;
+  branchName: string;
+  message: string;
+  createdAt: string;
+  isCurrent: boolean;
+};
+
+export type ChatMessage = CourseChatMessageView & {
+  commitId?: string;
+  canEdit?: boolean;
+  branchAlternatives?: ChatBranchAlternative[];
+};
 
 export type LessonMessageMap = Record<string, ChatMessage[]>;
 export type LessonComposerState = {
@@ -86,6 +100,21 @@ const LEGACY_NON_AI_ASSISTANT_PATTERNS = [
   "请求已发出，生成讲义可能需要",
 ] as const;
 
+const CHAT_TIMELINE_COMMIT_KINDS = new Set([
+  "chat_flow",
+  "board_document_generation",
+  "board_document_edit",
+]);
+
+const NON_EDITABLE_CHAT_ACTION_KEYS = [
+  "scope_action",
+  "resource_reference_action",
+  "board_edit_action",
+  "board_generation_action",
+  "teaching_action",
+  "strong_reasoning_action",
+] as const;
+
 function isDisplayableAssistantContent(content: string | null, source?: string | null): content is string {
   const text = content?.trim();
   if (!text) {
@@ -95,6 +124,22 @@ function isDisplayableAssistantContent(content: string | null, source?: string |
     return false;
   }
   return !LEGACY_NON_AI_ASSISTANT_PATTERNS.some((pattern) => text.includes(pattern));
+}
+
+function isChatTimelineCommit(commit: CommitRecord): boolean {
+  return CHAT_TIMELINE_COMMIT_KINDS.has(String(commit.metadata?.kind ?? ""));
+}
+
+function metadataHasValue(commit: CommitRecord, key: string): boolean {
+  const value = commit.metadata?.[key];
+  return value !== undefined && value !== null && value !== "";
+}
+
+function canEditUserChatCommit(commit: CommitRecord): boolean {
+  if (!isChatTimelineCommit(commit) || !metadataText(commit, "user_message")) {
+    return false;
+  }
+  return !NON_EDITABLE_CHAT_ACTION_KEYS.some((key) => metadataHasValue(commit, key));
 }
 
 function selectionFromMetadata(value: unknown): SelectionRef | null {
@@ -171,11 +216,10 @@ function conversationTargetCommitId(lesson: Lesson, commitId?: string | null): s
   return commit.id;
 }
 
-function commitLineageIds(lesson: Lesson, commitId?: string | null): Set<string> {
-  const targetCommitId = conversationTargetCommitId(lesson, commitId);
+function commitAncestorIds(lesson: Lesson, commitId?: string | null): Set<string> {
   const commitsById = new Map(lesson.history_graph.commits.map((commit) => [commit.id, commit]));
   const lineage = new Set<string>();
-  const stack = targetCommitId ? [targetCommitId] : [];
+  const stack = commitId ? [commitId] : [];
 
   while (stack.length) {
     const nextCommitId = stack.pop();
@@ -188,6 +232,10 @@ function commitLineageIds(lesson: Lesson, commitId?: string | null): Set<string>
   }
 
   return lineage;
+}
+
+function commitLineageIds(lesson: Lesson, commitId?: string | null): Set<string> {
+  return commitAncestorIds(lesson, conversationTargetCommitId(lesson, commitId));
 }
 
 function chatUserContentFromCommit(commit: CommitRecord): string | null {
@@ -231,23 +279,24 @@ export function buildLessonMessagesFromHistory(lesson: Lesson, commitId?: string
   const messages: ChatMessage[] = [];
 
   lesson.history_graph.commits.forEach((commit) => {
-    if (
-      !lineageIds.has(commit.id) ||
-      !["chat_flow", "board_document_generation", "board_document_edit"].includes(String(commit.metadata?.kind ?? ""))
-    ) {
+    if (!lineageIds.has(commit.id) || !isChatTimelineCommit(commit)) {
       return;
     }
 
     const userContent = chatUserContentFromCommit(commit);
     if (userContent) {
+      const userMessage = createChatMessage(
+        "user",
+        userContent,
+        "ready",
+        `${commit.id}:user`,
+        selectionFromMetadata(commit.metadata?.selection)
+      );
+      userMessage.commitId = commit.id;
+      userMessage.canEdit = canEditUserChatCommit(commit);
+      userMessage.branchAlternatives = chatBranchAlternativesForCommit(lesson, commit.id, targetCommitId);
       messages.push(
-        createChatMessage(
-          "user",
-          userContent,
-          "ready",
-          `${commit.id}:user`,
-          selectionFromMetadata(commit.metadata?.selection)
-        )
+        userMessage
       );
     }
 
@@ -256,20 +305,110 @@ export function buildLessonMessagesFromHistory(lesson: Lesson, commitId?: string
     const legacyChatbotGeneratedDuringHandoff =
       metadataLearningClarificationForcedStart(commit) && assistantMessageSource === "ai";
     if (!legacyChatbotGeneratedDuringHandoff && isDisplayableAssistantContent(assistantMessage, assistantMessageSource)) {
+      const assistantChatMessage = createChatMessage(
+        "assistant",
+        assistantMessage,
+        "ready",
+        `${commit.id}:assistant`,
+        null,
+        teachingProgressFromMetadata(commit.metadata?.teaching_progress)
+      );
+      assistantChatMessage.commitId = commit.id;
       messages.push(
-        createChatMessage(
-          "assistant",
-          assistantMessage,
-          "ready",
-          `${commit.id}:assistant`,
-          null,
-          teachingProgressFromMetadata(commit.metadata?.teaching_progress)
-        )
+        assistantChatMessage
       );
     }
   });
 
   return messages;
+}
+
+export function chatEditBaseCommitId(lesson: Lesson, commitId: string): string | null {
+  const commit = getLessonCommit(lesson, commitId);
+  return commit?.parent_ids[0] ?? null;
+}
+
+export function chatInteractionModeForCommit(lesson: Lesson, commitId: string): ChatInteractionMode {
+  const commit = getLessonCommit(lesson, commitId);
+  const mode = commit ? metadataText(commit, "interaction_mode") : null;
+  return mode === "direct_edit" ? "direct_edit" : "ask";
+}
+
+export function chatSelectionForCommit(lesson: Lesson, commitId: string): SelectionRef | null {
+  const commit = getLessonCommit(lesson, commitId);
+  return commit ? selectionFromMetadata(commit.metadata?.selection) : null;
+}
+
+export function buildConversationBeforeChatCommit(lesson: Lesson, commitId: string, limit = 8): ConversationTurn[] {
+  const baseCommitId = chatEditBaseCommitId(lesson, commitId);
+  if (!baseCommitId) {
+    return [];
+  }
+
+  const lineageIds = commitLineageIds(lesson, baseCommitId);
+  const turns: ConversationTurn[] = [];
+  lesson.history_graph.commits.forEach((commit) => {
+    if (!lineageIds.has(commit.id) || !isChatTimelineCommit(commit)) {
+      return;
+    }
+
+    const userContent = chatUserContentFromCommit(commit);
+    if (userContent) {
+      turns.push({ role: "user", content: userContent });
+    }
+
+    const assistantMessage = metadataText(commit, "assistant_message");
+    const assistantMessageSource = metadataText(commit, "assistant_message_source");
+    if (isDisplayableAssistantContent(assistantMessage, assistantMessageSource)) {
+      turns.push({ role: "assistant", content: assistantMessage });
+    }
+  });
+  return turns.slice(-limit);
+}
+
+export function chatBranchAlternativesForCommit(
+  lesson: Lesson,
+  commitId: string,
+  targetCommitId?: string | null
+): ChatBranchAlternative[] {
+  const commit = getLessonCommit(lesson, commitId);
+  const baseCommitId = commit?.parent_ids[0] ?? null;
+  if (!commit || !baseCommitId) {
+    return [];
+  }
+
+  const currentLineageIds = commitLineageIds(lesson, targetCommitId);
+  const candidates = lesson.history_graph.commits
+    .filter((candidate) => {
+      if (candidate.parent_ids[0] !== baseCommitId || !isChatTimelineCommit(candidate) || !chatUserContentFromCommit(candidate)) {
+        return false;
+      }
+      const branch = lesson.history_graph.branches[candidate.branch_name];
+      return Boolean(branch && commitAncestorIds(lesson, branch.head_commit_id).has(candidate.id));
+    })
+    .sort((left, right) => {
+      const timeDelta = new Date(left.created_at).getTime() - new Date(right.created_at).getTime();
+      if (timeDelta !== 0) {
+        return timeDelta;
+      }
+      return left.branch_name.localeCompare(right.branch_name, "zh-CN", { numeric: true });
+    });
+
+  const byBranch = new Map<string, CommitRecord>();
+  candidates.forEach((candidate) => {
+    if (!byBranch.has(candidate.branch_name)) {
+      byBranch.set(candidate.branch_name, candidate);
+    }
+  });
+
+  return Array.from(byBranch.values()).map((candidate, index) => ({
+    order: index + 1,
+    commitId: candidate.id,
+    branchName: candidate.branch_name,
+    message: compactText(chatUserContentFromCommit(candidate) ?? candidate.message, 80),
+    createdAt: candidate.created_at,
+    isCurrent: currentLineageIds.has(candidate.id),
+  }));
 }
 
 export function learningClarityFromCommit(commit: CommitRecord | null): LearningClarificationStatus | null {

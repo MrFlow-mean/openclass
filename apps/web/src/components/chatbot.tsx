@@ -7,12 +7,16 @@ import {
   ArrowRight,
   Check,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   ChevronUp,
   Copy,
   LoaderCircle,
   MessageSquare,
+  PencilLine,
   Sparkles,
   TextQuote,
+  X,
 } from "lucide-react";
 
 import type { SectionTeachingProgress, SelectionRef } from "@/types";
@@ -25,6 +29,16 @@ export type CourseChatMessageView = {
   statusLabel?: string;
   selection?: SelectionRef | null;
   teachingProgress?: SectionTeachingProgress | null;
+  commitId?: string;
+  canEdit?: boolean;
+  branchAlternatives?: Array<{
+    order: number;
+    commitId: string;
+    branchName: string;
+    message: string;
+    createdAt: string;
+    isCurrent: boolean;
+  }>;
 };
 
 function selectionPreviewLabel(selection: SelectionRef): string {
@@ -156,18 +170,37 @@ function ChatMessageContent({ content }: { content: string }) {
 export function CourseChatMessage({
   message,
   onContinueTeaching,
+  onEditMessage,
+  onSwitchBranch,
+  isBusy = false,
 }: {
   message: CourseChatMessageView;
   onContinueTeaching?: () => void;
+  onEditMessage?: (message: CourseChatMessageView, nextContent: string) => void | Promise<void>;
+  onSwitchBranch?: (branchName: string) => void | Promise<void>;
+  isBusy?: boolean;
 }) {
   const [isSelectionExpanded, setIsSelectionExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editDraft, setEditDraft] = useState(message.content);
+  const [isSubmittingEdit, setIsSubmittingEdit] = useState(false);
   const isAssistant = message.role === "assistant";
   const isPending = message.status === "pending";
   const isError = message.status === "error";
   const selectedExcerpt = message.selection?.excerpt ? selectionPreviewText(message.selection.excerpt) : "";
   const teachingProgress = message.teachingProgress;
   const hasContent = message.content.trim().length > 0;
+  const branchAlternatives = message.branchAlternatives ?? [];
+  const currentBranchIndex = branchAlternatives.findIndex((branch) => branch.isCurrent);
+  const activeBranchIndex = currentBranchIndex >= 0 ? currentBranchIndex : 0;
+  const previousBranch = activeBranchIndex > 0 ? branchAlternatives[activeBranchIndex - 1] : null;
+  const nextBranch =
+    activeBranchIndex >= 0 && activeBranchIndex < branchAlternatives.length - 1
+      ? branchAlternatives[activeBranchIndex + 1]
+      : null;
+  const canEditMessage = !isAssistant && !isPending && message.canEdit && Boolean(message.commitId) && onEditMessage;
+  const showBranchControls = !isAssistant && branchAlternatives.length > 1 && onSwitchBranch;
 
   async function copyMessage() {
     if (!hasContent) {
@@ -180,6 +213,27 @@ export function CourseChatMessage({
     } catch {
       setCopied(false);
     }
+  }
+
+  async function submitEditedMessage() {
+    const nextContent = editDraft.trim();
+    if (!nextContent || !onEditMessage || isBusy || isSubmittingEdit) {
+      return;
+    }
+    setIsSubmittingEdit(true);
+    try {
+      await onEditMessage(message, nextContent);
+      setIsEditing(false);
+    } finally {
+      setIsSubmittingEdit(false);
+    }
+  }
+
+  function switchToBranch(branchName: string | null | undefined) {
+    if (!branchName || !onSwitchBranch || isBusy) {
+      return;
+    }
+    void onSwitchBranch(branchName);
   }
 
   return (
@@ -237,13 +291,64 @@ export function CourseChatMessage({
                 ? "rounded-tl-md border border-gray-200 bg-white text-gray-600"
                 : isError
                   ? "rounded-tl-md border border-rose-200 bg-rose-50 text-rose-800"
-                  : isAssistant
-                    ? "rounded-tl-md border border-gray-200 bg-white text-gray-900"
-                    : "ml-auto rounded-tr-md bg-[#1a1a1a] text-white"
+                  : isEditing
+                    ? "ml-auto rounded-tr-md border border-gray-200 bg-white text-gray-900"
+                    : isAssistant
+                      ? "rounded-tl-md border border-gray-200 bg-white text-gray-900"
+                      : "ml-auto rounded-tr-md bg-[#1a1a1a] text-white"
             )}
           >
             {hasContent ? (
-              <ChatMessageContent content={message.content} />
+              isEditing ? (
+                <form
+                  className="space-y-2"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void submitEditedMessage();
+                  }}
+                >
+                  <textarea
+                    value={editDraft}
+                    autoFocus
+                    disabled={isBusy || isSubmittingEdit}
+                    rows={Math.min(8, Math.max(3, editDraft.split(/\r?\n/).length))}
+                    onChange={(event) => setEditDraft(event.target.value)}
+                    onKeyDown={(event) => {
+                      if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+                        event.preventDefault();
+                        void submitEditedMessage();
+                      }
+                    }}
+                    className="custom-scrollbar min-h-20 w-full resize-y rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] leading-6 text-gray-900 outline-none transition focus:border-gray-400 disabled:cursor-wait disabled:text-gray-400"
+                  />
+                  <div className="flex justify-end gap-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditDraft(message.content);
+                        setIsEditing(false);
+                      }}
+                      disabled={isSubmittingEdit}
+                      title="取消编辑"
+                      aria-label="取消编辑"
+                      className="flex h-8 w-8 items-center justify-center rounded-md text-gray-500 transition hover:bg-gray-100 hover:text-gray-900 disabled:cursor-wait disabled:opacity-60"
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={isBusy || isSubmittingEdit || !editDraft.trim()}
+                      title="提交编辑并生成新分支"
+                      aria-label="提交编辑并生成新分支"
+                      className="flex h-8 w-8 items-center justify-center rounded-md bg-gray-900 text-white transition hover:bg-black disabled:cursor-wait disabled:opacity-60"
+                    >
+                      {isSubmittingEdit ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+                    </button>
+                  </div>
+                </form>
+              ) : (
+                <ChatMessageContent content={message.content} />
+              )
             ) : (
               <div className="flex items-center gap-1.5 py-1">
                 <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-gray-400" />
@@ -272,18 +377,65 @@ export function CourseChatMessage({
           </div>
         ) : null}
 
-        {hasContent ? (
-          <button
-            type="button"
-            onClick={() => void copyMessage()}
+        {hasContent && !isEditing ? (
+          <div
             className={clsx(
-              "inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[11px] font-medium text-gray-400 opacity-0 transition hover:bg-gray-100 hover:text-gray-700 group-hover:opacity-100",
-              !isAssistant && "float-right"
+              "flex h-7 items-center gap-1 opacity-0 transition group-hover:opacity-100",
+              !isAssistant && "justify-end"
             )}
           >
-            {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-            {copied ? "已复制" : "复制"}
-          </button>
+            {showBranchControls ? (
+              <div className="flex items-center gap-0.5 rounded-md border border-gray-200 bg-white px-0.5 text-gray-500 shadow-sm">
+                <button
+                  type="button"
+                  onClick={() => switchToBranch(previousBranch?.branchName)}
+                  disabled={!previousBranch || isBusy}
+                  title="上一个分支"
+                  aria-label="上一个分支"
+                  className="flex h-6 w-6 items-center justify-center rounded text-gray-500 transition hover:bg-gray-100 hover:text-gray-900 disabled:cursor-not-allowed disabled:opacity-35"
+                >
+                  <ChevronLeft className="h-3.5 w-3.5" />
+                </button>
+                <span className="min-w-8 text-center text-[11px] font-semibold text-gray-700">
+                  {activeBranchIndex + 1}/{branchAlternatives.length}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => switchToBranch(nextBranch?.branchName)}
+                  disabled={!nextBranch || isBusy}
+                  title="下一个分支"
+                  aria-label="下一个分支"
+                  className="flex h-6 w-6 items-center justify-center rounded text-gray-500 transition hover:bg-gray-100 hover:text-gray-900 disabled:cursor-not-allowed disabled:opacity-35"
+                >
+                  <ChevronRight className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            ) : null}
+            {canEditMessage ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setEditDraft(message.content);
+                  setIsEditing(true);
+                }}
+                disabled={isBusy}
+                title="编辑这条消息"
+                aria-label="编辑这条消息"
+                className="flex h-7 w-7 items-center justify-center rounded-md text-gray-400 transition hover:bg-gray-100 hover:text-gray-700 disabled:cursor-wait disabled:opacity-60"
+              >
+                <PencilLine className="h-3.5 w-3.5" />
+              </button>
+            ) : null}
+            <button
+              type="button"
+              onClick={() => void copyMessage()}
+              title={copied ? "已复制" : "复制"}
+              aria-label={copied ? "已复制" : "复制"}
+              className="flex h-7 w-7 items-center justify-center rounded-md text-gray-400 transition hover:bg-gray-100 hover:text-gray-700"
+            >
+              {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+            </button>
+          </div>
         ) : null}
       </div>
     </article>

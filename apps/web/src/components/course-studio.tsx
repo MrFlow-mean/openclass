@@ -190,6 +190,7 @@ export function CourseStudio() {
     strongReasoningPrompt,
     selectedReference,
     handleSubmitChat,
+    handleEditChatTurn,
     handleScopeAction,
     handleReferenceAction,
     handleBoardEditAction,
@@ -512,6 +513,8 @@ export function CourseStudio() {
           includeSelectionInPrompt={includeSelectionInPrompt}
           onApplySelection={applySelection}
           onContinueTeaching={() => void handleContinueTeaching()}
+          onEditChatTurn={(commitId, nextContent) => handleEditChatTurn(commitId, nextContent)}
+          onSwitchChatBranch={(branchName) => handleSwitchBranch(branchName)}
           onSubmitChat={(payload) => handleSubmitChat(payload)}
           onScopeAction={(option) => handleScopeAction(option)}
           onReferenceAction={(action) => handleReferenceAction(action)}
