@@ -41,22 +41,37 @@ export type GraphEdge = {
   sameLane: boolean;
 };
 
+export type GraphBranchSprout = {
+  id: string;
+  branch: GraphBranch;
+  baseCommitId: string;
+  baseX: number;
+  baseY: number;
+  x: number;
+  y: number;
+  labelX: number;
+  labelY: number;
+};
+
 export type LessonHistoryGraphViewModel = {
   nodes: GraphNode[];
   edges: GraphEdge[];
+  branchSprouts: GraphBranchSprout[];
   branches: GraphBranch[];
   laneCount: number;
+  contentLeft: number;
   graphWidth: number;
   graphHeight: number;
   currentHeadCommitId: string | null;
 };
 
-const LANE_WIDTH = 32;
-const ROW_HEIGHT = 92;
-const NODE_TOP = 32;
+const LANE_WIDTH = 38;
+const ROW_HEIGHT = 78;
+const NODE_TOP = 34;
 const NODE_LEFT = 18;
 const CONTENT_GAP = 48;
-const MIN_GRAPH_WIDTH = 332;
+const BRANCH_SPROUT_RISE = 30;
+const MIN_GRAPH_WIDTH = 300;
 
 function sortCommitsForGraph(commits: CommitRecord[]) {
   return commits
@@ -152,8 +167,8 @@ export function buildLessonHistoryGraphModel(
   const laneNames = branchLaneOrder(lesson);
   const laneByBranch = new Map(laneNames.map((branchName, index) => [branchName, index]));
   const graphLaneCount = Math.max(1, laneNames.length);
-  const graphGutterWidth = graphLaneCount * LANE_WIDTH + CONTENT_GAP;
-  const graphWidth = Math.max(MIN_GRAPH_WIDTH, graphGutterWidth + 220);
+  const contentLeft = graphLaneCount * LANE_WIDTH + CONTENT_GAP;
+  const graphWidth = Math.max(MIN_GRAPH_WIDTH, contentLeft + 176);
   const graphHeight = Math.max(140, orderedCommits.length * ROW_HEIGHT + 18);
   const headCommitId = currentHeadCommitId(lesson);
   const branches = Object.values(lesson.history_graph.branches).map((branch) => ({
@@ -192,6 +207,34 @@ export function buildLessonHistoryGraphModel(
   });
 
   const nodeById = new Map(nodes.map((node) => [node.commit.id, node]));
+  const sproutCountByBase = new Map<string, number>();
+  const branchSprouts = branches.flatMap((branch) => {
+    if (branch.name === "main" || branch.headCommitId !== branch.baseCommitId) {
+      return [];
+    }
+    const baseNode = nodeById.get(branch.baseCommitId);
+    const branchLane = laneByBranch.get(branch.name);
+    if (!baseNode || branchLane == null || branchLane === baseNode.lane) {
+      return [];
+    }
+    const sproutIndex = sproutCountByBase.get(branch.baseCommitId) ?? 0;
+    sproutCountByBase.set(branch.baseCommitId, sproutIndex + 1);
+    const x = NODE_LEFT + branchLane * LANE_WIDTH;
+    const y = Math.max(14, baseNode.y - BRANCH_SPROUT_RISE - sproutIndex * 14);
+    return [
+      {
+        id: `${branch.name}:${branch.baseCommitId}:sprout`,
+        branch,
+        baseCommitId: branch.baseCommitId,
+        baseX: baseNode.x,
+        baseY: baseNode.y,
+        x,
+        y,
+        labelX: x + 9,
+        labelY: y - 8,
+      },
+    ];
+  });
   const edges = nodes.flatMap((childNode) =>
     childNode.commit.parent_ids.flatMap((parentId, parentIndex) => {
       const parentNode = nodeById.get(parentId);
@@ -216,8 +259,10 @@ export function buildLessonHistoryGraphModel(
   return {
     nodes,
     edges,
+    branchSprouts,
     branches,
     laneCount: graphLaneCount,
+    contentLeft,
     graphWidth,
     graphHeight,
     currentHeadCommitId: headCommitId,

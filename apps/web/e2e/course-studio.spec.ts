@@ -80,6 +80,24 @@ test("restores an older document version from history", async ({ page }) => {
   await expect(editor).not.toContainText(secondVersion);
 });
 
+test("shows a sideways branch sprout immediately after creating a branch", async ({ page }) => {
+  const unique = Date.now();
+  await enterAsGuest(page);
+  await createPackageFromHome(page, `分叉图测试课程包 ${unique}`);
+  await createLessonFromEmptyStudio(page, `分叉图测试页面 ${unique}`);
+  await openHistoryPanel(page);
+
+  const branchResponse = page.waitForResponse(
+    (response) => response.url().includes("/branches") && response.request().method() === "POST"
+  );
+  await page.getByRole("button", { name: "Branch" }).click();
+  await branchResponse;
+
+  await expect(page.getByText("2 branches")).toBeVisible();
+  await expect(page.getByTestId("history-branch-sprout")).toHaveCount(1);
+  await expect(page.getByTestId("history-branch-sprout-label")).toContainText("branch-2");
+});
+
 test("DOCX import and export entry points complete without breaking the editor", async ({ page }) => {
   const unique = Date.now();
   await enterAsGuest(page);

@@ -8,6 +8,8 @@ import {
   buildLessonHistoryGraphModel,
   graphHeadCommit,
   graphNodeForCommit,
+  type GraphBranchSprout,
+  type GraphEdge,
   type GraphNode,
 } from "@/components/course-studio/lesson-history-graph-model";
 import { compactText, formatDate } from "@/components/course-studio/history-utils";
@@ -41,6 +43,21 @@ function nodeTone(node: GraphNode) {
 
 function edgeColor(sameLane: boolean) {
   return sameLane ? "#111827" : "#9ca3af";
+}
+
+function edgePath(edge: GraphEdge) {
+  if (edge.sameLane) {
+    return `M ${edge.parentX} ${edge.parentY} L ${edge.childX} ${edge.childY}`;
+  }
+  return `M ${edge.parentX} ${edge.parentY} C ${edge.childX} ${edge.parentY}, ${edge.childX} ${edge.childY}, ${edge.childX} ${edge.childY}`;
+}
+
+function sproutPath(sprout: GraphBranchSprout) {
+  return `M ${sprout.baseX} ${sprout.baseY} C ${sprout.x} ${sprout.baseY}, ${sprout.x} ${sprout.y}, ${sprout.x} ${sprout.y}`;
+}
+
+function sproutColor(sprout: GraphBranchSprout) {
+  return sprout.branch.isCurrent ? "#111827" : "#2563eb";
 }
 
 export function LessonHistoryGraphPanel({
@@ -83,7 +100,7 @@ export function LessonHistoryGraphPanel({
           </div>
         </div>
 
-        <div className="flex flex-wrap gap-1.5">
+        <div className="flex flex-wrap gap-1">
           {model.branches.map((branch) => {
             const headCommit = graphHeadCommit(activeLesson, branch.name);
             return (
@@ -94,14 +111,14 @@ export function LessonHistoryGraphPanel({
                 disabled={branch.isCurrent}
                 title={headCommit ? `${branch.name}: ${headCommit.label}` : branch.name}
                 className={clsx(
-                  "inline-flex h-7 items-center gap-1 rounded-md border px-2 text-[10px] font-bold transition",
+                  "inline-flex h-5 max-w-[92px] items-center gap-0.5 rounded border px-1.5 text-[9px] font-bold transition",
                   branch.isCurrent
                     ? "border-black bg-black text-white"
                     : "border-gray-200 bg-white text-gray-500 hover:border-gray-300 hover:text-gray-950"
                 )}
               >
-                <GitBranch className="h-3 w-3" />
-                {branch.name}
+                <GitBranch className="h-2.5 w-2.5 shrink-0" />
+                <span className="truncate">{compactText(branch.name, 16)}</span>
               </button>
             );
           })}
@@ -123,19 +140,74 @@ export function LessonHistoryGraphPanel({
             aria-hidden="true"
           >
             {model.edges.map((edge) => (
-              <line
+              <path
                 key={edge.id}
-                x1={edge.parentX}
-                y1={edge.parentY}
-                x2={edge.childX}
-                y2={edge.childY}
+                d={edgePath(edge)}
                 stroke={edgeColor(edge.sameLane)}
                 strokeWidth={edge.sameLane ? 2 : 1.5}
                 strokeLinecap="round"
+                fill="none"
                 opacity={edge.sameLane ? 0.8 : 0.65}
               />
             ))}
+            {model.branchSprouts.map((sprout) => (
+              <path
+                key={sprout.id}
+                data-testid="history-branch-sprout"
+                d={sproutPath(sprout)}
+                stroke={sproutColor(sprout)}
+                strokeWidth={2}
+                strokeLinecap="round"
+                fill="none"
+                opacity={sprout.branch.isCurrent ? 0.9 : 0.75}
+              />
+            ))}
           </svg>
+
+          {model.branchSprouts.map((sprout) => (
+            <button
+              key={`${sprout.id}:dot`}
+              type="button"
+              onClick={() => void onSwitchBranch(sprout.branch.name)}
+              disabled={sprout.branch.isCurrent}
+              title={`切换到 ${sprout.branch.name}`}
+              aria-label={`切换到分支 ${sprout.branch.name}`}
+              className={clsx(
+                "absolute z-20 flex h-4 w-4 items-center justify-center rounded-full border-2 bg-white shadow-sm transition hover:scale-110",
+                sprout.branch.isCurrent ? "border-black text-black" : "border-blue-600 text-blue-600"
+              )}
+              style={{
+                left: `${sprout.x - 8}px`,
+                top: `${sprout.y - 8}px`,
+              }}
+            >
+              <span className="h-1.5 w-1.5 rounded-full bg-current" />
+            </button>
+          ))}
+
+          {model.branchSprouts.map((sprout) => (
+            <button
+              key={`${sprout.id}:label`}
+              data-testid="history-branch-sprout-label"
+              type="button"
+              onClick={() => void onSwitchBranch(sprout.branch.name)}
+              disabled={sprout.branch.isCurrent}
+              title={`切换到 ${sprout.branch.name}`}
+              className={clsx(
+                "absolute z-20 inline-flex h-4 max-w-[72px] items-center gap-0.5 rounded border px-1 text-[8px] font-bold transition",
+                sprout.branch.isCurrent
+                  ? "border-black bg-black text-white"
+                  : "border-blue-100 bg-blue-50 text-blue-700 hover:border-blue-200 hover:bg-blue-100"
+              )}
+              style={{
+                left: `${sprout.labelX}px`,
+                top: `${sprout.labelY}px`,
+              }}
+            >
+              <GitBranch className="h-2.5 w-2.5 shrink-0" />
+              <span className="truncate">{compactText(sprout.branch.name, 14)}</span>
+            </button>
+          ))}
 
           {model.nodes.map((node) => (
             <button
@@ -161,7 +233,7 @@ export function LessonHistoryGraphPanel({
             <div
               key={`${node.commit.id}:card`}
               className={clsx(
-                "absolute rounded-lg border bg-white px-3 py-2 shadow-sm transition",
+                "absolute rounded-md border bg-white px-2.5 py-1.5 shadow-sm transition",
                 node.isPreviewed
                   ? "border-blue-200 ring-1 ring-blue-200"
                   : node.isCurrentHead
@@ -169,14 +241,14 @@ export function LessonHistoryGraphPanel({
                     : "border-gray-200"
               )}
               style={{
-                left: `${model.laneCount * 32 + 50}px`,
-                top: `${node.y - 26}px`,
-                width: `${Math.max(210, model.graphWidth - (model.laneCount * 32 + 66))}px`,
+                left: `${model.contentLeft}px`,
+                top: `${node.y - 22}px`,
+                width: `${Math.max(168, model.graphWidth - model.contentLeft - 12)}px`,
               }}
             >
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-1.5">
+                  <div className="flex flex-wrap items-center gap-1">
                     <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-gray-500">
                       {node.kindLabel}
                     </span>
@@ -201,24 +273,25 @@ export function LessonHistoryGraphPanel({
                 </div>
                 <span className="shrink-0 text-[10px] text-gray-400">{formatDate(node.commit.created_at)}</span>
               </div>
-              <p className="mt-1 line-clamp-2 text-[11px] leading-5 text-gray-500">{node.summary}</p>
+              <p className="mt-1 line-clamp-1 text-[11px] leading-5 text-gray-500">{node.summary}</p>
               {node.branchLabels.length ? (
-                <div className="mt-2 flex flex-wrap gap-1">
+                <div className="mt-1.5 flex flex-wrap gap-1">
                   {node.branchLabels.map((branch) => (
                     <button
                       key={branch.name}
                       type="button"
                       onClick={() => void onSwitchBranch(branch.name)}
                       disabled={branch.isCurrent}
+                      title={`切换到 ${branch.name}`}
                       className={clsx(
-                        "inline-flex h-5 items-center gap-1 rounded px-1.5 text-[9px] font-bold transition",
+                        "inline-flex h-4 max-w-[78px] items-center gap-0.5 rounded px-1 text-[8px] font-bold transition",
                         branch.isCurrent
                           ? "bg-black text-white"
                           : "bg-gray-100 text-gray-500 hover:bg-gray-200 hover:text-gray-950"
                       )}
                     >
-                      <GitBranch className="h-2.5 w-2.5" />
-                      {branch.name}
+                      <GitBranch className="h-2.5 w-2.5 shrink-0" />
+                      <span className="truncate">{compactText(branch.name, 14)}</span>
                     </button>
                   ))}
                 </div>
