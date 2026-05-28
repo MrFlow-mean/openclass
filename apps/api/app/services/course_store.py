@@ -25,7 +25,7 @@ from app.services.document_segment_store import DocumentSegmentStore
 from app.services.resource_segment_store import ResourceSegmentStore
 from app.services.rich_document import upgrade_markdown_like_document
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 
 def _active_package_setting_key(owner_user_id: str | None) -> str:

@@ -2,9 +2,11 @@ import json
 import sqlite3
 
 from app.models import BoardTeachingProgress, ResourceLibraryItem
+from app.services import resource_segment_store
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
 from app.services.lesson_factory import create_empty_lesson
 from app.services.rich_document import build_document
+from app.services.resource_embedding import ResourceEmbeddingSpec, SegmentEmbeddingRecord
 from app.services.resource_library import build_resource_item
 
 
@@ -166,6 +168,60 @@ def test_sqlite_store_indexes_and_round_trips_resource_segments(tmp_path) -> Non
     assert json.loads(segment_rows[0][2]) == ["定积分"]
     if fts_rows:
         assert [row[0] for row in fts_rows] == [row[0] for row in segment_rows]
+
+
+def test_sqlite_store_persists_resource_segment_embeddings(monkeypatch, tmp_path) -> None:
+    db_path = tmp_path / "openclass.sqlite3"
+    store = SqliteCourseStore(db_path, legacy_json_path=None)
+
+    def fake_embed_segments(segments):
+        return {
+            segment.segment_id: SegmentEmbeddingRecord(
+                resource_id=segment.resource_id,
+                segment_id=segment.segment_id,
+                text_hash=segment.text_hash,
+                provider="openai",
+                model="test-embedding",
+                dimensions=2,
+                embedding=[1.0, 0.25],
+            )
+            for segment in segments
+        }
+
+    monkeypatch.setattr(resource_segment_store.resource_embedding_service, "embed_segments", fake_embed_segments)
+    monkeypatch.setattr(
+        resource_segment_store.resource_embedding_service,
+        "current_spec",
+        lambda: ResourceEmbeddingSpec(provider="openai", model="test-embedding", dimensions=2),
+    )
+
+    workspace = build_initial_workspace_state()
+    package = workspace.packages[0]
+    resource_path = tmp_path / "resource.md"
+    resource_path.write_text("# 主题\n这里是可向量化的资料片段。", encoding="utf-8")
+    resource = build_resource_item(resource_path, "resource.md")
+    package.resources.append(resource)
+    store.save(workspace)
+
+    reloaded = store.load()
+    segment = reloaded.packages[0].resources[0].segments[0]
+
+    assert segment.embedding == [1.0, 0.25]
+    assert segment.embedding_model == "test-embedding"
+
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT model, dimensions, embedding_json
+            FROM resource_segment_embeddings
+            WHERE resource_id = ?
+            """,
+            (resource.id,),
+        ).fetchone()
+
+    assert row[0] == "test-embedding"
+    assert row[1] == 2
+    assert json.loads(row[2]) == [1.0, 0.25]
 
 
 def test_sqlite_store_imports_and_archives_legacy_store_json(tmp_path) -> None:

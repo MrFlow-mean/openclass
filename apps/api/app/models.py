@@ -463,6 +463,9 @@ class ResourceSegment(BaseModel):
     page_range: str | None = None
     before_segment_id: str | None = None
     after_segment_id: str | None = None
+    embedding: list[float] = Field(default_factory=list, exclude=True, repr=False)
+    embedding_provider: str | None = Field(default=None, exclude=True, repr=False)
+    embedding_model: str | None = Field(default=None, exclude=True, repr=False)
 
 
 class ResourceLibraryItem(BaseModel):

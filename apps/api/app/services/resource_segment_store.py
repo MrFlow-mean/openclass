@@ -4,7 +4,8 @@ import json
 import sqlite3
 from typing import Any
 
-from app.models import ResourceLibraryItem, ResourceSegment
+from app.models import ResourceLibraryItem, ResourceSegment, now_iso
+from app.services.resource_embedding import SegmentEmbeddingRecord, resource_embedding_service
 from app.services.resource_library import build_resource_segments
 
 
@@ -38,6 +39,24 @@ class ResourceSegmentStore:
 
             CREATE INDEX IF NOT EXISTS idx_resource_segments_hash
                 ON resource_segments(text_hash);
+
+            CREATE TABLE IF NOT EXISTS resource_segment_embeddings (
+                resource_id TEXT NOT NULL,
+                segment_id TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL,
+                dimensions INTEGER NOT NULL,
+                text_hash TEXT NOT NULL,
+                embedding_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (resource_id, segment_id, provider, model)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_resource_segment_embeddings_resource
+                ON resource_segment_embeddings(resource_id, provider, model);
+
+            CREATE INDEX IF NOT EXISTS idx_resource_segment_embeddings_hash
+                ON resource_segment_embeddings(text_hash);
             """
         )
         try:
@@ -60,6 +79,19 @@ class ResourceSegmentStore:
             self.fts_available = True
 
     def read_segments(self, conn: sqlite3.Connection, resource_id: str) -> list[ResourceSegment]:
+        embedding_rows = conn.execute(
+            """
+            SELECT *
+            FROM resource_segment_embeddings
+            WHERE resource_id = ?
+            ORDER BY provider, model
+            """,
+            (resource_id,),
+        ).fetchall()
+        embeddings_by_segment: dict[str, list[sqlite3.Row]] = {}
+        for row in embedding_rows:
+            embeddings_by_segment.setdefault(row["segment_id"], []).append(row)
+        preferred_spec = resource_embedding_service.current_spec()
         rows = conn.execute(
             """
             SELECT *
@@ -69,22 +101,33 @@ class ResourceSegmentStore:
             """,
             (resource_id,),
         ).fetchall()
-        return [
-            ResourceSegment(
-                segment_id=row["segment_id"],
-                resource_id=row["resource_id"],
-                chapter_id=row["chapter_id"],
-                heading_path=_loads(row["heading_path_json"], []),
-                order_index=row["order_index"],
-                text=row["text"],
+        segments: list[ResourceSegment] = []
+        for row in rows:
+            embedding_row = _preferred_embedding_row(
+                embeddings_by_segment.get(row["segment_id"], []),
+                provider=preferred_spec.provider,
+                model=preferred_spec.model,
                 text_hash=row["text_hash"],
-                keywords=_loads(row["keywords_json"], []),
-                page_range=row["page_range"],
-                before_segment_id=row["before_segment_id"],
-                after_segment_id=row["after_segment_id"],
             )
-            for row in rows
-        ]
+            segments.append(
+                ResourceSegment(
+                    segment_id=row["segment_id"],
+                    resource_id=row["resource_id"],
+                    chapter_id=row["chapter_id"],
+                    heading_path=_loads(row["heading_path_json"], []),
+                    order_index=row["order_index"],
+                    text=row["text"],
+                    text_hash=row["text_hash"],
+                    keywords=_loads(row["keywords_json"], []),
+                    page_range=row["page_range"],
+                    before_segment_id=row["before_segment_id"],
+                    after_segment_id=row["after_segment_id"],
+                    embedding=_loads(embedding_row["embedding_json"], []) if embedding_row is not None else [],
+                    embedding_provider=embedding_row["provider"] if embedding_row is not None else None,
+                    embedding_model=embedding_row["model"] if embedding_row is not None else None,
+                )
+            )
+        return segments
 
     def ensure_segments(self, resource: ResourceLibraryItem) -> list[ResourceSegment]:
         if resource.segments:
@@ -96,6 +139,7 @@ class ResourceSegmentStore:
         conn: sqlite3.Connection,
         resource: ResourceLibraryItem,
     ) -> list[ResourceSegment]:
+        existing_embeddings = self._read_embedding_records(conn, resource.id)
         conn.execute("DELETE FROM resource_segments WHERE resource_id = ?", (resource.id,))
         self.delete_for_resource(conn, resource.id)
         segments = resource.segments or build_resource_segments(resource)
@@ -122,11 +166,10 @@ class ResourceSegmentStore:
                 ),
             )
             self._insert_fts(conn, segment)
+        self._replace_embeddings(conn, segments, existing_embeddings)
         return segments
 
     def delete_for_owner(self, conn: sqlite3.Connection, owner_user_id: str | None) -> None:
-        if not self.fts_available:
-            return
         if owner_user_id is None:
             resource_ids = [row["id"] for row in conn.execute("SELECT id FROM resources").fetchall()]
         else:
@@ -146,12 +189,93 @@ class ResourceSegmentStore:
             self.delete_for_resource(conn, resource_id)
 
     def delete_for_resource(self, conn: sqlite3.Connection, resource_id: str) -> None:
+        conn.execute("DELETE FROM resource_segment_embeddings WHERE resource_id = ?", (resource_id,))
         if not self.fts_available:
             return
         try:
             conn.execute("DELETE FROM resource_segments_fts WHERE resource_id = ?", (resource_id,))
         except sqlite3.OperationalError:
             self.fts_available = False
+
+    def _read_embedding_records(
+        self,
+        conn: sqlite3.Connection,
+        resource_id: str,
+    ) -> dict[tuple[str, str, str], SegmentEmbeddingRecord]:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM resource_segment_embeddings
+            WHERE resource_id = ?
+            """,
+            (resource_id,),
+        ).fetchall()
+        records: dict[tuple[str, str, str], SegmentEmbeddingRecord] = {}
+        for row in rows:
+            records[(row["segment_id"], row["provider"], row["model"])] = SegmentEmbeddingRecord(
+                resource_id=row["resource_id"],
+                segment_id=row["segment_id"],
+                text_hash=row["text_hash"],
+                provider=row["provider"],
+                model=row["model"],
+                dimensions=row["dimensions"],
+                embedding=_loads(row["embedding_json"], []),
+            )
+        return records
+
+    def _replace_embeddings(
+        self,
+        conn: sqlite3.Connection,
+        segments: list[ResourceSegment],
+        existing_embeddings: dict[tuple[str, str, str], SegmentEmbeddingRecord],
+    ) -> None:
+        segments_by_id = {segment.segment_id: segment for segment in segments}
+        reusable: dict[tuple[str, str, str], SegmentEmbeddingRecord] = {}
+        for key, record in existing_embeddings.items():
+            segment = segments_by_id.get(record.segment_id)
+            if segment is None or segment.text_hash != record.text_hash or not record.embedding:
+                continue
+            reusable[key] = record
+            self._insert_embedding(conn, record)
+
+        spec = resource_embedding_service.current_spec()
+        missing_segments = [
+            segment
+            for segment in segments
+            if (segment.segment_id, spec.provider, spec.model) not in reusable
+        ]
+        generated = resource_embedding_service.embed_segments(missing_segments)
+        for segment in segments:
+            target_record = reusable.get((segment.segment_id, spec.provider, spec.model)) or generated.get(segment.segment_id)
+            if target_record is None:
+                continue
+            if (segment.segment_id, target_record.provider, target_record.model) not in reusable:
+                self._insert_embedding(conn, target_record)
+            segment.embedding = target_record.embedding
+            segment.embedding_provider = target_record.provider
+            segment.embedding_model = target_record.model
+
+    def _insert_embedding(self, conn: sqlite3.Connection, record: SegmentEmbeddingRecord) -> None:
+        if not record.embedding:
+            return
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO resource_segment_embeddings(
+                resource_id, segment_id, provider, model, dimensions,
+                text_hash, embedding_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                record.resource_id,
+                record.segment_id,
+                record.provider,
+                record.model,
+                record.dimensions,
+                record.text_hash,
+                _dumps(record.embedding),
+                now_iso(),
+            ),
+        )
 
     def _insert_fts(self, conn: sqlite3.Connection, segment: ResourceSegment) -> None:
         if not self.fts_available:
@@ -184,3 +308,17 @@ def _loads(raw: str | None, default: Any) -> Any:
     if raw is None or raw == "":
         return default
     return json.loads(raw)
+
+
+def _preferred_embedding_row(
+    rows: list[sqlite3.Row],
+    *,
+    provider: str,
+    model: str,
+    text_hash: str,
+) -> sqlite3.Row | None:
+    matching_hash_rows = [row for row in rows if row["text_hash"] == text_hash]
+    for row in matching_hash_rows:
+        if row["provider"] == provider and row["model"] == model:
+            return row
+    return matching_hash_rows[0] if matching_hash_rows else None

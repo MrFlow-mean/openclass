@@ -12,6 +12,7 @@ from app.services.document_ops import apply_patch
 from app.services.history import commit_operations, create_branch, restore_commit, switch_branch
 from app.services.lesson_factory import create_empty_lesson, create_lesson
 from app.services.openai_course_ai import GeneratedCatalogChapter, GeneratedResourceCatalog, OpenAICourseAI
+from app.services import resource_resolver as resource_resolver_module
 from app.services.resource_library import _epub_section_body_score, build_resource_item, extract_reference_context
 from app.services.resource_resolver import resolve_resource_reference
 from app.services.board_segment_index import build_board_segment_index
@@ -508,6 +509,44 @@ def test_resource_resolver_selects_relevant_uploaded_segment(tmp_path) -> None:
     assert "牛顿莱布尼茨公式" in resolution.selected_reference.full_text
     assert resolution.matches[0].segment_id == resolution.selected_reference.segment_id
     assert "牛顿莱布尼茨公式" in resolution.matches[0].excerpt
+
+
+def test_resource_resolver_uses_embedding_similarity_without_word_overlap(monkeypatch, tmp_path) -> None:
+    resource_path = tmp_path / "resource.md"
+    resource_path.write_text(
+        "# 运动规律\n沿闭合曲线反复移动时，方向会持续改变。\n\n# 能量转换\n热量和做功都可以改变系统状态。",
+        encoding="utf-8",
+    )
+    resource = build_resource_item(resource_path, "resource.md")
+    updated_segments = []
+    for segment in resource.segments:
+        vector = [1.0, 0.0] if "闭合曲线" in segment.text else [0.0, 1.0]
+        updated_segments.append(
+            segment.model_copy(
+                update={
+                    "embedding": vector,
+                    "embedding_provider": "openai",
+                    "embedding_model": "test-embedding",
+                }
+            )
+        )
+    resource.segments = updated_segments
+    monkeypatch.setattr(
+        resource_resolver_module.resource_embedding_service,
+        "embed_query",
+        lambda query: [1.0, 0.0],
+    )
+
+    resolution = resolve_resource_reference(
+        resources=[resource],
+        user_message="讲讲绕圈时速度朝哪里",
+        allow_direct_reference=True,
+    )
+
+    assert resolution.selected_reference is not None
+    assert resolution.selected_reference.chapter_title == "运动规律"
+    assert "闭合曲线" in resolution.selected_reference.full_text
+    assert "语义向量" in resolution.matches[0].reason
 
 
 def test_epub_section_scoring_penalizes_generic_structural_shells() -> None:

@@ -13,11 +13,13 @@ from app.models import (
     ResourceReferencePrompt,
     ResourceSegment,
 )
+from app.services.resource_embedding import cosine_similarity, resource_embedding_service
 from app.services.resource_library import extract_reference_context
 
 
 DIRECT_REFERENCE_THRESHOLD = 0.68
 REFERENCE_PROMPT_THRESHOLD = 0.42
+SEMANTIC_MATCH_THRESHOLD = 0.3
 
 GENERIC_CONCEPT_GROUPS: tuple[tuple[str, ...], ...] = (
     ("为什么", "原因", "机制", "形成", "影响因素", "来源"),
@@ -93,11 +95,18 @@ def resolve_resource_reference(
 
 def _rank_resource_matches(resources: list[ResourceLibraryItem], user_message: str) -> list[ResourceMatch]:
     query_terms = _query_terms(user_message)
-    if not query_terms:
+    compact_message = _compact_text(user_message, limit=500)
+    embedded_segments = [
+        segment
+        for resource in resources
+        for segment in resource.segments
+        if segment.embedding
+    ]
+    query_vector = resource_embedding_service.embed_query(compact_message) if embedded_segments else []
+    if not query_terms and not query_vector:
         return []
 
     scored: list[tuple[float, ResourceLibraryItem, LibraryChapter, ResourceSegment | None, str]] = []
-    compact_message = _compact_text(user_message, limit=500)
     for resource in resources:
         chapters_by_id = {chapter.id: chapter for chapter in resource.outline}
         for segment in resource.segments:
@@ -106,9 +115,19 @@ def _rank_resource_matches(resources: list[ResourceLibraryItem], user_message: s
                 continue
             score = _segment_score(query_terms, compact_message, resource, chapter, segment)
             if score <= 0:
+                semantic_score = _semantic_segment_score(query_vector, segment)
+                if semantic_score <= 0:
+                    continue
+                reason = "根据用户描述与资料正文片段的语义向量相似度定位。"
+                scored.append((semantic_score, resource, chapter, segment, reason))
                 continue
-            reason = "根据用户描述与资料正文片段、标题路径和关键词的匹配度定位。"
-            scored.append((score, resource, chapter, segment, reason))
+            semantic_score = _semantic_segment_score(query_vector, segment)
+            if semantic_score > score:
+                reason = "根据用户描述与资料正文片段的语义向量相似度定位。"
+                scored.append((semantic_score, resource, chapter, segment, reason))
+            else:
+                reason = "根据用户描述与资料正文片段、标题路径和关键词的匹配度定位。"
+                scored.append((score, resource, chapter, segment, reason))
         for chapter in resource.outline:
             score = _chapter_score(query_terms, compact_message, resource, chapter)
             if score <= 0:
@@ -149,6 +168,13 @@ def _rank_resource_matches(resources: list[ResourceLibraryItem], user_message: s
         if len(matches) >= 8:
             break
     return matches
+
+
+def _semantic_segment_score(query_vector: list[float], segment: ResourceSegment) -> float:
+    similarity = cosine_similarity(query_vector, segment.embedding)
+    if similarity < SEMANTIC_MATCH_THRESHOLD:
+        return 0.0
+    return similarity * 1.18
 
 
 def _segment_score(
