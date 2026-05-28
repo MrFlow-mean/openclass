@@ -1,12 +1,11 @@
 import clsx from "clsx";
 import { X } from "lucide-react";
 
-import { BranchPanel } from "@/components/course-studio/branch-panel";
+import { LessonHistoryGraphPanel } from "@/components/course-studio/lesson-history-graph-panel";
 import { ResourcePanel } from "@/components/course-studio/resource-panel";
-import { VersionHistoryPanel } from "@/components/course-studio/version-history-panel";
 import type { BoardDecision, CommitRecord, CoursePackage, Lesson } from "@/types";
 
-export type CourseStudioSidebarTab = "history" | "branch" | "library";
+export type CourseStudioSidebarTab = "graph" | "library";
 
 type CourseStudioSidePanelProps = {
   open: boolean;
@@ -14,7 +13,6 @@ type CourseStudioSidePanelProps = {
   onSidebarTabChange: (tab: CourseStudioSidebarTab) => void;
   onClose: () => void;
   activeLesson: Lesson;
-  previewCommit: CommitRecord | null;
   previewCommitId: string | null;
   activeRequirements: Lesson["learning_requirements"];
   latestBoardDecision: BoardDecision | null;
@@ -24,7 +22,6 @@ type CourseStudioSidePanelProps = {
   resources: CoursePackage["resources"];
   relatedEdges: CoursePackage["course_graph"];
   lessonMap: Map<string, Lesson>;
-  onCreateBranch: () => void | Promise<void>;
   onPreviewCommit: (commit: CommitRecord) => void | Promise<void>;
   onRestoreCommit: (commitId: string) => void | Promise<void>;
   onCreateBranchFromCommit: (commit: CommitRecord) => void | Promise<void>;
@@ -40,7 +37,6 @@ export function CourseStudioSidePanel({
   onSidebarTabChange,
   onClose,
   activeLesson,
-  previewCommit,
   previewCommitId,
   activeRequirements,
   latestBoardDecision,
@@ -50,7 +46,6 @@ export function CourseStudioSidePanel({
   resources,
   relatedEdges,
   lessonMap,
-  onCreateBranch,
   onPreviewCommit,
   onRestoreCommit,
   onCreateBranchFromCommit,
@@ -79,8 +74,7 @@ export function CourseStudioSidePanel({
 
       <div className="flex border-b border-gray-200 bg-white">
         {[
-          { value: "history", label: "History" },
-          { value: "branch", label: "Branch" },
+          { value: "graph", label: "Graph" },
           { value: "library", label: "Library" },
         ].map((tab) => (
           <button
@@ -100,26 +94,17 @@ export function CourseStudioSidePanel({
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-5 custom-scrollbar">
-        {sidebarTab === "history" ? (
-          <VersionHistoryPanel
+        {sidebarTab === "graph" ? (
+          <LessonHistoryGraphPanel
             activeLesson={activeLesson}
             previewCommitId={previewCommitId}
-            onPreviewCommit={onPreviewCommit}
-            onRestoreCommit={onRestoreCommit}
-            onCreateBranchFromCommit={onCreateBranchFromCommit}
-            onSwitchBranch={onSwitchBranch}
-          />
-        ) : null}
-
-        {sidebarTab === "branch" ? (
-          <BranchPanel
-            activeLesson={activeLesson}
-            previewCommit={previewCommit}
             activeRequirements={activeRequirements}
             latestBoardDecision={latestBoardDecision}
             newBranchName={newBranchName}
             onNewBranchNameChange={onNewBranchNameChange}
-            onCreateBranch={onCreateBranch}
+            onPreviewCommit={onPreviewCommit}
+            onRestoreCommit={onRestoreCommit}
+            onCreateBranchFromCommit={onCreateBranchFromCommit}
             onSwitchBranch={onSwitchBranch}
           />
         ) : null}

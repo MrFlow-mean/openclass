@@ -41,7 +41,7 @@ async function writeEditorTextAndWaitForSave(page: Page, text: string) {
 
 async function openHistoryPanel(page: Page) {
   await page.getByTitle("展开右侧栏").click();
-  await expect(page.getByText("修订记录")).toBeVisible();
+  await expect(page.getByText("历史分支图")).toBeVisible();
 }
 
 test("creates a package and lesson, edits the document, and persists a version", async ({ page }) => {
@@ -67,11 +67,12 @@ test("restores an older document version from history", async ({ page }) => {
   await writeEditorTextAndWaitForSave(page, firstVersion);
   await writeEditorTextAndWaitForSave(page, secondVersion);
   await openHistoryPanel(page);
+  await page.getByLabel(/查看历史节点/).nth(1).click();
 
   const restoreResponse = page.waitForResponse(
     (response) => response.url().includes("/restore") && response.request().method() === "POST"
   );
-  await page.getByRole("button", { name: "Restore" }).nth(1).click();
+  await page.getByRole("button", { name: "Restore" }).click();
   await restoreResponse;
 
   const editor = page.locator(".ProseMirror").first();
