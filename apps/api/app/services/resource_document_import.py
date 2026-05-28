@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
-from app.models import LearningRequirementSheet, Lesson, ResourceLibraryItem, ResourceReferenceContext
+from app.models import BoardDocument, LearningRequirementSheet, Lesson, ResourceLibraryItem, ResourceReferenceContext
 from app.services.board_teaching import build_board_teaching_guide
 from app.services.course_runtime import refresh_lesson_runtime
-from app.services.rich_document import build_document, document_to_markdown, is_document_empty
+from app.services.rich_document import build_document, document_to_markdown, import_docx, is_document_empty
 from app.services.resource_library import extract_reference_context
 from app.services.resource_resolver import ResourceResolution
 
@@ -31,6 +33,8 @@ class ResourceDocumentImportPayload:
     content_text: str
     import_scope: str
     operation: str
+    content_html: str | None = None
+    content_json: dict[str, Any] | None = None
     selected_reference: ResourceReferenceContext | None = None
 
 
@@ -103,6 +107,14 @@ def apply_resource_document_import(
         new_document = build_document(
             title=lesson.board_document.title or lesson.title,
             content_text=next_text,
+            content_html="\n".join(
+                part
+                for part in [
+                    lesson.board_document.content_html.strip(),
+                    (payload.content_html or "").strip(),
+                ]
+                if part
+            ),
             document_id=lesson.board_document.id,
             page_settings=lesson.board_document.page_settings,
         )
@@ -110,6 +122,8 @@ def apply_resource_document_import(
         new_document = build_document(
             title=payload.title or lesson.board_document.title or lesson.title,
             content_text=payload.content_text,
+            content_html=payload.content_html,
+            content_json=payload.content_json,
             document_id=lesson.board_document.id,
             page_settings=lesson.board_document.page_settings,
         )
@@ -194,6 +208,18 @@ def _full_resource_import_payload(
     user_message: str,
     operation: str,
 ) -> ResourceDocumentImportPayload | None:
+    rich_document = _full_resource_import_document(resource)
+    if rich_document is not None:
+        return ResourceDocumentImportPayload(
+            resource=resource,
+            title=resource.name,
+            content_text=rich_document.content_text,
+            content_html=rich_document.content_html,
+            content_json=rich_document.content_json,
+            import_scope="full_resource",
+            operation=operation,
+        )
+
     content_text = _full_resource_import_text(resource, user_message=user_message)
     if not content_text:
         return None
@@ -208,3 +234,14 @@ def _full_resource_import_payload(
 
 def _resource_by_id(resources: list[ResourceLibraryItem], resource_id: str) -> ResourceLibraryItem | None:
     return next((resource for resource in resources if resource.id == resource_id), None)
+
+
+def _full_resource_import_document(resource: ResourceLibraryItem) -> BoardDocument | None:
+    if not resource.source_path:
+        return None
+    file_path = Path(resource.source_path)
+    if not file_path.exists():
+        return None
+    if file_path.suffix.lower() == ".docx":
+        return import_docx(file_path, title=resource.name)
+    return None

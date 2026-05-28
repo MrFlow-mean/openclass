@@ -1,6 +1,8 @@
 import json
 
 import pytest
+from docx import Document as DocxDocument
+from docx.shared import Pt, RGBColor
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
@@ -3518,6 +3520,65 @@ def test_chat_imports_uploaded_resource_text_into_empty_board_without_pm_update(
     assert commit.metadata["resource_name"] == "resource.md"
     assert commit.metadata["resource_import_scope"] == "full_resource"
     assert commit.metadata["board_edit_operation"] == "replace_document"
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_chat_imports_uploaded_docx_with_rich_styles_into_empty_board(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+
+    def _fake_chatbot_reply(**kwargs):
+        return ChatbotReply(chatbot_message="AI生成：已保留格式导入。")
+
+    def _unexpected_requirement_update(**kwargs):
+        raise AssertionError("resource document import must not update learning requirements")
+
+    monkeypatch.setattr(openai_course_ai, "generate_chatbot_reply", _fake_chatbot_reply)
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _unexpected_requirement_update)
+
+    workspace = _seed_test_user_workspace(store)
+    package = workspace.packages[0]
+    lesson = package.lessons[0]
+    resource_path = tmp_path / "styled.docx"
+    docx = DocxDocument()
+    docx.add_heading("彩色标题", level=1)
+    paragraph = docx.add_paragraph()
+    run = paragraph.add_run("加粗红色大字")
+    run.bold = True
+    run.font.size = Pt(18)
+    run.font.color.rgb = RGBColor(194, 65, 12)
+    docx.save(resource_path)
+    resource = build_resource_item(resource_path, "styled.docx")
+    resource.scope_lesson_id = lesson.id
+    package.resources.append(resource)
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="将我上传的文件全部显示在文档框中"),
+        user_id=TEST_USER.id,
+    )
+
+    document = response.course_package.lessons[0].board_document
+    assert response.board_decision.action == "edit_board"
+    assert "<h1>彩色标题</h1>" in document.content_html
+    assert "<strong>加粗红色大字</strong>" in document.content_html
+    assert "font-size: 18pt" in document.content_html
+    assert "color: #C2410C" in document.content_html
+    heading = document.content_json["content"][0]
+    styled_paragraph = document.content_json["content"][1]
+    styled_text = styled_paragraph["content"][0]
+    assert heading["type"] == "heading"
+    assert heading["attrs"]["level"] == 1
+    assert any(mark["type"] == "bold" for mark in styled_text["marks"])
+    text_style = next(mark for mark in styled_text["marks"] if mark["type"] == "textStyle")
+    assert text_style["attrs"]["fontSize"] == "18pt"
+    assert text_style["attrs"]["color"] == "#C2410C"
+    commit = response.course_package.lessons[0].history_graph.commits[-1]
+    assert commit.metadata["kind"] == "board_document_import"
+    assert commit.metadata["resource_import_scope"] == "full_resource"
     assert _read_log_entries(isolated_ai_log) == []
 
 

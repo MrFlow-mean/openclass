@@ -440,6 +440,8 @@ def _block_attrs(attrs: dict[str, str]) -> dict[str, Any]:
 def _text_style_attrs(attrs: dict[str, str]) -> dict[str, str]:
     styles = _style_map(attrs)
     text_style: dict[str, str] = {}
+    if styles.get("color"):
+        text_style["color"] = styles["color"]
     if styles.get("font-size"):
         text_style["fontSize"] = styles["font-size"]
     if styles.get("font-family"):
@@ -1035,16 +1037,17 @@ def import_docx(path: Path, *, title: str | None = None) -> BoardDocument:
         if not text:
             continue
         style_name = (paragraph.style.name if paragraph.style else "").lower()
-        escaped = html.escape(text)
+        inline_html = _docx_paragraph_inline_html(paragraph)
+        block_attrs = _docx_paragraph_attrs(paragraph)
         if "heading 1" in style_name or "title" in style_name:
             inferred_title = inferred_title if title else text
-            html_parts.append(f"<h1>{escaped}</h1>")
+            html_parts.append(f"<h1{block_attrs}>{inline_html}</h1>")
         elif "heading 2" in style_name:
-            html_parts.append(f"<h2>{escaped}</h2>")
+            html_parts.append(f"<h2{block_attrs}>{inline_html}</h2>")
         elif "heading 3" in style_name:
-            html_parts.append(f"<h3>{escaped}</h3>")
+            html_parts.append(f"<h3{block_attrs}>{inline_html}</h3>")
         else:
-            html_parts.append(f"<p>{escaped}</p>")
+            html_parts.append(f"<p{block_attrs}>{inline_html}</p>")
         text_parts.append(text)
 
     for table in source.tables:
@@ -1061,6 +1064,56 @@ def import_docx(path: Path, *, title: str | None = None) -> BoardDocument:
         content_html="\n".join(html_parts),
         content_text="\n".join(text_parts),
     )
+
+
+def _docx_paragraph_attrs(paragraph: Any) -> str:
+    alignment = paragraph.alignment
+    if alignment == WD_ALIGN_PARAGRAPH.CENTER:
+        return ' style="text-align: center"'
+    if alignment == WD_ALIGN_PARAGRAPH.RIGHT:
+        return ' style="text-align: right"'
+    if alignment == WD_ALIGN_PARAGRAPH.JUSTIFY:
+        return ' style="text-align: justify"'
+    return ""
+
+
+def _docx_paragraph_inline_html(paragraph: Any) -> str:
+    fragments = [_docx_run_html(run) for run in paragraph.runs]
+    inline = "".join(fragment for fragment in fragments if fragment)
+    return inline or html.escape(paragraph.text.strip())
+
+
+def _docx_run_html(run: Any) -> str:
+    text = run.text
+    if not text:
+        return ""
+    fragment = html.escape(text).replace("\n", "<br>")
+    if run.bold:
+        fragment = f"<strong>{fragment}</strong>"
+    if run.italic:
+        fragment = f"<em>{fragment}</em>"
+    if run.underline:
+        fragment = f"<u>{fragment}</u>"
+    if getattr(run.font, "strike", False):
+        fragment = f"<s>{fragment}</s>"
+    styles = _docx_run_styles(run)
+    if styles:
+        fragment = f'<span style="{html.escape("; ".join(styles), quote=True)}">{fragment}</span>'
+    return fragment
+
+
+def _docx_run_styles(run: Any) -> list[str]:
+    styles: list[str] = []
+    font = run.font
+    if font.color and font.color.rgb:
+        styles.append(f"color: #{str(font.color.rgb)}")
+    if font.size:
+        size = font.size.pt
+        styles.append(f"font-size: {size:g}pt")
+    if font.name:
+        family = str(font.name).replace('"', "'")
+        styles.append(f'font-family: "{family}"')
+    return styles
 
 
 def _has_math_signal(value: str) -> bool:
