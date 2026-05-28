@@ -34,6 +34,7 @@ import type {
   CommitRecord,
   LearningClarificationStatus,
   Lesson,
+  ResourceMatch,
   ResourceReferenceContext,
   ResourceReferencePrompt,
   ScopeOption,
@@ -58,6 +59,7 @@ type CourseStudioChatSidebarProps = {
   showReadyForBoardCard: boolean;
   scopeOptions: ScopeOption[];
   referencePrompt: ResourceReferencePrompt | null;
+  resourceMatches: ResourceMatch[];
   boardEditPrompt: BoardEditPrompt | null;
   strongReasoningPrompt: StrongReasoningPrompt | null;
   clarificationQuestions: string[];
@@ -111,6 +113,7 @@ export function CourseStudioChatSidebar({
   showReadyForBoardCard,
   scopeOptions,
   referencePrompt,
+  resourceMatches,
   boardEditPrompt,
   strongReasoningPrompt,
   clarificationQuestions,
@@ -150,6 +153,19 @@ export function CourseStudioChatSidebar({
   onAdjustComposerHeight,
 }: CourseStudioChatSidebarProps) {
   const voiceStartDisabled = !voiceActive && !selectedRealtimeOption?.enabled;
+  const referenceEvidenceMatches = referencePrompt
+    ? resourceMatches
+        .filter(
+          (match) =>
+            match.resource_id === referencePrompt.resource_id &&
+            match.chapter_id === referencePrompt.chapter_id
+        )
+        .slice(0, 3)
+    : [];
+  const selectedReferenceTargetChunk =
+    selectedReference?.chunks.find((chunk) => chunk.segment_id === selectedReference.segment_id) ??
+    selectedReference?.chunks[0] ??
+    null;
 
   return (
     <aside className="relative flex h-full min-h-0 flex-col border-r border-gray-200 bg-white">
@@ -272,6 +288,36 @@ export function CourseStudioChatSidebar({
               <p className="text-[11px] font-bold uppercase tracking-widest text-violet-700">资料参考建议</p>
               <p className="mt-2 text-sm leading-6 text-violet-950">{referencePrompt.question}</p>
               <p className="mt-2 text-xs leading-6 text-violet-900/80">{referencePrompt.reason}</p>
+              {referenceEvidenceMatches.length ? (
+                <div className="mt-3 space-y-3 border-t border-violet-200/80 pt-3">
+                  {referenceEvidenceMatches.map((match) => {
+                    const headingPath = match.heading_path?.length ? match.heading_path.join(" / ") : match.chapter_title;
+                    const excerpt = match.excerpt || match.evidence?.find((item) => item.label.includes("片段"))?.value || "";
+                    return (
+                      <div key={`${match.resource_id}-${match.segment_id ?? match.chapter_id}`} className="text-xs leading-5 text-violet-950">
+                        <div className="flex items-start justify-between gap-3">
+                          <p className="min-w-0 font-semibold text-gray-900">
+                            <span className="break-words">{match.resource_name} / {headingPath}</span>
+                          </p>
+                          <span className="shrink-0 font-semibold text-violet-700">{Math.round(match.score * 100)}%</span>
+                        </div>
+                        {excerpt ? (
+                          <p className="mt-2 border-l-2 border-violet-300 pl-3 text-violet-900/90">{excerpt}</p>
+                        ) : null}
+                        {match.evidence?.length ? (
+                          <div className="mt-2 space-y-1 text-[11px] text-violet-900/75">
+                            {match.evidence.slice(0, 3).map((item) => (
+                              <p key={`${item.label}-${item.value}`} className="break-words">
+                                <span className="font-semibold">{item.label}：</span>{item.value}
+                              </p>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : null}
               <div className="mt-3 grid gap-2">
                 <button
                   type="button"
@@ -377,6 +423,11 @@ export function CourseStudioChatSidebar({
               <p className="mt-2 text-sm font-semibold text-gray-900">
                 {selectedReference.resource_name} / {selectedReference.chapter_title}
               </p>
+              {selectedReferenceTargetChunk?.excerpt ? (
+                <p className="mt-3 border-l-2 border-emerald-300 pl-3 text-xs leading-5 text-emerald-900/90">
+                  {selectedReferenceTargetChunk.excerpt}
+                </p>
+              ) : null}
             </div>
           ) : null}
         </div>

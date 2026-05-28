@@ -8,6 +8,7 @@ from app.models import (
     ResourceContextChunk,
     ResourceLibraryItem,
     ResourceMatch,
+    ResourceMatchEvidence,
     ResourceReferenceAction,
     ResourceReferenceContext,
     ResourceReferencePrompt,
@@ -31,6 +32,17 @@ GENERIC_CONCEPT_GROUPS: tuple[tuple[str, ...], ...] = (
     ("表格", "图表", "数据", "列表"),
     ("章节", "小节", "部分", "目录", "材料", "资料"),
 )
+
+
+@dataclass(frozen=True)
+class RankedResourceCandidate:
+    score: float
+    resource: ResourceLibraryItem
+    chapter: LibraryChapter
+    segment: ResourceSegment | None
+    reason: str
+    evidence: list[ResourceMatchEvidence]
+    score_breakdown: dict[str, float]
 
 
 @dataclass(frozen=True)
@@ -106,43 +118,42 @@ def _rank_resource_matches(resources: list[ResourceLibraryItem], user_message: s
     if not query_terms and not query_vector:
         return []
 
-    scored: list[tuple[float, ResourceLibraryItem, LibraryChapter, ResourceSegment | None, str]] = []
+    candidates: list[RankedResourceCandidate] = []
     for resource in resources:
         chapters_by_id = {chapter.id: chapter for chapter in resource.outline}
         for segment in resource.segments:
             chapter = chapters_by_id.get(segment.chapter_id)
             if chapter is None:
                 continue
-            score = _segment_score(query_terms, compact_message, resource, chapter, segment)
-            if score <= 0:
-                semantic_score = _semantic_segment_score(query_vector, segment)
-                if semantic_score <= 0:
-                    continue
-                reason = "根据用户描述与资料正文片段的语义向量相似度定位。"
-                scored.append((semantic_score, resource, chapter, segment, reason))
+            candidate = _rank_segment_candidate(
+                query_terms,
+                compact_message,
+                query_vector,
+                resource,
+                chapter,
+                segment,
+            )
+            if candidate is None:
                 continue
-            semantic_score = _semantic_segment_score(query_vector, segment)
-            if semantic_score > score:
-                reason = "根据用户描述与资料正文片段的语义向量相似度定位。"
-                scored.append((semantic_score, resource, chapter, segment, reason))
-            else:
-                reason = "根据用户描述与资料正文片段、标题路径和关键词的匹配度定位。"
-                scored.append((score, resource, chapter, segment, reason))
+            candidates.append(candidate)
         for chapter in resource.outline:
-            score = _chapter_score(query_terms, compact_message, resource, chapter)
-            if score <= 0:
+            candidate = _rank_chapter_candidate(query_terms, compact_message, resource, chapter)
+            if candidate is None:
                 continue
-            reason = "根据用户描述与资料目录、章节摘要和关键词的匹配度定位。"
-            scored.append((score, resource, chapter, None, reason))
+            candidates.append(candidate)
 
-    scored.sort(key=lambda item: item[0], reverse=True)
-    if not scored:
+    candidates.sort(key=lambda item: item.score, reverse=True)
+    if not candidates:
         return []
 
-    max_score = max(scored[0][0], 0.01)
+    max_score = max(candidates[0].score, 0.01)
     matches: list[ResourceMatch] = []
     seen: set[tuple[str, str]] = set()
-    for score, resource, chapter, segment, reason in scored:
+    for candidate in candidates:
+        score = candidate.score
+        resource = candidate.resource
+        chapter = candidate.chapter
+        segment = candidate.segment
         key = (resource.id, segment.segment_id if segment else chapter.id)
         if key in seen:
             continue
@@ -160,7 +171,9 @@ def _rank_resource_matches(resources: list[ResourceLibraryItem], user_message: s
                 before_text=_neighbor_excerpt(resource, segment.before_segment_id) if segment else "",
                 after_text=_neighbor_excerpt(resource, segment.after_segment_id) if segment else "",
                 text_hash=segment.text_hash if segment else None,
-                reason=reason,
+                reason=candidate.reason,
+                evidence=candidate.evidence,
+                score_breakdown=candidate.score_breakdown,
                 score=round(normalized, 3),
                 is_high_overlap=normalized >= DIRECT_REFERENCE_THRESHOLD,
             )
@@ -170,11 +183,95 @@ def _rank_resource_matches(resources: list[ResourceLibraryItem], user_message: s
     return matches
 
 
-def _semantic_segment_score(query_vector: list[float], segment: ResourceSegment) -> float:
+def _rank_segment_candidate(
+    query_terms: set[str],
+    compact_message: str,
+    query_vector: list[float],
+    resource: ResourceLibraryItem,
+    chapter: LibraryChapter,
+    segment: ResourceSegment,
+) -> RankedResourceCandidate | None:
+    lexical_score = _segment_score(query_terms, compact_message, resource, chapter, segment)
+    semantic_similarity = _semantic_segment_similarity(query_vector, segment)
+    semantic_score = semantic_similarity * 1.18 if semantic_similarity >= SEMANTIC_MATCH_THRESHOLD else 0.0
+    if lexical_score <= 0 and semantic_score <= 0:
+        return None
+
+    heading_score = _overlap_ratio(query_terms, _value_terms(" ".join([resource.name, *segment.heading_path, chapter.title])))
+    body_score = _overlap_ratio(query_terms, _value_terms(segment.text))
+    keyword_score = _overlap_ratio(query_terms, set(segment.keywords))
+    evidence_bonus = 0.04 if segment.heading_path else 0.0
+    evidence_bonus += 0.04 if segment.text.strip() else 0.0
+    score = max(lexical_score, semantic_score)
+    score += min(lexical_score, semantic_score) * 0.18
+    score += heading_score * 0.1
+    score += body_score * 0.12
+    score += keyword_score * 0.06
+    score += evidence_bonus
+
+    evidence = _segment_evidence(
+        segment=segment,
+        query_terms=query_terms,
+        semantic_similarity=semantic_similarity,
+    )
+    if semantic_score > lexical_score:
+        reason = "根据用户描述与资料正文片段的语义向量相似度定位，并结合标题路径和正文证据重排。"
+    else:
+        reason = "根据用户描述与资料正文片段、标题路径、关键词和引用证据的综合重排定位。"
+    return RankedResourceCandidate(
+        score=score,
+        resource=resource,
+        chapter=chapter,
+        segment=segment,
+        reason=reason,
+        evidence=evidence,
+        score_breakdown=_score_breakdown(
+            {
+                "lexical": lexical_score,
+                "semantic": semantic_similarity,
+                "heading": heading_score,
+                "body": body_score,
+                "keyword": keyword_score,
+                "rerank": score,
+            }
+        ),
+    )
+
+
+def _rank_chapter_candidate(
+    query_terms: set[str],
+    compact_message: str,
+    resource: ResourceLibraryItem,
+    chapter: LibraryChapter,
+) -> RankedResourceCandidate | None:
+    score = _chapter_score(query_terms, compact_message, resource, chapter)
+    if score <= 0:
+        return None
+    heading_score = _overlap_ratio(query_terms, _value_terms(" ".join([resource.name, *chapter.path, chapter.title])))
+    summary_score = _overlap_ratio(query_terms, _value_terms(chapter.summary))
+    rerank_score = score + heading_score * 0.1 + summary_score * 0.08
+    evidence = _chapter_evidence(chapter)
+    return RankedResourceCandidate(
+        score=rerank_score,
+        resource=resource,
+        chapter=chapter,
+        segment=None,
+        reason="根据用户描述与资料目录、章节摘要、关键词和引用证据的综合重排定位。",
+        evidence=evidence,
+        score_breakdown=_score_breakdown(
+            {
+                "lexical": score,
+                "heading": heading_score,
+                "summary": summary_score,
+                "rerank": rerank_score,
+            }
+        ),
+    )
+
+
+def _semantic_segment_similarity(query_vector: list[float], segment: ResourceSegment) -> float:
     similarity = cosine_similarity(query_vector, segment.embedding)
-    if similarity < SEMANTIC_MATCH_THRESHOLD:
-        return 0.0
-    return similarity * 1.18
+    return max(0.0, similarity)
 
 
 def _segment_score(
@@ -271,6 +368,8 @@ def _explicit_match(
                     after_text=_neighbor_excerpt(resource, segment.after_segment_id),
                     text_hash=segment.text_hash,
                     reason="用户确认了要参考的资料片段。",
+                    evidence=_segment_evidence(segment=segment, query_terms=set(), semantic_similarity=0.0),
+                    score_breakdown={"rerank": 1.0},
                     score=1.0,
                     is_high_overlap=True,
                 )
@@ -282,6 +381,8 @@ def _explicit_match(
                     resource_name=resource.name,
                     chapter_title=chapter.title,
                     reason="用户确认了要参考的资料章节。",
+                    evidence=_chapter_evidence(chapter),
+                    score_breakdown={"rerank": 1.0},
                     score=1.0,
                     is_high_overlap=True,
                 )
@@ -397,6 +498,53 @@ def _value_terms(value: str) -> set[str]:
     cjk = re.sub(r"[^\u4e00-\u9fff]", "", compact)
     terms.update(cjk[index : index + 2] for index in range(max(0, len(cjk) - 1)))
     return {term for term in terms if len(term.strip()) >= 2}
+
+
+def _overlap_ratio(query_terms: set[str], value_terms: set[str]) -> float:
+    if not query_terms or not value_terms:
+        return 0.0
+    return len(query_terms & value_terms) / max(len(query_terms), 1)
+
+
+def _segment_evidence(
+    *,
+    segment: ResourceSegment,
+    query_terms: set[str],
+    semantic_similarity: float,
+) -> list[ResourceMatchEvidence]:
+    evidence: list[ResourceMatchEvidence] = []
+    heading = " / ".join(segment.heading_path).strip()
+    if heading:
+        evidence.append(ResourceMatchEvidence(label="标题路径", value=heading))
+    excerpt = _match_excerpt(segment.text, query_terms, limit=420)
+    if excerpt:
+        evidence.append(ResourceMatchEvidence(label="正文片段", value=excerpt))
+    matched_keywords = [keyword for keyword in segment.keywords[:8] if keyword in query_terms]
+    if matched_keywords:
+        evidence.append(ResourceMatchEvidence(label="命中关键词", value="、".join(matched_keywords[:5])))
+    if semantic_similarity >= SEMANTIC_MATCH_THRESHOLD:
+        evidence.append(ResourceMatchEvidence(label="语义相似度", value=f"{semantic_similarity:.2f}"))
+    return evidence[:5]
+
+
+def _chapter_evidence(chapter: LibraryChapter) -> list[ResourceMatchEvidence]:
+    evidence: list[ResourceMatchEvidence] = []
+    heading = " / ".join(chapter.path).strip() or chapter.title
+    if heading:
+        evidence.append(ResourceMatchEvidence(label="章节路径", value=heading))
+    if chapter.summary:
+        evidence.append(ResourceMatchEvidence(label="章节摘要", value=_compact_text(chapter.summary, limit=260)))
+    if chapter.keywords:
+        evidence.append(ResourceMatchEvidence(label="章节关键词", value="、".join(chapter.keywords[:5])))
+    return evidence[:4]
+
+
+def _score_breakdown(raw: dict[str, float]) -> dict[str, float]:
+    return {
+        key: round(value, 3)
+        for key, value in raw.items()
+        if value > 0
+    }
 
 
 def _compact_text(value: str | None, *, limit: int = 1200) -> str:

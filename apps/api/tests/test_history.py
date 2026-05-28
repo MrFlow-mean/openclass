@@ -509,6 +509,8 @@ def test_resource_resolver_selects_relevant_uploaded_segment(tmp_path) -> None:
     assert "牛顿莱布尼茨公式" in resolution.selected_reference.full_text
     assert resolution.matches[0].segment_id == resolution.selected_reference.segment_id
     assert "牛顿莱布尼茨公式" in resolution.matches[0].excerpt
+    assert "正文片段" in {item.label for item in resolution.matches[0].evidence}
+    assert resolution.matches[0].score_breakdown["rerank"] > 0
 
 
 def test_resource_resolver_uses_embedding_similarity_without_word_overlap(monkeypatch, tmp_path) -> None:
@@ -547,6 +549,7 @@ def test_resource_resolver_uses_embedding_similarity_without_word_overlap(monkey
     assert resolution.selected_reference.chapter_title == "运动规律"
     assert "闭合曲线" in resolution.selected_reference.full_text
     assert "语义向量" in resolution.matches[0].reason
+    assert resolution.matches[0].score_breakdown["semantic"] == 1.0
 
 
 def test_epub_section_scoring_penalizes_generic_structural_shells() -> None:

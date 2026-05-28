@@ -3723,6 +3723,8 @@ def test_learning_request_generates_board_after_resource_reference_confirmation(
     assert first.resource_matches
     assert first.resource_matches[0].segment_id == first.reference_prompt.segment_id
     assert "牛顿莱布尼茨公式" in first.resource_matches[0].excerpt
+    assert "正文片段" in {item.label for item in first.resource_matches[0].evidence}
+    assert first.resource_matches[0].score_breakdown["rerank"] > 0
     assert first.course_package.lessons[0].board_document.content_text == ""
 
     confirmed = chat_service.process_chat_on_lesson(

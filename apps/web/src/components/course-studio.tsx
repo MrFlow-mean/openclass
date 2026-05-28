@@ -204,6 +204,7 @@ export function CourseStudio() {
     learningClarity,
     latestBoardDecision,
     referencePrompt,
+    resourceMatches,
     boardEditPrompt,
     strongReasoningPrompt,
     selectedReference,
@@ -513,6 +514,7 @@ export function CourseStudio() {
           showReadyForBoardCard={showReadyForBoardCard}
           scopeOptions={scopeOptions}
           referencePrompt={referencePrompt}
+          resourceMatches={resourceMatches}
           boardEditPrompt={boardEditPrompt}
           strongReasoningPrompt={strongReasoningPrompt}
           clarificationQuestions={clarificationQuestions}

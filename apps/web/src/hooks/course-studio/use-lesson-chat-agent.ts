@@ -93,7 +93,7 @@ export function useLessonChatAgent({
   onSpeakResponse,
 }: UseLessonChatAgentOptions) {
   const [scopeOptions, setScopeOptions] = useState<ScopeOption[]>([]);
-  const [, setResourceMatches] = useState<ResourceMatch[]>([]);
+  const [resourceMatches, setResourceMatches] = useState<ResourceMatch[]>([]);
   const [clarificationQuestions, setClarificationQuestions] = useState<string[]>([]);
   const [learningClarity, setLearningClarity] = useState<LearningClarificationStatus | null>(null);
   const [latestBoardDecision, setLatestBoardDecision] = useState<BoardDecision | null>(null);
@@ -504,6 +504,7 @@ export function useLessonChatAgent({
     learningClarity,
     latestBoardDecision,
     referencePrompt,
+    resourceMatches,
     boardEditPrompt,
     strongReasoningPrompt,
     selectedReference,

@@ -568,6 +568,11 @@ class ScopeOption(BaseModel):
     resource_chapter_id: str | None = None
 
 
+class ResourceMatchEvidence(BaseModel):
+    label: str
+    value: str
+
+
 class ResourceMatch(BaseModel):
     resource_id: str
     chapter_id: str
@@ -580,6 +585,8 @@ class ResourceMatch(BaseModel):
     after_text: str = ""
     text_hash: str | None = None
     reason: str
+    evidence: list[ResourceMatchEvidence] = Field(default_factory=list)
+    score_breakdown: dict[str, float] = Field(default_factory=dict)
     score: float = 0.0
     is_high_overlap: bool = False
 

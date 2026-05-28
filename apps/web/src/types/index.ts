@@ -389,6 +389,8 @@ export interface ResourceMatch {
   after_text?: string;
   text_hash?: string | null;
   reason: string;
+  evidence?: Array<{ label: string; value: string }>;
+  score_breakdown?: Record<string, number>;
   score: number;
   is_high_overlap: boolean;
 }
