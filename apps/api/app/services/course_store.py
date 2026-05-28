@@ -22,9 +22,10 @@ from app.models import (
     WorkspaceState,
 )
 from app.services.document_segment_store import DocumentSegmentStore
+from app.services.resource_segment_store import ResourceSegmentStore
 from app.services.rich_document import upgrade_markdown_like_document
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 
 def _active_package_setting_key(owner_user_id: str | None) -> str:
@@ -39,6 +40,7 @@ class SqliteCourseStore:
         self.legacy_json_path = legacy_json_path
         self._lock = threading.RLock()
         self._document_segments = DocumentSegmentStore()
+        self._resource_segments = ResourceSegmentStore()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
@@ -291,6 +293,7 @@ class SqliteCourseStore:
             """
         )
         self._migrate_schema(conn)
+        self._resource_segments.create_schema(conn)
         self._document_segments.create_fts_schema(conn)
         self._document_segments.backfill(conn, _document_from_row)
         conn.execute(
@@ -549,7 +552,7 @@ class SqliteCourseStore:
                 (row["id"],),
             ).fetchall()
         ]
-        return ResourceLibraryItem(
+        resource = ResourceLibraryItem(
             id=row["id"],
             name=row["name"],
             mime_type=row["mime_type"],
@@ -563,6 +566,10 @@ class SqliteCourseStore:
             text_content=row["text_content"],
             source_path=row["source_path"],
         )
+        resource.segments = self._resource_segments.read_segments(conn, resource.id)
+        if not resource.segments:
+            resource.segments = self._resource_segments.ensure_segments(resource)
+        return resource
 
     def _replace_workspace(
         self,
@@ -573,6 +580,7 @@ class SqliteCourseStore:
     ) -> None:
         setting_key = _active_package_setting_key(owner_user_id)
         self._document_segments.delete_for_owner(conn, owner_user_id)
+        self._resource_segments.delete_for_owner(conn, owner_user_id)
         if owner_user_id is None:
             conn.execute("DELETE FROM workspace_settings")
             conn.execute("DELETE FROM course_packages")
@@ -798,6 +806,7 @@ class SqliteCourseStore:
                     chapter.scan_strategy,
                 ),
             )
+        resource.segments = self._resource_segments.replace_segments(conn, resource)
 
     def _load_legacy_workspace(self) -> WorkspaceState | None:
         if self.legacy_json_path is None or not self.legacy_json_path.exists():

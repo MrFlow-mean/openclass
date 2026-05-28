@@ -444,6 +444,7 @@ export function useLessonChatAgent({
       resource_reference_action: action,
       resource_reference_resource_id: referencePrompt.resource_id,
       resource_reference_chapter_id: referencePrompt.chapter_id,
+      resource_reference_segment_id: referencePrompt.segment_id ?? null,
     });
     setReferencePrompt(null);
     setLastReferenceRequest(null);
@@ -462,6 +463,7 @@ export function useLessonChatAgent({
       resource_reference_action: lastBoardEditRequest.resource_reference_action,
       resource_reference_resource_id: lastBoardEditRequest.resource_reference_resource_id,
       resource_reference_chapter_id: lastBoardEditRequest.resource_reference_chapter_id,
+      resource_reference_segment_id: lastBoardEditRequest.resource_reference_segment_id,
       board_edit_action: action,
       board_edit_topic: boardEditPrompt.topic,
     });

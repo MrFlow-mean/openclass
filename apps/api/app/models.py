@@ -451,6 +451,20 @@ class LibraryChapter(BaseModel):
     scan_strategy: ResourceScanStrategy = "outline_only"
 
 
+class ResourceSegment(BaseModel):
+    segment_id: str
+    resource_id: str
+    chapter_id: str
+    heading_path: list[str] = Field(default_factory=list)
+    order_index: int = 0
+    text: str = ""
+    text_hash: str = ""
+    keywords: list[str] = Field(default_factory=list)
+    page_range: str | None = None
+    before_segment_id: str | None = None
+    after_segment_id: str | None = None
+
+
 class ResourceLibraryItem(BaseModel):
     id: str = Field(default_factory=lambda: new_id("resource"))
     name: str
@@ -460,6 +474,7 @@ class ResourceLibraryItem(BaseModel):
     uploaded_at: str = Field(default_factory=now_iso)
     scope_lesson_id: str | None = None
     outline: list[LibraryChapter] = Field(default_factory=list)
+    segments: list[ResourceSegment] = Field(default_factory=list)
     concept_index: dict[str, list[str]] = Field(default_factory=dict)
     extracted_text_available: bool = False
     text_content: str | None = None
@@ -553,8 +568,14 @@ class ScopeOption(BaseModel):
 class ResourceMatch(BaseModel):
     resource_id: str
     chapter_id: str
+    segment_id: str | None = None
     resource_name: str
     chapter_title: str
+    heading_path: list[str] = Field(default_factory=list)
+    excerpt: str = ""
+    before_text: str = ""
+    after_text: str = ""
+    text_hash: str | None = None
     reason: str
     score: float = 0.0
     is_high_overlap: bool = False
@@ -563,6 +584,7 @@ class ResourceMatch(BaseModel):
 class ResourceReferencePrompt(BaseModel):
     resource_id: str
     chapter_id: str
+    segment_id: str | None = None
     resource_name: str
     chapter_title: str
     question: str
@@ -576,11 +598,17 @@ class ResourceContextChunk(BaseModel):
     title: str
     excerpt: str
     teaching_hint: str
+    segment_id: str | None = None
+    heading_path: list[str] = Field(default_factory=list)
+    before_text: str = ""
+    after_text: str = ""
+    text_hash: str | None = None
 
 
 class ResourceReferenceContext(BaseModel):
     resource_id: str
     chapter_id: str
+    segment_id: str | None = None
     resource_name: str
     chapter_title: str
     summary: str
@@ -682,6 +710,7 @@ class ChatRequest(BaseModel):
     resource_reference_action: ResourceReferenceAction | None = None
     resource_reference_resource_id: str | None = None
     resource_reference_chapter_id: str | None = None
+    resource_reference_segment_id: str | None = None
     board_edit_action: BoardEditConfirmationAction | None = None
     board_edit_topic: str | None = None
     strong_reasoning_action: StrongReasoningAction | None = None

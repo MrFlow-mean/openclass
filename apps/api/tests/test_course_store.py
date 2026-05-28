@@ -5,6 +5,7 @@ from app.models import BoardTeachingProgress, ResourceLibraryItem
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
 from app.services.lesson_factory import create_empty_lesson
 from app.services.rich_document import build_document
+from app.services.resource_library import build_resource_item
 
 
 def _append_lesson(workspace, title: str = "测试页面"):
@@ -111,6 +112,60 @@ def test_sqlite_store_indexes_and_searches_board_document_segments(tmp_path) -> 
         ("paragraph", "This paragraph has a retrieval anchor and x^2+y^2 ."),
         ("formula", "E=mc^2"),
     ]
+
+
+def test_sqlite_store_indexes_and_round_trips_resource_segments(tmp_path) -> None:
+    db_path = tmp_path / "openclass.sqlite3"
+    store = SqliteCourseStore(db_path, legacy_json_path=None)
+
+    workspace = build_initial_workspace_state()
+    package = workspace.packages[0]
+    resource_path = tmp_path / "resource.md"
+    resource_path.write_text(
+        "# 定积分\n这一节先说明面积问题。\n\n牛顿莱布尼茨公式连接原函数与定积分，是正文里的目标片段。",
+        encoding="utf-8",
+    )
+    resource = build_resource_item(resource_path, "resource.md")
+    package.resources.append(resource)
+    store.save(workspace)
+
+    reloaded = store.load()
+    reloaded_resource = reloaded.packages[0].resources[0]
+
+    assert reloaded_resource.segments
+    assert any("牛顿莱布尼茨公式" in segment.text for segment in reloaded_resource.segments)
+
+    with sqlite3.connect(db_path) as conn:
+        segment_rows = conn.execute(
+            """
+            SELECT segment_id, text, heading_path_json
+            FROM resource_segments
+            WHERE resource_id = ?
+            ORDER BY order_index
+            """,
+            (resource.id,),
+        ).fetchall()
+        has_fts = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'resource_segments_fts'"
+        ).fetchone()
+        fts_rows = (
+            conn.execute(
+                """
+                SELECT segment_id
+                FROM resource_segments_fts
+                WHERE resource_id = ?
+                """,
+                (resource.id,),
+            ).fetchall()
+            if has_fts
+            else []
+        )
+
+    assert segment_rows
+    assert any("牛顿莱布尼茨公式" in row[1] for row in segment_rows)
+    assert json.loads(segment_rows[0][2]) == ["定积分"]
+    if fts_rows:
+        assert [row[0] for row in fts_rows] == [row[0] for row in segment_rows]
 
 
 def test_sqlite_store_imports_and_archives_legacy_store_json(tmp_path) -> None:

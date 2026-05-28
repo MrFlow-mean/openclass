@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import hashlib
 import mimetypes
 import posixpath
 import re
@@ -16,12 +17,17 @@ from app.models import (
     ResourceContextChunk,
     ResourceLibraryItem,
     ResourceReferenceContext,
+    ResourceSegment,
 )
 from app.services.image_ocr import extract_image_text, extract_pdf_pages_text
 
 
 _PDF_TEXT_SUMMARY_LIMIT = 140
 _PDF_LOCATOR_SEPARATOR = " || "
+_RESOURCE_SEGMENT_TARGET_CHARS = 900
+_RESOURCE_SEGMENT_MAX_CHARS = 1400
+_RESOURCE_SEGMENT_MAX_SOURCE_CHARS = 320000
+_RESOURCE_SEGMENT_LIMIT = 600
 
 
 def _normalize_extracted_text(text: str) -> str:
@@ -1537,6 +1543,183 @@ def extract_outline(file_path: Path, original_name: str, mime_type: str) -> tupl
     )
 
 
+def _resource_segment_hash(text: str) -> str:
+    compact = re.sub(r"\s+", " ", _normalize_extracted_text(text)).strip()
+    return hashlib.sha1(compact.encode("utf-8")).hexdigest()[:16]
+
+
+def _compact_resource_segment_text(text: str) -> str:
+    lines = [line.strip() for line in _normalize_extracted_text(text).splitlines()]
+    compact_lines = [line for line in lines if line]
+    return "\n".join(compact_lines).strip()
+
+
+def _split_long_segment(text: str) -> list[str]:
+    compact = _compact_resource_segment_text(text)
+    if len(compact) <= _RESOURCE_SEGMENT_MAX_CHARS:
+        return [compact] if compact else []
+
+    sentences = [part.strip() for part in re.split(r"(?<=[。！？!?；;])\s*", compact) if part.strip()]
+    if len(sentences) <= 1:
+        return [
+            compact[index : index + _RESOURCE_SEGMENT_MAX_CHARS].strip()
+            for index in range(0, len(compact), _RESOURCE_SEGMENT_MAX_CHARS)
+            if compact[index : index + _RESOURCE_SEGMENT_MAX_CHARS].strip()
+        ]
+
+    chunks: list[str] = []
+    current = ""
+    for sentence in sentences:
+        candidate = f"{current}{sentence}" if not current else f"{current}\n{sentence}"
+        if len(candidate) <= _RESOURCE_SEGMENT_TARGET_CHARS or not current:
+            current = candidate
+            continue
+        chunks.append(current)
+        current = sentence
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def _split_resource_text_into_segments(text: str) -> list[str]:
+    normalized = _normalize_extracted_text(text)
+    if not normalized:
+        return []
+
+    paragraphs = [
+        paragraph.strip()
+        for paragraph in re.split(r"\n\s*\n+", normalized)
+        if paragraph.strip()
+    ]
+    if not paragraphs:
+        paragraphs = [line.strip() for line in normalized.splitlines() if line.strip()]
+
+    segments: list[str] = []
+    current = ""
+    for paragraph in paragraphs:
+        paragraph_segments = _split_long_segment(paragraph)
+        for paragraph_segment in paragraph_segments:
+            candidate = paragraph_segment if not current else f"{current}\n\n{paragraph_segment}"
+            if len(candidate) <= _RESOURCE_SEGMENT_TARGET_CHARS or not current:
+                current = candidate
+                continue
+            segments.append(current)
+            current = paragraph_segment
+    if current:
+        segments.append(current)
+
+    final_segments: list[str] = []
+    for segment in segments:
+        final_segments.extend(_split_long_segment(segment))
+    return [
+        _compact_resource_segment_text(segment)
+        for segment in final_segments[:_RESOURCE_SEGMENT_LIMIT]
+        if _compact_resource_segment_text(segment)
+    ]
+
+
+def _read_pdf_text(file_path: Path, *, max_chars: int = _RESOURCE_SEGMENT_MAX_SOURCE_CHARS) -> str:
+    try:
+        reader = PdfReader(str(file_path))
+    except Exception:
+        return ""
+    extracted: list[str] = []
+    current_size = 0
+    for page in reader.pages:
+        try:
+            text = _normalize_extracted_text(page.extract_text() or "")
+        except Exception:
+            continue
+        if not text:
+            continue
+        extracted.append(text)
+        current_size += len(text)
+        if current_size >= max_chars:
+            break
+    return "\n\n".join(extracted).strip()
+
+
+def _resource_chapter_raw_text(resource: ResourceLibraryItem, chapter: LibraryChapter) -> str:
+    if resource.text_content and resource.resource_type == "image":
+        return resource.text_content
+    if not resource.source_path:
+        return resource.text_content or f"{chapter.title}\n{chapter.summary}\n{' '.join(chapter.keywords)}"
+
+    file_path = Path(resource.source_path)
+    if not file_path.exists():
+        return resource.text_content or f"{chapter.title}\n{chapter.summary}\n{' '.join(chapter.keywords)}"
+
+    suffix = file_path.suffix.lower()
+    try:
+        if resource.mime_type in {"text/plain", "text/markdown"} or suffix in {".md", ".txt"}:
+            return _extract_markdown_section_text(file_path, chapter) if chapter.scan_strategy == "heading_section" else _read_text_file(file_path)
+        if suffix == ".docx":
+            return _extract_docx_section_text(file_path, chapter) if chapter.scan_strategy == "heading_section" else _read_docx_text(file_path)
+        if suffix == ".epub":
+            _, raw_text = _extract_epub_section_text(file_path, chapter, chapter.title)
+            return raw_text
+        if suffix == ".pdf":
+            if chapter.page_start or chapter.page_end:
+                reader = PdfReader(str(file_path))
+                page_start = chapter.page_start or 1
+                page_end = chapter.page_end or min(page_start + 8, len(reader.pages))
+                return _read_pdf_text_window(
+                    reader,
+                    page_start=page_start,
+                    page_end=page_end,
+                    max_pages=max(1, min(24, page_end - page_start + 1)),
+                )
+            return _read_pdf_text(file_path)
+    except Exception:
+        return resource.text_content or f"{chapter.title}\n{chapter.summary}\n{' '.join(chapter.keywords)}"
+    return resource.text_content or f"{chapter.title}\n{chapter.summary}\n{' '.join(chapter.keywords)}"
+
+
+def build_resource_segments(resource: ResourceLibraryItem) -> list[ResourceSegment]:
+    segments: list[ResourceSegment] = []
+    chapters = sorted(resource.outline, key=lambda item: item.order_index)
+    seen_hashes: set[tuple[str, str]] = set()
+
+    for chapter in chapters:
+        raw_text = _resource_chapter_raw_text(resource, chapter)
+        for text in _split_resource_text_into_segments(raw_text):
+            text_hash = _resource_segment_hash(text)
+            dedupe_key = (chapter.id, text_hash)
+            if dedupe_key in seen_hashes:
+                continue
+            seen_hashes.add(dedupe_key)
+            order_index = len(segments)
+            stable_seed = f"{resource.id}:{chapter.id}:{order_index}:{text_hash}"
+            segment_id = f"rseg_{hashlib.sha1(stable_seed.encode('utf-8')).hexdigest()[:12]}"
+            heading_path = chapter.path or [chapter.title]
+            segments.append(
+                ResourceSegment(
+                    segment_id=segment_id,
+                    resource_id=resource.id,
+                    chapter_id=chapter.id,
+                    heading_path=heading_path,
+                    order_index=order_index,
+                    text=text,
+                    text_hash=text_hash,
+                    keywords=_keywords_from_text(f"{' '.join(heading_path)}\n{text}")[:12],
+                    page_range=chapter.page_range,
+                )
+            )
+            if len(segments) >= _RESOURCE_SEGMENT_LIMIT:
+                break
+        if len(segments) >= _RESOURCE_SEGMENT_LIMIT:
+            break
+
+    for index, segment in enumerate(segments):
+        segments[index] = segment.model_copy(
+            update={
+                "before_segment_id": segments[index - 1].segment_id if index > 0 else None,
+                "after_segment_id": segments[index + 1].segment_id if index + 1 < len(segments) else None,
+            }
+        )
+    return segments
+
+
 def build_resource_item(file_path: Path, original_name: str) -> ResourceLibraryItem:
     mime_type = mimetypes.guess_type(original_name)[0] or "application/octet-stream"
     outline, extracted, text_content = extract_outline(file_path, original_name, mime_type)
@@ -1547,7 +1730,7 @@ def build_resource_item(file_path: Path, original_name: str) -> ResourceLibraryI
         for keyword in [*chapter.keywords, *path_keywords]:
             concept_index.setdefault(keyword, []).append(chapter.id)
 
-    return ResourceLibraryItem(
+    resource = ResourceLibraryItem(
         name=original_name,
         mime_type=mime_type,
         resource_type="image" if mime_type.startswith("image/") else "document",
@@ -1558,6 +1741,8 @@ def build_resource_item(file_path: Path, original_name: str) -> ResourceLibraryI
         text_content=text_content,
         source_path=str(file_path),
     )
+    resource.segments = build_resource_segments(resource)
+    return resource
 
 
 def extract_reference_context(

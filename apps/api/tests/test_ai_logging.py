@@ -3683,10 +3683,10 @@ def test_learning_request_generates_board_after_resource_reference_confirmation(
         captured["intent"] = kwargs.get("intent")
         return BoardDocumentEditResult(
             operation="replace_document",
-            title="第一章板书",
-            content_text="# 第一章板书\n## 核心概念\n根据资料生成的板书内容。",
-            summary="已参考上传资料生成第一章板书。",
-            chatbot_message="AI生成：已参考上传资料生成第一章板书。",
+            title="公式板书",
+            content_text="# 公式板书\n## 核心概念\n根据资料生成的板书内容。",
+            summary="已参考上传资料生成公式板书。",
+            chatbot_message="AI生成：已参考上传资料生成公式板书。",
             section_titles=["核心概念"],
         )
 
@@ -3703,7 +3703,7 @@ def test_learning_request_generates_board_after_resource_reference_confirmation(
     lesson = package.lessons[0]
     resource_path = tmp_path / "resource.md"
     resource_path.write_text(
-        "# 第一章\n这是第一章资料正文，可以辅助生成板书建议。",
+        "# 定积分\n这一节先说明面积问题。\n\n牛顿莱布尼茨公式连接原函数与定积分，可以辅助生成板书建议。",
         encoding="utf-8",
     )
     resource = build_resource_item(resource_path, "resource.md")
@@ -3713,36 +3713,42 @@ def test_learning_request_generates_board_after_resource_reference_confirmation(
 
     first = chat_service.process_chat_on_lesson(
         lesson.id,
-        ChatRequest(message="我要学第一章"),
+        ChatRequest(message="我要学牛顿莱布尼茨公式"),
         user_id=TEST_USER.id,
     )
 
     assert first.board_decision.action == "await_reference_choice"
     assert first.reference_prompt is not None
+    assert first.reference_prompt.segment_id is not None
     assert first.resource_matches
+    assert first.resource_matches[0].segment_id == first.reference_prompt.segment_id
+    assert "牛顿莱布尼茨公式" in first.resource_matches[0].excerpt
     assert first.course_package.lessons[0].board_document.content_text == ""
 
     confirmed = chat_service.process_chat_on_lesson(
         lesson.id,
         ChatRequest(
-            message="我要学第一章",
+            message="我要学牛顿莱布尼茨公式",
             resource_reference_action="confirm",
             resource_reference_resource_id=first.reference_prompt.resource_id,
             resource_reference_chapter_id=first.reference_prompt.chapter_id,
+            resource_reference_segment_id=first.reference_prompt.segment_id,
         ),
         user_id=TEST_USER.id,
     )
 
-    assert confirmed.chatbot_message == "AI生成：已参考上传资料生成第一章板书。"
+    assert confirmed.chatbot_message == "AI生成：已参考上传资料生成公式板书。"
     assert confirmed.board_decision.action == "edit_board"
     assert confirmed.selected_reference is not None
+    assert confirmed.selected_reference.segment_id == first.reference_prompt.segment_id
     assert confirmed.requirement_cleared is True
-    assert "第一章资料正文" in (captured["resource_summary"] or "")
+    assert "牛顿莱布尼茨公式" in (captured["resource_summary"] or "")
     assert "根据资料生成的板书内容" in confirmed.course_package.lessons[0].board_document.content_text
     commit = confirmed.course_package.lessons[0].history_graph.commits[-1]
     assert commit.metadata["kind"] == "board_document_generation"
     assert commit.metadata["resource_backed_generation"] is True
-    assert commit.metadata["selected_reference"]["chapter_title"] == "第一章"
+    assert commit.metadata["selected_reference"]["chapter_title"] == "定积分"
+    assert commit.metadata["selected_reference"]["segment_id"] == first.reference_prompt.segment_id
     assert commit.metadata["active_requirement_sheet_after"] is None
     assert captured["intent"] == "generate_from_requirements"
     assert _read_log_entries(isolated_ai_log) == []

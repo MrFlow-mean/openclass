@@ -488,6 +488,28 @@ def test_resource_resolver_selects_relevant_uploaded_chapter(tmp_path) -> None:
     assert resolution.matches
 
 
+def test_resource_resolver_selects_relevant_uploaded_segment(tmp_path) -> None:
+    resource_path = tmp_path / "resource.md"
+    resource_path.write_text(
+        "# 定积分\n这一节先说明面积问题。\n\n牛顿莱布尼茨公式连接原函数与定积分，是正文里的目标片段。",
+        encoding="utf-8",
+    )
+    resource = build_resource_item(resource_path, "resource.md")
+
+    resolution = resolve_resource_reference(
+        resources=[resource],
+        user_message="我要学牛顿莱布尼茨公式",
+        allow_direct_reference=True,
+    )
+
+    assert resolution.selected_reference is not None
+    assert resolution.selected_reference.segment_id is not None
+    assert resolution.selected_reference.chapter_title == "定积分"
+    assert "牛顿莱布尼茨公式" in resolution.selected_reference.full_text
+    assert resolution.matches[0].segment_id == resolution.selected_reference.segment_id
+    assert "牛顿莱布尼茨公式" in resolution.matches[0].excerpt
+
+
 def test_epub_section_scoring_penalizes_generic_structural_shells() -> None:
     shell_sections = [
         {

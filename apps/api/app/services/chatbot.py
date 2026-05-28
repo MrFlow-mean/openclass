@@ -540,9 +540,11 @@ def _reference_metadata(
             {
                 "resource_id": resolution.selected_reference.resource_id,
                 "chapter_id": resolution.selected_reference.chapter_id,
+                "segment_id": resolution.selected_reference.segment_id,
                 "resource_name": resolution.selected_reference.resource_name,
                 "chapter_title": resolution.selected_reference.chapter_title,
                 "summary": resolution.selected_reference.summary,
+                "chunks": [chunk.model_dump(mode="json") for chunk in resolution.selected_reference.chunks],
             }
             if resolution.selected_reference
             else None
@@ -1230,6 +1232,7 @@ def _chat_response(
         reference_action=request.resource_reference_action,
         reference_resource_id=request.resource_reference_resource_id,
         reference_chapter_id=request.resource_reference_chapter_id,
+        reference_segment_id=request.resource_reference_segment_id,
         allow_direct_reference=(
             _requests_resource_backed_answer(request.message)
             and request.interaction_mode != "direct_edit"

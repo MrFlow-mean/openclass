@@ -380,8 +380,14 @@ export interface ScopeOption {
 export interface ResourceMatch {
   resource_id: string;
   chapter_id: string;
+  segment_id?: string | null;
   resource_name: string;
   chapter_title: string;
+  heading_path?: string[];
+  excerpt?: string;
+  before_text?: string;
+  after_text?: string;
+  text_hash?: string | null;
   reason: string;
   score: number;
   is_high_overlap: boolean;
@@ -390,6 +396,7 @@ export interface ResourceMatch {
 export interface ResourceReferencePrompt {
   resource_id: string;
   chapter_id: string;
+  segment_id?: string | null;
   resource_name: string;
   chapter_title: string;
   question: string;
@@ -419,11 +426,17 @@ export interface ResourceContextChunk {
   title: string;
   excerpt: string;
   teaching_hint: string;
+  segment_id?: string | null;
+  heading_path?: string[];
+  before_text?: string;
+  after_text?: string;
+  text_hash?: string | null;
 }
 
 export interface ResourceReferenceContext {
   resource_id: string;
   chapter_id: string;
+  segment_id?: string | null;
   resource_name: string;
   chapter_title: string;
   summary: string;
@@ -456,6 +469,7 @@ export interface ChatRequestPayload {
   resource_reference_action?: ResourceReferenceAction | null;
   resource_reference_resource_id?: string | null;
   resource_reference_chapter_id?: string | null;
+  resource_reference_segment_id?: string | null;
   board_edit_action?: BoardEditConfirmationAction | null;
   board_edit_topic?: string | null;
   strong_reasoning_action?: StrongReasoningAction | null;

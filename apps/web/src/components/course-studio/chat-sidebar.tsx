@@ -269,7 +269,7 @@ export function CourseStudioChatSidebar({
 
           {!isPreviewMode && referencePrompt ? (
             <div className="rounded-xl border border-violet-200 bg-violet-50 p-4">
-              <p className="text-[11px] font-bold uppercase tracking-widest text-violet-700">章节参考建议</p>
+              <p className="text-[11px] font-bold uppercase tracking-widest text-violet-700">资料参考建议</p>
               <p className="mt-2 text-sm leading-6 text-violet-950">{referencePrompt.question}</p>
               <p className="mt-2 text-xs leading-6 text-violet-900/80">{referencePrompt.reason}</p>
               <div className="mt-3 grid gap-2">
