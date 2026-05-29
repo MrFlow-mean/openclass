@@ -12,6 +12,7 @@ from app.models import (
     AIModelSelection,
     BoardTeachingProgress,
     ChatRequest,
+    ConversationTurn,
     CreateBranchRequest,
     DocumentSaveRequest,
     InteractionRuleDraft,
@@ -761,6 +762,75 @@ def test_chat_route_binds_requested_text_model_selection(
     assert response.chatbot_message == "AI生成：这是一段测试讲解。"
     assert captured_models["chatbot"] == ("deepseek", "deepseek-v4-pro")
     assert captured_models["pm"] == ("deepseek", "deepseek-v4-pro")
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_contextual_continuation_explanation_does_not_reclarify_requirements(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    captured: dict[str, str | None] = {}
+
+    def _fake_chatbot_reply(**kwargs):
+        captured["user_message"] = kwargs.get("user_message")
+        captured["board_summary"] = kwargs.get("board_summary")
+        captured["conversation_summary"] = kwargs.get("conversation_summary")
+        return ChatbotReply(chatbot_message="AI生成：我会按刚才的五点结构继续展开讲解。")
+
+    def _unexpected_requirement_update(**kwargs):
+        raise AssertionError("contextual continuation explanation should not run the requirement updater")
+
+    def _unexpected_board_edit(**kwargs):
+        raise AssertionError("contextual continuation explanation must not edit the board")
+
+    monkeypatch.setattr(openai_course_ai, "generate_chatbot_reply", _fake_chatbot_reply)
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _unexpected_requirement_update)
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _unexpected_board_edit)
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.board_document = build_document(
+        title="已有文档",
+        content_text=(
+            "# 当前文档\n"
+            "## 一、背景\n背景内容。\n"
+            "## 二、洞察\n洞察内容。\n"
+            "## 三、方法\n方法内容。\n"
+            "## 四、应用\n应用内容。\n"
+            "## 五、总结\n总结内容。"
+        ),
+    )
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(
+            message="更大篇幅展开讲解",
+            conversation=[
+                ConversationTurn(role="user", content="总结一下这篇文档的内容结构"),
+                ConversationTurn(
+                    role="assistant",
+                    content="这篇文档可以分成五个结构点：背景、洞察、方法、应用、总结。",
+                ),
+            ],
+        ),
+        user_id=TEST_USER.id,
+    )
+
+    updated_lesson = response.course_package.lessons[0]
+    assert response.chatbot_message == "AI生成：我会按刚才的五点结构继续展开讲解。"
+    assert "整篇还是某一块" not in response.chatbot_message
+    assert response.board_decision.action == "no_change"
+    assert updated_lesson.board_document.content_text == lesson.board_document.content_text
+    assert "继续讲解请求" in (captured["user_message"] or "")
+    assert "背景内容" in (captured["board_summary"] or "")
+    assert "五个结构点" in (captured["conversation_summary"] or "")
+    commit = updated_lesson.history_graph.commits[-1]
+    assert commit.metadata["kind"] == "chat_flow"
+    assert commit.metadata["user_message"] == "更大篇幅展开讲解"
+    assert commit.metadata["assistant_message_source"] == "chatbot"
     assert _read_log_entries(isolated_ai_log) == []
 
 

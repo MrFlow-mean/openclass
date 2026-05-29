@@ -62,6 +62,12 @@ APPEND_REQUEST_PATTERN = re.compile(
     r"(续写|继续写|接着写|往后写|后续|新增|追加|新加|新章节|新小节|下一节|下一章|下一部分|末尾)"
 )
 EXPAND_REQUEST_PATTERN = re.compile(r"(扩写|扩展|补充|增加|添加)")
+CONTEXTUAL_CONTINUATION_EXPLANATION_PATTERN = re.compile(
+    r"(更(?:大篇幅|详细|深入|完整|系统).{0,12}(?:展开|讲解|讲|说明|分析)|"
+    r"(?:展开|详细|深入|继续|接着|往下).{0,8}(?:讲解|讲|说明|分析)|"
+    r"按(?:刚才|上面|前面|这个).{0,12}(?:结构|总结|内容).{0,8}(?:讲解|讲|说明|分析)|"
+    r"讲透(?:一点|一些)?|展开讲|详细讲|继续讲|接着讲)"
+)
 SIMPLIFY_REQUEST_PATTERN = re.compile(r"(简化|简单(?:一点|点|些)?|更简单|通俗|更容易懂|更好懂|好理解|容易理解|降低难度|浅显)")
 REWRITE_REQUEST_PATTERN = re.compile(
     r"(改写|重写|修改|编辑|润色|优化|"
@@ -300,6 +306,27 @@ def _requests_append_section(text: str) -> bool:
 def _is_followup_execution_request(text: str) -> bool:
     compact = _compact_text(text, limit=80)
     return bool(compact and FOLLOWUP_EXECUTION_PATTERN.search(compact))
+
+
+def _requests_contextual_continuation_explanation(
+    request: ChatRequest,
+    *,
+    has_selection: bool,
+    document_empty: bool,
+) -> bool:
+    if request.interaction_mode != "ask" or has_selection or document_empty:
+        return False
+    message = _compact_text(request.message, limit=280)
+    if not message or not CONTEXTUAL_CONTINUATION_EXPLANATION_PATTERN.search(message):
+        return False
+    if (
+        _requests_append_section(message)
+        or is_generation_control_request(message)
+        or _requests_document_artifact_generation(message)
+        or REWRITE_REQUEST_PATTERN.search(message)
+    ):
+        return False
+    return True
 
 
 def _requirements_imply_append(requirements: LearningRequirementSheet) -> bool:
@@ -1401,6 +1428,64 @@ def _chat_response(
             learning_clarification=learning_clarification,
             board_decision=BoardDecision(action="no_change", reason="本轮是分节讲解，不修改板书。"),
             teaching_progress=teaching_result.progress_view,
+        )
+
+    if _requests_contextual_continuation_explanation(
+        request,
+        has_selection=bool(selection_excerpt),
+        document_empty=is_document_empty(lesson.board_document),
+    ):
+        learning_clarification = _latest_learning_clarification(lesson, requirements=requirements)
+        ai_reply = openai_course_ai.generate_chatbot_reply(
+            lesson_title=lesson.title,
+            learning_goal=requirements.learning_goal,
+            board_summary=_board_summary(lesson),
+            resource_summary=_resource_summary(visible_package.resources),
+            conversation_summary=_conversation_summary(request.conversation),
+            user_message=(
+                f"用户原始请求：{request.message}\n"
+                "系统已判断这是基于当前文档和上一轮总结的继续讲解请求。"
+                "请直接顺着当前文档或最近对话中已经总结出的结构展开讲解；"
+                "不要追问用户选择整篇还是某一块，不要写入或改动右侧文档。"
+            ),
+            selection_excerpt=None,
+            interaction_mode=request.interaction_mode,
+        )
+        chatbot_message = (ai_reply.chatbot_message if ai_reply else "").strip()
+        chatbot_message_source = "chatbot" if chatbot_message else "chatbot_empty"
+        commit_operations(
+            lesson,
+            [],
+            label="Chat turn",
+            message="Recorded a contextual continuation explanation chat turn",
+            new_document=lesson.board_document,
+            metadata={
+                "kind": "chat_flow",
+                "user_message": request.message,
+                "assistant_message": chatbot_message,
+                "assistant_message_source": chatbot_message_source,
+                "interaction_mode": request.interaction_mode,
+                "selection": request.selection.model_dump(mode="json") if request.selection else None,
+                **_task_metadata(
+                    requirements=requirements,
+                    learning_clarification=learning_clarification,
+                    requirement_cleared=False,
+                ),
+                **_reference_metadata(resolution=resource_resolution),
+            },
+        )
+        workspace_state.normalize_package_state(package)
+        workspace_state.save_workspace_for_user(user_id, workspace)
+        return _response(
+            workspace=workspace,
+            package=package,
+            lesson=lesson,
+            chatbot_message=chatbot_message,
+            requirements=requirements,
+            learning_clarification=learning_clarification,
+            board_decision=BoardDecision(action="no_change", reason="本轮是基于当前文档的继续讲解，不修改板书。"),
+            resource_matches=resource_resolution.matches,
+            selected_reference=selected_reference,
         )
 
     if request.interaction_mode == "direct_edit" and action_type != "append_section":
