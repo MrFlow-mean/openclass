@@ -3523,6 +3523,56 @@ def test_chat_imports_uploaded_resource_text_into_empty_board_without_pm_update(
     assert _read_log_entries(isolated_ai_log) == []
 
 
+def test_chat_imports_single_uploaded_resource_text_without_explicit_full_phrase(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+
+    def _fake_chatbot_reply(**kwargs):
+        return ChatbotReply(chatbot_message="AI生成：已把上传文件放进文档框。")
+
+    def _unexpected_requirement_update(**kwargs):
+        raise AssertionError("resource document import must not update learning requirements")
+
+    def _unexpected_board_edit(**kwargs):
+        raise AssertionError("resource document import must not use AI board generation")
+
+    monkeypatch.setattr(openai_course_ai, "generate_chatbot_reply", _fake_chatbot_reply)
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _unexpected_requirement_update)
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _unexpected_board_edit)
+
+    workspace = _seed_test_user_workspace(store)
+    package = workspace.packages[0]
+    lesson = package.lessons[0]
+    resource_path = tmp_path / "resource.md"
+    resource_path.write_text(
+        "# 第一章\n上传资料第一章全文。\n\n## 第二章\n上传资料第二章全文。",
+        encoding="utf-8",
+    )
+    resource = build_resource_item(resource_path, "resource.md")
+    resource.scope_lesson_id = lesson.id
+    package.resources.append(resource)
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="把我上传的文件显示在文档框中"),
+        user_id=TEST_USER.id,
+    )
+
+    imported_text = response.course_package.lessons[0].board_document.content_text
+    assert response.chatbot_message == "AI生成：已把上传文件放进文档框。"
+    assert response.board_decision.action == "edit_board"
+    assert "上传资料第一章全文" in imported_text
+    assert "上传资料第二章全文" in imported_text
+    commit = response.course_package.lessons[0].history_graph.commits[-1]
+    assert commit.metadata["kind"] == "board_document_import"
+    assert commit.metadata["resource_import_scope"] == "full_resource"
+    assert commit.metadata["board_edit_operation"] == "replace_document"
+    assert _read_log_entries(isolated_ai_log) == []
+
+
 def test_chat_imports_uploaded_docx_with_rich_styles_into_empty_board(
     monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
 ) -> None:
@@ -3668,6 +3718,75 @@ def test_chat_asks_write_mode_before_importing_resource_into_non_empty_board(
     commit = response.course_package.lessons[0].history_graph.commits[-1]
     assert commit.metadata["kind"] == "board_document_import"
     assert commit.metadata["import_status"] == "await_write_mode"
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_chat_replaces_selected_location_with_pending_uploaded_resource_original(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+
+    def _fake_chatbot_reply(**kwargs):
+        return ChatbotReply(chatbot_message="AI生成：已在选中位置显示上传原文。")
+
+    def _unexpected_requirement_update(**kwargs):
+        raise AssertionError("pending resource import should reuse the active task sheet")
+
+    def _unexpected_board_edit(**kwargs):
+        raise AssertionError("pending resource import must not use AI board generation")
+
+    monkeypatch.setattr(openai_course_ai, "generate_chatbot_reply", _fake_chatbot_reply)
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _unexpected_requirement_update)
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _unexpected_board_edit)
+
+    workspace = _seed_test_user_workspace(store)
+    package = workspace.packages[0]
+    lesson = package.lessons[0]
+    lesson.board_document = build_document(
+        title="已有板书",
+        content_text="# 已有板书\n\n开头内容。\n\n待替换位置\n\n结尾内容。",
+    )
+    requirements = build_requirements(lesson.title)
+    requirements.learning_goal = "用户上传了一份资料，希望黑板直接显示上传资料原文。"
+    requirements.output_preference = "直接显示上传资料原文，不解释不改写"
+    requirements.action_type = "rewrite_target"
+    requirements.action_instruction = "将上传资料原文放到用户确认的位置"
+    lesson.learning_requirements = requirements
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+
+    resource_path = tmp_path / "resource.md"
+    resource_path.write_text(
+        "# 第一章\n上传资料第一章全文。\n\n## 第二章\n上传资料第二章全文。",
+        encoding="utf-8",
+    )
+    resource = build_resource_item(resource_path, "resource.md")
+    resource.scope_lesson_id = lesson.id
+    package.resources.append(resource)
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(
+            message="在这里",
+            selection=SelectionRef(kind="board", excerpt="待替换位置", lesson_id=lesson.id),
+        ),
+        user_id=TEST_USER.id,
+    )
+
+    updated_text = response.course_package.lessons[0].board_document.content_text
+    assert response.chatbot_message == "AI生成：已在选中位置显示上传原文。"
+    assert response.board_decision.action == "edit_board"
+    assert "待替换位置" not in updated_text
+    assert "上传资料第一章全文" in updated_text
+    assert "上传资料第二章全文" in updated_text
+    assert "开头内容" in updated_text
+    assert "结尾内容" in updated_text
+    commit = response.course_package.lessons[0].history_graph.commits[-1]
+    assert commit.metadata["kind"] == "board_document_import"
+    assert commit.metadata["import_status"] == "imported"
+    assert commit.metadata["resource_import_scope"] == "full_resource"
+    assert commit.metadata["board_edit_operation"] == "replace_selection"
     assert _read_log_entries(isolated_ai_log) == []
 
 

@@ -44,6 +44,7 @@ from app.services.learning_requirement_manager import (
 from app.services.openai_course_ai import bind_text_model_selection, openai_course_ai
 from app.services.resource_document_import import (
     apply_resource_document_import,
+    requests_pending_resource_document_import,
     requests_resource_document_import,
     resource_import_operation,
     select_resource_import_payload,
@@ -679,12 +680,25 @@ def _handle_resource_document_import_request(
     requirements: LearningRequirementSheet,
     resources: list[ResourceLibraryItem],
     resource_resolution: ResourceResolution,
+    selection_excerpt: str | None,
 ) -> ChatResponse | None:
-    if not requests_resource_document_import(request.message, resources=resources):
+    is_direct_import_request = requests_resource_document_import(request.message, resources=resources)
+    is_pending_import_request = requests_pending_resource_document_import(
+        request.message,
+        resources=resources,
+        requirements=requirements,
+        has_selection=bool(selection_excerpt),
+    )
+    if not is_direct_import_request and not is_pending_import_request:
         return None
 
     learning_clarification = _latest_learning_clarification(lesson, requirements=requirements)
-    operation = resource_import_operation(lesson=lesson, user_message=request.message)
+    operation = resource_import_operation(
+        lesson=lesson,
+        user_message=request.message,
+        has_selection=bool(selection_excerpt),
+        pending_location_confirmation=is_pending_import_request,
+    )
 
     if operation is None:
         result_context = "当前黑板已有内容，系统还没有执行导入；需要用户说明是追加到现有内容后面，还是替换当前黑板。"
@@ -784,8 +798,18 @@ def _handle_resource_document_import_request(
             selected_reference=resource_resolution.selected_reference,
         )
 
-    apply_resource_document_import(lesson=lesson, payload=payload, requirements=lesson.learning_requirements)
-    operation_label = "追加到当前黑板末尾" if payload.operation == "append_section" else "替换当前黑板内容"
+    apply_resource_document_import(
+        lesson=lesson,
+        payload=payload,
+        requirements=lesson.learning_requirements,
+        selection_excerpt=selection_excerpt,
+    )
+    if payload.operation == "append_section":
+        operation_label = "追加到当前黑板末尾"
+    elif payload.operation == "replace_selection":
+        operation_label = "替换到当前选中位置"
+    else:
+        operation_label = "替换当前黑板内容"
     result_context = (
         f"已将资料“{payload.resource.name}”的{payload.import_scope}内容{operation_label}；"
         f"导入文本长度约 {len(payload.content_text)} 个字符。"
@@ -1255,6 +1279,7 @@ def _chat_response(
         requirements=requirements,
         resources=visible_package.resources,
         resource_resolution=resource_resolution,
+        selection_excerpt=selection_excerpt,
     )
     if resource_import_response is not None:
         return resource_import_response

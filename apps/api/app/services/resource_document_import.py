@@ -8,7 +8,13 @@ from typing import Any
 from app.models import BoardDocument, LearningRequirementSheet, Lesson, ResourceLibraryItem, ResourceReferenceContext
 from app.services.board_teaching import build_board_teaching_guide
 from app.services.course_runtime import refresh_lesson_runtime
-from app.services.rich_document import build_document, document_to_markdown, import_docx, is_document_empty
+from app.services.rich_document import (
+    build_document,
+    document_to_markdown,
+    import_docx,
+    is_document_empty,
+    replace_selection_in_document,
+)
 from app.services.resource_library import extract_reference_context
 from app.services.resource_resolver import ResourceResolution
 
@@ -21,6 +27,16 @@ RESOURCE_DOCUMENT_IMPORT_PRONOUN_PATTERN = re.compile(r"(其|它|这份|这个|�
 RESOURCE_DOCUMENT_FULL_IMPORT_PATTERN = re.compile(r"(全部|整份|全文|完整|全篇|所有内容|整个(?:文件|资料|文档|材料)|原文)")
 RESOURCE_DOCUMENT_REPLACE_PATTERN = re.compile(r"(替换|覆盖|清空后|重新放|换成|替掉)")
 RESOURCE_REFERENCE_PATTERN = re.compile(r"(资料|材料|上传|教材|课本|原文|参考|根据|来自|文件|PDF|Word)", re.IGNORECASE)
+RESOURCE_DOCUMENT_PART_REFERENCE_PATTERN = re.compile(
+    r"(第.{0,12}[章节部分段页条]|[0-9一二三四五六七八九十]+[章节部分段页条]|[①②③④⑤⑥⑦⑧⑨⑩]|chapter|section|part)",
+    re.IGNORECASE,
+)
+RESOURCE_DOCUMENT_ORIGINAL_DISPLAY_PATTERN = re.compile(
+    r"(原文|全文|完整|整份|不解释|不改写|不总结|照原样|原样|直接显示|本身显示|显示(?:出来|到|在)?)"
+)
+RESOURCE_DOCUMENT_LOCATION_CONFIRMATION_PATTERN = re.compile(
+    r"(在?这(?:里|儿|边)|当前位置|当前选区|选中(?:处|位置)?|放(?:到|在)?这|插(?:到|在)?这|贴(?:到|在)?这)"
+)
 APPEND_REQUEST_PATTERN = re.compile(
     r"(续写|继续写|接着写|往后写|后续|新增|追加|新加|新章节|新小节|下一节|下一章|下一部分|末尾)"
 )
@@ -51,7 +67,57 @@ def requests_resource_document_import(text: str, *, resources: list[ResourceLibr
     return has_resource_reference or has_contextual_reference
 
 
-def resource_import_operation(*, lesson: Lesson, user_message: str) -> str | None:
+def requests_pending_resource_document_import(
+    text: str,
+    *,
+    resources: list[ResourceLibraryItem],
+    requirements: LearningRequirementSheet | None,
+    has_selection: bool,
+) -> bool:
+    if not resources or requirements is None:
+        return False
+    compact = _compact_text(text, limit=280)
+    if not compact:
+        return False
+    if not has_selection and not RESOURCE_DOCUMENT_LOCATION_CONFIRMATION_PATTERN.search(compact):
+        return False
+
+    requirement_text = _compact_text(
+        " ".join(
+            part
+            for part in [
+                requirements.learning_goal,
+                requirements.output_preference,
+                requirements.action_instruction,
+                *requirements.learning_need_checklist,
+                *requirements.board_scope,
+            ]
+            if part
+        ),
+        limit=1600,
+    )
+    if not requirement_text:
+        return False
+    has_resource_reference = bool(RESOURCE_REFERENCE_PATTERN.search(requirement_text))
+    wants_original_display = bool(RESOURCE_DOCUMENT_ORIGINAL_DISPLAY_PATTERN.search(requirement_text))
+    has_write_intent = bool(
+        RESOURCE_DOCUMENT_IMPORT_ACTION_PATTERN.search(requirement_text)
+        or RESOURCE_DOCUMENT_IMPORT_TARGET_PATTERN.search(requirement_text)
+    )
+    return has_resource_reference and wants_original_display and has_write_intent
+
+
+def resource_import_operation(
+    *,
+    lesson: Lesson,
+    user_message: str,
+    has_selection: bool = False,
+    pending_location_confirmation: bool = False,
+) -> str | None:
+    if has_selection and (
+        pending_location_confirmation or RESOURCE_DOCUMENT_LOCATION_CONFIRMATION_PATTERN.search(user_message)
+    ):
+        return "replace_selection"
     if is_document_empty(lesson.board_document):
         return "replace_document"
     if _requests_append_section(user_message):
@@ -68,7 +134,7 @@ def select_resource_import_payload(
     resource_resolution: ResourceResolution,
     operation: str,
 ) -> ResourceDocumentImportPayload | None:
-    if _requests_full_import(user_message) and len(resources) == 1:
+    if len(resources) == 1 and (_requests_full_import(user_message) or not _requests_specific_resource_part(user_message)):
         return _full_resource_import_payload(
             resource=resources[0],
             user_message=user_message,
@@ -100,6 +166,7 @@ def apply_resource_document_import(
     lesson: Lesson,
     payload: ResourceDocumentImportPayload,
     requirements: LearningRequirementSheet | None,
+    selection_excerpt: str | None = None,
 ) -> None:
     if payload.operation == "append_section":
         existing_text = _document_text(lesson).strip()
@@ -117,6 +184,13 @@ def apply_resource_document_import(
             ),
             document_id=lesson.board_document.id,
             page_settings=lesson.board_document.page_settings,
+        )
+    elif payload.operation == "replace_selection" and selection_excerpt:
+        new_document = replace_selection_in_document(
+            lesson.board_document,
+            selection_text=selection_excerpt,
+            replacement_text=payload.content_text,
+            replacement_html=payload.content_html or "",
         )
     else:
         new_document = build_document(
@@ -152,6 +226,11 @@ def _requests_full_import(text: str) -> bool:
 def _requests_replace_import(text: str) -> bool:
     compact = _compact_text(text, limit=280)
     return bool(compact and RESOURCE_DOCUMENT_REPLACE_PATTERN.search(compact))
+
+
+def _requests_specific_resource_part(text: str) -> bool:
+    compact = _compact_text(text, limit=280)
+    return bool(compact and RESOURCE_DOCUMENT_PART_REFERENCE_PATTERN.search(compact))
 
 
 def _document_text(lesson: Lesson) -> str:
