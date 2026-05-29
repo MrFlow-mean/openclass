@@ -32,6 +32,7 @@ from app.services import chat_service, workspace_state
 from app.services.course_runtime import refresh_lesson_runtime
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
 from app.services.lesson_factory import build_requirements, create_empty_lesson
+from app.services.learning_requirement_manager import update_learning_requirements_from_chat
 from app.services.openai_course_ai import (
     BoardDocumentEditResult,
     ChatbotReply,
@@ -831,6 +832,75 @@ def test_contextual_continuation_explanation_does_not_reclarify_requirements(
     assert commit.metadata["kind"] == "chat_flow"
     assert commit.metadata["user_message"] == "更大篇幅展开讲解"
     assert commit.metadata["assistant_message_source"] == "chatbot"
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_requirement_manager_preserves_contextual_continuation_state(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_learning_requirement_update",
+        lambda **kwargs: LearningRequirementUpdate(
+            progress=30,
+            summary="用户上传了文档并要求展开讲解，但尚未表达学习目标、水平和使用场景，整体需求不明确。",
+            key_facts=[],
+            checklist=[
+                LearningRequirementChecklistItem(
+                    title="用户学习的真实主题",
+                    is_clear=False,
+                    evidence="用户只说要更大篇幅展开讲解。",
+                ),
+                LearningRequirementChecklistItem(
+                    title="用户当前知识水平",
+                    is_clear=False,
+                    evidence="对话中没有说明。",
+                ),
+                LearningRequirementChecklistItem(
+                    title="用户的使用场景",
+                    is_clear=False,
+                    evidence="对话中没有说明。",
+                ),
+            ],
+            missing_items=["用户学习的真实主题", "用户当前知识水平", "用户的使用场景"],
+            next_question="你希望我先展开整篇，还是挑一块深入？",
+            ready_for_board=False,
+            action_type="expand_target",
+            action_instruction="对之前总结的文档结构进行更大篇幅展开讲解",
+            target_hint="之前总结的文档结构",
+        ),
+    )
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.board_document = build_document(
+        title="已有文档",
+        content_text="# 当前文档\n## 背景\n背景内容。\n## 方法\n方法内容。",
+    )
+    requirements, clarification = update_learning_requirements_from_chat(
+        lesson=lesson,
+        resources=[],
+        conversation=[
+            ConversationTurn(role="user", content="总结一下这篇文档的内容结构"),
+            ConversationTurn(role="assistant", content="这篇文档可以分成背景和方法两个结构点。"),
+            ConversationTurn(role="user", content="更大篇幅展开讲解"),
+        ],
+        user_message="更大篇幅展开讲解",
+        chatbot_message="",
+    )
+
+    assert requirements.learning_goal == "用户正在基于当前文档和最近总结继续展开讲解。"
+    assert requirements.learning_need_checklist == ["围绕当前文档继续展开讲解"]
+    assert requirements.current_questions == []
+    assert requirements.risk_notes == []
+    assert requirements.action_type is None
+    assert clarification.label == "继续讲解"
+    assert clarification.missing_items == []
+    assert clarification.next_question == ""
+    assert clarification.can_start is True
     assert _read_log_entries(isolated_ai_log) == []
 
 

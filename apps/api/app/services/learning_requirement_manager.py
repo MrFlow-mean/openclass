@@ -112,6 +112,12 @@ APPEND_ACTION_PATTERN = re.compile(
     r"(续写|继续写|接着写|往后写|后续|新增|追加|新加|新章节|新小节|下一节|下一章|下一部分|末尾)"
 )
 EXPAND_ACTION_PATTERN = re.compile(r"(扩写|扩展|补充|增加|添加)")
+CONTEXTUAL_CONTINUATION_EXPLANATION_PATTERN = re.compile(
+    r"(更(?:大篇幅|详细|深入|完整|系统).{0,12}(?:展开|讲解|讲|说明|分析)|"
+    r"(?:展开|详细|深入|继续|接着|往下).{0,8}(?:讲解|讲|说明|分析)|"
+    r"按(?:刚才|上面|前面|这个).{0,12}(?:结构|总结|内容).{0,8}(?:讲解|讲|说明|分析)|"
+    r"讲透(?:一点|一些)?|展开讲|详细讲|继续讲|接着讲)"
+)
 SIMPLIFY_ACTION_PATTERN = re.compile(r"(简化|简单一点|通俗|更容易懂|更好懂)")
 REWRITE_ACTION_PATTERN = re.compile(r"(改写|重写|修改|编辑|润色|优化)")
 
@@ -239,6 +245,33 @@ def _extract_learning_content(text: str, *, allow_question_topic: bool = True) -
         if target:
             return target
     return None
+
+
+def _requests_contextual_continuation_explanation(text: str) -> bool:
+    compact = _compact_text(text, limit=280)
+    if not compact or not CONTEXTUAL_CONTINUATION_EXPLANATION_PATTERN.search(compact):
+        return False
+    if (
+        APPEND_ACTION_PATTERN.search(compact)
+        or REWRITE_ACTION_PATTERN.search(compact)
+        or _requests_immediate_board_generation(compact)
+        or _requests_immediate_generation(compact)
+    ):
+        return False
+    return True
+
+
+def _has_continuation_context(
+    *,
+    lesson: Lesson,
+    conversation: list[ConversationTurn],
+    chatbot_message: str,
+) -> bool:
+    if lesson.board_document.content_text.strip():
+        return True
+    if chatbot_message.strip():
+        return True
+    return any(turn.role == "assistant" and turn.content.strip() for turn in conversation)
 
 
 def _fallback_update(*, lesson: Lesson, conversation: list[ConversationTurn]) -> LearningRequirementUpdate:
@@ -473,6 +506,75 @@ def _ensure_learning_content_fact(
     ]
 
 
+def _is_contextual_continuation_update(
+    update: LearningRequirementUpdate,
+    *,
+    lesson: Lesson,
+    conversation: list[ConversationTurn],
+    user_message: str,
+    chatbot_message: str,
+) -> bool:
+    if not _requests_contextual_continuation_explanation(user_message):
+        return False
+    if not _has_continuation_context(lesson=lesson, conversation=conversation, chatbot_message=chatbot_message):
+        return False
+    return update.action_type in {None, "expand_target", "explain_target"}
+
+
+def _contextual_continuation_summary(update: LearningRequirementUpdate) -> str:
+    compact = _compact_text(update.summary, limit=180)
+    unclear_signal = re.search(r"(不清晰|不明确|尚未|还没有|缺少|缺乏|待确认)", compact)
+    requirement_probe = re.search(r"(学习目标|当前水平|使用场景|学习目的|真实主题)", compact)
+    if compact and not (unclear_signal and requirement_probe):
+        return compact
+    return "用户正在基于当前文档和最近总结继续展开讲解。"
+
+
+def _contextual_continuation_checklist(update: LearningRequirementUpdate) -> list[LearningRequirementChecklistItem]:
+    clear_items = [item for item in update.checklist if item.is_clear and item.title.strip()]
+    if clear_items:
+        return clear_items[:3]
+    return [
+        LearningRequirementChecklistItem(
+            title="围绕当前文档继续展开讲解",
+            is_clear=True,
+            evidence="用户要求在已有文档或上一轮总结基础上继续讲解。",
+        )
+    ]
+
+
+def _apply_contextual_continuation_to_requirements(
+    requirements: LearningRequirementSheet,
+    update: LearningRequirementUpdate,
+    *,
+    user_message: str,
+) -> tuple[LearningRequirementSheet, LearningClarificationStatus]:
+    updated = LearningRequirementSheet.model_validate(requirements.model_dump(mode="json"))
+    summary = _contextual_continuation_summary(update)
+    checklist = _contextual_continuation_checklist(update)
+    updated.learning_goal = summary
+    updated.learning_need_checklist = [item.title for item in checklist]
+    updated.current_questions = []
+    updated.risk_notes = []
+    updated.action_type = None
+    updated.action_instruction = _compact_text(user_message, limit=240)
+    updated.interaction_rule_draft = update.interaction_rule_draft
+    progress = max(70, min(update.progress, 99))
+    clarification = LearningClarificationStatus(
+        progress=progress,
+        label="继续讲解",
+        reason=summary,
+        missing_items=[],
+        can_start=True,
+        summary=summary,
+        key_facts=update.key_facts,
+        checklist=checklist,
+        next_question="",
+        ready_for_board=False,
+    )
+    return updated, clarification
+
+
 def _normalize_update(update: LearningRequirementUpdate, *, user_message: str = "") -> LearningRequirementUpdate:
     key_facts = [
         _normalize_key_fact(item)
@@ -637,6 +739,18 @@ def update_learning_requirements_from_chat(
         user_message=user_message,
     )
     update = _merge_update_with_existing_facts(update, lesson=lesson)
+    if _is_contextual_continuation_update(
+        update,
+        lesson=lesson,
+        conversation=conversation,
+        user_message=user_message,
+        chatbot_message=chatbot_message,
+    ):
+        return _apply_contextual_continuation_to_requirements(
+            requirements,
+            update,
+            user_message=user_message,
+        )
     forced_board_generation = _requests_immediate_board_generation(user_message) or (
         _requests_immediate_generation(user_message) and _has_actionable_generation_context(update)
     )
