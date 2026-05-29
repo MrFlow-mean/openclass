@@ -26,6 +26,7 @@ export type AutoSaveReason =
   | "preview"
   | "switch-branch"
   | "restore"
+  | "merge"
   | "import"
   | "export"
   | "upload-resource"

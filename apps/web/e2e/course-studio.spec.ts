@@ -98,6 +98,51 @@ test("shows a sideways branch sprout immediately after creating a branch", async
   await expect(page.getByTestId("history-branch-sprout-label")).toContainText("branch-2");
 });
 
+test("merges a source branch into the current branch with manual choices", async ({ page }) => {
+  const unique = Date.now();
+  await enterAsGuest(page);
+  await createPackageFromHome(page, `合并图测试课程包 ${unique}`);
+  await createLessonFromEmptyStudio(page, `合并图测试页面 ${unique}`);
+  await openHistoryPanel(page);
+
+  const branchResponse = page.waitForResponse(
+    (response) => response.url().includes("/branches") && response.request().method() === "POST"
+  );
+  await page.getByRole("button", { name: "Branch" }).click();
+  await branchResponse;
+
+  const sourceText = `来源分支文档 ${unique}`;
+  await writeEditorTextAndWaitForSave(page, sourceText);
+
+  const switchMainResponse = page.waitForResponse(
+    (response) => response.url().includes("/branches/checkout") && response.request().method() === "POST"
+  );
+  await page.locator('button[title^="main:"]').click();
+  await switchMainResponse;
+
+  const targetText = `当前分支文档 ${unique}`;
+  await writeEditorTextAndWaitForSave(page, targetText);
+
+  const previewResponse = page.waitForResponse(
+    (response) => response.url().includes("/branches/merge-preview") && response.request().method() === "POST"
+  );
+  await page.getByLabel("合并分支 branch-2").click();
+  await previewResponse;
+  await expect(page.getByText("Merge Review")).toBeVisible();
+
+  await page.getByLabel("文档 使用来源").click();
+  const mergeResponse = page.waitForResponse(
+    (response) => response.url().includes("/branches/merge") && response.request().method() === "POST"
+  );
+  await page.getByRole("button", { name: "Confirm Merge" }).click();
+  await mergeResponse;
+
+  const editor = page.locator(".ProseMirror").first();
+  await expect(editor).toContainText(sourceText);
+  await expect(editor).not.toContainText(targetText);
+  await expect(page.getByText("Merge branch-2").first()).toBeVisible();
+});
+
 test("DOCX import and export entry points complete without breaking the editor", async ({ page }) => {
   const unique = Date.now();
   await enterAsGuest(page);

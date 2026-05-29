@@ -167,6 +167,34 @@ export interface LessonHistoryGraph {
   current_branch: string;
 }
 
+export type MergeBranchChoice = "target" | "source";
+export type MergeBranchSectionStatus = "no_change" | "source_only" | "target_only" | "conflict";
+export type MergeBranchSectionKey = "document" | "requirements" | "session";
+
+export interface MergeBranchSectionPreview {
+  status: MergeBranchSectionStatus;
+  recommended_choice: MergeBranchChoice;
+  requires_confirmation: boolean;
+  base_summary: string;
+  target_summary: string;
+  source_summary: string;
+}
+
+export interface MergeBranchPreviewResponse {
+  source_branch: string;
+  target_branch: string;
+  base_commit_id: string;
+  target_head_commit_id: string;
+  source_head_commit_id: string;
+  can_merge: boolean;
+  already_merged: boolean;
+  document: MergeBranchSectionPreview;
+  requirements: MergeBranchSectionPreview;
+  session: MergeBranchSectionPreview;
+}
+
+export type MergeBranchChoices = Record<MergeBranchSectionKey, MergeBranchChoice>;
+
 export interface Lesson {
   id: string;
   title: string;

@@ -145,11 +145,17 @@ export function CourseStudio() {
   const {
     previewCommitId,
     newBranchName,
+    mergePreview,
+    mergeChoices,
     setNewBranchName,
     handlePreviewCommit,
     exitPreviewMode,
     handleCreateBranchFromCommit,
     handleSwitchBranch,
+    handleOpenMergePreview,
+    handleMergeChoiceChange,
+    handleCancelMerge,
+    handleConfirmMerge,
     handleRestoreCommit,
   } = history;
 
@@ -580,6 +586,8 @@ export function CourseStudio() {
           activeRequirements={activeRequirements}
           latestBoardDecision={latestBoardDecision}
           newBranchName={newBranchName}
+          mergePreview={mergePreview}
+          mergeChoices={mergeChoices}
           onNewBranchNameChange={setNewBranchName}
           busyAction={busyAction}
           resources={coursePackage.resources}
@@ -589,6 +597,10 @@ export function CourseStudio() {
           onRestoreCommit={(commitId) => handleRestoreCommit(commitId)}
           onCreateBranchFromCommit={(commit) => handleCreateBranchFromCommit(commit)}
           onSwitchBranch={(branchName) => handleSwitchBranch(branchName)}
+          onOpenMergePreview={(branchName) => handleOpenMergePreview(branchName)}
+          onMergeChoiceChange={(section, choice) => handleMergeChoiceChange(section, choice)}
+          onCancelMerge={() => handleCancelMerge()}
+          onConfirmMerge={() => handleConfirmMerge()}
           onUploadResource={(file) => handleUploadResource(file)}
           onDeleteResource={(resourceId, resourceName) => handleDeleteResource(resourceId, resourceName)}
           onOpenLesson={(lessonId) => handleOpenLesson(lessonId)}

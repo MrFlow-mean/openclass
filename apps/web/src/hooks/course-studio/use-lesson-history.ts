@@ -10,7 +10,16 @@ import {
 } from "@/components/course-studio/history-utils";
 import type { AutoSaveReason } from "@/hooks/course-studio/use-board-draft";
 import type { AppliedCoursePackage, CoursePackageApplyOptions } from "@/hooks/course-studio/use-course-workspace";
-import type { BoardDocument, CommitRecord, CoursePackage, Lesson } from "@/types";
+import type {
+  BoardDocument,
+  CommitRecord,
+  CoursePackage,
+  Lesson,
+  MergeBranchChoice,
+  MergeBranchChoices,
+  MergeBranchPreviewResponse,
+  MergeBranchSectionKey,
+} from "@/types";
 
 type UseLessonHistoryOptions = {
   activeLesson: Lesson | null;
@@ -33,6 +42,12 @@ export function useLessonHistory({
 }: UseLessonHistoryOptions) {
   const [previewCommitId, setPreviewCommitId] = useState<string | null>(null);
   const [newBranchName, setNewBranchName] = useState("");
+  const [mergePreview, setMergePreview] = useState<MergeBranchPreviewResponse | null>(null);
+  const [mergeChoices, setMergeChoices] = useState<MergeBranchChoices>({
+    document: "target",
+    requirements: "target",
+    session: "target",
+  });
 
   const previewCommit = useMemo(
     () =>
@@ -120,6 +135,72 @@ export function useLessonHistory({
     }
   }
 
+  async function handleOpenMergePreview(sourceBranch: string) {
+    if (!activeLesson) {
+      return;
+    }
+    if (!(await flushAutoSave("merge"))) {
+      return;
+    }
+    setBusyAction("merge-preview");
+    try {
+      const preview = await api.previewBranchMerge(
+        activeLesson.id,
+        sourceBranch,
+        activeLesson.history_graph.current_branch
+      );
+      setMergePreview(preview);
+      setMergeChoices({
+        document: preview.document.recommended_choice,
+        requirements: preview.requirements.recommended_choice,
+        session: preview.session.recommended_choice,
+      });
+    } catch (mergeError) {
+      setError(mergeError instanceof Error ? mergeError.message : "合并预览失败");
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  function handleMergeChoiceChange(section: MergeBranchSectionKey, choice: MergeBranchChoice) {
+    setMergeChoices((current) => ({ ...current, [section]: choice }));
+  }
+
+  function handleCancelMerge() {
+    setMergePreview(null);
+  }
+
+  async function handleConfirmMerge() {
+    if (!activeLesson || !mergePreview) {
+      return;
+    }
+    if (!(await flushAutoSave("merge"))) {
+      return;
+    }
+    setBusyAction("merge");
+    try {
+      const nextPackage = await api.mergeBranch(activeLesson.id, {
+        source_branch: mergePreview.source_branch,
+        target_branch: mergePreview.target_branch,
+        expected_target_head_commit_id: mergePreview.target_head_commit_id,
+        expected_source_head_commit_id: mergePreview.source_head_commit_id,
+        document_choice: mergeChoices.document,
+        requirements_choice: mergeChoices.requirements,
+        session_choice: mergeChoices.session,
+      });
+      const applied = applyCoursePackage(nextPackage, {
+        activeLessonId: activeLesson.id,
+        rebuildMessageLessonIds: [activeLesson.id],
+      });
+      setMergePreview(null);
+      resetDraftToLesson(applied.activeLesson);
+    } catch (mergeError) {
+      setError(mergeError instanceof Error ? mergeError.message : "合并分支失败");
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
   async function handleRestoreCommit(commitId: string) {
     if (!activeLesson) {
       return;
@@ -147,6 +228,8 @@ export function useLessonHistory({
     activeHeadCommit,
     isPreviewMode,
     newBranchName,
+    mergePreview,
+    mergeChoices,
     setPreviewCommitId,
     setNewBranchName,
     handleCreateBranch,
@@ -154,6 +237,10 @@ export function useLessonHistory({
     exitPreviewMode,
     handleCreateBranchFromCommit,
     handleSwitchBranch,
+    handleOpenMergePreview,
+    handleMergeChoiceChange,
+    handleCancelMerge,
+    handleConfirmMerge,
     handleRestoreCommit,
   };
 }

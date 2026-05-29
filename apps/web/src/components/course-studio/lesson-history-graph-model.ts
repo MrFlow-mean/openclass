@@ -124,6 +124,9 @@ function commitKindLabel(commit: CommitRecord) {
   if (kind === "restore_snapshot") {
     return "Restore";
   }
+  if (kind === "branch_merge") {
+    return "Merge";
+  }
   if (metadataBool(commit, "autosave") || kind === "auto_document_save") {
     return "Auto";
   }

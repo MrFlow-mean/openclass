@@ -4,7 +4,16 @@ import type { HTMLAttributes } from "react";
 
 import { LessonHistoryGraphPanel } from "@/components/course-studio/lesson-history-graph-panel";
 import { ResourcePanel } from "@/components/course-studio/resource-panel";
-import type { BoardDecision, CommitRecord, CoursePackage, Lesson } from "@/types";
+import type {
+  BoardDecision,
+  CommitRecord,
+  CoursePackage,
+  Lesson,
+  MergeBranchChoice,
+  MergeBranchChoices,
+  MergeBranchPreviewResponse,
+  MergeBranchSectionKey,
+} from "@/types";
 
 export type CourseStudioSidebarTab = "graph" | "library";
 
@@ -20,6 +29,8 @@ type CourseStudioSidePanelProps = {
   activeRequirements: Lesson["learning_requirements"];
   latestBoardDecision: BoardDecision | null;
   newBranchName: string;
+  mergePreview: MergeBranchPreviewResponse | null;
+  mergeChoices: MergeBranchChoices;
   onNewBranchNameChange: (value: string) => void;
   busyAction: string | null;
   resources: CoursePackage["resources"];
@@ -29,6 +40,10 @@ type CourseStudioSidePanelProps = {
   onRestoreCommit: (commitId: string) => void | Promise<void>;
   onCreateBranchFromCommit: (commit: CommitRecord) => void | Promise<void>;
   onSwitchBranch: (branchName: string) => void | Promise<void>;
+  onOpenMergePreview: (branchName: string) => void | Promise<void>;
+  onMergeChoiceChange: (section: MergeBranchSectionKey, choice: MergeBranchChoice) => void;
+  onCancelMerge: () => void;
+  onConfirmMerge: () => void | Promise<void>;
   onUploadResource: (file: File | null) => void | Promise<void>;
   onDeleteResource: (resourceId: string, resourceName: string) => void | Promise<void>;
   onOpenLesson: (lessonId: string) => void | Promise<void>;
@@ -46,6 +61,8 @@ export function CourseStudioSidePanel({
   activeRequirements,
   latestBoardDecision,
   newBranchName,
+  mergePreview,
+  mergeChoices,
   onNewBranchNameChange,
   busyAction,
   resources,
@@ -55,6 +72,10 @@ export function CourseStudioSidePanel({
   onRestoreCommit,
   onCreateBranchFromCommit,
   onSwitchBranch,
+  onOpenMergePreview,
+  onMergeChoiceChange,
+  onCancelMerge,
+  onConfirmMerge,
   onUploadResource,
   onDeleteResource,
   onOpenLesson,
@@ -120,11 +141,18 @@ export function CourseStudioSidePanel({
             activeRequirements={activeRequirements}
             latestBoardDecision={latestBoardDecision}
             newBranchName={newBranchName}
+            mergePreview={mergePreview}
+            mergeChoices={mergeChoices}
+            busyAction={busyAction}
             onNewBranchNameChange={onNewBranchNameChange}
             onPreviewCommit={onPreviewCommit}
             onRestoreCommit={onRestoreCommit}
             onCreateBranchFromCommit={onCreateBranchFromCommit}
             onSwitchBranch={onSwitchBranch}
+            onOpenMergePreview={onOpenMergePreview}
+            onMergeChoiceChange={onMergeChoiceChange}
+            onCancelMerge={onCancelMerge}
+            onConfirmMerge={onConfirmMerge}
           />
         ) : null}
 

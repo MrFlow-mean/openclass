@@ -10,6 +10,8 @@ import type {
   DocumentSavePayload,
   GoogleRealtimeSessionPayload,
   GoogleRealtimeSessionResponse,
+  MergeBranchChoice,
+  MergeBranchPreviewResponse,
   RealtimeConnectPayload,
   RealtimeConnectResponse,
   RealtimeEventLogPayload,
@@ -472,6 +474,29 @@ export const api = {
     return request<CoursePackage>(`/api/lessons/${lessonId}/branches`, {
       method: "POST",
       body: JSON.stringify({ name, from_commit_id: fromCommitId ?? null }),
+    });
+  },
+  previewBranchMerge(lessonId: string, sourceBranch: string, targetBranch?: string | null) {
+    return request<MergeBranchPreviewResponse>(`/api/lessons/${lessonId}/branches/merge-preview`, {
+      method: "POST",
+      body: JSON.stringify({ source_branch: sourceBranch, target_branch: targetBranch ?? null }),
+    });
+  },
+  mergeBranch(
+    lessonId: string,
+    payload: {
+      source_branch: string;
+      target_branch?: string | null;
+      expected_target_head_commit_id: string;
+      expected_source_head_commit_id: string;
+      document_choice: MergeBranchChoice;
+      requirements_choice: MergeBranchChoice;
+      session_choice: MergeBranchChoice;
+    }
+  ) {
+    return request<CoursePackage>(`/api/lessons/${lessonId}/branches/merge`, {
+      method: "POST",
+      body: JSON.stringify(payload),
     });
   },
   switchBranch(lessonId: string, name: string) {

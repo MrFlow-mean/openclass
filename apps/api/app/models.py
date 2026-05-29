@@ -897,6 +897,47 @@ class SwitchBranchRequest(BaseModel):
     name: str
 
 
+MergeBranchChoice = Literal["target", "source"]
+MergeBranchSectionStatus = Literal["no_change", "source_only", "target_only", "conflict"]
+
+
+class MergeBranchPreviewRequest(BaseModel):
+    source_branch: str
+    target_branch: str | None = None
+
+
+class MergeBranchSectionPreview(BaseModel):
+    status: MergeBranchSectionStatus
+    recommended_choice: MergeBranchChoice = "target"
+    requires_confirmation: bool = False
+    base_summary: str = ""
+    target_summary: str = ""
+    source_summary: str = ""
+
+
+class MergeBranchPreviewResponse(BaseModel):
+    source_branch: str
+    target_branch: str
+    base_commit_id: str
+    target_head_commit_id: str
+    source_head_commit_id: str
+    can_merge: bool = True
+    already_merged: bool = False
+    document: MergeBranchSectionPreview
+    requirements: MergeBranchSectionPreview
+    session: MergeBranchSectionPreview
+
+
+class MergeBranchRequest(BaseModel):
+    source_branch: str
+    target_branch: str | None = None
+    expected_target_head_commit_id: str
+    expected_source_head_commit_id: str
+    document_choice: MergeBranchChoice = "target"
+    requirements_choice: MergeBranchChoice = "target"
+    session_choice: MergeBranchChoice = "target"
+
+
 class RestoreCommitRequest(BaseModel):
     commit_id: str
     label: str = "Restore snapshot"

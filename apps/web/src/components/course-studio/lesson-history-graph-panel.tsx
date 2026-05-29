@@ -2,8 +2,9 @@
 
 import { useMemo } from "react";
 import clsx from "clsx";
-import { BookOpen, BrainCircuit, Clock3, GitBranch } from "lucide-react";
+import { BookOpen, BrainCircuit, Clock3, GitBranch, GitMerge } from "lucide-react";
 
+import { BranchMergeReviewCard } from "@/components/course-studio/branch-merge-review-card";
 import {
   buildLessonHistoryGraphModel,
   graphHeadCommit,
@@ -13,7 +14,15 @@ import {
   type GraphNode,
 } from "@/components/course-studio/lesson-history-graph-model";
 import { compactText, formatDate } from "@/components/course-studio/history-utils";
-import type { BoardDecision, CommitRecord, Lesson } from "@/types";
+import type {
+  BoardDecision,
+  CommitRecord,
+  Lesson,
+  MergeBranchChoice,
+  MergeBranchChoices,
+  MergeBranchPreviewResponse,
+  MergeBranchSectionKey,
+} from "@/types";
 
 type LessonHistoryGraphPanelProps = {
   activeLesson: Lesson;
@@ -21,11 +30,18 @@ type LessonHistoryGraphPanelProps = {
   activeRequirements: Lesson["learning_requirements"];
   latestBoardDecision: BoardDecision | null;
   newBranchName: string;
+  mergePreview: MergeBranchPreviewResponse | null;
+  mergeChoices: MergeBranchChoices;
+  busyAction: string | null;
   onNewBranchNameChange: (value: string) => void;
   onPreviewCommit: (commit: CommitRecord) => void | Promise<void>;
   onRestoreCommit: (commitId: string) => void | Promise<void>;
   onCreateBranchFromCommit: (commit: CommitRecord) => void | Promise<void>;
   onSwitchBranch: (branchName: string) => void | Promise<void>;
+  onOpenMergePreview: (branchName: string) => void | Promise<void>;
+  onMergeChoiceChange: (section: MergeBranchSectionKey, choice: MergeBranchChoice) => void;
+  onCancelMerge: () => void;
+  onConfirmMerge: () => void | Promise<void>;
 };
 
 function nodeTone(node: GraphNode) {
@@ -66,11 +82,18 @@ export function LessonHistoryGraphPanel({
   activeRequirements,
   latestBoardDecision,
   newBranchName,
+  mergePreview,
+  mergeChoices,
+  busyAction,
   onNewBranchNameChange,
   onPreviewCommit,
   onRestoreCommit,
   onCreateBranchFromCommit,
   onSwitchBranch,
+  onOpenMergePreview,
+  onMergeChoiceChange,
+  onCancelMerge,
+  onConfirmMerge,
 }: LessonHistoryGraphPanelProps) {
   const model = useMemo(
     () => buildLessonHistoryGraphModel(activeLesson, previewCommitId),
@@ -104,22 +127,41 @@ export function LessonHistoryGraphPanel({
           {model.branches.map((branch) => {
             const headCommit = graphHeadCommit(activeLesson, branch.name);
             return (
-              <button
+              <div
                 key={branch.name}
-                type="button"
-                onClick={() => void onSwitchBranch(branch.name)}
-                disabled={branch.isCurrent}
-                title={headCommit ? `${branch.name}: ${headCommit.label}` : branch.name}
                 className={clsx(
-                  "inline-flex h-5 max-w-[92px] items-center gap-0.5 rounded border px-1.5 text-[9px] font-bold transition",
-                  branch.isCurrent
-                    ? "border-black bg-black text-white"
-                    : "border-gray-200 bg-white text-gray-500 hover:border-gray-300 hover:text-gray-950"
+                  "inline-flex h-5 items-center overflow-hidden rounded border",
+                  branch.isCurrent ? "border-black bg-black" : "border-gray-200 bg-white"
                 )}
               >
-                <GitBranch className="h-2.5 w-2.5 shrink-0" />
-                <span className="truncate">{compactText(branch.name, 16)}</span>
-              </button>
+                <button
+                  type="button"
+                  onClick={() => void onSwitchBranch(branch.name)}
+                  disabled={branch.isCurrent}
+                  title={headCommit ? `${branch.name}: ${headCommit.label}` : branch.name}
+                  className={clsx(
+                    "inline-flex h-full max-w-[92px] items-center gap-0.5 px-1.5 text-[9px] font-bold transition",
+                    branch.isCurrent
+                      ? "text-white"
+                      : "text-gray-500 hover:bg-gray-50 hover:text-gray-950"
+                  )}
+                >
+                  <GitBranch className="h-2.5 w-2.5 shrink-0" />
+                  <span className="truncate">{compactText(branch.name, 16)}</span>
+                </button>
+                {!branch.isCurrent ? (
+                  <button
+                    type="button"
+                    data-testid="history-branch-merge"
+                    onClick={() => void onOpenMergePreview(branch.name)}
+                    title={`合并 ${branch.name}`}
+                    aria-label={`合并分支 ${branch.name}`}
+                    className="flex h-full w-5 items-center justify-center border-l border-gray-200 text-gray-400 transition hover:bg-gray-50 hover:text-gray-950"
+                  >
+                    <GitMerge className="h-2.5 w-2.5" />
+                  </button>
+                ) : null}
+              </div>
             );
           })}
         </div>
@@ -350,6 +392,17 @@ export function LessonHistoryGraphPanel({
             />
           </div>
         </section>
+      ) : null}
+
+      {mergePreview ? (
+        <BranchMergeReviewCard
+          preview={mergePreview}
+          choices={mergeChoices}
+          busyAction={busyAction}
+          onChoiceChange={onMergeChoiceChange}
+          onCancel={onCancelMerge}
+          onConfirm={onConfirmMerge}
+        />
       ) : null}
 
       <section className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">

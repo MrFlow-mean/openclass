@@ -1,6 +1,6 @@
 import pytest
 
-from app.models import BoardDocument, LearningRequirementSheet, PatchOperation
+from app.models import BoardDocument, InteractionSession, LearningRequirementSheet, PatchOperation
 from app.services.chart_generation import extract_chart_data_fragments
 from app.services.course_runtime import (
     build_lesson_for_topic,
@@ -9,7 +9,7 @@ from app.services.course_runtime import (
     refresh_lesson_runtime,
 )
 from app.services.document_ops import apply_patch
-from app.services.history import commit_operations, create_branch, restore_commit, switch_branch
+from app.services.history import build_merge_preview, commit_operations, create_branch, merge_branch, restore_commit, switch_branch
 from app.services.lesson_factory import create_empty_lesson, create_lesson
 from app.services.openai_course_ai import GeneratedCatalogChapter, GeneratedResourceCatalog, OpenAICourseAI
 from app.services import resource_resolver as resource_resolver_module
@@ -154,6 +154,114 @@ def test_branch_switch_restores_runtime_state_from_commit_metadata() -> None:
     switch_branch(lesson, "main")
     assert lesson.learning_requirements is not None
     assert lesson.learning_requirements.learning_goal == "第二轮学习目标"
+
+
+def test_merge_branch_creates_two_parent_commit_and_merges_runtime_state() -> None:
+    lesson = create_lesson("合并测试")
+    base_commit_id = lesson.history_graph.commits[0].id
+    target_requirements = LearningRequirementSheet.model_validate(lesson.learning_requirements.model_dump(mode="json"))
+    target_requirements.learning_goal = "目标分支需求"
+    target_document = build_document(title="合并测试", content_text="目标分支文档")
+    lesson.learning_requirements = target_requirements
+    commit_operations(
+        lesson,
+        [],
+        "Target update",
+        "Target branch update",
+        new_document=target_document,
+        metadata={
+            "kind": "chat_flow",
+            "user_message": "目标分支问题",
+            "active_requirement_sheet_after": target_requirements.model_dump(mode="json"),
+            "active_interaction_session_after": None,
+        },
+    )
+    target_head_id = lesson.history_graph.branches["main"].head_commit_id
+
+    create_branch(lesson, "source", base_commit_id)
+    source_requirements = LearningRequirementSheet.model_validate(lesson.learning_requirements.model_dump(mode="json"))
+    source_requirements.learning_goal = "来源分支需求"
+    source_session = InteractionSession(interaction_goal="来源分支聊天目标", progress_note="来源分支进展")
+    source_document = build_document(title="合并测试", content_text="来源分支文档")
+    lesson.learning_requirements = source_requirements
+    lesson.active_interaction_session = source_session
+    commit_operations(
+        lesson,
+        [],
+        "Source update",
+        "Source branch update",
+        new_document=source_document,
+        metadata={
+            "kind": "chat_flow",
+            "user_message": "来源分支问题",
+            "active_requirement_sheet_after": source_requirements.model_dump(mode="json"),
+            "active_interaction_session_after": source_session.model_dump(mode="json"),
+        },
+    )
+    source_head_id = lesson.history_graph.branches["source"].head_commit_id
+
+    preview = build_merge_preview(lesson, "source", "main")
+    assert preview.base_commit_id == base_commit_id
+    assert preview.target_head_commit_id == target_head_id
+    assert preview.source_head_commit_id == source_head_id
+    assert preview.document.status == "conflict"
+    assert preview.requirements.status == "conflict"
+    assert preview.session.status == "source_only"
+
+    merge_branch(
+        lesson,
+        source_branch="source",
+        target_branch="main",
+        expected_target_head_commit_id=target_head_id,
+        expected_source_head_commit_id=source_head_id,
+        document_choice="source",
+        requirements_choice="source",
+        session_choice="source",
+    )
+
+    merge_commit = lesson.history_graph.commits[-1]
+    assert merge_commit.metadata["kind"] == "branch_merge"
+    assert merge_commit.parent_ids == [target_head_id, source_head_id]
+    assert lesson.history_graph.branches["main"].head_commit_id == merge_commit.id
+    assert lesson.history_graph.branches["source"].head_commit_id == source_head_id
+    assert lesson.board_document.content_text == "来源分支文档"
+    assert lesson.learning_requirements is not None
+    assert lesson.learning_requirements.learning_goal == "来源分支需求"
+    assert lesson.active_interaction_session is not None
+    assert lesson.active_interaction_session.interaction_goal == "来源分支聊天目标"
+
+    merged_preview = build_merge_preview(lesson, "source", "main")
+    assert merged_preview.already_merged is True
+    assert merged_preview.can_merge is False
+
+
+def test_merge_branch_rejects_stale_head_ids() -> None:
+    lesson = create_lesson("过期合并测试")
+    base_commit_id = lesson.history_graph.commits[0].id
+    target_head_id = lesson.history_graph.branches["main"].head_commit_id
+    create_branch(lesson, "source", base_commit_id)
+    commit_operations(
+        lesson,
+        [],
+        "Source update",
+        "Source branch update",
+        new_document=build_document(title="过期合并测试", content_text="来源变化"),
+        metadata={"kind": "manual_document_save"},
+    )
+    source_head_id = lesson.history_graph.branches["source"].head_commit_id
+
+    with pytest.raises(ValueError, match="Target branch changed"):
+        merge_branch(
+            lesson,
+            source_branch="source",
+            target_branch="main",
+            expected_target_head_commit_id="stale",
+            expected_source_head_commit_id=source_head_id,
+            document_choice="target",
+            requirements_choice="target",
+            session_choice="target",
+        )
+    assert lesson.history_graph.branches["main"].head_commit_id == target_head_id
 
 
 def test_create_empty_lesson_starts_with_blank_rich_document() -> None:

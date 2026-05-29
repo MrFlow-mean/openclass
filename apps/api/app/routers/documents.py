@@ -16,6 +16,9 @@ from app.models import (
     DocumentSaveRequest,
     DocumentSegmentSearchResponse,
     ManualCommitRequest,
+    MergeBranchPreviewRequest,
+    MergeBranchPreviewResponse,
+    MergeBranchRequest,
     RestoreCommitRequest,
     SwitchBranchRequest,
     UserView,
@@ -23,7 +26,7 @@ from app.models import (
 from app.routers.auth import current_user
 from app.services.chat_service import document_ai_edit_request
 from app.services.course_runtime import refresh_lesson_runtime
-from app.services.history import create_branch, current_head_commit, restore_commit, switch_branch
+from app.services.history import build_merge_preview, create_branch, current_head_commit, merge_branch, restore_commit, switch_branch
 from app.services.rich_document import document_changed, export_docx, import_docx
 from app.services.route_context import bind_ai_request_context
 from app.services.workspace_state import (
@@ -214,6 +217,54 @@ def create_lesson_branch(
         from_commit_id=request.from_commit_id,
     ):
         create_branch(lesson, request.name, request.from_commit_id)
+        refresh_lesson_runtime(lesson)
+        save_workspace_for_user(user.id, workspace)
+    return package_view_for_lesson(workspace, package, lesson.id)
+
+
+@router.post("/api/lessons/{lesson_id}/branches/merge-preview", response_model=MergeBranchPreviewResponse)
+def preview_lesson_branch_merge(
+    lesson_id: str,
+    request: MergeBranchPreviewRequest,
+    user: UserView = Depends(current_user),
+) -> MergeBranchPreviewResponse:
+    workspace = load_workspace_for_user(user.id)
+    _, lesson = find_lesson_package(workspace, lesson_id)
+    try:
+        return build_merge_preview(lesson, request.source_branch, request.target_branch)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/api/lessons/{lesson_id}/branches/merge", response_model=CoursePackageView)
+def merge_lesson_branch(
+    lesson_id: str,
+    request: MergeBranchRequest,
+    user: UserView = Depends(current_user),
+) -> CoursePackageView:
+    workspace = load_workspace_for_user(user.id)
+    package, lesson = find_lesson_package(workspace, lesson_id)
+    package.active_lesson_id = lesson.id
+    with bind_ai_request_context(
+        "/api/lessons/{lesson_id}/branches/merge",
+        lesson=lesson,
+        trace_prefix="merge_branch",
+        source_branch=request.source_branch,
+        target_branch=request.target_branch or lesson.history_graph.current_branch,
+    ):
+        try:
+            merge_branch(
+                lesson,
+                source_branch=request.source_branch,
+                target_branch=request.target_branch,
+                expected_target_head_commit_id=request.expected_target_head_commit_id,
+                expected_source_head_commit_id=request.expected_source_head_commit_id,
+                document_choice=request.document_choice,
+                requirements_choice=request.requirements_choice,
+                session_choice=request.session_choice,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         refresh_lesson_runtime(lesson)
         save_workspace_for_user(user.id, workspace)
     return package_view_for_lesson(workspace, package, lesson.id)
