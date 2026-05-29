@@ -4,6 +4,7 @@ import clsx from "clsx";
 import { Plus, X } from "lucide-react";
 
 import { InlineNameForm } from "@/components/inline-name-form";
+import { useInterfaceLanguage } from "@/contexts/interface-language-context";
 import type { Lesson } from "@/types";
 
 type LessonTabsProps = {
@@ -29,6 +30,8 @@ export function LessonTabs({
   onCancelCreateLesson,
   onCreateLesson,
 }: LessonTabsProps) {
+  const { texts: txt } = useInterfaceLanguage();
+  const t = txt.studio.tabs;
   return (
     <nav className="flex min-w-0 items-center overflow-x-auto custom-scrollbar">
       {lessons.map((lesson) => (
@@ -60,8 +63,8 @@ export function LessonTabs({
       ))}
       {isCreatingLessonInline && lessons.length > 0 ? (
         <InlineNameForm
-          label="新页面名称"
-          placeholder="课程导读 / 第一讲 / 练习讲义"
+          label={t.newPageName}
+          placeholder={t.newPagePlaceholder}
           variant="tab"
           isBusy={isBusyCreating}
           onCancel={onCancelCreateLesson}
@@ -72,7 +75,7 @@ export function LessonTabs({
         type="button"
         onClick={onStartCreateLesson}
         className="p-3 text-gray-300 transition-colors hover:text-black"
-        title="新建页面"
+        title={t.newPage}
       >
         <Plus className="h-4 w-4" />
       </button>

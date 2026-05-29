@@ -29,6 +29,7 @@ import { useModelCatalog } from "@/hooks/course-studio/use-model-catalog";
 import { useRealtimeVoice } from "@/hooks/course-studio/use-realtime-voice";
 import { useWorkspaceActions } from "@/hooks/course-studio/use-workspace-actions";
 import { InlineNameForm } from "@/components/inline-name-form";
+import { useInterfaceLanguage } from "@/contexts/interface-language-context";
 import { useResizablePanelWidth } from "@/hooks/use-resizable-panel-width";
 import type { AIModelOption, ChatInteractionMode, CoursePackage, LearningClarificationStatus, SelectionRef } from "@/types";
 
@@ -43,6 +44,8 @@ const RIGHT_SIDEBAR_MAX_WIDTH = 640;
 
 export function CourseStudio() {
   const router = useRouter();
+  const { texts: txt } = useInterfaceLanguage();
+  const s = txt.studio;
   const mainContainerRef = useRef<HTMLDivElement | null>(null);
   const chatInputRef = useRef<HTMLTextAreaElement | null>(null);
   const chatScrollEndRef = useRef<HTMLDivElement | null>(null);
@@ -91,8 +94,8 @@ export function CourseStudio() {
     defaultWidth: CHAT_PANEL_DEFAULT_WIDTH,
     minWidth: CHAT_PANEL_MIN_WIDTH,
     maxWidth: CHAT_PANEL_MAX_WIDTH,
-    ariaLabel: "调整 Chatbot 宽度",
-    title: "调整 Chatbot 宽度",
+    ariaLabel: s.resizeChatbot,
+    title: s.resizeChatbot,
   });
   const {
     width: rightSidebarWidth,
@@ -104,8 +107,8 @@ export function CourseStudio() {
     minWidth: RIGHT_SIDEBAR_MIN_WIDTH,
     maxWidth: RIGHT_SIDEBAR_MAX_WIDTH,
     resizeDirection: "left",
-    ariaLabel: "调整辅助栏宽度",
-    title: "调整辅助栏宽度",
+    ariaLabel: s.resizeSidebar,
+    title: s.resizeSidebar,
   });
   const [sidebarTab, setSidebarTab] = useState<CourseStudioSidebarTab>("graph");
   const [isCreatingLessonInline, setIsCreatingLessonInline] = useState(false);
@@ -313,7 +316,7 @@ export function CourseStudio() {
 
   function speakChatbotResponse(content: string) {
     voice.speakControlledChatbotMessage(content);
-    voice.setVoiceStatusText("Chatbot 回复已通过受控工作流播出，可以继续提问");
+    voice.setVoiceStatusText(s.chatbotSpoken);
   }
 
   function adjustComposerHeight() {
@@ -365,7 +368,7 @@ export function CourseStudio() {
       return;
     }
     if (voiceActive || busyAction === "voice-connect") {
-      stopRealtimeSession("已切换实时语音模型，当前会话已断开");
+      stopRealtimeSession(s.voiceModelSwitched);
     }
     selectRealtimeModel(option);
   }
@@ -396,11 +399,11 @@ export function CourseStudio() {
   }
 
   if (isLoading) {
-    return <div className="flex min-h-screen items-center justify-center text-gray-500">正在载入课程工作台…</div>;
+    return <div className="flex min-h-screen items-center justify-center text-gray-500">{s.loading}</div>;
   }
 
   if (!coursePackage) {
-    return <div className="flex min-h-screen items-center justify-center text-gray-500">没有找到可用课程。</div>;
+    return <div className="flex min-h-screen items-center justify-center text-gray-500">{s.noCourse}</div>;
   }
 
   const workspaceTitle = coursePackage.title;
@@ -445,15 +448,15 @@ export function CourseStudio() {
             <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-[20px] bg-stone-950 text-white">
               <BookOpen className="h-7 w-7" />
             </div>
-            <h2 className="mt-6 text-2xl font-semibold tracking-tight text-stone-950">这个课程包还是空的</h2>
+            <h2 className="mt-6 text-2xl font-semibold tracking-tight text-stone-950">{s.emptyPackageTitle}</h2>
             <p className="mt-3 text-sm leading-7 text-stone-500">
-              上方这条页签栏已经是当前课程包的页面区了。点右上角的加号，或者直接从下面创建第一张课程页面。
+              {s.emptyPackageBody}
             </p>
             <div className="mt-8 flex justify-center">
               {isCreatingLessonInline ? (
                 <InlineNameForm
-                  label="第一页名称"
-                  placeholder="课程导读 / 第一讲 / 练习讲义"
+                  label={s.firstPageLabel}
+                  placeholder={s.firstPagePlaceholder}
                   isBusy={busyAction === "generate"}
                   className="w-full max-w-sm"
                   onCancel={() => setIsCreatingLessonInline(false)}
@@ -469,7 +472,7 @@ export function CourseStudio() {
                   className="inline-flex items-center gap-2 rounded-full bg-stone-950 px-5 py-3 text-sm font-medium text-white transition hover:bg-stone-800"
                 >
                   <Plus className="h-4 w-4" />
-                  新建第一页
+                  {s.createFirstPage}
                 </button>
               )}
             </div>

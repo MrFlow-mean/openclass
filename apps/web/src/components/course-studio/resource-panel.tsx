@@ -1,8 +1,11 @@
+"use client";
+
 import clsx from "clsx";
 import { FileText, ImagePlus, LoaderCircle, Trash2 } from "lucide-react";
 
 import { CourseGraphPanel } from "@/components/course-studio/course-graph-panel";
 import { ResourceUploadDropzone } from "@/components/resource-upload-dropzone";
+import { useInterfaceLanguage } from "@/contexts/interface-language-context";
 import type { CoursePackage, Lesson } from "@/types";
 
 type ResourcePanelProps = {
@@ -26,10 +29,12 @@ export function ResourcePanel({
   onDeleteResource,
   onOpenLesson,
 }: ResourcePanelProps) {
+  const { texts: txt } = useInterfaceLanguage();
+  const r = txt.studio.resourcePanel;
   return (
     <div className="space-y-8">
       <div>
-        <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">关联资料库</p>
+        <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">{r.title}</p>
         <ResourceUploadDropzone
           disabled={Boolean(busyAction)}
           uploading={busyAction === "upload"}
@@ -56,16 +61,16 @@ export function ResourcePanel({
                         <p className="truncate text-xs font-bold text-gray-900">{resource.name}</p>
                         <p className="mt-1 text-[11px] text-gray-500">
                           {resource.extracted_text_available
-                            ? `已索引 ${resource.outline.length} 个章节入口`
-                            : "当前仅做入口索引"}
+                            ? r.indexed(resource.outline.length)
+                            : r.entryOnly}
                         </p>
                       </div>
                       <button
                         type="button"
                         onClick={() => void onDeleteResource(resource.id, resource.name)}
                         disabled={Boolean(busyAction)}
-                        title={`删除 ${resource.name}`}
-                        aria-label={`删除资料 ${resource.name}`}
+                        title={r.deleteTitle(resource.name)}
+                        aria-label={r.deleteAria(resource.name)}
                         className={clsx(
                           "flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-gray-400 transition-colors hover:bg-red-50 hover:text-red-600",
                           busyAction && "cursor-not-allowed opacity-50 hover:bg-transparent hover:text-gray-400"

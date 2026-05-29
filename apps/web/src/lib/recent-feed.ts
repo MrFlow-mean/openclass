@@ -54,15 +54,15 @@ function truncateText(value: string, maxLength = 160) {
 function humanizeCommitLabel(label: string) {
   switch (label) {
     case "Initial document draft":
-      return "初始课程草稿";
+      return "Initial course draft";
     case "Manual document edit":
-      return "手动编辑已保存";
+      return "Manual edit saved";
     case "Restore snapshot":
-      return "恢复历史快照";
+      return "Historical snapshot restored";
     case "AI document edit":
-      return "AI 更新文稿";
+      return "AI updated the notes";
     case "Cloned lesson snapshot":
-      return "克隆课程快照";
+      return "Course snapshot cloned";
     default:
       return label;
   }
@@ -72,20 +72,20 @@ function humanizeCommitMessage(commit: CommitRecord, lesson: Lesson) {
   const normalized = commit.message.trim();
 
   if (!normalized) {
-    return `已更新《${lesson.title}》的课程内容，可以继续进入工作台完善讲义与分支。`;
+    return `${lesson.title} was updated. Continue in Studio to refine notes and branches.`;
   }
 
   const rewritten = normalized
-    .replace(/^Generated starter rich document for\s+/i, "已生成课程初稿：")
-    .replace(/^Saved Word-like rich document changes from the editor$/i, "已保存 Word 风格编辑器中的文稿改动。")
-    .replace(/^Saved rich document changes from the editor$/i, "已保存编辑器中的文稿改动。")
-    .replace(/^Cloned lesson into an isolated workspace$/i, "已复制到独立工作区，方便继续扩展。");
+    .replace(/^Generated starter rich document for\s+/i, "Generated starter draft for ")
+    .replace(/^Saved Word-like rich document changes from the editor$/i, "Saved Word-style editor changes.")
+    .replace(/^Saved rich document changes from the editor$/i, "Saved editor changes.")
+    .replace(/^Cloned lesson into an isolated workspace$/i, "Copied into an isolated workspace for follow-up.");
 
   return truncateText(rewritten, 180);
 }
 
 function resourceSummary(resource: ResourceLibraryItem) {
-  return resource.outline[0]?.summary ?? "已进入资料库，可在工作台中继续引用和扩展。";
+  return resource.outline[0]?.summary ?? "Added to the resource library for citation and expansion in Studio.";
 }
 
 function resourceTypeLabel(resource: ResourceLibraryItem) {
@@ -96,10 +96,10 @@ function resourceTypeLabel(resource: ResourceLibraryItem) {
     return "Word";
   }
   if (resource.mime_type.startsWith("image/")) {
-    return "图片";
+    return "Image";
   }
 
-  return resource.resource_type || "资料";
+  return resource.resource_type || "Resource";
 }
 
 export function buildRecentFeed(lessons: RecentFeedLesson[], resources: RecentFeedResource[]) {
@@ -135,7 +135,7 @@ export function buildRecentFeed(lessons: RecentFeedLesson[], resources: RecentFe
         id: `commit:${commit.id}`,
         timestamp: commit.created_at,
         title: humanizeCommitLabel(commit.label),
-        detailTitle: commit.branch_name === "main" ? "主分支 main" : `分支 ${commit.branch_name}`,
+        detailTitle: commit.branch_name === "main" ? "Main branch" : `Branch ${commit.branch_name}`,
         detailBody: humanizeCommitMessage(commit, lesson),
         lessonTitle: lesson.title,
       };
@@ -167,8 +167,8 @@ export function buildRecentFeed(lessons: RecentFeedLesson[], resources: RecentFe
       group.isStandalone && lessonCount === 1
         ? Array.from(group.lessonTitles)[0] ?? group.packageTitle
         : group.packageTitle;
-    const lessonPill = lessonCount > 1 ? `${lessonCount} 个课程页` : latestUpdate.lessonTitle ?? "课程内容";
-    const tagPill = Array.from(group.tags)[0] ?? "课程内容";
+    const lessonPill = lessonCount > 1 ? `${lessonCount} lesson pages` : latestUpdate.lessonTitle ?? "Course content";
+    const tagPill = Array.from(group.tags)[0] ?? "Course content";
 
     return [
       {
@@ -176,11 +176,11 @@ export function buildRecentFeed(lessons: RecentFeedLesson[], resources: RecentFe
         kind: "commit",
         timestamp: latestUpdate.timestamp,
         actor,
-        action: commitCount > 1 ? `有 ${commitCount} 次课程文稿更新` : "更新了课程文稿",
-        title: commitCount > 1 ? "近期更新记录" : latestUpdate.title,
+        action: commitCount > 1 ? `${commitCount} lesson note updates` : "Updated lesson notes",
+        title: commitCount > 1 ? "Recent updates" : latestUpdate.title,
         detailTitle: latestUpdate.detailTitle,
         detailBody: latestUpdate.detailBody,
-        pills: [group.packageTitle, lessonPill, tagPill, `${commitCount} 次提交`],
+        pills: [group.packageTitle, lessonPill, tagPill, `${commitCount} commits`],
         lessonId: group.lessonIdsByUpdateId.get(latestUpdate.id),
         updates,
       } satisfies RecentFeedItem,
@@ -192,13 +192,13 @@ export function buildRecentFeed(lessons: RecentFeedLesson[], resources: RecentFe
     kind: "resource",
     timestamp: resource.uploaded_at,
     actor: packageTitle,
-    action: "收录了新资料",
+    action: "Added a resource",
     title: resource.name,
-    detailTitle: resource.outline[0]?.title ?? "资料摘要",
+    detailTitle: resource.outline[0]?.title ?? "Resource summary",
     detailBody: truncateText(resourceSummary(resource), 180),
     pills: [
       resourceTypeLabel(resource),
-      resource.outline.length ? `${resource.outline.length} 个索引片段` : "等待生成索引",
+      resource.outline.length ? `${resource.outline.length} indexed sections` : "Waiting for index",
     ],
   }));
 

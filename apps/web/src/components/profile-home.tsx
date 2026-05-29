@@ -451,10 +451,10 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
               <p className="mt-1 text-sm text-stone-500">@{profileHandle}</p>
               <span className="mt-3 inline-flex rounded-full border border-stone-200 bg-white px-2.5 py-1 text-xs font-semibold text-stone-500">
                 {profileSettings.profileVisibility === "public"
-                  ? "公开"
+                  ? "Public"
                   : profileSettings.profileVisibility === "workspace"
-                    ? "工作区可见"
-                    : "仅自己可见"}
+                    ? "Workspace visible"
+                    : "Private"}
               </span>
               <button
                 type="button"
@@ -576,7 +576,7 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
             )
           ) : (
             <div className="rounded-lg border border-dashed border-stone-300 bg-white/82 px-5 py-8 text-sm text-stone-500">
-              {error ? `个人项目暂时无法加载：${error}` : "没有匹配到课程或课程包。"}
+              {error ? `Projects could not load: ${error}` : "No matching lessons or packages."}
             </div>
           )}
         </div>
@@ -591,7 +591,7 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
           <Star className="mx-auto h-7 w-7 text-stone-400" />
           <h2 className="mt-4 text-lg font-semibold text-stone-950">Create your first list</h2>
           <p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-stone-600">
-            Stars 只显示你收藏的他人课程包；自己创建的课程包会保留在 Repositories。
+            Stars show course packages you collected from others. Your own course packages stay under Repositories.
           </p>
         </section>
 
@@ -625,7 +625,7 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
               filteredFavoriteProjects.map((course) => renderStarCard(course))
             ) : (
               <div className="rounded-lg border border-dashed border-stone-300 bg-white/82 px-5 py-8 text-sm text-stone-500">
-                没有匹配到已收藏的他人课程包。
+                No matching starred course packages.
               </div>
             )}
           </div>
@@ -651,7 +651,7 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
                 {lesson.title}
               </button>
               <span className="rounded-full border border-sky-200 bg-sky-50 px-2 py-0.5 text-[11px] font-semibold text-sky-700">
-                单独课程
+                Standalone lesson
               </span>
             </div>
             <p className="mt-2 line-clamp-2 text-sm leading-6 text-stone-600">
@@ -672,7 +672,7 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
             <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-stone-500">
               <span className="inline-flex items-center gap-1">
                 <BookOpen className="h-3.5 w-3.5" />
-                单独课程
+                Standalone lesson
               </span>
               <span>{lesson.history_graph.commits.length} commits</span>
               <span>
@@ -688,7 +688,7 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
             className="inline-flex shrink-0 items-center justify-center gap-2 rounded-md border border-stone-200 bg-stone-50 px-3 py-2 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:bg-white hover:text-stone-950 disabled:cursor-wait disabled:opacity-70"
           >
             {isOpening ? <LoaderCircle className="h-4 w-4 animate-spin" /> : null}
-            打开
+            Open
             {!isOpening ? <ArrowUpRight className="h-4 w-4" /> : null}
           </button>
         </div>
@@ -725,7 +725,7 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
                 className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-700 transition hover:border-emerald-300 hover:bg-emerald-100"
               >
                 <FolderClosed className="h-3 w-3" />
-                课程包
+                Course package
                 <span className="rounded-full bg-white/75 px-1.5 py-px text-[10px] text-emerald-700">
                   {coursePackage.lessons.length}
                 </span>
@@ -736,7 +736,7 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
               </span>
             </div>
             <p className="mt-2 line-clamp-2 text-sm leading-6 text-stone-600">
-              {coursePackage.summary || "个人课程项目，包含课程文档、资料索引和学习活动记录。"}
+              {coursePackage.summary || "Personal course project with lesson documents, resource indexes, and learning activity."}
             </p>
 
             {!isCompact ? (
@@ -768,7 +768,7 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
             href={`/?package=${coursePackage.id}`}
             className="inline-flex shrink-0 items-center justify-center gap-2 rounded-md border border-stone-200 bg-stone-50 px-3 py-2 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:bg-white hover:text-stone-950"
           >
-            打开
+            Open
             <ArrowUpRight className="h-4 w-4" />
           </Link>
         </div>
@@ -777,7 +777,7 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
           <ul
             id={lessonsListId}
             className="mt-4 divide-y divide-stone-200 rounded-md border border-stone-200 bg-stone-50/80"
-            aria-label={`${coursePackage.title} 的单独课程列表`}
+            aria-label={`${coursePackage.title} lesson list`}
           >
             {coursePackage.lessons.length ? (
               coursePackage.lessons.map((lesson, index) => {
@@ -801,7 +801,7 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
                           {lesson.title}
                         </button>
                         <span className="rounded-full border border-sky-200 bg-sky-50 px-2 py-0.5 text-[11px] font-semibold text-sky-700">
-                          单独课程
+                          Standalone lesson
                         </span>
                       </div>
                       <p className="mt-1 line-clamp-1 text-xs leading-5 text-stone-500">
@@ -816,14 +816,14 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
                       className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-md border border-stone-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-stone-700 transition hover:border-stone-300 hover:text-stone-950 disabled:cursor-wait disabled:opacity-70"
                     >
                       {isOpening ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : null}
-                      打开
+                      Open
                       {!isOpening ? <ArrowUpRight className="h-3.5 w-3.5" /> : null}
                     </button>
                   </li>
                 );
               })
             ) : (
-              <li className="px-3 py-3 text-sm text-stone-500">这个课程包还没有单独课程。</li>
+              <li className="px-3 py-3 text-sm text-stone-500">This course package has no lessons yet.</li>
             )}
           </ul>
         ) : null}
@@ -877,7 +877,7 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
               href={courseDetailHref(course)}
               className="inline-flex items-center justify-center gap-1.5 rounded-md border border-stone-200 bg-stone-50 px-3 py-1.5 text-xs font-semibold text-stone-700 transition hover:border-stone-300 hover:bg-white hover:text-stone-950"
             >
-              打开
+              Open
               <ArrowUpRight className="h-3.5 w-3.5" />
             </Link>
             <button

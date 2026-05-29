@@ -1,5 +1,5 @@
 export const INTERFACE_LANGUAGE_OPTIONS = [
-  { value: "zh-CN", label: "简体中文" },
+  { value: "zh-CN", label: "Chinese (Simplified)" },
   { value: "en", label: "English" },
 ] as const;
 
@@ -60,16 +60,16 @@ export const DEFAULT_PROFILE_SETTINGS: ProfileSettings = {
   showSocialLinks: true,
   showRepositoriesOnProfile: true,
   showStarsOnProfile: true,
-  bio: "管理自己的课程项目，Stars 收藏值得继续学习的他人开源课程。",
+  bio: "Manage course projects and star open courses worth revisiting.",
   website: "",
   company: "",
   location: "",
-  learningFocus: "概念解释、资料扩讲、练习训练",
+  learningFocus: "Concept explanation, resource-based teaching, practice training",
   socialLinks: ["", "", "", ""],
   theme: "system",
   density: "comfortable",
   startPage: "home",
-  interfaceLanguage: "zh-CN",
+  interfaceLanguage: "en",
   reduceMotion: false,
   highContrast: false,
   largeText: false,
@@ -94,7 +94,7 @@ export const DEFAULT_PROFILE_SETTINGS: ProfileSettings = {
 };
 
 function parseInterfaceLanguage(value: unknown): InterfaceLanguage {
-  return value === "en" ? "en" : "zh-CN";
+  return value === "zh-CN" ? "zh-CN" : "en";
 }
 
 export function normalizeProfileSettings(raw: Partial<ProfileSettings> | null): ProfileSettings {

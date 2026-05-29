@@ -4,6 +4,8 @@ import clsx from "clsx";
 import { Check, LoaderCircle, X } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 
+import { useInterfaceLanguage } from "@/contexts/interface-language-context";
+
 type InlineNameFormVariant = "sidebar" | "tab";
 
 type InlineNameFormProps = {
@@ -25,6 +27,7 @@ export function InlineNameForm({
   onCancel,
   onSubmit,
 }: InlineNameFormProps) {
+  const { texts: txt } = useInterfaceLanguage();
   const [draft, setDraft] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
   const trimmedDraft = draft.trim();
@@ -74,8 +77,8 @@ export function InlineNameForm({
       <button
         type="submit"
         disabled={!trimmedDraft || isBusy}
-        title="确认"
-        aria-label="确认"
+        title={txt.common.confirm}
+        aria-label={txt.common.confirm}
         className={clsx(
           "flex shrink-0 items-center justify-center transition disabled:cursor-not-allowed",
           variant === "tab"
@@ -93,8 +96,8 @@ export function InlineNameForm({
         type="button"
         onClick={onCancel}
         disabled={isBusy}
-        title="取消"
-        aria-label="取消"
+        title={txt.common.cancel}
+        aria-label={txt.common.cancel}
         className={clsx(
           "flex shrink-0 items-center justify-center text-stone-400 transition hover:bg-stone-100 hover:text-stone-950 disabled:cursor-not-allowed disabled:text-stone-300",
           variant === "tab" ? "h-6 w-6 rounded-md" : "h-8 w-8 rounded-xl"

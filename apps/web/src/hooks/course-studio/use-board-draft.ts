@@ -231,7 +231,7 @@ export function useBoardDraft({
           return true;
         } catch (saveError) {
           setAutoSaveStatus("error");
-          setError(saveError instanceof Error ? saveError.message : "自动保存失败");
+          setError(saveError instanceof Error ? saveError.message : "Autosave failed");
           return false;
         } finally {
           if (isManualSave) {
@@ -342,7 +342,7 @@ export function useBoardDraft({
         resetToLesson(result.activeLesson);
         onPackageApplied?.();
       } catch (importError) {
-        setError(importError instanceof Error ? importError.message : "导入 DOCX 失败");
+        setError(importError instanceof Error ? importError.message : "DOCX import failed");
       } finally {
         setBusyAction(null);
       }
@@ -368,7 +368,7 @@ export function useBoardDraft({
       anchor.click();
       URL.revokeObjectURL(url);
     } catch (exportError) {
-      setError(exportError instanceof Error ? exportError.message : "导出 DOCX 失败");
+      setError(exportError instanceof Error ? exportError.message : "DOCX export failed");
     } finally {
       setBusyAction(null);
     }

@@ -52,13 +52,13 @@ function subscribe(onStoreChange: () => void): () => void {
 
 function getSnapshot(): InterfaceLanguage {
   if (typeof window === "undefined") {
-    return "zh-CN";
+    return "en";
   }
   return readLanguageFromDomStorage();
 }
 
 function getServerSnapshot(): InterfaceLanguage {
-  return "zh-CN";
+  return "en";
 }
 
 export function InterfaceLanguageProvider({ children }: { children: ReactNode }) {

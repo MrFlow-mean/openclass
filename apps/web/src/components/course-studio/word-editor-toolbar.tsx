@@ -1,7 +1,10 @@
+"use client";
+
 import clsx from "clsx";
 import { Maximize2, Minus, Plus } from "lucide-react";
 import type { CSSProperties, ReactNode } from "react";
 
+import { useInterfaceLanguage } from "@/contexts/interface-language-context";
 import {
   PAGE_ZOOM_DEFAULT,
   PAGE_ZOOM_MAX,
@@ -123,14 +126,16 @@ export function WordPageZoomControls({
   onChange: (value: number) => void;
   onFitToWidth: () => void;
 }) {
+  const { texts: txt } = useInterfaceLanguage();
+  const z = txt.studio.editor.zoom;
   const zoomProgress = ((value - PAGE_ZOOM_MIN) / (PAGE_ZOOM_MAX - PAGE_ZOOM_MIN)) * 100;
 
   return (
     <div className="flex h-10 items-center gap-1 rounded-full border border-gray-200 bg-gradient-to-b from-white to-gray-50 px-1.5 text-gray-600 shadow-[0_1px_3px_rgba(15,23,42,0.08)]">
       <button
         type="button"
-        title="适配页面宽度"
-        aria-label="适配页面宽度"
+        title={z.fit}
+        aria-label={z.fit}
         onClick={onFitToWidth}
         className="flex h-7 w-7 items-center justify-center rounded-full transition hover:bg-white hover:text-black hover:shadow-sm"
       >
@@ -138,7 +143,7 @@ export function WordPageZoomControls({
       </button>
       <button
         type="button"
-        title="重置缩放为 100%"
+        title={z.reset}
         onClick={() => onChange(PAGE_ZOOM_DEFAULT)}
         className="mx-0.5 flex h-7 min-w-14 items-center justify-center rounded-full border border-gray-200 bg-white px-2 text-[12px] font-semibold tabular-nums text-gray-800 shadow-[inset_0_1px_0_rgba(255,255,255,0.75)] transition hover:border-gray-300 hover:text-black"
       >
@@ -146,8 +151,8 @@ export function WordPageZoomControls({
       </button>
       <button
         type="button"
-        title="缩小页面"
-        aria-label="缩小页面"
+        title={z.zoomOut}
+        aria-label={z.zoomOut}
         disabled={value <= PAGE_ZOOM_MIN}
         onClick={() => onChange(value - PAGE_ZOOM_STEP)}
         className="flex h-7 w-7 items-center justify-center rounded-full transition hover:bg-white hover:text-black hover:shadow-sm disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:bg-transparent disabled:hover:shadow-none"
@@ -160,15 +165,15 @@ export function WordPageZoomControls({
         max={PAGE_ZOOM_MAX}
         step={PAGE_ZOOM_SLIDER_STEP}
         value={value}
-        aria-label="页面缩放"
+        aria-label={z.zoom}
         onChange={(event) => onChange(Number(event.target.value))}
         className="word-editor__zoom-range h-5 w-28 sm:w-32"
         style={{ "--word-zoom-progress": `${zoomProgress}%` } as CSSProperties}
       />
       <button
         type="button"
-        title="放大页面"
-        aria-label="放大页面"
+        title={z.zoomIn}
+        aria-label={z.zoomIn}
         disabled={value >= PAGE_ZOOM_MAX}
         onClick={() => onChange(value + PAGE_ZOOM_STEP)}
         className="flex h-7 w-7 items-center justify-center rounded-full transition hover:bg-white hover:text-black hover:shadow-sm disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:bg-transparent disabled:hover:shadow-none"

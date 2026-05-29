@@ -1,4 +1,7 @@
+"use client";
+
 import { CommitTimelineItem } from "@/components/course-studio/commit-timeline-item";
+import { useInterfaceLanguage } from "@/contexts/interface-language-context";
 import { branchSequenceForCommit } from "@/components/course-studio/history-utils";
 import type { CommitRecord, Lesson } from "@/types";
 
@@ -19,10 +22,11 @@ export function VersionHistoryPanel({
   onCreateBranchFromCommit,
   onSwitchBranch,
 }: VersionHistoryPanelProps) {
+  const { texts: txt } = useInterfaceLanguage();
   return (
     <div className="space-y-8">
       <div className="space-y-4">
-        <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">修订记录</p>
+        <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">{txt.studio.history.revisionHistory}</p>
         {[...activeLesson.history_graph.commits].reverse().map((commit, index) => (
           <CommitTimelineItem
             key={commit.id}

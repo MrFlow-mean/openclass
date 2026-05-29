@@ -17,7 +17,7 @@ type AuthCallbackProps = {
 export function AuthCallback({ error, nextPath, token }: AuthCallbackProps) {
   const router = useRouter();
   const hasError = Boolean(error || !token);
-  const message = error || (!token ? "第三方登录没有返回有效会话，请重新登录。" : "正在跳转到开放课堂主页。");
+  const message = error || (!token ? "Third-party sign-in did not return a valid session. Please sign in again." : "Redirecting to OpenClass home.");
 
   useEffect(() => {
     if (error || !token) {
@@ -33,7 +33,7 @@ export function AuthCallback({ error, nextPath, token }: AuthCallbackProps) {
         <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-lg bg-stone-950 text-white">
           {hasError ? <TriangleAlert className="h-5 w-5" /> : <ShieldCheck className="h-5 w-5" />}
         </div>
-        <h1 className="mt-5 text-2xl font-semibold tracking-tight">{hasError ? "登录未完成" : "登录成功"}</h1>
+        <h1 className="mt-5 text-2xl font-semibold tracking-tight">{hasError ? "Sign-in incomplete" : "Signed in"}</h1>
         <p className="mt-3 text-sm leading-6 text-stone-600">
           {message}
         </p>
@@ -43,7 +43,7 @@ export function AuthCallback({ error, nextPath, token }: AuthCallbackProps) {
             href="/login"
             className="mt-6 inline-flex h-10 items-center justify-center rounded-md bg-stone-950 px-4 text-sm font-semibold text-white transition hover:bg-stone-800"
           >
-            返回登录
+            Back to sign in
           </Link>
         ) : null}
       </section>

@@ -1,7 +1,10 @@
+"use client";
+
 import clsx from "clsx";
 import { GitBranch } from "lucide-react";
 
 import { BranchSequenceSelector, type BranchSequenceOption } from "@/components/branch-sequence-selector";
+import { useInterfaceLanguage } from "@/contexts/interface-language-context";
 import {
   compactText,
   formatDate,
@@ -33,6 +36,9 @@ export function CommitTimelineItem({
   onBranch,
   onSwitchBranch,
 }: CommitTimelineItemProps) {
+  const { texts: txt, intlLocale } = useInterfaceLanguage();
+  const h = txt.studio.history;
+  const c = txt.common;
   const isChatFlow = commit.metadata?.kind === "chat_flow";
   const isAutoSave = metadataBool(commit, "autosave") || commit.metadata?.kind === "auto_document_save";
   const userMessage = metadataText(commit, "user_message");
@@ -70,11 +76,11 @@ export function CommitTimelineItem({
         </div>
         {isChatFlow && userMessage ? (
           <div className="mt-2 rounded-xl border border-gray-100 bg-white p-3 text-[11px] leading-5 text-gray-600 shadow-sm">
-            <p className="font-bold text-gray-400">用户输入</p>
+            <p className="font-bold text-gray-400">{h.userInput}</p>
             <p className="mt-1 text-gray-700">{compactText(userMessage)}</p>
             {assistantMessage ? (
               <>
-                <p className="mt-3 font-bold text-gray-400">AI 讲解</p>
+                <p className="mt-3 font-bold text-gray-400">{h.aiExplanation}</p>
                 <p className="mt-1 text-gray-700">{compactText(assistantMessage)}</p>
               </>
             ) : null}
@@ -87,21 +93,21 @@ export function CommitTimelineItem({
         ) : (
           <p className="mt-1 whitespace-pre-wrap text-[11px] text-gray-500">{commit.message}</p>
         )}
-        <p className="mt-1 text-[11px] text-gray-400">{formatDate(commit.created_at)}</p>
+        <p className="mt-1 text-[11px] text-gray-400">{formatDate(commit.created_at, intlLocale)}</p>
         <div className="mt-2 flex flex-wrap gap-2">
           <button
             type="button"
             onClick={onPreview}
             className="rounded-md border border-gray-200 bg-white px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-gray-500 hover:border-gray-300 hover:text-black"
           >
-            Preview
+            {c.preview}
           </button>
           <button
             type="button"
             onClick={onRestore}
             className="rounded-md border border-gray-200 bg-white px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-gray-500 hover:border-gray-300 hover:text-black"
           >
-            Restore
+            {c.restore}
           </button>
           <button
             type="button"
@@ -109,7 +115,7 @@ export function CommitTimelineItem({
             className="rounded-md border border-gray-200 bg-white px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-gray-500 hover:border-gray-300 hover:text-black"
           >
             <GitBranch className="mr-1 inline h-3 w-3" />
-            Branch
+            {c.branch}
           </button>
         </div>
         <BranchSequenceSelector

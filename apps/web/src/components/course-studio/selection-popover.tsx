@@ -2,6 +2,7 @@
 
 import { PencilLine, TextQuote } from "lucide-react";
 
+import { useInterfaceLanguage } from "@/contexts/interface-language-context";
 import type { ChatInteractionMode, SelectionRef } from "@/types";
 import type { SelectionPopoverPosition } from "@/components/course-studio/selection-utils";
 
@@ -18,6 +19,9 @@ export function SelectionPopover({
   isPreviewMode,
   onFocusComposerWithSelection,
 }: SelectionPopoverProps) {
+  const { texts: txt } = useInterfaceLanguage();
+  const s = txt.studio.selectionPopover;
+
   if (!selection || !position) {
     return null;
   }
@@ -34,7 +38,7 @@ export function SelectionPopover({
         className="inline-flex h-10 items-center gap-2 px-3.5 transition-colors hover:bg-gray-50"
       >
         <TextQuote className="h-4 w-4" />
-        引用到输入框
+        {s.quoteToComposer}
       </button>
       {selection.kind === "board" && !isPreviewMode ? (
         <>
@@ -45,7 +49,7 @@ export function SelectionPopover({
             className="inline-flex h-10 items-center gap-2 px-3.5 transition-colors hover:bg-amber-50 hover:text-amber-700"
           >
             <PencilLine className="h-4 w-4" />
-            编辑文档
+            {s.editDocument}
           </button>
         </>
       ) : null}

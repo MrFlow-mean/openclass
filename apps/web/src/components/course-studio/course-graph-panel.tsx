@@ -1,5 +1,8 @@
+"use client";
+
 import { BookOpen } from "lucide-react";
 
+import { useInterfaceLanguage } from "@/contexts/interface-language-context";
 import type { CoursePackage, Lesson } from "@/types";
 
 type CourseGraphPanelProps = {
@@ -15,11 +18,13 @@ export function CourseGraphPanel({
   lessonMap,
   onOpenLesson,
 }: CourseGraphPanelProps) {
+  const { texts: txt } = useInterfaceLanguage();
+  const g = txt.studio.graphPanel;
   return (
     <div className="border-t border-gray-200 pt-6">
       <div className="mb-4 flex items-center gap-2">
         <BookOpen className="h-4 w-4 text-gray-400" />
-        <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">课程图谱</p>
+        <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">{g.title}</p>
       </div>
       <div className="space-y-3">
         {relatedEdges.length ? (
@@ -40,13 +45,13 @@ export function CourseGraphPanel({
                 <p className="text-xs font-bold text-gray-900">
                   {source.title} → {target.title}
                 </p>
-                <p className="mt-1 text-[11px] text-gray-500">关系：{edge.relationship}</p>
+                <p className="mt-1 text-[11px] text-gray-500">{g.relationship(edge.relationship)}</p>
               </button>
             );
           })
         ) : (
           <div className="rounded-xl border border-gray-200 bg-white px-4 py-6 text-sm text-gray-500">
-            当前 lesson 还没有更多图谱关系。
+            {g.empty}
           </div>
         )}
       </div>

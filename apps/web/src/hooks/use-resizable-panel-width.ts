@@ -22,8 +22,8 @@ export function useResizablePanelWidth({
   maxWidth,
   keyboardStep = 24,
   resizeDirection = "right",
-  ariaLabel = "调整面板宽度",
-  title = "调整面板宽度",
+  ariaLabel = "Resize panel",
+  title = "Resize panel",
 }: ResizablePanelWidthOptions) {
   const [width, setWidth] = useState(() => {
     const fallbackWidth = clampPanelWidth(defaultWidth, minWidth, maxWidth);

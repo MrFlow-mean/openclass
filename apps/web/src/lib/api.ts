@@ -264,7 +264,7 @@ function handleChatStreamBlock(block: string, handlers: ChatStreamHandlers) {
     return;
   }
   if (parsed.event === "error") {
-    const message = typeof payload.message === "string" ? payload.message : "聊天失败";
+    const message = typeof payload.message === "string" ? payload.message : "Chat failed";
     throw new Error(message);
   }
 }
@@ -314,7 +314,7 @@ async function streamRequest(path: string, payload: unknown, handlers: ChatStrea
     handleChatStreamBlock(rest, streamHandlers);
   }
   if (!finalResponse) {
-    throw new Error("聊天流没有返回最终结果");
+    throw new Error("The chat stream did not return a final result");
   }
   return finalResponse;
 }

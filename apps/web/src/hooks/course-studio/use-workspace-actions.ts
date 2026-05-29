@@ -50,7 +50,7 @@ export function useWorkspaceActions({
       });
       return true;
     } catch (generationError) {
-      setError(generationError instanceof Error ? generationError.message : "生成 lesson 失败");
+      setError(generationError instanceof Error ? generationError.message : "Could not generate lesson");
       return false;
     } finally {
       setBusyAction(null);
@@ -77,7 +77,7 @@ export function useWorkspaceActions({
       const nextPackage = await api.openLesson(lessonId);
       updateCoursePackage(nextPackage);
     } catch (openError) {
-      setError(openError instanceof Error ? openError.message : "打开课程失败");
+      setError(openError instanceof Error ? openError.message : "Could not open lesson");
     } finally {
       setBusyAction(null);
     }
@@ -94,7 +94,7 @@ export function useWorkspaceActions({
         activeLessonId: activeLesson && activeLesson.id !== lessonId ? activeLesson.id : undefined,
       });
     } catch (closeError) {
-      setError(closeError instanceof Error ? closeError.message : "关闭课程失败");
+      setError(closeError instanceof Error ? closeError.message : "Could not close lesson");
     } finally {
       setBusyAction(null);
     }
@@ -112,14 +112,14 @@ export function useWorkspaceActions({
       const nextPackage = await api.uploadResource(file, activeLesson?.id);
       updateCoursePackage(nextPackage, { activeLessonId: activeLesson?.id });
     } catch (uploadError) {
-      setError(uploadError instanceof Error ? uploadError.message : "上传资料失败");
+      setError(uploadError instanceof Error ? uploadError.message : "Could not upload resource");
     } finally {
       setBusyAction(null);
     }
   }
 
   async function handleDeleteResource(resourceId: string, resourceName: string) {
-    if (!window.confirm(`删除资料“${resourceName}”？删除后，AI 将不再引用它。`)) {
+    if (!window.confirm(`Delete resource "${resourceName}"? AI will no longer cite it after deletion.`)) {
       return;
     }
     if (!(await flushAutoSave("delete-resource"))) {
@@ -130,7 +130,7 @@ export function useWorkspaceActions({
       const nextPackage = await api.deleteResource(resourceId, activeLesson?.id);
       updateCoursePackage(nextPackage, { activeLessonId: activeLesson?.id });
     } catch (deleteError) {
-      setError(deleteError instanceof Error ? deleteError.message : "删除资料失败");
+      setError(deleteError instanceof Error ? deleteError.message : "Could not delete resource");
     } finally {
       setBusyAction(null);
     }

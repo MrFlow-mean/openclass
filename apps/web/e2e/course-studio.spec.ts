@@ -4,27 +4,27 @@ const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8
 
 async function enterAsGuest(page: Page, nextPath = "/") {
   await page.goto(`/login?next=${encodeURIComponent(nextPath)}`);
-  await page.getByRole("button", { name: /游客登录/ }).click();
-  await expect(page.getByLabel("添加课程包")).toBeVisible();
+  await page.getByRole("button", { name: /Continue as guest/ }).click();
+  await expect(page.getByLabel("Add course package")).toBeVisible();
 }
 
 async function createPackageFromHome(page: Page, title: string) {
-  await page.getByLabel("添加课程包").click();
-  await page.getByLabel("课程包名称").fill(title);
+  await page.getByLabel("Add course package").click();
+  await page.getByLabel("Package name").fill(title);
   const createPackageResponse = page.waitForResponse(
     (response) => response.url().endsWith("/api/packages") && response.request().method() === "POST"
   );
-  await page.getByLabel("确认").click();
+  await page.getByLabel("Confirm").click();
   await createPackageResponse;
   await expect(page.locator("[data-package-selection-root]").filter({ hasText: title }).first()).toBeVisible();
 }
 
 async function createLessonFromEmptyStudio(page: Page, title: string) {
   await page.goto("/studio");
-  await expect(page.getByText("这个课程包还是空的")).toBeVisible();
-  await page.getByRole("button", { name: "新建第一页" }).click();
-  await page.getByLabel("第一页名称").fill(title);
-  await page.getByLabel("确认").click();
+  await expect(page.getByText("This package is empty")).toBeVisible();
+  await page.getByRole("button", { name: "Create first page" }).click();
+  await page.getByLabel("First page name").fill(title);
+  await page.getByLabel("Confirm").click();
   await expect(page.locator(".ProseMirror")).toBeVisible();
 }
 
@@ -40,17 +40,17 @@ async function writeEditorTextAndWaitForSave(page: Page, text: string) {
 }
 
 async function openHistoryPanel(page: Page) {
-  await page.getByTitle("展开右侧栏").click();
-  await expect(page.getByText("历史分支图")).toBeVisible();
+  await page.getByTitle("Expand side panel").click();
+  await expect(page.getByText("History graph")).toBeVisible();
 }
 
 test("creates a package and lesson, edits the document, and persists a version", async ({ page }) => {
   const unique = Date.now();
   await enterAsGuest(page);
-  await createPackageFromHome(page, `维护性测试课程包 ${unique}`);
-  await createLessonFromEmptyStudio(page, `主流程页面 ${unique}`);
+  await createPackageFromHome(page, `Maintainability test package ${unique}`);
+  await createLessonFromEmptyStudio(page, `Main flow page ${unique}`);
 
-  await writeEditorTextAndWaitForSave(page, `第一版讲义内容 ${unique}`);
+  await writeEditorTextAndWaitForSave(page, `First note version ${unique}`);
   await openHistoryPanel(page);
 
   await expect(page.getByText("Auto Save").first()).toBeVisible();
@@ -59,20 +59,20 @@ test("creates a package and lesson, edits the document, and persists a version",
 test("restores an older document version from history", async ({ page }) => {
   const unique = Date.now();
   await enterAsGuest(page);
-  await createPackageFromHome(page, `恢复测试课程包 ${unique}`);
-  await createLessonFromEmptyStudio(page, `恢复测试页面 ${unique}`);
+  await createPackageFromHome(page, `Restore test package ${unique}`);
+  await createLessonFromEmptyStudio(page, `Restore test page ${unique}`);
 
-  const firstVersion = `历史版本一 ${unique}`;
-  const secondVersion = `历史版本二 ${unique}`;
+  const firstVersion = `Historical version one ${unique}`;
+  const secondVersion = `Historical version two ${unique}`;
   await writeEditorTextAndWaitForSave(page, firstVersion);
   await writeEditorTextAndWaitForSave(page, secondVersion);
   await openHistoryPanel(page);
-  await page.getByLabel(/查看历史节点/).nth(1).click();
+  await page.getByLabel(/View history node/).nth(1).click();
 
   const restoreResponse = page.waitForResponse(
     (response) => response.url().includes("/restore") && response.request().method() === "POST"
   );
-  await page.getByRole("button", { name: "Restore" }).click();
+  await page.getByRole("button", { name: "Restore", exact: true }).click();
   await restoreResponse;
 
   const editor = page.locator(".ProseMirror").first();
@@ -83,14 +83,14 @@ test("restores an older document version from history", async ({ page }) => {
 test("shows a sideways branch sprout immediately after creating a branch", async ({ page }) => {
   const unique = Date.now();
   await enterAsGuest(page);
-  await createPackageFromHome(page, `分叉图测试课程包 ${unique}`);
-  await createLessonFromEmptyStudio(page, `分叉图测试页面 ${unique}`);
+  await createPackageFromHome(page, `Branch graph test package ${unique}`);
+  await createLessonFromEmptyStudio(page, `Branch graph test page ${unique}`);
   await openHistoryPanel(page);
 
   const branchResponse = page.waitForResponse(
     (response) => response.url().includes("/branches") && response.request().method() === "POST"
   );
-  await page.getByRole("button", { name: "Branch" }).click();
+  await page.getByRole("button", { name: "Branch", exact: true }).click();
   await branchResponse;
 
   await expect(page.getByText("2 branches")).toBeVisible();
@@ -101,17 +101,17 @@ test("shows a sideways branch sprout immediately after creating a branch", async
 test("merges a source branch into the current branch with manual choices", async ({ page }) => {
   const unique = Date.now();
   await enterAsGuest(page);
-  await createPackageFromHome(page, `合并图测试课程包 ${unique}`);
-  await createLessonFromEmptyStudio(page, `合并图测试页面 ${unique}`);
+  await createPackageFromHome(page, `Merge graph test package ${unique}`);
+  await createLessonFromEmptyStudio(page, `Merge graph test page ${unique}`);
   await openHistoryPanel(page);
 
   const branchResponse = page.waitForResponse(
     (response) => response.url().includes("/branches") && response.request().method() === "POST"
   );
-  await page.getByRole("button", { name: "Branch" }).click();
+  await page.getByRole("button", { name: "Branch", exact: true }).click();
   await branchResponse;
 
-  const sourceText = `来源分支文档 ${unique}`;
+  const sourceText = `Source branch document ${unique}`;
   await writeEditorTextAndWaitForSave(page, sourceText);
 
   const switchMainResponse = page.waitForResponse(
@@ -120,21 +120,21 @@ test("merges a source branch into the current branch with manual choices", async
   await page.locator('button[title^="main:"]').click();
   await switchMainResponse;
 
-  const targetText = `当前分支文档 ${unique}`;
+  const targetText = `Current branch document ${unique}`;
   await writeEditorTextAndWaitForSave(page, targetText);
 
   const previewResponse = page.waitForResponse(
     (response) => response.url().includes("/branches/merge-preview") && response.request().method() === "POST"
   );
-  await page.getByLabel("合并分支 branch-2").click();
+  await page.getByLabel("Merge branch branch-2").click();
   await previewResponse;
   await expect(page.getByText("Merge Review")).toBeVisible();
 
-  await page.getByLabel("文档 使用来源").click();
+  await page.getByLabel("Use Source for Document").click();
   const mergeResponse = page.waitForResponse(
     (response) => response.url().includes("/branches/merge") && response.request().method() === "POST"
   );
-  await page.getByRole("button", { name: "Confirm Merge" }).click();
+  await page.getByRole("button", { name: "Confirm merge" }).click();
   await mergeResponse;
 
   const editor = page.locator(".ProseMirror").first();
@@ -146,9 +146,9 @@ test("merges a source branch into the current branch with manual choices", async
 test("DOCX import and export entry points complete without breaking the editor", async ({ page }) => {
   const unique = Date.now();
   await enterAsGuest(page);
-  await createPackageFromHome(page, `DOCX 测试课程包 ${unique}`);
-  await createLessonFromEmptyStudio(page, `DOCX 测试页面 ${unique}`);
-  await writeEditorTextAndWaitForSave(page, `导入前内容 ${unique}`);
+  await createPackageFromHome(page, `DOCX test package ${unique}`);
+  await createLessonFromEmptyStudio(page, `DOCX test page ${unique}`);
+  await writeEditorTextAndWaitForSave(page, `Before import ${unique}`);
 
   await page.route("**/api/lessons/*/document/import-docx", async (route) => {
     const authHeader = route.request().headers().authorization;
@@ -156,7 +156,7 @@ test("DOCX import and export entry points complete without breaking the editor",
       headers: authHeader ? { Authorization: authHeader } : undefined,
     });
     const currentPackage = await currentPackageResponse.json();
-    const importedText = `DOCX 导入内容 ${unique}`;
+    const importedText = `DOCX imported content ${unique}`;
     const lesson = currentPackage.lessons[0];
     lesson.board_document = {
       ...lesson.board_document,
@@ -178,7 +178,7 @@ test("DOCX import and export entry points complete without breaking the editor",
   });
 
   const fileChooserPromise = page.waitForEvent("filechooser");
-  await page.getByRole("button", { name: "导入 DOCX" }).click();
+  await page.getByRole("button", { name: "Import DOCX" }).click();
   const fileChooser = await fileChooserPromise;
   await fileChooser.setFiles({
     name: "smoke.docx",
@@ -186,9 +186,9 @@ test("DOCX import and export entry points complete without breaking the editor",
     buffer: Buffer.from("docx-smoke"),
   });
 
-  await expect(page.locator(".ProseMirror").first()).toContainText(`DOCX 导入内容 ${unique}`);
+  await expect(page.locator(".ProseMirror").first()).toContainText(`DOCX imported content ${unique}`);
   const downloadPromise = page.waitForEvent("download");
-  await page.getByRole("button", { name: "导出 DOCX" }).click();
+  await page.getByRole("button", { name: "Export DOCX" }).click();
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toMatch(/\.docx$/);
 });

@@ -4,6 +4,8 @@ import clsx from "clsx";
 import { useEffect, useRef, useState } from "react";
 import { BookOpen, Clock3, GitBranch } from "lucide-react";
 
+import { useInterfaceLanguage } from "@/contexts/interface-language-context";
+
 export type BranchSequenceOption = {
   order: number;
   branchName: string;
@@ -14,8 +16,8 @@ export type BranchSequenceOption = {
   updatedAt: string;
 };
 
-function formatBranchDate(value: string) {
-  return new Date(value).toLocaleString("zh-CN", {
+function formatBranchDate(value: string, locale: string) {
+  return new Date(value).toLocaleString(locale, {
     hour12: false,
     month: "2-digit",
     day: "2-digit",
@@ -33,6 +35,8 @@ export function BranchSequenceSelector({
   currentBranchName: string;
   onSelectBranch: (branchName: string) => void;
 }) {
+  const { texts: txt, intlLocale } = useInterfaceLanguage();
+  const s = txt.studio.branchSequence;
   const rootRef = useRef<HTMLDivElement | null>(null);
   const [openBranchName, setOpenBranchName] = useState<string | null>(null);
   const openBranch = branches.find((branch) => branch.branchName === openBranchName) ?? null;
@@ -95,8 +99,8 @@ export function BranchSequenceSelector({
                     : "text-blue-600 hover:bg-blue-50 hover:text-blue-700"
                 )}
                 aria-current={isCurrent ? "true" : undefined}
-                aria-label={`切换到第 ${branch.order} 号分支：${branch.branchName}`}
-                title={`${branch.branchName} · 左键切换，右键查看概览`}
+                aria-label={s.switchAria(branch.order, branch.branchName)}
+                title={s.title(branch.branchName)}
               >
                 {branch.order}
               </button>
@@ -122,7 +126,7 @@ export function BranchSequenceSelector({
                     </p>
                     <p className="mt-2 flex items-center gap-1 text-[10px] text-gray-400">
                       <Clock3 className="h-3 w-3" />
-                      {formatBranchDate(openBranch.updatedAt)}
+                      {formatBranchDate(openBranch.updatedAt, intlLocale)}
                     </p>
                   </div>
                 </div>

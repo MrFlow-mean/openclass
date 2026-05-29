@@ -36,26 +36,26 @@ function createClientSessionId(prefix: string): string {
 
 function realtimeReadyStatus(option: AIModelOption | null | undefined): string {
   if (!option) {
-    return "实时语音未启用";
+    return "Realtime voice is not enabled";
   }
   if (!option.enabled) {
-    return `${PROVIDER_LABELS[option.provider]} 实时语音未配置`;
+    return `${PROVIDER_LABELS[option.provider]} realtime voice is not configured`;
   }
-  return "点击麦克风，连接实时语音 Chatbot";
+  return "Click the microphone to connect realtime Chatbot voice";
 }
 
 function realtimeUnavailableMessage(option: AIModelOption | null | undefined): string {
   if (!option) {
-    return "实时语音未启用。请开启 OPENCLASS_REALTIME_ENABLED 并重启后端。";
+    return "Realtime voice is not enabled. Turn on OPENCLASS_REALTIME_ENABLED and restart the backend.";
   }
-  return `当前未配置 ${PROVIDER_LABELS[option.provider]} 的实时语音 API Key。`;
+  return `${PROVIDER_LABELS[option.provider]} realtime voice API key is not configured.`;
 }
 
 function isAutomaticRealtimeStatus(value: string): boolean {
   return (
-    value === "实时语音未启用" ||
-    value === "点击麦克风，连接实时语音 Chatbot" ||
-    value.endsWith("实时语音未配置")
+    value === "Realtime voice is not enabled" ||
+    value === "Click the microphone to connect realtime Chatbot voice" ||
+    value.endsWith("realtime voice is not configured")
   );
 }
 
@@ -186,7 +186,7 @@ export function useRealtimeVoice({
     realtimeLessonTitleRef.current = null;
   }
 
-  function stopRealtimeSession(statusText = "语音 Chatbot 已断开") {
+  function stopRealtimeSession(statusText = "Voice Chatbot disconnected") {
     disposeRealtimeSession();
     window.speechSynthesis?.cancel();
     setVoiceActive(false);
@@ -208,7 +208,7 @@ export function useRealtimeVoice({
     }
     window.speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = "zh-CN";
+    utterance.lang = "en-US";
     utterance.rate = 1;
     utterance.pitch = 1;
     window.speechSynthesis.speak(utterance);
@@ -221,7 +221,7 @@ export function useRealtimeVoice({
     }
     enqueueRealtimeLogEvent(lessonId, "user", eventType, normalized);
     if (chatRequestInFlightRef.current) {
-      setVoiceStatusText("正在处理上一句语音，请稍等片刻");
+      setVoiceStatusText("Processing the previous voice input. Please wait.");
       return;
     }
     onSubmitTranscript(normalized);
@@ -282,7 +282,7 @@ export function useRealtimeVoice({
     if (serverContent.interrupted) {
       stopGoogleQueuedPlayback();
       googleOutputTranscriptRef.current = "";
-      setVoiceStatusText("检测到插话，已停止上一段回答");
+      setVoiceStatusText("Interruption detected. Previous response stopped.");
     }
     const outputText = serverContent.outputTranscription?.text;
     if (outputText && !serverContent.interrupted) {
@@ -337,16 +337,16 @@ export function useRealtimeVoice({
         socket.send(JSON.stringify(session.setup));
       };
       socket.onerror = () => {
-        rejectStart("Google Gemini Live WebSocket 连接失败");
+        rejectStart("Google Gemini Live WebSocket connection failed");
       };
       socket.onclose = (event) => {
         if (!streamingStarted) {
           rejectStart(
-            `Google Gemini Live WebSocket 在初始化前关闭（${event.code}${event.reason ? `：${event.reason}` : ""}）`
+            `Google Gemini Live WebSocket closed before initialization (${event.code}${event.reason ? `: ${event.reason}` : ""})`
           );
         }
         if (googleRealtimeSocketRef.current === socket) {
-          stopRealtimeSession("Google Gemini Live 会话已结束");
+          stopRealtimeSession("Google Gemini Live session ended");
         }
       };
       socket.onmessage = (event) => {
@@ -360,7 +360,7 @@ export function useRealtimeVoice({
                 rejectStart(message);
                 return;
               }
-              stopRealtimeSession("Google Gemini Live 会话已结束");
+              stopRealtimeSession("Google Gemini Live session ended");
               setError(message);
               return;
             }
@@ -369,7 +369,7 @@ export function useRealtimeVoice({
               beginGoogleAudioStreaming(socket, mediaStream, audioContext);
               setVoiceActive(true);
               setBusyAction((current) => (current === "voice-connect" ? null : current));
-              setVoiceStatusText(`Google Gemini Live 已连接，语音音色：${session.voice}`);
+              setVoiceStatusText(`Google Gemini Live connected. Voice: ${session.voice}`);
               resolveStart();
               return;
             }
@@ -387,7 +387,7 @@ export function useRealtimeVoice({
       return;
     }
     if (voiceActive || busyAction === "voice-connect") {
-      stopRealtimeSession("语音 Chatbot 已手动断开");
+      stopRealtimeSession("Voice Chatbot disconnected manually");
       return;
     }
     if (!activeLesson) {
@@ -400,7 +400,7 @@ export function useRealtimeVoice({
       return;
     }
     if (!navigator.mediaDevices?.getUserMedia) {
-      setError("当前浏览器无法访问麦克风。请使用支持麦克风的浏览器，并通过 localhost 或 HTTPS 打开页面。");
+      setError("This browser cannot access the microphone. Use a browser with microphone support and open the page through localhost or HTTPS.");
       return;
     }
     if (!(await flushAutoSave("voice"))) {
@@ -409,7 +409,7 @@ export function useRealtimeVoice({
 
     setBusyAction("voice-connect");
     const realtimeLabel = modelButtonLabel(selectedRealtimeOption ?? null, selectedRealtimeModel);
-    setVoiceStatusText(`正在连接 ${realtimeLabel}…`);
+    setVoiceStatusText(`Connecting ${realtimeLabel}...`);
     setError(null);
 
     try {
@@ -450,7 +450,7 @@ export function useRealtimeVoice({
       peerConnection.onconnectionstatechange = () => {
         if (peerConnection.connectionState === "connected") {
           setVoiceActive(true);
-          setVoiceStatusText(`${realtimeLabel} 已连接，说话后会先进入 Chatbot 工作流`);
+          setVoiceStatusText(`${realtimeLabel} connected. Speech will enter the Chatbot workflow first.`);
           setBusyAction((current) => (current === "voice-connect" ? null : current));
           return;
         }
@@ -459,7 +459,7 @@ export function useRealtimeVoice({
           peerConnection.connectionState === "closed" ||
           peerConnection.connectionState === "disconnected"
         ) {
-          stopRealtimeSession("语音会话已结束");
+          stopRealtimeSession("Voice session ended");
         }
       };
 
@@ -534,12 +534,12 @@ export function useRealtimeVoice({
       });
 
       setVoiceStatusText(
-        `${PROVIDER_LABELS[realtimeResponse.provider]} ${realtimeResponse.model} 已就绪${
-          realtimeResponse.tools_enabled ? "，可调用 Chatbot 工具" : "，正在受控转写"
+        `${PROVIDER_LABELS[realtimeResponse.provider]} ${realtimeResponse.model} is ready${
+          realtimeResponse.tools_enabled ? ", Chatbot tools enabled" : ", controlled transcription active"
         }`
       );
     } catch (voiceError) {
-      stopRealtimeSession("语音连接失败");
+      stopRealtimeSession("Voice connection failed");
       setError(realtimeConnectionErrorMessage(voiceError, selectedRealtimeModel));
     }
   }
@@ -585,7 +585,7 @@ export function useRealtimeVoice({
     if (!realtimeLessonIdRef.current || realtimeLessonIdRef.current === activeLesson?.id) {
       return;
     }
-    stopRealtimeSessionEvent("已切换课程，语音会话已自动断开");
+    stopRealtimeSessionEvent("Course changed. Voice session disconnected automatically.");
   }, [activeLesson?.id]);
 
   const idleVoiceStatusText =

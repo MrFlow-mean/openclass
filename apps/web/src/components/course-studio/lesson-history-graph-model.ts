@@ -147,17 +147,17 @@ function commitSummary(commit: CommitRecord) {
     return compactText(assistantMessage, 120);
   }
   const snapshotText = commit.snapshot.content_text || commit.snapshot.title || "";
-  return compactText(commit.message || snapshotText || "这个节点没有更多摘要。", 120);
+  return compactText(commit.message || snapshotText || "This node has no additional summary.", 120);
 }
 
 function commitDetail(commit: CommitRecord) {
   const userMessage = metadataText(commit, "user_message");
   const assistantMessage = metadataText(commit, "assistant_message");
   if (userMessage && assistantMessage) {
-    return `用户：${compactText(userMessage, 120)}\nAI：${compactText(assistantMessage, 180)}`;
+    return `User: ${compactText(userMessage, 120)}\nAI: ${compactText(assistantMessage, 180)}`;
   }
   if (userMessage) {
-    return `用户：${compactText(userMessage, 220)}`;
+    return `User: ${compactText(userMessage, 220)}`;
   }
   return compactText(commit.message || commit.snapshot.content_text || commit.snapshot.title || "", 260);
 }

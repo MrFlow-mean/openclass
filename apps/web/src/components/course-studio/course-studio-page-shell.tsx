@@ -4,6 +4,8 @@ import clsx from "clsx";
 import { ArrowLeft, ChevronDown, ChevronUp, PanelRight, X } from "lucide-react";
 import type { ReactNode } from "react";
 
+import { useInterfaceLanguage } from "@/contexts/interface-language-context";
+
 type CourseStudioPageShellProps = {
   workspaceTitle: string;
   topCollapsed: boolean;
@@ -31,6 +33,8 @@ export function CourseStudioPageShell({
   onRightSidebarOpenChange,
   onClearError,
 }: CourseStudioPageShellProps) {
+  const { texts: txt } = useInterfaceLanguage();
+  const s = txt.studio.shell;
   return (
     <main className="flex h-screen flex-col overflow-hidden bg-[#f8f6f0] text-[#1a1a1a]">
       <div
@@ -46,8 +50,8 @@ export function CourseStudioPageShell({
                 type="button"
                 onClick={onReturnHome}
                 className="group flex h-8 w-8 items-center justify-center rounded-full text-gray-600 transition-colors duration-150 hover:bg-gray-100 hover:text-gray-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-300"
-                title="返回主页"
-                aria-label="返回主页"
+                title={s.returnHome}
+                aria-label={s.returnHome}
               >
                 <ArrowLeft className="h-5 w-5 stroke-[1.8] transition-transform duration-150 group-hover:-translate-x-0.5" />
               </button>
@@ -69,7 +73,7 @@ export function CourseStudioPageShell({
                     ? "border-gray-200 bg-gray-100 text-gray-700 shadow-sm"
                     : "border-transparent bg-white text-gray-500 hover:border-gray-200 hover:bg-gray-50"
                 )}
-                title={rightSidebarOpen ? "收起右侧栏" : "展开右侧栏"}
+                title={rightSidebarOpen ? s.collapseRight : s.expandRight}
               >
                 <PanelRight className="h-4.5 w-4.5" />
               </button>
@@ -83,7 +87,7 @@ export function CourseStudioPageShell({
                     ? "border-gray-200 bg-gray-100 text-gray-700 shadow-sm"
                     : "border-transparent bg-white text-gray-500 hover:border-gray-200 hover:bg-gray-50"
                 )}
-                title="收起顶部与编辑工具栏"
+                title={s.collapseToolbar}
               >
                 <ChevronUp className="h-4.5 w-4.5" />
               </button>
@@ -99,7 +103,7 @@ export function CourseStudioPageShell({
           "fixed left-1/2 top-0 z-[70] flex h-4 w-16 -translate-x-1/2 items-center justify-center rounded-b-lg border border-t-0 border-gray-200 bg-white shadow-sm transition-all hover:h-5 hover:bg-gray-50",
           topCollapsed ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"
         )}
-        title="展开顶部与编辑工具栏"
+        title={s.expandToolbar}
       >
         <ChevronDown className="h-3 w-3 text-gray-400" />
       </button>
@@ -113,8 +117,8 @@ export function CourseStudioPageShell({
           <button
             type="button"
             onClick={onClearError}
-            aria-label="关闭错误提示"
-            title="关闭提示"
+            aria-label={s.closeError}
+            title={s.closeTip}
             className="-mr-1 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-rose-500 transition-colors hover:bg-rose-100 hover:text-rose-700"
           >
             <X className="h-4 w-4" />

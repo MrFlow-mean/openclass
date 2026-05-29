@@ -1,9 +1,12 @@
+"use client";
+
 import clsx from "clsx";
 import { X } from "lucide-react";
 import type { HTMLAttributes } from "react";
 
 import { LessonHistoryGraphPanel } from "@/components/course-studio/lesson-history-graph-panel";
 import { ResourcePanel } from "@/components/course-studio/resource-panel";
+import { useInterfaceLanguage } from "@/contexts/interface-language-context";
 import type {
   BoardDecision,
   CommitRecord,
@@ -80,6 +83,8 @@ export function CourseStudioSidePanel({
   onDeleteResource,
   onOpenLesson,
 }: CourseStudioSidePanelProps) {
+  const { texts: txt } = useInterfaceLanguage();
+  const s = txt.studio.sidePanel;
   return (
     <aside
       className={clsx(
@@ -102,10 +107,12 @@ export function CourseStudioSidePanel({
         />
       </div>
       <div className="flex h-12 items-center justify-between border-b border-gray-200 bg-white px-5">
-        <h4 className="text-[10px] font-bold uppercase tracking-widest text-gray-500">课程工作台辅助</h4>
+        <h4 className="text-[10px] font-bold uppercase tracking-widest text-gray-500">{s.title}</h4>
         <button
           type="button"
           onClick={onClose}
+          title={s.close}
+          aria-label={s.close}
           className="rounded-md p-1.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-black"
         >
           <X className="h-3.5 w-3.5" />
@@ -114,8 +121,8 @@ export function CourseStudioSidePanel({
 
       <div className="flex border-b border-gray-200 bg-white">
         {[
-          { value: "graph", label: "Graph" },
-          { value: "library", label: "Library" },
+          { value: "graph", label: s.graph },
+          { value: "library", label: s.library },
         ].map((tab) => (
           <button
             key={tab.value}

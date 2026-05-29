@@ -31,35 +31,35 @@ type CreatorFilter = "all" | string;
 
 function formatRelativeTime(value: string | Date | null | undefined) {
   if (!value) {
-    return "刚刚";
+    return "just now";
   }
 
   const date = value instanceof Date ? value : new Date(value);
   const timestamp = date.getTime();
 
   if (Number.isNaN(timestamp)) {
-    return "刚刚";
+    return "just now";
   }
 
   const minutes = Math.floor((Date.now() - timestamp) / 60000);
   if (minutes <= 0) {
-    return "刚刚";
+    return "just now";
   }
   if (minutes < 60) {
-    return `${minutes} 分钟前`;
+    return `${minutes}m ago`;
   }
 
   const hours = Math.floor(minutes / 60);
   if (hours < 24) {
-    return `${hours} 小时前`;
+    return `${hours}h ago`;
   }
 
   const days = Math.floor(hours / 24);
   if (days < 7) {
-    return `${days} 天前`;
+    return `${days}d ago`;
   }
 
-  return new Intl.DateTimeFormat("zh-CN", {
+  return new Intl.DateTimeFormat("en-US", {
     month: "numeric",
     day: "numeric",
   }).format(date);
@@ -86,7 +86,7 @@ function feedItemMatchesSearch(item: FollowedCourseUpdateItem, normalizedQuery: 
 }
 
 function formatCompactCount(value: number) {
-  return new Intl.NumberFormat("zh-CN", {
+  return new Intl.NumberFormat("en-US", {
     maximumFractionDigits: 1,
     notation: "compact",
   }).format(value);
@@ -182,12 +182,12 @@ export function FollowingFeedContent() {
           <div>
             <h1 className="flex items-center gap-2 text-lg font-semibold text-stone-950">
               <Activity className="h-5 w-5" />
-              {selectedCreator ? selectedCreator.name : "全部动态"}
+              {selectedCreator ? selectedCreator.name : "All updates"}
             </h1>
             <p className="mt-1 text-sm text-stone-500">
               {selectedCreator
-                ? `${selectedCreator.field} · ${formatCompactCount(selectedCreator.followers)} 粉丝`
-                : `${FOLLOWED_CREATORS.length} 位关注创作者的课程项目更新`}
+                ? `${selectedCreator.field} - ${formatCompactCount(selectedCreator.followers)} followers`
+                : `Course project updates from ${FOLLOWED_CREATORS.length} followed creators`}
             </p>
           </div>
 
@@ -198,7 +198,7 @@ export function FollowingFeedContent() {
                 type="text"
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                placeholder="搜索创作者、课程或更新内容"
+                placeholder="Search creators, courses, or updates"
                 className="w-full rounded-full border border-stone-200 bg-white py-2.5 pl-9 pr-3 text-sm outline-none transition placeholder:text-stone-400 focus:border-stone-950"
               />
             </div>
@@ -211,7 +211,7 @@ export function FollowingFeedContent() {
             visibleFeedItems.map((item) => renderFeedCard(item))
           ) : (
             <div className="rounded-[24px] border border-dashed border-stone-300 bg-white/70 px-5 py-8 text-sm text-stone-500">
-              没有找到匹配的他人项目更新。
+              No matching updates from followed projects.
             </div>
           )}
         </div>
@@ -253,8 +253,8 @@ function FollowingCreatorRail({
             <Activity className="h-5 w-5" />
           </span>
           <span className="min-w-0 flex-1">
-            <span className="block truncate text-sm font-semibold">全部动态</span>
-            <span className="mt-0.5 block truncate text-xs text-stone-400">{creators.length} 位已关注</span>
+            <span className="block truncate text-sm font-semibold">All updates</span>
+            <span className="mt-0.5 block truncate text-xs text-stone-400">{creators.length} followed</span>
           </span>
           {totalUnreadCount ? (
             <span className="flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-[#ff6699] px-1.5 text-[11px] font-semibold text-white">
@@ -281,7 +281,7 @@ function FollowingCreatorRail({
               <span className="relative h-12 w-12 shrink-0">
                 <Image
                   src={creatorAvatarUrl(creator)}
-                  alt={`${creator.name} 头像`}
+                  alt={`${creator.name} avatar`}
                   className="h-12 w-12 rounded-full border border-white bg-stone-100 object-cover shadow-sm"
                   width={48}
                   height={48}
@@ -363,8 +363,8 @@ function renderFeedCard(item: FollowedCourseUpdateItem) {
         <button
           type="button"
           className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-stone-400 transition hover:bg-stone-100 hover:text-stone-700"
-          aria-label="更多项目操作"
-          title="更多项目操作"
+          aria-label="More project actions"
+          title="More project actions"
         >
           <MoreHorizontal className="h-4 w-4" />
         </button>
@@ -377,7 +377,7 @@ function renderFeedCard(item: FollowedCourseUpdateItem) {
         >
           {FOLLOWED_UPDATE_KIND_LABELS[update.updateKind]}
         </span>
-        <span className="text-xs text-stone-400">{update.lessonCount} 课 · {update.views.toLocaleString("zh-CN")} views</span>
+        <span className="text-xs text-stone-400">{update.lessonCount} lessons - {update.views.toLocaleString("en-US")} views</span>
       </div>
 
       <div className="mt-4 rounded-md bg-[#f6f8fa] p-4">
@@ -398,15 +398,15 @@ function renderFeedCard(item: FollowedCourseUpdateItem) {
       <div className="mt-4 flex flex-wrap items-center gap-2 text-xs text-stone-500">
         <span className="inline-flex h-7 items-center gap-1 rounded-md border border-stone-200 bg-white px-2.5">
           <Eye className="h-3.5 w-3.5" />
-          {update.views.toLocaleString("zh-CN")}
+          {update.views.toLocaleString("en-US")}
         </span>
         <span className="inline-flex h-7 items-center gap-1 rounded-md border border-stone-200 bg-white px-2.5">
           <MessageCircle className="h-3.5 w-3.5" />
-          {update.comments.toLocaleString("zh-CN")}
+          {update.comments.toLocaleString("en-US")}
         </span>
         <span className="inline-flex h-7 items-center gap-1 rounded-md border border-stone-200 bg-white px-2.5">
           <Heart className="h-3.5 w-3.5" />
-          {update.likes.toLocaleString("zh-CN")}
+          {update.likes.toLocaleString("en-US")}
         </span>
       </div>
     </article>
@@ -423,7 +423,7 @@ export function FollowingFeed() {
             className="inline-flex items-center gap-2 rounded-md px-2 py-2 text-sm font-semibold text-stone-700 transition hover:bg-stone-100 hover:text-stone-950"
           >
             <ArrowLeft className="h-4 w-4" />
-            开放课堂
+            OpenClass
           </Link>
 
           <Link
@@ -431,7 +431,7 @@ export function FollowingFeed() {
             className="inline-flex items-center gap-2 rounded-md border border-stone-200 bg-white px-3 py-2 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:text-stone-950"
           >
             <BrandMark alt="" className="h-5 w-5 rounded bg-white" size={40} />
-            开放课堂
+            OpenClass
           </Link>
         </div>
       </header>

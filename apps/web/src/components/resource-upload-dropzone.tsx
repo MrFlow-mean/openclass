@@ -4,6 +4,8 @@ import clsx from "clsx";
 import { LoaderCircle, Upload } from "lucide-react";
 import { useCallback, useState, type DragEvent } from "react";
 
+import { useInterfaceLanguage } from "@/contexts/interface-language-context";
+
 type ResourceUploadDropzoneProps = {
   disabled?: boolean;
   uploading?: boolean;
@@ -15,6 +17,8 @@ function dragIncludesFiles(event: DragEvent<HTMLElement>) {
 }
 
 export function ResourceUploadDropzone({ disabled = false, uploading = false, onUpload }: ResourceUploadDropzoneProps) {
+  const { texts: txt } = useInterfaceLanguage();
+  const u = txt.studio.upload;
   const [isDragActive, setIsDragActive] = useState(false);
 
   const handleDragEnter = useCallback(
@@ -91,7 +95,7 @@ export function ResourceUploadDropzone({ disabled = false, uploading = false, on
     >
       <span className="inline-flex items-center justify-center gap-2">
         {uploading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
-        {isDragActive && !disabled ? "松开上传" : uploading ? "正在上传" : "上传文件或图片"}
+        {isDragActive && !disabled ? u.drop : uploading ? u.uploading : u.idle}
       </span>
       <input
         type="file"

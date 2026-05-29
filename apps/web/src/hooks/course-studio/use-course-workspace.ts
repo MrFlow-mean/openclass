@@ -62,7 +62,7 @@ export function useCourseWorkspace() {
         setLessonComposerStates((current) => createComposerStateMap(payload, current));
         setError(null);
       } catch (loadError) {
-        setError(loadError instanceof Error ? loadError.message : "加载失败");
+        setError(loadError instanceof Error ? loadError.message : "Load failed");
       } finally {
         setIsLoading(false);
       }

@@ -5,6 +5,7 @@ import clsx from "clsx";
 import { BookOpen, BrainCircuit, Clock3, GitBranch, GitMerge } from "lucide-react";
 
 import { BranchMergeReviewCard } from "@/components/course-studio/branch-merge-review-card";
+import { useInterfaceLanguage } from "@/contexts/interface-language-context";
 import {
   buildLessonHistoryGraphModel,
   graphHeadCommit,
@@ -95,6 +96,9 @@ export function LessonHistoryGraphPanel({
   onCancelMerge,
   onConfirmMerge,
 }: LessonHistoryGraphPanelProps) {
+  const { texts: txt, intlLocale } = useInterfaceLanguage();
+  const h = txt.studio.history;
+  const c = txt.common;
   const model = useMemo(
     () => buildLessonHistoryGraphModel(activeLesson, previewCommitId),
     [activeLesson, previewCommitId]
@@ -110,15 +114,15 @@ export function LessonHistoryGraphPanel({
       <section className="space-y-3">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">历史分支图</p>
+            <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">{h.title}</p>
             <p className="mt-1 text-sm font-semibold text-gray-950">{activeLesson.history_graph.current_branch}</p>
           </div>
           <div className="flex shrink-0 gap-1 text-[10px] font-semibold text-gray-500">
             <span className="rounded-md border border-gray-200 bg-white px-2 py-1">
-              {model.nodes.length} commits
+              {h.commitsCount(model.nodes.length)}
             </span>
             <span className="rounded-md border border-gray-200 bg-white px-2 py-1">
-              {model.branches.length} branches
+              {h.branchesCount(model.branches.length)}
             </span>
           </div>
         </div>
@@ -154,8 +158,8 @@ export function LessonHistoryGraphPanel({
                     type="button"
                     data-testid="history-branch-merge"
                     onClick={() => void onOpenMergePreview(branch.name)}
-                    title={`合并 ${branch.name}`}
-                    aria-label={`合并分支 ${branch.name}`}
+                    title={h.mergeBranchTitle(branch.name)}
+                    aria-label={h.mergeBranchAria(branch.name)}
                     className="flex h-full w-5 items-center justify-center border-l border-gray-200 text-gray-400 transition hover:bg-gray-50 hover:text-gray-950"
                   >
                     <GitMerge className="h-2.5 w-2.5" />
@@ -212,8 +216,8 @@ export function LessonHistoryGraphPanel({
               type="button"
               onClick={() => void onSwitchBranch(sprout.branch.name)}
               disabled={sprout.branch.isCurrent}
-              title={`切换到 ${sprout.branch.name}`}
-              aria-label={`切换到分支 ${sprout.branch.name}`}
+              title={h.switchBranchTitle(sprout.branch.name)}
+              aria-label={h.switchBranchAria(sprout.branch.name)}
               className={clsx(
                 "absolute z-20 flex h-4 w-4 items-center justify-center rounded-full border-2 bg-white shadow-sm transition hover:scale-110",
                 sprout.branch.isCurrent ? "border-black text-black" : "border-blue-600 text-blue-600"
@@ -234,7 +238,7 @@ export function LessonHistoryGraphPanel({
               type="button"
               onClick={() => void onSwitchBranch(sprout.branch.name)}
               disabled={sprout.branch.isCurrent}
-              title={`切换到 ${sprout.branch.name}`}
+              title={h.switchBranchTitle(sprout.branch.name)}
               className={clsx(
                 "absolute z-20 inline-flex h-4 max-w-[72px] items-center gap-0.5 rounded border px-1 text-[8px] font-bold transition",
                 sprout.branch.isCurrent
@@ -257,7 +261,7 @@ export function LessonHistoryGraphPanel({
               type="button"
               onClick={() => void onPreviewCommit(node.commit)}
               title={`${node.kindLabel}: ${node.title}`}
-              aria-label={`查看历史节点 ${node.title}`}
+              aria-label={h.viewNodeAria(node.title)}
               className={clsx(
                 "absolute z-10 flex h-5 w-5 items-center justify-center rounded-full border-2 shadow-sm transition hover:scale-110",
                 nodeTone(node)
@@ -296,12 +300,12 @@ export function LessonHistoryGraphPanel({
                     </span>
                     {node.isCurrentHead ? (
                       <span className="rounded bg-black px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-white">
-                        Head
+                        {h.head}
                       </span>
                     ) : null}
                     {node.isPreviewed ? (
                       <span className="rounded bg-blue-50 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-blue-700">
-                        Preview
+                        {h.previewTag}
                       </span>
                     ) : null}
                   </div>
@@ -313,7 +317,7 @@ export function LessonHistoryGraphPanel({
                     {node.title}
                   </button>
                 </div>
-                <span className="shrink-0 text-[10px] text-gray-400">{formatDate(node.commit.created_at)}</span>
+                <span className="shrink-0 text-[10px] text-gray-400">{formatDate(node.commit.created_at, intlLocale)}</span>
               </div>
               <p className="mt-1 line-clamp-1 text-[11px] leading-5 text-gray-500">{node.summary}</p>
               {node.branchLabels.length ? (
@@ -324,7 +328,7 @@ export function LessonHistoryGraphPanel({
                       type="button"
                       onClick={() => void onSwitchBranch(branch.name)}
                       disabled={branch.isCurrent}
-                      title={`切换到 ${branch.name}`}
+                      title={h.switchBranchTitle(branch.name)}
                       className={clsx(
                         "inline-flex h-4 max-w-[78px] items-center gap-0.5 rounded px-1 text-[8px] font-bold transition",
                         branch.isCurrent
@@ -347,7 +351,7 @@ export function LessonHistoryGraphPanel({
         <section className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">选中节点</p>
+              <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">{h.selectedNode}</p>
               <h5 className="mt-1 break-words text-sm font-semibold text-gray-950">{selectedNode.title}</h5>
             </div>
             <span className="shrink-0 rounded bg-gray-100 px-2 py-1 text-[10px] font-bold text-gray-500">
@@ -364,7 +368,7 @@ export function LessonHistoryGraphPanel({
               className="inline-flex h-8 items-center gap-1 rounded-md border border-gray-200 bg-white px-2.5 text-[10px] font-bold uppercase tracking-wider text-gray-600 transition hover:border-gray-300 hover:text-gray-950"
             >
               <BookOpen className="h-3.5 w-3.5" />
-              Preview
+              {c.preview}
             </button>
             <button
               type="button"
@@ -372,7 +376,7 @@ export function LessonHistoryGraphPanel({
               className="inline-flex h-8 items-center gap-1 rounded-md border border-gray-200 bg-white px-2.5 text-[10px] font-bold uppercase tracking-wider text-gray-600 transition hover:border-gray-300 hover:text-gray-950"
             >
               <Clock3 className="h-3.5 w-3.5" />
-              Restore
+              {c.restore}
             </button>
             <button
               type="button"
@@ -380,14 +384,14 @@ export function LessonHistoryGraphPanel({
               className="inline-flex h-8 items-center gap-1 rounded-md bg-gray-950 px-2.5 text-[10px] font-bold uppercase tracking-wider text-white transition hover:bg-black"
             >
               <GitBranch className="h-3.5 w-3.5" />
-              Branch
+              {c.branch}
             </button>
           </div>
           <div className="mt-3 flex gap-2">
             <input
               value={newBranchName}
               onChange={(event) => onNewBranchNameChange(event.target.value)}
-              placeholder="新分支名"
+              placeholder={h.newBranchPlaceholder}
               className="min-w-0 flex-1 rounded-md border border-gray-200 bg-white px-3 py-2 text-xs outline-none transition focus:border-gray-500"
             />
           </div>
@@ -408,14 +412,14 @@ export function LessonHistoryGraphPanel({
       <section className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
         <div className="flex items-center gap-2">
           <BrainCircuit className="h-4 w-4 text-gray-400" />
-          <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">需求状态</p>
+          <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">{h.requirementsStatus}</p>
         </div>
         <p className="mt-3 text-xs leading-6 text-gray-600">
-          {activeRequirements?.learning_goal ?? "当前没有待执行的学习需求。"}
+          {activeRequirements?.learning_goal ?? h.requirementsEmpty}
         </p>
         {latestBoardDecision ? (
           <div className="mt-3 rounded-md bg-gray-50 px-3 py-2">
-            <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">当前讲义决策</p>
+            <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">{txt.studio.branchPanel.boardDecisionTitle}</p>
             <p className="mt-1 text-xs font-semibold text-gray-900">{latestBoardDecision.action}</p>
             <p className="mt-1 text-[11px] leading-5 text-gray-500">{latestBoardDecision.reason}</p>
           </div>

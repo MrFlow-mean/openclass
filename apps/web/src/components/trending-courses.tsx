@@ -33,9 +33,9 @@ type TrendWindow = "today" | "week" | "month";
 type CategoryFilter = "all" | string;
 
 const trendWindows: Array<{ id: TrendWindow; label: string }> = [
-  { id: "today", label: "今日" },
-  { id: "week", label: "本周" },
-  { id: "month", label: "本月" },
+  { id: "today", label: "Today" },
+  { id: "week", label: "This week" },
+  { id: "month", label: "This month" },
 ];
 
 function readCollectedCourseIds() {
@@ -84,13 +84,13 @@ function daysSince(value: string) {
 function formatRelativeTime(value: string) {
   const days = daysSince(value);
   if (days <= 0) {
-    return "今天";
+    return "today";
   }
   if (days === 1) {
-    return "昨天";
+    return "yesterday";
   }
   if (days < 7) {
-    return `${days} 天前`;
+    return `${days}d ago`;
   }
 
   return new Intl.DateTimeFormat("zh-CN", {
@@ -147,26 +147,26 @@ function getRecommendedScore(course: OpenCourse, favoriteCourses: OpenCourse[]) 
 
 function getRecommendationReason(course: OpenCourse, favoriteCourses: OpenCourse[]) {
   if (!favoriteCourses.length) {
-    return "根据近期热度和课程完整度推荐";
+    return "Recommended by recent momentum and course completeness";
   }
 
   const favoriteTopics = new Set(favoriteCourses.flatMap((favorite) => favorite.topics));
   const sharedTopic = course.topics.find((topic) => favoriteTopics.has(topic));
   if (sharedTopic) {
-    return `因为你关注了 ${sharedTopic}`;
+    return `Because you follow ${sharedTopic}`;
   }
 
   const favoriteCategory = favoriteCourses.find((favorite) => favorite.category === course.category);
   if (favoriteCategory) {
-    return `和 ${favoriteCategory.title} 同属${course.category}`;
+    return `Shares the ${course.category} category with ${favoriteCategory.title}`;
   }
 
   const favoriteLanguage = favoriteCourses.find((favorite) => favorite.language === course.language);
   if (favoriteLanguage) {
-    return `与你收藏的 ${favoriteLanguage.language} 内容相近`;
+    return `Similar to your starred ${favoriteLanguage.language} content`;
   }
 
-  return "和你的收藏项目受众相近";
+  return "Similar audience to your starred projects";
 }
 
 function courseMatchesQuery(course: OpenCourse, normalizedQuery: string) {
@@ -271,7 +271,7 @@ export function TrendingCourses() {
             className="inline-flex items-center gap-2 rounded-md border border-stone-200 bg-white px-3 py-2 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:text-stone-950"
           >
             <ArrowLeft className="h-4 w-4" />
-            返回主页
+            Back home
           </Link>
 
           <div className="flex items-center gap-2">
@@ -291,7 +291,7 @@ export function TrendingCourses() {
           <div className="rounded-lg border border-stone-200 bg-white p-4 shadow-[0_16px_34px_rgba(15,23,42,0.05)]">
             <div className="flex items-center gap-2 text-sm font-semibold text-stone-950">
               <Sparkles className="h-4 w-4 text-sky-600" />
-              发现
+              Explore
             </div>
 
             <div className="mt-4 grid gap-2">
@@ -301,7 +301,7 @@ export function TrendingCourses() {
               >
                 <span className="inline-flex items-center gap-2">
                   <Flame className="h-4 w-4" />
-                  热度最高
+                  Top momentum
                 </span>
                 <span className="text-xs">{trendingCourses.length}</span>
               </a>
@@ -311,7 +311,7 @@ export function TrendingCourses() {
               >
                 <span className="inline-flex items-center gap-2">
                   <Sparkles className="h-4 w-4" />
-                  推荐
+                  Recommended
                 </span>
                 <span className="text-xs">{recommendedProjectRows.length}</span>
               </a>
@@ -349,7 +349,7 @@ export function TrendingCourses() {
                     : "text-stone-700 hover:bg-stone-100 hover:text-stone-950"
                 )}
               >
-                <span>全部项目</span>
+                <span>All projects</span>
                 <span
                   className={clsx(
                     "rounded-full px-2 py-0.5 text-[10px]",
@@ -393,17 +393,17 @@ export function TrendingCourses() {
               <div>
                 <h1 className="flex items-center gap-2 text-2xl font-semibold tracking-tight text-stone-950 sm:text-3xl">
                   <Sparkles className="h-5 w-5 text-sky-600" />
-                  推荐给你
+                  Recommended for you
                 </h1>
                 <p className="mt-2 max-w-2xl text-sm leading-6 text-stone-600">
-                  根据你 Star 的课程方向、主题标签和学科偏好，优先推送可能感兴趣的项目。
+                  Prioritized from your starred course directions, topic tags, and category preferences.
                 </p>
               </div>
               <Link
                 href="/profile?tab=stars"
                 className="inline-flex w-fit items-center gap-2 rounded-md border border-sky-100 bg-white px-3 py-2 text-sm font-semibold text-sky-700 transition hover:border-sky-200 hover:text-sky-800"
               >
-                管理 Stars
+                Manage Stars
                 <ArrowUpRight className="h-4 w-4" />
               </Link>
             </div>
@@ -422,7 +422,7 @@ export function TrendingCourses() {
                 ))
               ) : (
                 <div className="rounded-lg border border-dashed border-sky-200 bg-white/80 px-5 py-8 text-sm text-stone-500 lg:col-span-3">
-                  暂时没有匹配的推荐项目。换个分区或搜索词后再看看。
+                  No matching recommendations yet. Try another section or search term.
                 </div>
               )}
             </div>
@@ -438,9 +438,9 @@ export function TrendingCourses() {
                   <TrendingUp className="h-4 w-4" />
                   Explore
                 </div>
-                <h2 className="mt-2 text-3xl font-semibold tracking-tight text-stone-950 sm:text-4xl">热门项目</h2>
+                <h2 className="mt-2 text-3xl font-semibold tracking-tight text-stone-950 sm:text-4xl">Trending projects</h2>
                 <p className="mt-3 max-w-2xl text-sm leading-6 text-stone-600">
-                  按 stars、forks、watchers、课程体量和近期更新综合排序的开源课程项目。
+                  Open course projects ranked by stars, forks, watchers, course size, and recent updates.
                 </p>
               </div>
 
@@ -470,9 +470,9 @@ export function TrendingCourses() {
               <div>
                 <h2 className="flex items-center gap-2 text-base font-semibold text-stone-950">
                   <Sparkles className="h-4 w-4 text-sky-600" />
-                  推荐项目
+                  Recommended projects
                 </h2>
-                <p className="mt-1 text-xs text-stone-500">{recommendedProjectRows.length} 个项目正在展示</p>
+                <p className="mt-1 text-xs text-stone-500">{recommendedProjectRows.length} projects shown</p>
               </div>
 
               <div className="relative min-w-0 md:w-80">
@@ -481,7 +481,7 @@ export function TrendingCourses() {
                   type="text"
                   value={query}
                   onChange={(event) => setQuery(event.target.value)}
-                  placeholder="搜索项目、作者、主题"
+                  placeholder="Search projects, authors, topics"
                   className="w-full rounded-full border border-stone-200 bg-white py-2.5 pl-9 pr-3 text-sm outline-none transition placeholder:text-stone-400 focus:border-stone-950"
                 />
               </div>
@@ -501,7 +501,7 @@ export function TrendingCourses() {
                 ))
               ) : (
                 <div className="rounded-lg border border-dashed border-stone-300 bg-stone-50 px-5 py-10 text-sm text-stone-500">
-                  没有找到匹配的推荐项目。
+                  No matching recommended projects.
                 </div>
               )}
             </div>
@@ -558,7 +558,7 @@ function RecommendedCourseCard({ course, isCollected, reason, rank, onToggleColl
           height={44}
           unoptimized
         />
-        <span className="rounded-full bg-sky-50 px-2.5 py-1 text-xs font-semibold text-sky-700">推荐 {rank}</span>
+        <span className="rounded-full bg-sky-50 px-2.5 py-1 text-xs font-semibold text-sky-700">Recommended {rank}</span>
       </div>
 
       <Link href={courseDetailHref(course)} className="mt-4 line-clamp-2 text-base font-semibold text-blue-600 hover:underline">
@@ -602,7 +602,7 @@ function RecommendedCourseCard({ course, isCollected, reason, rank, onToggleColl
             href={courseDetailHref(course)}
             className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-md border border-stone-200 bg-stone-50 px-3 py-2 text-xs font-semibold text-stone-700 transition hover:border-stone-300 hover:bg-white hover:text-stone-950"
           >
-            打开
+            Open
             <ArrowUpRight className="h-3.5 w-3.5" />
           </Link>
           <button
@@ -616,7 +616,7 @@ function RecommendedCourseCard({ course, isCollected, reason, rank, onToggleColl
             )}
           >
             <Star className={clsx("h-3.5 w-3.5", isCollected && "fill-current")} />
-            {isCollected ? "已收藏" : "收藏"}
+            {isCollected ? "Starred" : "Star"}
           </button>
         </div>
       </div>
@@ -668,7 +668,7 @@ function FeaturedCourseCard({ course, growthPercent, isCollected, rank, onToggle
             href={courseDetailHref(course)}
             className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-md border border-stone-200 bg-stone-50 px-3 py-2 text-xs font-semibold text-stone-700 transition hover:border-stone-300 hover:bg-white hover:text-stone-950"
           >
-            打开
+            Open
             <ArrowUpRight className="h-3.5 w-3.5" />
           </Link>
           <button
@@ -682,7 +682,7 @@ function FeaturedCourseCard({ course, growthPercent, isCollected, rank, onToggle
             )}
           >
             <Star className={clsx("h-3.5 w-3.5", isCollected && "fill-current")} />
-            {isCollected ? "已收藏" : "收藏"}
+            {isCollected ? "Starred" : "Star"}
           </button>
         </div>
       </div>
@@ -739,7 +739,7 @@ function TrendingCourseRow({ course, growthPercent, isCollected, rank, onToggleC
               <span className="inline-flex items-center gap-1 text-emerald-700">
                 <TrendingUp className="h-3.5 w-3.5" />+{growthPercent}%
               </span>
-              <span>更新 {formatRelativeTime(course.updatedAt)}</span>
+              <span>Updated {formatRelativeTime(course.updatedAt)}</span>
             </div>
           </div>
         </div>
@@ -749,7 +749,7 @@ function TrendingCourseRow({ course, growthPercent, isCollected, rank, onToggleC
             href={courseDetailHref(course)}
             className="inline-flex items-center justify-center gap-1.5 rounded-md border border-stone-200 bg-stone-50 px-3 py-1.5 text-xs font-semibold text-stone-700 transition hover:border-stone-300 hover:bg-white hover:text-stone-950"
           >
-            打开
+            Open
             <ArrowUpRight className="h-3.5 w-3.5" />
           </Link>
           <button
@@ -763,7 +763,7 @@ function TrendingCourseRow({ course, growthPercent, isCollected, rank, onToggleC
             )}
           >
             <Star className={clsx("h-3.5 w-3.5", isCollected && "fill-current")} />
-            {isCollected ? "已收藏" : "收藏"}
+            {isCollected ? "Starred" : "Star"}
           </button>
         </div>
       </div>

@@ -19,6 +19,7 @@ import {
   X,
 } from "lucide-react";
 
+import { useInterfaceLanguage } from "@/contexts/interface-language-context";
 import type { SectionTeachingProgress, SelectionRef } from "@/types";
 
 export type CourseChatMessageView = {
@@ -41,8 +42,11 @@ export type CourseChatMessageView = {
   }>;
 };
 
-function selectionPreviewLabel(selection: SelectionRef): string {
-  return selection.kind === "board" ? "选中的讲义" : "引用的对话";
+function selectionPreviewLabel(
+  selection: SelectionRef,
+  labels: { boardSelection: string; chatSelection: string }
+): string {
+  return selection.kind === "board" ? labels.boardSelection : labels.chatSelection;
 }
 
 function selectionPreviewText(excerpt: string): string {
@@ -180,6 +184,9 @@ export function CourseChatMessage({
   onSwitchBranch?: (branchName: string) => void | Promise<void>;
   isBusy?: boolean;
 }) {
+  const { texts: txt } = useInterfaceLanguage();
+  const m = txt.studio.chatMessage;
+  const c = txt.common;
   const [isSelectionExpanded, setIsSelectionExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
@@ -247,7 +254,7 @@ export function CourseChatMessage({
       <div className={clsx("min-w-0 max-w-[86%] space-y-2", isAssistant && "max-w-[calc(100%-2.5rem)] flex-1")}>
         <div className={clsx("flex items-center gap-2 text-[11px] text-gray-500", !isAssistant && "justify-end")}>
           {!isAssistant ? <MessageSquare className="h-3.5 w-3.5" /> : null}
-          <span className="font-medium">{isPending ? message.statusLabel || "正在思考" : isAssistant ? "OpenClass" : "你"}</span>
+          <span className="font-medium">{isPending ? message.statusLabel || m.thinking : isAssistant ? "OpenClass" : m.user}</span>
         </div>
 
         {message.selection && selectedExcerpt ? (
@@ -260,7 +267,7 @@ export function CourseChatMessage({
             <div className="flex items-start gap-2">
               <TextQuote className="mt-0.5 h-3.5 w-3.5 shrink-0 text-gray-400" />
               <div className="min-w-0">
-                <p className="text-[11px] font-semibold text-gray-500">{selectionPreviewLabel(message.selection)}</p>
+                <p className="text-[11px] font-semibold text-gray-500">{selectionPreviewLabel(message.selection, m)}</p>
                 <p
                   className={clsx(
                     "mt-1 whitespace-pre-wrap break-words pr-1 text-[12px] leading-5",
@@ -276,7 +283,7 @@ export function CourseChatMessage({
                   className="mt-2 inline-flex h-6 items-center gap-1 rounded-md px-1.5 text-[11px] font-semibold text-gray-500 transition hover:bg-white hover:text-gray-900"
                 >
                   {isSelectionExpanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
-                  {isSelectionExpanded ? "收起" : "展开"}
+                  {isSelectionExpanded ? m.collapse : m.expand}
                 </button>
               </div>
             </div>
@@ -329,8 +336,8 @@ export function CourseChatMessage({
                         setIsEditing(false);
                       }}
                       disabled={isSubmittingEdit}
-                      title="取消编辑"
-                      aria-label="取消编辑"
+                      title={m.cancelEdit}
+                      aria-label={m.cancelEdit}
                       className="flex h-8 w-8 items-center justify-center rounded-md text-gray-500 transition hover:bg-gray-100 hover:text-gray-900 disabled:cursor-wait disabled:opacity-60"
                     >
                       <X className="h-4 w-4" />
@@ -338,8 +345,8 @@ export function CourseChatMessage({
                     <button
                       type="submit"
                       disabled={isBusy || isSubmittingEdit || !editDraft.trim()}
-                      title="提交编辑并生成新分支"
-                      aria-label="提交编辑并生成新分支"
+                      title={m.submitEdit}
+                      aria-label={m.submitEdit}
                       className="flex h-8 w-8 items-center justify-center rounded-md bg-gray-900 text-white transition hover:bg-black disabled:cursor-wait disabled:opacity-60"
                     >
                       {isSubmittingEdit ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
@@ -359,8 +366,11 @@ export function CourseChatMessage({
             {isAssistant && teachingProgress && !isPending && !isError ? (
               <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-gray-200 pt-3 text-[11px] text-gray-500">
                 <span>
-                  第 {teachingProgress.section_index + 1}/{teachingProgress.section_count} 节
-                  {teachingProgress.current_section_title ? `：${teachingProgress.current_section_title}` : ""}
+                  {m.sectionProgress(
+                    teachingProgress.section_index,
+                    teachingProgress.section_count,
+                    teachingProgress.current_section_title
+                  )}
                 </span>
                 {teachingProgress.has_next_section && onContinueTeaching ? (
                   <button
@@ -369,7 +379,7 @@ export function CourseChatMessage({
                     className="inline-flex h-7 items-center gap-1 rounded-md border border-gray-200 bg-white px-2.5 font-semibold text-gray-700 transition hover:border-gray-300 hover:text-gray-950"
                   >
                     <ArrowRight className="h-3.5 w-3.5" />
-                    继续下一节
+                    {m.continueNextSection}
                   </button>
                 ) : null}
               </div>
@@ -390,8 +400,8 @@ export function CourseChatMessage({
                   type="button"
                   onClick={() => switchToBranch(previousBranch?.branchName)}
                   disabled={!previousBranch || isBusy}
-                  title="上一个分支"
-                  aria-label="上一个分支"
+                  title={m.previousBranch}
+                  aria-label={m.previousBranch}
                   className="flex h-6 w-6 items-center justify-center rounded text-gray-500 transition hover:bg-gray-100 hover:text-gray-900 disabled:cursor-not-allowed disabled:opacity-35"
                 >
                   <ChevronLeft className="h-3.5 w-3.5" />
@@ -403,8 +413,8 @@ export function CourseChatMessage({
                   type="button"
                   onClick={() => switchToBranch(nextBranch?.branchName)}
                   disabled={!nextBranch || isBusy}
-                  title="下一个分支"
-                  aria-label="下一个分支"
+                  title={m.nextBranch}
+                  aria-label={m.nextBranch}
                   className="flex h-6 w-6 items-center justify-center rounded text-gray-500 transition hover:bg-gray-100 hover:text-gray-900 disabled:cursor-not-allowed disabled:opacity-35"
                 >
                   <ChevronRight className="h-3.5 w-3.5" />
@@ -419,8 +429,8 @@ export function CourseChatMessage({
                   setIsEditing(true);
                 }}
                 disabled={isBusy}
-                title="编辑这条消息"
-                aria-label="编辑这条消息"
+                title={m.editMessage}
+                aria-label={m.editMessage}
                 className="flex h-7 w-7 items-center justify-center rounded-md text-gray-400 transition hover:bg-gray-100 hover:text-gray-700 disabled:cursor-wait disabled:opacity-60"
               >
                 <PencilLine className="h-3.5 w-3.5" />
@@ -429,8 +439,8 @@ export function CourseChatMessage({
             <button
               type="button"
               onClick={() => void copyMessage()}
-              title={copied ? "已复制" : "复制"}
-              aria-label={copied ? "已复制" : "复制"}
+              title={copied ? c.copied : c.copy}
+              aria-label={copied ? c.copied : c.copy}
               className="flex h-7 w-7 items-center justify-center rounded-md text-gray-400 transition hover:bg-gray-100 hover:text-gray-700"
             >
               {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}

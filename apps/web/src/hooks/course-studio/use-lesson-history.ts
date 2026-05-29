@@ -80,7 +80,7 @@ export function useLessonHistory({
       });
       setNewBranchName("");
     } catch (branchError) {
-      setError(branchError instanceof Error ? branchError.message : "创建分支失败");
+      setError(branchError instanceof Error ? branchError.message : "Could not create branch");
     } finally {
       setBusyAction(null);
     }
@@ -129,7 +129,7 @@ export function useLessonHistory({
         rebuildMessageLessonIds: [activeLesson.id],
       });
     } catch (branchError) {
-      setError(branchError instanceof Error ? branchError.message : "切换分支失败");
+      setError(branchError instanceof Error ? branchError.message : "Could not switch branch");
     } finally {
       setBusyAction(null);
     }
@@ -156,7 +156,7 @@ export function useLessonHistory({
         session: preview.session.recommended_choice,
       });
     } catch (mergeError) {
-      setError(mergeError instanceof Error ? mergeError.message : "合并预览失败");
+      setError(mergeError instanceof Error ? mergeError.message : "Could not preview merge");
     } finally {
       setBusyAction(null);
     }
@@ -195,7 +195,7 @@ export function useLessonHistory({
       setMergePreview(null);
       resetDraftToLesson(applied.activeLesson);
     } catch (mergeError) {
-      setError(mergeError instanceof Error ? mergeError.message : "合并分支失败");
+      setError(mergeError instanceof Error ? mergeError.message : "Could not merge branch");
     } finally {
       setBusyAction(null);
     }
@@ -216,7 +216,7 @@ export function useLessonHistory({
         rebuildMessageLessonIds: [activeLesson.id],
       });
     } catch (restoreError) {
-      setError(restoreError instanceof Error ? restoreError.message : "恢复版本失败");
+      setError(restoreError instanceof Error ? restoreError.message : "Could not restore version");
     } finally {
       setBusyAction(null);
     }

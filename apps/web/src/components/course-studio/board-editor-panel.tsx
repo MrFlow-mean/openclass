@@ -1,6 +1,7 @@
 "use client";
 
 import { WordBoardEditor } from "@/components/course-studio/word-board-editor";
+import { useInterfaceLanguage } from "@/contexts/interface-language-context";
 import type { SelectionPopoverPosition } from "@/components/course-studio/selection-utils";
 import type { BoardDocument, CommitRecord, Lesson, SelectionRef } from "@/types";
 
@@ -31,17 +32,19 @@ export function BoardEditorPanel({
   onImportDocx,
   onExportDocx,
 }: BoardEditorPanelProps) {
+  const { texts: txt } = useInterfaceLanguage();
+  const s = txt.studio.boardPanel;
   return (
     <section className="relative z-10 flex min-w-0 flex-col overflow-hidden bg-white shadow-[0_0_20px_rgba(0,0,0,0.02)]">
       {isPreviewMode ? (
         <div className="shrink-0 border-b border-violet-200 bg-violet-50 px-5 py-3 text-sm text-violet-700">
-          正在预览历史快照：{previewCommit?.label}
+          {s.previewingSnapshot(previewCommit?.label)}
           <button
             type="button"
             className="ml-3 rounded-md border border-violet-200 bg-white px-3 py-1 text-[11px] font-bold uppercase tracking-wider text-violet-700"
             onClick={onExitPreviewMode}
           >
-            回到当前版本
+            {s.backToCurrent}
           </button>
         </div>
       ) : null}

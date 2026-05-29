@@ -569,7 +569,7 @@ export function LearningHome() {
   }
 
   async function handleDeleteLesson(lesson: Lesson) {
-    if (typeof window !== "undefined" && !window.confirm(`确定删除《${lesson.title}》吗？`)) {
+    if (typeof window !== "undefined" && !window.confirm(`Delete "${lesson.title}"?`)) {
       return;
     }
 
@@ -637,7 +637,7 @@ export function LearningHome() {
       return;
     }
 
-    const nextTitle = window.prompt("请输入新的课程包名称", selectedCoursePackage.title);
+    const nextTitle = window.prompt("Enter the new course package name", selectedCoursePackage.title);
     if (!nextTitle?.trim() || nextTitle.trim() === selectedCoursePackage.title) {
       return;
     }
@@ -661,8 +661,8 @@ export function LearningHome() {
 
     const lessonCount = selectedCoursePackage.lessons.length;
     const message = lessonCount
-      ? `确定删除《${selectedCoursePackage.title}》吗？包内 ${lessonCount} 节单课也会一起删除。`
-      : `确定删除《${selectedCoursePackage.title}》吗？`;
+      ? `Delete "${selectedCoursePackage.title}"? The ${lessonCount} lessons inside will also be deleted.`
+      : `Delete "${selectedCoursePackage.title}"?`;
     if (typeof window !== "undefined" && !window.confirm(message)) {
       return;
     }
@@ -691,7 +691,7 @@ export function LearningHome() {
     shareUrl.searchParams.set("package", selectedCoursePackage.id);
     const shareData = {
       title: selectedCoursePackage.title,
-      text: `分享课程包：${selectedCoursePackage.title}`,
+      text: `Share course package: ${selectedCoursePackage.title}`,
       url: shareUrl.toString(),
     };
 
@@ -700,7 +700,7 @@ export function LearningHome() {
         await navigator.share(shareData);
         return;
       }
-      window.prompt("复制课程包链接", shareData.url);
+      window.prompt("Copy course package link", shareData.url);
     } catch (shareError) {
       if (shareError instanceof DOMException && shareError.name === "AbortError") {
         return;
@@ -1388,7 +1388,7 @@ export function LearningHome() {
 
   function renderOpenCourseSearchResults() {
     const searchText = searchQuery.trim();
-    const activeFacetLabel = openCourseFacet.kind === "all" ? "全部开源课程" : openCourseFacet.value;
+    const activeFacetLabel = openCourseFacet.kind === "all" ? "All open courses" : openCourseFacet.value;
     const totalStars = openCourseResults.reduce((sum, course) => sum + course.stars, 0);
 
     return (
@@ -1425,7 +1425,7 @@ export function LearningHome() {
             </button>
 
             <div className="mt-4 border-t border-stone-200 pt-4">
-              <p className="px-2 text-xs font-semibold text-stone-500">课程方向</p>
+              <p className="px-2 text-xs font-semibold text-stone-500">Course direction</p>
               <div className="mt-2 space-y-1">
                 {categoryFacetCounts.map((facet) => {
                   const isActive = openCourseFacet.kind === "category" && openCourseFacet.value === facet.value;
@@ -1451,7 +1451,7 @@ export function LearningHome() {
             </div>
 
             <div className="mt-4 border-t border-stone-200 pt-4">
-              <p className="px-2 text-xs font-semibold text-stone-500">语言 / 学科</p>
+              <p className="px-2 text-xs font-semibold text-stone-500">Language / domain</p>
               <div className="mt-2 space-y-1">
                 {languageFacetCounts.map((facet) => {
                   const isActive = openCourseFacet.kind === "language" && openCourseFacet.value === facet.value;
@@ -1485,10 +1485,10 @@ export function LearningHome() {
             <div className="mb-4 flex flex-col gap-3 rounded-lg border border-stone-200 bg-white/88 px-4 py-3 shadow-[0_12px_28px_rgba(15,23,42,0.04)] backdrop-blur sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <h2 className="text-base font-semibold text-stone-950">
-                  {openCourseResults.length.toLocaleString("zh-CN")} 个开源课程结果
+                  {openCourseResults.length.toLocaleString("en-US")} open course results
                 </h2>
                 <p className="mt-1 text-xs text-stone-500">
-                  搜索 “{searchText}” · 当前筛选：{activeFacetLabel}
+                  Search &quot;{searchText}&quot; - current filter: {activeFacetLabel}
                 </p>
               </div>
 
@@ -1577,7 +1577,7 @@ export function LearningHome() {
                             href={courseDetailHref(course)}
                             className="inline-flex items-center justify-center gap-1.5 rounded-md border border-stone-200 bg-stone-50 px-3 py-1.5 text-xs font-semibold text-stone-700 transition hover:border-stone-300 hover:bg-white hover:text-stone-950"
                           >
-                            打开
+                            Open
                             <ArrowUpRight className="h-3.5 w-3.5" />
                           </Link>
                           <button
@@ -1591,7 +1591,7 @@ export function LearningHome() {
                             )}
                           >
                             <Star className={clsx("h-3.5 w-3.5", isCollected && "fill-current")} />
-                            {isCollected ? "已收藏" : "收藏"}
+                            {isCollected ? "Starred" : "Star"}
                           </button>
                         </div>
                       </div>
@@ -1600,7 +1600,7 @@ export function LearningHome() {
                 })
               ) : (
                 <div className="rounded-lg border border-dashed border-stone-300 bg-white/88 px-5 py-10 text-sm text-stone-500">
-                  没有找到匹配的开源课程。换个关键词，或清除左侧筛选后再试。
+                  No matching open courses. Try another keyword or clear the filters.
                 </div>
               )}
             </div>
@@ -1610,16 +1610,16 @@ export function LearningHome() {
             <div className="rounded-lg border border-stone-200 bg-white/88 p-4 shadow-[0_12px_28px_rgba(15,23,42,0.04)]">
               <div className="flex items-center gap-2 text-sm font-semibold text-stone-950">
                 <Bookmark className="h-4 w-4 text-amber-500" />
-                收藏的开源课程
+                Starred open courses
               </div>
               <p className="mt-2 text-sm leading-6 text-stone-600">
-                已收藏 {collectedOpenCourseCount} 个项目，可在个人主页继续查看和管理。
+                {collectedOpenCourseCount} projects starred. View and manage them on your profile.
               </p>
               <Link
                 href="/profile"
                 className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-md border border-stone-200 bg-stone-50 px-3 py-2 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:bg-white hover:text-stone-950"
               >
-                打开个人主页
+                Open profile
                 <ArrowUpRight className="h-4 w-4" />
               </Link>
             </div>
@@ -1627,7 +1627,7 @@ export function LearningHome() {
             <div className="rounded-lg border border-stone-200 bg-white/88 p-4 shadow-[0_12px_28px_rgba(15,23,42,0.04)]">
               <div className="flex items-center gap-2 text-sm font-semibold text-stone-950">
                 <Eye className="h-4 w-4 text-sky-600" />
-                搜索概览
+                Search overview
               </div>
               <dl className="mt-3 grid grid-cols-2 gap-3 text-sm">
                 <div>
@@ -1661,7 +1661,7 @@ export function LearningHome() {
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-stone-400">
-              当前课程包
+              Current course package
             </p>
             <h4 className="mt-2 truncate text-lg font-semibold text-stone-950">{selectedCoursePackage.title}</h4>
             <div className="mt-2 flex h-3.5 origin-left scale-[0.82] flex-nowrap items-center gap-0.5">
@@ -1670,36 +1670,36 @@ export function LearningHome() {
                 onClick={() => void handleDeleteSelectedPackage()}
                 disabled={packageActionBusy}
                 className="inline-flex h-3.5 shrink-0 items-center gap-px rounded-full border border-rose-100 bg-rose-50 px-1 text-[8px] font-normal leading-none text-rose-600 transition hover:border-rose-200 hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-45"
-                title="删除课程包"
+                title="Delete course package"
               >
                 {isDeletingPackage ? <LoaderCircle className="h-2 w-2 animate-spin" /> : <Trash2 className="h-2 w-2" />}
-                删除
+                Delete
               </button>
               <button
                 type="button"
                 onClick={() => void handleShareSelectedPackage()}
                 disabled={packageActionBusy}
                 className="inline-flex h-3.5 shrink-0 items-center gap-px rounded-full border border-stone-200 bg-white px-1 text-[8px] font-normal leading-none text-stone-600 transition hover:border-stone-300 hover:text-stone-950 disabled:cursor-not-allowed disabled:opacity-45"
-                title="分享课程包"
+                title="Share course package"
               >
                 <Share2 className="h-2 w-2" />
-                分享
+                Share
               </button>
               <button
                 type="button"
                 onClick={() => void handleRenameSelectedPackage()}
                 disabled={packageActionBusy}
                 className="inline-flex h-3.5 shrink-0 items-center gap-px rounded-full border border-stone-200 bg-white px-1 text-[8px] font-normal leading-none text-stone-600 transition hover:border-stone-300 hover:text-stone-950 disabled:cursor-not-allowed disabled:opacity-45"
-                title="重命名课程包"
+                title="Rename course package"
               >
                 {isRenamingPackage ? <LoaderCircle className="h-2 w-2 animate-spin" /> : <PencilLine className="h-2 w-2" />}
-                重命名
+                Rename
               </button>
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
             <span className="rounded-full bg-stone-100 px-2.5 py-1 text-[10px] font-semibold text-stone-600">
-              {selectedPackageLessons.length} 课
+              {selectedPackageLessons.length} lessons
             </span>
             <button
               type="button"
@@ -1709,8 +1709,8 @@ export function LearningHome() {
                 setPackageLessonsExpanded(false);
               }}
               className="flex h-8 w-8 items-center justify-center rounded-full border border-stone-200 bg-white text-stone-600 transition hover:border-stone-300 hover:text-stone-950"
-              aria-label="收起单课列表"
-              title="收起单课列表"
+              aria-label="Collapse lesson list"
+              title="Collapse lesson list"
             >
               <ChevronDown className="h-4 w-4 rotate-180" />
             </button>
@@ -1756,7 +1756,7 @@ export function LearningHome() {
                           </span>
                         </div>
                         <p className={clsx("mt-1 line-clamp-2 text-xs leading-5", isPreviewActive ? "text-white/75" : "text-stone-500")}>
-                          {lesson.summary || "已创建课程文档，等待继续补充内容。"}
+                          {lesson.summary || "Course document created and ready for more content."}
                         </p>
                       </div>
                     </div>
@@ -1765,7 +1765,7 @@ export function LearningHome() {
               })
             ) : (
               <div className="rounded-2xl border border-dashed border-stone-300 bg-stone-50/80 px-4 py-5 text-sm text-stone-500">
-                这个课程包还是空的，先把课程移动进来，或者进入工作台新建一页。
+                This course package is empty. Move lessons into it, or create a page in Studio.
               </div>
             )}
           </div>
@@ -1781,17 +1781,17 @@ export function LearningHome() {
           <Link
             href="/trending"
             className="group relative hidden h-11 items-center gap-2 rounded-full border border-orange-100 bg-white px-3 text-sm font-semibold text-stone-700 shadow-[0_10px_24px_rgba(249,115,22,0.10)] transition hover:-translate-y-0.5 hover:bg-orange-500 hover:text-white hover:shadow-[0_14px_28px_rgba(249,115,22,0.18)] sm:flex"
-            aria-label="打开热门项目"
+            aria-label="Open trending projects"
           >
             <span className="relative flex h-8 w-8 items-center justify-center rounded-full bg-orange-50 text-orange-500 transition group-hover:bg-white group-hover:text-orange-500">
               <Flame className="h-4 w-4" />
             </span>
-            <span>热门</span>
+            <span>Trending</span>
           </Link>
           <Link
             href="/profile?tab=stars"
             className="group relative hidden h-11 items-center gap-2 rounded-full border border-amber-100 bg-white px-3 text-sm font-semibold text-stone-700 shadow-[0_10px_24px_rgba(245,158,11,0.10)] transition hover:-translate-y-0.5 hover:bg-amber-500 hover:text-white hover:shadow-[0_14px_28px_rgba(245,158,11,0.18)] sm:flex"
-            aria-label="打开 Stars 收藏"
+            aria-label="Open Stars"
           >
             <span className="relative flex h-8 w-8 items-center justify-center rounded-full bg-amber-50 text-amber-500 transition group-hover:bg-white group-hover:text-amber-500">
               <Star className="h-4 w-4" />
@@ -1806,7 +1806,7 @@ export function LearningHome() {
           <Link
             href="/following"
             className="group relative hidden h-11 items-center gap-2 rounded-full border border-rose-100 bg-white px-3 text-sm font-semibold text-stone-700 shadow-[0_10px_24px_rgba(244,63,94,0.10)] transition hover:-translate-y-0.5 hover:bg-rose-500 hover:text-white hover:shadow-[0_14px_28px_rgba(244,63,94,0.18)] sm:flex"
-            aria-label="打开关注动态"
+            aria-label="Open following feed"
           >
             <span className="relative flex h-8 w-8 items-center justify-center rounded-full bg-rose-50 text-rose-500 transition group-hover:bg-white group-hover:text-rose-500">
               <Activity className="h-4 w-4" />
@@ -1816,7 +1816,7 @@ export function LearningHome() {
                 </span>
               ) : null}
             </span>
-            <span>动态</span>
+            <span>Feed</span>
           </Link>
           <div className="flex flex-col items-center gap-2">
             <button
@@ -1841,17 +1841,17 @@ export function LearningHome() {
               title={language === "en" ? h.languageSwitchToChinese : h.languageSwitchToEnglish}
             >
               <Languages className="h-3.5 w-3.5" />
-              <span>{language === "en" ? "中" : "EN"}</span>
+              <span>{language === "en" ? "CN" : "EN"}</span>
             </button>
           </div>
           <Link
             href="/profile"
             className="h-11 w-11 overflow-hidden rounded-full border-2 border-white bg-stone-200 shadow-[0_10px_24px_rgba(15,23,42,0.08)] transition hover:scale-[1.03]"
-            aria-label="用户头像"
+            aria-label="User avatar"
           >
             <Image
               src="https://api.dicebear.com/9.x/glass/svg?seed=kai-fang-ke-tang"
-              alt="开放课堂用户头像"
+              alt="OpenClass user avatar"
               className="h-full w-full object-cover"
               width={44}
               height={44}
@@ -1863,9 +1863,9 @@ export function LearningHome() {
         {notificationOpen ? (
           <div className="w-full rounded-[28px] border border-white/80 bg-white/92 p-5 shadow-[0_18px_50px_rgba(15,23,42,0.08)] backdrop-blur">
             <div className="mb-4 flex items-center justify-between">
-              <h4 className="text-[11px] font-semibold uppercase tracking-[0.28em] text-stone-400">消息推送</h4>
+              <h4 className="text-[11px] font-semibold uppercase tracking-[0.28em] text-stone-400">Notifications</h4>
               <span className="rounded-full bg-rose-500 px-2 py-1 text-[10px] font-semibold text-white">
-                {followingUnreadCount ? `${followingBadge} NEW` : "已同步"}
+                {followingUnreadCount ? `${followingBadge} NEW` : "Synced"}
               </span>
             </div>
 
@@ -1912,7 +1912,7 @@ export function LearningHome() {
                       >
                         {FOLLOWED_UPDATE_KIND_LABELS[item.update.updateKind]}
                       </span>
-                      <span className="text-[11px] text-stone-400">{item.update.lessonCount} 课</span>
+                      <span className="text-[11px] text-stone-400">{item.update.lessonCount} lessons</span>
                     </div>
 
                     <div className="mt-3 rounded-md bg-[#f6f8fa] p-3">
@@ -1938,7 +1938,7 @@ export function LearningHome() {
                 ))
               ) : (
                 <div className="rounded-2xl border border-dashed border-stone-200 bg-stone-50 px-4 py-5 text-sm text-stone-500">
-                  关注他人项目后，这里只显示这些项目的更新推送。
+                  After following other projects, updates from those projects will appear here.
                 </div>
               )}
             </div>
@@ -1947,7 +1947,7 @@ export function LearningHome() {
               href="/following"
               className="mt-5 inline-flex w-full items-center justify-center gap-2 rounded-full border border-stone-200 bg-stone-50 px-4 py-3 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:bg-white hover:text-stone-950"
             >
-              查看全部动态
+              View all updates
               <ArrowUpRight className="h-4 w-4" />
             </Link>
           </div>

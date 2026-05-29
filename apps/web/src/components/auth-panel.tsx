@@ -40,6 +40,7 @@ import {
   storeGuestAuthToken,
 } from "@/lib/api";
 import { BrandMark } from "@/components/brand-mark";
+import { useInterfaceLanguage } from "@/contexts/interface-language-context";
 import { userAccountLabel } from "@/lib/account";
 import { loginRedirectPath } from "@/lib/auth-redirect";
 import type { AuthProviderView, UserView } from "@/types";
@@ -76,22 +77,22 @@ type KnowledgeIconItem = {
 const socialSignInOptions: SocialSignInOption[] = [
   {
     id: "google",
-    label: "使用 Google 登录",
-    providerLabel: "Google 账号",
+    label: "Continue with Google",
+    providerLabel: "Google",
     className: "border-[#e8dfd2] bg-white text-[#5c4c3c] hover:border-[#d2a878] hover:bg-[#fcfbf9]",
     brand: "google",
   },
   {
     id: "wechat",
-    label: "使用微信登录",
-    providerLabel: "微信登录",
+    label: "Continue with WeChat",
+    providerLabel: "WeChat",
     className: "border-[#1aad19] bg-[#1aad19] text-white hover:border-[#159b17] hover:bg-[#159b17]",
     brand: "wechat",
   },
   {
     id: "github",
-    label: "使用 GitHub 登录",
-    providerLabel: "GitHub 账号",
+    label: "Continue with GitHub",
+    providerLabel: "GitHub",
     className: "border-[#24292f] bg-[#24292f] text-white hover:bg-black",
     brand: "github",
   },
@@ -129,7 +130,7 @@ const knowledgeTextItems: KnowledgeTextItem[] = [
     style: { "--rot": "-15deg" },
   },
   {
-    content: "格物致知",
+    content: "Inquiry",
     className: "auth-scale-grow absolute left-[15%] top-[20%] text-4xl font-bold text-[#5c4c3c] opacity-10 md:text-5xl",
     style: { "--rot": "12deg" },
   },
@@ -144,7 +145,7 @@ const knowledgeTextItems: KnowledgeTextItem[] = [
     style: { "--rot": "-20deg" },
   },
   {
-    content: "日本語",
+    content: "Nihongo",
     className: "auth-float-wave absolute right-[40%] top-[8%] text-3xl text-[#6d93a7] opacity-[0.12] md:text-4xl",
     style: { "--rot": "5deg" },
   },
@@ -569,6 +570,9 @@ function ProductShowcase() {
 }
 
 export function AuthPanel({ initialMode }: AuthPanelProps) {
+  const { texts: txt } = useInterfaceLanguage();
+  const a = txt.authPanel;
+  const c = txt.common;
   const [mode, setMode] = useState(initialMode);
   const [accountIdentifier, setAccountIdentifier] = useState("");
   const [password, setPassword] = useState("");
@@ -636,7 +640,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
       const nextPath = new URLSearchParams(window.location.search).get("next");
       navigateAfterAuth(loginDestination(payload.user, nextPath));
     } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : "操作失败");
+      setError(submitError instanceof Error ? submitError.message : a.operationFailed);
     } finally {
       setIsLoading(false);
     }
@@ -657,7 +661,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
       const nextPath = loginRedirectPath(new URLSearchParams(window.location.search).get("next"));
       navigateAfterAuth(nextPath);
     } catch (guestError) {
-      setError(guestError instanceof Error ? guestError.message : "游客访问失败");
+      setError(guestError instanceof Error ? guestError.message : a.guestAccessFailed);
     } finally {
       setIsLoading(false);
     }
@@ -675,7 +679,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
     setError(null);
     const provider = authProviders.find((item) => item.id === option.id);
     if (!provider?.configured) {
-      setNotice(`${option.providerLabel}需要先在服务器 .env 配置 OAuth Client/App ID 与 Secret。邮箱/手机号注册登录已可直接使用。`);
+      setNotice(a.oauthNotice(option.providerLabel));
       return;
     }
     const nextPath =
@@ -690,7 +694,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
 
   function handleForgotPassword() {
     setError(null);
-    setNotice("密码找回入口已预留；接入邮件服务后即可发送重置链接。");
+    setNotice(a.forgotNotice);
   }
 
   const isRegister = mode === "register";
@@ -707,7 +711,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                 onClick={() => void handleHomeAccess()}
                 disabled={isLoading}
                 className="flex min-w-0 items-center gap-3 text-left disabled:cursor-wait disabled:opacity-70"
-                aria-label="进入产品主页"
+                aria-label={a.openProductHome}
               >
                 <BrandMark
                   alt=""
@@ -715,7 +719,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                   priority
                   size={80}
                 />
-                <span className="auth-display truncate text-2xl font-bold text-[#3a312b]">开放课堂</span>
+                <span className="auth-display truncate text-2xl font-bold text-[#3a312b]">OpenClass</span>
               </button>
               <button
                 type="button"
@@ -724,49 +728,51 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                 className="inline-flex h-9 shrink-0 items-center gap-2 rounded-lg border border-[#ebe2d2] bg-white px-3 text-sm font-semibold text-[#5c4c3c] transition hover:border-[#d2a878] hover:text-[#3a312b] disabled:cursor-wait disabled:opacity-70"
               >
                 <ArrowLeft className="h-4 w-4" />
-                主页
+                {a.home}
               </button>
             </div>
 
             <div className="mb-6 sm:mb-7">
               <h1 className="auth-display text-4xl font-bold leading-[1.08] text-[#3a312b] sm:text-5xl">
-                构筑思维
+                {a.heroLine1}
                 <br />
                 <span className="bg-gradient-to-r from-[#ead9b3] via-[#d2b77c] to-[#a78651] bg-clip-text text-transparent">
-                  优雅呈现
+                  {a.heroLine2}
                 </span>
               </h1>
               <p className="mt-4 text-base leading-7 text-[#5c4c3c]/70">
-                将课堂灵感转化为结构化课程包、讲义与可复用的学习资料。欢迎回来，登录以继续创作。
+                {a.heroBody}
               </p>
             </div>
 
             {isCheckingSession ? (
               <div className="flex min-h-80 items-center justify-center rounded-lg border border-[#ebe2d2] bg-white/80 text-sm font-medium text-[#5c4c3c]">
                 <LoaderCircle className="mr-2 h-4 w-4 animate-spin" />
-                正在检查登录状态
+                {a.checking}
               </div>
             ) : currentUser ? (
               <div className="rounded-lg border border-[#ebe2d2] bg-white p-6 shadow-[0_18px_48px_rgba(58,49,43,0.08)]">
                 <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-[#3a312b] text-white">
                   <ShieldCheck className="h-5 w-5" />
                 </div>
-                <h2 className="auth-display mt-5 text-2xl font-bold text-[#3a312b]">已登录</h2>
+                <h2 className="auth-display mt-5 text-2xl font-bold text-[#3a312b]">{a.signedIn}</h2>
                 <p className="mt-2 break-all text-sm text-[#5c4c3c]">{userAccountLabel(currentUser)}</p>
-                <p className="mt-1 text-xs text-[#8d8377]">权限：{currentUser.role === "admin" ? "管理员" : "普通用户"}</p>
+                <p className="mt-1 text-xs text-[#8d8377]">
+                  {a.rolePrefix}{currentUser.role === "admin" ? c.admin : c.member}
+                </p>
                 <div className="mt-6 flex flex-col gap-2 sm:flex-row">
                   <Link
                     href={currentUser.role === "admin" ? "/admin" : "/"}
                     className="inline-flex h-11 items-center justify-center rounded-lg bg-[#3a312b] px-4 text-sm font-bold text-white transition hover:bg-[#1f1a17]"
                   >
-                    {currentUser.role === "admin" ? "进入后台" : "回到主页"}
+                    {currentUser.role === "admin" ? a.openAdmin : a.backHome}
                   </Link>
                   <button
                     type="button"
                     onClick={handleLogout}
                     className="inline-flex h-11 items-center justify-center rounded-lg border border-[#ebe2d2] bg-white px-4 text-sm font-bold text-[#5c4c3c] transition hover:border-[#d2a878] hover:text-[#3a312b]"
                   >
-                    退出登录
+                    {a.signOut}
                   </button>
                 </div>
               </div>
@@ -790,9 +796,9 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                         )}
                       >
                         <SocialBrandIcon brand={option.brand} />
-                        <span className="whitespace-nowrap">{option.label}</span>
+                        <span className="whitespace-nowrap">{a.continueWith(option.providerLabel)}</span>
                         {isUnconfigured ? (
-                          <span className={clsx("shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold", statusClassName)}>未配置</span>
+                          <span className={clsx("shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold", statusClassName)}>{c.notConfigured}</span>
                         ) : null}
                       </button>
                     );
@@ -807,7 +813,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
 
                 <div className="mb-5 flex items-center gap-3 text-xs font-semibold text-[#8d8377]">
                   <span className="h-px flex-1 bg-[#ebe2d2]" />
-                  或使用邮箱/手机号
+                  {a.emailDivider}
                   <span className="h-px flex-1 bg-[#ebe2d2]" />
                 </div>
 
@@ -826,7 +832,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                         mode === item ? "bg-white text-[#3a312b] shadow-sm" : "text-[#8d8377] hover:text-[#3a312b]"
                       )}
                     >
-                      {item === "register" ? "注册" : "登录"}
+                      {item === "register" ? a.createAccount : a.signIn}
                     </Link>
                   ))}
                 </div>
@@ -834,7 +840,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                 <form onSubmit={(event) => void handleSubmit(event)} className="space-y-4">
                   <AuthInput
                     id="account"
-                    label="邮箱或手机号"
+                    label={a.emailOrPhone}
                     type="text"
                     value={accountIdentifier}
                     onChange={setAccountIdentifier}
@@ -845,13 +851,13 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
 
                   <div className="space-y-2">
                     <div className="flex items-center justify-between gap-3">
-                      <span className="text-sm font-semibold text-[#5c4c3c]">密码</span>
+                      <span className="text-sm font-semibold text-[#5c4c3c]">{a.password}</span>
                       <button
                         type="button"
                         onClick={handleForgotPassword}
                         className="text-sm font-medium text-[#b88952] transition hover:text-[#5c4c3c]"
                       >
-                        忘记密码？
+                        {a.forgotPassword}
                       </button>
                     </div>
                     <AuthInput
@@ -862,7 +868,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                       onChange={setPassword}
                       minLength={8}
                       autoComplete={isRegister ? "new-password" : "current-password"}
-                      placeholder={isRegister ? "至少 8 位" : "••••••••"}
+                      placeholder={isRegister ? a.passwordPlaceholderNew : "********"}
                       Icon={LockKeyhole}
                     />
                   </div>
@@ -877,12 +883,12 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                     className="flex w-full items-center justify-center gap-2 rounded-lg border border-transparent bg-[#3a312b] px-4 py-3 text-sm font-bold text-white shadow-[0_8px_20px_-8px_rgba(58,49,43,0.5)] transition hover:bg-[#1f1a17] focus:outline-none focus:ring-2 focus:ring-[#3a312b] focus:ring-offset-2 disabled:cursor-wait disabled:opacity-70 sm:py-3.5"
                   >
                     {isLoading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <GraduationCap className="h-4 w-4" />}
-                    {isRegister ? "创建账号" : "进入工作台"}
+                    {isRegister ? a.createAccount : a.enterWorkspace}
                   </button>
                 </form>
 
                 <p className="mt-5 text-center text-sm text-[#5c4c3c]/70">
-                  {isRegister ? "已有账号？" : "还没有账号？"}
+                  {isRegister ? a.alreadyHaveAccount : a.newToOpenClass}
                   <Link
                     href={`/${alternateMode}`}
                     onClick={() => {
@@ -892,7 +898,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                     }}
                     className="ml-1 border-b border-[#3a312b] pb-0.5 font-semibold text-[#3a312b] transition hover:border-[#d2a878] hover:text-[#b88952]"
                   >
-                    {isRegister ? "返回登录" : "免费注册"}
+                    {isRegister ? a.backToSignIn : a.createFreeAccount}
                   </Link>
                 </p>
 
@@ -904,7 +910,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                     className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg border border-[#ebe2d2] bg-white px-4 py-3 text-sm font-bold text-[#5c4c3c] shadow-sm transition hover:border-[#d2a878] hover:text-[#3a312b] disabled:cursor-wait disabled:opacity-70"
                   >
                     {isLoading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-                    游客登录（使用记录不会被缓存）
+                    {a.guestAccess}
                   </button>
                 ) : null}
               </>

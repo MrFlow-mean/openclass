@@ -18,11 +18,11 @@ type SpecificNeedParts = {
 };
 
 const SUMMARY_LABELS: Record<string, string> = {
-  learning: "用户要学什么",
-  level: "自己的水平",
-  vocabulary: "词汇量",
-  scenario: "面向场景",
-  output: "输出需求",
+  learning: "Learning goal",
+  level: "Current level",
+  vocabulary: "Vocabulary",
+  scenario: "Scenario",
+  output: "Output need",
 };
 const SUMMARY_CATEGORIES = ["learning", "level", "vocabulary", "scenario", "output"] as const;
 

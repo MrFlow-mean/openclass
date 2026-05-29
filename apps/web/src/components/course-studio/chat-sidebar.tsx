@@ -23,6 +23,7 @@ import {
 } from "@/components/course-studio/model-catalog";
 import { popoverPositionFromDomSelection } from "@/components/course-studio/selection-utils";
 import { LearningClarityCard } from "@/components/learning-clarity-card";
+import { useInterfaceLanguage } from "@/contexts/interface-language-context";
 import type {
   AIModelCatalog,
   AIModelOption,
@@ -152,6 +153,8 @@ export function CourseStudioChatSidebar({
   onUpdateComposerState,
   onAdjustComposerHeight,
 }: CourseStudioChatSidebarProps) {
+  const { texts: txt } = useInterfaceLanguage();
+  const s = txt.studio.chatSidebar;
   const voiceStartDisabled = !voiceActive && !selectedRealtimeOption?.enabled;
   const referenceEvidenceMatches = referencePrompt
     ? resourceMatches
@@ -195,7 +198,7 @@ export function CourseStudioChatSidebar({
           <div className="space-y-5">
             {previewCommit ? (
               <div className="rounded-xl border border-violet-200 bg-violet-50 px-4 py-3 text-xs leading-6 text-violet-800">
-                正在查看 {previewCommit.label} 时的交流记录。
+                {s.previewRecord(previewCommit.label)}
               </div>
             ) : null}
 
@@ -238,18 +241,18 @@ export function CourseStudioChatSidebar({
             ))}
             {showReadyForBoardCard ? (
               <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
-                <p className="text-[11px] font-bold uppercase tracking-widest text-emerald-700">学习需求已清晰</p>
+                <p className="text-[11px] font-bold uppercase tracking-widest text-emerald-700">{s.readyTitle}</p>
                 <p className="mt-2 text-sm leading-6 text-emerald-950">
                   {clarityStatus.summary || clarityStatus.reason}
                 </p>
                 <p className="mt-2 text-xs leading-6 text-emerald-900/80">
-                  接下来将基于这份学习需求生成板书，是否开始？
+                  {s.readyBody}
                 </p>
                 <button
                   type="button"
                   onClick={() =>
                     void onSubmitChat({
-                      message: "开始生成板书",
+                      message: s.startBoardMessage,
                       interaction_mode: "ask",
                       board_generation_action: "start",
                     })
@@ -257,7 +260,7 @@ export function CourseStudioChatSidebar({
                   disabled={isChatBusy}
                   className="mt-3 inline-flex h-9 items-center justify-center rounded-lg bg-emerald-600 px-3 text-xs font-semibold text-white shadow-sm transition hover:bg-emerald-700"
                 >
-                  开始生成板书
+                  {s.startBoardButton}
                 </button>
               </div>
             ) : null}
@@ -266,7 +269,7 @@ export function CourseStudioChatSidebar({
 
           {!isPreviewMode && scopeOptions.length ? (
             <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
-              <p className="text-[11px] font-bold uppercase tracking-widest text-amber-700">范围升级建议</p>
+              <p className="text-[11px] font-bold uppercase tracking-widest text-amber-700">{s.scopeTitle}</p>
               <div className="mt-3 space-y-2">
                 {scopeOptions.map((option) => (
                   <button
@@ -285,14 +288,14 @@ export function CourseStudioChatSidebar({
 
           {!isPreviewMode && referencePrompt ? (
             <div className="rounded-xl border border-violet-200 bg-violet-50 p-4">
-              <p className="text-[11px] font-bold uppercase tracking-widest text-violet-700">资料参考建议</p>
+              <p className="text-[11px] font-bold uppercase tracking-widest text-violet-700">{s.referenceTitle}</p>
               <p className="mt-2 text-sm leading-6 text-violet-950">{referencePrompt.question}</p>
               <p className="mt-2 text-xs leading-6 text-violet-900/80">{referencePrompt.reason}</p>
               {referenceEvidenceMatches.length ? (
                 <div className="mt-3 space-y-3 border-t border-violet-200/80 pt-3">
                   {referenceEvidenceMatches.map((match) => {
                     const headingPath = match.heading_path?.length ? match.heading_path.join(" / ") : match.chapter_title;
-                    const excerpt = match.excerpt || match.evidence?.find((item) => item.label.includes("片段"))?.value || "";
+                    const excerpt = match.excerpt || match.evidence?.[0]?.value || "";
                     return (
                       <div key={`${match.resource_id}-${match.segment_id ?? match.chapter_id}`} className="text-xs leading-5 text-violet-950">
                         <div className="flex items-start justify-between gap-3">
@@ -308,7 +311,7 @@ export function CourseStudioChatSidebar({
                           <div className="mt-2 space-y-1 text-[11px] text-violet-900/75">
                             {match.evidence.slice(0, 3).map((item) => (
                               <p key={`${item.label}-${item.value}`} className="break-words">
-                                <span className="font-semibold">{item.label}：</span>{item.value}
+                                <span className="font-semibold">{item.label}: </span>{item.value}
                               </p>
                             ))}
                           </div>
@@ -348,12 +351,12 @@ export function CourseStudioChatSidebar({
                   <BrainCircuit className="h-4 w-4" />
                 </span>
                 <div className="min-w-0">
-                  <p className="text-[11px] font-bold uppercase tracking-widest text-indigo-700">深度推理建议</p>
+                  <p className="text-[11px] font-bold uppercase tracking-widest text-indigo-700">{s.strongReasoningTitle}</p>
                   <p className="mt-2 text-sm leading-6 text-indigo-950">{strongReasoningPrompt.question}</p>
                   <p className="mt-2 text-xs leading-6 text-indigo-900/80">{strongReasoningPrompt.reason}</p>
                   {strongReasoningPrompt.model_label ? (
                     <p className="mt-2 text-[11px] font-semibold text-indigo-800">
-                      模型：{strongReasoningPrompt.model_label}
+                      {s.modelPrefix}{strongReasoningPrompt.model_label}
                     </p>
                   ) : null}
                 </div>
@@ -379,7 +382,7 @@ export function CourseStudioChatSidebar({
 
           {!isPreviewMode && boardEditPrompt ? (
             <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
-              <p className="text-[11px] font-bold uppercase tracking-widest text-emerald-700">扩选板书</p>
+              <p className="text-[11px] font-bold uppercase tracking-widest text-emerald-700">{s.boardEditTitle}</p>
               <p className="mt-2 text-sm leading-6 text-emerald-950">{boardEditPrompt.question}</p>
               <p className="mt-2 text-xs leading-6 text-emerald-900/80">{boardEditPrompt.reason}</p>
               <div className="mt-3 grid grid-cols-2 gap-2">
@@ -403,9 +406,9 @@ export function CourseStudioChatSidebar({
 
           {!isPreviewMode && clarificationQuestions.length ? (
             <div className="rounded-xl border border-sky-200 bg-sky-50 p-4">
-              <p className="text-[11px] font-bold uppercase tracking-widest text-sky-700">需求澄清</p>
+              <p className="text-[11px] font-bold uppercase tracking-widest text-sky-700">{s.clarificationTitle}</p>
               <p className="mt-2 text-xs leading-6 text-sky-900">
-                {latestBoardDecision?.reason ?? "AI 还需要再确认一点学习目标，才能决定后面的讲义策略。"}
+                {latestBoardDecision?.reason ?? s.clarificationFallback}
               </p>
               <div className="mt-3 space-y-2">
                 {clarificationQuestions.map((question, index) => (
@@ -425,7 +428,7 @@ export function CourseStudioChatSidebar({
               <summary className="flex cursor-pointer list-none items-start justify-between gap-3">
                 <span className="min-w-0">
                   <span className="block text-[11px] font-bold uppercase tracking-widest text-emerald-700">
-                    已引用参考资料
+                    {s.selectedReferenceTitle}
                   </span>
                   <span className="mt-1 block truncate text-sm font-semibold text-gray-900">
                     {selectedReference.resource_name} / {selectedReference.chapter_title}
@@ -449,7 +452,7 @@ export function CourseStudioChatSidebar({
         <div className="mb-2 grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_40px] items-center gap-2">
           <ModelPicker
             kind="text"
-            label="文本生成"
+            label={s.textModel}
             icon={<BrainCircuit className="h-4 w-4 shrink-0 text-gray-600" />}
             openModelMenu={openModelMenu}
             setOpenModelMenu={setOpenModelMenu}
@@ -460,7 +463,7 @@ export function CourseStudioChatSidebar({
           />
           <ModelPicker
             kind="realtime"
-            label="语音模型"
+            label={s.realtimeModel}
             icon={<Volume2 className="h-4 w-4 shrink-0 text-gray-600" />}
             openModelMenu={openModelMenu}
             setOpenModelMenu={setOpenModelMenu}
@@ -513,7 +516,7 @@ export function CourseStudioChatSidebar({
                 type="button"
                 onClick={onClearSelection}
                 className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-gray-400 transition-colors hover:bg-white hover:text-black"
-                title="移除引用"
+                title={s.removeReference}
               >
                 <X className="h-3.5 w-3.5" />
               </button>
@@ -545,14 +548,14 @@ export function CourseStudioChatSidebar({
             }}
             placeholder={
               isChatBusy
-                ? "正在处理上一条请求..."
+                ? s.busyPlaceholder
                 : isPreviewMode
-                  ? "点击输入会回到当前版本并继续对话"
+                  ? s.previewPlaceholder
                   : composerMode === "direct_edit"
-                    ? "描述要怎么改这段板书，或直接说“重写整篇”..."
+                    ? s.directEditPlaceholder
                     : composerSelection
-                      ? "基于选中内容继续追问"
-                      : "给 OpenClass 发消息..."
+                      ? s.selectedPlaceholder
+                      : s.defaultPlaceholder
             }
             className="custom-scrollbar block w-full resize-none border-0 bg-transparent px-3.5 py-2.5 text-[13px] leading-relaxed outline-none placeholder:text-gray-400 disabled:cursor-wait disabled:text-gray-400"
           />
@@ -571,7 +574,7 @@ export function CourseStudioChatSidebar({
                     "flex h-7 w-7 items-center justify-center rounded text-gray-500 transition-colors hover:bg-white hover:text-black",
                     composerMode === "ask" && "bg-white text-black shadow-sm"
                   )}
-                  title="Ask Mode"
+                  title={s.askMode}
                 >
                   <MessageSquare className="h-3.5 w-3.5" />
                 </button>
@@ -588,7 +591,7 @@ export function CourseStudioChatSidebar({
                     "flex h-7 w-7 items-center justify-center rounded text-gray-500 transition-colors hover:bg-white hover:text-black",
                     composerMode === "direct_edit" && "bg-white text-amber-700 shadow-sm"
                   )}
-                  title="Agent Edit Mode"
+                  title={s.editMode}
                 >
                   <BrainCircuit className="h-3.5 w-3.5" />
                 </button>
@@ -610,7 +613,7 @@ export function CourseStudioChatSidebar({
                   )}
                 >
                   <TextQuote className="h-3.5 w-3.5" />
-                  {includeSelectionInPrompt ? "包含选区" : "忽略选区"}
+                  {includeSelectionInPrompt ? s.includeSelection : s.ignoreSelection}
                 </button>
               ) : null}
             </div>
@@ -654,12 +657,14 @@ function ModelPicker({
   options: AIModelOption[];
   onSelect: (option: AIModelOption) => void;
 }) {
+  const { texts: txt } = useInterfaceLanguage();
+  const s = txt.studio.chatSidebar;
   return (
     <div className="relative">
       <button
         type="button"
         aria-expanded={openModelMenu === kind}
-        aria-label={`${label}，当前模型 ${modelButtonLabel(selectedOption, selectedModel)}`}
+        aria-label={s.currentModelAria(label, modelButtonLabel(selectedOption, selectedModel))}
         onClick={() => setOpenModelMenu((current) => (current === kind ? null : kind))}
         className="flex h-10 w-full items-center justify-between gap-2 rounded-lg border border-gray-200 bg-gray-50 px-2.5 text-left transition-colors hover:border-gray-300 hover:bg-white"
       >
@@ -680,7 +685,7 @@ function ModelPicker({
           <div className="space-y-1">
             {options.length === 0 ? (
               <p className="px-2 py-2 text-xs leading-5 text-gray-500">
-                {kind === "realtime" ? "实时语音未启用" : "暂无可用模型"}
+                {kind === "realtime" ? s.realtimeUnavailable : s.noModels}
               </p>
             ) : null}
             {options.map((option) => {
@@ -701,7 +706,7 @@ function ModelPicker({
                     <span className="block truncate text-xs font-semibold">{option.label}</span>
                     <span className="block truncate text-[11px] text-gray-400">
                       {PROVIDER_LABELS[option.provider]} / {option.model}
-                      {option.configured ? "" : " / 未配置"}
+                      {option.configured ? "" : s.notConfiguredSuffix}
                     </span>
                   </span>
                   {selected ? <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" /> : null}

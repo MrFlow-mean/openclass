@@ -217,30 +217,30 @@ export function useLessonChatAgent({
 
     const isDirectEdit = payloadWithConversation.interaction_mode === "direct_edit";
     const userMessageContent = payloadOverride?.scope_action
-      ? `继续执行：${payloadOverride.scope_action}`
+      ? `Continue: ${payloadOverride.scope_action}`
       : payloadOverride?.teaching_action === "continue"
-        ? "继续讲下一节"
+        ? "Continue to the next section"
         : payloadOverride?.teaching_action === "restart"
-          ? "从第一节重新讲"
+          ? "Restart from the first section"
           : payloadOverride?.board_edit_action === "confirm"
-            ? `扩选板书：${payloadOverride.board_edit_topic ?? payloadWithConversation.message}`
+            ? `Expand board selection: ${payloadOverride.board_edit_topic ?? payloadWithConversation.message}`
           : payloadOverride?.board_edit_action === "skip"
-            ? `暂不扩选板书：${payloadOverride.board_edit_topic ?? payloadWithConversation.message}`
+            ? `Skip board expansion: ${payloadOverride.board_edit_topic ?? payloadWithConversation.message}`
             : payloadOverride?.resource_reference_action === "confirm"
-              ? "继续执行：参考推荐章节生成讲义"
+              ? "Continue: generate notes from the recommended section"
               : payloadOverride?.resource_reference_action === "skip"
-                ? "继续执行：先不参考推荐章节"
+                ? "Continue: skip the recommended section"
                 : payloadOverride?.strong_reasoning_action === "confirm"
-                  ? "继续执行：确认深度推理"
+                  ? "Continue: confirm deep reasoning"
                   : payloadOverride?.strong_reasoning_action === "skip"
-                    ? "继续执行：先不用深度推理"
+                    ? "Continue: skip deep reasoning"
                     : isDirectEdit
-                      ? `直接编辑讲义：${payloadWithConversation.message}`
+                      ? `Directly edit notes: ${payloadWithConversation.message}`
                       : payloadWithConversation.message;
     const userMessage = createChatMessage("user", userMessageContent, "ready", undefined, submittedSelection);
     const pendingAssistantMessage: ChatMessage = {
       ...createChatMessage("assistant", "", "pending"),
-      statusLabel: "正在保存当前文档",
+      statusLabel: "Saving current document",
     };
     const baseStreamingDocument = options?.boardDocumentOverride ?? currentBoardDocument ?? requestLesson.board_document;
     const canStreamDocumentPreview = shouldStreamDocumentPreview(payloadWithConversation, baseStreamingDocument);
@@ -277,7 +277,7 @@ export function useLessonChatAgent({
         return;
       }
       requestStarted = true;
-      updatePendingAssistant(lessonId, pendingAssistantMessage.id, { statusLabel: "正在回复" });
+      updatePendingAssistant(lessonId, pendingAssistantMessage.id, { statusLabel: "Replying" });
       const response = await api.streamChatOnLesson(lessonId, payloadWithConversation, {
         onPhase(label) {
           updatePendingAssistant(lessonId, pendingAssistantMessage.id, { statusLabel: label });
@@ -286,7 +286,7 @@ export function useLessonChatAgent({
           streamedChatContent += delta;
           updatePendingAssistant(lessonId, pendingAssistantMessage.id, {
             content: streamedChatContent,
-            statusLabel: "正在回复",
+            statusLabel: "Replying",
           });
         },
         onDocumentDelta(delta) {
@@ -354,7 +354,7 @@ export function useLessonChatAgent({
             message.id !== pendingAssistantMessage.id && (requestStarted || message.id !== userMessage.id)
         )
       );
-      setError(chatError instanceof Error ? chatError.message : "聊天失败");
+      setError(chatError instanceof Error ? chatError.message : "Chat failed");
     } finally {
       chatRequestInFlightRef.current = false;
       setBusyAction(null);
@@ -392,7 +392,7 @@ export function useLessonChatAgent({
       });
       branchedLesson = applied.activeLesson;
     } catch (branchError) {
-      setError(branchError instanceof Error ? branchError.message : "创建对话分支失败");
+      setError(branchError instanceof Error ? branchError.message : "Could not create chat branch");
       return;
     } finally {
       setBusyAction(null);
@@ -488,7 +488,7 @@ export function useLessonChatAgent({
       return;
     }
     await handleSubmitChat({
-      message: "继续下一节",
+      message: "Continue to the next section",
       interaction_mode: "ask",
       teaching_action: "continue",
     });

@@ -66,8 +66,8 @@ export function createLessonComposerState(): LessonComposerState {
   return { ...DEFAULT_LESSON_COMPOSER_STATE };
 }
 
-export function formatDate(value: string) {
-  return new Date(value).toLocaleString("zh-CN", {
+export function formatDate(value: string, locale = "en-US") {
+  return new Date(value).toLocaleString(locale, {
     hour12: false,
     month: "2-digit",
     day: "2-digit",
@@ -246,31 +246,31 @@ function chatUserContentFromCommit(commit: CommitRecord): string | null {
 
   const scopeAction = metadataText(commit, "scope_action");
   if (scopeAction) {
-    return `继续执行：${scopeAction}`;
+    return `Continue: ${scopeAction}`;
   }
 
   const referenceAction = metadataText(commit, "resource_reference_action");
   if (referenceAction === "confirm") {
-    return "继续执行：参考推荐章节生成讲义";
+    return "Continue: generate notes from the recommended section";
   }
   if (referenceAction === "skip") {
-    return "继续执行：先不参考推荐章节";
+    return "Continue: skip the recommended section";
   }
 
   const boardEditAction = metadataText(commit, "board_edit_action");
   const boardEditTopic = metadataText(commit, "board_edit_topic");
   if (boardEditAction === "confirm") {
-    return `扩选板书：${boardEditTopic || userMessage}`;
+    return `Expand board selection: ${boardEditTopic || userMessage}`;
   }
   if (boardEditAction === "skip") {
-    return `暂不扩选板书：${boardEditTopic || userMessage}`;
+    return `Skip board expansion: ${boardEditTopic || userMessage}`;
   }
 
   if (metadataText(commit, "board_generation_action") === "start") {
-    return "开始生成板书";
+    return "Start generating board notes";
   }
 
-  return metadataText(commit, "interaction_mode") === "direct_edit" ? `直接编辑讲义：${userMessage}` : userMessage;
+  return metadataText(commit, "interaction_mode") === "direct_edit" ? `Directly edit notes: ${userMessage}` : userMessage;
 }
 
 export function buildLessonMessagesFromHistory(lesson: Lesson, commitId?: string | null): ChatMessage[] {
@@ -512,10 +512,10 @@ export function branchSequenceForCommit(lesson: Lesson, commit: CommitRecord): B
       return {
         order: index + 1,
         branchName: branch.name,
-        documentTitle: snapshot.title || "未命名章节",
-        documentOverview: compactText(snapshot.content_text || snapshot.title || "这个分支暂时还没有章节正文。", 220),
-        latestLabel: headCommit?.label ?? "分支起点",
-        latestMessage: compactText(headCommit?.message || commit.message || "还没有新的章节更新。", 120),
+        documentTitle: snapshot.title || "Untitled section",
+        documentOverview: compactText(snapshot.content_text || snapshot.title || "This branch has no section body yet.", 220),
+        latestLabel: headCommit?.label ?? "Branch start",
+        latestMessage: compactText(headCommit?.message || commit.message || "No new section updates yet.", 120),
         updatedAt: headCommit?.created_at ?? branch.created_at,
       };
     });
