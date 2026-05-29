@@ -186,10 +186,10 @@ const PageBreak = Node.create({
 });
 
 const FONT_FAMILY_OPTIONS = [
-  { label: "Satoshi", value: '"Satoshi","Avenir Next","PingFang SC","Microsoft YaHei",sans-serif' },
-  { label: "Serif", value: '"Iowan Old Style","Songti SC","Times New Roman",serif' },
-  { label: "Mono", value: '"IBM Plex Mono","SFMono-Regular","Menlo",monospace' },
-];
+  { id: "sans", value: '"Satoshi","Avenir Next","PingFang SC","Microsoft YaHei",sans-serif' },
+  { id: "serif", value: '"Iowan Old Style","Songti SC","Times New Roman",serif' },
+  { id: "mono", value: '"IBM Plex Mono","SFMono-Regular","Menlo",monospace' },
+] as const;
 
 const FONT_SIZE_OPTIONS = [
   { label: "12", value: "12px" },
@@ -876,18 +876,22 @@ export function WordBoardEditor({
         <select
           disabled={!editor || readOnly}
           value={currentFontFamily}
+          aria-label={tb.fontFamily}
+          title={tb.fontFamily}
           onChange={(event) => editor?.chain().focus().setFontFamily(event.target.value).run()}
           className="rounded-lg border border-gray-200 bg-white px-2.5 py-2 text-[12px] font-medium outline-none"
         >
           {FONT_FAMILY_OPTIONS.map((option) => (
-            <option key={option.label} value={option.value}>
-              {option.label}
+            <option key={option.id} value={option.value}>
+              {tb.fontFamilyLabels[option.id]}
             </option>
           ))}
         </select>
         <select
           disabled={!editor || readOnly}
           value={currentFontSize}
+          aria-label={tb.fontSize}
+          title={tb.fontSize}
           onChange={(event) => editor?.chain().focus().setFontSize(`${event.target.value}px`).run()}
           className="rounded-lg border border-gray-200 bg-white px-2.5 py-2 text-[12px] font-medium outline-none"
         >

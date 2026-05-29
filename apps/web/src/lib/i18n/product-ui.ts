@@ -134,11 +134,18 @@ export function profileSettingsTexts(lang: InterfaceLanguage) {
         z ? `${date} · ${count} 次活动` : `${date} · ${count} activities`,
       lastActivePrefix: z ? "最近一次活跃：" : "Last active: ",
       noActivityYet: z ? "暂无记录" : "No activity yet",
-      feedCollapseAria: z ? "收起 Feed" : "Collapse feed",
-      feedExpandAria: z ? "展开 Feed" : "Expand feed",
+      feedTitle: z ? "动态" : "Feed",
+      feedCollapseAria: z ? "收起动态" : "Collapse feed",
+      feedExpandAria: z ? "展开动态" : "Expand feed",
       feedSubtitle: z ? "最近的课程提交、资料收录和工作台推进会按时间排在这里。" : "Recent commits, resources, and studio updates.",
       feedEmpty: z ? "还没有可以展示的更新。新建课程、编辑文稿或上传资料后，这里会自动变成最近活动流。" : "Nothing here yet — edits and uploads will appear in this feed.",
       notificationToggleAria: z ? "切换消息面板" : "Toggle notifications",
+      topTrending: z ? "热门" : "Trending",
+      topTrendingAria: z ? "打开热门项目" : "Open trending projects",
+      topStars: z ? "收藏" : "Star",
+      topStarsAria: z ? "打开收藏课程" : "Open starred courses",
+      topFeed: z ? "动态" : "Feed",
+      topFeedAria: z ? "打开关注动态" : "Open following feed",
       languageSwitchToEnglish: z ? "切换到英语界面" : "Switch to English",
       languageSwitchToChinese: z ? "切换到中文界面" : "Switch to Chinese",
       filterAll: z ? "全部" : "All",
@@ -146,11 +153,42 @@ export function profileSettingsTexts(lang: InterfaceLanguage) {
       filterTrending: z ? "热门" : "Popular",
       updatedLabel: z ? "更新" : "Updated",
       shareLater: z ? "分享功能稍后提供" : "Sharing coming soon",
+      open: z ? "打开" : "Open",
+      collect: z ? "收藏" : "Collect",
+      collected: z ? "已收藏" : "Collected",
       share: z ? "分享" : "Share",
+      sharePackageText: (title: string) => (z ? `分享课程包：${title}` : `Share course package: ${title}`),
+      copyPackageLinkPrompt: z ? "复制课程包链接" : "Copy course package link",
+      rename: z ? "重命名" : "Rename",
       moveToPackage: z ? "移动到课程包" : "Move to package",
       delete: z ? "删除" : "Delete",
+      currentCoursePackage: z ? "当前课程包" : "Current course package",
+      deleteLessonConfirm: (title: string) => (z ? `删除“${title}”？` : `Delete "${title}"?`),
+      deletePackageConfirm: (title: string, lessonCount: number) =>
+        lessonCount
+          ? z
+            ? `删除“${title}”？其中 ${lessonCount} 节课也会一起删除。`
+            : `Delete "${title}"? The ${lessonCount} lessons inside will also be deleted.`
+          : z
+            ? `删除“${title}”？`
+            : `Delete "${title}"?`,
+      deletePackageTitle: z ? "删除课程包" : "Delete course package",
+      sharePackageTitle: z ? "分享课程包" : "Share course package",
+      renamePackageTitle: z ? "重命名课程包" : "Rename course package",
       noMovablePackages: z ? "暂无可移动课程包" : "No packages to move into",
       moreUpdatesAria: z ? "更多更新操作" : "More updates",
+      selectedPackageEmpty: z
+        ? "这个课程包还是空的。可以把课程移入这里，或进入工作台创建页面。"
+        : "This course package is empty. Move lessons into it, or create a page in Studio.",
+      openCourseLessons: (count: number) => (z ? `${count} 课` : `${count} lessons`),
+      openCourseUpdated: (relative: string) => (z ? `更新 ${relative}` : `Updated ${relative}`),
+      openCourseNoMatches: z ? "没有匹配的开放课程。可以换个关键词，或清空筛选。" : "No matching open courses. Try another keyword or clear the filters.",
+      starredOpenCourses: z ? "收藏的开放课程" : "Starred open courses",
+      starredOpenCoursesSummary: (count: number) => (z ? `已收藏 ${count} 个项目，可在个人主页查看和管理。` : `${count} projects starred. View and manage them on your profile.`),
+      openProfile: z ? "打开个人主页" : "Open profile",
+      searchOverview: z ? "搜索概览" : "Search overview",
+      metricStars: z ? "收藏" : "Stars",
+      metricTopics: z ? "主题" : "Topics",
     },
 
     homeRelative: {
@@ -458,6 +496,13 @@ export function profileSettingsTexts(lang: InterfaceLanguage) {
           zoomIn: z ? "放大页面" : "Zoom in",
         },
         toolbar: {
+          fontFamily: z ? "字体" : "Font family",
+          fontSize: z ? "字号" : "Font size",
+          fontFamilyLabels: {
+            sans: z ? "无衬线" : "Sans",
+            serif: z ? "衬线" : "Serif",
+            mono: z ? "等宽" : "Mono",
+          },
           addRowAbove: z ? "上方插入行" : "Insert row above",
           addRowBelow: z ? "下方插入行" : "Insert row below",
           addColLeft: z ? "左侧插入列" : "Insert column left",

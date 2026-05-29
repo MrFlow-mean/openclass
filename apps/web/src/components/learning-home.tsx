@@ -569,7 +569,7 @@ export function LearningHome() {
   }
 
   async function handleDeleteLesson(lesson: Lesson) {
-    if (typeof window !== "undefined" && !window.confirm(`Delete "${lesson.title}"?`)) {
+    if (typeof window !== "undefined" && !window.confirm(errMsgs.current.deleteLessonConfirm(lesson.title))) {
       return;
     }
 
@@ -659,10 +659,10 @@ export function LearningHome() {
       return;
     }
 
-    const lessonCount = selectedCoursePackage.lessons.length;
-    const message = lessonCount
-      ? `Delete "${selectedCoursePackage.title}"? The ${lessonCount} lessons inside will also be deleted.`
-      : `Delete "${selectedCoursePackage.title}"?`;
+    const message = errMsgs.current.deletePackageConfirm(
+      selectedCoursePackage.title,
+      selectedCoursePackage.lessons.length
+    );
     if (typeof window !== "undefined" && !window.confirm(message)) {
       return;
     }
@@ -691,7 +691,7 @@ export function LearningHome() {
     shareUrl.searchParams.set("package", selectedCoursePackage.id);
     const shareData = {
       title: selectedCoursePackage.title,
-      text: `Share course package: ${selectedCoursePackage.title}`,
+      text: errMsgs.current.sharePackageText(selectedCoursePackage.title),
       url: shareUrl.toString(),
     };
 
@@ -700,7 +700,7 @@ export function LearningHome() {
         await navigator.share(shareData);
         return;
       }
-      window.prompt("Copy course package link", shareData.url);
+      window.prompt(errMsgs.current.copyPackageLinkPrompt, shareData.url);
     } catch (shareError) {
       if (shareError instanceof DOMException && shareError.name === "AbortError") {
         return;
@@ -1099,7 +1099,7 @@ export function LearningHome() {
                     <div className="flex items-center gap-2">
                       <h3 className="flex items-center gap-2 text-lg font-semibold text-stone-950">
                         <Activity className="h-5 w-5" />
-                        Feed
+                        {h.feedTitle}
                       </h3>
                       <button
                         type="button"
@@ -1564,10 +1564,10 @@ export function LearningHome() {
                               </span>
                               <span className="inline-flex items-center gap-1">
                                 <GraduationCap className="h-3.5 w-3.5" />
-                                {course.lessons} lessons
+                                {h.openCourseLessons(course.lessons)}
                               </span>
                               <span>{course.license}</span>
-                              <span>Updated {homeRelFmt(course.updatedAt)}</span>
+                              <span>{h.openCourseUpdated(homeRelFmt(course.updatedAt))}</span>
                             </div>
                           </div>
                         </div>
@@ -1577,7 +1577,7 @@ export function LearningHome() {
                             href={courseDetailHref(course)}
                             className="inline-flex items-center justify-center gap-1.5 rounded-md border border-stone-200 bg-stone-50 px-3 py-1.5 text-xs font-semibold text-stone-700 transition hover:border-stone-300 hover:bg-white hover:text-stone-950"
                           >
-                            Open
+                            {h.open}
                             <ArrowUpRight className="h-3.5 w-3.5" />
                           </Link>
                           <button
@@ -1591,7 +1591,7 @@ export function LearningHome() {
                             )}
                           >
                             <Star className={clsx("h-3.5 w-3.5", isCollected && "fill-current")} />
-                            {isCollected ? "Starred" : "Star"}
+                            {isCollected ? h.collected : h.collect}
                           </button>
                         </div>
                       </div>
@@ -1600,7 +1600,7 @@ export function LearningHome() {
                 })
               ) : (
                 <div className="rounded-lg border border-dashed border-stone-300 bg-white/88 px-5 py-10 text-sm text-stone-500">
-                  No matching open courses. Try another keyword or clear the filters.
+                  {h.openCourseNoMatches}
                 </div>
               )}
             </div>
@@ -1610,16 +1610,16 @@ export function LearningHome() {
             <div className="rounded-lg border border-stone-200 bg-white/88 p-4 shadow-[0_12px_28px_rgba(15,23,42,0.04)]">
               <div className="flex items-center gap-2 text-sm font-semibold text-stone-950">
                 <Bookmark className="h-4 w-4 text-amber-500" />
-                Starred open courses
+                {h.starredOpenCourses}
               </div>
               <p className="mt-2 text-sm leading-6 text-stone-600">
-                {collectedOpenCourseCount} projects starred. View and manage them on your profile.
+                {h.starredOpenCoursesSummary(collectedOpenCourseCount)}
               </p>
               <Link
                 href="/profile"
                 className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-md border border-stone-200 bg-stone-50 px-3 py-2 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:bg-white hover:text-stone-950"
               >
-                Open profile
+                {h.openProfile}
                 <ArrowUpRight className="h-4 w-4" />
               </Link>
             </div>
@@ -1627,15 +1627,15 @@ export function LearningHome() {
             <div className="rounded-lg border border-stone-200 bg-white/88 p-4 shadow-[0_12px_28px_rgba(15,23,42,0.04)]">
               <div className="flex items-center gap-2 text-sm font-semibold text-stone-950">
                 <Eye className="h-4 w-4 text-sky-600" />
-                Search overview
+                {h.searchOverview}
               </div>
               <dl className="mt-3 grid grid-cols-2 gap-3 text-sm">
                 <div>
-                  <dt className="text-xs text-stone-400">Stars</dt>
+                  <dt className="text-xs text-stone-400">{h.metricStars}</dt>
                   <dd className="mt-1 font-semibold text-stone-900">{formatCompactNumber(totalStars)}</dd>
                 </div>
                 <div>
-                  <dt className="text-xs text-stone-400">Topics</dt>
+                  <dt className="text-xs text-stone-400">{h.metricTopics}</dt>
                   <dd className="mt-1 font-semibold text-stone-900">
                     {new Set(openCourseResults.flatMap((course) => course.topics)).size}
                   </dd>
@@ -1661,7 +1661,7 @@ export function LearningHome() {
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-stone-400">
-              Current course package
+              {h.currentCoursePackage}
             </p>
             <h4 className="mt-2 truncate text-lg font-semibold text-stone-950">{selectedCoursePackage.title}</h4>
             <div className="mt-2 flex h-3.5 origin-left scale-[0.82] flex-nowrap items-center gap-0.5">
@@ -1670,36 +1670,36 @@ export function LearningHome() {
                 onClick={() => void handleDeleteSelectedPackage()}
                 disabled={packageActionBusy}
                 className="inline-flex h-3.5 shrink-0 items-center gap-px rounded-full border border-rose-100 bg-rose-50 px-1 text-[8px] font-normal leading-none text-rose-600 transition hover:border-rose-200 hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-45"
-                title="Delete course package"
+                title={h.deletePackageTitle}
               >
                 {isDeletingPackage ? <LoaderCircle className="h-2 w-2 animate-spin" /> : <Trash2 className="h-2 w-2" />}
-                Delete
+                {h.delete}
               </button>
               <button
                 type="button"
                 onClick={() => void handleShareSelectedPackage()}
                 disabled={packageActionBusy}
                 className="inline-flex h-3.5 shrink-0 items-center gap-px rounded-full border border-stone-200 bg-white px-1 text-[8px] font-normal leading-none text-stone-600 transition hover:border-stone-300 hover:text-stone-950 disabled:cursor-not-allowed disabled:opacity-45"
-                title="Share course package"
+                title={h.sharePackageTitle}
               >
                 <Share2 className="h-2 w-2" />
-                Share
+                {h.share}
               </button>
               <button
                 type="button"
                 onClick={() => void handleRenameSelectedPackage()}
                 disabled={packageActionBusy}
                 className="inline-flex h-3.5 shrink-0 items-center gap-px rounded-full border border-stone-200 bg-white px-1 text-[8px] font-normal leading-none text-stone-600 transition hover:border-stone-300 hover:text-stone-950 disabled:cursor-not-allowed disabled:opacity-45"
-                title="Rename course package"
+                title={h.renamePackageTitle}
               >
                 {isRenamingPackage ? <LoaderCircle className="h-2 w-2 animate-spin" /> : <PencilLine className="h-2 w-2" />}
-                Rename
+                {h.rename}
               </button>
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
             <span className="rounded-full bg-stone-100 px-2.5 py-1 text-[10px] font-semibold text-stone-600">
-              {selectedPackageLessons.length} lessons
+              {h.openCourseLessons(selectedPackageLessons.length)}
             </span>
             <button
               type="button"
@@ -1765,7 +1765,7 @@ export function LearningHome() {
               })
             ) : (
               <div className="rounded-2xl border border-dashed border-stone-300 bg-stone-50/80 px-4 py-5 text-sm text-stone-500">
-                This course package is empty. Move lessons into it, or create a page in Studio.
+                {h.selectedPackageEmpty}
               </div>
             )}
           </div>
@@ -1781,17 +1781,17 @@ export function LearningHome() {
           <Link
             href="/trending"
             className="group relative hidden h-11 items-center gap-2 rounded-full border border-orange-100 bg-white px-3 text-sm font-semibold text-stone-700 shadow-[0_10px_24px_rgba(249,115,22,0.10)] transition hover:-translate-y-0.5 hover:bg-orange-500 hover:text-white hover:shadow-[0_14px_28px_rgba(249,115,22,0.18)] sm:flex"
-            aria-label="Open trending projects"
+            aria-label={h.topTrendingAria}
           >
             <span className="relative flex h-8 w-8 items-center justify-center rounded-full bg-orange-50 text-orange-500 transition group-hover:bg-white group-hover:text-orange-500">
               <Flame className="h-4 w-4" />
             </span>
-            <span>Trending</span>
+            <span>{h.topTrending}</span>
           </Link>
           <Link
             href="/profile?tab=stars"
             className="group relative hidden h-11 items-center gap-2 rounded-full border border-amber-100 bg-white px-3 text-sm font-semibold text-stone-700 shadow-[0_10px_24px_rgba(245,158,11,0.10)] transition hover:-translate-y-0.5 hover:bg-amber-500 hover:text-white hover:shadow-[0_14px_28px_rgba(245,158,11,0.18)] sm:flex"
-            aria-label="Open Stars"
+            aria-label={h.topStarsAria}
           >
             <span className="relative flex h-8 w-8 items-center justify-center rounded-full bg-amber-50 text-amber-500 transition group-hover:bg-white group-hover:text-amber-500">
               <Star className="h-4 w-4" />
@@ -1801,12 +1801,12 @@ export function LearningHome() {
                 </span>
               ) : null}
             </span>
-            <span>Star</span>
+            <span>{h.topStars}</span>
           </Link>
           <Link
             href="/following"
             className="group relative hidden h-11 items-center gap-2 rounded-full border border-rose-100 bg-white px-3 text-sm font-semibold text-stone-700 shadow-[0_10px_24px_rgba(244,63,94,0.10)] transition hover:-translate-y-0.5 hover:bg-rose-500 hover:text-white hover:shadow-[0_14px_28px_rgba(244,63,94,0.18)] sm:flex"
-            aria-label="Open following feed"
+            aria-label={h.topFeedAria}
           >
             <span className="relative flex h-8 w-8 items-center justify-center rounded-full bg-rose-50 text-rose-500 transition group-hover:bg-white group-hover:text-rose-500">
               <Activity className="h-4 w-4" />
@@ -1816,7 +1816,7 @@ export function LearningHome() {
                 </span>
               ) : null}
             </span>
-            <span>Feed</span>
+            <span>{h.topFeed}</span>
           </Link>
           <div className="flex flex-col items-center gap-2">
             <button
@@ -1912,7 +1912,7 @@ export function LearningHome() {
                       >
                         {FOLLOWED_UPDATE_KIND_LABELS[item.update.updateKind]}
                       </span>
-                      <span className="text-[11px] text-stone-400">{item.update.lessonCount} lessons</span>
+                      <span className="text-[11px] text-stone-400">{h.openCourseLessons(item.update.lessonCount)}</span>
                     </div>
 
                     <div className="mt-3 rounded-md bg-[#f6f8fa] p-3">
