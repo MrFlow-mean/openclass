@@ -418,17 +418,29 @@ export function CourseStudioChatSidebar({
           ) : null}
 
           {!isPreviewMode && selectedReference ? (
-            <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
-              <p className="text-[11px] font-bold uppercase tracking-widest text-emerald-700">已引用参考资料</p>
-              <p className="mt-2 text-sm font-semibold text-gray-900">
-                {selectedReference.resource_name} / {selectedReference.chapter_title}
-              </p>
+            <details
+              key={`${selectedReference.resource_id}-${selectedReference.chapter_id}-${selectedReference.segment_id ?? "chapter"}`}
+              className="group rounded-xl border border-emerald-200 bg-emerald-50 p-3 [&>summary::-webkit-details-marker]:hidden"
+            >
+              <summary className="flex cursor-pointer list-none items-start justify-between gap-3">
+                <span className="min-w-0">
+                  <span className="block text-[11px] font-bold uppercase tracking-widest text-emerald-700">
+                    已引用参考资料
+                  </span>
+                  <span className="mt-1 block truncate text-sm font-semibold text-gray-900">
+                    {selectedReference.resource_name} / {selectedReference.chapter_title}
+                  </span>
+                </span>
+                <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-emerald-200 bg-white text-emerald-700 shadow-sm transition-colors group-open:bg-emerald-100">
+                  <ChevronDown className="h-4 w-4 transition-transform group-open:rotate-180" />
+                </span>
+              </summary>
               {selectedReferenceTargetChunk?.excerpt ? (
                 <p className="mt-3 border-l-2 border-emerald-300 pl-3 text-xs leading-5 text-emerald-900/90">
                   {selectedReferenceTargetChunk.excerpt}
                 </p>
               ) : null}
-            </div>
+            </details>
           ) : null}
         </div>
       </div>
