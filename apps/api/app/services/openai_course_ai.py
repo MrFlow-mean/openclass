@@ -19,7 +19,7 @@ from typing import Any, Literal
 
 import certifi
 from openai import OpenAI
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.models import (
     AIModelSelection,
@@ -274,6 +274,11 @@ class LearningRequirementUpdate(BaseModel):
     action_instruction: str = ""
     target_hint: str = ""
     interaction_rule_draft: InteractionRuleDraft | None = None
+
+    @field_validator("next_question", "action_instruction", "target_hint", mode="before")
+    @classmethod
+    def _empty_string_for_null_text(cls, value: Any) -> Any:
+        return "" if value is None else value
 
 
 class ComplexProblemSolution(BaseModel):
@@ -1054,10 +1059,12 @@ class OpenAICourseAI:
             "不要擅自整体覆盖已有文档。\n"
             "4. content_text 是可直接进入文档的正文；可用 Markdown 表达标题、粗体、列表和表格，"
             "不要用代码块包裹全文。content_html 通常留空；后端会把 content_text 规范化为可编辑富文本。\n"
-            "5. 完整生成时，每个主要 H2 小节都要有可讲解密度：核心解释、必要步骤或推理、"
+            "5. 如果 intent=edit_existing_document 且用户要求翻译、语言转换或表达转换整篇当前文档，"
+            "operation 使用 replace_document，content_text 返回转换后的整篇文档，不要只返回说明。\n"
+            "6. 完整生成时，每个主要 H2 小节都要有可讲解密度：核心解释、必要步骤或推理、"
             "至少一个例子或类比、常见误区/注意点、一个检查问题。不要只写目录式提纲。\n"
-            "6. section_titles 写入本次文档的主要 H2 章节标题，用于后续分节讲解。\n"
-            "7. 不写任何固定主题模板，不根据主题名、资料名或样例走特殊规则。"
+            "7. section_titles 写入本次文档的主要 H2 章节标题，用于后续分节讲解。\n"
+            "8. 不写任何固定主题模板，不根据主题名、资料名或样例走特殊规则。"
         )
         user_prompt = _json(
             {
@@ -1127,10 +1134,12 @@ class OpenAICourseAI:
             "9. 如果用户表达的是对现有板书局部内容的动作，额外填写 action_type、action_instruction、target_hint："
             "action_type 只能是 generate_board、explain_target、rewrite_target、expand_target、simplify_target；"
             "target_hint 只写用户给出的定位线索，不猜具体段落 ID。\n"
-            "10. 如果用户表达的是希望系统按照某种规则进行连续对话或学习互动，"
+            "10. 如果用户表达的是翻译、语言转换或表达转换已有板书/文档内容，这是 rewrite_target，"
+            "不是 generate_board；target_hint 写用户给出的选区、全文、整篇或当前文档等通用定位线索。\n"
+            "11. 如果用户表达的是希望系统按照某种规则进行连续对话或学习互动，"
             "填写 interaction_rule_draft；它只描述用户给出的通用互动规则、目标、目标线索、用户应如何输入、"
             "Chatbot 应如何输出，不写任何具体主题或样例专属分支。\n"
-            "11. 不写任何主题、资料或样例专属规则。"
+            "12. 不写任何主题、资料或样例专属规则。"
         )
         user_prompt = _json(
             {

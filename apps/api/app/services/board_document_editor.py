@@ -101,10 +101,18 @@ def edit_existing_document(
     user_instruction: str,
     selection_excerpt: str | None,
     focus: BoardFocusRef | None = None,
+    allow_replace_document: bool = False,
 ) -> BoardDocumentEditOutcome:
     target_excerpt = _target_excerpt(selection_excerpt=selection_excerpt, focus=focus)
+    if allow_replace_document and not target_excerpt:
+        target_excerpt = _document_text(lesson.board_document)
     is_append_request = requirements.action_type == "append_section"
-    if not target_excerpt and not is_document_empty(lesson.board_document) and not is_append_request:
+    if (
+        not target_excerpt
+        and not is_document_empty(lesson.board_document)
+        and not is_append_request
+        and not allow_replace_document
+    ):
         return _no_change(
             lesson,
             "已有板书的局部编辑需要先解析目标位置。",
@@ -127,7 +135,12 @@ def edit_existing_document(
             "板书文档编辑 AI 没有返回编辑结果。",
         )
 
-    operation = "append_section" if is_append_request else result.operation
+    if is_append_request:
+        operation = "append_section"
+    elif allow_replace_document:
+        operation = "replace_document"
+    else:
+        operation = result.operation
     new_document = _apply_edit_result(
         lesson=lesson,
         result=result,
@@ -177,21 +190,21 @@ def _apply_edit_result(
             page_settings=lesson.board_document.page_settings,
         )
 
-    if operation == "replace_selection" and selection_excerpt:
-        return replace_selection_in_document(
-            lesson.board_document,
-            selection_text=selection_excerpt,
-            replacement_text=content_text,
-            replacement_html=content_html,
-        )
-
-    if is_document_empty(lesson.board_document):
+    if operation == "replace_document":
         return build_document(
             title=result.title.strip() or lesson.board_document.title or lesson.title,
             content_text=content_text,
             content_html=content_html,
             document_id=lesson.board_document.id,
             page_settings=lesson.board_document.page_settings,
+        )
+
+    if operation == "replace_selection" and selection_excerpt:
+        return replace_selection_in_document(
+            lesson.board_document,
+            selection_text=selection_excerpt,
+            replacement_text=content_text,
+            replacement_html=content_html,
         )
 
     if selection_excerpt:

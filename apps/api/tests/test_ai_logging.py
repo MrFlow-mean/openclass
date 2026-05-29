@@ -108,6 +108,28 @@ def _fake_requirement_update(**kwargs) -> LearningRequirementUpdate:
     )
 
 
+def test_learning_requirement_update_accepts_null_optional_text_fields() -> None:
+    update = LearningRequirementUpdate.model_validate(
+        {
+            "progress": 30,
+            "summary": "用户正在提出一个通用文档操作。",
+            "key_facts": [],
+            "checklist": [],
+            "missing_items": [],
+            "next_question": None,
+            "ready_for_board": False,
+            "action_type": None,
+            "action_instruction": None,
+            "target_hint": None,
+            "interaction_rule_draft": None,
+        }
+    )
+
+    assert update.next_question == ""
+    assert update.action_instruction == ""
+    assert update.target_hint == ""
+
+
 @pytest.fixture
 def isolated_ai_log(monkeypatch: pytest.MonkeyPatch, tmp_path):
     log_path = tmp_path / "logs" / "ai-usage.jsonl"
@@ -2677,6 +2699,163 @@ def test_selected_simplify_request_in_chat_routes_to_board_editor(
         "intent": "edit_existing_document",
         "user_instruction": "把这里改的简单点",
     }
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_whole_document_transform_request_routes_to_board_editor(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    captured: dict[str, str | None] = {}
+
+    def _fake_board_edit(**kwargs):
+        captured["selection_excerpt"] = kwargs.get("selection_excerpt")
+        captured["current_document_text"] = kwargs.get("current_document_text")
+        captured["intent"] = kwargs.get("intent")
+        captured["user_instruction"] = kwargs.get("user_instruction")
+        return BoardDocumentEditResult(
+            operation="replace_document",
+            title="已有板书",
+            content_text="English version of the current board document.",
+            summary="已转换整篇文档。",
+            chatbot_message="AI生成：已把当前文档转换完成。",
+        )
+
+    def _unexpected_chatbot_reply(**kwargs):
+        raise AssertionError("document transform requests must use the board document editor AI")
+
+    monkeypatch.setattr(openai_course_ai, "generate_chatbot_reply", _unexpected_chatbot_reply)
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _fake_board_edit)
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.board_document = build_document(title="已有板书", content_text="原文第一段\n\n原文第二段")
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="把文档内容翻译成英文"),
+        user_id=TEST_USER.id,
+    )
+
+    assert response.chatbot_message == "AI生成：已把当前文档转换完成。"
+    assert response.board_decision.action == "edit_board"
+    assert response.requirement_cleared is True
+    updated_lesson = response.course_package.lessons[0]
+    assert updated_lesson.board_document.content_text == "English version of the current board document."
+    assert captured == {
+        "selection_excerpt": "原文第一段\n\n原文第二段",
+        "current_document_text": "原文第一段\n\n原文第二段",
+        "intent": "edit_existing_document",
+        "user_instruction": "把文档内容翻译成英文",
+    }
+    commit = updated_lesson.history_graph.commits[-1]
+    assert commit.metadata["kind"] == "board_document_edit"
+    assert commit.metadata["board_edit_operation"] == "replace_document"
+    assert commit.metadata["task_requirement_sheet"]["action_type"] == "rewrite_target"
+    assert commit.metadata["assistant_message_source"] == "board_document_editor_ai"
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_selected_translate_request_in_chat_routes_to_board_editor(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    captured: dict[str, str | None] = {}
+
+    def _fake_board_edit(**kwargs):
+        captured["selection_excerpt"] = kwargs.get("selection_excerpt")
+        captured["intent"] = kwargs.get("intent")
+        captured["user_instruction"] = kwargs.get("user_instruction")
+        return BoardDocumentEditResult(
+            operation="replace_selection",
+            content_text="Selected sentence in another language.",
+            summary="已转换选中内容。",
+            chatbot_message="AI生成：已转换选中内容。",
+        )
+
+    def _unexpected_chatbot_reply(**kwargs):
+        raise AssertionError("selected transform requests must use the board document editor AI")
+
+    monkeypatch.setattr(openai_course_ai, "generate_chatbot_reply", _unexpected_chatbot_reply)
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _fake_board_edit)
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.board_document = build_document(
+        title="已有板书",
+        content_text="# 主线\n## 第一节\n选中的原文句子\n## 第二节\n其他内容",
+    )
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(
+            message="把这里翻译成英文",
+            selection=SelectionRef(kind="board", excerpt="选中的原文句子", lesson_id=lesson.id),
+        ),
+        user_id=TEST_USER.id,
+    )
+
+    assert response.chatbot_message == "AI生成：已转换选中内容。"
+    assert response.board_decision.action == "edit_board"
+    updated_lesson = response.course_package.lessons[0]
+    assert "Selected sentence in another language." in updated_lesson.board_document.content_text
+    assert "选中的原文句子" not in updated_lesson.board_document.content_text
+    assert "其他内容" in updated_lesson.board_document.content_text
+    assert captured == {
+        "selection_excerpt": "选中的原文句子",
+        "intent": "edit_existing_document",
+        "user_instruction": "把这里翻译成英文",
+    }
+    commit = updated_lesson.history_graph.commits[-1]
+    assert commit.metadata["kind"] == "board_document_edit"
+    assert commit.metadata["task_requirement_sheet"]["action_type"] == "rewrite_target"
+    assert commit.metadata["assistant_message_source"] == "board_document_editor_ai"
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_learning_about_translation_stays_in_chatbot(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+
+    def _unexpected_board_edit(**kwargs):
+        raise AssertionError("learning about translation should not edit the board document")
+
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _unexpected_board_edit)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_chatbot_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="AI生成：我们可以学习翻译方法。"),
+    )
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.board_document = build_document(title="已有板书", content_text="已有内容")
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="我想学习翻译方法"),
+        user_id=TEST_USER.id,
+    )
+
+    assert response.chatbot_message == "AI生成：我们可以学习翻译方法。"
+    assert response.board_decision.action == "no_change"
+    assert response.course_package.lessons[0].board_document.content_text == "已有内容"
+    commit = response.course_package.lessons[0].history_graph.commits[-1]
+    assert commit.metadata["kind"] == "chat_flow"
+    assert commit.metadata["assistant_message_source"] == "chatbot"
     assert _read_log_entries(isolated_ai_log) == []
 
 

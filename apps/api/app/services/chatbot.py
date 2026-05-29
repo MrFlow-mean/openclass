@@ -69,6 +69,10 @@ CONTEXTUAL_CONTINUATION_EXPLANATION_PATTERN = re.compile(
     r"讲透(?:一点|一些)?|展开讲|详细讲|继续讲|接着讲)"
 )
 SIMPLIFY_REQUEST_PATTERN = re.compile(r"(简化|简单(?:一点|点|些)?|更简单|通俗|更容易懂|更好懂|好理解|容易理解|降低难度|浅显)")
+DOCUMENT_TRANSFORM_REQUEST_PATTERN = re.compile(r"(翻译|译成|翻成|转换成|转成|改成|改为)")
+WHOLE_DOCUMENT_TARGET_PATTERN = re.compile(
+    r"(文档内容|黑板内容|板书内容|版书内容|全文|整篇|整份|这份内容|这篇内容|当前内容|全部内容|所有内容)"
+)
 REWRITE_REQUEST_PATTERN = re.compile(
     r"(改写|重写|修改|编辑|润色|优化|"
     r"改(?:得|的)?(?:简单|通俗|容易|好懂|清楚|更清楚|更难|难一点|有难度|更有区分度)|"
@@ -303,6 +307,20 @@ def _requests_append_section(text: str) -> bool:
     return bool(compact and APPEND_REQUEST_PATTERN.search(compact))
 
 
+def _requests_document_transform(text: str) -> bool:
+    compact = _compact_text(text, limit=280)
+    return bool(compact and DOCUMENT_TRANSFORM_REQUEST_PATTERN.search(compact))
+
+
+def _requests_whole_document_transform(text: str) -> bool:
+    compact = _compact_text(text, limit=280)
+    return bool(
+        compact
+        and DOCUMENT_TRANSFORM_REQUEST_PATTERN.search(compact)
+        and WHOLE_DOCUMENT_TARGET_PATTERN.search(compact)
+    )
+
+
 def _is_followup_execution_request(text: str) -> bool:
     compact = _compact_text(text, limit=80)
     return bool(compact and FOLLOWUP_EXECUTION_PATTERN.search(compact))
@@ -360,6 +378,9 @@ def _infer_board_task_action(request: ChatRequest, *, has_selection: bool, docum
         if EXPAND_REQUEST_PATTERN.search(message):
             return "expand_target"
         return "rewrite_target"
+    if _requests_document_transform(message) and not document_empty:
+        if has_selection or _requests_whole_document_transform(message):
+            return "rewrite_target"
     if not has_selection and _has_explicit_resource_reference(message):
         return None
     if _requests_append_section(message) and not document_empty:
@@ -1686,6 +1707,68 @@ def _chat_response(
                 [],
                 label="Board document edit",
                 message="Appended new board content at the end of the current document",
+                new_document=lesson.board_document,
+                metadata={
+                    "kind": "board_document_edit",
+                    "user_message": request.message,
+                    "assistant_message": edit_outcome.chatbot_message,
+                    "assistant_message_source": edit_outcome.assistant_message_source,
+                    "interaction_mode": request.interaction_mode,
+                    "selection": request.selection.model_dump(mode="json") if request.selection else None,
+                    "selection_text": None,
+                    "board_edit_operation": edit_outcome.operation,
+                    "board_edit_summary": edit_outcome.summary,
+                    "board_section_titles": edit_outcome.section_titles,
+                    **_task_metadata(
+                        requirements=requirements,
+                        learning_clarification=learning_clarification,
+                        requirement_cleared=requirement_cleared,
+                    ),
+                },
+            )
+            if requirement_cleared:
+                _clear_task_requirements(lesson)
+            workspace_state.normalize_package_state(package)
+            workspace_state.save_workspace_for_user(user_id, workspace)
+            return _response(
+                workspace=workspace,
+                package=package,
+                lesson=lesson,
+                chatbot_message=edit_outcome.chatbot_message,
+                requirements=requirements,
+                learning_clarification=learning_clarification,
+                board_decision=edit_outcome.board_decision,
+                requirement_cleared=requirement_cleared,
+            )
+
+        if action_type in EDIT_ACTIONS and not selection_excerpt and _requests_whole_document_transform(request.message):
+            requirements = _with_task_details(
+                requirements,
+                action_type=action_type,
+                instruction=request.message,
+            )
+            edit_outcome = edit_existing_document(
+                lesson=lesson,
+                requirements=requirements,
+                clarification=learning_clarification,
+                resource_summary=_resource_summary(visible_package.resources),
+                conversation_summary=_conversation_summary(request.conversation),
+                user_instruction=request.message,
+                selection_excerpt=None,
+                focus=None,
+                allow_replace_document=True,
+            )
+            if edit_outcome.changed:
+                refresh_lesson_runtime(lesson, document=edit_outcome.new_document, requirements=requirements)
+                requirements = lesson.learning_requirements
+                lesson.board_teaching_guide = build_board_teaching_guide(lesson)
+                lesson.board_teaching_progress = None
+            requirement_cleared = edit_outcome.changed
+            commit_operations(
+                lesson,
+                [],
+                label="Board document edit",
+                message="Transformed the current board document",
                 new_document=lesson.board_document,
                 metadata={
                     "kind": "board_document_edit",
