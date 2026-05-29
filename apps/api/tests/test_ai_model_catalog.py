@@ -67,30 +67,11 @@ def test_catalog_exposes_openai_realtime_when_runtime_enabled(monkeypatch) -> No
 
     assert catalog.defaults["realtime"].provider == "openai"
     assert catalog.defaults["realtime"].model == "gpt-realtime-2"
-    assert _models_by_provider(catalog, "realtime", "openai") == ["gpt-realtime-1.5", "gpt-realtime-2"]
-    options_by_model = {option.model: option for option in catalog.realtime}
-    assert options_by_model["gpt-realtime-1.5"].enabled is True
-    assert options_by_model["gpt-realtime-1.5"].configured is True
-    assert options_by_model["gpt-realtime-1.5"].transport == "openai_webrtc"
-    assert options_by_model["gpt-realtime-2"].enabled is True
-    assert options_by_model["gpt-realtime-2"].configured is True
-    assert options_by_model["gpt-realtime-2"].transport == "openai_webrtc"
-
-
-def test_catalog_can_select_legacy_openai_realtime_model(monkeypatch) -> None:
-    monkeypatch.setenv("OPENCLASS_REALTIME_ENABLED", "true")
-    monkeypatch.delenv("OPENCLASS_REALTIME_TOOLS_ENABLED", raising=False)
-    monkeypatch.delenv("AI_SINGLE_API_KEY_MODE", raising=False)
-    monkeypatch.delenv("AI_REALTIME_MODELS_JSON", raising=False)
-    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
-    monkeypatch.setenv("AI_REALTIME_PROVIDER", "openai")
-    monkeypatch.setenv("OPENAI_REALTIME_MODEL", "gpt-realtime-1.5")
-
-    catalog = ai_model_catalog.build_model_catalog()
-
-    assert catalog.defaults["realtime"].provider == "openai"
-    assert catalog.defaults["realtime"].model == "gpt-realtime-1.5"
-    assert _models_by_provider(catalog, "realtime", "openai") == ["gpt-realtime-1.5", "gpt-realtime-2"]
+    assert _models_by_provider(catalog, "realtime", "openai") == ["gpt-realtime-2"]
+    option = catalog.realtime[0]
+    assert option.enabled is True
+    assert option.configured is True
+    assert option.transport == "openai_webrtc"
 
 
 def test_catalog_defaults_to_configured_google_when_openai_is_missing(monkeypatch) -> None:
