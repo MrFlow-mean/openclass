@@ -380,6 +380,7 @@ export function LessonHistoryGraphPanel({
             </button>
             <button
               type="button"
+              data-testid="history-create-branch"
               onClick={() => void onCreateBranchFromCommit(selectedNode.commit)}
               className="inline-flex h-8 items-center gap-1 rounded-md bg-gray-950 px-2.5 text-[10px] font-bold uppercase tracking-wider text-white transition hover:bg-black"
             >

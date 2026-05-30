@@ -41,7 +41,7 @@ async function writeEditorTextAndWaitForSave(page: Page, text: string) {
 
 async function openHistoryPanel(page: Page) {
   await page.getByTitle("Expand side panel").click();
-  await expect(page.getByText("History graph")).toBeVisible();
+  await expect(page.getByText("Branch history", { exact: true })).toBeVisible();
 }
 
 test("creates a package and lesson, edits the document, and persists a version", async ({ page }) => {
@@ -83,14 +83,14 @@ test("restores an older document version from history", async ({ page }) => {
 test("shows a sideways branch sprout immediately after creating a branch", async ({ page }) => {
   const unique = Date.now();
   await enterAsGuest(page);
-  await createPackageFromHome(page, `Branch graph test package ${unique}`);
-  await createLessonFromEmptyStudio(page, `Branch graph test page ${unique}`);
+  await createPackageFromHome(page, `Branch history test package ${unique}`);
+  await createLessonFromEmptyStudio(page, `Branch history test page ${unique}`);
   await openHistoryPanel(page);
 
   const branchResponse = page.waitForResponse(
     (response) => response.url().includes("/branches") && response.request().method() === "POST"
   );
-  await page.getByRole("button", { name: "Branch", exact: true }).click();
+  await page.getByTestId("history-create-branch").click();
   await branchResponse;
 
   await expect(page.getByText("2 branches")).toBeVisible();
@@ -101,14 +101,14 @@ test("shows a sideways branch sprout immediately after creating a branch", async
 test("merges a source branch into the current branch with manual choices", async ({ page }) => {
   const unique = Date.now();
   await enterAsGuest(page);
-  await createPackageFromHome(page, `Merge graph test package ${unique}`);
-  await createLessonFromEmptyStudio(page, `Merge graph test page ${unique}`);
+  await createPackageFromHome(page, `Merge branch test package ${unique}`);
+  await createLessonFromEmptyStudio(page, `Merge branch test page ${unique}`);
   await openHistoryPanel(page);
 
   const branchResponse = page.waitForResponse(
     (response) => response.url().includes("/branches") && response.request().method() === "POST"
   );
-  await page.getByRole("button", { name: "Branch", exact: true }).click();
+  await page.getByTestId("history-create-branch").click();
   await branchResponse;
 
   const sourceText = `Source branch document ${unique}`;
