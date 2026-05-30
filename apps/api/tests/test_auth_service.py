@@ -161,13 +161,14 @@ def test_password_reset_token_is_one_time(tmp_path, email_delivery) -> None:
     assert detail_code(exc_info.value) == "password_reset_invalid"
 
 
-def test_provider_list_is_public_login_set(tmp_path) -> None:
+def test_provider_list_is_public_login_set(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "openclass.sqlite3"
     auth = auth_for_path(db_path)
+    monkeypatch.setenv("OPENCLASS_AUTH_PUBLIC_PROVIDERS", "google,github")
 
     provider_ids = [provider.id for provider in auth.providers()]
 
-    assert provider_ids == ["email", "google", "wechat", "github"]
+    assert provider_ids == ["email", "google", "github"]
 
 
 def test_provider_configuration_reflects_env(tmp_path, monkeypatch) -> None:
@@ -176,16 +177,21 @@ def test_provider_configuration_reflects_env(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setenv("OPENCLASS_OAUTH_GOOGLE_CLIENT_ID", "google-client")
     monkeypatch.setenv("OPENCLASS_OAUTH_GOOGLE_CLIENT_SECRET", "google-secret")
+    monkeypatch.setenv("OPENCLASS_AUTH_PUBLIC_PROVIDERS", "google,github")
+    monkeypatch.delenv("OPENCLASS_OAUTH_GITHUB_CLIENT_ID", raising=False)
+    monkeypatch.delenv("OPENCLASS_OAUTH_GITHUB_CLIENT_SECRET", raising=False)
 
     providers = {provider.id: provider for provider in auth.providers()}
 
     assert providers["google"].configured is True
-    assert providers["wechat"].configured is False
+    assert providers["github"].configured is False
 
 
 def test_x_oauth_authorization_url_still_uses_pkce_when_enabled(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "openclass.sqlite3"
     auth = auth_for_path(db_path)
+    monkeypatch.delenv("OPENCLASS_PUBLIC_ORIGIN", raising=False)
+    monkeypatch.delenv("OPENCLASS_WEB_ORIGIN", raising=False)
     monkeypatch.setenv("OPENCLASS_OAUTH_X_CLIENT_ID", "x-client")
     monkeypatch.setenv("OPENCLASS_OAUTH_X_CLIENT_SECRET", "x-secret")
     request = Request(

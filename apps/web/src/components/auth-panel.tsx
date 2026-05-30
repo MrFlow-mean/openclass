@@ -64,7 +64,7 @@ type SocialSignInOption = {
   label: string;
   providerLabel: string;
   className: string;
-  brand: "apple" | "github" | "google" | "microsoft" | "wechat" | "x";
+  brand: "apple" | "github" | "google" | "microsoft" | "x";
 };
 
 type KnowledgeTextItem = {
@@ -86,13 +86,6 @@ const socialSignInOptions: SocialSignInOption[] = [
     providerLabel: "Google",
     className: "border-[#e8dfd2] bg-white text-[#5c4c3c] hover:border-[#d2a878] hover:bg-[#fcfbf9]",
     brand: "google",
-  },
-  {
-    id: "wechat",
-    label: "Continue with WeChat",
-    providerLabel: "WeChat",
-    className: "border-[#1aad19] bg-[#1aad19] text-white hover:border-[#159b17] hover:bg-[#159b17]",
-    brand: "wechat",
   },
   {
     id: "github",
@@ -292,15 +285,6 @@ function XBrandIcon() {
   );
 }
 
-function WeChatBrandIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 24 24" className="h-[18px] w-[18px]" fill="currentColor">
-      <path d="M9.4 4.2c-4.25 0-7.7 2.8-7.7 6.25 0 2.02 1.18 3.8 3.02 4.94l-.69 2.08 2.47-1.2c.9.27 1.88.42 2.9.42h.47a6.02 6.02 0 0 1-.27-1.78c0-3.14 2.96-5.69 6.62-5.69.28 0 .56.02.83.05-.68-2.9-3.82-5.07-7.65-5.07Zm-2.5 4.25a.86.86 0 1 1 0 1.72.86.86 0 0 1 0-1.72Zm5 0a.86.86 0 1 1 0 1.72.86.86 0 0 1 0-1.72Z" />
-      <path d="M22.3 14.9c0-2.72-2.72-4.92-6.08-4.92s-6.08 2.2-6.08 4.92 2.72 4.92 6.08 4.92c.74 0 1.45-.1 2.1-.3l1.95.95-.54-1.65c1.56-.9 2.57-2.32 2.57-3.92Zm-8.08-.7a.7.7 0 1 1 0-1.4.7.7 0 0 1 0 1.4Zm4 0a.7.7 0 1 1 0-1.4.7.7 0 0 1 0 1.4Z" />
-    </svg>
-  );
-}
-
 function SocialBrandIcon({ brand }: { brand: SocialSignInOption["brand"] }) {
   if (brand === "google") {
     return <GoogleBrandIcon />;
@@ -317,7 +301,7 @@ function SocialBrandIcon({ brand }: { brand: SocialSignInOption["brand"] }) {
   if (brand === "x") {
     return <XBrandIcon />;
   }
-  return <WeChatBrandIcon />;
+  return null;
 }
 
 function loginDestination(user: UserView, nextPath: string | null) {
