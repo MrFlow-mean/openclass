@@ -2,30 +2,46 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { LoaderCircle, ShieldCheck, TriangleAlert } from "lucide-react";
 
-import { storeAuthToken } from "@/lib/api";
+import { api } from "@/lib/api";
 import { loginRedirectPath } from "@/lib/auth-redirect";
 
 type AuthCallbackProps = {
   error?: string | null;
   nextPath?: string | null;
-  token?: string | null;
+  verified?: string | null;
 };
 
-export function AuthCallback({ error, nextPath, token }: AuthCallbackProps) {
+export function AuthCallback({ error, nextPath, verified }: AuthCallbackProps) {
   const router = useRouter();
-  const hasError = Boolean(error || !token);
-  const message = error || (!token ? "Third-party sign-in did not return a valid session. Please sign in again." : "Redirecting to OpenClass home.");
+  const [callbackError, setCallbackError] = useState<string | null>(error || null);
+  const hasError = Boolean(callbackError);
+  const message = callbackError || (verified ? "Email verified. Redirecting to OpenClass." : "Signed in. Redirecting to OpenClass.");
 
   useEffect(() => {
-    if (error || !token) {
+    if (error) {
       return;
     }
-    storeAuthToken(token);
-    router.replace(loginRedirectPath(nextPath));
-  }, [error, nextPath, router, token]);
+    let disposed = false;
+    async function finishCallback() {
+      try {
+        await api.getCurrentUser();
+        if (!disposed) {
+          router.replace(loginRedirectPath(nextPath));
+        }
+      } catch (sessionError) {
+        if (!disposed) {
+          setCallbackError(sessionError instanceof Error ? sessionError.message : "Sign-in session was not created. Please sign in again.");
+        }
+      }
+    }
+    void finishCallback();
+    return () => {
+      disposed = true;
+    };
+  }, [error, nextPath, router]);
 
   return (
     <main className="flex min-h-screen items-center justify-center bg-[#f7f5ef] px-4 text-stone-950">
@@ -33,7 +49,7 @@ export function AuthCallback({ error, nextPath, token }: AuthCallbackProps) {
         <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-lg bg-stone-950 text-white">
           {hasError ? <TriangleAlert className="h-5 w-5" /> : <ShieldCheck className="h-5 w-5" />}
         </div>
-        <h1 className="mt-5 text-2xl font-semibold tracking-tight">{hasError ? "Sign-in incomplete" : "Signed in"}</h1>
+        <h1 className="mt-5 text-2xl font-semibold tracking-tight">{hasError ? "Sign-in incomplete" : verified ? "Email verified" : "Signed in"}</h1>
         <p className="mt-3 text-sm leading-6 text-stone-600">
           {message}
         </p>

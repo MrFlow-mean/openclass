@@ -1,6 +1,8 @@
 import type {
   AIModelCatalog,
+  AdminAuditLogResponse,
   AdminOverview,
+  RegisterResponse,
   AuthProviderView,
   AuthSessionResponse,
   ChatRequestPayload,
@@ -111,9 +113,9 @@ export function storeAuthToken(token: string) {
   guestAuthToken = null;
   clearSessionToken(OPENCLASS_GUEST_AUTH_TOKEN_STORAGE_KEY);
   clearCookie(OPENCLASS_GUEST_AUTH_TOKEN_STORAGE_KEY);
-  window.localStorage.setItem(OPENCLASS_AUTH_TOKEN_STORAGE_KEY, token);
-  const secure = window.location.protocol === "https:" ? "; Secure" : "";
-  document.cookie = `${OPENCLASS_AUTH_TOKEN_STORAGE_KEY}=${encodeURIComponent(token)}; Path=/; Max-Age=2592000; SameSite=Lax${secure}`;
+  if (token) {
+    window.localStorage.setItem(OPENCLASS_AUTH_TOKEN_STORAGE_KEY, token);
+  }
 }
 
 export function storeGuestAuthToken(token: string) {
@@ -121,11 +123,11 @@ export function storeGuestAuthToken(token: string) {
   if (typeof window === "undefined") {
     return;
   }
-  const secure = window.location.protocol === "https:" ? "; Secure" : "";
   window.localStorage.removeItem(OPENCLASS_AUTH_TOKEN_STORAGE_KEY);
   clearCookie(OPENCLASS_AUTH_TOKEN_STORAGE_KEY);
-  storeSessionToken(OPENCLASS_GUEST_AUTH_TOKEN_STORAGE_KEY, token);
-  document.cookie = `${OPENCLASS_GUEST_AUTH_TOKEN_STORAGE_KEY}=${encodeURIComponent(token)}; Path=/; SameSite=Lax${secure}`;
+  if (token) {
+    storeSessionToken(OPENCLASS_GUEST_AUTH_TOKEN_STORAGE_KEY, token);
+  }
 }
 
 export function clearAuthToken() {
@@ -137,6 +139,15 @@ export function clearAuthToken() {
   clearSessionToken(OPENCLASS_GUEST_AUTH_TOKEN_STORAGE_KEY);
   clearCookie(OPENCLASS_AUTH_TOKEN_STORAGE_KEY);
   clearCookie(OPENCLASS_GUEST_AUTH_TOKEN_STORAGE_KEY);
+}
+
+export function clearClientAuthStorage() {
+  guestAuthToken = null;
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.localStorage.removeItem(OPENCLASS_AUTH_TOKEN_STORAGE_KEY);
+  clearSessionToken(OPENCLASS_GUEST_AUTH_TOKEN_STORAGE_KEY);
 }
 
 function authHeaders(headers?: HeadersInit) {
@@ -151,16 +162,7 @@ function authHeaders(headers?: HeadersInit) {
 }
 
 function withAuthTokenQuery(url: string) {
-  if (typeof window === "undefined") {
-    return url;
-  }
-  const token = readEffectiveAuthToken();
-  if (!token) {
-    return url;
-  }
-  const nextUrl = new URL(url, window.location.href);
-  nextUrl.searchParams.set("access_token", token);
-  return nextUrl.toString();
+  return url;
 }
 
 export function getApiWebSocketUrl(pathOrUrl: string) {
@@ -190,6 +192,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
     headers,
     cache: "no-store",
+    credentials: "include",
   });
 
   if (!response.ok) {
@@ -199,6 +202,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       const parsed = JSON.parse(text) as { detail?: unknown };
       if (typeof parsed.detail === "string") {
         message = parsed.detail;
+      } else if (
+        parsed.detail &&
+        typeof parsed.detail === "object" &&
+        "message" in parsed.detail &&
+        typeof (parsed.detail as { message?: unknown }).message === "string"
+      ) {
+        message = (parsed.detail as { message: string }).message;
       }
     } catch {
       // Keep the raw response text for non-JSON errors.
@@ -275,6 +285,7 @@ async function streamRequest(path: string, payload: unknown, handlers: ChatStrea
     headers: authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(payload),
     cache: "no-store",
+    credentials: "include",
   });
   if (!response.ok || !response.body) {
     const text = await response.text();
@@ -320,10 +331,10 @@ async function streamRequest(path: string, payload: unknown, handlers: ChatStrea
 }
 
 export const api = {
-  register(identifier: string, password: string) {
-    return request<AuthSessionResponse>("/api/auth/register", {
+  register(identifier: string, password: string, nextPath = "/") {
+    return request<RegisterResponse>("/api/auth/register", {
       method: "POST",
-      body: JSON.stringify({ identifier, password, guest_token: readGuestAuthToken() }),
+      body: JSON.stringify({ identifier, password, guest_token: readGuestAuthToken(), next_path: nextPath }),
     });
   },
   login(identifier: string, password: string) {
@@ -332,9 +343,37 @@ export const api = {
       body: JSON.stringify({ identifier, password, guest_token: readGuestAuthToken() }),
     });
   },
+  logout() {
+    return request<{ message: string }>("/api/auth/logout", {
+      method: "POST",
+    });
+  },
+  logoutAll() {
+    return request<{ message: string }>("/api/auth/logout-all", {
+      method: "POST",
+    });
+  },
   startGuestSession() {
     return request<AuthSessionResponse>("/api/auth/guest", {
       method: "POST",
+    });
+  },
+  resendVerification(email: string, nextPath = "/") {
+    return request<{ message: string }>("/api/auth/email/resend", {
+      method: "POST",
+      body: JSON.stringify({ email, next_path: nextPath }),
+    });
+  },
+  forgotPassword(email: string) {
+    return request<{ message: string }>("/api/auth/password/forgot", {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    });
+  },
+  resetPassword(token: string, password: string) {
+    return request<{ message: string }>("/api/auth/password/reset", {
+      method: "POST",
+      body: JSON.stringify({ token, password }),
     });
   },
   getCurrentUser() {
@@ -345,6 +384,20 @@ export const api = {
   },
   getAdminOverview() {
     return request<AdminOverview>("/api/admin/overview");
+  },
+  updateAdminUser(userId: string, payload: { role?: "user" | "admin"; status?: "active" | "disabled" }) {
+    return request<UserView>(`/api/admin/users/${userId}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    });
+  },
+  revokeAdminUserSessions(userId: string) {
+    return request<{ message: string }>(`/api/admin/users/${userId}/sessions/revoke`, {
+      method: "POST",
+    });
+  },
+  getAdminAuditLogs() {
+    return request<AdminAuditLogResponse>("/api/admin/audit-logs");
   },
   getAIModels() {
     return request<AIModelCatalog>("/api/ai-models");

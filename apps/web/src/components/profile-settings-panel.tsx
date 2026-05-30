@@ -32,7 +32,7 @@ import {
 } from "lucide-react";
 
 import { useInterfaceLanguage } from "@/contexts/interface-language-context";
-import { api, OPENCLASS_AUTH_TOKEN_STORAGE_KEY } from "@/lib/api";
+import { api, clearAuthToken } from "@/lib/api";
 import { userAccountLabel, userPublicEmail } from "@/lib/account";
 import type { InterfaceLanguage } from "@/lib/profile-settings-state";
 import {
@@ -400,8 +400,13 @@ export function ProfileSettingsPanel({
     }
   }
 
-  function handleSignOut() {
-    window.localStorage.removeItem(OPENCLASS_AUTH_TOKEN_STORAGE_KEY);
+  async function handleSignOut() {
+    try {
+      await api.logoutAll();
+    } catch {
+      // Local cleanup still happens if the server session is already gone.
+    }
+    clearAuthToken();
     setCurrentUser(null);
     router.push("/login");
   }
@@ -1203,7 +1208,7 @@ export function ProfileSettingsPanel({
           </div>
           <button
             type="button"
-            onClick={handleSignOut}
+            onClick={() => void handleSignOut()}
             className="inline-flex h-10 items-center justify-center rounded-md border border-stone-200 bg-white px-4 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:text-stone-950"
           >
             {p.signOutEverywhere}

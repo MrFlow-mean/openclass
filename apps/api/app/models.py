@@ -776,10 +776,15 @@ class UserView(BaseModel):
     email: str
     phone: str | None = None
     role: Literal["user", "admin", "guest"]
+    status: Literal["active", "disabled"] = "active"
     display_name: str | None = None
     avatar_url: str | None = None
     created_at: str
+    updated_at: str | None = None
     last_login_at: str | None = None
+    email_verified_at: str | None = None
+    session_count: int | None = None
+    package_count: int | None = None
     auth_identities: list[AuthIdentityView] = Field(default_factory=list)
 
 
@@ -788,14 +793,24 @@ class AuthRequest(BaseModel):
     email: str | None = None
     phone: str | None = None
     guest_token: str | None = None
+    next_path: str | None = None
     password: str = Field(min_length=8, max_length=256)
 
     def account_identifier(self) -> str:
         return self.identifier or self.email or self.phone or ""
 
 
+class RegisterResponse(BaseModel):
+    email: str
+    verification_required: Literal[True] = True
+
+
 class AuthSessionResponse(BaseModel):
     token: str
+    user: UserView
+
+
+class AuthUserResponse(BaseModel):
     user: UserView
 
 
@@ -807,17 +822,56 @@ class AuthProviderView(BaseModel):
     kind: Literal["password", "oauth"] = "oauth"
 
 
+class AuthEmailRequest(BaseModel):
+    email: str
+    next_path: str | None = None
+
+
+class AuthPasswordResetRequest(BaseModel):
+    token: str
+    password: str = Field(min_length=8, max_length=256)
+
+
+class AuthMessageResponse(BaseModel):
+    message: str
+
+
+class AdminUserUpdateRequest(BaseModel):
+    role: Literal["user", "admin"] | None = None
+    status: Literal["active", "disabled"] | None = None
+
+
+class AdminAuditLogView(BaseModel):
+    id: str
+    actor_user_id: str
+    target_user_id: str | None = None
+    action: str
+    metadata: dict[str, object] = Field(default_factory=dict)
+    created_at: str
+    actor_email: str | None = None
+    target_email: str | None = None
+
+
+class AdminAuditLogResponse(BaseModel):
+    logs: list[AdminAuditLogView] = Field(default_factory=list)
+
+
 class AdminStats(BaseModel):
     users: int
     admins: int
     packages: int
     lessons: int
     resources: int
+    disabled_users: int = 0
+    unverified_users: int = 0
+    active_sessions: int = 0
 
 
 class AdminOverview(BaseModel):
     stats: AdminStats
     users: list[UserView] = Field(default_factory=list)
+    mail_delivery_configured: bool = False
+    mail_delivery_mode: str = "unconfigured"
 
 
 class ChatResponse(BaseModel):

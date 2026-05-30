@@ -8,10 +8,10 @@ export const metadata: Metadata = {
 };
 
 type AuthCallbackPageProps = {
-  searchParams?: Promise<{
+ searchParams?: Promise<{
     error?: string | string[];
     next?: string | string[];
-    token?: string | string[];
+    verified?: string | string[];
   }>;
 };
 
@@ -25,7 +25,7 @@ export default async function AuthCallbackPage({ searchParams }: AuthCallbackPag
     <AuthCallback
       error={firstParam(params?.error)}
       nextPath={firstParam(params?.next)}
-      token={firstParam(params?.token)}
+      verified={firstParam(params?.verified)}
     />
   );
 }

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
-import base64
 import json
 import os
 import re
@@ -18,30 +18,33 @@ from urllib import parse, request as urlrequest
 import certifi
 from fastapi import HTTPException, Request, WebSocket
 
-from app.models import AdminOverview, AdminStats, AuthIdentityView, AuthProviderView, UserView, new_id
+from app.models import (
+    AdminAuditLogView,
+    AdminAuditLogResponse,
+    AdminOverview,
+    AdminStats,
+    AuthIdentityView,
+    AuthProviderView,
+    UserView,
+    new_id,
+)
 from app.services.auth_store import AuthStore
+from app.services.email_delivery import delivery_status, send_transactional_email
 
 
 PBKDF2_ITERATIONS = 210_000
 SESSION_TOKEN_BYTES = 32
 OAUTH_STATE_BYTES = 24
 OAUTH_STATE_TTL = timedelta(minutes=15)
+SESSION_TTL = timedelta(days=30)
+EMAIL_VERIFICATION_TTL = timedelta(hours=24)
+PASSWORD_RESET_TTL = timedelta(hours=1)
 _URLLIB_SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
 AUTH_COOKIE_NAME = "openclass.auth.token"
+GUEST_AUTH_COOKIE_NAME = "openclass.guest.auth.token"
 PHONE_EMAIL_DOMAIN = "phone.openclass.local"
 GUEST_EMAIL_DOMAIN = "guest.openclass.local"
-
-
-@dataclass(frozen=True)
-class AuthUser:
-    id: str
-    email: str
-    phone: str | None
-    role: str
-    created_at: str
-    display_name: str | None = None
-    avatar_url: str | None = None
-    last_login_at: str | None = None
+OAUTH_EMAIL_DOMAIN = "oauth.openclass.local"
 
 
 @dataclass(frozen=True)
@@ -57,7 +60,7 @@ class AccountIdentifier:
             return self.email
         if self.phone:
             return _synthetic_email_for_phone(self.phone)
-        raise HTTPException(status_code=422, detail="请输入有效邮箱或手机号")
+        _raise_auth_error(422, "invalid_account", "请输入有效邮箱")
 
     @property
     def display_name(self) -> str:
@@ -65,7 +68,7 @@ class AccountIdentifier:
             return self.email.split("@", 1)[0]
         if self.phone:
             return _mask_phone(self.phone)
-        return "开放课堂用户"
+        return "OpenClass user"
 
 
 @dataclass(frozen=True)
@@ -75,6 +78,7 @@ class OAuthProfile:
     email: str | None
     display_name: str | None = None
     avatar_url: str | None = None
+    email_verified: bool = False
 
 
 @dataclass(frozen=True)
@@ -106,8 +110,18 @@ class OAuthProviderConfig:
         return bool(self.client_id and self.client_secret)
 
 
+@dataclass(frozen=True)
+class RegistrationResult:
+    email: str
+    verification_required: bool = True
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _future_iso(delta: timedelta) -> str:
+    return (datetime.now(timezone.utc) + delta).isoformat()
 
 
 def _parse_iso(value: str) -> datetime | None:
@@ -127,7 +141,7 @@ def _normalize_optional_secret(value: str | None) -> str | None:
 def _normalize_email(email: str) -> str:
     normalized = email.strip().lower()
     if "@" not in normalized or normalized.startswith("@") or normalized.endswith("@"):
-        raise HTTPException(status_code=422, detail="请输入有效邮箱")
+        _raise_auth_error(422, "invalid_email", "请输入有效邮箱")
     return normalized
 
 
@@ -138,21 +152,21 @@ def _normalize_phone(phone: str) -> str:
     elif compact.startswith("0086"):
         compact = compact[4:]
     if not re.fullmatch(r"1[3-9]\d{9}", compact):
-        raise HTTPException(status_code=422, detail="请输入有效手机号")
+        _raise_auth_error(422, "invalid_phone", "请输入有效手机号")
     return compact
 
 
 def _normalize_account_identifier(identifier: str) -> AccountIdentifier:
     raw = identifier.strip()
     if not raw:
-        raise HTTPException(status_code=422, detail="请输入有效邮箱或手机号")
+        _raise_auth_error(422, "invalid_account", "请输入有效邮箱")
     if "@" in raw:
         email = _normalize_email(raw)
         return AccountIdentifier(kind="email", subject=email, email=email)
     try:
         phone = _normalize_phone(raw)
-    except HTTPException as exc:
-        raise HTTPException(status_code=422, detail="请输入有效邮箱或手机号") from exc
+    except HTTPException:
+        _raise_auth_error(422, "invalid_account", "请输入有效邮箱")
     return AccountIdentifier(kind="phone", subject=phone, phone=phone)
 
 
@@ -221,13 +235,15 @@ def _safe_next_path(value: str | None) -> str:
     path = parsed.path or "/"
     if not path.startswith("/"):
         return "/"
+    if path in {"/login", "/register"}:
+        return "/"
     query = f"?{parsed.query}" if parsed.query else ""
     return f"{path}{query}"
 
 
 def _hash_password(password: str, salt: bytes | None = None) -> tuple[str, str]:
     if len(password) < 8:
-        raise HTTPException(status_code=422, detail="密码至少需要 8 位")
+        _raise_auth_error(422, "password_too_short", "密码至少需要 8 位")
     password_salt = salt or secrets.token_bytes(16)
     digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), password_salt, PBKDF2_ITERATIONS)
     return password_salt.hex(), digest.hex()
@@ -261,6 +277,20 @@ def _oauth_code_challenge(verifier: str) -> str:
     return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
 
 
+def _token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _raise_auth_error(status_code: int, code: str, message: str) -> None:
+    raise HTTPException(status_code=status_code, detail={"code": code, "message": message})
+
+
+def _is_truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes"}
+
+
 def _identity_view(row: sqlite3.Row) -> AuthIdentityView:
     return AuthIdentityView(
         provider=row["provider"],
@@ -273,21 +303,43 @@ def _identity_view(row: sqlite3.Row) -> AuthIdentityView:
     )
 
 
-def _user_view(row: sqlite3.Row | AuthUser, identities: list[AuthIdentityView] | None = None) -> UserView:
+def _row_value(row: sqlite3.Row, key: str, default: Any = None) -> Any:
+    return row[key] if key in row.keys() else default
+
+
+def _user_view(row: sqlite3.Row, identities: list[AuthIdentityView] | None = None) -> UserView:
     return UserView(
-        id=row["id"] if isinstance(row, sqlite3.Row) else row.id,
-        email=row["email"] if isinstance(row, sqlite3.Row) else row.email,
-        phone=(
-            row["phone"]
-            if isinstance(row, sqlite3.Row) and "phone" in row.keys()
-            else (None if isinstance(row, sqlite3.Row) else row.phone)
-        ),
-        role=row["role"] if isinstance(row, sqlite3.Row) else row.role,  # type: ignore[arg-type]
-        display_name=row["display_name"] if isinstance(row, sqlite3.Row) and "display_name" in row.keys() else (None if isinstance(row, sqlite3.Row) else row.display_name),
-        avatar_url=row["avatar_url"] if isinstance(row, sqlite3.Row) and "avatar_url" in row.keys() else (None if isinstance(row, sqlite3.Row) else row.avatar_url),
-        created_at=row["created_at"] if isinstance(row, sqlite3.Row) else row.created_at,
-        last_login_at=row["last_login_at"] if isinstance(row, sqlite3.Row) else row.last_login_at,
+        id=row["id"],
+        email=row["email"],
+        phone=_row_value(row, "phone"),
+        role=row["role"],  # type: ignore[arg-type]
+        status=_row_value(row, "status", "active"),
+        display_name=_row_value(row, "display_name"),
+        avatar_url=_row_value(row, "avatar_url"),
+        created_at=row["created_at"],
+        updated_at=_row_value(row, "updated_at"),
+        last_login_at=row["last_login_at"],
+        email_verified_at=_row_value(row, "email_verified_at"),
+        session_count=_row_value(row, "session_count"),
+        package_count=_row_value(row, "package_count"),
         auth_identities=identities or [],
+    )
+
+
+def _audit_log_view(row: sqlite3.Row) -> AdminAuditLogView:
+    try:
+        metadata = json.loads(row["metadata_json"])
+    except (TypeError, ValueError):
+        metadata = {}
+    return AdminAuditLogView(
+        id=row["id"],
+        actor_user_id=row["actor_user_id"],
+        target_user_id=row["target_user_id"],
+        action=row["action"],
+        metadata=metadata if isinstance(metadata, dict) else {},
+        created_at=row["created_at"],
+        actor_email=row["actor_email"],
+        target_email=row["target_email"],
     )
 
 
@@ -365,6 +417,13 @@ def _oauth_providers() -> dict[str, OAuthProviderConfig]:
     }
 
 
+def _public_provider_ids() -> list[str]:
+    raw = (os.getenv("OPENCLASS_AUTH_PUBLIC_PROVIDERS") or "").strip()
+    if not raw:
+        return ["google", "wechat", "github"]
+    return [item.strip().lower() for item in raw.split(",") if item.strip()]
+
+
 def _post_form(url: str, data: dict[str, str], *, basic_auth: tuple[str, str] | None = None) -> dict[str, Any]:
     encoded = parse.urlencode(data).encode("utf-8")
     headers = {
@@ -386,7 +445,8 @@ def _post_form(url: str, data: dict[str, str], *, basic_auth: tuple[str, str] | 
         with urlrequest.urlopen(req, timeout=12, context=_URLLIB_SSL_CONTEXT) as response:
             return json.loads(response.read().decode("utf-8"))
     except Exception as exc:
-        raise HTTPException(status_code=502, detail="第三方登录令牌交换失败") from exc
+        _raise_auth_error(502, "oauth_token_exchange_failed", "第三方登录令牌交换失败")
+        raise exc
 
 
 def _get_json(url: str, access_token: str) -> dict[str, Any] | list[Any]:
@@ -403,7 +463,8 @@ def _get_json(url: str, access_token: str) -> dict[str, Any] | list[Any]:
         with urlrequest.urlopen(req, timeout=12, context=_URLLIB_SSL_CONTEXT) as response:
             return json.loads(response.read().decode("utf-8"))
     except Exception as exc:
-        raise HTTPException(status_code=502, detail="第三方账号资料读取失败") from exc
+        _raise_auth_error(502, "oauth_profile_failed", "第三方账号资料读取失败")
+        raise exc
 
 
 def _get_json_with_params(url: str, params: dict[str, str]) -> dict[str, Any] | list[Any]:
@@ -420,7 +481,8 @@ def _get_json_with_params(url: str, params: dict[str, str]) -> dict[str, Any] | 
         with urlrequest.urlopen(req, timeout=12, context=_URLLIB_SSL_CONTEXT) as response:
             return json.loads(response.read().decode("utf-8"))
     except Exception as exc:
-        raise HTTPException(status_code=502, detail="第三方账号资料读取失败") from exc
+        _raise_auth_error(502, "oauth_profile_failed", "第三方账号资料读取失败")
+        raise exc
 
 
 def _decode_jwt_payload(token: str) -> dict[str, Any]:
@@ -429,7 +491,8 @@ def _decode_jwt_payload(token: str) -> dict[str, Any]:
         padded = payload + "=" * (-len(payload) % 4)
         return json.loads(base64.urlsafe_b64decode(padded.encode("utf-8")).decode("utf-8"))
     except Exception as exc:
-        raise HTTPException(status_code=502, detail="第三方身份令牌解析失败") from exc
+        _raise_auth_error(502, "oauth_id_token_failed", "第三方身份令牌解析失败")
+        raise exc
 
 
 class AuthService:
@@ -437,44 +500,131 @@ class AuthService:
         self.path = path
         self.store = AuthStore(path)
 
-    def register(self, identifier: str, password: str, *, guest_token: str | None = None) -> tuple[str, UserView]:
+    def register(
+        self,
+        identifier: str,
+        password: str,
+        *,
+        request: Request | None = None,
+        next_path: str | None = None,
+        guest_token: str | None = None,
+    ) -> RegistrationResult:
         account = _normalize_account_identifier(identifier)
+        if not account.email:
+            _raise_auth_error(422, "email_required", "请使用邮箱注册")
+        if not delivery_status().configured:
+            _raise_auth_error(503, "mail_delivery_unconfigured", "邮件服务尚未配置，暂时无法注册")
         salt, password_hash = _hash_password(password)
         created_at = _now_iso()
+        verification_token = secrets.token_urlsafe(SESSION_TOKEN_BYTES)
+        user_id = new_id("user")
+        frontend_origin = _frontend_origin(request)
+        normalized_next = _safe_next_path(next_path)
+        guest_user_id = self._guest_user_id_for_token(guest_token)
 
         with self.store.transaction() as conn:
             user_count = self.store.user_count(conn)
-            role = "admin" if user_count == 0 or (account.email and account.email in _admin_emails()) else "user"
+            role = "admin" if user_count == 0 or account.email in _admin_emails() else "user"
             try:
-                user_id = new_id("user")
                 self.store.create_password_user(
                     conn,
                     user_id=user_id,
                     email=account.storage_email,
-                    phone=account.phone,
+                    phone=None,
                     password_salt=salt,
                     password_hash=password_hash,
                     role=role,
                     display_name=account.display_name,
                     created_at=created_at,
+                    email_verified_at=None,
                 )
                 self.store.create_identity(
                     conn,
-                    provider=account.kind,
-                    provider_subject=account.subject,
+                    provider="email",
+                    provider_subject=account.email,
                     user_id=user_id,
                     email=account.email,
                     display_name=account.display_name,
                     created_at=created_at,
-                    last_login_at=created_at,
+                    last_login_at=None,
+                )
+                self.store.create_email_verification(
+                    conn,
+                    token_hash=self._token_hash(verification_token),
+                    user_id=user_id,
+                    email=account.email,
+                    next_path=normalized_next,
+                    frontend_origin=frontend_origin,
+                    guest_user_id=guest_user_id,
+                    created_at=created_at,
+                    expires_at=_future_iso(EMAIL_VERIFICATION_TTL),
                 )
             except sqlite3.IntegrityError as exc:
-                message = "该手机号已注册" if account.kind == "phone" else "该邮箱已注册"
-                raise HTTPException(status_code=409, detail=message) from exc
-            self._claim_guest_workspace(conn, guest_token=guest_token, user_id=user_id)
-            return self._issue_session_for_user_id(conn, user_id)
+                _raise_auth_error(409, "email_already_registered", "该邮箱已注册")
+                raise exc
 
-    def login(self, identifier: str, password: str, *, guest_token: str | None = None) -> tuple[str, UserView]:
+        self._send_verification_email(account.email, verification_token, request)
+        return RegistrationResult(email=account.email)
+
+    def resend_verification(
+        self,
+        email: str,
+        *,
+        request: Request | None = None,
+        next_path: str | None = None,
+        guest_token: str | None = None,
+    ) -> None:
+        normalized_email = _normalize_email(email)
+        if not delivery_status().configured:
+            _raise_auth_error(503, "mail_delivery_unconfigured", "邮件服务尚未配置，暂时无法发送验证邮件")
+        verification_token = secrets.token_urlsafe(SESSION_TOKEN_BYTES)
+        now = _now_iso()
+        should_send = False
+        guest_user_id = self._guest_user_id_for_token(guest_token)
+
+        with self.store.transaction() as conn:
+            user = self.store.find_user_by_email(conn, normalized_email)
+            if user is not None and user["status"] == "active" and user["email_verified_at"] is None:
+                self.store.create_email_verification(
+                    conn,
+                    token_hash=self._token_hash(verification_token),
+                    user_id=user["id"],
+                    email=normalized_email,
+                    next_path=_safe_next_path(next_path),
+                    frontend_origin=_frontend_origin(request),
+                    guest_user_id=guest_user_id,
+                    created_at=now,
+                    expires_at=_future_iso(EMAIL_VERIFICATION_TTL),
+                )
+                should_send = True
+        if should_send:
+            self._send_verification_email(normalized_email, verification_token, request)
+
+    def verify_email(self, token: str, *, user_agent: str | None = None) -> tuple[str, UserView, str, str]:
+        token_hash = self._token_hash(token)
+        now = _now_iso()
+        with self.store.transaction() as conn:
+            verification = self.store.consume_email_verification(conn, token_hash=token_hash, now=now)
+            if verification is None:
+                _raise_auth_error(400, "email_verification_invalid", "邮箱验证链接已失效，请重新发送验证邮件")
+            user = self.store.find_user_by_id(conn, verification["user_id"])
+            if user is None:
+                _raise_auth_error(404, "user_not_found", "用户不存在")
+            if user["status"] != "active":
+                _raise_auth_error(403, "account_disabled", "该账号已被禁用")
+            self.store.mark_email_verified(conn, user_id=user["id"], now=now)
+            self._claim_guest_workspace_by_id(conn, guest_user_id=verification["guest_user_id"], user_id=user["id"])
+            session_token, session_user = self._issue_session_for_user_id(conn, user["id"], user_agent=user_agent)
+            return session_token, session_user, _safe_next_path(verification["next_path"]), verification["frontend_origin"] or _frontend_origin(None)
+
+    def login(
+        self,
+        identifier: str,
+        password: str,
+        *,
+        guest_token: str | None = None,
+        user_agent: str | None = None,
+    ) -> tuple[str, UserView]:
         account = _normalize_account_identifier(identifier)
         with self.store.transaction() as conn:
             row = (
@@ -483,42 +633,58 @@ class AuthService:
                 else self.store.find_user_by_email(conn, account.email or "")
             )
             if row is None or not _verify_password(password, row["password_salt"], row["password_hash"]):
-                raise HTTPException(status_code=401, detail="账号或密码不正确")
+                _raise_auth_error(401, "invalid_credentials", "账号或密码不正确")
+            if row["status"] != "active":
+                _raise_auth_error(403, "account_disabled", "该账号已被禁用")
+            if account.kind == "email" and row["email_verified_at"] is None:
+                _raise_auth_error(403, "email_not_verified", "请先验证邮箱后再登录")
             now = _now_iso()
             self.store.touch_password_login(conn, user_id=row["id"], provider=account.kind, now=now)
             self._claim_guest_workspace(conn, guest_token=guest_token, user_id=row["id"])
-            return self._issue_session_for_user_id(conn, row["id"])
+            return self._issue_session_for_user_id(conn, row["id"], user_agent=user_agent)
 
-    def login_with_oauth(self, profile: OAuthProfile, *, guest_user_id: str | None = None) -> tuple[str, UserView]:
+    def login_with_oauth(
+        self,
+        profile: OAuthProfile,
+        *,
+        guest_user_id: str | None = None,
+        user_agent: str | None = None,
+    ) -> tuple[str, UserView]:
         if not profile.provider or not profile.subject:
-            raise HTTPException(status_code=422, detail="第三方账号资料不完整")
+            _raise_auth_error(422, "oauth_profile_incomplete", "第三方账号资料不完整")
         provider = profile.provider.strip().lower()
         subject = profile.subject.strip()
-        normalized_email = self._email_for_oauth_profile(profile)
+        verified_email = self._verified_email_for_oauth_profile(profile)
+        storage_email = verified_email or self._synthetic_email_for_oauth_profile(profile)
         now = _now_iso()
 
         with self.store.transaction() as conn:
             identity = self.store.find_user_by_oauth_identity(conn, provider=provider, provider_subject=subject)
             if identity is not None:
+                if identity["status"] != "active":
+                    _raise_auth_error(403, "account_disabled", "该账号已被禁用")
                 user_id = identity["id"]
             else:
-                existing = self.store.find_user_by_email(conn, normalized_email)
+                existing = self.store.find_user_by_email(conn, verified_email) if verified_email else None
                 if existing is not None:
+                    if existing["status"] != "active":
+                        _raise_auth_error(403, "account_disabled", "该账号已被禁用")
                     user_id = existing["id"]
                 else:
                     user_id = new_id("user")
                     password_salt, password_hash = _hash_password(secrets.token_urlsafe(32))
                     user_count = self.store.user_count(conn)
-                    role = "admin" if user_count == 0 or normalized_email in _admin_emails() else "user"
+                    role = "admin" if user_count == 0 or storage_email in _admin_emails() else "user"
                     self.store.create_oauth_user(
                         conn,
                         user_id=user_id,
-                        email=normalized_email,
+                        email=storage_email,
                         password_salt=password_salt,
                         password_hash=password_hash,
                         role=role,
-                        display_name=profile.display_name or normalized_email.split("@", 1)[0],
+                        display_name=profile.display_name or storage_email.split("@", 1)[0],
                         avatar_url=profile.avatar_url,
+                        email_verified_at=now if verified_email else None,
                         now=now,
                     )
                 self.store.create_identity(
@@ -547,22 +713,24 @@ class AuthService:
                 user_id=user_id,
                 display_name=profile.display_name,
                 avatar_url=profile.avatar_url,
+                email_verified_at=now if verified_email else None,
                 now=now,
             )
             self._claim_guest_workspace_by_id(conn, guest_user_id=guest_user_id, user_id=user_id)
-            return self._issue_session_for_user_id(conn, user_id)
+            return self._issue_session_for_user_id(conn, user_id, user_agent=user_agent)
 
     def get_user_by_token(self, token: str) -> UserView:
         token_hash = self._token_hash(token)
+        now = _now_iso()
         with self.store.transaction() as conn:
-            row = self.store.find_user_by_session_token(conn, token_hash)
+            row = self.store.find_user_by_session_token(conn, token_hash, now)
             if row is None:
                 guest = self.store.find_guest_session_by_token(conn, token_hash)
                 if guest is None:
-                    raise HTTPException(status_code=401, detail="请先登录")
-                self.store.touch_guest_session(conn, token_hash, _now_iso())
+                    _raise_auth_error(401, "unauthenticated", "请先登录")
+                self.store.touch_guest_session(conn, token_hash, now)
                 return self._guest_user_view(guest["guest_user_id"], guest["created_at"], guest["last_seen_at"])
-            self.store.touch_session(conn, token_hash, _now_iso())
+            self.store.touch_session(conn, token_hash, now)
             return _user_view(row, self._identities_for_user(conn, row["id"]))
 
     def start_guest_session(self) -> tuple[str, UserView]:
@@ -578,13 +746,64 @@ class AuthService:
             )
         return token, self._guest_user_view(guest_user_id, now, now)
 
+    def logout(self, token: str) -> None:
+        with self.store.transaction() as conn:
+            self.store.revoke_session(conn, token_hash=self._token_hash(token), now=_now_iso())
+
+    def logout_all(self, user_id: str) -> None:
+        with self.store.transaction() as conn:
+            self.store.revoke_user_sessions(conn, user_id=user_id, now=_now_iso())
+
+    def request_password_reset(self, email: str, *, request: Request | None = None) -> None:
+        normalized_email = _normalize_email(email)
+        if not delivery_status().configured:
+            _raise_auth_error(503, "mail_delivery_unconfigured", "邮件服务尚未配置，暂时无法发送重置邮件")
+        reset_token = secrets.token_urlsafe(SESSION_TOKEN_BYTES)
+        now = _now_iso()
+        should_send = False
+        with self.store.transaction() as conn:
+            user = self.store.find_user_by_email(conn, normalized_email)
+            if user is not None and user["status"] == "active" and user["email_verified_at"] is not None:
+                self.store.create_password_reset(
+                    conn,
+                    token_hash=self._token_hash(reset_token),
+                    user_id=user["id"],
+                    created_at=now,
+                    expires_at=_future_iso(PASSWORD_RESET_TTL),
+                )
+                should_send = True
+        if should_send:
+            self._send_password_reset_email(normalized_email, reset_token, request)
+
+    def reset_password(self, token: str, password: str) -> None:
+        token_hash = self._token_hash(token)
+        salt, password_hash = _hash_password(password)
+        now = _now_iso()
+        with self.store.transaction() as conn:
+            reset = self.store.consume_password_reset(conn, token_hash=token_hash, now=now)
+            if reset is None:
+                _raise_auth_error(400, "password_reset_invalid", "密码重置链接已失效，请重新发送")
+            user = self.store.find_user_by_id(conn, reset["user_id"])
+            if user is None or user["status"] != "active":
+                _raise_auth_error(400, "password_reset_invalid", "密码重置链接已失效，请重新发送")
+            self.store.update_password(
+                conn,
+                user_id=user["id"],
+                password_salt=salt,
+                password_hash=password_hash,
+                now=now,
+            )
+            self.store.revoke_user_sessions(conn, user_id=user["id"], now=now)
+
     def overview(self) -> AdminOverview:
+        now = _now_iso()
         with self.store.connection() as conn:
             users = [
                 _user_view(row, self._identities_for_user(conn, row["id"]))
-                for row in self.store.list_users(conn)
+                for row in self.store.list_users(conn, now=now)
             ]
-            stats_row = self.store.admin_stats(conn)
+            stats_row = self.store.admin_stats(conn, now=now)
+        status = delivery_status()
         return AdminOverview(
             stats=AdminStats(
                 users=stats_row["users"],
@@ -592,21 +811,86 @@ class AuthService:
                 packages=stats_row["packages"],
                 lessons=stats_row["lessons"],
                 resources=stats_row["resources"],
+                disabled_users=stats_row["disabled_users"],
+                unverified_users=stats_row["unverified_users"],
+                active_sessions=stats_row["active_sessions"],
             ),
             users=users,
+            mail_delivery_configured=status.configured,
+            mail_delivery_mode=status.mode,
         )
+
+    def update_admin_user(
+        self,
+        *,
+        actor: UserView,
+        target_user_id: str,
+        role: str | None,
+        status: str | None,
+    ) -> UserView:
+        if actor.id == target_user_id and (role == "user" or status == "disabled"):
+            _raise_auth_error(400, "admin_self_lockout", "不能禁用或降级当前管理员账号")
+        now = _now_iso()
+        with self.store.transaction() as conn:
+            target = self.store.find_user_by_id(conn, target_user_id)
+            if target is None:
+                _raise_auth_error(404, "user_not_found", "用户不存在")
+            self.store.update_user_admin_fields(conn, user_id=target_user_id, role=role, status=status, now=now)
+            if status == "disabled":
+                self.store.revoke_user_sessions(conn, user_id=target_user_id, now=now)
+            self.store.create_audit_log(
+                conn,
+                log_id=new_id("audit"),
+                actor_user_id=actor.id,
+                target_user_id=target_user_id,
+                action="user.update",
+                metadata={
+                    "role_before": target["role"],
+                    "role_after": role or target["role"],
+                    "status_before": target["status"],
+                    "status_after": status or target["status"],
+                },
+                created_at=now,
+            )
+            updated = self.store.find_user_by_id(conn, target_user_id)
+            return _user_view(updated, self._identities_for_user(conn, target_user_id))
+
+    def revoke_admin_user_sessions(self, *, actor: UserView, target_user_id: str) -> None:
+        now = _now_iso()
+        with self.store.transaction() as conn:
+            target = self.store.find_user_by_id(conn, target_user_id)
+            if target is None:
+                _raise_auth_error(404, "user_not_found", "用户不存在")
+            self.store.revoke_user_sessions(conn, user_id=target_user_id, now=now)
+            self.store.create_audit_log(
+                conn,
+                log_id=new_id("audit"),
+                actor_user_id=actor.id,
+                target_user_id=target_user_id,
+                action="user.sessions.revoke",
+                metadata={},
+                created_at=now,
+            )
+
+    def audit_logs(self, *, limit: int = 100) -> AdminAuditLogResponse:
+        with self.store.connection() as conn:
+            return AdminAuditLogResponse(logs=[_audit_log_view(row) for row in self.store.list_audit_logs(conn, limit=limit)])
 
     def providers(self) -> list[AuthProviderView]:
         options = [
             AuthProviderView(
                 id="email",
-                label="邮箱/手机号",
-                description="使用邮箱或手机号和密码注册或登录。",
-                configured=True,
+                label="邮箱",
+                description="使用邮箱和密码注册或登录。",
+                configured=delivery_status().configured,
                 kind="password",
             )
         ]
-        for provider in _oauth_providers().values():
+        all_providers = _oauth_providers()
+        for provider_id in _public_provider_ids():
+            provider = all_providers.get(provider_id)
+            if provider is None:
+                continue
             options.append(
                 AuthProviderView(
                     id=provider.id,
@@ -669,17 +953,38 @@ class AuthService:
         suffix = "#wechat_redirect" if provider.id == "wechat" else ""
         return f"{provider.auth_url}?{parse.urlencode(params)}{suffix}"
 
-    def complete_oauth_callback(self, provider_id: str, payload: dict[str, str], request: Request) -> tuple[str, UserView, str, str]:
+    def complete_oauth_callback(
+        self,
+        provider_id: str,
+        payload: dict[str, str],
+        request: Request,
+        *,
+        user_agent: str | None = None,
+    ) -> tuple[str, UserView, str, str]:
         provider = self._configured_provider(provider_id)
         state = payload.get("state", "")
         code = payload.get("code", "")
         if not state or not code:
-            raise HTTPException(status_code=400, detail="第三方登录回调缺少授权码")
+            _raise_auth_error(400, "oauth_callback_missing_code", "第三方登录回调缺少授权码")
         next_path, frontend_origin, guest_user_id, code_verifier = self._consume_oauth_state(provider.id, state)
         token_payload = self._exchange_oauth_code(provider, code, request, code_verifier=code_verifier)
         profile = self._profile_from_oauth(provider, token_payload)
-        token, user = self.login_with_oauth(profile, guest_user_id=guest_user_id)
+        token, user = self.login_with_oauth(profile, guest_user_id=guest_user_id, user_agent=user_agent)
         return token, user, next_path, frontend_origin
+
+    def oauth_frontend_redirect_url(self, next_path: str, frontend_origin: str, request: Request, *, error: str | None = None) -> str:
+        target = parse.urljoin((frontend_origin or _frontend_origin(request)).rstrip("/"), "/auth/callback")
+        params = {"next": _safe_next_path(next_path)}
+        if error:
+            params["error"] = error
+        return f"{target}?{parse.urlencode(params)}"
+
+    def verification_frontend_redirect_url(self, next_path: str, frontend_origin: str, request: Request, *, error: str | None = None) -> str:
+        target = parse.urljoin((frontend_origin or _frontend_origin(request)).rstrip("/"), "/auth/callback")
+        params = {"next": _safe_next_path(next_path), "verified": "1"}
+        if error:
+            params["error"] = error
+        return f"{target}?{parse.urlencode(params)}"
 
     def _exchange_oauth_code(
         self,
@@ -700,9 +1005,9 @@ class AuthService:
                 },
             )
             if not isinstance(payload, dict):
-                raise HTTPException(status_code=502, detail="微信登录令牌格式异常")
+                _raise_auth_error(502, "wechat_token_malformed", "微信登录令牌格式异常")
             if payload.get("errcode"):
-                raise HTTPException(status_code=502, detail=str(payload.get("errmsg") or "微信登录令牌交换失败"))
+                _raise_auth_error(502, "wechat_token_failed", str(payload.get("errmsg") or "微信登录令牌交换失败"))
             return payload
         token_data = {
             "client_id": provider.client_id or "",
@@ -714,7 +1019,7 @@ class AuthService:
         basic_auth = None
         if provider.pkce:
             if not code_verifier:
-                raise HTTPException(status_code=400, detail="第三方登录状态已失效，请重新发起登录")
+                _raise_auth_error(400, "oauth_state_invalid", "第三方登录状态已失效，请重新发起登录")
             token_data["code_verifier"] = code_verifier
         if provider.token_auth_method == "basic":
             basic_auth = (provider.client_id or "", provider.client_secret or "")
@@ -725,24 +1030,28 @@ class AuthService:
             basic_auth=basic_auth,
         )
 
-    def oauth_frontend_redirect_url(self, token: str, user: UserView, next_path: str, frontend_origin: str, request: Request) -> str:
-        target = parse.urljoin((frontend_origin or _frontend_origin(request)).rstrip("/"), "/auth/callback")
-        query = parse.urlencode(
-            {
-                "token": token,
-                "user_id": user.id,
-                "next": _safe_next_path(next_path),
-            }
-        )
-        return f"{target}?{query}"
-
-    def _issue_session_for_user_id(self, conn: sqlite3.Connection, user_id: str) -> tuple[str, UserView]:
+    def _issue_session_for_user_id(
+        self,
+        conn: sqlite3.Connection,
+        user_id: str,
+        *,
+        user_agent: str | None,
+    ) -> tuple[str, UserView]:
         row = self.store.find_user_by_id(conn, user_id)
         if row is None:
-            raise HTTPException(status_code=404, detail="用户不存在")
+            _raise_auth_error(404, "user_not_found", "用户不存在")
+        if row["status"] != "active":
+            _raise_auth_error(403, "account_disabled", "该账号已被禁用")
         token = secrets.token_urlsafe(SESSION_TOKEN_BYTES)
         now = _now_iso()
-        self.store.create_session(conn, token_hash=self._token_hash(token), user_id=row["id"], now=now)
+        self.store.create_session(
+            conn,
+            token_hash=self._token_hash(token),
+            user_id=row["id"],
+            now=now,
+            expires_at=_future_iso(SESSION_TTL),
+            user_agent=(user_agent or "")[:500] or None,
+        )
         refreshed = self.store.find_user_by_id(conn, row["id"])
         return token, _user_view(refreshed, self._identities_for_user(conn, row["id"]))
 
@@ -751,8 +1060,10 @@ class AuthService:
             id=guest_user_id,
             email=_synthetic_email_for_guest(guest_user_id),
             role="guest",
+            status="active",
             display_name="游客",
             created_at=created_at,
+            updated_at=created_at,
             last_login_at=last_seen_at,
             auth_identities=[],
         )
@@ -794,21 +1105,24 @@ class AuthService:
         rows = self.store.identities_for_user(conn, user_id)
         return [_identity_view(row) for row in rows]
 
-    def _email_for_oauth_profile(self, profile: OAuthProfile) -> str:
-        if profile.email:
-            try:
-                return _normalize_email(profile.email)
-            except HTTPException:
-                pass
+    def _verified_email_for_oauth_profile(self, profile: OAuthProfile) -> str | None:
+        if not profile.email or not profile.email_verified:
+            return None
+        try:
+            return _normalize_email(profile.email)
+        except HTTPException:
+            return None
+
+    def _synthetic_email_for_oauth_profile(self, profile: OAuthProfile) -> str:
         safe_subject = "".join(char if char.isalnum() else "-" for char in profile.subject.lower()).strip("-")
-        return f"{profile.provider}-{safe_subject or secrets.token_hex(6)}@oauth.openclass.local"
+        return f"{profile.provider}-{safe_subject or secrets.token_hex(6)}@{OAUTH_EMAIL_DOMAIN}"
 
     def _configured_provider(self, provider_id: str) -> OAuthProviderConfig:
         provider = _oauth_providers().get(provider_id.strip().lower())
         if provider is None:
-            raise HTTPException(status_code=404, detail="暂不支持该第三方登录方式")
+            _raise_auth_error(404, "oauth_provider_unsupported", "暂不支持该第三方登录方式")
         if not provider.configured:
-            raise HTTPException(status_code=503, detail=f"{provider.label} 登录尚未配置 OAuth Client")
+            _raise_auth_error(503, "oauth_provider_unconfigured", f"{provider.label} 登录尚未配置 OAuth Client")
         return provider
 
     def _oauth_redirect_uri(self, provider_id: str, request: Request) -> str:
@@ -818,10 +1132,10 @@ class AuthService:
         with self.store.transaction() as conn:
             row = self.store.consume_oauth_state(conn, provider=provider_id, state=state)
             if row is None:
-                raise HTTPException(status_code=400, detail="第三方登录状态已失效，请重新发起登录")
+                _raise_auth_error(400, "oauth_state_invalid", "第三方登录状态已失效，请重新发起登录")
             created_at = _parse_iso(row["created_at"])
             if created_at is None or datetime.now(timezone.utc) - created_at > OAUTH_STATE_TTL:
-                raise HTTPException(status_code=400, detail="第三方登录状态已过期，请重新发起登录")
+                _raise_auth_error(400, "oauth_state_expired", "第三方登录状态已过期，请重新发起登录")
             return (
                 _safe_next_path(row["next_path"]),
                 row["frontend_origin"] or _frontend_origin(None),
@@ -840,13 +1154,14 @@ class AuthService:
                 email=str(claims.get("email") or "") or None,
                 display_name=None,
                 avatar_url=None,
+                email_verified=_is_truthy(claims.get("email_verified")),
             )
         if not access_token:
-            raise HTTPException(status_code=502, detail="第三方登录没有返回访问令牌")
+            _raise_auth_error(502, "oauth_access_token_missing", "第三方登录没有返回访问令牌")
         if provider.id == "wechat":
             openid = str(token_payload.get("openid") or "")
             if not openid:
-                raise HTTPException(status_code=502, detail="微信登录没有返回 OpenID")
+                _raise_auth_error(502, "wechat_openid_missing", "微信登录没有返回 OpenID")
             raw_profile = _get_json_with_params(
                 provider.userinfo_url or "",
                 {
@@ -856,9 +1171,9 @@ class AuthService:
                 },
             )
             if not isinstance(raw_profile, dict):
-                raise HTTPException(status_code=502, detail="微信账号资料格式异常")
+                _raise_auth_error(502, "wechat_profile_malformed", "微信账号资料格式异常")
             if raw_profile.get("errcode"):
-                raise HTTPException(status_code=502, detail=str(raw_profile.get("errmsg") or "微信账号资料读取失败"))
+                _raise_auth_error(502, "wechat_profile_failed", str(raw_profile.get("errmsg") or "微信账号资料读取失败"))
             subject = str(raw_profile.get("unionid") or raw_profile.get("openid") or openid)
             return OAuthProfile(
                 provider=provider.id,
@@ -866,54 +1181,87 @@ class AuthService:
                 email=None,
                 display_name=str(raw_profile.get("nickname") or "") or None,
                 avatar_url=str(raw_profile.get("headimgurl") or "") or None,
+                email_verified=False,
             )
         if provider.id == "github":
             raw_profile = _get_json(provider.userinfo_url or "", access_token)
             if not isinstance(raw_profile, dict):
-                raise HTTPException(status_code=502, detail="GitHub 账号资料格式异常")
-            email = raw_profile.get("email")
-            if not email and provider.email_url:
+                _raise_auth_error(502, "github_profile_malformed", "GitHub 账号资料格式异常")
+            email = None
+            email_verified = False
+            if provider.email_url:
                 raw_emails = _get_json(provider.email_url, access_token)
                 if isinstance(raw_emails, list):
                     for item in raw_emails:
                         if isinstance(item, dict) and item.get("primary") and item.get("verified") and item.get("email"):
                             email = item["email"]
+                            email_verified = True
                             break
+            if not email and raw_profile.get("email"):
+                email = raw_profile.get("email")
             return OAuthProfile(
                 provider=provider.id,
                 subject=str(raw_profile.get("id") or ""),
                 email=str(email or "") or None,
                 display_name=str(raw_profile.get("name") or raw_profile.get("login") or "") or None,
                 avatar_url=str(raw_profile.get("avatar_url") or "") or None,
+                email_verified=email_verified,
             )
         if provider.id == "x":
             raw_profile = _get_json(provider.userinfo_url or "", access_token)
             if not isinstance(raw_profile, dict):
-                raise HTTPException(status_code=502, detail="X 账号资料格式异常")
+                _raise_auth_error(502, "x_profile_malformed", "X 账号资料格式异常")
             data = raw_profile.get("data")
             if not isinstance(data, dict):
-                raise HTTPException(status_code=502, detail="X 账号资料格式异常")
+                _raise_auth_error(502, "x_profile_malformed", "X 账号资料格式异常")
             return OAuthProfile(
                 provider=provider.id,
                 subject=str(data.get("id") or ""),
                 email=str(data.get("email") or "") or None,
                 display_name=str(data.get("name") or data.get("username") or "") or None,
                 avatar_url=str(data.get("profile_image_url") or "") or None,
+                email_verified=False,
             )
         raw_profile = _get_json(provider.userinfo_url or "", access_token)
         if not isinstance(raw_profile, dict):
-            raise HTTPException(status_code=502, detail="第三方账号资料格式异常")
+            _raise_auth_error(502, "oauth_profile_malformed", "第三方账号资料格式异常")
         return OAuthProfile(
             provider=provider.id,
             subject=str(raw_profile.get("sub") or raw_profile.get("id") or ""),
             email=str(raw_profile.get("email") or raw_profile.get("userPrincipalName") or "") or None,
             display_name=str(raw_profile.get("name") or raw_profile.get("preferred_username") or "") or None,
             avatar_url=str(raw_profile.get("picture") or "") or None,
+            email_verified=_is_truthy(raw_profile.get("email_verified", True)),
+        )
+
+    def _send_verification_email(self, email: str, token: str, request: Request | None) -> None:
+        link = f"{_public_origin(request)}/api/auth/email/verify?{parse.urlencode({'token': token})}"
+        send_transactional_email(
+            to_email=email,
+            subject="Verify your OpenClass email",
+            text_body=(
+                "Welcome to OpenClass.\n\n"
+                "Verify your email to finish creating your account:\n"
+                f"{link}\n\n"
+                "This link expires in 24 hours. If you did not request this, you can ignore this email."
+            ),
+        )
+
+    def _send_password_reset_email(self, email: str, token: str, request: Request | None) -> None:
+        link = f"{_frontend_origin(request)}/login?{parse.urlencode({'reset_token': token})}"
+        send_transactional_email(
+            to_email=email,
+            subject="Reset your OpenClass password",
+            text_body=(
+                "Use this link to reset your OpenClass password:\n"
+                f"{link}\n\n"
+                "This link expires in 1 hour. If you did not request this, you can ignore this email."
+            ),
         )
 
     @staticmethod
     def _token_hash(token: str) -> str:
-        return hashlib.sha256(token.encode("utf-8")).hexdigest()
+        return _token_hash(token)
 
 
 def _bearer_token_from_parts(
@@ -929,13 +1277,13 @@ def _bearer_token_from_parts(
         return query_token.strip()
     if cookie_token:
         return cookie_token.strip()
-    raise HTTPException(status_code=401, detail="请先登录")
+    _raise_auth_error(401, "unauthenticated", "请先登录")
 
 
 def bearer_token_from_request(request: Request) -> str:
     return _bearer_token_from_parts(
         request.headers.get("Authorization", ""),
-        cookie_token=request.cookies.get(AUTH_COOKIE_NAME),
+        cookie_token=request.cookies.get(AUTH_COOKIE_NAME) or request.cookies.get(GUEST_AUTH_COOKIE_NAME),
         query_token=request.query_params.get("access_token"),
     )
 
@@ -943,6 +1291,6 @@ def bearer_token_from_request(request: Request) -> str:
 def bearer_token_from_websocket(websocket: WebSocket) -> str:
     return _bearer_token_from_parts(
         websocket.headers.get("Authorization", ""),
-        cookie_token=websocket.cookies.get(AUTH_COOKIE_NAME),
+        cookie_token=websocket.cookies.get(AUTH_COOKIE_NAME) or websocket.cookies.get(GUEST_AUTH_COOKIE_NAME),
         query_token=websocket.query_params.get("access_token"),
     )

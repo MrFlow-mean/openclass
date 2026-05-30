@@ -272,11 +272,21 @@ export interface UserView {
   email: string;
   phone?: string | null;
   role: "user" | "admin" | "guest";
+  status: "active" | "disabled";
   display_name?: string | null;
   avatar_url?: string | null;
   created_at: string;
+  updated_at?: string | null;
   last_login_at?: string | null;
+  email_verified_at?: string | null;
+  session_count?: number | null;
+  package_count?: number | null;
   auth_identities: AuthIdentityView[];
+}
+
+export interface RegisterResponse {
+  email: string;
+  verification_required: true;
 }
 
 export interface AuthSessionResponse {
@@ -309,8 +319,28 @@ export interface AdminOverview {
     packages: number;
     lessons: number;
     resources: number;
+    disabled_users: number;
+    unverified_users: number;
+    active_sessions: number;
   };
   users: UserView[];
+  mail_delivery_configured: boolean;
+  mail_delivery_mode: string;
+}
+
+export interface AdminAuditLogView {
+  id: string;
+  actor_user_id: string;
+  target_user_id?: string | null;
+  action: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  actor_email?: string | null;
+  target_email?: string | null;
+}
+
+export interface AdminAuditLogResponse {
+  logs: AdminAuditLogView[];
 }
 
 export interface AIModelSelection {

@@ -32,11 +32,9 @@ import {
 
 import {
   api,
+  clearClientAuthStorage,
   clearAuthToken,
   getApiBase,
-  readAuthToken,
-  readGuestAuthToken,
-  storeAuthToken,
   storeGuestAuthToken,
 } from "@/lib/api";
 import { BrandMark } from "@/components/brand-mark";
@@ -48,6 +46,13 @@ import type { AuthProviderView, UserView } from "@/types";
 type AuthPanelProps = {
   initialMode: "register" | "login";
 };
+
+function initialPasswordFlow(): "auth" | "forgot" | "reset" {
+  if (typeof window === "undefined") {
+    return "auth";
+  }
+  return new URLSearchParams(window.location.search).get("reset_token") ? "reset" : "auth";
+}
 
 type AuthCssVars = CSSProperties & {
   "--base-op"?: string;
@@ -576,6 +581,9 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
   const [mode, setMode] = useState(initialMode);
   const [accountIdentifier, setAccountIdentifier] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [passwordFlow, setPasswordFlow] = useState<"auth" | "forgot" | "reset">(initialPasswordFlow);
+  const [pendingVerificationEmail, setPendingVerificationEmail] = useState<string | null>(null);
   const [currentUser, setCurrentUser] = useState<UserView | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isCheckingSession, setIsCheckingSession] = useState(true);
@@ -595,10 +603,6 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
         if (!disposed) {
           setCurrentUser(user?.role === "guest" ? null : user);
           setAuthProviders(providers);
-          const token = readAuthToken();
-          if (user && token) {
-            storeAuthToken(token);
-          }
         }
       } catch {
         if (!disposed) {
@@ -633,11 +637,18 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
     setNotice(null);
 
     try {
-      const payload =
-        mode === "register" ? await api.register(accountIdentifier, password) : await api.login(accountIdentifier, password);
-      storeAuthToken(payload.token);
+      const nextPath = loginRedirectPath(new URLSearchParams(window.location.search).get("next"));
+      if (mode === "register") {
+        const payload = await api.register(accountIdentifier, password, nextPath);
+        setPendingVerificationEmail(payload.email);
+        setMode("login");
+        setPassword("");
+        setNotice(`Verification email sent to ${payload.email}. Please open the link to finish signing in.`);
+        return;
+      }
+      const payload = await api.login(accountIdentifier, password);
+      clearClientAuthStorage();
       setCurrentUser(payload.user);
-      const nextPath = new URLSearchParams(window.location.search).get("next");
       navigateAfterAuth(loginDestination(payload.user, nextPath));
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : a.operationFailed);
@@ -646,7 +657,12 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
     }
   }
 
-  function handleLogout() {
+  async function handleLogout() {
+    try {
+      await api.logout();
+    } catch {
+      // Local cleanup still happens if the server session is already gone.
+    }
     clearAuthToken();
     setCurrentUser(null);
   }
@@ -685,16 +701,75 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
     const nextPath =
       typeof window !== "undefined" ? loginRedirectPath(new URLSearchParams(window.location.search).get("next")) : "/";
     const params = new URLSearchParams({ next: nextPath });
-    const guestToken = readGuestAuthToken();
-    if (guestToken) {
-      params.set("guest_token", guestToken);
-    }
     window.location.assign(`${getApiBase()}/api/auth/oauth/${option.id}/start?${params.toString()}`);
   }
 
   function handleForgotPassword() {
     setError(null);
-    setNotice(a.forgotNotice);
+    setNotice(null);
+    setPasswordFlow("forgot");
+  }
+
+  async function handleForgotSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setIsLoading(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await api.forgotPassword(accountIdentifier);
+      setNotice("If that email exists, a password reset link has been sent.");
+      setPasswordFlow("auth");
+    } catch (forgotError) {
+      setError(forgotError instanceof Error ? forgotError.message : a.operationFailed);
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  async function handleResetSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const resetToken = new URLSearchParams(window.location.search).get("reset_token") || "";
+    if (password.length < 8) {
+      setError("Password needs at least 8 characters.");
+      return;
+    }
+    if (password !== confirmPassword) {
+      setError("Passwords do not match.");
+      return;
+    }
+    setIsLoading(true);
+    setError(null);
+    try {
+      await api.resetPassword(resetToken, password);
+      setNotice("Password reset. Please sign in with the new password.");
+      setPassword("");
+      setConfirmPassword("");
+      setPasswordFlow("auth");
+      window.history.replaceState(null, "", "/login");
+    } catch (resetError) {
+      setError(resetError instanceof Error ? resetError.message : a.operationFailed);
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  async function handleResendVerification() {
+    if (!accountIdentifier.includes("@")) {
+      setError("Enter your email first.");
+      return;
+    }
+    setIsLoading(true);
+    setError(null);
+    try {
+      const nextPath = loginRedirectPath(new URLSearchParams(window.location.search).get("next"));
+      await api.resendVerification(accountIdentifier, nextPath);
+      setPendingVerificationEmail(accountIdentifier);
+      setNotice(`Verification email sent to ${accountIdentifier}.`);
+    } catch (resendError) {
+      setError(resendError instanceof Error ? resendError.message : a.operationFailed);
+    } finally {
+      setIsLoading(false);
+    }
   }
 
   const isRegister = mode === "register";
@@ -769,7 +844,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                   </Link>
                   <button
                     type="button"
-                    onClick={handleLogout}
+                    onClick={() => void handleLogout()}
                     className="inline-flex h-11 items-center justify-center rounded-lg border border-[#ebe2d2] bg-white px-4 text-sm font-bold text-[#5c4c3c] transition hover:border-[#d2a878] hover:text-[#3a312b]"
                   >
                     {a.signOut}
@@ -822,10 +897,11 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                     <Link
                       key={item}
                       href={`/${item}`}
-                      onClick={() => {
-                        setMode(item);
-                        setError(null);
-                        setNotice(null);
+	                      onClick={() => {
+	                        setMode(item);
+	                        setPasswordFlow("auth");
+	                        setError(null);
+	                        setNotice(null);
                       }}
                       className={clsx(
                         "flex h-10 items-center justify-center rounded-lg text-sm font-bold transition",
@@ -837,64 +913,149 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                   ))}
                 </div>
 
-                <form onSubmit={(event) => void handleSubmit(event)} className="space-y-4">
-                  <AuthInput
-                    id="account"
-                    label={a.emailOrPhone}
-                    type="text"
-                    value={accountIdentifier}
-                    onChange={setAccountIdentifier}
-                    autoComplete="username"
-                    placeholder="name@company.com / 13800138000"
-                    Icon={User}
-                  />
+	                {passwordFlow === "forgot" ? (
+	                  <form onSubmit={(event) => void handleForgotSubmit(event)} className="space-y-4">
+	                    <AuthInput
+	                      id="forgot-email"
+	                      label="Email"
+	                      type="email"
+	                      value={accountIdentifier}
+	                      onChange={setAccountIdentifier}
+	                      autoComplete="email"
+	                      placeholder="name@company.com"
+	                      Icon={User}
+	                    />
+	                    {error ? <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm leading-6 text-rose-700">{error}</div> : null}
+	                    <button
+	                      type="submit"
+	                      disabled={isLoading}
+	                      className="flex w-full items-center justify-center gap-2 rounded-lg border border-transparent bg-[#3a312b] px-4 py-3 text-sm font-bold text-white shadow-[0_8px_20px_-8px_rgba(58,49,43,0.5)] transition hover:bg-[#1f1a17] disabled:cursor-wait disabled:opacity-70 sm:py-3.5"
+	                    >
+	                      {isLoading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <GraduationCap className="h-4 w-4" />}
+	                      Send reset link
+	                    </button>
+	                    <button
+	                      type="button"
+	                      onClick={() => setPasswordFlow("auth")}
+	                      className="w-full text-sm font-semibold text-[#5c4c3c] transition hover:text-[#3a312b]"
+	                    >
+	                      Back to sign in
+	                    </button>
+	                  </form>
+	                ) : passwordFlow === "reset" ? (
+	                  <form onSubmit={(event) => void handleResetSubmit(event)} className="space-y-4">
+	                    <AuthInput
+	                      id="reset-password"
+	                      label="New password"
+	                      type="password"
+	                      value={password}
+	                      onChange={setPassword}
+	                      minLength={8}
+	                      autoComplete="new-password"
+	                      placeholder={a.passwordPlaceholderNew}
+	                      Icon={LockKeyhole}
+	                    />
+	                    <AuthInput
+	                      id="reset-confirm-password"
+	                      label="Confirm password"
+	                      type="password"
+	                      value={confirmPassword}
+	                      onChange={setConfirmPassword}
+	                      minLength={8}
+	                      autoComplete="new-password"
+	                      placeholder="********"
+	                      Icon={LockKeyhole}
+	                    />
+	                    {error ? <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm leading-6 text-rose-700">{error}</div> : null}
+	                    <button
+	                      type="submit"
+	                      disabled={isLoading}
+	                      className="flex w-full items-center justify-center gap-2 rounded-lg border border-transparent bg-[#3a312b] px-4 py-3 text-sm font-bold text-white shadow-[0_8px_20px_-8px_rgba(58,49,43,0.5)] transition hover:bg-[#1f1a17] disabled:cursor-wait disabled:opacity-70 sm:py-3.5"
+	                    >
+	                      {isLoading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <GraduationCap className="h-4 w-4" />}
+	                      Reset password
+	                    </button>
+	                  </form>
+	                ) : (
+	                  <form onSubmit={(event) => void handleSubmit(event)} className="space-y-4">
+	                    <AuthInput
+	                      id="account"
+	                      label="Email"
+	                      type="email"
+	                      value={accountIdentifier}
+	                      onChange={setAccountIdentifier}
+	                      autoComplete="username"
+	                      placeholder="name@company.com"
+	                      Icon={User}
+	                    />
 
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="text-sm font-semibold text-[#5c4c3c]">{a.password}</span>
-                      <button
-                        type="button"
-                        onClick={handleForgotPassword}
-                        className="text-sm font-medium text-[#b88952] transition hover:text-[#5c4c3c]"
-                      >
-                        {a.forgotPassword}
-                      </button>
-                    </div>
-                    <AuthInput
-                      id="password"
-                      label=""
-                      type="password"
-                      value={password}
-                      onChange={setPassword}
-                      minLength={8}
-                      autoComplete={isRegister ? "new-password" : "current-password"}
-                      placeholder={isRegister ? a.passwordPlaceholderNew : "********"}
-                      Icon={LockKeyhole}
-                    />
-                  </div>
+	                    <div className="space-y-2">
+	                      <div className="flex items-center justify-between gap-3">
+	                        <span className="text-sm font-semibold text-[#5c4c3c]">{a.password}</span>
+	                        {!isRegister ? (
+	                          <button
+	                            type="button"
+	                            onClick={handleForgotPassword}
+	                            className="text-sm font-medium text-[#b88952] transition hover:text-[#5c4c3c]"
+	                          >
+	                            {a.forgotPassword}
+	                          </button>
+	                        ) : null}
+	                      </div>
+	                      <AuthInput
+	                        id="password"
+	                        label=""
+	                        type="password"
+	                        value={password}
+	                        onChange={setPassword}
+	                        minLength={8}
+	                        autoComplete={isRegister ? "new-password" : "current-password"}
+	                        placeholder={isRegister ? a.passwordPlaceholderNew : "********"}
+	                        Icon={LockKeyhole}
+	                      />
+	                    </div>
 
-                  {error ? (
-                    <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm leading-6 text-rose-700">{error}</div>
-                  ) : null}
+	                    {error ? (
+	                      <div className="space-y-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm leading-6 text-rose-700">
+	                        <p>{error}</p>
+	                        {!isRegister && accountIdentifier.includes("@") ? (
+	                          <button
+	                            type="button"
+	                            onClick={() => void handleResendVerification()}
+	                            className="font-semibold underline decoration-rose-300 underline-offset-4 transition hover:text-rose-900"
+	                          >
+	                            Resend verification email
+	                          </button>
+	                        ) : null}
+	                      </div>
+	                    ) : null}
 
-                  <button
-                    type="submit"
-                    disabled={isLoading}
-                    className="flex w-full items-center justify-center gap-2 rounded-lg border border-transparent bg-[#3a312b] px-4 py-3 text-sm font-bold text-white shadow-[0_8px_20px_-8px_rgba(58,49,43,0.5)] transition hover:bg-[#1f1a17] focus:outline-none focus:ring-2 focus:ring-[#3a312b] focus:ring-offset-2 disabled:cursor-wait disabled:opacity-70 sm:py-3.5"
-                  >
-                    {isLoading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <GraduationCap className="h-4 w-4" />}
-                    {isRegister ? a.createAccount : a.enterWorkspace}
-                  </button>
-                </form>
+	                    {pendingVerificationEmail ? (
+	                      <div className="rounded-lg border border-[#b9cbb8] bg-[#f1f7ef] px-3 py-2 text-sm leading-6 text-[#496a4c]">
+	                        Verification is pending for {pendingVerificationEmail}.
+	                      </div>
+	                    ) : null}
+
+	                    <button
+	                      type="submit"
+	                      disabled={isLoading}
+	                      className="flex w-full items-center justify-center gap-2 rounded-lg border border-transparent bg-[#3a312b] px-4 py-3 text-sm font-bold text-white shadow-[0_8px_20px_-8px_rgba(58,49,43,0.5)] transition hover:bg-[#1f1a17] focus:outline-none focus:ring-2 focus:ring-[#3a312b] focus:ring-offset-2 disabled:cursor-wait disabled:opacity-70 sm:py-3.5"
+	                    >
+	                      {isLoading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <GraduationCap className="h-4 w-4" />}
+	                      {isRegister ? a.createAccount : a.enterWorkspace}
+	                    </button>
+	                  </form>
+	                )}
 
                 <p className="mt-5 text-center text-sm text-[#5c4c3c]/70">
                   {isRegister ? a.alreadyHaveAccount : a.newToOpenClass}
                   <Link
                     href={`/${alternateMode}`}
-                    onClick={() => {
-                      setMode(alternateMode);
-                      setError(null);
-                      setNotice(null);
+	                    onClick={() => {
+	                      setMode(alternateMode);
+	                      setPasswordFlow("auth");
+	                      setError(null);
+	                      setNotice(null);
                     }}
                     className="ml-1 border-b border-[#3a312b] pb-0.5 font-semibold text-[#3a312b] transition hover:border-[#d2a878] hover:text-[#b88952]"
                   >

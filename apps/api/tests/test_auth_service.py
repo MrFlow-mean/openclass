@@ -1,42 +1,86 @@
+import re
+
 import pytest
 from fastapi import HTTPException
 from starlette.requests import Request
 
+from app.services import auth_service as auth_service_module
 from app.services.auth_service import AuthService, OAuthProfile
 from app.services.course_store import SqliteCourseStore
 
 
-def test_register_login_and_admin_overview(tmp_path) -> None:
-    db_path = tmp_path / "openclass.sqlite3"
+@pytest.fixture(autouse=True)
+def email_delivery(monkeypatch):
+    sent: list[dict[str, str]] = []
+    monkeypatch.setenv("OPENCLASS_EMAIL_DELIVERY", "log")
+    monkeypatch.setattr(
+        auth_service_module,
+        "send_transactional_email",
+        lambda **kwargs: sent.append(kwargs),
+    )
+    return sent
+
+
+def auth_for_path(db_path):
     SqliteCourseStore(db_path, legacy_json_path=None)
-    auth = AuthService(db_path)
+    return AuthService(db_path)
 
-    admin_token, admin_user = auth.register("Teacher@Example.com", "correct-password")
-    _, student_user = auth.register("student@example.com", "correct-password")
 
-    assert admin_user.email == "teacher@example.com"
-    assert admin_user.role == "admin"
-    assert student_user.role == "user"
-    assert auth.get_user_by_token(admin_token).id == admin_user.id
+def token_from_latest_email(sent: list[dict[str, str]], name: str = "token") -> str:
+    assert sent
+    match = re.search(rf"{name}=([A-Za-z0-9_.~%-]+)", sent[-1]["text_body"])
+    assert match
+    return match.group(1)
+
+
+def detail_code(exc: HTTPException) -> str:
+    assert isinstance(exc.detail, dict)
+    return str(exc.detail["code"])
+
+
+def test_register_requires_email_verification_before_login(tmp_path, email_delivery) -> None:
+    db_path = tmp_path / "openclass.sqlite3"
+    auth = auth_for_path(db_path)
+
+    result = auth.register("Teacher@Example.com", "correct-password")
+
+    assert result.email == "teacher@example.com"
+    assert result.verification_required is True
+    with pytest.raises(HTTPException) as exc_info:
+        auth.login("teacher@example.com", "correct-password")
+    assert detail_code(exc_info.value) == "email_not_verified"
+
+    verify_token = token_from_latest_email(email_delivery)
+    session_token, verified_user, _, _ = auth.verify_email(verify_token)
+
+    assert verified_user.email == "teacher@example.com"
+    assert verified_user.email_verified_at is not None
+    assert verified_user.role == "admin"
+    assert auth.get_user_by_token(session_token).id == verified_user.id
 
     login_token, logged_in = auth.login("teacher@example.com", "correct-password")
 
-    assert logged_in.id == admin_user.id
+    assert logged_in.id == verified_user.id
     assert auth.get_user_by_token(login_token).last_login_at is not None
 
-    overview = auth.overview()
 
-    assert overview.stats.users == 2
-    assert overview.stats.admins == 1
-    assert overview.stats.packages == 0
-    assert [user.email for user in overview.users] == ["student@example.com", "teacher@example.com"]
-    assert logged_in.auth_identities[0].provider == "email"
+def test_email_verification_token_is_one_time(tmp_path, email_delivery) -> None:
+    db_path = tmp_path / "openclass.sqlite3"
+    auth = auth_for_path(db_path)
+
+    auth.register("student@example.com", "correct-password")
+    verify_token = token_from_latest_email(email_delivery)
+
+    auth.verify_email(verify_token)
+    with pytest.raises(HTTPException) as exc_info:
+        auth.verify_email(verify_token)
+
+    assert detail_code(exc_info.value) == "email_verification_invalid"
 
 
 def test_register_rejects_duplicate_email(tmp_path) -> None:
     db_path = tmp_path / "openclass.sqlite3"
-    SqliteCourseStore(db_path, legacy_json_path=None)
-    auth = AuthService(db_path)
+    auth = auth_for_path(db_path)
 
     auth.register("student@example.com", "correct-password")
 
@@ -44,24 +88,7 @@ def test_register_rejects_duplicate_email(tmp_path) -> None:
         auth.register("student@example.com", "correct-password")
 
     assert exc_info.value.status_code == 409
-
-
-def test_register_and_login_with_phone(tmp_path) -> None:
-    db_path = tmp_path / "openclass.sqlite3"
-    SqliteCourseStore(db_path, legacy_json_path=None)
-    auth = AuthService(db_path)
-
-    token, user = auth.register("13800138000", "correct-password")
-
-    assert user.phone == "13800138000"
-    assert user.email.endswith("@phone.openclass.local")
-    assert user.auth_identities[0].provider == "phone"
-    assert auth.get_user_by_token(token).id == user.id
-
-    login_token, logged_in = auth.login("+86 138 0013 8000", "correct-password")
-
-    assert logged_in.id == user.id
-    assert auth.get_user_by_token(login_token).phone == "13800138000"
+    assert detail_code(exc_info.value) == "email_already_registered"
 
 
 def test_guest_session_can_use_workspace_without_creating_user(tmp_path) -> None:
@@ -80,7 +107,7 @@ def test_guest_session_can_use_workspace_without_creating_user(tmp_path) -> None
     assert store.load_for_user(guest_user.id).packages[0].title == "游客临时课程包"
 
 
-def test_register_claims_guest_workspace(tmp_path) -> None:
+def test_email_verification_claims_guest_workspace(tmp_path, email_delivery) -> None:
     db_path = tmp_path / "openclass.sqlite3"
     store = SqliteCourseStore(db_path, legacy_json_path=None)
     auth = AuthService(db_path)
@@ -90,7 +117,8 @@ def test_register_claims_guest_workspace(tmp_path) -> None:
     guest_workspace.packages[0].title = "登录前学习记录"
     store.save_for_user(guest_user.id, guest_workspace)
 
-    _, user = auth.register("student@example.com", "correct-password", guest_token=guest_token)
+    auth.register("student@example.com", "correct-password", guest_token=guest_token)
+    _, user, _, _ = auth.verify_email(token_from_latest_email(email_delivery))
 
     assert store.load_for_user(user.id).packages[0].title == "登录前学习记录"
     with pytest.raises(HTTPException) as exc_info:
@@ -98,47 +126,53 @@ def test_register_claims_guest_workspace(tmp_path) -> None:
     assert exc_info.value.status_code == 401
 
 
-def test_register_rejects_duplicate_phone(tmp_path) -> None:
+def test_login_rejects_wrong_password(tmp_path, email_delivery) -> None:
     db_path = tmp_path / "openclass.sqlite3"
-    SqliteCourseStore(db_path, legacy_json_path=None)
-    auth = AuthService(db_path)
-
-    auth.register("13800138000", "correct-password")
-
-    with pytest.raises(HTTPException) as exc_info:
-        auth.register("13800138000", "correct-password")
-
-    assert exc_info.value.status_code == 409
-    assert exc_info.value.detail == "该手机号已注册"
-
-
-def test_login_rejects_wrong_password(tmp_path) -> None:
-    db_path = tmp_path / "openclass.sqlite3"
-    SqliteCourseStore(db_path, legacy_json_path=None)
-    auth = AuthService(db_path)
+    auth = auth_for_path(db_path)
 
     auth.register("student@example.com", "correct-password")
+    auth.verify_email(token_from_latest_email(email_delivery))
 
     with pytest.raises(HTTPException) as exc_info:
         auth.login("student@example.com", "wrong-password")
 
     assert exc_info.value.status_code == 401
+    assert detail_code(exc_info.value) == "invalid_credentials"
 
 
-def test_provider_list_includes_supported_social_logins(tmp_path) -> None:
+def test_password_reset_token_is_one_time(tmp_path, email_delivery) -> None:
     db_path = tmp_path / "openclass.sqlite3"
-    SqliteCourseStore(db_path, legacy_json_path=None)
-    auth = AuthService(db_path)
+    auth = auth_for_path(db_path)
 
-    provider_ids = {provider.id for provider in auth.providers()}
+    auth.register("student@example.com", "correct-password")
+    auth.verify_email(token_from_latest_email(email_delivery))
+    auth.request_password_reset("student@example.com")
+    reset_token = token_from_latest_email(email_delivery, "reset_token")
 
-    assert {"google", "wechat", "apple", "github", "microsoft", "x"}.issubset(provider_ids)
+    auth.reset_password(reset_token, "new-password")
+    with pytest.raises(HTTPException) as exc_info:
+        auth.login("student@example.com", "correct-password")
+    assert detail_code(exc_info.value) == "invalid_credentials"
+
+    login_token, user = auth.login("student@example.com", "new-password")
+    assert auth.get_user_by_token(login_token).id == user.id
+    with pytest.raises(HTTPException) as exc_info:
+        auth.reset_password(reset_token, "another-password")
+    assert detail_code(exc_info.value) == "password_reset_invalid"
+
+
+def test_provider_list_is_public_login_set(tmp_path) -> None:
+    db_path = tmp_path / "openclass.sqlite3"
+    auth = auth_for_path(db_path)
+
+    provider_ids = [provider.id for provider in auth.providers()]
+
+    assert provider_ids == ["email", "google", "wechat", "github"]
 
 
 def test_provider_configuration_reflects_env(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "openclass.sqlite3"
-    SqliteCourseStore(db_path, legacy_json_path=None)
-    auth = AuthService(db_path)
+    auth = auth_for_path(db_path)
 
     monkeypatch.setenv("OPENCLASS_OAUTH_GOOGLE_CLIENT_ID", "google-client")
     monkeypatch.setenv("OPENCLASS_OAUTH_GOOGLE_CLIENT_SECRET", "google-secret")
@@ -149,10 +183,9 @@ def test_provider_configuration_reflects_env(tmp_path, monkeypatch) -> None:
     assert providers["wechat"].configured is False
 
 
-def test_x_oauth_authorization_url_uses_pkce(tmp_path, monkeypatch) -> None:
+def test_x_oauth_authorization_url_still_uses_pkce_when_enabled(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "openclass.sqlite3"
-    SqliteCourseStore(db_path, legacy_json_path=None)
-    auth = AuthService(db_path)
+    auth = auth_for_path(db_path)
     monkeypatch.setenv("OPENCLASS_OAUTH_X_CLIENT_ID", "x-client")
     monkeypatch.setenv("OPENCLASS_OAUTH_X_CLIENT_SECRET", "x-secret")
     request = Request(
@@ -178,12 +211,12 @@ def test_x_oauth_authorization_url_uses_pkce(tmp_path, monkeypatch) -> None:
     assert "redirect_uri=https%3A%2F%2Fexample.com%2Fapi%2Fauth%2Foauth%2Fx%2Fcallback" in target
 
 
-def test_oauth_login_links_existing_email_and_reuses_unique_account(tmp_path) -> None:
+def test_oauth_login_links_existing_verified_email(tmp_path, email_delivery) -> None:
     db_path = tmp_path / "openclass.sqlite3"
-    SqliteCourseStore(db_path, legacy_json_path=None)
-    auth = AuthService(db_path)
+    auth = auth_for_path(db_path)
 
-    _, email_user = auth.register("student@example.com", "correct-password")
+    auth.register("student@example.com", "correct-password")
+    _, email_user, _, _ = auth.verify_email(token_from_latest_email(email_delivery))
     google_token, google_user = auth.login_with_oauth(
         OAuthProfile(
             provider="google",
@@ -191,6 +224,7 @@ def test_oauth_login_links_existing_email_and_reuses_unique_account(tmp_path) ->
             email="student@example.com",
             display_name="Student From Google",
             avatar_url="https://example.com/avatar.png",
+            email_verified=True,
         )
     )
     _, second_google_user = auth.login_with_oauth(
@@ -200,6 +234,7 @@ def test_oauth_login_links_existing_email_and_reuses_unique_account(tmp_path) ->
             email="student@example.com",
             display_name="Student From Google",
             avatar_url="https://example.com/avatar.png",
+            email_verified=True,
         )
     )
 
@@ -209,10 +244,30 @@ def test_oauth_login_links_existing_email_and_reuses_unique_account(tmp_path) ->
     assert {identity.provider for identity in google_user.auth_identities} == {"email", "google"}
 
 
+def test_oauth_unverified_email_does_not_merge_existing_account(tmp_path, email_delivery) -> None:
+    db_path = tmp_path / "openclass.sqlite3"
+    auth = auth_for_path(db_path)
+
+    auth.register("student@example.com", "correct-password")
+    _, email_user, _, _ = auth.verify_email(token_from_latest_email(email_delivery))
+
+    _, oauth_user = auth.login_with_oauth(
+        OAuthProfile(
+            provider="google",
+            subject="google-subject-2",
+            email="student@example.com",
+            display_name="Unverified Google",
+            email_verified=False,
+        )
+    )
+
+    assert oauth_user.id != email_user.id
+    assert oauth_user.email.endswith("@oauth.openclass.local")
+
+
 def test_oauth_login_without_email_gets_stable_synthetic_email(tmp_path) -> None:
     db_path = tmp_path / "openclass.sqlite3"
-    SqliteCourseStore(db_path, legacy_json_path=None)
-    auth = AuthService(db_path)
+    auth = auth_for_path(db_path)
 
     _, user = auth.login_with_oauth(
         OAuthProfile(
@@ -226,3 +281,38 @@ def test_oauth_login_without_email_gets_stable_synthetic_email(tmp_path) -> None
 
     assert user.email == "github-12345@oauth.openclass.local"
     assert user.auth_identities[0].provider == "github"
+
+
+def test_disabled_user_session_is_rejected_and_audited(tmp_path, email_delivery) -> None:
+    db_path = tmp_path / "openclass.sqlite3"
+    auth = auth_for_path(db_path)
+
+    auth.register("admin@example.com", "correct-password")
+    admin_token, admin_user, _, _ = auth.verify_email(token_from_latest_email(email_delivery))
+    auth.register("student@example.com", "correct-password")
+    student_token, student_user, _, _ = auth.verify_email(token_from_latest_email(email_delivery))
+
+    updated = auth.update_admin_user(actor=admin_user, target_user_id=student_user.id, role=None, status="disabled")
+
+    assert updated.status == "disabled"
+    with pytest.raises(HTTPException) as exc_info:
+        auth.get_user_by_token(student_token)
+    assert detail_code(exc_info.value) == "unauthenticated"
+    assert auth.get_user_by_token(admin_token).role == "admin"
+    assert auth.audit_logs().logs[0].action == "user.update"
+
+
+def test_admin_cannot_disable_or_demote_self(tmp_path, email_delivery) -> None:
+    db_path = tmp_path / "openclass.sqlite3"
+    auth = auth_for_path(db_path)
+
+    auth.register("admin@example.com", "correct-password")
+    _, admin_user, _, _ = auth.verify_email(token_from_latest_email(email_delivery))
+
+    with pytest.raises(HTTPException) as exc_info:
+        auth.update_admin_user(actor=admin_user, target_user_id=admin_user.id, role="user", status=None)
+    assert detail_code(exc_info.value) == "admin_self_lockout"
+
+    with pytest.raises(HTTPException) as exc_info:
+        auth.update_admin_user(actor=admin_user, target_user_id=admin_user.id, role=None, status="disabled")
+    assert detail_code(exc_info.value) == "admin_self_lockout"

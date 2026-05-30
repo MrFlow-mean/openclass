@@ -241,17 +241,17 @@ export function profileSettingsTexts(lang: InterfaceLanguage) {
       providerLabel: (provider: string) => (z ? `${provider} 账号` : `${provider} account`),
       oauthNotice: (provider: string) =>
         z
-          ? `${provider} 需要先在服务端 .env 配置 OAuth Client/App ID 和 Secret。邮箱和手机号登录可以直接使用。`
-          : `${provider} needs OAuth Client/App ID and Secret in the server .env first. Email and phone sign-in are ready to use.`,
+          ? `${provider} 需要先在服务端 .env 配置 OAuth Client/App ID 和 Secret。`
+          : `${provider} needs OAuth Client/App ID and Secret in the server .env first.`,
       forgotNotice: z
         ? "密码找回功能已预留。连接邮件服务后可以发送重置链接。"
         : "Password recovery is reserved. Reset links can be sent after email service is connected.",
       operationFailed: z ? "操作失败" : "Operation failed",
       guestAccessFailed: z ? "游客访问失败" : "Guest access failed",
-      emailDivider: z ? "或使用邮箱 / 手机号" : "Or use email / phone",
+      emailDivider: z ? "或使用邮箱" : "Or use email",
       createAccount: z ? "创建账号" : "Create account",
       signIn: z ? "登录" : "Sign in",
-      emailOrPhone: z ? "邮箱或手机号" : "Email or phone",
+      emailOrPhone: z ? "邮箱" : "Email",
       password: z ? "密码" : "Password",
       forgotPassword: z ? "忘记密码？" : "Forgot password?",
       passwordPlaceholderNew: z ? "至少 8 个字符" : "At least 8 characters",

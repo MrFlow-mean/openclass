@@ -2,14 +2,14 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { ArrowLeft, BookOpen, Database, LoaderCircle, ShieldCheck, UsersRound } from "lucide-react";
+import { ArrowLeft, Ban, BookOpen, CheckCircle2, Database, LoaderCircle, RotateCcw, ShieldCheck, UsersRound } from "lucide-react";
 
 import { AccountMenu } from "@/components/account-menu";
 import { BrandMark } from "@/components/brand-mark";
 import { useInterfaceLanguage } from "@/contexts/interface-language-context";
 import { api } from "@/lib/api";
 import { userAccountLabel } from "@/lib/account";
-import type { AdminOverview } from "@/types";
+import type { AdminAuditLogView, AdminOverview, UserView } from "@/types";
 
 function formatDate(value: string | null | undefined, locale: string, fallback: string) {
   if (!value) {
@@ -33,17 +33,20 @@ export function AdminDashboard() {
   const a = txt.adminDashboard;
   const c = txt.common;
   const [overview, setOverview] = useState<AdminOverview | null>(null);
+  const [auditLogs, setAuditLogs] = useState<AdminAuditLogView[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [actionUserId, setActionUserId] = useState<string | null>(null);
 
   useEffect(() => {
     let disposed = false;
 
     async function loadOverview() {
       try {
-        const payload = await api.getAdminOverview();
+        const [payload, logsPayload] = await Promise.all([api.getAdminOverview(), api.getAdminAuditLogs().catch(() => ({ logs: [] }))]);
         if (!disposed) {
           setOverview(payload);
+          setAuditLogs(logsPayload.logs);
           setError(null);
         }
       } catch (loadError) {
@@ -69,9 +72,41 @@ export function AdminDashboard() {
         { label: a.statsUsers, value: overview.stats.users, icon: UsersRound },
         { label: a.statsAdmins, value: overview.stats.admins, icon: ShieldCheck },
         { label: a.statsPackages, value: overview.stats.packages, icon: BookOpen },
-        { label: a.statsLessons, value: overview.stats.lessons, icon: Database },
+        { label: "Active sessions", value: overview.stats.active_sessions, icon: Database },
       ]
     : [];
+
+  async function reloadAdminData() {
+    const [payload, logsPayload] = await Promise.all([api.getAdminOverview(), api.getAdminAuditLogs().catch(() => ({ logs: [] }))]);
+    setOverview(payload);
+    setAuditLogs(logsPayload.logs);
+  }
+
+  async function updateUser(user: UserView, payload: { role?: "user" | "admin"; status?: "active" | "disabled" }) {
+    setActionUserId(user.id);
+    setError(null);
+    try {
+      await api.updateAdminUser(user.id, payload);
+      await reloadAdminData();
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : a.loadErrorFallback);
+    } finally {
+      setActionUserId(null);
+    }
+  }
+
+  async function revokeSessions(user: UserView) {
+    setActionUserId(user.id);
+    setError(null);
+    try {
+      await api.revokeAdminUserSessions(user.id);
+      await reloadAdminData();
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : a.loadErrorFallback);
+    } finally {
+      setActionUserId(null);
+    }
+  }
 
   return (
     <main className="min-h-screen bg-[#f7f5ef] text-stone-950">
@@ -126,41 +161,115 @@ export function AdminDashboard() {
                     <p className="mt-4 text-3xl font-semibold tracking-tight text-stone-950">{card.value}</p>
                   </article>
                 );
-              })}
-            </div>
+	              })}
+	            </div>
 
-            <section className="overflow-hidden rounded-lg border border-stone-200 bg-white">
+	            <div className={`rounded-lg border px-5 py-4 text-sm ${overview.mail_delivery_configured ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-amber-200 bg-amber-50 text-amber-800"}`}>
+	              Mail delivery: {overview.mail_delivery_configured ? "configured" : "not configured"} ({overview.mail_delivery_mode})
+	            </div>
+
+	            <section className="overflow-hidden rounded-lg border border-stone-200 bg-white">
               <div className="border-b border-stone-200 px-5 py-4">
                 <h2 className="text-base font-semibold text-stone-950">{a.userManagement}</h2>
               </div>
               <div className="overflow-x-auto">
-                <table className="w-full min-w-[46rem] text-left text-sm">
+	                <table className="w-full min-w-[76rem] text-left text-sm">
                   <thead className="bg-stone-50 text-xs font-semibold uppercase tracking-[0.16em] text-stone-500">
-                    <tr>
-                      <th className="px-5 py-3">{a.account}</th>
-                      <th className="px-5 py-3">{a.role}</th>
-                      <th className="px-5 py-3">{a.createdAt}</th>
-                      <th className="px-5 py-3">{a.lastLogin}</th>
-                    </tr>
+	                    <tr>
+	                      <th className="px-5 py-3">{a.account}</th>
+	                      <th className="px-5 py-3">{a.role}</th>
+	                      <th className="px-5 py-3">Status</th>
+	                      <th className="px-5 py-3">Email</th>
+	                      <th className="px-5 py-3">Sessions</th>
+	                      <th className="px-5 py-3">Packages</th>
+	                      <th className="px-5 py-3">{a.createdAt}</th>
+	                      <th className="px-5 py-3">{a.lastLogin}</th>
+	                      <th className="px-5 py-3">Actions</th>
+	                    </tr>
                   </thead>
                   <tbody className="divide-y divide-stone-200">
                     {overview.users.map((user) => (
                       <tr key={user.id}>
                         <td className="px-5 py-4 font-medium text-stone-950">{userAccountLabel(user)}</td>
-                        <td className="px-5 py-4">
-                          <span className="rounded-full border border-stone-200 bg-stone-50 px-2.5 py-1 text-xs font-semibold text-stone-600">
-                            {user.role === "admin" ? c.admin : c.user}
-                          </span>
-                        </td>
-                        <td className="px-5 py-4 text-stone-600">{formatDate(user.created_at, intlLocale, c.never)}</td>
-                        <td className="px-5 py-4 text-stone-600">{formatDate(user.last_login_at, intlLocale, c.never)}</td>
-                      </tr>
+	                        <td className="px-5 py-4">
+	                          <span className="rounded-full border border-stone-200 bg-stone-50 px-2.5 py-1 text-xs font-semibold text-stone-600">
+	                            {user.role === "admin" ? c.admin : c.user}
+	                          </span>
+	                        </td>
+	                        <td className="px-5 py-4">
+	                          <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${user.status === "active" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-rose-200 bg-rose-50 text-rose-700"}`}>
+	                            {user.status}
+	                          </span>
+	                        </td>
+	                        <td className="px-5 py-4">
+	                          <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${user.email_verified_at ? "border-sky-200 bg-sky-50 text-sky-700" : "border-amber-200 bg-amber-50 text-amber-700"}`}>
+	                            {user.email_verified_at ? "Verified" : "Unverified"}
+	                          </span>
+	                        </td>
+	                        <td className="px-5 py-4 text-stone-600">{user.session_count ?? 0}</td>
+	                        <td className="px-5 py-4 text-stone-600">{user.package_count ?? 0}</td>
+	                        <td className="px-5 py-4 text-stone-600">{formatDate(user.created_at, intlLocale, c.never)}</td>
+	                        <td className="px-5 py-4 text-stone-600">{formatDate(user.last_login_at, intlLocale, c.never)}</td>
+	                        <td className="px-5 py-4">
+	                          <div className="flex min-w-[16rem] flex-wrap gap-2">
+	                            <button
+	                              type="button"
+	                              disabled={actionUserId === user.id}
+	                              onClick={() => void updateUser(user, { status: user.status === "active" ? "disabled" : "active" })}
+	                              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-stone-200 bg-white px-2.5 text-xs font-semibold text-stone-700 transition hover:border-stone-300 disabled:cursor-wait disabled:opacity-60"
+	                            >
+	                              {user.status === "active" ? <Ban className="h-3.5 w-3.5" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
+	                              {user.status === "active" ? "Disable" : "Enable"}
+	                            </button>
+	                            <button
+	                              type="button"
+	                              disabled={actionUserId === user.id}
+	                              onClick={() => void updateUser(user, { role: user.role === "admin" ? "user" : "admin" })}
+	                              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-stone-200 bg-white px-2.5 text-xs font-semibold text-stone-700 transition hover:border-stone-300 disabled:cursor-wait disabled:opacity-60"
+	                            >
+	                              <ShieldCheck className="h-3.5 w-3.5" />
+	                              {user.role === "admin" ? "Member" : "Admin"}
+	                            </button>
+	                            <button
+	                              type="button"
+	                              disabled={actionUserId === user.id}
+	                              onClick={() => void revokeSessions(user)}
+	                              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-stone-200 bg-white px-2.5 text-xs font-semibold text-stone-700 transition hover:border-stone-300 disabled:cursor-wait disabled:opacity-60"
+	                            >
+	                              <RotateCcw className="h-3.5 w-3.5" />
+	                              Revoke
+	                            </button>
+	                          </div>
+	                        </td>
+	                      </tr>
                     ))}
                   </tbody>
                 </table>
-              </div>
-            </section>
-          </div>
+	              </div>
+	            </section>
+
+	            <section className="overflow-hidden rounded-lg border border-stone-200 bg-white">
+	              <div className="border-b border-stone-200 px-5 py-4">
+	                <h2 className="text-base font-semibold text-stone-950">Audit log</h2>
+	              </div>
+	              <div className="divide-y divide-stone-200">
+	                {auditLogs.length ? (
+	                  auditLogs.slice(0, 20).map((log) => (
+	                    <div key={log.id} className="grid gap-2 px-5 py-4 text-sm sm:grid-cols-[10rem_1fr_12rem]">
+	                      <span className="font-semibold text-stone-950">{log.action}</span>
+	                      <span className="break-all text-stone-600">
+	                        {log.actor_email || log.actor_user_id}
+	                        {log.target_email ? ` -> ${log.target_email}` : ""}
+	                      </span>
+	                      <span className="text-stone-500">{formatDate(log.created_at, intlLocale, c.never)}</span>
+	                    </div>
+	                  ))
+	                ) : (
+	                  <div className="px-5 py-6 text-sm text-stone-500">No audit events yet.</div>
+	                )}
+	              </div>
+	            </section>
+	          </div>
         ) : null}
       </section>
     </main>
