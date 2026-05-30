@@ -209,7 +209,7 @@ export function profileSettingsTexts(lang: InterfaceLanguage) {
       open: z ? "打开" : "Open",
       restore: z ? "恢复" : "Restore",
       preview: z ? "预览" : "Preview",
-      branch: "Branch",
+      branch: z ? "分支" : "Branch",
       current: z ? "当前" : "Current",
       source: z ? "来源" : "Source",
       never: z ? "从未" : "Never",
@@ -315,9 +315,9 @@ export function profileSettingsTexts(lang: InterfaceLanguage) {
         collapse: z ? "收起" : "Collapse",
         expand: z ? "展开" : "Expand",
         cancelEdit: z ? "取消编辑" : "Cancel edit",
-        submitEdit: z ? "提交编辑并生成新 Branch" : "Submit edit and create a new branch",
-        previousBranch: z ? "上一个 Branch" : "Previous branch",
-        nextBranch: z ? "下一个 Branch" : "Next branch",
+        submitEdit: z ? "提交编辑并生成新分支" : "Submit edit and create a new branch",
+        previousBranch: z ? "上一个分支" : "Previous branch",
+        nextBranch: z ? "下一个分支" : "Next branch",
         editMessage: z ? "编辑这条消息" : "Edit this message",
         sectionProgress: (index: number, count: number, title?: string) =>
           z
@@ -371,19 +371,19 @@ export function profileSettingsTexts(lang: InterfaceLanguage) {
       sidePanel: {
         title: z ? "课程工作台辅助" : "Studio assistant",
         close: z ? "关闭辅助栏" : "Close side panel",
-        graph: "Branch",
+        graph: z ? "分支" : "Branch",
         library: z ? "资料库" : "Library",
       },
       branchPanel: {
-        title: z ? "Branch 管理" : "Branch management",
-        newBranchPlaceholder: z ? "新 Branch 名" : "New branch name",
-        createBranch: z ? "创建 Branch" : "Create branch",
+        title: z ? "分支管理" : "Branch management",
+        newBranchPlaceholder: z ? "新分支名" : "New branch name",
+        createBranch: z ? "创建分支" : "Create branch",
         fromPreview: (label: string) =>
           z
-            ? `当前会从历史节点「${label}」创建 Branch；未填写名称时会自动生成。`
+            ? `当前会从历史节点「${label}」创建分支；未填写名称时会自动生成。`
             : `A branch will start from historical node "${label}". Leave the name empty to auto-generate it.`,
         fromCurrent: z
-          ? "先在 Branch 历史中 Preview 某个节点，或直接从当前最新节点创建 Branch。未填写名称时会自动生成。"
+          ? "先在分支历史中预览某个节点，或直接从当前最新节点创建分支。未填写名称时会自动生成。"
           : "Preview a node in History first, or branch directly from the latest node. Leave the name empty to auto-generate it.",
         requirementsTitle: z ? "需求清单" : "Requirement sheet",
         requirementsEmpty: z
@@ -394,26 +394,26 @@ export function profileSettingsTexts(lang: InterfaceLanguage) {
         boardDecisionTitle: z ? "当前讲义决策" : "Current board decision",
       },
       history: {
-        title: z ? "Branch 历史" : "Branch history",
+        title: z ? "分支历史" : "Branch history",
         commitsCount: (count: number) => (z ? `${count} 次提交` : `${count} commit${count === 1 ? "" : "s"}`),
-        branchesCount: (count: number) => (z ? `${count} 个 Branch` : `${count} branch${count === 1 ? "" : "es"}`),
-        head: z ? "Head" : "Head",
-        previewTag: z ? "Preview" : "Preview",
+        branchesCount: (count: number) => (z ? `${count} 个分支` : `${count} branch${count === 1 ? "" : "es"}`),
+        head: z ? "最新" : "Head",
+        previewTag: z ? "预览" : "Preview",
         selectedNode: z ? "选中节点" : "Selected node",
         mergeBranchTitle: (branch: string) => (z ? `合并 ${branch}` : `Merge ${branch}`),
-        mergeBranchAria: (branch: string) => (z ? `合并 Branch ${branch}` : `Merge branch ${branch}`),
+        mergeBranchAria: (branch: string) => (z ? `合并分支 ${branch}` : `Merge branch ${branch}`),
         switchBranchTitle: (branch: string) => (z ? `切换到 ${branch}` : `Switch to ${branch}`),
-        switchBranchAria: (branch: string) => (z ? `切换到 Branch ${branch}` : `Switch to branch ${branch}`),
+        switchBranchAria: (branch: string) => (z ? `切换到分支 ${branch}` : `Switch to branch ${branch}`),
         viewNodeAria: (title: string) => (z ? `查看历史节点 ${title}` : `View history node ${title}`),
-        newBranchPlaceholder: z ? "新 Branch 名" : "New branch name",
+        newBranchPlaceholder: z ? "新分支名" : "New branch name",
         requirementsStatus: z ? "需求状态" : "Requirement status",
         requirementsEmpty: z ? "当前没有待执行的学习需求。" : "There is no active learning requirement.",
         noSummary: z ? "这个节点没有更多摘要。" : "No additional summary for this node.",
         userPrefix: z ? "用户：" : "User: ",
         untitledSection: z ? "未命名章节" : "Untitled section",
-        emptyBranchOverview: z ? "这个 Branch 暂时还没有章节正文。" : "This branch has no lesson body yet.",
-        branchStart: z ? "Branch 起点" : "Branch start",
-        noBranchUpdate: z ? "这个 Branch 还没有新的章节更新。" : "No new section updates yet.",
+        emptyBranchOverview: z ? "这个分支暂时还没有章节正文。" : "This branch has no lesson body yet.",
+        branchStart: z ? "分支起点" : "Branch start",
+        noBranchUpdate: z ? "这个分支还没有新的章节更新。" : "No new section updates yet.",
         userInput: z ? "用户输入" : "User input",
         aiExplanation: z ? "AI 讲解" : "AI explanation",
         revisionHistory: z ? "修订记录" : "Revision history",
@@ -433,7 +433,8 @@ export function profileSettingsTexts(lang: InterfaceLanguage) {
         useChoiceAria: (section: string, choice: string) =>
           z ? `${section} 使用${choice}` : `Use ${choice} for ${section}`,
         closePreview: z ? "关闭合并预览" : "Close merge preview",
-        alreadyMerged: z ? "这个来源 Branch 已经包含在当前 Branch 历史里，不需要再次合并。" : "This source branch is already included in the current branch history, so it does not need to be merged again.",
+        reviewTitle: z ? "合并检查" : "Merge Review",
+        alreadyMerged: z ? "这个来源分支已经包含在当前分支历史里，不需要再次合并。" : "This source branch is already included in the current branch history, so it does not need to be merged again.",
         merging: z ? "合并中" : "Merging",
         confirmMerge: z ? "确认合并" : "Confirm merge",
       },
@@ -451,7 +452,7 @@ export function profileSettingsTexts(lang: InterfaceLanguage) {
       },
       branchSequence: {
         switchAria: (order: number, branchName: string) =>
-          z ? `切换到第 ${order} 个 Branch：${branchName}` : `Switch to branch option ${order}: ${branchName}`,
+          z ? `切换到第 ${order} 个分支：${branchName}` : `Switch to branch option ${order}: ${branchName}`,
         title: (branchName: string) =>
           z ? `${branchName} · 左键切换，右键查看概览` : `${branchName} - left-click to switch, right-click for overview`,
       },
@@ -685,7 +686,7 @@ export function profileSettingsTexts(lang: InterfaceLanguage) {
       workspace: z ? "工作台" : "Studio",
       loadWorkspaceError: z ? "加载个人项目失败" : "Could not load your projects",
       avatarAlt: z ? "开放课堂用户头像" : "OpenClass profile avatar",
-      lessonStandaloneHint: z ? "单独课程文档，可进入工作台继续编辑、Branch 和讲解。" : "Standalone lesson — open the studio to edit, branch, or present.",
+      lessonStandaloneHint: z ? "单独课程文档，可进入工作台继续编辑、创建分支和讲解。" : "Standalone lesson — open the studio to edit, branch, or present.",
       lessonDocHint: z ? "课程文档，可进入工作台继续编辑。" : "Lesson document — continue editing in the studio.",
       noUpdatesYet: z ? "暂无更新" : "No updates yet",
       tabSettings: z ? "个人设置" : "Settings",
