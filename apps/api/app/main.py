@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.models import AIModelCatalog
-from app.routers import auth, chat, documents, realtime, resources, workspace
+from app.routers import auth, chat, collaboration, documents, realtime, resources, workspace
 from app.services.ai_model_catalog import build_model_catalog, realtime_runtime_enabled
 from app.services.email_delivery import delivery_status
 from app.services.openai_course_ai import openai_course_ai
@@ -58,6 +58,7 @@ async def validate_unsafe_api_origin(request: Request, call_next):
 
 app.include_router(workspace.router)
 app.include_router(auth.router)
+app.include_router(collaboration.router)
 app.include_router(documents.router)
 app.include_router(chat.router)
 app.include_router(realtime.router)

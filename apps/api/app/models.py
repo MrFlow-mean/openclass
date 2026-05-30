@@ -109,6 +109,10 @@ DocumentMarginPreset = Literal["narrow", "normal", "wide"]
 DocumentOrientation = Literal["portrait", "landscape"]
 DocumentPageSize = Literal["a4", "letter", "a3"]
 DocumentBackgroundStyle = Literal["plain", "warm", "grid"]
+CourseContributionStatus = Literal["open", "changes_requested", "merged", "closed"]
+CourseContributionReviewAction = Literal["request_changes", "close", "merge"]
+CourseMaintainerRole = Literal["owner", "maintainer"]
+CourseChangeStatus = Literal["unchanged", "edited", "added", "deleted"]
 
 
 class BlockStyle(BaseModel):
@@ -754,6 +758,136 @@ class CoursePackageView(BaseModel):
     open_lesson_ids: list[str] = Field(default_factory=list)
     active_lesson_id: str | None = None
     workspace_tab_order: list[str] = Field(default_factory=list)
+
+
+class PublicUserView(BaseModel):
+    id: str
+    display_name: str
+    avatar_url: str | None = None
+
+
+class OpenCourseStats(BaseModel):
+    lessons: int = 0
+    resources: int = 0
+    forks: int = 0
+    open_contributions: int = 0
+    contributors: int = 0
+    maintainers: int = 0
+
+
+class OpenCourseSummary(BaseModel):
+    id: str
+    package_id: str
+    owner: PublicUserView
+    title: str
+    summary: str
+    topics: list[str] = Field(default_factory=list)
+    stats: OpenCourseStats = Field(default_factory=OpenCourseStats)
+    published_at: str
+    updated_at: str
+
+
+class CourseMaintainerView(BaseModel):
+    publication_id: str
+    user: PublicUserView
+    role: CourseMaintainerRole
+    added_at: str
+
+
+class CourseContributionEventView(BaseModel):
+    id: str
+    actor: PublicUserView
+    event_type: str
+    message: str
+    created_at: str
+
+
+class ContributionLessonChange(BaseModel):
+    status: CourseChangeStatus
+    source_lesson_id: str | None = None
+    fork_lesson_id: str | None = None
+    title: str
+    base_summary: str = ""
+    current_summary: str = ""
+    proposed_summary: str = ""
+    current_changed: bool = False
+
+
+class ContributionResourceChange(BaseModel):
+    status: CourseChangeStatus
+    source_resource_id: str | None = None
+    fork_resource_id: str | None = None
+    name: str
+
+
+class CourseForkView(BaseModel):
+    id: str
+    publication_id: str
+    fork_package_id: str
+    source_package_id: str
+    created_at: str
+    updated_at: str
+
+
+class CourseContributionSummary(BaseModel):
+    id: str
+    publication_id: str
+    fork_id: str
+    title: str
+    description: str
+    status: CourseContributionStatus
+    contributor: PublicUserView
+    lesson_changes: list[ContributionLessonChange] = Field(default_factory=list)
+    resource_changes: list[ContributionResourceChange] = Field(default_factory=list)
+    created_at: str
+    updated_at: str
+    reviewed_by: PublicUserView | None = None
+    reviewed_at: str | None = None
+
+
+class CourseContributionView(CourseContributionSummary):
+    course: OpenCourseSummary
+    baseline_package: CoursePackageView | None = None
+    proposed_package: CoursePackageView | None = None
+    source_package: CoursePackageView | None = None
+    events: list[CourseContributionEventView] = Field(default_factory=list)
+
+
+class OpenCourseDetail(BaseModel):
+    course: OpenCourseSummary
+    package: CoursePackageView
+    maintainers: list[CourseMaintainerView] = Field(default_factory=list)
+    contributions: list[CourseContributionSummary] = Field(default_factory=list)
+    viewer_can_review: bool = False
+    viewer_is_owner: bool = False
+    viewer_fork: CourseForkView | None = None
+
+
+class OpenCourseListResponse(BaseModel):
+    courses: list[OpenCourseSummary] = Field(default_factory=list)
+
+
+class PublishPackageRequest(BaseModel):
+    summary: str | None = None
+
+
+class ForkCourseResponse(BaseModel):
+    fork: CourseForkView
+    course_package: CoursePackageView
+
+
+class SubmitContributionRequest(BaseModel):
+    title: str
+    description: str = ""
+
+
+class ReviewContributionRequest(BaseModel):
+    action: CourseContributionReviewAction
+    message: str = ""
+
+
+class AddMaintainerRequest(BaseModel):
+    email: str
 
 
 class WorkspaceStateView(BaseModel):

@@ -21,13 +21,14 @@ import {
 import {
   DEFAULT_COLLECTED_COURSE_IDS,
   OPEN_COURSE_COLLECTION_STORAGE_KEY,
-  OPEN_SOURCE_COURSES,
   courseAvatarUrl,
   courseDetailHref,
   courseFullName,
   formatCompactNumber,
+  openCourseFromSummary,
   type OpenCourse,
 } from "@/lib/open-courses";
+import { api } from "@/lib/api";
 
 type TrendWindow = "today" | "week" | "month";
 type CategoryFilter = "all" | string;
@@ -189,9 +190,9 @@ function courseMatchesQuery(course: OpenCourse, normalizedQuery: string) {
     .includes(normalizedQuery);
 }
 
-function categoryCounts() {
+function categoryCounts(courses: OpenCourse[]) {
   const counts = new Map<string, number>();
-  OPEN_SOURCE_COURSES.forEach((course) => {
+  courses.forEach((course) => {
     counts.set(course.category, (counts.get(course.category) ?? 0) + 1);
   });
 
@@ -204,6 +205,9 @@ function categoryCounts() {
 }
 
 export function TrendingCourses() {
+  const [openCourses, setOpenCourses] = useState<OpenCourse[]>([]);
+  const [isLoadingCourses, setIsLoadingCourses] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [trendWindow, setTrendWindow] = useState<TrendWindow>("week");
   const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>("all");
   const [query, setQuery] = useState("");
@@ -211,19 +215,19 @@ export function TrendingCourses() {
     () => new Set(DEFAULT_COLLECTED_COURSE_IDS)
   );
   const normalizedQuery = query.trim().toLowerCase();
-  const categories = useMemo(() => categoryCounts(), []);
+  const categories = useMemo(() => categoryCounts(openCourses), [openCourses]);
   const trendingCourses = useMemo(() => {
-    return OPEN_SOURCE_COURSES.filter((course) => {
+    return openCourses.filter((course) => {
       const matchesCategory = categoryFilter === "all" || course.category === categoryFilter;
       return matchesCategory && courseMatchesQuery(course, normalizedQuery);
     }).sort((left, right) => getTrendingScore(right, trendWindow) - getTrendingScore(left, trendWindow));
-  }, [categoryFilter, normalizedQuery, trendWindow]);
+  }, [categoryFilter, normalizedQuery, openCourses, trendWindow]);
   const favoriteCourses = useMemo(
-    () => OPEN_SOURCE_COURSES.filter((course) => collectedCourseIds.has(course.id)),
-    [collectedCourseIds]
+    () => openCourses.filter((course) => collectedCourseIds.has(course.id)),
+    [collectedCourseIds, openCourses]
   );
   const recommendedProjectRows = useMemo(() => {
-    const recommended = OPEN_SOURCE_COURSES.filter((course) => {
+    const recommended = openCourses.filter((course) => {
       const matchesCategory = categoryFilter === "all" || course.category === categoryFilter;
       return matchesCategory && courseMatchesQuery(course, normalizedQuery) && !collectedCourseIds.has(course.id);
     }).sort((left, right) => getRecommendedScore(right, favoriteCourses) - getRecommendedScore(left, favoriteCourses));
@@ -234,12 +238,40 @@ export function TrendingCourses() {
 
     const fallbackCourses = trendingCourses.filter((course) => !collectedCourseIds.has(course.id));
     return fallbackCourses.length ? fallbackCourses : trendingCourses;
-  }, [categoryFilter, collectedCourseIds, favoriteCourses, normalizedQuery, trendingCourses]);
+  }, [categoryFilter, collectedCourseIds, favoriteCourses, normalizedQuery, openCourses, trendingCourses]);
   const recommendedCourses = recommendedProjectRows.slice(0, 3);
   const featuredCourses = trendingCourses.slice(0, 3);
   const totalStars = trendingCourses.reduce((sum, course) => sum + course.stars, 0);
   const totalWatchers = trendingCourses.reduce((sum, course) => sum + course.watchers, 0);
   const totalTopics = new Set(trendingCourses.flatMap((course) => course.topics)).size;
+
+  useEffect(() => {
+    let isDisposed = false;
+
+    async function loadOpenCourses() {
+      try {
+        const response = await api.listOpenCourses();
+        if (!isDisposed) {
+          setOpenCourses(response.courses.map(openCourseFromSummary));
+          setLoadError(null);
+        }
+      } catch (error) {
+        if (!isDisposed) {
+          setLoadError(error instanceof Error ? error.message : "Could not load open courses");
+        }
+      } finally {
+        if (!isDisposed) {
+          setIsLoadingCourses(false);
+        }
+      }
+    }
+
+    void loadOpenCourses();
+
+    return () => {
+      isDisposed = true;
+    };
+  }, []);
 
   useEffect(() => {
     const timeoutId = window.setTimeout(() => {
@@ -285,6 +317,14 @@ export function TrendingCourses() {
           </div>
         </div>
       </header>
+
+      {isLoadingCourses || loadError ? (
+        <div className="mx-auto w-full max-w-7xl px-4 pt-4 sm:px-6 lg:px-8">
+          <div className="rounded-md border border-stone-200 bg-white px-4 py-3 text-sm text-stone-600">
+            {isLoadingCourses ? "Loading open courses..." : loadError}
+          </div>
+        </div>
+      ) : null}
 
       <div className="mx-auto grid w-full max-w-7xl gap-6 px-4 py-6 sm:px-6 lg:grid-cols-[16rem_minmax(0,1fr)] lg:px-8">
         <aside className="min-w-0 lg:sticky lg:top-[88px] lg:self-start">
@@ -356,7 +396,7 @@ export function TrendingCourses() {
                     categoryFilter === "all" ? "bg-white/12 text-white" : "bg-stone-100 text-stone-500"
                   )}
                 >
-                  {OPEN_SOURCE_COURSES.length}
+                  {openCourses.length}
                 </span>
               </button>
 

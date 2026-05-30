@@ -7,13 +7,18 @@ import type {
   AuthSessionResponse,
   ChatRequestPayload,
   ChatResponse,
+  CourseContributionReviewAction,
+  CourseContributionView,
   CoursePackage,
   DocumentAIEditPayload,
   DocumentSavePayload,
+  ForkCourseResponse,
   GoogleRealtimeSessionPayload,
   GoogleRealtimeSessionResponse,
   MergeBranchChoice,
   MergeBranchPreviewResponse,
+  OpenCourseDetail,
+  OpenCourseListResponse,
   RealtimeConnectPayload,
   RealtimeConnectResponse,
   RealtimeEventLogPayload,
@@ -404,6 +409,46 @@ export const api = {
   },
   getWorkspace() {
     return request<WorkspaceState>("/api/workspace");
+  },
+  listOpenCourses() {
+    return request<OpenCourseListResponse>("/api/open-courses");
+  },
+  getOpenCourse(publicationId: string) {
+    return request<OpenCourseDetail>(`/api/open-courses/${publicationId}`);
+  },
+  publishPackage(packageId: string, summary?: string | null) {
+    return request<OpenCourseDetail>(`/api/packages/${packageId}/publish`, {
+      method: "POST",
+      body: JSON.stringify({ summary: summary ?? null }),
+    });
+  },
+  forkOpenCourse(publicationId: string) {
+    return request<ForkCourseResponse>(`/api/open-courses/${publicationId}/fork`, {
+      method: "POST",
+    });
+  },
+  submitContribution(forkId: string, title: string, description: string) {
+    return request<CourseContributionView>(`/api/forks/${forkId}/contributions`, {
+      method: "POST",
+      body: JSON.stringify({ title, description }),
+    });
+  },
+  reviewContribution(contributionId: string, action: CourseContributionReviewAction, message = "") {
+    return request<CourseContributionView>(`/api/contributions/${contributionId}/review`, {
+      method: "POST",
+      body: JSON.stringify({ action, message }),
+    });
+  },
+  addMaintainer(publicationId: string, email: string) {
+    return request<OpenCourseDetail>(`/api/open-courses/${publicationId}/maintainers`, {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    });
+  },
+  removeMaintainer(publicationId: string, userId: string) {
+    return request<OpenCourseDetail>(`/api/open-courses/${publicationId}/maintainers/${userId}`, {
+      method: "DELETE",
+    });
   },
   createPackage(title: string, summary = "") {
     return request<WorkspaceState>("/api/packages", {

@@ -267,6 +267,122 @@ export interface WorkspaceState {
   active_package_id?: string | null;
 }
 
+export interface PublicUserView {
+  id: string;
+  display_name: string;
+  avatar_url?: string | null;
+}
+
+export interface OpenCourseStats {
+  lessons: number;
+  resources: number;
+  forks: number;
+  open_contributions: number;
+  contributors: number;
+  maintainers: number;
+}
+
+export interface OpenCourseSummary {
+  id: string;
+  package_id: string;
+  owner: PublicUserView;
+  title: string;
+  summary: string;
+  topics: string[];
+  stats: OpenCourseStats;
+  published_at: string;
+  updated_at: string;
+}
+
+export interface CourseMaintainerView {
+  publication_id: string;
+  user: PublicUserView;
+  role: "owner" | "maintainer";
+  added_at: string;
+}
+
+export interface CourseForkView {
+  id: string;
+  publication_id: string;
+  fork_package_id: string;
+  source_package_id: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export type CourseContributionStatus = "open" | "changes_requested" | "merged" | "closed";
+export type CourseContributionReviewAction = "request_changes" | "close" | "merge";
+export type CourseChangeStatus = "unchanged" | "edited" | "added" | "deleted";
+
+export interface ContributionLessonChange {
+  status: CourseChangeStatus;
+  source_lesson_id?: string | null;
+  fork_lesson_id?: string | null;
+  title: string;
+  base_summary: string;
+  current_summary: string;
+  proposed_summary: string;
+  current_changed: boolean;
+}
+
+export interface ContributionResourceChange {
+  status: CourseChangeStatus;
+  source_resource_id?: string | null;
+  fork_resource_id?: string | null;
+  name: string;
+}
+
+export interface CourseContributionEventView {
+  id: string;
+  actor: PublicUserView;
+  event_type: string;
+  message: string;
+  created_at: string;
+}
+
+export interface CourseContributionSummary {
+  id: string;
+  publication_id: string;
+  fork_id: string;
+  title: string;
+  description: string;
+  status: CourseContributionStatus;
+  contributor: PublicUserView;
+  lesson_changes: ContributionLessonChange[];
+  resource_changes: ContributionResourceChange[];
+  created_at: string;
+  updated_at: string;
+  reviewed_by?: PublicUserView | null;
+  reviewed_at?: string | null;
+}
+
+export interface CourseContributionView extends CourseContributionSummary {
+  course: OpenCourseSummary;
+  baseline_package?: CoursePackage | null;
+  proposed_package?: CoursePackage | null;
+  source_package?: CoursePackage | null;
+  events: CourseContributionEventView[];
+}
+
+export interface OpenCourseDetail {
+  course: OpenCourseSummary;
+  package: CoursePackage;
+  maintainers: CourseMaintainerView[];
+  contributions: CourseContributionSummary[];
+  viewer_can_review: boolean;
+  viewer_is_owner: boolean;
+  viewer_fork?: CourseForkView | null;
+}
+
+export interface OpenCourseListResponse {
+  courses: OpenCourseSummary[];
+}
+
+export interface ForkCourseResponse {
+  fork: CourseForkView;
+  course_package: CoursePackage;
+}
+
 export interface UserView {
   id: string;
   email: string;

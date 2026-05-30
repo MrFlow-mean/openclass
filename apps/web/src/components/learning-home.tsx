@@ -51,6 +51,7 @@ import {
   courseDetailHref,
   courseFullName,
   formatCompactNumber,
+  openCourseFromSummary,
   searchOpenCourses,
   sortOpenCourses,
   type OpenCourse,
@@ -309,6 +310,7 @@ export function LearningHome() {
   const [searchQuery, setSearchQuery] = useState("");
   const deferredQuery = useDeferredValue(searchQuery.trim().toLowerCase());
   const [openCourseSort, setOpenCourseSort] = useState<OpenCourseSort>("best-match");
+  const [openCourses, setOpenCourses] = useState<OpenCourse[]>([]);
   const [openCourseFacet, setOpenCourseFacet] = useState<SearchFacet>({ kind: "all" });
   const [collectedCourseIds, setCollectedCourseIds] = useState<Set<string>>(
     () => new Set(DEFAULT_COLLECTED_COURSE_IDS)
@@ -387,6 +389,27 @@ export function LearningHome() {
     }, 0);
 
     return () => window.clearTimeout(timeoutId);
+  }, []);
+
+  useEffect(() => {
+    let isDisposed = false;
+
+    api
+      .listOpenCourses()
+      .then((response) => {
+        if (!isDisposed) {
+          setOpenCourses(response.courses.map(openCourseFromSummary));
+        }
+      })
+      .catch(() => {
+        if (!isDisposed) {
+          setOpenCourses([]);
+        }
+      });
+
+    return () => {
+      isDisposed = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -475,7 +498,7 @@ export function LearningHome() {
     )
   );
 
-  const matchingOpenCourses = useMemo(() => searchOpenCourses(deferredQuery), [deferredQuery]);
+  const matchingOpenCourses = useMemo(() => searchOpenCourses(openCourses, deferredQuery), [deferredQuery, openCourses]);
   const categoryFacetCounts = useMemo(
     () => countOpenCourseFacet(matchingOpenCourses, (course) => course.category, intlLocale),
     [matchingOpenCourses, intlLocale]
@@ -706,6 +729,30 @@ export function LearningHome() {
         return;
       }
       setError(shareError instanceof Error ? shareError.message : errMsgs.current.sharePackageFail);
+    }
+  }
+
+  async function handlePublishSelectedPackage() {
+    if (!selectedCoursePackage) {
+      return;
+    }
+
+    if (
+      typeof window !== "undefined" &&
+      !window.confirm("Publish this course package publicly? Forks will receive a full copy of the course materials.")
+    ) {
+      return;
+    }
+
+    setBusyKey(`package:publish:${selectedCoursePackage.id}`);
+    try {
+      const publication = await api.publishPackage(selectedCoursePackage.id);
+      setError(null);
+      router.push(`/courses/${publication.course.id}`);
+    } catch (publishError) {
+      setError(publishError instanceof Error ? publishError.message : "Could not publish course package");
+    } finally {
+      setBusyKey(null);
     }
   }
 
@@ -1654,7 +1701,8 @@ export function LearningHome() {
     }
     const isDeletingPackage = busyKey === `package:delete:${selectedCoursePackage.id}`;
     const isRenamingPackage = busyKey === `package:rename:${selectedCoursePackage.id}`;
-    const packageActionBusy = isDeletingPackage || isRenamingPackage;
+    const isPublishingPackage = busyKey === `package:publish:${selectedCoursePackage.id}`;
+    const packageActionBusy = isDeletingPackage || isRenamingPackage || isPublishingPackage;
 
     return (
       <div className="w-full rounded-[28px] border border-white/80 bg-white/95 p-5 shadow-[0_18px_50px_rgba(15,23,42,0.1)] backdrop-blur">
@@ -1684,6 +1732,16 @@ export function LearningHome() {
               >
                 <Share2 className="h-2 w-2" />
                 {h.share}
+              </button>
+              <button
+                type="button"
+                onClick={() => void handlePublishSelectedPackage()}
+                disabled={packageActionBusy}
+                className="inline-flex h-3.5 shrink-0 items-center gap-px rounded-full border border-emerald-200 bg-emerald-50 px-1 text-[8px] font-normal leading-none text-emerald-700 transition hover:border-emerald-300 hover:bg-white disabled:cursor-not-allowed disabled:opacity-45"
+                title="Publish course package"
+              >
+                {isPublishingPackage ? <LoaderCircle className="h-2 w-2 animate-spin" /> : <ArrowUpRight className="h-2 w-2" />}
+                Publish
               </button>
               <button
                 type="button"
