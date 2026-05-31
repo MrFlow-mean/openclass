@@ -15,6 +15,7 @@
     "lint:web": "npm --prefix apps/web run lint",
     "typecheck:web": "npm --prefix apps/web run typecheck",
     "guard:file-sizes": "node scripts/check-file-sizes.mjs",
+    "reindex:resources": ".venv/bin/python scripts/reindex_resources.py",
     "test:e2e": "npm --prefix apps/web run test:e2e",
     "test:api": ".venv/bin/python -m pytest",
     "verify": "npm run guard:file-sizes && npm run lint:web && npm run typecheck:web && npm run test:api && npm run build:web"
