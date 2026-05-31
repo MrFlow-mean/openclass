@@ -1,4 +1,4 @@
-import type { CommitRecord, Lesson, ResourceLibraryItem } from "@/types";
+import type { CommitRecord, Lesson, ResourceActivityEvent, ResourceLibraryItem } from "@/types";
 
 export type RecentFeedKind = "commit" | "resource";
 export type RecentFeedFilter = "all" | RecentFeedKind;
@@ -12,6 +12,11 @@ export type RecentFeedLesson = {
 
 export type RecentFeedResource = {
   resource: ResourceLibraryItem;
+  packageTitle: string;
+};
+
+export type RecentFeedResourceEvent = {
+  event: ResourceActivityEvent;
   packageTitle: string;
 };
 
@@ -89,20 +94,61 @@ function resourceSummary(resource: ResourceLibraryItem) {
 }
 
 function resourceTypeLabel(resource: ResourceLibraryItem) {
-  if (resource.mime_type.includes("pdf")) {
+  return resourceTypeLabelFromFields(resource.mime_type, resource.resource_type);
+}
+
+function resourceTypeLabelFromFields(mimeType: string, resourceType: string) {
+  if (mimeType.includes("pdf")) {
     return "PDF";
   }
-  if (resource.mime_type.includes("word") || resource.mime_type.includes("document")) {
+  if (mimeType.includes("word") || mimeType.includes("document")) {
     return "Word";
   }
-  if (resource.mime_type.startsWith("image/")) {
+  if (mimeType.startsWith("image/")) {
     return "Image";
   }
 
-  return resource.resource_type || "Resource";
+  return resourceType || "Resource";
 }
 
-export function buildRecentFeed(lessons: RecentFeedLesson[], resources: RecentFeedResource[]) {
+function formatBytes(sizeBytes: number) {
+  if (!Number.isFinite(sizeBytes) || sizeBytes <= 0) {
+    return "Size unknown";
+  }
+  if (sizeBytes < 1024) {
+    return `${sizeBytes} B`;
+  }
+  const units = ["KB", "MB", "GB"];
+  let value = sizeBytes / 1024;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[unitIndex]}`;
+}
+
+function resourceEventAction(event: ResourceActivityEvent) {
+  return event.action === "deleted" ? "Deleted a resource" : "Uploaded a resource";
+}
+
+function resourceEventDetailTitle(event: ResourceActivityEvent) {
+  return event.action === "deleted" ? "Removed from resource library" : "Added to resource library";
+}
+
+function resourceEventDetailBody(event: ResourceActivityEvent) {
+  const typeLabel = resourceTypeLabelFromFields(event.mime_type, event.resource_type);
+  const sizeLabel = formatBytes(event.size_bytes);
+  return event.action === "deleted"
+    ? `${event.resource_name} was removed. The action remains in history for audit and recovery context.`
+    : `${event.resource_name} was uploaded as ${typeLabel} (${sizeLabel}).`;
+}
+
+export function buildRecentFeed(
+  lessons: RecentFeedLesson[],
+  resources: RecentFeedResource[],
+  resourceEvents: RecentFeedResourceEvent[] = []
+) {
   const commitGroups = new Map<
     string,
     {
@@ -187,22 +233,42 @@ export function buildRecentFeed(lessons: RecentFeedLesson[], resources: RecentFe
     ];
   });
 
-  const resourceItems: RecentFeedItem[] = resources.map(({ resource, packageTitle }) => ({
-    id: `resource:${resource.id}`,
+  const loggedUploadResourceIds = new Set(
+    resourceEvents.filter(({ event }) => event.action === "uploaded").map(({ event }) => event.resource_id)
+  );
+  const resourceEventItems: RecentFeedItem[] = resourceEvents.map(({ event, packageTitle }) => ({
+    id: `resource-event:${event.id}`,
     kind: "resource",
-    timestamp: resource.uploaded_at,
+    timestamp: event.occurred_at,
     actor: packageTitle,
-    action: "Added a resource",
-    title: resource.name,
-    detailTitle: resource.outline[0]?.title ?? "Resource summary",
-    detailBody: truncateText(resourceSummary(resource), 180),
+    action: resourceEventAction(event),
+    title: event.resource_name,
+    detailTitle: resourceEventDetailTitle(event),
+    detailBody: truncateText(resourceEventDetailBody(event), 180),
     pills: [
-      resourceTypeLabel(resource),
-      resource.outline.length ? `${resource.outline.length} indexed sections` : "Waiting for index",
+      resourceTypeLabelFromFields(event.mime_type, event.resource_type),
+      formatBytes(event.size_bytes),
+      event.action === "deleted" ? "Deletion recorded" : "Upload recorded",
     ],
   }));
+  const resourceFallbackItems: RecentFeedItem[] = resources
+    .filter(({ resource }) => !loggedUploadResourceIds.has(resource.id))
+    .map(({ resource, packageTitle }) => ({
+      id: `resource:${resource.id}:fallback-upload`,
+      kind: "resource",
+      timestamp: resource.uploaded_at,
+      actor: packageTitle,
+      action: "Uploaded a resource",
+      title: resource.name,
+      detailTitle: resource.outline[0]?.title ?? "Resource summary",
+      detailBody: truncateText(resourceSummary(resource), 180),
+      pills: [
+        resourceTypeLabel(resource),
+        resource.outline.length ? `${resource.outline.length} indexed sections` : "Waiting for index",
+      ],
+    }));
 
-  return [...commitItems, ...resourceItems].sort(
+  return [...commitItems, ...resourceEventItems, ...resourceFallbackItems].sort(
     (left, right) => new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime()
   );
 }

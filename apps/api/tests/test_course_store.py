@@ -1,7 +1,7 @@
 import json
 import sqlite3
 
-from app.models import BoardTeachingProgress, ResourceLibraryItem
+from app.models import BoardTeachingProgress, ResourceActivityEvent, ResourceLibraryItem
 from app.services import resource_segment_store
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
 from app.services.lesson_factory import create_empty_lesson
@@ -268,6 +268,59 @@ def test_sqlite_store_round_trips_resource_lesson_scope(tmp_path) -> None:
     reloaded = store.load()
 
     assert reloaded.packages[0].resources[0].scope_lesson_id == lesson.id
+
+
+def test_sqlite_store_round_trips_resource_activity_events(tmp_path) -> None:
+    db_path = tmp_path / "openclass.sqlite3"
+    store = SqliteCourseStore(db_path, legacy_json_path=None)
+
+    workspace = store.load()
+    package = workspace.packages[0]
+    lesson = _append_lesson(workspace)
+    package.resource_events.extend(
+        [
+            ResourceActivityEvent(
+                id="event_upload",
+                action="uploaded",
+                resource_id="resource_1",
+                resource_name="lesson.png",
+                mime_type="image/png",
+                resource_type="image",
+                size_bytes=12,
+                occurred_at="2026-06-01T00:00:00+00:00",
+                scope_lesson_id=lesson.id,
+            ),
+            ResourceActivityEvent(
+                id="event_delete",
+                action="deleted",
+                resource_id="resource_1",
+                resource_name="lesson.png",
+                mime_type="image/png",
+                resource_type="image",
+                size_bytes=12,
+                occurred_at="2026-06-01T00:01:00+00:00",
+                scope_lesson_id=lesson.id,
+            ),
+        ]
+    )
+    store.save(workspace)
+
+    reloaded = store.load()
+    events = reloaded.packages[0].resource_events
+
+    assert [event.action for event in events] == ["uploaded", "deleted"]
+    assert events[0].resource_name == "lesson.png"
+    assert events[1].scope_lesson_id == lesson.id
+
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT action, resource_name
+            FROM resource_events
+            ORDER BY sort_order
+            """
+        ).fetchall()
+    assert rows == [("uploaded", "lesson.png"), ("deleted", "lesson.png")]
 
 
 def test_sqlite_store_round_trips_board_teaching_progress(tmp_path) -> None:

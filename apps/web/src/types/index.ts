@@ -249,6 +249,20 @@ export interface ResourceLibraryItem {
   extracted_text_available: boolean;
 }
 
+export type ResourceActivityAction = "uploaded" | "deleted";
+
+export interface ResourceActivityEvent {
+  id: string;
+  action: ResourceActivityAction;
+  resource_id: string;
+  resource_name: string;
+  mime_type: string;
+  resource_type: string;
+  size_bytes: number;
+  occurred_at: string;
+  scope_lesson_id?: string | null;
+}
+
 export interface CoursePackage {
   id: string;
   title: string;
@@ -257,6 +271,7 @@ export interface CoursePackage {
   lessons: Lesson[];
   course_graph: CourseGraphEdge[];
   resources: ResourceLibraryItem[];
+  resource_events: ResourceActivityEvent[];
   open_lesson_ids: string[];
   active_lesson_id?: string | null;
   workspace_tab_order: string[];

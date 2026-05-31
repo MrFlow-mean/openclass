@@ -18,6 +18,7 @@ from app.models import (
     Lesson,
     LessonHistoryGraph,
     LibraryChapter,
+    ResourceActivityEvent,
     ResourceLibraryItem,
     WorkspaceState,
 )
@@ -25,7 +26,7 @@ from app.services.document_segment_store import DocumentSegmentStore
 from app.services.resource_segment_store import ResourceSegmentStore
 from app.services.rich_document import upgrade_markdown_like_document
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 
 def _active_package_setting_key(owner_user_id: str | None) -> str:
@@ -290,6 +291,23 @@ class SqliteCourseStore:
                 scan_strategy TEXT NOT NULL,
                 PRIMARY KEY (resource_id, id)
             );
+
+            CREATE TABLE IF NOT EXISTS resource_events (
+                id TEXT PRIMARY KEY,
+                package_id TEXT NOT NULL REFERENCES course_packages(id) ON DELETE CASCADE,
+                sort_order INTEGER NOT NULL,
+                action TEXT NOT NULL,
+                resource_id TEXT NOT NULL,
+                resource_name TEXT NOT NULL,
+                mime_type TEXT NOT NULL,
+                resource_type TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL,
+                occurred_at TEXT NOT NULL,
+                scope_lesson_id TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_resource_events_package
+                ON resource_events(package_id, sort_order);
             """
         )
         self._migrate_schema(conn)
@@ -435,6 +453,17 @@ class SqliteCourseStore:
                 (package_id,),
             ).fetchall()
         ]
+        resource_events = [
+            self._read_resource_event(event_row)
+            for event_row in conn.execute(
+                """
+                SELECT * FROM resource_events
+                WHERE package_id = ?
+                ORDER BY sort_order, id
+                """,
+                (package_id,),
+            ).fetchall()
+        ]
         open_lesson_ids = _ordered_values(conn, "package_open_lessons", package_id)
         workspace_tab_order = _ordered_values(conn, "package_tab_order", package_id)
         return CoursePackage(
@@ -444,6 +473,7 @@ class SqliteCourseStore:
             lessons=lessons,
             course_graph=course_graph,
             resources=resources,
+            resource_events=resource_events,
             open_lesson_ids=open_lesson_ids,
             active_lesson_id=row["active_lesson_id"],
             workspace_tab_order=workspace_tab_order,
@@ -571,6 +601,19 @@ class SqliteCourseStore:
             resource.segments = self._resource_segments.ensure_segments(resource)
         return resource
 
+    def _read_resource_event(self, row: sqlite3.Row) -> ResourceActivityEvent:
+        return ResourceActivityEvent(
+            id=row["id"],
+            action=row["action"],
+            resource_id=row["resource_id"],
+            resource_name=row["resource_name"],
+            mime_type=row["mime_type"],
+            resource_type=row["resource_type"],
+            size_bytes=row["size_bytes"],
+            occurred_at=row["occurred_at"],
+            scope_lesson_id=row["scope_lesson_id"],
+        )
+
     def _replace_workspace(
         self,
         conn: sqlite3.Connection,
@@ -646,6 +689,8 @@ class SqliteCourseStore:
             )
         for resource_index, resource in enumerate(package.resources):
             self._insert_resource(conn, package.id, resource, resource_index)
+        for event_index, event in enumerate(package.resource_events):
+            self._insert_resource_event(conn, package.id, event, event_index)
 
     def _insert_lesson(
         self,
@@ -807,6 +852,35 @@ class SqliteCourseStore:
                 ),
             )
         resource.segments = self._resource_segments.replace_segments(conn, resource)
+
+    def _insert_resource_event(
+        self,
+        conn: sqlite3.Connection,
+        package_id: str,
+        event: ResourceActivityEvent,
+        event_index: int,
+    ) -> None:
+        conn.execute(
+            """
+            INSERT INTO resource_events(
+                id, package_id, sort_order, action, resource_id, resource_name, mime_type,
+                resource_type, size_bytes, occurred_at, scope_lesson_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event.id,
+                package_id,
+                event_index,
+                event.action,
+                event.resource_id,
+                event.resource_name,
+                event.mime_type,
+                event.resource_type,
+                event.size_bytes,
+                event.occurred_at,
+                event.scope_lesson_id,
+            ),
+        )
 
     def _load_legacy_workspace(self) -> WorkspaceState | None:
         if self.legacy_json_path is None or not self.legacy_json_path.exists():

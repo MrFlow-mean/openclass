@@ -125,7 +125,7 @@ export function profileSettingsTexts(lang: InterfaceLanguage) {
       deletePackageFail: z ? "删除课程包失败" : "Could not delete package",
       searchPlaceholder: z ? "搜索别人的开源课程、作者、主题或知识方向..." : "Search open courses, authors, topics...",
       activityTitle: z ? "学习活跃度" : "Learning activity",
-      activitySubtitle: z ? "过去 32 周内课程编辑、提交与资料接入的活动分布。" : "Edits, commits, and uploads over the past 32 weeks.",
+      activitySubtitle: z ? "过去 32 周内课程编辑、提交与资料增删的活动分布。" : "Edits, commits, and resource changes over the past 32 weeks.",
       activityTotal: (count: number) =>
         z
           ? `${count.toLocaleString(intl(lang))} 次活动`
@@ -137,7 +137,7 @@ export function profileSettingsTexts(lang: InterfaceLanguage) {
       feedTitle: z ? "动态" : "Feed",
       feedCollapseAria: z ? "收起动态" : "Collapse feed",
       feedExpandAria: z ? "展开动态" : "Expand feed",
-      feedSubtitle: z ? "最近的课程提交、资料收录和工作台推进会按时间排在这里。" : "Recent commits, resources, and studio updates.",
+      feedSubtitle: z ? "最近的课程提交、资料上传删除和工作台推进会按时间排在这里。" : "Recent commits, resource uploads/deletions, and studio updates.",
       feedEmpty: z ? "还没有可以展示的更新。新建课程、编辑文稿或上传资料后，这里会自动变成最近活动流。" : "Nothing here yet — edits and uploads will appear in this feed.",
       notificationToggleAria: z ? "切换消息面板" : "Toggle notifications",
       topTrending: z ? "热门" : "Trending",
@@ -794,7 +794,7 @@ export function profileSettingsTexts(lang: InterfaceLanguage) {
         aiTitle: z ? "AI 生成结果" : "AI results",
         aiDesc: z ? "长任务结束后提醒。" : "Alerts when long jobs finish.",
         resourceTitle: z ? "资料库变化" : "Resource library",
-        resourceDesc: z ? "上传资料解析完成或失败。" : "Upload parsing complete or failed.",
+        resourceDesc: z ? "资料上传、删除或解析状态变化。" : "Resource uploads, deletions, or parsing changes.",
         quietStart: z ? "免打扰开始" : "Quiet hours start",
         quietEnd: z ? "免打扰结束" : "Quiet hours end",
         saveFooter: z ? "浏览器权限由当前浏览器控制，其他通知偏好保存到本机。" : "Browser permission is controlled by the browser; other prefs are saved locally.",

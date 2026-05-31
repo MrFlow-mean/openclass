@@ -1,10 +1,29 @@
+from io import BytesIO
+
+from fastapi import UploadFile
+
 from app.models import CoursePackage, ResourceLibraryItem, WorkspaceState
 from app.services.lesson_factory import create_empty_lesson
-from app.services.resource_service import delete_uploaded_resource_file, remove_resource_from_package
+from app.services.resource_service import add_uploaded_resource, delete_uploaded_resource_file, remove_resource_from_package
 from app.services.workspace_state import package_context_for_lesson, package_view_for_lesson
 
 
-def test_remove_resource_from_package_returns_removed_resource() -> None:
+def test_add_uploaded_resource_records_upload_event(tmp_path) -> None:
+    package = CoursePackage(title="测试课程", summary="", lessons=[])
+    upload_dir = tmp_path / "uploads"
+    upload_dir.mkdir()
+    upload = UploadFile(file=BytesIO(b"# Section\nResource body"), filename="notes.md")
+
+    resource = add_uploaded_resource(package, upload, upload_dir)
+
+    assert package.resources == [resource]
+    assert package.resource_events[-1].action == "uploaded"
+    assert package.resource_events[-1].resource_id == resource.id
+    assert package.resource_events[-1].resource_name == "notes.md"
+    assert package.resource_events[-1].mime_type == "text/markdown"
+
+
+def test_remove_resource_from_package_returns_removed_resource_and_records_delete() -> None:
     resource = ResourceLibraryItem(
         id="resource_1",
         name="lesson.png",
@@ -18,6 +37,9 @@ def test_remove_resource_from_package_returns_removed_resource() -> None:
 
     assert removed == resource
     assert package.resources == []
+    assert package.resource_events[-1].action == "deleted"
+    assert package.resource_events[-1].resource_id == "resource_1"
+    assert package.resource_events[-1].resource_name == "lesson.png"
 
 
 def test_delete_uploaded_resource_file_only_removes_upload_dir_files(tmp_path) -> None:

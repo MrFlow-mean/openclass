@@ -190,7 +190,14 @@ function buildActivitySummary(coursePackage: CoursePackage | null) {
       track(commit.created_at);
     });
   });
-  coursePackage?.resources.forEach((resource) => {
+  const resourceEvents = coursePackage?.resource_events ?? [];
+  const loggedUploadResourceIds = new Set(
+    resourceEvents.filter((event) => event.action === "uploaded").map((event) => event.resource_id)
+  );
+  resourceEvents.forEach((event) => {
+    track(event.occurred_at);
+  });
+  coursePackage?.resources.filter((resource) => !loggedUploadResourceIds.has(resource.id)).forEach((resource) => {
     track(resource.uploaded_at);
   });
 
@@ -476,6 +483,12 @@ export function LearningHome() {
       packageTitle: packageItem.title,
     }))
   );
+  const feedResourceEvents = packages.flatMap((packageItem) =>
+    (packageItem.resource_events ?? []).map((event) => ({
+      event,
+      packageTitle: packageItem.title,
+    }))
+  );
   const selectedPackageLessons = sortByUpdatedAt(selectedCoursePackage?.lessons ?? []);
   const selectedPackageActiveLesson = selectedLessonId
     ? selectedCoursePackage?.lessons.find((lesson) => lesson.id === selectedLessonId) ?? null
@@ -525,7 +538,7 @@ export function LearningHome() {
   const activity = buildActivitySummary(coursePackage);
   const lessonMenuLesson =
     lessonMenuState ? standaloneLessonItems.find(({ lesson }) => lesson.id === lessonMenuState.lessonId)?.lesson ?? null : null;
-  const feedItems = buildRecentFeed(feedLessons, feedResources);
+  const feedItems = buildRecentFeed(feedLessons, feedResources, feedResourceEvents);
   const visibleFeedItems = feedFilter === "all" ? feedItems : feedItems.filter((item) => item.kind === feedFilter);
   const followedProjectUpdates = useMemo(() => buildFollowedCourseUpdateItems(), []);
   const followingUnreadCount = followedProjectUpdates.length;

@@ -6,7 +6,7 @@ from uuid import uuid4
 
 from fastapi import HTTPException, UploadFile
 
-from app.models import CoursePackage, ResourceLibraryItem
+from app.models import CoursePackage, ResourceActivityAction, ResourceActivityEvent, ResourceLibraryItem
 from app.services.resource_library import build_resource_item
 
 
@@ -25,13 +25,34 @@ def add_uploaded_resource(
     resource = build_resource_item(destination, original_name)
     resource.scope_lesson_id = scope_lesson_id
     package.resources.append(resource)
+    record_resource_activity(package, resource, "uploaded")
     return resource
+
+
+def record_resource_activity(
+    package: CoursePackage,
+    resource: ResourceLibraryItem,
+    action: ResourceActivityAction,
+) -> ResourceActivityEvent:
+    event = ResourceActivityEvent(
+        action=action,
+        resource_id=resource.id,
+        resource_name=resource.name,
+        mime_type=resource.mime_type,
+        resource_type=resource.resource_type,
+        size_bytes=resource.size_bytes,
+        scope_lesson_id=resource.scope_lesson_id,
+    )
+    package.resource_events.append(event)
+    return event
 
 
 def remove_resource_from_package(package: CoursePackage, resource_id: str) -> ResourceLibraryItem:
     for index, resource in enumerate(package.resources):
         if resource.id == resource_id:
-            return package.resources.pop(index)
+            removed = package.resources.pop(index)
+            record_resource_activity(package, removed, "deleted")
+            return removed
     raise HTTPException(status_code=404, detail=f"Unknown resource {resource_id}")
 
 

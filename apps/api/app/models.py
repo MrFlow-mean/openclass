@@ -101,6 +101,7 @@ ResourceReferenceAction = Literal["confirm", "skip"]
 BoardEditConfirmationAction = Literal["confirm", "skip"]
 StrongReasoningAction = Literal["confirm", "skip"]
 ResourceScanStrategy = Literal["outline_only", "heading_section", "page_window", "fulltext_match"]
+ResourceActivityAction = Literal["uploaded", "deleted"]
 ChatInteractionMode = Literal["ask", "direct_edit"]
 TeachingAction = Literal["continue", "restart"]
 BoardGenerationAction = Literal["start"]
@@ -501,6 +502,18 @@ class ResourceLibraryItemView(BaseModel):
     extracted_text_available: bool = False
 
 
+class ResourceActivityEvent(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("resource_event"))
+    action: ResourceActivityAction
+    resource_id: str
+    resource_name: str
+    mime_type: str
+    resource_type: str
+    size_bytes: int
+    occurred_at: str = Field(default_factory=now_iso)
+    scope_lesson_id: str | None = None
+
+
 class CoursePackage(BaseModel):
     id: str = Field(default_factory=lambda: new_id("course"))
     title: str
@@ -508,6 +521,7 @@ class CoursePackage(BaseModel):
     lessons: list[Lesson]
     course_graph: list[CourseGraphEdge] = Field(default_factory=list)
     resources: list[ResourceLibraryItem] = Field(default_factory=list)
+    resource_events: list[ResourceActivityEvent] = Field(default_factory=list)
     open_lesson_ids: list[str] = Field(default_factory=list)
     active_lesson_id: str | None = None
     workspace_tab_order: list[str] = Field(default_factory=list)
@@ -755,6 +769,7 @@ class CoursePackageView(BaseModel):
     lessons: list[LessonView]
     course_graph: list[CourseGraphEdge] = Field(default_factory=list)
     resources: list[ResourceLibraryItemView] = Field(default_factory=list)
+    resource_events: list[ResourceActivityEvent] = Field(default_factory=list)
     open_lesson_ids: list[str] = Field(default_factory=list)
     active_lesson_id: str | None = None
     workspace_tab_order: list[str] = Field(default_factory=list)
