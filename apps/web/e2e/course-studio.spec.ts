@@ -56,11 +56,11 @@ test("creates a package and lesson, edits the document, and persists a version",
   await expect(page.getByText("Auto Save").first()).toBeVisible();
 });
 
-test("restores an older document version from history", async ({ page }) => {
+test("previews an older document version from history without a restore action", async ({ page }) => {
   const unique = Date.now();
   await enterAsGuest(page);
-  await createPackageFromHome(page, `Restore test package ${unique}`);
-  await createLessonFromEmptyStudio(page, `Restore test page ${unique}`);
+  await createPackageFromHome(page, `History preview test package ${unique}`);
+  await createLessonFromEmptyStudio(page, `History preview test page ${unique}`);
 
   const firstVersion = `Historical version one ${unique}`;
   const secondVersion = `Historical version two ${unique}`;
@@ -69,15 +69,10 @@ test("restores an older document version from history", async ({ page }) => {
   await openHistoryPanel(page);
   await page.getByLabel(/View history node/).nth(1).click();
 
-  const restoreResponse = page.waitForResponse(
-    (response) => response.url().includes("/restore") && response.request().method() === "POST"
-  );
-  await page.getByRole("button", { name: "Restore", exact: true }).click();
-  await restoreResponse;
-
   const editor = page.locator(".ProseMirror").first();
   await expect(editor).toContainText(firstVersion);
   await expect(editor).not.toContainText(secondVersion);
+  await expect(page.getByRole("button", { name: "Restore", exact: true })).toHaveCount(0);
 });
 
 test("shows a sideways branch sprout immediately after creating a branch", async ({ page }) => {

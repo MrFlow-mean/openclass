@@ -2,7 +2,7 @@
 
 import { useMemo } from "react";
 import clsx from "clsx";
-import { BookOpen, BrainCircuit, Clock3, GitBranch, GitMerge } from "lucide-react";
+import { BookOpen, BrainCircuit, GitBranch, GitMerge } from "lucide-react";
 
 import { BranchMergeReviewCard } from "@/components/course-studio/branch-merge-review-card";
 import { useInterfaceLanguage } from "@/contexts/interface-language-context";
@@ -36,7 +36,6 @@ type LessonHistoryGraphPanelProps = {
   busyAction: string | null;
   onNewBranchNameChange: (value: string) => void;
   onPreviewCommit: (commit: CommitRecord) => void | Promise<void>;
-  onRestoreCommit: (commitId: string) => void | Promise<void>;
   onCreateBranchFromCommit: (commit: CommitRecord) => void | Promise<void>;
   onSwitchBranch: (branchName: string) => void | Promise<void>;
   onOpenMergePreview: (branchName: string) => void | Promise<void>;
@@ -88,7 +87,6 @@ export function LessonHistoryGraphPanel({
   busyAction,
   onNewBranchNameChange,
   onPreviewCommit,
-  onRestoreCommit,
   onCreateBranchFromCommit,
   onSwitchBranch,
   onOpenMergePreview,
@@ -373,14 +371,6 @@ export function LessonHistoryGraphPanel({
             >
               <BookOpen className="h-3.5 w-3.5" />
               {c.preview}
-            </button>
-            <button
-              type="button"
-              onClick={() => void onRestoreCommit(selectedNode.commit.id)}
-              className="inline-flex h-8 items-center gap-1 rounded-md border border-gray-200 bg-white px-2.5 text-[10px] font-bold uppercase tracking-wider text-gray-600 transition hover:border-gray-300 hover:text-gray-950"
-            >
-              <Clock3 className="h-3.5 w-3.5" />
-              {c.restore}
             </button>
             <button
               type="button"

@@ -159,7 +159,6 @@ export function CourseStudio() {
     handleMergeChoiceChange,
     handleCancelMerge,
     handleConfirmMerge,
-    handleRestoreCommit,
   } = history;
 
   const previewCommit = history.previewCommit;
@@ -597,7 +596,6 @@ export function CourseStudio() {
           relatedEdges={relatedEdges}
           lessonMap={lessonMap}
           onPreviewCommit={(commit) => handlePreviewCommit(commit)}
-          onRestoreCommit={(commitId) => handleRestoreCommit(commitId)}
           onCreateBranchFromCommit={(commit) => handleCreateBranchFromCommit(commit)}
           onSwitchBranch={(branchName) => handleSwitchBranch(branchName)}
           onOpenMergePreview={(branchName) => handleOpenMergePreview(branchName)}

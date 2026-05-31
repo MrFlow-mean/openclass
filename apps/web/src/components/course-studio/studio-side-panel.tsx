@@ -40,7 +40,6 @@ type CourseStudioSidePanelProps = {
   relatedEdges: CoursePackage["course_graph"];
   lessonMap: Map<string, Lesson>;
   onPreviewCommit: (commit: CommitRecord) => void | Promise<void>;
-  onRestoreCommit: (commitId: string) => void | Promise<void>;
   onCreateBranchFromCommit: (commit: CommitRecord) => void | Promise<void>;
   onSwitchBranch: (branchName: string) => void | Promise<void>;
   onOpenMergePreview: (branchName: string) => void | Promise<void>;
@@ -72,7 +71,6 @@ export function CourseStudioSidePanel({
   relatedEdges,
   lessonMap,
   onPreviewCommit,
-  onRestoreCommit,
   onCreateBranchFromCommit,
   onSwitchBranch,
   onOpenMergePreview,
@@ -153,7 +151,6 @@ export function CourseStudioSidePanel({
             busyAction={busyAction}
             onNewBranchNameChange={onNewBranchNameChange}
             onPreviewCommit={onPreviewCommit}
-            onRestoreCommit={onRestoreCommit}
             onCreateBranchFromCommit={onCreateBranchFromCommit}
             onSwitchBranch={onSwitchBranch}
             onOpenMergePreview={onOpenMergePreview}
