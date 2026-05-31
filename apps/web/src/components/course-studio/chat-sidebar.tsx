@@ -21,6 +21,10 @@ import {
   modelSelectionKey,
   PROVIDER_LABELS,
 } from "@/components/course-studio/model-catalog";
+import {
+  ResourceReferencePromptCard,
+  SelectedResourceReferenceCard,
+} from "@/components/course-studio/resource-evidence-card";
 import { popoverPositionFromDomSelection } from "@/components/course-studio/selection-utils";
 import { LearningClarityCard } from "@/components/learning-clarity-card";
 import { useInterfaceLanguage } from "@/contexts/interface-language-context";
@@ -157,18 +161,12 @@ export function CourseStudioChatSidebar({
   const s = txt.studio.chatSidebar;
   const voiceStartDisabled = !voiceActive && !selectedRealtimeOption?.enabled;
   const referenceEvidenceMatches = referencePrompt
-    ? resourceMatches
-        .filter(
-          (match) =>
-            match.resource_id === referencePrompt.resource_id &&
-            match.chapter_id === referencePrompt.chapter_id
-        )
-        .slice(0, 3)
+    ? resourceMatches.filter(
+        (match) =>
+          match.resource_id === referencePrompt.resource_id &&
+          match.chapter_id === referencePrompt.chapter_id
+      )
     : [];
-  const selectedReferenceTargetChunk =
-    selectedReference?.chunks.find((chunk) => chunk.segment_id === selectedReference.segment_id) ??
-    selectedReference?.chunks[0] ??
-    null;
 
   return (
     <aside className="relative flex h-full min-h-0 flex-col border-r border-gray-200 bg-white">
@@ -287,61 +285,11 @@ export function CourseStudioChatSidebar({
           ) : null}
 
           {!isPreviewMode && referencePrompt ? (
-            <div className="rounded-xl border border-violet-200 bg-violet-50 p-4">
-              <p className="text-[11px] font-bold uppercase tracking-widest text-violet-700">{s.referenceTitle}</p>
-              <p className="mt-2 text-sm leading-6 text-violet-950">{referencePrompt.question}</p>
-              <p className="mt-2 text-xs leading-6 text-violet-900/80">{referencePrompt.reason}</p>
-              {referenceEvidenceMatches.length ? (
-                <div className="mt-3 space-y-3 border-t border-violet-200/80 pt-3">
-                  {referenceEvidenceMatches.map((match) => {
-                    const headingPath = match.heading_path?.length ? match.heading_path.join(" / ") : match.chapter_title;
-                    const excerpt = match.excerpt || match.evidence?.[0]?.value || "";
-                    return (
-                      <div key={`${match.resource_id}-${match.segment_id ?? match.chapter_id}`} className="text-xs leading-5 text-violet-950">
-                        <div className="flex items-start justify-between gap-3">
-                          <p className="min-w-0 font-semibold text-gray-900">
-                            <span className="break-words">{match.resource_name} / {headingPath}</span>
-                          </p>
-                          <span className="shrink-0 font-semibold text-violet-700">{Math.round(match.score * 100)}%</span>
-                        </div>
-                        {excerpt ? (
-                          <p className="mt-2 border-l-2 border-violet-300 pl-3 text-violet-900/90">{excerpt}</p>
-                        ) : null}
-                        {match.evidence?.length ? (
-                          <div className="mt-2 space-y-1 text-[11px] text-violet-900/75">
-                            {match.evidence.slice(0, 3).map((item) => (
-                              <p key={`${item.label}-${item.value}`} className="break-words">
-                                <span className="font-semibold">{item.label}: </span>{item.value}
-                              </p>
-                            ))}
-                          </div>
-                        ) : null}
-                      </div>
-                    );
-                  })}
-                </div>
-              ) : null}
-              <div className="mt-3 grid gap-2">
-                <button
-                  type="button"
-                  onClick={() => void onReferenceAction("confirm")}
-                  className="w-full rounded-xl border border-violet-200 bg-white px-4 py-3 text-left transition hover:border-violet-300"
-                >
-                  <span className="block text-sm font-semibold text-gray-900">
-                    {referencePrompt.confirm_label}
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void onReferenceAction("skip")}
-                  className="w-full rounded-xl border border-violet-200 bg-white px-4 py-3 text-left transition hover:border-violet-300"
-                >
-                  <span className="block text-sm font-semibold text-gray-900">
-                    {referencePrompt.skip_label}
-                  </span>
-                </button>
-              </div>
-            </div>
+            <ResourceReferencePromptCard
+              prompt={referencePrompt}
+              matches={referenceEvidenceMatches}
+              onReferenceAction={onReferenceAction}
+            />
           ) : null}
 
           {!isPreviewMode && strongReasoningPrompt ? (
@@ -421,29 +369,7 @@ export function CourseStudioChatSidebar({
           ) : null}
 
           {!isPreviewMode && selectedReference ? (
-            <details
-              key={`${selectedReference.resource_id}-${selectedReference.chapter_id}-${selectedReference.segment_id ?? "chapter"}`}
-              className="group rounded-xl border border-emerald-200 bg-emerald-50 p-3 [&>summary::-webkit-details-marker]:hidden"
-            >
-              <summary className="flex cursor-pointer list-none items-start justify-between gap-3">
-                <span className="min-w-0">
-                  <span className="block text-[11px] font-bold uppercase tracking-widest text-emerald-700">
-                    {s.selectedReferenceTitle}
-                  </span>
-                  <span className="mt-1 block truncate text-sm font-semibold text-gray-900">
-                    {selectedReference.resource_name} / {selectedReference.chapter_title}
-                  </span>
-                </span>
-                <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-emerald-200 bg-white text-emerald-700 shadow-sm transition-colors group-open:bg-emerald-100">
-                  <ChevronDown className="h-4 w-4 transition-transform group-open:rotate-180" />
-                </span>
-              </summary>
-              {selectedReferenceTargetChunk?.excerpt ? (
-                <p className="mt-3 border-l-2 border-emerald-300 pl-3 text-xs leading-5 text-emerald-900/90">
-                  {selectedReferenceTargetChunk.excerpt}
-                </p>
-              ) : null}
-            </details>
+            <SelectedResourceReferenceCard reference={selectedReference} />
           ) : null}
         </div>
       </div>

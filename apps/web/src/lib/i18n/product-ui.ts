@@ -343,6 +343,40 @@ export function profileSettingsTexts(lang: InterfaceLanguage) {
           ? "AI 还需要再确认一点学习目标，才能决定后面的讲义策略。"
           : "AI needs one more confirmation about the learning goal before deciding the lesson-note strategy.",
         selectedReferenceTitle: z ? "已引用参考资料" : "Referenced material",
+        evidence: {
+          bodyEvidence: (source?: string | null) =>
+            z
+              ? `正文证据${source ? ` · ${source}` : ""}`
+              : `Text evidence${source ? ` · ${source}` : ""}`,
+          metadataOnly: z ? "仅结构线索" : "Structure only",
+          degraded: z
+            ? "当前没有可引用正文；继续生成会被标记为降级生成。"
+            : "No source text is available; continuing will be marked as degraded generation.",
+          page: (pageRange: string) => (z ? `页码 ${pageRange}` : `Page ${pageRange}`),
+          sourceLabel: (source: string) => {
+            const labels: Record<string, string> = z
+              ? {
+                  source_file: "源文件",
+                  external_parser: "外部解析器",
+                  ocr: "OCR",
+                  inline_text: "内联文本",
+                  metadata_only: "元数据",
+                }
+              : {
+                  source_file: "Source file",
+                  external_parser: "External parser",
+                  ocr: "OCR",
+                  inline_text: "Inline text",
+                  metadata_only: "Metadata",
+                };
+            return labels[source] ?? source;
+          },
+          score: (percent: number) => (z ? `匹配 ${percent}%` : `${percent}% match`),
+          context: z ? "上下文" : "Context",
+          neighborContext: z ? "前后文摘要" : "Neighbor context",
+          before: z ? "前文" : "Before",
+          after: z ? "后文" : "After",
+        },
         textModel: z ? "文本生成" : "Text model",
         realtimeModel: z ? "语音模型" : "Voice model",
         removeReference: z ? "移除引用" : "Remove reference",
@@ -442,6 +476,11 @@ export function profileSettingsTexts(lang: InterfaceLanguage) {
       resourcePanel: {
         title: z ? "关联资料库" : "Linked resources",
         indexed: (count: number) => (z ? `已索引 ${count} 个章节入口` : `${count} chapter entr${count === 1 ? "y" : "ies"} indexed`),
+        indexedText: z ? "已索引正文" : "Text indexed",
+        metadataOnly: z ? "仅目录或元数据" : "Outline or metadata only",
+        missingText: z ? "缺正文" : "Missing text",
+        chaptersCount: (count: number) => (z ? `${count} 个章节入口` : `${count} chapter entr${count === 1 ? "y" : "ies"}`),
+        pageRange: (range: string) => (z ? `页码 ${range}` : `Page ${range}`),
         entryOnly: z ? "当前仅做入口索引" : "Entry index only",
         deleteTitle: (name: string) => (z ? `删除 ${name}` : `Delete ${name}`),
         deleteAria: (name: string) => (z ? `删除资料 ${name}` : `Delete resource ${name}`),

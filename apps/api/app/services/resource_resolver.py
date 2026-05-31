@@ -180,6 +180,8 @@ def _rank_resource_matches(resources: list[ResourceLibraryItem], user_message: s
                 before_text=_neighbor_excerpt(resource, segment.before_segment_id) if segment else "",
                 after_text=_neighbor_excerpt(resource, segment.after_segment_id) if segment else "",
                 text_hash=segment.text_hash if segment else None,
+                page_range=segment.page_range if segment else chapter.page_range,
+                text_source=segment.text_source if segment else "metadata_only",
                 reason=candidate.reason,
                 evidence=candidate.evidence,
                 score_breakdown=candidate.score_breakdown,
@@ -450,6 +452,8 @@ def _explicit_match(
                     before_text=_neighbor_excerpt(resource, segment.before_segment_id),
                     after_text=_neighbor_excerpt(resource, segment.after_segment_id),
                     text_hash=segment.text_hash,
+                    page_range=segment.page_range,
+                    text_source=segment.text_source,
                     reason="用户确认了要参考的资料片段。",
                     evidence=_segment_evidence(segment=segment, query_terms=set(), semantic_similarity=0.0),
                     score_breakdown={"rerank": 1.0},
@@ -463,6 +467,9 @@ def _explicit_match(
                     chapter_id=chapter.id,
                     resource_name=resource.name,
                     chapter_title=chapter.title,
+                    heading_path=chapter.path,
+                    page_range=chapter.page_range,
+                    text_source="metadata_only",
                     reason="用户确认了要参考的资料章节。",
                     evidence=_chapter_evidence(chapter),
                     score_breakdown={"rerank": 1.0},
@@ -518,6 +525,7 @@ def _outline_only_reference(
                 excerpt=excerpt,
                 teaching_hint="只能作为目录级定位线索，不作为原文证据。",
                 heading_path=match.heading_path or chapter.path,
+                page_range=match.page_range or chapter.page_range,
                 text_source="metadata_only",
             )
         ],
@@ -547,6 +555,7 @@ def _extract_segment_reference(resource: ResourceLibraryItem, match: ResourceMat
                 segment_id=before.segment_id,
                 heading_path=before.heading_path,
                 text_hash=before.text_hash,
+                page_range=before.page_range,
                 text_source=before.text_source,
             )
         )
@@ -560,6 +569,7 @@ def _extract_segment_reference(resource: ResourceLibraryItem, match: ResourceMat
             before_text=_neighbor_excerpt(resource, segment.before_segment_id),
             after_text=_neighbor_excerpt(resource, segment.after_segment_id),
             text_hash=segment.text_hash,
+            page_range=segment.page_range,
             text_source=segment.text_source,
         )
     )
@@ -572,6 +582,7 @@ def _extract_segment_reference(resource: ResourceLibraryItem, match: ResourceMat
                 segment_id=after.segment_id,
                 heading_path=after.heading_path,
                 text_hash=after.text_hash,
+                page_range=after.page_range,
                 text_source=after.text_source,
             )
         )
@@ -665,6 +676,10 @@ def _segment_evidence(
     excerpt = _match_excerpt(segment.text, query_terms, limit=420)
     if excerpt:
         evidence.append(ResourceMatchEvidence(label="正文片段", value=excerpt))
+    if segment.page_range:
+        evidence.append(ResourceMatchEvidence(label="页码", value=segment.page_range))
+    if segment.text_source:
+        evidence.append(ResourceMatchEvidence(label="来源", value=segment.text_source))
     matched_keywords = [keyword for keyword in segment.keywords[:8] if keyword in query_terms]
     if matched_keywords:
         evidence.append(ResourceMatchEvidence(label="命中关键词", value="、".join(matched_keywords[:5])))
@@ -680,6 +695,8 @@ def _chapter_evidence(chapter: LibraryChapter) -> list[ResourceMatchEvidence]:
         evidence.append(ResourceMatchEvidence(label="章节路径", value=heading))
     if chapter.summary:
         evidence.append(ResourceMatchEvidence(label="章节摘要", value=_compact_text(chapter.summary, limit=260)))
+    if chapter.page_range:
+        evidence.append(ResourceMatchEvidence(label="页码", value=chapter.page_range))
     if chapter.keywords:
         evidence.append(ResourceMatchEvidence(label="章节关键词", value="、".join(chapter.keywords[:5])))
     return evidence[:4]

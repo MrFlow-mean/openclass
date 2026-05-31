@@ -609,6 +609,8 @@ class ResourceMatch(BaseModel):
     before_text: str = ""
     after_text: str = ""
     text_hash: str | None = None
+    page_range: str | None = None
+    text_source: str = "metadata_only"
     reason: str
     evidence: list[ResourceMatchEvidence] = Field(default_factory=list)
     score_breakdown: dict[str, float] = Field(default_factory=dict)
@@ -640,6 +642,7 @@ class ResourceContextChunk(BaseModel):
     before_text: str = ""
     after_text: str = ""
     text_hash: str | None = None
+    page_range: str | None = None
     text_source: str = "source_file"
 
 

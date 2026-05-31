@@ -1,7 +1,7 @@
 "use client";
 
 import clsx from "clsx";
-import { FileText, ImagePlus, LoaderCircle, Trash2 } from "lucide-react";
+import { AlertTriangle, CheckCircle2, CircleDashed, FileText, ImagePlus, LoaderCircle, Trash2 } from "lucide-react";
 
 import { CourseGraphPanel } from "@/components/course-studio/course-graph-panel";
 import { ResourceUploadDropzone } from "@/components/resource-upload-dropzone";
@@ -44,6 +44,7 @@ export function ResourcePanel({
           {resources.length
             ? resources.map((resource) => {
                 const isDeletingResource = busyAction === `delete-resource:${resource.id}`;
+                const status = resourceStatus(resource, r);
                 return (
                   <div
                     key={resource.id}
@@ -59,11 +60,13 @@ export function ResourcePanel({
                       </div>
                       <div className="min-w-0 flex-1">
                         <p className="truncate text-xs font-bold text-gray-900">{resource.name}</p>
-                        <p className="mt-1 text-[11px] text-gray-500">
-                          {resource.extracted_text_available
-                            ? r.indexed(resource.outline.length)
-                            : r.entryOnly}
-                        </p>
+                        <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                          <span className={clsx("inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold", status.className)}>
+                            {status.icon}
+                            {status.label}
+                          </span>
+                          <span className="text-[11px] text-gray-500">{r.chaptersCount(resource.outline.length)}</span>
+                        </div>
                       </div>
                       <button
                         type="button"
@@ -86,7 +89,14 @@ export function ResourcePanel({
                     <div className="mt-3 space-y-2">
                       {resource.outline.slice(0, 3).map((chapter) => (
                         <div key={chapter.id} className="rounded-lg bg-gray-50 px-3 py-2 text-[11px] text-gray-600">
-                          <p className="font-semibold text-gray-800">{chapter.title}</p>
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <p className="min-w-0 font-semibold text-gray-800">{chapter.title}</p>
+                            {chapter.page_range ? (
+                              <span className="rounded-full border border-gray-200 bg-white px-2 py-0.5 text-[10px] font-semibold text-gray-500">
+                                {r.pageRange(chapter.page_range)}
+                              </span>
+                            ) : null}
+                          </div>
                           <p className="mt-1 leading-6">{chapter.summary}</p>
                         </div>
                       ))}
@@ -106,4 +116,26 @@ export function ResourcePanel({
       />
     </div>
   );
+}
+
+function resourceStatus(resource: CoursePackage["resources"][number], labels: ReturnType<typeof useInterfaceLanguage>["texts"]["studio"]["resourcePanel"]) {
+  if (resource.extracted_text_available) {
+    return {
+      label: labels.indexedText,
+      className: "bg-emerald-100 text-emerald-800",
+      icon: <CheckCircle2 className="h-3 w-3" />,
+    };
+  }
+  if (resource.outline.length) {
+    return {
+      label: labels.metadataOnly,
+      className: "bg-amber-100 text-amber-900",
+      icon: <CircleDashed className="h-3 w-3" />,
+    };
+  }
+  return {
+    label: labels.missingText,
+    className: "bg-red-100 text-red-800",
+    icon: <AlertTriangle className="h-3 w-3" />,
+  };
 }

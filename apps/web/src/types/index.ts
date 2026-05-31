@@ -577,6 +577,8 @@ export interface ResourceMatch {
   before_text?: string;
   after_text?: string;
   text_hash?: string | null;
+  page_range?: string | null;
+  text_source?: string;
   reason: string;
   evidence?: Array<{ label: string; value: string }>;
   score_breakdown?: Record<string, number>;
@@ -624,6 +626,7 @@ export interface ResourceContextChunk {
   before_text?: string;
   after_text?: string;
   text_hash?: string | null;
+  page_range?: string | null;
   text_source?: string;
 }
 

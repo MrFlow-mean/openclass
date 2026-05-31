@@ -1197,6 +1197,8 @@ def _outline_chunk(chapter: LibraryChapter, children: list[LibraryChapter]) -> R
         title=f"{chapter.title} / 目录主线",
         excerpt=f"这一章可以按目录顺序来讲：{outline}。",
         teaching_hint="先把目录讲成学习地图，再展开正文里的定义、例子和系统流程。",
+        page_range=chapter.page_range,
+        text_source="metadata_only",
     )
 
 
@@ -1241,6 +1243,7 @@ def _build_reference_context(
             title=f"{chapter.title} / 参考片段 {index}",
             excerpt=passage[:420],
             teaching_hint=_build_teaching_hint(chapter.title, passage),
+            page_range=chapter.page_range,
             text_source=text_evidence_source,
         )
         for index, passage in enumerate(passages[:3], start=1)

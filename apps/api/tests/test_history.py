@@ -3,7 +3,7 @@ from pypdf import PdfReader, PdfWriter
 from pypdf.constants import PageLabelStyle
 from reportlab.pdfgen import canvas
 
-from app.models import BoardDocument, InteractionSession, LearningRequirementSheet, PatchOperation
+from app.models import BoardDocument, InteractionSession, LearningRequirementSheet, LibraryChapter, PatchOperation, ResourceLibraryItem
 from app.services.chart_generation import extract_chart_data_fragments
 from app.services.course_runtime import (
     build_lesson_for_topic,
@@ -770,6 +770,69 @@ def test_short_pdf_without_outline_or_toc_generates_page_range_segments(tmp_path
     assert resource.extracted_text_available is True
     assert [segment.page_range for segment in resource.segments] == ["1", "2", "3"]
     assert any("target explanation" in segment.text for segment in resource.segments)
+
+
+def test_resource_match_exposes_segment_page_range_and_text_source(tmp_path) -> None:
+    resource_path = tmp_path / "paged-notes.pdf"
+    _write_pdf_pages(
+        resource_path,
+        [
+            ["Opening page."],
+            ["Page two target evidence for resolver display."],
+        ],
+    )
+    resource = build_resource_item(resource_path, "paged-notes.pdf")
+
+    resolution = resolve_resource_reference(
+        resources=[resource],
+        user_message="target evidence resolver display",
+        allow_direct_reference=True,
+    )
+
+    assert resolution.matches
+    assert resolution.matches[0].page_range == "2"
+    assert resolution.matches[0].text_source == "source_file"
+    assert resolution.selected_reference is not None
+    target_chunk = next(
+        chunk
+        for chunk in resolution.selected_reference.chunks
+        if chunk.segment_id == resolution.selected_reference.segment_id
+    )
+    assert target_chunk.page_range == "2"
+    assert target_chunk.text_source == "source_file"
+
+
+def test_metadata_only_reference_keeps_no_text_evidence_status() -> None:
+    resource = ResourceLibraryItem(
+        name="outline-only.pdf",
+        mime_type="application/pdf",
+        resource_type="document",
+        size_bytes=1,
+        outline=[
+            LibraryChapter(
+                title="Only Outline",
+                summary="Only structural metadata is available.",
+                keywords=["target"],
+                page_range="12",
+                order_index=0,
+            )
+        ],
+        extracted_text_available=False,
+    )
+
+    resolution = resolve_resource_reference(
+        resources=[resource],
+        user_message="target",
+        reference_action="confirm",
+        reference_resource_id=resource.id,
+        reference_chapter_id=resource.outline[0].id,
+    )
+
+    assert resolution.selected_reference is not None
+    assert resolution.selected_reference.text_evidence_available is False
+    assert resolution.selected_reference.text_evidence_status == "metadata_only"
+    assert resolution.selected_reference.chunks[0].page_range == "12"
+    assert resolution.selected_reference.chunks[0].text_source == "metadata_only"
 
 
 def test_short_pdf_without_outline_uses_later_text_even_when_first_pages_are_blank(tmp_path) -> None:
