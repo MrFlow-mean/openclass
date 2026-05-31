@@ -46,6 +46,12 @@ class RankedResourceCandidate:
 
 
 @dataclass(frozen=True)
+class OutlineReference:
+    primary: int
+    secondary: int | None = None
+
+
+@dataclass(frozen=True)
 class ResourceResolution:
     matches: list[ResourceMatch]
     selected_reference: ResourceReferenceContext | None = None
@@ -75,6 +81,8 @@ def resolve_resource_reference(
         if match is None:
             return ResourceResolution(matches=[], status="missing")
         reference = _extract_reference(resources, match, user_message)
+        if reference is None:
+            reference = _outline_only_reference(resources, match)
         return ResourceResolution(
             matches=[match],
             selected_reference=reference,
@@ -96,9 +104,10 @@ def resolve_resource_reference(
             )
 
     if best.score >= REFERENCE_PROMPT_THRESHOLD:
+        reference = _extract_reference(resources, best, user_message)
         return ResourceResolution(
             matches=matches[:5],
-            reference_prompt=_reference_prompt(best),
+            reference_prompt=_reference_prompt(best, text_evidence_available=reference is not None),
             status="prompt",
         )
 
@@ -298,6 +307,12 @@ def _segment_score(
     compact_path = _compact_text(" ".join(segment.heading_path), limit=240).lower()
     if compact_path and compact_path in lower_message:
         score += 0.24
+    score += _outline_reference_match_score(
+        _outline_references(compact_message),
+        _outline_references(title_text),
+        partial_bonus=0.42,
+        exact_bonus=0.72,
+    )
     for term in query_terms:
         if len(term) >= 4 and term in compact_body:
             score += 0.18
@@ -333,11 +348,79 @@ def _chapter_score(
         score += 0.55
     if compact_path and compact_path in lower_message:
         score += 0.26
+    score += _outline_reference_match_score(
+        _outline_references(compact_message),
+        _outline_references(title_text),
+        partial_bonus=0.72,
+        exact_bonus=1.08,
+    )
     for keyword in chapter.keywords[:8]:
         normalized = keyword.strip().lower()
         if len(normalized) >= 2 and normalized in lower_message:
             score += 0.12
     return score
+
+
+def _outline_reference_match_score(
+    query_refs: set[OutlineReference],
+    target_refs: set[OutlineReference],
+    *,
+    partial_bonus: float,
+    exact_bonus: float,
+) -> float:
+    if not query_refs or not target_refs:
+        return 0.0
+    score = 0.0
+    for query_ref in query_refs:
+        for target_ref in target_refs:
+            if query_ref == target_ref:
+                score = max(score, exact_bonus)
+            elif query_ref.primary == target_ref.primary:
+                score = max(score, partial_bonus)
+    return score
+
+
+def _outline_references(text: str) -> set[OutlineReference]:
+    compact = _compact_text(text, limit=800)
+    refs: set[OutlineReference] = set()
+    for match in re.finditer(r"(?<!\d)(\d{1,3})\s*[.．]\s*(\d{1,3})(?!\d)", compact):
+        refs.add(OutlineReference(primary=int(match.group(1)), secondary=int(match.group(2))))
+    for match in re.finditer(r"第\s*([0-9一二三四五六七八九十百〇零两]{1,8})\s*[章节部分卷册]", compact):
+        parsed = _parse_outline_number(match.group(1))
+        if parsed is not None:
+            refs.add(OutlineReference(primary=parsed))
+    for match in re.finditer(r"(?<!\d)(\d{1,3})\s*(?:章|节|部分|chapter|section)\b", compact, flags=re.IGNORECASE):
+        refs.add(OutlineReference(primary=int(match.group(1))))
+    for match in re.finditer(r"\b(?:chapter|section)\s*(\d{1,3})(?!\d)", compact, flags=re.IGNORECASE):
+        refs.add(OutlineReference(primary=int(match.group(1))))
+    return refs
+
+
+def _parse_outline_number(value: str) -> int | None:
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+    if cleaned.isdigit():
+        return int(cleaned)
+    digits = {"零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+    if cleaned in digits:
+        return digits[cleaned]
+    if "百" in cleaned:
+        left, _, right = cleaned.partition("百")
+        hundreds = digits.get(left, 1 if left == "" else 0)
+        tail = _parse_outline_number(right) if right else 0
+        return hundreds * 100 + (tail or 0)
+    if "十" in cleaned:
+        left, _, right = cleaned.partition("十")
+        tens = digits.get(left, 1 if left == "" else 0)
+        ones = digits.get(right, 0) if right else 0
+        return tens * 10 + ones
+    if all(char in digits for char in cleaned):
+        value_int = 0
+        for char in cleaned:
+            value_int = value_int * 10 + digits[char]
+        return value_int
+    return None
 
 
 def _explicit_match(
@@ -406,6 +489,44 @@ def _extract_reference(
     )
 
 
+def _outline_only_reference(
+    resources: list[ResourceLibraryItem],
+    match: ResourceMatch,
+) -> ResourceReferenceContext | None:
+    resource = next((candidate for candidate in resources if candidate.id == match.resource_id), None)
+    if resource is None:
+        return None
+    chapter = next((candidate for candidate in resource.outline if candidate.id == match.chapter_id), None)
+    if chapter is None:
+        return None
+    heading = " / ".join(match.heading_path or chapter.path or [chapter.title])
+    excerpt = chapter.summary or f"只定位到资料目录项“{heading}”，当前没有抽到这一章的可引用正文。"
+    return ResourceReferenceContext(
+        resource_id=resource.id,
+        chapter_id=chapter.id,
+        segment_id=match.segment_id,
+        resource_name=resource.name,
+        chapter_title=chapter.title,
+        summary=(
+            f"已定位到《{resource.name}》的目录项“{heading}”，"
+            "但没有抽到可引用正文；继续生成时只能把目录定位作为线索。"
+        ),
+        teaching_points=["先说明当前只命中资料结构，不能声称已引用原文正文。"],
+        chunks=[
+            ResourceContextChunk(
+                title=f"{chapter.title} / 目录定位",
+                excerpt=excerpt,
+                teaching_hint="只能作为目录级定位线索，不作为原文证据。",
+                heading_path=match.heading_path or chapter.path,
+                text_source="metadata_only",
+            )
+        ],
+        text_evidence_available=False,
+        text_evidence_status="metadata_only",
+        full_text="",
+    )
+
+
 def _extract_segment_reference(resource: ResourceLibraryItem, match: ResourceMatch) -> ResourceReferenceContext | None:
     segment = next((candidate for candidate in resource.segments if candidate.segment_id == match.segment_id), None)
     if segment is None:
@@ -426,6 +547,7 @@ def _extract_segment_reference(resource: ResourceLibraryItem, match: ResourceMat
                 segment_id=before.segment_id,
                 heading_path=before.heading_path,
                 text_hash=before.text_hash,
+                text_source=before.text_source,
             )
         )
     chunks.append(
@@ -438,6 +560,7 @@ def _extract_segment_reference(resource: ResourceLibraryItem, match: ResourceMat
             before_text=_neighbor_excerpt(resource, segment.before_segment_id),
             after_text=_neighbor_excerpt(resource, segment.after_segment_id),
             text_hash=segment.text_hash,
+            text_source=segment.text_source,
         )
     )
     if after is not None:
@@ -449,6 +572,7 @@ def _extract_segment_reference(resource: ResourceLibraryItem, match: ResourceMat
                 segment_id=after.segment_id,
                 heading_path=after.heading_path,
                 text_hash=after.text_hash,
+                text_source=after.text_source,
             )
         )
     full_text = "\n\n".join(chunk.excerpt for chunk in chunks if chunk.excerpt)
@@ -461,14 +585,34 @@ def _extract_segment_reference(resource: ResourceLibraryItem, match: ResourceMat
         summary=f"《{resource.name}》中“{title}”附近的资料片段可以作为本次参考。",
         teaching_points=segment.keywords[:6],
         chunks=chunks,
+        text_evidence_available=True,
+        text_evidence_status=segment.text_source,
         full_text=full_text or segment.text,
     )
 
 
-def _reference_prompt(match: ResourceMatch) -> ResourceReferencePrompt:
+def _reference_prompt(match: ResourceMatch, *, text_evidence_available: bool = True) -> ResourceReferencePrompt:
     target_label = "资料片段" if match.segment_id else "资料章节"
     confirm_label = "参考这一片段" if match.segment_id else "参考这一章节"
     heading = " / ".join(match.heading_path) if match.heading_path else match.chapter_title
+    if not text_evidence_available:
+        return ResourceReferencePrompt(
+            resource_id=match.resource_id,
+            chapter_id=match.chapter_id,
+            segment_id=match.segment_id,
+            resource_name=match.resource_name,
+            chapter_title=match.chapter_title,
+            question=(
+                f"我只定位到可能相关的{target_label}：{match.resource_name} / {heading}，"
+                "但还没有抽到这部分的正文。要在缺少原文正文证据的情况下继续吗？"
+            ),
+            reason="只命中资料目录或章节结构，当前没有可引用的正文片段。",
+            confirm_label="确认继续",
+            skip_label="先不生成",
+            score=match.score,
+            text_evidence_available=False,
+            requires_text_fallback_confirmation=True,
+        )
     return ResourceReferencePrompt(
         resource_id=match.resource_id,
         chapter_id=match.chapter_id,
@@ -480,6 +624,8 @@ def _reference_prompt(match: ResourceMatch) -> ResourceReferencePrompt:
         confirm_label=confirm_label,
         skip_label="先不参考",
         score=match.score,
+        text_evidence_available=True,
+        requires_text_fallback_confirmation=False,
     )
 
 

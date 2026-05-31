@@ -84,6 +84,10 @@ TARGET_LOCATION_HINT_PATTERN = re.compile(
 )
 RESOURCE_REFERENCE_HINT_PATTERN = re.compile(r"(资料|材料|文档|上传|教材|课本|原文|参考|根据|来自|文件|PDF|Word|章节|小节|第.{0,8}[章节部分])", re.IGNORECASE)
 EXPLICIT_RESOURCE_REFERENCE_PATTERN = re.compile(r"(资料|材料|上传|教材|课本|原文|参考|根据|来自|文件|PDF|Word)", re.IGNORECASE)
+RESOURCE_OUTPUT_EXPLANATION_PATTERN = re.compile(
+    r"((文档框|右侧|板书|版书|讲义).{0,24}(讲解|解释|说明).{0,48}(章节|小节|内容|资料|材料|文档)|"
+    r"(讲解|解释|说明).{0,48}(章节|小节).{0,24}(文档框|右侧|板书|版书|讲义))"
+)
 LEARNING_START_REQUEST_PATTERN = re.compile(r"(我要学|我想学|想学习|学习一下|开始学|帮我学|学一学)")
 FOLLOWUP_EXECUTION_PATTERN = re.compile(r"^(写啊|写|开始|执行|可以|好的|好|就这样|按这个来|照这个来|继续)$")
 INTERACTION_RULE_REQUEST_PATTERN = re.compile(r"(规则|互动|轮流|你问我答|按.{0,12}来)")
@@ -541,6 +545,7 @@ def _should_prompt_resource_reference(text: str) -> bool:
     return (
         _requests_resource_backed_answer(text)
         or _requests_document_artifact_generation(text)
+        or _requests_resource_output_explanation(text)
         or is_generation_control_request(text)
         or _requests_learning_start(text)
     )
@@ -549,9 +554,15 @@ def _should_prompt_resource_reference(text: str) -> bool:
 def _should_generate_board_after_reference_confirmation(text: str) -> bool:
     return (
         _requests_document_artifact_generation(text)
+        or _requests_resource_output_explanation(text)
         or is_generation_control_request(text)
         or _requests_learning_start(text)
     )
+
+
+def _requests_resource_output_explanation(text: str) -> bool:
+    compact = _compact_text(text, limit=280)
+    return bool(compact and RESOURCE_OUTPUT_EXPLANATION_PATTERN.search(compact))
 
 
 def _resource_context_excerpt(reference: ResourceReferenceContext | None) -> str | None:
@@ -561,6 +572,8 @@ def _resource_context_excerpt(reference: ResourceReferenceContext | None) -> str
         f"参考资料：{reference.resource_name} / {reference.chapter_title}",
         f"资料摘要：{reference.summary}",
     ]
+    if not reference.text_evidence_available:
+        lines.append("资料正文状态：只命中目录或结构线索，未抽到可引用正文；不要声称已依据原文细节。")
     if reference.teaching_points:
         lines.append("讲解要点：" + "；".join(reference.teaching_points[:4]))
     for chunk in reference.chunks[:4]:
@@ -594,11 +607,24 @@ def _reference_metadata(
                 "chapter_title": resolution.selected_reference.chapter_title,
                 "summary": resolution.selected_reference.summary,
                 "chunks": [chunk.model_dump(mode="json") for chunk in resolution.selected_reference.chunks],
+                "text_evidence_available": resolution.selected_reference.text_evidence_available,
+                "text_evidence_status": resolution.selected_reference.text_evidence_status,
             }
             if resolution.selected_reference
             else None
         ),
         "resource_resolution_status": resolution.status,
+    }
+
+
+def _resource_generation_metadata(reference: ResourceReferenceContext | None) -> dict[str, object]:
+    has_text = bool(reference and reference.text_evidence_available)
+    degraded = bool(reference and not reference.text_evidence_available)
+    return {
+        "resource_backed_generation": has_text,
+        "resource_text_evidence_available": has_text,
+        "resource_reference_degraded": degraded,
+        "resource_text_evidence_status": reference.text_evidence_status if reference else None,
     }
 
 
@@ -611,7 +637,11 @@ def _should_generate_board_from_explicit_request(
 ) -> bool:
     if not is_document_empty(lesson.board_document):
         return False
-    if is_explicit_board_generation_request(request.message) or _requests_document_artifact_generation(request.message):
+    if (
+        is_explicit_board_generation_request(request.message)
+        or _requests_document_artifact_generation(request.message)
+        or _requests_resource_output_explanation(request.message)
+    ):
         return True
     return is_generation_control_request(request.message) and _has_actionable_generation_context(
         requirements,
@@ -1239,7 +1269,6 @@ def _generate_board_from_confirmed_resource(
         new_document=lesson.board_document,
         metadata={
             "kind": "board_document_generation",
-            "resource_backed_generation": True,
             "user_message": request.message,
             "assistant_message": chatbot_message,
             "assistant_message_source": edit_outcome.assistant_message_source,
@@ -1254,6 +1283,7 @@ def _generate_board_from_confirmed_resource(
                 learning_clarification=learning_clarification,
                 requirement_cleared=requirement_cleared,
             ),
+            **_resource_generation_metadata(resource_resolution.selected_reference),
             **_reference_metadata(resolution=resource_resolution),
         },
     )
@@ -1311,6 +1341,7 @@ def _chat_response(
             and action_type not in DOCUMENT_WRITE_ACTIONS
             and request.board_generation_action != "start"
             and not _requests_document_artifact_generation(request.message)
+            and not _requests_resource_output_explanation(request.message)
             and not _requests_learning_start(request.message)
         ),
     )
@@ -1381,6 +1412,7 @@ def _chat_response(
                 learning_clarification=learning_clarification,
                 requirement_cleared=requirement_cleared,
             ),
+            **_resource_generation_metadata(None),
         }
 
         commit_operations(
@@ -2042,8 +2074,10 @@ def _chat_response(
             requirement_cleared=requirement_cleared,
         )
 
-    if is_generation_control_request(request.message) or _requests_document_artifact_generation(
-        request.message
+    if (
+        is_generation_control_request(request.message)
+        or _requests_document_artifact_generation(request.message)
+        or _requests_resource_output_explanation(request.message)
     ):
         requirement_conversation = [
             *request.conversation,
@@ -2156,6 +2190,7 @@ def _chat_response(
                         learning_clarification=learning_clarification,
                         requirement_cleared=requirement_cleared,
                     ),
+                    **_resource_generation_metadata(selected_reference),
                     **_reference_metadata(resolution=resource_resolution),
                 },
             )

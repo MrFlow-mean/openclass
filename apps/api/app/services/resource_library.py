@@ -6,6 +6,7 @@ import mimetypes
 import posixpath
 import re
 import zipfile
+from dataclasses import dataclass
 from xml.etree import ElementTree as ET
 from pathlib import Path
 
@@ -20,6 +21,7 @@ from app.models import (
     ResourceSegment,
 )
 from app.services.image_ocr import extract_image_text, extract_pdf_pages_text
+from app.services.resource_parser import current_resource_parser_spec, parse_with_external_resource_parser
 
 
 _PDF_TEXT_SUMMARY_LIMIT = 140
@@ -28,6 +30,13 @@ _RESOURCE_SEGMENT_TARGET_CHARS = 900
 _RESOURCE_SEGMENT_MAX_CHARS = 1400
 _RESOURCE_SEGMENT_MAX_SOURCE_CHARS = 320000
 _RESOURCE_SEGMENT_LIMIT = 600
+
+
+@dataclass(frozen=True)
+class ResourceTextExtraction:
+    text: str
+    text_source: str
+    has_text_evidence: bool
 
 
 def _normalize_extracted_text(text: str) -> str:
@@ -995,12 +1004,12 @@ def _build_reference_context(
     chapter: LibraryChapter,
     query: str,
     raw_text: str,
+    *,
+    text_evidence_source: str = "source_file",
 ) -> ResourceReferenceContext | None:
     normalized_text = _normalize_extracted_text(raw_text)
     compact = re.sub(r"\s+", " ", normalized_text).strip()
     if not compact:
-        return None
-    if not resource.extracted_text_available and len(compact) < 320:
         return None
 
     children = _child_chapters(resource, chapter)
@@ -1010,6 +1019,7 @@ def _build_reference_context(
             title=f"{chapter.title} / 参考片段 {index}",
             excerpt=passage[:420],
             teaching_hint=_build_teaching_hint(chapter.title, passage),
+            text_source=text_evidence_source,
         )
         for index, passage in enumerate(passages[:3], start=1)
     ]
@@ -1043,6 +1053,8 @@ def _build_reference_context(
         summary=summary,
         teaching_points=unique_points[:6],
         chunks=chunks,
+        text_evidence_available=True,
+        text_evidence_status=text_evidence_source,
         full_text=normalized_text,
     )
 
@@ -1417,6 +1429,27 @@ def extract_outline(file_path: Path, original_name: str, mime_type: str) -> tupl
             None,
         )
 
+    external_parse = parse_with_external_resource_parser(file_path)
+    if external_parse is not None:
+        text = external_parse.text[:200000]
+        outline = _extract_markdown_outline(text)
+        if outline:
+            return outline, True, text
+        ai_outline = _ai_generated_outline(original_name, text)
+        if ai_outline:
+            return ai_outline, True, text
+        return (
+            [
+                _generic_chapter_from_text(
+                    Path(original_name).stem,
+                    text,
+                    summary_prefix="从可插拔解析器抽取到的内容摘要：",
+                )
+            ],
+            True,
+            text,
+        )
+
     if mime_type in {"text/plain", "text/markdown"} or file_path.suffix.lower() in {".md", ".txt"}:
         text = _read_text_file(file_path)
         outline = _extract_markdown_outline(text)
@@ -1499,12 +1532,12 @@ def extract_outline(file_path: Path, original_name: str, mime_type: str) -> tupl
             _walk_outline(list(reader.outline))
             chapters = _outline_entries_to_chapters(entries, len(reader.pages), reader=reader)
             if chapters:
-                return chapters, True, None
+                return chapters, False, None
 
         toc_pages = _extract_pdf_toc_text_pages(reader, file_path)
         toc_chapters = _toc_entries_to_chapters(reader, toc_pages)
         if toc_chapters:
-            return toc_chapters, True, None
+            return toc_chapters, False, None
         extracted_text = []
         for page in reader.pages[:2]:
             try:
@@ -1515,7 +1548,7 @@ def extract_outline(file_path: Path, original_name: str, mime_type: str) -> tupl
         if joined_text:
             ai_outline = _ai_generated_outline(original_name, joined_text)
             if ai_outline:
-                return ai_outline, True, None
+                return ai_outline, False, None
             return (
                 [
                     _generic_chapter_from_text(
@@ -1524,7 +1557,7 @@ def extract_outline(file_path: Path, original_name: str, mime_type: str) -> tupl
                         summary_prefix="从 PDF 前几页抽取到的内容摘要：",
                     )
                 ],
-                True,
+                False,
                 None,
             )
     generic_title = Path(original_name).stem
@@ -1639,49 +1672,74 @@ def _read_pdf_text(file_path: Path, *, max_chars: int = _RESOURCE_SEGMENT_MAX_SO
     return "\n\n".join(extracted).strip()
 
 
-def _resource_chapter_raw_text(resource: ResourceLibraryItem, chapter: LibraryChapter) -> str:
+def _resource_chapter_text(
+    resource: ResourceLibraryItem,
+    chapter: LibraryChapter,
+    *,
+    user_query: str | None = None,
+) -> ResourceTextExtraction:
     if resource.text_content and resource.resource_type == "image":
-        return resource.text_content
+        return ResourceTextExtraction(resource.text_content, "ocr", True)
     if not resource.source_path:
-        return resource.text_content or f"{chapter.title}\n{chapter.summary}\n{' '.join(chapter.keywords)}"
+        if resource.text_content:
+            return ResourceTextExtraction(resource.text_content, "inline_text", True)
+        return ResourceTextExtraction("", "metadata_only", False)
 
     file_path = Path(resource.source_path)
     if not file_path.exists():
-        return resource.text_content or f"{chapter.title}\n{chapter.summary}\n{' '.join(chapter.keywords)}"
+        if resource.text_content:
+            return ResourceTextExtraction(resource.text_content, "inline_text", True)
+        return ResourceTextExtraction("", "missing_source", False)
 
     suffix = file_path.suffix.lower()
     try:
         if resource.mime_type in {"text/plain", "text/markdown"} or suffix in {".md", ".txt"}:
-            return _extract_markdown_section_text(file_path, chapter) if chapter.scan_strategy == "heading_section" else _read_text_file(file_path)
+            text = (
+                _extract_markdown_section_text(file_path, chapter)
+                if chapter.scan_strategy == "heading_section"
+                else _read_text_file(file_path)
+            )
+            return ResourceTextExtraction(text, "source_file", bool(_normalize_extracted_text(text)))
         if suffix == ".docx":
-            return _extract_docx_section_text(file_path, chapter) if chapter.scan_strategy == "heading_section" else _read_docx_text(file_path)
+            text = (
+                _extract_docx_section_text(file_path, chapter)
+                if chapter.scan_strategy == "heading_section"
+                else _read_docx_text(file_path)
+            )
+            return ResourceTextExtraction(text, "source_file", bool(_normalize_extracted_text(text)))
         if suffix == ".epub":
-            _, raw_text = _extract_epub_section_text(file_path, chapter, chapter.title)
-            return raw_text
+            _, raw_text = _extract_epub_section_text(file_path, chapter, user_query or chapter.title)
+            return ResourceTextExtraction(raw_text, "source_file", bool(_normalize_extracted_text(raw_text)))
         if suffix == ".pdf":
             if chapter.page_start or chapter.page_end:
-                reader = PdfReader(str(file_path))
-                page_start = chapter.page_start or 1
-                page_end = chapter.page_end or min(page_start + 8, len(reader.pages))
-                return _read_pdf_text_window(
-                    reader,
-                    page_start=page_start,
-                    page_end=page_end,
-                    max_pages=max(1, min(24, page_end - page_start + 1)),
-                )
-            return _read_pdf_text(file_path)
+                raw_text = _extract_pdf_chapter_text(file_path, chapter, user_query or chapter.title)
+            else:
+                raw_text = _read_pdf_text(file_path)
+            return ResourceTextExtraction(raw_text, "source_file", bool(_normalize_extracted_text(raw_text)))
     except Exception:
-        return resource.text_content or f"{chapter.title}\n{chapter.summary}\n{' '.join(chapter.keywords)}"
-    return resource.text_content or f"{chapter.title}\n{chapter.summary}\n{' '.join(chapter.keywords)}"
+        if resource.text_content:
+            return ResourceTextExtraction(resource.text_content, "inline_text", True)
+        return ResourceTextExtraction("", "extraction_error", False)
+    if resource.text_content:
+        return ResourceTextExtraction(resource.text_content, "inline_text", True)
+    return ResourceTextExtraction("", "unsupported", False)
+
+
+def _resource_chapter_raw_text(resource: ResourceLibraryItem, chapter: LibraryChapter) -> str:
+    return _resource_chapter_text(resource, chapter).text
 
 
 def build_resource_segments(resource: ResourceLibraryItem) -> list[ResourceSegment]:
     segments: list[ResourceSegment] = []
     chapters = sorted(resource.outline, key=lambda item: item.order_index)
     seen_hashes: set[tuple[str, str]] = set()
+    parser_spec = current_resource_parser_spec()
 
     for chapter in chapters:
-        raw_text = _resource_chapter_raw_text(resource, chapter)
+        extraction = _resource_chapter_text(resource, chapter)
+        if not extraction.has_text_evidence:
+            continue
+        raw_text = extraction.text
         for text in _split_resource_text_into_segments(raw_text):
             text_hash = _resource_segment_hash(text)
             dedupe_key = (chapter.id, text_hash)
@@ -1703,6 +1761,9 @@ def build_resource_segments(resource: ResourceLibraryItem) -> list[ResourceSegme
                     text_hash=text_hash,
                     keywords=_keywords_from_text(f"{' '.join(heading_path)}\n{text}")[:12],
                     page_range=chapter.page_range,
+                    parser_name=parser_spec.name,
+                    parser_version=parser_spec.version,
+                    text_source=extraction.text_source,
                 )
             )
             if len(segments) >= _RESOURCE_SEGMENT_LIMIT:
@@ -1718,6 +1779,12 @@ def build_resource_segments(resource: ResourceLibraryItem) -> list[ResourceSegme
             }
         )
     return segments
+
+
+def resource_has_text_evidence(resource: ResourceLibraryItem) -> bool:
+    if resource.text_content and _normalize_extracted_text(resource.text_content):
+        return True
+    return any(_normalize_extracted_text(segment.text) for segment in resource.segments)
 
 
 def build_resource_item(file_path: Path, original_name: str) -> ResourceLibraryItem:
@@ -1742,6 +1809,7 @@ def build_resource_item(file_path: Path, original_name: str) -> ResourceLibraryI
         source_path=str(file_path),
     )
     resource.segments = build_resource_segments(resource)
+    resource.extracted_text_available = resource_has_text_evidence(resource)
     return resource
 
 
@@ -1761,40 +1829,15 @@ def extract_reference_context(
             chapter,
             user_query,
             raw_text=resource.text_content,
+            text_evidence_source="ocr",
         )
 
-    if not resource.source_path:
-        return _build_reference_context(
-            resource,
-            chapter,
-            user_query,
-            raw_text=resource.text_content or f"{chapter.title}\n{chapter.summary}\n{' '.join(chapter.keywords)}",
-        )
-
-    file_path = Path(resource.source_path)
-    if not file_path.exists():
-        if resource.text_content:
-            return _build_reference_context(
-                resource,
-                chapter,
-                user_query,
-                raw_text=resource.text_content,
-            )
+    extraction = _resource_chapter_text(resource, chapter, user_query=user_query)
+    if not extraction.has_text_evidence:
         return None
 
-    suffix = file_path.suffix.lower()
-    raw_text = ""
-    if resource.mime_type in {"text/plain", "text/markdown"} or suffix in {".md", ".txt"}:
-        if chapter.scan_strategy == "heading_section":
-            raw_text = _extract_markdown_section_text(file_path, chapter)
-        else:
-            raw_text = _read_text_file(file_path)
-    elif suffix == ".docx":
-        if chapter.scan_strategy == "heading_section":
-            raw_text = _extract_docx_section_text(file_path, chapter)
-        else:
-            raw_text = _read_docx_text(file_path)
-    elif suffix == ".epub":
+    file_path = Path(resource.source_path) if resource.source_path else None
+    if file_path and file_path.exists() and file_path.suffix.lower() == ".epub":
         chapter_title, raw_text = _extract_epub_section_text(file_path, chapter, user_query)
         if chapter_title and chapter_title != chapter.title:
             chapter = chapter.model_copy(
@@ -1806,9 +1849,12 @@ def extract_reference_context(
                     "locator_hint": chapter_title,
                 }
             )
-    elif suffix == ".pdf":
-        raw_text = _extract_pdf_chapter_text(file_path, chapter, user_query)
-    else:
-        raw_text = resource.text_content or f"{chapter.title}\n{chapter.summary}\n{' '.join(chapter.keywords)}"
+            extraction = ResourceTextExtraction(raw_text, extraction.text_source, bool(_normalize_extracted_text(raw_text)))
 
-    return _build_reference_context(resource, chapter, user_query, raw_text)
+    return _build_reference_context(
+        resource,
+        chapter,
+        user_query,
+        extraction.text,
+        text_evidence_source=extraction.text_source,
+    )

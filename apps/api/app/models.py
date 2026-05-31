@@ -468,6 +468,9 @@ class ResourceSegment(BaseModel):
     page_range: str | None = None
     before_segment_id: str | None = None
     after_segment_id: str | None = None
+    parser_name: str = "openclass-native"
+    parser_version: str = "1"
+    text_source: str = "source_file"
     embedding: list[float] = Field(default_factory=list, exclude=True, repr=False)
     embedding_provider: str | None = Field(default=None, exclude=True, repr=False)
     embedding_model: str | None = Field(default=None, exclude=True, repr=False)
@@ -620,6 +623,8 @@ class ResourceReferencePrompt(BaseModel):
     confirm_label: str = "参考这一章节"
     skip_label: str = "先不参考"
     score: float = 0.0
+    text_evidence_available: bool = True
+    requires_text_fallback_confirmation: bool = False
 
 
 class ResourceContextChunk(BaseModel):
@@ -631,6 +636,7 @@ class ResourceContextChunk(BaseModel):
     before_text: str = ""
     after_text: str = ""
     text_hash: str | None = None
+    text_source: str = "source_file"
 
 
 class ResourceReferenceContext(BaseModel):
@@ -642,6 +648,8 @@ class ResourceReferenceContext(BaseModel):
     summary: str
     teaching_points: list[str] = Field(default_factory=list)
     chunks: list[ResourceContextChunk] = Field(default_factory=list)
+    text_evidence_available: bool = True
+    text_evidence_status: str = "source_text"
     full_text: str = Field(default="", exclude=True, repr=False)
 
 

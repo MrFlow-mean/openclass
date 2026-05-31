@@ -595,6 +595,8 @@ export interface ResourceReferencePrompt {
   confirm_label: string;
   skip_label: string;
   score: number;
+  text_evidence_available?: boolean;
+  requires_text_fallback_confirmation?: boolean;
 }
 
 export interface BoardEditPrompt {
@@ -622,6 +624,7 @@ export interface ResourceContextChunk {
   before_text?: string;
   after_text?: string;
   text_hash?: string | null;
+  text_source?: string;
 }
 
 export interface ResourceReferenceContext {
@@ -633,6 +636,8 @@ export interface ResourceReferenceContext {
   summary: string;
   teaching_points: string[];
   chunks: ResourceContextChunk[];
+  text_evidence_available?: boolean;
+  text_evidence_status?: string;
 }
 
 export interface BoardDecision {

@@ -28,6 +28,9 @@ class ResourceSegmentStore:
                 page_range TEXT,
                 before_segment_id TEXT,
                 after_segment_id TEXT,
+                parser_name TEXT NOT NULL DEFAULT 'openclass-native',
+                parser_version TEXT NOT NULL DEFAULT '1',
+                text_source TEXT NOT NULL DEFAULT 'source_file',
                 PRIMARY KEY (resource_id, segment_id)
             );
 
@@ -77,6 +80,19 @@ class ResourceSegmentStore:
             self.fts_available = False
         else:
             self.fts_available = True
+        self._migrate_schema(conn)
+
+    def _migrate_schema(self, conn: sqlite3.Connection) -> None:
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(resource_segments)").fetchall()
+        }
+        if "parser_name" not in columns:
+            conn.execute("ALTER TABLE resource_segments ADD COLUMN parser_name TEXT NOT NULL DEFAULT 'openclass-native'")
+        if "parser_version" not in columns:
+            conn.execute("ALTER TABLE resource_segments ADD COLUMN parser_version TEXT NOT NULL DEFAULT '1'")
+        if "text_source" not in columns:
+            conn.execute("ALTER TABLE resource_segments ADD COLUMN text_source TEXT NOT NULL DEFAULT 'source_file'")
 
     def read_segments(self, conn: sqlite3.Connection, resource_id: str) -> list[ResourceSegment]:
         embedding_rows = conn.execute(
@@ -122,6 +138,9 @@ class ResourceSegmentStore:
                     page_range=row["page_range"],
                     before_segment_id=row["before_segment_id"],
                     after_segment_id=row["after_segment_id"],
+                    parser_name=row["parser_name"],
+                    parser_version=row["parser_version"],
+                    text_source=row["text_source"],
                     embedding=_loads(embedding_row["embedding_json"], []) if embedding_row is not None else [],
                     embedding_provider=embedding_row["provider"] if embedding_row is not None else None,
                     embedding_model=embedding_row["model"] if embedding_row is not None else None,
@@ -148,8 +167,9 @@ class ResourceSegmentStore:
                 """
                 INSERT INTO resource_segments(
                     resource_id, chapter_id, segment_id, order_index, heading_path_json,
-                    text, text_hash, keywords_json, page_range, before_segment_id, after_segment_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    text, text_hash, keywords_json, page_range, before_segment_id, after_segment_id,
+                    parser_name, parser_version, text_source
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     resource.id,
@@ -163,6 +183,9 @@ class ResourceSegmentStore:
                     segment.page_range,
                     segment.before_segment_id,
                     segment.after_segment_id,
+                    segment.parser_name,
+                    segment.parser_version,
+                    segment.text_source,
                 ),
             )
             self._insert_fts(conn, segment)

@@ -18,9 +18,11 @@ from app.models import (
     InteractionRuleDraft,
     InteractionSession,
     InteractionTurnDecision,
+    LibraryChapter,
     LearningRequirementChecklistItem,
     LearningRequirementKeyFact,
     RealtimeTranscriptLogRequest,
+    ResourceLibraryItem,
     SelectionRef,
     UserView,
 )
@@ -4191,6 +4193,165 @@ def test_learning_request_generates_board_after_resource_reference_confirmation(
     assert commit.metadata["selected_reference"]["segment_id"] == first.reference_prompt.segment_id
     assert commit.metadata["active_requirement_sheet_after"] is None
     assert captured["intent"] == "generate_from_requirements"
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_resource_output_explanation_resolves_structural_chapter_before_generation(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    captured: dict[str, str | None] = {}
+
+    def _fake_board_edit(**kwargs):
+        captured["resource_summary"] = kwargs.get("resource_summary")
+        return BoardDocumentEditResult(
+            operation="replace_document",
+            title="结构化章节板书",
+            content_text="# 结构化章节板书\n## 目标小节\n根据章节正文生成。",
+            summary="已参考章节正文生成板书。",
+            chatbot_message="AI生成：已参考章节正文生成板书。",
+            section_titles=["目标小节"],
+        )
+
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_chatbot_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="确认参考资料。"),
+    )
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _fake_board_edit)
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
+
+    workspace = _seed_test_user_workspace(store)
+    package = workspace.packages[0]
+    lesson = package.lessons[0]
+    resource_path = tmp_path / "resource.md"
+    resource_path.write_text(
+        "# Chapter 15 Rule Structure\nThis chapter overview is not the target.\n\n"
+        "## 15.3 Target Section\n15.3 target body evidence for generated board.",
+        encoding="utf-8",
+    )
+    resource = build_resource_item(resource_path, "resource.md")
+    resource.scope_lesson_id = lesson.id
+    package.resources.append(resource)
+    store.save_for_user(TEST_USER.id, workspace)
+
+    first = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="在文档框为我讲解15.3的章节内容"),
+        user_id=TEST_USER.id,
+    )
+
+    assert first.board_decision.action == "await_reference_choice"
+    assert first.reference_prompt is not None
+    assert first.reference_prompt.text_evidence_available is True
+    assert "15.3" in first.reference_prompt.chapter_title
+
+    confirmed = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(
+            message="在文档框为我讲解15.3的章节内容",
+            resource_reference_action="confirm",
+            resource_reference_resource_id=first.reference_prompt.resource_id,
+            resource_reference_chapter_id=first.reference_prompt.chapter_id,
+            resource_reference_segment_id=first.reference_prompt.segment_id,
+        ),
+        user_id=TEST_USER.id,
+    )
+
+    assert confirmed.board_decision.action == "edit_board"
+    assert "15.3 target body evidence" in (captured["resource_summary"] or "")
+    commit = confirmed.course_package.lessons[0].history_graph.commits[-1]
+    assert commit.metadata["resource_backed_generation"] is True
+    assert commit.metadata["resource_text_evidence_available"] is True
+    assert commit.metadata["selected_reference"]["chapter_title"] == first.reference_prompt.chapter_title
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_outline_only_reference_requires_confirmation_and_marks_degraded_generation(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    captured: dict[str, str | None] = {}
+
+    def _fake_board_edit(**kwargs):
+        captured["resource_summary"] = kwargs.get("resource_summary")
+        return BoardDocumentEditResult(
+            operation="replace_document",
+            title="目录降级板书",
+            content_text="# 目录降级板书\n## 说明\n没有正文证据的降级生成。",
+            summary="已在缺少正文证据时降级生成。",
+            chatbot_message="AI生成：已在缺少正文证据时降级生成。",
+            section_titles=["说明"],
+        )
+
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_chatbot_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="确认缺少正文。"),
+    )
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _fake_board_edit)
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
+
+    workspace = _seed_test_user_workspace(store)
+    package = workspace.packages[0]
+    lesson = package.lessons[0]
+    resource = ResourceLibraryItem(
+        name="outline-only.pdf",
+        mime_type="application/pdf",
+        resource_type="document",
+        size_bytes=1,
+        outline=[
+            LibraryChapter(
+                title="第15章 结构章节",
+                summary="目录显示这里包含目标小节，但没有可用正文。",
+                keywords=["15.3"],
+                path=["第15章 结构章节"],
+                locator_hint="第15章",
+                order_index=0,
+            )
+        ],
+        extracted_text_available=False,
+        text_content=None,
+        source_path=None,
+    )
+    resource.scope_lesson_id = lesson.id
+    package.resources.append(resource)
+    store.save_for_user(TEST_USER.id, workspace)
+
+    first = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="在文档框为我讲解15.3的章节内容"),
+        user_id=TEST_USER.id,
+    )
+
+    assert first.board_decision.action == "await_reference_choice"
+    assert first.reference_prompt is not None
+    assert first.reference_prompt.text_evidence_available is False
+    assert first.reference_prompt.requires_text_fallback_confirmation is True
+    assert "没有抽到" in first.chatbot_message
+
+    confirmed = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(
+            message="在文档框为我讲解15.3的章节内容",
+            resource_reference_action="confirm",
+            resource_reference_resource_id=first.reference_prompt.resource_id,
+            resource_reference_chapter_id=first.reference_prompt.chapter_id,
+        ),
+        user_id=TEST_USER.id,
+    )
+
+    assert confirmed.board_decision.action == "edit_board"
+    assert confirmed.selected_reference is not None
+    assert confirmed.selected_reference.text_evidence_available is False
+    assert "未抽到可引用正文" in (captured["resource_summary"] or "")
+    commit = confirmed.course_package.lessons[0].history_graph.commits[-1]
+    assert commit.metadata["resource_backed_generation"] is False
+    assert commit.metadata["resource_text_evidence_available"] is False
+    assert commit.metadata["resource_reference_degraded"] is True
+    assert commit.metadata["selected_reference"]["text_evidence_available"] is False
     assert _read_log_entries(isolated_ai_log) == []
 
 

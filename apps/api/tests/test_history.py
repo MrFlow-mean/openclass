@@ -1,4 +1,6 @@
 import pytest
+from pypdf import PdfReader
+from reportlab.pdfgen import canvas
 
 from app.models import BoardDocument, InteractionSession, LearningRequirementSheet, PatchOperation
 from app.services.chart_generation import extract_chart_data_fragments
@@ -25,6 +27,19 @@ from app.services.rich_document import (
     upgrade_markdown_like_document,
 )
 from app.services.segment_resolver import resolve_board_focus
+
+
+def _write_pdf_with_outline(path, *, outline_title: str, lines: list[str]) -> None:
+    pdf = canvas.Canvas(str(path))
+    pdf.bookmarkPage("target")
+    pdf.addOutlineEntry(outline_title, "target", level=0)
+    y = 760
+    for line in lines:
+        pdf.drawString(72, y, line)
+        y -= 18
+    pdf.showPage()
+    pdf.save()
+    assert PdfReader(str(path)).outline
 
 
 def test_build_lesson_for_topic_creates_blank_lesson_without_ai_runtime() -> None:
@@ -575,6 +590,36 @@ def test_build_resource_item_extracts_markdown_outline_and_reference_context(tmp
     assert context is not None
     assert context.chapter_title == "第一章"
     assert "第一章正文" in context.full_text
+
+
+def test_pdf_outline_without_text_is_not_marked_as_extracted(tmp_path) -> None:
+    resource_path = tmp_path / "outline-only.pdf"
+    _write_pdf_with_outline(resource_path, outline_title="Chapter 15 Rule Structure", lines=[])
+
+    resource = build_resource_item(resource_path, "outline-only.pdf")
+
+    assert resource.outline
+    assert resource.extracted_text_available is False
+    assert resource.segments == []
+
+
+def test_pdf_page_text_generates_resource_segments(tmp_path) -> None:
+    resource_path = tmp_path / "chapter.pdf"
+    _write_pdf_with_outline(
+        resource_path,
+        outline_title="Chapter 15 Rule Structure",
+        lines=[
+            "15.3 Pruning Optimization",
+            "This section explains pruning evidence used for resource-backed generation.",
+        ],
+    )
+
+    resource = build_resource_item(resource_path, "chapter.pdf")
+
+    assert resource.extracted_text_available is True
+    assert resource.segments
+    assert any("Pruning Optimization" in segment.text for segment in resource.segments)
+    assert all(segment.parser_name for segment in resource.segments)
 
 
 def test_resource_resolver_selects_relevant_uploaded_chapter(tmp_path) -> None:

@@ -140,7 +140,7 @@ def test_sqlite_store_indexes_and_round_trips_resource_segments(tmp_path) -> Non
     with sqlite3.connect(db_path) as conn:
         segment_rows = conn.execute(
             """
-            SELECT segment_id, text, heading_path_json
+            SELECT segment_id, text, heading_path_json, parser_name, parser_version, text_source
             FROM resource_segments
             WHERE resource_id = ?
             ORDER BY order_index
@@ -166,6 +166,9 @@ def test_sqlite_store_indexes_and_round_trips_resource_segments(tmp_path) -> Non
     assert segment_rows
     assert any("牛顿莱布尼茨公式" in row[1] for row in segment_rows)
     assert json.loads(segment_rows[0][2]) == ["定积分"]
+    assert segment_rows[0][3] == "openclass-native"
+    assert segment_rows[0][4]
+    assert segment_rows[0][5]
     if fts_rows:
         assert [row[0] for row in fts_rows] == [row[0] for row in segment_rows]
 

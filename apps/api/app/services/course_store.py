@@ -24,9 +24,10 @@ from app.models import (
 )
 from app.services.document_segment_store import DocumentSegmentStore
 from app.services.resource_segment_store import ResourceSegmentStore
+from app.services.resource_library import resource_has_text_evidence
 from app.services.rich_document import upgrade_markdown_like_document
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 
 def _active_package_setting_key(owner_user_id: str | None) -> str:
@@ -599,6 +600,15 @@ class SqliteCourseStore:
         resource.segments = self._resource_segments.read_segments(conn, resource.id)
         if not resource.segments:
             resource.segments = self._resource_segments.ensure_segments(resource)
+            if resource.segments:
+                resource.segments = self._resource_segments.replace_segments(conn, resource)
+        text_available = resource_has_text_evidence(resource)
+        if text_available != resource.extracted_text_available:
+            conn.execute(
+                "UPDATE resources SET extracted_text_available = ? WHERE id = ?",
+                (int(text_available), resource.id),
+            )
+            resource.extracted_text_available = text_available
         return resource
 
     def _read_resource_event(self, row: sqlite3.Row) -> ResourceActivityEvent:
