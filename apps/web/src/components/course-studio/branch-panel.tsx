@@ -55,21 +55,24 @@ export function BranchPanel({
             : b.fromCurrent}
         </p>
         <div className="mt-4 flex flex-wrap gap-2">
-          {Object.values(activeLesson.history_graph.branches).map((branch) => (
-            <button
-              key={branch.name}
-              type="button"
-              onClick={() => void onSwitchBranch(branch.name)}
-              className={clsx(
-                "rounded-full border px-3 py-1 text-[10px] font-bold uppercase tracking-[0.16em] transition",
-                activeLesson.history_graph.current_branch === branch.name
-                  ? "border-black bg-black text-white"
-                  : "border-gray-200 bg-white text-gray-500 hover:text-black"
-              )}
-            >
-              {branch.name}
-            </button>
-          ))}
+          {Object.values(activeLesson.history_graph.branches).map((branch) => {
+            const branchLabel = txt.studio.branchDisplayName(branch.name);
+            return (
+              <button
+                key={branch.name}
+                type="button"
+                onClick={() => void onSwitchBranch(branch.name)}
+                className={clsx(
+                  "rounded-full border px-3 py-1 text-[10px] font-bold uppercase tracking-[0.16em] transition",
+                  activeLesson.history_graph.current_branch === branch.name
+                    ? "border-black bg-black text-white"
+                    : "border-gray-200 bg-white text-gray-500 hover:text-black"
+                )}
+              >
+                {branchLabel}
+              </button>
+            );
+          })}
         </div>
       </div>
 

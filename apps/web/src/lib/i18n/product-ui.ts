@@ -286,6 +286,7 @@ export function profileSettingsTexts(lang: InterfaceLanguage) {
       resizeSidebar: z ? "调整辅助栏宽度" : "Resize side panel",
       voiceModelSwitched: z ? "已切换实时语音模型，当前会话已断开" : "Realtime model changed; the current session was disconnected",
       chatbotSpoken: z ? "Chatbot 回复已通过受控工作流播出，可以继续提问" : "Chatbot response played through the controlled workflow. You can keep asking.",
+      branchDisplayName: (branchName: string) => (branchName === "main" ? (z ? "主分支" : "Main branch") : branchName),
       emptyPackageTitle: z ? "这个课程包还是空的" : "This package is empty",
       emptyPackageBody: z
         ? "上方这条页签栏已经是当前课程包的页面区了。点右上角的加号，或者直接从下面创建第一张课程页面。"

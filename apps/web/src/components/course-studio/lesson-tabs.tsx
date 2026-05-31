@@ -47,8 +47,8 @@ export function LessonTabs({
           )}
         >
           <span className="max-w-[160px] truncate">{lesson.title}</span>
-          <span className="max-w-[52px] truncate text-[9px] font-medium tracking-[0.16em] text-gray-300">
-            {lesson.history_graph.current_branch}
+          <span className="max-w-[72px] truncate text-[9px] font-medium tracking-[0.16em] text-gray-300">
+            {txt.studio.branchDisplayName(lesson.history_graph.current_branch)}
           </span>
           <span
             className="rounded-md p-1 text-gray-300 opacity-0 transition hover:bg-gray-100 hover:text-black group-hover:opacity-100"

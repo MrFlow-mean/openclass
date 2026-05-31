@@ -37,6 +37,7 @@ export function BranchSequenceSelector({
 }) {
   const { texts: txt, intlLocale } = useInterfaceLanguage();
   const s = txt.studio.branchSequence;
+  const branchDisplayName = txt.studio.branchDisplayName;
   const rootRef = useRef<HTMLDivElement | null>(null);
   const [openBranchName, setOpenBranchName] = useState<string | null>(null);
   const openBranch = branches.find((branch) => branch.branchName === openBranchName) ?? null;
@@ -78,6 +79,7 @@ export function BranchSequenceSelector({
       <div className="flex min-w-0 flex-wrap gap-1">
         {branches.map((branch) => {
           const isCurrent = branch.branchName === currentBranchName;
+          const branchLabel = branchDisplayName(branch.branchName);
           return (
             <div key={branch.branchName} className="relative">
               <button
@@ -99,8 +101,8 @@ export function BranchSequenceSelector({
                     : "text-blue-600 hover:bg-blue-50 hover:text-blue-700"
                 )}
                 aria-current={isCurrent ? "true" : undefined}
-                aria-label={s.switchAria(branch.order, branch.branchName)}
-                title={s.title(branch.branchName)}
+                aria-label={s.switchAria(branch.order, branchLabel)}
+                title={s.title(branchLabel)}
               >
                 {branch.order}
               </button>
@@ -108,7 +110,7 @@ export function BranchSequenceSelector({
                 <div className="absolute left-0 top-8 z-50 w-72 rounded-xl border border-gray-200 bg-white p-4 text-left shadow-xl">
                   <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.16em] text-gray-400">
                     <GitBranch className="h-3.5 w-3.5" />
-                    <span>{openBranch.branchName}</span>
+                    <span>{branchDisplayName(openBranch.branchName)}</span>
                   </div>
                   <div className="mt-3 flex items-start gap-2">
                     <BookOpen className="mt-0.5 h-4 w-4 shrink-0 text-gray-400" />
