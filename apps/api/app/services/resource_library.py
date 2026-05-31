@@ -21,7 +21,12 @@ from app.models import (
     ResourceSegment,
 )
 from app.services.image_ocr import extract_image_text, extract_pdf_pages_text
-from app.services.resource_parser import current_resource_parser_spec, parse_with_external_resource_parser
+from app.services.resource_parser import (
+    ParsedResourceText,
+    ResourceParserSpec,
+    current_resource_parser_spec,
+    parse_with_external_resource_parser,
+)
 
 
 _PDF_TEXT_SUMMARY_LIMIT = 140
@@ -33,7 +38,9 @@ _RESOURCE_SEGMENT_LIMIT = 600
 _PDF_SMALL_DOCUMENT_MAX_PAGES = 30
 _PDF_SMALL_DOCUMENT_MAX_CHARS = 60000
 _PDF_SMALL_DOCUMENT_SOURCE = "pdf_small_document"
+_EXTERNAL_PARSER_SOURCE = "external_parser"
 _TRUSTED_PDF_PAGE_OFFSET_SUPPORTS = {"page_labels", "text_sequence", "ocr_sequence"}
+_EXTERNAL_PARSE_NOT_PROVIDED = object()
 
 
 @dataclass(frozen=True)
@@ -372,6 +379,140 @@ def _generic_chapter_from_text(title: str, text: str, *, summary_prefix: str) ->
         order_index=0,
         scan_strategy="fulltext_match",
     )
+
+
+def _external_parser_locator_hint(title: str, parser: ResourceParserSpec) -> str:
+    return _PDF_LOCATOR_SEPARATOR.join(
+        [
+            f"source={_EXTERNAL_PARSER_SOURCE}",
+            f"title={title}",
+            f"parser_name={parser.name}",
+            f"parser_version={parser.version}",
+        ]
+    )
+
+
+def _mark_external_parser_chapters(
+    chapters: list[LibraryChapter],
+    parsed: ParsedResourceText,
+) -> list[LibraryChapter]:
+    return [
+        chapter.model_copy(
+            update={
+                "locator_hint": _external_parser_locator_hint(chapter.title, parsed.parser),
+            }
+        )
+        for chapter in chapters
+    ]
+
+
+def _external_parser_outline(original_name: str, parsed: ParsedResourceText) -> list[LibraryChapter]:
+    content_text = parsed.content_text
+    chapters: list[LibraryChapter] = []
+    if parsed.headings:
+        for index, heading in enumerate(parsed.headings):
+            seed = _text_for_external_heading(parsed, heading.heading_path or [heading.title])
+            chapters.append(
+                _chapter(
+                    title=heading.title,
+                    summary=_summary_snippet(seed, limit=160)
+                    or f"从外部解析器返回的标题“{heading.title}”生成的资料入口。",
+                    keywords=_keywords_from_text(f"{heading.title}\n{seed}"),
+                    level=heading.level,
+                    locator_hint=_external_parser_locator_hint(heading.title, parsed.parser),
+                    order_index=index,
+                    scan_strategy="fulltext_match",
+                    page_start=_page_start_from_range(heading.page_range),
+                    page_end=_page_end_from_range(heading.page_range),
+                )
+            )
+    elif parsed.blocks:
+        chapters = _outline_from_external_blocks(original_name, parsed)
+    elif parsed.markdown:
+        chapters = _mark_external_parser_chapters(_extract_markdown_outline(parsed.markdown), parsed)
+
+    if chapters:
+        return chapters
+
+    ai_outline = _ai_generated_outline(original_name, content_text)
+    if ai_outline:
+        return _mark_external_parser_chapters(ai_outline, parsed)
+
+    chapter = _generic_chapter_from_text(
+        Path(original_name).stem,
+        content_text,
+        summary_prefix="从可插拔解析器抽取到的内容摘要：",
+    )
+    return _mark_external_parser_chapters([chapter], parsed)
+
+
+def _outline_from_external_blocks(original_name: str, parsed: ParsedResourceText) -> list[LibraryChapter]:
+    chapters: list[LibraryChapter] = []
+    seen: set[tuple[int, str, tuple[str, ...]]] = set()
+    for block in parsed.blocks or []:
+        heading_path = block.heading_path or []
+        if not heading_path:
+            continue
+        for level, title in enumerate(heading_path, start=1):
+            path = tuple(heading_path[:level])
+            key = (level, title, path)
+            if key in seen:
+                continue
+            seen.add(key)
+            seed = _text_for_external_heading(parsed, list(path))
+            chapters.append(
+                _chapter(
+                    title=title,
+                    summary=_summary_snippet(seed, limit=160)
+                    or f"从外部解析器返回的结构“{title}”生成的资料入口。",
+                    keywords=_keywords_from_text(f"{title}\n{seed}"),
+                    level=level,
+                    locator_hint=_external_parser_locator_hint(title, parsed.parser),
+                    order_index=len(chapters),
+                    scan_strategy="fulltext_match",
+                    page_start=_page_start_from_range(block.page_range),
+                    page_end=_page_end_from_range(block.page_range),
+                )
+            )
+    if chapters:
+        return chapters
+
+    title = Path(original_name).stem
+    return [
+        _chapter(
+            title=title,
+            summary="从外部解析器返回的结构化块生成的资料入口。",
+            keywords=_keywords_from_text(parsed.content_text),
+            locator_hint=_external_parser_locator_hint(title, parsed.parser),
+            order_index=0,
+            scan_strategy="fulltext_match",
+        )
+    ]
+
+
+def _text_for_external_heading(parsed: ParsedResourceText, heading_path: list[str]) -> str:
+    if not heading_path:
+        return parsed.content_text[:4000]
+    matching_blocks = []
+    for block in parsed.blocks or []:
+        block_path = block.heading_path or []
+        if block_path[: len(heading_path)] == heading_path:
+            matching_blocks.append(block.text)
+    return "\n\n".join(matching_blocks).strip() or parsed.content_text[:4000]
+
+
+def _page_start_from_range(page_range: str | None) -> int | None:
+    if not page_range:
+        return None
+    match = re.search(r"\d+", page_range)
+    return int(match.group(0)) if match else None
+
+
+def _page_end_from_range(page_range: str | None) -> int | None:
+    if not page_range:
+        return None
+    matches = re.findall(r"\d+", page_range)
+    return int(matches[-1]) if matches else None
 
 
 def _ai_generated_outline(original_name: str, text: str) -> list[LibraryChapter]:
@@ -1142,12 +1283,17 @@ def _build_reference_context(
 
 def _extract_markdown_section_text(file_path: Path, chapter: LibraryChapter) -> str:
     text = _read_text_file(file_path)
+    return _extract_markdown_section_from_text(text, chapter)
+
+
+def _extract_markdown_section_from_text(text: str, chapter: LibraryChapter) -> str:
     sections = _markdown_sections(text)
+    locator_title = _pdf_locator_text(chapter.locator_hint, "title") or chapter.locator_hint or chapter.title
     target = next(
         (
             section
             for section in sections
-            if str(section["title"]) == (chapter.locator_hint or chapter.title)
+            if str(section["title"]) == locator_title or str(section["title"]) == chapter.title
         ),
         None,
     )
@@ -1678,7 +1824,13 @@ def _toc_entries_to_chapters(reader: PdfReader, file_path: Path, toc_pages: list
     return chapters
 
 
-def extract_outline(file_path: Path, original_name: str, mime_type: str) -> tuple[list[LibraryChapter], bool, str | None]:
+def extract_outline(
+    file_path: Path,
+    original_name: str,
+    mime_type: str,
+    *,
+    external_parse: ParsedResourceText | None = None,
+) -> tuple[list[LibraryChapter], bool, str | None]:
     if mime_type.startswith("image/"):
         generic_title = Path(original_name).stem
         extracted_text = extract_image_text(file_path)
@@ -1711,26 +1863,9 @@ def extract_outline(file_path: Path, original_name: str, mime_type: str) -> tupl
             None,
         )
 
-    external_parse = parse_with_external_resource_parser(file_path)
-    if external_parse is not None:
-        text = external_parse.text[:200000]
-        outline = _extract_markdown_outline(text)
-        if outline:
-            return outline, True, text
-        ai_outline = _ai_generated_outline(original_name, text)
-        if ai_outline:
-            return ai_outline, True, text
-        return (
-            [
-                _generic_chapter_from_text(
-                    Path(original_name).stem,
-                    text,
-                    summary_prefix="从可插拔解析器抽取到的内容摘要：",
-                )
-            ],
-            True,
-            text,
-        )
+    if external_parse is not None and external_parse.ok:
+        text = external_parse.content_text[:200000]
+        return _external_parser_outline(original_name, external_parse), True, text
 
     if mime_type in {"text/plain", "text/markdown"} or file_path.suffix.lower() in {".md", ".txt"}:
         text = _read_text_file(file_path)
@@ -1995,6 +2130,13 @@ def _resource_chapter_text(
 
     suffix = file_path.suffix.lower()
     try:
+        if resource.text_content and _is_external_parser_chapter(chapter):
+            text = (
+                _extract_markdown_section_from_text(resource.text_content, chapter)
+                if chapter.scan_strategy == "heading_section"
+                else resource.text_content
+            )
+            return ResourceTextExtraction(text, _EXTERNAL_PARSER_SOURCE, bool(_normalize_extracted_text(text)))
         if resource.mime_type in {"text/plain", "text/markdown"} or suffix in {".md", ".txt"}:
             text = (
                 _extract_markdown_section_text(file_path, chapter)
@@ -2029,6 +2171,88 @@ def _resource_chapter_text(
 
 def _resource_chapter_raw_text(resource: ResourceLibraryItem, chapter: LibraryChapter) -> str:
     return _resource_chapter_text(resource, chapter).text
+
+
+def _is_external_parser_chapter(chapter: LibraryChapter) -> bool:
+    return _pdf_locator_source(chapter.locator_hint) == _EXTERNAL_PARSER_SOURCE
+
+
+def _external_parser_spec_for_resource(
+    resource: ResourceLibraryItem,
+    chapter: LibraryChapter | None = None,
+) -> ResourceParserSpec:
+    parser_name = resource.parser_name
+    parser_version = resource.parser_version
+    if chapter is not None:
+        parser_name = parser_name or _pdf_locator_text(chapter.locator_hint, "parser_name")
+        parser_version = parser_version or _pdf_locator_text(chapter.locator_hint, "parser_version")
+    fallback = current_resource_parser_spec()
+    return ResourceParserSpec(
+        name=parser_name or fallback.name,
+        version=parser_version or fallback.version,
+    )
+
+
+def _chapter_for_external_block(
+    chapters: list[LibraryChapter],
+    heading_path: list[str],
+) -> LibraryChapter | None:
+    if not chapters:
+        return None
+    if heading_path:
+        normalized_path = [part.strip() for part in heading_path if part.strip()]
+        for chapter in chapters:
+            if chapter.path and chapter.path == normalized_path[: len(chapter.path)]:
+                return chapter
+        for chapter in reversed(chapters):
+            if chapter.title in normalized_path:
+                return chapter
+    return chapters[0]
+
+
+def _build_external_parser_resource_segments(resource: ResourceLibraryItem) -> list[ResourceSegment]:
+    chapters = sorted(resource.outline, key=lambda item: item.order_index)
+    if not resource.parsed_blocks or not chapters:
+        return []
+    parser_spec = _external_parser_spec_for_resource(resource)
+    segments: list[ResourceSegment] = []
+    for block in resource.parsed_blocks:
+        text = _normalize_extracted_text(str(block.get("text") or ""))
+        if not text:
+            continue
+        heading_path = [
+            str(part).strip()
+            for part in block.get("heading_path", [])
+            if str(part).strip()
+        ]
+        chapter = _chapter_for_external_block(chapters, heading_path)
+        if chapter is None:
+            continue
+        segment_heading_path = heading_path or chapter.path or [chapter.title]
+        for segment_text in _split_resource_text_into_segments(text):
+            text_hash = _resource_segment_hash(segment_text)
+            order_index = len(segments)
+            stable_seed = f"{resource.id}:{chapter.id}:external:{order_index}:{text_hash}"
+            segment_id = f"rseg_{hashlib.sha1(stable_seed.encode('utf-8')).hexdigest()[:12]}"
+            segments.append(
+                ResourceSegment(
+                    segment_id=segment_id,
+                    resource_id=resource.id,
+                    chapter_id=chapter.id,
+                    heading_path=segment_heading_path,
+                    order_index=order_index,
+                    text=segment_text,
+                    text_hash=text_hash,
+                    keywords=_keywords_from_text(f"{' '.join(segment_heading_path)}\n{segment_text}")[:12],
+                    page_range=str(block.get("page_range") or "") or None,
+                    parser_name=str(block.get("parser_name") or parser_spec.name),
+                    parser_version=str(block.get("parser_version") or parser_spec.version),
+                    text_source=_EXTERNAL_PARSER_SOURCE,
+                )
+            )
+            if len(segments) >= _RESOURCE_SEGMENT_LIMIT:
+                return segments
+    return segments
 
 
 def _is_pdf_small_document_chapter(resource: ResourceLibraryItem, chapter: LibraryChapter) -> bool:
@@ -2087,10 +2311,16 @@ def _link_resource_segments(segments: list[ResourceSegment]) -> list[ResourceSeg
 
 
 def build_resource_segments(resource: ResourceLibraryItem) -> list[ResourceSegment]:
+    if resource.parsed_blocks:
+        return _link_resource_segments(_build_external_parser_resource_segments(resource))
+
     segments: list[ResourceSegment] = []
     chapters = sorted(resource.outline, key=lambda item: item.order_index)
     seen_hashes: set[tuple[str, str]] = set()
-    parser_spec = current_resource_parser_spec()
+    parser_spec = ResourceParserSpec(
+        name=resource.parser_name or current_resource_parser_spec().name,
+        version=resource.parser_version or current_resource_parser_spec().version,
+    )
 
     for chapter in chapters:
         if _is_pdf_small_document_chapter(resource, chapter):
@@ -2110,6 +2340,11 @@ def build_resource_segments(resource: ResourceLibraryItem) -> list[ResourceSegme
             stable_seed = f"{resource.id}:{chapter.id}:{order_index}:{text_hash}"
             segment_id = f"rseg_{hashlib.sha1(stable_seed.encode('utf-8')).hexdigest()[:12]}"
             heading_path = chapter.path or [chapter.title]
+            segment_parser_spec = (
+                _external_parser_spec_for_resource(resource, chapter)
+                if _is_external_parser_chapter(chapter)
+                else parser_spec
+            )
             segments.append(
                 ResourceSegment(
                     segment_id=segment_id,
@@ -2121,8 +2356,8 @@ def build_resource_segments(resource: ResourceLibraryItem) -> list[ResourceSegme
                     text_hash=text_hash,
                     keywords=_keywords_from_text(f"{' '.join(heading_path)}\n{text}")[:12],
                     page_range=chapter.page_range,
-                    parser_name=parser_spec.name,
-                    parser_version=parser_spec.version,
+                    parser_name=segment_parser_spec.name,
+                    parser_version=segment_parser_spec.version,
                     text_source=extraction.text_source,
                 )
             )
@@ -2140,9 +2375,25 @@ def resource_has_text_evidence(resource: ResourceLibraryItem) -> bool:
     return any(_normalize_extracted_text(segment.text) for segment in resource.segments)
 
 
-def build_resource_item(file_path: Path, original_name: str) -> ResourceLibraryItem:
+def build_resource_item(
+    file_path: Path,
+    original_name: str,
+    *,
+    external_parse: ParsedResourceText | None | object = _EXTERNAL_PARSE_NOT_PROVIDED,
+) -> ResourceLibraryItem:
     mime_type = mimetypes.guess_type(original_name)[0] or "application/octet-stream"
-    outline, extracted, text_content = extract_outline(file_path, original_name, mime_type)
+    parsed = (
+        parse_with_external_resource_parser(file_path)
+        if external_parse is _EXTERNAL_PARSE_NOT_PROVIDED
+        else external_parse
+    )
+    parsed = parsed if isinstance(parsed, ParsedResourceText) else None
+    outline, extracted, text_content = extract_outline(
+        file_path,
+        original_name,
+        mime_type,
+        external_parse=parsed,
+    )
     outline = _attach_outline_hierarchy(outline)
     concept_index: dict[str, list[str]] = {}
     for chapter in outline:
@@ -2160,6 +2411,15 @@ def build_resource_item(file_path: Path, original_name: str) -> ResourceLibraryI
         extracted_text_available=extracted,
         text_content=text_content,
         source_path=str(file_path),
+        parsed_blocks=[
+            block.to_resource_block(parser=parsed.parser)
+            for block in (parsed.blocks or [])
+        ]
+        if parsed and parsed.ok
+        else [],
+        parser_name=parsed.parser.name if parsed and parsed.ok else None,
+        parser_version=parsed.parser.version if parsed and parsed.ok else None,
+        parser_metadata=(parsed.metadata or {}) if parsed and parsed.ok else {},
     )
     resource.segments = build_resource_segments(resource)
     resource.extracted_text_available = resource_has_text_evidence(resource)

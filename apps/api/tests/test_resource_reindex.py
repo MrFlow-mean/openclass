@@ -1,7 +1,10 @@
 import sqlite3
+import subprocess
 
+import pytest
 from reportlab.pdfgen import canvas
 
+from app.services import resource_parser
 from app.models import LibraryChapter, ResourceLibraryItem
 from app.services.image_ocr import PdfOcrPageResult
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
@@ -446,3 +449,53 @@ def test_resource_reindex_ocr_no_text_keeps_resource_unavailable(tmp_path, monke
         ).fetchone()[0]
     assert segment_count == 0
     assert text_available == 0
+
+
+@pytest.mark.parametrize(
+    ("failure_kind", "expected_error"),
+    [
+        ("timeout", "external_parser_timeout"),
+        ("exit", "parser exploded"),
+        ("empty", "external_parser_empty_output"),
+        ("malformed", "external_parser_malformed_json"),
+    ],
+)
+def test_resource_reindex_reports_parser_failure_and_falls_back_to_native(
+    tmp_path,
+    monkeypatch,
+    failure_kind,
+    expected_error,
+) -> None:
+    db_path = tmp_path / "openclass.sqlite3"
+    _, _, resource = _seed_markdown_resource(
+        db_path,
+        tmp_path,
+        filename="parser-fallback.md",
+        body="# Native Heading\nNative fallback evidence survives parser failure.",
+    )
+    _clear_resource_index(db_path, resource.id)
+    monkeypatch.setenv("OPENCLASS_RESOURCE_PARSER_COMMAND", "mock-parser")
+
+    def fake_run(command, **kwargs):
+        if failure_kind == "timeout":
+            raise subprocess.TimeoutExpired(command, timeout=1)
+        if failure_kind == "exit":
+            raise subprocess.CalledProcessError(2, command, stderr="parser exploded")
+        if failure_kind == "empty":
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(command, 0, stdout="{not-json", stderr="")
+
+    monkeypatch.setattr(resource_parser.subprocess, "run", fake_run)
+
+    report = reindex_resources(ResourceReindexOptions(database_path=db_path, apply=True))
+
+    assert report.parser_error_count == 1
+    assert report.resources[0].parser_status == "failed"
+    assert report.resources[0].parser_error == expected_error
+    assert report.resources[0].new_extracted_text_available is True
+    with sqlite3.connect(db_path) as conn:
+        segment_text = conn.execute(
+            "SELECT text FROM resource_segments WHERE resource_id = ? ORDER BY order_index LIMIT 1",
+            (resource.id,),
+        ).fetchone()[0]
+    assert "Native fallback evidence" in segment_text

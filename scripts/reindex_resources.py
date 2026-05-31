@@ -31,8 +31,15 @@ def main() -> int:
         help="Only OCR PDFs that still have no text after the normal parser path. This is the default.",
     )
     parser.add_argument("--ocr-all", action="store_true", help="OCR PDFs even when the normal parser found text.")
+    parser.add_argument("--parser-command", help="Override OPENCLASS_RESOURCE_PARSER_COMMAND for this run.")
+    parser.add_argument("--parser-timeout", type=int, help="Override OPENCLASS_RESOURCE_PARSER_TIMEOUT_SECONDS.")
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     args = parser.parse_args()
+
+    if args.parser_command:
+        os.environ["OPENCLASS_RESOURCE_PARSER_COMMAND"] = args.parser_command
+    if args.parser_timeout is not None:
+        os.environ["OPENCLASS_RESOURCE_PARSER_TIMEOUT_SECONDS"] = str(max(args.parser_timeout, 1))
 
     options = ResourceReindexOptions(
         database_path=args.database,
@@ -79,7 +86,9 @@ def _print_report(report: dict) -> None:
         f"errors={report['error_count']} "
         f"ocr_attempted={report['ocr_attempted_count']} "
         f"ocr_text_pages={report['ocr_text_page_count']} "
-        f"ocr_error_pages={report['ocr_error_page_count']}"
+        f"ocr_error_pages={report['ocr_error_page_count']} "
+        f"parser_success={report['parser_success_count']} "
+        f"parser_errors={report['parser_error_count']}"
     )
     for item in report["resources"]:
         ocr_summary = ""
@@ -90,11 +99,20 @@ def _print_report(report: dict) -> None:
                 f" empty_pages={item['ocr_empty_page_count']}"
                 f" error_pages={item['ocr_error_page_count']}"
             )
+        parser_summary = ""
+        if item.get("parser_status") != "disabled":
+            parser_summary = (
+                f" parser={item['parser_status']}"
+                f" name={item.get('parser_name') or ''}"
+                f" version={item.get('parser_version') or ''}"
+            )
+            if item.get("parser_error"):
+                parser_summary += f" parser_error={item['parser_error']}"
         print(
             f"- [{item['status']}] {item['resource_id']} {item['name']} "
             f"segments {item['old_segment_count']}->{item['new_segment_count']} "
             f"text {item['old_extracted_text_available']}->{item['new_extracted_text_available']} "
-            f"reason={item['reason']}{ocr_summary}"
+            f"reason={item['reason']}{ocr_summary}{parser_summary}"
         )
 
 

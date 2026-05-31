@@ -490,6 +490,10 @@ class ResourceLibraryItem(BaseModel):
     extracted_text_available: bool = False
     text_content: str | None = None
     source_path: str | None = None
+    parsed_blocks: list[dict[str, Any]] = Field(default_factory=list, exclude=True, repr=False)
+    parser_name: str | None = Field(default=None, exclude=True, repr=False)
+    parser_version: str | None = Field(default=None, exclude=True, repr=False)
+    parser_metadata: dict[str, Any] = Field(default_factory=dict, exclude=True, repr=False)
 
 
 class ResourceLibraryItemView(BaseModel):

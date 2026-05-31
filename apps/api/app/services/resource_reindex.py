@@ -19,7 +19,7 @@ from app.services.resource_library import (
     build_resource_segments,
     resource_has_text_evidence,
 )
-from app.services.resource_parser import current_resource_parser_spec
+from app.services.resource_parser import current_resource_parser_spec, parse_with_external_resource_parser
 from app.services.resource_segment_store import ResourceSegmentStore
 
 
@@ -56,6 +56,10 @@ class ResourceReindexItemResult:
     ocr_text_page_count: int = 0
     ocr_empty_page_count: int = 0
     ocr_error_page_count: int = 0
+    parser_status: str = "disabled"
+    parser_error: str | None = None
+    parser_name: str | None = None
+    parser_version: str | None = None
 
 
 @dataclass(frozen=True)
@@ -72,6 +76,8 @@ class ResourceReindexReport:
     ocr_attempted_count: int
     ocr_text_page_count: int
     ocr_error_page_count: int
+    parser_success_count: int
+    parser_error_count: int
     resources: list[ResourceReindexItemResult]
 
     def to_dict(self) -> dict[str, Any]:
@@ -134,6 +140,8 @@ def reindex_resources(options: ResourceReindexOptions) -> ResourceReindexReport:
         ocr_attempted_count=sum(1 for result in results if result.ocr_attempted),
         ocr_text_page_count=sum(result.ocr_text_page_count for result in results),
         ocr_error_page_count=sum(result.ocr_error_page_count for result in results),
+        parser_success_count=sum(1 for result in results if result.parser_status == "success"),
+        parser_error_count=sum(1 for result in results if result.parser_status == "failed"),
         resources=results,
     )
 
@@ -232,7 +240,8 @@ def _reindex_one(
 
     try:
         old_chapters = _read_old_chapters(conn, row.id)
-        rebuilt = build_resource_item(source_path, row.name)
+        parser_result = parse_with_external_resource_parser(source_path)
+        rebuilt = build_resource_item(source_path, row.name, external_parse=parser_result)
         rebuilt = _preserve_resource_identity(rebuilt, row, old_chapters)
         ocr_rebuild = _maybe_rebuild_pdf_with_ocr(source_path, row, old_chapters, rebuilt, options)
         if ocr_rebuild.resource is not None:
@@ -271,6 +280,10 @@ def _reindex_one(
         ocr_text_page_count=ocr_rebuild.text_page_count,
         ocr_empty_page_count=ocr_rebuild.empty_page_count,
         ocr_error_page_count=ocr_rebuild.error_page_count,
+        parser_status=parser_result.status if parser_result is not None else "disabled",
+        parser_error=parser_result.error if parser_result is not None else None,
+        parser_name=parser_result.parser.name if parser_result is not None else None,
+        parser_version=parser_result.parser.version if parser_result is not None else None,
     )
 
 
