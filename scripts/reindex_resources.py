@@ -23,6 +23,14 @@ def main() -> int:
     parser.add_argument("--limit", type=int)
     parser.add_argument("--apply", action="store_true", help="Write rebuilt indexes back to SQLite.")
     parser.add_argument("--dry-run", action="store_true", help="Inspect only. This is the default.")
+    parser.add_argument("--ocr-pdf", action="store_true", help="Run page-by-page OCR for PDF resources during reindex.")
+    parser.add_argument("--ocr-max-pages", type=int, default=80, help="Maximum PDF pages to OCR per resource.")
+    parser.add_argument(
+        "--ocr-only-missing-text",
+        action="store_true",
+        help="Only OCR PDFs that still have no text after the normal parser path. This is the default.",
+    )
+    parser.add_argument("--ocr-all", action="store_true", help="OCR PDFs even when the normal parser found text.")
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     args = parser.parse_args()
 
@@ -34,6 +42,9 @@ def main() -> int:
         owner_user_id=args.owner_user_id,
         limit=args.limit,
         create_backup=True,
+        ocr_pdf=bool(args.ocr_pdf),
+        ocr_max_pages=max(args.ocr_max_pages, 0),
+        ocr_only_missing_text=(not bool(args.ocr_all) or bool(args.ocr_only_missing_text)),
     )
     report = reindex_resources(options)
     if args.json:
@@ -65,14 +76,25 @@ def _print_report(report: dict) -> None:
         f"applied={report['applied_count']} "
         f"missing_source={report['missing_source_count']} "
         f"still_missing_text={report['still_missing_text_count']} "
-        f"errors={report['error_count']}"
+        f"errors={report['error_count']} "
+        f"ocr_attempted={report['ocr_attempted_count']} "
+        f"ocr_text_pages={report['ocr_text_page_count']} "
+        f"ocr_error_pages={report['ocr_error_page_count']}"
     )
     for item in report["resources"]:
+        ocr_summary = ""
+        if item.get("ocr_attempted"):
+            ocr_summary = (
+                f" ocr pages={item['ocr_page_count']}"
+                f" text_pages={item['ocr_text_page_count']}"
+                f" empty_pages={item['ocr_empty_page_count']}"
+                f" error_pages={item['ocr_error_page_count']}"
+            )
         print(
             f"- [{item['status']}] {item['resource_id']} {item['name']} "
             f"segments {item['old_segment_count']}->{item['new_segment_count']} "
             f"text {item['old_extracted_text_available']}->{item['new_extracted_text_available']} "
-            f"reason={item['reason']}"
+            f"reason={item['reason']}{ocr_summary}"
         )
 
 

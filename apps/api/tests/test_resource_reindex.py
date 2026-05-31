@@ -3,6 +3,7 @@ import sqlite3
 from reportlab.pdfgen import canvas
 
 from app.models import LibraryChapter, ResourceLibraryItem
+from app.services.image_ocr import PdfOcrPageResult
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
 from app.services.resource_library import build_resource_item
 from app.services.resource_reindex import ResourceReindexOptions, reindex_resources
@@ -49,6 +50,37 @@ def _write_pdf_pages(path, pages: list[list[str]]) -> None:
             y -= 18
         pdf.showPage()
     pdf.save()
+
+
+def _seed_legacy_pdf_resource(db_path, tmp_path, *, filename: str = "scan.pdf", pages: int = 3):
+    store = SqliteCourseStore(db_path, legacy_json_path=None)
+    workspace = build_initial_workspace_state()
+    package = workspace.packages[0]
+    resource_path = tmp_path / filename
+    pdf = canvas.Canvas(str(resource_path))
+    for _ in range(pages):
+        pdf.showPage()
+    pdf.save()
+    resource = ResourceLibraryItem(
+        name=filename,
+        mime_type="application/pdf",
+        resource_type="document",
+        size_bytes=resource_path.stat().st_size,
+        outline=[
+            LibraryChapter(
+                title=filename.removesuffix(".pdf"),
+                summary="Legacy scanned PDF entry.",
+                locator_hint=filename,
+                order_index=0,
+            )
+        ],
+        extracted_text_available=False,
+        source_path=str(resource_path),
+    )
+    package.resources.append(resource)
+    store.save(workspace)
+    _clear_resource_index(db_path, resource.id)
+    return resource, resource_path
 
 
 def test_resource_reindex_dry_run_reports_rebuild_without_writing(tmp_path) -> None:
@@ -293,3 +325,124 @@ def test_resource_reindex_rebuilds_short_pdf_with_page_ranges(tmp_path) -> None:
     assert [row[1] for row in segment_rows] == ["1", "2"]
     assert any("page two evidence" in row[0] for row in segment_rows)
     assert fts_count == len(segment_rows)
+
+
+def test_resource_reindex_ocr_dry_run_reports_rebuild_without_writing(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "openclass.sqlite3"
+    resource, _ = _seed_legacy_pdf_resource(db_path, tmp_path)
+
+    def fake_ocr(*args, **kwargs):
+        return [
+            PdfOcrPageResult(page_number=1, text="OCR dry-run evidence.", status="text"),
+            PdfOcrPageResult(page_number=2, text="", status="empty"),
+        ]
+
+    monkeypatch.setattr("app.services.resource_reindex.extract_pdf_page_texts", fake_ocr)
+
+    report = reindex_resources(ResourceReindexOptions(database_path=db_path, ocr_pdf=True))
+
+    assert report.dry_run is True
+    assert report.ocr_attempted_count == 1
+    assert report.ocr_text_page_count == 1
+    assert report.resources[0].status == "would_reindex"
+    assert report.resources[0].reason.startswith("ocr_segments_rebuilt")
+    with sqlite3.connect(db_path) as conn:
+        segment_count = conn.execute(
+            "SELECT COUNT(*) FROM resource_segments WHERE resource_id = ?",
+            (resource.id,),
+        ).fetchone()[0]
+        text_available = conn.execute(
+            "SELECT extracted_text_available FROM resources WHERE id = ?",
+            (resource.id,),
+        ).fetchone()[0]
+    assert segment_count == 0
+    assert text_available == 0
+
+
+def test_resource_reindex_ocr_apply_writes_page_segments_and_keeps_page_errors(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "openclass.sqlite3"
+    resource, _ = _seed_legacy_pdf_resource(db_path, tmp_path)
+
+    def fake_ocr(*args, **kwargs):
+        return [
+            PdfOcrPageResult(page_number=1, text="OCR page one evidence.", status="text"),
+            PdfOcrPageResult(page_number=2, status="error", error="page failed"),
+            PdfOcrPageResult(page_number=3, text="OCR page three evidence.", status="text"),
+        ]
+
+    monkeypatch.setattr("app.services.resource_reindex.extract_pdf_page_texts", fake_ocr)
+
+    report = reindex_resources(
+        ResourceReindexOptions(
+            database_path=db_path,
+            apply=True,
+            ocr_pdf=True,
+        )
+    )
+
+    assert report.resources[0].status == "reindexed"
+    assert report.resources[0].new_extracted_text_available is True
+    assert report.resources[0].ocr_error_page_count == 1
+    with sqlite3.connect(db_path) as conn:
+        segment_rows = conn.execute(
+            """
+            SELECT text, page_range, text_source
+            FROM resource_segments
+            WHERE resource_id = ?
+            ORDER BY order_index
+            """,
+            (resource.id,),
+        ).fetchall()
+        fts_count = conn.execute(
+            "SELECT COUNT(*) FROM resource_segments_fts WHERE resource_id = ?",
+            (resource.id,),
+        ).fetchone()[0]
+        chapter_row = conn.execute(
+            "SELECT locator_hint FROM resource_chapters WHERE resource_id = ?",
+            (resource.id,),
+        ).fetchone()
+
+    assert [row[1] for row in segment_rows] == ["1", "3"]
+    assert {row[2] for row in segment_rows} == {"ocr"}
+    assert any("page three evidence" in row[0] for row in segment_rows)
+    assert fts_count == len(segment_rows)
+    assert "source=pdf_ocr" in chapter_row[0]
+
+
+def test_resource_reindex_ocr_no_text_keeps_resource_unavailable(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "openclass.sqlite3"
+    resource, _ = _seed_legacy_pdf_resource(db_path, tmp_path)
+
+    def fake_ocr(*args, **kwargs):
+        return [
+            PdfOcrPageResult(page_number=1, status="empty"),
+            PdfOcrPageResult(page_number=2, status="error", error="not readable"),
+        ]
+
+    monkeypatch.setattr("app.services.resource_reindex.extract_pdf_page_texts", fake_ocr)
+
+    report = reindex_resources(
+        ResourceReindexOptions(
+            database_path=db_path,
+            apply=True,
+            ocr_pdf=True,
+        )
+    )
+
+    assert report.resources[0].status == "marked_no_text"
+    assert report.resources[0].reason.startswith("ocr_no_text")
+    assert report.resources[0].ocr_error_page_count == 1
+    with sqlite3.connect(db_path) as conn:
+        segment_count = conn.execute(
+            "SELECT COUNT(*) FROM resource_segments WHERE resource_id = ?",
+            (resource.id,),
+        ).fetchone()[0]
+        text_available = conn.execute(
+            "SELECT extracted_text_available FROM resources WHERE id = ?",
+            (resource.id,),
+        ).fetchone()[0]
+    assert segment_count == 0
+    assert text_available == 0

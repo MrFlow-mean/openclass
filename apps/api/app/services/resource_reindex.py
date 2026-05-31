@@ -3,13 +3,23 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+import hashlib
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from app.models import LibraryChapter, ResourceLibraryItem
-from app.services.resource_library import build_resource_item, build_resource_segments, resource_has_text_evidence
+from app.models import LibraryChapter, ResourceLibraryItem, ResourceSegment
+from app.services.image_ocr import PdfOcrPageResult, extract_pdf_page_texts
+from app.services.resource_library import (
+    _normalize_extracted_text,
+    _resource_segment_hash,
+    _split_resource_text_into_segments,
+    build_resource_item,
+    build_resource_segments,
+    resource_has_text_evidence,
+)
+from app.services.resource_parser import current_resource_parser_spec
 from app.services.resource_segment_store import ResourceSegmentStore
 
 
@@ -22,6 +32,10 @@ class ResourceReindexOptions:
     owner_user_id: str | None = None
     limit: int | None = None
     create_backup: bool = True
+    ocr_pdf: bool = False
+    ocr_max_pages: int = 80
+    ocr_only_missing_text: bool = True
+    ocr_page_timeout_seconds: int = 90
 
 
 @dataclass(frozen=True)
@@ -37,6 +51,11 @@ class ResourceReindexItemResult:
     old_extracted_text_available: bool
     new_extracted_text_available: bool
     applied: bool
+    ocr_attempted: bool = False
+    ocr_page_count: int = 0
+    ocr_text_page_count: int = 0
+    ocr_empty_page_count: int = 0
+    ocr_error_page_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -50,6 +69,9 @@ class ResourceReindexReport:
     missing_source_count: int
     still_missing_text_count: int
     error_count: int
+    ocr_attempted_count: int
+    ocr_text_page_count: int
+    ocr_error_page_count: int
     resources: list[ResourceReindexItemResult]
 
     def to_dict(self) -> dict[str, Any]:
@@ -72,6 +94,16 @@ class _ResourceRow:
     text_content: str | None
     source_path: str | None
     old_segment_count: int
+
+
+@dataclass(frozen=True)
+class _OcrReindexResult:
+    resource: ResourceLibraryItem | None
+    reason: str
+    page_count: int
+    text_page_count: int
+    empty_page_count: int
+    error_page_count: int
 
 
 def reindex_resources(options: ResourceReindexOptions) -> ResourceReindexReport:
@@ -99,6 +131,9 @@ def reindex_resources(options: ResourceReindexOptions) -> ResourceReindexReport:
         missing_source_count=sum(1 for result in results if result.status == "missing_source"),
         still_missing_text_count=sum(1 for result in results if result.new_extracted_text_available is False),
         error_count=sum(1 for result in results if result.status == "error"),
+        ocr_attempted_count=sum(1 for result in results if result.ocr_attempted),
+        ocr_text_page_count=sum(result.ocr_text_page_count for result in results),
+        ocr_error_page_count=sum(result.ocr_error_page_count for result in results),
         resources=results,
     )
 
@@ -199,11 +234,19 @@ def _reindex_one(
         old_chapters = _read_old_chapters(conn, row.id)
         rebuilt = build_resource_item(source_path, row.name)
         rebuilt = _preserve_resource_identity(rebuilt, row, old_chapters)
+        ocr_rebuild = _maybe_rebuild_pdf_with_ocr(source_path, row, old_chapters, rebuilt, options)
+        if ocr_rebuild.resource is not None:
+            rebuilt = ocr_rebuild.resource
     except Exception as exc:
         return _item_result(row, status="error", reason=str(exc) or exc.__class__.__name__)
 
     status = "would_reindex" if options.apply is False else "reindexed"
-    reason = "segments rebuilt" if rebuilt.segments else "no text evidence after reindex"
+    if ocr_rebuild.page_count > 0:
+        reason = ocr_rebuild.reason
+        if ocr_rebuild.resource is None and rebuilt.segments:
+            reason = f"segments rebuilt; {ocr_rebuild.reason}"
+    else:
+        reason = "segments rebuilt" if rebuilt.segments else "no text evidence after reindex"
     if not rebuilt.extracted_text_available:
         status = "would_mark_no_text" if options.apply is False else "marked_no_text"
 
@@ -223,6 +266,11 @@ def _reindex_one(
         old_extracted_text_available=row.extracted_text_available,
         new_extracted_text_available=rebuilt.extracted_text_available,
         applied=options.apply,
+        ocr_attempted=ocr_rebuild.page_count > 0,
+        ocr_page_count=ocr_rebuild.page_count,
+        ocr_text_page_count=ocr_rebuild.text_page_count,
+        ocr_empty_page_count=ocr_rebuild.empty_page_count,
+        ocr_error_page_count=ocr_rebuild.error_page_count,
     )
 
 
@@ -240,6 +288,204 @@ def _item_result(_row: _ResourceRow, *, status: str, reason: str) -> ResourceRei
         new_extracted_text_available=False,
         applied=False,
     )
+
+
+def _maybe_rebuild_pdf_with_ocr(
+    source_path: Path,
+    row: _ResourceRow,
+    old_chapters: list[LibraryChapter],
+    rebuilt: ResourceLibraryItem,
+    options: ResourceReindexOptions,
+) -> _OcrReindexResult:
+    if not options.ocr_pdf:
+        return _empty_ocr_reindex_result()
+    if source_path.suffix.lower() != ".pdf":
+        return _empty_ocr_reindex_result()
+    if options.ocr_only_missing_text and rebuilt.extracted_text_available:
+        return _empty_ocr_reindex_result()
+
+    ocr_results = extract_pdf_page_texts(
+        source_path,
+        max_pages=options.ocr_max_pages,
+        page_timeout=options.ocr_page_timeout_seconds,
+    )
+    page_count = len(ocr_results)
+    text_page_count = sum(1 for result in ocr_results if _normalize_extracted_text(result.text))
+    empty_page_count = sum(1 for result in ocr_results if result.status == "empty")
+    error_page_count = sum(1 for result in ocr_results if result.status == "error")
+    text_pages = [
+        PdfOcrPageResult(
+            page_number=result.page_number,
+            text=_normalize_extracted_text(result.text),
+            status=result.status,
+            error=result.error,
+        )
+        for result in ocr_results
+        if _normalize_extracted_text(result.text)
+    ]
+
+    if not text_pages:
+        reason = _ocr_reason(
+            prefix="ocr_no_text",
+            page_count=page_count,
+            text_page_count=text_page_count,
+            empty_page_count=empty_page_count,
+            error_page_count=error_page_count,
+            errors=[result.error for result in ocr_results if result.error],
+        )
+        return _OcrReindexResult(
+            resource=None,
+            reason=reason,
+            page_count=page_count,
+            text_page_count=text_page_count,
+            empty_page_count=empty_page_count,
+            error_page_count=error_page_count,
+        )
+
+    resource = _build_ocr_pdf_resource(row, old_chapters, text_pages)
+    reason = _ocr_reason(
+        prefix="ocr_segments_rebuilt",
+        page_count=page_count,
+        text_page_count=text_page_count,
+        empty_page_count=empty_page_count,
+        error_page_count=error_page_count,
+        errors=[result.error for result in ocr_results if result.error],
+    )
+    return _OcrReindexResult(
+        resource=resource,
+        reason=reason,
+        page_count=page_count,
+        text_page_count=text_page_count,
+        empty_page_count=empty_page_count,
+        error_page_count=error_page_count,
+    )
+
+
+def _empty_ocr_reindex_result() -> _OcrReindexResult:
+    return _OcrReindexResult(
+        resource=None,
+        reason="",
+        page_count=0,
+        text_page_count=0,
+        empty_page_count=0,
+        error_page_count=0,
+    )
+
+
+def _build_ocr_pdf_resource(
+    row: _ResourceRow,
+    old_chapters: list[LibraryChapter],
+    text_pages: list[PdfOcrPageResult],
+) -> ResourceLibraryItem:
+    title = Path(row.name).stem
+    joined_text = "\n\n".join(page.text for page in text_pages if page.text)
+    summary = "OCR 已按实际页码抽取 PDF 正文片段。"
+    snippet = _summary_snippet(joined_text)
+    if snippet:
+        summary = f"{summary}内容摘要：{snippet}"
+    outline = _preserve_chapter_ids(
+        [
+            LibraryChapter(
+                title=title,
+                summary=summary,
+                keywords=_keywords_from_text(f"{title}\n{joined_text}"),
+                locator_hint=f"source=pdf_ocr;pages={len(text_pages)}",
+                order_index=0,
+                scan_strategy="fulltext_match",
+            )
+        ],
+        old_chapters,
+    )
+    resource = ResourceLibraryItem(
+        id=row.id,
+        name=row.name,
+        mime_type=row.mime_type,
+        resource_type=row.resource_type,
+        size_bytes=row.size_bytes,
+        uploaded_at=row.uploaded_at,
+        scope_lesson_id=row.scope_lesson_id,
+        outline=outline,
+        concept_index=_build_concept_index(outline),
+        extracted_text_available=False,
+        text_content=None,
+        source_path=row.source_path,
+    )
+    resource.segments = _build_ocr_resource_segments(resource, outline[0], text_pages)
+    resource.extracted_text_available = resource_has_text_evidence(resource)
+    return resource
+
+
+def _build_ocr_resource_segments(
+    resource: ResourceLibraryItem,
+    chapter: LibraryChapter,
+    text_pages: list[PdfOcrPageResult],
+) -> list[ResourceSegment]:
+    parser_spec = current_resource_parser_spec()
+    heading_path = chapter.path or [chapter.title]
+    segments: list[ResourceSegment] = []
+    for page in text_pages:
+        for text in _split_resource_text_into_segments(page.text):
+            text_hash = _resource_segment_hash(text)
+            order_index = len(segments)
+            stable_seed = f"{resource.id}:{chapter.id}:ocr:{order_index}:{page.page_number}:{text_hash}"
+            segment_id = f"rseg_{hashlib.sha1(stable_seed.encode('utf-8')).hexdigest()[:12]}"
+            segments.append(
+                ResourceSegment(
+                    segment_id=segment_id,
+                    resource_id=resource.id,
+                    chapter_id=chapter.id,
+                    heading_path=heading_path,
+                    order_index=order_index,
+                    text=text,
+                    text_hash=text_hash,
+                    keywords=_keywords_from_text(f"{' '.join(heading_path)}\n{text}")[:12],
+                    page_range=str(page.page_number),
+                    parser_name=parser_spec.name,
+                    parser_version=parser_spec.version,
+                    text_source="ocr",
+                )
+            )
+    return _link_segments(segments)
+
+
+def _link_segments(segments: list[ResourceSegment]) -> list[ResourceSegment]:
+    for index, segment in enumerate(segments):
+        segments[index] = segment.model_copy(
+            update={
+                "before_segment_id": segments[index - 1].segment_id if index > 0 else None,
+                "after_segment_id": segments[index + 1].segment_id if index + 1 < len(segments) else None,
+            }
+        )
+    return segments
+
+
+def _summary_snippet(text: str, *, limit: int = 180) -> str:
+    compact = re.sub(r"\s+", " ", _normalize_extracted_text(text)).strip()
+    if len(compact) <= limit:
+        return compact
+    return f"{compact[:limit].rstrip()}..."
+
+
+def _ocr_reason(
+    *,
+    prefix: str,
+    page_count: int,
+    text_page_count: int,
+    empty_page_count: int,
+    error_page_count: int,
+    errors: list[str | None],
+) -> str:
+    parts = [
+        prefix,
+        f"pages={page_count}",
+        f"text_pages={text_page_count}",
+        f"empty_pages={empty_page_count}",
+        f"error_pages={error_page_count}",
+    ]
+    first_error = next((error for error in errors if error), None)
+    if first_error:
+        parts.append(f"first_error={first_error[:120]}")
+    return " ".join(parts)
 
 
 def _read_old_chapters(conn: sqlite3.Connection, resource_id: str) -> list[LibraryChapter]:
