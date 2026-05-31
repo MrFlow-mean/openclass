@@ -1,5 +1,6 @@
 import pytest
-from pypdf import PdfReader
+from pypdf import PdfReader, PdfWriter
+from pypdf.constants import PageLabelStyle
 from reportlab.pdfgen import canvas
 
 from app.models import BoardDocument, InteractionSession, LearningRequirementSheet, PatchOperation
@@ -40,6 +41,60 @@ def _write_pdf_with_outline(path, *, outline_title: str, lines: list[str]) -> No
     pdf.showPage()
     pdf.save()
     assert PdfReader(str(path)).outline
+
+
+def _write_pdf_with_toc_and_body(
+    path,
+    *,
+    toc_lines: list[str],
+    body_pages: list[list[str]],
+    preface_pages: int = 1,
+    draw_page_numbers: bool = True,
+    set_page_labels: bool = False,
+) -> int:
+    pdf = canvas.Canvas(str(path))
+    pdf.drawString(72, 760, "Cover")
+    pdf.showPage()
+
+    pdf.drawString(72, 760, "Contents")
+    y = 730
+    for line in toc_lines:
+        pdf.drawString(72, y, line)
+        y -= 18
+    pdf.showPage()
+
+    for index in range(preface_pages):
+        pdf.drawString(72, 760, f"Preface {index + 1}")
+        pdf.showPage()
+
+    body_first_actual_page = 2 + preface_pages + 1
+    for printed_page, lines in enumerate(body_pages, start=1):
+        y = 760
+        for line in lines:
+            pdf.drawString(72, y, line)
+            y -= 18
+        if draw_page_numbers:
+            pdf.drawCentredString(300, 36, str(printed_page))
+        pdf.showPage()
+    pdf.save()
+
+    if set_page_labels:
+        reader = PdfReader(str(path))
+        writer = PdfWriter()
+        for page in reader.pages:
+            writer.add_page(page)
+        writer.set_page_label(
+            body_first_actual_page - 1,
+            len(reader.pages) - 1,
+            style=PageLabelStyle.DECIMAL,
+            start=1,
+        )
+        labeled_path = path.with_suffix(".labeled.pdf")
+        with labeled_path.open("wb") as output:
+            writer.write(output)
+        labeled_path.replace(path)
+
+    return body_first_actual_page
 
 
 def test_build_lesson_for_topic_creates_blank_lesson_without_ai_runtime() -> None:
@@ -620,6 +675,69 @@ def test_pdf_page_text_generates_resource_segments(tmp_path) -> None:
     assert resource.segments
     assert any("Pruning Optimization" in segment.text for segment in resource.segments)
     assert all(segment.parser_name for segment in resource.segments)
+
+
+def test_pdf_toc_printed_page_anchor_maps_to_actual_body_page(tmp_path) -> None:
+    resource_path = tmp_path / "toc-anchor.pdf"
+    body_first_page = _write_pdf_with_toc_and_body(
+        resource_path,
+        toc_lines=["1.1 Target Section 3"],
+        body_pages=[
+            ["Body opening page."],
+            ["Body bridge page."],
+            ["1.1 Target Section", "Target body evidence from printed page three."],
+        ],
+    )
+
+    resource = build_resource_item(resource_path, "toc-anchor.pdf")
+
+    assert resource.outline
+    assert resource.outline[0].page_start == body_first_page + 2
+    assert "page_offset=3" in (resource.outline[0].locator_hint or "")
+    assert resource.extracted_text_available is True
+    assert any("Target body evidence" in segment.text for segment in resource.segments)
+
+
+def test_pdf_toc_anchor_window_recovers_nearby_heading(tmp_path) -> None:
+    resource_path = tmp_path / "toc-window.pdf"
+    body_first_page = _write_pdf_with_toc_and_body(
+        resource_path,
+        toc_lines=["1.1 Windowed Section 1"],
+        body_pages=[
+            ["Opening context for this section."],
+            ["More context before the heading."],
+            ["1.1 Windowed Section", "Windowed target evidence near the printed page anchor."],
+        ],
+    )
+
+    resource = build_resource_item(resource_path, "toc-window.pdf")
+
+    assert resource.outline
+    assert resource.outline[0].page_start == body_first_page
+    assert resource.extracted_text_available is True
+    assert any("Windowed target evidence" in segment.text for segment in resource.segments)
+
+
+def test_pdf_toc_uses_explicit_page_labels_as_printed_page_anchor(tmp_path) -> None:
+    resource_path = tmp_path / "toc-page-labels.pdf"
+    body_first_page = _write_pdf_with_toc_and_body(
+        resource_path,
+        toc_lines=["1.1 Label Section 2"],
+        body_pages=[
+            ["Body page with no visible footer."],
+            ["1.1 Label Section", "Label-based target evidence from printed page two."],
+        ],
+        draw_page_numbers=False,
+        set_page_labels=True,
+    )
+
+    resource = build_resource_item(resource_path, "toc-page-labels.pdf")
+
+    assert resource.outline
+    assert resource.outline[0].page_start == body_first_page + 1
+    assert "page_offset_support=page_labels" in (resource.outline[0].locator_hint or "")
+    assert resource.extracted_text_available is True
+    assert any("Label-based target evidence" in segment.text for segment in resource.segments)
 
 
 def test_resource_resolver_selects_relevant_uploaded_chapter(tmp_path) -> None:

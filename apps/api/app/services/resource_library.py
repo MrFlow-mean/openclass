@@ -30,6 +30,7 @@ _RESOURCE_SEGMENT_TARGET_CHARS = 900
 _RESOURCE_SEGMENT_MAX_CHARS = 1400
 _RESOURCE_SEGMENT_MAX_SOURCE_CHARS = 320000
 _RESOURCE_SEGMENT_LIMIT = 600
+_TRUSTED_PDF_PAGE_OFFSET_SUPPORTS = {"page_labels", "text_sequence", "ocr_sequence"}
 
 
 @dataclass(frozen=True)
@@ -37,6 +38,23 @@ class ResourceTextExtraction:
     text: str
     text_source: str
     has_text_evidence: bool
+
+
+@dataclass(frozen=True)
+class PdfPageNumberAnchor:
+    actual_page: int
+    printed_page: int
+    source: str
+
+
+@dataclass(frozen=True)
+class PdfPageOffset:
+    offset: int
+    support: str
+    anchor_actual_page: int
+    anchor_printed_page: int
+    anchor_count: int
+    trusted: bool
 
 
 def _normalize_extracted_text(text: str) -> str:
@@ -96,6 +114,10 @@ def _pdf_locator_hint(
     toc_page: int | None = None,
     printed_page: int | None = None,
     actual_page: int | None = None,
+    page_offset: int | None = None,
+    page_offset_support: str | None = None,
+    anchor_actual_page: int | None = None,
+    anchor_printed_page: int | None = None,
 ) -> str:
     parts = [title, f"source={source}"]
     if toc_page is not None:
@@ -104,6 +126,14 @@ def _pdf_locator_hint(
         parts.append(f"printed_page={printed_page}")
     if actual_page is not None:
         parts.append(f"actual_page={actual_page}")
+    if page_offset is not None:
+        parts.append(f"page_offset={page_offset}")
+    if page_offset_support is not None:
+        parts.append(f"page_offset_support={page_offset_support}")
+    if anchor_actual_page is not None:
+        parts.append(f"anchor_actual_page={anchor_actual_page}")
+    if anchor_printed_page is not None:
+        parts.append(f"anchor_printed_page={anchor_printed_page}")
     return _PDF_LOCATOR_SEPARATOR.join(parts)
 
 
@@ -127,6 +157,17 @@ def _pdf_locator_source(locator_hint: str | None) -> str | None:
         name, sep, value = part.partition("=")
         if sep and name.strip() == "source":
             return value.strip()
+    return None
+
+
+def _pdf_locator_text(locator_hint: str | None, key: str) -> str | None:
+    if not locator_hint:
+        return None
+    for part in locator_hint.split(_PDF_LOCATOR_SEPARATOR):
+        name, sep, value = part.partition("=")
+        if sep and name.strip() == key:
+            value = value.strip()
+            return value or None
     return None
 
 
@@ -1085,6 +1126,13 @@ def _extract_pdf_chapter_text(file_path: Path, chapter: LibraryChapter, query: s
     best_score = -1
     locator_source = _pdf_locator_source(chapter.locator_hint)
     trusted_locator = locator_source == "pdf_outline"
+    trusted_toc_locator = (
+        locator_source == "toc_page"
+        and (
+            _pdf_locator_text(chapter.locator_hint, "page_offset_support")
+            in _TRUSTED_PDF_PAGE_OFFSET_SUPPORTS
+        )
+    )
     for page_start in candidate_pages:
         page_end = min(chapter.page_end or page_start + 3, len(reader.pages))
         raw_text = _read_pdf_text_window(
@@ -1108,15 +1156,16 @@ def _extract_pdf_chapter_text(file_path: Path, chapter: LibraryChapter, query: s
         if score > best_score:
             best_score = score
             best_text = raw_text
-        if score >= 2 or trusted_locator:
+        if score >= 2 or trusted_locator or trusted_toc_locator:
             return raw_text
 
     if best_text and best_score > 0:
         return best_text
 
-    searched_text = _find_pdf_text_by_keywords(reader, chapter, query)
-    if searched_text:
-        return searched_text
+    if locator_source != "toc_page":
+        searched_text = _find_pdf_text_by_keywords(reader, chapter, query)
+        if searched_text:
+            return searched_text
 
     if best_text and trusted_locator:
         return best_text
@@ -1141,13 +1190,15 @@ def _extract_pdf_chapter_text(file_path: Path, chapter: LibraryChapter, query: s
 
 
 def _pdf_page_candidates(chapter: LibraryChapter, total_pages: int) -> list[int]:
+    printed_page = _pdf_locator_value(chapter.locator_hint, "printed_page")
+    page_offset = _pdf_locator_value(chapter.locator_hint, "page_offset")
     raw_candidates = [
         chapter.page_start,
         _pdf_locator_value(chapter.locator_hint, "actual_page"),
-        _pdf_locator_value(chapter.locator_hint, "printed_page"),
+        printed_page + page_offset if printed_page is not None and page_offset is not None else None,
+        printed_page,
     ]
     toc_page = _pdf_locator_value(chapter.locator_hint, "toc_page")
-    printed_page = _pdf_locator_value(chapter.locator_hint, "printed_page")
     if toc_page and printed_page:
         raw_candidates.extend([toc_page + printed_page, toc_page + printed_page - 1])
 
@@ -1304,17 +1355,201 @@ def _extract_pdf_toc_text_pages(reader: PdfReader, file_path: Path, *, max_pages
     return toc_pages
 
 
+def _arabic_page_number(value: str) -> int | None:
+    cleaned = re.sub(r"\s+", "", value).strip()
+    digit_groups = re.findall(r"\d{1,4}", cleaned)
+    if len(digit_groups) != 1:
+        return None
+    page_number = int(digit_groups[0])
+    return page_number if page_number > 0 else None
+
+
+def _printed_page_number_from_text(text: str) -> int | None:
+    lines = [line.strip() for line in _normalize_extracted_text(text).splitlines() if line.strip()]
+    if not lines:
+        return None
+    edge_lines = [*lines[:4], *lines[-4:]]
+    for line in edge_lines:
+        cleaned = re.sub(r"\s+", " ", line).strip()
+        match = re.fullmatch(r"[-–—]?\s*(\d{1,4})\s*[-–—]?", cleaned)
+        if match:
+            return int(match.group(1))
+        match = re.fullmatch(r"(?:page|p\.?)\s*(\d{1,4})", cleaned, flags=re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+        match = re.fullmatch(r"第\s*(\d{1,4})\s*页", cleaned)
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def _pdf_has_explicit_page_labels(reader: PdfReader) -> bool:
+    try:
+        root = reader.trailer.get("/Root")
+        if hasattr(root, "get_object"):
+            root = root.get_object()
+        return bool(root and root.get("/PageLabels"))
+    except Exception:
+        return False
+
+
+def _pdf_page_label_anchors(reader: PdfReader, *, min_actual_page: int) -> list[PdfPageNumberAnchor]:
+    if not _pdf_has_explicit_page_labels(reader):
+        return []
+    anchors: list[PdfPageNumberAnchor] = []
+    try:
+        page_labels = reader.page_labels
+    except Exception:
+        return []
+    for index, label in enumerate(page_labels[: len(reader.pages)], start=1):
+        if index < min_actual_page:
+            continue
+        printed_page = _arabic_page_number(str(label))
+        if printed_page is None:
+            continue
+        anchors.append(PdfPageNumberAnchor(actual_page=index, printed_page=printed_page, source="page_labels"))
+    return anchors
+
+
+def _pdf_text_page_number_anchors(
+    reader: PdfReader,
+    file_path: Path,
+    *,
+    min_actual_page: int,
+    max_pages: int,
+    use_ocr: bool = False,
+) -> list[PdfPageNumberAnchor]:
+    anchors: list[PdfPageNumberAnchor] = []
+    end_page = min(len(reader.pages), min_actual_page + max_pages - 1)
+    for actual_page in range(min_actual_page, end_page + 1):
+        text = _read_pdf_text_window(reader, page_start=actual_page, page_end=actual_page, max_pages=1)
+        source = "text"
+        printed_page = _printed_page_number_from_text(text)
+        if printed_page is None and use_ocr:
+            text = extract_pdf_pages_text(file_path, page_start=actual_page, page_end=actual_page, max_pages=1) or ""
+            source = "ocr"
+            printed_page = _printed_page_number_from_text(text)
+        if printed_page is None:
+            continue
+        anchors.append(PdfPageNumberAnchor(actual_page=actual_page, printed_page=printed_page, source=source))
+    return anchors
+
+
+def _longest_consecutive_anchor_run(anchors: list[PdfPageNumberAnchor]) -> list[PdfPageNumberAnchor]:
+    if not anchors:
+        return []
+    sorted_anchors = sorted(anchors, key=lambda anchor: (anchor.actual_page, anchor.printed_page))
+    best_run: list[PdfPageNumberAnchor] = []
+    current_run: list[PdfPageNumberAnchor] = []
+    for anchor in sorted_anchors:
+        previous = current_run[-1] if current_run else None
+        if previous and anchor.actual_page == previous.actual_page + 1 and anchor.printed_page == previous.printed_page + 1:
+            current_run.append(anchor)
+        else:
+            current_run = [anchor]
+        if len(current_run) > len(best_run):
+            best_run = list(current_run)
+    return best_run
+
+
+def _pdf_page_offset_from_anchors(anchors: list[PdfPageNumberAnchor], *, support: str) -> PdfPageOffset | None:
+    if not anchors:
+        return None
+    by_offset: dict[int, list[PdfPageNumberAnchor]] = {}
+    for anchor in anchors:
+        by_offset.setdefault(anchor.actual_page - anchor.printed_page, []).append(anchor)
+
+    best_offset: PdfPageOffset | None = None
+    best_rank: tuple[int, int, int] | None = None
+    for offset, offset_anchors in by_offset.items():
+        run = _longest_consecutive_anchor_run(offset_anchors)
+        anchor = run[0] if run else sorted(offset_anchors, key=lambda item: item.actual_page)[0]
+        trusted = len(run) >= 2
+        rank = (len(run), len(offset_anchors), -anchor.actual_page)
+        if best_rank is not None and rank <= best_rank:
+            continue
+        best_rank = rank
+        best_offset = PdfPageOffset(
+            offset=offset,
+            support=support if trusted else f"{support}_anchor",
+            anchor_actual_page=anchor.actual_page,
+            anchor_printed_page=anchor.printed_page,
+            anchor_count=max(len(run), len(offset_anchors)),
+            trusted=trusted,
+        )
+    return best_offset
+
+
+def _infer_pdf_page_offset(reader: PdfReader, file_path: Path, toc_pages: list[tuple[int, str]]) -> PdfPageOffset | None:
+    min_actual_page = 1
+    if toc_pages:
+        min_actual_page = min(len(reader.pages), max(page_number for page_number, _ in toc_pages) + 1)
+
+    fallback: PdfPageOffset | None = None
+    label_offset = _pdf_page_offset_from_anchors(
+        _pdf_page_label_anchors(reader, min_actual_page=min_actual_page),
+        support="page_labels",
+    )
+    if label_offset and label_offset.trusted:
+        return label_offset
+    fallback = label_offset or fallback
+
+    text_offset = _pdf_page_offset_from_anchors(
+        _pdf_text_page_number_anchors(
+            reader,
+            file_path,
+            min_actual_page=min_actual_page,
+            max_pages=80,
+        ),
+        support="text_sequence",
+    )
+    if text_offset and text_offset.trusted:
+        return text_offset
+    fallback = text_offset or fallback
+
+    ocr_offset = _pdf_page_offset_from_anchors(
+        _pdf_text_page_number_anchors(
+            reader,
+            file_path,
+            min_actual_page=min_actual_page,
+            max_pages=12,
+            use_ocr=True,
+        ),
+        support="ocr_sequence",
+    )
+    if ocr_offset and ocr_offset.trusted:
+        return ocr_offset
+    return ocr_offset or fallback
+
+
 def _resolve_toc_entry_actual_page(
     reader: PdfReader,
     *,
     title: str,
     toc_page: int,
     printed_page: int,
+    page_offset: PdfPageOffset | None = None,
 ) -> int | None:
-    candidates = [printed_page, toc_page + printed_page, toc_page + printed_page - 1]
-    for candidate in candidates:
+    candidates: list[tuple[int, bool]] = []
+    if page_offset is not None:
+        candidates.append((printed_page + page_offset.offset, page_offset.trusted))
+    candidates.extend(
+        [
+            (printed_page, False),
+            (toc_page + printed_page, False),
+            (toc_page + printed_page - 1, False),
+        ]
+    )
+
+    seen_candidates: set[int] = set()
+    for candidate, trusted in candidates:
         if candidate < 1 or candidate > len(reader.pages):
             continue
+        if candidate in seen_candidates:
+            continue
+        seen_candidates.add(candidate)
+        if trusted:
+            return candidate
         window_text = _read_pdf_text_window(
             reader,
             page_start=candidate,
@@ -1326,10 +1561,10 @@ def _resolve_toc_entry_actual_page(
         pseudo_chapter = LibraryChapter(title=title, summary="", keywords=_keywords_from_text(title))
         if _chapter_text_match_score(window_text, pseudo_chapter, title) > 0:
             return candidate
-    return next((candidate for candidate in candidates if 1 <= candidate <= len(reader.pages)), None)
+    return None
 
 
-def _toc_entries_to_chapters(reader: PdfReader, toc_pages: list[tuple[int, str]]) -> list[LibraryChapter]:
+def _toc_entries_to_chapters(reader: PdfReader, file_path: Path, toc_pages: list[tuple[int, str]]) -> list[LibraryChapter]:
     raw_entries: list[tuple[str, int, int, int]] = []
     for toc_page, toc_text in toc_pages:
         for title, level, printed_page in _parse_toc_entries(toc_text):
@@ -1337,6 +1572,7 @@ def _toc_entries_to_chapters(reader: PdfReader, toc_pages: list[tuple[int, str]]
     if not raw_entries:
         return []
 
+    page_offset = _infer_pdf_page_offset(reader, file_path, toc_pages)
     chapters: list[LibraryChapter] = []
     for index, (title, level, printed_page, toc_page) in enumerate(raw_entries):
         actual_page = _resolve_toc_entry_actual_page(
@@ -1344,6 +1580,7 @@ def _toc_entries_to_chapters(reader: PdfReader, toc_pages: list[tuple[int, str]]
             title=title,
             toc_page=toc_page,
             printed_page=printed_page,
+            page_offset=page_offset,
         )
         page_end = None
         next_entry = next(
@@ -1360,6 +1597,7 @@ def _toc_entries_to_chapters(reader: PdfReader, toc_pages: list[tuple[int, str]]
                 title=next_entry[0],
                 toc_page=next_entry[3],
                 printed_page=next_entry[2],
+                page_offset=page_offset,
             )
             if next_actual_page and next_actual_page > actual_page:
                 page_end = next_actual_page - 1
@@ -1370,7 +1608,7 @@ def _toc_entries_to_chapters(reader: PdfReader, toc_pages: list[tuple[int, str]]
             f"{actual_page}-{page_end}" if actual_page and page_end else None
         )
         summary = (
-            f"PDF 目录页 {toc_page} 标注页码 {printed_page}；引用时会尝试实际页、目录页偏移和全文检索定位正文。"
+            f"PDF 目录页 {toc_page} 标注页码 {printed_page}；引用时会先用正文页码锚点定位，再校验正文。"
         )
         if page_label:
             summary = f"PDF 页 {page_label} 已由目录页 {toc_page} 的页码 {printed_page} 定位；引用时会再次校验正文。"
@@ -1386,6 +1624,10 @@ def _toc_entries_to_chapters(reader: PdfReader, toc_pages: list[tuple[int, str]]
                     toc_page=toc_page,
                     printed_page=printed_page,
                     actual_page=actual_page,
+                    page_offset=page_offset.offset if page_offset else None,
+                    page_offset_support=page_offset.support if page_offset else None,
+                    anchor_actual_page=page_offset.anchor_actual_page if page_offset else None,
+                    anchor_printed_page=page_offset.anchor_printed_page if page_offset else None,
                 ),
                 order_index=index,
                 scan_strategy="page_window" if actual_page else "fulltext_match",
@@ -1535,7 +1777,7 @@ def extract_outline(file_path: Path, original_name: str, mime_type: str) -> tupl
                 return chapters, False, None
 
         toc_pages = _extract_pdf_toc_text_pages(reader, file_path)
-        toc_chapters = _toc_entries_to_chapters(reader, toc_pages)
+        toc_chapters = _toc_entries_to_chapters(reader, file_path, toc_pages)
         if toc_chapters:
             return toc_chapters, False, None
         extracted_text = []
