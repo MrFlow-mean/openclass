@@ -30,6 +30,9 @@ _RESOURCE_SEGMENT_TARGET_CHARS = 900
 _RESOURCE_SEGMENT_MAX_CHARS = 1400
 _RESOURCE_SEGMENT_MAX_SOURCE_CHARS = 320000
 _RESOURCE_SEGMENT_LIMIT = 600
+_PDF_SMALL_DOCUMENT_MAX_PAGES = 30
+_PDF_SMALL_DOCUMENT_MAX_CHARS = 60000
+_PDF_SMALL_DOCUMENT_SOURCE = "pdf_small_document"
 _TRUSTED_PDF_PAGE_OFFSET_SUPPORTS = {"page_labels", "text_sequence", "ocr_sequence"}
 
 
@@ -38,6 +41,12 @@ class ResourceTextExtraction:
     text: str
     text_source: str
     has_text_evidence: bool
+
+
+@dataclass(frozen=True)
+class PdfPageText:
+    page_number: int
+    text: str
 
 
 @dataclass(frozen=True)
@@ -105,6 +114,37 @@ def _read_pdf_text_window(
         if max_nonempty_pages is not None and nonempty_pages >= max_nonempty_pages:
             break
     return "\n".join(extracted).strip()
+
+
+def _read_pdf_page_texts(
+    reader: PdfReader,
+    *,
+    max_chars: int = _RESOURCE_SEGMENT_MAX_SOURCE_CHARS,
+) -> list[PdfPageText]:
+    pages: list[PdfPageText] = []
+    current_size = 0
+    for page_number, page in enumerate(reader.pages, start=1):
+        try:
+            text = _normalize_extracted_text(page.extract_text() or "")
+        except Exception:
+            continue
+        if not text:
+            continue
+        pages.append(PdfPageText(page_number=page_number, text=text))
+        current_size += len(text)
+        if current_size >= max_chars:
+            break
+    return pages
+
+
+def _pdf_pages_text(page_texts: list[PdfPageText]) -> str:
+    return "\n\n".join(page.text for page in page_texts if page.text).strip()
+
+
+def _is_short_pdf_document(reader: PdfReader, page_texts: list[PdfPageText]) -> bool:
+    if len(reader.pages) <= _PDF_SMALL_DOCUMENT_MAX_PAGES:
+        return True
+    return len(_pdf_pages_text(page_texts)) <= _PDF_SMALL_DOCUMENT_MAX_CHARS
 
 
 def _pdf_locator_hint(
@@ -1780,22 +1820,42 @@ def extract_outline(file_path: Path, original_name: str, mime_type: str) -> tupl
         toc_chapters = _toc_entries_to_chapters(reader, file_path, toc_pages)
         if toc_chapters:
             return toc_chapters, False, None
-        extracted_text = []
-        for page in reader.pages[:2]:
-            try:
-                extracted_text.append(page.extract_text() or "")
-            except Exception:
-                continue
-        joined_text = "\n".join(extracted_text).strip()
-        if joined_text:
-            ai_outline = _ai_generated_outline(original_name, joined_text)
+
+        page_texts = _read_pdf_page_texts(reader)
+        joined_text = _pdf_pages_text(page_texts)
+        if page_texts and _is_short_pdf_document(reader, page_texts):
+            title = Path(original_name).stem
+            snippet = _summary_snippet(joined_text)
+            summary = (
+                f"无显式目录的短 PDF，已按实际页码抽取正文片段。内容摘要：{snippet}"
+                if snippet
+                else "无显式目录的短 PDF，已按实际页码抽取正文片段。"
+            )
+            return (
+                [
+                    _chapter(
+                        title=title,
+                        summary=summary,
+                        keywords=_keywords_from_text(f"{title}\n{joined_text}")[:8],
+                        locator_hint=_pdf_locator_hint(title, source=_PDF_SMALL_DOCUMENT_SOURCE),
+                        order_index=0,
+                        scan_strategy="fulltext_match",
+                    )
+                ],
+                False,
+                None,
+            )
+
+        first_pages_text = "\n".join(page.text for page in page_texts if page.page_number <= 2).strip()
+        if first_pages_text:
+            ai_outline = _ai_generated_outline(original_name, first_pages_text)
             if ai_outline:
                 return ai_outline, False, None
             return (
                 [
                     _generic_chapter_from_text(
                         Path(original_name).stem,
-                        joined_text,
+                        first_pages_text,
                         summary_prefix="从 PDF 前几页抽取到的内容摘要：",
                     )
                 ],
@@ -1971,6 +2031,61 @@ def _resource_chapter_raw_text(resource: ResourceLibraryItem, chapter: LibraryCh
     return _resource_chapter_text(resource, chapter).text
 
 
+def _is_pdf_small_document_chapter(resource: ResourceLibraryItem, chapter: LibraryChapter) -> bool:
+    if not resource.source_path or Path(resource.source_path).suffix.lower() != ".pdf":
+        return False
+    return _pdf_locator_source(chapter.locator_hint) == _PDF_SMALL_DOCUMENT_SOURCE
+
+
+def _build_small_pdf_resource_segments(resource: ResourceLibraryItem, chapter: LibraryChapter) -> list[ResourceSegment]:
+    if not resource.source_path:
+        return []
+    try:
+        reader = PdfReader(resource.source_path)
+    except Exception:
+        return []
+
+    parser_spec = current_resource_parser_spec()
+    heading_path = chapter.path or [chapter.title]
+    segments: list[ResourceSegment] = []
+    for page in _read_pdf_page_texts(reader):
+        for text in _split_resource_text_into_segments(page.text):
+            text_hash = _resource_segment_hash(text)
+            order_index = len(segments)
+            stable_seed = f"{resource.id}:{chapter.id}:{order_index}:{page.page_number}:{text_hash}"
+            segment_id = f"rseg_{hashlib.sha1(stable_seed.encode('utf-8')).hexdigest()[:12]}"
+            segments.append(
+                ResourceSegment(
+                    segment_id=segment_id,
+                    resource_id=resource.id,
+                    chapter_id=chapter.id,
+                    heading_path=heading_path,
+                    order_index=order_index,
+                    text=text,
+                    text_hash=text_hash,
+                    keywords=_keywords_from_text(f"{' '.join(heading_path)}\n{text}")[:12],
+                    page_range=str(page.page_number),
+                    parser_name=parser_spec.name,
+                    parser_version=parser_spec.version,
+                    text_source="source_file",
+                )
+            )
+            if len(segments) >= _RESOURCE_SEGMENT_LIMIT:
+                return segments
+    return segments
+
+
+def _link_resource_segments(segments: list[ResourceSegment]) -> list[ResourceSegment]:
+    for index, segment in enumerate(segments):
+        segments[index] = segment.model_copy(
+            update={
+                "before_segment_id": segments[index - 1].segment_id if index > 0 else None,
+                "after_segment_id": segments[index + 1].segment_id if index + 1 < len(segments) else None,
+            }
+        )
+    return segments
+
+
 def build_resource_segments(resource: ResourceLibraryItem) -> list[ResourceSegment]:
     segments: list[ResourceSegment] = []
     chapters = sorted(resource.outline, key=lambda item: item.order_index)
@@ -1978,6 +2093,9 @@ def build_resource_segments(resource: ResourceLibraryItem) -> list[ResourceSegme
     parser_spec = current_resource_parser_spec()
 
     for chapter in chapters:
+        if _is_pdf_small_document_chapter(resource, chapter):
+            segments.extend(_build_small_pdf_resource_segments(resource, chapter))
+            break
         extraction = _resource_chapter_text(resource, chapter)
         if not extraction.has_text_evidence:
             continue
@@ -2013,14 +2131,7 @@ def build_resource_segments(resource: ResourceLibraryItem) -> list[ResourceSegme
         if len(segments) >= _RESOURCE_SEGMENT_LIMIT:
             break
 
-    for index, segment in enumerate(segments):
-        segments[index] = segment.model_copy(
-            update={
-                "before_segment_id": segments[index - 1].segment_id if index > 0 else None,
-                "after_segment_id": segments[index + 1].segment_id if index + 1 < len(segments) else None,
-            }
-        )
-    return segments
+    return _link_resource_segments(segments)
 
 
 def resource_has_text_evidence(resource: ResourceLibraryItem) -> bool:

@@ -97,6 +97,17 @@ def _write_pdf_with_toc_and_body(
     return body_first_actual_page
 
 
+def _write_pdf_pages(path, pages: list[list[str]]) -> None:
+    pdf = canvas.Canvas(str(path))
+    for lines in pages:
+        y = 760
+        for line in lines:
+            pdf.drawString(72, y, line)
+            y -= 18
+        pdf.showPage()
+    pdf.save()
+
+
 def test_build_lesson_for_topic_creates_blank_lesson_without_ai_runtime() -> None:
     lesson = build_lesson_for_topic("新的学习页")
 
@@ -738,6 +749,69 @@ def test_pdf_toc_uses_explicit_page_labels_as_printed_page_anchor(tmp_path) -> N
     assert "page_offset_support=page_labels" in (resource.outline[0].locator_hint or "")
     assert resource.extracted_text_available is True
     assert any("Label-based target evidence" in segment.text for segment in resource.segments)
+
+
+def test_short_pdf_without_outline_or_toc_generates_page_range_segments(tmp_path) -> None:
+    resource_path = tmp_path / "short-notes.pdf"
+    _write_pdf_pages(
+        resource_path,
+        [
+            ["Short note page one has opening evidence."],
+            ["Short note page two has the target explanation."],
+            ["Short note page three closes the resource."],
+        ],
+    )
+
+    resource = build_resource_item(resource_path, "short-notes.pdf")
+
+    assert resource.outline
+    assert resource.outline[0].scan_strategy == "fulltext_match"
+    assert "source=pdf_small_document" in (resource.outline[0].locator_hint or "")
+    assert resource.extracted_text_available is True
+    assert [segment.page_range for segment in resource.segments] == ["1", "2", "3"]
+    assert any("target explanation" in segment.text for segment in resource.segments)
+
+
+def test_short_pdf_without_outline_uses_later_text_even_when_first_pages_are_blank(tmp_path) -> None:
+    resource_path = tmp_path / "late-text.pdf"
+    _write_pdf_pages(
+        resource_path,
+        [
+            [],
+            [],
+            ["Late page evidence appears after blank opening pages."],
+        ],
+    )
+
+    resource = build_resource_item(resource_path, "late-text.pdf")
+
+    assert resource.extracted_text_available is True
+    assert len(resource.segments) == 1
+    assert resource.segments[0].page_range == "3"
+    assert "Late page evidence" in resource.segments[0].text
+
+
+def test_long_pdf_without_outline_does_not_use_small_document_mode(tmp_path) -> None:
+    resource_path = tmp_path / "long-notes.pdf"
+    long_line = "Long resource body text without a table of contents marker " * 3
+    _write_pdf_pages(
+        resource_path,
+        [
+            [
+                f"{long_line} page {page_number} line {line_number}"
+                for line_number in range(25)
+            ]
+            for page_number in range(1, 32)
+        ],
+    )
+
+    resource = build_resource_item(resource_path, "long-notes.pdf")
+
+    assert resource.outline
+    assert "source=pdf_small_document" not in (resource.outline[0].locator_hint or "")
+    assert resource.extracted_text_available is True
+    assert resource.segments
+    assert all(segment.page_range is None for segment in resource.segments)
 
 
 def test_resource_resolver_selects_relevant_uploaded_chapter(tmp_path) -> None:

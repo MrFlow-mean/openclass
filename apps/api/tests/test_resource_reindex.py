@@ -40,6 +40,17 @@ def _write_blank_pdf(path) -> None:
     pdf.save()
 
 
+def _write_pdf_pages(path, pages: list[list[str]]) -> None:
+    pdf = canvas.Canvas(str(path))
+    for lines in pages:
+        y = 760
+        for line in lines:
+            pdf.drawString(72, y, line)
+            y -= 18
+        pdf.showPage()
+    pdf.save()
+
+
 def test_resource_reindex_dry_run_reports_rebuild_without_writing(tmp_path) -> None:
     db_path = tmp_path / "openclass.sqlite3"
     _, _, resource = _seed_markdown_resource(
@@ -225,3 +236,60 @@ def test_resource_reindex_filters_by_resource_id(tmp_path) -> None:
         ).fetchone()[0]
     assert first_segments > 0
     assert second_segments == 0
+
+
+def test_resource_reindex_rebuilds_short_pdf_with_page_ranges(tmp_path) -> None:
+    db_path = tmp_path / "openclass.sqlite3"
+    store = SqliteCourseStore(db_path, legacy_json_path=None)
+    workspace = build_initial_workspace_state()
+    package = workspace.packages[0]
+    resource_path = tmp_path / "short.pdf"
+    _write_pdf_pages(
+        resource_path,
+        [
+            ["Short PDF page one evidence."],
+            ["Short PDF page two evidence."],
+        ],
+    )
+    resource = ResourceLibraryItem(
+        name="short.pdf",
+        mime_type="application/pdf",
+        resource_type="document",
+        size_bytes=resource_path.stat().st_size,
+        outline=[
+            LibraryChapter(
+                title="short",
+                summary="Legacy no-outline PDF entry.",
+                locator_hint="short",
+                order_index=0,
+            )
+        ],
+        extracted_text_available=False,
+        source_path=str(resource_path),
+    )
+    package.resources.append(resource)
+    store.save(workspace)
+    _clear_resource_index(db_path, resource.id)
+
+    report = reindex_resources(ResourceReindexOptions(database_path=db_path, apply=True))
+
+    assert report.resources[0].status == "reindexed"
+    assert report.resources[0].new_extracted_text_available is True
+    with sqlite3.connect(db_path) as conn:
+        segment_rows = conn.execute(
+            """
+            SELECT text, page_range
+            FROM resource_segments
+            WHERE resource_id = ?
+            ORDER BY order_index
+            """,
+            (resource.id,),
+        ).fetchall()
+        fts_count = conn.execute(
+            "SELECT COUNT(*) FROM resource_segments_fts WHERE resource_id = ?",
+            (resource.id,),
+        ).fetchone()[0]
+
+    assert [row[1] for row in segment_rows] == ["1", "2"]
+    assert any("page two evidence" in row[0] for row in segment_rows)
+    assert fts_count == len(segment_rows)
