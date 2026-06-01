@@ -18,6 +18,30 @@ AUTH_ERROR_USER_NOT_FOUND: Final = "user_not_found"
 AUTH_ERROR_ADMIN_SELF_LOCKOUT: Final = "admin_self_lockout"
 AUTH_ERROR_ADMIN_REQUIRED: Final = "admin_required"
 
+# 输入校验
+AUTH_ERROR_INVALID_ACCOUNT: Final = "invalid_account"
+AUTH_ERROR_INVALID_EMAIL: Final = "invalid_email"
+AUTH_ERROR_INVALID_PHONE: Final = "invalid_phone"
+AUTH_ERROR_PASSWORD_TOO_SHORT: Final = "password_too_short"
+AUTH_ERROR_EMAIL_REQUIRED: Final = "email_required"
+AUTH_ERROR_MAIL_DELIVERY_UNCONFIGURED: Final = "mail_delivery_unconfigured"
+AUTH_ERROR_EMAIL_VERIFICATION_INVALID: Final = "email_verification_invalid"
+
+# OAuth
+AUTH_ERROR_OAUTH_TOKEN_EXCHANGE_FAILED: Final = "oauth_token_exchange_failed"
+AUTH_ERROR_OAUTH_PROFILE_FAILED: Final = "oauth_profile_failed"
+AUTH_ERROR_OAUTH_ID_TOKEN_FAILED: Final = "oauth_id_token_failed"
+AUTH_ERROR_OAUTH_PROFILE_INCOMPLETE: Final = "oauth_profile_incomplete"
+AUTH_ERROR_OAUTH_CALLBACK_MISSING_CODE: Final = "oauth_callback_missing_code"
+AUTH_ERROR_OAUTH_STATE_INVALID: Final = "oauth_state_invalid"
+AUTH_ERROR_OAUTH_STATE_EXPIRED: Final = "oauth_state_expired"
+AUTH_ERROR_OAUTH_PROVIDER_UNSUPPORTED: Final = "oauth_provider_unsupported"
+AUTH_ERROR_OAUTH_PROVIDER_UNCONFIGURED: Final = "oauth_provider_unconfigured"
+AUTH_ERROR_OAUTH_ACCESS_TOKEN_MISSING: Final = "oauth_access_token_missing"
+AUTH_ERROR_OAUTH_PROFILE_MALFORMED: Final = "oauth_profile_malformed"
+AUTH_ERROR_GITHUB_PROFILE_MALFORMED: Final = "github_profile_malformed"
+AUTH_ERROR_X_PROFILE_MALFORMED: Final = "x_profile_malformed"
+
 # ---------------------------------------------------------------------------
 # Lesson commit metadata.kind
 # ---------------------------------------------------------------------------
