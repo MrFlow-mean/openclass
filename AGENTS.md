@@ -148,6 +148,36 @@ if "统计学习理论" in chapter_title:
 → UpdateRequirement 记录需求变化
 ```
 
+固定工作流程架构（宪法级约束，不得绕过）：
+
+1. 空白板书从零生成
+   - 当 `board_document` 为空时，只能进入第一层“需求清单闭环”：Chatbot / Requirement Manager 先探寻学习需求，维护 `LearningRequirementSheet + LearningClarificationStatus`。
+   - 学习需求清单的每次真实变动必须版本化入库；清单完整或用户强制生成时，必须先写入 completed / frozen 快照，再交给 BoardEditor。
+   - 首次板书生成只能消费 frozen requirement payload；不得直接把原始 conversation、临时 PM 状态或 Chatbot 自由判断交给 BoardEditor。
+   - 板书生成成功后写 lesson commit，并把 requirement run 标记为 consumed；生成失败必须记录失败事件，不得写成功 commit。
+   - 从零生成完板书后，Chatbot 默认承接询问用户是否要从头开始讲解。
+
+2. 已有板书但目标内容不存在
+   - 当 `board_document` 非空时，不再进入第一层需求清单闭环，而必须进入第二层 `BoardTaskRequirementSheet` 四字段任务清单。
+   - 四字段固定为：目标位置、动作类型、问题 / 主题内容、是否有练习或特殊交互方式要求。清单语义就是“在什么地方，做什么，围绕什么，是否有特殊交互方式要求”。
+   - 如果用户要问、学、讲的目标内容在全文定位不到，必须先把任务置为 `awaiting_confirmation`，由 Chatbot 说明板书中没有对应内容并询问是否扩写；不得直接写入或直接讲解不存在的内容。
+   - 用户确认后，BoardEditor 才能按同一 frozen board task 写入新内容；写入后 Chatbot 只能依据板书侧返回的新内容 / directive 进行讲解。
+   - 用户拒绝或取消时，任务必须记录为 not_executed / archived，不得静默清空历史。
+
+3. 已有板书且找到目标位置
+   - 找到目标位置后，BoardEditor / Board AI 只能根据完整四字段清单裁决 `write / edit / explain / chat`，旧的写、改、讲、聊执行器不得绕过 board task 清单与定位证据。
+   - `write` 表示“在目标位置扩写特定内容”，必须带 `target_focus + write_proposal`；无目标位置的内容缺失写入，仍走“先确认是否扩写”的链路。
+   - `edit` 表示“只改写目标文段”，必须带 `target_focus + edit instruction`；多候选、缺位置或定位失败时只允许澄清位置，不得执行改写。
+   - `explain` 表示“对目标文段讲解”，必须由板书侧产生 directive / 目标摘录 / 讲解边界；Chatbot 只能依据该 directive 在聊天框讲解。
+   - `chat` 表示“围绕目标文段按特殊规则互动”，必须有 `interaction_rule_draft` 和目标位置，启动 `InteractionSession` 后保存规则、目标文段、合规输入判定和进度。
+   - 互动 session 中每轮必须先判定用户输入是否符合规则。符合规则才继续互动；规则内错误只做规则内纠正；用户输入脱离规则或提出新写 / 改 / 讲任务时，必须退出 session，并把本轮用户输入重新送回第二层四字段任务清单。
+
+不可动摇的讲解约束：
+
+- Chatbot 在聊天框中执行“讲解”动作时，必须依照板书 AI / BoardExplanationDirective 给出的目标内容、摘录、边界和指令。
+- 只有板书 AI 给 Chatbot 反馈并允许讲解后，Chatbot 才能进行讲解；否则 Chatbot 只能继续探寻需求、确认位置、请求选择资料或说明状态。
+- Chatbot 不得凭原始对话、自己的常识或未冻结的清单绕过板书侧反馈直接讲解板书内容。
+
 核心原则：
 
 - 新增能力只能作为明确的新分支、新步骤或可替换模块接入，不得隐式抢占旧流程。
