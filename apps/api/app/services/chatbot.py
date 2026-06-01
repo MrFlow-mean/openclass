@@ -6,6 +6,8 @@ import re
 from app.models import (
     BoardDecision,
     BoardFocusRef,
+    BoardTaskRequirementSheet,
+    BoardTaskUpdateStreamPayload,
     BoardTaskAction,
     ChatRequest,
     ChatResponse,
@@ -27,6 +29,13 @@ from app.services.board_document_editor import edit_existing_document, generate_
 from app.services.board_explanation_gate import (
     generate_board_directed_explanation_message as _gate_board_directed_explanation_message,
     requirement_probe_instead_of_explanation_message,
+)
+from app.services.board_task_history import BoardTaskHistoryRecorder, BoardTaskHistoryStamp
+from app.services.board_task_manager import (
+    is_write_confirmation,
+    is_write_decline,
+    make_write_task_from_topic,
+    update_board_task_from_chat,
 )
 from app.services.board_teaching import build_board_teaching_guide, teach_first_section, teach_next_section
 from app.services.course_runtime import effective_requirements
@@ -50,6 +59,7 @@ from app.services.learning_requirement_history import (
     RequirementHistoryStamp,
 )
 from app.services.openai_course_ai import (
+    BoardTaskRouteDecision,
     bind_text_model_selection,
     emit_ai_stream_event,
     openai_course_ai,
@@ -569,17 +579,33 @@ def _new_requirement_history_recorder(
     )
 
 
+def _new_board_task_history_recorder(
+    *,
+    user_id: str,
+    lesson_id: str,
+) -> BoardTaskHistoryRecorder:
+    return BoardTaskHistoryRecorder.from_store_state(
+        owner_user_id=user_id,
+        lesson_id=lesson_id,
+        state=workspace_state.load_board_task_history_state_for_user(user_id, lesson_id),
+    )
+
+
 def _save_workspace_for_user(
     *,
     user_id: str,
     workspace,
     requirement_history: LearningRequirementHistoryRecorder | None,
+    board_task_history: BoardTaskHistoryRecorder | None = None,
 ) -> None:
-    if requirement_history is not None and requirement_history.operations:
-        workspace_state.save_workspace_for_user_with_requirement_history(
+    requirement_operations = requirement_history.operations if requirement_history is not None else []
+    board_task_operations = board_task_history.operations if board_task_history is not None else []
+    if requirement_operations or board_task_operations:
+        workspace_state.save_workspace_for_user_with_histories(
             user_id,
             workspace,
-            requirement_history.operations,
+            requirement_history_operations=requirement_operations,
+            board_task_history_operations=board_task_operations,
         )
         return
     workspace_state.save_workspace_for_user(user_id, workspace)
@@ -624,6 +650,46 @@ def _requirement_stream_payload(
         requirement_version_id=stamp.version_id if stamp else None,
         requirement_phase=stamp.phase if stamp else None,
         clarification_questions=_clarification_questions(learning_clarification),
+    )
+
+
+def _board_task_questions(sheet: BoardTaskRequirementSheet | None) -> list[str]:
+    if sheet is None:
+        return []
+    question = sheet.clarification_question.strip()
+    return [question] if question else []
+
+
+def _board_task_stream_payload(
+    *,
+    lesson: Lesson,
+    sheet: BoardTaskRequirementSheet,
+    stamp: BoardTaskHistoryStamp | None,
+) -> BoardTaskUpdateStreamPayload:
+    return BoardTaskUpdateStreamPayload(
+        board_task_sheet=sheet,
+        active_board_task_sheet=lesson.board_task_requirements,
+        board_task_run_id=stamp.run_id if stamp else None,
+        board_task_version_id=stamp.version_id if stamp else None,
+        board_task_phase=stamp.phase if stamp else None,
+        board_task_questions=_board_task_questions(sheet),
+    )
+
+
+def _emit_board_task_update(
+    *,
+    lesson: Lesson,
+    sheet: BoardTaskRequirementSheet,
+    stamp: BoardTaskHistoryStamp | None,
+) -> None:
+    if stamp is None:
+        return
+    payload = _board_task_stream_payload(lesson=lesson, sheet=sheet, stamp=stamp)
+    emit_ai_stream_event(
+        {
+            "type": "board_task_update",
+            "payload": payload.model_dump(mode="json"),
+        }
     )
 
 
@@ -843,6 +909,869 @@ def _generate_board_directed_explanation_message(
     return directed.chatbot_message, directed.assistant_message_source, directed.directive_payload
 
 
+def _board_task_metadata(
+    *,
+    board_task: BoardTaskRequirementSheet | None,
+    stamp: BoardTaskHistoryStamp | None,
+    route: str | None = None,
+    decision: dict[str, object] | None = None,
+    cleared: bool = False,
+) -> dict[str, object]:
+    return {
+        "board_task_sheet": board_task.model_dump(mode="json") if board_task else None,
+        "board_task_run_id": stamp.run_id if stamp else None,
+        "board_task_version_id": stamp.version_id if stamp else None,
+        "board_task_phase": stamp.phase if stamp else None,
+        "board_task_route": route,
+        "board_task_decision": decision,
+        "board_task_cleared": cleared,
+    }
+
+
+def _requirements_from_board_task(
+    *,
+    base: LearningRequirementSheet,
+    board_task: BoardTaskRequirementSheet,
+    action_type: BoardTaskAction | None,
+    focus: BoardFocusRef | None = None,
+) -> LearningRequirementSheet:
+    updated = LearningRequirementSheet.model_validate(base.model_dump(mode="json"))
+    updated.theme = board_task.question_or_topic or updated.theme
+    updated.learning_goal = board_task.question_or_topic or updated.learning_goal
+    updated.action_type = action_type
+    updated.action_instruction = board_task.question_or_topic or board_task.target_hint
+    updated.target_location = focus
+    updated.location_status = "resolved" if focus else "missing"
+    updated.location_clarification_question = board_task.clarification_question
+    updated.interaction_rule_draft = board_task.interaction_rule_draft
+    updated.current_questions = []
+    updated.risk_notes = []
+    return updated
+
+
+def _task_location_evidence(resolution: FocusResolution | None) -> dict[str, object]:
+    if resolution is None:
+        return {"status": "missing", "focus": None, "candidates": []}
+    return {
+        "status": resolution.status,
+        "focus": resolution.focus.model_dump(mode="json") if resolution.focus else None,
+        "candidates": [candidate.model_dump(mode="json") for candidate in resolution.candidates],
+        "question": resolution.question,
+    }
+
+
+def _fallback_board_task_decision(
+    *,
+    board_task: BoardTaskRequirementSheet,
+    resolution: FocusResolution | None,
+) -> BoardTaskRouteDecision:
+    if board_task.requested_action == "write":
+        if resolution is not None and resolution.resolved:
+            return BoardTaskRouteDecision(
+                route="write",
+                location_status="found",
+                target_focus=resolution.focus,
+                candidate_focuses=resolution.candidates,
+                reason="定位器已找到扩写目标位置。",
+                write_proposal=board_task.question_or_topic,
+            )
+        if resolution is not None and resolution.status == "ambiguous":
+            return BoardTaskRouteDecision(
+                route="clarify_location",
+                location_status="ambiguous",
+                target_focus=None,
+                candidate_focuses=resolution.candidates,
+                reason=resolution.question,
+            )
+        if board_task.confirmation_status == "confirmed":
+            return BoardTaskRouteDecision(
+                route="write",
+                location_status="content_absent" if resolution is None or not resolution.resolved else "found",
+                target_focus=resolution.focus if resolution and resolution.focus else None,
+                candidate_focuses=resolution.candidates if resolution else [],
+                reason="用户已经确认扩写或明确要求写入新内容。",
+                write_proposal=board_task.question_or_topic,
+            )
+        if board_task.confirmation_status == "none":
+            return BoardTaskRouteDecision(
+                route="write",
+                location_status="missing",
+                target_focus=None,
+                candidate_focuses=[],
+                reason="用户明确要求写入或续写板书内容。",
+                write_proposal=board_task.question_or_topic,
+            )
+        return BoardTaskRouteDecision(
+            route="await_write_confirmation",
+            location_status="content_absent",
+            target_focus=None,
+            candidate_focuses=[],
+            reason="当前板书没有可直接处理的目标内容，需要先确认是否扩写。",
+            write_proposal=board_task.question_or_topic,
+        )
+    if resolution is None or not resolution.resolved:
+        if resolution and resolution.status == "ambiguous":
+            return BoardTaskRouteDecision(
+                route="clarify_location",
+                location_status="ambiguous",
+                target_focus=None,
+                candidate_focuses=resolution.candidates,
+                reason=resolution.question,
+            )
+        if board_task.requested_action in {"explain", "chat"} and board_task.question_or_topic:
+            return BoardTaskRouteDecision(
+                route="await_write_confirmation",
+                location_status="content_absent",
+                target_focus=None,
+                candidate_focuses=[],
+                reason="当前板书没有定位到相关内容，需要先确认是否扩写。",
+                write_proposal=board_task.question_or_topic,
+            )
+        return BoardTaskRouteDecision(
+            route="clarify_location",
+            location_status="missing",
+            target_focus=None,
+            candidate_focuses=resolution.candidates if resolution else [],
+            reason=resolution.question if resolution else "还不能定位目标位置。",
+        )
+    if board_task.requested_action == "edit":
+        route = "edit"
+    elif board_task.requested_action == "chat":
+        route = "chat"
+    else:
+        route = "explain"
+    return BoardTaskRouteDecision(
+        route=route,
+        location_status="found",
+        target_focus=resolution.focus,
+        candidate_focuses=resolution.candidates,
+        reason="定位器已找到可操作的板书位置。",
+    )
+
+
+def _board_task_action_to_board_action(board_task: BoardTaskRequirementSheet) -> BoardTaskAction | None:
+    if board_task.requested_action == "edit":
+        return "rewrite_target"
+    if board_task.requested_action == "explain":
+        return "explain_target"
+    if board_task.requested_action == "chat":
+        return "explain_target"
+    if board_task.requested_action == "write":
+        return "append_section"
+    return None
+
+
+def _generate_board_task_clarification_message(
+    *,
+    lesson: Lesson,
+    resources: list[ResourceLibraryItem],
+    conversation: list[ConversationTurn],
+    request: ChatRequest,
+    board_task: BoardTaskRequirementSheet,
+    context: str,
+) -> tuple[str, str]:
+    ai_reply = openai_course_ai.generate_chatbot_reply(
+        lesson_title=lesson.title,
+        learning_goal=board_task.question_or_topic or lesson.summary,
+        board_summary=_board_summary(lesson),
+        resource_summary=_resource_summary(resources),
+        conversation_summary=_conversation_summary(conversation),
+        user_message=(
+            "当前已有板书任务清单还不完整，不能执行写、改、讲或聊。"
+            "请只自然追问一个最关键缺项，不要讲解，也不要承诺已经改写文档。\n"
+            f"任务清单：{board_task.model_dump(mode='json')}\n"
+            f"追问方向：{context}"
+        ),
+        selection_excerpt=None,
+        interaction_mode=request.interaction_mode,
+    )
+    chatbot_message = (ai_reply.chatbot_message if ai_reply else "").strip()
+    return chatbot_message, "chatbot_board_task_clarification" if chatbot_message else "chatbot_empty"
+
+
+def _handle_existing_board_task_flow(
+    *,
+    workspace,
+    package,
+    lesson: Lesson,
+    user_id: str,
+    request: ChatRequest,
+    requirements: LearningRequirementSheet,
+    resources: list[ResourceLibraryItem],
+    selection_excerpt: str | None,
+    selection_text: str | None,
+    requirement_history: LearningRequirementHistoryRecorder,
+    board_task_history: BoardTaskHistoryRecorder,
+) -> ChatResponse | None:
+    if is_document_empty(lesson.board_document):
+        return None
+    if request.board_generation_action == "start" or request.teaching_action is not None:
+        return None
+    if request.resource_reference_action is not None:
+        return None
+    existing_task = lesson.board_task_requirements
+    compact_request = _compact_text(request.message, limit=280)
+    if not existing_task and (
+        _requests_learning_start(request.message)
+        or bool(re.search(r"(开始|直接|从头|零基础).{0,12}(讲解|讲|学)", compact_request))
+    ):
+        return None
+
+    learning_clarification = _latest_learning_clarification(lesson, requirements=requirements)
+    if (
+        existing_task is not None
+        and existing_task.confirmation_status == "awaiting"
+        and existing_task.requested_action == "write"
+    ):
+        if is_write_decline(request.message):
+            stamp = board_task_history.not_executed(reason="用户取消了扩写确认。")
+            lesson.board_task_requirements = None
+            commit_operations(
+                lesson,
+                [],
+                label="Board task cancelled",
+                message="Cancelled an awaiting board write task",
+                new_document=lesson.board_document,
+                metadata={
+                    "kind": "chat_flow",
+                    "user_message": request.message,
+                    "assistant_message": "",
+                    "assistant_message_source": "board_task_cancelled",
+                    **_board_task_metadata(board_task=existing_task, stamp=stamp, route="await_write_confirmation", cleared=True),
+                },
+            )
+            workspace_state.normalize_package_state(package)
+            _save_workspace_for_user(
+                user_id=user_id,
+                workspace=workspace,
+                requirement_history=requirement_history,
+                board_task_history=board_task_history,
+            )
+            return _response(
+                workspace=workspace,
+                package=package,
+                lesson=lesson,
+                chatbot_message="",
+                requirements=requirements,
+                learning_clarification=learning_clarification,
+                board_decision=BoardDecision(action="no_change", reason="用户取消了扩写。"),
+                board_task_stamp=stamp,
+            )
+        if is_write_confirmation(request.message):
+            confirmed_task = BoardTaskRequirementSheet.model_validate(existing_task.model_dump(mode="json"))
+            confirmed_task.confirmation_status = "confirmed"
+            confirmed_task.progress = 100
+            return _execute_board_task_write(
+                workspace=workspace,
+                package=package,
+                lesson=lesson,
+                user_id=user_id,
+                request=request,
+                requirements=requirements,
+                learning_clarification=learning_clarification,
+                resources=resources,
+                board_task=confirmed_task,
+                requirement_history=requirement_history,
+                board_task_history=board_task_history,
+            )
+
+    action_type = _infer_board_task_action(
+        request,
+        has_selection=bool(selection_excerpt),
+        document_empty=False,
+    )
+    if (
+        action_type is None
+        and not existing_task
+        and request.interaction_mode != "direct_edit"
+        and not INTERACTION_RULE_REQUEST_PATTERN.search(_compact_text(request.message, limit=280))
+        and not _requests_explanation(request.message)
+    ):
+        return None
+
+    board_task = update_board_task_from_chat(
+        lesson=lesson,
+        resources=resources,
+        conversation=request.conversation,
+        user_message=request.message,
+        selection=request.selection,
+        selection_excerpt=selection_excerpt,
+        existing=existing_task,
+    )
+    lesson.board_task_requirements = board_task
+    stamp = board_task_history.record_update(sheet=board_task)
+    _emit_board_task_update(lesson=lesson, sheet=board_task, stamp=stamp)
+    if board_task.progress < 100:
+        chatbot_message, chatbot_message_source = _generate_board_task_clarification_message(
+            lesson=lesson,
+            resources=resources,
+            conversation=request.conversation,
+            request=request,
+            board_task=board_task,
+            context=board_task.clarification_question,
+        )
+        commit_operations(
+            lesson,
+            [],
+            label="Board task clarification",
+            message="Asked for a missing field in the existing-board task sheet",
+            new_document=lesson.board_document,
+            metadata={
+                "kind": "chat_flow",
+                "user_message": request.message,
+                "assistant_message": chatbot_message,
+                "assistant_message_source": chatbot_message_source,
+                "interaction_mode": request.interaction_mode,
+                "selection": request.selection.model_dump(mode="json") if request.selection else None,
+                **_board_task_metadata(board_task=board_task, stamp=stamp, route="clarify_location", cleared=False),
+            },
+        )
+        workspace_state.normalize_package_state(package)
+        _save_workspace_for_user(
+            user_id=user_id,
+            workspace=workspace,
+            requirement_history=requirement_history,
+            board_task_history=board_task_history,
+        )
+        return _response(
+            workspace=workspace,
+            package=package,
+            lesson=lesson,
+            chatbot_message=chatbot_message,
+            requirements=requirements,
+            learning_clarification=learning_clarification,
+            board_decision=BoardDecision(action="no_change", reason=board_task.clarification_question),
+            board_task_history=board_task_history,
+        )
+
+    board_action = _board_task_action_to_board_action(board_task)
+    resolution = None
+    if board_task.requested_action != "write" or board_task.target_hint or selection_excerpt:
+        resolution = resolve_board_focus(
+            lesson=lesson,
+            user_message=board_task.target_hint or request.message or board_task.question_or_topic,
+            selection=request.selection,
+            selection_text=selection_text,
+            action_type=board_action,
+        )
+    decision = openai_course_ai.generate_board_task_route_decision(
+        lesson_title=lesson.title,
+        board_task=board_task,
+        board_summary=_board_summary(lesson),
+        location_evidence=_task_location_evidence(resolution),
+        resource_summary=_resource_summary(resources),
+        conversation_summary=_conversation_summary(request.conversation),
+        user_message=request.message,
+    ) or _fallback_board_task_decision(board_task=board_task, resolution=resolution)
+
+    if decision.route == "clarify_location":
+        next_task = BoardTaskRequirementSheet.model_validate(board_task.model_dump(mode="json"))
+        next_task.location_status = "ambiguous" if decision.location_status == "ambiguous" else "missing"
+        next_task.failure_count += 1 if board_task.requested_action == "edit" else 0
+        if board_task.requested_action == "edit" and next_task.failure_count >= 2:
+            old_stamp = board_task_history.record_update(
+                sheet=next_task,
+                change_summary="Edit target could not be located twice.",
+            )
+            board_task_history.not_executed(reason="编辑目标连续两次未定位，旧任务未执行。")
+            new_task = make_write_task_from_topic(board_task.question_or_topic)
+            lesson.board_task_requirements = new_task
+            new_stamp = board_task_history.record_update(
+                sheet=new_task,
+                status="awaiting_confirmation",
+                change_summary="Created a write task from an unresolved edit topic.",
+            )
+            _emit_board_task_update(lesson=lesson, sheet=new_task, stamp=new_stamp)
+            chatbot_message, chatbot_message_source = _generate_board_task_clarification_message(
+                lesson=lesson,
+                resources=resources,
+                conversation=request.conversation,
+                request=request,
+                board_task=new_task,
+                context="板书里没有定位到可编辑的原内容。请确认是否改为扩写相关内容。",
+            )
+            commit_operations(
+                lesson,
+                [],
+                label="Board task converted to write confirmation",
+                message="Archived an unresolved edit task and opened a write confirmation task",
+                new_document=lesson.board_document,
+                metadata={
+                    "kind": "chat_flow",
+                    "user_message": request.message,
+                    "assistant_message": chatbot_message,
+                    "assistant_message_source": chatbot_message_source,
+                    **_board_task_metadata(board_task=board_task, stamp=old_stamp, route="clarify_location", cleared=True),
+                    "new_board_task": new_task.model_dump(mode="json"),
+                    "new_board_task_run_id": new_stamp.run_id,
+                    "new_board_task_version_id": new_stamp.version_id,
+                },
+            )
+            workspace_state.normalize_package_state(package)
+            _save_workspace_for_user(
+                user_id=user_id,
+                workspace=workspace,
+                requirement_history=requirement_history,
+                board_task_history=board_task_history,
+            )
+            return _response(
+                workspace=workspace,
+                package=package,
+                lesson=lesson,
+                chatbot_message=chatbot_message,
+                requirements=requirements,
+                learning_clarification=learning_clarification,
+                board_decision=BoardDecision(action="no_change", reason="编辑目标未定位，已转为扩写确认。"),
+                board_task_stamp=new_stamp,
+            )
+        lesson.board_task_requirements = next_task
+        stamp = board_task_history.record_update(sheet=next_task, change_summary=decision.reason)
+        _emit_board_task_update(lesson=lesson, sheet=next_task, stamp=stamp)
+        chatbot_message, chatbot_message_source = _generate_focus_candidate_message(
+            lesson=lesson,
+            requirements=_requirements_from_board_task(
+                base=requirements,
+                board_task=next_task,
+                action_type=board_action,
+            ),
+            resources=resources,
+            conversation=request.conversation,
+            request=request,
+            resolution=resolution or FocusResolution(
+                focus=None,
+                candidates=decision.candidate_focuses,
+                status="ambiguous" if decision.candidate_focuses else "missing",
+                question=decision.reason,
+            ),
+        )
+        commit_operations(
+            lesson,
+            [],
+            label="Board task location clarification",
+            message="Asked the learner to confirm the board task location",
+            new_document=lesson.board_document,
+            metadata={
+                "kind": "chat_flow",
+                "user_message": request.message,
+                "assistant_message": chatbot_message,
+                "assistant_message_source": chatbot_message_source,
+                **_task_metadata(
+                    requirements=_requirements_from_board_task(
+                        base=requirements,
+                        board_task=next_task,
+                        action_type=board_action,
+                    ),
+                    learning_clarification=learning_clarification,
+                    focus=None,
+                    focus_candidates=decision.candidate_focuses,
+                    requirement_cleared=False,
+                ),
+                **_board_task_metadata(
+                    board_task=next_task,
+                    stamp=stamp,
+                    route=decision.route,
+                    decision=decision.model_dump(mode="json"),
+                    cleared=False,
+                ),
+            },
+        )
+        workspace_state.normalize_package_state(package)
+        _save_workspace_for_user(
+            user_id=user_id,
+            workspace=workspace,
+            requirement_history=requirement_history,
+            board_task_history=board_task_history,
+        )
+        return _response(
+            workspace=workspace,
+            package=package,
+            lesson=lesson,
+            chatbot_message=chatbot_message,
+            requirements=requirements,
+            learning_clarification=learning_clarification,
+            board_decision=BoardDecision(action="await_focus_choice", reason=decision.reason),
+            focus_candidates=decision.candidate_focuses,
+            board_task_history=board_task_history,
+        )
+
+    if decision.route == "await_write_confirmation":
+        next_task = BoardTaskRequirementSheet.model_validate(board_task.model_dump(mode="json"))
+        next_task.requested_action = "write"
+        next_task.location_status = "content_absent"
+        next_task.confirmation_status = "awaiting"
+        next_task.progress = 100
+        next_task.missing_items = []
+        next_task.clarification_question = ""
+        lesson.board_task_requirements = next_task
+        stamp = board_task_history.record_update(
+            sheet=next_task,
+            status="awaiting_confirmation",
+            change_summary=decision.reason or "Awaiting learner confirmation before writing new board content.",
+        )
+        _emit_board_task_update(lesson=lesson, sheet=next_task, stamp=stamp)
+        chatbot_message, chatbot_message_source = _generate_board_task_clarification_message(
+            lesson=lesson,
+            resources=resources,
+            conversation=request.conversation,
+            request=request,
+            board_task=next_task,
+            context="板书里没有对应内容。请询问用户是否要先扩写板书，再继续学习。",
+        )
+        commit_operations(
+            lesson,
+            [],
+            label="Board write confirmation",
+            message="Asked the learner to confirm writing absent board content",
+            new_document=lesson.board_document,
+            metadata={
+                "kind": "chat_flow",
+                "user_message": request.message,
+                "assistant_message": chatbot_message,
+                "assistant_message_source": chatbot_message_source,
+                **_board_task_metadata(
+                    board_task=next_task,
+                    stamp=stamp,
+                    route=decision.route,
+                    decision=decision.model_dump(mode="json"),
+                    cleared=False,
+                ),
+            },
+        )
+        workspace_state.normalize_package_state(package)
+        _save_workspace_for_user(
+            user_id=user_id,
+            workspace=workspace,
+            requirement_history=requirement_history,
+            board_task_history=board_task_history,
+        )
+        return _response(
+            workspace=workspace,
+            package=package,
+            lesson=lesson,
+            chatbot_message=chatbot_message,
+            requirements=requirements,
+            learning_clarification=learning_clarification,
+            board_decision=BoardDecision(action="no_change", reason=decision.reason),
+            board_task_history=board_task_history,
+        )
+
+    if decision.route == "write":
+        return _execute_board_task_write(
+            workspace=workspace,
+            package=package,
+            lesson=lesson,
+            user_id=user_id,
+            request=request,
+            requirements=requirements,
+            learning_clarification=learning_clarification,
+            resources=resources,
+            board_task=board_task,
+            requirement_history=requirement_history,
+            board_task_history=board_task_history,
+            route_decision=decision,
+        )
+
+    if decision.route == "edit":
+        focus = decision.target_focus or (resolution.focus if resolution else None)
+        edit_action = action_type if action_type in EDIT_ACTIONS else "rewrite_target"
+        task_requirements = _requirements_from_board_task(
+            base=requirements,
+            board_task=board_task,
+            action_type=edit_action,
+            focus=focus,
+        )
+        edit_outcome = edit_existing_document(
+            lesson=lesson,
+            requirements=task_requirements,
+            clarification=learning_clarification,
+            resource_summary=_resource_summary(resources),
+            conversation_summary=_conversation_summary(request.conversation),
+            user_instruction=request.message,
+            selection_excerpt=selection_excerpt,
+            focus=focus,
+        )
+        if edit_outcome.changed:
+            refresh_lesson_runtime(lesson, document=edit_outcome.new_document, requirements=task_requirements)
+            lesson.board_teaching_guide = build_board_teaching_guide(lesson)
+            lesson.board_teaching_progress = None
+        stamp = board_task_history.record_update(sheet=board_task, status="ready")
+        commit_operations(
+            lesson,
+            [],
+            label="Board task edit",
+            message="Executed an existing-board edit task",
+            new_document=lesson.board_document,
+            metadata={
+                "kind": "board_document_edit",
+                "user_message": request.message,
+                "assistant_message": edit_outcome.chatbot_message,
+                "assistant_message_source": edit_outcome.assistant_message_source,
+                "board_edit_operation": edit_outcome.operation,
+                "board_edit_summary": edit_outcome.summary,
+                "board_section_titles": edit_outcome.section_titles,
+                **_task_metadata(
+                    requirements=task_requirements,
+                    learning_clarification=learning_clarification,
+                    focus=focus,
+                    requirement_cleared=edit_outcome.changed,
+                ),
+                **_board_task_metadata(
+                    board_task=board_task,
+                    stamp=stamp,
+                    route="edit",
+                    decision=decision.model_dump(mode="json"),
+                    cleared=edit_outcome.changed,
+                ),
+            },
+        )
+        consumed_stamp = board_task_history.consume(commit_id=lesson.history_graph.commits[-1].id) if edit_outcome.changed else stamp
+        if edit_outcome.changed:
+            lesson.board_task_requirements = None
+            _clear_task_requirements(lesson)
+        workspace_state.normalize_package_state(package)
+        _save_workspace_for_user(
+            user_id=user_id,
+            workspace=workspace,
+            requirement_history=requirement_history,
+            board_task_history=board_task_history,
+        )
+        return _response(
+            workspace=workspace,
+            package=package,
+            lesson=lesson,
+            chatbot_message=edit_outcome.chatbot_message,
+            requirements=task_requirements,
+            learning_clarification=learning_clarification,
+            board_decision=edit_outcome.board_decision,
+            resolved_focus=focus,
+            requirement_cleared=edit_outcome.changed,
+            board_task_stamp=consumed_stamp,
+        )
+
+    if decision.route == "explain":
+        focus = decision.target_focus or (resolution.focus if resolution else None)
+        focus_excerpt = focus_context(focus) if focus else board_task.question_or_topic
+        chatbot_message, chatbot_message_source, board_explanation_directive = _generate_board_directed_explanation_message(
+            lesson=lesson,
+            requirements=_requirements_from_board_task(
+                base=requirements,
+                board_task=board_task,
+                action_type="explain_target",
+                focus=focus,
+            ),
+            resources=resources,
+            conversation=request.conversation,
+            request=request,
+            learning_clarification=learning_clarification,
+            action_type="explain_target",
+            target_excerpt=focus_excerpt,
+        )
+        stamp = board_task_history.record_update(sheet=board_task, status="ready")
+        cleared = chatbot_message_source == "chatbot_board_directed" and bool(chatbot_message)
+        commit_operations(
+            lesson,
+            [],
+            label="Board task explanation",
+            message="Executed an existing-board explanation task",
+            new_document=lesson.board_document,
+            metadata={
+                "kind": "chat_flow",
+                "user_message": request.message,
+                "assistant_message": chatbot_message,
+                "assistant_message_source": chatbot_message_source,
+                "board_explanation_directive": board_explanation_directive,
+                **_task_metadata(
+                    requirements=_requirements_from_board_task(
+                        base=requirements,
+                        board_task=board_task,
+                        action_type="explain_target",
+                        focus=focus,
+                    ),
+                    learning_clarification=learning_clarification,
+                    focus=focus,
+                    focus_candidates=resolution.candidates if resolution else [],
+                    requirement_cleared=cleared,
+                ),
+                **_board_task_metadata(
+                    board_task=board_task,
+                    stamp=stamp,
+                    route="explain",
+                    decision=decision.model_dump(mode="json"),
+                    cleared=cleared,
+                ),
+            },
+        )
+        consumed_stamp = board_task_history.consume(commit_id=lesson.history_graph.commits[-1].id) if cleared else stamp
+        if cleared:
+            lesson.board_task_requirements = None
+            _clear_task_requirements(lesson)
+        workspace_state.normalize_package_state(package)
+        _save_workspace_for_user(
+            user_id=user_id,
+            workspace=workspace,
+            requirement_history=requirement_history,
+            board_task_history=board_task_history,
+        )
+        return _response(
+            workspace=workspace,
+            package=package,
+            lesson=lesson,
+            chatbot_message=chatbot_message,
+            requirements=requirements,
+            learning_clarification=learning_clarification,
+            board_decision=BoardDecision(action="no_change", reason=decision.reason),
+            resolved_focus=focus,
+            requirement_cleared=cleared,
+            board_task_stamp=consumed_stamp,
+        )
+
+    if decision.route == "chat":
+        task_requirements = _requirements_from_board_task(
+            base=requirements,
+            board_task=board_task,
+            action_type="explain_target",
+            focus=decision.target_focus or (resolution.focus if resolution else None),
+        )
+        lesson.learning_requirements = task_requirements
+        return _maybe_start_interaction_session(
+            workspace=workspace,
+            package=package,
+            lesson=lesson,
+            user_id=user_id,
+            request=request,
+            requirements=task_requirements,
+            learning_clarification=learning_clarification,
+            resources=resources,
+            selection_text=selection_text,
+            action_type="explain_target",
+            requirement_history=requirement_history,
+        )
+
+    return None
+
+
+def _execute_board_task_write(
+    *,
+    workspace,
+    package,
+    lesson: Lesson,
+    user_id: str,
+    request: ChatRequest,
+    requirements: LearningRequirementSheet,
+    learning_clarification: LearningClarificationStatus,
+    resources: list[ResourceLibraryItem],
+    board_task: BoardTaskRequirementSheet,
+    requirement_history: LearningRequirementHistoryRecorder,
+    board_task_history: BoardTaskHistoryRecorder,
+    route_decision: BoardTaskRouteDecision | None = None,
+) -> ChatResponse:
+    task_requirements = _requirements_from_board_task(
+        base=requirements,
+        board_task=board_task,
+        action_type="expand_target" if route_decision and route_decision.target_focus else "append_section",
+        focus=route_decision.target_focus if route_decision else None,
+    )
+    task_requirements.action_instruction = route_decision.write_proposal if route_decision and route_decision.write_proposal else board_task.question_or_topic
+    stamp = board_task_history.record_update(
+        sheet=board_task,
+        status="awaiting_confirmation" if board_task.confirmation_status == "confirmed" else "ready",
+    )
+    edit_outcome = edit_existing_document(
+        lesson=lesson,
+        requirements=task_requirements,
+        clarification=learning_clarification,
+        resource_summary=_resource_summary(resources),
+        conversation_summary=_conversation_summary(request.conversation),
+        user_instruction=task_requirements.action_instruction,
+        selection_excerpt=None,
+        focus=route_decision.target_focus if route_decision else None,
+    )
+    if edit_outcome.changed:
+        old_text = lesson.board_document.content_text
+        refresh_lesson_runtime(lesson, document=edit_outcome.new_document, requirements=task_requirements)
+        lesson.board_teaching_guide = build_board_teaching_guide(lesson)
+        lesson.board_teaching_progress = None
+        new_text = lesson.board_document.content_text
+        appended_excerpt = new_text[len(old_text):].strip() if new_text.startswith(old_text) else edit_outcome.new_document.content_text
+        if edit_outcome.chatbot_message and board_task.confirmation_status != "confirmed":
+            chatbot_message = edit_outcome.chatbot_message
+            chatbot_message_source = edit_outcome.assistant_message_source
+            board_explanation_directive = {
+                "status": "approved",
+                "source": "board_document_editor_ai",
+                "target_excerpt": appended_excerpt or edit_outcome.new_document.content_text,
+            }
+        else:
+            chatbot_message, chatbot_message_source, board_explanation_directive = _generate_board_directed_explanation_message(
+                lesson=lesson,
+                requirements=task_requirements,
+                resources=resources,
+                conversation=request.conversation,
+                request=request,
+                learning_clarification=learning_clarification,
+                action_type="explain_target",
+                target_excerpt=appended_excerpt or edit_outcome.new_document.content_text,
+            )
+    else:
+        chatbot_message = edit_outcome.chatbot_message
+        chatbot_message_source = edit_outcome.assistant_message_source
+        board_explanation_directive = None
+
+    commit_operations(
+        lesson,
+        [],
+        label="Board task write",
+        message="Wrote missing existing-board task content and prepared a board-grounded explanation",
+        new_document=lesson.board_document,
+        metadata={
+            "kind": "board_document_edit",
+            "user_message": request.message,
+            "assistant_message": chatbot_message,
+            "assistant_message_source": chatbot_message_source,
+            "board_editor_message": edit_outcome.chatbot_message,
+            "board_edit_operation": edit_outcome.operation,
+            "board_edit_summary": edit_outcome.summary,
+            "board_section_titles": edit_outcome.section_titles,
+            "board_explanation_directive": board_explanation_directive,
+            **_task_metadata(
+                requirements=task_requirements,
+                learning_clarification=learning_clarification,
+                focus=route_decision.target_focus if route_decision else None,
+                requirement_cleared=edit_outcome.changed,
+            ),
+            **_board_task_metadata(
+                board_task=board_task,
+                stamp=stamp,
+                route="write",
+                decision=route_decision.model_dump(mode="json") if route_decision else None,
+                cleared=edit_outcome.changed,
+            ),
+        },
+    )
+    consumed_stamp = board_task_history.consume(commit_id=lesson.history_graph.commits[-1].id) if edit_outcome.changed else stamp
+    if edit_outcome.changed:
+        lesson.board_task_requirements = None
+        _clear_task_requirements(lesson)
+    workspace_state.normalize_package_state(package)
+    _save_workspace_for_user(
+        user_id=user_id,
+        workspace=workspace,
+        requirement_history=requirement_history,
+        board_task_history=board_task_history,
+    )
+    return _response(
+        workspace=workspace,
+        package=package,
+        lesson=lesson,
+        chatbot_message=chatbot_message,
+        requirements=task_requirements,
+        learning_clarification=learning_clarification,
+        board_decision=edit_outcome.board_decision,
+        requirement_cleared=edit_outcome.changed,
+        board_task_stamp=consumed_stamp,
+    )
+
+
 def _response_requirement_stamp(
     requirement_history: LearningRequirementHistoryRecorder | None,
     requirement_stamp: RequirementHistoryStamp | None,
@@ -852,6 +1781,17 @@ def _response_requirement_stamp(
     if requirement_history is None:
         return None
     return requirement_history.current_stamp()
+
+
+def _response_board_task_stamp(
+    board_task_history: BoardTaskHistoryRecorder | None,
+    board_task_stamp: BoardTaskHistoryStamp | None,
+) -> BoardTaskHistoryStamp | None:
+    if board_task_stamp is not None:
+        return board_task_stamp
+    if board_task_history is None:
+        return None
+    return board_task_history.current_stamp()
 
 
 def _response(
@@ -873,8 +1813,11 @@ def _response(
     requirement_cleared: bool = False,
     requirement_history: LearningRequirementHistoryRecorder | None = None,
     requirement_stamp: RequirementHistoryStamp | None = None,
+    board_task_history: BoardTaskHistoryRecorder | None = None,
+    board_task_stamp: BoardTaskHistoryStamp | None = None,
 ) -> ChatResponse:
     stamp = _response_requirement_stamp(requirement_history, requirement_stamp)
+    board_task_stamp_value = _response_board_task_stamp(board_task_history, board_task_stamp)
     return ChatResponse(
         chatbot_message=chatbot_message,
         learning_requirement_sheet=requirements,
@@ -885,6 +1828,12 @@ def _response(
         requirement_run_id=stamp.run_id if stamp else None,
         requirement_version_id=stamp.version_id if stamp else None,
         requirement_phase=stamp.phase if stamp else None,
+        board_task_sheet=lesson.board_task_requirements,
+        active_board_task_sheet=lesson.board_task_requirements,
+        board_task_run_id=board_task_stamp_value.run_id if board_task_stamp_value else None,
+        board_task_version_id=board_task_stamp_value.version_id if board_task_stamp_value else None,
+        board_task_phase=board_task_stamp_value.phase if board_task_stamp_value else None,
+        board_task_questions=_board_task_questions(lesson.board_task_requirements),
         board_decision=board_decision,
         needs_clarification=False,
         clarification_questions=[],
@@ -1364,6 +2313,7 @@ def _chat_response(
     package, lesson = workspace_state.find_lesson_package(workspace, lesson_id)
     requirements = effective_requirements(lesson)
     requirement_history = _new_requirement_history_recorder(user_id=user_id, lesson_id=lesson.id)
+    board_task_history = _new_board_task_history_recorder(user_id=user_id, lesson_id=lesson.id)
     track_initial_requirement_run = _should_track_initial_requirement_run(lesson)
     visible_package = workspace_state.package_context_for_lesson(workspace, package, lesson.id)
     selection_excerpt = _selection_excerpt(request.selection, selection_text)
@@ -1410,6 +2360,23 @@ def _chat_response(
     )
     if interaction_response is not None:
         return interaction_response
+
+    if resource_resolution.selected_reference is None and resource_resolution.reference_prompt is None:
+        board_task_response = _handle_existing_board_task_flow(
+            workspace=workspace,
+            package=package,
+            lesson=lesson,
+            user_id=user_id,
+            request=request,
+            requirements=requirements,
+            resources=visible_package.resources,
+            selection_excerpt=selection_or_reference_excerpt,
+            selection_text=selection_text,
+            requirement_history=requirement_history,
+            board_task_history=board_task_history,
+        )
+        if board_task_response is not None:
+            return board_task_response
 
     if request.board_generation_action == "start":
         learning_clarification = _latest_learning_clarification(lesson, requirements=requirements)

@@ -3,6 +3,7 @@ import type {
   AdminOverview,
   AuthProviderView,
   AuthSessionResponse,
+  BoardTaskUpdateStreamPayload,
   ChatRequestPayload,
   ChatResponse,
   CoursePackage,
@@ -213,6 +214,7 @@ type ChatStreamHandlers = {
   onChatDelta?: (delta: string) => void;
   onDocumentDelta?: (delta: string) => void;
   onRequirementUpdate?: (payload: RequirementUpdateStreamPayload) => void;
+  onBoardTaskUpdate?: (payload: BoardTaskUpdateStreamPayload) => void;
   onFinal?: (response: ChatResponse) => void;
 };
 
@@ -261,6 +263,10 @@ function handleChatStreamBlock(block: string, handlers: ChatStreamHandlers) {
   }
   if (parsed.event === "requirement_update") {
     handlers.onRequirementUpdate?.(payload as unknown as RequirementUpdateStreamPayload);
+    return;
+  }
+  if (parsed.event === "board_task_update") {
+    handlers.onBoardTaskUpdate?.(payload as unknown as BoardTaskUpdateStreamPayload);
     return;
   }
   if (parsed.event === "final") {

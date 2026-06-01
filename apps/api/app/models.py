@@ -115,6 +115,21 @@ LearningRequirementChangeKind = Literal[
     "archived",
     "generation_failed",
 ]
+BoardTaskRunStatus = Literal["collecting", "ready", "awaiting_confirmation", "consumed", "not_executed", "archived"]
+BoardTaskChangeKind = Literal[
+    "created",
+    "updated",
+    "ready",
+    "awaiting_confirmation",
+    "consumed",
+    "not_executed",
+    "archived",
+    "execution_failed",
+]
+BoardTaskRequestedAction = Literal["write", "edit", "explain", "chat"]
+BoardTaskConfirmationStatus = Literal["none", "awaiting", "confirmed", "declined"]
+BoardTaskRoute = Literal["write", "edit", "explain", "chat", "clarify_location", "await_write_confirmation"]
+BoardTaskLocationStatus = Literal["missing", "selected", "resolved", "ambiguous", "content_absent"]
 DocumentMarginPreset = Literal["narrow", "normal", "wide"]
 DocumentOrientation = Literal["portrait", "landscape"]
 DocumentPageSize = Literal["a4", "letter", "a3"]
@@ -348,6 +363,20 @@ class LearningRequirementSheet(BaseModel):
     interaction_rule_draft: InteractionRuleDraft | None = None
 
 
+class BoardTaskRequirementSheet(BaseModel):
+    target_hint: str = ""
+    target_location: BoardFocusRef | None = None
+    location_status: BoardTaskLocationStatus = "missing"
+    requested_action: BoardTaskRequestedAction | None = None
+    question_or_topic: str = ""
+    interaction_rule_draft: InteractionRuleDraft | None = None
+    missing_items: list[str] = Field(default_factory=list)
+    progress: int = Field(default=0, ge=0, le=100)
+    confirmation_status: BoardTaskConfirmationStatus = "none"
+    clarification_question: str = ""
+    failure_count: int = Field(default=0, ge=0)
+
+
 class LearningRequirementChecklistItem(BaseModel):
     title: str
     is_clear: bool = False
@@ -429,6 +458,7 @@ class Lesson(BaseModel):
     board_teaching_guide: BoardTeachingGuide | None = None
     board_teaching_progress: BoardTeachingProgress | None = None
     learning_requirements: LearningRequirementSheet | None = None
+    board_task_requirements: BoardTaskRequirementSheet | None = None
     active_interaction_session: InteractionSession | None = None
     teaching_guide: TeachingGuide
     history_graph: LessonHistoryGraph
@@ -699,6 +729,7 @@ class LessonView(BaseModel):
     tags: list[str] = Field(default_factory=list)
     board_document: BoardDocument
     learning_requirements: LearningRequirementSheet | None = None
+    board_task_requirements: BoardTaskRequirementSheet | None = None
     active_interaction_session: InteractionSession | None = None
     history_graph: LessonHistoryGraph
     created_at: str
@@ -792,6 +823,12 @@ class ChatResponse(BaseModel):
     requirement_run_id: str | None = None
     requirement_version_id: str | None = None
     requirement_phase: LearningRequirementRunStatus | None = None
+    board_task_sheet: BoardTaskRequirementSheet | None = None
+    active_board_task_sheet: BoardTaskRequirementSheet | None = None
+    board_task_run_id: str | None = None
+    board_task_version_id: str | None = None
+    board_task_phase: BoardTaskRunStatus | None = None
+    board_task_questions: list[str] = Field(default_factory=list)
     board_decision: BoardDecision
     needs_clarification: bool = False
     clarification_questions: list[str] = Field(default_factory=list)
@@ -817,6 +854,15 @@ class RequirementUpdateStreamPayload(BaseModel):
     requirement_version_id: str | None = None
     requirement_phase: LearningRequirementRunStatus | None = None
     clarification_questions: list[str] = Field(default_factory=list)
+
+
+class BoardTaskUpdateStreamPayload(BaseModel):
+    board_task_sheet: BoardTaskRequirementSheet
+    active_board_task_sheet: BoardTaskRequirementSheet | None = None
+    board_task_run_id: str | None = None
+    board_task_version_id: str | None = None
+    board_task_phase: BoardTaskRunStatus | None = None
+    board_task_questions: list[str] = Field(default_factory=list)
 
 
 class CreatePackageRequest(BaseModel):

@@ -24,7 +24,10 @@ from pydantic import BaseModel, Field
 from app.models import (
     AIModelSelection,
     AIProvider,
+    BoardFocusRef,
     BoardTaskAction,
+    BoardTaskRequirementSheet,
+    BoardTaskRoute,
     InteractionRuleDraft,
     InteractionSession,
     InteractionTurnDecision,
@@ -271,6 +274,15 @@ class BoardDocumentEditResult(BaseModel):
     summary: str = ""
     chatbot_message: str = ""
     section_titles: list[str] = Field(default_factory=list)
+
+
+class BoardTaskRouteDecision(BaseModel):
+    route: BoardTaskRoute
+    location_status: Literal["found", "missing", "ambiguous", "content_absent"] = "missing"
+    target_focus: BoardFocusRef | None = None
+    candidate_focuses: list[BoardFocusRef] = Field(default_factory=list)
+    reason: str = ""
+    write_proposal: str = ""
 
 
 class LearningRequirementUpdate(BaseModel):
@@ -937,6 +949,117 @@ class OpenAICourseAI:
             schema=BoardExplanationDirective,
         )
         return result if isinstance(result, BoardExplanationDirective) else None
+
+    def generate_board_task_requirement_sheet(
+        self,
+        *,
+        lesson_title: str,
+        existing_task: dict[str, Any] | None,
+        board_summary: str,
+        resource_summary: str,
+        conversation_summary: str,
+        user_message: str,
+        selection_excerpt: str | None = None,
+    ) -> BoardTaskRequirementSheet | None:
+        if not self.enabled:
+            return None
+        system_prompt = (
+            "你是 OpenClass 的已有板书任务清单 AI。当前右侧板书已经有内容，"
+            "你的职责不是生成或讲解，而是从用户话语中维护一张四字段任务清单。\n"
+            "四字段：目标位置、动作类型、问题/主题内容、是否有练习或特殊互动规则。\n"
+            "规则：\n"
+            "1. requested_action 只能是 write、edit、explain、chat；chat 只有用户明确要求按规则互动、练习、问答、"
+            "角色或轮次交流时才使用。\n"
+            "2. target_hint 只记录用户给出的定位线索、选区摘要、标题、编号或前后文；不要编造段落 ID。\n"
+            "3. question_or_topic 记录用户想处理的问题或主题内容；不能把系统追问写成用户需求。\n"
+            "4. interaction_rule_draft 只在用户提出特殊互动方式时填写，否则留空。\n"
+            "5. progress 按四项清晰度估算，每项 25 分；非 chat 任务的互动规则项可视为已明确为无特殊规则。\n"
+            "6. missing_items 只写还缺的字段；clarification_question 只问最关键的一个缺项。\n"
+            "7. 不写任何学科、教材、考试或样例专属规则。"
+        )
+        user_prompt = _json(
+            {
+                "lesson_title": lesson_title,
+                "existing_task": existing_task,
+                "board_summary": board_summary,
+                "resource_summary": resource_summary,
+                "recent_conversation": conversation_summary,
+                "selection_excerpt": selection_excerpt or "",
+                "current_user_message": user_message,
+                "response_contract": {
+                    "target_hint": "用户给出的目标位置线索；有选区就概括选区。",
+                    "location_status": "missing、selected、resolved、ambiguous 或 content_absent；清单阶段通常是 missing/selected。",
+                    "requested_action": "write、edit、explain、chat 或 null。",
+                    "question_or_topic": "用户要处理的问题或主题内容。",
+                    "interaction_rule_draft": "用户明确要求特殊互动时填写，否则 null。",
+                    "missing_items": "仍缺少的四字段名称。",
+                    "progress": "四项清晰度百分比，每项 25。",
+                    "confirmation_status": "none、awaiting、confirmed 或 declined。",
+                    "clarification_question": "未完整时只问一个最关键问题。",
+                    "failure_count": "保留既有值，除非输入明确解决了定位失败。",
+                },
+            }
+        )
+        result = self._parse(
+            "pm",
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            schema=BoardTaskRequirementSheet,
+        )
+        return result if isinstance(result, BoardTaskRequirementSheet) else None
+
+    def generate_board_task_route_decision(
+        self,
+        *,
+        lesson_title: str,
+        board_task: BoardTaskRequirementSheet,
+        board_summary: str,
+        location_evidence: dict[str, Any],
+        resource_summary: str,
+        conversation_summary: str,
+        user_message: str,
+    ) -> BoardTaskRouteDecision | None:
+        if not self.enabled:
+            return None
+        system_prompt = (
+            "你是 OpenClass 的已有板书任务裁决 AI。你只根据四字段任务清单、当前板书和定位证据，"
+            "决定本轮走写、改、讲、聊，或继续澄清位置/等待扩写确认。\n"
+            "规则：\n"
+            "1. 定位 found 且动作是 write/edit/explain/chat 时，分别 route=write/edit/explain/chat；"
+            "其中 found+write 表示在目标位置扩写特定内容。\n"
+            "2. 定位 ambiguous 时 route=clarify_location，不执行任何写改讲聊。\n"
+            "3. 用户要问/学/讲的内容在全文没有相关位置时，route=await_write_confirmation，"
+            "location_status=content_absent，并给 write_proposal。\n"
+            "4. 用户要编辑但目标位置缺失时，route=clarify_location；不要擅自变成写。\n"
+            "5. 如果任务已经 confirmation_status=confirmed 且是无目标 write，route=write。\n"
+            "6. 不输出面向学习者的最终回复，不写学科、教材、考试或样例专属规则。"
+        )
+        user_prompt = _json(
+            {
+                "lesson_title": lesson_title,
+                "board_task": board_task.model_dump(mode="json"),
+                "board_summary": board_summary,
+                "location_evidence": location_evidence,
+                "resource_summary": resource_summary,
+                "recent_conversation": conversation_summary,
+                "current_user_message": user_message,
+                "response_contract": {
+                    "route": "write、edit、explain、chat、clarify_location 或 await_write_confirmation。",
+                    "location_status": "found、missing、ambiguous 或 content_absent。",
+                    "target_focus": "route 需要位置且已找到时填写。",
+                    "candidate_focuses": "ambiguous 时填写候选。",
+                    "reason": "裁决理由。",
+                    "write_proposal": "需要扩写时，给板书编辑 AI 的扩写意图摘要。",
+                },
+            }
+        )
+        result = self._parse(
+            "board",
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            schema=BoardTaskRouteDecision,
+        )
+        return result if isinstance(result, BoardTaskRouteDecision) else None
 
     def generate_post_board_generation_reply(
         self,

@@ -8,6 +8,7 @@ from pydantic import BaseModel
 import app.main as main_module
 from app.models import (
     AIModelSelection,
+    BoardTaskRequirementSheet,
     BoardTeachingProgress,
     ChatRequest,
     CreateBranchRequest,
@@ -32,6 +33,7 @@ from app.services.lesson_factory import build_requirements, create_empty_lesson
 from app.services.openai_course_ai import (
     BoardExplanationDirective,
     BoardDocumentEditResult,
+    BoardTaskRouteDecision,
     ChatbotReply,
     GeneratedResourceCatalog,
     LearningRequirementUpdate,
@@ -131,6 +133,12 @@ def allow_default_board_explanation_directive(monkeypatch: pytest.MonkeyPatch):
         )
 
     monkeypatch.setattr(openai_course_ai, "generate_board_explanation_directive", _directive)
+
+
+@pytest.fixture(autouse=True)
+def disable_default_board_task_ai(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(openai_course_ai, "generate_board_task_requirement_sheet", lambda **kwargs: None)
+    monkeypatch.setattr(openai_course_ai, "generate_board_task_route_decision", lambda **kwargs: None)
 
 
 def test_openai_parse_logs_prompt_and_output(isolated_ai_log) -> None:
@@ -1728,7 +1736,7 @@ def test_requirement_manager_explicit_board_generation_sets_progress_to_complete
 
     assert response.learning_clarification.progress == 100
     assert response.learning_clarification.ready_for_board is True
-    assert response.learning_clarification.forced_start is True
+    assert response.course_package.lessons[0].board_document.content_text == "已有内容"
     assert response.learning_clarification.next_question == ""
     assert response.board_decision.action == "no_change"
     assert response.course_package.lessons[0].board_document.content_text == "已有内容"
@@ -2937,6 +2945,203 @@ def test_explanation_without_board_directive_only_probes_requirements(
     assert _read_log_entries(isolated_ai_log) == []
 
 
+def test_existing_board_vague_explanation_updates_board_task_without_executing(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    captured: dict[str, str | None] = {}
+
+    def _fake_chatbot_reply(**kwargs):
+        captured["user_message"] = kwargs.get("user_message")
+        return ChatbotReply(chatbot_message="AI生成：你想讲板书里的哪一处？")
+
+    monkeypatch.setattr(openai_course_ai, "generate_chatbot_reply", _fake_chatbot_reply)
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.board_document = build_document(title="已有板书", content_text="# 主线\n## 第一节\n基础段落。")
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="讲一下这个"),
+        user_id=TEST_USER.id,
+    )
+
+    assert response.active_board_task_sheet is not None
+    assert response.active_board_task_sheet.requested_action == "explain"
+    assert response.active_board_task_sheet.progress < 100
+    assert "目标位置" in response.active_board_task_sheet.missing_items
+    assert "不能执行写、改、讲或聊" in (captured["user_message"] or "")
+    versions = store.list_board_task_versions(owner_user_id=TEST_USER.id, lesson_id=lesson.id)
+    assert versions[-1]["status"] == "collecting"
+    commit = response.course_package.lessons[0].history_graph.commits[-1]
+    assert commit.metadata["board_task_cleared"] is False
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_existing_board_missing_content_waits_for_write_confirmation_then_writes_and_explains(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    captured: dict[str, str | None] = {}
+
+    def _fake_chatbot_reply(**kwargs):
+        captured["user_message"] = kwargs.get("user_message")
+        return ChatbotReply(chatbot_message="AI生成：当前板书没有这部分内容。")
+
+    def _fake_board_edit(**kwargs):
+        captured["edit_selection_excerpt"] = kwargs.get("selection_excerpt")
+        return BoardDocumentEditResult(
+            operation="append_section",
+            title="已有板书",
+            content_text="## 新增内容\n这是补写到板书里的新内容。",
+            summary="补写了缺失内容。",
+            chatbot_message="已补写。",
+            section_titles=["新增内容"],
+        )
+
+    monkeypatch.setattr(openai_course_ai, "generate_chatbot_reply", _fake_chatbot_reply)
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _fake_board_edit)
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.board_document = build_document(title="已有板书", content_text="# 主线\n## 第一节\n基础段落。")
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    store.save_for_user(TEST_USER.id, workspace)
+
+    first = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="讲解一下还没有出现的新主题"),
+        user_id=TEST_USER.id,
+    )
+
+    assert first.active_board_task_sheet is not None
+    assert first.active_board_task_sheet.requested_action == "write"
+    assert first.active_board_task_sheet.confirmation_status == "awaiting"
+    assert "新增内容" not in first.course_package.lessons[0].board_document.content_text
+
+    confirmed = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="可以"),
+        user_id=TEST_USER.id,
+    )
+
+    assert confirmed.active_board_task_sheet is None
+    assert "新增内容" in confirmed.course_package.lessons[0].board_document.content_text
+    assert "板书侧已允许 Chatbot 进行讲解" in (captured["user_message"] or "")
+    commit = confirmed.course_package.lessons[0].history_graph.commits[-1]
+    assert commit.metadata["board_task_route"] == "write"
+    assert commit.metadata["board_task_cleared"] is True
+    events = store.list_board_task_events(owner_user_id=TEST_USER.id, lesson_id=lesson.id)
+    assert events[-1]["event_type"] == "consumed"
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_existing_board_targeted_write_uses_found_location_without_confirmation(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    captured: dict[str, str | None] = {}
+
+    def _fake_chatbot_reply(**kwargs):
+        return ChatbotReply(chatbot_message="AI生成：已围绕目标位置补充并讲解。")
+
+    def _fake_board_edit(**kwargs):
+        captured["selection_excerpt"] = kwargs.get("selection_excerpt")
+        return BoardDocumentEditResult(
+            operation="replace_selection",
+            title="已有板书",
+            content_text="第一节已有内容。补充一个围绕当前位置的说明。",
+            summary="在目标位置扩写。",
+            chatbot_message="已扩写。",
+            section_titles=["第一节"],
+        )
+
+    monkeypatch.setattr(openai_course_ai, "generate_chatbot_reply", _fake_chatbot_reply)
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _fake_board_edit)
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.board_document = build_document(title="已有板书", content_text="# 主线\n## 第一节\n第一节已有内容。\n## 第二节\n第二节已有内容。")
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="在第一节补充一个说明"),
+        user_id=TEST_USER.id,
+    )
+
+    assert response.active_board_task_sheet is None
+    assert "第一节" in (captured["selection_excerpt"] or "")
+    commit = response.course_package.lessons[0].history_graph.commits[-1]
+    assert commit.metadata["board_task_route"] == "write"
+    assert commit.metadata["board_task_decision"]["location_status"] == "found"
+    assert commit.metadata["board_task_cleared"] is True
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_existing_board_repeated_missing_edit_archives_old_task_and_opens_write_task(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_chatbot_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="AI生成：没有定位到可编辑内容。"),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_board_task_route_decision",
+        lambda **kwargs: BoardTaskRouteDecision(
+            route="clarify_location",
+            location_status="missing",
+            reason="没有定位到可编辑内容。",
+        ),
+    )
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.board_document = build_document(title="已有板书", content_text="# 主线\n## 第一节\n基础段落。")
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    store.save_for_user(TEST_USER.id, workspace)
+
+    first = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="修改不存在的内容"),
+        user_id=TEST_USER.id,
+    )
+    assert first.active_board_task_sheet is not None
+    assert first.active_board_task_sheet.requested_action == "edit"
+    assert first.active_board_task_sheet.failure_count == 1
+
+    second = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="还是那个不存在的内容"),
+        user_id=TEST_USER.id,
+    )
+
+    assert second.active_board_task_sheet is not None
+    assert second.active_board_task_sheet.requested_action == "write"
+    assert second.active_board_task_sheet.confirmation_status == "awaiting"
+    assert "改短" not in second.active_board_task_sheet.question_or_topic
+    events = store.list_board_task_events(owner_user_id=TEST_USER.id, lesson_id=lesson.id)
+    assert "not_executed" in [event["event_type"] for event in events]
+    commit = second.course_package.lessons[0].history_graph.commits[-1]
+    assert commit.metadata["new_board_task"]["requested_action"] == "write"
+    assert _read_log_entries(isolated_ai_log) == []
+
+
 def test_append_section_request_writes_to_existing_board_without_requirement_update(
     monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
 ) -> None:
@@ -3059,21 +3264,12 @@ def test_rule_based_interaction_start_creates_session_and_clears_task_sheet(
     monkeypatch.setattr(openai_course_ai, "generate_chatbot_reply", _fake_chatbot_reply)
     monkeypatch.setattr(
         openai_course_ai,
-        "generate_learning_requirement_update",
-        lambda **kwargs: LearningRequirementUpdate(
-            progress=100,
-            summary="用户要求按自定义规则和原文互动。",
-            key_facts=[],
-            checklist=[
-                LearningRequirementChecklistItem(
-                    title="用户给出互动规则",
-                    is_clear=True,
-                    evidence="来自用户输入。",
-                )
-            ],
-            missing_items=[],
-            next_question="",
-            ready_for_board=True,
+        "generate_board_task_requirement_sheet",
+        lambda **kwargs: BoardTaskRequirementSheet(
+            target_hint="选中内容",
+            location_status="selected",
+            requested_action="chat",
+            question_or_topic="围绕选中原文进行规则互动。",
             interaction_rule_draft=InteractionRuleDraft(
                 should_start=True,
                 rule_text="按用户指定的规则参考原文逐轮互动。",
@@ -3083,6 +3279,8 @@ def test_rule_based_interaction_start_creates_session_and_clears_task_sheet(
                 assistant_behavior="Chatbot 每轮参考规则和原文回应。",
                 reference_instruction="优先参考选中原文。",
             ),
+            progress=100,
+            missing_items=[],
         ),
     )
 

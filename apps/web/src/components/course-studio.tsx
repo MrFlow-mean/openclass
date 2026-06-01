@@ -142,6 +142,7 @@ export function CourseStudio() {
   const displayedMessages =
     activeLesson && previewCommit ? buildLessonMessagesFromHistory(activeLesson, previewCommit.id) : activeMessages;
   const persistedRequirements = activeLesson?.learning_requirements ?? null;
+  const persistedBoardTask = activeLesson?.board_task_requirements ?? null;
   const previewLearningClarity = learningClarityFromCommit(previewCommit);
   const persistedLearningClarity = learningClarityFromCommit(activeHeadCommit);
   const currentRequirementCleared =
@@ -185,6 +186,7 @@ export function CourseStudio() {
     clarificationQuestions,
     learningClarity,
     streamedRequirementSheet,
+    streamedBoardTaskSheet,
     latestBoardDecision,
     referencePrompt,
     boardEditPrompt,
@@ -196,6 +198,7 @@ export function CourseStudio() {
     handleContinueTeaching,
   } = chatAgent;
   const activeRequirements = streamedRequirementSheet ?? persistedRequirements;
+  const activeBoardTask = streamedBoardTaskSheet ?? persistedBoardTask;
   const voice = useRealtimeVoice({
     activeLesson,
     latestAssistantMessageContent: latestAssistantMessage?.content ?? null,
@@ -489,6 +492,7 @@ export function CourseStudio() {
           referencePrompt={referencePrompt}
           boardEditPrompt={boardEditPrompt}
           clarificationQuestions={clarificationQuestions}
+          activeBoardTask={activeBoardTask}
           latestBoardDecision={latestBoardDecision}
           selectedReference={selectedReference}
           chatScrollEndRef={chatScrollEndRef}
@@ -545,6 +549,7 @@ export function CourseStudio() {
           previewCommit={previewCommit}
           previewCommitId={previewCommitId}
           activeRequirements={activeRequirements}
+          activeBoardTask={activeBoardTask}
           latestBoardDecision={latestBoardDecision}
           newBranchName={newBranchName}
           onNewBranchNameChange={setNewBranchName}

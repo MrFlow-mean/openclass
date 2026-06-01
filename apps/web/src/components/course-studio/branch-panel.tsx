@@ -7,6 +7,7 @@ type BranchPanelProps = {
   activeLesson: Lesson;
   previewCommit: CommitRecord | null;
   activeRequirements: Lesson["learning_requirements"];
+  activeBoardTask: Lesson["board_task_requirements"];
   latestBoardDecision: BoardDecision | null;
   newBranchName: string;
   onNewBranchNameChange: (value: string) => void;
@@ -18,6 +19,7 @@ export function BranchPanel({
   activeLesson,
   previewCommit,
   activeRequirements,
+  activeBoardTask,
   latestBoardDecision,
   newBranchName,
   onNewBranchNameChange,
@@ -74,14 +76,14 @@ export function BranchPanel({
           <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">需求清单</p>
         </div>
         <p className="mt-4 text-sm leading-7 text-gray-700">
-          {activeRequirements?.learning_goal ?? "等待下一次任务需求：说明要操作的位置、动作类型，以及希望怎么讲解或怎么编写。"}
+          {activeBoardTask?.question_or_topic ?? activeRequirements?.learning_goal ?? "等待下一次任务需求：说明要操作的位置、动作类型，以及希望怎么讲解或怎么编写。"}
         </p>
         <div className="mt-4 rounded-xl border border-gray-200 bg-white p-4">
           <p className="text-xs font-semibold text-gray-900">
-            {activeRequirements?.action_type ?? activeRequirements?.target_depth ?? "暂无待执行任务"}
+            {activeBoardTask?.requested_action ?? activeRequirements?.action_type ?? activeRequirements?.target_depth ?? "暂无待执行任务"}
           </p>
           <p className="mt-2 text-[11px] leading-6 text-gray-500">
-            {activeRequirements?.action_instruction || activeRequirements?.success_criteria || "执行完成后，当前清单会归档到历史并清空。"}
+            {activeBoardTask?.target_hint || activeRequirements?.action_instruction || activeRequirements?.success_criteria || "执行完成后，当前清单会归档到历史并清空。"}
           </p>
         </div>
         {latestBoardDecision ? (

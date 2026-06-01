@@ -21,6 +21,7 @@ from app.models import (
     ResourceLibraryItem,
     WorkspaceState,
 )
+from app.services.board_task_history import BoardTaskHistoryStore
 from app.services.document_segment_store import DocumentSegmentStore
 from app.services.learning_requirement_history import LearningRequirementHistoryStore
 from app.services.rich_document import upgrade_markdown_like_document
@@ -41,6 +42,7 @@ class SqliteCourseStore:
         self._lock = threading.RLock()
         self._document_segments = DocumentSegmentStore()
         self._learning_requirement_history = LearningRequirementHistoryStore()
+        self._board_task_history = BoardTaskHistoryStore()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
@@ -91,6 +93,7 @@ class SqliteCourseStore:
         owner_user_id: str,
         workspace: WorkspaceState,
         requirement_history_operations: list[dict[str, Any]],
+        board_task_history_operations: list[dict[str, Any]] | None = None,
     ) -> None:
         with self._lock:
             with self._connect() as conn:
@@ -100,6 +103,34 @@ class SqliteCourseStore:
                         conn,
                         requirement_history_operations,
                     )
+                    if board_task_history_operations:
+                        self._board_task_history.apply_operations(
+                            conn,
+                            board_task_history_operations,
+                        )
+
+    def save_for_user_with_histories(
+        self,
+        owner_user_id: str,
+        workspace: WorkspaceState,
+        *,
+        requirement_history_operations: list[dict[str, Any]] | None = None,
+        board_task_history_operations: list[dict[str, Any]] | None = None,
+    ) -> None:
+        with self._lock:
+            with self._connect() as conn:
+                with conn:
+                    self._replace_workspace(conn, workspace, owner_user_id=owner_user_id)
+                    if requirement_history_operations:
+                        self._learning_requirement_history.apply_operations(
+                            conn,
+                            requirement_history_operations,
+                        )
+                    if board_task_history_operations:
+                        self._board_task_history.apply_operations(
+                            conn,
+                            board_task_history_operations,
+                        )
 
     def load_learning_requirement_history_state(
         self,
@@ -138,6 +169,48 @@ class SqliteCourseStore:
         with self._lock:
             with self._connect() as conn:
                 return self._learning_requirement_history.list_events(
+                    conn,
+                    owner_user_id=owner_user_id,
+                    lesson_id=lesson_id,
+                )
+
+    def load_board_task_history_state(
+        self,
+        *,
+        owner_user_id: str,
+        lesson_id: str,
+    ) -> dict[str, Any] | None:
+        with self._lock:
+            with self._connect() as conn:
+                return self._board_task_history.load_state(
+                    conn,
+                    owner_user_id=owner_user_id,
+                    lesson_id=lesson_id,
+                )
+
+    def list_board_task_versions(
+        self,
+        *,
+        owner_user_id: str,
+        lesson_id: str,
+    ) -> list[dict[str, Any]]:
+        with self._lock:
+            with self._connect() as conn:
+                return self._board_task_history.list_versions(
+                    conn,
+                    owner_user_id=owner_user_id,
+                    lesson_id=lesson_id,
+                )
+
+    def list_board_task_events(
+        self,
+        *,
+        owner_user_id: str,
+        lesson_id: str,
+    ) -> list[dict[str, Any]]:
+        with self._lock:
+            with self._connect() as conn:
+                return self._board_task_history.list_events(
                     conn,
                     owner_user_id=owner_user_id,
                     lesson_id=lesson_id,
@@ -214,6 +287,7 @@ class SqliteCourseStore:
                 board_teaching_guide_json TEXT,
                 board_teaching_progress_json TEXT,
                 learning_requirements_json TEXT,
+                board_task_requirements_json TEXT,
                 interaction_session_json TEXT,
                 teaching_guide_json TEXT NOT NULL,
                 current_branch TEXT NOT NULL,
@@ -351,6 +425,7 @@ class SqliteCourseStore:
         )
         self._migrate_schema(conn)
         self._learning_requirement_history.create_schema(conn)
+        self._board_task_history.create_schema(conn)
         self._document_segments.create_fts_schema(conn)
         self._document_segments.backfill(conn, _document_from_row)
         conn.execute(
@@ -373,6 +448,8 @@ class SqliteCourseStore:
             conn.execute("ALTER TABLE lessons ADD COLUMN board_teaching_progress_json TEXT")
         if "interaction_session_json" not in lesson_columns:
             conn.execute("ALTER TABLE lessons ADD COLUMN interaction_session_json TEXT")
+        if "board_task_requirements_json" not in lesson_columns:
+            conn.execute("ALTER TABLE lessons ADD COLUMN board_task_requirements_json TEXT")
         resource_columns = {
             row["name"]
             for row in conn.execute("PRAGMA table_info(resources)").fetchall()
@@ -550,6 +627,7 @@ class SqliteCourseStore:
             board_teaching_guide=_loads_optional(row["board_teaching_guide_json"]),
             board_teaching_progress=_loads_optional(row["board_teaching_progress_json"]),
             learning_requirements=_loads_optional(row["learning_requirements_json"]),
+            board_task_requirements=_loads_optional(row["board_task_requirements_json"]),
             active_interaction_session=_loads_optional(row["interaction_session_json"]),
             teaching_guide=_loads(row["teaching_guide_json"], {}),
             history_graph=history_graph,
@@ -714,9 +792,9 @@ class SqliteCourseStore:
                 board_document_id, board_document_title, board_content_json,
                 board_content_html, board_content_text, board_page_settings_json,
                 board_teaching_guide_json, board_teaching_progress_json, learning_requirements_json,
-                interaction_session_json, teaching_guide_json,
+                board_task_requirements_json, interaction_session_json, teaching_guide_json,
                 current_branch, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 lesson.id,
@@ -735,6 +813,7 @@ class SqliteCourseStore:
                 _dumps_optional(lesson.board_teaching_guide),
                 _dumps_optional(lesson.board_teaching_progress),
                 _dumps_optional(lesson.learning_requirements),
+                _dumps_optional(lesson.board_task_requirements),
                 _dumps_optional(lesson.active_interaction_session),
                 _dumps(lesson.teaching_guide.model_dump(mode="json")),
                 lesson.history_graph.current_branch,

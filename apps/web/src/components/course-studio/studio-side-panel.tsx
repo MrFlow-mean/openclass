@@ -17,6 +17,7 @@ type CourseStudioSidePanelProps = {
   previewCommit: CommitRecord | null;
   previewCommitId: string | null;
   activeRequirements: Lesson["learning_requirements"];
+  activeBoardTask: Lesson["board_task_requirements"];
   latestBoardDecision: BoardDecision | null;
   newBranchName: string;
   onNewBranchNameChange: (value: string) => void;
@@ -39,6 +40,7 @@ export function CourseStudioSidePanel({
   previewCommit,
   previewCommitId,
   activeRequirements,
+  activeBoardTask,
   latestBoardDecision,
   newBranchName,
   onNewBranchNameChange,
@@ -108,6 +110,7 @@ export function CourseStudioSidePanel({
             activeLesson={activeLesson}
             previewCommit={previewCommit}
             activeRequirements={activeRequirements}
+            activeBoardTask={activeBoardTask}
             latestBoardDecision={latestBoardDecision}
             newBranchName={newBranchName}
             onNewBranchNameChange={onNewBranchNameChange}

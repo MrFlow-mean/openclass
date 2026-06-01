@@ -17,6 +17,7 @@ import type {
   BoardDocument,
   BoardDecision,
   BoardEditPrompt,
+  BoardTaskRequirementSheet,
   ChatRequestPayload,
   CoursePackage,
   LearningClarificationStatus,
@@ -77,6 +78,7 @@ export function useLessonChatAgent({
   const [clarificationQuestions, setClarificationQuestions] = useState<string[]>([]);
   const [learningClarity, setLearningClarity] = useState<LearningClarificationStatus | null>(null);
   const [streamedRequirementSheet, setStreamedRequirementSheet] = useState<LearningRequirementSheet | null>(null);
+  const [streamedBoardTaskSheet, setStreamedBoardTaskSheet] = useState<BoardTaskRequirementSheet | null>(null);
   const [latestBoardDecision, setLatestBoardDecision] = useState<BoardDecision | null>(null);
   const [referencePrompt, setReferencePrompt] = useState<ResourceReferencePrompt | null>(null);
   const [boardEditPrompt, setBoardEditPrompt] = useState<BoardEditPrompt | null>(null);
@@ -117,6 +119,7 @@ export function useLessonChatAgent({
     setClarificationQuestions([]);
     setLearningClarity(null);
     setStreamedRequirementSheet(null);
+    setStreamedBoardTaskSheet(null);
     setLatestBoardDecision(null);
     setReferencePrompt(null);
     setBoardEditPrompt(null);
@@ -241,6 +244,9 @@ export function useLessonChatAgent({
           setLearningClarity(payload.learning_clarification);
           setStreamedRequirementSheet(payload.active_requirement_sheet ?? payload.learning_requirement_sheet);
         },
+        onBoardTaskUpdate(payload) {
+          setStreamedBoardTaskSheet(payload.active_board_task_sheet ?? payload.board_task_sheet);
+        },
       });
       updateCoursePackage(response.course_package, {
         activeLessonId: response.created_lesson ? undefined : lessonId,
@@ -251,6 +257,7 @@ export function useLessonChatAgent({
       setStreamedRequirementSheet(
         response.requirement_cleared ? null : response.active_requirement_sheet ?? response.learning_requirement_sheet
       );
+      setStreamedBoardTaskSheet(response.active_board_task_sheet ?? response.board_task_sheet ?? null);
       setScopeOptions(response.scope_options);
       setResourceMatches(response.resource_matches);
       setReferencePrompt(response.reference_prompt ?? null);
@@ -369,6 +376,7 @@ export function useLessonChatAgent({
     clarificationQuestions,
     learningClarity,
     streamedRequirementSheet,
+    streamedBoardTaskSheet,
     latestBoardDecision,
     referencePrompt,
     boardEditPrompt,

@@ -85,6 +85,25 @@ export interface LearningRequirementSheet {
   interaction_rule_draft?: InteractionRuleDraft | null;
 }
 
+export type BoardTaskRunStatus = "collecting" | "ready" | "awaiting_confirmation" | "consumed" | "not_executed" | "archived";
+export type BoardTaskRequestedAction = "write" | "edit" | "explain" | "chat";
+export type BoardTaskConfirmationStatus = "none" | "awaiting" | "confirmed" | "declined";
+export type BoardTaskLocationStatus = "missing" | "selected" | "resolved" | "ambiguous" | "content_absent";
+
+export interface BoardTaskRequirementSheet {
+  target_hint: string;
+  target_location?: BoardFocusRef | null;
+  location_status: BoardTaskLocationStatus;
+  requested_action?: BoardTaskRequestedAction | null;
+  question_or_topic: string;
+  interaction_rule_draft?: InteractionRuleDraft | null;
+  missing_items: string[];
+  progress: number;
+  confirmation_status: BoardTaskConfirmationStatus;
+  clarification_question: string;
+  failure_count: number;
+}
+
 export interface InteractionRuleDraft {
   should_start: boolean;
   rule_text: string;
@@ -176,6 +195,7 @@ export interface Lesson {
   tags: string[];
   board_document: BoardDocument;
   learning_requirements?: LearningRequirementSheet | null;
+  board_task_requirements?: BoardTaskRequirementSheet | null;
   active_interaction_session?: InteractionSession | null;
   history_graph: LessonHistoryGraph;
   created_at: string;
@@ -474,6 +494,12 @@ export interface ChatResponse {
   requirement_run_id?: string | null;
   requirement_version_id?: string | null;
   requirement_phase?: LearningRequirementRunStatus | null;
+  board_task_sheet?: BoardTaskRequirementSheet | null;
+  active_board_task_sheet?: BoardTaskRequirementSheet | null;
+  board_task_run_id?: string | null;
+  board_task_version_id?: string | null;
+  board_task_phase?: BoardTaskRunStatus | null;
+  board_task_questions?: string[];
   board_decision: BoardDecision;
   needs_clarification: boolean;
   clarification_questions: string[];
@@ -499,6 +525,15 @@ export interface RequirementUpdateStreamPayload {
   requirement_version_id?: string | null;
   requirement_phase?: LearningRequirementRunStatus | null;
   clarification_questions: string[];
+}
+
+export interface BoardTaskUpdateStreamPayload {
+  board_task_sheet: BoardTaskRequirementSheet;
+  active_board_task_sheet?: BoardTaskRequirementSheet | null;
+  board_task_run_id?: string | null;
+  board_task_version_id?: string | null;
+  board_task_phase?: BoardTaskRunStatus | null;
+  board_task_questions: string[];
 }
 
 export interface RealtimeConnectPayload {
