@@ -6,7 +6,7 @@
 
 - 前端课程工作台：围绕课程包、lesson、资料和文档编辑提供统一操作界面。
 - 富文本讲义编辑：右侧类 Word 编辑器支持手动编辑、DOCX 导入导出。
-- 资料库与引用：上传课程资料，抽取章节结构，作为后续文档整理和新架构接入的资料基础。
+- 资料库与引用：课程资料可随协作 fork 复制、通过 Chat 导入或在测试/脚本中写入；资料库保存 metadata、抽取结果和章节入口，供文档整理与引用。
 - 课程包管理：一个课程包可以包含多节 lesson，适合按主题、章节或教学单元组织内容。
 - 版本与分支：每节课支持 commit / branch / restore，可以尝试不同讲法再安全回退。
 - 课程图谱：用结构化关系串联 lesson、知识点和课程路径。
@@ -16,8 +16,8 @@
 
 1. 创建课程包：为一门课、一个专题或一次培训建立独立课程空间。
 2. 添加 lesson：按章节、知识点或教学任务拆分课程内容。
-3. 上传资料：导入讲义、参考文档、案例材料或课堂素材，系统记录 metadata 并抽取结构。
-4. 整理资料：通过资料库保存上传文件 metadata、抽取结果和章节入口。
+3. 引入资料：通过协作 fork 复制资料、Chat 导入或 DOCX 导入把参考内容带入课程包；独立的上传 API（`POST /api/resources/upload`）已移除。
+4. 整理资料：通过资料库查看 metadata、抽取结果和章节入口，并在 Chat 或编辑器中引用。
 5. 手动打磨：在富文本编辑器中直接调整标题、段落、重点、示例和课堂活动。
 6. 保存版本：对稳定结果创建 commit；需要探索新讲法时创建 branch，满意后再保留或回退。
 7. 组织课程路径：通过课程包、标签页和课程图谱把多个 lesson 串成完整教学流程。
@@ -54,7 +54,7 @@ AI_TEXT_PROVIDER=openai
 AI_REALTIME_PROVIDER=openai
 ```
 
-OpenAI/GPT 文本交互和 GPT Image 2 默认走官方 OpenAI API：`https://api.openai.com/v1`。交互 AI 文本默认用 GPT-5.5；语音交互默认用 GPT Realtime 2，但需要显式设置 `OPENCLASS_REALTIME_ENABLED=true` 才会启用后端 WebRTC 连接，`OPENCLASS_REALTIME_TOOLS_ENABLED=true` 才允许 Realtime 调用后端 Chatbot 工具。复杂问题的隐藏强推理工具默认使用 `OPENAI_STRONG_REASONING_MODEL=gpt-5.5` 和 `OPENAI_STRONG_REASONING_EFFORT=high`，只有设置 `OPENCLASS_STRONG_REASONING_ALLOW_PRO=true` 时才会使用 `OPENAI_PRO_REASONING_MODEL`。上传资料默认走确定性解析、页码导航和正文证据检索，不再调用独立目录生成 AI。其他 provider（Anthropic / Google / DeepSeek / Kimi / MiniMax / 自定义兼容网关）和默认模型见 `.env.example`。
+OpenAI/GPT 文本交互和 GPT Image 2 默认走官方 OpenAI API：`https://api.openai.com/v1`。交互 AI 文本默认用 GPT-5.5；语音交互默认用 GPT Realtime 2，但需要显式设置 `OPENCLASS_REALTIME_ENABLED=true` 才会启用后端 WebRTC 连接，`OPENCLASS_REALTIME_TOOLS_ENABLED=true` 才允许 Realtime 调用后端 Chatbot 工具。复杂问题的隐藏强推理工具默认使用 `OPENAI_STRONG_REASONING_MODEL=gpt-5.5` 和 `OPENAI_STRONG_REASONING_EFFORT=high`，只有设置 `OPENCLASS_STRONG_REASONING_ALLOW_PRO=true` 时才会使用 `OPENAI_PRO_REASONING_MODEL`。已有资料走确定性解析、页码导航和正文证据检索；新资料主要通过协作 fork、Chat 导入或 DOCX 进入课程包，不再提供独立的资料上传 HTTP 接口。其他 provider（Anthropic / Google / DeepSeek / Kimi / MiniMax / 自定义兼容网关）和默认模型见 `.env.example`。
 
 前端"选择模型"调 `/api/ai-models`，未配置 key 的 provider 会标为未配置。当前保留并启用的是模型目录、课程聊天入口、文档保存/导入/导出和资料解析等工作台能力；Realtime 默认关闭，开启后仍作为同一个 Chatbot 的实时输入/输出形态，而不是新的教学角色。`BoardTeachingGuide` / `BoardTeachingProgress` 等教学工作流 schema 仅作为历史兼容和 future workflow 预留，不代表完整 AI 教学编排已经接回。
 
