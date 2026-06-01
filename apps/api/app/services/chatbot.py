@@ -149,6 +149,26 @@ def _resource_summary_with_reference(
     return "\n\n".join(parts)
 
 
+def _resource_resolution_query(request: ChatRequest, requirements: LearningRequirementSheet) -> str:
+    parts = [request.message]
+    should_carry_requirement_target = (
+        request.board_generation_action == "start"
+        or is_generation_control_request(request.message)
+        or _requests_document_artifact_generation(request.message)
+        or _requests_resource_output_explanation(request.message)
+    )
+    if should_carry_requirement_target:
+        parts.extend(
+            [
+                requirements.theme,
+                requirements.learning_goal,
+                requirements.action_instruction,
+                str(requirements.target_location or ""),
+            ]
+        )
+    return "\n".join(part for part in parts if part and part.strip())
+
+
 def _conversation_summary(conversation: list[ConversationTurn]) -> str:
     turns = conversation[-MAX_CONVERSATION_TURNS:]
     return "\n".join(f"{turn.role}: {_compact_text(turn.content, limit=500)}" for turn in turns if turn.content.strip())
@@ -1328,21 +1348,25 @@ def _chat_response(
         request_message=request.message,
         requirements=requirements,
     )
+    resource_query = _resource_resolution_query(request, requirements)
     resource_resolution = resolve_resource_reference(
         resources=visible_package.resources,
-        user_message=request.message,
+        user_message=resource_query,
         reference_action=request.resource_reference_action,
         reference_resource_id=request.resource_reference_resource_id,
         reference_chapter_id=request.resource_reference_chapter_id,
         reference_segment_id=request.resource_reference_segment_id,
         allow_direct_reference=(
-            _requests_resource_backed_answer(request.message)
-            and request.interaction_mode != "direct_edit"
-            and action_type not in DOCUMENT_WRITE_ACTIONS
-            and request.board_generation_action != "start"
-            and not _requests_document_artifact_generation(request.message)
-            and not _requests_resource_output_explanation(request.message)
-            and not _requests_learning_start(request.message)
+            (
+                _requests_resource_backed_answer(request.message)
+                and request.interaction_mode != "direct_edit"
+                and action_type not in DOCUMENT_WRITE_ACTIONS
+                and request.board_generation_action != "start"
+                and not _requests_document_artifact_generation(request.message)
+                and not _requests_resource_output_explanation(request.message)
+                and not _requests_learning_start(request.message)
+            )
+            or (request.board_generation_action == "start" and resource_query != request.message)
         ),
     )
     selected_reference = resource_resolution.selected_reference

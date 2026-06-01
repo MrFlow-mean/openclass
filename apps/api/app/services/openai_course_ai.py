@@ -39,7 +39,6 @@ from app.services.ai_model_catalog import (
     GOOGLE_DEFAULT_TEXT_MODEL,
     KIMI_DEFAULT_TEXT_MODEL,
     MINIMAX_DEFAULT_TEXT_MODEL,
-    OPENAI_DEFAULT_CATALOG_MODEL,
     OPENAI_DEFAULT_TEXT_MODEL,
     OPENAI_COMPATIBLE_DEFAULT_TEXT_MODEL,
     OPENAI_OFFICIAL_BASE_URL,
@@ -318,9 +317,6 @@ class OpenAIConfig(BaseModel):
     guide_model: str | None = Field(default_factory=lambda: os.getenv("OPENAI_GUIDE_MODEL"))
     chatbot_model: str | None = Field(default_factory=lambda: os.getenv("OPENAI_CHATBOT_MODEL"))
     lesson_model: str | None = Field(default_factory=lambda: os.getenv("OPENAI_LESSON_MODEL"))
-    catalog_model: str | None = Field(
-        default_factory=lambda: os.getenv("OPENAI_CATALOG_MODEL", OPENAI_DEFAULT_CATALOG_MODEL)
-    )
     fallback_model: str = Field(default_factory=lambda: os.getenv("OPENAI_FALLBACK_MODEL", DEFAULT_TEXT_MODEL))
     compat_api: str = Field(default_factory=lambda: os.getenv("OPENAI_COMPAT_API", "chat_completions"))
 
@@ -342,7 +338,6 @@ class DeepSeekConfig(BaseModel):
     guide_model: str | None = Field(default_factory=lambda: os.getenv("DEEPSEEK_GUIDE_MODEL"))
     chatbot_model: str | None = Field(default_factory=lambda: os.getenv("DEEPSEEK_CHATBOT_MODEL"))
     lesson_model: str | None = Field(default_factory=lambda: os.getenv("DEEPSEEK_LESSON_MODEL"))
-    catalog_model: str | None = Field(default_factory=lambda: os.getenv("DEEPSEEK_CATALOG_MODEL"))
     fallback_model: str = Field(default_factory=lambda: os.getenv("DEEPSEEK_FALLBACK_MODEL", "deepseek-chat"))
     compat_api: str = Field(default_factory=lambda: os.getenv("DEEPSEEK_COMPAT_API", "chat_completions"))
 
@@ -364,7 +359,6 @@ class KimiConfig(BaseModel):
     guide_model: str | None = Field(default_factory=lambda: _env_any("KIMI_GUIDE_MODEL", "MOONSHOT_GUIDE_MODEL"))
     chatbot_model: str | None = Field(default_factory=lambda: _env_any("KIMI_CHATBOT_MODEL", "MOONSHOT_CHATBOT_MODEL"))
     lesson_model: str | None = Field(default_factory=lambda: _env_any("KIMI_LESSON_MODEL", "MOONSHOT_LESSON_MODEL"))
-    catalog_model: str | None = Field(default_factory=lambda: _env_any("KIMI_CATALOG_MODEL", "MOONSHOT_CATALOG_MODEL"))
     fallback_model: str = Field(default_factory=lambda: _env_any("KIMI_FALLBACK_MODEL", "MOONSHOT_FALLBACK_MODEL") or KIMI_DEFAULT_TEXT_MODEL)
     compat_api: str = Field(default_factory=lambda: _env_any("KIMI_COMPAT_API", "MOONSHOT_COMPAT_API") or "chat_completions")
 
@@ -386,7 +380,6 @@ class MiniMaxConfig(BaseModel):
     guide_model: str | None = Field(default_factory=lambda: os.getenv("MINIMAX_GUIDE_MODEL"))
     chatbot_model: str | None = Field(default_factory=lambda: os.getenv("MINIMAX_CHATBOT_MODEL"))
     lesson_model: str | None = Field(default_factory=lambda: os.getenv("MINIMAX_LESSON_MODEL"))
-    catalog_model: str | None = Field(default_factory=lambda: os.getenv("MINIMAX_CATALOG_MODEL"))
     fallback_model: str = Field(default_factory=lambda: os.getenv("MINIMAX_FALLBACK_MODEL", "MiniMax-M2"))
     compat_api: str = Field(default_factory=lambda: os.getenv("MINIMAX_COMPAT_API", "chat_completions"))
 
@@ -426,9 +419,6 @@ class OpenAICompatibleConfig(BaseModel):
     )
     lesson_model: str | None = Field(
         default_factory=lambda: _env_any("OPENAI_COMPATIBLE_LESSON_MODEL", "CUSTOM_OPENAI_LESSON_MODEL")
-    )
-    catalog_model: str | None = Field(
-        default_factory=lambda: _env_any("OPENAI_COMPATIBLE_CATALOG_MODEL", "CUSTOM_OPENAI_CATALOG_MODEL")
     )
     fallback_model: str = Field(
         default_factory=lambda: _env_any(
@@ -657,17 +647,6 @@ class GoogleTextClient:
             raise RuntimeError(f"Google Gemini API error {exc.code}: {body}") from exc
 
 
-class GeneratedCatalogChapter(BaseModel):
-    title: str
-    summary: str
-    keywords: list[str] = Field(default_factory=list)
-    level: int = Field(default=1, ge=1, le=4)
-
-
-class GeneratedResourceCatalog(BaseModel):
-    chapters: list[GeneratedCatalogChapter] = Field(default_factory=list)
-
-
 class OpenAICourseAI:
     def __init__(self) -> None:
         self.config = OpenAIConfig()
@@ -750,7 +729,6 @@ class OpenAICourseAI:
             },
             "models": {
                 "text": self.config.default_model,
-                "catalog": self.config.catalog_model or self.config.default_model,
                 "fallback": self.config.fallback_model,
                 "image": self.config.image_model,
                 "strong_reasoning": os.getenv("OPENAI_STRONG_REASONING_MODEL", "gpt-5.5"),
@@ -762,54 +740,6 @@ class OpenAICourseAI:
                 "anthropic_compatible": self.anthropic_compatible_config.default_model,
             },
         }
-
-    def generate_resource_outline(
-        self,
-        *,
-        resource_name: str,
-        extracted_text: str,
-        max_chapters: int = 8,
-    ) -> GeneratedResourceCatalog | None:
-        compact_text = re.sub(r"\s+", " ", extracted_text or "").strip()
-        if len(compact_text) < 80:
-            return None
-        source_excerpt = compact_text[:12000]
-        system_prompt = (
-            "You are the Directory AI for a general AI course workbench. "
-            "Build a compact, domain-neutral table of contents for uploaded learning materials. "
-            "Use only the supplied material. Do not add subject templates, fixed course content, or examples not grounded in the text."
-        )
-        user_prompt = _json(
-            {
-                "resource_name": resource_name,
-                "max_chapters": max_chapters,
-                "requirements": [
-                    "Return 1 to max_chapters chapter entries.",
-                    "Prefer real section titles when the text implies them.",
-                    "If the material has no clear sections, group it by content shape and learning flow.",
-                    "Keep summaries concise and useful for later retrieval.",
-                    "Keywords should come from the material text, not from external knowledge.",
-                ],
-                "material_excerpt": source_excerpt,
-            }
-        )
-        result = self._parse(
-            "catalog",
-            system_prompt,
-            user_prompt,
-            GeneratedResourceCatalog,
-            log_user_prompt=_json(
-                {
-                    "resource_name": resource_name,
-                    "max_chapters": max_chapters,
-                    "material_excerpt_length": len(source_excerpt),
-                }
-            ),
-        )
-        if not isinstance(result, GeneratedResourceCatalog):
-            return None
-        result.chapters = result.chapters[:max_chapters]
-        return result
 
     def generate_chatbot_reply(
         self,
@@ -1616,9 +1546,6 @@ class OpenAICourseAI:
             return None
 
     def _model_for(self, role: str) -> tuple[AIProvider, str]:
-        if role == "catalog":
-            return "openai", self.config.model_for(role)
-
         selection = _text_model_selection.get()
         if selection:
             return selection.provider, selection.model

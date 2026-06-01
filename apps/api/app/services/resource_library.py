@@ -448,10 +448,6 @@ def _external_parser_outline(original_name: str, parsed: ParsedResourceText) -> 
     if chapters:
         return chapters
 
-    ai_outline = _ai_generated_outline(original_name, content_text)
-    if ai_outline:
-        return _mark_external_parser_chapters(ai_outline, parsed)
-
     chapter = _generic_chapter_from_text(
         Path(original_name).stem,
         content_text,
@@ -527,48 +523,6 @@ def _page_end_from_range(page_range: str | None) -> int | None:
         return None
     matches = re.findall(r"\d+", page_range)
     return int(matches[-1]) if matches else None
-
-
-def _ai_generated_outline(original_name: str, text: str) -> list[LibraryChapter]:
-    normalized_text = _normalize_extracted_text(text)
-    if len(normalized_text) < 80:
-        return []
-    try:
-        from app.services.openai_course_ai import openai_course_ai
-
-        generated = openai_course_ai.generate_resource_outline(
-            resource_name=original_name,
-            extracted_text=normalized_text,
-        )
-    except Exception:
-        return []
-    if generated is None:
-        return []
-
-    chapters: list[LibraryChapter] = []
-    seen_titles: set[str] = set()
-    for index, item in enumerate(generated.chapters):
-        title = re.sub(r"\s+", " ", item.title).strip()
-        summary = re.sub(r"\s+", " ", item.summary).strip()
-        if not title or title.lower() in seen_titles:
-            continue
-        seen_titles.add(title.lower())
-        chapters.append(
-            _chapter(
-                title=title[:80],
-                summary=summary[:220] or f"从资料“{original_name}”生成的目录入口。",
-                keywords=[
-                    keyword[:40]
-                    for keyword in (item.keywords or _keywords_from_text(f"{title}\n{summary}"))[:8]
-                    if keyword.strip()
-                ],
-                level=max(1, min(item.level, 4)),
-                locator_hint=title,
-                order_index=index,
-                scan_strategy="fulltext_match",
-            )
-        )
-    return chapters
 
 
 def _read_text_file(file_path: Path) -> str:
@@ -1852,9 +1806,6 @@ def extract_outline(
         generic_title = Path(original_name).stem
         extracted_text = extract_image_text(file_path)
         if extracted_text:
-            ai_outline = _ai_generated_outline(original_name, extracted_text)
-            if ai_outline:
-                return ai_outline, True, extracted_text
             return (
                 [
                     _generic_chapter_from_text(
@@ -1889,9 +1840,6 @@ def extract_outline(
         outline = _extract_markdown_outline(text)
         if outline:
             return outline, True, text
-        ai_outline = _ai_generated_outline(original_name, text)
-        if ai_outline:
-            return ai_outline, True, text
         return (
             [
                 _generic_chapter_from_text(
@@ -1909,9 +1857,6 @@ def extract_outline(
         outline = _extract_docx_outline(file_path)
         if outline:
             return outline, True, text
-        ai_outline = _ai_generated_outline(original_name, text)
-        if ai_outline:
-            return ai_outline, True, text
         return (
             [
                 _generic_chapter_from_text(
@@ -1930,9 +1875,6 @@ def extract_outline(
         if outline:
             return outline, True, text[:200000] if text else None
         if text:
-            ai_outline = _ai_generated_outline(original_name, text)
-            if ai_outline:
-                return ai_outline, True, text[:200000]
             return (
                 [
                     _generic_chapter_from_text(
@@ -2000,9 +1942,6 @@ def extract_outline(
 
         first_pages_text = "\n".join(page.text for page in page_texts if page.page_number <= 2).strip()
         if first_pages_text:
-            ai_outline = _ai_generated_outline(original_name, first_pages_text)
-            if ai_outline:
-                return ai_outline, False, None
             return (
                 [
                     _generic_chapter_from_text(

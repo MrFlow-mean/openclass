@@ -19,6 +19,7 @@ from app.models import (
     InteractionSession,
     InteractionTurnDecision,
     LibraryChapter,
+    LearningRequirementSheet,
     LearningRequirementChecklistItem,
     LearningRequirementKeyFact,
     RealtimeTranscriptLogRequest,
@@ -30,6 +31,7 @@ from app.routers.auth import current_user
 from app.routers import documents as documents_router
 from app.routers import realtime as realtime_router
 from app.services.ai_logging import ai_log_context, ai_usage_logger, current_ai_log_context
+from app.services.chatbot import _resource_resolution_query
 from app.services import chat_service, workspace_state
 from app.services.course_runtime import refresh_lesson_runtime
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
@@ -39,7 +41,6 @@ from app.services.openai_course_ai import (
     BoardDocumentEditResult,
     ChatbotReply,
     ComplexProblemSolution,
-    GeneratedResourceCatalog,
     LearningRequirementUpdate,
     OpenAICourseAI,
     bind_text_model_selection,
@@ -670,53 +671,26 @@ def test_anthropic_compatible_provider_routes_to_selected_client(isolated_ai_log
     assert entries[0]["payload"]["model"] == "claude-router"
 
 
-def test_catalog_role_uses_dedicated_openai_model_even_with_text_selection(isolated_ai_log) -> None:
-    class _FakeResponses:
-        def __init__(self) -> None:
-            self.payload = None
+def test_resource_resolution_query_carries_requirement_target_for_board_generation() -> None:
+    request = ChatRequest(message="Start the board.", board_generation_action="start")
+    requirements = LearningRequirementSheet(
+        theme="Document navigation",
+        learning_goal="Present section 13.2 from the uploaded material.",
+        level="unknown",
+        known_background="",
+        current_questions=[],
+        target_depth="",
+        output_preference="",
+        boundary="",
+        board_scope=[],
+        success_criteria="",
+        action_instruction="Use section 13.2 as the target source.",
+    )
 
-        def parse(self, **kwargs):
-            self.payload = kwargs
+    query = _resource_resolution_query(request, requirements)
 
-            class _Response:
-                id = "catalog_123"
-                usage = {"input_tokens": 5, "output_tokens": 8}
-
-                def __init__(self) -> None:
-                    payload = {
-                        "chapters": [
-                            {
-                                "title": "入口",
-                                "summary": "资料的起点。",
-                                "keywords": ["入口"],
-                                "level": 1,
-                            }
-                        ]
-                    }
-                    self.output_text = json.dumps(payload, ensure_ascii=False)
-                    self.output_parsed = GeneratedResourceCatalog.model_validate(payload)
-
-            return _Response()
-
-    class _FakeClient:
-        def __init__(self) -> None:
-            self.responses = _FakeResponses()
-
-    ai = OpenAICourseAI()
-    ai.client = _FakeClient()
-    ai.config.default_model = "gpt-5.5"
-    ai.config.catalog_model = "gpt-5.4-mini"
-    ai.config.compat_api = "responses"
-
-    with bind_text_model_selection(AIModelSelection(provider="openai", model="gpt-5.5")):
-        result = ai.generate_resource_outline(
-            resource_name="material.txt",
-            extracted_text="入口说明。" * 80,
-        )
-
-    assert result is not None
-    assert result.chapters[0].title == "入口"
-    assert ai.client.responses.payload["model"] == "gpt-5.4-mini"
+    assert "Start the board." in query
+    assert "13.2" in query
 
 
 def test_chat_route_returns_chatbot_reply(monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path) -> None:
