@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, WebSocket
 from fastapi.responses import RedirectResponse
 
+from app.constants import AUTH_ERROR_ADMIN_REQUIRED
 from app.models import (
     AdminAuditLogResponse,
     AdminOverview,
@@ -94,7 +95,10 @@ def current_websocket_user(websocket: WebSocket) -> UserView:
 
 def current_admin(user: UserView = Depends(current_user)) -> UserView:
     if user.role != "admin":
-        raise HTTPException(status_code=403, detail={"code": "admin_required", "message": "需要管理员权限"})
+        raise HTTPException(
+            status_code=403,
+            detail={"code": AUTH_ERROR_ADMIN_REQUIRED, "message": "需要管理员权限"},
+        )
     return user
 
 

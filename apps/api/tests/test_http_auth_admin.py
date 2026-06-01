@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from app.constants import AUTH_ERROR_PASSWORD_RESET_INVALID, AUTH_ERROR_UNAUTHENTICATED
+from app.constants import (
+    AUTH_ERROR_ADMIN_REQUIRED,
+    AUTH_ERROR_PASSWORD_RESET_INVALID,
+    AUTH_ERROR_UNAUTHENTICATED,
+)
 from conftest import token_from_latest_email, verified_headers
 
 
@@ -51,7 +55,7 @@ def test_admin_overview_requires_admin_role(isolated_app) -> None:
 
     forbidden = client.get("/api/admin/overview", headers=member_headers)
     assert forbidden.status_code == 403
-    assert forbidden.json()["detail"]["code"] == "admin_required"
+    assert forbidden.json()["detail"]["code"] == AUTH_ERROR_ADMIN_REQUIRED
 
 
 def test_admin_can_disable_user(isolated_app) -> None:

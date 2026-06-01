@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 
+from app.constants import COMMIT_KIND_MANUAL_DOCUMENT_SAVE
 from conftest import verified_headers
 
 
@@ -71,7 +72,7 @@ def test_workspace_crud_and_isolation_via_http(isolated_app) -> None:
             "document": document,
             "label": "Owner save",
             "message": "Saved by owner",
-            "metadata": {"kind": "manual_document_save"},
+            "metadata": {"kind": COMMIT_KIND_MANUAL_DOCUMENT_SAVE},
         },
     )
     assert save.status_code == 200

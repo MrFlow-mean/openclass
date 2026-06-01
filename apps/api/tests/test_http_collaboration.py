@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 
-from app.constants import CONTRIBUTION_STATUS_MERGED
+from app.constants import COMMIT_KIND_MANUAL_DOCUMENT_SAVE, CONTRIBUTION_STATUS_MERGED
 from conftest import verified_headers
 
 
@@ -72,7 +72,7 @@ def test_collaboration_publish_list_and_fork_via_http(isolated_app) -> None:
             "document": document,
             "label": "Contributor save",
             "message": "Improved lesson body",
-            "metadata": {"kind": "manual_document_save"},
+            "metadata": {"kind": COMMIT_KIND_MANUAL_DOCUMENT_SAVE},
         },
     )
     assert save.status_code == 200

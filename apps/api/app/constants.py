@@ -1,9 +1,11 @@
 """跨模块共享的业务常量（error code、commit kind、贡献状态）。"""
 
-from typing import Final, Literal
+from typing import Final
+
+from app.models import CourseContributionStatus as CourseContributionStatus
 
 # ---------------------------------------------------------------------------
-# Auth HTTP detail.code（与 auth_service._raise_auth_error 一致）
+# Auth HTTP detail.code（与 auth_service._raise_auth_error / current_admin 一致）
 # ---------------------------------------------------------------------------
 
 AUTH_ERROR_UNAUTHENTICATED: Final = "unauthenticated"
@@ -14,6 +16,7 @@ AUTH_ERROR_EMAIL_ALREADY_REGISTERED: Final = "email_already_registered"
 AUTH_ERROR_PASSWORD_RESET_INVALID: Final = "password_reset_invalid"
 AUTH_ERROR_USER_NOT_FOUND: Final = "user_not_found"
 AUTH_ERROR_ADMIN_SELF_LOCKOUT: Final = "admin_self_lockout"
+AUTH_ERROR_ADMIN_REQUIRED: Final = "admin_required"
 
 # ---------------------------------------------------------------------------
 # Lesson commit metadata.kind
@@ -31,10 +34,8 @@ COMMIT_KIND_DOCUMENT_EVIDENCE_LOOKUP: Final = "document_evidence_lookup"
 COMMIT_KIND_INTERACTION_FLOW: Final = "interaction_flow"
 
 # ---------------------------------------------------------------------------
-# 开放课程贡献状态（与 models.CourseContributionStatus 一致）
+# 开放课程贡献状态：类型唯一定义在 models，这里仅 re-export 字符串常量，避免漂移
 # ---------------------------------------------------------------------------
-
-CourseContributionStatus = Literal["open", "changes_requested", "merged", "closed"]
 
 CONTRIBUTION_STATUS_OPEN: Final = "open"
 CONTRIBUTION_STATUS_CHANGES_REQUESTED: Final = "changes_requested"
