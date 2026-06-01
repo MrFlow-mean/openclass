@@ -1,3 +1,7 @@
+"""开放课程协作：发布、fork、贡献审核与 merge。
+
+Fork 复制资料文件到独立 upload 路径；merge 在事务内写回主线 lesson 与 history。
+"""
 from __future__ import annotations
 
 import hashlib
@@ -155,6 +159,10 @@ class CourseCollaborationService:
                 """
             )
 
+    # -----------------------------------------------------------------------
+    # 公开 API：publish / list / fork
+    # -----------------------------------------------------------------------
+
     def publish_package(self, user: UserView, package_id: str, summary: str | None = None) -> OpenCourseDetail:
         self._require_account_user(user)
         workspace = load_workspace_for_user(user.id)
@@ -291,6 +299,10 @@ class CourseCollaborationService:
             updated_at=now,
         )
         return fork_view, package_view_for_lesson(workspace, fork_package, fork_package.active_lesson_id)
+
+    # -----------------------------------------------------------------------
+    # 贡献提交与 maintainer 审核
+    # -----------------------------------------------------------------------
 
     def submit_contribution(
         self,
@@ -455,6 +467,10 @@ class CourseCollaborationService:
                     (publication_id, maintainer_user_id),
                 )
         return self.get_open_course(publication_id, viewer=user)
+
+    # -----------------------------------------------------------------------
+    # Merge 写回（仅 maintainer / owner）
+    # -----------------------------------------------------------------------
 
     def _merge_contribution(self, contribution_row: sqlite3.Row, publication_row: sqlite3.Row, merged_by_user_id: str) -> None:
         source_workspace = load_workspace_for_user(publication_row["owner_user_id"])

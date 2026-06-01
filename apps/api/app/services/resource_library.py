@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+# ---------------------------------------------------------------------------
+# 资料解析：PDF / DOCX / EPUB / Markdown / 外部 adapter
+# ---------------------------------------------------------------------------
+
 import html
 import hashlib
 import mimetypes
@@ -2264,6 +2268,11 @@ def _link_resource_segments(segments: list[ResourceSegment]) -> list[ResourceSeg
             }
         )
     return segments
+
+
+# ---------------------------------------------------------------------------
+# 对外构建：segments 与 ResourceLibraryItem
+# ---------------------------------------------------------------------------
 
 
 def build_resource_segments(resource: ResourceLibraryItem) -> list[ResourceSegment]:

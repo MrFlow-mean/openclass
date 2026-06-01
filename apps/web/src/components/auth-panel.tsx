@@ -1,5 +1,9 @@
 "use client";
 
+// ---------------------------------------------------------------------------
+// 登录 / 注册 / 密码重置 / OAuth
+// ---------------------------------------------------------------------------
+
 import clsx from "clsx";
 import Link from "next/link";
 import type { CSSProperties, FormEvent } from "react";

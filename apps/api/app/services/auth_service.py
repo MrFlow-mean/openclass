@@ -1,3 +1,8 @@
+"""用户认证、OAuth、会话与管理员操作。
+
+Token 仅以 SHA256 hash 存库；guest workspace 在注册/验证后可认领到正式账号。
+详见 app/services/auth/README.md 与 docs/auth-user-management.md。
+"""
 from __future__ import annotations
 
 import base64
@@ -483,6 +488,11 @@ def _decode_jwt_payload(token: str) -> dict[str, Any]:
         raise exc
 
 
+# ---------------------------------------------------------------------------
+# AuthService：注册、登录、OAuth、会话
+# ---------------------------------------------------------------------------
+
+
 class AuthService:
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -512,6 +522,7 @@ class AuthService:
 
         with self.store.transaction() as conn:
             user_count = self.store.user_count(conn)
+            # 首个注册用户或 OPENCLASS_ADMIN_EMAILS 中的邮箱自动获得 admin
             role = "admin" if user_count == 0 or account.email in _admin_emails() else "user"
             try:
                 self.store.create_password_user(
@@ -708,6 +719,7 @@ class AuthService:
             return self._issue_session_for_user_id(conn, user_id, user_agent=user_agent)
 
     def get_user_by_token(self, token: str) -> UserView:
+        # 每次鉴权查库并 touch 会话，避免使用过期或已撤销 token 的缓存视图
         token_hash = self._token_hash(token)
         now = _now_iso()
         with self.store.transaction() as conn:
@@ -1200,6 +1212,11 @@ class AuthService:
     @staticmethod
     def _token_hash(token: str) -> str:
         return _token_hash(token)
+
+
+# ---------------------------------------------------------------------------
+# HTTP / WebSocket Bearer 提取
+# ---------------------------------------------------------------------------
 
 
 def _bearer_token_from_parts(

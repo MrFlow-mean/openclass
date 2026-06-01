@@ -1,5 +1,9 @@
 "use client";
 
+// ---------------------------------------------------------------------------
+// 类 Word 讲义编辑器（TipTap）
+// ---------------------------------------------------------------------------
+
 import type { Editor as TiptapEditor } from "@tiptap/core";
 import { useEditor } from "@tiptap/react";
 import clsx from "clsx";

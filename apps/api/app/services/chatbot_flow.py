@@ -1,3 +1,7 @@
+"""Chat 主流程：interaction_mode 分支、requirement 更新、SSE 事件组装。
+
+Router 经 chat_service 调用；模型与 prompt 在 openai_course_ai，intent 分支在 chatbot_handlers。
+"""
 from __future__ import annotations
 
 from app.models import BoardDecision, ChatRequest, ChatResponse, ConversationTurn
@@ -57,6 +61,12 @@ from app.services.chatbot_support import (
     _task_metadata,
     _with_task_details,
 )
+
+
+# ---------------------------------------------------------------------------
+# Chat 主入口
+# ---------------------------------------------------------------------------
+
 
 def _chat_response(
     *,

@@ -38,6 +38,11 @@ def _active_package_setting_key(owner_user_id: str | None) -> str:
     return "active_package_id"
 
 
+# ---------------------------------------------------------------------------
+# SQLite 课程包持久化（单写进程 + WAL）
+# ---------------------------------------------------------------------------
+
+
 class SqliteCourseStore:
     def __init__(self, path: Path, *, legacy_json_path: Path | None = None) -> None:
         self.path = path

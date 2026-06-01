@@ -1,5 +1,9 @@
 "use client";
 
+// ---------------------------------------------------------------------------
+// 学习首页：workspace、开放课程、recent feed
+// ---------------------------------------------------------------------------
+
 import clsx from "clsx";
 import Image from "next/image";
 import Link from "next/link";

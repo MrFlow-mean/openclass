@@ -647,6 +647,11 @@ class GoogleTextClient:
             raise RuntimeError(f"Google Gemini API error {exc.code}: {body}") from exc
 
 
+# ---------------------------------------------------------------------------
+# 模型调用：Chat / Board / PM / 强推理
+# ---------------------------------------------------------------------------
+
+
 class OpenAICourseAI:
     def __init__(self) -> None:
         self.config = OpenAIConfig()

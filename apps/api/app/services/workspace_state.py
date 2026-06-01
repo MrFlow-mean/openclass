@@ -1,3 +1,7 @@
+"""Workspace 读写 helper 与视图转换。
+
+STORE 单例指向 SqliteCourseStore；返回前端前由 package_view 等剥离资料原文与本地路径。
+"""
 from __future__ import annotations
 
 import os
@@ -20,6 +24,11 @@ from app.services.course_store import SqliteCourseStore
 from app.services.config import API_BASE_DIR as BASE_DIR, DATA_DIR, ROOT_DIR, load_root_dotenv
 from app.services.course_runtime import active_task_requirements
 from app.services.history import commit_operations
+
+
+# ---------------------------------------------------------------------------
+# 路径与环境
+# ---------------------------------------------------------------------------
 
 
 def _load_root_dotenv() -> None:
@@ -62,6 +71,11 @@ def load_workspace() -> WorkspaceState:
 
 def save_workspace(workspace: WorkspaceState) -> None:
     get_store().save(workspace)
+
+
+# ---------------------------------------------------------------------------
+# 按用户加载 / 保存
+# ---------------------------------------------------------------------------
 
 
 def load_workspace_for_user(user_id: str) -> WorkspaceState:
@@ -158,7 +172,12 @@ def package_context_for_lesson(
         lesson_id=lesson_id,
         isolate_lesson_resources=is_standalone_package(workspace, package),
     )
-    return package.model_copy(update={"resources": resources})
+    return package.model_copy(update={"resources": resources}    )
+
+
+# ---------------------------------------------------------------------------
+# 视图转换（剥离敏感字段后再返回 HTTP）
+# ---------------------------------------------------------------------------
 
 
 def normalize_package_state(package: CoursePackage) -> None:

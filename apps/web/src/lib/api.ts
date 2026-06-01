@@ -27,6 +27,7 @@ import type {
   UserView,
 } from "@/types";
 
+/** 前端唯一 HTTP 客户端：注册 token 用 localStorage+Cookie，游客用 sessionStorage；错误读 detail.code。 */
 const configuredApiBase = process.env.NEXT_PUBLIC_API_BASE_URL;
 export const OPENCLASS_AUTH_TOKEN_STORAGE_KEY = "openclass.auth.token";
 export const OPENCLASS_GUEST_AUTH_TOKEN_STORAGE_KEY = "openclass.guest.auth.token";
