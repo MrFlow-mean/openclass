@@ -4,6 +4,11 @@ Router 经 chat_service 调用；模型与 prompt 在 openai_course_ai，intent 
 """
 from __future__ import annotations
 
+from app.constants import (
+    COMMIT_KIND_BOARD_DOCUMENT_EDIT,
+    COMMIT_KIND_BOARD_DOCUMENT_GENERATION,
+    COMMIT_KIND_CHAT_FLOW,
+)
 from app.models import BoardDecision, ChatRequest, ChatResponse, ConversationTurn
 from app.services import workspace_state
 from app.services.board_document_editor import edit_existing_document, generate_from_requirements
@@ -190,7 +195,7 @@ def _chat_response(
             lesson.board_teaching_progress = None
         requirement_cleared = edit_outcome.changed
         metadata = {
-            "kind": "board_document_generation",
+            "kind": COMMIT_KIND_BOARD_DOCUMENT_GENERATION,
             "user_message": request.message,
             "assistant_message": chatbot_message,
             "assistant_message_source": edit_outcome.assistant_message_source,
@@ -251,7 +256,7 @@ def _chat_response(
             message="Recorded a section-by-section board teaching turn",
             new_document=lesson.board_document,
             metadata={
-                "kind": "chat_flow",
+                "kind": COMMIT_KIND_CHAT_FLOW,
                 "user_message": request.message,
                 "assistant_message": teaching_result.chatbot_message,
                 "assistant_message_source": "chatbot",
@@ -304,7 +309,7 @@ def _chat_response(
             message="Recorded a contextual continuation explanation chat turn",
             new_document=lesson.board_document,
             metadata={
-                "kind": "chat_flow",
+                "kind": COMMIT_KIND_CHAT_FLOW,
                 "user_message": request.message,
                 "assistant_message": chatbot_message,
                 "assistant_message_source": chatbot_message_source,
@@ -381,7 +386,7 @@ def _chat_response(
                 message="Asked the learner to confirm the board focus before editing",
                 new_document=lesson.board_document,
                 metadata={
-                    "kind": "chat_flow",
+                    "kind": COMMIT_KIND_CHAT_FLOW,
                     "user_message": request.message,
                     "assistant_message": chatbot_message,
                     "assistant_message_source": chatbot_message_source,
@@ -432,7 +437,7 @@ def _chat_response(
             message="Applied a Board Document Editor AI update",
             new_document=lesson.board_document,
             metadata={
-                "kind": "board_document_edit",
+                "kind": COMMIT_KIND_BOARD_DOCUMENT_EDIT,
                 "user_message": request.message,
                 "assistant_message": edit_outcome.chatbot_message,
                 "assistant_message_source": edit_outcome.assistant_message_source,
@@ -532,7 +537,7 @@ def _chat_response(
                 message="Appended new board content at the end of the current document",
                 new_document=lesson.board_document,
                 metadata={
-                    "kind": "board_document_edit",
+                    "kind": COMMIT_KIND_BOARD_DOCUMENT_EDIT,
                     "user_message": request.message,
                     "assistant_message": edit_outcome.chatbot_message,
                     "assistant_message_source": edit_outcome.assistant_message_source,
@@ -594,7 +599,7 @@ def _chat_response(
                 message="Transformed the current board document",
                 new_document=lesson.board_document,
                 metadata={
-                    "kind": "board_document_edit",
+                    "kind": COMMIT_KIND_BOARD_DOCUMENT_EDIT,
                     "user_message": request.message,
                     "assistant_message": edit_outcome.chatbot_message,
                     "assistant_message_source": edit_outcome.assistant_message_source,
@@ -657,7 +662,7 @@ def _chat_response(
                 message="Asked the learner to confirm the board focus before acting",
                 new_document=lesson.board_document,
                 metadata={
-                    "kind": "chat_flow",
+                    "kind": COMMIT_KIND_CHAT_FLOW,
                     "user_message": request.message,
                     "assistant_message": chatbot_message,
                     "assistant_message_source": chatbot_message_source,
@@ -709,7 +714,7 @@ def _chat_response(
                 message="Applied a Board Document Editor AI update",
                 new_document=lesson.board_document,
                 metadata={
-                    "kind": "board_document_edit",
+                    "kind": COMMIT_KIND_BOARD_DOCUMENT_EDIT,
                     "user_message": request.message,
                     "assistant_message": edit_outcome.chatbot_message,
                     "assistant_message_source": edit_outcome.assistant_message_source,
@@ -764,7 +769,7 @@ def _chat_response(
                 message="Asked the learner to confirm strong reasoning before solving a complex target",
                 new_document=lesson.board_document,
                 metadata={
-                    "kind": "chat_flow",
+                    "kind": COMMIT_KIND_CHAT_FLOW,
                     "user_message": request.message,
                     "assistant_message": chatbot_message,
                     "assistant_message_source": chatbot_message_source,
@@ -828,7 +833,7 @@ def _chat_response(
             message="Answered a learner question about a resolved board segment",
             new_document=lesson.board_document,
             metadata={
-                "kind": "chat_flow",
+                "kind": COMMIT_KIND_CHAT_FLOW,
                 "user_message": request.message,
                 "assistant_message": chatbot_message,
                 "assistant_message_source": chatbot_message_source,
@@ -891,7 +896,7 @@ def _chat_response(
                 message="Asked the learner to confirm a relevant resource chapter before continuing",
                 new_document=lesson.board_document,
                 metadata={
-                    "kind": "chat_flow",
+                    "kind": COMMIT_KIND_CHAT_FLOW,
                     "user_message": request.message,
                     "assistant_message": chatbot_message,
                     "assistant_message_source": "resource_resolver",
@@ -966,7 +971,7 @@ def _chat_response(
                 message="Generated board document from an explicit learner request",
                 new_document=lesson.board_document,
                 metadata={
-                    "kind": "board_document_generation",
+                    "kind": COMMIT_KIND_BOARD_DOCUMENT_GENERATION,
                     "user_message": request.message,
                     "assistant_message": edit_outcome.chatbot_message,
                     "assistant_message_source": edit_outcome.assistant_message_source,
@@ -1022,7 +1027,7 @@ def _chat_response(
             message="Recorded a learner and PM handoff chat turn",
             new_document=lesson.board_document,
             metadata={
-                "kind": "chat_flow",
+                "kind": COMMIT_KIND_CHAT_FLOW,
                 "user_message": request.message,
                 "assistant_message": chatbot_message,
                 "assistant_message_source": chatbot_message_source,
@@ -1064,7 +1069,7 @@ def _chat_response(
             message="Asked the learner to confirm a relevant resource chapter before answering",
             new_document=lesson.board_document,
             metadata={
-                "kind": "chat_flow",
+                "kind": COMMIT_KIND_CHAT_FLOW,
                 "user_message": request.message,
                 "assistant_message": chatbot_message,
                 "assistant_message_source": "resource_resolver",
@@ -1155,7 +1160,7 @@ def _chat_response(
             message="Asked the learner to confirm strong reasoning before solving a complex request",
             new_document=lesson.board_document,
             metadata={
-                "kind": "chat_flow",
+                "kind": COMMIT_KIND_CHAT_FLOW,
                 "user_message": request.message,
                 "assistant_message": chatbot_message,
                 "assistant_message_source": chatbot_message_source,
@@ -1257,7 +1262,7 @@ def _chat_response(
         message="Recorded a learner and chatbot chat turn",
         new_document=lesson.board_document,
         metadata={
-            "kind": "chat_flow",
+            "kind": COMMIT_KIND_CHAT_FLOW,
             "user_message": request.message,
             "assistant_message": chatbot_message,
             "assistant_message_source": chatbot_message_source,

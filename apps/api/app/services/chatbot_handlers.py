@@ -1,6 +1,13 @@
 from __future__ import annotations
 
-
+from app.constants import (
+    COMMIT_KIND_BOARD_DOCUMENT_GENERATION,
+    COMMIT_KIND_BOARD_DOCUMENT_IMPORT,
+    COMMIT_KIND_DOCUMENT_EVIDENCE_GENERATION,
+    COMMIT_KIND_DOCUMENT_EVIDENCE_INSERT,
+    COMMIT_KIND_DOCUMENT_EVIDENCE_LOOKUP,
+    COMMIT_KIND_INTERACTION_FLOW,
+)
 from app.models import (
     BoardDecision,
     ChatRequest,
@@ -134,7 +141,7 @@ def _handle_resource_document_import_request(
             message="Asked the learner how to apply an uploaded resource to a non-empty board",
             new_document=lesson.board_document,
             metadata={
-                "kind": "board_document_import",
+                "kind": COMMIT_KIND_BOARD_DOCUMENT_IMPORT,
                 "import_status": "await_write_mode",
                 "user_message": request.message,
                 "assistant_message": chatbot_message,
@@ -186,7 +193,7 @@ def _handle_resource_document_import_request(
             message="Could not resolve a resource document import request",
             new_document=lesson.board_document,
             metadata={
-                "kind": "board_document_import",
+                "kind": COMMIT_KIND_BOARD_DOCUMENT_IMPORT,
                 "import_status": "unresolved",
                 "user_message": request.message,
                 "assistant_message": chatbot_message,
@@ -247,7 +254,7 @@ def _handle_resource_document_import_request(
         message="Imported uploaded resource text into the board document",
         new_document=lesson.board_document,
         metadata={
-            "kind": "board_document_import",
+            "kind": COMMIT_KIND_BOARD_DOCUMENT_IMPORT,
             "import_status": "imported",
             "user_message": request.message,
             "assistant_message": chatbot_message,
@@ -372,7 +379,7 @@ def _handle_document_evidence_action(
             message="Inserted located document evidence into the board",
             new_document=lesson.board_document,
             metadata={
-                "kind": "document_evidence_insert",
+                "kind": COMMIT_KIND_DOCUMENT_EVIDENCE_INSERT,
                 "document_evidence": evidence.model_dump(mode="json", exclude={"full_text"}),
                 "assistant_message": chatbot_message,
                 **_task_metadata(
@@ -420,7 +427,7 @@ def _handle_document_evidence_action(
         message="Generated board document from located document evidence",
         new_document=lesson.board_document,
         metadata={
-            "kind": "document_evidence_generation",
+            "kind": COMMIT_KIND_DOCUMENT_EVIDENCE_GENERATION,
             "document_evidence": evidence.model_dump(mode="json", exclude={"full_text"}),
             "assistant_message": chatbot_message,
             "board_edit_operation": edit_outcome.operation,
@@ -478,7 +485,7 @@ def _handle_document_lookup_request(
             message="Located uploaded document evidence",
             new_document=lesson.board_document,
             metadata={
-                "kind": "document_evidence_lookup",
+                "kind": COMMIT_KIND_DOCUMENT_EVIDENCE_LOOKUP,
                 "document_evidence": [item.model_dump(mode="json", exclude={"full_text"}) for item in evidence],
                 "assistant_message": chatbot_message,
                 **_task_metadata(
@@ -573,7 +580,7 @@ def _handle_existing_interaction_session(
             message="Recorded an interaction-rule turn without a route decision",
             new_document=lesson.board_document,
             metadata={
-                "kind": "interaction_flow",
+                "kind": COMMIT_KIND_INTERACTION_FLOW,
                 "user_message": request.message,
                 "assistant_message": chatbot_message,
                 "assistant_message_source": "interaction_decision_empty",
@@ -618,7 +625,7 @@ def _handle_existing_interaction_session(
         message="Recorded an interaction-rule chat turn",
         new_document=lesson.board_document,
         metadata={
-            "kind": "interaction_flow",
+            "kind": COMMIT_KIND_INTERACTION_FLOW,
             "user_message": request.message,
             "assistant_message": chatbot_message,
             "assistant_message_source": chatbot_message_source,
@@ -692,7 +699,7 @@ def _maybe_start_interaction_session(
             message="Asked the learner to confirm the source content for an interaction rule",
             new_document=lesson.board_document,
             metadata={
-                "kind": "interaction_flow",
+                "kind": COMMIT_KIND_INTERACTION_FLOW,
                 "user_message": request.message,
                 "assistant_message": chatbot_message,
                 "assistant_message_source": chatbot_message_source,
@@ -750,7 +757,7 @@ def _maybe_start_interaction_session(
         message="Started a rule-based interaction session",
         new_document=lesson.board_document,
         metadata={
-            "kind": "interaction_flow",
+            "kind": COMMIT_KIND_INTERACTION_FLOW,
             "user_message": request.message,
             "assistant_message": chatbot_message,
             "assistant_message_source": chatbot_message_source,
@@ -837,7 +844,7 @@ def _generate_board_from_confirmed_resource(
         message="Generated board document from a confirmed uploaded resource chapter",
         new_document=lesson.board_document,
         metadata={
-            "kind": "board_document_generation",
+            "kind": COMMIT_KIND_BOARD_DOCUMENT_GENERATION,
             "user_message": request.message,
             "assistant_message": chatbot_message,
             "assistant_message_source": edit_outcome.assistant_message_source,
