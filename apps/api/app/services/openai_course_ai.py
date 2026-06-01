@@ -303,6 +303,12 @@ def bind_ai_output_stream(observer: AIStreamObserver | None) -> Iterator[None]:
         _ai_stream_observer.reset(token)
 
 
+def emit_ai_stream_event(payload: dict[str, Any]) -> None:
+    observer = _ai_stream_observer.get()
+    if observer:
+        observer(payload)
+
+
 class OpenAIConfig(BaseModel):
     api_key: str | None = Field(default_factory=_shared_api_key)
     base_url: str | None = Field(default_factory=lambda: os.getenv("OPENAI_BASE_URL") or OPENAI_OFFICIAL_BASE_URL)
@@ -1027,15 +1033,17 @@ class OpenAICourseAI:
         current_document_title: str,
         current_document_text: str,
         resource_summary: str,
-        conversation_summary: str,
-        user_instruction: str,
+        conversation_summary: str | None = None,
+        user_instruction: str | None = None,
         selection_excerpt: str | None = None,
     ) -> BoardDocumentEditResult | None:
+        is_initial_generation = intent == "generate_from_requirements"
         system_prompt = (
             "你是 OpenClass 的板书文档编辑 AI，只负责生成或编辑板书文档，不负责学习需求澄清，"
             "也不扮演 Chatbot。\n"
             "规则：\n"
-            "1. 只根据学习需求清单、用户指令、当前板书、选区、资料摘要和最近对话写入文档内容。\n"
+            "1. 生成空白板书的第一版时，只根据已冻结学习需求清单和资料摘要写入文档；"
+            "编辑已有板书时，才可结合用户指令、当前板书、选区和最近对话。\n"
             "2. intent=generate_from_requirements 时，输出一份完整板书，operation 使用 replace_document，"
             "content_text 必须包含清晰章节标题；默认按一节可直接教学的完整文档篇幅生成，"
             "优先组织多个相互衔接的 H2 小节，篇幅要足以支撑一节课直接教学，"
@@ -1049,31 +1057,37 @@ class OpenAICourseAI:
             "6. section_titles 写入本次文档的主要 H2 章节标题，用于后续分节讲解。\n"
             "7. 不写任何固定主题模板，不根据主题名、资料名或样例走特殊规则。"
         )
-        user_prompt = _json(
-            {
-                "intent": intent,
-                "lesson_title": lesson_title,
-                "learning_requirement_context": learning_requirement_context,
-                "current_document_title": current_document_title,
-                "current_document_text": current_document_text,
-                "resource_summary": resource_summary,
-                "recent_conversation": conversation_summary,
-                "selection_excerpt": selection_excerpt.strip() if selection_excerpt else "无选中引用",
-                "user_instruction": user_instruction,
-                "response_contract": {
-                    "operation": "replace_document、replace_selection 或 append_section。",
-                    "title": "文档标题；局部编辑时可沿用当前标题。",
-                    "content_text": (
-                        "完整生成时是整份板书，默认按一节可直接教学的较完整篇幅展开；"
-                        "局部替换时是替换片段；追加时是追加片段。"
-                    ),
-                    "content_html": "可选 HTML，与 content_text 表达同一内容。",
-                    "summary": "一句话说明本次生成或编辑了什么。",
-                    "chatbot_message": "可直接展示给学习者的自然语言短回复，说明本次动作结果，不要套用固定格式。",
-                    "section_titles": "主要章节标题数组，用于分节讲解。",
-                },
-            }
-        )
+        user_payload: dict[str, Any] = {
+            "intent": intent,
+            "learning_requirement_context": learning_requirement_context,
+            "resource_summary": resource_summary,
+            "response_contract": {
+                "operation": "replace_document、replace_selection 或 append_section。",
+                "title": "文档标题；局部编辑时可沿用当前标题。",
+                "content_text": (
+                    "完整生成时是整份板书，默认按一节可直接教学的较完整篇幅展开；"
+                    "局部替换时是替换片段；追加时是追加片段。"
+                ),
+                "content_html": "可选 HTML，与 content_text 表达同一内容。",
+                "summary": "一句话说明本次生成或编辑了什么。",
+                "chatbot_message": "可直接展示给学习者的自然语言短回复，说明本次动作结果，不要套用固定格式。",
+                "section_titles": "主要章节标题数组，用于分节讲解。",
+            },
+        }
+        if is_initial_generation:
+            user_payload["generation_source"] = "frozen_learning_requirement"
+        else:
+            user_payload.update(
+                {
+                    "lesson_title": lesson_title,
+                    "current_document_title": current_document_title,
+                    "current_document_text": current_document_text,
+                    "recent_conversation": conversation_summary or "",
+                    "selection_excerpt": selection_excerpt.strip() if selection_excerpt else "无选中引用",
+                    "user_instruction": user_instruction or "",
+                }
+            )
+        user_prompt = _json(user_payload)
         result = self._parse(
             "board",
             system_prompt=system_prompt,

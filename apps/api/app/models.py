@@ -809,6 +809,16 @@ class ChatResponse(BaseModel):
     course_package: CoursePackageView
 
 
+class RequirementUpdateStreamPayload(BaseModel):
+    learning_requirement_sheet: LearningRequirementSheet
+    active_requirement_sheet: LearningRequirementSheet | None = None
+    learning_clarification: LearningClarificationStatus
+    requirement_run_id: str | None = None
+    requirement_version_id: str | None = None
+    requirement_phase: LearningRequirementRunStatus | None = None
+    clarification_questions: list[str] = Field(default_factory=list)
+
+
 class CreatePackageRequest(BaseModel):
     title: str
     summary: str = ""

@@ -141,11 +141,11 @@ export function CourseStudio() {
   const displayedDocument = boardDraft.displayedDocument;
   const displayedMessages =
     activeLesson && previewCommit ? buildLessonMessagesFromHistory(activeLesson, previewCommit.id) : activeMessages;
-  const activeRequirements = activeLesson?.learning_requirements ?? null;
+  const persistedRequirements = activeLesson?.learning_requirements ?? null;
   const previewLearningClarity = learningClarityFromCommit(previewCommit);
   const persistedLearningClarity = learningClarityFromCommit(activeHeadCommit);
   const currentRequirementCleared =
-    !isPreviewMode && !activeRequirements && activeHeadCommit?.metadata?.requirement_cleared === true;
+    !isPreviewMode && !persistedRequirements && activeHeadCommit?.metadata?.requirement_cleared === true;
   const latestAssistantMessage = [...activeMessages].reverse().find((message) => message.role === "assistant");
   const relatedEdges =
     activeLesson && coursePackage
@@ -184,6 +184,7 @@ export function CourseStudio() {
     scopeOptions,
     clarificationQuestions,
     learningClarity,
+    streamedRequirementSheet,
     latestBoardDecision,
     referencePrompt,
     boardEditPrompt,
@@ -194,6 +195,7 @@ export function CourseStudio() {
     handleBoardEditAction,
     handleContinueTeaching,
   } = chatAgent;
+  const activeRequirements = streamedRequirementSheet ?? persistedRequirements;
   const voice = useRealtimeVoice({
     activeLesson,
     latestAssistantMessageContent: latestAssistantMessage?.content ?? null,
@@ -223,7 +225,7 @@ export function CourseStudio() {
 
   const clarityStatus: LearningClarificationStatus =
     previewLearningClarity ??
-    (currentRequirementCleared ? null : learningClarity) ??
+    learningClarity ??
     (currentRequirementCleared ? null : persistedLearningClarity) ?? {
       progress: 0,
       label: "",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 
 from app.models import (
@@ -14,6 +15,7 @@ from app.models import (
     LearningClarificationStatus,
     LearningRequirementSheet,
     Lesson,
+    RequirementUpdateStreamPayload,
     ResourceLibraryItem,
     ResourceMatch,
     ResourceReferenceContext,
@@ -43,7 +45,7 @@ from app.services.learning_requirement_history import (
     LearningRequirementHistoryRecorder,
     RequirementHistoryStamp,
 )
-from app.services.openai_course_ai import bind_text_model_selection, openai_course_ai
+from app.services.openai_course_ai import bind_text_model_selection, emit_ai_stream_event, openai_course_ai
 from app.services.rich_document import is_document_empty
 from app.services.route_context import bind_ai_request_context
 from app.services.resource_resolver import ResourceResolution, resolve_resource_reference
@@ -538,6 +540,71 @@ def _save_workspace_for_user(
     workspace_state.save_workspace_for_user(user_id, workspace)
 
 
+def _persist_requirement_history_checkpoint(
+    *,
+    user_id: str,
+    workspace,
+    package,
+    requirement_history: LearningRequirementHistoryRecorder,
+) -> None:
+    workspace_state.normalize_package_state(package)
+    if requirement_history.operations:
+        workspace_state.save_workspace_for_user_with_requirement_history(
+            user_id,
+            workspace,
+            requirement_history.operations,
+        )
+        requirement_history.operations.clear()
+    else:
+        workspace_state.save_workspace_for_user(user_id, workspace)
+
+
+def _clarification_questions(learning_clarification: LearningClarificationStatus) -> list[str]:
+    question = learning_clarification.next_question.strip()
+    return [question] if question else []
+
+
+def _requirement_stream_payload(
+    *,
+    lesson: Lesson,
+    requirements: LearningRequirementSheet,
+    learning_clarification: LearningClarificationStatus,
+    stamp: RequirementHistoryStamp | None,
+) -> RequirementUpdateStreamPayload:
+    return RequirementUpdateStreamPayload(
+        learning_requirement_sheet=requirements,
+        active_requirement_sheet=lesson.learning_requirements,
+        learning_clarification=learning_clarification,
+        requirement_run_id=stamp.run_id if stamp else None,
+        requirement_version_id=stamp.version_id if stamp else None,
+        requirement_phase=stamp.phase if stamp else None,
+        clarification_questions=_clarification_questions(learning_clarification),
+    )
+
+
+def _emit_requirement_update(
+    *,
+    lesson: Lesson,
+    requirements: LearningRequirementSheet,
+    learning_clarification: LearningClarificationStatus,
+    stamp: RequirementHistoryStamp | None,
+) -> None:
+    if stamp is None:
+        return
+    payload = _requirement_stream_payload(
+        lesson=lesson,
+        requirements=requirements,
+        learning_clarification=learning_clarification,
+        stamp=stamp,
+    )
+    emit_ai_stream_event(
+        {
+            "type": "requirement_update",
+            "payload": payload.model_dump(mode="json"),
+        }
+    )
+
+
 def _record_requirement_update(
     requirement_history: LearningRequirementHistoryRecorder,
     *,
@@ -567,6 +634,42 @@ def _should_track_initial_requirement_run(lesson: Lesson) -> bool:
     return is_document_empty(lesson.board_document)
 
 
+def _frozen_requirement_snapshot(
+    requirement_history: LearningRequirementHistoryRecorder,
+) -> tuple[LearningRequirementSheet, LearningClarificationStatus] | None:
+    snapshot = requirement_history.snapshot
+    if snapshot.status != "frozen" or not snapshot.latest_sheet_json or not snapshot.latest_clarification_json:
+        return None
+    try:
+        requirements = LearningRequirementSheet.model_validate(json.loads(snapshot.latest_sheet_json))
+        clarification = LearningClarificationStatus.model_validate(json.loads(snapshot.latest_clarification_json))
+    except Exception:
+        return None
+    return requirements, clarification
+
+
+def _normalize_requirement_for_board_generation(
+    *,
+    requirements: LearningRequirementSheet,
+    learning_clarification: LearningClarificationStatus,
+) -> tuple[LearningRequirementSheet, LearningClarificationStatus]:
+    frozen_requirements = LearningRequirementSheet.model_validate(requirements.model_dump(mode="json"))
+    frozen_clarification = LearningClarificationStatus.model_validate(
+        learning_clarification.model_dump(mode="json")
+    )
+    frozen_requirements.current_questions = []
+    frozen_requirements.risk_notes = []
+    frozen_requirements.location_clarification_question = ""
+    frozen_clarification.progress = 100
+    frozen_clarification.missing_items = []
+    frozen_clarification.can_start = True
+    frozen_clarification.next_question = ""
+    if not frozen_clarification.ready_for_board:
+        frozen_clarification.forced_start = True
+    frozen_clarification.ready_for_board = True
+    return frozen_requirements, frozen_clarification
+
+
 def _maybe_record_initial_requirement_update(
     requirement_history: LearningRequirementHistoryRecorder,
     *,
@@ -576,6 +679,10 @@ def _maybe_record_initial_requirement_update(
 ) -> RequirementHistoryStamp | None:
     if not enabled:
         return None
+    if requirement_history.snapshot.status == "frozen":
+        return requirement_history.current_stamp()
+    if learning_clarification.forced_start and learning_clarification.ready_for_board:
+        return None
     return _record_requirement_update(
         requirement_history,
         requirements=requirements,
@@ -583,19 +690,56 @@ def _maybe_record_initial_requirement_update(
     )
 
 
-def _maybe_freeze_initial_requirement_for_board_generation(
+def _prepare_initial_requirement_for_board_generation(
     requirement_history: LearningRequirementHistoryRecorder,
     *,
     enabled: bool,
     requirements: LearningRequirementSheet,
     learning_clarification: LearningClarificationStatus,
-) -> RequirementHistoryStamp | None:
+) -> tuple[LearningRequirementSheet, LearningClarificationStatus, RequirementHistoryStamp | None]:
     if not enabled:
-        return None
-    return _freeze_requirement_for_board_generation(
-        requirement_history,
+        return requirements, learning_clarification, None
+    existing_frozen = _frozen_requirement_snapshot(requirement_history)
+    if existing_frozen is not None:
+        frozen_requirements, frozen_clarification = existing_frozen
+        return frozen_requirements, frozen_clarification, requirement_history.current_stamp()
+    frozen_requirements, frozen_clarification = _normalize_requirement_for_board_generation(
         requirements=requirements,
         learning_clarification=learning_clarification,
+    )
+    frozen_stamp = _freeze_requirement_for_board_generation(
+        requirement_history,
+        requirements=frozen_requirements,
+        learning_clarification=frozen_clarification,
+    )
+    return frozen_requirements, frozen_clarification, frozen_stamp
+
+
+def _checkpoint_initial_requirement_before_generation(
+    *,
+    user_id: str,
+    workspace,
+    package,
+    lesson: Lesson,
+    requirement_history: LearningRequirementHistoryRecorder,
+    requirements: LearningRequirementSheet,
+    learning_clarification: LearningClarificationStatus,
+    stamp: RequirementHistoryStamp | None,
+) -> None:
+    if stamp is None:
+        return
+    lesson.learning_requirements = requirements
+    _persist_requirement_history_checkpoint(
+        user_id=user_id,
+        workspace=workspace,
+        package=package,
+        requirement_history=requirement_history,
+    )
+    _emit_requirement_update(
+        lesson=lesson,
+        requirements=requirements,
+        learning_clarification=learning_clarification,
+        stamp=stamp,
     )
 
 
@@ -965,7 +1109,6 @@ def _generate_board_from_confirmed_resource(
     learning_clarification: LearningClarificationStatus,
     resource_resolution: ResourceResolution,
     resource_summary_for_turn: str,
-    conversation_summary: str,
     requirement_history: LearningRequirementHistoryRecorder,
     track_initial_requirement_run: bool,
 ) -> ChatResponse:
@@ -974,19 +1117,29 @@ def _generate_board_from_confirmed_resource(
         action_type="generate_board",
         instruction=request.message,
     )
-    frozen_requirement = _maybe_freeze_initial_requirement_for_board_generation(
+    requirements, learning_clarification, frozen_requirement = _prepare_initial_requirement_for_board_generation(
         requirement_history,
         enabled=track_initial_requirement_run,
         requirements=requirements,
         learning_clarification=learning_clarification,
+    )
+    _checkpoint_initial_requirement_before_generation(
+        user_id=user_id,
+        workspace=workspace,
+        package=package,
+        lesson=lesson,
+        requirement_history=requirement_history,
+        requirements=requirements,
+        learning_clarification=learning_clarification,
+        stamp=frozen_requirement,
     )
     edit_outcome = generate_from_requirements(
         lesson=lesson,
         requirements=requirements,
         clarification=learning_clarification,
         resource_summary=resource_summary_for_turn,
-        conversation_summary=conversation_summary,
-        user_instruction=request.message,
+        requirement_run_id=frozen_requirement.run_id if frozen_requirement else None,
+        frozen_requirement_version_id=frozen_requirement.version_id if frozen_requirement else None,
     )
     chatbot_message = edit_outcome.chatbot_message
     if not edit_outcome.changed:
@@ -1015,7 +1168,6 @@ def _generate_board_from_confirmed_resource(
         )
     if edit_outcome.changed:
         refresh_lesson_runtime(lesson, document=edit_outcome.new_document, requirements=requirements)
-        requirements = lesson.learning_requirements
         lesson.board_teaching_guide = build_board_teaching_guide(lesson)
         lesson.board_teaching_progress = None
     requirement_cleared = edit_outcome.changed
@@ -1139,19 +1291,29 @@ def _chat_response(
             action_type="generate_board",
             instruction=request.message,
         )
-        frozen_requirement = _maybe_freeze_initial_requirement_for_board_generation(
+        requirements, learning_clarification, frozen_requirement = _prepare_initial_requirement_for_board_generation(
             requirement_history,
             enabled=track_initial_requirement_run,
             requirements=requirements,
             learning_clarification=learning_clarification,
+        )
+        _checkpoint_initial_requirement_before_generation(
+            user_id=user_id,
+            workspace=workspace,
+            package=package,
+            lesson=lesson,
+            requirement_history=requirement_history,
+            requirements=requirements,
+            learning_clarification=learning_clarification,
+            stamp=frozen_requirement,
         )
         edit_outcome = generate_from_requirements(
             lesson=lesson,
             requirements=requirements,
             clarification=learning_clarification,
             resource_summary=_resource_summary(visible_package.resources),
-            conversation_summary=_conversation_summary(request.conversation),
-            user_instruction=request.message,
+            requirement_run_id=frozen_requirement.run_id if frozen_requirement else None,
+            frozen_requirement_version_id=frozen_requirement.version_id if frozen_requirement else None,
         )
         chatbot_message = edit_outcome.chatbot_message
         if not edit_outcome.changed:
@@ -1178,7 +1340,6 @@ def _chat_response(
             )
         if edit_outcome.changed:
             refresh_lesson_runtime(lesson, document=edit_outcome.new_document, requirements=requirements)
-            requirements = lesson.learning_requirements
             lesson.board_teaching_guide = build_board_teaching_guide(lesson)
             lesson.board_teaching_progress = None
         requirement_cleared = edit_outcome.changed
@@ -1815,7 +1976,6 @@ def _chat_response(
                 learning_clarification=learning_clarification,
                 resource_resolution=resource_resolution,
                 resource_summary_for_turn=resource_summary_for_turn,
-                conversation_summary=_conversation_summary(request.conversation),
                 requirement_history=requirement_history,
                 track_initial_requirement_run=track_initial_requirement_run,
             )
@@ -1830,19 +1990,29 @@ def _chat_response(
                 action_type="generate_board",
                 instruction=request.message,
             )
-            frozen_requirement = _maybe_freeze_initial_requirement_for_board_generation(
+            requirements, learning_clarification, frozen_requirement = _prepare_initial_requirement_for_board_generation(
                 requirement_history,
                 enabled=track_initial_requirement_run,
                 requirements=requirements,
                 learning_clarification=learning_clarification,
+            )
+            _checkpoint_initial_requirement_before_generation(
+                user_id=user_id,
+                workspace=workspace,
+                package=package,
+                lesson=lesson,
+                requirement_history=requirement_history,
+                requirements=requirements,
+                learning_clarification=learning_clarification,
+                stamp=frozen_requirement,
             )
             edit_outcome = generate_from_requirements(
                 lesson=lesson,
                 requirements=requirements,
                 clarification=learning_clarification,
                 resource_summary=resource_summary_for_turn,
-                conversation_summary=_conversation_summary(requirement_conversation),
-                user_instruction=request.message,
+                requirement_run_id=frozen_requirement.run_id if frozen_requirement else None,
+                frozen_requirement_version_id=frozen_requirement.version_id if frozen_requirement else None,
             )
             if not edit_outcome.changed:
                 failed_stamp = (
@@ -1870,7 +2040,6 @@ def _chat_response(
                 )
             if edit_outcome.changed:
                 refresh_lesson_runtime(lesson, document=edit_outcome.new_document, requirements=requirements)
-                requirements = lesson.learning_requirements
                 lesson.board_teaching_guide = build_board_teaching_guide(lesson)
                 lesson.board_teaching_progress = None
             requirement_cleared = edit_outcome.changed
@@ -2062,7 +2231,6 @@ def _chat_response(
             learning_clarification=learning_clarification,
             resource_resolution=resource_resolution,
             resource_summary_for_turn=resource_summary_for_turn,
-            conversation_summary=_conversation_summary(request.conversation),
             requirement_history=requirement_history,
             track_initial_requirement_run=track_initial_requirement_run,
         )
@@ -2134,18 +2302,29 @@ def _chat_response(
             action_type="generate_board",
             instruction=requirements.action_instruction or request.message,
         )
-        frozen_requirement = _freeze_requirement_for_board_generation(
+        requirements, learning_clarification, frozen_requirement = _prepare_initial_requirement_for_board_generation(
             requirement_history,
+            enabled=track_initial_requirement_run,
             requirements=requirements,
             learning_clarification=learning_clarification,
+        )
+        _checkpoint_initial_requirement_before_generation(
+            user_id=user_id,
+            workspace=workspace,
+            package=package,
+            lesson=lesson,
+            requirement_history=requirement_history,
+            requirements=requirements,
+            learning_clarification=learning_clarification,
+            stamp=frozen_requirement,
         )
         edit_outcome = generate_from_requirements(
             lesson=lesson,
             requirements=requirements,
             clarification=learning_clarification,
             resource_summary=resource_summary_for_turn,
-            conversation_summary=_conversation_summary(requirement_conversation),
-            user_instruction=request.message,
+            requirement_run_id=frozen_requirement.run_id if frozen_requirement else None,
+            frozen_requirement_version_id=frozen_requirement.version_id if frozen_requirement else None,
         )
         if not edit_outcome.changed:
             failed_stamp = requirement_history.generation_failed(
@@ -2170,7 +2349,6 @@ def _chat_response(
                 requirement_stamp=failed_stamp,
             )
         refresh_lesson_runtime(lesson, document=edit_outcome.new_document, requirements=requirements)
-        requirements = lesson.learning_requirements
         lesson.board_teaching_guide = build_board_teaching_guide(lesson)
         lesson.board_teaching_progress = None
         commit_operations(

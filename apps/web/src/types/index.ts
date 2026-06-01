@@ -491,6 +491,16 @@ export interface ChatResponse {
   course_package: CoursePackage;
 }
 
+export interface RequirementUpdateStreamPayload {
+  learning_requirement_sheet: LearningRequirementSheet;
+  active_requirement_sheet?: LearningRequirementSheet | null;
+  learning_clarification: LearningClarificationStatus;
+  requirement_run_id?: string | null;
+  requirement_version_id?: string | null;
+  requirement_phase?: LearningRequirementRunStatus | null;
+  clarification_questions: string[];
+}
+
 export interface RealtimeConnectPayload {
   offer_sdp: string;
   latest_assistant_message?: string | null;

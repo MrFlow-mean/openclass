@@ -537,8 +537,15 @@ def _apply_update_to_requirements(
         updated.level = level
     if output := _key_fact_value(update, "output"):
         updated.output_preference = output
+    background_values = [
+        fact.value.strip()
+        for fact in update.key_facts
+        if fact.category in {"level", "vocabulary", "scenario", "other"} and fact.value.strip()
+    ]
+    if background_values:
+        updated.known_background = "；".join(dict.fromkeys(background_values))
     updated.learning_need_checklist = [item.title for item in update.checklist]
-    if forced_start:
+    if forced_start or update.ready_for_board:
         updated.current_questions = []
         updated.risk_notes = []
     else:
@@ -598,16 +605,16 @@ def _clarification_from_update(
 
     ready = update.ready_for_board
     return LearningClarificationStatus(
-        progress=update.progress,
+        progress=100 if ready else update.progress,
         label="需求已清晰" if ready else "继续澄清",
         reason=update.summary,
-        missing_items=update.missing_items,
+        missing_items=[] if ready else update.missing_items,
         can_start=ready,
         forced_start=False,
         summary=update.summary,
         key_facts=update.key_facts,
         checklist=update.checklist,
-        next_question=update.next_question,
+        next_question="" if ready else update.next_question,
         ready_for_board=ready,
     )
 

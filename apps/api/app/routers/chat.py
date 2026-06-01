@@ -32,6 +32,11 @@ def _chat_stream_events(lesson_id: str, request: ChatRequest, *, user_id: str) -
         events.put((event, data))
 
     def observer(payload: dict[str, object]) -> None:
+        if payload.get("type") == "requirement_update":
+            data = payload.get("payload")
+            if isinstance(data, dict):
+                emit("requirement_update", data)
+            return
         if payload.get("type") == "role_start":
             role = str(payload.get("role") or "")
             label = phase_labels.get(role)

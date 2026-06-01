@@ -8,6 +8,7 @@ from app.models import (
     LearningRequirementChecklistItem,
     LearningRequirementKeyFact,
 )
+from app.routers.chat import _chat_stream_events
 from app.services import chat_service, workspace_state
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
 from app.services.learning_requirement_history import LearningRequirementHistoryRecorder
@@ -16,6 +17,7 @@ from app.services.openai_course_ai import (
     BoardDocumentEditResult,
     ChatbotReply,
     LearningRequirementUpdate,
+    emit_ai_stream_event,
     openai_course_ai,
 )
 from app.services.rich_document import build_document
@@ -102,6 +104,18 @@ def _history_kinds(store: SqliteCourseStore, lesson_id: str) -> tuple[list[str],
         lesson_id=lesson_id,
     )
     return [row["change_kind"] for row in versions], [row["event_type"] for row in events]
+
+
+def _sse_event_name(block: str) -> str:
+    for line in block.splitlines():
+        if line.startswith("event:"):
+            return line.split(":", 1)[1].strip()
+    return ""
+
+
+def _sse_payload(block: str) -> dict[str, object]:
+    lines = [line.split(":", 1)[1].lstrip() for line in block.splitlines() if line.startswith("data:")]
+    return json.loads("\n".join(lines))
 
 
 def test_requirement_history_records_changed_versions_and_events(tmp_path) -> None:
@@ -250,6 +264,13 @@ def test_ready_blank_board_freezes_then_generates_and_consumes_requirement(
 
     def _fake_board_edit(**kwargs):
         captured["learning_requirement_context"] = kwargs["learning_requirement_context"]
+        captured["user_instruction_present"] = "user_instruction" in kwargs
+        captured["conversation_summary_present"] = "conversation_summary" in kwargs
+        captured["state_before_board"] = store.load_learning_requirement_history_state(
+            owner_user_id=TEST_USER_ID,
+            lesson_id=lesson.id,
+        )
+        captured["history_before_board"] = _history_kinds(store, lesson.id)
         return BoardDocumentEditResult(
             operation="replace_document",
             title="第一版板书",
@@ -268,6 +289,7 @@ def test_ready_blank_board_freezes_then_generates_and_consumes_requirement(
         user_id=TEST_USER_ID,
     )
 
+    versions = store.list_learning_requirement_versions(owner_user_id=TEST_USER_ID, lesson_id=lesson.id)
     version_kinds, event_kinds = _history_kinds(store, lesson.id)
     commit = response.course_package.lessons[0].history_graph.commits[-1]
     assert response.requirement_phase == "consumed"
@@ -275,11 +297,19 @@ def test_ready_blank_board_freezes_then_generates_and_consumes_requirement(
     assert response.active_requirement_sheet is None
     assert "第一版板书" in response.course_package.lessons[0].board_document.content_text
     assert captured["learning_requirement_context"]["summary"] == "用户想学习一个通用主题。"
+    assert captured["learning_requirement_context"]["requirement_run_id"] is not None
+    assert captured["learning_requirement_context"]["frozen_requirement_version_id"] is not None
+    assert captured["user_instruction_present"] is False
+    assert captured["conversation_summary_present"] is False
+    assert captured["state_before_board"]["status"] == "frozen"
+    assert captured["history_before_board"] == (["completed", "frozen"], ["created", "completed", "frozen"])
     assert version_kinds == ["completed", "frozen"]
     assert event_kinds == ["created", "completed", "frozen", "consumed"]
     assert commit.metadata["board_generation_action"] == "ready_requirement_sheet"
     assert commit.metadata["requirement_run_id"] == response.requirement_run_id
     assert commit.metadata["frozen_requirement_version_id"] is not None
+    assert commit.metadata["task_requirement_sheet"] == json.loads(versions[-1]["sheet_json"])
+    assert "起点" not in commit.metadata["task_requirement_sheet"]["board_scope"]
 
 
 def test_forced_generation_writes_forced_frozen_before_board_generation(
@@ -316,6 +346,7 @@ def test_forced_generation_writes_forced_frozen_before_board_generation(
 
     version_kinds, event_kinds = _history_kinds(store, lesson.id)
     assert response.requirement_phase == "consumed"
+    assert "completed" not in version_kinds
     assert "forced_frozen" in version_kinds
     assert "forced_frozen" in event_kinds
     assert event_kinds[-1] == "consumed"
@@ -356,3 +387,60 @@ def test_generation_failure_keeps_frozen_requirement_retryable(
     assert reloaded.history_graph.commits[-1].metadata.get("kind") != "board_document_generation"
     frozen_sheet = json.loads(versions[-1]["sheet_json"])
     assert frozen_sheet["action_type"] == "generate_board"
+
+
+def test_stream_emits_requirement_update_before_document_delta(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_chatbot_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="需求已经够清楚。"),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_learning_requirement_update",
+        lambda **kwargs: _requirement_update(ready=True, action_type="generate_board"),
+    )
+
+    def _fake_board_edit(**kwargs):
+        emit_ai_stream_event(
+            {
+                "type": "field_delta",
+                "role": "board",
+                "field": "content_text",
+                "delta": "#",
+                "value": "#",
+            }
+        )
+        return BoardDocumentEditResult(
+            operation="replace_document",
+            title="第一版板书",
+            content_text="# 第一版板书\n\n## 起点\n\n这是一段根据冻结需求清单生成的通用板书。",
+            summary="已生成第一版板书。",
+            chatbot_message="已生成第一版板书。",
+            section_titles=["起点"],
+        )
+
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _fake_board_edit)
+    _, lesson = _seed_workspace(store)
+
+    events = list(
+        _chat_stream_events(
+            lesson.id,
+            ChatRequest(message="我已经说明目标、水平和输出形式"),
+            user_id=TEST_USER_ID,
+        )
+    )
+    names = [_sse_event_name(block) for block in events]
+    requirement_index = names.index("requirement_update")
+    document_index = names.index("document_delta")
+    payload = _sse_payload(events[requirement_index])
+
+    assert requirement_index < document_index
+    assert payload["requirement_phase"] == "frozen"
+    assert payload["learning_clarification"]["progress"] == 100
+    assert payload["learning_requirement_sheet"]["current_questions"] == []

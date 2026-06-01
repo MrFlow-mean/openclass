@@ -40,8 +40,8 @@ def generate_from_requirements(
     requirements: LearningRequirementSheet,
     clarification: LearningClarificationStatus,
     resource_summary: str,
-    conversation_summary: str,
-    user_instruction: str,
+    requirement_run_id: str | None = None,
+    frozen_requirement_version_id: str | None = None,
 ) -> BoardDocumentEditOutcome:
     if not is_document_empty(lesson.board_document):
         return _no_change(
@@ -52,12 +52,15 @@ def generate_from_requirements(
     result = openai_course_ai.generate_board_document_edit(
         intent="generate_from_requirements",
         lesson_title=lesson.title,
-        learning_requirement_context=_requirement_context(requirements, clarification),
+        learning_requirement_context=_requirement_context(
+            requirements,
+            clarification,
+            requirement_run_id=requirement_run_id,
+            frozen_requirement_version_id=frozen_requirement_version_id,
+        ),
         current_document_title=lesson.board_document.title,
         current_document_text=_document_text(lesson.board_document),
         resource_summary=resource_summary,
-        conversation_summary=conversation_summary,
-        user_instruction=user_instruction,
         selection_excerpt=None,
     )
     if not result:
@@ -263,11 +266,18 @@ def _target_excerpt(*, selection_excerpt: str | None, focus: BoardFocusRef | Non
 def _requirement_context(
     requirements: LearningRequirementSheet,
     clarification: LearningClarificationStatus,
+    *,
+    requirement_run_id: str | None = None,
+    frozen_requirement_version_id: str | None = None,
 ) -> dict[str, object]:
     return {
+        "requirement_run_id": requirement_run_id,
+        "frozen_requirement_version_id": frozen_requirement_version_id,
         "summary": clarification.summary or clarification.reason or requirements.learning_goal,
         "key_facts": [item.model_dump(mode="json") for item in clarification.key_facts],
         "checklist": [item.model_dump(mode="json") for item in clarification.checklist],
+        "sheet": requirements.model_dump(mode="json"),
+        "clarification": clarification.model_dump(mode="json"),
         "learning_goal": requirements.learning_goal,
         "level": requirements.level,
         "known_background": requirements.known_background,

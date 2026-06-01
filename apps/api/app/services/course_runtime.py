@@ -42,7 +42,7 @@ def normalize_requirements(
     if normalized.current_questions == legacy_questions:
         normalized.current_questions = list(default_requirements.current_questions)
     normalized.board_scope = _document_outline(document)
-    if not normalized.current_questions:
+    if not normalized.current_questions and normalized.action_type is None:
         normalized.current_questions = [f"如何理解 {normalized.theme or lesson_title}"]
     return normalized
 

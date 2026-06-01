@@ -1327,7 +1327,9 @@ def test_explicit_board_generation_request_generates_and_clears_requirements(
 
     def _fake_board_edit(**kwargs):
         captured["intent"] = kwargs.get("intent")
-        captured["user_instruction"] = kwargs.get("user_instruction")
+        captured["has_user_instruction"] = "user_instruction" in kwargs
+        captured["has_conversation_summary"] = "conversation_summary" in kwargs
+        captured["action_instruction"] = kwargs["learning_requirement_context"]["sheet"]["action_instruction"]
         return BoardDocumentEditResult(
             operation="replace_document",
             title="通用主题板书",
@@ -1358,7 +1360,9 @@ def test_explicit_board_generation_request_generates_and_clears_requirements(
 
     assert captured == {
         "intent": "generate_from_requirements",
-        "user_instruction": "请生成一份入门板书",
+        "has_user_instruction": False,
+        "has_conversation_summary": False,
+        "action_instruction": "请生成一份入门板书",
     }
     assert response.board_decision.action == "edit_board"
     assert response.requirement_cleared is True
@@ -1692,7 +1696,9 @@ def test_requirement_manager_start_generation_request_writes_blank_document_from
 
     def _fake_board_edit(**kwargs):
         captured["intent"] = kwargs.get("intent")
-        captured["user_instruction"] = kwargs.get("user_instruction")
+        captured["has_user_instruction"] = "user_instruction" in kwargs
+        captured["has_conversation_summary"] = "conversation_summary" in kwargs
+        captured["action_instruction"] = kwargs["learning_requirement_context"]["sheet"]["action_instruction"]
         return BoardDocumentEditResult(
             operation="replace_document",
             title="生成后的文档",
@@ -1712,7 +1718,9 @@ def test_requirement_manager_start_generation_request_writes_blank_document_from
 
     assert captured == {
         "intent": "generate_from_requirements",
-        "user_instruction": "看你发挥，开始生成",
+        "has_user_instruction": False,
+        "has_conversation_summary": False,
+        "action_instruction": "看你发挥，开始生成",
     }
     assert response.learning_clarification.progress == 100
     assert response.learning_clarification.ready_for_board is True
@@ -1772,7 +1780,9 @@ def test_generation_control_request_writes_blank_document_from_existing_context(
 
     def _fake_board_edit(**kwargs):
         captured["intent"] = kwargs.get("intent")
-        captured["user_instruction"] = kwargs.get("user_instruction")
+        captured["has_user_instruction"] = "user_instruction" in kwargs
+        captured["has_conversation_summary"] = "conversation_summary" in kwargs
+        captured["action_instruction"] = kwargs["learning_requirement_context"]["sheet"]["action_instruction"]
         return BoardDocumentEditResult(
             operation="replace_document",
             title="练习材料",
@@ -1813,7 +1823,9 @@ def test_generation_control_request_writes_blank_document_from_existing_context(
 
     assert captured == {
         "intent": "generate_from_requirements",
-        "user_instruction": "都行，看你发挥，直接生成",
+        "has_user_instruction": False,
+        "has_conversation_summary": False,
+        "action_instruction": "都行，看你发挥，直接生成",
     }
     assert response.board_decision.action == "edit_board"
     assert response.learning_clarification.ready_for_board is True
@@ -1876,7 +1888,9 @@ def test_document_artifact_request_writes_blank_document_without_chatbot_generat
 
     def _fake_board_edit(**kwargs):
         captured["intent"] = kwargs.get("intent")
-        captured["user_instruction"] = kwargs.get("user_instruction")
+        captured["has_user_instruction"] = "user_instruction" in kwargs
+        captured["has_conversation_summary"] = "conversation_summary" in kwargs
+        captured["action_instruction"] = kwargs["learning_requirement_context"]["sheet"]["action_instruction"]
         return BoardDocumentEditResult(
             operation="replace_document",
             title="任务材料",
@@ -1901,7 +1915,9 @@ def test_document_artifact_request_writes_blank_document_without_chatbot_generat
 
     assert captured == {
         "intent": "generate_from_requirements",
-        "user_instruction": "请给我生成一篇用于真实任务的情景对话课文",
+        "has_user_instruction": False,
+        "has_conversation_summary": False,
+        "action_instruction": "请给我生成一篇用于真实任务的情景对话课文",
     }
     assert response.chatbot_message == "已生成任务材料。"
     assert response.board_decision.action == "edit_board"

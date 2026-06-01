@@ -20,6 +20,7 @@ import type {
   ChatRequestPayload,
   CoursePackage,
   LearningClarificationStatus,
+  LearningRequirementSheet,
   Lesson,
   ResourceMatch,
   ResourceReferenceContext,
@@ -75,6 +76,7 @@ export function useLessonChatAgent({
   const [, setResourceMatches] = useState<ResourceMatch[]>([]);
   const [clarificationQuestions, setClarificationQuestions] = useState<string[]>([]);
   const [learningClarity, setLearningClarity] = useState<LearningClarificationStatus | null>(null);
+  const [streamedRequirementSheet, setStreamedRequirementSheet] = useState<LearningRequirementSheet | null>(null);
   const [latestBoardDecision, setLatestBoardDecision] = useState<BoardDecision | null>(null);
   const [referencePrompt, setReferencePrompt] = useState<ResourceReferencePrompt | null>(null);
   const [boardEditPrompt, setBoardEditPrompt] = useState<BoardEditPrompt | null>(null);
@@ -114,6 +116,7 @@ export function useLessonChatAgent({
     setResourceMatches([]);
     setClarificationQuestions([]);
     setLearningClarity(null);
+    setStreamedRequirementSheet(null);
     setLatestBoardDecision(null);
     setReferencePrompt(null);
     setBoardEditPrompt(null);
@@ -233,6 +236,11 @@ export function useLessonChatAgent({
             content_text: streamedDocumentText,
           });
         },
+        onRequirementUpdate(payload) {
+          setClarificationQuestions(payload.clarification_questions);
+          setLearningClarity(payload.learning_clarification);
+          setStreamedRequirementSheet(payload.active_requirement_sheet ?? payload.learning_requirement_sheet);
+        },
       });
       updateCoursePackage(response.course_package, {
         activeLessonId: response.created_lesson ? undefined : lessonId,
@@ -240,6 +248,9 @@ export function useLessonChatAgent({
       setLatestBoardDecision(response.board_decision);
       setClarificationQuestions(response.clarification_questions);
       setLearningClarity(response.learning_clarification);
+      setStreamedRequirementSheet(
+        response.requirement_cleared ? null : response.active_requirement_sheet ?? response.learning_requirement_sheet
+      );
       setScopeOptions(response.scope_options);
       setResourceMatches(response.resource_matches);
       setReferencePrompt(response.reference_prompt ?? null);
@@ -357,6 +368,7 @@ export function useLessonChatAgent({
     scopeOptions,
     clarificationQuestions,
     learningClarity,
+    streamedRequirementSheet,
     latestBoardDecision,
     referencePrompt,
     boardEditPrompt,

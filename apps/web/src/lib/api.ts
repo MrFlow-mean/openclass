@@ -13,6 +13,7 @@ import type {
   RealtimeConnectPayload,
   RealtimeConnectResponse,
   RealtimeEventLogPayload,
+  RequirementUpdateStreamPayload,
   ScopeAction,
   WorkspaceState,
   UserView,
@@ -211,6 +212,7 @@ type ChatStreamHandlers = {
   onPhase?: (label: string) => void;
   onChatDelta?: (delta: string) => void;
   onDocumentDelta?: (delta: string) => void;
+  onRequirementUpdate?: (payload: RequirementUpdateStreamPayload) => void;
   onFinal?: (response: ChatResponse) => void;
 };
 
@@ -255,6 +257,10 @@ function handleChatStreamBlock(block: string, handlers: ChatStreamHandlers) {
     if (delta) {
       handlers.onDocumentDelta?.(delta);
     }
+    return;
+  }
+  if (parsed.event === "requirement_update") {
+    handlers.onRequirementUpdate?.(payload as unknown as RequirementUpdateStreamPayload);
     return;
   }
   if (parsed.event === "final") {
