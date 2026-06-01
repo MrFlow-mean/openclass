@@ -26,6 +26,8 @@ import type {
   ChatRequestPayload,
   ConversationTurn,
   CoursePackage,
+  DocumentEvidence,
+  DocumentEvidenceAction,
   LearningClarificationStatus,
   Lesson,
   ResourceMatch,
@@ -99,6 +101,7 @@ export function useLessonChatAgent({
   const [learningClarity, setLearningClarity] = useState<LearningClarificationStatus | null>(null);
   const [latestBoardDecision, setLatestBoardDecision] = useState<BoardDecision | null>(null);
   const [referencePrompt, setReferencePrompt] = useState<ResourceReferencePrompt | null>(null);
+  const [documentEvidence, setDocumentEvidence] = useState<DocumentEvidence[]>([]);
   const [boardEditPrompt, setBoardEditPrompt] = useState<BoardEditPrompt | null>(null);
   const [strongReasoningPrompt, setStrongReasoningPrompt] = useState<StrongReasoningPrompt | null>(null);
   const [selectedReference, setSelectedReference] = useState<ResourceReferenceContext | null>(null);
@@ -128,6 +131,7 @@ export function useLessonChatAgent({
     }
     return (
       payload.board_generation_action === "start" ||
+      payload.document_evidence_action === "reference_generate" ||
       payload.resource_reference_action === "confirm" ||
       isBoardDocumentEmpty(document)
     );
@@ -140,6 +144,7 @@ export function useLessonChatAgent({
     setLearningClarity(null);
     setLatestBoardDecision(null);
     setReferencePrompt(null);
+    setDocumentEvidence([]);
     setBoardEditPrompt(null);
     setStrongReasoningPrompt(null);
     setSelectedReference(null);
@@ -187,8 +192,12 @@ export function useLessonChatAgent({
       ? `Continue: ${payloadOverride.scope_action}`
       : payloadOverride?.teaching_action === "continue"
         ? "Continue to the next section"
-        : payloadOverride?.teaching_action === "restart"
-          ? "Restart from the first section"
+          : payloadOverride?.teaching_action === "restart"
+            ? "Restart from the first section"
+          : payloadOverride?.document_evidence_action === "insert_original"
+            ? payloadWithConversation.message
+          : payloadOverride?.document_evidence_action === "reference_generate"
+            ? payloadWithConversation.message
           : payloadOverride?.board_edit_action === "confirm"
             ? `Expand board selection: ${payloadOverride.board_edit_topic ?? payloadWithConversation.message}`
           : payloadOverride?.board_edit_action === "skip"
@@ -278,6 +287,7 @@ export function useLessonChatAgent({
       setLearningClarity(response.learning_clarification);
       setScopeOptions(response.scope_options);
       setResourceMatches(response.resource_matches);
+      setDocumentEvidence(response.document_evidence ?? []);
       setReferencePrompt(response.reference_prompt ?? null);
       setBoardEditPrompt(response.board_edit_prompt ?? null);
       setStrongReasoningPrompt(response.strong_reasoning_prompt ?? null);
@@ -417,6 +427,18 @@ export function useLessonChatAgent({
     setLastReferenceRequest(null);
   }
 
+  async function handleDocumentEvidenceAction(evidence: DocumentEvidence, action: DocumentEvidenceAction) {
+    await handleSubmitChat({
+      message:
+        action === "insert_original"
+          ? `把资料“${evidence.resource_name}”中定位到的原文插入板书`
+          : `参考资料“${evidence.resource_name}”中定位到的证据生成板书`,
+      interaction_mode: "ask",
+      document_evidence_action: action,
+      document_evidence_id: evidence.evidence_id,
+    });
+  }
+
   async function handleBoardEditAction(action: "confirm" | "skip") {
     if (!boardEditPrompt || !lastBoardEditRequest) {
       return;
@@ -471,6 +493,7 @@ export function useLessonChatAgent({
     learningClarity,
     latestBoardDecision,
     referencePrompt,
+    documentEvidence,
     resourceMatches,
     boardEditPrompt,
     strongReasoningPrompt,
@@ -480,6 +503,7 @@ export function useLessonChatAgent({
     handleEditChatTurn,
     handleScopeAction,
     handleReferenceAction,
+    handleDocumentEvidenceAction,
     handleBoardEditAction,
     handleStrongReasoningAction,
     handleContinueTeaching,

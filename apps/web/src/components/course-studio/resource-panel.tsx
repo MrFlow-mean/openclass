@@ -65,7 +65,11 @@ export function ResourcePanel({
                             {status.icon}
                             {status.label}
                           </span>
-                          <span className="text-[11px] text-gray-500">{r.chaptersCount(resource.outline.length)}</span>
+                          {resource.index_status === "ready" ? (
+                            <span className="text-[11px] text-gray-500">{r.indexedBlocks(resource.page_count, resource.indexed_block_count)}</span>
+                          ) : (
+                            <span className="text-[11px] text-gray-500">{resource.index_message || r.chaptersCount(resource.outline.length)}</span>
+                          )}
                         </div>
                       </div>
                       <button
@@ -119,6 +123,34 @@ export function ResourcePanel({
 }
 
 function resourceStatus(resource: CoursePackage["resources"][number], labels: ReturnType<typeof useInterfaceLanguage>["texts"]["studio"]["resourcePanel"]) {
+  if (resource.index_status === "queued") {
+    return {
+      label: labels.queued,
+      className: "bg-blue-100 text-blue-800",
+      icon: <CircleDashed className="h-3 w-3" />,
+    };
+  }
+  if (resource.index_status === "processing") {
+    return {
+      label: labels.processing,
+      className: "bg-blue-100 text-blue-800",
+      icon: <LoaderCircle className="h-3 w-3 animate-spin" />,
+    };
+  }
+  if (resource.index_status === "failed") {
+    return {
+      label: labels.failed,
+      className: "bg-red-100 text-red-800",
+      icon: <AlertTriangle className="h-3 w-3" />,
+    };
+  }
+  if (resource.index_status === "no_text") {
+    return {
+      label: labels.missingText,
+      className: "bg-amber-100 text-amber-900",
+      icon: <AlertTriangle className="h-3 w-3" />,
+    };
+  }
   if (resource.extracted_text_available) {
     return {
       label: labels.indexedText,

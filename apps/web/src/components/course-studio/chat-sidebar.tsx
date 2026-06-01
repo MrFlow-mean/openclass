@@ -22,6 +22,7 @@ import {
   PROVIDER_LABELS,
 } from "@/components/course-studio/model-catalog";
 import {
+  DocumentEvidenceCard,
   ResourceReferencePromptCard,
   SelectedResourceReferenceCard,
 } from "@/components/course-studio/resource-evidence-card";
@@ -37,6 +38,8 @@ import type {
   ChatInteractionMode,
   ChatRequestPayload,
   CommitRecord,
+  DocumentEvidence,
+  DocumentEvidenceAction,
   LearningClarificationStatus,
   Lesson,
   ResourceMatch,
@@ -64,6 +67,7 @@ type CourseStudioChatSidebarProps = {
   showReadyForBoardCard: boolean;
   scopeOptions: ScopeOption[];
   referencePrompt: ResourceReferencePrompt | null;
+  documentEvidence: DocumentEvidence[];
   resourceMatches: ResourceMatch[];
   boardEditPrompt: BoardEditPrompt | null;
   strongReasoningPrompt: StrongReasoningPrompt | null;
@@ -93,6 +97,7 @@ type CourseStudioChatSidebarProps = {
   onSubmitChat: (payload?: ChatRequestPayload) => void | Promise<void>;
   onScopeAction: (option: ScopeOption) => void | Promise<void>;
   onReferenceAction: (action: "confirm" | "skip") => void | Promise<void>;
+  onDocumentEvidenceAction: (evidence: DocumentEvidence, action: DocumentEvidenceAction) => void | Promise<void>;
   onBoardEditAction: (action: "confirm" | "skip") => void | Promise<void>;
   onStrongReasoningAction: (action: "confirm" | "skip") => void | Promise<void>;
   onSelectTextModel: (option: AIModelOption) => void;
@@ -118,6 +123,7 @@ export function CourseStudioChatSidebar({
   showReadyForBoardCard,
   scopeOptions,
   referencePrompt,
+  documentEvidence,
   resourceMatches,
   boardEditPrompt,
   strongReasoningPrompt,
@@ -147,6 +153,7 @@ export function CourseStudioChatSidebar({
   onSubmitChat,
   onScopeAction,
   onReferenceAction,
+  onDocumentEvidenceAction,
   onBoardEditAction,
   onStrongReasoningAction,
   onSelectTextModel,
@@ -290,6 +297,10 @@ export function CourseStudioChatSidebar({
               matches={referenceEvidenceMatches}
               onReferenceAction={onReferenceAction}
             />
+          ) : null}
+
+          {!isPreviewMode && documentEvidence.length ? (
+            <DocumentEvidenceCard evidence={documentEvidence} onEvidenceAction={onDocumentEvidenceAction} />
           ) : null}
 
           {!isPreviewMode && strongReasoningPrompt ? (

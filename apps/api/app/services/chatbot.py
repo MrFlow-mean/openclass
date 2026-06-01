@@ -10,6 +10,7 @@ from app.models import (
     ChatRequest,
     ChatResponse,
     ConversationTurn,
+    DocumentEvidence,
     InteractionSession,
     InteractionTurnDecision,
     LearningClarificationStatus,
@@ -42,6 +43,12 @@ from app.services.learning_requirement_manager import (
     update_learning_requirements_from_chat,
 )
 from app.services.openai_course_ai import bind_text_model_selection, openai_course_ai
+from app.services.document_locator import (
+    document_evidence_from_id,
+    locate_document_evidence,
+    looks_like_document_request,
+    queued_resource_message,
+)
 from app.services.resource_document_import import (
     apply_resource_document_import,
     requests_pending_resource_document_import,
@@ -49,7 +56,7 @@ from app.services.resource_document_import import (
     resource_import_operation,
     select_resource_import_payload,
 )
-from app.services.rich_document import is_document_empty
+from app.services.rich_document import build_document, is_document_empty
 from app.services.route_context import bind_ai_request_context
 from app.services.resource_resolver import ResourceResolution, resolve_resource_reference
 from app.services.segment_resolver import FocusResolution, focus_context, resolve_board_focus
@@ -130,11 +137,14 @@ def _board_summary(lesson: Lesson) -> str:
 def _resource_summary(resources: list[ResourceLibraryItem]) -> str:
     lines: list[str] = []
     for resource in resources[:6]:
+        status = f"索引状态={resource.index_status}"
+        if resource.index_status == "ready":
+            status = f"已索引 {resource.page_count or 0} 页/{resource.indexed_block_count or 0} 块"
         chapter_titles = [chapter.title for chapter in resource.outline[:4] if chapter.title.strip()]
         if chapter_titles:
-            lines.append(f"{resource.name}: {' / '.join(chapter_titles)}")
+            lines.append(f"{resource.name}: {status}; {' / '.join(chapter_titles)}")
         else:
-            lines.append(resource.name)
+            lines.append(f"{resource.name}: {status}")
     return "\n".join(lines) or "暂无已上传资料摘要"
 
 
@@ -707,6 +717,7 @@ def _response(
     resolved_focus: BoardFocusRef | None = None,
     focus_candidates: list[BoardFocusRef] | None = None,
     resource_matches: list[ResourceMatch] | None = None,
+    document_evidence: list[DocumentEvidence] | None = None,
     reference_prompt: ResourceReferencePrompt | None = None,
     strong_reasoning_prompt: StrongReasoningPrompt | None = None,
     selected_reference: ResourceReferenceContext | None = None,
@@ -726,6 +737,7 @@ def _response(
         patch_proposal=None,
         scope_options=[],
         resource_matches=resource_matches or [],
+        document_evidence=document_evidence or [],
         reference_prompt=reference_prompt,
         board_edit_prompt=None,
         strong_reasoning_prompt=strong_reasoning_prompt,
@@ -963,6 +975,236 @@ def _handle_resource_document_import_request(
         resource_matches=resource_resolution.matches,
         selected_reference=payload.selected_reference or resource_resolution.selected_reference,
     )
+
+
+def _document_evidence_resource_summary(evidence: DocumentEvidence) -> str:
+    path = " / ".join(evidence.heading_path) if evidence.heading_path else evidence.resource_name
+    page = f"PDF 实际页 {evidence.page_range}" if evidence.page_range else "无页码"
+    printed = f"，印刷页 {evidence.printed_page_range}" if evidence.printed_page_range else ""
+    return (
+        f"资料证据：{evidence.resource_name} / {path}\n"
+        f"位置：{page}{printed}\n"
+        f"定位置信度：{round(evidence.confidence * 100)}%\n"
+        f"正文：{_compact_text(evidence.full_text or evidence.excerpt, limit=3200)}"
+    )
+
+
+def _format_document_evidence_message(evidence: list[DocumentEvidence]) -> str:
+    if not evidence:
+        return "我还没有找到可用的正文证据。"
+    lines = ["我已经按资料索引定位到下面的正文证据："]
+    for index, item in enumerate(evidence, start=1):
+        path = " / ".join(item.heading_path) if item.heading_path else item.resource_name
+        page = f"实际页 {item.page_range}" if item.page_range else "无页码"
+        printed = f"，印刷页 {item.printed_page_range}" if item.printed_page_range else ""
+        lines.extend(
+            [
+                "",
+                f"{index}. {item.resource_name} / {path}",
+                f"位置：{page}{printed}；置信度 {round(item.confidence * 100)}%。",
+                f"摘录：{item.excerpt}",
+            ]
+        )
+        if item.trace:
+            lines.append("定位过程：" + " ".join(item.trace[:3]))
+    lines.append("")
+    lines.append("你可以在证据卡里预览原页，也可以把原文插入板书，或让 AI 参考这段证据生成板书。")
+    return "\n".join(lines)
+
+
+def _handle_document_evidence_action(
+    *,
+    workspace,
+    package,
+    lesson: Lesson,
+    user_id: str,
+    request: ChatRequest,
+    requirements: LearningRequirementSheet,
+    resources: list[ResourceLibraryItem],
+) -> ChatResponse | None:
+    if request.document_evidence_action is None or not request.document_evidence_id:
+        return None
+
+    evidence = document_evidence_from_id(
+        workspace_state.get_store().path,
+        resources=resources,
+        evidence_id=request.document_evidence_id,
+    )
+    learning_clarification = _latest_learning_clarification(lesson, requirements=requirements)
+    if evidence is None:
+        chatbot_message = "这条资料证据已经失效或资料索引已更新，请重新让我定位一次。"
+        return _response(
+            workspace=workspace,
+            package=package,
+            lesson=lesson,
+            chatbot_message=chatbot_message,
+            requirements=requirements,
+            learning_clarification=learning_clarification,
+            board_decision=BoardDecision(action="no_change", reason="资料证据 ID 已失效。"),
+        )
+
+    if request.document_evidence_action == "insert_original":
+        existing_text = lesson.board_document.content_text.strip()
+        heading = " / ".join(evidence.heading_path) if evidence.heading_path else evidence.resource_name
+        inserted_text = f"{heading}\n\n{evidence.full_text or evidence.excerpt}".strip()
+        next_text = "\n\n".join(part for part in [existing_text, inserted_text] if part)
+        new_document = build_document(
+            title=lesson.board_document.title or lesson.title,
+            content_text=next_text,
+            document_id=lesson.board_document.id,
+            page_settings=lesson.board_document.page_settings,
+        )
+        refresh_lesson_runtime(lesson, document=new_document, requirements=lesson.learning_requirements)
+        lesson.board_teaching_guide = build_board_teaching_guide(lesson)
+        lesson.board_teaching_progress = None
+        chatbot_message = f"已把“{evidence.resource_name}”中定位到的原文插入板书。"
+        commit_operations(
+            lesson,
+            [],
+            label="Document evidence insert",
+            message="Inserted located document evidence into the board",
+            new_document=lesson.board_document,
+            metadata={
+                "kind": "document_evidence_insert",
+                "document_evidence": evidence.model_dump(mode="json", exclude={"full_text"}),
+                "assistant_message": chatbot_message,
+                **_task_metadata(
+                    requirements=requirements,
+                    learning_clarification=learning_clarification,
+                    requirement_cleared=False,
+                ),
+            },
+        )
+        workspace_state.normalize_package_state(package)
+        workspace_state.save_workspace_for_user(user_id, workspace)
+        return _response(
+            workspace=workspace,
+            package=package,
+            lesson=lesson,
+            chatbot_message=chatbot_message,
+            requirements=requirements,
+            learning_clarification=learning_clarification,
+            board_decision=BoardDecision(action="append_section", reason="已插入资料原文。"),
+            document_evidence=[evidence],
+        )
+
+    task_requirements = _with_task_details(
+        requirements,
+        action_type="generate_board",
+        instruction=request.message or f"参考资料证据生成板书：{evidence.resource_name}",
+    )
+    edit_outcome = generate_from_requirements(
+        lesson=lesson,
+        requirements=task_requirements,
+        clarification=learning_clarification,
+        resource_summary=_document_evidence_resource_summary(evidence),
+        conversation_summary=_conversation_summary(request.conversation),
+        user_instruction=request.message,
+    )
+    chatbot_message = edit_outcome.chatbot_message
+    if edit_outcome.changed:
+        refresh_lesson_runtime(lesson, document=edit_outcome.new_document, requirements=task_requirements)
+        lesson.board_teaching_guide = build_board_teaching_guide(lesson)
+        lesson.board_teaching_progress = None
+    commit_operations(
+        lesson,
+        [],
+        label="Document evidence generation",
+        message="Generated board document from located document evidence",
+        new_document=lesson.board_document,
+        metadata={
+            "kind": "document_evidence_generation",
+            "document_evidence": evidence.model_dump(mode="json", exclude={"full_text"}),
+            "assistant_message": chatbot_message,
+            "board_edit_operation": edit_outcome.operation,
+            **_task_metadata(
+                requirements=task_requirements,
+                learning_clarification=learning_clarification,
+                requirement_cleared=edit_outcome.changed,
+            ),
+        },
+    )
+    workspace_state.normalize_package_state(package)
+    workspace_state.save_workspace_for_user(user_id, workspace)
+    return _response(
+        workspace=workspace,
+        package=package,
+        lesson=lesson,
+        chatbot_message=chatbot_message,
+        requirements=task_requirements,
+        learning_clarification=learning_clarification,
+        board_decision=edit_outcome.board_decision,
+        document_evidence=[evidence],
+        requirement_cleared=edit_outcome.changed,
+    )
+
+
+def _handle_document_lookup_request(
+    *,
+    workspace,
+    package,
+    lesson: Lesson,
+    user_id: str,
+    request: ChatRequest,
+    requirements: LearningRequirementSheet,
+    resources: list[ResourceLibraryItem],
+) -> ChatResponse | None:
+    if request.interaction_mode == "direct_edit" or request.board_generation_action == "start":
+        return None
+    if requests_resource_document_import(request.message, resources=resources):
+        return None
+    if not resources or not looks_like_document_request(request.message):
+        return None
+
+    learning_clarification = _latest_learning_clarification(lesson, requirements=requirements)
+    evidence = locate_document_evidence(
+        workspace_state.get_store().path,
+        resources=resources,
+        query=request.message,
+    )
+    if evidence:
+        chatbot_message = _format_document_evidence_message(evidence)
+        commit_operations(
+            lesson,
+            [],
+            label="Document evidence lookup",
+            message="Located uploaded document evidence",
+            new_document=lesson.board_document,
+            metadata={
+                "kind": "document_evidence_lookup",
+                "document_evidence": [item.model_dump(mode="json", exclude={"full_text"}) for item in evidence],
+                "assistant_message": chatbot_message,
+                **_task_metadata(
+                    requirements=requirements,
+                    learning_clarification=learning_clarification,
+                    requirement_cleared=False,
+                ),
+            },
+        )
+        workspace_state.save_workspace_for_user(user_id, workspace)
+        return _response(
+            workspace=workspace,
+            package=package,
+            lesson=lesson,
+            chatbot_message=chatbot_message,
+            requirements=requirements,
+            learning_clarification=learning_clarification,
+            board_decision=BoardDecision(action="no_change", reason="已定位资料正文证据，等待用户选择是否写入板书。"),
+            document_evidence=evidence,
+        )
+
+    pending_message = queued_resource_message(resources)
+    if pending_message:
+        return _response(
+            workspace=workspace,
+            package=package,
+            lesson=lesson,
+            chatbot_message=pending_message,
+            requirements=requirements,
+            learning_clarification=learning_clarification,
+            board_decision=BoardDecision(action="no_change", reason="资料索引尚未就绪。"),
+        )
+    return None
 
 
 def _generate_interaction_chatbot_message(
@@ -1348,6 +1590,30 @@ def _chat_response(
         request_message=request.message,
         requirements=requirements,
     )
+    document_action_response = _handle_document_evidence_action(
+        workspace=workspace,
+        package=package,
+        lesson=lesson,
+        user_id=user_id,
+        request=request,
+        requirements=requirements,
+        resources=visible_package.resources,
+    )
+    if document_action_response is not None:
+        return document_action_response
+
+    document_lookup_response = _handle_document_lookup_request(
+        workspace=workspace,
+        package=package,
+        lesson=lesson,
+        user_id=user_id,
+        request=request,
+        requirements=requirements,
+        resources=visible_package.resources,
+    )
+    if document_lookup_response is not None:
+        return document_lookup_response
+
     resource_query = _resource_resolution_query(request, requirements)
     resource_resolution = resolve_resource_reference(
         resources=visible_package.resources,

@@ -16,6 +16,8 @@ export type BoardAction =
   | "await_focus_choice";
 
 export type ResourceReferenceAction = "confirm" | "skip";
+export type DocumentEvidenceAction = "insert_original" | "reference_generate";
+export type ResourceIndexStatus = "queued" | "processing" | "ready" | "no_text" | "failed";
 export type BoardEditConfirmationAction = "confirm" | "skip";
 export type StrongReasoningAction = "confirm" | "skip";
 export type ChatInteractionMode = "ask" | "direct_edit";
@@ -247,6 +249,11 @@ export interface ResourceLibraryItem {
   outline: LibraryChapter[];
   concept_index: Record<string, string[]>;
   extracted_text_available: boolean;
+  index_status: ResourceIndexStatus;
+  index_message: string;
+  index_updated_at: string;
+  page_count: number;
+  indexed_block_count: number;
 }
 
 export type ResourceActivityAction = "uploaded" | "deleted";
@@ -643,6 +650,21 @@ export interface ResourceReferenceContext {
   text_evidence_status?: string;
 }
 
+export interface DocumentEvidence {
+  evidence_id: string;
+  resource_id: string;
+  resource_name: string;
+  page_range?: string | null;
+  printed_page_range?: string | null;
+  heading_path: string[];
+  excerpt: string;
+  confidence: number;
+  trace: string[];
+  preview_url?: string | null;
+  available_actions: DocumentEvidenceAction[];
+  text_source: string;
+}
+
 export interface BoardDecision {
   action: BoardAction;
   reason: string;
@@ -669,6 +691,8 @@ export interface ChatRequestPayload {
   resource_reference_resource_id?: string | null;
   resource_reference_chapter_id?: string | null;
   resource_reference_segment_id?: string | null;
+  document_evidence_action?: DocumentEvidenceAction | null;
+  document_evidence_id?: string | null;
   board_edit_action?: BoardEditConfirmationAction | null;
   board_edit_topic?: string | null;
   strong_reasoning_action?: StrongReasoningAction | null;
@@ -698,6 +722,7 @@ export interface ChatResponse {
   patch_proposal?: PatchProposal | null;
   scope_options: ScopeOption[];
   resource_matches: ResourceMatch[];
+  document_evidence: DocumentEvidence[];
   reference_prompt?: ResourceReferencePrompt | null;
   board_edit_prompt?: BoardEditPrompt | null;
   strong_reasoning_prompt?: StrongReasoningPrompt | null;

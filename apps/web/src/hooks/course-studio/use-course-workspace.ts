@@ -219,6 +219,33 @@ export function useCourseWorkspace() {
     setCoursePackage((current) => (current ? { ...current, active_lesson_id: lessonId } : current));
   }, []);
 
+  const hasPendingResourceIndex = useMemo(
+    () => Boolean(coursePackage?.resources.some((resource) => resource.index_status === "queued" || resource.index_status === "processing")),
+    [coursePackage?.resources]
+  );
+
+  useEffect(() => {
+    if (!hasPendingResourceIndex) {
+      return;
+    }
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const payload = await api.getCoursePackage();
+        if (!cancelled) {
+          applyCoursePackage(payload, { activeLessonId: activeLesson?.id });
+        }
+      } catch {
+        // Keep the last visible state; explicit user actions will surface API errors.
+      }
+    };
+    const timer = window.setInterval(() => void poll(), 2500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [activeLesson?.id, applyCoursePackage, hasPendingResourceIndex]);
+
   return {
     coursePackage,
     isLoading,

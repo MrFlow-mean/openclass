@@ -1,11 +1,12 @@
 "use client";
 
 import clsx from "clsx";
-import { AlertTriangle, BadgeCheck, ChevronDown, FileText, MapPin, Sparkles } from "lucide-react";
+import { AlertTriangle, BadgeCheck, ChevronDown, FileText, MapPin, PlusCircle, Sparkles } from "lucide-react";
 import type { ReactNode } from "react";
 
 import { useInterfaceLanguage } from "@/contexts/interface-language-context";
-import type { ResourceContextChunk, ResourceMatch, ResourceReferenceContext, ResourceReferencePrompt } from "@/types";
+import { getApiBase } from "@/lib/api";
+import type { DocumentEvidence, DocumentEvidenceAction, ResourceContextChunk, ResourceMatch, ResourceReferenceContext, ResourceReferencePrompt } from "@/types";
 
 type ResourceReferencePromptCardProps = {
   prompt: ResourceReferencePrompt;
@@ -15,6 +16,11 @@ type ResourceReferencePromptCardProps = {
 
 type SelectedResourceReferenceCardProps = {
   reference: ResourceReferenceContext;
+};
+
+type DocumentEvidenceCardProps = {
+  evidence: DocumentEvidence[];
+  onEvidenceAction: (evidence: DocumentEvidence, action: DocumentEvidenceAction) => void | Promise<void>;
 };
 
 export function ResourceReferencePromptCard({
@@ -128,6 +134,74 @@ export function SelectedResourceReferenceCard({ reference }: SelectedResourceRef
         </div>
       ) : null}
     </details>
+  );
+}
+
+export function DocumentEvidenceCard({ evidence, onEvidenceAction }: DocumentEvidenceCardProps) {
+  if (!evidence.length) {
+    return null;
+  }
+  return (
+    <div className="space-y-3">
+      {evidence.map((item) => {
+        const heading = item.heading_path?.length ? item.heading_path.join(" / ") : item.resource_name;
+        const previewUrl = item.preview_url ? `${getApiBase()}${item.preview_url}` : null;
+        return (
+          <article key={item.evidence_id} className="rounded-xl border border-blue-200 bg-blue-50 p-4">
+            <div className="flex items-start gap-3">
+              <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white text-blue-700 shadow-sm">
+                <MapPin className="h-4 w-4" />
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="text-[11px] font-bold uppercase tracking-widest text-blue-700">资料证据</p>
+                <p className="mt-1 break-words text-sm font-semibold text-gray-950">{item.resource_name} / {heading}</p>
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {item.page_range ? <MetaPill icon={<MapPin className="h-3 w-3" />} text={`PDF 页 ${item.page_range}`} /> : null}
+                  {item.printed_page_range ? <MetaPill icon={<FileText className="h-3 w-3" />} text={`印刷页 ${item.printed_page_range}`} /> : null}
+                  <MetaPill icon={<BadgeCheck className="h-3 w-3" />} text={`置信度 ${Math.round(item.confidence * 100)}%`} />
+                </div>
+              </div>
+            </div>
+
+            {previewUrl ? (
+              <div className="mt-3 overflow-hidden rounded-lg border border-blue-100 bg-white">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={previewUrl} alt={`${item.resource_name} page preview`} className="max-h-64 w-full object-contain" loading="lazy" />
+              </div>
+            ) : null}
+
+            {item.excerpt ? (
+              <p className="mt-3 border-l-2 border-blue-300 pl-3 text-xs leading-5 text-gray-800">{item.excerpt}</p>
+            ) : null}
+            {item.trace?.length ? (
+              <div className="mt-3 space-y-1 text-[11px] leading-5 text-blue-950/80">
+                {item.trace.slice(0, 3).map((line) => (
+                  <p key={line}>{line}</p>
+                ))}
+              </div>
+            ) : null}
+            <div className="mt-3 grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => void onEvidenceAction(item, "insert_original")}
+                className="inline-flex items-center justify-center gap-1 rounded-lg border border-blue-200 bg-white px-3 py-2 text-xs font-semibold text-gray-900 transition hover:border-blue-300"
+              >
+                <PlusCircle className="h-3.5 w-3.5" />
+                插入原文
+              </button>
+              <button
+                type="button"
+                onClick={() => void onEvidenceAction(item, "reference_generate")}
+                className="inline-flex items-center justify-center gap-1 rounded-lg border border-blue-200 bg-white px-3 py-2 text-xs font-semibold text-gray-900 transition hover:border-blue-300"
+              >
+                <Sparkles className="h-3.5 w-3.5" />
+                参考生成
+              </button>
+            </div>
+          </article>
+        );
+      })}
+    </div>
   );
 }
 

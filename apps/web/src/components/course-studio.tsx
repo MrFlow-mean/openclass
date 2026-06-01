@@ -212,6 +212,7 @@ export function CourseStudio() {
     learningClarity,
     latestBoardDecision,
     referencePrompt,
+    documentEvidence,
     resourceMatches,
     boardEditPrompt,
     strongReasoningPrompt,
@@ -220,6 +221,7 @@ export function CourseStudio() {
     handleEditChatTurn,
     handleScopeAction,
     handleReferenceAction,
+    handleDocumentEvidenceAction,
     handleBoardEditAction,
     handleStrongReasoningAction,
     handleContinueTeaching,
@@ -522,6 +524,7 @@ export function CourseStudio() {
           showReadyForBoardCard={showReadyForBoardCard}
           scopeOptions={scopeOptions}
           referencePrompt={referencePrompt}
+          documentEvidence={documentEvidence}
           resourceMatches={resourceMatches}
           boardEditPrompt={boardEditPrompt}
           strongReasoningPrompt={strongReasoningPrompt}
@@ -551,6 +554,7 @@ export function CourseStudio() {
           onSubmitChat={(payload) => handleSubmitChat(payload)}
           onScopeAction={(option) => handleScopeAction(option)}
           onReferenceAction={(action) => handleReferenceAction(action)}
+          onDocumentEvidenceAction={(evidence, action) => handleDocumentEvidenceAction(evidence, action)}
           onBoardEditAction={(action) => handleBoardEditAction(action)}
           onStrongReasoningAction={(action) => handleStrongReasoningAction(action)}
           onSelectTextModel={selectTextModel}

@@ -7,21 +7,27 @@ from uuid import uuid4
 
 from fastapi import HTTPException, UploadFile
 
-from app.models import CoursePackage, ResourceActivityAction, ResourceActivityEvent, ResourceLibraryItem
-from app.services.resource_library import build_resource_item
+from app.models import CoursePackage, ResourceActivityAction, ResourceActivityEvent, ResourceLibraryItem, now_iso
 
 
-INLINE_UPLOAD_EXTRACTION_MAX_BYTES = 8 * 1024 * 1024
-
-
-def _should_defer_upload_extraction(destination: Path, original_name: str, content_type: str | None) -> bool:
+def build_queued_resource(destination: Path, original_name: str, content_type: str | None = None) -> ResourceLibraryItem:
     mime_type = content_type or mimetypes.guess_type(original_name)[0] or "application/octet-stream"
-    if mime_type.startswith("image/"):
-        return True
-    try:
-        return destination.stat().st_size > INLINE_UPLOAD_EXTRACTION_MAX_BYTES
-    except OSError:
-        return True
+    return ResourceLibraryItem(
+        name=original_name,
+        mime_type=mime_type,
+        resource_type="image" if mime_type.startswith("image/") else "document",
+        size_bytes=destination.stat().st_size,
+        outline=[],
+        concept_index={},
+        extracted_text_available=False,
+        text_content=None,
+        source_path=str(destination),
+        index_status="queued",
+        index_message="等待后台解析资料",
+        index_updated_at=now_iso(),
+        page_count=0,
+        indexed_block_count=0,
+    )
 
 
 def add_uploaded_resource(
@@ -36,11 +42,7 @@ def add_uploaded_resource(
     with destination.open("wb") as output:
         shutil.copyfileobj(file.file, output)
 
-    resource = build_resource_item(
-        destination,
-        original_name,
-        defer_text_extraction=_should_defer_upload_extraction(destination, original_name, file.content_type),
-    )
+    resource = build_queued_resource(destination, original_name, file.content_type)
     resource.scope_lesson_id = scope_lesson_id
     package.resources.append(resource)
     record_resource_activity(package, resource, "uploaded")

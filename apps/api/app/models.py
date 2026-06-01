@@ -100,6 +100,8 @@ AIRealtimeTransport = Literal["openai_webrtc", "gemini_live_websocket"]
 ResourceReferenceAction = Literal["confirm", "skip"]
 BoardEditConfirmationAction = Literal["confirm", "skip"]
 StrongReasoningAction = Literal["confirm", "skip"]
+DocumentEvidenceAction = Literal["insert_original", "reference_generate"]
+ResourceIndexStatus = Literal["queued", "processing", "ready", "no_text", "failed"]
 ResourceScanStrategy = Literal["outline_only", "heading_section", "page_window", "fulltext_match"]
 ResourceActivityAction = Literal["uploaded", "deleted"]
 ChatInteractionMode = Literal["ask", "direct_edit"]
@@ -490,6 +492,11 @@ class ResourceLibraryItem(BaseModel):
     extracted_text_available: bool = False
     text_content: str | None = None
     source_path: str | None = None
+    index_status: ResourceIndexStatus = "ready"
+    index_message: str = ""
+    index_updated_at: str = Field(default_factory=now_iso)
+    page_count: int = 0
+    indexed_block_count: int = 0
     parsed_blocks: list[dict[str, Any]] = Field(default_factory=list, exclude=True, repr=False)
     parser_name: str | None = Field(default=None, exclude=True, repr=False)
     parser_version: str | None = Field(default=None, exclude=True, repr=False)
@@ -507,6 +514,11 @@ class ResourceLibraryItemView(BaseModel):
     outline: list[LibraryChapter] = Field(default_factory=list)
     concept_index: dict[str, list[str]] = Field(default_factory=dict)
     extracted_text_available: bool = False
+    index_status: ResourceIndexStatus = "ready"
+    index_message: str = ""
+    index_updated_at: str = Field(default_factory=now_iso)
+    page_count: int = 0
+    indexed_block_count: int = 0
 
 
 class ResourceActivityEvent(BaseModel):
@@ -660,6 +672,22 @@ class ResourceReferenceContext(BaseModel):
     full_text: str = Field(default="", exclude=True, repr=False)
 
 
+class DocumentEvidence(BaseModel):
+    evidence_id: str
+    resource_id: str
+    resource_name: str
+    page_range: str | None = None
+    printed_page_range: str | None = None
+    heading_path: list[str] = Field(default_factory=list)
+    excerpt: str = ""
+    confidence: float = 0.0
+    trace: list[str] = Field(default_factory=list)
+    preview_url: str | None = None
+    available_actions: list[DocumentEvidenceAction] = Field(default_factory=list)
+    text_source: str = "source_file"
+    full_text: str = Field(default="", exclude=True, repr=False)
+
+
 class BoardDecision(BaseModel):
     action: BoardAction
     reason: str
@@ -754,6 +782,8 @@ class ChatRequest(BaseModel):
     resource_reference_resource_id: str | None = None
     resource_reference_chapter_id: str | None = None
     resource_reference_segment_id: str | None = None
+    document_evidence_action: DocumentEvidenceAction | None = None
+    document_evidence_id: str | None = None
     board_edit_action: BoardEditConfirmationAction | None = None
     board_edit_topic: str | None = None
     strong_reasoning_action: StrongReasoningAction | None = None
@@ -1051,6 +1081,7 @@ class ChatResponse(BaseModel):
     patch_proposal: PatchProposal | None = None
     scope_options: list[ScopeOption] = Field(default_factory=list)
     resource_matches: list[ResourceMatch] = Field(default_factory=list)
+    document_evidence: list[DocumentEvidence] = Field(default_factory=list)
     reference_prompt: ResourceReferencePrompt | None = None
     board_edit_prompt: BoardEditPrompt | None = None
     strong_reasoning_prompt: StrongReasoningPrompt | None = None

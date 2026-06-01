@@ -21,8 +21,10 @@ from app.models import (
     ResourceActivityEvent,
     ResourceLibraryItem,
     WorkspaceState,
+    now_iso,
 )
 from app.services.document_segment_store import DocumentSegmentStore
+from app.services.document_index_store import DocumentIndexStore
 from app.services.resource_segment_store import ResourceSegmentStore
 from app.services.resource_library import resource_has_text_evidence
 from app.services.rich_document import upgrade_markdown_like_document
@@ -42,6 +44,7 @@ class SqliteCourseStore:
         self.legacy_json_path = legacy_json_path
         self._lock = threading.RLock()
         self._document_segments = DocumentSegmentStore()
+        self._document_index = DocumentIndexStore()
         self._resource_segments = ResourceSegmentStore()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
@@ -266,7 +269,12 @@ class SqliteCourseStore:
                 concept_index_json TEXT NOT NULL,
                 extracted_text_available INTEGER NOT NULL,
                 text_content TEXT,
-                source_path TEXT
+                source_path TEXT,
+                index_status TEXT NOT NULL DEFAULT 'ready',
+                index_message TEXT NOT NULL DEFAULT '',
+                index_updated_at TEXT NOT NULL DEFAULT '',
+                page_count INTEGER NOT NULL DEFAULT 0,
+                indexed_block_count INTEGER NOT NULL DEFAULT 0
             );
 
             CREATE INDEX IF NOT EXISTS idx_resources_package
@@ -313,6 +321,7 @@ class SqliteCourseStore:
         )
         self._migrate_schema(conn)
         self._resource_segments.create_schema(conn)
+        self._document_index.create_schema(conn)
         self._document_segments.create_fts_schema(conn)
         self._document_segments.backfill(conn, _document_from_row)
         conn.execute(
@@ -341,6 +350,16 @@ class SqliteCourseStore:
         }
         if "scope_lesson_id" not in resource_columns:
             conn.execute("ALTER TABLE resources ADD COLUMN scope_lesson_id TEXT")
+        if "index_status" not in resource_columns:
+            conn.execute("ALTER TABLE resources ADD COLUMN index_status TEXT NOT NULL DEFAULT 'ready'")
+        if "index_message" not in resource_columns:
+            conn.execute("ALTER TABLE resources ADD COLUMN index_message TEXT NOT NULL DEFAULT ''")
+        if "index_updated_at" not in resource_columns:
+            conn.execute("ALTER TABLE resources ADD COLUMN index_updated_at TEXT NOT NULL DEFAULT ''")
+        if "page_count" not in resource_columns:
+            conn.execute("ALTER TABLE resources ADD COLUMN page_count INTEGER NOT NULL DEFAULT 0")
+        if "indexed_block_count" not in resource_columns:
+            conn.execute("ALTER TABLE resources ADD COLUMN indexed_block_count INTEGER NOT NULL DEFAULT 0")
         package_columns = {
             row["name"]
             for row in conn.execute("PRAGMA table_info(course_packages)").fetchall()
@@ -596,13 +615,24 @@ class SqliteCourseStore:
             extracted_text_available=bool(row["extracted_text_available"]),
             text_content=row["text_content"],
             source_path=row["source_path"],
+            index_status=row["index_status"] or "ready",
+            index_message=row["index_message"] or "",
+            index_updated_at=row["index_updated_at"] or row["uploaded_at"],
+            page_count=row["page_count"] or 0,
+            indexed_block_count=row["indexed_block_count"] or 0,
         )
         resource.segments = self._resource_segments.read_segments(conn, resource.id)
         if not resource.segments:
             resource.segments = self._resource_segments.ensure_segments(resource)
             if resource.segments:
                 resource.segments = self._resource_segments.replace_segments(conn, resource)
-        text_available = resource_has_text_evidence(resource)
+        self._repair_legacy_resource_index_state(conn, resource)
+        if resource.index_status == "ready" and resource.indexed_block_count > 0:
+            text_available = True
+        elif resource.index_status in {"queued", "processing", "no_text", "failed"}:
+            text_available = False
+        else:
+            text_available = resource_has_text_evidence(resource)
         if text_available != resource.extracted_text_available:
             conn.execute(
                 "UPDATE resources SET extracted_text_available = ? WHERE id = ?",
@@ -610,6 +640,33 @@ class SqliteCourseStore:
             )
             resource.extracted_text_available = text_available
         return resource
+
+    def _repair_legacy_resource_index_state(self, conn: sqlite3.Connection, resource: ResourceLibraryItem) -> None:
+        if resource.index_status != "ready" or resource.indexed_block_count > 0:
+            return
+        if resource_has_text_evidence(resource):
+            return
+        if not resource.source_path:
+            resource.index_status = "no_text"
+            resource.index_message = "旧资料没有源文件路径，无法建立 v2 正文索引。"
+        elif not Path(resource.source_path).exists():
+            resource.index_status = "failed"
+            resource.index_message = "旧资料源文件不存在，无法建立 v2 正文索引。"
+        else:
+            resource.index_status = "queued"
+            resource.index_message = "旧资料等待后台重建 v2 正文索引。"
+            self._document_index.enqueue(conn, resource.id)
+        resource.index_updated_at = now_iso()
+        conn.execute(
+            """
+            UPDATE resources
+            SET index_status = ?,
+                index_message = ?,
+                index_updated_at = ?
+            WHERE id = ?
+            """,
+            (resource.index_status, resource.index_message, resource.index_updated_at, resource.id),
+        )
 
     def _read_resource_event(self, row: sqlite3.Row) -> ResourceActivityEvent:
         return ResourceActivityEvent(
@@ -813,8 +870,9 @@ class SqliteCourseStore:
             """
             INSERT INTO resources(
                 id, package_id, sort_order, name, mime_type, resource_type, size_bytes,
-                uploaded_at, scope_lesson_id, concept_index_json, extracted_text_available, text_content, source_path
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                uploaded_at, scope_lesson_id, concept_index_json, extracted_text_available, text_content, source_path,
+                index_status, index_message, index_updated_at, page_count, indexed_block_count
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 resource.id,
@@ -830,6 +888,11 @@ class SqliteCourseStore:
                 int(resource.extracted_text_available),
                 resource.text_content,
                 resource.source_path,
+                resource.index_status,
+                resource.index_message,
+                resource.index_updated_at,
+                resource.page_count,
+                resource.indexed_block_count,
             ),
         )
         for chapter_index, chapter in enumerate(resource.outline):

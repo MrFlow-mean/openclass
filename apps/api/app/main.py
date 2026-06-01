@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from contextlib import asynccontextmanager
 from urllib import parse
 
 from fastapi import FastAPI, Request
@@ -10,13 +11,22 @@ from fastapi.responses import JSONResponse
 from app.models import AIModelCatalog
 from app.routers import auth, chat, collaboration, documents, realtime, resources, workspace
 from app.services.ai_model_catalog import build_model_catalog, realtime_runtime_enabled
+from app.services.document_indexer import start_document_index_worker
 from app.services.email_delivery import delivery_status
 from app.services.openai_course_ai import openai_course_ai
+from app.services import workspace_state
 from app.services.workspace_state import ensure_data_dirs
 
 ensure_data_dirs()
 
-app = FastAPI(title="AI Board Course System API", version="0.2.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    start_document_index_worker(workspace_state.get_store().path)
+    yield
+
+
+app = FastAPI(title="AI Board Course System API", version="0.2.0", lifespan=lifespan)
 
 cors_origins = ["http://localhost:3000", "http://127.0.0.1:3000"]
 for origin in (os.getenv("OPENCLASS_PUBLIC_ORIGIN"), os.getenv("OPENCLASS_WEB_ORIGIN")):

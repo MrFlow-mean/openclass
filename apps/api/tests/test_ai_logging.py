@@ -4300,32 +4300,10 @@ def test_outline_only_reference_requires_confirmation_and_marks_degraded_generat
         user_id=TEST_USER.id,
     )
 
-    assert first.board_decision.action == "await_reference_choice"
-    assert first.reference_prompt is not None
-    assert first.reference_prompt.text_evidence_available is False
-    assert first.reference_prompt.requires_text_fallback_confirmation is True
-    assert "没有抽到" in first.chatbot_message
-
-    confirmed = chat_service.process_chat_on_lesson(
-        lesson.id,
-        ChatRequest(
-            message="在文档框为我讲解15.3的章节内容",
-            resource_reference_action="confirm",
-            resource_reference_resource_id=first.reference_prompt.resource_id,
-            resource_reference_chapter_id=first.reference_prompt.chapter_id,
-        ),
-        user_id=TEST_USER.id,
-    )
-
-    assert confirmed.board_decision.action == "edit_board"
-    assert confirmed.selected_reference is not None
-    assert confirmed.selected_reference.text_evidence_available is False
-    assert "未抽到可引用正文" in (captured["resource_summary"] or "")
-    commit = confirmed.course_package.lessons[0].history_graph.commits[-1]
-    assert commit.metadata["resource_backed_generation"] is False
-    assert commit.metadata["resource_text_evidence_available"] is False
-    assert commit.metadata["resource_reference_degraded"] is True
-    assert commit.metadata["selected_reference"]["text_evidence_available"] is False
+    assert first.board_decision.action == "no_change"
+    assert first.reference_prompt is None
+    assert first.document_evidence == []
+    assert "没有可用正文索引" in first.chatbot_message
     assert _read_log_entries(isolated_ai_log) == []
 
 
