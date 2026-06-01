@@ -20,8 +20,6 @@ type CourseStudioSidePanelProps = {
   latestBoardDecision: BoardDecision | null;
   newBranchName: string;
   onNewBranchNameChange: (value: string) => void;
-  busyAction: string | null;
-  resources: CoursePackage["resources"];
   relatedEdges: CoursePackage["course_graph"];
   lessonMap: Map<string, Lesson>;
   onCreateBranch: () => void | Promise<void>;
@@ -29,8 +27,6 @@ type CourseStudioSidePanelProps = {
   onRestoreCommit: (commitId: string) => void | Promise<void>;
   onCreateBranchFromCommit: (commit: CommitRecord) => void | Promise<void>;
   onSwitchBranch: (branchName: string) => void | Promise<void>;
-  onUploadResource: (file: File | null) => void | Promise<void>;
-  onDeleteResource: (resourceId: string, resourceName: string) => void | Promise<void>;
   onOpenLesson: (lessonId: string) => void | Promise<void>;
 };
 
@@ -46,8 +42,6 @@ export function CourseStudioSidePanel({
   latestBoardDecision,
   newBranchName,
   onNewBranchNameChange,
-  busyAction,
-  resources,
   relatedEdges,
   lessonMap,
   onCreateBranch,
@@ -55,8 +49,6 @@ export function CourseStudioSidePanel({
   onRestoreCommit,
   onCreateBranchFromCommit,
   onSwitchBranch,
-  onUploadResource,
-  onDeleteResource,
   onOpenLesson,
 }: CourseStudioSidePanelProps) {
   return (
@@ -127,12 +119,8 @@ export function CourseStudioSidePanel({
         {sidebarTab === "library" ? (
           <ResourcePanel
             activeLesson={activeLesson}
-            busyAction={busyAction}
-            resources={resources}
             relatedEdges={relatedEdges}
             lessonMap={lessonMap}
-            onUploadResource={onUploadResource}
-            onDeleteResource={onDeleteResource}
             onOpenLesson={onOpenLesson}
           />
         ) : null}

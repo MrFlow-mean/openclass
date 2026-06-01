@@ -100,42 +100,6 @@ export function useWorkspaceActions({
     }
   }
 
-  async function handleUploadResource(file: File | null) {
-    if (!file) {
-      return;
-    }
-    if (!(await flushAutoSave("upload-resource"))) {
-      return;
-    }
-    setBusyAction("upload");
-    try {
-      const nextPackage = await api.uploadResource(file, activeLesson?.id);
-      updateCoursePackage(nextPackage, { activeLessonId: activeLesson?.id });
-    } catch (uploadError) {
-      setError(uploadError instanceof Error ? uploadError.message : "上传资料失败");
-    } finally {
-      setBusyAction(null);
-    }
-  }
-
-  async function handleDeleteResource(resourceId: string, resourceName: string) {
-    if (!window.confirm(`删除资料“${resourceName}”？删除后，AI 将不再引用它。`)) {
-      return;
-    }
-    if (!(await flushAutoSave("delete-resource"))) {
-      return;
-    }
-    setBusyAction(`delete-resource:${resourceId}`);
-    try {
-      const nextPackage = await api.deleteResource(resourceId, activeLesson?.id);
-      updateCoursePackage(nextPackage, { activeLessonId: activeLesson?.id });
-    } catch (deleteError) {
-      setError(deleteError instanceof Error ? deleteError.message : "删除资料失败");
-    } finally {
-      setBusyAction(null);
-    }
-  }
-
   async function handleSelectLesson(lessonId: string) {
     if (activeLesson?.id !== lessonId && !(await flushAutoSave("select-lesson"))) {
       return;
@@ -149,8 +113,6 @@ export function useWorkspaceActions({
     handleCreateLessonFromName,
     handleOpenLesson,
     handleCloseLesson,
-    handleUploadResource,
-    handleDeleteResource,
     handleSelectLesson,
   };
 }
