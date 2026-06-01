@@ -3,6 +3,7 @@
 import { useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 
 import { api } from "@/lib/api";
+import { streamingMarkdownToHtml } from "@/lib/streaming-rich-document";
 import {
   createChatMessage,
   isBoardDocumentEmpty,
@@ -95,40 +96,6 @@ export function useLessonChatAgent({
     updateLessonMessages(lessonId, (current) =>
       current.map((message) => (message.id === messageId ? { ...message, ...patch } : message))
     );
-  }
-
-  function escapeHtml(value: string) {
-    return value
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;")
-      .replace(/'/g, "&#39;");
-  }
-
-  function streamingTextToHtml(contentText: string) {
-    const blocks = contentText
-      .split(/\n{2,}/)
-      .map((block) => block.trim())
-      .filter(Boolean);
-    if (!blocks.length) {
-      return "<p></p>";
-    }
-    return blocks
-      .map((block) => {
-        const lines = block.split(/\r?\n/);
-        if (lines.every((line) => /^\s*[-*]\s+/.test(line))) {
-          return `<ul>${lines
-            .map((line) => `<li>${escapeHtml(line.replace(/^\s*[-*]\s+/, ""))}</li>`)
-            .join("")}</ul>`;
-        }
-        const headingMatch = /^#{1,6}\s+(.+)$/.exec(block);
-        if (headingMatch) {
-          return `<h2>${escapeHtml(headingMatch[1])}</h2>`;
-        }
-        return `<p>${escapeHtml(block).replace(/\r?\n/g, "<br>")}</p>`;
-      })
-      .join("");
   }
 
   function shouldStreamDocumentPreview(payload: ChatRequestPayload, document: BoardDocument | null) {
@@ -262,7 +229,7 @@ export function useLessonChatAgent({
           setStreamingDocumentPreview({
             ...baseStreamingDocument,
             content_json: {},
-            content_html: streamingTextToHtml(streamedDocumentText),
+            content_html: streamingMarkdownToHtml(streamedDocumentText),
             content_text: streamedDocumentText,
           });
         },

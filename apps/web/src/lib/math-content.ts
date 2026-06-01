@@ -3,7 +3,7 @@ import type { Mark, Node as ProseMirrorNode, Schema } from "@tiptap/pm/model";
 
 const CJK_TEXT = /[\u3400-\u9fff]/;
 const STRONG_MATH_SIGNAL =
-  /\\[A-Za-z]+|[=≤≥≈≠∞±]|[A-Za-z0-9]\s*[_^]\s*\{?[-+\w/]+\}?|\d+\s*[+\-−*/]\s*\d+|\b(?:lim|sin|cos|tan|ln|log|sqrt|exp)_?\b/;
+  /\\[A-Za-z]+|[=≤≥≈≠∞±]|[A-Za-z0-9]\s*[_^]\s*\{?[-+\w/]+\}?|[A-Za-z0-9]\s*[+\-−*/]\s*[A-Za-z0-9]|\b(?:lim|sin|cos|tan|ln|log|sqrt|exp)_?\b/;
 const DELIMITED_MATH = /\\\[([\s\S]+?)\\\]|\\\((.+?)\\\)|\$\$([\s\S]+?)\$\$|\$(?!\d+\$)([^$\n]+?)\$(?!\d)/g;
 const TRAILING_SENTENCE_MARKS = /[\s.,，。；;:：]+$/;
 const LEADING_SENTENCE_MARKS = /^[\s.,，。；;:：]+/;
@@ -16,6 +16,14 @@ type MathSegment = {
 
 function hasStrongMathSignal(value: string) {
   return STRONG_MATH_SIGNAL.test(value);
+}
+
+function isLikelyDelimitedMath(value: string) {
+  const compact = value.trim().replace(TRAILING_SENTENCE_MARKS, "").replace(LEADING_SENTENCE_MARKS, "");
+  if (!compact || CJK_TEXT.test(compact)) {
+    return false;
+  }
+  return hasStrongMathSignal(compact) || /^[A-Za-z]$/.test(compact);
 }
 
 function normalizeLimitSubscript(value: string) {
@@ -64,10 +72,15 @@ function normalizeLatex(value: string) {
 
 function formulaOnlyLatex(text: string) {
   const compact = text.trim().replace(TRAILING_SENTENCE_MARKS, "");
-  const delimited = compact.match(/^\\\[(.+?)\\\]$/) ?? compact.match(/^\\\((.+?)\\\)$/) ?? compact.match(/^\$\$?(.+?)\$\$?$/);
+  const bracketDelimited = compact.match(/^\\\[(.+?)\\\]$/) ?? compact.match(/^\\\((.+?)\\\)$/);
 
-  if (delimited) {
-    return normalizeLatex(delimited[1]);
+  if (bracketDelimited) {
+    return normalizeLatex(bracketDelimited[1]);
+  }
+
+  const dollarDelimited = compact.match(/^\$\$?(.+?)\$\$?$/);
+  if (dollarDelimited) {
+    return isLikelyDelimitedMath(dollarDelimited[1]) ? normalizeLatex(dollarDelimited[1]) : null;
   }
 
   if (!compact || CJK_TEXT.test(compact) || !hasStrongMathSignal(compact)) {
@@ -86,6 +99,9 @@ function mathSegments(text: string): MathSegment[] {
     const latex = match[1] ?? match[2] ?? match[3] ?? match[4];
 
     if (!latex?.trim()) {
+      continue;
+    }
+    if ((match[3] || match[4]) && !isLikelyDelimitedMath(latex)) {
       continue;
     }
 
