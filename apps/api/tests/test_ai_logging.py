@@ -1358,12 +1358,12 @@ def test_explicit_board_generation_request_generates_and_clears_requirements(
         user_id=TEST_USER.id,
     )
 
-    assert captured == {
-        "intent": "generate_from_requirements",
-        "has_user_instruction": False,
-        "has_conversation_summary": False,
-        "action_instruction": "请生成一份入门板书",
-    }
+    assert captured["intent"] == "generate_from_requirements"
+    assert captured["has_user_instruction"] is False
+    assert captured["has_conversation_summary"] is False
+    assert captured["action_instruction"] != "请生成一份入门板书"
+    assert str(captured["action_instruction"]).startswith("生成第一版板书；学习目标：")
+    assert "通用主题的入门板书" in str(captured["action_instruction"])
     assert response.board_decision.action == "edit_board"
     assert response.requirement_cleared is True
     assert response.active_requirement_sheet is None
@@ -1716,12 +1716,12 @@ def test_requirement_manager_start_generation_request_writes_blank_document_from
         user_id=TEST_USER.id,
     )
 
-    assert captured == {
-        "intent": "generate_from_requirements",
-        "has_user_instruction": False,
-        "has_conversation_summary": False,
-        "action_instruction": "看你发挥，开始生成",
-    }
+    assert captured["intent"] == "generate_from_requirements"
+    assert captured["has_user_instruction"] is False
+    assert captured["has_conversation_summary"] is False
+    assert captured["action_instruction"] != "看你发挥，开始生成"
+    assert str(captured["action_instruction"]).startswith("生成第一版板书；学习目标：")
+    assert "用户已有学习内容、水平和输出需求" in str(captured["action_instruction"])
     assert response.learning_clarification.progress == 100
     assert response.learning_clarification.ready_for_board is True
     assert response.learning_clarification.can_start is True
@@ -1821,12 +1821,12 @@ def test_generation_control_request_writes_blank_document_from_existing_context(
         user_id=TEST_USER.id,
     )
 
-    assert captured == {
-        "intent": "generate_from_requirements",
-        "has_user_instruction": False,
-        "has_conversation_summary": False,
-        "action_instruction": "都行，看你发挥，直接生成",
-    }
+    assert captured["intent"] == "generate_from_requirements"
+    assert captured["has_user_instruction"] is False
+    assert captured["has_conversation_summary"] is False
+    assert captured["action_instruction"] != "都行，看你发挥，直接生成"
+    assert str(captured["action_instruction"]).startswith("生成第一版板书；学习目标：")
+    assert "基于当前需求进入生成" in str(captured["action_instruction"])
     assert response.board_decision.action == "edit_board"
     assert response.learning_clarification.ready_for_board is True
     assert response.learning_clarification.forced_start is True
@@ -1913,12 +1913,12 @@ def test_document_artifact_request_writes_blank_document_without_chatbot_generat
         user_id=TEST_USER.id,
     )
 
-    assert captured == {
-        "intent": "generate_from_requirements",
-        "has_user_instruction": False,
-        "has_conversation_summary": False,
-        "action_instruction": "请给我生成一篇用于真实任务的情景对话课文",
-    }
+    assert captured["intent"] == "generate_from_requirements"
+    assert captured["has_user_instruction"] is False
+    assert captured["has_conversation_summary"] is False
+    assert captured["action_instruction"] != "请给我生成一篇用于真实任务的情景对话课文"
+    assert str(captured["action_instruction"]).startswith("生成第一版板书；学习目标：")
+    assert "面向真实任务的情景对话课文" in str(captured["action_instruction"])
     assert response.chatbot_message == "已生成任务材料。"
     assert response.board_decision.action == "edit_board"
     assert "任务材料" in response.course_package.lessons[0].board_document.content_text

@@ -308,8 +308,13 @@ def test_ready_blank_board_freezes_then_generates_and_consumes_requirement(
     assert commit.metadata["board_generation_action"] == "ready_requirement_sheet"
     assert commit.metadata["requirement_run_id"] == response.requirement_run_id
     assert commit.metadata["frozen_requirement_version_id"] is not None
+    assert commit.metadata["requirement_phase"] == "frozen"
+    assert commit.metadata["frozen_requirement_phase"] == "frozen"
+    assert commit.metadata["requirement_run_status_after_commit"] == "consumed"
     assert commit.metadata["task_requirement_sheet"] == json.loads(versions[-1]["sheet_json"])
     assert "起点" not in commit.metadata["task_requirement_sheet"]["board_scope"]
+    assert commit.metadata["task_requirement_sheet"]["action_instruction"].startswith("生成第一版板书；学习目标：")
+    assert commit.metadata["task_requirement_sheet"]["action_instruction"] != "我已经说明目标、水平和输出形式"
 
 
 def test_forced_generation_writes_forced_frozen_before_board_generation(

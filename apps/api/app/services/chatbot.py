@@ -309,7 +309,11 @@ def _with_task_details(
 ) -> LearningRequirementSheet:
     updated = LearningRequirementSheet.model_validate(requirements.model_dump(mode="json"))
     updated.action_type = action_type
-    updated.action_instruction = _compact_text(instruction, limit=240)
+    updated.action_instruction = _structured_action_instruction(
+        updated,
+        action_type=action_type,
+        instruction=instruction,
+    )
     if focus is not None:
         updated.target_location = focus
         updated.location_status = "selected" if focus.confidence >= 0.9 else "resolved"
@@ -321,6 +325,26 @@ def _with_task_details(
     elif action_type == "generate_board":
         updated.location_status = "resolved"
     return updated
+
+
+def _structured_action_instruction(
+    requirements: LearningRequirementSheet,
+    *,
+    action_type: BoardTaskAction | None,
+    instruction: str,
+) -> str:
+    if action_type != "generate_board":
+        return _compact_text(instruction, limit=240)
+    parts = ["生成第一版板书"]
+    if requirements.learning_goal.strip():
+        parts.append(f"学习目标：{requirements.learning_goal.strip()}")
+    if requirements.level.strip():
+        parts.append(f"学习水平：{requirements.level.strip()}")
+    if requirements.output_preference.strip():
+        parts.append(f"输出形式：{requirements.output_preference.strip()}")
+    if requirements.target_depth.strip():
+        parts.append(f"讲解深度：{requirements.target_depth.strip()}")
+    return _compact_text("；".join(parts), limit=360)
 
 
 def _task_metadata(
@@ -341,17 +365,25 @@ def _task_metadata(
     }
 
 
-def _requirement_history_metadata(stamp: RequirementHistoryStamp | None) -> dict[str, object]:
+def _requirement_history_metadata(
+    stamp: RequirementHistoryStamp | None,
+    *,
+    run_status_after_commit: str | None = None,
+) -> dict[str, object]:
     if stamp is None:
         return {
             "requirement_run_id": None,
             "frozen_requirement_version_id": None,
         }
-    return {
+    metadata = {
         "requirement_run_id": stamp.run_id,
         "frozen_requirement_version_id": stamp.version_id,
         "requirement_phase": stamp.phase,
+        "frozen_requirement_phase": stamp.phase,
     }
+    if run_status_after_commit is not None:
+        metadata["requirement_run_status_after_commit"] = run_status_after_commit
+    return metadata
 
 
 def _clear_task_requirements(lesson: Lesson) -> None:
@@ -1189,7 +1221,10 @@ def _generate_board_from_confirmed_resource(
             "board_edit_operation": edit_outcome.operation,
             "board_edit_summary": edit_outcome.summary,
             "board_section_titles": edit_outcome.section_titles,
-            **_requirement_history_metadata(frozen_requirement),
+            **_requirement_history_metadata(
+                frozen_requirement,
+                run_status_after_commit="consumed" if frozen_requirement is not None else None,
+            ),
             **_task_metadata(
                 requirements=requirements,
                 learning_clarification=learning_clarification,
@@ -1352,7 +1387,10 @@ def _chat_response(
             "board_edit_operation": edit_outcome.operation,
             "board_edit_summary": edit_outcome.summary,
             "board_section_titles": edit_outcome.section_titles,
-            **_requirement_history_metadata(frozen_requirement),
+            **_requirement_history_metadata(
+                frozen_requirement,
+                run_status_after_commit="consumed" if frozen_requirement is not None else None,
+            ),
             **_task_metadata(
                 requirements=requirements,
                 learning_clarification=learning_clarification,
@@ -2060,7 +2098,10 @@ def _chat_response(
                     "board_edit_operation": edit_outcome.operation,
                     "board_edit_summary": edit_outcome.summary,
                     "board_section_titles": edit_outcome.section_titles,
-                    **_requirement_history_metadata(frozen_requirement),
+                    **_requirement_history_metadata(
+                        frozen_requirement,
+                        run_status_after_commit="consumed" if frozen_requirement is not None else None,
+                    ),
                     **_task_metadata(
                         requirements=requirements,
                         learning_clarification=learning_clarification,
@@ -2369,7 +2410,10 @@ def _chat_response(
                 "board_edit_operation": edit_outcome.operation,
                 "board_edit_summary": edit_outcome.summary,
                 "board_section_titles": edit_outcome.section_titles,
-                **_requirement_history_metadata(frozen_requirement),
+                **_requirement_history_metadata(
+                    frozen_requirement,
+                    run_status_after_commit="consumed" if frozen_requirement is not None else None,
+                ),
                 **_task_metadata(
                     requirements=requirements,
                     learning_clarification=learning_clarification,
