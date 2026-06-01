@@ -20,6 +20,7 @@ export function ResourceUploadDropzone({ disabled = false, uploading = false, on
   const { texts: txt } = useInterfaceLanguage();
   const u = txt.studio.upload;
   const [isDragActive, setIsDragActive] = useState(false);
+  const statusText = isDragActive && !disabled ? u.drop : uploading ? u.uploading : u.idle;
 
   const handleDragEnter = useCallback(
     (event: DragEvent<HTMLLabelElement>) => {
@@ -94,8 +95,11 @@ export function ResourceUploadDropzone({ disabled = false, uploading = false, on
       )}
     >
       <span className="inline-flex items-center justify-center gap-2">
-        {uploading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
-        {isDragActive && !disabled ? u.drop : uploading ? u.uploading : u.idle}
+        <span aria-hidden="true" className="relative h-4 w-4 shrink-0">
+          <Upload className={clsx("absolute inset-0 h-4 w-4 transition-opacity", uploading ? "opacity-0" : "opacity-100")} />
+          <LoaderCircle className={clsx("absolute inset-0 h-4 w-4 animate-spin transition-opacity", uploading ? "opacity-100" : "opacity-0")} />
+        </span>
+        <span>{statusText}</span>
       </span>
       <input
         type="file"
