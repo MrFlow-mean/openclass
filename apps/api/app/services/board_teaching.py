@@ -13,7 +13,7 @@ from app.models import (
     Lesson,
     SectionTeachingProgressView,
 )
-from app.services.openai_course_ai import openai_course_ai
+from app.services.board_explanation_gate import generate_board_directed_explanation_message
 
 
 MAX_TEACHING_CONTEXT_CHARS = 2200
@@ -24,6 +24,8 @@ MAX_SECTION_EXCERPT_CHARS = 900
 class BoardTeachingResult:
     chatbot_message: str
     progress_view: SectionTeachingProgressView
+    assistant_message_source: str = "chatbot_board_directed"
+    board_explanation_directive: dict[str, object] | None = None
 
 
 def teach_first_section(
@@ -117,35 +119,62 @@ def _teach_section(
         f"当前是否还有后续章节：{'是' if has_next else '否'}。"
         "请根据这个状态自然决定结尾怎么收束。"
     )
-    ai_reply = openai_course_ai.generate_chatbot_reply(
+    section_context = _section_context(lesson, section_title)
+    directed = generate_board_directed_explanation_message(
         lesson_title=lesson.title,
         learning_goal=lesson.learning_requirements.learning_goal if lesson.learning_requirements else lesson.summary,
-        board_summary=_section_context(lesson, section_title),
+        board_summary=section_context,
         resource_summary=resource_summary,
         conversation_summary=conversation_summary,
         user_message=user_message,
-        selection_excerpt=None,
+        action_type="teach_section",
+        target_excerpt=section_context,
         interaction_mode="ask",
     )
-    chatbot_message = (ai_reply.chatbot_message if ai_reply else "").strip()
 
-    completed = set(lesson.board_teaching_progress.completed_section_indexes if lesson.board_teaching_progress else [])
-    completed.add(safe_index)
-    lesson.board_teaching_progress = BoardTeachingProgress(
-        board_document_id=lesson.board_document.id,
-        board_snapshot_hash=_snapshot_hash(lesson),
-        current_section_index=safe_index,
-        completed_section_indexes=sorted(completed),
-        waiting_for_continue=has_next,
+    if directed.assistant_message_source == "chatbot_board_directed":
+        completed = set(lesson.board_teaching_progress.completed_section_indexes if lesson.board_teaching_progress else [])
+        completed.add(safe_index)
+        lesson.board_teaching_progress = BoardTeachingProgress(
+            board_document_id=lesson.board_document.id,
+            board_snapshot_hash=_snapshot_hash(lesson),
+            current_section_index=safe_index,
+            completed_section_indexes=sorted(completed),
+            waiting_for_continue=has_next,
+        )
+        progress_view = SectionTeachingProgressView(
+            section_index=safe_index,
+            section_count=len(sections),
+            current_section_title=section_title,
+            has_next_section=has_next,
+            waiting_for_continue=has_next,
+        )
+    else:
+        progress_view = _current_progress_view(lesson, sections, fallback_index=safe_index)
+    return BoardTeachingResult(
+        chatbot_message=directed.chatbot_message,
+        progress_view=progress_view,
+        assistant_message_source=directed.assistant_message_source,
+        board_explanation_directive=directed.directive_payload,
     )
-    progress_view = SectionTeachingProgressView(
+
+
+def _current_progress_view(
+    lesson: Lesson,
+    sections: list[str],
+    *,
+    fallback_index: int,
+) -> SectionTeachingProgressView:
+    existing = lesson.board_teaching_progress
+    current_index = existing.current_section_index if existing else fallback_index
+    safe_index = min(max(current_index, 0), len(sections) - 1)
+    return SectionTeachingProgressView(
         section_index=safe_index,
         section_count=len(sections),
-        current_section_title=section_title,
-        has_next_section=has_next,
-        waiting_for_continue=has_next,
+        current_section_title=sections[safe_index],
+        has_next_section=safe_index < len(sections) - 1,
+        waiting_for_continue=existing.waiting_for_continue if existing else False,
     )
-    return BoardTeachingResult(chatbot_message=chatbot_message, progress_view=progress_view)
 
 
 def _section_titles(lesson: Lesson) -> list[str]:

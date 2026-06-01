@@ -30,6 +30,7 @@ from app.services.course_runtime import refresh_lesson_runtime
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
 from app.services.lesson_factory import build_requirements, create_empty_lesson
 from app.services.openai_course_ai import (
+    BoardExplanationDirective,
     BoardDocumentEditResult,
     ChatbotReply,
     GeneratedResourceCatalog,
@@ -114,6 +115,22 @@ def isolated_ai_log(monkeypatch: pytest.MonkeyPatch, tmp_path):
 @pytest.fixture(autouse=True)
 def disable_default_post_board_generation_reply(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(openai_course_ai, "generate_post_board_generation_reply", lambda **kwargs: None)
+
+
+@pytest.fixture(autouse=True)
+def allow_default_board_explanation_directive(monkeypatch: pytest.MonkeyPatch):
+    def _directive(**kwargs):
+        return BoardExplanationDirective(
+            status="approved",
+            target_summary="测试板书目标",
+            target_excerpt=kwargs.get("target_excerpt") or "测试板书片段",
+            board_feedback="依据当前板书目标进行讲解。",
+            teaching_instruction="按板书片段的顺序解释，不补写右侧文档。",
+            constraints=["不得脱离板书依据"],
+            reason="测试默认允许讲解。",
+        )
+
+    monkeypatch.setattr(openai_course_ai, "generate_board_explanation_directive", _directive)
 
 
 def test_openai_parse_logs_prompt_and_output(isolated_ai_log) -> None:
@@ -283,6 +300,46 @@ def test_post_board_generation_reply_prompt_invites_teaching_from_start(
     assert "从开头开始讲解" in captured["system_prompt"]
     assert "不要输出板书正文" in captured["system_prompt"]
     assert "不要套用固定格式" in captured["system_prompt"]
+
+
+def test_board_explanation_directive_prompt_controls_chatbot_teaching(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, str] = {}
+    ai = OpenAICourseAI()
+    monkeypatch.setattr(OpenAICourseAI, "enabled", property(lambda self: True))
+
+    def _fake_parse(role, *, system_prompt, user_prompt, schema):
+        captured["role"] = role
+        captured["system_prompt"] = system_prompt
+        captured["user_prompt"] = user_prompt
+        return BoardExplanationDirective(
+            status="approved",
+            target_summary="第一节",
+            target_excerpt="第一节正文",
+            board_feedback="依据第一节正文讲解。",
+            teaching_instruction="先解释核心句，再给检查问题。",
+        )
+
+    monkeypatch.setattr(ai, "_parse", _fake_parse)
+
+    directive = ai.generate_board_explanation_directive(
+        lesson_title="测试页",
+        learning_goal="学习一个通用主题",
+        board_summary="# 板书\n## 第一节\n正文",
+        target_excerpt="第一节正文",
+        user_message="讲解第一节",
+        action_type="explain_target",
+        resource_summary="暂无已上传资料摘要",
+        conversation_summary="",
+    )
+
+    assert directive is not None
+    assert captured["role"] == "board"
+    assert "判断 Chatbot 是否可以进行讲解" in captured["system_prompt"]
+    assert "给 Chatbot 提供必须遵守的讲解依据和指令" in captured["system_prompt"]
+    assert "此时 Chatbot 只能追问" in captured["system_prompt"]
+    assert "target_excerpt" in captured["user_prompt"]
 
 
 def test_board_document_generation_prompt_requests_substantial_default_length(
@@ -1156,15 +1213,11 @@ def test_requirement_manager_direct_teaching_start_does_not_keep_clarifying(
     )
 
     assert response.chatbot_message == "好的，我们从第一小节开始讲。"
-    assert response.learning_clarification.label == "可以开始讲解"
-    assert response.learning_clarification.can_start is True
-    assert response.learning_clarification.forced_start is True
-    assert response.learning_clarification.ready_for_board is False
-    assert response.learning_clarification.progress == 90
-    assert response.learning_clarification.missing_items == []
-    assert response.learning_clarification.next_question == ""
     assert response.board_decision.action == "no_change"
     assert response.course_package.lessons[0].board_document.content_text == "已有内容"
+    commit = response.course_package.lessons[0].history_graph.commits[-1]
+    assert commit.metadata["assistant_message_source"] == "chatbot_board_directed"
+    assert commit.metadata["board_explanation_directive"]["status"] == "approved"
     assert _read_log_entries(isolated_ai_log) == []
 
 
@@ -2705,6 +2758,7 @@ def test_numbered_target_explanation_uses_structured_focus(
 
     def _fake_chatbot_reply(**kwargs):
         captured["selection_excerpt"] = kwargs.get("selection_excerpt")
+        captured["user_message"] = kwargs.get("user_message")
         return ChatbotReply(chatbot_message="AI生成：这是第3题讲解。")
 
     def _unexpected_board_edit(**kwargs):
@@ -2734,8 +2788,11 @@ def test_numbered_target_explanation_uses_structured_focus(
     assert response.resolved_focus is not None
     assert response.resolved_focus.excerpt == "3）第三题内容"
     assert "3）第三题内容" in (captured["selection_excerpt"] or "")
+    assert "板书侧已允许 Chatbot 进行讲解" in (captured["user_message"] or "")
     commit = response.course_package.lessons[0].history_graph.commits[-1]
     assert commit.metadata["kind"] == "chat_flow"
+    assert commit.metadata["assistant_message_source"] == "chatbot_board_directed"
+    assert commit.metadata["board_explanation_directive"]["status"] == "approved"
     assert commit.metadata["task_requirement_sheet"]["action_type"] == "explain_target"
     assert commit.metadata["requirement_cleared"] is True
     assert _read_log_entries(isolated_ai_log) == []
@@ -2750,6 +2807,7 @@ def test_targeted_explanation_uses_resolved_board_focus_and_clears_task_sheet(
 
     def _fake_chatbot_reply(**kwargs):
         captured["selection_excerpt"] = kwargs.get("selection_excerpt")
+        captured["user_message"] = kwargs.get("user_message")
         return ChatbotReply(chatbot_message="AI生成：针对目标文段的讲解。")
 
     def _unexpected_board_edit(**kwargs):
@@ -2780,8 +2838,11 @@ def test_targeted_explanation_uses_resolved_board_focus_and_clears_task_sheet(
     assert response.requirement_cleared is True
     assert response.course_package.lessons[0].learning_requirements is None
     assert "目标文段" in (captured["selection_excerpt"] or "")
+    assert "板书侧已允许 Chatbot 进行讲解" in (captured["user_message"] or "")
     commit = response.course_package.lessons[0].history_graph.commits[-1]
     assert commit.metadata["kind"] == "chat_flow"
+    assert commit.metadata["assistant_message_source"] == "chatbot_board_directed"
+    assert commit.metadata["board_explanation_directive"]["status"] == "approved"
     assert commit.metadata["requirement_cleared"] is True
     assert commit.metadata["task_requirement_sheet"]["action_type"] == "explain_target"
     assert commit.metadata["active_requirement_sheet_after"] is None
@@ -2834,6 +2895,45 @@ def test_numbered_target_explanation_skips_requirement_update(
     assert commit.metadata["kind"] == "chat_flow"
     assert commit.metadata["task_requirement_sheet"]["action_type"] == "explain_target"
     assert commit.metadata["requirement_cleared"] is True
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_explanation_without_board_directive_only_probes_requirements(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    captured: dict[str, str | None] = {}
+
+    monkeypatch.setattr(openai_course_ai, "generate_board_explanation_directive", lambda **kwargs: None)
+
+    def _fake_chatbot_reply(**kwargs):
+        captured["user_message"] = kwargs.get("user_message")
+        return ChatbotReply(chatbot_message="AI生成：我先确认你想围绕哪一段学习。")
+
+    monkeypatch.setattr(openai_course_ai, "generate_chatbot_reply", _fake_chatbot_reply)
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.board_document = build_document(
+        title="已有板书",
+        content_text="# 主线\n## 第一节\n已有内容。",
+    )
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="讲解第一节"),
+        user_id=TEST_USER.id,
+    )
+
+    assert response.chatbot_message == "AI生成：我先确认你想围绕哪一段学习。"
+    assert "没有板书侧讲解指令" in (captured["user_message"] or "")
+    commit = response.course_package.lessons[0].history_graph.commits[-1]
+    assert commit.metadata["assistant_message_source"] == "chatbot_requirement_probe"
+    assert commit.metadata["board_explanation_directive"] is None
     assert _read_log_entries(isolated_ai_log) == []
 
 
@@ -3418,6 +3518,70 @@ def test_board_teaching_continue_advances_to_next_section(
     assert "AI生成：第二节讲解。" in response.chatbot_message
     commit = response.course_package.lessons[0].history_graph.commits[-1]
     assert commit.metadata["teaching_progress"]["section_index"] == 1
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_board_teaching_blocked_directive_does_not_advance_progress(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    captured: dict[str, str | None] = {}
+
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_board_explanation_directive",
+        lambda **kwargs: BoardExplanationDirective(
+            status="needs_clarification",
+            target_summary="第二节",
+            target_excerpt=kwargs.get("target_excerpt") or "",
+            clarification_question="请先确认要讲解哪一节。",
+            reason="板书侧需要先确认讲解目标。",
+        ),
+    )
+
+    def _fake_chatbot_reply(**kwargs):
+        captured["user_message"] = kwargs.get("user_message")
+        return ChatbotReply(chatbot_message="AI生成：我先确认你要讲哪一节。")
+
+    monkeypatch.setattr(openai_course_ai, "generate_chatbot_reply", _fake_chatbot_reply)
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    document = build_document(
+        title="分节板书",
+        content_text="# 分节板书\n## 第一节\n第一节正文。\n## 第二节\n第二节正文。",
+    )
+    refresh_lesson_runtime(lesson, document=document, requirements=lesson.learning_requirements)
+    lesson.board_teaching_progress = BoardTeachingProgress(
+        board_document_id=document.id,
+        board_snapshot_hash="hash-1",
+        current_section_index=0,
+        completed_section_indexes=[0],
+        waiting_for_continue=True,
+    )
+    lesson.history_graph.commits[-1].snapshot = document
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="继续下一节", teaching_action="continue"),
+        user_id=TEST_USER.id,
+    )
+
+    assert response.teaching_progress is not None
+    assert response.teaching_progress.section_index == 0
+    assert response.chatbot_message == "AI生成：我先确认你要讲哪一节。"
+    assert "板书侧没有允许 Chatbot 直接讲解" in (captured["user_message"] or "")
+    saved_lesson = store.load_for_user(TEST_USER.id).packages[0].lessons[0]
+    assert saved_lesson.board_teaching_progress is not None
+    assert saved_lesson.board_teaching_progress.current_section_index == 0
+    assert saved_lesson.board_teaching_progress.completed_section_indexes == [0]
+    commit = response.course_package.lessons[0].history_graph.commits[-1]
+    assert commit.metadata["assistant_message_source"] == "chatbot_board_directed_clarification"
+    assert commit.metadata["board_explanation_directive"]["status"] == "needs_clarification"
+    assert commit.metadata["teaching_progress"]["section_index"] == 0
     assert _read_log_entries(isolated_ai_log) == []
 
 

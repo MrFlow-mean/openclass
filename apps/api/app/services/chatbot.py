@@ -24,6 +24,10 @@ from app.models import (
 )
 from app.services import workspace_state
 from app.services.board_document_editor import edit_existing_document, generate_from_requirements
+from app.services.board_explanation_gate import (
+    generate_board_directed_explanation_message as _gate_board_directed_explanation_message,
+    requirement_probe_instead_of_explanation_message,
+)
 from app.services.board_teaching import build_board_teaching_guide, teach_first_section, teach_next_section
 from app.services.course_runtime import effective_requirements
 from app.services.course_runtime import refresh_lesson_runtime
@@ -45,7 +49,11 @@ from app.services.learning_requirement_history import (
     LearningRequirementHistoryRecorder,
     RequirementHistoryStamp,
 )
-from app.services.openai_course_ai import bind_text_model_selection, emit_ai_stream_event, openai_course_ai
+from app.services.openai_course_ai import (
+    bind_text_model_selection,
+    emit_ai_stream_event,
+    openai_course_ai,
+)
 from app.services.rich_document import is_document_empty
 from app.services.route_context import bind_ai_request_context
 from app.services.resource_resolver import ResourceResolution, resolve_resource_reference
@@ -140,6 +148,11 @@ def _conversation_summary(conversation: list[ConversationTurn]) -> str:
 def _requests_complex_reasoning(text: str) -> bool:
     compact = _compact_text(text, limit=280)
     return bool(compact and COMPLEX_REASONING_REQUEST_PATTERN.search(compact))
+
+
+def _requests_explanation(text: str) -> bool:
+    compact = _compact_text(text, limit=280)
+    return bool(compact and EXPLAIN_REQUEST_PATTERN.search(compact))
 
 
 def _chatbot_message_with_solver_context(
@@ -801,6 +814,35 @@ def _post_initial_board_generation_message(
     return edit_outcome.chatbot_message, edit_outcome.assistant_message_source
 
 
+def _generate_board_directed_explanation_message(
+    *,
+    lesson: Lesson,
+    requirements: LearningRequirementSheet,
+    resources: list[ResourceLibraryItem],
+    conversation: list[ConversationTurn],
+    request: ChatRequest,
+    learning_clarification: LearningClarificationStatus,
+    action_type: str,
+    target_excerpt: str,
+    interaction_context: dict[str, object] | None = None,
+) -> tuple[str, str, dict[str, object] | None]:
+    resource_summary = _resource_summary(resources)
+    conversation_summary = _conversation_summary(conversation)
+    directed = _gate_board_directed_explanation_message(
+        lesson_title=lesson.title,
+        learning_goal=learning_clarification.summary or requirements.learning_goal,
+        board_summary=_board_summary(lesson),
+        resource_summary=resource_summary,
+        conversation_summary=conversation_summary,
+        user_message=request.message,
+        action_type=action_type,
+        target_excerpt=target_excerpt,
+        interaction_mode=request.interaction_mode,
+        interaction_context=interaction_context,
+    )
+    return directed.chatbot_message, directed.assistant_message_source, directed.directive_payload
+
+
 def _response_requirement_stamp(
     requirement_history: LearningRequirementHistoryRecorder | None,
     requirement_stamp: RequirementHistoryStamp | None,
@@ -870,7 +912,20 @@ def _generate_interaction_chatbot_message(
     request: ChatRequest,
     session: InteractionSession,
     decision: InteractionTurnDecision | None,
-) -> tuple[str, str]:
+) -> tuple[str, str, dict[str, object] | None]:
+    context = interaction_context_payload(session=session, decision=decision)
+    if decision is not None and decision.route == "side_learning_request":
+        return _generate_board_directed_explanation_message(
+            lesson=lesson,
+            requirements=requirements,
+            resources=resources,
+            conversation=conversation,
+            request=request,
+            learning_clarification=_latest_learning_clarification(lesson, requirements=requirements),
+            action_type="side_learning_request",
+            target_excerpt=session.reference_context,
+            interaction_context=context,
+        )
     ai_reply = openai_course_ai.generate_chatbot_reply(
         lesson_title=lesson.title,
         learning_goal=session.interaction_goal or requirements.learning_goal,
@@ -880,10 +935,10 @@ def _generate_interaction_chatbot_message(
         user_message=request.message,
         selection_excerpt=session.reference_context,
         interaction_mode="interaction_rule",
-        interaction_context=interaction_context_payload(session=session, decision=decision),
+        interaction_context=context,
     )
     chatbot_message = (ai_reply.chatbot_message if ai_reply else "").strip()
-    return chatbot_message, "chatbot_interaction" if chatbot_message else "chatbot_empty"
+    return chatbot_message, "chatbot_interaction" if chatbot_message else "chatbot_empty", None
 
 
 def _handle_existing_interaction_session(
@@ -955,7 +1010,7 @@ def _handle_existing_interaction_session(
     session_after = apply_interaction_decision(session_before, decision)
     reply_session = session_after or session_before
     lesson.active_interaction_session = session_after
-    chatbot_message, chatbot_message_source = _generate_interaction_chatbot_message(
+    chatbot_message, chatbot_message_source, board_explanation_directive = _generate_interaction_chatbot_message(
         lesson=lesson,
         requirements=requirements,
         resources=resources,
@@ -975,6 +1030,7 @@ def _handle_existing_interaction_session(
             "user_message": request.message,
             "assistant_message": chatbot_message,
             "assistant_message_source": chatbot_message_source,
+            "board_explanation_directive": board_explanation_directive,
             "interaction_mode": request.interaction_mode,
             "selection": request.selection.model_dump(mode="json") if request.selection else None,
             **_task_metadata(
@@ -1015,6 +1071,7 @@ def _maybe_start_interaction_session(
     learning_clarification: LearningClarificationStatus,
     resources: list[ResourceLibraryItem],
     selection_text: str | None,
+    action_type: BoardTaskAction | None,
     requirement_history: LearningRequirementHistoryRecorder,
 ) -> ChatResponse | None:
     if request.interaction_mode == "direct_edit" and action_type != "append_section":
@@ -1088,7 +1145,7 @@ def _maybe_start_interaction_session(
 
     session_before = lesson.active_interaction_session
     lesson.active_interaction_session = start_resolution.session
-    chatbot_message, chatbot_message_source = _generate_interaction_chatbot_message(
+    chatbot_message, chatbot_message_source, board_explanation_directive = _generate_interaction_chatbot_message(
         lesson=lesson,
         requirements=requirements,
         resources=resources,
@@ -1109,6 +1166,7 @@ def _maybe_start_interaction_session(
             "user_message": request.message,
             "assistant_message": chatbot_message,
             "assistant_message_source": chatbot_message_source,
+            "board_explanation_directive": board_explanation_directive,
             "interaction_mode": request.interaction_mode,
             "selection": request.selection.model_dump(mode="json") if request.selection else None,
             **_task_metadata(
@@ -1498,10 +1556,11 @@ def _chat_response(
                 "kind": "chat_flow",
                 "user_message": request.message,
                 "assistant_message": teaching_result.chatbot_message,
-                "assistant_message_source": "chatbot",
+                "assistant_message_source": teaching_result.assistant_message_source,
                 "interaction_mode": request.interaction_mode,
                 "teaching_action": request.teaching_action,
                 "teaching_progress": teaching_result.progress_view.model_dump(mode="json"),
+                "board_explanation_directive": teaching_result.board_explanation_directive,
                 "learning_clarification": learning_clarification.model_dump(mode="json"),
             },
         )
@@ -1704,6 +1763,7 @@ def _chat_response(
                 learning_clarification=learning_clarification,
                 resources=visible_package.resources,
                 selection_text=selection_text,
+                action_type=action_type,
                 requirement_history=requirement_history,
             )
             if interaction_start_response is not None:
@@ -1913,27 +1973,16 @@ def _chat_response(
             )
 
         focus_excerpt = focus_context(resolution.focus) if resolution.focus else ""
-        solver_user_message, solver_metadata = _chatbot_message_with_solver_context(
+        chatbot_message, chatbot_message_source, board_explanation_directive = _generate_board_directed_explanation_message(
             lesson=lesson,
+            requirements=requirements,
+            resources=visible_package.resources,
+            conversation=request.conversation,
             request=request,
-            user_message=request.message,
+            learning_clarification=learning_clarification,
+            action_type="explain_target",
             target_excerpt=focus_excerpt,
-            board_summary=_board_summary(lesson),
-            resource_summary=_resource_summary(visible_package.resources),
-            conversation_summary=_conversation_summary(request.conversation),
         )
-        ai_reply = openai_course_ai.generate_chatbot_reply(
-            lesson_title=lesson.title,
-            learning_goal=requirements.learning_goal,
-            board_summary=_board_summary(lesson),
-            resource_summary=_resource_summary(visible_package.resources),
-            conversation_summary=_conversation_summary(request.conversation),
-            user_message=solver_user_message,
-            selection_excerpt=focus_excerpt,
-            interaction_mode=request.interaction_mode,
-        )
-        chatbot_message = (ai_reply.chatbot_message if ai_reply else "").strip()
-        chatbot_message_source = "chatbot" if chatbot_message else "chatbot_empty"
 
         requirement_cleared = bool(chatbot_message)
         commit_operations(
@@ -1956,7 +2005,7 @@ def _chat_response(
                     focus_candidates=resolution.candidates,
                     requirement_cleared=requirement_cleared,
                 ),
-                **solver_metadata,
+                "board_explanation_directive": board_explanation_directive,
             },
         )
         if requirement_cleared:
@@ -2187,13 +2236,18 @@ def _chat_response(
                 requirement_stamp=consumed_stamp,
             )
         lesson.learning_requirements = requirements
+        chatbot_user_message = (
+            requirement_probe_instead_of_explanation_message(request.message)
+            if _requests_explanation(request.message)
+            else request.message
+        )
         ai_reply = openai_course_ai.generate_chatbot_reply(
             lesson_title=lesson.title,
             learning_goal=learning_clarification.summary or requirements.learning_goal,
             board_summary=_board_summary(lesson),
             resource_summary=resource_summary_for_turn,
             conversation_summary=_conversation_summary(request.conversation),
-            user_message=request.message,
+            user_message=chatbot_user_message,
             selection_excerpt=selection_or_reference_excerpt,
             interaction_mode=request.interaction_mode,
         )
@@ -2326,15 +2380,86 @@ def _chat_response(
             track_initial_requirement_run=track_initial_requirement_run,
         )
 
-    solver_user_message, solver_metadata = _chatbot_message_with_solver_context(
-        lesson=lesson,
-        request=request,
-        user_message=request.message,
-        target_excerpt=selection_or_reference_excerpt,
-        board_summary=_board_summary(lesson),
-        resource_summary=resource_summary_for_turn,
-        conversation_summary=_conversation_summary(request.conversation),
+    learning_clarification = _latest_learning_clarification(lesson, requirements=requirements)
+    if _requests_explanation(request.message) and not is_document_empty(lesson.board_document):
+        target_excerpt = selection_or_reference_excerpt or _board_summary(lesson)
+        requirements = _with_task_details(
+            requirements,
+            action_type="explain_target",
+            instruction=request.message,
+        )
+        chatbot_message, chatbot_message_source, board_explanation_directive = _generate_board_directed_explanation_message(
+            lesson=lesson,
+            requirements=requirements,
+            resources=visible_package.resources,
+            conversation=request.conversation,
+            request=request,
+            learning_clarification=learning_clarification,
+            action_type="explain_target",
+            target_excerpt=target_excerpt,
+        )
+        requirement_cleared = bool(chatbot_message)
+        commit_operations(
+            lesson,
+            [],
+            label="Board explanation",
+            message="Answered only after receiving a board-side explanation directive",
+            new_document=lesson.board_document,
+            metadata={
+                "kind": "chat_flow",
+                "user_message": request.message,
+                "assistant_message": chatbot_message,
+                "assistant_message_source": chatbot_message_source,
+                "interaction_mode": request.interaction_mode,
+                "selection": request.selection.model_dump(mode="json") if request.selection else None,
+                **_task_metadata(
+                    requirements=requirements,
+                    learning_clarification=learning_clarification,
+                    requirement_cleared=requirement_cleared,
+                ),
+                "board_explanation_directive": board_explanation_directive,
+                **_reference_metadata(resolution=resource_resolution),
+            },
+        )
+        if requirement_cleared:
+            _clear_task_requirements(lesson)
+        workspace_state.normalize_package_state(package)
+        _save_workspace_for_user(
+            user_id=user_id,
+            workspace=workspace,
+            requirement_history=requirement_history,
+        )
+        return _response(
+            workspace=workspace,
+            package=package,
+            lesson=lesson,
+            chatbot_message=chatbot_message,
+            learning_clarification=learning_clarification,
+            requirements=requirements,
+            board_decision=BoardDecision(action="no_change", reason="本轮是板书指令授权后的讲解，不修改板书。"),
+            resource_matches=resource_resolution.matches,
+            selected_reference=selected_reference,
+            requirement_cleared=requirement_cleared,
+            requirement_history=requirement_history if track_initial_requirement_run else None,
+        )
+
+    free_chat_user_message = (
+        requirement_probe_instead_of_explanation_message(request.message)
+        if _requests_explanation(request.message)
+        else request.message
     )
+    if _requests_explanation(request.message):
+        solver_user_message, solver_metadata = free_chat_user_message, {}
+    else:
+        solver_user_message, solver_metadata = _chatbot_message_with_solver_context(
+            lesson=lesson,
+            request=request,
+            user_message=free_chat_user_message,
+            target_excerpt=selection_or_reference_excerpt,
+            board_summary=_board_summary(lesson),
+            resource_summary=resource_summary_for_turn,
+            conversation_summary=_conversation_summary(request.conversation),
+        )
     ai_reply = openai_course_ai.generate_chatbot_reply(
         lesson_title=lesson.title,
         learning_goal=requirements.learning_goal,
@@ -2378,6 +2503,7 @@ def _chat_response(
         learning_clarification=learning_clarification,
         resources=visible_package.resources,
         selection_text=selection_text,
+        action_type=action_type,
         requirement_history=requirement_history,
     )
     if interaction_start_response is not None:

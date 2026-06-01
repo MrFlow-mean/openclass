@@ -249,6 +249,17 @@ class ChatbotReply(BaseModel):
     chatbot_message: str
 
 
+class BoardExplanationDirective(BaseModel):
+    status: Literal["approved", "needs_clarification", "blocked"] = "approved"
+    target_summary: str = ""
+    target_excerpt: str = ""
+    board_feedback: str = ""
+    teaching_instruction: str = ""
+    constraints: list[str] = Field(default_factory=list)
+    clarification_question: str = ""
+    reason: str = ""
+
+
 BoardDocumentEditOperation = Literal["replace_document", "replace_selection", "append_section"]
 
 
@@ -837,9 +848,9 @@ class OpenAICourseAI:
             "除非是在讲解既有文档内容，否则回复保持短小。\n"
             "5. 如果学习需求还不清楚，先说明澄清是为了匹配讲解深度、材料组织和练习方式，"
             "再从具体想学什么、当前水平、学习目的/使用场景中选择最缺的一项追问。\n"
-            "6. 如果用户明确说“直接讲、开始讲、从零开始、当我是零基础、不要再问”等教学启动意图，"
-            "并且已经有可识别的学习主题，就先讲一个最基础的小节；结尾只用一个理解检查或继续提示，"
-            "不要再把子知识点偏好当成开始前的必答条件。\n"
+            "6. Chatbot 不能自行进入讲解动作。只有 interaction_context 或 user_message 明确包含"
+            "板书侧给出的讲解指令、讲解依据和目标片段时，才可以围绕该依据讲解；否则即使用户说"
+            "“直接讲、开始讲、从零开始、不要再问”，也只能继续澄清学习需求或询问是否先生成/定位板书。\n"
             "7. 每次最多追问一个主问题；可以给 2-3 个可选回答方向，但不要像机械问卷或客服套话。\n"
             "8. 如果 interaction_context 存在，说明系统正在执行用户指定的通用互动规则；"
             "回复必须同时参考互动规则、原文内容、互动进度和用户当前输入，但不要输出系统字段名。\n"
@@ -868,6 +879,64 @@ class OpenAICourseAI:
             schema=ChatbotReply,
         )
         return result if isinstance(result, ChatbotReply) else None
+
+    def generate_board_explanation_directive(
+        self,
+        *,
+        lesson_title: str,
+        learning_goal: str,
+        board_summary: str,
+        target_excerpt: str,
+        user_message: str,
+        action_type: str,
+        resource_summary: str,
+        conversation_summary: str,
+        interaction_context: dict[str, Any] | None = None,
+    ) -> BoardExplanationDirective | None:
+        if not self.enabled:
+            return None
+        system_prompt = (
+            "你是 OpenClass 的板书理解与讲解指令 AI。你不直接面向学习者聊天，也不写入文档；"
+            "你的职责是先阅读当前板书、目标片段和用户请求，判断 Chatbot 是否可以进行讲解，"
+            "并给 Chatbot 提供必须遵守的讲解依据和指令。\n"
+            "规则：\n"
+            "1. 只有当前板书或目标片段足以支撑用户要的讲解时，status 才能是 approved。\n"
+            "2. approved 时，board_feedback 和 teaching_instruction 必须给出 Chatbot 可依照的内容依据、"
+            "讲解边界、先后顺序和注意点；不要让 Chatbot 自由发挥板书外知识。\n"
+            "3. 如果目标不清楚、板书依据不足或用户请求脱离板书，status 使用 needs_clarification 或 blocked，"
+            "并给出 clarification_question 或 reason；此时 Chatbot 只能追问或说明需要先定位/补充板书，不能讲解。\n"
+            "4. 不输出最终给学习者看的讲解正文，不写固定主题模板，不根据主题名、资料名或样例走特殊规则。"
+        )
+        user_prompt = _json(
+            {
+                "lesson_title": lesson_title,
+                "learning_goal": learning_goal,
+                "board_summary": board_summary,
+                "target_excerpt": target_excerpt,
+                "user_message": user_message,
+                "action_type": action_type,
+                "resource_summary": resource_summary,
+                "recent_conversation": conversation_summary,
+                "interaction_context": interaction_context or None,
+                "response_contract": {
+                    "status": "approved、needs_clarification 或 blocked。",
+                    "target_summary": "被允许讲解的板书对象摘要。",
+                    "target_excerpt": "Chatbot 必须依据的板书片段；可压缩，但不能编造。",
+                    "board_feedback": "给 Chatbot 的板书依据反馈。",
+                    "teaching_instruction": "给 Chatbot 的讲解指令；说明顺序、边界和侧重点。",
+                    "constraints": "Chatbot 讲解时必须遵守的限制。",
+                    "clarification_question": "不能讲解时，给 Chatbot 的追问方向。",
+                    "reason": "判断理由。",
+                },
+            }
+        )
+        result = self._parse(
+            "board",
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            schema=BoardExplanationDirective,
+        )
+        return result if isinstance(result, BoardExplanationDirective) else None
 
     def generate_post_board_generation_reply(
         self,
