@@ -170,6 +170,33 @@ function withAuthTokenQuery(url: string) {
   return url;
 }
 
+function apiErrorMessage(text: string, fallbackMessage: string) {
+  let message = text || fallbackMessage;
+  try {
+    const parsed = JSON.parse(text) as { detail?: unknown; message?: unknown };
+    if (typeof parsed.detail === "string") {
+      message = parsed.detail;
+    } else if (
+      parsed.detail &&
+      typeof parsed.detail === "object" &&
+      "message" in parsed.detail &&
+      typeof (parsed.detail as { message?: unknown }).message === "string"
+    ) {
+      message = (parsed.detail as { message: string }).message;
+    } else if (typeof parsed.message === "string") {
+      message = parsed.message;
+    }
+  } catch {
+    // Keep the raw response text for non-JSON errors.
+  }
+  return message;
+}
+
+async function throwApiError(response: Response, fallbackMessage: string): Promise<never> {
+  const text = await response.text();
+  throw new Error(apiErrorMessage(text, fallbackMessage));
+}
+
 export function getApiWebSocketUrl(pathOrUrl: string) {
   if (pathOrUrl.startsWith("ws://") || pathOrUrl.startsWith("wss://")) {
     return withAuthTokenQuery(pathOrUrl);
@@ -201,24 +228,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
 
   if (!response.ok) {
-    const text = await response.text();
-    let message = text || `Request failed with ${response.status}`;
-    try {
-      const parsed = JSON.parse(text) as { detail?: unknown };
-      if (typeof parsed.detail === "string") {
-        message = parsed.detail;
-      } else if (
-        parsed.detail &&
-        typeof parsed.detail === "object" &&
-        "message" in parsed.detail &&
-        typeof (parsed.detail as { message?: unknown }).message === "string"
-      ) {
-        message = (parsed.detail as { message: string }).message;
-      }
-    } catch {
-      // Keep the raw response text for non-JSON errors.
-    }
-    throw new Error(message);
+    await throwApiError(response, `Request failed with ${response.status}`);
   }
 
   return response.json() as Promise<T>;
@@ -292,9 +302,11 @@ async function streamRequest(path: string, payload: unknown, handlers: ChatStrea
     cache: "no-store",
     credentials: "include",
   });
-  if (!response.ok || !response.body) {
-    const text = await response.text();
-    throw new Error(text || `Request failed with ${response.status}`);
+  if (!response.ok) {
+    await throwApiError(response, `Request failed with ${response.status}`);
+  }
+  if (!response.body) {
+    throw new Error(`Request failed with ${response.status}`);
   }
 
   const reader = response.body.getReader();
@@ -533,6 +545,7 @@ export const api = {
       headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify(payload),
       cache: "no-store",
+      credentials: "include",
       keepalive: true,
     });
   },
@@ -550,10 +563,10 @@ export const api = {
       body: formData,
       headers: authHeaders(),
       cache: "no-store",
+      credentials: "include",
     });
     if (!response.ok) {
-      const text = await response.text();
-      throw new Error(text || `Upload failed with ${response.status}`);
+      await throwApiError(response, `Upload failed with ${response.status}`);
     }
     return response.json() as Promise<CoursePackage>;
   },
@@ -561,10 +574,10 @@ export const api = {
     const response = await fetch(`${getApiBase()}/api/lessons/${lessonId}/document/export-docx`, {
       headers: authHeaders(),
       cache: "no-store",
+      credentials: "include",
     });
     if (!response.ok) {
-      const text = await response.text();
-      throw new Error(text || `Export failed with ${response.status}`);
+      await throwApiError(response, `Export failed with ${response.status}`);
     }
     return response.blob();
   },
@@ -676,10 +689,10 @@ export const api = {
       body: formData,
       headers: authHeaders(),
       cache: "no-store",
+      credentials: "include",
     });
     if (!response.ok) {
-      const text = await response.text();
-      throw new Error(text || `Upload failed with ${response.status}`);
+      await throwApiError(response, `Upload failed with ${response.status}`);
     }
     return response.json() as Promise<CoursePackage>;
   },
