@@ -23,6 +23,7 @@ from urllib import parse, request as urlrequest
 import certifi
 from fastapi import HTTPException, Request, WebSocket
 
+from app.constants import AUTH_ERROR_EMAIL_NOT_VERIFIED, AUTH_ERROR_UNAUTHENTICATED
 from app.models import (
     AdminAuditLogView,
     AdminAuditLogResponse,
@@ -636,7 +637,7 @@ class AuthService:
             if row["status"] != "active":
                 _raise_auth_error(403, "account_disabled", "该账号已被禁用")
             if account.kind == "email" and row["email_verified_at"] is None:
-                _raise_auth_error(403, "email_not_verified", "请先验证邮箱后再登录")
+                _raise_auth_error(403, AUTH_ERROR_EMAIL_NOT_VERIFIED, "请先验证邮箱后再登录")
             now = _now_iso()
             self.store.touch_password_login(conn, user_id=row["id"], provider=account.kind, now=now)
             self._claim_guest_workspace(conn, guest_token=guest_token, user_id=row["id"])
@@ -727,7 +728,7 @@ class AuthService:
             if row is None:
                 guest = self.store.find_guest_session_by_token(conn, token_hash)
                 if guest is None:
-                    _raise_auth_error(401, "unauthenticated", "请先登录")
+                    _raise_auth_error(401, AUTH_ERROR_UNAUTHENTICATED, "请先登录")
                 self.store.touch_guest_session(conn, token_hash, now)
                 return self._guest_user_view(guest["guest_user_id"], guest["created_at"], guest["last_seen_at"])
             self.store.touch_session(conn, token_hash, now)
@@ -1232,7 +1233,7 @@ def _bearer_token_from_parts(
         return query_token.strip()
     if cookie_token:
         return cookie_token.strip()
-    _raise_auth_error(401, "unauthenticated", "请先登录")
+    _raise_auth_error(401, AUTH_ERROR_UNAUTHENTICATED, "请先登录")
 
 
 def bearer_token_from_request(request: Request) -> str:

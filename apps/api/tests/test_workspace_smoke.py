@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app.main as main_module
+from app.constants import COMMIT_KIND_MANUAL_DOCUMENT_SAVE
 from app.models import UserView
 from app.routers import auth as auth_router
 from app.routers import documents as documents_router
@@ -77,7 +78,7 @@ def test_workspace_document_history_flow(api_client: TestClient) -> None:
             "document": first_document,
             "label": "First smoke save",
             "message": "Saved first smoke version",
-            "metadata": {"kind": "manual_document_save"},
+            "metadata": {"kind": COMMIT_KIND_MANUAL_DOCUMENT_SAVE},
         },
     )
     assert first_save.status_code == 200
@@ -90,7 +91,7 @@ def test_workspace_document_history_flow(api_client: TestClient) -> None:
             "document": second_document,
             "label": "Second smoke save",
             "message": "Saved second smoke version",
-            "metadata": {"kind": "manual_document_save"},
+            "metadata": {"kind": COMMIT_KIND_MANUAL_DOCUMENT_SAVE},
         },
     )
     assert second_save.status_code == 200

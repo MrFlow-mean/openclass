@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from conftest import token_from_latest_email
+from app.constants import AUTH_ERROR_EMAIL_NOT_VERIFIED
 
 
 def test_auth_register_verify_login_and_me(isolated_app) -> None:
@@ -86,4 +87,4 @@ def test_auth_login_requires_verified_email(isolated_app) -> None:
         json={"email": "pending@example.com", "password": "correct-password"},
     )
     assert login.status_code == 403
-    assert login.json()["detail"]["code"] == "email_not_verified"
+    assert login.json()["detail"]["code"] == AUTH_ERROR_EMAIL_NOT_VERIFIED

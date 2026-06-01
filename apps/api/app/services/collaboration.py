@@ -503,7 +503,7 @@ class CourseCollaborationService:
                     message=contribution_row["description"] or f"Merged improvement {contribution_row['id']}",
                     new_document=next_document,
                     metadata={
-                        "kind": "course_contribution_merge",
+                        "kind": COMMIT_KIND_COURSE_CONTRIBUTION_MERGE,
                         "contribution_id": contribution_row["id"],
                         "contributor_user_id": contribution_row["contributor_user_id"],
                         "fork_id": contribution_row["fork_id"],
