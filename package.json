@@ -22,7 +22,8 @@
     "verify": "npm run guard:file-sizes && npm run lint:web && npm run typecheck:web && npm run test:api && npm run build:web"
   },
   "overrides": {
-    "postcss": "8.5.10"
+    "postcss": "8.5.10",
+    "postcss@8.4.31": "8.5.10"
   },
   "devDependencies": {
     "concurrently": "^9.2.1"
