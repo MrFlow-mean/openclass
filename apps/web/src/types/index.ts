@@ -405,12 +405,16 @@ export interface ForkCourseResponse {
   course_package: CoursePackage;
 }
 
+// 用户角色与状态：后端 models.UserView 的同名 Literal 是权威来源，这里保持取值一致。
+export type UserRole = "user" | "admin" | "guest";
+export type UserStatus = "active" | "disabled";
+
 export interface UserView {
   id: string;
   email: string;
   phone?: string | null;
-  role: "user" | "admin" | "guest";
-  status: "active" | "disabled";
+  role: UserRole;
+  status: UserStatus;
   display_name?: string | null;
   avatar_url?: string | null;
   created_at: string;
