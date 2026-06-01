@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from conftest import token_from_latest_email
+from conftest import verified_headers
 from app.models import LearningRequirementChecklistItem, LearningRequirementKeyFact
 from app.services.openai_course_ai import ChatbotReply, LearningRequirementUpdate, openai_course_ai
 

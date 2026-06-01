@@ -11,7 +11,7 @@ export type FollowedCreator = {
 
 export type FollowedCourseUpdate = {
   id: string;
-  creatorId: string;
+  creator_id: string;
   courseTitle: string;
   moduleTitle: string;
   summary: string;
@@ -103,7 +103,7 @@ export const FOLLOWED_CREATORS: FollowedCreator[] = [
 export const FOLLOWED_COURSE_UPDATES: FollowedCourseUpdate[] = [
   {
     id: "case-lab-01",
-    creatorId: "case-lab",
+    creator_id: "case-lab",
     courseTitle: "Case Analysis Course Package",
     moduleTitle: "New: From Material Facts to Judgments",
     summary: "Uses three replaceable cases to unpack fact extraction, rule location, and conclusion writing, with an analysis path map.",
@@ -118,7 +118,7 @@ export const FOLLOWED_COURSE_UPDATES: FollowedCourseUpdate[] = [
   },
   {
     id: "concept-bridge-01",
-    creatorId: "concept-bridge",
+    creator_id: "concept-bridge",
     courseTitle: "Concept Explanation Course Package",
     moduleTitle: "Update: Five Common Concept-Relation Pitfalls",
     summary: "Places definitions, applicable conditions, and counterexamples in one handout for quick review calibration.",
@@ -133,7 +133,7 @@ export const FOLLOWED_COURSE_UPDATES: FollowedCourseUpdate[] = [
   },
   {
     id: "project-studio-01",
-    creatorId: "project-studio",
+    creator_id: "project-studio",
     courseTitle: "Project Practice Course Package",
     moduleTitle: "New: From Task Goals to Delivery Checklist",
     summary: "Explains how learning outputs and review metrics evolve together through goals, constraints, and steps.",
@@ -148,7 +148,7 @@ export const FOLLOWED_COURSE_UPDATES: FollowedCourseUpdate[] = [
   },
   {
     id: "pen-review-01",
-    creatorId: "pen-review",
+    creator_id: "pen-review",
     courseTitle: "Efficient Notes and Resource Library Setup",
     moduleTitle: "New Resource Pack: Paper Reading Annotation Templates",
     summary: "Adds three reusable reading templates covering concept cards, evidence excerpts, and review question lists.",
@@ -163,7 +163,7 @@ export const FOLLOWED_COURSE_UPDATES: FollowedCourseUpdate[] = [
   },
   {
     id: "source-map-01",
-    creatorId: "source-map",
+    creator_id: "source-map",
     courseTitle: "Resource-Based Teaching Course Package",
     moduleTitle: "Class Notes: From Resource Fragments to Teaching Thread",
     summary: "Organizes outlines, material fragments, and data tables, with discussion prompts for class use.",
@@ -178,7 +178,7 @@ export const FOLLOWED_COURSE_UPDATES: FollowedCourseUpdate[] = [
   },
   {
     id: "practice-daily-01",
-    creatorId: "practice-daily",
+    creator_id: "practice-daily",
     courseTitle: "Daily Practice Course Package",
     moduleTitle: "Update: Day 18 Scenario Practice and Review Questions",
     summary: "Adds replaceable practice scenarios with slow walkthroughs, keyword cards, and 12 transfer tasks.",
@@ -193,7 +193,7 @@ export const FOLLOWED_COURSE_UPDATES: FollowedCourseUpdate[] = [
   },
   {
     id: "case-lab-02",
-    creatorId: "case-lab",
+    creator_id: "case-lab",
     courseTitle: "Expression Training Course Package",
     moduleTitle: "New: Turning Material Facts into Structured Answers",
     summary: "Works backward from scoring criteria to split fact extraction, evidence location, and conclusion writing into three steps.",
@@ -212,15 +212,11 @@ export function creatorAvatarUrl(creator: FollowedCreator) {
   return `https://api.dicebear.com/9.x/glass/svg?seed=${encodeURIComponent(creator.avatarSeed)}`;
 }
 
-export function updateCoverUrl(update: FollowedCourseUpdate) {
-  return `https://api.dicebear.com/9.x/shapes/svg?seed=${encodeURIComponent(update.coverSeed)}`;
-}
-
 export function buildFollowedCourseUpdateItems(): FollowedCourseUpdateItem[] {
   const creatorById = new Map(FOLLOWED_CREATORS.map((creator) => [creator.id, creator]));
 
   return FOLLOWED_COURSE_UPDATES.map((update) => {
-    const creator = creatorById.get(update.creatorId);
+    const creator = creatorById.get(update.creator_id);
     return creator ? { update, creator } : null;
   })
     .filter((item): item is FollowedCourseUpdateItem => item !== null)
