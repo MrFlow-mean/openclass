@@ -201,27 +201,6 @@ export function useLessonHistory({
     }
   }
 
-  async function handleRestoreCommit(commitId: string) {
-    if (!activeLesson) {
-      return;
-    }
-    if (!(await flushAutoSave("restore"))) {
-      return;
-    }
-    setBusyAction("restore");
-    try {
-      const nextPackage = await api.restoreCommit(activeLesson.id, commitId);
-      applyCoursePackage(nextPackage, {
-        activeLessonId: activeLesson.id,
-        rebuildMessageLessonIds: [activeLesson.id],
-      });
-    } catch (restoreError) {
-      setError(restoreError instanceof Error ? restoreError.message : "Could not restore version");
-    } finally {
-      setBusyAction(null);
-    }
-  }
-
   return {
     previewCommitId,
     previewCommit,
@@ -241,6 +220,5 @@ export function useLessonHistory({
     handleMergeChoiceChange,
     handleCancelMerge,
     handleConfirmMerge,
-    handleRestoreCommit,
   };
 }

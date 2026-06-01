@@ -1,4 +1,3 @@
-import type { BranchSequenceOption } from "@/components/branch-sequence-selector";
 import type { CourseChatMessageView } from "@/components/chatbot";
 import { normalizePageSettings } from "@/components/course-studio/page-settings";
 import type {
@@ -493,32 +492,6 @@ export function nextBranchName(lesson: Lesson) {
     name = `branch-${index}`;
   }
   return name;
-}
-
-export function branchSequenceForCommit(lesson: Lesson, commit: CommitRecord): BranchSequenceOption[] {
-  const commitsById = new Map(lesson.history_graph.commits.map((item) => [item.id, item]));
-  return Object.values(lesson.history_graph.branches)
-    .filter((branch) => branch.base_commit_id === commit.id)
-    .sort((left, right) => {
-      const timeDelta = new Date(left.created_at).getTime() - new Date(right.created_at).getTime();
-      if (timeDelta !== 0) {
-        return timeDelta;
-      }
-      return left.name.localeCompare(right.name, "zh-CN", { numeric: true });
-    })
-    .map((branch, index) => {
-      const headCommit = commitsById.get(branch.head_commit_id);
-      const snapshot = headCommit?.snapshot ?? commit.snapshot;
-      return {
-        order: index + 1,
-        branchName: branch.name,
-        documentTitle: snapshot.title || "Untitled section",
-        documentOverview: compactText(snapshot.content_text || snapshot.title || "This branch has no section body yet.", 220),
-        latestLabel: headCommit?.label ?? "Branch start",
-        latestMessage: compactText(headCommit?.message || commit.message || "No new section updates yet.", 120),
-        updatedAt: headCommit?.created_at ?? branch.created_at,
-      };
-    });
 }
 
 export function documentsEqual(left: BoardDocument | null | undefined, right: BoardDocument | null | undefined) {
