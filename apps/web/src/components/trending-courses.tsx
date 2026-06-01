@@ -29,15 +29,14 @@ import {
   type OpenCourse,
 } from "@/lib/open-courses";
 import { api } from "@/lib/api";
+import { useInterfaceLanguage } from "@/contexts/interface-language-context";
+import type { ProfileSettingsTexts } from "@/lib/i18n/product-ui";
 
 type TrendWindow = "today" | "week" | "month";
 type CategoryFilter = "all" | string;
+type TrendingTexts = ProfileSettingsTexts["trending"];
 
-const trendWindows: Array<{ id: TrendWindow; label: string }> = [
-  { id: "today", label: "Today" },
-  { id: "week", label: "This week" },
-  { id: "month", label: "This month" },
-];
+const trendWindowIds: TrendWindow[] = ["today", "week", "month"];
 
 function readCollectedCourseIds() {
   if (typeof window === "undefined") {
@@ -82,19 +81,19 @@ function daysSince(value: string) {
   return Math.max(0, Math.floor((Date.now() - timestamp) / 86400000));
 }
 
-function formatRelativeTime(value: string) {
+function formatRelativeTime(value: string, txt: TrendingTexts, intlLocale: string) {
   const days = daysSince(value);
   if (days <= 0) {
-    return "today";
+    return txt.today;
   }
   if (days === 1) {
-    return "yesterday";
+    return txt.yesterday;
   }
   if (days < 7) {
-    return `${days}d ago`;
+    return txt.daysAgo(days);
   }
 
-  return new Intl.DateTimeFormat("zh-CN", {
+  return new Intl.DateTimeFormat(intlLocale, {
     month: "numeric",
     day: "numeric",
   }).format(new Date(value));
@@ -146,28 +145,28 @@ function getRecommendedScore(course: OpenCourse, favoriteCourses: OpenCourse[]) 
   );
 }
 
-function getRecommendationReason(course: OpenCourse, favoriteCourses: OpenCourse[]) {
+function getRecommendationReason(course: OpenCourse, favoriteCourses: OpenCourse[], txt: TrendingTexts) {
   if (!favoriteCourses.length) {
-    return "Recommended by recent momentum and course completeness";
+    return txt.defaultReason;
   }
 
   const favoriteTopics = new Set(favoriteCourses.flatMap((favorite) => favorite.topics));
   const sharedTopic = course.topics.find((topic) => favoriteTopics.has(topic));
   if (sharedTopic) {
-    return `Because you follow ${sharedTopic}`;
+    return txt.sharedTopicReason(sharedTopic);
   }
 
   const favoriteCategory = favoriteCourses.find((favorite) => favorite.category === course.category);
   if (favoriteCategory) {
-    return `Shares the ${course.category} category with ${favoriteCategory.title}`;
+    return txt.categoryReason(favoriteCategory.title, course.category);
   }
 
   const favoriteLanguage = favoriteCourses.find((favorite) => favorite.language === course.language);
   if (favoriteLanguage) {
-    return `Similar to your starred ${favoriteLanguage.language} content`;
+    return txt.languageReason(favoriteLanguage.language);
   }
 
-  return "Similar audience to your starred projects";
+  return txt.audienceReason;
 }
 
 function courseMatchesQuery(course: OpenCourse, normalizedQuery: string) {
@@ -205,6 +204,9 @@ function categoryCounts(courses: OpenCourse[]) {
 }
 
 export function TrendingCourses() {
+  const { texts: txt, intlLocale } = useInterfaceLanguage();
+  const t = txt.trending;
+  const loadOpenCoursesError = t.loadOpenCoursesError;
   const [openCourses, setOpenCourses] = useState<OpenCourse[]>([]);
   const [isLoadingCourses, setIsLoadingCourses] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -257,7 +259,7 @@ export function TrendingCourses() {
         }
       } catch (error) {
         if (!isDisposed) {
-          setLoadError(error instanceof Error ? error.message : "Could not load open courses");
+          setLoadError(error instanceof Error ? error.message : loadOpenCoursesError);
         }
       } finally {
         if (!isDisposed) {
@@ -271,7 +273,7 @@ export function TrendingCourses() {
     return () => {
       isDisposed = true;
     };
-  }, []);
+  }, [loadOpenCoursesError]);
 
   useEffect(() => {
     const timeoutId = window.setTimeout(() => {
@@ -303,7 +305,7 @@ export function TrendingCourses() {
             className="inline-flex items-center gap-2 rounded-md border border-stone-200 bg-white px-3 py-2 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:text-stone-950"
           >
             <ArrowLeft className="h-4 w-4" />
-            Back home
+            {t.backHome}
           </Link>
 
           <div className="flex items-center gap-2">
@@ -312,7 +314,7 @@ export function TrendingCourses() {
               className="inline-flex items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-700 transition hover:border-amber-300"
             >
               <Star className="h-4 w-4" />
-              Star
+              {t.star}
             </Link>
           </div>
         </div>
@@ -321,7 +323,7 @@ export function TrendingCourses() {
       {isLoadingCourses || loadError ? (
         <div className="mx-auto w-full max-w-7xl px-4 pt-4 sm:px-6 lg:px-8">
           <div className="rounded-md border border-stone-200 bg-white px-4 py-3 text-sm text-stone-600">
-            {isLoadingCourses ? "Loading open courses..." : loadError}
+            {isLoadingCourses ? t.loadingOpenCourses : loadError}
           </div>
         </div>
       ) : null}
@@ -331,7 +333,7 @@ export function TrendingCourses() {
           <div className="rounded-lg border border-stone-200 bg-white p-4 shadow-[0_16px_34px_rgba(15,23,42,0.05)]">
             <div className="flex items-center gap-2 text-sm font-semibold text-stone-950">
               <Sparkles className="h-4 w-4 text-sky-600" />
-              Explore
+              {t.explore}
             </div>
 
             <div className="mt-4 grid gap-2">
@@ -341,7 +343,7 @@ export function TrendingCourses() {
               >
                 <span className="inline-flex items-center gap-2">
                   <Flame className="h-4 w-4" />
-                  Top momentum
+                  {t.topMomentum}
                 </span>
                 <span className="text-xs">{trendingCourses.length}</span>
               </a>
@@ -351,27 +353,27 @@ export function TrendingCourses() {
               >
                 <span className="inline-flex items-center gap-2">
                   <Sparkles className="h-4 w-4" />
-                  Recommended
+                  {t.recommended}
                 </span>
                 <span className="text-xs">{recommendedProjectRows.length}</span>
               </a>
             </div>
 
             <div className="mt-4 grid grid-cols-3 gap-1 rounded-md border border-stone-200 bg-stone-50 p-1">
-              {trendWindows.map((item) => {
-                const isActive = trendWindow === item.id;
+              {trendWindowIds.map((itemId) => {
+                const isActive = trendWindow === itemId;
                 return (
                   <button
-                    key={item.id}
+                    key={itemId}
                     type="button"
                     aria-pressed={isActive}
-                    onClick={() => setTrendWindow(item.id)}
+                    onClick={() => setTrendWindow(itemId)}
                     className={clsx(
                       "rounded px-2 py-1.5 text-xs font-semibold transition",
                       isActive ? "bg-white text-stone-950 shadow-sm" : "text-stone-500 hover:text-stone-950"
                     )}
                   >
-                    {item.label}
+                    {t.periods[itemId]}
                   </button>
                 );
               })}
@@ -389,7 +391,7 @@ export function TrendingCourses() {
                     : "text-stone-700 hover:bg-stone-100 hover:text-stone-950"
                 )}
               >
-                <span>All projects</span>
+                <span>{t.allProjects}</span>
                 <span
                   className={clsx(
                     "rounded-full px-2 py-0.5 text-[10px]",
@@ -433,17 +435,17 @@ export function TrendingCourses() {
               <div>
                 <h1 className="flex items-center gap-2 text-2xl font-semibold tracking-tight text-stone-950 sm:text-3xl">
                   <Sparkles className="h-5 w-5 text-sky-600" />
-                  Recommended for you
+                  {t.recommendedForYou}
                 </h1>
                 <p className="mt-2 max-w-2xl text-sm leading-6 text-stone-600">
-                  Prioritized from your starred course directions, topic tags, and category preferences.
+                  {t.recommendationBody}
                 </p>
               </div>
               <Link
                 href="/profile?tab=stars"
                 className="inline-flex w-fit items-center gap-2 rounded-md border border-sky-100 bg-white px-3 py-2 text-sm font-semibold text-sky-700 transition hover:border-sky-200 hover:text-sky-800"
               >
-                Manage Stars
+                {t.manageStars}
                 <ArrowUpRight className="h-4 w-4" />
               </Link>
             </div>
@@ -455,14 +457,15 @@ export function TrendingCourses() {
                     key={course.id}
                     course={course}
                     isCollected={collectedCourseIds.has(course.id)}
-                    reason={getRecommendationReason(course, favoriteCourses)}
+                    reason={getRecommendationReason(course, favoriteCourses, t)}
                     rank={index + 1}
                     onToggleCollect={handleToggleCollectCourse}
+                    txt={t}
                   />
                 ))
               ) : (
                 <div className="rounded-lg border border-dashed border-sky-200 bg-white/80 px-5 py-8 text-sm text-stone-500 lg:col-span-3">
-                  No matching recommendations yet. Try another section or search term.
+                  {t.noRecommended}
                 </div>
               )}
             </div>
@@ -476,18 +479,18 @@ export function TrendingCourses() {
               <div className="min-w-0">
                 <div className="flex items-center gap-2 text-sm font-semibold text-orange-600">
                   <TrendingUp className="h-4 w-4" />
-                  Explore
+                  {t.explore}
                 </div>
-                <h2 className="mt-2 text-3xl font-semibold tracking-tight text-stone-950 sm:text-4xl">Trending projects</h2>
+                <h2 className="mt-2 text-3xl font-semibold tracking-tight text-stone-950 sm:text-4xl">{t.trendingProjects}</h2>
                 <p className="mt-3 max-w-2xl text-sm leading-6 text-stone-600">
-                  Open course projects ranked by stars, forks, watchers, course size, and recent updates.
+                  {t.trendingBody}
                 </p>
               </div>
 
               <div className="grid gap-3 sm:grid-cols-3 xl:w-[28rem]">
-                <MetricCard label="Stars" value={formatCompactNumber(totalStars)} Icon={Star} />
-                <MetricCard label="Watchers" value={formatCompactNumber(totalWatchers)} Icon={UsersRound} />
-                <MetricCard label="Topics" value={totalTopics.toString()} Icon={BookOpen} />
+                <MetricCard label={t.metrics.stars} value={formatCompactNumber(totalStars)} Icon={Star} />
+                <MetricCard label={t.metrics.watchers} value={formatCompactNumber(totalWatchers)} Icon={UsersRound} />
+                <MetricCard label={t.metrics.topics} value={totalTopics.toString()} Icon={BookOpen} />
               </div>
             </div>
 
@@ -500,6 +503,7 @@ export function TrendingCourses() {
                   isCollected={collectedCourseIds.has(course.id)}
                   rank={index + 1}
                   onToggleCollect={handleToggleCollectCourse}
+                  txt={t}
                 />
               ))}
             </div>
@@ -510,9 +514,9 @@ export function TrendingCourses() {
               <div>
                 <h2 className="flex items-center gap-2 text-base font-semibold text-stone-950">
                   <Sparkles className="h-4 w-4 text-sky-600" />
-                  Recommended projects
+                  {t.recommendedProjects}
                 </h2>
-                <p className="mt-1 text-xs text-stone-500">{recommendedProjectRows.length} projects shown</p>
+                <p className="mt-1 text-xs text-stone-500">{t.showingProjects(recommendedProjectRows.length)}</p>
               </div>
 
               <div className="relative min-w-0 md:w-80">
@@ -521,7 +525,7 @@ export function TrendingCourses() {
                   type="text"
                   value={query}
                   onChange={(event) => setQuery(event.target.value)}
-                  placeholder="Search projects, authors, topics"
+                  placeholder={t.searchPlaceholder}
                   className="w-full rounded-full border border-stone-200 bg-white py-2.5 pl-9 pr-3 text-sm outline-none transition placeholder:text-stone-400 focus:border-stone-950"
                 />
               </div>
@@ -537,11 +541,13 @@ export function TrendingCourses() {
                     isCollected={collectedCourseIds.has(course.id)}
                     rank={index + 1}
                     onToggleCollect={handleToggleCollectCourse}
+                    txt={t}
+                    intlLocale={intlLocale}
                   />
                 ))
               ) : (
                 <div className="rounded-lg border border-dashed border-stone-300 bg-stone-50 px-5 py-10 text-sm text-stone-500">
-                  No matching recommended projects.
+                  {t.noMatches}
                 </div>
               )}
             </div>
@@ -584,9 +590,10 @@ type RecommendedCourseCardProps = {
   reason: string;
   rank: number;
   onToggleCollect: (courseId: string) => void;
+  txt: TrendingTexts;
 };
 
-function RecommendedCourseCard({ course, isCollected, reason, rank, onToggleCollect }: RecommendedCourseCardProps) {
+function RecommendedCourseCard({ course, isCollected, reason, rank, onToggleCollect, txt }: RecommendedCourseCardProps) {
   return (
     <article className="flex min-h-full flex-col rounded-lg border border-sky-100 bg-white p-4 shadow-[0_10px_24px_rgba(14,165,233,0.06)] transition hover:border-sky-200">
       <div className="flex items-start justify-between gap-3">
@@ -598,7 +605,7 @@ function RecommendedCourseCard({ course, isCollected, reason, rank, onToggleColl
           height={44}
           unoptimized
         />
-        <span className="rounded-full bg-sky-50 px-2.5 py-1 text-xs font-semibold text-sky-700">Recommended {rank}</span>
+        <span className="rounded-full bg-sky-50 px-2.5 py-1 text-xs font-semibold text-sky-700">{txt.rank(rank)}</span>
       </div>
 
       <Link href={courseDetailHref(course)} className="mt-4 line-clamp-2 text-base font-semibold text-blue-600 hover:underline">
@@ -633,7 +640,7 @@ function RecommendedCourseCard({ course, isCollected, reason, rank, onToggleColl
           </span>
           <span className="inline-flex items-center gap-1">
             <GraduationCap className="h-3.5 w-3.5" />
-            {course.lessons} lessons
+            {txt.lessonsCount(course.lessons)}
           </span>
         </div>
 
@@ -642,7 +649,7 @@ function RecommendedCourseCard({ course, isCollected, reason, rank, onToggleColl
             href={courseDetailHref(course)}
             className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-md border border-stone-200 bg-stone-50 px-3 py-2 text-xs font-semibold text-stone-700 transition hover:border-stone-300 hover:bg-white hover:text-stone-950"
           >
-            Open
+            {txt.open}
             <ArrowUpRight className="h-3.5 w-3.5" />
           </Link>
           <button
@@ -656,7 +663,7 @@ function RecommendedCourseCard({ course, isCollected, reason, rank, onToggleColl
             )}
           >
             <Star className={clsx("h-3.5 w-3.5", isCollected && "fill-current")} />
-            {isCollected ? "Starred" : "Star"}
+            {isCollected ? txt.starred : txt.star}
           </button>
         </div>
       </div>
@@ -664,7 +671,7 @@ function RecommendedCourseCard({ course, isCollected, reason, rank, onToggleColl
   );
 }
 
-function FeaturedCourseCard({ course, growthPercent, isCollected, rank, onToggleCollect }: CourseCardProps) {
+function FeaturedCourseCard({ course, growthPercent, isCollected, rank, onToggleCollect, txt }: CourseCardProps & { txt: TrendingTexts }) {
   return (
     <article className="flex min-h-full flex-col rounded-lg border border-stone-200 bg-[linear-gradient(180deg,#fff_0%,#faf8f2_100%)] p-4">
       <div className="flex items-start justify-between gap-3">
@@ -676,7 +683,7 @@ function FeaturedCourseCard({ course, growthPercent, isCollected, rank, onToggle
           height={44}
           unoptimized
         />
-        <span className="rounded-full bg-orange-50 px-2.5 py-1 text-xs font-semibold text-orange-700">#{rank}</span>
+        <span className="rounded-full bg-orange-50 px-2.5 py-1 text-xs font-semibold text-orange-700">{txt.rankHash(rank)}</span>
       </div>
 
       <Link href={courseDetailHref(course)} className="mt-4 line-clamp-2 text-base font-semibold text-blue-600 hover:underline">
@@ -708,7 +715,7 @@ function FeaturedCourseCard({ course, growthPercent, isCollected, rank, onToggle
             href={courseDetailHref(course)}
             className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-md border border-stone-200 bg-stone-50 px-3 py-2 text-xs font-semibold text-stone-700 transition hover:border-stone-300 hover:bg-white hover:text-stone-950"
           >
-            Open
+            {txt.open}
             <ArrowUpRight className="h-3.5 w-3.5" />
           </Link>
           <button
@@ -722,7 +729,7 @@ function FeaturedCourseCard({ course, growthPercent, isCollected, rank, onToggle
             )}
           >
             <Star className={clsx("h-3.5 w-3.5", isCollected && "fill-current")} />
-            {isCollected ? "Starred" : "Star"}
+            {isCollected ? txt.starred : txt.star}
           </button>
         </div>
       </div>
@@ -730,12 +737,20 @@ function FeaturedCourseCard({ course, growthPercent, isCollected, rank, onToggle
   );
 }
 
-function TrendingCourseRow({ course, growthPercent, isCollected, rank, onToggleCollect }: CourseCardProps) {
+function TrendingCourseRow({
+  course,
+  growthPercent,
+  isCollected,
+  rank,
+  onToggleCollect,
+  txt,
+  intlLocale,
+}: CourseCardProps & { txt: TrendingTexts; intlLocale: string }) {
   return (
     <article className="rounded-lg border border-stone-200 bg-white p-4 transition hover:border-stone-300 hover:bg-stone-50/40">
       <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
         <div className="flex min-w-0 gap-3">
-          <div className="flex w-9 shrink-0 justify-center pt-1 text-sm font-semibold text-stone-400">#{rank}</div>
+          <div className="flex w-9 shrink-0 justify-center pt-1 text-sm font-semibold text-stone-400">{txt.rankHash(rank)}</div>
           <Image
             src={courseAvatarUrl(course)}
             alt=""
@@ -774,12 +789,12 @@ function TrendingCourseRow({ course, growthPercent, isCollected, rank, onToggleC
               </span>
               <span className="inline-flex items-center gap-1">
                 <GraduationCap className="h-3.5 w-3.5" />
-                {course.lessons} lessons
+                {txt.lessonsCount(course.lessons)}
               </span>
               <span className="inline-flex items-center gap-1 text-emerald-700">
                 <TrendingUp className="h-3.5 w-3.5" />+{growthPercent}%
               </span>
-              <span>Updated {formatRelativeTime(course.updatedAt)}</span>
+              <span>{txt.updated(formatRelativeTime(course.updatedAt, txt, intlLocale))}</span>
             </div>
           </div>
         </div>
@@ -789,7 +804,7 @@ function TrendingCourseRow({ course, growthPercent, isCollected, rank, onToggleC
             href={courseDetailHref(course)}
             className="inline-flex items-center justify-center gap-1.5 rounded-md border border-stone-200 bg-stone-50 px-3 py-1.5 text-xs font-semibold text-stone-700 transition hover:border-stone-300 hover:bg-white hover:text-stone-950"
           >
-            Open
+            {txt.open}
             <ArrowUpRight className="h-3.5 w-3.5" />
           </Link>
           <button
@@ -803,7 +818,7 @@ function TrendingCourseRow({ course, growthPercent, isCollected, rank, onToggleC
             )}
           >
             <Star className={clsx("h-3.5 w-3.5", isCollected && "fill-current")} />
-            {isCollected ? "Starred" : "Star"}
+            {isCollected ? txt.starred : txt.star}
           </button>
         </div>
       </div>

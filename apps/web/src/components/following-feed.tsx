@@ -17,49 +17,56 @@ import {
 } from "lucide-react";
 
 import { BrandMark } from "@/components/brand-mark";
+import { useInterfaceLanguage } from "@/contexts/interface-language-context";
 import {
   FOLLOWED_CREATORS,
-  FOLLOWED_UPDATE_KIND_LABELS,
   buildFollowedCourseUpdateItems,
   creatorAvatarUrl,
   type FollowedCreator,
   type FollowedCourseUpdate,
   type FollowedCourseUpdateItem,
 } from "@/lib/following";
+import type { ProfileSettingsTexts } from "@/lib/i18n/product-ui";
+
+type FollowingTexts = ProfileSettingsTexts["following"];
 
 type CreatorFilter = "all" | string;
 
-function formatRelativeTime(value: string | Date | null | undefined) {
+function formatRelativeTime(
+  value: string | Date | null | undefined,
+  txt: FollowingTexts,
+  intlLocale: string
+) {
   if (!value) {
-    return "just now";
+    return txt.justNow;
   }
 
   const date = value instanceof Date ? value : new Date(value);
   const timestamp = date.getTime();
 
   if (Number.isNaN(timestamp)) {
-    return "just now";
+    return txt.justNow;
   }
 
   const minutes = Math.floor((Date.now() - timestamp) / 60000);
   if (minutes <= 0) {
-    return "just now";
+    return txt.justNow;
   }
   if (minutes < 60) {
-    return `${minutes}m ago`;
+    return txt.minutesAgo(minutes);
   }
 
   const hours = Math.floor(minutes / 60);
   if (hours < 24) {
-    return `${hours}h ago`;
+    return txt.hoursAgo(hours);
   }
 
   const days = Math.floor(hours / 24);
   if (days < 7) {
-    return `${days}d ago`;
+    return txt.daysAgo(days);
   }
 
-  return new Intl.DateTimeFormat("en-US", {
+  return new Intl.DateTimeFormat(intlLocale, {
     month: "numeric",
     day: "numeric",
   }).format(date);
@@ -85,8 +92,8 @@ function feedItemMatchesSearch(item: FollowedCourseUpdateItem, normalizedQuery: 
   );
 }
 
-function formatCompactCount(value: number) {
-  return new Intl.NumberFormat("en-US", {
+function formatCompactCount(value: number, intlLocale: string) {
+  return new Intl.NumberFormat(intlLocale, {
     maximumFractionDigits: 1,
     notation: "compact",
   }).format(value);
@@ -120,35 +127,17 @@ function updateLabelTone(kind: FollowedCourseUpdate["updateKind"]) {
   }
 }
 
-function updateActionLabel(kind: FollowedCourseUpdate["updateKind"]) {
-  switch (kind) {
-    case "resource_added":
-      return "added resources to";
-    case "note_added":
-      return "published notes in";
-    case "course_revision":
-      return "updated";
-    case "new_lesson":
-    default:
-      return "published";
-  }
+function updateActionLabel(kind: FollowedCourseUpdate["updateKind"], txt: FollowingTexts) {
+  return txt.updateActions[kind];
 }
 
-function updatePreviewHeading(kind: FollowedCourseUpdate["updateKind"]) {
-  switch (kind) {
-    case "resource_added":
-      return "Resource Notes";
-    case "note_added":
-      return "Class Notes";
-    case "course_revision":
-      return "What's Changed";
-    case "new_lesson":
-    default:
-      return "Highlights";
-  }
+function updatePreviewHeading(kind: FollowedCourseUpdate["updateKind"], txt: FollowingTexts) {
+  return txt.previewHeadings[kind];
 }
 
 export function FollowingFeedContent() {
+  const { texts: txt, intlLocale } = useInterfaceLanguage();
+  const f = txt.following;
   const [selectedCreatorId, setSelectedCreatorId] = useState<CreatorFilter>("all");
   const [query, setQuery] = useState("");
   const normalizedQuery = query.trim().toLowerCase();
@@ -175,6 +164,7 @@ export function FollowingFeedContent() {
         totalUnreadCount={totalUnreadCount}
         updateCountByCreator={updateCountByCreator}
         onSelectCreator={setSelectedCreatorId}
+        txt={f}
       />
 
       <section className="min-w-0 rounded-[30px] border border-white/70 bg-[linear-gradient(180deg,#ffffff_0%,#faf8f2_100%)] p-6 shadow-[0_18px_50px_rgba(15,23,42,0.07)] sm:p-7">
@@ -182,12 +172,12 @@ export function FollowingFeedContent() {
           <div>
             <h1 className="flex items-center gap-2 text-lg font-semibold text-stone-950">
               <Activity className="h-5 w-5" />
-              {selectedCreator ? selectedCreator.name : "All updates"}
+              {selectedCreator ? selectedCreator.name : f.allUpdates}
             </h1>
             <p className="mt-1 text-sm text-stone-500">
               {selectedCreator
-                ? `${selectedCreator.field} - ${formatCompactCount(selectedCreator.followers)} followers`
-                : `Course project updates from ${FOLLOWED_CREATORS.length} followed creators`}
+                ? f.creatorSummary(selectedCreator.field, formatCompactCount(selectedCreator.followers, intlLocale))
+                : f.allCreatorsSummary(FOLLOWED_CREATORS.length)}
             </p>
           </div>
 
@@ -198,7 +188,7 @@ export function FollowingFeedContent() {
                 type="text"
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                placeholder="Search creators, courses, or updates"
+                placeholder={f.searchPlaceholder}
                 className="w-full rounded-full border border-stone-200 bg-white py-2.5 pl-9 pr-3 text-sm outline-none transition placeholder:text-stone-400 focus:border-stone-950"
               />
             </div>
@@ -208,10 +198,10 @@ export function FollowingFeedContent() {
 
         <div className="space-y-4">
           {visibleFeedItems.length ? (
-            visibleFeedItems.map((item) => renderFeedCard(item))
+            visibleFeedItems.map((item) => renderFeedCard(item, f, intlLocale))
           ) : (
             <div className="rounded-[24px] border border-dashed border-stone-300 bg-white/70 px-5 py-8 text-sm text-stone-500">
-              No matching updates from followed projects.
+              {f.noMatches}
             </div>
           )}
         </div>
@@ -226,6 +216,7 @@ type FollowingCreatorRailProps = {
   totalUnreadCount: number;
   updateCountByCreator: Map<string, number>;
   onSelectCreator: (creatorId: CreatorFilter) => void;
+  txt: FollowingTexts;
 };
 
 function FollowingCreatorRail({
@@ -234,6 +225,7 @@ function FollowingCreatorRail({
   totalUnreadCount,
   updateCountByCreator,
   onSelectCreator,
+  txt,
 }: FollowingCreatorRailProps) {
   const isAllActive = selectedCreatorId === "all";
 
@@ -253,8 +245,8 @@ function FollowingCreatorRail({
             <Activity className="h-5 w-5" />
           </span>
           <span className="min-w-0 flex-1">
-            <span className="block truncate text-sm font-semibold">All updates</span>
-            <span className="mt-0.5 block truncate text-xs text-stone-400">{creators.length} followed</span>
+            <span className="block truncate text-sm font-semibold">{txt.allUpdates}</span>
+            <span className="mt-0.5 block truncate text-xs text-stone-400">{txt.followedCount(creators.length)}</span>
           </span>
           {totalUnreadCount ? (
             <span className="flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-[#ff6699] px-1.5 text-[11px] font-semibold text-white">
@@ -281,7 +273,7 @@ function FollowingCreatorRail({
               <span className="relative h-12 w-12 shrink-0">
                 <Image
                   src={creatorAvatarUrl(creator)}
-                  alt={`${creator.name} avatar`}
+                  alt={txt.avatarAlt(creator.name)}
                   className="h-12 w-12 rounded-full border border-white bg-stone-100 object-cover shadow-sm"
                   width={48}
                   height={48}
@@ -318,9 +310,10 @@ function FollowingCreatorRail({
   );
 }
 
-function renderFeedCard(item: FollowedCourseUpdateItem) {
+function renderFeedCard(item: FollowedCourseUpdateItem, txt: FollowingTexts, intlLocale: string) {
   const { creator, update } = item;
   const isResourceUpdate = update.updateKind === "resource_added";
+  const numberLocale = intlLocale;
 
   return (
     <article
@@ -351,11 +344,11 @@ function renderFeedCard(item: FollowedCourseUpdateItem) {
           <div className="min-w-0">
             <p className="text-sm text-stone-600">
               <span className="font-semibold text-stone-950">{creator.name}</span>{" "}
-              {updateActionLabel(update.updateKind)}{" "}
+              {updateActionLabel(update.updateKind, txt)}{" "}
               <span className="font-semibold text-stone-950">{update.courseTitle}</span>
             </p>
             <p className="mt-1 text-xs text-stone-400">
-              @{creator.handle} · {creator.field} · {formatRelativeTime(update.updatedAt)}
+              @{creator.handle} · {creator.field} · {formatRelativeTime(update.updatedAt, txt, intlLocale)}
             </p>
           </div>
         </div>
@@ -363,8 +356,8 @@ function renderFeedCard(item: FollowedCourseUpdateItem) {
         <button
           type="button"
           className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-stone-400 transition hover:bg-stone-100 hover:text-stone-700"
-          aria-label="More project actions"
-          title="More project actions"
+          aria-label={txt.moreActions}
+          title={txt.moreActions}
         >
           <MoreHorizontal className="h-4 w-4" />
         </button>
@@ -375,14 +368,16 @@ function renderFeedCard(item: FollowedCourseUpdateItem) {
         <span
           className={clsx("rounded-full px-2.5 py-1 text-[10px] font-semibold", updateLabelTone(update.updateKind))}
         >
-          {FOLLOWED_UPDATE_KIND_LABELS[update.updateKind]}
+          {txt.updateKinds[update.updateKind]}
         </span>
-        <span className="text-xs text-stone-400">{update.lessonCount} lessons - {update.views.toLocaleString("en-US")} views</span>
+        <span className="text-xs text-stone-400">
+          {txt.lessonCountViews(update.lessonCount, update.views.toLocaleString(numberLocale))}
+        </span>
       </div>
 
       <div className="mt-4 rounded-md bg-[#f6f8fa] p-4">
         <div className="border-b border-stone-200 pb-3">
-          <p className="text-base font-semibold text-stone-950">{updatePreviewHeading(update.updateKind)}</p>
+          <p className="text-base font-semibold text-stone-950">{updatePreviewHeading(update.updateKind, txt)}</p>
         </div>
         <p className="mt-3 text-sm leading-7 text-stone-600">{update.summary}</p>
         <ul className="mt-3 list-disc space-y-1 pl-5 text-sm leading-6 text-stone-600">
@@ -391,22 +386,22 @@ function renderFeedCard(item: FollowedCourseUpdateItem) {
           ))}
         </ul>
         <Link href="/" className="mt-4 inline-flex text-xs font-semibold text-stone-800 underline underline-offset-2">
-          Read more
+          {txt.readMore}
         </Link>
       </div>
 
       <div className="mt-4 flex flex-wrap items-center gap-2 text-xs text-stone-500">
         <span className="inline-flex h-7 items-center gap-1 rounded-md border border-stone-200 bg-white px-2.5">
           <Eye className="h-3.5 w-3.5" />
-          {update.views.toLocaleString("en-US")}
+          {update.views.toLocaleString(numberLocale)}
         </span>
         <span className="inline-flex h-7 items-center gap-1 rounded-md border border-stone-200 bg-white px-2.5">
           <MessageCircle className="h-3.5 w-3.5" />
-          {update.comments.toLocaleString("en-US")}
+          {update.comments.toLocaleString(numberLocale)}
         </span>
         <span className="inline-flex h-7 items-center gap-1 rounded-md border border-stone-200 bg-white px-2.5">
           <Heart className="h-3.5 w-3.5" />
-          {update.likes.toLocaleString("en-US")}
+          {update.likes.toLocaleString(numberLocale)}
         </span>
       </div>
     </article>
@@ -414,6 +409,9 @@ function renderFeedCard(item: FollowedCourseUpdateItem) {
 }
 
 export function FollowingFeed() {
+  const { texts: txt } = useInterfaceLanguage();
+  const brand = txt.following.brand;
+
   return (
     <main className="min-h-screen bg-[#f7f5ef] text-stone-950">
       <header className="sticky top-0 z-40 border-b border-stone-200 bg-[#fcfbf8]/92 backdrop-blur">
@@ -423,7 +421,7 @@ export function FollowingFeed() {
             className="inline-flex items-center gap-2 rounded-md px-2 py-2 text-sm font-semibold text-stone-700 transition hover:bg-stone-100 hover:text-stone-950"
           >
             <ArrowLeft className="h-4 w-4" />
-            OpenClass
+            {brand}
           </Link>
 
           <Link
@@ -431,7 +429,7 @@ export function FollowingFeed() {
             className="inline-flex items-center gap-2 rounded-md border border-stone-200 bg-white px-3 py-2 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:text-stone-950"
           >
             <BrandMark alt="" className="h-5 w-5 rounded bg-white" size={40} />
-            OpenClass
+            {brand}
           </Link>
         </div>
       </header>
