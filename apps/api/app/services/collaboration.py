@@ -14,6 +14,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from app.constants import COMMIT_KIND_COURSE_CONTRIBUTION_MERGE
 from app.models import (
     BoardDocument,
     BranchRef,
