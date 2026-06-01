@@ -381,6 +381,20 @@ def _generic_chapter_from_text(title: str, text: str, *, summary_prefix: str) ->
     )
 
 
+def _metadata_only_outline(original_name: str, mime_type: str) -> list[LibraryChapter]:
+    title = Path(original_name).stem or original_name
+    resource_label = "图片" if mime_type.startswith("image/") else "资料"
+    return [
+        _chapter(
+            title=title,
+            summary=f"已上传{resource_label}“{original_name}”，先作为课程资料入口保存；正文索引可在后续解析中补齐。",
+            keywords=[token.lower() for token in re.findall(r"[A-Za-z\u4e00-\u9fff]+", title)[:6]],
+            locator_hint=title,
+            order_index=0,
+        )
+    ]
+
+
 def _external_parser_locator_hint(title: str, parser: ResourceParserSpec) -> str:
     return _PDF_LOCATOR_SEPARATOR.join(
         [
@@ -2383,20 +2397,25 @@ def build_resource_item(
     original_name: str,
     *,
     external_parse: ParsedResourceText | None | object = _EXTERNAL_PARSE_NOT_PROVIDED,
+    defer_text_extraction: bool = False,
 ) -> ResourceLibraryItem:
     mime_type = mimetypes.guess_type(original_name)[0] or "application/octet-stream"
-    parsed = (
-        parse_with_external_resource_parser(file_path)
-        if external_parse is _EXTERNAL_PARSE_NOT_PROVIDED
-        else external_parse
-    )
-    parsed = parsed if isinstance(parsed, ParsedResourceText) else None
-    outline, extracted, text_content = extract_outline(
-        file_path,
-        original_name,
-        mime_type,
-        external_parse=parsed,
-    )
+    if defer_text_extraction:
+        parsed = None
+        outline, extracted, text_content = _metadata_only_outline(original_name, mime_type), False, None
+    else:
+        parsed = (
+            parse_with_external_resource_parser(file_path)
+            if external_parse is _EXTERNAL_PARSE_NOT_PROVIDED
+            else external_parse
+        )
+        parsed = parsed if isinstance(parsed, ParsedResourceText) else None
+        outline, extracted, text_content = extract_outline(
+            file_path,
+            original_name,
+            mime_type,
+            external_parse=parsed,
+        )
     outline = _attach_outline_hierarchy(outline)
     concept_index: dict[str, list[str]] = {}
     for chapter in outline:

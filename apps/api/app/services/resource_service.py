@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import mimetypes
 import shutil
 from pathlib import Path
 from uuid import uuid4
@@ -8,6 +9,19 @@ from fastapi import HTTPException, UploadFile
 
 from app.models import CoursePackage, ResourceActivityAction, ResourceActivityEvent, ResourceLibraryItem
 from app.services.resource_library import build_resource_item
+
+
+INLINE_UPLOAD_EXTRACTION_MAX_BYTES = 8 * 1024 * 1024
+
+
+def _should_defer_upload_extraction(destination: Path, original_name: str, content_type: str | None) -> bool:
+    mime_type = content_type or mimetypes.guess_type(original_name)[0] or "application/octet-stream"
+    if mime_type.startswith("image/"):
+        return True
+    try:
+        return destination.stat().st_size > INLINE_UPLOAD_EXTRACTION_MAX_BYTES
+    except OSError:
+        return True
 
 
 def add_uploaded_resource(
@@ -22,7 +36,11 @@ def add_uploaded_resource(
     with destination.open("wb") as output:
         shutil.copyfileobj(file.file, output)
 
-    resource = build_resource_item(destination, original_name)
+    resource = build_resource_item(
+        destination,
+        original_name,
+        defer_text_extraction=_should_defer_upload_extraction(destination, original_name, file.content_type),
+    )
     resource.scope_lesson_id = scope_lesson_id
     package.resources.append(resource)
     record_resource_activity(package, resource, "uploaded")
