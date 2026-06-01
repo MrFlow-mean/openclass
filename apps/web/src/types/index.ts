@@ -122,6 +122,8 @@ export interface LearningClarificationStatus {
   ready_for_board: boolean;
 }
 
+export type LearningRequirementRunStatus = "collecting" | "ready" | "frozen" | "consumed" | "archived";
+
 export interface TeachingGuideMapping {
   block_id: string;
   supports_goal: string;
@@ -469,6 +471,9 @@ export interface ChatResponse {
   active_interaction_session?: InteractionSession | null;
   interaction_decision?: InteractionTurnDecision | null;
   learning_clarification: LearningClarificationStatus;
+  requirement_run_id?: string | null;
+  requirement_version_id?: string | null;
+  requirement_phase?: LearningRequirementRunStatus | null;
   board_decision: BoardDecision;
   needs_clarification: boolean;
   clarification_questions: string[];

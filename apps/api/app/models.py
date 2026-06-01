@@ -104,6 +104,17 @@ ChatInteractionMode = Literal["ask", "direct_edit"]
 TeachingAction = Literal["continue", "restart"]
 BoardGenerationAction = Literal["start"]
 LearningRequirementFactCategory = Literal["learning", "level", "vocabulary", "scenario", "output", "other"]
+LearningRequirementRunStatus = Literal["collecting", "ready", "frozen", "consumed", "archived"]
+LearningRequirementChangeKind = Literal[
+    "created",
+    "updated",
+    "completed",
+    "frozen",
+    "forced_frozen",
+    "consumed",
+    "archived",
+    "generation_failed",
+]
 DocumentMarginPreset = Literal["narrow", "normal", "wide"]
 DocumentOrientation = Literal["portrait", "landscape"]
 DocumentPageSize = Literal["a4", "letter", "a3"]
@@ -778,6 +789,9 @@ class ChatResponse(BaseModel):
     active_interaction_session: InteractionSession | None = None
     interaction_decision: InteractionTurnDecision | None = None
     learning_clarification: LearningClarificationStatus
+    requirement_run_id: str | None = None
+    requirement_version_id: str | None = None
+    requirement_phase: LearningRequirementRunStatus | None = None
     board_decision: BoardDecision
     needs_clarification: bool = False
     clarification_questions: list[str] = Field(default_factory=list)

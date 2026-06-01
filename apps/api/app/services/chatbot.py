@@ -39,6 +39,10 @@ from app.services.learning_requirement_manager import (
     is_generation_control_request,
     update_learning_requirements_from_chat,
 )
+from app.services.learning_requirement_history import (
+    LearningRequirementHistoryRecorder,
+    RequirementHistoryStamp,
+)
 from app.services.openai_course_ai import bind_text_model_selection, openai_course_ai
 from app.services.rich_document import is_document_empty
 from app.services.route_context import bind_ai_request_context
@@ -335,6 +339,19 @@ def _task_metadata(
     }
 
 
+def _requirement_history_metadata(stamp: RequirementHistoryStamp | None) -> dict[str, object]:
+    if stamp is None:
+        return {
+            "requirement_run_id": None,
+            "frozen_requirement_version_id": None,
+        }
+    return {
+        "requirement_run_id": stamp.run_id,
+        "frozen_requirement_version_id": stamp.version_id,
+        "requirement_phase": stamp.phase,
+    }
+
+
 def _clear_task_requirements(lesson: Lesson) -> None:
     lesson.learning_requirements = None
 
@@ -493,6 +510,106 @@ def _latest_learning_clarification(
     )
 
 
+def _new_requirement_history_recorder(
+    *,
+    user_id: str,
+    lesson_id: str,
+) -> LearningRequirementHistoryRecorder:
+    return LearningRequirementHistoryRecorder.from_store_state(
+        owner_user_id=user_id,
+        lesson_id=lesson_id,
+        state=workspace_state.load_learning_requirement_history_state_for_user(user_id, lesson_id),
+    )
+
+
+def _save_workspace_for_user(
+    *,
+    user_id: str,
+    workspace,
+    requirement_history: LearningRequirementHistoryRecorder | None,
+) -> None:
+    if requirement_history is not None and requirement_history.operations:
+        workspace_state.save_workspace_for_user_with_requirement_history(
+            user_id,
+            workspace,
+            requirement_history.operations,
+        )
+        return
+    workspace_state.save_workspace_for_user(user_id, workspace)
+
+
+def _record_requirement_update(
+    requirement_history: LearningRequirementHistoryRecorder,
+    *,
+    requirements: LearningRequirementSheet,
+    learning_clarification: LearningClarificationStatus,
+) -> RequirementHistoryStamp:
+    return requirement_history.record_update(
+        requirements=requirements,
+        clarification=learning_clarification,
+    )
+
+
+def _freeze_requirement_for_board_generation(
+    requirement_history: LearningRequirementHistoryRecorder,
+    *,
+    requirements: LearningRequirementSheet,
+    learning_clarification: LearningClarificationStatus,
+) -> RequirementHistoryStamp:
+    return requirement_history.freeze(
+        requirements=requirements,
+        clarification=learning_clarification,
+        forced=learning_clarification.forced_start or not learning_clarification.ready_for_board,
+    )
+
+
+def _should_track_initial_requirement_run(lesson: Lesson) -> bool:
+    return is_document_empty(lesson.board_document)
+
+
+def _maybe_record_initial_requirement_update(
+    requirement_history: LearningRequirementHistoryRecorder,
+    *,
+    enabled: bool,
+    requirements: LearningRequirementSheet,
+    learning_clarification: LearningClarificationStatus,
+) -> RequirementHistoryStamp | None:
+    if not enabled:
+        return None
+    return _record_requirement_update(
+        requirement_history,
+        requirements=requirements,
+        learning_clarification=learning_clarification,
+    )
+
+
+def _maybe_freeze_initial_requirement_for_board_generation(
+    requirement_history: LearningRequirementHistoryRecorder,
+    *,
+    enabled: bool,
+    requirements: LearningRequirementSheet,
+    learning_clarification: LearningClarificationStatus,
+) -> RequirementHistoryStamp | None:
+    if not enabled:
+        return None
+    return _freeze_requirement_for_board_generation(
+        requirement_history,
+        requirements=requirements,
+        learning_clarification=learning_clarification,
+    )
+
+
+def _response_requirement_stamp(
+    requirement_history: LearningRequirementHistoryRecorder | None,
+    requirement_stamp: RequirementHistoryStamp | None,
+) -> RequirementHistoryStamp | None:
+    if requirement_stamp is not None:
+        return requirement_stamp
+    if requirement_history is None:
+        return None
+    return requirement_history.current_stamp()
+
+
 def _response(
     *,
     workspace,
@@ -510,7 +627,10 @@ def _response(
     selected_reference: ResourceReferenceContext | None = None,
     interaction_decision: InteractionTurnDecision | None = None,
     requirement_cleared: bool = False,
+    requirement_history: LearningRequirementHistoryRecorder | None = None,
+    requirement_stamp: RequirementHistoryStamp | None = None,
 ) -> ChatResponse:
+    stamp = _response_requirement_stamp(requirement_history, requirement_stamp)
     return ChatResponse(
         chatbot_message=chatbot_message,
         learning_requirement_sheet=requirements,
@@ -518,6 +638,9 @@ def _response(
         active_interaction_session=lesson.active_interaction_session,
         interaction_decision=interaction_decision,
         learning_clarification=learning_clarification,
+        requirement_run_id=stamp.run_id if stamp else None,
+        requirement_version_id=stamp.version_id if stamp else None,
+        requirement_phase=stamp.phase if stamp else None,
         board_decision=board_decision,
         needs_clarification=False,
         clarification_questions=[],
@@ -571,6 +694,7 @@ def _handle_existing_interaction_session(
     requirements: LearningRequirementSheet,
     resources: list[ResourceLibraryItem],
     selection_excerpt: str | None,
+    requirement_history: LearningRequirementHistoryRecorder,
 ) -> ChatResponse | None:
     session_before = lesson.active_interaction_session
     if session_before is None:
@@ -610,7 +734,11 @@ def _handle_existing_interaction_session(
             },
         )
         workspace_state.normalize_package_state(package)
-        workspace_state.save_workspace_for_user(user_id, workspace)
+        _save_workspace_for_user(
+            user_id=user_id,
+            workspace=workspace,
+            requirement_history=requirement_history,
+        )
         return _response(
             workspace=workspace,
             package=package,
@@ -619,6 +747,7 @@ def _handle_existing_interaction_session(
             learning_clarification=learning_clarification,
             requirements=requirements,
             board_decision=BoardDecision(action="no_change", reason=""),
+            requirement_history=requirement_history,
         )
 
     session_after = apply_interaction_decision(session_before, decision)
@@ -655,7 +784,11 @@ def _handle_existing_interaction_session(
         },
     )
     workspace_state.normalize_package_state(package)
-    workspace_state.save_workspace_for_user(user_id, workspace)
+    _save_workspace_for_user(
+        user_id=user_id,
+        workspace=workspace,
+        requirement_history=requirement_history,
+    )
     return _response(
         workspace=workspace,
         package=package,
@@ -665,6 +798,7 @@ def _handle_existing_interaction_session(
         requirements=requirements,
         board_decision=BoardDecision(action="no_change", reason=decision.reason),
         interaction_decision=decision,
+        requirement_history=requirement_history,
     )
 
 
@@ -679,6 +813,7 @@ def _maybe_start_interaction_session(
     learning_clarification: LearningClarificationStatus,
     resources: list[ResourceLibraryItem],
     selection_text: str | None,
+    requirement_history: LearningRequirementHistoryRecorder,
 ) -> ChatResponse | None:
     if request.interaction_mode == "direct_edit" and action_type != "append_section":
         return None
@@ -726,7 +861,11 @@ def _maybe_start_interaction_session(
             },
         )
         workspace_state.normalize_package_state(package)
-        workspace_state.save_workspace_for_user(user_id, workspace)
+        _save_workspace_for_user(
+            user_id=user_id,
+            workspace=workspace,
+            requirement_history=requirement_history,
+        )
         return _response(
             workspace=workspace,
             package=package,
@@ -739,6 +878,7 @@ def _maybe_start_interaction_session(
                 reason=start_resolution.focus_resolution.question,
             ),
             focus_candidates=start_resolution.focus_resolution.candidates,
+            requirement_history=requirement_history,
         )
 
     if start_resolution.session is None:
@@ -787,7 +927,11 @@ def _maybe_start_interaction_session(
         },
     )
     workspace_state.normalize_package_state(package)
-    workspace_state.save_workspace_for_user(user_id, workspace)
+    _save_workspace_for_user(
+        user_id=user_id,
+        workspace=workspace,
+        requirement_history=requirement_history,
+    )
     return _response(
         workspace=workspace,
         package=package,
@@ -806,6 +950,7 @@ def _maybe_start_interaction_session(
             else []
         ),
         requirement_cleared=True,
+        requirement_history=requirement_history,
     )
 
 
@@ -821,11 +966,19 @@ def _generate_board_from_confirmed_resource(
     resource_resolution: ResourceResolution,
     resource_summary_for_turn: str,
     conversation_summary: str,
+    requirement_history: LearningRequirementHistoryRecorder,
+    track_initial_requirement_run: bool,
 ) -> ChatResponse:
     requirements = _with_task_details(
         requirements,
         action_type="generate_board",
         instruction=request.message,
+    )
+    frozen_requirement = _maybe_freeze_initial_requirement_for_board_generation(
+        requirement_history,
+        enabled=track_initial_requirement_run,
+        requirements=requirements,
+        learning_clarification=learning_clarification,
     )
     edit_outcome = generate_from_requirements(
         lesson=lesson,
@@ -836,6 +989,30 @@ def _generate_board_from_confirmed_resource(
         user_instruction=request.message,
     )
     chatbot_message = edit_outcome.chatbot_message
+    if not edit_outcome.changed:
+        failed_stamp = (
+            requirement_history.generation_failed(reason=edit_outcome.summary or chatbot_message)
+            if frozen_requirement is not None
+            else None
+        )
+        workspace_state.normalize_package_state(package)
+        _save_workspace_for_user(
+            user_id=user_id,
+            workspace=workspace,
+            requirement_history=requirement_history,
+        )
+        return _response(
+            workspace=workspace,
+            package=package,
+            lesson=lesson,
+            chatbot_message=chatbot_message,
+            learning_clarification=learning_clarification,
+            requirements=requirements,
+            board_decision=edit_outcome.board_decision,
+            resource_matches=resource_resolution.matches,
+            selected_reference=resource_resolution.selected_reference,
+            requirement_stamp=failed_stamp,
+        )
     if edit_outcome.changed:
         refresh_lesson_runtime(lesson, document=edit_outcome.new_document, requirements=requirements)
         requirements = lesson.learning_requirements
@@ -860,6 +1037,7 @@ def _generate_board_from_confirmed_resource(
             "board_edit_operation": edit_outcome.operation,
             "board_edit_summary": edit_outcome.summary,
             "board_section_titles": edit_outcome.section_titles,
+            **_requirement_history_metadata(frozen_requirement),
             **_task_metadata(
                 requirements=requirements,
                 learning_clarification=learning_clarification,
@@ -868,10 +1046,19 @@ def _generate_board_from_confirmed_resource(
             **_reference_metadata(resolution=resource_resolution),
         },
     )
+    consumed_stamp = (
+        requirement_history.consume(commit_id=lesson.history_graph.commits[-1].id)
+        if frozen_requirement is not None
+        else None
+    )
     if requirement_cleared:
         _clear_task_requirements(lesson)
     workspace_state.normalize_package_state(package)
-    workspace_state.save_workspace_for_user(user_id, workspace)
+    _save_workspace_for_user(
+        user_id=user_id,
+        workspace=workspace,
+        requirement_history=requirement_history,
+    )
     return _response(
         workspace=workspace,
         package=package,
@@ -883,6 +1070,7 @@ def _generate_board_from_confirmed_resource(
         resource_matches=resource_resolution.matches,
         selected_reference=resource_resolution.selected_reference,
         requirement_cleared=requirement_cleared,
+        requirement_stamp=consumed_stamp,
     )
 
 
@@ -896,6 +1084,8 @@ def _chat_response(
     workspace = workspace_state.load_workspace_for_user(user_id)
     package, lesson = workspace_state.find_lesson_package(workspace, lesson_id)
     requirements = effective_requirements(lesson)
+    requirement_history = _new_requirement_history_recorder(user_id=user_id, lesson_id=lesson.id)
+    track_initial_requirement_run = _should_track_initial_requirement_run(lesson)
     visible_package = workspace_state.package_context_for_lesson(workspace, package, lesson.id)
     selection_excerpt = _selection_excerpt(request.selection, selection_text)
     action_type = _infer_board_task_action(
@@ -937,6 +1127,7 @@ def _chat_response(
         requirements=requirements,
         resources=visible_package.resources,
         selection_excerpt=selection_or_reference_excerpt,
+        requirement_history=requirement_history,
     )
     if interaction_response is not None:
         return interaction_response
@@ -948,6 +1139,12 @@ def _chat_response(
             action_type="generate_board",
             instruction=request.message,
         )
+        frozen_requirement = _maybe_freeze_initial_requirement_for_board_generation(
+            requirement_history,
+            enabled=track_initial_requirement_run,
+            requirements=requirements,
+            learning_clarification=learning_clarification,
+        )
         edit_outcome = generate_from_requirements(
             lesson=lesson,
             requirements=requirements,
@@ -957,6 +1154,28 @@ def _chat_response(
             user_instruction=request.message,
         )
         chatbot_message = edit_outcome.chatbot_message
+        if not edit_outcome.changed:
+            failed_stamp = (
+                requirement_history.generation_failed(reason=edit_outcome.summary or chatbot_message)
+                if frozen_requirement is not None
+                else None
+            )
+            workspace_state.normalize_package_state(package)
+            _save_workspace_for_user(
+                user_id=user_id,
+                workspace=workspace,
+                requirement_history=requirement_history,
+            )
+            return _response(
+                workspace=workspace,
+                package=package,
+                lesson=lesson,
+                chatbot_message=chatbot_message,
+                requirements=requirements,
+                learning_clarification=learning_clarification,
+                board_decision=edit_outcome.board_decision,
+                requirement_stamp=failed_stamp,
+            )
         if edit_outcome.changed:
             refresh_lesson_runtime(lesson, document=edit_outcome.new_document, requirements=requirements)
             requirements = lesson.learning_requirements
@@ -972,6 +1191,7 @@ def _chat_response(
             "board_edit_operation": edit_outcome.operation,
             "board_edit_summary": edit_outcome.summary,
             "board_section_titles": edit_outcome.section_titles,
+            **_requirement_history_metadata(frozen_requirement),
             **_task_metadata(
                 requirements=requirements,
                 learning_clarification=learning_clarification,
@@ -987,10 +1207,19 @@ def _chat_response(
             new_document=lesson.board_document,
             metadata=metadata,
         )
+        consumed_stamp = (
+            requirement_history.consume(commit_id=lesson.history_graph.commits[-1].id)
+            if frozen_requirement is not None
+            else None
+        )
         if requirement_cleared:
             _clear_task_requirements(lesson)
         workspace_state.normalize_package_state(package)
-        workspace_state.save_workspace_for_user(user_id, workspace)
+        _save_workspace_for_user(
+            user_id=user_id,
+            workspace=workspace,
+            requirement_history=requirement_history,
+        )
         return _response(
             workspace=workspace,
             package=package,
@@ -1000,6 +1229,7 @@ def _chat_response(
             learning_clarification=learning_clarification,
             board_decision=edit_outcome.board_decision,
             requirement_cleared=requirement_cleared,
+            requirement_stamp=consumed_stamp,
         )
 
     if request.teaching_action in {"continue", "restart"}:
@@ -1035,7 +1265,11 @@ def _chat_response(
             },
         )
         workspace_state.normalize_package_state(package)
-        workspace_state.save_workspace_for_user(user_id, workspace)
+        _save_workspace_for_user(
+            user_id=user_id,
+            workspace=workspace,
+            requirement_history=requirement_history,
+        )
         return _response(
             workspace=workspace,
             package=package,
@@ -1045,6 +1279,7 @@ def _chat_response(
             learning_clarification=learning_clarification,
             board_decision=BoardDecision(action="no_change", reason="本轮是分节讲解，不修改板书。"),
             teaching_progress=teaching_result.progress_view,
+            requirement_history=requirement_history if track_initial_requirement_run else None,
         )
 
     if request.interaction_mode == "direct_edit" and action_type != "append_section":
@@ -1058,6 +1293,12 @@ def _chat_response(
             conversation=requirement_conversation,
             user_message=request.message,
             chatbot_message="",
+        )
+        _maybe_record_initial_requirement_update(
+            requirement_history,
+            enabled=track_initial_requirement_run,
+            requirements=requirements,
+            learning_clarification=learning_clarification,
         )
         action_type = _prefer_requirement_action(
             action_type,
@@ -1112,7 +1353,11 @@ def _chat_response(
                 },
             )
             workspace_state.normalize_package_state(package)
-            workspace_state.save_workspace_for_user(user_id, workspace)
+            _save_workspace_for_user(
+                user_id=user_id,
+                workspace=workspace,
+                requirement_history=requirement_history,
+            )
             return _response(
                 workspace=workspace,
                 package=package,
@@ -1122,6 +1367,7 @@ def _chat_response(
                 learning_clarification=learning_clarification,
                 board_decision=BoardDecision(action="await_focus_choice", reason=resolution.question),
                 focus_candidates=resolution.candidates,
+                requirement_history=requirement_history if track_initial_requirement_run else None,
             )
 
         edit_outcome = edit_existing_document(
@@ -1169,7 +1415,11 @@ def _chat_response(
         if requirement_cleared:
             _clear_task_requirements(lesson)
         workspace_state.normalize_package_state(package)
-        workspace_state.save_workspace_for_user(user_id, workspace)
+        _save_workspace_for_user(
+            user_id=user_id,
+            workspace=workspace,
+            requirement_history=requirement_history,
+        )
         return _response(
             workspace=workspace,
             package=package,
@@ -1181,6 +1431,7 @@ def _chat_response(
             resolved_focus=resolution.focus,
             focus_candidates=resolution.candidates,
             requirement_cleared=requirement_cleared,
+            requirement_history=requirement_history if track_initial_requirement_run else None,
         )
 
     if action_type in {*DOCUMENT_WRITE_ACTIONS, "explain_target"} and not is_document_empty(lesson.board_document):
@@ -1196,6 +1447,12 @@ def _chat_response(
                 user_message=request.message,
                 chatbot_message="",
             )
+            _maybe_record_initial_requirement_update(
+                requirement_history,
+                enabled=track_initial_requirement_run,
+                requirements=requirements,
+                learning_clarification=learning_clarification,
+            )
             interaction_start_response = _maybe_start_interaction_session(
                 workspace=workspace,
                 package=package,
@@ -1206,6 +1463,7 @@ def _chat_response(
                 learning_clarification=learning_clarification,
                 resources=visible_package.resources,
                 selection_text=selection_text,
+                requirement_history=requirement_history,
             )
             if interaction_start_response is not None:
                 return interaction_start_response
@@ -1267,7 +1525,11 @@ def _chat_response(
             if requirement_cleared:
                 _clear_task_requirements(lesson)
             workspace_state.normalize_package_state(package)
-            workspace_state.save_workspace_for_user(user_id, workspace)
+            _save_workspace_for_user(
+                user_id=user_id,
+                workspace=workspace,
+                requirement_history=requirement_history,
+            )
             return _response(
                 workspace=workspace,
                 package=package,
@@ -1277,6 +1539,7 @@ def _chat_response(
                 learning_clarification=learning_clarification,
                 board_decision=edit_outcome.board_decision,
                 requirement_cleared=requirement_cleared,
+                requirement_history=requirement_history if track_initial_requirement_run else None,
             )
 
         resolution = resolve_board_focus(
@@ -1326,7 +1589,11 @@ def _chat_response(
                 },
             )
             workspace_state.normalize_package_state(package)
-            workspace_state.save_workspace_for_user(user_id, workspace)
+            _save_workspace_for_user(
+                user_id=user_id,
+                workspace=workspace,
+                requirement_history=requirement_history,
+            )
             return _response(
                 workspace=workspace,
                 package=package,
@@ -1336,6 +1603,7 @@ def _chat_response(
                 learning_clarification=learning_clarification,
                 board_decision=BoardDecision(action="await_focus_choice", reason=resolution.question),
                 focus_candidates=resolution.candidates,
+                requirement_history=requirement_history if track_initial_requirement_run else None,
             )
 
         if action_type in EDIT_ACTIONS:
@@ -1384,7 +1652,11 @@ def _chat_response(
             if requirement_cleared:
                 _clear_task_requirements(lesson)
             workspace_state.normalize_package_state(package)
-            workspace_state.save_workspace_for_user(user_id, workspace)
+            _save_workspace_for_user(
+                user_id=user_id,
+                workspace=workspace,
+                requirement_history=requirement_history,
+            )
             return _response(
                 workspace=workspace,
                 package=package,
@@ -1396,6 +1668,7 @@ def _chat_response(
                 resolved_focus=resolution.focus,
                 focus_candidates=resolution.candidates,
                 requirement_cleared=requirement_cleared,
+                requirement_history=requirement_history if track_initial_requirement_run else None,
             )
 
         focus_excerpt = focus_context(resolution.focus) if resolution.focus else ""
@@ -1448,7 +1721,11 @@ def _chat_response(
         if requirement_cleared:
             _clear_task_requirements(lesson)
         workspace_state.normalize_package_state(package)
-        workspace_state.save_workspace_for_user(user_id, workspace)
+        _save_workspace_for_user(
+            user_id=user_id,
+            workspace=workspace,
+            requirement_history=requirement_history,
+        )
         return _response(
             workspace=workspace,
             package=package,
@@ -1476,6 +1753,12 @@ def _chat_response(
             user_message=request.message,
             chatbot_message="",
         )
+        _maybe_record_initial_requirement_update(
+            requirement_history,
+            enabled=track_initial_requirement_run,
+            requirements=requirements,
+            learning_clarification=learning_clarification,
+        )
         if resource_resolution.reference_prompt is not None and request.resource_reference_action is None:
             lesson.learning_requirements = requirements
             chatbot_message = resource_resolution.reference_prompt.question
@@ -1501,7 +1784,11 @@ def _chat_response(
                 },
             )
             workspace_state.normalize_package_state(package)
-            workspace_state.save_workspace_for_user(user_id, workspace)
+            _save_workspace_for_user(
+                user_id=user_id,
+                workspace=workspace,
+                requirement_history=requirement_history,
+            )
             return _response(
                 workspace=workspace,
                 package=package,
@@ -1515,6 +1802,7 @@ def _chat_response(
                 ),
                 resource_matches=resource_resolution.matches,
                 reference_prompt=resource_resolution.reference_prompt,
+                requirement_history=requirement_history if track_initial_requirement_run else None,
             )
         if request.resource_reference_action == "confirm" and selected_reference is not None:
             return _generate_board_from_confirmed_resource(
@@ -1528,6 +1816,8 @@ def _chat_response(
                 resource_resolution=resource_resolution,
                 resource_summary_for_turn=resource_summary_for_turn,
                 conversation_summary=_conversation_summary(request.conversation),
+                requirement_history=requirement_history,
+                track_initial_requirement_run=track_initial_requirement_run,
             )
         if _should_generate_board_from_explicit_request(
             lesson=lesson,
@@ -1540,6 +1830,12 @@ def _chat_response(
                 action_type="generate_board",
                 instruction=request.message,
             )
+            frozen_requirement = _maybe_freeze_initial_requirement_for_board_generation(
+                requirement_history,
+                enabled=track_initial_requirement_run,
+                requirements=requirements,
+                learning_clarification=learning_clarification,
+            )
             edit_outcome = generate_from_requirements(
                 lesson=lesson,
                 requirements=requirements,
@@ -1548,6 +1844,30 @@ def _chat_response(
                 conversation_summary=_conversation_summary(requirement_conversation),
                 user_instruction=request.message,
             )
+            if not edit_outcome.changed:
+                failed_stamp = (
+                    requirement_history.generation_failed(reason=edit_outcome.summary or edit_outcome.chatbot_message)
+                    if frozen_requirement is not None
+                    else None
+                )
+                workspace_state.normalize_package_state(package)
+                _save_workspace_for_user(
+                    user_id=user_id,
+                    workspace=workspace,
+                    requirement_history=requirement_history,
+                )
+                return _response(
+                    workspace=workspace,
+                    package=package,
+                    lesson=lesson,
+                    chatbot_message=edit_outcome.chatbot_message,
+                    learning_clarification=learning_clarification,
+                    requirements=requirements,
+                    board_decision=edit_outcome.board_decision,
+                    resource_matches=resource_resolution.matches,
+                    selected_reference=selected_reference,
+                    requirement_stamp=failed_stamp,
+                )
             if edit_outcome.changed:
                 refresh_lesson_runtime(lesson, document=edit_outcome.new_document, requirements=requirements)
                 requirements = lesson.learning_requirements
@@ -1571,6 +1891,7 @@ def _chat_response(
                     "board_edit_operation": edit_outcome.operation,
                     "board_edit_summary": edit_outcome.summary,
                     "board_section_titles": edit_outcome.section_titles,
+                    **_requirement_history_metadata(frozen_requirement),
                     **_task_metadata(
                         requirements=requirements,
                         learning_clarification=learning_clarification,
@@ -1579,10 +1900,19 @@ def _chat_response(
                     **_reference_metadata(resolution=resource_resolution),
                 },
             )
+            consumed_stamp = (
+                requirement_history.consume(commit_id=lesson.history_graph.commits[-1].id)
+                if frozen_requirement is not None
+                else None
+            )
             if requirement_cleared:
                 _clear_task_requirements(lesson)
             workspace_state.normalize_package_state(package)
-            workspace_state.save_workspace_for_user(user_id, workspace)
+            _save_workspace_for_user(
+                user_id=user_id,
+                workspace=workspace,
+                requirement_history=requirement_history,
+            )
             return _response(
                 workspace=workspace,
                 package=package,
@@ -1594,6 +1924,7 @@ def _chat_response(
                 resource_matches=resource_resolution.matches,
                 selected_reference=selected_reference,
                 requirement_cleared=requirement_cleared,
+                requirement_stamp=consumed_stamp,
             )
         lesson.learning_requirements = requirements
         ai_reply = openai_course_ai.generate_chatbot_reply(
@@ -1631,7 +1962,11 @@ def _chat_response(
             },
         )
         workspace_state.normalize_package_state(package)
-        workspace_state.save_workspace_for_user(user_id, workspace)
+        _save_workspace_for_user(
+            user_id=user_id,
+            workspace=workspace,
+            requirement_history=requirement_history,
+        )
         return _response(
             workspace=workspace,
             package=package,
@@ -1642,6 +1977,7 @@ def _chat_response(
             board_decision=BoardDecision(action="no_change", reason="本轮是需求确认到板书生成的交接，不自动写入板书。"),
             resource_matches=resource_resolution.matches,
             selected_reference=selected_reference,
+            requirement_history=requirement_history if track_initial_requirement_run else None,
         )
 
     if (
@@ -1673,7 +2009,11 @@ def _chat_response(
             },
         )
         workspace_state.normalize_package_state(package)
-        workspace_state.save_workspace_for_user(user_id, workspace)
+        _save_workspace_for_user(
+            user_id=user_id,
+            workspace=workspace,
+            requirement_history=requirement_history,
+        )
         return _response(
             workspace=workspace,
             package=package,
@@ -1687,6 +2027,7 @@ def _chat_response(
             ),
             resource_matches=resource_resolution.matches,
             reference_prompt=resource_resolution.reference_prompt,
+            requirement_history=requirement_history if track_initial_requirement_run else None,
         )
 
     if (
@@ -1705,6 +2046,12 @@ def _chat_response(
             user_message=request.message,
             chatbot_message="",
         )
+        _maybe_record_initial_requirement_update(
+            requirement_history,
+            enabled=track_initial_requirement_run,
+            requirements=requirements,
+            learning_clarification=learning_clarification,
+        )
         return _generate_board_from_confirmed_resource(
             workspace=workspace,
             package=package,
@@ -1716,6 +2063,8 @@ def _chat_response(
             resource_resolution=resource_resolution,
             resource_summary_for_turn=resource_summary_for_turn,
             conversation_summary=_conversation_summary(request.conversation),
+            requirement_history=requirement_history,
+            track_initial_requirement_run=track_initial_requirement_run,
         )
 
     solver_user_message, solver_metadata = _chatbot_message_with_solver_context(
@@ -1752,6 +2101,12 @@ def _chat_response(
         user_message=request.message,
         chatbot_message=chatbot_message,
     )
+    _maybe_record_initial_requirement_update(
+        requirement_history,
+        enabled=track_initial_requirement_run,
+        requirements=requirements,
+        learning_clarification=learning_clarification,
+    )
     lesson.learning_requirements = requirements
 
     interaction_start_response = _maybe_start_interaction_session(
@@ -1764,9 +2119,109 @@ def _chat_response(
         learning_clarification=learning_clarification,
         resources=visible_package.resources,
         selection_text=selection_text,
+        requirement_history=requirement_history,
     )
     if interaction_start_response is not None:
         return interaction_start_response
+
+    if (
+        track_initial_requirement_run
+        and learning_clarification.ready_for_board
+        and requirements.action_type == "generate_board"
+    ):
+        requirements = _with_task_details(
+            requirements,
+            action_type="generate_board",
+            instruction=requirements.action_instruction or request.message,
+        )
+        frozen_requirement = _freeze_requirement_for_board_generation(
+            requirement_history,
+            requirements=requirements,
+            learning_clarification=learning_clarification,
+        )
+        edit_outcome = generate_from_requirements(
+            lesson=lesson,
+            requirements=requirements,
+            clarification=learning_clarification,
+            resource_summary=resource_summary_for_turn,
+            conversation_summary=_conversation_summary(requirement_conversation),
+            user_instruction=request.message,
+        )
+        if not edit_outcome.changed:
+            failed_stamp = requirement_history.generation_failed(
+                reason=edit_outcome.summary or edit_outcome.chatbot_message,
+            )
+            workspace_state.normalize_package_state(package)
+            _save_workspace_for_user(
+                user_id=user_id,
+                workspace=workspace,
+                requirement_history=requirement_history,
+            )
+            return _response(
+                workspace=workspace,
+                package=package,
+                lesson=lesson,
+                chatbot_message=edit_outcome.chatbot_message or chatbot_message,
+                learning_clarification=learning_clarification,
+                requirements=requirements,
+                board_decision=edit_outcome.board_decision,
+                resource_matches=resource_resolution.matches,
+                selected_reference=selected_reference,
+                requirement_stamp=failed_stamp,
+            )
+        refresh_lesson_runtime(lesson, document=edit_outcome.new_document, requirements=requirements)
+        requirements = lesson.learning_requirements
+        lesson.board_teaching_guide = build_board_teaching_guide(lesson)
+        lesson.board_teaching_progress = None
+        commit_operations(
+            lesson,
+            [],
+            label="Board document generation",
+            message="Generated board document from a frozen learning requirement sheet",
+            new_document=lesson.board_document,
+            metadata={
+                "kind": "board_document_generation",
+                "user_message": request.message,
+                "assistant_message": edit_outcome.chatbot_message,
+                "assistant_message_source": edit_outcome.assistant_message_source,
+                "chatbot_requirement_reply": chatbot_message,
+                "interaction_mode": request.interaction_mode,
+                "selection": request.selection.model_dump(mode="json") if request.selection else None,
+                "board_generation_action": "ready_requirement_sheet",
+                "board_edit_operation": edit_outcome.operation,
+                "board_edit_summary": edit_outcome.summary,
+                "board_section_titles": edit_outcome.section_titles,
+                **_requirement_history_metadata(frozen_requirement),
+                **_task_metadata(
+                    requirements=requirements,
+                    learning_clarification=learning_clarification,
+                    requirement_cleared=True,
+                ),
+                **_reference_metadata(resolution=resource_resolution),
+                **solver_metadata,
+            },
+        )
+        consumed_stamp = requirement_history.consume(commit_id=lesson.history_graph.commits[-1].id)
+        _clear_task_requirements(lesson)
+        workspace_state.normalize_package_state(package)
+        _save_workspace_for_user(
+            user_id=user_id,
+            workspace=workspace,
+            requirement_history=requirement_history,
+        )
+        return _response(
+            workspace=workspace,
+            package=package,
+            lesson=lesson,
+            chatbot_message=edit_outcome.chatbot_message,
+            learning_clarification=learning_clarification,
+            requirements=requirements,
+            board_decision=edit_outcome.board_decision,
+            resource_matches=resource_resolution.matches,
+            selected_reference=selected_reference,
+            requirement_cleared=True,
+            requirement_stamp=consumed_stamp,
+        )
 
     board_decision = BoardDecision(action="no_change", reason="本轮是通用问答聊天，不自动修改讲义。")
     requirement_cleared = False
@@ -1796,7 +2251,11 @@ def _chat_response(
     if requirement_cleared:
         _clear_task_requirements(lesson)
     workspace_state.normalize_package_state(package)
-    workspace_state.save_workspace_for_user(user_id, workspace)
+    _save_workspace_for_user(
+        user_id=user_id,
+        workspace=workspace,
+        requirement_history=requirement_history,
+    )
     return _response(
         workspace=workspace,
         package=package,
@@ -1808,6 +2267,7 @@ def _chat_response(
         resource_matches=resource_resolution.matches,
         selected_reference=selected_reference,
         requirement_cleared=requirement_cleared,
+        requirement_history=requirement_history if track_initial_requirement_run else None,
     )
 
 
