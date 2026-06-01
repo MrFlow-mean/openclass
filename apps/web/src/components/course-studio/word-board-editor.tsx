@@ -1,20 +1,7 @@
 "use client";
 
-import { Extension, Node, type Editor as TiptapEditor } from "@tiptap/core";
-import Color from "@tiptap/extension-color";
-import Highlight from "@tiptap/extension-highlight";
-import ImageExtension from "@tiptap/extension-image";
-import LinkExtension from "@tiptap/extension-link";
-import { BlockMath, InlineMath } from "@tiptap/extension-mathematics";
-import { Table } from "@tiptap/extension-table";
-import TableCell from "@tiptap/extension-table-cell";
-import TableHeader from "@tiptap/extension-table-header";
-import TableRow from "@tiptap/extension-table-row";
-import TextAlign from "@tiptap/extension-text-align";
-import { TextStyle } from "@tiptap/extension-text-style";
-import UnderlineExtension from "@tiptap/extension-underline";
-import { EditorContent, useEditor } from "@tiptap/react";
-import StarterKit from "@tiptap/starter-kit";
+import type { Editor as TiptapEditor } from "@tiptap/core";
+import { useEditor } from "@tiptap/react";
 import clsx from "clsx";
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import {
@@ -63,6 +50,16 @@ import {
   Upload,
 } from "lucide-react";
 
+import { WordEditorPageCanvas } from "@/components/course-studio/word-editor-page-canvas";
+import {
+  FONT_FAMILY_OPTIONS,
+  FONT_SIZE_OPTIONS,
+  TABLE_DIMENSION_MAX,
+  TABLE_DIMENSION_MIN,
+  WORD_EDITOR_EXTENSIONS,
+  WORD_EDITOR_PROPS,
+  normalizeTableDimension,
+} from "@/components/course-studio/word-editor-extensions";
 import {
   PAGE_BACKGROUND_OPTIONS,
   PAGE_MARGIN_OPTIONS,
@@ -88,174 +85,6 @@ import { MATH_TEXT_SERIALIZERS, normalizeEditorMath } from "@/lib/math-content";
 import type { BoardDocument, DocumentPageSettings } from "@/types";
 
 type WordRibbonTab = "home" | "insert" | "page";
-
-declare module "@tiptap/core" {
-  interface Commands<ReturnType> {
-    fontSize: {
-      setFontSize: (fontSize: string) => ReturnType;
-      unsetFontSize: () => ReturnType;
-    };
-    fontFamily: {
-      setFontFamily: (fontFamily: string) => ReturnType;
-      unsetFontFamily: () => ReturnType;
-    };
-  }
-}
-
-const FontSize = Extension.create({
-  name: "fontSize",
-  addGlobalAttributes() {
-    return [
-      {
-        types: ["textStyle"],
-        attributes: {
-          fontSize: {
-            default: null,
-            parseHTML: (element) => element.style.fontSize || null,
-            renderHTML: (attributes) => {
-              if (!attributes.fontSize) {
-                return {};
-              }
-              return { style: `font-size: ${attributes.fontSize}` };
-            },
-          },
-        },
-      },
-    ];
-  },
-  addCommands() {
-    return {
-      setFontSize:
-        (fontSize: string) =>
-        ({ chain }) =>
-          chain().setMark("textStyle", { fontSize }).run(),
-      unsetFontSize:
-        () =>
-        ({ chain }) =>
-          chain().setMark("textStyle", { fontSize: null }).removeEmptyTextStyle().run(),
-    };
-  },
-});
-
-const FontFamily = Extension.create({
-  name: "fontFamily",
-  addGlobalAttributes() {
-    return [
-      {
-        types: ["textStyle"],
-        attributes: {
-          fontFamily: {
-            default: null,
-            parseHTML: (element) => element.style.fontFamily || null,
-            renderHTML: (attributes) => {
-              if (!attributes.fontFamily) {
-                return {};
-              }
-              return { style: `font-family: ${attributes.fontFamily}` };
-            },
-          },
-        },
-      },
-    ];
-  },
-  addCommands() {
-    return {
-      setFontFamily:
-        (fontFamily: string) =>
-        ({ chain }) =>
-          chain().setMark("textStyle", { fontFamily }).run(),
-      unsetFontFamily:
-        () =>
-        ({ chain }) =>
-          chain().setMark("textStyle", { fontFamily: null }).removeEmptyTextStyle().run(),
-    };
-  },
-});
-
-const PageBreak = Node.create({
-  name: "pageBreak",
-  group: "block",
-  atom: true,
-  selectable: true,
-  parseHTML() {
-    return [{ tag: 'div[data-type="page-break"]' }];
-  },
-  renderHTML() {
-    return ["div", { "data-type": "page-break", class: "word-editor__page-break" }];
-  },
-});
-
-const FONT_FAMILY_OPTIONS = [
-  { id: "sans", value: '"Satoshi","Avenir Next","PingFang SC","Microsoft YaHei",sans-serif' },
-  { id: "serif", value: '"Iowan Old Style","Songti SC","Times New Roman",serif' },
-  { id: "mono", value: '"IBM Plex Mono","SFMono-Regular","Menlo",monospace' },
-] as const;
-
-const FONT_SIZE_OPTIONS = [
-  { label: "12", value: "12px" },
-  { label: "14", value: "14px" },
-  { label: "16", value: "16px" },
-  { label: "18", value: "18px" },
-  { label: "24", value: "24px" },
-];
-
-const TABLE_DIMENSION_MIN = 1;
-const TABLE_DIMENSION_MAX = 12;
-
-function normalizeTableDimension(value: number) {
-  if (!Number.isFinite(value)) {
-    return TABLE_DIMENSION_MIN;
-  }
-  return Math.min(TABLE_DIMENSION_MAX, Math.max(TABLE_DIMENSION_MIN, Math.round(value)));
-}
-
-const WORD_EDITOR_EXTENSIONS = [
-  StarterKit.configure({
-    heading: { levels: [1, 2, 3] },
-    link: false,
-    underline: false,
-  }),
-  TextStyle,
-  Color,
-  Highlight.configure({ multicolor: true }),
-  UnderlineExtension,
-  LinkExtension.configure({
-    autolink: true,
-    openOnClick: false,
-    defaultProtocol: "https",
-  }),
-  ImageExtension.configure({
-    allowBase64: true,
-    HTMLAttributes: {
-      class: "word-editor__image",
-    },
-  }),
-  TextAlign.configure({ types: ["heading", "paragraph"] }),
-  Table.configure({ resizable: true, cellMinWidth: 72, lastColumnResizable: true }),
-  TableRow,
-  TableHeader,
-  TableCell,
-  BlockMath.configure({
-    katexOptions: {
-      displayMode: true,
-      throwOnError: false,
-    },
-  }),
-  InlineMath.configure({
-    katexOptions: {
-      throwOnError: false,
-    },
-  }),
-  PageBreak,
-  FontSize,
-  FontFamily,
-];
-
-const WORD_EDITOR_PROPS = {
-  attributes: {
-    class: "word-editor__content",
-  },
-};
 
 export function WordBoardEditor({
   document,
@@ -1333,51 +1162,20 @@ export function WordBoardEditor({
         </div>
       </div>
 
-      <div
-        ref={pageScrollRef}
-        className="min-h-0 flex-1 overflow-auto bg-[radial-gradient(circle_at_top,#f7f5ef,transparent_28%),linear-gradient(180deg,#f3f0e7_0%,#eef2f8_100%)]"
-      >
-        <div className="mx-auto flex w-max min-w-full justify-center px-6 py-10 md:px-10">
-          <div
-            className={clsx(
-              "word-editor__page word-editor__page--zoomable relative flex shrink-0 flex-col overflow-hidden",
-              !pageSettings.page_border && "word-editor__page--borderless",
-              pageSettings.background_style === "warm" && "word-editor__page--warm",
-              pageSettings.background_style === "grid" && "word-editor__page--grid",
-              pageSettings.columns === 2 && "word-editor__page--columns-2",
-              pageSettings.line_numbers && "word-editor__page--line-numbers"
-            )}
-            style={pageStyle}
-          >
-            {pageSettings.watermark_text ? (
-              <div className="word-editor__watermark pointer-events-none select-none">{pageSettings.watermark_text}</div>
-            ) : null}
-            {pageSettings.header_text ? (
-              <div className="word-editor__chrome word-editor__chrome--header" style={pageChromeStyle}>
-                <span>{pageSettings.header_text}</span>
-              </div>
-            ) : null}
-            <div className="border-b border-[#ece4d9]" style={titleStyle}>
-              <input
-                value={document.title}
-                disabled={readOnly}
-                onChange={(event) => onDocumentChange({ ...document, title: event.target.value })}
-                className="w-full border-0 bg-transparent text-[34px] font-semibold tracking-tight text-[#1a1a1a] outline-none placeholder:text-gray-300"
-                placeholder={e.untitledLesson}
-              />
-            </div>
-            <div className="flex-1" style={contentStyle}>
-              <EditorContent editor={editor} />
-            </div>
-            {pageSettings.footer_text || currentPageNumberLabel ? (
-              <div className="word-editor__chrome word-editor__chrome--footer" style={pageChromeStyle}>
-                <span>{pageSettings.footer_text}</span>
-                <span>{currentPageNumberLabel}</span>
-              </div>
-            ) : null}
-          </div>
-        </div>
-      </div>
+      <WordEditorPageCanvas
+        pageScrollRef={pageScrollRef}
+        pageSettings={pageSettings}
+        pageStyle={pageStyle}
+        pageChromeStyle={pageChromeStyle}
+        titleStyle={titleStyle}
+        contentStyle={contentStyle}
+        document={document}
+        readOnly={readOnly}
+        editor={editor}
+        currentPageNumberLabel={currentPageNumberLabel}
+        untitledLessonLabel={e.untitledLesson}
+        onDocumentChange={onDocumentChange}
+      />
     </div>
   );
 }

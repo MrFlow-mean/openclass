@@ -7,7 +7,7 @@
   ],
   "scripts": {
     "setup": "npm install && npm run setup:api",
-    "setup:api": "python3 -m venv .venv && .venv/bin/python -m pip install --upgrade pip && .venv/bin/python -m pip install -e '.[dev]'",
+    "setup:api": "python3.13 -m venv .venv && .venv/bin/python -m pip install --upgrade pip && .venv/bin/python -m pip install -e '.[dev]'",
     "dev": "concurrently -k \"npm run dev:api\" \"npm run dev:web\"",
     "dev:web": "npm --prefix apps/web run dev",
     "dev:api": ".venv/bin/python -m uvicorn app.main:app --reload --app-dir apps/api",

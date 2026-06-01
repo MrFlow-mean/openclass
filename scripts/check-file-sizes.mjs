@@ -18,6 +18,11 @@ const checks = [
     maxLines: 1200,
     level: "warn",
   },
+  {
+    path: "apps/api/app/services",
+    maxLines: 1300,
+    level: "warn",
+  },
 ];
 
 function lineCount(filePath) {
