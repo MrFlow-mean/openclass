@@ -96,6 +96,10 @@ def _chat_response(
         request_message=request.message,
         requirements=requirements,
     )
+
+    # ===== 专用 handler 优先拦截 =====
+    # 顺序敏感：证据插入 / 文档查询 / 资料导入 / 已有互动会话都可能直接产出最终
+    # 响应并 early-return。删除或重排任一分支会让后续通用生成误吞这些意图。
     document_action_response = _handle_document_evidence_action(
         workspace=workspace,
         package=package,
@@ -128,6 +132,8 @@ def _chat_response(
         reference_resource_id=request.resource_reference_resource_id,
         reference_chapter_id=request.resource_reference_chapter_id,
         reference_segment_id=request.resource_reference_segment_id,
+        # 仅当用户明显想「基于资料作答」且本轮不是写板书 / 生成讲义 / 开始学习时，
+        # 才允许直接引用资料原文；否则资料应作为生成上下文而非被原样回灌，避免答非所问。
         allow_direct_reference=(
             (
                 _requests_resource_backed_answer(request.message)
@@ -172,6 +178,7 @@ def _chat_response(
     if interaction_response is not None:
         return interaction_response
 
+    # ===== board_generation_action == "start"：显式从学习需求生成整篇板书 =====
     if request.board_generation_action == "start":
         learning_clarification = _latest_learning_clarification(lesson, requirements=requirements)
         requirements = _with_task_details(
@@ -337,6 +344,9 @@ def _chat_response(
             selected_reference=selected_reference,
         )
 
+    # ===== direct_edit：跳过「先问后写」，直接改写定位到的板书片段 =====
+    # direct_edit 模式下用户要的是即时落笔，所以这里先从本轮对话重算学习需求与目标
+    # 片段，再原地改写；append_section 例外（属于追加而非改写），交给后续通用分支。
     if request.interaction_mode == "direct_edit" and action_type != "append_section":
         requirement_conversation = [
             *request.conversation,
