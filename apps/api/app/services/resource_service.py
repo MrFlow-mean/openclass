@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import mimetypes
-import shutil
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import HTTPException, UploadFile
+from fastapi import HTTPException
 
 from app.models import CoursePackage, ResourceActivityAction, ResourceActivityEvent, ResourceLibraryItem, now_iso
 
@@ -28,25 +27,6 @@ def build_queued_resource(destination: Path, original_name: str, content_type: s
         page_count=0,
         indexed_block_count=0,
     )
-
-
-def add_uploaded_resource(
-    package: CoursePackage,
-    file: UploadFile,
-    upload_dir: Path,
-    *,
-    scope_lesson_id: str | None = None,
-) -> ResourceLibraryItem:
-    original_name = Path(file.filename or "resource").name
-    destination = upload_dir / f"{uuid4().hex[:8]}_{original_name}"
-    with destination.open("wb") as output:
-        shutil.copyfileobj(file.file, output)
-
-    resource = build_queued_resource(destination, original_name, file.content_type)
-    resource.scope_lesson_id = scope_lesson_id
-    package.resources.append(resource)
-    record_resource_activity(package, resource, "uploaded")
-    return resource
 
 
 def record_resource_activity(

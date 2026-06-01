@@ -46,7 +46,6 @@ type CourseStudioSidePanelProps = {
   onMergeChoiceChange: (section: MergeBranchSectionKey, choice: MergeBranchChoice) => void;
   onCancelMerge: () => void;
   onConfirmMerge: () => void | Promise<void>;
-  onUploadResource: (file: File | null) => void | Promise<void>;
   onDeleteResource: (resourceId: string, resourceName: string) => void | Promise<void>;
   onOpenLesson: (lessonId: string) => void | Promise<void>;
 };
@@ -77,7 +76,6 @@ export function CourseStudioSidePanel({
   onMergeChoiceChange,
   onCancelMerge,
   onConfirmMerge,
-  onUploadResource,
   onDeleteResource,
   onOpenLesson,
 }: CourseStudioSidePanelProps) {
@@ -167,7 +165,6 @@ export function CourseStudioSidePanel({
             resources={resources}
             relatedEdges={relatedEdges}
             lessonMap={lessonMap}
-            onUploadResource={onUploadResource}
             onDeleteResource={onDeleteResource}
             onOpenLesson={onOpenLesson}
           />

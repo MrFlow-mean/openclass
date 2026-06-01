@@ -4,7 +4,6 @@ import clsx from "clsx";
 import { AlertTriangle, CheckCircle2, CircleDashed, FileText, ImagePlus, LoaderCircle, Trash2 } from "lucide-react";
 
 import { CourseGraphPanel } from "@/components/course-studio/course-graph-panel";
-import { ResourceUploadDropzone } from "@/components/resource-upload-dropzone";
 import { useInterfaceLanguage } from "@/contexts/interface-language-context";
 import type { CoursePackage, Lesson } from "@/types";
 
@@ -14,7 +13,6 @@ type ResourcePanelProps = {
   resources: CoursePackage["resources"];
   relatedEdges: CoursePackage["course_graph"];
   lessonMap: Map<string, Lesson>;
-  onUploadResource: (file: File | null) => void | Promise<void>;
   onDeleteResource: (resourceId: string, resourceName: string) => void | Promise<void>;
   onOpenLesson: (lessonId: string) => void | Promise<void>;
 };
@@ -25,7 +23,6 @@ export function ResourcePanel({
   resources,
   relatedEdges,
   lessonMap,
-  onUploadResource,
   onDeleteResource,
   onOpenLesson,
 }: ResourcePanelProps) {
@@ -35,11 +32,6 @@ export function ResourcePanel({
     <div className="space-y-8">
       <div>
         <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">{r.title}</p>
-        <ResourceUploadDropzone
-          disabled={Boolean(busyAction)}
-          uploading={busyAction === "upload"}
-          onUpload={(file) => void onUploadResource(file)}
-        />
         <div className="mt-4 space-y-3">
           {resources.length
             ? resources.map((resource) => {

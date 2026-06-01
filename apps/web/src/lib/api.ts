@@ -678,24 +678,6 @@ export const api = {
       blob
     );
   },
-  async uploadResource(file: File, lessonId?: string | null) {
-    const formData = new FormData();
-    formData.append("file", file);
-    if (lessonId) {
-      formData.append("lesson_id", lessonId);
-    }
-    const response = await fetch(`${getApiBase()}/api/resources/upload`, {
-      method: "POST",
-      body: formData,
-      headers: authHeaders(),
-      cache: "no-store",
-      credentials: "include",
-    });
-    if (!response.ok) {
-      await throwApiError(response, `Upload failed with ${response.status}`);
-    }
-    return response.json() as Promise<CoursePackage>;
-  },
   deleteResource(resourceId: string, lessonId?: string | null) {
     const query = lessonId ? `?lesson_id=${encodeURIComponent(lessonId)}` : "";
     return request<CoursePackage>(`/api/resources/${resourceId}/delete${query}`, {

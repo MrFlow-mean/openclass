@@ -100,24 +100,6 @@ export function useWorkspaceActions({
     }
   }
 
-  async function handleUploadResource(file: File | null) {
-    if (!file) {
-      return;
-    }
-    if (!(await flushAutoSave("upload-resource"))) {
-      return;
-    }
-    setBusyAction("upload");
-    try {
-      const nextPackage = await api.uploadResource(file, activeLesson?.id);
-      updateCoursePackage(nextPackage, { activeLessonId: activeLesson?.id });
-    } catch (uploadError) {
-      setError(uploadError instanceof Error ? uploadError.message : "Could not upload resource");
-    } finally {
-      setBusyAction(null);
-    }
-  }
-
   async function handleDeleteResource(resourceId: string, resourceName: string) {
     if (!window.confirm(`Delete resource "${resourceName}"? AI will no longer cite it after deletion.`)) {
       return;
@@ -149,7 +131,6 @@ export function useWorkspaceActions({
     handleCreateLessonFromName,
     handleOpenLesson,
     handleCloseLesson,
-    handleUploadResource,
     handleDeleteResource,
     handleSelectLesson,
   };

@@ -359,7 +359,6 @@ export function CourseStudio() {
     handleCreateLessonFromName,
     handleOpenLesson,
     handleCloseLesson,
-    handleUploadResource,
     handleDeleteResource,
     handleSelectLesson,
   } = workspaceActions;
@@ -606,7 +605,6 @@ export function CourseStudio() {
           onMergeChoiceChange={(section, choice) => handleMergeChoiceChange(section, choice)}
           onCancelMerge={() => handleCancelMerge()}
           onConfirmMerge={() => handleConfirmMerge()}
-          onUploadResource={(file) => handleUploadResource(file)}
           onDeleteResource={(resourceId, resourceName) => handleDeleteResource(resourceId, resourceName)}
           onOpenLesson={(lessonId) => handleOpenLesson(lessonId)}
         />

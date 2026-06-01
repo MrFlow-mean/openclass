@@ -29,7 +29,6 @@ export type AutoSaveReason =
   | "merge"
   | "import"
   | "export"
-  | "upload-resource"
   | "delete-resource"
   | "voice"
   | "pagehide";

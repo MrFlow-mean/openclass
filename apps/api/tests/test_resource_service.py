@@ -1,26 +1,20 @@
-from io import BytesIO
-
-from fastapi import UploadFile
-
 from app.models import CoursePackage, ResourceLibraryItem, WorkspaceState
 from app.services.lesson_factory import create_empty_lesson
-from app.services.resource_service import add_uploaded_resource, delete_uploaded_resource_file, remove_resource_from_package
+from app.services.resource_service import build_queued_resource, delete_uploaded_resource_file, remove_resource_from_package
 from app.services.workspace_state import package_context_for_lesson, package_view_for_lesson
 
 
-def test_add_uploaded_resource_records_upload_event(tmp_path) -> None:
-    package = CoursePackage(title="测试课程", summary="", lessons=[])
-    upload_dir = tmp_path / "uploads"
-    upload_dir.mkdir()
-    upload = UploadFile(file=BytesIO(b"# Section\nResource body"), filename="notes.md")
+def test_build_queued_resource_marks_resource_for_indexing(tmp_path) -> None:
+    source = tmp_path / "notes.md"
+    source.write_text("# Section\nResource body", encoding="utf-8")
 
-    resource = add_uploaded_resource(package, upload, upload_dir)
+    resource = build_queued_resource(source, "notes.md")
 
-    assert package.resources == [resource]
-    assert package.resource_events[-1].action == "uploaded"
-    assert package.resource_events[-1].resource_id == resource.id
-    assert package.resource_events[-1].resource_name == "notes.md"
-    assert package.resource_events[-1].mime_type == "text/markdown"
+    assert resource.name == "notes.md"
+    assert resource.mime_type == "text/markdown"
+    assert resource.source_path == str(source)
+    assert resource.index_status == "queued"
+    assert resource.extracted_text_available is False
 
 
 def test_remove_resource_from_package_returns_removed_resource_and_records_delete() -> None:

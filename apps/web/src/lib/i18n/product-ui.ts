@@ -500,11 +500,6 @@ export function profileSettingsTexts(lang: InterfaceLanguage) {
         title: (branchName: string) =>
           z ? `${branchName} · 左键切换，右键查看概览` : `${branchName} - left-click to switch, right-click for overview`,
       },
-      upload: {
-        drop: z ? "松开上传" : "Drop to upload",
-        uploading: z ? "正在上传" : "Uploading",
-        idle: z ? "上传文件或图片" : "Upload a file or image",
-      },
       editor: {
         pageBreak: z ? "分页符" : "Page break",
         pageNumberLabel: z ? "第 1 页" : "Page 1",

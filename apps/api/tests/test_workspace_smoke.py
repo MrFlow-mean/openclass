@@ -54,7 +54,7 @@ def _document_with_text(document: dict, text: str) -> dict:
     return next_document
 
 
-def test_workspace_document_history_and_resource_flow(api_client: TestClient) -> None:
+def test_workspace_document_history_flow(api_client: TestClient) -> None:
     created_workspace = api_client.post(
         "/api/packages",
         json={"title": "Smoke package", "summary": ""},
@@ -96,14 +96,6 @@ def test_workspace_document_history_and_resource_flow(api_client: TestClient) ->
     assert second_save.status_code == 200
     assert second_save.json()["lessons"][0]["board_document"]["content_text"] == "Second smoke version"
 
-    upload = api_client.post(
-        "/api/resources/upload",
-        data={"lesson_id": lesson["id"]},
-        files={"file": ("notes.txt", b"# Notes\nReusable resource text.", "text/plain")},
-    )
-    assert upload.status_code == 200
-    assert upload.json()["resources"][0]["name"] == "notes.txt"
-
     search = api_client.get("/api/documents/search", params={"q": "Second smoke", "limit": 5})
     assert search.status_code == 200
     assert search.json()["results"]
@@ -116,39 +108,10 @@ def test_workspace_document_history_and_resource_flow(api_client: TestClient) ->
     assert restored.json()["lessons"][0]["board_document"]["content_text"] == "First smoke version"
 
 
-def test_resource_uploads_queue_background_indexing(api_client: TestClient) -> None:
-    created_workspace = api_client.post(
-        "/api/packages",
-        json={"title": "Upload package", "summary": ""},
-    )
-    assert created_workspace.status_code == 200
-    target_package_id = created_workspace.json()["active_package_id"]
-
-    generated = api_client.post(
-        "/api/lessons/generate",
-        json={"topic": "Upload lesson", "target_package_id": target_package_id, "start_blank": True},
-    )
-    assert generated.status_code == 200
-    lesson = generated.json()["lessons"][0]
-
-    large_pdf = api_client.post(
+def test_resource_upload_endpoint_is_removed(api_client: TestClient) -> None:
+    response = api_client.post(
         "/api/resources/upload",
-        data={"lesson_id": lesson["id"]},
-        files={
-            "file": (
-                "large.pdf",
-                b"x" * (9 * 1024 * 1024),
-                "application/pdf",
-            )
-        },
+        files={"file": ("notes.txt", b"# Notes\nReusable resource text.", "text/plain")},
     )
-    assert large_pdf.status_code == 200
-    assert large_pdf.json()["resources"][0]["index_status"] == "queued"
 
-    small_image = api_client.post(
-        "/api/resources/upload",
-        data={"lesson_id": lesson["id"]},
-        files={"file": ("screenshot.png", b"png", "image/png")},
-    )
-    assert small_image.status_code == 200
-    assert [resource["index_status"] for resource in small_image.json()["resources"]] == ["queued", "queued"]
+    assert response.status_code == 404
