@@ -11,7 +11,6 @@ from app.models import (
     ChatResponse,
     ConversationTurn,
     DocumentEvidence,
-    InteractionSession,
     InteractionTurnDecision,
     LearningClarificationStatus,
     LearningRequirementSheet,
@@ -24,49 +23,20 @@ from app.models import (
     StrongReasoningPrompt,
 )
 from app.services import workspace_state
-from app.services.board_document_editor import edit_existing_document, generate_from_requirements
-from app.services.board_teaching import build_board_teaching_guide, teach_first_section, teach_next_section
-from app.services.course_runtime import effective_requirements
-from app.services.course_runtime import refresh_lesson_runtime
-from app.services.history import commit_operations
-from app.services.interaction_rules import (
-    apply_interaction_decision,
-    build_interaction_start,
-    decide_interaction_turn,
-    interaction_context_payload,
-    interaction_session_metadata,
-    should_start_interaction,
-)
 from app.services.learning_requirement_manager import (
     is_explicit_board_generation_request,
     is_generation_control_request,
-    update_learning_requirements_from_chat,
 )
-from app.services.openai_course_ai import bind_text_model_selection, openai_course_ai
-from app.services.document_locator import (
-    document_evidence_from_id,
-    locate_document_evidence,
-    looks_like_document_request,
-    queued_resource_message,
-)
-from app.services.resource_document_import import (
-    apply_resource_document_import,
-    requests_pending_resource_document_import,
-    requests_resource_document_import,
-    resource_import_operation,
-    select_resource_import_payload,
-)
-from app.services.rich_document import build_document, is_document_empty
-from app.services.route_context import bind_ai_request_context
-from app.services.resource_resolver import ResourceResolution, resolve_resource_reference
-from app.services.segment_resolver import FocusResolution, focus_context, resolve_board_focus
+from app.services.openai_course_ai import openai_course_ai
+from app.services.rich_document import is_document_empty
+from app.services.resource_resolver import ResourceResolution
+from app.services.segment_resolver import FocusResolution
 from app.services.chatbot_patterns import (
     APPEND_REQUEST_PATTERN,
     COMPLEX_REASONING_REQUEST_PATTERN,
     CONTEXTUAL_CONTINUATION_EXPLANATION_PATTERN,
     DOCUMENT_ARTIFACT_REQUEST_PATTERN,
     DOCUMENT_TRANSFORM_REQUEST_PATTERN,
-    DOCUMENT_WRITE_ACTIONS,
     EDIT_ACTIONS,
     EXPLAIN_REQUEST_PATTERN,
     EXPAND_REQUEST_PATTERN,

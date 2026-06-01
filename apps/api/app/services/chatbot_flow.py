@@ -11,7 +11,6 @@ from app.services.learning_requirement_manager import (
     update_learning_requirements_from_chat,
 )
 from app.services.openai_course_ai import openai_course_ai
-from app.services.resource_document_import import requests_resource_document_import
 from app.services.rich_document import is_document_empty
 from app.services.resource_resolver import resolve_resource_reference
 from app.services.segment_resolver import focus_context, resolve_board_focus

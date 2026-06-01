@@ -1,12 +1,8 @@
 from __future__ import annotations
 
-import os
-import re
 
 from app.models import (
     BoardDecision,
-    BoardFocusRef,
-    BoardTaskAction,
     ChatRequest,
     ChatResponse,
     ConversationTurn,
@@ -17,16 +13,10 @@ from app.models import (
     LearningRequirementSheet,
     Lesson,
     ResourceLibraryItem,
-    ResourceMatch,
-    ResourceReferenceContext,
-    ResourceReferencePrompt,
-    SelectionRef,
-    StrongReasoningPrompt,
 )
 from app.services import workspace_state
-from app.services.board_document_editor import edit_existing_document, generate_from_requirements
-from app.services.board_teaching import build_board_teaching_guide, teach_first_section, teach_next_section
-from app.services.course_runtime import effective_requirements
+from app.services.board_document_editor import generate_from_requirements
+from app.services.board_teaching import build_board_teaching_guide
 from app.services.course_runtime import refresh_lesson_runtime
 from app.services.history import commit_operations
 from app.services.interaction_rules import (
@@ -37,12 +27,7 @@ from app.services.interaction_rules import (
     interaction_session_metadata,
     should_start_interaction,
 )
-from app.services.learning_requirement_manager import (
-    is_explicit_board_generation_request,
-    is_generation_control_request,
-    update_learning_requirements_from_chat,
-)
-from app.services.openai_course_ai import bind_text_model_selection, openai_course_ai
+from app.services.openai_course_ai import openai_course_ai
 from app.services.document_locator import (
     document_evidence_from_id,
     locate_document_evidence,
@@ -56,10 +41,8 @@ from app.services.resource_document_import import (
     resource_import_operation,
     select_resource_import_payload,
 )
-from app.services.rich_document import build_document, is_document_empty
-from app.services.route_context import bind_ai_request_context
-from app.services.resource_resolver import ResourceResolution, resolve_resource_reference
-from app.services.segment_resolver import FocusResolution, focus_context, resolve_board_focus
+from app.services.rich_document import build_document
+from app.services.resource_resolver import ResourceResolution
 from app.services.chatbot_support import (
     _board_summary,
     _clear_task_requirements,
@@ -73,30 +56,6 @@ from app.services.chatbot_support import (
     _response,
     _task_metadata,
     _with_task_details,
-)
-from app.services.chatbot_patterns import (
-    APPEND_REQUEST_PATTERN,
-    COMPLEX_REASONING_REQUEST_PATTERN,
-    CONTEXTUAL_CONTINUATION_EXPLANATION_PATTERN,
-    DOCUMENT_ARTIFACT_REQUEST_PATTERN,
-    DOCUMENT_TRANSFORM_REQUEST_PATTERN,
-    DOCUMENT_WRITE_ACTIONS,
-    EDIT_ACTIONS,
-    EXPLAIN_REQUEST_PATTERN,
-    EXPAND_REQUEST_PATTERN,
-    EXPLICIT_RESOURCE_REFERENCE_PATTERN,
-    FOLLOWUP_EXECUTION_PATTERN,
-    INTERACTION_RULE_REQUEST_PATTERN,
-    LEARNING_START_REQUEST_PATTERN,
-    PRO_REASONING_REQUEST_PATTERN,
-    RESOURCE_OUTPUT_EXPLANATION_PATTERN,
-    RESOURCE_REFERENCE_HINT_PATTERN,
-    REWRITE_REQUEST_PATTERN,
-    SIMPLIFY_REQUEST_PATTERN,
-    TARGET_LOCATION_HINT_PATTERN,
-    WHOLE_DOCUMENT_TARGET_PATTERN,
-    MAX_CONTEXT_CHARS,
-    MAX_CONVERSATION_TURNS,
 )
 
 def _generate_resource_import_chatbot_message(
