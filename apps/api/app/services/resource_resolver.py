@@ -16,10 +16,6 @@ from app.models import (
 )
 from app.services.resource_embedding import cosine_similarity, resource_embedding_service
 from app.services.resource_library import extract_reference_context
-from app.services.resource_page_navigator import (
-    extract_navigated_reference_context,
-    find_navigated_matches,
-)
 
 
 DIRECT_REFERENCE_THRESHOLD = 0.68
@@ -119,7 +115,6 @@ def resolve_resource_reference(
 
 
 def _rank_resource_matches(resources: list[ResourceLibraryItem], user_message: str) -> list[ResourceMatch]:
-    navigated_matches = find_navigated_matches(resources, user_message)
     query_terms = _query_terms(user_message)
     compact_message = _compact_text(user_message, limit=500)
     embedded_segments = [
@@ -130,7 +125,7 @@ def _rank_resource_matches(resources: list[ResourceLibraryItem], user_message: s
     ]
     query_vector = resource_embedding_service.embed_query(compact_message) if embedded_segments else []
     if not query_terms and not query_vector:
-        return navigated_matches
+        return []
 
     candidates: list[RankedResourceCandidate] = []
     for resource in resources:
@@ -158,17 +153,11 @@ def _rank_resource_matches(resources: list[ResourceLibraryItem], user_message: s
 
     candidates.sort(key=lambda item: item.score, reverse=True)
     if not candidates:
-        return navigated_matches
+        return []
 
     max_score = max(candidates[0].score, 0.01)
     matches: list[ResourceMatch] = []
     seen: set[tuple[str, str]] = set()
-    for match in navigated_matches:
-        key = (match.resource_id, match.segment_id or match.chapter_id)
-        if key in seen:
-            continue
-        seen.add(key)
-        matches.append(match)
     for candidate in candidates:
         score = candidate.score
         resource = candidate.resource
@@ -498,9 +487,6 @@ def _extract_reference(
     resource = next((candidate for candidate in resources if candidate.id == match.resource_id), None)
     if resource is None:
         return None
-    navigated_reference = extract_navigated_reference_context(resource, match, user_message)
-    if navigated_reference is not None:
-        return navigated_reference
     if match.segment_id:
         return _extract_segment_reference(resource, match)
     return extract_reference_context(

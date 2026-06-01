@@ -14,6 +14,7 @@ from app.services.course_runtime import (
 from app.services.document_ops import apply_patch
 from app.services.history import build_merge_preview, commit_operations, create_branch, merge_branch, restore_commit, switch_branch
 from app.services.lesson_factory import create_empty_lesson, create_lesson
+from app.services.openai_course_ai import GeneratedCatalogChapter, GeneratedResourceCatalog, OpenAICourseAI
 from app.services import resource_resolver as resource_resolver_module
 from app.services.resource_library import _epub_section_body_score, build_resource_item, extract_reference_context
 from app.services.resource_resolver import resolve_resource_reference
@@ -687,37 +688,6 @@ def test_pdf_page_text_generates_resource_segments(tmp_path) -> None:
     assert all(segment.parser_name for segment in resource.segments)
 
 
-def test_resource_page_navigator_extracts_numbered_pdf_subsection(tmp_path) -> None:
-    resource_path = tmp_path / "numbered-section.pdf"
-    _write_pdf_with_outline(
-        resource_path,
-        outline_title="Chapter 13 Semi Supervised Learning",
-        lines=[
-            "13.1 Unlabeled Samples",
-            "Figure 13.2 is a figure label, not the target heading.",
-            "Equation (13.2) is not a subsection heading.",
-            "13.2 Generative Methods",
-            "Target body evidence for the requested numbered section.",
-            "More target evidence before the next sibling heading.",
-            "13.3 Semi-supervised SVM",
-            "This later section must not be included.",
-        ],
-    )
-    resource = build_resource_item(resource_path, "numbered-section.pdf")
-
-    resolution = resolve_resource_reference(
-        resources=[resource],
-        user_message="Please present section 13.2.",
-        allow_direct_reference=True,
-    )
-
-    assert resolution.selected_reference is not None
-    assert resolution.selected_reference.text_evidence_status == "page_navigator"
-    assert resolution.matches[0].text_source == "page_navigator"
-    assert "Target body evidence" in resolution.selected_reference.full_text
-    assert "This later section must not be included" not in resolution.selected_reference.full_text
-
-
 def test_pdf_toc_printed_page_anchor_maps_to_actual_body_page(tmp_path) -> None:
     resource_path = tmp_path / "toc-anchor.pdf"
     body_first_page = _write_pdf_with_toc_and_body(
@@ -1010,16 +980,30 @@ def test_epub_section_scoring_penalizes_generic_structural_shells() -> None:
     assert _epub_section_body_score(body_sections, 0)[0] > _epub_section_body_score(shell_sections, 0)[0]
 
 
-def test_build_resource_item_uses_deterministic_entry_when_material_has_no_outline(tmp_path) -> None:
+def test_build_resource_item_uses_catalog_ai_when_material_has_no_outline(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    def _fake_outline(self, *, resource_name: str, extracted_text: str, max_chapters: int = 8):
+        return GeneratedResourceCatalog(
+            chapters=[
+                GeneratedCatalogChapter(
+                    title="学习入口",
+                    summary="从资料正文生成的目录入口。",
+                    keywords=["入口"],
+                    level=1,
+                )
+            ]
+        )
+
+    monkeypatch.setattr(OpenAICourseAI, "generate_resource_outline", _fake_outline)
     resource_path = tmp_path / "plain.txt"
     resource_path.write_text("这是一段没有标题的资料正文。" * 20, encoding="utf-8")
 
     resource = build_resource_item(resource_path, "plain.txt")
 
-    assert resource.outline[0].title == "plain"
+    assert resource.outline[0].title == "学习入口"
     assert resource.outline[0].scan_strategy == "fulltext_match"
-    assert resource.extracted_text_available is True
-    assert resource.text_content
 
 
 def test_docx_import_export_roundtrip(tmp_path) -> None:

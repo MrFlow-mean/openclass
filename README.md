@@ -46,6 +46,7 @@ npm run dev              # 同时启动前后端
 OPENAI_API_KEY=...
 OPENAI_COMPAT_API=chat_completions
 OPENAI_MODEL=gpt-5.5
+OPENAI_CATALOG_MODEL=gpt-5.4-mini
 OPENCLASS_REALTIME_ENABLED=false
 OPENCLASS_REALTIME_TOOLS_ENABLED=false
 OPENAI_REALTIME_MODEL=gpt-realtime-2
@@ -54,7 +55,7 @@ AI_TEXT_PROVIDER=openai
 AI_REALTIME_PROVIDER=openai
 ```
 
-OpenAI/GPT 文本交互和 GPT Image 2 默认走官方 OpenAI API：`https://api.openai.com/v1`。交互 AI 文本默认用 GPT-5.5；语音交互默认用 GPT Realtime 2，但需要显式设置 `OPENCLASS_REALTIME_ENABLED=true` 才会启用后端 WebRTC 连接，`OPENCLASS_REALTIME_TOOLS_ENABLED=true` 才允许 Realtime 调用后端 Chatbot 工具。复杂问题的隐藏强推理工具默认使用 `OPENAI_STRONG_REASONING_MODEL=gpt-5.5` 和 `OPENAI_STRONG_REASONING_EFFORT=high`，只有设置 `OPENCLASS_STRONG_REASONING_ALLOW_PRO=true` 时才会使用 `OPENAI_PRO_REASONING_MODEL`。上传资料默认走确定性解析、页码导航和正文证据检索，不再调用独立目录生成 AI。其他 provider（Anthropic / Google / DeepSeek / Kimi / MiniMax / 自定义兼容网关）和默认模型见 `.env.example`。
+OpenAI/GPT 文本交互和 GPT Image 2 默认走官方 OpenAI API：`https://api.openai.com/v1`。交互 AI 文本默认用 GPT-5.5；语音交互默认用 GPT Realtime 2，但需要显式设置 `OPENCLASS_REALTIME_ENABLED=true` 才会启用后端 WebRTC 连接，`OPENCLASS_REALTIME_TOOLS_ENABLED=true` 才允许 Realtime 调用后端 Chatbot 工具。复杂问题的隐藏强推理工具默认使用 `OPENAI_STRONG_REASONING_MODEL=gpt-5.5` 和 `OPENAI_STRONG_REASONING_EFFORT=high`，只有设置 `OPENCLASS_STRONG_REASONING_ALLOW_PRO=true` 时才会使用 `OPENAI_PRO_REASONING_MODEL`。上传资料的目录 AI 通过 `OPENAI_CATALOG_MODEL` 独立配置，默认用 GPT-5.4 mini。其他 provider（Anthropic / Google / DeepSeek / Kimi / MiniMax / 自定义兼容网关）和默认模型见 `.env.example`。
 
 前端"选择模型"调 `/api/ai-models`，未配置 key 的 provider 会标为未配置。当前保留并启用的是模型目录、课程聊天入口、文档保存/导入/导出和资料解析等工作台能力；Realtime 默认关闭，开启后仍作为同一个 Chatbot 的实时输入/输出形态，而不是新的教学角色。`BoardTeachingGuide` / `BoardTeachingProgress` 等教学工作流 schema 仅作为历史兼容和 future workflow 预留，不代表完整 AI 教学编排已经接回。
 
