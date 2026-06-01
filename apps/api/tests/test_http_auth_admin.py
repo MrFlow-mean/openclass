@@ -76,3 +76,45 @@ def test_admin_can_disable_user(isolated_app) -> None:
 
     login = client.post("/api/auth/login", json={"email": "target@example.com", "password": "correct-password"})
     assert login.status_code == 403
+
+
+def test_admin_audit_logs_requires_admin(isolated_app) -> None:
+    client, _auth, _store, sent = isolated_app
+
+    unauthenticated = client.get("/api/admin/audit-logs")
+    assert unauthenticated.status_code == 401
+    assert unauthenticated.json()["detail"]["code"] == AUTH_ERROR_UNAUTHENTICATED
+
+    admin_headers = verified_headers(client, sent, email="audit-admin@example.com")
+    member_headers = verified_headers(client, sent, email="audit-member@example.com")
+
+    forbidden = client.get("/api/admin/audit-logs", headers=member_headers)
+    assert forbidden.status_code == 403
+    assert forbidden.json()["detail"]["code"] == AUTH_ERROR_ADMIN_REQUIRED
+
+    allowed = client.get("/api/admin/audit-logs", headers=admin_headers)
+    assert allowed.status_code == 200
+
+
+def test_admin_audit_logs_returns_entries(isolated_app) -> None:
+    client, _auth, _store, sent = isolated_app
+    admin_headers = verified_headers(client, sent, email="audit-entries-admin@example.com")
+    target_headers = verified_headers(client, sent, email="audit-entries-target@example.com")
+
+    target_me = client.get("/api/auth/me", headers=target_headers)
+    target_id = target_me.json()["id"]
+
+    patch = client.patch(
+        f"/api/admin/users/{target_id}",
+        headers=admin_headers,
+        json={"status": "disabled"},
+    )
+    assert patch.status_code == 200
+
+    response = client.get("/api/admin/audit-logs", headers=admin_headers)
+    assert response.status_code == 200
+    payload = response.json()
+    assert "logs" in payload
+    assert isinstance(payload["logs"], list)
+    assert payload["logs"]
+    assert payload["logs"][0]["action"] == "user.update"

@@ -88,3 +88,16 @@ def test_workspace_crud_and_isolation_via_http(isolated_app) -> None:
     assert deleted.status_code == 200
     active_package = next(pkg for pkg in deleted.json()["packages"] if pkg["id"] == package_id)
     assert all(lesson_item["id"] != lesson_id for lesson_item in active_package["lessons"])
+
+
+def test_create_package_rejects_empty_title(isolated_app) -> None:
+    client, _auth, _store, sent = isolated_app
+    headers = verified_headers(client, sent, email="workspace-empty-title@example.com")
+
+    response = client.post(
+        "/api/packages",
+        json={"title": "   ", "summary": ""},
+        headers=headers,
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Package title is required"
