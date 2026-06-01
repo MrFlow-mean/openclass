@@ -6,15 +6,7 @@ from app.services.openai_course_ai import ChatbotReply, LearningRequirementUpdat
 
 
 def _auth_headers(client, sent, *, email: str = "chat@example.com", password: str = "correct-password") -> dict[str, str]:
-    client.post("/api/auth/register", json={"email": email, "password": password})
-    client.get(
-        "/api/auth/email/verify",
-        params={"token": token_from_latest_email(sent)},
-        follow_redirects=False,
-    )
-    login = client.post("/api/auth/login", json={"email": email, "password": password})
-    token = login.json()["token"]
-    return {"Authorization": f"Bearer {token}"}
+    return verified_headers(client, sent, email=email, password=password)
 
 
 def _fake_requirement_update(**kwargs) -> LearningRequirementUpdate:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from conftest import token_from_latest_email
+from conftest import token_from_latest_email, verified_headers
 from app.constants import AUTH_ERROR_EMAIL_NOT_VERIFIED
 
 

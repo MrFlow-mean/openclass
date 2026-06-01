@@ -1,23 +1,15 @@
 from __future__ import annotations
 
-from conftest import token_from_latest_email
+from copy import deepcopy
 
-
-def _verified_headers(client, sent, *, email: str, password: str = "correct-password") -> dict[str, str]:
-    client.post("/api/auth/register", json={"email": email, "password": password})
-    client.get(
-        "/api/auth/email/verify",
-        params={"token": token_from_latest_email(sent)},
-        follow_redirects=False,
-    )
-    login = client.post("/api/auth/login", json={"email": email, "password": password})
-    return {"Authorization": f"Bearer {login.json()['token']}"}
+from app.constants import CONTRIBUTION_STATUS_MERGED
+from conftest import verified_headers
 
 
 def test_collaboration_publish_list_and_fork_via_http(isolated_app) -> None:
     client, _auth, _store, sent = isolated_app
-    owner_headers = _verified_headers(client, sent, email="owner@example.com")
-    learner_headers = _verified_headers(client, sent, email="learner@example.com")
+    owner_headers = verified_headers(client, sent, email="owner@example.com")
+    learner_headers = verified_headers(client, sent, email="learner@example.com")
 
     package = client.post(
         "/api/packages",
@@ -47,11 +39,56 @@ def test_collaboration_publish_list_and_fork_via_http(isolated_app) -> None:
     courses = listing.json()["courses"]
     assert any(course["id"] == publication_id for course in courses)
 
+    detail = client.get(f"/api/open-courses/{publication_id}", headers=learner_headers)
+    assert detail.status_code == 200
+    assert detail.json()["course"]["id"] == publication_id
+
     fork = client.post(
         f"/api/open-courses/{publication_id}/fork",
         headers=learner_headers,
     )
     assert fork.status_code == 200
     forked = fork.json()["course_package"]
+    fork_meta = fork.json()["fork"]
     assert forked["id"] != package_id
     assert len(forked["lessons"]) >= 1
+
+    foreign_publish = client.post(
+        f"/api/packages/{package_id}/publish",
+        headers=learner_headers,
+        json={"summary": "Should fail"},
+    )
+    assert foreign_publish.status_code in {403, 404}
+
+    fork_lesson = forked["lessons"][0]
+    document = deepcopy(fork_lesson["board_document"])
+    document["content_text"] = "Contributor improvement"
+    document["content_html"] = "<p>Contributor improvement</p>"
+
+    save = client.post(
+        f"/api/lessons/{fork_lesson['id']}/document/save",
+        headers=learner_headers,
+        json={
+            "document": document,
+            "label": "Contributor save",
+            "message": "Improved lesson body",
+            "metadata": {"kind": "manual_document_save"},
+        },
+    )
+    assert save.status_code == 200
+
+    contribution = client.post(
+        f"/api/forks/{fork_meta['id']}/contributions",
+        headers=learner_headers,
+        json={"title": "Improve lesson", "description": "HTTP integration contribution"},
+    )
+    assert contribution.status_code == 200
+    contribution_id = contribution.json()["id"]
+
+    review = client.post(
+        f"/api/contributions/{contribution_id}/review",
+        headers=owner_headers,
+        json={"action": "merge", "message": "accept"},
+    )
+    assert review.status_code == 200
+    assert review.json()["status"] == CONTRIBUTION_STATUS_MERGED

@@ -25,6 +25,24 @@ def token_from_latest_email(sent: list[dict[str, str]], *, name: str = "token") 
     return match.group(1)
 
 
+def verified_headers(
+    client: TestClient,
+    sent: list[dict[str, str]],
+    *,
+    email: str,
+    password: str = "correct-password",
+) -> dict[str, str]:
+    client.post("/api/auth/register", json={"email": email, "password": password})
+    client.get(
+        "/api/auth/email/verify",
+        params={"token": token_from_latest_email(sent)},
+        follow_redirects=False,
+    )
+    login = client.post("/api/auth/login", json={"email": email, "password": password})
+    token = login.json()["token"]
+    return {"Authorization": f"Bearer {token}"}
+
+
 @pytest.fixture
 def isolated_app(tmp_path, monkeypatch) -> Iterator[tuple[TestClient, AuthService, SqliteCourseStore, list[dict[str, str]]]]:
     sent: list[dict[str, str]] = []
