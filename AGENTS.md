@@ -7,12 +7,13 @@
 ```text
 .
 ├── apps/
-│   ├── api/              # FastAPI 后端（Python 3.13）
+│   ├── api/              # FastAPI 后端（Python 3.13），详见 apps/api/README.md
 │   │   ├── app/main.py       # 应用组装 + 健康检查
 │   │   ├── app/routers/      # workspace / documents / chat / realtime / resources
 │   │   ├── app/services/     # 业务逻辑、状态、AI、存储、历史
 │   │   └── data/             # 本地运行数据，已 gitignore
 │   └── web/              # Next.js 前端，详见 apps/web/AGENTS.md
+├── docs/                 # 补充架构说明（如 auth-user-management.md）
 ├── launcher/             # 可双击的本地入口 HTML
 ├── package.json          # 根 workspace 脚本
 ├── pyproject.toml        # 后端依赖 + pytest（单一来源）
