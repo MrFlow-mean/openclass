@@ -111,6 +111,11 @@ def isolated_ai_log(monkeypatch: pytest.MonkeyPatch, tmp_path):
     return log_path
 
 
+@pytest.fixture(autouse=True)
+def disable_default_post_board_generation_reply(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(openai_course_ai, "generate_post_board_generation_reply", lambda **kwargs: None)
+
+
 def test_openai_parse_logs_prompt_and_output(isolated_ai_log) -> None:
     class _Output(BaseModel):
         title: str
@@ -245,6 +250,39 @@ def test_chatbot_reply_prompt_uses_chatbot_identity(monkeypatch: pytest.MonkeyPa
     assert captured["role"] == "chatbot"
     assert captured["system_prompt"].startswith("你是 OpenClass 的 Chatbot，")
     assert "AI Chatbot" not in captured["system_prompt"]
+
+
+def test_post_board_generation_reply_prompt_invites_teaching_from_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, str] = {}
+    ai = OpenAICourseAI()
+    monkeypatch.setattr(OpenAICourseAI, "enabled", property(lambda self: True))
+
+    def _fake_parse(role, *, system_prompt, user_prompt, schema):
+        captured["role"] = role
+        captured["system_prompt"] = system_prompt
+        captured["user_prompt"] = user_prompt
+        return ChatbotReply(chatbot_message="板书已经好了，要不要我从开头讲起？")
+
+    monkeypatch.setattr(ai, "_parse", _fake_parse)
+
+    reply = ai.generate_post_board_generation_reply(
+        lesson_title="测试页",
+        learning_goal="学习一个通用主题",
+        board_summary="# 板书\n## 起点\n正文",
+        resource_summary="暂无已上传资料摘要",
+        requirement_context={"summary": "用户已经给出学习目标。"},
+        editor_summary="已生成第一版板书。",
+        section_titles=["起点"],
+    )
+
+    assert reply is not None
+    assert captured["role"] == "chatbot"
+    assert "右侧文档已经从空白状态生成了第一版板书" in captured["system_prompt"]
+    assert "从开头开始讲解" in captured["system_prompt"]
+    assert "不要输出板书正文" in captured["system_prompt"]
+    assert "不要套用固定格式" in captured["system_prompt"]
 
 
 def test_board_document_generation_prompt_requests_substantial_default_length(

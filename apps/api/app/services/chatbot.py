@@ -775,6 +775,32 @@ def _checkpoint_initial_requirement_before_generation(
     )
 
 
+def _post_initial_board_generation_message(
+    *,
+    lesson: Lesson,
+    requirements: LearningRequirementSheet,
+    learning_clarification: LearningClarificationStatus,
+    resource_summary: str,
+    edit_outcome,
+) -> tuple[str, str]:
+    ai_reply = openai_course_ai.generate_post_board_generation_reply(
+        lesson_title=lesson.title,
+        learning_goal=learning_clarification.summary or requirements.learning_goal,
+        board_summary=_board_summary(lesson),
+        resource_summary=resource_summary,
+        requirement_context={
+            "sheet": requirements.model_dump(mode="json"),
+            "clarification": learning_clarification.model_dump(mode="json"),
+        },
+        editor_summary=edit_outcome.summary,
+        section_titles=edit_outcome.section_titles,
+    )
+    chatbot_message = (ai_reply.chatbot_message if ai_reply else "").strip()
+    if chatbot_message:
+        return chatbot_message, "chatbot_post_board_generation"
+    return edit_outcome.chatbot_message, edit_outcome.assistant_message_source
+
+
 def _response_requirement_stamp(
     requirement_history: LearningRequirementHistoryRecorder | None,
     requirement_stamp: RequirementHistoryStamp | None,
@@ -1202,6 +1228,13 @@ def _generate_board_from_confirmed_resource(
         refresh_lesson_runtime(lesson, document=edit_outcome.new_document, requirements=requirements)
         lesson.board_teaching_guide = build_board_teaching_guide(lesson)
         lesson.board_teaching_progress = None
+        chatbot_message, chatbot_message_source = _post_initial_board_generation_message(
+            lesson=lesson,
+            requirements=requirements,
+            learning_clarification=learning_clarification,
+            resource_summary=resource_summary_for_turn,
+            edit_outcome=edit_outcome,
+        )
     requirement_cleared = edit_outcome.changed
     commit_operations(
         lesson,
@@ -1214,7 +1247,8 @@ def _generate_board_from_confirmed_resource(
             "resource_backed_generation": True,
             "user_message": request.message,
             "assistant_message": chatbot_message,
-            "assistant_message_source": edit_outcome.assistant_message_source,
+            "assistant_message_source": chatbot_message_source,
+            "board_editor_message": edit_outcome.chatbot_message,
             "interaction_mode": request.interaction_mode,
             "resource_reference_action": request.resource_reference_action,
             "board_generation_action": "resource_reference_confirm",
@@ -1377,12 +1411,20 @@ def _chat_response(
             refresh_lesson_runtime(lesson, document=edit_outcome.new_document, requirements=requirements)
             lesson.board_teaching_guide = build_board_teaching_guide(lesson)
             lesson.board_teaching_progress = None
+            chatbot_message, chatbot_message_source = _post_initial_board_generation_message(
+                lesson=lesson,
+                requirements=requirements,
+                learning_clarification=learning_clarification,
+                resource_summary=_resource_summary(visible_package.resources),
+                edit_outcome=edit_outcome,
+            )
         requirement_cleared = edit_outcome.changed
         metadata = {
             "kind": "board_document_generation",
             "user_message": request.message,
             "assistant_message": chatbot_message,
-            "assistant_message_source": edit_outcome.assistant_message_source,
+            "assistant_message_source": chatbot_message_source,
+            "board_editor_message": edit_outcome.chatbot_message,
             "board_generation_action": request.board_generation_action,
             "board_edit_operation": edit_outcome.operation,
             "board_edit_summary": edit_outcome.summary,
@@ -2080,6 +2122,13 @@ def _chat_response(
                 refresh_lesson_runtime(lesson, document=edit_outcome.new_document, requirements=requirements)
                 lesson.board_teaching_guide = build_board_teaching_guide(lesson)
                 lesson.board_teaching_progress = None
+                chatbot_message, chatbot_message_source = _post_initial_board_generation_message(
+                    lesson=lesson,
+                    requirements=requirements,
+                    learning_clarification=learning_clarification,
+                    resource_summary=resource_summary_for_turn,
+                    edit_outcome=edit_outcome,
+                )
             requirement_cleared = edit_outcome.changed
             commit_operations(
                 lesson,
@@ -2090,8 +2139,9 @@ def _chat_response(
                 metadata={
                     "kind": "board_document_generation",
                     "user_message": request.message,
-                    "assistant_message": edit_outcome.chatbot_message,
-                    "assistant_message_source": edit_outcome.assistant_message_source,
+                    "assistant_message": chatbot_message,
+                    "assistant_message_source": chatbot_message_source,
+                    "board_editor_message": edit_outcome.chatbot_message,
                     "interaction_mode": request.interaction_mode,
                     "selection": request.selection.model_dump(mode="json") if request.selection else None,
                     "board_generation_action": "explicit_board_request",
@@ -2127,7 +2177,7 @@ def _chat_response(
                 workspace=workspace,
                 package=package,
                 lesson=lesson,
-                chatbot_message=edit_outcome.chatbot_message,
+                chatbot_message=chatbot_message,
                 learning_clarification=learning_clarification,
                 requirements=requirements,
                 board_decision=edit_outcome.board_decision,
@@ -2392,6 +2442,13 @@ def _chat_response(
         refresh_lesson_runtime(lesson, document=edit_outcome.new_document, requirements=requirements)
         lesson.board_teaching_guide = build_board_teaching_guide(lesson)
         lesson.board_teaching_progress = None
+        post_generation_message, post_generation_source = _post_initial_board_generation_message(
+            lesson=lesson,
+            requirements=requirements,
+            learning_clarification=learning_clarification,
+            resource_summary=resource_summary_for_turn,
+            edit_outcome=edit_outcome,
+        )
         commit_operations(
             lesson,
             [],
@@ -2401,9 +2458,10 @@ def _chat_response(
             metadata={
                 "kind": "board_document_generation",
                 "user_message": request.message,
-                "assistant_message": edit_outcome.chatbot_message,
-                "assistant_message_source": edit_outcome.assistant_message_source,
+                "assistant_message": post_generation_message,
+                "assistant_message_source": post_generation_source,
                 "chatbot_requirement_reply": chatbot_message,
+                "board_editor_message": edit_outcome.chatbot_message,
                 "interaction_mode": request.interaction_mode,
                 "selection": request.selection.model_dump(mode="json") if request.selection else None,
                 "board_generation_action": "ready_requirement_sheet",
@@ -2435,7 +2493,7 @@ def _chat_response(
             workspace=workspace,
             package=package,
             lesson=lesson,
-            chatbot_message=edit_outcome.chatbot_message,
+            chatbot_message=post_generation_message,
             learning_clarification=learning_clarification,
             requirements=requirements,
             board_decision=edit_outcome.board_decision,

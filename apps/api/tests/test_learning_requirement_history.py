@@ -26,6 +26,11 @@ from app.services.rich_document import build_document
 TEST_USER_ID = "user_requirement_history"
 
 
+@pytest.fixture(autouse=True)
+def disable_default_post_board_generation_reply(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(openai_course_ai, "generate_post_board_generation_reply", lambda **kwargs: None)
+
+
 def _seed_workspace(store: SqliteCourseStore):
     workspace = build_initial_workspace_state()
     lesson = create_empty_lesson("空白学习页")
@@ -281,6 +286,11 @@ def test_ready_blank_board_freezes_then_generates_and_consumes_requirement(
         )
 
     monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _fake_board_edit)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_post_board_generation_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="板书已经就绪，要我按它从开头讲起吗？"),
+    )
     _, lesson = _seed_workspace(store)
 
     response = chat_service.process_chat_on_lesson(
@@ -294,6 +304,7 @@ def test_ready_blank_board_freezes_then_generates_and_consumes_requirement(
     commit = response.course_package.lessons[0].history_graph.commits[-1]
     assert response.requirement_phase == "consumed"
     assert response.requirement_cleared is True
+    assert response.chatbot_message == "板书已经就绪，要我按它从开头讲起吗？"
     assert response.active_requirement_sheet is None
     assert "第一版板书" in response.course_package.lessons[0].board_document.content_text
     assert captured["learning_requirement_context"]["summary"] == "用户想学习一个通用主题。"
@@ -306,6 +317,9 @@ def test_ready_blank_board_freezes_then_generates_and_consumes_requirement(
     assert version_kinds == ["completed", "frozen"]
     assert event_kinds == ["created", "completed", "frozen", "consumed"]
     assert commit.metadata["board_generation_action"] == "ready_requirement_sheet"
+    assert commit.metadata["assistant_message"] == response.chatbot_message
+    assert commit.metadata["assistant_message_source"] == "chatbot_post_board_generation"
+    assert commit.metadata["board_editor_message"] == "已生成第一版板书。"
     assert commit.metadata["requirement_run_id"] == response.requirement_run_id
     assert commit.metadata["frozen_requirement_version_id"] is not None
     assert commit.metadata["requirement_phase"] == "frozen"

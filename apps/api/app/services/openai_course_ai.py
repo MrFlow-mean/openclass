@@ -869,6 +869,51 @@ class OpenAICourseAI:
         )
         return result if isinstance(result, ChatbotReply) else None
 
+    def generate_post_board_generation_reply(
+        self,
+        *,
+        lesson_title: str,
+        learning_goal: str,
+        board_summary: str,
+        resource_summary: str,
+        requirement_context: dict[str, Any],
+        editor_summary: str,
+        section_titles: list[str],
+    ) -> ChatbotReply | None:
+        if not self.enabled:
+            return None
+        system_prompt = (
+            "你是 OpenClass 的 Chatbot，负责左侧聊天框里的自然学习对话。\n"
+            "当前右侧文档已经从空白状态生成了第一版板书。你的任务是给学习者一个短回复："
+            "确认板书已就绪，并询问是否要按照板书从开头开始讲解。\n"
+            "规则：\n"
+            "1. 不要输出板书正文、讲义正文、练习正文或长篇教学内容；右侧文档已经由板书文档编辑 AI 完成。\n"
+            "2. 不要开始正式讲解，只提出下一步教学邀请，等待用户确认。\n"
+            "3. 语气自然，结合学习需求和板书结构表达，不要套用固定格式。\n"
+            "4. 不写任何固定主题模板，不根据主题名、资料名或样例走特殊规则。"
+        )
+        user_prompt = _json(
+            {
+                "lesson_title": lesson_title,
+                "learning_goal": learning_goal,
+                "board_summary": board_summary,
+                "resource_summary": resource_summary,
+                "requirement_context": requirement_context,
+                "board_editor_summary": editor_summary,
+                "section_titles": section_titles,
+                "response_contract": {
+                    "chatbot_message": "面向学习者的自然语言短回复；确认板书已就绪，并询问是否要从开头开始讲解。",
+                },
+            }
+        )
+        result = self._parse(
+            "chatbot",
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            schema=ChatbotReply,
+        )
+        return result if isinstance(result, ChatbotReply) else None
+
     def solve_complex_problem(
         self,
         *,
