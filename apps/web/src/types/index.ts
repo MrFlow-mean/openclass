@@ -366,11 +366,15 @@ export interface InteractionSession {
   interaction_goal: string;
   target_focus?: BoardFocusRef | null;
   reference_context: string;
+  compliant_input_rule?: string;
   expected_user_behavior: string;
   assistant_behavior: string;
   progress_note: string;
   pause_reason: string;
   turn_count: number;
+  source_board_task_run_id?: string | null;
+  source_board_task_version_id?: string | null;
+  source_board_task_route?: string | null;
 }
 
 export interface InteractionTurnDecision {

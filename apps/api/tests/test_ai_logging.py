@@ -3304,20 +3304,30 @@ def test_rule_based_interaction_start_creates_session_and_clears_task_sheet(
 
     assert response.requirement_cleared is True
     assert response.active_requirement_sheet is None
+    assert response.active_board_task_sheet is None
     assert response.active_interaction_session is not None
     assert response.active_interaction_session.rule_text == "按用户指定的规则参考原文逐轮互动。"
     assert response.active_interaction_session.target_focus is not None
+    assert response.active_interaction_session.compliant_input_rule == "用户每轮按规则给出输入。"
+    assert response.active_interaction_session.source_board_task_run_id is not None
+    assert response.active_interaction_session.source_board_task_version_id is not None
     assert "目标原文内容" in response.active_interaction_session.reference_context
     assert captured_contexts[-1] is not None
     assert captured_contexts[-1]["rule_text"] == "按用户指定的规则参考原文逐轮互动。"
+    assert captured_contexts[-1]["compliant_input_rule"] == "用户每轮按规则给出输入。"
     updated_lesson = response.course_package.lessons[0]
     assert updated_lesson.learning_requirements is None
+    assert updated_lesson.board_task_requirements is None
     assert updated_lesson.active_interaction_session is not None
     commit = updated_lesson.history_graph.commits[-1]
     assert commit.metadata["kind"] == "interaction_flow"
     assert commit.metadata["requirement_cleared"] is True
+    assert commit.metadata["board_task_route"] == "chat"
+    assert commit.metadata["board_task_cleared"] is True
     assert commit.metadata["active_requirement_sheet_after"] is None
     assert commit.metadata["active_interaction_session_after"]["status"] == "active"
+    events = store.list_board_task_events(owner_user_id=TEST_USER.id, lesson_id=lesson.id)
+    assert events[-1]["event_type"] == "consumed"
     assert _read_log_entries(isolated_ai_log) == []
 
 
@@ -3382,6 +3392,63 @@ def test_active_rule_interaction_continues_with_rule_context(
     assert _read_log_entries(isolated_ai_log) == []
 
 
+def test_active_rule_interaction_new_task_exits_and_routes_to_board_task(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_interaction_turn_decision",
+        lambda **kwargs: InteractionTurnDecision(
+            route="new_task",
+            reason="用户提出了新的板书讲解任务。",
+            progress_note="互动结束，进入新任务。",
+            user_intent="讲解第一段",
+        ),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_chatbot_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="AI生成：按第一段讲解。"),
+    )
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.board_document = build_document(
+        title="已有板书",
+        content_text="# 原文\n## 第一段\n目标原文内容\n## 第二段\n其他内容",
+    )
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    lesson.active_interaction_session = InteractionSession(
+        status="active",
+        rule_text="按用户指定规则逐轮互动。",
+        interaction_goal="完成一段规则互动。",
+        reference_context="目标原文内容",
+        expected_user_behavior="用户按规则输入。",
+        assistant_behavior="Chatbot 按规则回应。",
+    )
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="解释第一段"),
+        user_id=TEST_USER.id,
+    )
+
+    assert response.interaction_decision is not None
+    assert response.interaction_decision.route == "new_task"
+    assert response.active_interaction_session is None
+    assert response.active_board_task_sheet is None
+    assert response.chatbot_message == "AI生成：按第一段讲解。"
+    commit = response.course_package.lessons[0].history_graph.commits[-1]
+    assert commit.metadata["interaction_decision"]["route"] == "new_task"
+    assert commit.metadata["active_interaction_session_after"] is None
+    assert commit.metadata["board_task_route"] == "explain"
+    assert commit.metadata["board_task_cleared"] is True
+    assert _read_log_entries(isolated_ai_log) == []
+
+
 def test_rule_violation_keeps_session_active(
     monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
 ) -> None:
@@ -3430,7 +3497,7 @@ def test_rule_violation_keeps_session_active(
     assert _read_log_entries(isolated_ai_log) == []
 
 
-def test_side_learning_request_pauses_interaction_session(
+def test_side_learning_request_exits_session_and_reenters_board_task_flow(
     monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
 ) -> None:
     store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
@@ -3461,20 +3528,25 @@ def test_side_learning_request_pauses_interaction_session(
         expected_user_behavior="用户按规则输入。",
         assistant_behavior="Chatbot 按规则回应。",
     )
+    lesson.board_document = build_document(title="已有板书", content_text="# 原文\n## 第一段\n目标原文内容")
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
     store.save_for_user(TEST_USER.id, workspace)
 
     response = chat_service.process_chat_on_lesson(
         lesson.id,
-        ChatRequest(message="先解释一下这里的一个词"),
+        ChatRequest(message="解释第一段"),
         user_id=TEST_USER.id,
     )
 
     assert response.interaction_decision is not None
     assert response.interaction_decision.route == "side_learning_request"
-    assert response.active_interaction_session is not None
-    assert response.active_interaction_session.status == "paused"
-    assert response.active_interaction_session.pause_reason == "用户临时询问原文内容。"
-    assert response.course_package.lessons[0].active_interaction_session is not None
+    assert response.active_interaction_session is None
+    assert response.active_board_task_sheet is None
+    assert response.course_package.lessons[0].active_interaction_session is None
+    commit = response.course_package.lessons[0].history_graph.commits[-1]
+    assert commit.metadata["interaction_decision"]["route"] == "side_learning_request"
+    assert commit.metadata["board_task_route"] == "explain"
+    assert commit.metadata["board_task_cleared"] is True
     assert _read_log_entries(isolated_ai_log) == []
 
 

@@ -32,12 +32,13 @@ def build_interaction_start(
     user_message: str,
     selection: SelectionRef | None = None,
     selection_text: str | None = None,
+    resolved_focus: BoardFocusRef | None = None,
 ) -> InteractionStartResolution:
     focus_resolution: FocusResolution | None = None
-    focus: BoardFocusRef | None = None
+    focus: BoardFocusRef | None = resolved_focus
     target_query = compact_segment_text(draft.target_hint or "", limit=500)
     selected_excerpt = compact_segment_text(selection.excerpt if selection else selection_text, limit=1200)
-    if selected_excerpt or target_query:
+    if focus is None and (selected_excerpt or target_query):
         focus_resolution = resolve_board_focus(
             lesson=lesson,
             user_message=target_query or user_message,
@@ -61,6 +62,7 @@ def build_interaction_start(
         interaction_goal=compact_segment_text(draft.interaction_goal, limit=500),
         target_focus=focus,
         reference_context=reference_context,
+        compliant_input_rule=compact_segment_text(draft.expected_user_behavior, limit=500),
         expected_user_behavior=compact_segment_text(draft.expected_user_behavior, limit=500),
         assistant_behavior=compact_segment_text(draft.assistant_behavior, limit=500),
         progress_note="",
@@ -122,12 +124,19 @@ def interaction_context_payload(
         "rule_text": session.rule_text,
         "interaction_goal": session.interaction_goal,
         "reference_context": session.reference_context,
+        "compliant_input_rule": session.compliant_input_rule,
         "expected_user_behavior": session.expected_user_behavior,
         "assistant_behavior": session.assistant_behavior,
         "progress_note": session.progress_note,
         "status": session.status,
         "turn_count": session.turn_count,
     }
+    if session.source_board_task_run_id:
+        payload["source_board_task_run_id"] = session.source_board_task_run_id
+    if session.source_board_task_version_id:
+        payload["source_board_task_version_id"] = session.source_board_task_version_id
+    if session.source_board_task_route:
+        payload["source_board_task_route"] = session.source_board_task_route
     if session.target_focus is not None:
         payload["target_focus"] = session.target_focus.model_dump(mode="json")
     if decision is not None:

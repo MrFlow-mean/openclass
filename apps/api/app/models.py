@@ -328,11 +328,15 @@ class InteractionSession(BaseModel):
     interaction_goal: str = ""
     target_focus: BoardFocusRef | None = None
     reference_context: str = ""
+    compliant_input_rule: str = ""
     expected_user_behavior: str = ""
     assistant_behavior: str = ""
     progress_note: str = ""
     pause_reason: str = ""
     turn_count: int = Field(default=0, ge=0)
+    source_board_task_run_id: str | None = None
+    source_board_task_version_id: str | None = None
+    source_board_task_route: str | None = None
 
 
 class InteractionTurnDecision(BaseModel):

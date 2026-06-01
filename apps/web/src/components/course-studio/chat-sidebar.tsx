@@ -199,6 +199,26 @@ export function CourseStudioChatSidebar({
               ) : null}
             </div>
           ) : null}
+          {!isPreviewMode && !activeBoardTask && activeLesson?.active_interaction_session ? (
+            <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-[11px] font-bold uppercase tracking-widest text-emerald-700">互动规则</p>
+                <span className="rounded-full bg-white px-2 py-1 text-[11px] font-semibold text-emerald-700">
+                  {activeLesson.active_interaction_session.turn_count}
+                </span>
+              </div>
+              <div className="mt-3 grid gap-2 text-xs leading-5 text-emerald-950">
+                <p>规则：{activeLesson.active_interaction_session.rule_text || "待确认"}</p>
+                <p>目标：{activeLesson.active_interaction_session.interaction_goal || "当前板书内容"}</p>
+                <p>
+                  合规输入：
+                  {activeLesson.active_interaction_session.compliant_input_rule ||
+                    activeLesson.active_interaction_session.expected_user_behavior ||
+                    "按当前规则回应"}
+                </p>
+              </div>
+            </div>
+          ) : null}
 
           <div className="space-y-5">
             {previewCommit ? (

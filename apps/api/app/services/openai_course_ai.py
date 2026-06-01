@@ -972,7 +972,8 @@ class OpenAICourseAI:
             "角色或轮次交流时才使用。\n"
             "2. target_hint 只记录用户给出的定位线索、选区摘要、标题、编号或前后文；不要编造段落 ID。\n"
             "3. question_or_topic 记录用户想处理的问题或主题内容；不能把系统追问写成用户需求。\n"
-            "4. interaction_rule_draft 只在用户提出特殊互动方式时填写，否则留空。\n"
+            "4. interaction_rule_draft 只在用户提出特殊互动方式时填写，否则留空；"
+            "如果填写，expected_user_behavior 必须说明什么样的用户输入算合规，assistant_behavior 必须说明 AI 如何按规则回应。\n"
             "5. progress 按四项清晰度估算，每项 25 分；非 chat 任务的互动规则项可视为已明确为无特殊规则。\n"
             "6. missing_items 只写还缺的字段；clarification_question 只问最关键的一个缺项。\n"
             "7. 不写任何学科、教材、考试或样例专属规则。"
@@ -1227,14 +1228,14 @@ class OpenAICourseAI:
             "你是 OpenClass 的互动规则路由 AI，只做结构化判断，不直接和用户聊天。\n"
             "任务：根据当前互动会话、原文上下文、最近对话和用户输入，判断本轮应该如何路由。\n"
             "规则：\n"
-            "1. route 只能是 continue_rule、rule_violation、side_learning_request、resume_rule、exit_rule、new_task。\n"
+            "1. route 优先只能是 continue_rule、rule_violation、exit_rule、new_task；"
+            "side_learning_request 和 resume_rule 仅为旧数据兼容，不作为默认选择。\n"
             "2. continue_rule 表示用户输入符合当前互动规则，应继续按规则互动。\n"
-            "3. rule_violation 表示用户仍在当前互动里，但输入不符合规则，应让 Chatbot 在规则内纠错。\n"
-            "4. side_learning_request 表示用户临时询问原文、词句、概念、步骤或原因，应暂停互动并讲解。\n"
-            "5. resume_rule 表示用户想恢复 paused 状态的互动。\n"
-            "6. exit_rule 表示用户明确结束当前互动规则。\n"
-            "7. new_task 表示用户开启了新的生成、编辑、定位或学习任务。\n"
-            "8. progress_note 只记录通用进度，不写固定场景模板或样例内容。"
+            "3. rule_violation 表示用户仍在当前互动任务内，但输入格式、顺序或内容不符合规则，应让 Chatbot 在规则内纠错。\n"
+            "4. new_task 表示用户开启了新的生成、编辑、定位、讲解或学习任务，或问题已经脱离当前互动规则。\n"
+            "5. exit_rule 表示用户明确结束当前互动规则。\n"
+            "6. 不要把规则外的新讲解/编辑/写作需求判成 side_learning_request；这类输入必须判成 new_task，回到四字段任务清单。\n"
+            "7. progress_note 只记录通用进度，不写固定场景模板或样例内容。"
         )
         user_prompt = _json(
             {
@@ -1246,7 +1247,7 @@ class OpenAICourseAI:
                 "selection_excerpt": selection_excerpt.strip() if selection_excerpt else "无选中引用",
                 "user_message": user_message,
                 "response_contract": {
-                    "route": "continue_rule、rule_violation、side_learning_request、resume_rule、exit_rule 或 new_task。",
+                    "route": "continue_rule、rule_violation、exit_rule 或 new_task；旧兼容可返回 side_learning_request/resume_rule。",
                     "reason": "本轮路由理由；用于内部记录，不面向用户。",
                     "progress_note": "本轮后应保存的互动进度摘要；没有变化可沿用原摘要。",
                     "user_intent": "对用户本轮意图的简短结构化描述。",
