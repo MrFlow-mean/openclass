@@ -151,8 +151,10 @@ export function useBoardDraft({
       documentDraftVersionRef.current += 1;
       draftDocumentRef.current = document;
       isDocumentDirtyRef.current = false;
+      isPreviewingRef.current = true;
       setDraftDocument(document);
       setIsDocumentDirty(false);
+      setIsPreviewing(true);
       setAutoSaveStatus("idle");
     },
     [clearAutoSaveTimer]

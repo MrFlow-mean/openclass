@@ -25,6 +25,7 @@ from app.models import (
     SelectionRef,
 )
 from app.services import workspace_state
+from app.services.ai_logging import current_ai_log_context
 from app.services.board_document_editor import edit_existing_document, generate_from_requirements
 from app.services.board_explanation_gate import (
     generate_board_directed_explanation_message as _gate_board_directed_explanation_message,
@@ -1930,6 +1931,8 @@ def _handle_existing_board_task_flow(
                 resolved_focus=focus,
                 requirement_cleared=False,
                 board_task_stamp=failed_stamp,
+                board_document_operation_status=edit_outcome.operation_status,
+                board_document_operation_failure_reason=edit_outcome.failure_reason,
             )
         recent_focus = _recent_board_edit_focus_for_commit(
             lesson=lesson,
@@ -1998,6 +2001,8 @@ def _handle_existing_board_task_flow(
             resolved_focus=focus,
             requirement_cleared=True,
             board_task_stamp=consumed_stamp,
+            board_document_operation_status=edit_outcome.operation_status,
+            board_document_operation_failure_reason=edit_outcome.failure_reason,
         )
 
     if decision.route == "explain":
@@ -2267,6 +2272,8 @@ def _execute_board_task_write(
             board_decision=edit_outcome.board_decision,
             requirement_cleared=False,
             board_task_stamp=failed_stamp,
+            board_document_operation_status=edit_outcome.operation_status,
+            board_document_operation_failure_reason=edit_outcome.failure_reason,
         )
 
     commit_operations(
@@ -2330,6 +2337,8 @@ def _execute_board_task_write(
         board_decision=edit_outcome.board_decision,
         requirement_cleared=edit_outcome.changed,
         board_task_stamp=consumed_stamp,
+        board_document_operation_status=edit_outcome.operation_status,
+        board_document_operation_failure_reason=edit_outcome.failure_reason,
     )
 
 
@@ -2355,6 +2364,20 @@ def _response_board_task_stamp(
     return board_task_history.current_stamp()
 
 
+def _board_document_failure_metadata(edit_outcome) -> dict[str, object]:
+    context = current_ai_log_context()
+    metadata: dict[str, object] = {
+        "assistant_message_source": edit_outcome.assistant_message_source,
+        "board_edit_operation": edit_outcome.operation,
+        "board_edit_summary": edit_outcome.summary,
+        "board_document_operation_status": edit_outcome.operation_status,
+    }
+    trace_id = context.get("trace_id")
+    if trace_id:
+        metadata["trace_id"] = trace_id
+    return metadata
+
+
 def _response(
     *,
     workspace,
@@ -2376,6 +2399,8 @@ def _response(
     requirement_stamp: RequirementHistoryStamp | None = None,
     board_task_history: BoardTaskHistoryRecorder | None = None,
     board_task_stamp: BoardTaskHistoryStamp | None = None,
+    board_document_operation_status: str = "none",
+    board_document_operation_failure_reason: str | None = None,
 ) -> ChatResponse:
     stamp = _response_requirement_stamp(requirement_history, requirement_stamp)
     board_task_stamp_value = _response_board_task_stamp(board_task_history, board_task_stamp)
@@ -2408,6 +2433,8 @@ def _response(
         resolved_focus=resolved_focus,
         focus_candidates=focus_candidates or [],
         requirement_cleared=visible_requirement_cleared,
+        board_document_operation_status=board_document_operation_status,
+        board_document_operation_failure_reason=board_document_operation_failure_reason,
         created_lesson=None,
         teaching_progress=teaching_progress,
         course_package=workspace_state.package_view_for_lesson(workspace, package, lesson.id),
@@ -2904,7 +2931,10 @@ def _generate_board_from_confirmed_resource(
     chatbot_message = edit_outcome.chatbot_message
     if not edit_outcome.changed:
         failed_stamp = (
-            requirement_history.generation_failed(reason=edit_outcome.summary or chatbot_message)
+            requirement_history.generation_failed(
+                reason=edit_outcome.summary or chatbot_message,
+                metadata=_board_document_failure_metadata(edit_outcome),
+            )
             if frozen_requirement is not None
             else None
         )
@@ -2925,6 +2955,8 @@ def _generate_board_from_confirmed_resource(
             resource_matches=resource_resolution.matches,
             selected_reference=resource_resolution.selected_reference,
             requirement_stamp=failed_stamp,
+            board_document_operation_status=edit_outcome.operation_status,
+            board_document_operation_failure_reason=edit_outcome.failure_reason,
         )
     if edit_outcome.changed:
         refresh_lesson_runtime(lesson, document=edit_outcome.new_document, requirements=requirements)
@@ -2994,6 +3026,8 @@ def _generate_board_from_confirmed_resource(
         selected_reference=resource_resolution.selected_reference,
         requirement_cleared=requirement_cleared,
         requirement_stamp=consumed_stamp,
+        board_document_operation_status=edit_outcome.operation_status,
+        board_document_operation_failure_reason=edit_outcome.failure_reason,
     )
 
 
@@ -3109,7 +3143,10 @@ def _chat_response(
         chatbot_message = edit_outcome.chatbot_message
         if not edit_outcome.changed:
             failed_stamp = (
-                requirement_history.generation_failed(reason=edit_outcome.summary or chatbot_message)
+                requirement_history.generation_failed(
+                    reason=edit_outcome.summary or chatbot_message,
+                    metadata=_board_document_failure_metadata(edit_outcome),
+                )
                 if frozen_requirement is not None
                 else None
             )
@@ -3128,6 +3165,8 @@ def _chat_response(
                 learning_clarification=learning_clarification,
                 board_decision=edit_outcome.board_decision,
                 requirement_stamp=failed_stamp,
+                board_document_operation_status=edit_outcome.operation_status,
+                board_document_operation_failure_reason=edit_outcome.failure_reason,
             )
         if edit_outcome.changed:
             refresh_lesson_runtime(lesson, document=edit_outcome.new_document, requirements=requirements)
@@ -3193,6 +3232,8 @@ def _chat_response(
             board_decision=edit_outcome.board_decision,
             requirement_cleared=requirement_cleared,
             requirement_stamp=consumed_stamp,
+            board_document_operation_status=edit_outcome.operation_status,
+            board_document_operation_failure_reason=edit_outcome.failure_reason,
         )
 
     if request.teaching_action in {"continue", "restart"}:
@@ -3396,6 +3437,8 @@ def _chat_response(
             focus_candidates=resolution.candidates,
             requirement_cleared=requirement_cleared,
             requirement_history=requirement_history if track_initial_requirement_run else None,
+            board_document_operation_status=edit_outcome.operation_status,
+            board_document_operation_failure_reason=edit_outcome.failure_reason,
         )
 
     if action_type in {*DOCUMENT_WRITE_ACTIONS, "explain_target"} and not is_document_empty(lesson.board_document):
@@ -3505,6 +3548,8 @@ def _chat_response(
                 board_decision=edit_outcome.board_decision,
                 requirement_cleared=requirement_cleared,
                 requirement_history=requirement_history if track_initial_requirement_run else None,
+                board_document_operation_status=edit_outcome.operation_status,
+                board_document_operation_failure_reason=edit_outcome.failure_reason,
             )
 
         resolution = resolve_board_focus(
@@ -3634,6 +3679,8 @@ def _chat_response(
                 focus_candidates=resolution.candidates,
                 requirement_cleared=requirement_cleared,
                 requirement_history=requirement_history if track_initial_requirement_run else None,
+                board_document_operation_status=edit_outcome.operation_status,
+                board_document_operation_failure_reason=edit_outcome.failure_reason,
             )
 
         focus_excerpt = focus_context(resolution.focus) if resolution.focus else ""
@@ -3809,7 +3856,10 @@ def _chat_response(
             )
             if not edit_outcome.changed:
                 failed_stamp = (
-                    requirement_history.generation_failed(reason=edit_outcome.summary or edit_outcome.chatbot_message)
+                    requirement_history.generation_failed(
+                        reason=edit_outcome.summary or edit_outcome.chatbot_message,
+                        metadata=_board_document_failure_metadata(edit_outcome),
+                    )
                     if frozen_requirement is not None
                     else None
                 )
@@ -3830,6 +3880,8 @@ def _chat_response(
                     resource_matches=resource_resolution.matches,
                     selected_reference=selected_reference,
                     requirement_stamp=failed_stamp,
+                    board_document_operation_status=edit_outcome.operation_status,
+                    board_document_operation_failure_reason=edit_outcome.failure_reason,
                 )
             if edit_outcome.changed:
                 refresh_lesson_runtime(lesson, document=edit_outcome.new_document, requirements=requirements)
@@ -3898,6 +3950,8 @@ def _chat_response(
                 selected_reference=selected_reference,
                 requirement_cleared=requirement_cleared,
                 requirement_stamp=consumed_stamp,
+                board_document_operation_status=edit_outcome.operation_status,
+                board_document_operation_failure_reason=edit_outcome.failure_reason,
             )
         lesson.learning_requirements = requirements
         chatbot_user_message = (
@@ -4210,6 +4264,7 @@ def _chat_response(
         if not edit_outcome.changed:
             failed_stamp = requirement_history.generation_failed(
                 reason=edit_outcome.summary or edit_outcome.chatbot_message,
+                metadata=_board_document_failure_metadata(edit_outcome),
             )
             workspace_state.normalize_package_state(package)
             _save_workspace_for_user(
@@ -4228,6 +4283,8 @@ def _chat_response(
                 resource_matches=resource_resolution.matches,
                 selected_reference=selected_reference,
                 requirement_stamp=failed_stamp,
+                board_document_operation_status=edit_outcome.operation_status,
+                board_document_operation_failure_reason=edit_outcome.failure_reason,
             )
         refresh_lesson_runtime(lesson, document=edit_outcome.new_document, requirements=requirements)
         lesson.board_teaching_guide = build_board_teaching_guide(lesson)
@@ -4291,6 +4348,8 @@ def _chat_response(
             selected_reference=selected_reference,
             requirement_cleared=True,
             requirement_stamp=consumed_stamp,
+            board_document_operation_status=edit_outcome.operation_status,
+            board_document_operation_failure_reason=edit_outcome.failure_reason,
         )
 
     board_decision = BoardDecision(action="no_change", reason="本轮是通用问答聊天，不自动修改讲义。")

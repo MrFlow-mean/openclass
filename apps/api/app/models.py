@@ -130,6 +130,7 @@ BoardTaskRequestedAction = Literal["write", "edit", "explain", "chat"]
 BoardTaskConfirmationStatus = Literal["none", "awaiting", "confirmed", "declined"]
 BoardTaskRoute = Literal["write", "edit", "explain", "chat", "clarify_location", "await_write_confirmation"]
 BoardTaskLocationStatus = Literal["missing", "selected", "resolved", "ambiguous", "content_absent"]
+BoardDocumentOperationStatus = Literal["none", "succeeded", "failed"]
 DocumentMarginPreset = Literal["narrow", "normal", "wide"]
 DocumentOrientation = Literal["portrait", "landscape"]
 DocumentPageSize = Literal["a4", "letter", "a3"]
@@ -904,6 +905,8 @@ class ChatResponse(BaseModel):
     resolved_focus: BoardFocusRef | None = None
     focus_candidates: list[BoardFocusRef] = Field(default_factory=list)
     requirement_cleared: bool = False
+    board_document_operation_status: BoardDocumentOperationStatus = "none"
+    board_document_operation_failure_reason: str | None = None
     created_lesson: LessonView | None = None
     teaching_progress: SectionTeachingProgressView | None = None
     course_package: CoursePackageView

@@ -1350,7 +1350,8 @@ class OpenAICourseAI:
             "3. intent=edit_existing_document 时，有选区就优先 replace_selection；需要新增内容时用 append_section；"
             "只有 target_scope=whole_document 且 allow_replace_document=true 时才允许 replace_document，"
             "否则不要整体覆盖已有文档。\n"
-            "4. content_text 是可直接进入文档的正文；可用 Markdown 表达标题、粗体、列表和表格，"
+            "4. content_text 是可直接进入文档的正文；必须用 Markdown 或 HTML 保留文档层级，"
+            "包括标题、列表、加粗、表格等结构；全文重写、缩短或精简时也不能把原有层级压成普通段落。"
             "不要用代码块包裹全文。content_html 通常留空；后端会把 content_text 规范化为可编辑富文本。\n"
             "5. 完整生成时，每个主要 H2 小节都要有可讲解密度：核心解释、必要步骤或推理、"
             "至少一个例子或类比、常见误区/注意点、一个检查问题。不要只写目录式提纲。\n"
@@ -1368,7 +1369,8 @@ class OpenAICourseAI:
                 "title": "文档标题；局部编辑时可沿用当前标题。",
                 "content_text": (
                     "完整生成时是整份板书，默认按一节可直接教学的较完整篇幅展开；"
-                    "局部替换时是替换片段；追加时是追加片段。普通语言文本不得包进公式定界符。"
+                    "局部替换时是替换片段；追加时是追加片段。必须保留标题、列表、加粗、表格等文档结构；"
+                    "普通语言文本不得包进公式定界符。"
                 ),
                 "content_html": "可选 HTML，与 content_text 表达同一内容。",
                 "summary": "一句话说明本次生成或编辑了什么。",
@@ -1685,10 +1687,50 @@ class OpenAICourseAI:
                     field_name=stream_field,
                     use_response_format=False,
                 )
-            return ParsedAIResponse(
-                output_parsed=schema.model_validate(_extract_json_object(output_text)),
-                output_text=output_text,
-            )
+            try:
+                output_parsed = schema.model_validate(_extract_json_object(output_text))
+            except Exception as exc:
+                repair_prompt = (
+                    "The previous streamed response could not be parsed as valid JSON. "
+                    "Reformat the same answer as valid JSON that matches this JSON schema. "
+                    "Do not add new content. Return only JSON:\n"
+                    f"{_compact_json(schema_payload)}"
+                )
+                try:
+                    repair_response = client.chat.completions.create(
+                        model=model,
+                        messages=[
+                            *messages,
+                            {"role": "assistant", "content": output_text},
+                            {"role": "user", "content": repair_prompt},
+                        ],
+                        response_format={
+                            "type": "json_schema",
+                            "json_schema": {
+                                "name": schema.__name__,
+                                "schema": schema_payload,
+                                "strict": True,
+                            },
+                        },
+                    )
+                except Exception as repair_request_exc:
+                    raise AIOutputParseError(str(exc), output_text=output_text) from repair_request_exc
+                repair_output_text = self._chat_completion_text(repair_response)
+                try:
+                    output_parsed = schema.model_validate(_extract_json_object(repair_output_text))
+                except Exception as repair_parse_exc:
+                    raise AIOutputParseError(
+                        str(repair_parse_exc),
+                        output_text=output_text,
+                        repair_output_text=repair_output_text,
+                    ) from repair_parse_exc
+                return ParsedAIResponse(
+                    output_parsed=output_parsed,
+                    id=getattr(repair_response, "id", None),
+                    output_text=repair_output_text,
+                    usage=getattr(repair_response, "usage", None),
+                )
+            return ParsedAIResponse(output_parsed=output_parsed, output_text=output_text)
         try:
             response = client.chat.completions.create(
                 model=model,

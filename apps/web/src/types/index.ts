@@ -86,6 +86,7 @@ export interface LearningRequirementSheet {
 }
 
 export type BoardTaskRunStatus = "collecting" | "ready" | "awaiting_confirmation" | "consumed" | "not_executed" | "archived";
+export type BoardDocumentOperationStatus = "none" | "succeeded" | "failed";
 export type BoardTaskRequestedAction = "write" | "edit" | "explain" | "chat";
 export type BoardTaskConfirmationStatus = "none" | "awaiting" | "confirmed" | "declined";
 export type BoardTaskLocationStatus = "missing" | "selected" | "resolved" | "ambiguous" | "content_absent";
@@ -520,6 +521,8 @@ export interface ChatResponse {
   resolved_focus?: BoardFocusRef | null;
   focus_candidates?: BoardFocusRef[];
   requirement_cleared?: boolean;
+  board_document_operation_status?: BoardDocumentOperationStatus;
+  board_document_operation_failure_reason?: string | null;
   created_lesson?: Lesson | null;
   teaching_progress?: SectionTeachingProgress | null;
   course_package: CoursePackage;

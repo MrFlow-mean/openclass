@@ -520,17 +520,20 @@ class LearningRequirementHistoryRecorder:
         self.snapshot.status = "consumed"
         return RequirementHistoryStamp(run_id=self.snapshot.run_id, version_id=frozen_version_id, phase="consumed")
 
-    def generation_failed(self, *, reason: str) -> RequirementHistoryStamp:
+    def generation_failed(self, *, reason: str, metadata: dict[str, Any] | None = None) -> RequirementHistoryStamp:
         if not self.snapshot.run_id:
             return self.current_stamp()
         frozen_version_id = self.snapshot.frozen_version_id or self.snapshot.latest_version_id
         created_at = now_iso()
+        event_metadata = {"reason": reason}
+        if metadata:
+            event_metadata.update(metadata)
         self._append_event(
             event_type="generation_failed",
             from_version_id=frozen_version_id,
             to_version_id=frozen_version_id,
             change_summary=reason[:240],
-            metadata={"reason": reason},
+            metadata=event_metadata,
             created_at=created_at,
         )
         return RequirementHistoryStamp(run_id=self.snapshot.run_id, version_id=frozen_version_id, phase=self.snapshot.status)

@@ -387,7 +387,13 @@ def test_generation_failure_keeps_frozen_requirement_retryable(
         "generate_learning_requirement_update",
         lambda **kwargs: _requirement_update(ready=True, action_type="generate_board"),
     )
-    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", lambda **kwargs: None)
+    board_calls = []
+
+    def _failed_board_edit(**kwargs):
+        board_calls.append(kwargs)
+        return None
+
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _failed_board_edit)
     _, lesson = _seed_workspace(store)
 
     response = chat_service.process_chat_on_lesson(
@@ -399,13 +405,65 @@ def test_generation_failure_keeps_frozen_requirement_retryable(
     versions = store.list_learning_requirement_versions(owner_user_id=TEST_USER_ID, lesson_id=lesson.id)
     events = store.list_learning_requirement_events(owner_user_id=TEST_USER_ID, lesson_id=lesson.id)
     reloaded = store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
+    assert len(board_calls) == 2
     assert response.requirement_phase == "frozen"
+    assert response.board_document_operation_status == "failed"
+    assert response.board_document_operation_failure_reason == "板书文档编辑 AI 没有返回生成结果。"
     assert [row["change_kind"] for row in versions] == ["completed", "frozen"]
     assert [row["event_type"] for row in events] == ["created", "completed", "frozen", "generation_failed"]
     assert reloaded.board_document.content_text == ""
     assert reloaded.history_graph.commits[-1].metadata.get("kind") != "board_document_generation"
     frozen_sheet = json.loads(versions[-1]["sheet_json"])
     assert frozen_sheet["action_type"] == "generate_board"
+
+
+def test_generation_retry_success_consumes_frozen_requirement(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_chatbot_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="需求已经够清楚。"),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_learning_requirement_update",
+        lambda **kwargs: _requirement_update(ready=True, action_type="generate_board"),
+    )
+    board_calls = []
+
+    def _retrying_board_edit(**kwargs):
+        board_calls.append(kwargs)
+        if len(board_calls) == 1:
+            return None
+        return BoardDocumentEditResult(
+            operation="replace_document",
+            title="第一版板书",
+            content_text="# 第一版板书\n\n## 核心内容\n\n这是重试后生成的板书。",
+            summary="生成了第一版板书。",
+            chatbot_message="板书已经生成。",
+            section_titles=["核心内容"],
+        )
+
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _retrying_board_edit)
+    _, lesson = _seed_workspace(store)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="目标已经完整"),
+        user_id=TEST_USER_ID,
+    )
+
+    events = store.list_learning_requirement_events(owner_user_id=TEST_USER_ID, lesson_id=lesson.id)
+    reloaded = store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
+    assert len(board_calls) == 2
+    assert response.requirement_phase == "consumed"
+    assert response.board_document_operation_status == "succeeded"
+    assert [row["event_type"] for row in events] == ["created", "completed", "frozen", "consumed"]
+    assert "重试后生成的板书" in reloaded.board_document.content_text
 
 
 def test_stream_emits_requirement_update_before_document_delta(

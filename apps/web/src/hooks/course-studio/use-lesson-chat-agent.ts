@@ -318,6 +318,17 @@ export function useLessonChatAgent({
           setStreamedBoardTaskSheet(payload.active_board_task_sheet ?? payload.board_task_sheet);
         },
       });
+      const failedStreamingDocumentPreview =
+        canStreamDocumentPreview &&
+        streamedDocumentText.trim() &&
+        response.board_document_operation_status === "failed"
+          ? {
+              ...baseStreamingDocument,
+              content_json: {},
+              content_html: streamingMarkdownToHtml(streamedDocumentText),
+              content_text: streamedDocumentText,
+            }
+          : null;
       const responseCommit = latestCommitFromPackage(response.course_package, requestLesson.id);
       const committedUserMessage: ChatMessage = responseCommit
         ? {
@@ -333,6 +344,10 @@ export function useLessonChatAgent({
       updateCoursePackage(response.course_package, {
         activeLessonId: response.created_lesson ? undefined : requestLesson.id,
       });
+      if (failedStreamingDocumentPreview) {
+        setStreamingDocumentPreview(failedStreamingDocumentPreview);
+        setError(response.board_document_operation_failure_reason ?? "右侧文档生成失败，已保留未保存的预览草稿。");
+      }
       setLatestBoardDecision(response.board_decision);
       setClarificationQuestions(response.clarification_questions);
       setLearningClarity(response.learning_clarification);

@@ -141,6 +141,7 @@ export function CourseStudio() {
   const previewCommit = history.previewCommit;
   const activeHeadCommit = history.activeHeadCommit;
   const isPreviewMode = history.isPreviewMode;
+  const isDraftPreviewMode = !isPreviewMode && boardDraft.isPreviewing;
   const displayedDocument = boardDraft.displayedDocument;
   const displayedMessages =
     activeLesson && previewCommit ? buildLessonMessagesFromHistory(activeLesson, previewCommit.id) : activeMessages;
@@ -159,6 +160,13 @@ export function CourseStudio() {
         )
       : [];
   const composerSelection = selection && !selectionPopover ? selection : null;
+  function exitAnyPreviewMode() {
+    if (isDraftPreviewMode) {
+      boardDraft.resetToLesson(activeLesson);
+      return;
+    }
+    exitPreviewMode();
+  }
   const chatAgent = useLessonChatAgent({
     activeLesson,
     activeMessages,
@@ -166,10 +174,10 @@ export function CourseStudio() {
     composerSelection,
     currentBoardDocument: displayedDocument,
     selectedTextModel,
-    isPreviewMode,
+    isPreviewMode: isPreviewMode || isDraftPreviewMode,
     chatRequestInFlightRef,
     flushAutoSave,
-    exitPreviewMode,
+    exitPreviewMode: exitAnyPreviewMode,
     updateCoursePackage,
     updateLessonMessages,
     updateLessonComposerState,
@@ -530,7 +538,7 @@ export function CourseStudio() {
           onSelectTextModel={selectTextModel}
           onSelectRealtimeModel={handleSelectRealtimeModel}
           onVoiceToggle={handleVoiceToggle}
-          onExitPreviewMode={exitPreviewMode}
+          onExitPreviewMode={exitAnyPreviewMode}
           onClearSelection={clearSelection}
           onUpdateComposerState={updateActiveLessonComposerState}
           onAdjustComposerHeight={adjustComposerHeight}
@@ -540,9 +548,10 @@ export function CourseStudio() {
           activeLesson={activeLesson}
           document={displayedDocument}
           isPreviewMode={isPreviewMode}
+          isDraftPreviewMode={isDraftPreviewMode}
           previewCommit={previewCommit}
           toolbarCollapsed={topCollapsed}
-          onExitPreviewMode={exitPreviewMode}
+          onExitPreviewMode={exitAnyPreviewMode}
           onDocumentChange={handleLocalDocumentChange}
           onApplySelection={applySelection}
           onClearSelection={clearSelection}

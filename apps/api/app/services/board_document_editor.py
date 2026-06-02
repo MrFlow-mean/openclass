@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import Literal
 
 from app.models import (
     BoardDecision,
@@ -33,6 +34,8 @@ class BoardDocumentEditOutcome:
     summary: str
     section_titles: list[str]
     changed: bool = False
+    operation_status: Literal["succeeded", "failed"] = "failed"
+    failure_reason: str | None = None
 
 
 def generate_from_requirements(
@@ -50,7 +53,7 @@ def generate_from_requirements(
             "当前板书不是空白文档，已阻止整体覆盖。",
         )
 
-    result = openai_course_ai.generate_board_document_edit(
+    result = _generate_board_document_edit_with_retry(
         intent="generate_from_requirements",
         lesson_title=lesson.title,
         learning_requirement_context=_requirement_context(
@@ -117,7 +120,7 @@ def edit_existing_document(
             "已有板书的局部编辑需要先解析目标位置。",
         )
 
-    result = openai_course_ai.generate_board_document_edit(
+    result = _generate_board_document_edit_with_retry(
         intent="edit_existing_document",
         lesson_title=lesson.title,
         learning_requirement_context=_requirement_context(requirements, clarification),
@@ -169,6 +172,15 @@ def edit_existing_document(
         return _no_change(
             lesson,
             "板书文档编辑 AI 的结果没有改变当前文档。",
+        )
+    if _would_flatten_rich_document(
+        current_document=lesson.board_document,
+        new_document=new_document,
+        operation=operation,
+    ):
+        return _no_change(
+            lesson,
+            "全文替换结果丢失了原有标题、列表、加粗或表格结构，已阻止写入。",
         )
 
     return _changed(
@@ -287,6 +299,8 @@ def _changed(
         summary=summary,
         section_titles=[title.strip() for title in section_titles if title.strip()],
         changed=True,
+        operation_status="succeeded",
+        failure_reason=None,
     )
 
 
@@ -300,7 +314,16 @@ def _no_change(lesson: Lesson, reason: str) -> BoardDocumentEditOutcome:
         summary=reason,
         section_titles=[],
         changed=False,
+        operation_status="failed",
+        failure_reason=reason,
     )
+
+
+def _generate_board_document_edit_with_retry(**kwargs) -> BoardDocumentEditResult | None:
+    result = openai_course_ai.generate_board_document_edit(**kwargs)
+    if result is not None:
+        return result
+    return openai_course_ai.generate_board_document_edit(**kwargs)
 
 
 def _edit_payload(result: BoardDocumentEditResult, *, prefer_content_html: bool) -> tuple[str, str]:
@@ -315,6 +338,75 @@ def _edit_payload(result: BoardDocumentEditResult, *, prefer_content_html: bool)
 
 def _document_text(document: BoardDocument) -> str:
     return document_to_markdown(document) or document.content_text or html_to_text(document.content_html)
+
+
+def _rich_structure_counts(document: BoardDocument) -> dict[str, int]:
+    counts = {
+        "heading": 0,
+        "bold": 0,
+        "italic": 0,
+        "bulletList": 0,
+        "orderedList": 0,
+        "listItem": 0,
+        "table": 0,
+        "blockquote": 0,
+        "paragraph": 0,
+    }
+
+    def walk(value) -> None:
+        if isinstance(value, dict):
+            node_type = value.get("type")
+            if isinstance(node_type, str) and node_type in counts:
+                counts[node_type] += 1
+            marks = value.get("marks")
+            if isinstance(marks, list):
+                for mark in marks:
+                    if isinstance(mark, dict):
+                        mark_type = mark.get("type")
+                        if isinstance(mark_type, str) and mark_type in counts:
+                            counts[mark_type] += 1
+            for child in value.values():
+                walk(child)
+        elif isinstance(value, list):
+            for child in value:
+                walk(child)
+
+    walk(document.content_json if isinstance(document.content_json, dict) else {})
+    return counts
+
+
+def _rich_structure_score(counts: dict[str, int]) -> int:
+    return (
+        counts.get("heading", 0) * 3
+        + counts.get("table", 0) * 4
+        + counts.get("bulletList", 0) * 2
+        + counts.get("orderedList", 0) * 2
+        + counts.get("listItem", 0)
+        + counts.get("blockquote", 0) * 2
+        + counts.get("bold", 0)
+        + counts.get("italic", 0)
+    )
+
+
+def _would_flatten_rich_document(
+    *,
+    current_document: BoardDocument,
+    new_document: BoardDocument,
+    operation: str | None,
+) -> bool:
+    if operation != "replace_document" or is_document_empty(current_document):
+        return False
+    old_counts = _rich_structure_counts(current_document)
+    old_score = _rich_structure_score(old_counts)
+    if old_score < 8:
+        return False
+    new_counts = _rich_structure_counts(new_document)
+    new_score = _rich_structure_score(new_counts)
+    if new_counts.get("heading", 0) or new_counts.get("table", 0):
+        return False
+    if new_score > max(2, old_score // 10):
+        return False
+    return new_counts.get("paragraph", 0) >= max(8, old_counts.get("paragraph", 0) // 2)
 
 
 def _target_excerpt(*, selection_excerpt: str | None, focus: BoardFocusRef | None) -> str | None:

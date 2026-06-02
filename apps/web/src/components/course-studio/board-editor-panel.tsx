@@ -8,6 +8,7 @@ type BoardEditorPanelProps = {
   activeLesson: Lesson;
   document: BoardDocument;
   isPreviewMode: boolean;
+  isDraftPreviewMode: boolean;
   previewCommit: CommitRecord | null;
   toolbarCollapsed: boolean;
   onExitPreviewMode: () => void;
@@ -22,6 +23,7 @@ export function BoardEditorPanel({
   activeLesson,
   document,
   isPreviewMode,
+  isDraftPreviewMode,
   previewCommit,
   toolbarCollapsed,
   onExitPreviewMode,
@@ -45,10 +47,22 @@ export function BoardEditorPanel({
           </button>
         </div>
       ) : null}
+      {!isPreviewMode && isDraftPreviewMode ? (
+        <div className="shrink-0 border-b border-amber-200 bg-amber-50 px-5 py-3 text-sm text-amber-800">
+          正在预览未保存的生成草稿。生成未成功落库，当前内容不会自动保存。
+          <button
+            type="button"
+            className="ml-3 rounded-md border border-amber-200 bg-white px-3 py-1 text-[11px] font-bold uppercase tracking-wider text-amber-800"
+            onClick={onExitPreviewMode}
+          >
+            回到当前版本
+          </button>
+        </div>
+      ) : null}
 
       <WordBoardEditor
         document={document}
-        readOnly={isPreviewMode}
+        readOnly={isPreviewMode || isDraftPreviewMode}
         toolbarCollapsed={toolbarCollapsed}
         onDocumentChange={onDocumentChange}
         onSelectionChange={(payload) => {
