@@ -158,9 +158,12 @@ def _inline_nodes(value: str) -> list[dict[str, Any]]:
     for match in _DELIMITED_MATH_RE.finditer(value):
         if match.start() > cursor:
             nodes.extend(_markdown_text_nodes(value[cursor : match.start()]))
+        raw = match.group(0)
         latex = match.group(1) or match.group(2) or match.group(3) or match.group(4) or ""
-        if latex.strip():
+        if latex.strip() and _is_likely_delimited_math(latex):
             nodes.append({"type": "inlineMath", "attrs": {"latex": _normalize_latex(latex)}})
+        else:
+            nodes.extend(_markdown_text_nodes(raw))
         cursor = match.end()
     if cursor < len(value):
         nodes.extend(_markdown_text_nodes(value[cursor:]))
@@ -215,12 +218,13 @@ def _display_math_block(lines: list[str], index: int) -> tuple[str, int] | None:
                 current = lines[cursor].strip()
                 if current == closer:
                     latex = "\n".join(formula_lines).strip()
-                    return (latex, cursor + 1) if latex else None
+                    return (latex, cursor + 1) if latex and _is_likely_delimited_math(latex) else None
                 formula_lines.append(lines[cursor])
                 cursor += 1
             return None
         if line.startswith(opener) and line.endswith(closer) and len(line) > len(opener) + len(closer):
-            return line[len(opener) : -len(closer)].strip(), index + 1
+            latex = line[len(opener) : -len(closer)].strip()
+            return (latex, index + 1) if latex and _is_likely_delimited_math(latex) else None
     return None
 
 
@@ -812,6 +816,96 @@ def document_to_markdown(document: BoardDocument) -> str:
     return document.content_text.strip()
 
 
+def _sanitize_suspicious_math_node(node: dict[str, Any]) -> tuple[dict[str, Any] | None, bool]:
+    node_type = node.get("type")
+    if node_type == "inlineMath":
+        latex = str(node.get("attrs", {}).get("latex") or "").strip()
+        if latex and not _is_likely_delimited_math(latex):
+            return {"type": "text", "text": latex}, True
+        return dict(node), False
+
+    if node_type == "blockMath":
+        latex = str(node.get("attrs", {}).get("latex") or "").strip()
+        if latex and not _is_likely_delimited_math(latex):
+            return {"type": "paragraph", "content": [{"type": "text", "text": latex}]}, True
+        return dict(node), False
+
+    sanitized = dict(node)
+    content = sanitized.get("content")
+    changed = False
+    if isinstance(content, list):
+        next_content: list[dict[str, Any]] = []
+        for child in content:
+            if not isinstance(child, dict):
+                next_content.append(child)
+                continue
+            next_child, child_changed = _sanitize_suspicious_math_node(child)
+            changed = changed or child_changed
+            if next_child is not None:
+                next_content.append(next_child)
+        sanitized["content"] = next_content
+    return sanitized, changed
+
+
+def _sanitize_suspicious_math_json(content_json: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    sanitized = dict(content_json)
+    content = sanitized.get("content")
+    if not isinstance(content, list):
+        return sanitized, False
+
+    changed = False
+    next_content: list[dict[str, Any]] = []
+    for child in content:
+        if not isinstance(child, dict):
+            next_content.append(child)
+            continue
+        next_child, child_changed = _sanitize_suspicious_math_node(child)
+        changed = changed or child_changed
+        if next_child is not None:
+            next_content.append(next_child)
+    sanitized["content"] = next_content
+    return sanitized, changed
+
+
+def _html_attr(raw_tag: str, name: str) -> str:
+    match = re.search(rf"\b{re.escape(name)}\s*=\s*(\"([^\"]*)\"|'([^']*)')", raw_tag, flags=re.IGNORECASE)
+    if not match:
+        return ""
+    return html.unescape(match.group(2) if match.group(2) is not None else match.group(3) or "")
+
+
+def _repair_suspicious_math_html(content_html: str) -> str:
+    def inline_replacement(match: re.Match[str]) -> str:
+        raw = match.group(0)
+        latex = _html_attr(raw, "data-latex").strip()
+        node_type = _html_attr(raw, "data-type").strip()
+        if node_type == "inline-math" and latex and not _is_likely_delimited_math(latex):
+            return html.escape(latex)
+        return raw
+
+    def block_replacement(match: re.Match[str]) -> str:
+        raw = match.group(0)
+        latex = _html_attr(raw, "data-latex").strip()
+        node_type = _html_attr(raw, "data-type").strip()
+        if node_type == "block-math" and latex and not _is_likely_delimited_math(latex):
+            return f"<p>{html.escape(latex)}</p>"
+        return raw
+
+    repaired = re.sub(
+        r"<span\b(?=[^>]*data-type=['\"]inline-math['\"])[^>]*>\s*</span>",
+        inline_replacement,
+        content_html,
+        flags=re.IGNORECASE,
+    )
+    repaired = re.sub(
+        r"<div\b(?=[^>]*data-type=['\"]block-math['\"])[^>]*>\s*</div>",
+        block_replacement,
+        repaired,
+        flags=re.IGNORECASE,
+    )
+    return repaired
+
+
 def build_document(
     *,
     title: str,
@@ -823,6 +917,8 @@ def build_document(
 ) -> BoardDocument:
     normalized_html = (content_html or "").strip()
     normalized_text = (content_text or "").strip()
+    if normalized_html:
+        normalized_html = _repair_suspicious_math_html(normalized_html)
     if not normalized_text and normalized_html:
         normalized_text = html_to_text(normalized_html)
     if not normalized_html and normalized_text:
@@ -832,6 +928,10 @@ def build_document(
     normalized_json = content_json or (
         html_to_tiptap_doc(normalized_html) if normalized_html.strip() else text_to_tiptap_doc(normalized_text)
     )
+    if isinstance(normalized_json, dict):
+        normalized_json, repaired_math = _sanitize_suspicious_math_json(normalized_json)
+        if repaired_math:
+            normalized_html = _repair_suspicious_math_html(normalized_html)
     kwargs: dict[str, Any] = {
         "title": title,
         "content_json": normalized_json,
@@ -862,7 +962,19 @@ def _looks_like_markdown_document(content_text: str) -> bool:
 
 def upgrade_markdown_like_document(document: BoardDocument) -> BoardDocument:
     if not _looks_like_markdown_document(document.content_text):
-        return document
+        content_json = document.content_json if isinstance(document.content_json, dict) else {}
+        sanitized_json, repaired_math = _sanitize_suspicious_math_json(content_json)
+        repaired_html = _repair_suspicious_math_html(document.content_html)
+        if not repaired_math and repaired_html == document.content_html:
+            return document
+        return BoardDocument(
+            id=document.id,
+            title=document.title,
+            content_json=sanitized_json,
+            content_html=repaired_html,
+            content_text=document.content_text,
+            page_settings=document.page_settings,
+        )
     upgraded = build_document(
         title=document.title,
         content_text=document.content_text,
@@ -1065,6 +1177,13 @@ def import_docx(path: Path, *, title: str | None = None) -> BoardDocument:
 
 def _has_math_signal(value: str) -> bool:
     return bool(_MATH_SIGNAL_RE.search(value))
+
+
+def _is_likely_delimited_math(value: str) -> bool:
+    compact = _TRAILING_SENTENCE_MARKS_RE.sub("", _LEADING_SENTENCE_MARKS_RE.sub("", value.strip()))
+    if not compact or _CJK_RE.search(compact):
+        return False
+    return _has_math_signal(compact) or bool(re.fullmatch(r"[A-Za-z]", compact))
 
 
 def _normalize_limit_subscript(value: str) -> str:
@@ -1279,13 +1398,14 @@ def _normalize_top_level_slash_fractions(value: str) -> str:
 
 def _formula_only_latex(text: str) -> str | None:
     compact = _TRAILING_SENTENCE_MARKS_RE.sub("", text.strip())
-    delimited = (
-        re.match(r"^\\\[(.+?)\\\]$", compact)
-        or re.match(r"^\\\((.+?)\\\)$", compact)
-        or re.match(r"^\$\$?(.+?)\$\$?$", compact)
-    )
+    delimited = re.match(r"^\\\[(.+?)\\\]$", compact) or re.match(r"^\\\((.+?)\\\)$", compact)
     if delimited:
-        return _normalize_latex(delimited.group(1))
+        latex = delimited.group(1)
+        return _normalize_latex(latex) if _is_likely_delimited_math(latex) else None
+    dollar_delimited = re.match(r"^\$\$?(.+?)\$\$?$", compact)
+    if dollar_delimited:
+        latex = dollar_delimited.group(1)
+        return _normalize_latex(latex) if _is_likely_delimited_math(latex) else None
     if not compact or _CJK_RE.search(compact) or not _has_math_signal(compact):
         return None
     return _normalize_latex(compact)
@@ -1296,7 +1416,7 @@ def _math_segments(text: str) -> list[tuple[int, int, str]]:
 
     for match in _DELIMITED_MATH_RE.finditer(text):
         latex = match.group(1) or match.group(2) or match.group(3) or match.group(4) or ""
-        if latex.strip():
+        if latex.strip() and _is_likely_delimited_math(latex):
             segments.append((match.start(), match.end(), _normalize_latex(latex)))
 
     for match in _MATH_RUN_RE.finditer(text):

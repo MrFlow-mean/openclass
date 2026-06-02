@@ -310,6 +310,48 @@ def test_build_document_converts_inline_display_delimiters_to_inline_math() -> N
     assert "\\lim_{x \\to a}" in document.content_html
 
 
+def test_build_document_keeps_dollar_delimited_prose_as_text() -> None:
+    sentence = "$Je me disais que tu allais peut-être oublier notre rendez-vous.$"
+    document = build_document(title="Doc", content_text=f"Paul : {sentence}")
+
+    assert "inlineMath" not in _collect_node_types(document.content_json)
+    assert 'data-type="inline-math"' not in document.content_html
+    assert "Je me disais que tu allais peut-être oublier notre rendez-vous." in document.content_html
+
+
+def test_upgrade_markdown_like_document_repairs_suspicious_math_nodes() -> None:
+    sentence = "Je me disais que tu allais peut-être oublier notre rendez-vous."
+    legacy = BoardDocument(
+        title="Doc",
+        content_text=f"Paul : {sentence}",
+        content_html=(
+            '<p>Paul : <span data-latex="'
+            f"{sentence}"
+            '" data-type="inline-math"></span></p>'
+        ),
+        content_json={
+            "type": "doc",
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "Paul : "},
+                        {"type": "inlineMath", "attrs": {"latex": sentence}},
+                    ],
+                }
+            ],
+        },
+    )
+
+    upgraded = upgrade_markdown_like_document(legacy)
+
+    assert "inlineMath" not in _collect_node_types(upgraded.content_json)
+    assert upgraded.content_json["content"][0]["content"][1]["type"] == "text"
+    assert upgraded.content_json["content"][0]["content"][1]["text"] == sentence
+    assert 'data-type="inline-math"' not in upgraded.content_html
+    assert sentence in upgraded.content_html
+
+
 def test_document_to_markdown_preserves_rich_structure_for_ai_edit_context() -> None:
     document = build_document(
         title="Doc",
