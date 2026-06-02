@@ -106,11 +106,23 @@ def test_sqlite_store_indexes_and_searches_board_document_segments(tmp_path) -> 
             """,
             (lesson.id,),
         ).fetchall()
+        chunk_rows = conn.execute(
+            """
+            SELECT source_segment_ids_json, text
+            FROM board_document_chunks
+            WHERE lesson_id = ?
+            ORDER BY order_start
+            """,
+            (lesson.id,),
+        ).fetchall()
     assert rows == [
         ("heading", "检索标题"),
         ("paragraph", "This paragraph has a retrieval anchor and x^2+y^2 ."),
         ("formula", "E=mc^2"),
     ]
+    assert chunk_rows
+    assert any("retrieval anchor" in row[1] and "检索标题" in row[1] for row in chunk_rows)
+    assert any(len(json.loads(row[0])) >= 2 for row in chunk_rows)
 
 
 def test_sqlite_store_imports_and_archives_legacy_store_json(tmp_path) -> None:

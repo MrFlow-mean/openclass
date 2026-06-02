@@ -54,7 +54,7 @@ def generate_board_directed_explanation_message(
             resource_summary=resource_summary,
             conversation_summary=conversation_summary,
             user_message=requirement_probe_instead_of_explanation_message(user_message),
-            selection_excerpt=target_excerpt,
+            selection_excerpt=None,
             interaction_mode=interaction_mode,
             interaction_context=interaction_context,
         )
@@ -79,7 +79,7 @@ def generate_board_directed_explanation_message(
         resource_summary=resource_summary,
         conversation_summary=conversation_summary,
         user_message=gated_user_message,
-        selection_excerpt=directive.target_excerpt or target_excerpt,
+        selection_excerpt=(directive.target_excerpt or target_excerpt) if directive.status == "approved" else None,
         interaction_mode=interaction_mode,
         interaction_context={
             **(interaction_context or {}),

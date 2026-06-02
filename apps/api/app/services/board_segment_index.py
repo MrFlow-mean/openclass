@@ -4,7 +4,7 @@ import hashlib
 import re
 from typing import Any
 
-from app.models import BoardDocument, BoardSegment, BoardSegmentIndex, BoardSegmentKind
+from app.models import BoardChunk, BoardDocument, BoardSegment, BoardSegmentIndex, BoardSegmentKind
 from app.services.rich_document import html_to_text
 
 
@@ -52,7 +52,47 @@ def build_board_segment_index(document: BoardDocument) -> BoardSegmentIndex:
         document_id=document.id,
         document_title=document.title,
         segments=segments,
+        chunks=build_board_chunks(segments),
     )
+
+
+def build_board_chunks(
+    segments: list[BoardSegment],
+    *,
+    max_chars: int = 1000,
+    max_segments: int = 6,
+    overlap_segments: int = 1,
+) -> list[BoardChunk]:
+    chunks: list[BoardChunk] = []
+    current: list[BoardSegment] = []
+
+    def flush() -> None:
+        nonlocal current
+        if current:
+            chunks.append(_make_chunk(current, len(chunks)))
+            if overlap_segments > 0:
+                current = [segment for segment in current[-overlap_segments:] if segment.kind != "heading"]
+            else:
+                current = []
+
+    for segment in segments:
+        if not segment.text.strip():
+            continue
+        if segment.kind == "heading" and current:
+            flush()
+            current = []
+
+        proposed_text = _chunk_text([*current, segment])
+        if current and (len(proposed_text) > max_chars or len(current) >= max_segments):
+            flush()
+            if segment.kind == "heading":
+                current = []
+
+        current.append(segment)
+
+    if current:
+        chunks.append(_make_chunk(current, len(chunks)))
+    return chunks
 
 
 def compact_segment_text(value: str, *, limit: int = 1200) -> str:
@@ -64,6 +104,36 @@ def compact_segment_text(value: str, *, limit: int = 1200) -> str:
 
 def segment_text_hash(value: str) -> str:
     return hashlib.sha256(compact_segment_text(value).encode("utf-8")).hexdigest()[:16]
+
+
+def _make_chunk(source_segments: list[BoardSegment], chunk_index: int) -> BoardChunk:
+    first = source_segments[0]
+    last = source_segments[-1]
+    text = _chunk_text(source_segments)
+    text_hash = segment_text_hash(text)
+    stable_seed = f"{first.document_id}:{first.order_index}:{last.order_index}:{text_hash}"
+    return BoardChunk(
+        chunk_id=f"chk_{hashlib.sha256(stable_seed.encode('utf-8')).hexdigest()[:16]}",
+        document_id=first.document_id,
+        source_segment_ids=[segment.segment_id for segment in source_segments],
+        heading_path=last.heading_path or first.heading_path,
+        order_start=first.order_index,
+        order_end=last.order_index,
+        text=text,
+        text_hash=text_hash,
+    )
+
+
+def _chunk_text(source_segments: list[BoardSegment]) -> str:
+    lines: list[str] = []
+    for segment in source_segments:
+        heading = " / ".join(segment.heading_path)
+        label = f"[{segment.segment_id} | 第{segment.order_index + 1}段"
+        if heading:
+            label += f" | {heading}"
+        label += "]"
+        lines.append(f"{label}\n{segment.text}")
+    return "\n".join(lines)
 
 
 def _collect_segments(

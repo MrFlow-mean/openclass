@@ -25,6 +25,7 @@ from app.models import (
     AIModelSelection,
     AIProvider,
     BoardFocusRef,
+    BoardSearchRerankResult,
     BoardTaskAction,
     BoardTaskRequirementSheet,
     BoardTaskRoute,
@@ -66,6 +67,14 @@ _text_model_selection: ContextVar[AIModelSelection | None] = ContextVar(
 )
 AIStreamObserver = Callable[[dict[str, Any]], None]
 _ai_stream_observer: ContextVar[AIStreamObserver | None] = ContextVar("ai_stream_observer", default=None)
+CHATBOT_BOARD_DOCUMENT_REDACTION = (
+    "已隔离：Chatbot 没有直接读取右侧板书文档的权限。"
+    "如果本轮需要讲解板书内容，只能依据板书侧 directive、互动 session 或工具结果中明确提供的目标摘录和指令。"
+)
+BOARD_EDITOR_CHAT_LOG_REDACTION = (
+    "已隔离：板书文档编辑 AI 没有读取用户和 Chatbot 原始聊天记录的权限；"
+    "只能依据结构化需求清单、任务清单、定位证据、当前文档和资料摘要执行。"
+)
 
 
 def _env_any(*names: str) -> str | None:
@@ -851,7 +860,8 @@ class OpenAICourseAI:
         system_prompt = (
             "你是 OpenClass 的 Chatbot，负责左侧聊天框里的自然、连续、有帮助的你问我答交流。\n"
             "规则：\n"
-            "1. 只根据用户问题、当前课程上下文、讲义摘要、引用选区、资料摘要和最近对话回答。\n"
+            "1. 只根据用户问题、当前课程上下文、板书侧 directive/互动 session 明确给你的目标摘录、"
+            "资料摘要和最近对话回答；Chatbot 没有直接读取右侧板书文档全文或摘要的权限。\n"
             "2. Chatbot 不生成整篇文档、板书、讲义、课文、练习、试题、对话稿等长篇产物；"
             "这类内容只能写入右侧文档区。用户要求生成可写入文档的内容时，"
             "只做简短承接、确认或引导，不要把正文铺在聊天框里。\n"
@@ -860,19 +870,22 @@ class OpenAICourseAI:
             "除非是在讲解既有文档内容，否则回复保持短小。\n"
             "5. 如果学习需求还不清楚，先说明澄清是为了匹配讲解深度、材料组织和练习方式，"
             "再从具体想学什么、当前水平、学习目的/使用场景中选择最缺的一项追问。\n"
-            "6. Chatbot 不能自行进入讲解动作。只有 interaction_context 或 user_message 明确包含"
+            "6. 主动与被动动作边界必须分清：当用户只是聊天、泛泛表达兴趣或需求清单还不完整时，"
+            "Chatbot 不主动展开讲解，只继续完善需求；当用户已经明确要求写、改、讲或按规则互动时，"
+            "可承接该动作，但仍必须服从后端清单、定位和板书侧授权门禁。\n"
+            "7. Chatbot 不能自行进入讲解动作。只有 interaction_context 或 user_message 明确包含"
             "板书侧给出的讲解指令、讲解依据和目标片段时，才可以围绕该依据讲解；否则即使用户说"
             "“直接讲、开始讲、从零开始、不要再问”，也只能继续澄清学习需求或询问是否先生成/定位板书。\n"
-            "7. 每次最多追问一个主问题；可以给 2-3 个可选回答方向，但不要像机械问卷或客服套话。\n"
-            "8. 如果 interaction_context 存在，说明系统正在执行用户指定的通用互动规则；"
+            "8. 每次最多追问一个主问题；可以给 2-3 个可选回答方向，但不要像机械问卷或客服套话。\n"
+            "9. 如果 interaction_context 存在，说明系统正在执行用户指定的通用互动规则；"
             "回复必须同时参考互动规则、原文内容、互动进度和用户当前输入，但不要输出系统字段名。\n"
-            "9. 不写任何固定主题模板，不根据主题名、资料名或样例走特殊规则。"
+            "10. 不写任何固定主题模板，不根据主题名、资料名或样例走特殊规则。"
         )
         user_prompt = _json(
             {
                 "lesson_title": lesson_title,
                 "learning_goal": learning_goal,
-                "board_summary": board_summary,
+                "board_summary": CHATBOT_BOARD_DOCUMENT_REDACTION,
                 "resource_summary": resource_summary,
                 "recent_conversation": conversation_summary,
                 "selection_excerpt": selection_excerpt.strip() if selection_excerpt else "无选中引用",
@@ -917,7 +930,12 @@ class OpenAICourseAI:
             "讲解边界、先后顺序和注意点；不要让 Chatbot 自由发挥板书外知识。\n"
             "3. 如果目标不清楚、板书依据不足或用户请求脱离板书，status 使用 needs_clarification 或 blocked，"
             "并给出 clarification_question 或 reason；此时 Chatbot 只能追问或说明需要先定位/补充板书，不能讲解。\n"
-            "4. 不输出最终给学习者看的讲解正文，不写固定主题模板，不根据主题名、资料名或样例走特殊规则。"
+            "4. 主动/被动边界：如果用户没有明确要求讲解，而需求或任务仍不完整，不允许主动展开讲解；"
+            "如果用户已经明确要求讲解，且传入的任务清单、定位裁决和目标摘录足以支撑本轮讲解，"
+            "不要仅因为还可以收集更多背景而拒绝授权。\n"
+            "5. 对“都讲、逐个、按顺序”等多目标讲解，本轮只授权 target_excerpt 中标明的当前目标；"
+            "后续候选只能作为顺序上下文，不得让 Chatbot 越界把未授权目标一起讲完。\n"
+            "6. 不输出最终给学习者看的讲解正文，不写固定主题模板，不根据主题名、资料名或样例走特殊规则。"
         )
         user_prompt = _json(
             {
@@ -975,8 +993,12 @@ class OpenAICourseAI:
             "4. interaction_rule_draft 只在用户提出特殊互动方式时填写，否则留空；"
             "如果填写，expected_user_behavior 必须说明什么样的用户输入算合规，assistant_behavior 必须说明 AI 如何按规则回应。\n"
             "5. progress 按四项清晰度估算，每项 25 分；非 chat 任务的互动规则项可视为已明确为无特殊规则。\n"
-            "6. missing_items 只写还缺的字段；clarification_question 只问最关键的一个缺项。\n"
-            "7. 不写任何学科、教材、考试或样例专属规则。"
+            "6. 用户没有明确要求行动时，清单应尽量完善，缺项就追问；用户已经明确要求写、改、讲或聊时，"
+            "只要四字段达到可执行最低条件，就不要为了追求更完整背景而阻止行动。\n"
+            "7. 用户在多候选澄清后说“都讲、全部讲、逐个、按顺序”等，表示目标位置是这些候选的顺序集合；"
+            "不得继续把目标位置判为空缺。\n"
+            "8. missing_items 只写还缺的字段；clarification_question 只问最关键的一个缺项。\n"
+            "9. 不写任何学科、教材、考试或样例专属规则。"
         )
         user_prompt = _json(
             {
@@ -1009,41 +1031,75 @@ class OpenAICourseAI:
         )
         return result if isinstance(result, BoardTaskRequirementSheet) else None
 
+    def generate_board_search_rerank(
+        self,
+        *,
+        board_task: dict[str, Any] | None,
+        query_plan: dict[str, Any],
+        candidates: list[dict[str, Any]],
+    ) -> BoardSearchRerankResult | None:
+        if not self.enabled:
+            return None
+        system_prompt = (
+            "你是 OpenClass 的板书侧目标内容检索重排 AI。你只根据结构化 board task、查询计划和候选位置证据排序，"
+            "不得凭空补充板书内容，不得读取用户和 Chatbot 的原始聊天记录。\n"
+            "规则：\n"
+            "1. 只能在候选 match_id 中排序和打分，不能创造新位置。\n"
+            "2. 优先选择最符合目标位置、动作类型、问题/主题和互动规则的候选。\n"
+            "3. 分数接近时保留多个高分候选，交给后续流程澄清。\n"
+            "4. 不输出面向学习者的话术，不写学科、教材、考试或样例专属规则。"
+        )
+        user_prompt = _json(
+            {
+                "board_task": board_task,
+                "query_plan": query_plan,
+                "candidates": candidates,
+                "response_contract": {
+                    "ranked": "按相关性排序的 match_id 列表，每项包含 match_id、score、reason。",
+                    "reason": "整体重排依据。",
+                },
+            }
+        )
+        result = self._parse(
+            "board",
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            schema=BoardSearchRerankResult,
+        )
+        return result if isinstance(result, BoardSearchRerankResult) else None
+
     def generate_board_task_route_decision(
         self,
         *,
         lesson_title: str,
         board_task: BoardTaskRequirementSheet,
-        board_summary: str,
         location_evidence: dict[str, Any],
         resource_summary: str,
-        conversation_summary: str,
-        user_message: str,
     ) -> BoardTaskRouteDecision | None:
         if not self.enabled:
             return None
         system_prompt = (
-            "你是 OpenClass 的已有板书任务裁决 AI。你只根据四字段任务清单、当前板书和定位证据，"
+            "你是 OpenClass 的已有板书任务裁决 AI。你只根据四字段任务清单和板书侧定位证据，"
             "决定本轮走写、改、讲、聊，或继续澄清位置/等待扩写确认。\n"
             "规则：\n"
             "1. 定位 found 且动作是 write/edit/explain/chat 时，分别 route=write/edit/explain/chat；"
             "其中 found+write 表示在目标位置扩写特定内容。\n"
-            "2. 定位 ambiguous 时 route=clarify_location，不执行任何写改讲聊。\n"
+            "2. 定位 ambiguous 时 route=clarify_location，不执行任何写改讲聊；但 explain 任务中，"
+            "如果用户已经明确说“都讲、全部讲、逐个、按顺序”，则可以把多个候选视为顺序讲解目标，"
+            "route=explain，并把本轮应先讲的 target_focus 填为第一个候选。\n"
             "3. 用户要问/学/讲的内容在全文没有相关位置时，route=await_write_confirmation，"
             "location_status=content_absent，并给 write_proposal。\n"
             "4. 用户要编辑但目标位置缺失时，route=clarify_location；不要擅自变成写。\n"
             "5. 如果任务已经 confirmation_status=confirmed 且是无目标 write，route=write。\n"
-            "6. 不输出面向学习者的最终回复，不写学科、教材、考试或样例专属规则。"
+            "6. 不读取原始用户聊天记录，不直接搜索整篇板书；定位只能来自 location_evidence。\n"
+            "7. 不输出面向学习者的最终回复，不写学科、教材、考试或样例专属规则。"
         )
         user_prompt = _json(
             {
                 "lesson_title": lesson_title,
                 "board_task": board_task.model_dump(mode="json"),
-                "board_summary": board_summary,
                 "location_evidence": location_evidence,
                 "resource_summary": resource_summary,
-                "recent_conversation": conversation_summary,
-                "current_user_message": user_message,
                 "response_contract": {
                     "route": "write、edit、explain、chat、clarify_location 或 await_write_confirmation。",
                     "location_status": "found、missing、ambiguous 或 content_absent。",
@@ -1089,7 +1145,7 @@ class OpenAICourseAI:
             {
                 "lesson_title": lesson_title,
                 "learning_goal": learning_goal,
-                "board_summary": board_summary,
+                "board_summary": CHATBOT_BOARD_DOCUMENT_REDACTION,
                 "resource_summary": resource_summary,
                 "requirement_context": requirement_context,
                 "board_editor_summary": editor_summary,
@@ -1139,7 +1195,8 @@ class OpenAICourseAI:
             "你是 OpenClass Chatbot 的隐藏强推理工具，只提供解题材料，不直接面向学习者发言。\n"
             "规则：\n"
             "1. 只解决用户问题本身，不修改板书、不生成整篇文档、不扮演新的 AI 角色。\n"
-            "2. 根据课程标题、目标片段、板书摘要、资料摘要和最近对话进行严谨分析。\n"
+            "2. 根据课程标题、目标片段、资料摘要和最近对话进行严谨分析；"
+            "不得把右侧板书全文或摘要作为 Chatbot 的间接读取通道。\n"
             "3. 输出要便于 Chatbot 直接转述：给出结论、关键依据、必要步骤和不确定性。\n"
             "4. 不写任何学科、教材、考试或样例专属分支；换成任意主题后规则仍成立。"
         )
@@ -1148,7 +1205,7 @@ class OpenAICourseAI:
                 "lesson_title": lesson_title,
                 "question": question,
                 "target_excerpt": target_excerpt or "无",
-                "board_summary": board_summary or "无",
+                "board_summary": CHATBOT_BOARD_DOCUMENT_REDACTION,
                 "resource_summary": resource_summary or "无",
                 "recent_conversation": conversation_summary or "无",
                 "desired_output": desired_output or "由 Chatbot 用适合学习者的方式讲解。",
@@ -1281,7 +1338,8 @@ class OpenAICourseAI:
             "也不扮演 Chatbot。\n"
             "规则：\n"
             "1. 生成空白板书的第一版时，只根据已冻结学习需求清单和资料摘要写入文档；"
-            "编辑已有板书时，才可结合用户指令、当前板书、选区和最近对话。\n"
+            "编辑已有板书时，只根据结构化需求/任务清单、当前板书、目标选区/定位摘录和资料摘要写入，"
+            "不得读取用户和 Chatbot 的原始聊天记录。\n"
             "2. intent=generate_from_requirements 时，输出一份完整板书，operation 使用 replace_document，"
             "content_text 必须包含清晰章节标题；默认按一节可直接教学的完整文档篇幅生成，"
             "优先组织多个相互衔接的 H2 小节，篇幅要足以支撑一节课直接教学，"
@@ -1320,9 +1378,8 @@ class OpenAICourseAI:
                     "lesson_title": lesson_title,
                     "current_document_title": current_document_title,
                     "current_document_text": current_document_text,
-                    "recent_conversation": conversation_summary or "",
                     "selection_excerpt": selection_excerpt.strip() if selection_excerpt else "无选中引用",
-                    "user_instruction": user_instruction or "",
+                    "input_isolation": BOARD_EDITOR_CHAT_LOG_REDACTION,
                 }
             )
         user_prompt = _json(user_payload)

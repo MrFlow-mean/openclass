@@ -120,8 +120,6 @@ def edit_existing_document(
         current_document_title=lesson.board_document.title,
         current_document_text=_document_text(lesson.board_document),
         resource_summary=resource_summary,
-        conversation_summary=conversation_summary,
-        user_instruction=user_instruction,
         selection_excerpt=target_excerpt,
     )
     if not result:

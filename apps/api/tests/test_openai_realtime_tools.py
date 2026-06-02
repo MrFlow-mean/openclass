@@ -113,6 +113,8 @@ def test_realtime_connect_posts_sdp_with_chatbot_tools(monkeypatch, isolated_sto
     tool_names = {tool["name"] for tool in session_payload["tools"]}
     assert {"run_chatbot_workflow", "solve_complex_problem"} <= tool_names
     assert "同一个角色" in session_payload["instructions"]
+    assert "当前板书有一个待讲解片段" not in session_payload["instructions"]
+    assert "实时 Chatbot 不能直接读取" in session_payload["instructions"]
     assert sideband_sessions[0][0].call_id == "rtc_test_call"
     assert sideband_sessions[0][1] == "test-openai-key"
 
@@ -226,3 +228,6 @@ def test_strong_reasoning_solver_uses_configured_model_and_effort(monkeypatch, i
     assert captured["model"] == "gpt-5.5"
     assert captured["reasoning"] == {"effort": "xhigh"}
     assert captured["text_format"] is ComplexProblemSolution
+    prompt_payload = json.loads(captured["input"][1]["content"])
+    assert prompt_payload["board_summary"] != "当前板书摘要"
+    assert "没有直接读取右侧板书文档的权限" in prompt_payload["board_summary"]

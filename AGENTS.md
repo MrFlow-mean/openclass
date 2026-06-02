@@ -170,6 +170,8 @@ if "统计学习理论" in chapter_title:
 
 - 每轮必须先判断 `board_document` 是否为空。空白板书和已有板书是两条不同链路，不得混用清单、状态机或生成入口。
 - Chatbot 不得在需求未完整、目标未定位、资料未选择、写入动作未确认、板书侧未授权讲解时抢先给最终回答。
+- Chatbot、Realtime Chatbot、StrongReasoning 等 Chatbot 侧能力不得直接读取 `board_document` 全文、摘要、选区正文或候选片段正文。它们只能接收板书侧 directive、InteractionSession 或后端工具结果中明确交接的目标摘录、边界和指令。
+- BoardEditor / 板书文档编辑 AI 不得读取用户和 Chatbot 的原始聊天记录、recent conversation 或自由对话摘要；它只能接收 frozen requirement payload、BoardTaskRequirementSheet、定位证据、当前文档、目标摘录、资料摘要和结构化 action instruction。
 - BoardEditor 不得直接消费原始用户对话来首次生成板书；首次生成只能消费 frozen requirement payload。
 - 已有板书后的写、改、讲、聊不得直接由旧 action handler 触发；必须从 `BoardTaskRequirementSheet`、定位证据、Board AI route decision 进入。
 - 清单变动必须可追溯。第一层需求清单和第二层任务清单都必须有 run / version / event 或 commit metadata 记录；执行后不得静默清空。
@@ -306,6 +308,19 @@ if "统计学习理论" in chapter_title:
 - Chatbot 不得凭原始对话、自己的常识、未冻结清单、未定位目标、未授权的资料摘要绕过板书侧反馈直接讲解板书内容。
 - Chatbot 可以生成用户可见的承接话术，但承接话术不得包含未被板书侧授权的实质讲解。
 - 任何代码路径只要会让 Chatbot 输出实质讲解，就必须能在 commit metadata 或运行上下文中追溯到 board directive、target focus 或 interaction session reference context。
+
+### 主动讲解与被动行动边界
+
+本边界用于防止系统在需求清单还不充分时擅自开始教学，同时保证用户已经明确要求行动时不会被“继续完善清单”无限拖住。
+
+- 主动讲解：指用户没有明确要求本轮开始讲解、写入、改写或规则互动时，系统根据自己判断想推进教学内容。主动讲解只允许在对应清单已经足够完整、目标已经定位、板书侧已经授权时发生。
+- 被动行动：指用户本轮已经明确要求“讲解、解释、说明、开始讲、写、补充、修改、改写、练习、互动、按规则来”等动作。被动行动不要求清单达到理想丰满度，但必须达到可执行最低条件，并且仍然必须经过第二层任务清单、定位、route decision 和讲解 directive / 编辑器门禁。
+- 第一层空白板书中，如果学习需求清单未完整且用户没有明确要求生成，Chatbot 只能继续澄清学习需求，不得主动生成板书或展开教学。
+- 第一层空白板书中，如果用户明确要求“直接生成、开始生成、别问了”，系统可以强制冻结当前清单并生成，但必须写 forced_frozen / frozen 历史；这不是绕过清单，而是把不完整清单以强制开始的方式审计下来。
+- 第二层已有板书中，如果四字段任务清单未完整且用户没有明确要求执行，Chatbot 只能追问缺项，不得主动讲解、写入、改写或启动互动。
+- 第二层已有板书中，如果用户明确要求讲解某个内容，例如“是什么意思、什么含义、为什么、解释这里、讲第几句”，系统必须进入 `BoardTaskRequirementSheet` 链路，而不能落回普通 Chatbot 自由回答。
+- 第二层已有板书中，如果用户在多候选澄清后明确说“都讲、全部讲、逐个、按顺序”，这表示目标是这些候选的顺序集合；对 `explain` 路线可以先从第一个候选生成 board directive 并开始讲解，不得无意义地反复要求用户选择单一位置。此规则只适用于讲解，不适用于写入或改写。
+- “尽可能完善清单”是主动阶段的策略；“用户明确要求行动”是被动阶段的触发。两者冲突时，以被动行动触发为准，但绝不取消板书侧授权、定位和历史审计门禁。
 
 ### 不可更改声明
 

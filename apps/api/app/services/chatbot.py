@@ -72,7 +72,9 @@ from app.services.segment_resolver import FocusResolution, focus_context, resolv
 
 MAX_CONTEXT_CHARS = 1800
 MAX_CONVERSATION_TURNS = 8
-EXPLAIN_REQUEST_PATTERN = re.compile(r"(讲解|解释|说明|讲一下|解释一下|帮我理解)")
+EXPLAIN_REQUEST_PATTERN = re.compile(
+    r"(讲解|解释|说明|讲一下|解释一下|帮我理解|为什么|是什么|什么意思|是什么意思|什么含义|含义)"
+)
 APPEND_REQUEST_PATTERN = re.compile(
     r"(续写|继续写|接着写|往后写|后续|新增|追加|新加|新章节|新小节|下一节|下一章|下一部分|末尾)"
 )
@@ -92,6 +94,9 @@ EXPLICIT_RESOURCE_REFERENCE_PATTERN = re.compile(r"(资料|材料|上传|教材|
 LEARNING_START_REQUEST_PATTERN = re.compile(r"(我要学|我想学|想学习|学习一下|开始学|帮我学|学一学)")
 FOLLOWUP_EXECUTION_PATTERN = re.compile(r"^(写啊|写|开始|执行|可以|好的|好|就这样|按这个来|照这个来|继续)$")
 INTERACTION_RULE_REQUEST_PATTERN = re.compile(r"(规则|互动|轮流|你问我答|按.{0,12}来)")
+SEQUENTIAL_EXPLANATION_REQUEST_PATTERN = re.compile(
+    r"(都讲|全都讲|全部讲|都解释|全部解释|逐个|一个个|挨个|依次|按顺序|从头到尾)"
+)
 EDIT_ACTIONS: set[BoardTaskAction] = {"rewrite_target", "expand_target", "simplify_target"}
 DOCUMENT_WRITE_ACTIONS: set[BoardTaskAction] = {*EDIT_ACTIONS, "append_section"}
 DOCUMENT_GENERATION_ACTIONS = r"(生成|写|撰写|创建|整理|制作|设计|输出|产出|编写)"
@@ -213,6 +218,12 @@ def _selection_excerpt(selection: SelectionRef | None, fallback: str | None = No
     excerpt = selection.excerpt if selection else fallback
     compact = _compact_text(excerpt, limit=1200)
     return compact or None
+
+
+def _chatbot_visible_selection_excerpt(request: ChatRequest, excerpt: str | None) -> str | None:
+    if request.selection and request.selection.kind == "board":
+        return None
+    return excerpt
 
 
 def _has_explicit_resource_reference(text: str) -> bool:
@@ -424,8 +435,8 @@ def _focus_candidate_context(resolution: FocusResolution) -> str:
     lines = [resolution.question]
     for index, candidate in enumerate(resolution.candidates[:3], start=1):
         path = " / ".join(candidate.heading_path) if candidate.heading_path else "当前板书"
-        excerpt = _compact_text(candidate.excerpt, limit=180)
-        lines.append(f"{index}. {path}：{excerpt}")
+        kind = candidate.kind or "片段"
+        lines.append(f"{index}. {path}（{kind}，内容摘录已由板书侧隔离）")
     return "\n".join(lines)
 
 
@@ -958,12 +969,19 @@ def _requirements_from_board_task(
 
 def _task_location_evidence(resolution: FocusResolution | None) -> dict[str, object]:
     if resolution is None:
-        return {"status": "missing", "focus": None, "candidates": []}
+        return {"status": "missing", "focus": None, "candidates": [], "board_search_evidence": None}
     return {
         "status": resolution.status,
         "focus": resolution.focus.model_dump(mode="json") if resolution.focus else None,
         "candidates": [candidate.model_dump(mode="json") for candidate in resolution.candidates],
         "question": resolution.question,
+        "board_search_evidence": resolution.evidence.model_dump(mode="json") if resolution.evidence else None,
+    }
+
+
+def _board_search_evidence_metadata(resolution: FocusResolution | None) -> dict[str, object]:
+    return {
+        "board_search_evidence": resolution.evidence.model_dump(mode="json") if resolution and resolution.evidence else None,
     }
 
 
@@ -1085,6 +1103,57 @@ def _clarify_decision_for_missing_focus(
     )
 
 
+def _requests_sequential_explanation(text: str) -> bool:
+    compact = _compact_text(text, limit=120)
+    return bool(compact and SEQUENTIAL_EXPLANATION_REQUEST_PATTERN.search(compact))
+
+
+def _ordered_explanation_candidates(
+    *,
+    decision: BoardTaskRouteDecision,
+    resolution: FocusResolution | None,
+) -> list[BoardFocusRef]:
+    candidates = decision.candidate_focuses or (resolution.candidates if resolution else [])
+    seen: set[tuple[str | None, str]] = set()
+    ordered: list[BoardFocusRef] = []
+    for candidate in candidates:
+        key = (candidate.segment_id, candidate.excerpt)
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(candidate)
+    return ordered
+
+
+def _apply_explicit_sequential_explanation_choice(
+    *,
+    board_task: BoardTaskRequirementSheet,
+    decision: BoardTaskRouteDecision,
+    resolution: FocusResolution | None,
+    request_message: str,
+) -> BoardTaskRouteDecision:
+    if board_task.requested_action != "explain":
+        return decision
+    if decision.route != "clarify_location" or decision.location_status != "ambiguous":
+        return decision
+    if not _requests_sequential_explanation(request_message):
+        return decision
+    candidates = _ordered_explanation_candidates(decision=decision, resolution=resolution)
+    if not candidates:
+        return decision
+    return BoardTaskRouteDecision(
+        route="explain",
+        location_status="found",
+        target_focus=candidates[0],
+        candidate_focuses=candidates,
+        reason=(
+            "用户已经明确要求全部或按顺序讲解多个候选目标；"
+            "本轮先从第一个候选目标开始讲解，不再反复要求用户选择位置。"
+        ),
+        write_proposal=decision.write_proposal,
+    )
+
+
 def _board_task_action_to_board_action(board_task: BoardTaskRequirementSheet) -> BoardTaskAction | None:
     if board_task.requested_action == "edit":
         return "rewrite_target"
@@ -1106,6 +1175,7 @@ def _generate_board_task_clarification_message(
     board_task: BoardTaskRequirementSheet,
     context: str,
 ) -> tuple[str, str]:
+    visible_task = _chatbot_visible_board_task(board_task)
     ai_reply = openai_course_ai.generate_chatbot_reply(
         lesson_title=lesson.title,
         learning_goal=board_task.question_or_topic or lesson.summary,
@@ -1115,7 +1185,7 @@ def _generate_board_task_clarification_message(
         user_message=(
             "当前已有板书任务清单还不完整，不能执行写、改、讲或聊。"
             "请只自然追问一个最关键缺项，不要讲解，也不要承诺已经改写文档。\n"
-            f"任务清单：{board_task.model_dump(mode='json')}\n"
+            f"任务清单：{visible_task}\n"
             f"追问方向：{context}"
         ),
         selection_excerpt=None,
@@ -1123,6 +1193,44 @@ def _generate_board_task_clarification_message(
     )
     chatbot_message = (ai_reply.chatbot_message if ai_reply else "").strip()
     return chatbot_message, "chatbot_board_task_clarification" if chatbot_message else "chatbot_empty"
+
+
+def _chatbot_visible_board_task(board_task: BoardTaskRequirementSheet) -> dict[str, object]:
+    payload = board_task.model_dump(mode="json")
+    if payload.get("target_hint"):
+        payload["target_hint"] = "已由板书侧记录；Chatbot 无直接读取目标板书内容权限。"
+    if payload.get("target_location"):
+        payload["target_location"] = "已由板书侧定位；Chatbot 无直接读取目标板书内容权限。"
+    return payload
+
+
+def _board_task_explanation_target_excerpt(
+    *,
+    board_task: BoardTaskRequirementSheet,
+    focus: BoardFocusRef | None,
+    decision: BoardTaskRouteDecision,
+    resolution: FocusResolution | None,
+) -> str:
+    parts = [
+        "已有板书任务清单已进入 explain 路线。",
+        f"用户目标线索：{board_task.target_hint or '未单独提供'}",
+        f"用户问题/主题：{board_task.question_or_topic or '未单独提供'}",
+        f"定位裁决：{decision.reason or '已定位目标内容'}",
+    ]
+    if focus is not None:
+        parts.append(f"当前允许讲解的目标内容：\n{focus_context(focus)}")
+    other_candidates = [
+        candidate
+        for candidate in (decision.candidate_focuses or (resolution.candidates if resolution else []))
+        if focus is None or (candidate.segment_id, candidate.excerpt) != (focus.segment_id, focus.excerpt)
+    ]
+    if other_candidates:
+        candidate_lines = [
+            f"{index}. {' / '.join(candidate.heading_path) or '板书片段'}（正文摘录仅供板书侧后续授权，不交给 Chatbot）"
+            for index, candidate in enumerate(other_candidates[:4], start=1)
+        ]
+        parts.append("同一任务中还存在的后续候选目标，仅作为顺序讲解上下文，不得越界讲解：\n" + "\n".join(candidate_lines))
+    return "\n\n".join(part for part in parts if part.strip())
 
 
 def _handle_existing_board_task_flow(
@@ -1289,24 +1397,29 @@ def _handle_existing_board_task_flow(
     board_action = _board_task_action_to_board_action(board_task)
     resolution = None
     if board_task.requested_action != "write" or board_task.target_hint or selection_excerpt:
+        locator_query = _compact_text(" ".join(part for part in [board_task.target_hint, board_task.question_or_topic] if part), limit=500)
         resolution = resolve_board_focus(
             lesson=lesson,
-            user_message=board_task.target_hint or request.message or board_task.question_or_topic,
+            user_message=locator_query,
             selection=request.selection,
             selection_text=selection_text,
             action_type=board_action,
+            board_task=board_task,
         )
     decision = openai_course_ai.generate_board_task_route_decision(
         lesson_title=lesson.title,
         board_task=board_task,
-        board_summary=_board_summary(lesson),
         location_evidence=_task_location_evidence(resolution),
         resource_summary=_resource_summary(resources),
-        conversation_summary=_conversation_summary(request.conversation),
-        user_message=request.message,
     ) or _fallback_board_task_decision(board_task=board_task, resolution=resolution)
     if _decision_must_have_focus(board_task=board_task, decision=decision) and _decision_focus(decision, resolution) is None:
         decision = _clarify_decision_for_missing_focus(decision=decision, resolution=resolution)
+    decision = _apply_explicit_sequential_explanation_choice(
+        board_task=board_task,
+        decision=decision,
+        resolution=resolution,
+        request_message=request.message,
+    )
 
     if decision.route == "clarify_location":
         next_task = BoardTaskRequirementSheet.model_validate(board_task.model_dump(mode="json"))
@@ -1346,6 +1459,7 @@ def _handle_existing_board_task_flow(
                     "assistant_message": chatbot_message,
                     "assistant_message_source": chatbot_message_source,
                     **interaction_metadata,
+                    **_board_search_evidence_metadata(resolution),
                     **_board_task_metadata(board_task=board_task, stamp=old_stamp, route="clarify_location", cleared=True),
                     "new_board_task": new_task.model_dump(mode="json"),
                     "new_board_task_run_id": new_stamp.run_id,
@@ -1401,6 +1515,7 @@ def _handle_existing_board_task_flow(
                 "assistant_message": chatbot_message,
                 "assistant_message_source": chatbot_message_source,
                 **interaction_metadata,
+                **_board_search_evidence_metadata(resolution),
                 **_task_metadata(
                     requirements=_requirements_from_board_task(
                         base=requirements,
@@ -1475,6 +1590,7 @@ def _handle_existing_board_task_flow(
                 "assistant_message": chatbot_message,
                 "assistant_message_source": chatbot_message_source,
                 **interaction_metadata,
+                **_board_search_evidence_metadata(resolution),
                 **_board_task_metadata(
                     board_task=next_task,
                     stamp=stamp,
@@ -1516,6 +1632,7 @@ def _handle_existing_board_task_flow(
             requirement_history=requirement_history,
             board_task_history=board_task_history,
             route_decision=decision,
+            search_evidence=resolution.evidence.model_dump(mode="json") if resolution and resolution.evidence else None,
             source_interaction_metadata=interaction_metadata,
         )
 
@@ -1558,6 +1675,7 @@ def _handle_existing_board_task_flow(
                 "board_edit_summary": edit_outcome.summary,
                 "board_section_titles": edit_outcome.section_titles,
                 **interaction_metadata,
+                **_board_search_evidence_metadata(resolution),
                 **_task_metadata(
                     requirements=task_requirements,
                     learning_clarification=learning_clarification,
@@ -1599,7 +1717,12 @@ def _handle_existing_board_task_flow(
 
     if decision.route == "explain":
         focus = decision.target_focus or (resolution.focus if resolution else None)
-        focus_excerpt = focus_context(focus) if focus else board_task.question_or_topic
+        focus_excerpt = _board_task_explanation_target_excerpt(
+            board_task=board_task,
+            focus=focus,
+            decision=decision,
+            resolution=resolution,
+        )
         chatbot_message, chatbot_message_source, board_explanation_directive = _generate_board_directed_explanation_message(
             lesson=lesson,
             requirements=_requirements_from_board_task(
@@ -1630,6 +1753,7 @@ def _handle_existing_board_task_flow(
                 "assistant_message_source": chatbot_message_source,
                 "board_explanation_directive": board_explanation_directive,
                 **interaction_metadata,
+                **_board_search_evidence_metadata(resolution),
                 **_task_metadata(
                     requirements=_requirements_from_board_task(
                         base=requirements,
@@ -1701,7 +1825,10 @@ def _handle_existing_board_task_flow(
             board_task_stamp=stamp,
             board_task_decision=decision,
             resolved_focus=focus,
-            source_interaction_metadata=interaction_metadata,
+            source_interaction_metadata={
+                **interaction_metadata,
+                **_board_search_evidence_metadata(resolution),
+            },
         )
 
     return None
@@ -1721,6 +1848,7 @@ def _execute_board_task_write(
     requirement_history: LearningRequirementHistoryRecorder,
     board_task_history: BoardTaskHistoryRecorder,
     route_decision: BoardTaskRouteDecision | None = None,
+    search_evidence: dict[str, object] | None = None,
     source_interaction_metadata: dict[str, object] | None = None,
 ) -> ChatResponse:
     interaction_metadata = source_interaction_metadata or {}
@@ -1793,6 +1921,7 @@ def _execute_board_task_write(
             "board_section_titles": edit_outcome.section_titles,
             "board_explanation_directive": board_explanation_directive,
             **interaction_metadata,
+            "board_search_evidence": search_evidence,
             **_task_metadata(
                 requirements=task_requirements,
                 learning_clarification=learning_clarification,
@@ -3411,7 +3540,7 @@ def _chat_response(
             resource_summary=resource_summary_for_turn,
             conversation_summary=_conversation_summary(request.conversation),
             user_message=chatbot_user_message,
-            selection_excerpt=selection_or_reference_excerpt,
+            selection_excerpt=_chatbot_visible_selection_excerpt(request, selection_or_reference_excerpt),
             interaction_mode=request.interaction_mode,
         )
         chatbot_message = (ai_reply.chatbot_message if ai_reply else "").strip()
@@ -3618,7 +3747,7 @@ def _chat_response(
             lesson=lesson,
             request=request,
             user_message=free_chat_user_message,
-            target_excerpt=selection_or_reference_excerpt,
+            target_excerpt=_chatbot_visible_selection_excerpt(request, selection_or_reference_excerpt),
             board_summary=_board_summary(lesson),
             resource_summary=resource_summary_for_turn,
             conversation_summary=_conversation_summary(request.conversation),
@@ -3630,7 +3759,7 @@ def _chat_response(
         resource_summary=resource_summary_for_turn,
         conversation_summary=_conversation_summary(request.conversation),
         user_message=solver_user_message,
-        selection_excerpt=selection_or_reference_excerpt,
+        selection_excerpt=_chatbot_visible_selection_excerpt(request, selection_or_reference_excerpt),
         interaction_mode=request.interaction_mode,
     )
     chatbot_message = (ai_reply.chatbot_message if ai_reply else "").strip()

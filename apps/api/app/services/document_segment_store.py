@@ -15,6 +15,28 @@ class DocumentSegmentStore:
         self.fts_available = False
 
     def create_fts_schema(self, conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS board_document_chunks (
+                lesson_id TEXT NOT NULL,
+                document_id TEXT NOT NULL,
+                chunk_id TEXT NOT NULL,
+                order_start INTEGER NOT NULL,
+                order_end INTEGER NOT NULL,
+                heading_path_json TEXT NOT NULL,
+                source_segment_ids_json TEXT NOT NULL,
+                text TEXT NOT NULL,
+                text_hash TEXT NOT NULL,
+                PRIMARY KEY (lesson_id, chunk_id)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_board_document_chunks_lesson
+                ON board_document_chunks(lesson_id, order_start, order_end)
+            """
+        )
         try:
             conn.execute(
                 """
@@ -29,6 +51,18 @@ class DocumentSegmentStore:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE VIRTUAL TABLE IF NOT EXISTS board_document_chunks_fts USING fts5(
+                    lesson_id UNINDEXED,
+                    document_id UNINDEXED,
+                    chunk_id UNINDEXED,
+                    heading_path,
+                    text,
+                    tokenize = 'unicode61'
+                )
+                """
+            )
         except sqlite3.OperationalError:
             self.fts_available = False
         else:
@@ -36,7 +70,8 @@ class DocumentSegmentStore:
 
     def backfill(self, conn: sqlite3.Connection, document_from_row: DocumentFromRow) -> None:
         segment_count = conn.execute("SELECT count(*) FROM board_document_segments").fetchone()[0]
-        if segment_count:
+        chunk_count = conn.execute("SELECT count(*) FROM board_document_chunks").fetchone()[0]
+        if segment_count and chunk_count:
             return
         lesson_rows = conn.execute("SELECT * FROM lessons").fetchall()
         for row in lesson_rows:
@@ -49,6 +84,7 @@ class DocumentSegmentStore:
         document: BoardDocument,
     ) -> None:
         conn.execute("DELETE FROM board_document_segments WHERE lesson_id = ?", (lesson_id,))
+        conn.execute("DELETE FROM board_document_chunks WHERE lesson_id = ?", (lesson_id,))
         self.delete_for_lesson(conn, lesson_id)
         segment_index = build_board_segment_index(document)
         for segment in segment_index.segments:
@@ -82,10 +118,36 @@ class DocumentSegmentStore:
                 segment.heading_path,
                 segment.text,
             )
+        for chunk in segment_index.chunks:
+            conn.execute(
+                """
+                INSERT INTO board_document_chunks(
+                    lesson_id, document_id, chunk_id, order_start, order_end,
+                    heading_path_json, source_segment_ids_json, text, text_hash
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    lesson_id,
+                    chunk.document_id,
+                    chunk.chunk_id,
+                    chunk.order_start,
+                    chunk.order_end,
+                    _dumps(chunk.heading_path),
+                    _dumps(chunk.source_segment_ids),
+                    chunk.text,
+                    chunk.text_hash,
+                ),
+            )
+            self._insert_chunk_fts(
+                conn,
+                lesson_id,
+                chunk.document_id,
+                chunk.chunk_id,
+                chunk.heading_path,
+                chunk.text,
+            )
 
     def delete_for_owner(self, conn: sqlite3.Connection, owner_user_id: str | None) -> None:
-        if not self.fts_available:
-            return
         if owner_user_id is None:
             lesson_ids = [row["id"] for row in conn.execute("SELECT id FROM lessons").fetchall()]
         else:
@@ -102,6 +164,7 @@ class DocumentSegmentStore:
                 ).fetchall()
             ]
         for lesson_id in lesson_ids:
+            conn.execute("DELETE FROM board_document_chunks WHERE lesson_id = ?", (lesson_id,))
             self.delete_for_lesson(conn, lesson_id)
 
     def delete_for_lesson(self, conn: sqlite3.Connection, lesson_id: str) -> None:
@@ -109,6 +172,7 @@ class DocumentSegmentStore:
             return
         try:
             conn.execute("DELETE FROM board_document_segments_fts WHERE lesson_id = ?", (lesson_id,))
+            conn.execute("DELETE FROM board_document_chunks_fts WHERE lesson_id = ?", (lesson_id,))
         except sqlite3.OperationalError:
             self.fts_available = False
 
@@ -162,6 +226,29 @@ class DocumentSegmentStore:
                 ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (lesson_id, document_id, segment_id, kind, " / ".join(heading_path), text),
+            )
+        except sqlite3.OperationalError:
+            self.fts_available = False
+
+    def _insert_chunk_fts(
+        self,
+        conn: sqlite3.Connection,
+        lesson_id: str,
+        document_id: str,
+        chunk_id: str,
+        heading_path: list[str],
+        text: str,
+    ) -> None:
+        if not self.fts_available:
+            return
+        try:
+            conn.execute(
+                """
+                INSERT INTO board_document_chunks_fts(
+                    lesson_id, document_id, chunk_id, heading_path, text
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (lesson_id, document_id, chunk_id, " / ".join(heading_path), text),
             )
         except sqlite3.OperationalError:
             self.fts_available = False

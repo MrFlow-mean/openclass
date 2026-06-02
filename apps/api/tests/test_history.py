@@ -1,6 +1,6 @@
 import pytest
 
-from app.models import BoardDocument, LearningRequirementSheet, PatchOperation
+from app.models import BoardDocument, BoardTaskRequirementSheet, LearningRequirementSheet, PatchOperation
 from app.services.chart_generation import extract_chart_data_fragments
 from app.services.course_runtime import (
     build_lesson_for_topic,
@@ -11,7 +11,7 @@ from app.services.course_runtime import (
 from app.services.document_ops import apply_patch
 from app.services.history import create_branch, restore_commit
 from app.services.lesson_factory import create_empty_lesson, create_lesson
-from app.services.openai_course_ai import GeneratedCatalogChapter, GeneratedResourceCatalog, OpenAICourseAI
+from app.services.openai_course_ai import GeneratedCatalogChapter, GeneratedResourceCatalog, OpenAICourseAI, openai_course_ai
 from app.services.resource_library import _epub_section_body_score, build_resource_item, extract_reference_context
 from app.services.resource_resolver import resolve_resource_reference
 from app.services.board_segment_index import build_board_segment_index
@@ -156,6 +156,8 @@ def test_board_segment_index_builds_machine_directory_from_rich_document() -> No
     assert paragraph.heading_path == ["主线", "形成机制"]
     assert paragraph.before_segment_id
     assert paragraph.after_segment_id
+    assert index.chunks
+    assert any(paragraph.segment_id in chunk.source_segment_ids for chunk in index.chunks)
 
 
 def test_segment_resolver_uses_generic_semantic_aliases_without_selection() -> None:
@@ -174,6 +176,59 @@ def test_segment_resolver_uses_generic_semantic_aliases_without_selection() -> N
     assert resolution.resolved
     assert resolution.focus is not None
     assert "影响因素" in resolution.focus.excerpt or "形成机制" in resolution.focus.excerpt
+    assert resolution.evidence is not None
+    assert resolution.evidence.status == "found"
+
+
+def test_segment_resolver_uses_board_chunks_for_cross_segment_topic(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(openai_course_ai, "generate_board_search_rerank", lambda **kwargs: None)
+    lesson = create_empty_lesson("定位测试")
+    lesson.board_document = build_document(
+        title="定位测试",
+        content_text=(
+            "# 主线\n"
+            "## 商业模式\n"
+            "商业化路径先看用户转化。\n"
+            "订阅制收入来源用于支撑长期运营。"
+        ),
+    )
+
+    resolution = resolve_board_focus(
+        lesson=lesson,
+        user_message="商业化收入来源",
+        action_type="explain_target",
+    )
+
+    assert resolution.resolved
+    assert resolution.focus is not None
+    assert "收入来源" in resolution.focus.excerpt
+    assert resolution.evidence is not None
+    assert resolution.evidence.candidates[0].source == "chunk_lexical"
+    assert len(resolution.evidence.candidates[0].source_segment_ids) >= 2
+
+
+def test_segment_resolver_marks_absent_explain_topic_as_content_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(openai_course_ai, "generate_board_search_rerank", lambda **kwargs: None)
+    lesson = create_empty_lesson("定位测试")
+    lesson.board_document = build_document(title="定位测试", content_text="# 主线\n## 已有内容\n这里只讲已有内容。")
+    board_task = BoardTaskRequirementSheet(
+        target_hint="全新缺失主题",
+        requested_action="explain",
+        question_or_topic="全新缺失主题",
+        progress=100,
+    )
+
+    resolution = resolve_board_focus(
+        lesson=lesson,
+        user_message="全新缺失主题",
+        action_type="explain_target",
+        board_task=board_task,
+    )
+
+    assert not resolution.resolved
+    assert resolution.status == "content_absent"
+    assert resolution.evidence is not None
+    assert resolution.evidence.status == "content_absent"
 
 
 def test_segment_resolver_uses_numbered_heading_location_without_selection() -> None:

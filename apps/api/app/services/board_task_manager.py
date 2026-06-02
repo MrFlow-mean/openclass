@@ -16,7 +16,7 @@ from app.services.openai_course_ai import openai_course_ai
 
 WRITE_PATTERN = re.compile(r"(写|新增|追加|补充|扩写|添加|加一段|加一节|加入)")
 EDIT_PATTERN = re.compile(r"(改|修改|改写|重写|编辑|润色|优化|简化|扩展|缩短|改短|调整)")
-EXPLAIN_PATTERN = re.compile(r"(讲解|解释|说明|讲一下|解释一下|帮我理解|为什么|是什么)")
+EXPLAIN_PATTERN = re.compile(r"(讲解|解释|说明|讲一下|解释一下|帮我理解|为什么|是什么|什么意思|是什么意思|什么含义|含义)")
 CHAT_PATTERN = re.compile(r"(练习|互动|你问我答|问答|角色|轮流|按.{0,12}规则|对话|测验|检查我)")
 CONFIRM_PATTERN = re.compile(r"^(好|好的|可以|确认|扩写|写吧|加吧|开始|继续|就这样|按这个来|是|要)$")
 DECLINE_PATTERN = re.compile(r"^(不用|不要|先不|取消|算了|否|不用写|别写)$")

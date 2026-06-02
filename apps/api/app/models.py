@@ -269,10 +269,22 @@ class BoardSegment(BaseModel):
     after_segment_id: str | None = None
 
 
+class BoardChunk(BaseModel):
+    chunk_id: str
+    document_id: str
+    source_segment_ids: list[str] = Field(default_factory=list)
+    heading_path: list[str] = Field(default_factory=list)
+    order_start: int = 0
+    order_end: int = 0
+    text: str = ""
+    text_hash: str = ""
+
+
 class BoardSegmentIndex(BaseModel):
     document_id: str
     document_title: str = ""
     segments: list[BoardSegment] = Field(default_factory=list)
+    chunks: list[BoardChunk] = Field(default_factory=list)
 
 
 class DocumentSegmentSearchResult(BaseModel):
@@ -308,6 +320,49 @@ class BoardFocusRef(BaseModel):
     after_text: str = ""
     text_hash: str | None = None
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    reason: str = ""
+    match_id: str | None = None
+    source_segment_ids: list[str] = Field(default_factory=list)
+    order_start: int | None = None
+    order_end: int | None = None
+    score_breakdown: dict[str, float] = Field(default_factory=dict)
+
+
+class BoardSearchQueryPlan(BaseModel):
+    query_text: str = ""
+    search_terms: list[str] = Field(default_factory=list)
+    structured_target: str = ""
+    scope_hint: str = ""
+    action_type: BoardTaskAction | None = None
+
+
+class BoardSearchCandidate(BaseModel):
+    match_id: str
+    source: str
+    chunk_id: str | None = None
+    source_segment_ids: list[str] = Field(default_factory=list)
+    focus: BoardFocusRef
+    score: float = Field(default=0.0, ge=0.0, le=1.0)
+    score_breakdown: dict[str, float] = Field(default_factory=dict)
+    reason: str = ""
+
+
+class BoardSearchEvidence(BaseModel):
+    status: Literal["selected", "found", "ambiguous", "missing", "content_absent"] = "missing"
+    query_plan: BoardSearchQueryPlan = Field(default_factory=BoardSearchQueryPlan)
+    candidates: list[BoardSearchCandidate] = Field(default_factory=list)
+    selected_match_id: str | None = None
+    reason: str = ""
+
+
+class BoardSearchRerankItem(BaseModel):
+    match_id: str
+    score: float = Field(default=0.0, ge=0.0, le=1.0)
+    reason: str = ""
+
+
+class BoardSearchRerankResult(BaseModel):
+    ranked: list[BoardSearchRerankItem] = Field(default_factory=list)
     reason: str = ""
 
 
