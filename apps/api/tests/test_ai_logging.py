@@ -2632,7 +2632,6 @@ def test_board_generation_from_ready_sheet_writes_empty_document_without_chat_bo
             operation="replace_document",
             title="生成后的板书",
             content_text="# 生成后的板书\n## 第一节\n**讲解重点:** 这是一段足够长的第一节正文，用来避免被识别成额外章节并保持测试稳定。\n## 第二节\n这是一段足够长的第二节正文，用来避免被识别成额外章节并保持测试稳定。",
-            content_html="<p>不应采用模型 HTML</p>",
             summary="生成了完整板书。",
             section_titles=["第一节", "第二节"],
         )
@@ -2696,24 +2695,34 @@ def test_board_generation_from_ready_sheet_writes_empty_document_without_chat_bo
     assert _read_log_entries(isolated_ai_log) == []
 
 
-def test_board_generation_converts_model_html_content_text_to_markdown(
+def test_board_generation_repairs_model_html_content_text_before_commit(
     monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
 ) -> None:
     store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
     monkeypatch.setattr(workspace_state, "STORE", store)
+    captured_contexts: list[dict] = []
 
     def _fake_board_edit(**kwargs):
+        captured_contexts.append(kwargs.get("learning_requirement_context") or {})
+        if len(captured_contexts) == 1:
+            return BoardDocumentEditResult(
+                operation="replace_document",
+                title="生成后的板书",
+                content_text=(
+                    "<h1>生成后的板书</h1>"
+                    "<h2>第一节</h2>"
+                    "<p><strong>讲解重点:</strong> 这里是第一节正文。</p>"
+                    "<ul><li>第一条</li><li>第二条</li></ul>"
+                    "<h2>第二节</h2>"
+                    "<p>这里是第二节正文。</p>"
+                ),
+                summary="生成了完整板书。",
+                section_titles=["第一节", "第二节"],
+            )
         return BoardDocumentEditResult(
             operation="replace_document",
             title="生成后的板书",
-            content_text=(
-                "<h1>生成后的板书</h1>"
-                "<h2>第一节</h2>"
-                "<p><strong>讲解重点:</strong> 这里是第一节正文。</p>"
-                "<ul><li>第一条</li><li>第二条</li></ul>"
-                "<h2>第二节</h2>"
-                "<p>这里是第二节正文。</p>"
-            ),
+            content_text="# 生成后的板书\n## 第一节\n**讲解重点:** 这里是第一节正文。\n- 第一条\n- 第二条\n## 第二节\n这里是第二节正文。",
             summary="生成了完整板书。",
             section_titles=["第一节", "第二节"],
         )
@@ -2734,6 +2743,11 @@ def test_board_generation_converts_model_html_content_text_to_markdown(
     )
 
     updated_document = response.course_package.lessons[0].board_document
+    assert len(captured_contexts) == 2
+    repair = captured_contexts[1]["document_quality_repair"]
+    assert repair["status"] == "previous_output_rejected"
+    assert "HTML" in repair["failure_reason"]
+    assert "<h1>生成后的板书</h1>" in repair["previous_content_text_excerpt"]
     assert updated_document.content_text.startswith("# 生成后的板书")
     assert "## 第一节" in updated_document.content_text
     assert "**讲解重点:** 这里是第一节正文。" in updated_document.content_text
@@ -2844,7 +2858,6 @@ def test_document_ai_edit_uses_rich_markdown_context_and_keeps_html_marks(
         return BoardDocumentEditResult(
             operation="replace_selection",
             content_text="**Speaker A:** Simpler target.",
-            content_html="<p>不应采用模型 HTML</p>",
             summary="改写了选中内容。",
         )
 
@@ -3919,6 +3932,90 @@ def test_explicit_whole_document_simplify_allows_replace_document(
     commit = updated_lesson.history_graph.commits[-1]
     assert commit.metadata["board_task_route"] == "edit"
     assert commit.metadata["target_scope"] == "whole_document"
+    assert commit.metadata["board_edit_operation"] == "replace_document"
+    assert commit.metadata["board_task_cleared"] is True
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_whole_document_replace_repairs_flattened_rich_structure_before_commit(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    captured_contexts: list[dict] = []
+
+    def _fake_board_edit(**kwargs):
+        assert kwargs.get("allow_replace_document") is True
+        assert kwargs.get("target_scope") == "whole_document"
+        captured_contexts.append(kwargs.get("learning_requirement_context") or {})
+        if len(captured_contexts) == 1:
+            return BoardDocumentEditResult(
+                operation="replace_document",
+                title="短版",
+                content_text="\n\n".join(
+                    [
+                        "短版",
+                        "核心内容",
+                        "第一段普通内容。",
+                        "第二段普通内容。",
+                        "第三段普通内容。",
+                        "第四段普通内容。",
+                        "第五段普通内容。",
+                        "第六段普通内容。",
+                        "第七段普通内容。",
+                        "第八段普通内容。",
+                    ]
+                ),
+                summary="全文精简成短版。",
+                chatbot_message="AI生成：全文已经精简。",
+                section_titles=["核心内容"],
+            )
+        return BoardDocumentEditResult(
+            operation="replace_document",
+            title="短版",
+            content_text="# 短版\n## 核心内容\n- 第一条\n- 第二条\n**结论：** 保留结构后完成精简。",
+            summary="全文精简成结构化短版。",
+            chatbot_message="AI生成：全文已经精简并保留结构。",
+            section_titles=["核心内容"],
+        )
+
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _fake_board_edit)
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.board_document = build_document(
+        title="已有板书",
+        content_text=(
+            "# 主线\n"
+            "## 第一节\n"
+            "- 第一条\n"
+            "- 第二条\n"
+            "**重点：** 保留结构。\n"
+            "## 第二节\n"
+            "- 第三条\n"
+            "- 第四条\n"
+            "**结论：** 不能写扁。"
+        ),
+    )
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="把全文精简成短版"),
+        user_id=TEST_USER.id,
+    )
+
+    updated_lesson = response.course_package.lessons[0]
+    assert len(captured_contexts) == 2
+    repair = captured_contexts[1]["document_quality_repair"]
+    assert "丢失了原有标题" in repair["failure_reason"]
+    assert updated_lesson.board_document.content_text.startswith("# 短版")
+    assert "## 核心内容" in updated_lesson.board_document.content_text
+    assert "**结论：** 保留结构后完成精简。" in updated_lesson.board_document.content_text
+    assert response.board_document_operation_status == "succeeded"
+    commit = updated_lesson.history_graph.commits[-1]
     assert commit.metadata["board_edit_operation"] == "replace_document"
     assert commit.metadata["board_task_cleared"] is True
     assert _read_log_entries(isolated_ai_log) == []

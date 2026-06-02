@@ -571,7 +571,7 @@ def test_initial_generation_rejects_flat_long_document_without_headings(
 
     events = store.list_learning_requirement_events(owner_user_id=TEST_USER_ID, lesson_id=lesson.id)
     reloaded = store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
-    assert len(board_calls) == 2
+    assert len(board_calls) == 3
     assert response.requirement_phase == "frozen"
     assert response.board_document_operation_status == "failed"
     assert response.board_document_operation_failure_reason == "首次板书生成结果缺少标题层级，已阻止写入。"

@@ -28,6 +28,10 @@ from app.services.rich_document import (
 )
 
 
+_MAX_BOARD_DOCUMENT_QUALITY_ATTEMPTS = 3
+_QUALITY_REPAIR_EXCERPT_CHARS = 2400
+
+
 @dataclass(frozen=True)
 class BoardDocumentEditOutcome:
     chatbot_message: str
@@ -72,15 +76,31 @@ def generate_from_requirements(
         "selection_excerpt": None,
     }
     failure_reason = "板书文档编辑 AI 没有返回生成结果。"
-    for _attempt in range(2):
-        result = openai_course_ai.generate_board_document_edit(**request_kwargs)
+    repair_feedback: dict[str, object] | None = None
+    for attempt in range(_MAX_BOARD_DOCUMENT_QUALITY_ATTEMPTS):
+        result = _request_board_document_edit(request_kwargs, repair_feedback=repair_feedback)
         if not result:
             failure_reason = "板书文档编辑 AI 没有返回生成结果。"
+            break
+
+        format_issue = _model_output_quality_issue(result)
+        if format_issue:
+            failure_reason = format_issue
+            repair_feedback = _quality_repair_feedback(
+                reason=failure_reason,
+                attempt=attempt,
+                result=result,
+            )
             continue
 
         content_text, content_html = _edit_payload(result, prefer_content_html=False)
         if not content_text and not content_html:
             failure_reason = "板书文档编辑 AI 返回了空内容。"
+            repair_feedback = _quality_repair_feedback(
+                reason=failure_reason,
+                attempt=attempt,
+                result=result,
+            )
             continue
 
         new_document = build_document(
@@ -92,6 +112,11 @@ def generate_from_requirements(
         )
         if _would_store_flat_initial_board(new_document):
             failure_reason = "首次板书生成结果缺少标题层级，已阻止写入。"
+            repair_feedback = _quality_repair_feedback(
+                reason=failure_reason,
+                attempt=attempt,
+                result=result,
+            )
             continue
         return _changed(
             lesson=lesson,
@@ -127,78 +152,112 @@ def edit_existing_document(
             "已有板书的局部编辑需要先解析目标位置。",
         )
 
-    result = _generate_board_document_edit_with_retry(
-        intent="edit_existing_document",
-        lesson_title=lesson.title,
-        learning_requirement_context=_requirement_context(requirements, clarification),
-        current_document_title=lesson.board_document.title,
-        current_document_text=_document_text(lesson.board_document),
-        resource_summary=resource_summary,
-        selection_excerpt=target_excerpt,
-        target_scope=target_scope,
-        allow_replace_document=allow_replace_document or is_whole_document_scope,
-    )
-    if not result:
-        return _no_change(
-            lesson,
-            "板书文档编辑 AI 没有返回编辑结果。",
-        )
+    request_kwargs = {
+        "intent": "edit_existing_document",
+        "lesson_title": lesson.title,
+        "learning_requirement_context": _requirement_context(requirements, clarification),
+        "current_document_title": lesson.board_document.title,
+        "current_document_text": _document_text(lesson.board_document),
+        "resource_summary": resource_summary,
+        "selection_excerpt": target_excerpt,
+        "target_scope": target_scope,
+        "allow_replace_document": allow_replace_document or is_whole_document_scope,
+    }
+    failure_reason = "板书文档编辑 AI 没有返回编辑结果。"
+    repair_feedback: dict[str, object] | None = None
+    for attempt in range(_MAX_BOARD_DOCUMENT_QUALITY_ATTEMPTS):
+        result = _request_board_document_edit(request_kwargs, repair_feedback=repair_feedback)
+        if not result:
+            failure_reason = "板书文档编辑 AI 没有返回编辑结果。"
+            break
 
-    operation = "append_section" if is_append_request else result.operation
-    content_text, _content_html = _edit_payload(result, prefer_content_html=True)
-    if (
-        operation == "replace_document"
-        and not is_document_empty(lesson.board_document)
-        and not (allow_replace_document or is_whole_document_scope)
-    ):
-        return _no_change(
-            lesson,
-            "非全文编辑返回了整篇替换结果，已阻止写入。",
-        )
-    if (
-        operation == "replace_selection"
-        and target_excerpt
-        and _looks_like_whole_document_replacement(
-            current_document=lesson.board_document,
+        format_issue = _model_output_quality_issue(result)
+        if format_issue:
+            failure_reason = format_issue
+            repair_feedback = _quality_repair_feedback(
+                reason=failure_reason,
+                attempt=attempt,
+                result=result,
+            )
+            continue
+
+        operation = "append_section" if is_append_request else result.operation
+        content_text, _content_html = _edit_payload(result, prefer_content_html=True)
+        if not content_text:
+            failure_reason = "板书文档编辑 AI 返回了空内容。"
+            repair_feedback = _quality_repair_feedback(
+                reason=failure_reason,
+                attempt=attempt,
+                result=result,
+            )
+            continue
+        if (
+            operation == "replace_document"
+            and not is_document_empty(lesson.board_document)
+            and not (allow_replace_document or is_whole_document_scope)
+        ):
+            failure_reason = "非全文编辑返回了整篇替换结果，已阻止写入。"
+            repair_feedback = _quality_repair_feedback(
+                reason=failure_reason,
+                attempt=attempt,
+                result=result,
+            )
+            continue
+        if (
+            operation == "replace_selection"
+            and target_excerpt
+            and _looks_like_whole_document_replacement(
+                current_document=lesson.board_document,
+                selection_excerpt=target_excerpt,
+                replacement_text=content_text,
+            )
+        ):
+            failure_reason = "局部替换结果看起来像整份文档，已阻止写入。"
+            repair_feedback = _quality_repair_feedback(
+                reason=failure_reason,
+                attempt=attempt,
+                result=result,
+            )
+            continue
+        new_document = _apply_edit_result(
+            lesson=lesson,
+            result=result,
             selection_excerpt=target_excerpt,
-            replacement_text=content_text,
+            operation_override=operation,
+            allow_replace_document=allow_replace_document or is_whole_document_scope,
         )
-    ):
-        return _no_change(
-            lesson,
-            "局部替换结果看起来像整份文档，已阻止写入。",
-        )
-    new_document = _apply_edit_result(
-        lesson=lesson,
-        result=result,
-        selection_excerpt=target_excerpt,
-        operation_override=operation,
-        allow_replace_document=allow_replace_document or is_whole_document_scope,
-    )
-    if not document_changed(lesson.board_document, new_document):
-        return _no_change(
-            lesson,
-            "板书文档编辑 AI 的结果没有改变当前文档。",
-        )
-    if would_flatten_rich_document(
-        current_document=lesson.board_document,
-        new_document=new_document,
-        operation=operation,
-    ):
-        return _no_change(
-            lesson,
-            "全文替换结果丢失了原有标题、列表、加粗或表格结构，已阻止写入。",
+        if not document_changed(lesson.board_document, new_document):
+            failure_reason = "板书文档编辑 AI 的结果没有改变当前文档。"
+            repair_feedback = _quality_repair_feedback(
+                reason=failure_reason,
+                attempt=attempt,
+                result=result,
+            )
+            continue
+        if would_flatten_rich_document(
+            current_document=lesson.board_document,
+            new_document=new_document,
+            operation=operation,
+        ):
+            failure_reason = "全文替换结果丢失了原有标题、列表、加粗或表格结构，已阻止写入。"
+            repair_feedback = _quality_repair_feedback(
+                reason=failure_reason,
+                attempt=attempt,
+                result=result,
+            )
+            continue
+
+        return _changed(
+            lesson=lesson,
+            new_document=new_document,
+            operation=operation,
+            summary=result.summary.strip(),
+            chatbot_message=result.chatbot_message.strip() or result.summary.strip(),
+            section_titles=result.section_titles,
+            reason="板书文档编辑 AI 已根据解析出的目标位置和指令更新板书。",
         )
 
-    return _changed(
-        lesson=lesson,
-        new_document=new_document,
-        operation=operation,
-        summary=result.summary.strip(),
-        chatbot_message=result.chatbot_message.strip() or result.summary.strip(),
-        section_titles=result.section_titles,
-        reason="板书文档编辑 AI 已根据解析出的目标位置和指令更新板书。",
-    )
+    return _no_change(lesson, failure_reason)
 
 
 def _apply_edit_result(
@@ -331,6 +390,70 @@ def _generate_board_document_edit_with_retry(**kwargs) -> BoardDocumentEditResul
     if result is not None:
         return result
     return openai_course_ai.generate_board_document_edit(**kwargs)
+
+
+def _request_board_document_edit(
+    request_kwargs: dict[str, object],
+    *,
+    repair_feedback: dict[str, object] | None,
+) -> BoardDocumentEditResult | None:
+    kwargs = dict(request_kwargs)
+    if repair_feedback:
+        context = dict(kwargs.get("learning_requirement_context") or {})
+        context["document_quality_repair"] = repair_feedback
+        kwargs["learning_requirement_context"] = context
+    return _generate_board_document_edit_with_retry(**kwargs)
+
+
+def _model_output_quality_issue(result: BoardDocumentEditResult) -> str | None:
+    if looks_like_html_content(result.content_text):
+        return "板书文档编辑 AI 在 content_text 中返回了 HTML 标签，必须改写为 Markdown / 普通文本。"
+    if result.content_html.strip():
+        return "板书文档编辑 AI 返回了 content_html；模型输出必须只提供 Markdown / 普通文本 content_text。"
+    return None
+
+
+def _quality_repair_feedback(
+    *,
+    reason: str,
+    attempt: int,
+    result: BoardDocumentEditResult | None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "status": "previous_output_rejected",
+        "attempt_number": attempt + 1,
+        "failure_reason": reason,
+        "repair_instruction": (
+            "上一版板书编辑结果没有通过后端质量门禁。请不要放宽格式要求，"
+            "而是重写不合格内容，返回合格的 operation 和 Markdown / 普通文本 content_text；"
+            "content_html 必须为空字符串。"
+        ),
+        "required_contract": [
+            "content_text 使用 ChatGPT 风格 Markdown / 普通文本，不包含 HTML 标签。",
+            "content_html 为空字符串。",
+            "真实公式以外的普通文字不得使用公式定界符或公式节点。",
+            "全文改写或缩短必须保留标题、列表、加粗、表格等必要文档结构。",
+            "局部编辑必须返回目标片段，不得把整篇文档塞进局部替换。",
+        ],
+    }
+    if result is not None:
+        payload.update(
+            {
+                "previous_operation": result.operation,
+                "previous_title": result.title,
+                "previous_content_text_excerpt": _compact_repair_excerpt(result.content_text),
+                "previous_content_html_excerpt": _compact_repair_excerpt(result.content_html),
+                "previous_summary": result.summary,
+            }
+        )
+    return payload
+
+
+def _compact_repair_excerpt(value: str) -> str:
+    text = value.strip()
+    if len(text) <= _QUALITY_REPAIR_EXCERPT_CHARS:
+        return text
+    return text[:_QUALITY_REPAIR_EXCERPT_CHARS] + "\n..."
 
 
 def _edit_payload(result: BoardDocumentEditResult, *, prefer_content_html: bool) -> tuple[str, str]:
