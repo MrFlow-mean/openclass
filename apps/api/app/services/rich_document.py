@@ -24,17 +24,18 @@ DocxBlock = tuple[str, list[InlineFragment], dict[str, Any]]
 
 _CJK_RE = re.compile(r"[\u3400-\u9fff]")
 _MATH_SIGNAL_RE = re.compile(
-    r"[\\_^=·*/∞→←≤≥≈≠±]"
-    r"|\b(?:lim|sin|cos|tan|ln|log|sqrt|exp)\b"
+    r"\\(?:frac|sqrt|lim|sum|int|sin|cos|tan|ln|log|exp|to|leftarrow|infty|cdot|times|div|leq?|geq?|approx|neq?|pm|alpha|beta|gamma|delta|theta|lambda|mu|pi|sigma|phi|omega)\b"
+    r"|[_^]"
+    r"|[A-Za-z0-9)]\s*(?:[+\-−*/=<>≤≥≈≠±]|→|←)\s*[A-Za-z0-9(\\]"
     r"|\d+\s*/\s*\d+"
-    r"|[A-Za-z]\s*\([^)]*\)"
-    r"|[A-Za-z]\s*\^\s*\{?[-+\w/]+\}?"
 )
+_LATIN_WORD_RE = re.compile(r"[A-Za-z]+")
+_NON_FORMULA_LETTER_RE = re.compile(r"[^\W\d_A-Za-zα-ωΑ-Ω]", re.UNICODE)
+_FORMULA_CHARS_RE = re.compile(r"^[A-Za-z0-9α-ωΑ-Ω\\_{}^()+\-−*/=·∞→←≤≥≈≠±<>|'\s.,]+$")
 _HTML_BLOCK_RE = re.compile(
     r"<(?P<tag>h[1-6]|p|li|blockquote)\b[^>]*>.*?</(?P=tag)>",
     re.IGNORECASE | re.DOTALL,
 )
-_MATH_RUN_RE = re.compile(r"[A-Za-z0-9\\_{}^()+\-−*/=·∞→←≤≥≈≠±<>|'\s.]+")
 _DELIMITED_MATH_RE = re.compile(
     r"\\\[([\s\S]+?)\\\]|\\\((.+?)\\\)|\$\$([\s\S]+?)\$\$|\$(?!\d+\$)([^$\n]+?)\$(?!\d)"
 )
@@ -520,8 +521,12 @@ def _html_inline_nodes(children: list[Any], marks: list[dict[str, Any]] | None =
         node_type = (attrs.get("data-type") or "").strip()
         if node_type == "inline-math":
             latex = html.unescape((attrs.get("data-latex") or "").strip())
-            if latex:
+            if latex and _is_likely_delimited_math(latex):
                 nodes.append({"type": "inlineMath", "attrs": {"latex": latex}})
+            elif latex:
+                text_node = _text_node(latex, active_marks)
+                if text_node:
+                    nodes.append(text_node)
             continue
         if tag == "br":
             nodes.append({"type": "hardBreak"})
@@ -611,7 +616,11 @@ def _html_node_to_blocks(node: dict[str, Any]) -> list[dict[str, Any]]:
         return [{"type": "pageBreak"}]
     if node_type == "block-math":
         latex = html.unescape((attrs.get("data-latex") or "").strip())
-        return [{"type": "blockMath", "attrs": {"latex": latex}}] if latex else []
+        if latex and _is_likely_delimited_math(latex):
+            return [{"type": "blockMath", "attrs": {"latex": latex}}]
+        if latex:
+            return [{"type": "paragraph", "content": [{"type": "text", "text": latex}]}]
+        return []
     if tag in {"h1", "h2", "h3", "h4", "h5", "h6"}:
         level = min(int(tag[1]), 3)
         return [
@@ -892,13 +901,13 @@ def _repair_suspicious_math_html(content_html: str) -> str:
         return raw
 
     repaired = re.sub(
-        r"<span\b(?=[^>]*data-type=['\"]inline-math['\"])[^>]*>\s*</span>",
+        r"<span\b(?=[^>]*data-type=['\"]inline-math['\"])[^>]*>[\s\S]*?</span>",
         inline_replacement,
         content_html,
         flags=re.IGNORECASE,
     )
     repaired = re.sub(
-        r"<div\b(?=[^>]*data-type=['\"]block-math['\"])[^>]*>\s*</div>",
+        r"<div\b(?=[^>]*data-type=['\"]block-math['\"])[^>]*>[\s\S]*?</div>",
         block_replacement,
         repaired,
         flags=re.IGNORECASE,
@@ -1179,11 +1188,26 @@ def _has_math_signal(value: str) -> bool:
     return bool(_MATH_SIGNAL_RE.search(value))
 
 
+def _has_non_formula_letters(value: str) -> bool:
+    without_latex_commands = re.sub(r"\\[A-Za-z]+", "", value)
+    return bool(_CJK_RE.search(without_latex_commands) or _NON_FORMULA_LETTER_RE.search(without_latex_commands))
+
+
+def _latin_words_are_formula_like(value: str) -> bool:
+    without_latex_commands = re.sub(r"\\[A-Za-z]+", "", value)
+    for word in _LATIN_WORD_RE.findall(without_latex_commands):
+        if len(word) > 3 and word not in _LATEX_FUNCTIONS:
+            return False
+    return True
+
+
 def _is_likely_delimited_math(value: str) -> bool:
     compact = _TRAILING_SENTENCE_MARKS_RE.sub("", _LEADING_SENTENCE_MARKS_RE.sub("", value.strip()))
-    if not compact or _CJK_RE.search(compact):
+    if not compact or not _FORMULA_CHARS_RE.fullmatch(compact):
         return False
-    return _has_math_signal(compact) or bool(re.fullmatch(r"[A-Za-z]", compact))
+    if _has_non_formula_letters(compact) or not _latin_words_are_formula_like(compact):
+        return False
+    return _has_math_signal(compact) or bool(re.fullmatch(r"[A-Za-zα-ωΑ-Ω]", compact))
 
 
 def _normalize_limit_subscript(value: str) -> str:
@@ -1418,20 +1442,6 @@ def _math_segments(text: str) -> list[tuple[int, int, str]]:
         latex = match.group(1) or match.group(2) or match.group(3) or match.group(4) or ""
         if latex.strip() and _is_likely_delimited_math(latex):
             segments.append((match.start(), match.end(), _normalize_latex(latex)))
-
-    for match in _MATH_RUN_RE.finditer(text):
-        raw = match.group(0)
-        leading_trimmed = _LEADING_SENTENCE_MARKS_RE.sub("", raw)
-        leading_offset = len(raw) - len(leading_trimmed)
-        candidate = _TRAILING_SENTENCE_MARKS_RE.sub("", leading_trimmed)
-        trailing_offset = len(leading_trimmed) - len(candidate)
-        if not candidate or _CJK_RE.search(candidate) or not _has_math_signal(candidate):
-            continue
-        start = match.start() + leading_offset
-        end = match.start() + len(raw) - trailing_offset
-        if end <= start or any(start < segment_end and end > segment_start for segment_start, segment_end, _ in segments):
-            continue
-        segments.append((start, end, _normalize_latex(candidate)))
 
     return sorted(segments, key=lambda segment: segment[0])
 

@@ -436,7 +436,8 @@ def _focus_candidate_context(resolution: FocusResolution) -> str:
     for index, candidate in enumerate(resolution.candidates[:3], start=1):
         path = " / ".join(candidate.heading_path) if candidate.heading_path else "当前板书"
         kind = candidate.kind or "片段"
-        lines.append(f"{index}. {path}（{kind}，内容摘录已由板书侧隔离）")
+        label = candidate.display_label or f"{path}（{kind}）"
+        lines.append(f"{index}. {label}（内容摘录已由板书侧隔离）")
     return "\n".join(lines)
 
 
@@ -1226,7 +1227,7 @@ def _board_task_explanation_target_excerpt(
     ]
     if other_candidates:
         candidate_lines = [
-            f"{index}. {' / '.join(candidate.heading_path) or '板书片段'}（正文摘录仅供板书侧后续授权，不交给 Chatbot）"
+            f"{index}. {candidate.display_label or ' / '.join(candidate.heading_path) or '板书片段'}（正文摘录仅供板书侧后续授权，不交给 Chatbot）"
             for index, candidate in enumerate(other_candidates[:4], start=1)
         ]
         parts.append("同一任务中还存在的后续候选目标，仅作为顺序讲解上下文，不得越界讲解：\n" + "\n".join(candidate_lines))
@@ -1406,6 +1407,17 @@ def _handle_existing_board_task_flow(
             action_type=board_action,
             board_task=board_task,
         )
+    if resolution and resolution.resolved and resolution.focus:
+        resolved_task = BoardTaskRequirementSheet.model_validate(board_task.model_dump(mode="json"))
+        resolved_task.target_location = resolution.focus
+        resolved_task.location_status = "selected" if resolution.status == "selected" else "resolved"
+        _activate_board_task_requirements(lesson, resolved_task)
+        stamp = board_task_history.record_update(
+            sheet=resolved_task,
+            change_summary="Board-side locator confirmed the target location.",
+        )
+        _emit_board_task_update(lesson=lesson, sheet=resolved_task, stamp=stamp)
+        board_task = resolved_task
     decision = openai_course_ai.generate_board_task_route_decision(
         lesson_title=lesson.title,
         board_task=board_task,

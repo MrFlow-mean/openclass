@@ -28,6 +28,17 @@ STRUCTURED_TARGET_PATTERN = re.compile(
     r"(?:第\s*)?(?P<number>[0-9０-９一二三四五六七八九十两]+)\s*(?:个|道)?\s*"
     r"(?P<unit>空|题|问题|项|条|选项|句|行)"
 )
+SPEAKER_LABEL_PATTERN = re.compile(
+    r"(?P<speaker>[A-Za-zÀ-ÖØ-öø-ÿ][A-Za-zÀ-ÖØ-öø-ÿ0-9_'’.-]{0,40}|[\u4e00-\u9fff]{1,12})\s*[:：]\s*"
+)
+SPEAKER_EXPLICIT_TURN_PATTERN = re.compile(
+    r"(?:第\s*)?(?P<turn>[0-9０-９一二三四五六七八九十两]+)\s*(?:次|个)?\s*"
+    r"(?:发言|话轮|台词|回复|说话)"
+    r"(?:\s*(?:的|里|中)\s*(?:第\s*)?(?P<sentence>[0-9０-９一二三四五六七八九十两]+)\s*(?:句|句话))?"
+)
+SPEAKER_DEFAULT_ORDINAL_PATTERN = re.compile(
+    r"(?:第\s*)?(?P<number>[0-9０-９一二三四五六七八九十两]+)\s*(?:句|句话|次发言|个话轮|次说话|条台词)"
+)
 HEADING_ORDINAL_PATTERN = re.compile(
     r"^\s*(?:第\s*)?(?P<number>[0-9０-９一二三四五六七八九十两]+)\s*(?:[.．、:：)）]|章|节|部分|段|小节)"
 )
@@ -73,6 +84,21 @@ class StructuredTarget:
     unit: str
 
 
+@dataclass(frozen=True)
+class SpeakerTurn:
+    speaker: str
+    body: str
+    segment: BoardSegment
+    speaker_turn_index: int
+
+
+@dataclass(frozen=True)
+class SpeakerTarget:
+    speaker: str
+    turn_number: int
+    sentence_number: int | None = None
+
+
 class BoardDocumentLocator:
     def locate(
         self,
@@ -110,6 +136,33 @@ class BoardDocumentLocator:
                 reason="用户已经选中目标内容。",
             )
             return FocusResolution(focus=focus, candidates=[focus], status="selected", evidence=evidence)
+
+        task_location_resolution = _resolution_from_board_task_location(
+            lesson=lesson,
+            board_task=board_task,
+            plan=plan,
+            segments=index.segments,
+            action_type=action_type,
+        )
+        if task_location_resolution is not None:
+            return task_location_resolution
+
+        speaker_candidates = _speaker_candidate_focuses(
+            lesson=lesson,
+            query_text=plan.query_text,
+            segments=index.segments,
+        )
+        if speaker_candidates:
+            speaker_source = "speaker_sentence" if "speaker_sentence" in speaker_candidates[0].score_breakdown else "speaker_turn"
+            return _resolution_from_candidates(
+                candidates=speaker_candidates,
+                plan=plan,
+                source_reason="根据用户给出的角色名和发言序号定位。",
+                resolved_question="我按角色发言找到了几个可能的位置。请确认你要讲解或操作的是哪一句。",
+                action_type=action_type,
+                force_unique=True,
+                source=speaker_source,
+            )
 
         structured_candidates = _structured_candidate_focuses(
             lesson=lesson,
@@ -325,11 +378,7 @@ def _matching_segment(
         match = next((segment for segment in segments if segment.text_hash == selection.text_hash), None)
         if match:
             return match
-    exact_matches = [
-        segment
-        for segment in segments
-        if excerpt in segment.text or _segment_text_is_selection(segment.text, excerpt)
-    ]
+    exact_matches = _matching_segments_for_excerpt(excerpt=excerpt, segments=segments)
     if len(exact_matches) == 1:
         return exact_matches[0]
     if selection and selection.heading_path:
@@ -347,6 +396,229 @@ def _segment_text_is_selection(segment_text: str, excerpt: str) -> bool:
         return False
     minimum_length = min(len(compact_excerpt), max(8, int(len(compact_excerpt) * 0.6)))
     return len(compact_segment) >= minimum_length
+
+
+def _matching_segments_for_excerpt(*, excerpt: str, segments: list[BoardSegment]) -> list[BoardSegment]:
+    compact_excerpt = compact_segment_text(excerpt, limit=1200)
+    if not compact_excerpt:
+        return []
+    matches: list[BoardSegment] = []
+    for segment in segments:
+        compact_segment = compact_segment_text(segment.text, limit=1200)
+        if not compact_segment:
+            continue
+        if (
+            compact_excerpt == compact_segment
+            or compact_excerpt in compact_segment
+            or _segment_text_is_selection(segment.text, excerpt)
+        ):
+            matches.append(segment)
+    return matches
+
+
+def _resolution_from_board_task_location(
+    *,
+    lesson: Lesson,
+    board_task: BoardTaskRequirementSheet | None,
+    plan: BoardSearchQueryPlan,
+    segments: list[BoardSegment],
+    action_type: BoardTaskAction | None,
+) -> FocusResolution | None:
+    location = board_task.target_location if board_task else None
+    if location is None:
+        return None
+
+    matched_segment: BoardSegment | None = None
+    if location.segment_id:
+        matched_segment = next((segment for segment in segments if segment.segment_id == location.segment_id), None)
+    if matched_segment is None and location.text_hash:
+        matched_segment = next((segment for segment in segments if segment.text_hash == location.text_hash), None)
+
+    excerpt = compact_segment_text(location.excerpt, limit=1200)
+    if matched_segment is not None:
+        if excerpt and not (
+            excerpt in matched_segment.text
+            or segment_text_hash(excerpt) == matched_segment.text_hash
+            or _segment_text_is_selection(matched_segment.text, excerpt)
+        ):
+            matched_segment = None
+        else:
+            focus = _focus_from_segment_excerpt(
+                lesson=lesson,
+                segment=matched_segment,
+                segments=segments,
+                excerpt=excerpt or matched_segment.text,
+                confidence=max(0.94, location.confidence),
+                reason="任务清单里的目标摘录已被板书侧校验并映射到真实片段。",
+                score_breakdown={"task_location_exact": 0.96},
+                display_label=location.display_label,
+            )
+            return _resolved_single_focus(
+                focus=focus,
+                plan=plan,
+                source="task_location_exact",
+                reason="任务清单目标摘录已映射到真实板书片段。",
+            )
+
+    if not excerpt:
+        return None
+
+    matches = _matching_segments_for_excerpt(excerpt=excerpt, segments=segments)
+    if not matches:
+        return None
+
+    candidates = [
+        _focus_from_segment_excerpt(
+            lesson=lesson,
+            segment=segment,
+            segments=segments,
+            excerpt=excerpt,
+            confidence=0.96,
+            reason="任务清单里的目标摘录已被板书侧精确匹配。",
+            score_breakdown={"task_location_exact": 0.96},
+            display_label=location.display_label,
+        )
+        for segment in matches[:5]
+    ]
+    return _resolution_from_candidates(
+        candidates=candidates,
+        plan=plan,
+        source_reason="任务清单目标摘录已映射到真实板书片段。",
+        resolved_question="我找到了多个与任务清单目标摘录一致的位置。请确认你要操作哪一处。",
+        action_type=action_type,
+        force_unique=True,
+        source="task_location_exact",
+    )
+
+
+def _speaker_candidate_focuses(
+    *,
+    lesson: Lesson,
+    query_text: str,
+    segments: list[BoardSegment],
+) -> list[BoardFocusRef]:
+    turns = _speaker_turns(segments)
+    target = _speaker_target_from_query(query_text=query_text, turns=turns)
+    if target is None:
+        return []
+
+    speaker_turns = [turn for turn in turns if _speaker_key(turn.speaker) == _speaker_key(target.speaker)]
+    if not speaker_turns or target.turn_number > len(speaker_turns):
+        return []
+
+    turn = speaker_turns[target.turn_number - 1]
+    excerpt_body = turn.body
+    source = "speaker_turn"
+    reason = "根据用户给出的角色名和第几次发言定位。"
+    display_label = _speaker_display_label(turn=turn, sentence_number=None)
+    if target.sentence_number is not None:
+        sentences = _sentences_for_text(turn.body)
+        if target.sentence_number > len(sentences):
+            return []
+        excerpt_body = sentences[target.sentence_number - 1]
+        source = "speaker_sentence"
+        reason = "根据用户给出的角色名、发言轮次和句子序号定位。"
+        display_label = _speaker_display_label(turn=turn, sentence_number=target.sentence_number)
+
+    excerpt = compact_segment_text(f"{turn.speaker}: {excerpt_body}", limit=600)
+    focus = _focus_from_segment_excerpt(
+        lesson=lesson,
+        segment=turn.segment,
+        segments=segments,
+        excerpt=excerpt,
+        confidence=0.97,
+        reason=reason,
+        score_breakdown={source: 0.97},
+        display_label=display_label,
+    )
+    return [focus]
+
+
+def _speaker_turns(segments: list[BoardSegment]) -> list[SpeakerTurn]:
+    turns: list[SpeakerTurn] = []
+    speaker_counts: dict[str, int] = {}
+    for segment in segments:
+        text = segment.text
+        matches = list(SPEAKER_LABEL_PATTERN.finditer(text))
+        if not matches:
+            continue
+        for index, match in enumerate(matches):
+            speaker = match.group("speaker").strip()
+            body_start = match.end()
+            body_end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+            body = compact_segment_text(text[body_start:body_end].strip(" \t\r\n；;"), limit=800)
+            if not speaker or not body:
+                continue
+            key = _speaker_key(speaker)
+            speaker_counts[key] = speaker_counts.get(key, 0) + 1
+            turns.append(
+                SpeakerTurn(
+                    speaker=speaker,
+                    body=body,
+                    segment=segment,
+                    speaker_turn_index=speaker_counts[key],
+                )
+            )
+    return turns
+
+
+def _speaker_target_from_query(*, query_text: str, turns: list[SpeakerTurn]) -> SpeakerTarget | None:
+    speaker = _speaker_from_query(query_text=query_text, turns=turns)
+    if speaker is None:
+        return None
+
+    explicit = SPEAKER_EXPLICIT_TURN_PATTERN.search(query_text)
+    if explicit:
+        turn_number = _parse_ordinal_number(explicit.group("turn"))
+        sentence_number = _parse_ordinal_number(explicit.group("sentence") or "") if explicit.group("sentence") else None
+        if turn_number is not None:
+            return SpeakerTarget(speaker=speaker, turn_number=turn_number, sentence_number=sentence_number)
+
+    default = SPEAKER_DEFAULT_ORDINAL_PATTERN.search(query_text)
+    if default:
+        turn_number = _parse_ordinal_number(default.group("number"))
+        if turn_number is not None:
+            return SpeakerTarget(speaker=speaker, turn_number=turn_number)
+
+    return None
+
+
+def _speaker_from_query(*, query_text: str, turns: list[SpeakerTurn]) -> str | None:
+    compact = compact_segment_text(query_text, limit=500)
+    if not compact:
+        return None
+    compact_key = _speaker_key(compact)
+    candidates = sorted({turn.speaker for turn in turns}, key=len, reverse=True)
+    for speaker in candidates:
+        key = _speaker_key(speaker)
+        if not key:
+            continue
+        if _speaker_is_latin(speaker):
+            if re.search(rf"(?<![A-Za-zÀ-ÖØ-öø-ÿ0-9_]){re.escape(key)}(?![A-Za-zÀ-ÖØ-öø-ÿ0-9_])", compact_key):
+                return speaker
+        elif key in compact_key:
+            return speaker
+    return None
+
+
+def _speaker_key(value: str) -> str:
+    return re.sub(r"\s+", "", value or "").casefold()
+
+
+def _speaker_is_latin(value: str) -> bool:
+    return bool(re.search(r"[A-Za-zÀ-ÖØ-öø-ÿ]", value))
+
+
+def _sentences_for_text(text: str) -> list[str]:
+    return [match.group(0).strip() for match in SENTENCE_SPLIT_PATTERN.finditer(text) if match.group(0).strip()]
+
+
+def _speaker_display_label(*, turn: SpeakerTurn, sentence_number: int | None) -> str:
+    path = " / ".join(turn.segment.heading_path)
+    label = f"{turn.speaker} 第{turn.speaker_turn_index}次发言"
+    if sentence_number is not None:
+        label += f"第{sentence_number}句"
+    return f"{label} · {path}" if path else label
 
 
 def _search_candidates(
@@ -682,6 +954,7 @@ def _focus_from_segment(
     score_breakdown: dict[str, float],
     order_start: int | None = None,
     order_end: int | None = None,
+    display_label: str = "",
 ) -> BoardFocusRef:
     before = ""
     after = ""
@@ -705,6 +978,7 @@ def _focus_from_segment(
         text_hash=segment.text_hash,
         confidence=max(0.0, min(1.0, confidence)),
         reason=reason,
+        display_label=display_label or _default_display_label(segment),
         match_id=match_id,
         source_segment_ids=source_segment_ids,
         order_start=segment.order_index if order_start is None else order_start,
@@ -722,6 +996,7 @@ def _focus_from_segment_excerpt(
     confidence: float,
     reason: str,
     score_breakdown: dict[str, float],
+    display_label: str = "",
 ) -> BoardFocusRef:
     focus = _focus_from_segment(
         lesson=lesson,
@@ -731,8 +1006,17 @@ def _focus_from_segment_excerpt(
         reason=reason,
         source_segment_ids=[segment.segment_id],
         score_breakdown=score_breakdown,
+        display_label=display_label,
     )
     return focus.model_copy(update={"excerpt": excerpt, "text_hash": segment_text_hash(excerpt)})
+
+
+def _default_display_label(segment: BoardSegment) -> str:
+    path = " / ".join(segment.heading_path)
+    kind = segment.kind or "片段"
+    if path:
+        return f"{path} · 第{segment.order_index + 1}段"
+    return f"当前板书 · 第{segment.order_index + 1}段 · {kind}"
 
 
 def _best_segment_for_chunk(
@@ -803,6 +1087,35 @@ def _query_terms(text: str) -> set[str]:
     return {term for term in terms if len(term.strip()) >= 2}
 
 
+def _resolved_single_focus(
+    *,
+    focus: BoardFocusRef,
+    plan: BoardSearchQueryPlan,
+    source: str,
+    reason: str,
+) -> FocusResolution:
+    candidate = _candidate(
+        source=source,
+        focus=focus,
+        score=focus.confidence,
+        reason=focus.reason or reason,
+        score_breakdown=focus.score_breakdown,
+        source_segment_ids=focus.source_segment_ids,
+    )
+    return FocusResolution(
+        focus=focus,
+        candidates=[focus],
+        status="resolved",
+        evidence=_evidence(
+            status="found",
+            plan=plan,
+            candidates=[candidate],
+            selected=focus.match_id,
+            reason=reason,
+        ),
+    )
+
+
 def _resolution_from_candidates(
     *,
     candidates: list[BoardFocusRef],
@@ -811,10 +1124,11 @@ def _resolution_from_candidates(
     resolved_question: str,
     action_type: BoardTaskAction | None,
     force_unique: bool,
+    source: str = "structured",
 ) -> FocusResolution:
     search_candidates = [
         _candidate(
-            source="structured",
+            source=source,
             focus=focus,
             score=focus.confidence,
             reason=focus.reason,

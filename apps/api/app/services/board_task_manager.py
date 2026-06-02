@@ -67,6 +67,10 @@ def normalize_board_task_sheet(
     if selection and selection.excerpt and not normalized.target_hint:
         normalized.target_hint = _compact_text(selection.excerpt, limit=240)
         normalized.location_status = "selected"
+    if normalized.target_location and not (
+        normalized.target_location.segment_id or normalized.target_location.text_hash
+    ):
+        normalized.location_status = "missing"
 
     missing: list[str] = []
     if not _has_target_signal(normalized):

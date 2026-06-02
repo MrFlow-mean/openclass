@@ -3170,6 +3170,57 @@ def test_existing_board_meaning_question_uses_board_task_directive(
     assert _read_log_entries(isolated_ai_log) == []
 
 
+def test_existing_board_speaker_ordinal_question_uses_board_task_directive(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    captured: dict[str, str | None] = {}
+
+    def _fake_chatbot_reply(**kwargs):
+        captured["user_message"] = kwargs.get("user_message")
+        return ChatbotReply(chatbot_message="AI生成：这是角色发言的讲解。")
+
+    monkeypatch.setattr(openai_course_ai, "generate_chatbot_reply", _fake_chatbot_reply)
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.board_document = build_document(
+        title="已有板书",
+        content_text=(
+            "# 主线\n"
+            "## 引言\n第一句背景。第二句不是目标。\n"
+            "## 情景对话\n"
+            "Sophie: Bonjour, je regardais la carte.\n"
+            "Marc: Je pensais prendre un thé.\n"
+            "Sophie: Moi, je savais que je voudrais commander un café crème.\n"
+            "## 注释\n第一句注释。第二句也不是目标。"
+        ),
+    )
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="Sophie 第二句说的是什么意思？"),
+        user_id=TEST_USER.id,
+    )
+
+    assert response.chatbot_message == "AI生成：这是角色发言的讲解。"
+    assert response.active_board_task_sheet is None
+    assert response.resolved_focus is not None
+    assert "Sophie: Moi, je savais" in response.resolved_focus.excerpt
+    assert "Sophie 第2次发言" in response.resolved_focus.display_label
+    assert "板书侧已允许 Chatbot 进行讲解" in (captured["user_message"] or "")
+    commit = response.course_package.lessons[0].history_graph.commits[-1]
+    assert commit.metadata["assistant_message_source"] == "chatbot_board_directed"
+    assert commit.metadata["board_task_route"] == "explain"
+    assert commit.metadata["board_task_decision"]["target_focus"]["display_label"]
+    assert commit.metadata["board_task_cleared"] is True
+    assert _read_log_entries(isolated_ai_log) == []
+
+
 def test_existing_board_sequential_explanation_confirmation_executes_first_candidate(
     monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
 ) -> None:

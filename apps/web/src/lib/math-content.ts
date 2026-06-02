@@ -3,10 +3,14 @@ import type { Mark, Node as ProseMirrorNode, Schema } from "@tiptap/pm/model";
 
 const CJK_TEXT = /[\u3400-\u9fff]/;
 const STRONG_MATH_SIGNAL =
-  /\\[A-Za-z]+|[=≤≥≈≠∞±]|[A-Za-z0-9]\s*[_^]\s*\{?[-+\w/]+\}?|[A-Za-z0-9]\s*[+\-−*/]\s*[A-Za-z0-9]|\b(?:lim|sin|cos|tan|ln|log|sqrt|exp)_?\b/;
+  /\\(?:frac|sqrt|lim|sum|int|sin|cos|tan|ln|log|exp|to|leftarrow|infty|cdot|times|div|leq?|geq?|approx|neq?|pm|alpha|beta|gamma|delta|theta|lambda|mu|pi|sigma|phi|omega)\b|[_^]|[A-Za-z0-9)]\s*(?:[+\-−*/=<>≤≥≈≠±]|→|←)\s*[A-Za-z0-9(\\]|\d+\s*\/\s*\d+/;
 const DELIMITED_MATH = /\\\[([\s\S]+?)\\\]|\\\((.+?)\\\)|\$\$([\s\S]+?)\$\$|\$(?!\d+\$)([^$\n]+?)\$(?!\d)/g;
 const TRAILING_SENTENCE_MARKS = /[\s.,，。；;:：]+$/;
 const LEADING_SENTENCE_MARKS = /^[\s.,，。；;:：]+/;
+const LATIN_WORD = /[A-Za-z]+/g;
+const NON_FORMULA_LETTER = /[\u00c0-\u024f\u3400-\u9fff]/;
+const FORMULA_CHARS = /^[A-Za-z0-9α-ωΑ-Ω\\_{}^()+\-−*/=·∞→←≤≥≈≠±<>|'\s.,]+$/;
+const LATEX_FUNCTIONS = new Set(["lim", "sin", "cos", "tan", "ln", "log", "sqrt", "exp"]);
 
 type MathSegment = {
   start: number;
@@ -18,12 +22,30 @@ function hasStrongMathSignal(value: string) {
   return STRONG_MATH_SIGNAL.test(value);
 }
 
+function withoutLatexCommands(value: string) {
+  return value.replace(/\\[A-Za-z]+/g, "");
+}
+
+function hasNonFormulaLetters(value: string) {
+  return NON_FORMULA_LETTER.test(withoutLatexCommands(value));
+}
+
+function latinWordsAreFormulaLike(value: string) {
+  for (const word of withoutLatexCommands(value).matchAll(LATIN_WORD)) {
+    const token = word[0];
+    if (token.length > 3 && !LATEX_FUNCTIONS.has(token)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function isLikelyDelimitedMath(value: string) {
   const compact = value.trim().replace(TRAILING_SENTENCE_MARKS, "").replace(LEADING_SENTENCE_MARKS, "");
-  if (!compact || CJK_TEXT.test(compact)) {
+  if (!compact || !FORMULA_CHARS.test(compact) || hasNonFormulaLetters(compact) || !latinWordsAreFormulaLike(compact)) {
     return false;
   }
-  return hasStrongMathSignal(compact) || /^[A-Za-z]$/.test(compact);
+  return hasStrongMathSignal(compact) || /^[A-Za-zα-ωΑ-Ω]$/.test(compact);
 }
 
 function normalizeLimitSubscript(value: string) {
@@ -87,7 +109,7 @@ function formulaOnlyLatex(text: string) {
     return null;
   }
 
-  return normalizeLatex(compact);
+  return isLikelyDelimitedMath(compact) ? normalizeLatex(compact) : null;
 }
 
 function mathSegments(text: string): MathSegment[] {
@@ -101,7 +123,7 @@ function mathSegments(text: string): MathSegment[] {
     if (!latex?.trim()) {
       continue;
     }
-    if ((match[3] || match[4]) && !isLikelyDelimitedMath(latex)) {
+    if (!isLikelyDelimitedMath(latex)) {
       continue;
     }
 

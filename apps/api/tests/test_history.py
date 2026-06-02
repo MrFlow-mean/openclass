@@ -1,6 +1,6 @@
 import pytest
 
-from app.models import BoardDocument, BoardTaskRequirementSheet, LearningRequirementSheet, PatchOperation
+from app.models import BoardDocument, BoardFocusRef, BoardTaskRequirementSheet, LearningRequirementSheet, PatchOperation
 from app.services.chart_generation import extract_chart_data_fragments
 from app.services.course_runtime import (
     build_lesson_for_topic,
@@ -15,6 +15,7 @@ from app.services.openai_course_ai import GeneratedCatalogChapter, GeneratedReso
 from app.services.resource_library import _epub_section_body_score, build_resource_item, extract_reference_context
 from app.services.resource_resolver import resolve_resource_reference
 from app.services.board_segment_index import build_board_segment_index
+from app.services.board_task_manager import normalize_board_task_sheet
 from app.services.rich_document import (
     build_document,
     document_to_markdown,
@@ -274,6 +275,115 @@ def test_segment_resolver_uses_numbered_list_item_location_without_selection() -
     assert resolution.focus.excerpt == "拆分任务"
 
 
+def test_segment_resolver_prefers_speaker_turn_over_global_sentence_number() -> None:
+    lesson = create_empty_lesson("定位测试")
+    lesson.board_document = build_document(
+        title="定位测试",
+        content_text=(
+            "# 主线\n"
+            "## 引言\n第一句背景。第二句不是目标。\n"
+            "## 情景对话\n"
+            "Sophie: Bonjour, je regardais la carte.\n"
+            "Marc: Je pensais prendre un thé.\n"
+            "Sophie: Moi, je savais que je voudrais commander un café crème.\n"
+            "## 注释\n第一句注释。第二句也不是目标。"
+        ),
+    )
+
+    resolution = resolve_board_focus(
+        lesson=lesson,
+        user_message="Sophie 第二句说的是什么意思？",
+        action_type="explain_target",
+    )
+
+    assert resolution.resolved
+    assert resolution.focus is not None
+    assert "Sophie: Moi, je savais" in resolution.focus.excerpt
+    assert "Sophie 第2次发言" in resolution.focus.display_label
+    assert resolution.evidence is not None
+    assert resolution.evidence.candidates[0].source == "speaker_turn"
+
+
+def test_segment_resolver_can_target_sentence_inside_speaker_turn() -> None:
+    lesson = create_empty_lesson("定位测试")
+    lesson.board_document = build_document(
+        title="定位测试",
+        content_text=(
+            "# 主线\n"
+            "## 情景对话\n"
+            "Sophie: Bonjour. Je savais que je voudrais commander un café crème.\n"
+            "Marc: Tu hésitais encore."
+        ),
+    )
+
+    resolution = resolve_board_focus(
+        lesson=lesson,
+        user_message="Sophie 第一次发言的第二句是什么意思？",
+        action_type="explain_target",
+    )
+
+    assert resolution.resolved
+    assert resolution.focus is not None
+    assert resolution.focus.excerpt == "Sophie: Je savais que je voudrais commander un café crème."
+    assert "Sophie 第1次发言第2句" in resolution.focus.display_label
+    assert resolution.evidence is not None
+    assert resolution.evidence.candidates[0].source == "speaker_sentence"
+
+
+def test_segment_resolver_maps_unverified_task_excerpt_to_real_segment() -> None:
+    lesson = create_empty_lesson("定位测试")
+    lesson.board_document = build_document(
+        title="定位测试",
+        content_text=(
+            "# 主线\n"
+            "## 情景对话\n"
+            "Sophie: Bonjour, je regardais la carte.\n"
+            "Sophie: Moi, je savais que je voudrais commander un café crème."
+        ),
+    )
+    board_task = BoardTaskRequirementSheet(
+        target_hint="Sophie 第二句",
+        target_location=BoardFocusRef(excerpt="Sophie: Moi, je savais que je voudrais commander un café crème."),
+        requested_action="explain",
+        question_or_topic="这句话是什么意思",
+        progress=100,
+    )
+
+    resolution = resolve_board_focus(
+        lesson=lesson,
+        user_message="第二句是什么意思？",
+        action_type="explain_target",
+        board_task=board_task,
+    )
+
+    assert resolution.resolved
+    assert resolution.focus is not None
+    assert resolution.focus.segment_id
+    assert "Sophie: Moi, je savais" in resolution.focus.excerpt
+    assert resolution.evidence is not None
+    assert resolution.evidence.candidates[0].source == "task_location_exact"
+
+
+def test_board_task_normalization_downgrades_unverified_target_location() -> None:
+    sheet = BoardTaskRequirementSheet(
+        target_hint="Sophie 第二句",
+        target_location=BoardFocusRef(excerpt="Sophie: Moi, je savais que je voudrais commander un café crème."),
+        location_status="resolved",
+        requested_action="explain",
+        question_or_topic="这句话是什么意思",
+        progress=100,
+        missing_items=[],
+    )
+
+    normalized = normalize_board_task_sheet(sheet)
+
+    assert normalized.target_location is not None
+    assert normalized.target_location.excerpt.startswith("Sophie:")
+    assert normalized.location_status == "missing"
+    assert normalized.progress == 100
+    assert normalized.missing_items == []
+
+
 def _collect_node_types(node: dict) -> list[str]:
     node_type = node.get("type")
     result = [node_type] if isinstance(node_type, str) else []
@@ -374,6 +484,42 @@ def test_build_document_keeps_dollar_delimited_prose_as_text() -> None:
     assert "Je me disais que tu allais peut-être oublier notre rendez-vous." in document.content_html
 
 
+def test_build_document_keeps_grammar_arrow_feedback_as_text() -> None:
+    document = build_document(
+        title="Doc",
+        content_text=(
+            "Corrigé :\n"
+            "boirais → hypothèse (si + imparfait)\n"
+            "pleuvrait → futur dans le passé (la météo annonçait...)"
+        ),
+    )
+
+    node_types = _collect_node_types(document.content_json)
+
+    assert "inlineMath" not in node_types
+    assert "blockMath" not in node_types
+    assert 'data-type="inline-math"' not in document.content_html
+    assert "boirais → hypothèse" in document.content_html
+    assert "pleuvrait → futur dans le passé" in document.content_html
+
+
+def test_build_document_keeps_delimited_grammar_feedback_as_text() -> None:
+    document = build_document(title="Doc", content_text="$boirais → hypothèse$")
+
+    assert "inlineMath" not in _collect_node_types(document.content_json)
+    assert 'data-type="inline-math"' not in document.content_html
+    assert "$boirais → hypothèse$" in document.content_html
+
+
+def test_build_document_still_converts_real_inline_math() -> None:
+    document = build_document(title="Doc", content_text="Formule : \\(x^2+y^2=1\\) et $\\frac{1}{2}$.")
+
+    assert "inlineMath" in _collect_node_types(document.content_json)
+    assert 'data-type="inline-math"' in document.content_html
+    assert "x^2+y^2=1" in document.content_html
+    assert "\\frac{1}{2}" in document.content_html
+
+
 def test_upgrade_markdown_like_document_repairs_suspicious_math_nodes() -> None:
     sentence = "Je me disais que tu allais peut-être oublier notre rendez-vous."
     legacy = BoardDocument(
@@ -405,6 +551,32 @@ def test_upgrade_markdown_like_document_repairs_suspicious_math_nodes() -> None:
     assert upgraded.content_json["content"][0]["content"][1]["text"] == sentence
     assert 'data-type="inline-math"' not in upgraded.content_html
     assert sentence in upgraded.content_html
+
+
+def test_upgrade_markdown_like_document_repairs_grammar_feedback_math_nodes() -> None:
+    feedback = "boirais → hypothèse (si + imparfait)"
+    legacy = BoardDocument(
+        title="Doc",
+        content_text=feedback,
+        content_html=f'<p><span data-type="inline-math" data-latex="{feedback}"></span></p>',
+        content_json={
+            "type": "doc",
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [{"type": "inlineMath", "attrs": {"latex": feedback}}],
+                }
+            ],
+        },
+    )
+
+    upgraded = upgrade_markdown_like_document(legacy)
+
+    assert "inlineMath" not in _collect_node_types(upgraded.content_json)
+    assert upgraded.content_json["content"][0]["content"][0]["type"] == "text"
+    assert upgraded.content_json["content"][0]["content"][0]["text"] == feedback
+    assert 'data-type="inline-math"' not in upgraded.content_html
+    assert feedback in upgraded.content_html
 
 
 def test_document_to_markdown_preserves_rich_structure_for_ai_edit_context() -> None:

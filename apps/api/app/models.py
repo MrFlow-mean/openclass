@@ -321,6 +321,7 @@ class BoardFocusRef(BaseModel):
     text_hash: str | None = None
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     reason: str = ""
+    display_label: str = ""
     match_id: str | None = None
     source_segment_ids: list[str] = Field(default_factory=list)
     order_start: int | None = None

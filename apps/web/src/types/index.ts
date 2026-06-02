@@ -357,6 +357,7 @@ export interface BoardFocusRef {
   text_hash?: string | null;
   confidence: number;
   reason: string;
+  display_label?: string;
 }
 
 export interface InteractionSession {
