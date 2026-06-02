@@ -1093,6 +1093,11 @@ def would_flatten_rich_document(
     if old_primary_structure <= 0:
         return False
 
+    heading_hierarchy_lost = old_counts.get("heading", 0) >= 2 and new_counts.get("heading", 0) == 0
+    table_structure_lost = old_counts.get("table", 0) > 0 and new_counts.get("table", 0) == 0
+    if heading_hierarchy_lost or table_structure_lost:
+        return True
+
     new_score = rich_structure_score(new_counts)
     structure_dropped = new_score <= max(2, int(old_score * 0.5))
     paragraph_heavy = new_counts.get("paragraph", 0) >= max(8, old_counts.get("paragraph", 0) // 2)

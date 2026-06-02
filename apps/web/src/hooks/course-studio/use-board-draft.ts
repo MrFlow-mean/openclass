@@ -153,11 +153,19 @@ function wouldFlattenRenderedDocument(currentDocument: BoardDocument, nextDocume
   const currentCounts = richStructureCounts(currentDocument);
   const nextCounts = richStructureCounts(nextDocument);
   const currentScore = richStructureScore(currentCounts);
-  if (currentScore < 8 || currentCounts.heading + currentCounts.table <= 0) {
+  const headingHierarchyLost = currentCounts.heading >= 2 && nextCounts.heading === 0;
+  const tableStructureLost = currentCounts.table > 0 && nextCounts.table === 0;
+  if (currentScore < 8 && !headingHierarchyLost && !tableStructureLost) {
+    return false;
+  }
+  if (currentCounts.heading + currentCounts.table <= 0) {
     return false;
   }
   if (nextCounts.heading || nextCounts.table) {
     return false;
+  }
+  if (headingHierarchyLost || tableStructureLost) {
+    return true;
   }
   const nextScore = richStructureScore(nextCounts);
   return (

@@ -2540,6 +2540,73 @@ def test_autosave_does_not_flatten_current_rich_document(
     assert len(updated_lesson.history_graph.commits) == original_commit_count
 
 
+def test_autosave_rejects_heading_loss_to_plain_lists(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    rich_document = build_document(
+        title="结构化板书",
+        content_text=(
+            "# 结构化板书\n\n"
+            "## 1. 第一部分\n\n"
+            "这是一段说明。\n\n"
+            "- **目标**：保留标题。\n"
+            "- **任务**：继续讲解。\n\n"
+            "## 2. 第二部分\n\n"
+            "这是另一段说明。"
+        ),
+        document_id=lesson.board_document.id,
+        page_settings=lesson.board_document.page_settings,
+    )
+    lesson.board_document = rich_document
+    lesson.history_graph.commits[-1].snapshot = rich_document
+    store.save_for_user(TEST_USER.id, workspace)
+    base_commit_id = lesson.history_graph.commits[-1].id
+    original_commit_count = len(lesson.history_graph.commits)
+
+    flattened_document = build_document(
+        title=rich_document.title,
+        content_html=(
+            "<p>结构化板书</p>"
+            "<ol><li>第一部分</li></ol>"
+            "<p>这是一段说明。</p>"
+            "<p><strong>目标</strong>：保留标题。</p>"
+            "<p><strong>任务</strong>：继续讲解。</p>"
+            "<ol><li>第二部分</li></ol>"
+            "<p>这是另一段说明。</p>"
+        ),
+        document_id=rich_document.id,
+        page_settings=rich_document.page_settings,
+    )
+
+    package = documents_router.save_document(
+        lesson.id,
+        DocumentSaveRequest(
+            document=flattened_document,
+            label="Auto Save",
+            message="Auto-saved Word-like rich document changes from the editor",
+            metadata={
+                "kind": "auto_document_save",
+                "autosave": True,
+                "autosave_reason": "debounce",
+                "source": "word_board_editor",
+            },
+            base_commit_id=base_commit_id,
+        ),
+        user=TEST_USER,
+    )
+
+    updated_lesson = next(current for current in package.lessons if current.id == lesson.id)
+    assert updated_lesson.board_document.content_html == rich_document.content_html
+    assert updated_lesson.board_document.content_text == rich_document.content_text
+    assert updated_lesson.history_graph.commits[-1].id == base_commit_id
+    assert len(updated_lesson.history_graph.commits) == original_commit_count
+
+
 def test_stale_manual_document_save_is_rejected(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
     monkeypatch.setattr(workspace_state, "STORE", store)
