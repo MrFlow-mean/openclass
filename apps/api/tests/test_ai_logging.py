@@ -438,7 +438,29 @@ def test_board_document_generation_prompt_requests_substantial_default_length(
     assert "完整文档篇幅生成" in captured["system_prompt"]
     assert "多个相互衔接的 H2 小节" in captured["system_prompt"]
     assert "足以支撑一节课直接教学" in captured["system_prompt"]
+    assert "像 ChatGPT 正常回答一样使用 Markdown 或普通文本" in captured["system_prompt"]
+    assert "不得在 content_text 或 content_html 中输出 HTML 标签" in captured["system_prompt"]
+    assert "content_html 必须为空字符串" in captured["system_prompt"]
     assert "较完整篇幅展开" in captured["user_prompt"]
+    assert "不得输出 HTML 标签" in captured["user_prompt"]
+    assert "不要输出 HTML" in captured["user_prompt"]
+
+
+def test_board_document_edit_result_treats_null_content_html_as_empty_string() -> None:
+    result = BoardDocumentEditResult.model_validate(
+        {
+            "operation": "replace_document",
+            "title": "结构化板书",
+            "content_text": "# 结构化板书\n\n## 第一节\n正文",
+            "content_html": None,
+            "summary": "生成了板书。",
+            "chatbot_message": None,
+            "section_titles": ["第一节"],
+        }
+    )
+
+    assert result.content_html == ""
+    assert result.chatbot_message == ""
 
 
 def test_board_document_editor_prompt_excludes_chat_logs_and_raw_user_instruction(
@@ -2674,6 +2696,56 @@ def test_board_generation_from_ready_sheet_writes_empty_document_without_chat_bo
     assert _read_log_entries(isolated_ai_log) == []
 
 
+def test_board_generation_converts_model_html_content_text_to_markdown(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+
+    def _fake_board_edit(**kwargs):
+        return BoardDocumentEditResult(
+            operation="replace_document",
+            title="生成后的板书",
+            content_text=(
+                "<h1>生成后的板书</h1>"
+                "<h2>第一节</h2>"
+                "<p><strong>讲解重点:</strong> 这里是第一节正文。</p>"
+                "<ul><li>第一条</li><li>第二条</li></ul>"
+                "<h2>第二节</h2>"
+                "<p>这里是第二节正文。</p>"
+            ),
+            summary="生成了完整板书。",
+            section_titles=["第一节", "第二节"],
+        )
+
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _fake_board_edit)
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.board_document = build_document(title="空白板书")
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="开始生成板书", board_generation_action="start"),
+        user_id=TEST_USER.id,
+    )
+
+    updated_document = response.course_package.lessons[0].board_document
+    assert updated_document.content_text.startswith("# 生成后的板书")
+    assert "## 第一节" in updated_document.content_text
+    assert "**讲解重点:** 这里是第一节正文。" in updated_document.content_text
+    assert "- 第一条" in updated_document.content_text
+    assert "<h1>" not in updated_document.content_text
+    assert "<p>" not in updated_document.content_text
+    assert "<strong>" not in updated_document.content_text
+    assert "<h1>生成后的板书</h1>" in updated_document.content_html
+    assert "<strong>讲解重点:</strong> 这里是第一节正文。" in updated_document.content_html
+    assert _read_log_entries(isolated_ai_log) == []
+
+
 def test_board_generation_does_not_overwrite_existing_document(
     monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
 ) -> None:
@@ -2771,8 +2843,8 @@ def test_document_ai_edit_uses_rich_markdown_context_and_keeps_html_marks(
         captured["selection_excerpt"] = kwargs.get("selection_excerpt")
         return BoardDocumentEditResult(
             operation="replace_selection",
-            content_text="Speaker A: Simpler target.",
-            content_html="<p><strong>Speaker A:</strong> Simpler target.</p>",
+            content_text="**Speaker A:** Simpler target.",
+            content_html="<p>不应采用模型 HTML</p>",
             summary="改写了选中内容。",
         )
 
@@ -2806,6 +2878,7 @@ def test_document_ai_edit_uses_rich_markdown_context_and_keeps_html_marks(
     assert "**Speaker A:** Original target." in (captured["current_document_text"] or "")
     assert "<h2>Dialogue</h2>" in updated_document.content_html
     assert "<strong>Speaker A:</strong> Simpler target." in updated_document.content_html
+    assert "不应采用模型 HTML" not in updated_document.content_html
     assert "<strong>Goal:</strong> Keep structure" in updated_document.content_html
     assert _read_log_entries(isolated_ai_log) == []
 

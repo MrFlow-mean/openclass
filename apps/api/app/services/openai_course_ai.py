@@ -19,7 +19,7 @@ from typing import Any, Literal
 
 import certifi
 from openai import OpenAI
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.models import (
     AIModelSelection,
@@ -283,6 +283,13 @@ class BoardDocumentEditResult(BaseModel):
     summary: str = ""
     chatbot_message: str = ""
     section_titles: list[str] = Field(default_factory=list)
+
+    @field_validator("title", "content_text", "content_html", "summary", "chatbot_message", mode="before")
+    @classmethod
+    def _coerce_nullable_text(cls, value: object) -> str:
+        if value is None:
+            return ""
+        return str(value)
 
 
 class BoardTaskRouteDecision(BaseModel):
@@ -1350,9 +1357,11 @@ class OpenAICourseAI:
             "3. intent=edit_existing_document 时，有选区就优先 replace_selection；需要新增内容时用 append_section；"
             "只有 target_scope=whole_document 且 allow_replace_document=true 时才允许 replace_document，"
             "否则不要整体覆盖已有文档。\n"
-            "4. content_text 是可直接进入文档的正文；必须用 Markdown 或 HTML 保留文档层级，"
-            "包括标题、列表、加粗、表格等结构；全文重写、缩短或精简时也不能把原有层级压成普通段落。"
-            "不要用代码块包裹全文。content_html 通常留空；后端会把 content_text 规范化为可编辑富文本。\n"
+            "4. content_text 是可直接进入文档的正文；必须像 ChatGPT 正常回答一样使用 Markdown 或普通文本，"
+            "用 Markdown 表达标题、列表、加粗和表格。除真正公式的 LaTeX 定界符外，"
+            "不得在 content_text 或 content_html 中输出 HTML 标签，例如 <h1>、<p>、<strong>、<table>。"
+            "全文重写、缩短或精简时也不能把原有层级压成普通段落。不要用代码块包裹全文。"
+            "content_html 必须为空字符串；后端会把 content_text 规范化为可编辑富文本。\n"
             "5. 完整生成时，每个主要 H2 小节都要有可讲解密度：核心解释、必要步骤或推理、"
             "至少一个例子或类比、常见误区/注意点、一个检查问题。不要只写目录式提纲。\n"
             "6. section_titles 写入本次文档的主要 H2 章节标题，用于后续分节讲解。\n"
@@ -1369,10 +1378,11 @@ class OpenAICourseAI:
                 "title": "文档标题；局部编辑时可沿用当前标题。",
                 "content_text": (
                     "完整生成时是整份板书，默认按一节可直接教学的较完整篇幅展开；"
-                    "局部替换时是替换片段；追加时是追加片段。必须保留标题、列表、加粗、表格等文档结构；"
-                    "普通语言文本不得包进公式定界符。"
+                    "局部替换时是替换片段；追加时是追加片段。必须像 ChatGPT 正常回答一样使用 Markdown/普通文本，"
+                    "用 Markdown 保留标题、列表、加粗、表格等文档结构；不得输出 HTML 标签；"
+                    "普通语言文本不得包进公式定界符，只有真正公式才使用 LaTeX 定界符。"
                 ),
-                "content_html": "可选 HTML，与 content_text 表达同一内容。",
+                "content_html": "必须为空字符串；不要输出 HTML。后端内部会从 content_text 生成编辑器 HTML。",
                 "summary": "一句话说明本次生成或编辑了什么。",
                 "chatbot_message": "可直接展示给学习者的自然语言短回复，说明本次动作结果，不要套用固定格式。",
                 "section_titles": "主要章节标题数组，用于分节讲解。",

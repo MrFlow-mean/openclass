@@ -17,8 +17,10 @@ from app.services.rich_document import (
     build_document,
     document_to_markdown,
     document_changed,
+    html_to_markdown,
     html_to_text,
     is_document_empty,
+    looks_like_html_content,
     replace_selection_in_document,
     rich_structure_counts,
     text_to_html,
@@ -333,11 +335,12 @@ def _generate_board_document_edit_with_retry(**kwargs) -> BoardDocumentEditResul
 
 def _edit_payload(result: BoardDocumentEditResult, *, prefer_content_html: bool) -> tuple[str, str]:
     content_text = result.content_text.strip()
-    content_html = result.content_html.strip()
-    if not content_text and content_html:
-        content_text = html_to_text(content_html)
-    if content_text and (not content_html or not prefer_content_html):
-        content_html = text_to_html(content_text)
+    model_content_html = result.content_html.strip()
+    if content_text and looks_like_html_content(content_text):
+        content_text = html_to_markdown(content_text)
+    if not content_text and model_content_html:
+        content_text = html_to_markdown(model_content_html)
+    content_html = text_to_html(content_text) if content_text else ""
     return content_text, content_html
 
 

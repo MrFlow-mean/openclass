@@ -36,6 +36,10 @@ _HTML_BLOCK_RE = re.compile(
     r"<(?P<tag>h[1-6]|p|li|blockquote)\b[^>]*>.*?</(?P=tag)>",
     re.IGNORECASE | re.DOTALL,
 )
+_HTML_CONTENT_RE = re.compile(
+    r"</?(?:h[1-6]|p|ul|ol|li|table|thead|tbody|tfoot|tr|td|th|strong|em|blockquote|br|div|section)\b[^>]*>",
+    re.IGNORECASE,
+)
 _DELIMITED_MATH_RE = re.compile(
     r"\\\[([\s\S]+?)\\\]|\\\((.+?)\\\)|\$\$([\s\S]+?)\$\$|\$(?!\d+\$)([^$\n]+?)\$(?!\d)"
 )
@@ -808,6 +812,20 @@ def _markdown_blocks(nodes: list[dict[str, Any]], *, list_depth: int = 0) -> lis
     return blocks
 
 
+def html_to_markdown(content_html: str) -> str:
+    parsed = html_to_tiptap_doc(content_html)
+    parsed_content = parsed.get("content", [])
+    if isinstance(parsed_content, list):
+        markdown = "\n\n".join(line for line in _markdown_blocks(parsed_content) if line is not None).strip()
+        if markdown:
+            return markdown
+    return html_to_text(content_html)
+
+
+def looks_like_html_content(value: str) -> bool:
+    return bool(_HTML_CONTENT_RE.search(value))
+
+
 def document_to_markdown(document: BoardDocument) -> str:
     source_json = document.content_json if isinstance(document.content_json, dict) else {}
     content = source_json.get("content")
@@ -816,12 +834,9 @@ def document_to_markdown(document: BoardDocument) -> str:
         if markdown:
             return markdown
     if document.content_html.strip():
-        parsed = html_to_tiptap_doc(document.content_html)
-        parsed_content = parsed.get("content", [])
-        if isinstance(parsed_content, list):
-            markdown = "\n\n".join(line for line in _markdown_blocks(parsed_content) if line is not None).strip()
-            if markdown:
-                return markdown
+        markdown = html_to_markdown(document.content_html)
+        if markdown:
+            return markdown
     return document.content_text.strip()
 
 
