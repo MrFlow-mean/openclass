@@ -14,14 +14,23 @@ from app.models import (
 from app.services.openai_course_ai import openai_course_ai
 
 
-WRITE_PATTERN = re.compile(r"(写|新增|追加|补充|扩写|添加|加一段|加一节|加入)")
-EDIT_PATTERN = re.compile(r"(改|修改|改写|重写|编辑|润色|优化|简化|扩展|缩短|改短|调整)")
+WRITE_PATTERN = re.compile(r"(写|编写|生成|设计|创建|新增|追加|补充|扩写|添加|加一段|加一节|加入)")
+EDIT_PATTERN = re.compile(
+    r"(改|修改|改写|重写|编辑|润色|优化|简化|扩展|缩短|改短|调整|精简|压缩|太长|篇幅|"
+    r"控制.{0,8}(?:以内|以下)|[0-9０-９一二三四五六七八九十两]+.{0,8}(?:以内|以下))"
+)
 EXPLAIN_PATTERN = re.compile(r"(讲解|解释|说明|讲一下|解释一下|帮我理解|为什么|是什么|什么意思|是什么意思|什么含义|含义)")
 CHAT_PATTERN = re.compile(r"(练习|互动|你问我答|问答|角色|轮流|按.{0,12}规则|对话|测验|检查我)")
 CONFIRM_PATTERN = re.compile(r"^(好|好的|可以|确认|扩写|写吧|加吧|开始|继续|就这样|按这个来|是|要)$")
 DECLINE_PATTERN = re.compile(r"^(不用|不要|先不|取消|算了|否|不用写|别写)$")
 GENERIC_REFERENCE_PATTERN = re.compile(r"(这里|这个|这段|这一段|上述|上面|下面|前面|后面|该部分|选中)")
 ORDINAL_HINT_PATTERN = re.compile(r"(第\s*[0-9０-９一二三四五六七八九十两]+|[0-9０-９一二三四五六七八九十两]+\s*[.．、:：)）])")
+TARGET_BEFORE_ACTION_PATTERN = re.compile(
+    r"(?:在|把|对|给)?(?P<hint>[^，。！？!?；;\n\r]{1,80}?)"
+    r"(?:里|中|下|后面|前面|旁边|部分|这一段|这段)"
+    r"[^，。！？!?；;\n\r]{0,24}?"
+    r"(?:写|编写|生成|设计|创建|新增|追加|补充|扩写|添加|改|修改|改写|重写|编辑|润色|优化|简化|精简|压缩|缩短|改短|讲解|解释|说明)"
+)
 
 
 def update_board_task_from_chat(
@@ -133,8 +142,12 @@ def _fallback_board_task_sheet(
     if selection_excerpt:
         sheet.target_hint = _compact_text(selection_excerpt, limit=240)
         sheet.location_status = "selected"
-    elif _has_structured_location_hint(message):
-        sheet.target_hint = sheet.target_hint or message
+    else:
+        target_hint = _extract_target_hint(message)
+        if target_hint:
+            sheet.target_hint = sheet.target_hint or target_hint
+        elif _has_structured_location_hint(message):
+            sheet.target_hint = sheet.target_hint or message
     if not sheet.question_or_topic:
         sheet.question_or_topic = _extract_topic(message)
     if action == "chat":
@@ -162,19 +175,29 @@ def _has_target_signal(sheet: BoardTaskRequirementSheet) -> bool:
 
 
 def _infer_action(text: str) -> BoardTaskRequestedAction | None:
-    if CHAT_PATTERN.search(text):
-        return "chat"
     if EDIT_PATTERN.search(text):
         return "edit"
     if WRITE_PATTERN.search(text):
         return "write"
     if EXPLAIN_PATTERN.search(text):
         return "explain"
+    if CHAT_PATTERN.search(text):
+        return "chat"
     return None
 
 
 def _has_structured_location_hint(text: str) -> bool:
     return bool(ORDINAL_HINT_PATTERN.search(text))
+
+
+def _extract_target_hint(text: str) -> str:
+    match = TARGET_BEFORE_ACTION_PATTERN.search(text)
+    if not match:
+        return ""
+    hint = _compact_text(match.group("hint"), limit=160)
+    hint = re.sub(r"^(请|帮我|你能不能|能不能|可以|可以为我|为我)\s*", "", hint)
+    hint = hint.strip(" ：:，,。！？!?；;\"'“”‘’")
+    return "" if _is_only_generic_reference(hint) else hint
 
 
 def _extract_topic(text: str) -> str:

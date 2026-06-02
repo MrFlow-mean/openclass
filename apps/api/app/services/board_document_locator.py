@@ -53,6 +53,11 @@ BLANK_MARKER_PATTERN = re.compile(
     r"\s*[_＿—-]{2,}"
 )
 SENTENCE_SPLIT_PATTERN = re.compile(r"[^。！？!?；;.\n\r]+[。！？!?；;.]?")
+QUANTITY_OR_LENGTH_PATTERN = re.compile(
+    r"(?<!第)(?:写|编写|生成|设计|创建|做|要|控制|限制|不超过|以内|以下|一段|几段|几个|几句|"
+    r"[0-9０-９一二三四五六七八九十两]+.{0,6}(?:以内|以下|次|回合|来回))"
+    r"[^。！？!?；;\n\r]{0,28}(?:对话|样本|内容|句|段|次|回合|来回|篇幅)"
+)
 
 GENERIC_CONCEPT_GROUPS: tuple[tuple[str, ...], ...] = (
     ("为什么", "原因", "机制", "形成", "影响因素", "来源"),
@@ -736,6 +741,8 @@ def _structured_candidate_focuses(
 
 def _structured_target_from_message(text: str) -> StructuredTarget | None:
     compact = compact_segment_text(text, limit=300)
+    if _looks_like_quantity_or_length_constraint(compact):
+        return None
     match = STRUCTURED_TARGET_PATTERN.search(compact)
     if not match:
         return None
@@ -894,10 +901,16 @@ def _ordinal_candidate_focuses(
 
 def _ordinal_from_message(text: str) -> int | None:
     compact = compact_segment_text(text, limit=300)
+    if _looks_like_quantity_or_length_constraint(compact):
+        return None
     match = ORDINAL_LOCATION_PATTERN.search(compact)
     if not match:
         return None
     return _parse_ordinal_number(match.group("number"))
+
+
+def _looks_like_quantity_or_length_constraint(text: str) -> bool:
+    return bool(QUANTITY_OR_LENGTH_PATTERN.search(text or ""))
 
 
 def _heading_starts_with_ordinal(text: str, ordinal: int) -> bool:

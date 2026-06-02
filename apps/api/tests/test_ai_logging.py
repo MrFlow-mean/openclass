@@ -47,6 +47,7 @@ from app.services.openai_course_ai import (
 )
 from app.services.rich_document import build_document
 from app.services.resource_library import build_resource_item
+from app.services.segment_resolver import resolve_board_focus
 
 
 TEST_USER = UserView(
@@ -3543,6 +3544,240 @@ def test_existing_board_targeted_write_uses_found_location_without_confirmation(
     assert commit.metadata["board_task_cleared"] is True
     assert commit.metadata["board_search_evidence"]["status"] == "found"
     assert commit.metadata["board_search_evidence"]["selected_match_id"]
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_existing_board_write_dialogue_sample_uses_board_task_not_learning_requirement(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    captured: dict[str, str | None] = {}
+
+    def _fake_board_edit(**kwargs):
+        captured["selection_excerpt"] = kwargs.get("selection_excerpt")
+        return BoardDocumentEditResult(
+            operation="replace_selection",
+            title="已有板书",
+            content_text="课后小任务：完成一个简短样本。\n\n样本内容：两人围绕目标场景各说一句。",
+            summary="在目标任务位置扩写了样本。",
+            chatbot_message="AI生成：样本已经补进右侧板书。",
+            section_titles=["课后小任务"],
+        )
+
+    def _unexpected_requirement_update(**kwargs):
+        raise AssertionError("existing-board write must not update the first-layer learning requirement sheet")
+
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _fake_board_edit)
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _unexpected_requirement_update)
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.board_document = build_document(
+        title="已有板书",
+        content_text="# 主线\n## 课后小任务\n课后小任务：完成一个简短样本。\n## 其他部分\n其他内容。",
+    )
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="课后小任务里写一段对话样本"),
+        user_id=TEST_USER.id,
+    )
+
+    updated_lesson = response.course_package.lessons[0]
+    assert response.active_requirement_sheet is None
+    assert response.active_board_task_sheet is None
+    assert "样本内容" in updated_lesson.board_document.content_text
+    assert "课后小任务" in (captured["selection_excerpt"] or "")
+    commit = updated_lesson.history_graph.commits[-1]
+    assert commit.metadata["board_task_route"] == "write"
+    assert commit.metadata["board_task_run_id"]
+    assert commit.metadata["board_task_version_id"]
+    assert commit.metadata["board_task_cleared"] is True
+    assert commit.metadata["active_requirement_sheet_after"] is None
+    assert commit.metadata["board_search_evidence"]["status"] == "found"
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_quantity_phrase_does_not_trigger_heading_ordinal_locator(tmp_path) -> None:
+    workspace = build_initial_workspace_state()
+    lesson = create_empty_lesson("测试页面")
+    lesson.board_document = build_document(
+        title="已有板书",
+        content_text="# 主线\n## 第一段\n已有内容。\n## 第二段\n更多内容。",
+    )
+
+    resolution = resolve_board_focus(
+        lesson=lesson,
+        user_message="写一段对话样本",
+        action_type="append_section",
+    )
+
+    assert not resolution.resolved
+    assert all("heading_ordinal" not in candidate.score_breakdown for candidate in resolution.candidates)
+
+
+def test_recent_append_focus_is_inherited_for_length_followup(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    calls: list[str | None] = []
+
+    def _fake_board_edit(**kwargs):
+        calls.append(kwargs.get("selection_excerpt"))
+        if len(calls) == 1:
+            return BoardDocumentEditResult(
+                operation="append_section",
+                title="已有板书",
+                content_text="## 新增样本\n这是刚新增的较长样本内容。",
+                summary="追加了样本。",
+                chatbot_message="AI生成：已追加样本。",
+                section_titles=["新增样本"],
+            )
+        return BoardDocumentEditResult(
+            operation="replace_selection",
+            title="已有板书",
+            content_text="## 新增样本\n这是缩短后的样本。",
+            summary="缩短了最近新增样本。",
+            chatbot_message="AI生成：已缩短最近新增样本。",
+            section_titles=["新增样本"],
+        )
+
+    def _unexpected_requirement_update(**kwargs):
+        raise AssertionError("existing-board follow-up edit must stay in board task flow")
+
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _fake_board_edit)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_chatbot_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="AI生成：请确认是否写入。"),
+    )
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _unexpected_requirement_update)
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.board_document = build_document(title="已有板书", content_text="# 主线\n## 课后任务\n已有任务。")
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    store.save_for_user(TEST_USER.id, workspace)
+
+    first = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="写一段对话样本"),
+        user_id=TEST_USER.id,
+    )
+    if first.active_board_task_sheet is not None:
+        first = chat_service.process_chat_on_lesson(
+            lesson.id,
+            ChatRequest(message="可以"),
+            user_id=TEST_USER.id,
+        )
+    assert first.active_board_task_sheet is None
+
+    second = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="太长了，15次对话以内"),
+        user_id=TEST_USER.id,
+    )
+
+    updated_lesson = second.course_package.lessons[0]
+    assert "缩短后的样本" in updated_lesson.board_document.content_text
+    assert "较长样本内容" in (calls[-1] or "")
+    commit = updated_lesson.history_graph.commits[-1]
+    assert commit.metadata["board_task_route"] == "edit"
+    assert commit.metadata["target_scope"] == "focus"
+    assert commit.metadata["recent_board_edit_focus"]["excerpt"]
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_local_edit_rejects_replace_document_when_target_scope_is_focus(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+
+    def _fake_board_edit(**kwargs):
+        return BoardDocumentEditResult(
+            operation="replace_document",
+            title="短版",
+            content_text="# 短版\n## 第一节\n短版内容。\n## 第二节\n这看起来是一整份新文档。",
+            summary="返回了整篇替换。",
+            chatbot_message="AI生成：已尝试改写。",
+            section_titles=["第一节", "第二节"],
+        )
+
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _fake_board_edit)
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.board_document = build_document(title="已有板书", content_text="# 主线\n## 第一节\n第一节原文。\n## 第二节\n第二节原文。")
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    initial_commit_count = len(lesson.history_graph.commits)
+    original_text = lesson.board_document.content_text
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="把第一节改短"),
+        user_id=TEST_USER.id,
+    )
+
+    updated_lesson = response.course_package.lessons[0]
+    assert updated_lesson.board_document.content_text == original_text
+    assert len(updated_lesson.history_graph.commits) == initial_commit_count
+    assert response.active_board_task_sheet is not None
+    events = store.list_board_task_events(owner_user_id=TEST_USER.id, lesson_id=lesson.id)
+    assert events[-1]["event_type"] == "execution_failed"
+    metadata = json.loads(events[-1]["metadata_json"])
+    assert metadata["board_task_route"] == "edit"
+    assert metadata["target_scope"] == "focus"
+    assert metadata["board_task_cleared"] is False
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_explicit_whole_document_simplify_allows_replace_document(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+
+    def _fake_board_edit(**kwargs):
+        assert kwargs.get("allow_replace_document") is True
+        assert kwargs.get("target_scope") == "whole_document"
+        return BoardDocumentEditResult(
+            operation="replace_document",
+            title="短版",
+            content_text="# 短版\n## 核心内容\n这是全文精简后的短版。",
+            summary="全文精简成短版。",
+            chatbot_message="AI生成：全文已经精简。",
+            section_titles=["核心内容"],
+        )
+
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _fake_board_edit)
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.board_document = build_document(title="已有板书", content_text="# 主线\n## 第一节\n第一节原文。\n## 第二节\n第二节原文。")
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="把全文精简成短版"),
+        user_id=TEST_USER.id,
+    )
+
+    updated_lesson = response.course_package.lessons[0]
+    assert updated_lesson.board_document.content_text == "# 短版\n## 核心内容\n这是全文精简后的短版。"
+    commit = updated_lesson.history_graph.commits[-1]
+    assert commit.metadata["board_task_route"] == "edit"
+    assert commit.metadata["target_scope"] == "whole_document"
+    assert commit.metadata["board_edit_operation"] == "replace_document"
+    assert commit.metadata["board_task_cleared"] is True
     assert _read_log_entries(isolated_ai_log) == []
 
 

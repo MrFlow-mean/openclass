@@ -35,8 +35,10 @@ from app.services.board_task_manager import (
     is_write_confirmation,
     is_write_decline,
     make_write_task_from_topic,
+    normalize_board_task_sheet,
     update_board_task_from_chat,
 )
+from app.services.board_segment_index import build_board_segment_index
 from app.services.board_teaching import build_board_teaching_guide, teach_first_section, teach_next_section
 from app.services.course_runtime import effective_requirements
 from app.services.course_runtime import refresh_lesson_runtime
@@ -76,10 +78,16 @@ EXPLAIN_REQUEST_PATTERN = re.compile(
     r"(讲解|解释|说明|讲一下|解释一下|帮我理解|为什么|是什么|什么意思|是什么意思|什么含义|含义)"
 )
 APPEND_REQUEST_PATTERN = re.compile(
-    r"(续写|继续写|接着写|往后写|后续|新增|追加|新加|新章节|新小节|下一节|下一章|下一部分|末尾)"
+    r"(续写|继续写|接着写|往后写|后续|新增|追加|新加|新章节|新小节|下一节|下一章|下一部分|末尾|"
+    r"(?:帮我|为我|请|可以|能不能|你可以)?.{0,8}(?:写|编写|生成|设计|创建|做)"
+    r"(?:一|几|[0-9０-９一二三四五六七八九十两]|个|段|篇|份|条|点|些|一下))"
 )
 EXPAND_REQUEST_PATTERN = re.compile(r"(扩写|扩展|补充|增加|添加)")
-SIMPLIFY_REQUEST_PATTERN = re.compile(r"(简化|简单(?:一点|点|些)?|更简单|通俗|更容易懂|更好懂|好理解|容易理解|降低难度|浅显)")
+SIMPLIFY_REQUEST_PATTERN = re.compile(
+    r"(简化|简单(?:一点|点|些)?|更简单|通俗|更容易懂|更好懂|好理解|容易理解|降低难度|浅显|"
+    r"缩短|改短|短(?:一点|点|些)|精简|压缩|太长|篇幅|"
+    r"控制.{0,8}(?:以内|以下)|[0-9０-９一二三四五六七八九十两]+.{0,8}(?:以内|以下))"
+)
 REWRITE_REQUEST_PATTERN = re.compile(
     r"(改写|重写|修改|编辑|润色|优化|"
     r"改(?:得|的)?(?:简单|通俗|容易|好懂|清楚|更清楚|更难|难一点|有难度|更有区分度)|"
@@ -97,6 +105,12 @@ INTERACTION_RULE_REQUEST_PATTERN = re.compile(r"(规则|互动|轮流|你问我�
 SEQUENTIAL_EXPLANATION_REQUEST_PATTERN = re.compile(
     r"(都讲|全都讲|全部讲|都解释|全部解释|逐个|一个个|挨个|依次|按顺序|从头到尾)"
 )
+RECENT_EDIT_FOLLOWUP_PATTERN = re.compile(
+    r"(太长|篇幅|缩短|改短|短(?:一点|点|些)|精简|压缩|控制.{0,8}(?:以内|以下)|"
+    r"[0-9０-９一二三四五六七八九十两]+.{0,8}(?:以内|以下)|来回|回合)"
+)
+WHOLE_DOCUMENT_SCOPE_PATTERN = re.compile(r"(全文|整篇|整份|整个(?:文档|板书)|全篇|全部内容|整体)")
+EXISTING_BOARD_GENERATION_CONTROL_PATTERN = re.compile(r"(生成|创建|制作|准备).{0,8}(板书|版书|文档)")
 EDIT_ACTIONS: set[BoardTaskAction] = {"rewrite_target", "expand_target", "simplify_target"}
 DOCUMENT_WRITE_ACTIONS: set[BoardTaskAction] = {*EDIT_ACTIONS, "append_section"}
 DOCUMENT_GENERATION_ACTIONS = r"(生成|写|撰写|创建|整理|制作|设计|输出|产出|编写)"
@@ -276,6 +290,10 @@ def _infer_board_task_action(request: ChatRequest, *, has_selection: bool, docum
         return None
     if _requests_append_section(message) and not document_empty:
         return "append_section"
+    if not document_empty and SIMPLIFY_REQUEST_PATTERN.search(message):
+        return "simplify_target"
+    if not document_empty and EXPAND_REQUEST_PATTERN.search(message):
+        return "expand_target"
     if REWRITE_REQUEST_PATTERN.search(message):
         if SIMPLIFY_REQUEST_PATTERN.search(message):
             return "simplify_target"
@@ -427,6 +445,189 @@ def _clear_task_requirements(lesson: Lesson) -> None:
 def _activate_board_task_requirements(lesson: Lesson, board_task: BoardTaskRequirementSheet) -> None:
     _clear_task_requirements(lesson)
     lesson.board_task_requirements = board_task
+
+
+def _looks_like_recent_edit_followup(text: str) -> bool:
+    compact = _compact_text(text, limit=180)
+    return bool(compact and RECENT_EDIT_FOLLOWUP_PATTERN.search(compact))
+
+
+def _requests_whole_document_scope(*values: str) -> bool:
+    compact = _compact_text(" ".join(value for value in values if value), limit=300)
+    return bool(compact and WHOLE_DOCUMENT_SCOPE_PATTERN.search(compact))
+
+
+def _requests_existing_board_generation_control(text: str) -> bool:
+    compact = _compact_text(text, limit=220)
+    return bool(compact and EXISTING_BOARD_GENERATION_CONTROL_PATTERN.search(compact))
+
+
+def _whole_document_focus(lesson: Lesson) -> BoardFocusRef:
+    return BoardFocusRef(
+        source="board",
+        lesson_id=lesson.id,
+        document_id=lesson.board_document.id,
+        segment_id=None,
+        kind=None,
+        heading_path=[lesson.board_document.title or lesson.title],
+        excerpt=_compact_text(lesson.board_document.content_text, limit=2400),
+        confidence=1.0,
+        reason="用户明确要求处理全文，板书侧将目标范围设为 whole_document。",
+        display_label="全文",
+        match_id=f"whole_document:{lesson.board_document.id}",
+        score_breakdown={"whole_document_scope": 1.0},
+    )
+
+
+def _synthetic_focus_resolution(focus: BoardFocusRef) -> FocusResolution:
+    return FocusResolution(focus=focus, candidates=[focus], status="resolved", question="")
+
+
+def _latest_successful_board_edit_focus(lesson: Lesson) -> BoardFocusRef | None:
+    for commit in reversed(lesson.history_graph.commits):
+        metadata = commit.metadata if isinstance(commit.metadata, dict) else {}
+        if metadata.get("kind") != "board_document_edit":
+            continue
+        if metadata.get("board_task_cleared") is False:
+            continue
+        raw_focus = metadata.get("recent_board_edit_focus") or metadata.get("resolved_focus")
+        if isinstance(raw_focus, dict):
+            try:
+                return BoardFocusRef.model_validate(raw_focus)
+            except Exception:
+                pass
+        section_titles = metadata.get("board_section_titles")
+        if isinstance(section_titles, list):
+            titles = [str(title).strip() for title in section_titles if str(title).strip()]
+            for title in reversed(titles):
+                focus = _focus_from_section_title(lesson=lesson, title=title)
+                if focus is not None:
+                    return focus
+    return None
+
+
+def _maybe_inherit_recent_board_edit_focus(
+    *,
+    lesson: Lesson,
+    board_task: BoardTaskRequirementSheet,
+    request_message: str,
+) -> BoardTaskRequirementSheet:
+    if board_task.requested_action != "edit":
+        return board_task
+    if not _looks_like_recent_edit_followup(request_message):
+        return board_task
+    if board_task.target_location is not None and board_task.location_status in {"selected", "resolved"}:
+        return board_task
+    if board_task.target_hint.strip() and not _looks_like_recent_edit_followup(board_task.target_hint):
+        return board_task
+    focus = _latest_successful_board_edit_focus(lesson)
+    if focus is None:
+        return board_task
+    inherited = BoardTaskRequirementSheet.model_validate(board_task.model_dump(mode="json"))
+    inherited.target_location = focus
+    inherited.target_hint = focus.display_label or "最近一次板书编辑的目标区域"
+    inherited.location_status = "resolved"
+    inherited.clarification_question = ""
+    return normalize_board_task_sheet(inherited)
+
+
+def _recent_board_edit_focus_for_commit(
+    *,
+    lesson: Lesson,
+    fallback_focus: BoardFocusRef | None,
+    section_titles: list[str],
+) -> BoardFocusRef | None:
+    if fallback_focus is not None:
+        return fallback_focus
+    titles = [title.strip() for title in section_titles if title.strip()]
+    for title in reversed(titles):
+        focus = _focus_from_section_title(lesson=lesson, title=title)
+        if focus is not None:
+            return focus
+    return None
+
+
+def _focus_from_section_title(*, lesson: Lesson, title: str) -> BoardFocusRef | None:
+    compact_title = _compact_text(title, limit=120)
+    if not compact_title:
+        return None
+    index = build_board_segment_index(lesson.board_document)
+    for idx, segment in enumerate(index.segments):
+        if segment.kind != "heading" or compact_title not in _compact_text(segment.text, limit=240):
+            continue
+        target = segment
+        for following in index.segments[idx + 1 :]:
+            if following.kind == "heading":
+                break
+            if following.text.strip():
+                target = following
+                break
+        before = index.segments[target.order_index - 1].text if target.order_index and target.order_index > 0 else ""
+        after = index.segments[target.order_index + 1].text if target.order_index is not None and target.order_index + 1 < len(index.segments) else ""
+        return BoardFocusRef(
+            source="board",
+            lesson_id=lesson.id,
+            document_id=lesson.board_document.id,
+            segment_id=target.segment_id,
+            kind=target.kind,
+            heading_path=target.heading_path,
+            excerpt=target.text,
+            before_text=before,
+            after_text=after,
+            text_hash=target.text_hash,
+            confidence=0.95,
+            reason="根据最近一次板书编辑返回的 section title 定位到新增/编辑区域。",
+            display_label=" / ".join(target.heading_path) or compact_title,
+            match_id=f"recent:{target.segment_id}",
+            source_segment_ids=[target.segment_id],
+            order_start=target.order_index,
+            order_end=target.order_index,
+            score_breakdown={"recent_board_edit_focus": 0.95},
+        )
+    return None
+
+
+def _with_decision_target_scope(
+    *,
+    decision: BoardTaskRouteDecision,
+    board_task: BoardTaskRequirementSheet,
+    request_message: str,
+    resolution: FocusResolution | None,
+) -> BoardTaskRouteDecision:
+    scope = decision.target_scope
+    if not scope:
+        if _requests_whole_document_scope(request_message, board_task.target_hint, board_task.question_or_topic):
+            scope = "whole_document"
+        elif decision.route == "write" and _decision_focus(decision, resolution) is None:
+            scope = "append"
+        elif _decision_focus(decision, resolution) is not None:
+            scope = "focus"
+    if scope == decision.target_scope:
+        return decision
+    return BoardTaskRouteDecision(
+        route=decision.route,
+        location_status=decision.location_status,
+        target_focus=decision.target_focus,
+        candidate_focuses=decision.candidate_focuses,
+        reason=decision.reason,
+        write_proposal=decision.write_proposal,
+        target_scope=scope,
+    )
+
+
+def _implicit_board_search_evidence(
+    *,
+    route: str,
+    target_scope: str | None,
+    reason: str,
+) -> dict[str, object]:
+    return {
+        "status": "found" if target_scope in {"append", "whole_document"} else "missing",
+        "query_plan": {"source": "workflow", "target_scope": target_scope, "route": route},
+        "candidates": [],
+        "selected_match_id": None,
+        "reason": reason,
+    }
 
 
 def _focus_candidate_context(resolution: FocusResolution) -> str:
@@ -1262,6 +1463,7 @@ def _handle_existing_board_task_flow(
     if not existing_task and (
         _requests_learning_start(request.message)
         or bool(re.search(r"(开始|直接|从头|零基础).{0,12}(讲解|讲|学)", compact_request))
+        or _requests_existing_board_generation_control(request.message)
     ):
         return None
 
@@ -1348,6 +1550,11 @@ def _handle_existing_board_task_flow(
         selection_excerpt=selection_excerpt,
         existing=existing_task,
     )
+    board_task = _maybe_inherit_recent_board_edit_focus(
+        lesson=lesson,
+        board_task=board_task,
+        request_message=request.message,
+    )
     _activate_board_task_requirements(lesson, board_task)
     stamp = board_task_history.record_update(sheet=board_task)
     _emit_board_task_update(lesson=lesson, sheet=board_task, stamp=stamp)
@@ -1397,7 +1604,9 @@ def _handle_existing_board_task_flow(
 
     board_action = _board_task_action_to_board_action(board_task)
     resolution = None
-    if board_task.requested_action != "write" or board_task.target_hint or selection_excerpt:
+    if _requests_whole_document_scope(request.message, board_task.target_hint, board_task.question_or_topic):
+        resolution = _synthetic_focus_resolution(_whole_document_focus(lesson))
+    elif board_task.requested_action != "write" or board_task.target_hint or selection_excerpt:
         locator_query = _compact_text(" ".join(part for part in [board_task.target_hint, board_task.question_or_topic] if part), limit=500)
         resolution = resolve_board_focus(
             lesson=lesson,
@@ -1424,6 +1633,12 @@ def _handle_existing_board_task_flow(
         location_evidence=_task_location_evidence(resolution),
         resource_summary=_resource_summary(resources),
     ) or _fallback_board_task_decision(board_task=board_task, resolution=resolution)
+    decision = _with_decision_target_scope(
+        decision=decision,
+        board_task=board_task,
+        request_message=request.message,
+        resolution=resolution,
+    )
     if _decision_must_have_focus(board_task=board_task, decision=decision) and _decision_focus(decision, resolution) is None:
         decision = _clarify_decision_for_missing_focus(decision=decision, resolution=resolution)
     decision = _apply_explicit_sequential_explanation_choice(
@@ -1431,6 +1646,12 @@ def _handle_existing_board_task_flow(
         decision=decision,
         resolution=resolution,
         request_message=request.message,
+    )
+    decision = _with_decision_target_scope(
+        decision=decision,
+        board_task=board_task,
+        request_message=request.message,
+        resolution=resolution,
     )
 
     if decision.route == "clarify_location":
@@ -1651,6 +1872,9 @@ def _handle_existing_board_task_flow(
     if decision.route == "edit":
         focus = decision.target_focus or (resolution.focus if resolution else None)
         edit_action = action_type if action_type in EDIT_ACTIONS else "rewrite_target"
+        target_scope = decision.target_scope or (
+            "whole_document" if focus and focus.match_id and focus.match_id.startswith("whole_document:") else "focus"
+        )
         task_requirements = _requirements_from_board_task(
             base=requirements,
             board_task=board_task,
@@ -1666,12 +1890,52 @@ def _handle_existing_board_task_flow(
             user_instruction=request.message,
             selection_excerpt=selection_excerpt,
             focus=focus,
+            target_scope=target_scope,
+            allow_replace_document=target_scope == "whole_document",
         )
         if edit_outcome.changed:
             refresh_lesson_runtime(lesson, document=edit_outcome.new_document, requirements=task_requirements)
             lesson.board_teaching_guide = build_board_teaching_guide(lesson)
             lesson.board_teaching_progress = None
         stamp = board_task_history.record_update(sheet=board_task, status="ready")
+        if not edit_outcome.changed:
+            failed_stamp = board_task_history.execution_failed(
+                reason=edit_outcome.summary or "Board task edit did not produce a safe document change.",
+                metadata={
+                    "assistant_message_source": edit_outcome.assistant_message_source,
+                    "board_edit_operation": edit_outcome.operation,
+                    "board_edit_summary": edit_outcome.summary,
+                    "board_task_route": "edit",
+                    "board_task_decision": decision.model_dump(mode="json"),
+                    "board_task_cleared": False,
+                    "target_scope": target_scope,
+                    **_board_search_evidence_metadata(resolution),
+                },
+            )
+            workspace_state.normalize_package_state(package)
+            _save_workspace_for_user(
+                user_id=user_id,
+                workspace=workspace,
+                requirement_history=requirement_history,
+                board_task_history=board_task_history,
+            )
+            return _response(
+                workspace=workspace,
+                package=package,
+                lesson=lesson,
+                chatbot_message=edit_outcome.chatbot_message,
+                requirements=task_requirements,
+                learning_clarification=learning_clarification,
+                board_decision=edit_outcome.board_decision,
+                resolved_focus=focus,
+                requirement_cleared=False,
+                board_task_stamp=failed_stamp,
+            )
+        recent_focus = _recent_board_edit_focus_for_commit(
+            lesson=lesson,
+            fallback_focus=None if target_scope == "whole_document" else focus,
+            section_titles=edit_outcome.section_titles,
+        )
         commit_operations(
             lesson,
             [],
@@ -1686,27 +1950,36 @@ def _handle_existing_board_task_flow(
                 "board_edit_operation": edit_outcome.operation,
                 "board_edit_summary": edit_outcome.summary,
                 "board_section_titles": edit_outcome.section_titles,
+                "target_scope": target_scope,
+                "recent_board_edit_focus": recent_focus.model_dump(mode="json") if recent_focus else None,
                 **interaction_metadata,
-                **_board_search_evidence_metadata(resolution),
+                "board_search_evidence": (
+                    resolution.evidence.model_dump(mode="json")
+                    if resolution and resolution.evidence
+                    else _implicit_board_search_evidence(
+                        route="edit",
+                        target_scope=target_scope,
+                        reason="编辑链路使用全文或继承目标范围，没有独立检索证据。",
+                    )
+                ),
                 **_task_metadata(
                     requirements=task_requirements,
                     learning_clarification=learning_clarification,
                     focus=focus,
-                    requirement_cleared=edit_outcome.changed,
+                    requirement_cleared=True,
                 ),
                 **_board_task_metadata(
                     board_task=board_task,
                     stamp=stamp,
                     route="edit",
                     decision=decision.model_dump(mode="json"),
-                    cleared=edit_outcome.changed,
+                    cleared=True,
                 ),
             },
         )
-        consumed_stamp = board_task_history.consume(commit_id=lesson.history_graph.commits[-1].id) if edit_outcome.changed else stamp
-        if edit_outcome.changed:
-            lesson.board_task_requirements = None
-            _clear_task_requirements(lesson)
+        consumed_stamp = board_task_history.consume(commit_id=lesson.history_graph.commits[-1].id)
+        lesson.board_task_requirements = None
+        _clear_task_requirements(lesson)
         workspace_state.normalize_package_state(package)
         _save_workspace_for_user(
             user_id=user_id,
@@ -1723,7 +1996,7 @@ def _handle_existing_board_task_flow(
             learning_clarification=learning_clarification,
             board_decision=edit_outcome.board_decision,
             resolved_focus=focus,
-            requirement_cleared=edit_outcome.changed,
+            requirement_cleared=True,
             board_task_stamp=consumed_stamp,
         )
 
@@ -1896,11 +2169,13 @@ def _execute_board_task_write(
     source_interaction_metadata: dict[str, object] | None = None,
 ) -> ChatResponse:
     interaction_metadata = source_interaction_metadata or {}
+    target_focus = route_decision.target_focus if route_decision else None
+    target_scope = (route_decision.target_scope if route_decision else None) or ("focus" if target_focus else "append")
     task_requirements = _requirements_from_board_task(
         base=requirements,
         board_task=board_task,
-        action_type="expand_target" if route_decision and route_decision.target_focus else "append_section",
-        focus=route_decision.target_focus if route_decision else None,
+        action_type="expand_target" if target_focus else "append_section",
+        focus=target_focus,
     )
     task_requirements.action_instruction = route_decision.write_proposal if route_decision and route_decision.write_proposal else board_task.question_or_topic
     stamp = board_task_history.record_update(
@@ -1915,13 +2190,20 @@ def _execute_board_task_write(
         conversation_summary=_conversation_summary(request.conversation),
         user_instruction=task_requirements.action_instruction,
         selection_excerpt=None,
-        focus=route_decision.target_focus if route_decision else None,
+        focus=target_focus,
+        target_scope=target_scope,
+        allow_replace_document=False,
     )
     if edit_outcome.changed:
         old_text = lesson.board_document.content_text
         refresh_lesson_runtime(lesson, document=edit_outcome.new_document, requirements=task_requirements)
         lesson.board_teaching_guide = build_board_teaching_guide(lesson)
         lesson.board_teaching_progress = None
+        recent_focus = _recent_board_edit_focus_for_commit(
+            lesson=lesson,
+            fallback_focus=target_focus,
+            section_titles=edit_outcome.section_titles,
+        )
         new_text = lesson.board_document.content_text
         appended_excerpt = new_text[len(old_text):].strip() if new_text.startswith(old_text) else edit_outcome.new_document.content_text
         if edit_outcome.chatbot_message and board_task.confirmation_status != "confirmed":
@@ -1947,6 +2229,45 @@ def _execute_board_task_write(
         chatbot_message = edit_outcome.chatbot_message
         chatbot_message_source = edit_outcome.assistant_message_source
         board_explanation_directive = None
+        recent_focus = None
+
+    if not edit_outcome.changed:
+        failed_stamp = board_task_history.execution_failed(
+            reason=edit_outcome.summary or "Board task write did not produce a safe document change.",
+            metadata={
+                "assistant_message_source": chatbot_message_source,
+                "board_edit_operation": edit_outcome.operation,
+                "board_edit_summary": edit_outcome.summary,
+                "board_task_route": "write",
+                "board_task_decision": route_decision.model_dump(mode="json") if route_decision else None,
+                "board_task_cleared": False,
+                "target_scope": target_scope,
+                "board_search_evidence": search_evidence
+                or _implicit_board_search_evidence(
+                    route="write",
+                    target_scope=target_scope,
+                    reason="写链路没有独立定位证据；由任务清单和 Board AI 裁决进入。",
+                ),
+            },
+        )
+        workspace_state.normalize_package_state(package)
+        _save_workspace_for_user(
+            user_id=user_id,
+            workspace=workspace,
+            requirement_history=requirement_history,
+            board_task_history=board_task_history,
+        )
+        return _response(
+            workspace=workspace,
+            package=package,
+            lesson=lesson,
+            chatbot_message=chatbot_message,
+            requirements=task_requirements,
+            learning_clarification=learning_clarification,
+            board_decision=edit_outcome.board_decision,
+            requirement_cleared=False,
+            board_task_stamp=failed_stamp,
+        )
 
     commit_operations(
         lesson,
@@ -1963,13 +2284,20 @@ def _execute_board_task_write(
             "board_edit_operation": edit_outcome.operation,
             "board_edit_summary": edit_outcome.summary,
             "board_section_titles": edit_outcome.section_titles,
+            "target_scope": target_scope,
+            "recent_board_edit_focus": recent_focus.model_dump(mode="json") if recent_focus else None,
             "board_explanation_directive": board_explanation_directive,
             **interaction_metadata,
-            "board_search_evidence": search_evidence,
+            "board_search_evidence": search_evidence
+            or _implicit_board_search_evidence(
+                route="write",
+                target_scope=target_scope,
+                reason="写链路没有独立定位证据；由任务清单和 Board AI 裁决进入。",
+            ),
             **_task_metadata(
                 requirements=task_requirements,
                 learning_clarification=learning_clarification,
-                focus=route_decision.target_focus if route_decision else None,
+                focus=target_focus,
                 requirement_cleared=edit_outcome.changed,
             ),
             **_board_task_metadata(

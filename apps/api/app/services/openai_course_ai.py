@@ -292,6 +292,7 @@ class BoardTaskRouteDecision(BaseModel):
     candidate_focuses: list[BoardFocusRef] = Field(default_factory=list)
     reason: str = ""
     write_proposal: str = ""
+    target_scope: Literal["focus", "section", "whole_document", "append"] | None = None
 
 
 class LearningRequirementUpdate(BaseModel):
@@ -1087,7 +1088,8 @@ class OpenAICourseAI:
             "route=explain，并把本轮应先讲的 target_focus 填为第一个候选。\n"
             "3. 用户要问/学/讲的内容在全文没有相关位置时，route=await_write_confirmation，"
             "location_status=content_absent，并给 write_proposal。\n"
-            "4. 用户要编辑但目标位置缺失时，route=clarify_location；不要擅自变成写。\n"
+            "4. 用户要编辑但目标位置缺失时，route=clarify_location；不要擅自变成写。"
+            "只有用户明确说全文、整篇、整个板书、全部内容等，才允许 target_scope=whole_document。\n"
             "5. 如果任务已经 confirmation_status=confirmed 且是无目标 write，route=write。\n"
             "6. 不读取原始用户聊天记录，不直接搜索整篇板书；定位只能来自 location_evidence。\n"
             "7. 不输出面向学习者的最终回复，不写学科、教材、考试或样例专属规则。"
@@ -1105,6 +1107,7 @@ class OpenAICourseAI:
                     "candidate_focuses": "ambiguous 时填写候选。",
                     "reason": "裁决理由。",
                     "write_proposal": "需要扩写时，给板书编辑 AI 的扩写意图摘要。",
+                    "target_scope": "focus、section、whole_document 或 append；非明确全文任务不得输出 whole_document。",
                 },
             }
         )
@@ -1329,6 +1332,8 @@ class OpenAICourseAI:
         conversation_summary: str | None = None,
         user_instruction: str | None = None,
         selection_excerpt: str | None = None,
+        target_scope: str | None = None,
+        allow_replace_document: bool = False,
     ) -> BoardDocumentEditResult | None:
         is_initial_generation = intent == "generate_from_requirements"
         system_prompt = (
@@ -1343,7 +1348,8 @@ class OpenAICourseAI:
             "优先组织多个相互衔接的 H2 小节，篇幅要足以支撑一节课直接教学，"
             "除非用户明确要求短版、速览或只要大纲。\n"
             "3. intent=edit_existing_document 时，有选区就优先 replace_selection；需要新增内容时用 append_section；"
-            "不要擅自整体覆盖已有文档。\n"
+            "只有 target_scope=whole_document 且 allow_replace_document=true 时才允许 replace_document，"
+            "否则不要整体覆盖已有文档。\n"
             "4. content_text 是可直接进入文档的正文；可用 Markdown 表达标题、粗体、列表和表格，"
             "不要用代码块包裹全文。content_html 通常留空；后端会把 content_text 规范化为可编辑富文本。\n"
             "5. 完整生成时，每个主要 H2 小节都要有可讲解密度：核心解释、必要步骤或推理、"
@@ -1379,6 +1385,8 @@ class OpenAICourseAI:
                     "current_document_title": current_document_title,
                     "current_document_text": current_document_text,
                     "selection_excerpt": selection_excerpt.strip() if selection_excerpt else "无选中引用",
+                    "target_scope": target_scope or "",
+                    "allow_replace_document": allow_replace_document,
                     "input_isolation": BOARD_EDITOR_CHAT_LOG_REDACTION,
                 }
             )

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from app.models import (
@@ -104,10 +105,13 @@ def edit_existing_document(
     user_instruction: str,
     selection_excerpt: str | None,
     focus: BoardFocusRef | None = None,
+    target_scope: str | None = None,
+    allow_replace_document: bool = False,
 ) -> BoardDocumentEditOutcome:
     target_excerpt = _target_excerpt(selection_excerpt=selection_excerpt, focus=focus)
     is_append_request = requirements.action_type == "append_section"
-    if not target_excerpt and not is_document_empty(lesson.board_document) and not is_append_request:
+    is_whole_document_scope = target_scope == "whole_document"
+    if not target_excerpt and not is_document_empty(lesson.board_document) and not is_append_request and not is_whole_document_scope:
         return _no_change(
             lesson,
             "已有板书的局部编辑需要先解析目标位置。",
@@ -121,6 +125,8 @@ def edit_existing_document(
         current_document_text=_document_text(lesson.board_document),
         resource_summary=resource_summary,
         selection_excerpt=target_excerpt,
+        target_scope=target_scope,
+        allow_replace_document=allow_replace_document or is_whole_document_scope,
     )
     if not result:
         return _no_change(
@@ -129,11 +135,35 @@ def edit_existing_document(
         )
 
     operation = "append_section" if is_append_request else result.operation
+    content_text, _content_html = _edit_payload(result, prefer_content_html=True)
+    if (
+        operation == "replace_document"
+        and not is_document_empty(lesson.board_document)
+        and not (allow_replace_document or is_whole_document_scope)
+    ):
+        return _no_change(
+            lesson,
+            "非全文编辑返回了整篇替换结果，已阻止写入。",
+        )
+    if (
+        operation == "replace_selection"
+        and target_excerpt
+        and _looks_like_whole_document_replacement(
+            current_document=lesson.board_document,
+            selection_excerpt=target_excerpt,
+            replacement_text=content_text,
+        )
+    ):
+        return _no_change(
+            lesson,
+            "局部替换结果看起来像整份文档，已阻止写入。",
+        )
     new_document = _apply_edit_result(
         lesson=lesson,
         result=result,
         selection_excerpt=target_excerpt,
         operation_override=operation,
+        allow_replace_document=allow_replace_document or is_whole_document_scope,
     )
     if not document_changed(lesson.board_document, new_document):
         return _no_change(
@@ -158,12 +188,24 @@ def _apply_edit_result(
     result: BoardDocumentEditResult,
     selection_excerpt: str | None,
     operation_override: str | None = None,
+    allow_replace_document: bool = False,
 ) -> BoardDocument:
     content_text, content_html = _edit_payload(result, prefer_content_html=True)
     if not content_text and not content_html:
         return lesson.board_document
 
     operation = operation_override or result.operation
+    if operation == "replace_document":
+        if is_document_empty(lesson.board_document) or allow_replace_document:
+            return build_document(
+                title=result.title.strip() or lesson.board_document.title or lesson.title,
+                content_text=content_text,
+                content_html=content_html,
+                document_id=lesson.board_document.id,
+                page_settings=lesson.board_document.page_settings,
+            )
+        return lesson.board_document
+
     if operation == "append_section":
         next_text = "\n\n".join(
             part for part in [_document_text(lesson.board_document).strip(), content_text] if part
@@ -204,6 +246,26 @@ def _apply_edit_result(
         )
 
     return lesson.board_document
+
+
+def _looks_like_whole_document_replacement(
+    *,
+    current_document: BoardDocument,
+    selection_excerpt: str,
+    replacement_text: str,
+) -> bool:
+    current_text = _document_text(current_document).strip()
+    selection = (selection_excerpt or "").strip()
+    replacement = (replacement_text or "").strip()
+    if not current_text or not selection or not replacement:
+        return False
+    heading_count = len(re.findall(r"(?m)^\s*#{1,6}\s+\S+", replacement))
+    if heading_count >= 2 and len(replacement) > max(len(selection) * 2, 240):
+        return True
+    if len(replacement) > max(len(selection) * 4, 1200) and len(replacement) > len(current_text) * 0.6:
+        return True
+    prefix = current_text[: min(240, len(current_text))]
+    return len(prefix) >= 80 and prefix in replacement and len(replacement) > len(selection) * 2
 
 
 def _changed(
