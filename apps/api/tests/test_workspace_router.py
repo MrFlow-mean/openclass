@@ -1,4 +1,4 @@
-from app.models import CoursePackage, GenerateLessonRequest, UserView, WorkspaceState
+from app.models import CoursePackage, CreatePackageRequest, GenerateLessonRequest, UserView, WorkspaceState
 from app.routers import workspace as workspace_router
 from app.services.lesson_factory import create_empty_lesson
 
@@ -10,6 +10,24 @@ def _user() -> UserView:
         role="user",
         created_at="2026-01-01T00:00:00+00:00",
     )
+
+
+def test_create_package_without_summary_keeps_summary_empty(monkeypatch) -> None:
+    workspace = WorkspaceState(packages=[], active_package_id=None)
+    saved_workspaces = []
+
+    monkeypatch.setattr(workspace_router, "load_workspace_for_user", lambda user_id: workspace)
+    monkeypatch.setattr(
+        workspace_router,
+        "save_workspace_for_user",
+        lambda user_id, next_workspace: saved_workspaces.append(next_workspace),
+    )
+
+    workspace_router.create_package(CreatePackageRequest(title="空课程包", summary=""), user=_user())
+
+    assert workspace.packages[0].summary == ""
+    assert workspace.active_package_id == workspace.packages[0].id
+    assert saved_workspaces == [workspace]
 
 
 def test_generate_lesson_without_target_uses_standalone_pool(monkeypatch) -> None:

@@ -1661,7 +1661,7 @@ export function LearningHome() {
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-stone-400">
-              当前课程包
+              {h.currentPackage}
             </p>
             <h4 className="mt-2 truncate text-lg font-semibold text-stone-950">{selectedCoursePackage.title}</h4>
             <div className="mt-2 flex h-3.5 origin-left scale-[0.82] flex-nowrap items-center gap-0.5">
@@ -1670,36 +1670,36 @@ export function LearningHome() {
                 onClick={() => void handleDeleteSelectedPackage()}
                 disabled={packageActionBusy}
                 className="inline-flex h-3.5 shrink-0 items-center gap-px rounded-full border border-rose-100 bg-rose-50 px-1 text-[8px] font-normal leading-none text-rose-600 transition hover:border-rose-200 hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-45"
-                title="删除课程包"
+                title={h.deletePackageTitle}
               >
                 {isDeletingPackage ? <LoaderCircle className="h-2 w-2 animate-spin" /> : <Trash2 className="h-2 w-2" />}
-                删除
+                {h.delete}
               </button>
               <button
                 type="button"
                 onClick={() => void handleShareSelectedPackage()}
                 disabled={packageActionBusy}
                 className="inline-flex h-3.5 shrink-0 items-center gap-px rounded-full border border-stone-200 bg-white px-1 text-[8px] font-normal leading-none text-stone-600 transition hover:border-stone-300 hover:text-stone-950 disabled:cursor-not-allowed disabled:opacity-45"
-                title="分享课程包"
+                title={h.sharePackageTitle}
               >
                 <Share2 className="h-2 w-2" />
-                分享
+                {h.share}
               </button>
               <button
                 type="button"
                 onClick={() => void handleRenameSelectedPackage()}
                 disabled={packageActionBusy}
                 className="inline-flex h-3.5 shrink-0 items-center gap-px rounded-full border border-stone-200 bg-white px-1 text-[8px] font-normal leading-none text-stone-600 transition hover:border-stone-300 hover:text-stone-950 disabled:cursor-not-allowed disabled:opacity-45"
-                title="重命名课程包"
+                title={h.renamePackageTitle}
               >
                 {isRenamingPackage ? <LoaderCircle className="h-2 w-2 animate-spin" /> : <PencilLine className="h-2 w-2" />}
-                重命名
+                {h.renamePackage}
               </button>
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
             <span className="rounded-full bg-stone-100 px-2.5 py-1 text-[10px] font-semibold text-stone-600">
-              {selectedPackageLessons.length} 课
+              {h.packageLessonCount(selectedPackageLessons.length)}
             </span>
             <button
               type="button"
@@ -1709,8 +1709,8 @@ export function LearningHome() {
                 setPackageLessonsExpanded(false);
               }}
               className="flex h-8 w-8 items-center justify-center rounded-full border border-stone-200 bg-white text-stone-600 transition hover:border-stone-300 hover:text-stone-950"
-              aria-label="收起单课列表"
-              title="收起单课列表"
+              aria-label={h.collapsePackageLessons}
+              title={h.collapsePackageLessons}
             >
               <ChevronDown className="h-4 w-4 rotate-180" />
             </button>
@@ -1756,7 +1756,7 @@ export function LearningHome() {
                           </span>
                         </div>
                         <p className={clsx("mt-1 line-clamp-2 text-xs leading-5", isPreviewActive ? "text-white/75" : "text-stone-500")}>
-                          {lesson.summary || "已创建课程文档，等待继续补充内容。"}
+                          {lesson.summary || h.lessonSummaryFallback}
                         </p>
                       </div>
                     </div>
@@ -1765,7 +1765,7 @@ export function LearningHome() {
               })
             ) : (
               <div className="rounded-2xl border border-dashed border-stone-300 bg-stone-50/80 px-4 py-5 text-sm text-stone-500">
-                这个课程包还是空的，先把课程移动进来，或者进入工作台新建一页。
+                {h.selectedPackageEmpty}
               </div>
             )}
           </div>

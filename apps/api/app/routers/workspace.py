@@ -52,7 +52,7 @@ def create_package(request: CreatePackageRequest, user: UserView = Depends(curre
     workspace = load_workspace_for_user(user.id)
     package = CoursePackage(
         title=title,
-        summary=request.summary.strip() or "空课程包，等待你在顶部继续新建页面。",
+        summary=request.summary.strip(),
         lessons=[],
     )
     workspace.packages.append(package)

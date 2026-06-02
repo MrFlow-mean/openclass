@@ -28,6 +28,18 @@ async function createLessonFromEmptyStudio(page: Page, title: string) {
   await expect(page.locator(".ProseMirror")).toBeVisible();
 }
 
+async function setInterfaceLanguage(page: Page, interfaceLanguage: "zh-CN" | "en") {
+  await page.evaluate((nextLanguage) => {
+    const key = "openclass.profile.settings";
+    const eventName = "openclass.profile.settings.changed";
+    const stored = window.localStorage.getItem(key);
+    const current = stored ? (JSON.parse(stored) as Record<string, unknown>) : {};
+    const nextSettings = { ...current, interfaceLanguage: nextLanguage };
+    window.localStorage.setItem(key, JSON.stringify(nextSettings));
+    window.dispatchEvent(new CustomEvent(eventName, { detail: nextSettings }));
+  }, interfaceLanguage);
+}
+
 async function writeEditorTextAndWaitForSave(page: Page, text: string) {
   const editor = page.locator(".ProseMirror").first();
   const saveResponse = page.waitForResponse(
@@ -54,6 +66,25 @@ test("creates a package and lesson, edits the document, and persists a version",
   await openHistoryPanel(page);
 
   await expect(page.getByText("Auto Save").first()).toBeVisible();
+});
+
+test("localizes the empty course package page in English", async ({ page }) => {
+  const unique = Date.now();
+  await enterAsGuest(page);
+  await createPackageFromHome(page, `English empty package ${unique}`);
+  await page.goto("/studio");
+
+  await expect(page.getByText("这个课程包还是空的")).toBeVisible();
+  await setInterfaceLanguage(page, "en");
+  await expect(page.getByRole("heading", { name: "This package is empty" })).toBeVisible();
+  await expect(page.getByText("The tab bar above is this package's page area.")).toBeVisible();
+  await page.getByRole("button", { name: "Create first page" }).click();
+  await expect(page.getByLabel("First page name")).toHaveAttribute(
+    "placeholder",
+    "Course intro / Lecture 1 / Practice notes"
+  );
+  await expect(page.getByLabel("Confirm")).toBeVisible();
+  await expect(page.getByLabel("Cancel")).toBeVisible();
 });
 
 test("restores an older document version from history", async ({ page }) => {

@@ -4,9 +4,11 @@ import clsx from "clsx";
 import { Plus, X } from "lucide-react";
 
 import { InlineNameForm } from "@/components/inline-name-form";
+import type { StudioUiBundle } from "@/lib/i18n/product-ui";
 import type { Lesson } from "@/types";
 
 type LessonTabsProps = {
+  texts: StudioUiBundle;
   lessons: Lesson[];
   activeLessonId: string | null;
   isCreatingLessonInline: boolean;
@@ -19,6 +21,7 @@ type LessonTabsProps = {
 };
 
 export function LessonTabs({
+  texts,
   lessons,
   activeLessonId,
   isCreatingLessonInline,
@@ -60,8 +63,10 @@ export function LessonTabs({
       ))}
       {isCreatingLessonInline && lessons.length > 0 ? (
         <InlineNameForm
-          label="新页面名称"
-          placeholder="课程导读 / 第一讲 / 练习讲义"
+          label={texts.newPageNameLabel}
+          placeholder={texts.lessonNamePlaceholder}
+          confirmLabel={texts.confirm}
+          cancelLabel={texts.cancel}
           variant="tab"
           isBusy={isBusyCreating}
           onCancel={onCancelCreateLesson}
@@ -72,7 +77,8 @@ export function LessonTabs({
         type="button"
         onClick={onStartCreateLesson}
         className="p-3 text-gray-300 transition-colors hover:text-black"
-        title="新建页面"
+        title={texts.createPageTitle}
+        aria-label={texts.createPageTitle}
       >
         <Plus className="h-4 w-4" />
       </button>

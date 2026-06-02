@@ -147,6 +147,17 @@ export function profileSettingsTexts(lang: InterfaceLanguage) {
       updatedLabel: z ? "更新" : "Updated",
       shareLater: z ? "分享功能稍后提供" : "Sharing coming soon",
       share: z ? "分享" : "Share",
+      renamePackage: z ? "重命名" : "Rename",
+      currentPackage: z ? "当前课程包" : "Current package",
+      deletePackageTitle: z ? "删除课程包" : "Delete package",
+      sharePackageTitle: z ? "分享课程包" : "Share package",
+      renamePackageTitle: z ? "重命名课程包" : "Rename package",
+      collapsePackageLessons: z ? "收起单课列表" : "Collapse lesson list",
+      packageLessonCount: (count: number) => (z ? `${count} 课` : `${count} lesson${count === 1 ? "" : "s"}`),
+      lessonSummaryFallback: z ? "已创建课程文档，等待继续补充内容。" : "Lesson document created; ready for more content.",
+      selectedPackageEmpty: z
+        ? "这个课程包还是空的，先把课程移动进来，或者进入工作台新建一页。"
+        : "This package is empty. Move a lesson into it, or open Studio to create the first page.",
       moveToPackage: z ? "移动到课程包" : "Move to package",
       delete: z ? "删除" : "Delete",
       noMovablePackages: z ? "暂无可移动课程包" : "No packages to move into",
@@ -158,6 +169,29 @@ export function profileSettingsTexts(lang: InterfaceLanguage) {
       minutesAgo: (n: number) => (z ? `${n} 分钟前` : `${n}m ago`),
       hoursAgo: (n: number) => (z ? `${n} 小时前` : `${n}h ago`),
       daysAgo: (n: number) => (z ? `${n} 天前` : `${n}d ago`),
+    },
+
+    studio: {
+      loading: z ? "正在载入课程工作台…" : "Loading course studio…",
+      packageMissing: z ? "没有找到可用课程。" : "No available course was found.",
+      returnHome: z ? "返回主页" : "Back to home",
+      expandRightSidebar: z ? "展开右侧栏" : "Expand right sidebar",
+      collapseRightSidebar: z ? "收起右侧栏" : "Collapse right sidebar",
+      expandTopToolbar: z ? "展开顶部与编辑工具栏" : "Expand top and editor toolbar",
+      collapseTopToolbar: z ? "收起顶部与编辑工具栏" : "Collapse top and editor toolbar",
+      closeErrorAria: z ? "关闭错误提示" : "Dismiss error message",
+      closeErrorTitle: z ? "关闭提示" : "Dismiss",
+      confirm: z ? "确认" : "Confirm",
+      cancel: z ? "取消" : "Cancel",
+      createPageTitle: z ? "新建页面" : "Create page",
+      newPageNameLabel: z ? "新页面名称" : "New page name",
+      firstPageNameLabel: z ? "第一页名称" : "First page name",
+      lessonNamePlaceholder: z ? "课程导读 / 第一讲 / 练习讲义" : "Course intro / Lecture 1 / Practice notes",
+      emptyPackageTitle: z ? "这个课程包还是空的" : "This package is empty",
+      emptyPackageBody: z
+        ? "上方这条页签栏已经是当前课程包的页面区了。点右上角的加号，或者直接从下面创建第一张课程页面。"
+        : "The tab bar above is this package's page area. Use the + button in the top bar, or create the first page below.",
+      createFirstPage: z ? "新建第一页" : "Create first page",
     },
 
     auth: {
@@ -353,6 +387,7 @@ export function profileSettingsTexts(lang: InterfaceLanguage) {
 }
 
 export type HomeUiBundle = ReturnType<typeof profileSettingsTexts>["home"];
+export type StudioUiBundle = ReturnType<typeof profileSettingsTexts>["studio"];
 
 export function homeRelativeFormat(
   value: string | Date | null | undefined,

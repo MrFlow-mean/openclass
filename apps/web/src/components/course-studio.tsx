@@ -21,6 +21,7 @@ import {
 import { LessonTabs } from "@/components/course-studio/lesson-tabs";
 import { SelectionPopover } from "@/components/course-studio/selection-popover";
 import { CourseStudioSidePanel, type CourseStudioSidebarTab } from "@/components/course-studio/studio-side-panel";
+import { useInterfaceLanguage } from "@/contexts/interface-language-context";
 import { useBoardDraft } from "@/hooks/course-studio/use-board-draft";
 import { useCourseWorkspace, type CoursePackageApplyOptions } from "@/hooks/course-studio/use-course-workspace";
 import { useLessonChatAgent } from "@/hooks/course-studio/use-lesson-chat-agent";
@@ -39,6 +40,8 @@ const CHAT_PANEL_MAX_WIDTH = 640;
 
 export function CourseStudio() {
   const router = useRouter();
+  const { texts: txt } = useInterfaceLanguage();
+  const studioTexts = txt.studio;
   const mainContainerRef = useRef<HTMLDivElement | null>(null);
   const chatInputRef = useRef<HTMLTextAreaElement | null>(null);
   const chatScrollEndRef = useRef<HTMLDivElement | null>(null);
@@ -371,16 +374,17 @@ export function CourseStudio() {
   }
 
   if (isLoading) {
-    return <div className="flex min-h-screen items-center justify-center text-gray-500">正在载入课程工作台…</div>;
+    return <div className="flex min-h-screen items-center justify-center text-gray-500">{studioTexts.loading}</div>;
   }
 
   if (!coursePackage) {
-    return <div className="flex min-h-screen items-center justify-center text-gray-500">没有找到可用课程。</div>;
+    return <div className="flex min-h-screen items-center justify-center text-gray-500">{studioTexts.packageMissing}</div>;
   }
 
   const workspaceTitle = coursePackage.title;
   const lessonTabs = (
     <LessonTabs
+      texts={studioTexts}
       lessons={openLessons}
       activeLessonId={activeLesson?.id ?? null}
       isCreatingLessonInline={isCreatingLessonInline}
@@ -404,6 +408,7 @@ export function CourseStudio() {
   if (!activeLesson || !displayedDocument) {
     return (
       <CourseStudioPageShell
+        texts={studioTexts}
         workspaceTitle={workspaceTitle}
         topCollapsed={topCollapsed}
         rightSidebarOpen={rightSidebarOpen}
@@ -420,15 +425,17 @@ export function CourseStudio() {
             <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-[20px] bg-stone-950 text-white">
               <BookOpen className="h-7 w-7" />
             </div>
-            <h2 className="mt-6 text-2xl font-semibold tracking-tight text-stone-950">这个课程包还是空的</h2>
+            <h2 className="mt-6 text-2xl font-semibold tracking-tight text-stone-950">{studioTexts.emptyPackageTitle}</h2>
             <p className="mt-3 text-sm leading-7 text-stone-500">
-              上方这条页签栏已经是当前课程包的页面区了。点右上角的加号，或者直接从下面创建第一张课程页面。
+              {studioTexts.emptyPackageBody}
             </p>
             <div className="mt-8 flex justify-center">
               {isCreatingLessonInline ? (
                 <InlineNameForm
-                  label="第一页名称"
-                  placeholder="课程导读 / 第一讲 / 练习讲义"
+                  label={studioTexts.firstPageNameLabel}
+                  placeholder={studioTexts.lessonNamePlaceholder}
+                  confirmLabel={studioTexts.confirm}
+                  cancelLabel={studioTexts.cancel}
                   isBusy={busyAction === "generate"}
                   className="w-full max-w-sm"
                   onCancel={() => setIsCreatingLessonInline(false)}
@@ -444,7 +451,7 @@ export function CourseStudio() {
                   className="inline-flex items-center gap-2 rounded-full bg-stone-950 px-5 py-3 text-sm font-medium text-white transition hover:bg-stone-800"
                 >
                   <Plus className="h-4 w-4" />
-                  新建第一页
+                  {studioTexts.createFirstPage}
                 </button>
               )}
             </div>
@@ -456,6 +463,7 @@ export function CourseStudio() {
 
   return (
     <CourseStudioPageShell
+      texts={studioTexts}
       workspaceTitle={workspaceTitle}
       topCollapsed={topCollapsed}
       rightSidebarOpen={rightSidebarOpen}

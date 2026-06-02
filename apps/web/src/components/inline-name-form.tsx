@@ -9,6 +9,8 @@ type InlineNameFormVariant = "sidebar" | "tab";
 type InlineNameFormProps = {
   label: string;
   placeholder: string;
+  confirmLabel?: string;
+  cancelLabel?: string;
   isBusy?: boolean;
   variant?: InlineNameFormVariant;
   className?: string;
@@ -19,6 +21,8 @@ type InlineNameFormProps = {
 export function InlineNameForm({
   label,
   placeholder,
+  confirmLabel = "确认",
+  cancelLabel = "取消",
   isBusy = false,
   variant = "sidebar",
   className,
@@ -74,8 +78,8 @@ export function InlineNameForm({
       <button
         type="submit"
         disabled={!trimmedDraft || isBusy}
-        title="确认"
-        aria-label="确认"
+        title={confirmLabel}
+        aria-label={confirmLabel}
         className={clsx(
           "flex shrink-0 items-center justify-center transition disabled:cursor-not-allowed",
           variant === "tab"
@@ -93,8 +97,8 @@ export function InlineNameForm({
         type="button"
         onClick={onCancel}
         disabled={isBusy}
-        title="取消"
-        aria-label="取消"
+        title={cancelLabel}
+        aria-label={cancelLabel}
         className={clsx(
           "flex shrink-0 items-center justify-center text-stone-400 transition hover:bg-stone-100 hover:text-stone-950 disabled:cursor-not-allowed disabled:text-stone-300",
           variant === "tab" ? "h-6 w-6 rounded-md" : "h-8 w-8 rounded-xl"
