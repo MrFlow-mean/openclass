@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Upl
 from fastapi.responses import FileResponse
 
 from app.models import (
+    BoardDocument,
     BoardSegmentKind,
     ChatResponse,
     CoursePackageView,
@@ -28,6 +29,8 @@ from app.services.rich_document import (
     document_changed,
     export_docx,
     import_docx,
+    rich_structure_counts,
+    rich_structure_score,
     would_flatten_rich_document,
 )
 from app.services.route_context import bind_ai_request_context
@@ -85,6 +88,13 @@ def _save_document_request(lesson_id: str, request: DocumentSaveRequest, user_id
         commit_metadata: dict[str, object] = {
             "kind": "manual_document_save",
             **request.metadata,
+            **_document_save_structure_metadata(
+                base_commit_id=request.base_commit_id or current_head.id,
+                current_head_commit_id=current_head.id,
+                before_document=current_head.snapshot,
+                after_document=request.document,
+                flatten_guard_evaluated=is_autosave,
+            ),
         }
         commit_document_snapshot(
             lesson,
@@ -95,6 +105,28 @@ def _save_document_request(lesson_id: str, request: DocumentSaveRequest, user_id
         refresh_lesson_runtime(lesson)
         save_workspace_for_user(user_id, workspace)
     return package_view_for_lesson(workspace, package, lesson.id)
+
+
+def _document_save_structure_metadata(
+    *,
+    base_commit_id: str,
+    current_head_commit_id: str,
+    before_document: BoardDocument,
+    after_document: BoardDocument,
+    flatten_guard_evaluated: bool,
+) -> dict[str, object]:
+    before_counts = rich_structure_counts(before_document)
+    after_counts = rich_structure_counts(after_document)
+    return {
+        "base_commit_id": base_commit_id,
+        "current_head_commit_id": current_head_commit_id,
+        "structure_before": before_counts,
+        "structure_after": after_counts,
+        "structure_score_before": rich_structure_score(before_counts),
+        "structure_score_after": rich_structure_score(after_counts),
+        "flatten_guard_evaluated": flatten_guard_evaluated,
+        "flatten_guard_triggered": False,
+    }
 
 
 @router.post("/api/lessons/{lesson_id}/manual-commit", response_model=CoursePackageView)

@@ -29,6 +29,7 @@ from app.routers.auth import current_user
 from app.routers import documents as documents_router
 from app.routers import realtime as realtime_router
 from app.services.ai_logging import ai_log_context, ai_usage_logger, current_ai_log_context
+from app.services.board_segment_index import build_board_segment_index, segment_text_hash
 from app.services import chat_service, workspace_state
 from app.services.board_explanation_gate import generate_board_directed_explanation_message
 from app.services.course_runtime import refresh_lesson_runtime
@@ -37,6 +38,7 @@ from app.services.lesson_factory import build_requirements, create_empty_lesson
 from app.services.openai_course_ai import (
     BoardExplanationDirective,
     BoardDocumentEditResult,
+    BoardDocumentQualityReview,
     BoardTaskRouteDecision,
     ChatbotReply,
     GeneratedResourceCatalog,
@@ -506,6 +508,46 @@ def test_board_document_editor_prompt_excludes_chat_logs_and_raw_user_instructio
     assert "用户原始输入" not in captured["user_prompt"]
     assert payload["selection_excerpt"] == "目标摘录"
     assert payload["learning_requirement_context"]["action_instruction"] == "结构化清单里的编辑要求"
+
+
+def test_board_document_quality_review_prompt_excludes_chat_logs(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, str] = {}
+    ai = OpenAICourseAI()
+
+    def _fake_parse(role, *, system_prompt, user_prompt, schema):
+        captured["role"] = role
+        captured["system_prompt"] = system_prompt
+        captured["user_prompt"] = user_prompt
+        return BoardDocumentQualityReview(
+            status="pass",
+            checked_dimensions=["title_terms", "definitions", "examples", "exercises", "answers"],
+        )
+
+    monkeypatch.setattr(ai, "_parse", _fake_parse)
+
+    result = ai.generate_board_document_quality_review(
+        intent="generate_from_requirements",
+        lesson_title="测试页",
+        learning_requirement_context={"summary": "结构化清单里的学习目标"},
+        operation="replace_document",
+        candidate_title="候选板书",
+        candidate_content_text="# 候选板书\n## 定义\n候选正文。",
+        resource_summary="暂无已上传资料摘要",
+        current_document_title="空白板书",
+        target_scope="whole_document",
+        selection_excerpt="",
+        section_titles=["定义"],
+    )
+
+    assert result is not None
+    assert captured["role"] == "board"
+    assert "不得要求或引用用户与 Chatbot 的原始聊天记录" in captured["system_prompt"]
+    payload = json.loads(captured["user_prompt"])
+    assert "recent_conversation" not in payload
+    assert "conversation_summary" not in payload
+    assert "user_instruction" not in payload
+    assert payload["learning_requirement_context"]["summary"] == "结构化清单里的学习目标"
+    assert payload["candidate_content_text"].startswith("# 候选板书")
 
 
 def test_board_search_rerank_prompt_uses_only_task_and_candidates(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2391,6 +2433,7 @@ def test_document_save_route_keeps_autosave_metadata(monkeypatch: pytest.MonkeyP
 
     workspace = _seed_test_user_workspace(store)
     lesson = workspace.packages[0].lessons[0]
+    base_commit_id = lesson.history_graph.commits[-1].id
     document = lesson.board_document.model_copy(deep=True)
     document.content_html = "<p>自动保存后的内容</p>"
     document.content_text = "自动保存后的内容"
@@ -2417,6 +2460,14 @@ def test_document_save_route_keeps_autosave_metadata(monkeypatch: pytest.MonkeyP
     assert commit.metadata["kind"] == "auto_document_save"
     assert commit.metadata["autosave"] is True
     assert commit.metadata["autosave_reason"] == "pagehide"
+    assert commit.metadata["base_commit_id"] == base_commit_id
+    assert commit.metadata["current_head_commit_id"] == base_commit_id
+    assert isinstance(commit.metadata["structure_before"], dict)
+    assert isinstance(commit.metadata["structure_after"], dict)
+    assert isinstance(commit.metadata["structure_score_before"], int)
+    assert isinstance(commit.metadata["structure_score_after"], int)
+    assert commit.metadata["flatten_guard_evaluated"] is True
+    assert commit.metadata["flatten_guard_triggered"] is False
 
 
 def test_stale_autosave_does_not_overwrite_newer_board_commit(
@@ -2824,6 +2875,149 @@ def test_board_generation_repairs_model_html_content_text_before_commit(
     assert "<strong>" not in updated_document.content_text
     assert "<h1>生成后的板书</h1>" in updated_document.content_html
     assert "<strong>讲解重点:</strong> 这里是第一节正文。" in updated_document.content_html
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_board_generation_repairs_inconsistent_candidate_before_commit(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    captured_contexts: list[dict] = []
+    review_inputs: list[str] = []
+
+    def _fake_board_edit(**kwargs):
+        captured_contexts.append(kwargs.get("learning_requirement_context") or {})
+        if len(captured_contexts) == 1:
+            return BoardDocumentEditResult(
+                operation="replace_document",
+                title="概念A入门",
+                content_text=(
+                    "# 概念A入门\n"
+                    "## 定义\n"
+                    "本节说概念A是核心对象。\n"
+                    "## 例子\n"
+                    "下面的例子却把概念B当作核心对象。\n"
+                    "## 练习\n"
+                    "判断题：核心对象是概念A。答案：概念B。"
+                ),
+                summary="生成了候选板书。",
+                section_titles=["定义", "例子", "练习"],
+            )
+        return BoardDocumentEditResult(
+            operation="replace_document",
+            title="概念A入门",
+            content_text=(
+                "# 概念A入门\n"
+                "## 定义\n"
+                "本节统一说明概念A是核心对象。\n"
+                "## 例子\n"
+                "例子围绕概念A展开。\n"
+                "## 练习\n"
+                "判断题：核心对象是概念A。答案：概念A。"
+            ),
+            summary="生成了修复后的板书。",
+            section_titles=["定义", "例子", "练习"],
+        )
+
+    def _fake_quality_review(**kwargs):
+        review_inputs.append(kwargs.get("candidate_content_text") or "")
+        if "概念B" in review_inputs[-1]:
+            return BoardDocumentQualityReview(
+                status="repair_required",
+                issues=["标题、定义、例子和答案使用的核心对象不一致"],
+                repair_instruction="统一标题、定义、例子和答案中的核心对象，不要让答案与题干互相矛盾。",
+                checked_dimensions=["title_terms", "definitions", "examples", "exercises", "answers"],
+            )
+        return BoardDocumentQualityReview(
+            status="pass",
+            checked_dimensions=["title_terms", "definitions", "examples", "exercises", "answers"],
+        )
+
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _fake_board_edit)
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_quality_review", _fake_quality_review)
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.board_document = build_document(title="空白板书")
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="开始生成板书", board_generation_action="start"),
+        user_id=TEST_USER.id,
+    )
+
+    updated_document = response.course_package.lessons[0].board_document
+    assert len(captured_contexts) == 2
+    repair = captured_contexts[1]["document_quality_repair"]
+    assert "一致性审查未通过" in repair["failure_reason"]
+    assert "核心对象不一致" in repair["failure_reason"]
+    assert updated_document.content_text.startswith("# 概念A入门")
+    assert "答案：概念A" in updated_document.content_text
+    assert "答案：概念B" not in updated_document.content_text
+    assert response.board_document_operation_status == "succeeded"
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_board_generation_rejects_repeated_inconsistent_candidates(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    attempts: list[dict] = []
+
+    def _fake_board_edit(**kwargs):
+        attempts.append(kwargs.get("learning_requirement_context") or {})
+        return BoardDocumentEditResult(
+            operation="replace_document",
+            title="概念A入门",
+            content_text=(
+                "# 概念A入门\n"
+                "## 定义\n"
+                "本节说概念A是核心对象。\n"
+                "## 练习\n"
+                "判断题：核心对象是概念A。答案：概念B。"
+            ),
+            summary="生成了候选板书。",
+            section_titles=["定义", "练习"],
+        )
+
+    def _fake_quality_review(**kwargs):
+        return BoardDocumentQualityReview(
+            status="repair_required",
+            issues=["题干和答案互相矛盾"],
+            repair_instruction="重写候选板书，确保标题、定义、题干和答案一致。",
+            checked_dimensions=["title_terms", "definitions", "exercises", "answers"],
+        )
+
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _fake_board_edit)
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_quality_review", _fake_quality_review)
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.board_document = build_document(title="空白板书")
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    initial_commit_count = len(lesson.history_graph.commits)
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="开始生成板书", board_generation_action="start"),
+        user_id=TEST_USER.id,
+    )
+
+    updated_lesson = response.course_package.lessons[0]
+    assert len(attempts) == 3
+    assert updated_lesson.board_document.content_text == ""
+    assert len(updated_lesson.history_graph.commits) == initial_commit_count
+    assert response.board_document_operation_status == "failed"
+    assert "一致性审查未通过" in (response.board_document_operation_failure_reason or "")
+    events = store.list_learning_requirement_events(owner_user_id=TEST_USER.id, lesson_id=lesson.id)
+    assert events[-1]["event_type"] == "generation_failed"
     assert _read_log_entries(isolated_ai_log) == []
 
 
@@ -3568,6 +3762,13 @@ def test_existing_board_speaker_ordinal_question_uses_board_task_directive(
     assert response.resolved_focus is not None
     assert "Sophie: Moi, je savais" in response.resolved_focus.excerpt
     assert "Sophie 第2次发言" in response.resolved_focus.display_label
+    matched_segment = next(
+        segment
+        for segment in build_board_segment_index(lesson.board_document).segments
+        if segment.segment_id == response.resolved_focus.segment_id
+    )
+    assert response.resolved_focus.text_hash == matched_segment.text_hash
+    assert response.resolved_focus.excerpt_hash == segment_text_hash(response.resolved_focus.excerpt)
     assert "板书侧已允许 Chatbot 进行讲解" in (captured["user_message"] or "")
     commit = response.course_package.lessons[0].history_graph.commits[-1]
     assert commit.metadata["assistant_message_source"] == "chatbot_board_directed"

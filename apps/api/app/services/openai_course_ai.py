@@ -292,6 +292,13 @@ class BoardDocumentEditResult(BaseModel):
         return str(value)
 
 
+class BoardDocumentQualityReview(BaseModel):
+    status: Literal["pass", "repair_required"] = "pass"
+    issues: list[str] = Field(default_factory=list)
+    repair_instruction: str = ""
+    checked_dimensions: list[str] = Field(default_factory=list)
+
+
 class BoardTaskRouteDecision(BaseModel):
     route: BoardTaskRoute
     location_status: Literal["found", "missing", "ambiguous", "content_absent"] = "missing"
@@ -1413,6 +1420,64 @@ class OpenAICourseAI:
             schema=BoardDocumentEditResult,
         )
         return result if isinstance(result, BoardDocumentEditResult) else None
+
+    def generate_board_document_quality_review(
+        self,
+        *,
+        intent: str,
+        lesson_title: str,
+        learning_requirement_context: dict[str, Any],
+        operation: str,
+        candidate_title: str,
+        candidate_content_text: str,
+        resource_summary: str,
+        current_document_title: str = "",
+        target_scope: str | None = None,
+        selection_excerpt: str | None = None,
+        section_titles: list[str] | None = None,
+    ) -> BoardDocumentQualityReview | None:
+        system_prompt = (
+            "你是 OpenClass 的板书文档质量审查 AI，只负责审查候选板书是否能安全写入，"
+            "不负责和用户聊天，也不生成最终板书。\n"
+            "规则：\n"
+            "1. 只依据结构化需求/任务清单、候选板书正文、资料摘要和板书侧上下文审查；"
+            "不得要求或引用用户与 Chatbot 的原始聊天记录。\n"
+            "2. 只做通用质量审查，不写任何主题、学科、教材、考试或样例专属规则。\n"
+            "3. 必须检查候选文档内部一致性：标题、术语、定义、解释、例子、练习、答案、"
+            "输出范围、用户约束和章节结构之间不能互相矛盾。\n"
+            "4. 如果发现候选内容自相矛盾、范围错位、练习答案与说明冲突、术语前后不一致，"
+            "status 必须为 repair_required，并给出可交给 BoardEditor 重写的通用修复指令。\n"
+            "5. 如果只是需要更华丽的表达但没有一致性或安全问题，status 使用 pass。"
+        )
+        user_prompt = _json(
+            {
+                "intent": intent,
+                "lesson_title": lesson_title,
+                "learning_requirement_context": learning_requirement_context,
+                "operation": operation,
+                "candidate_title": candidate_title,
+                "candidate_content_text": candidate_content_text,
+                "resource_summary": resource_summary,
+                "current_document_title": current_document_title,
+                "target_scope": target_scope or "",
+                "selection_excerpt": selection_excerpt.strip() if selection_excerpt else "",
+                "section_titles": section_titles or [],
+                "input_isolation": BOARD_EDITOR_CHAT_LOG_REDACTION,
+                "response_contract": {
+                    "status": "pass 或 repair_required。",
+                    "issues": "候选文档存在的通用一致性问题；没有问题则为空数组。",
+                    "repair_instruction": "status=repair_required 时，给 BoardEditor 的自然语言重写指令。",
+                    "checked_dimensions": "实际检查过的维度，如 title_terms、definitions、examples、exercises、answers、scope、structure。",
+                },
+            }
+        )
+        result = self._parse(
+            "board",
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            schema=BoardDocumentQualityReview,
+        )
+        return result if isinstance(result, BoardDocumentQualityReview) else None
 
     def generate_learning_requirement_update(
         self,

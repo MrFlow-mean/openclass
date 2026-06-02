@@ -1021,7 +1021,7 @@ def _focus_from_segment_excerpt(
         score_breakdown=score_breakdown,
         display_label=display_label,
     )
-    return focus.model_copy(update={"excerpt": excerpt, "text_hash": segment_text_hash(excerpt)})
+    return focus.model_copy(update={"excerpt": excerpt, "excerpt_hash": segment_text_hash(excerpt)})
 
 
 def _default_display_label(segment: BoardSegment) -> str:

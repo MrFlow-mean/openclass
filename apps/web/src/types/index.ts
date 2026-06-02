@@ -356,6 +356,7 @@ export interface BoardFocusRef {
   before_text: string;
   after_text: string;
   text_hash?: string | null;
+  excerpt_hash?: string | null;
   confidence: number;
   reason: string;
   display_label?: string;

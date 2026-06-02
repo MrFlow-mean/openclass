@@ -30,6 +30,7 @@ from app.services.rich_document import (
 
 _MAX_BOARD_DOCUMENT_QUALITY_ATTEMPTS = 3
 _QUALITY_REPAIR_EXCERPT_CHARS = 2400
+_QUALITY_REVIEW_CONTENT_CHARS = 10000
 
 
 @dataclass(frozen=True)
@@ -112,6 +113,24 @@ def generate_from_requirements(
         )
         if _would_store_flat_initial_board(new_document):
             failure_reason = "首次板书生成结果缺少标题层级，已阻止写入。"
+            repair_feedback = _quality_repair_feedback(
+                reason=failure_reason,
+                attempt=attempt,
+                result=result,
+            )
+            continue
+        consistency_issue = _document_quality_review_issue(
+            intent="generate_from_requirements",
+            lesson=lesson,
+            request_kwargs=request_kwargs,
+            result=result,
+            operation="replace_document",
+            new_document=new_document,
+            selection_excerpt=None,
+            target_scope=None,
+        )
+        if consistency_issue:
+            failure_reason = consistency_issue
             repair_feedback = _quality_repair_feedback(
                 reason=failure_reason,
                 attempt=attempt,
@@ -240,6 +259,24 @@ def edit_existing_document(
             operation=operation,
         ):
             failure_reason = "全文替换结果丢失了原有标题、列表、加粗或表格结构，已阻止写入。"
+            repair_feedback = _quality_repair_feedback(
+                reason=failure_reason,
+                attempt=attempt,
+                result=result,
+            )
+            continue
+        consistency_issue = _document_quality_review_issue(
+            intent="edit_existing_document",
+            lesson=lesson,
+            request_kwargs=request_kwargs,
+            result=result,
+            operation=operation,
+            new_document=new_document,
+            selection_excerpt=target_excerpt,
+            target_scope=target_scope,
+        )
+        if consistency_issue:
+            failure_reason = consistency_issue
             repair_feedback = _quality_repair_feedback(
                 reason=failure_reason,
                 attempt=attempt,
@@ -413,6 +450,44 @@ def _model_output_quality_issue(result: BoardDocumentEditResult) -> str | None:
     return None
 
 
+def _document_quality_review_issue(
+    *,
+    intent: str,
+    lesson: Lesson,
+    request_kwargs: dict[str, object],
+    result: BoardDocumentEditResult,
+    operation: str,
+    new_document: BoardDocument,
+    selection_excerpt: str | None,
+    target_scope: str | None,
+) -> str | None:
+    review = openai_course_ai.generate_board_document_quality_review(
+        intent=intent,
+        lesson_title=str(request_kwargs.get("lesson_title") or lesson.title),
+        learning_requirement_context=dict(request_kwargs.get("learning_requirement_context") or {}),
+        operation=operation,
+        candidate_title=result.title.strip() or new_document.title,
+        candidate_content_text=_compact_text(_document_text(new_document), limit=_QUALITY_REVIEW_CONTENT_CHARS),
+        resource_summary=str(request_kwargs.get("resource_summary") or ""),
+        current_document_title=lesson.board_document.title,
+        target_scope=target_scope,
+        selection_excerpt=selection_excerpt,
+        section_titles=result.section_titles,
+    )
+    if review is None or review.status != "repair_required":
+        return None
+
+    issues = [item.strip() for item in review.issues if item.strip()]
+    instruction = review.repair_instruction.strip()
+    if issues and instruction:
+        return f"板书候选内容一致性审查未通过：{'；'.join(issues)}。修复要求：{instruction}"
+    if issues:
+        return f"板书候选内容一致性审查未通过：{'；'.join(issues)}。"
+    if instruction:
+        return f"板书候选内容一致性审查未通过。修复要求：{instruction}"
+    return "板书候选内容一致性审查未通过。"
+
+
 def _quality_repair_feedback(
     *,
     reason: str,
@@ -450,10 +525,14 @@ def _quality_repair_feedback(
 
 
 def _compact_repair_excerpt(value: str) -> str:
+    return _compact_text(value, limit=_QUALITY_REPAIR_EXCERPT_CHARS)
+
+
+def _compact_text(value: str, *, limit: int) -> str:
     text = value.strip()
-    if len(text) <= _QUALITY_REPAIR_EXCERPT_CHARS:
+    if len(text) <= limit:
         return text
-    return text[:_QUALITY_REPAIR_EXCERPT_CHARS] + "\n..."
+    return text[:limit] + "\n..."
 
 
 def _edit_payload(result: BoardDocumentEditResult, *, prefer_content_html: bool) -> tuple[str, str]:
