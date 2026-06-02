@@ -161,12 +161,14 @@ export function CourseStudioChatSidebar({
       </div>
       <div className="flex-1 overflow-y-auto p-6 custom-scrollbar">
         <div className="space-y-6">
-          <LearningClarityCard
-            barTone={clarityBarTone}
-            clarityStatus={clarityStatus}
-            lesson={activeLesson}
-            targetCommitId={targetCommitId}
-          />
+          {!activeBoardTask ? (
+            <LearningClarityCard
+              barTone={clarityBarTone}
+              clarityStatus={clarityStatus}
+              lesson={activeLesson}
+              targetCommitId={targetCommitId}
+            />
+          ) : null}
           {!isPreviewMode && activeBoardTask ? (
             <div className="rounded-xl border border-sky-200 bg-sky-50 p-4">
               <div className="flex items-center justify-between gap-3">

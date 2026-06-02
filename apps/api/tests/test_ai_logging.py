@@ -2753,7 +2753,8 @@ def test_ambiguous_numbered_edit_asks_for_focus_confirmation(
     commit = response.course_package.lessons[0].history_graph.commits[-1]
     assert commit.metadata["kind"] == "chat_flow"
     assert commit.metadata["focus_candidates"]
-    assert commit.metadata["requirement_cleared"] is False
+    assert commit.metadata["requirement_cleared"] is True
+    assert commit.metadata["active_requirement_sheet_after"] is None
     assert _read_log_entries(isolated_ai_log) == []
 
 
@@ -2972,13 +2973,18 @@ def test_existing_board_vague_explanation_updates_board_task_without_executing(
     )
 
     assert response.active_board_task_sheet is not None
+    assert response.requirement_cleared is True
+    assert response.active_requirement_sheet is None
     assert response.active_board_task_sheet.requested_action == "explain"
     assert response.active_board_task_sheet.progress < 100
     assert "目标位置" in response.active_board_task_sheet.missing_items
     assert "不能执行写、改、讲或聊" in (captured["user_message"] or "")
+    assert response.course_package.lessons[0].learning_requirements is None
     versions = store.list_board_task_versions(owner_user_id=TEST_USER.id, lesson_id=lesson.id)
     assert versions[-1]["status"] == "collecting"
     commit = response.course_package.lessons[0].history_graph.commits[-1]
+    assert commit.metadata["requirement_cleared"] is True
+    assert commit.metadata["active_requirement_sheet_after"] is None
     assert commit.metadata["board_task_cleared"] is False
     assert _read_log_entries(isolated_ai_log) == []
 

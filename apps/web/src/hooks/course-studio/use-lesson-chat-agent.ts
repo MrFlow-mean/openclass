@@ -245,6 +245,9 @@ export function useLessonChatAgent({
           setStreamedRequirementSheet(payload.active_requirement_sheet ?? payload.learning_requirement_sheet);
         },
         onBoardTaskUpdate(payload) {
+          setStreamedRequirementSheet(null);
+          setLearningClarity(null);
+          setClarificationQuestions([]);
           setStreamedBoardTaskSheet(payload.active_board_task_sheet ?? payload.board_task_sheet);
         },
       });
@@ -254,10 +257,13 @@ export function useLessonChatAgent({
       setLatestBoardDecision(response.board_decision);
       setClarificationQuestions(response.clarification_questions);
       setLearningClarity(response.learning_clarification);
+      const nextBoardTaskSheet = response.active_board_task_sheet ?? response.board_task_sheet ?? null;
       setStreamedRequirementSheet(
-        response.requirement_cleared ? null : response.active_requirement_sheet ?? response.learning_requirement_sheet
+        response.requirement_cleared || nextBoardTaskSheet
+          ? null
+          : response.active_requirement_sheet ?? response.learning_requirement_sheet
       );
-      setStreamedBoardTaskSheet(response.active_board_task_sheet ?? response.board_task_sheet ?? null);
+      setStreamedBoardTaskSheet(nextBoardTaskSheet);
       setScopeOptions(response.scope_options);
       setResourceMatches(response.resource_matches);
       setReferencePrompt(response.reference_prompt ?? null);

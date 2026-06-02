@@ -413,6 +413,11 @@ def _clear_task_requirements(lesson: Lesson) -> None:
     lesson.learning_requirements = None
 
 
+def _activate_board_task_requirements(lesson: Lesson, board_task: BoardTaskRequirementSheet) -> None:
+    _clear_task_requirements(lesson)
+    lesson.board_task_requirements = board_task
+
+
 def _focus_candidate_context(resolution: FocusResolution) -> str:
     if not resolution.candidates:
         return resolution.question
@@ -925,6 +930,8 @@ def _board_task_metadata(
         "board_task_route": route,
         "board_task_decision": decision,
         "board_task_cleared": cleared,
+        "requirement_cleared": True,
+        "active_requirement_sheet_after": None,
     }
 
 
@@ -1232,7 +1239,7 @@ def _handle_existing_board_task_flow(
         selection_excerpt=selection_excerpt,
         existing=existing_task,
     )
-    lesson.board_task_requirements = board_task
+    _activate_board_task_requirements(lesson, board_task)
     stamp = board_task_history.record_update(sheet=board_task)
     _emit_board_task_update(lesson=lesson, sheet=board_task, stamp=stamp)
     if board_task.progress < 100:
@@ -1312,7 +1319,7 @@ def _handle_existing_board_task_flow(
             )
             board_task_history.not_executed(reason="编辑目标连续两次未定位，旧任务未执行。")
             new_task = make_write_task_from_topic(board_task.question_or_topic)
-            lesson.board_task_requirements = new_task
+            _activate_board_task_requirements(lesson, new_task)
             new_stamp = board_task_history.record_update(
                 sheet=new_task,
                 status="awaiting_confirmation",
@@ -1362,7 +1369,7 @@ def _handle_existing_board_task_flow(
                 board_decision=BoardDecision(action="no_change", reason="编辑目标未定位，已转为扩写确认。"),
                 board_task_stamp=new_stamp,
             )
-        lesson.board_task_requirements = next_task
+        _activate_board_task_requirements(lesson, next_task)
         stamp = board_task_history.record_update(sheet=next_task, change_summary=decision.reason)
         _emit_board_task_update(lesson=lesson, sheet=next_task, stamp=stamp)
         chatbot_message, chatbot_message_source = _generate_focus_candidate_message(
@@ -1441,7 +1448,7 @@ def _handle_existing_board_task_flow(
         next_task.progress = 100
         next_task.missing_items = []
         next_task.clarification_question = ""
-        lesson.board_task_requirements = next_task
+        _activate_board_task_requirements(lesson, next_task)
         stamp = board_task_history.record_update(
             sheet=next_task,
             status="awaiting_confirmation",
@@ -1871,6 +1878,7 @@ def _response(
 ) -> ChatResponse:
     stamp = _response_requirement_stamp(requirement_history, requirement_stamp)
     board_task_stamp_value = _response_board_task_stamp(board_task_history, board_task_stamp)
+    visible_requirement_cleared = requirement_cleared or lesson.board_task_requirements is not None
     return ChatResponse(
         chatbot_message=chatbot_message,
         learning_requirement_sheet=requirements,
@@ -1898,7 +1906,7 @@ def _response(
         selected_reference=selected_reference,
         resolved_focus=resolved_focus,
         focus_candidates=focus_candidates or [],
-        requirement_cleared=requirement_cleared,
+        requirement_cleared=visible_requirement_cleared,
         created_lesson=None,
         teaching_progress=teaching_progress,
         course_package=workspace_state.package_view_for_lesson(workspace, package, lesson.id),
