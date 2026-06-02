@@ -466,6 +466,119 @@ def test_generation_retry_success_consumes_frozen_requirement(
     assert "重试后生成的板书" in reloaded.board_document.content_text
 
 
+def test_initial_generation_retries_flat_long_document_before_consuming_requirement(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_chatbot_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="需求已经够清楚。"),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_learning_requirement_update",
+        lambda **kwargs: _requirement_update(ready=True, action_type="generate_board"),
+    )
+    flat_content = "\n\n".join(
+        f"第 {index} 段：这是一段没有标题层级的长篇板书内容，用来模拟模型把整份文档压成普通段落的情况。"
+        for index in range(1, 32)
+    )
+    board_calls = []
+
+    def _retrying_board_edit(**kwargs):
+        board_calls.append(kwargs)
+        if len(board_calls) == 1:
+            return BoardDocumentEditResult(
+                operation="replace_document",
+                title="无结构板书",
+                content_text=flat_content,
+                summary="返回了一份无结构长文。",
+                chatbot_message="返回了一份无结构长文。",
+                section_titles=[],
+            )
+        return BoardDocumentEditResult(
+            operation="replace_document",
+            title="结构化板书",
+            content_text="# 结构化板书\n\n## 第一部分\n\n这是一段有标题层级的内容。\n\n## 第二部分\n\n这是一段继续展开的内容。",
+            summary="重试后生成了结构化板书。",
+            chatbot_message="板书已经生成。",
+            section_titles=["第一部分", "第二部分"],
+        )
+
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _retrying_board_edit)
+    _, lesson = _seed_workspace(store)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="目标已经完整"),
+        user_id=TEST_USER_ID,
+    )
+
+    events = store.list_learning_requirement_events(owner_user_id=TEST_USER_ID, lesson_id=lesson.id)
+    reloaded = store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
+    assert len(board_calls) == 2
+    assert response.requirement_phase == "consumed"
+    assert response.board_document_operation_status == "succeeded"
+    assert [row["event_type"] for row in events] == ["created", "completed", "frozen", "consumed"]
+    assert "# 结构化板书" in reloaded.board_document.content_text
+    assert "无结构长文" not in reloaded.board_document.content_text
+
+
+def test_initial_generation_rejects_flat_long_document_without_headings(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_chatbot_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="需求已经够清楚。"),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_learning_requirement_update",
+        lambda **kwargs: _requirement_update(ready=True, action_type="generate_board"),
+    )
+    flat_content = "\n\n".join(
+        f"第 {index} 段：这是一段没有标题层级的长篇板书内容，用来模拟模型把整份文档压成普通段落的情况。"
+        for index in range(1, 32)
+    )
+    board_calls = []
+
+    def _flat_board_edit(**kwargs):
+        board_calls.append(kwargs)
+        return BoardDocumentEditResult(
+            operation="replace_document",
+            title="无结构板书",
+            content_text=flat_content,
+            summary="返回了一份无结构长文。",
+            chatbot_message="返回了一份无结构长文。",
+            section_titles=[],
+        )
+
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _flat_board_edit)
+    _, lesson = _seed_workspace(store)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="目标已经完整"),
+        user_id=TEST_USER_ID,
+    )
+
+    events = store.list_learning_requirement_events(owner_user_id=TEST_USER_ID, lesson_id=lesson.id)
+    reloaded = store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
+    assert len(board_calls) == 2
+    assert response.requirement_phase == "frozen"
+    assert response.board_document_operation_status == "failed"
+    assert response.board_document_operation_failure_reason == "首次板书生成结果缺少标题层级，已阻止写入。"
+    assert [row["event_type"] for row in events] == ["created", "completed", "frozen", "generation_failed"]
+    assert reloaded.board_document.content_text == ""
+
+
 def test_stream_emits_requirement_update_before_document_delta(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,

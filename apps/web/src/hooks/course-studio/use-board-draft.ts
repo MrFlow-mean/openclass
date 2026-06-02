@@ -75,6 +75,24 @@ function buildDocumentSavePayload(document: BoardDocument, reason: AutoSaveReaso
   };
 }
 
+function plainTextFromHtml(value: string) {
+  return value
+    .replace(/<\/(h[1-6]|p|li|blockquote|tr)>/gi, "\n")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function visibleDocumentText(document: BoardDocument) {
+  return plainTextFromHtml(document.content_html) || document.content_text.replace(/\s+/g, " ").trim();
+}
+
+function looksLikeSameRenderedDocument(left: BoardDocument, right: BoardDocument) {
+  return left.id === right.id && visibleDocumentText(left) === visibleDocumentText(right);
+}
+
 export function useBoardDraft({
   activeLesson,
   setError,
@@ -93,6 +111,7 @@ export function useBoardDraft({
   const draftDocumentRef = useRef<BoardDocument | null>(null);
   const isDocumentDirtyRef = useRef(false);
   const isPreviewingRef = useRef(false);
+  const ignoredStreamingPreviewRef = useRef<BoardDocument | null>(null);
 
   const [draftDocument, setDraftDocument] = useState<BoardDocument | null>(null);
   const [isDocumentDirty, setIsDocumentDirty] = useState(false);
@@ -122,6 +141,9 @@ export function useBoardDraft({
       draftDocumentRef.current = nextDocument;
       isDocumentDirtyRef.current = false;
       isPreviewingRef.current = false;
+      if (!nextDocument || ignoredStreamingPreviewRef.current?.id !== nextDocument.id) {
+        ignoredStreamingPreviewRef.current = null;
+      }
       setDraftDocument(nextDocument);
       setIsDocumentDirty(false);
       setIsPreviewing(false);
@@ -137,6 +159,7 @@ export function useBoardDraft({
       draftDocumentRef.current = document;
       isDocumentDirtyRef.current = false;
       isPreviewingRef.current = true;
+      ignoredStreamingPreviewRef.current = null;
       setDraftDocument(document);
       setIsDocumentDirty(false);
       setIsPreviewing(true);
@@ -152,6 +175,7 @@ export function useBoardDraft({
       draftDocumentRef.current = document;
       isDocumentDirtyRef.current = false;
       isPreviewingRef.current = true;
+      ignoredStreamingPreviewRef.current = document;
       setDraftDocument(document);
       setIsDocumentDirty(false);
       setIsPreviewing(true);
@@ -210,6 +234,7 @@ export function useBoardDraft({
       if (documentsEqual(document, lesson.board_document)) {
         setIsDocumentDirty(false);
         isDocumentDirtyRef.current = false;
+        ignoredStreamingPreviewRef.current = null;
         setAutoSaveStatus("idle");
         return true;
       }
@@ -288,6 +313,7 @@ export function useBoardDraft({
         return;
       }
       if (documentsEqual(document, lesson.board_document)) {
+        ignoredStreamingPreviewRef.current = null;
         return;
       }
       const baseCommitId = currentHeadCommitId(lesson);
@@ -306,8 +332,30 @@ export function useBoardDraft({
       if (isPreviewingRef.current || !lesson) {
         return;
       }
+      const ignoredStreamingPreview = ignoredStreamingPreviewRef.current;
+      if (
+        ignoredStreamingPreview &&
+        looksLikeSameRenderedDocument(nextDocument, ignoredStreamingPreview) &&
+        !documentsEqual(nextDocument, lesson.board_document)
+      ) {
+        ignoredStreamingPreviewRef.current = null;
+        draftDocumentRef.current = lesson.board_document;
+        isDocumentDirtyRef.current = false;
+        setDraftDocument(lesson.board_document);
+        setIsDocumentDirty(false);
+        setAutoSaveStatus("idle");
+        return;
+      }
       const hasChanged = !documentsEqual(draftDocumentRef.current, nextDocument);
       const dirty = !documentsEqual(nextDocument, lesson.board_document);
+      if (!dirty) {
+        ignoredStreamingPreviewRef.current = null;
+      } else if (
+        ignoredStreamingPreview &&
+        !looksLikeSameRenderedDocument(nextDocument, ignoredStreamingPreview)
+      ) {
+        ignoredStreamingPreviewRef.current = null;
+      }
       if (hasChanged) {
         documentDraftVersionRef.current += 1;
       }

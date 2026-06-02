@@ -53,49 +53,52 @@ def generate_from_requirements(
             "当前板书不是空白文档，已阻止整体覆盖。",
         )
 
-    result = _generate_board_document_edit_with_retry(
-        intent="generate_from_requirements",
-        lesson_title=lesson.title,
-        learning_requirement_context=_requirement_context(
+    request_kwargs = {
+        "intent": "generate_from_requirements",
+        "lesson_title": lesson.title,
+        "learning_requirement_context": _requirement_context(
             requirements,
             clarification,
             requirement_run_id=requirement_run_id,
             frozen_requirement_version_id=frozen_requirement_version_id,
         ),
-        current_document_title=lesson.board_document.title,
-        current_document_text=_document_text(lesson.board_document),
-        resource_summary=resource_summary,
-        selection_excerpt=None,
-    )
-    if not result:
-        return _no_change(
-            lesson,
-            "板书文档编辑 AI 没有返回生成结果。",
-        )
+        "current_document_title": lesson.board_document.title,
+        "current_document_text": _document_text(lesson.board_document),
+        "resource_summary": resource_summary,
+        "selection_excerpt": None,
+    }
+    failure_reason = "板书文档编辑 AI 没有返回生成结果。"
+    for _attempt in range(2):
+        result = openai_course_ai.generate_board_document_edit(**request_kwargs)
+        if not result:
+            failure_reason = "板书文档编辑 AI 没有返回生成结果。"
+            continue
 
-    content_text, content_html = _edit_payload(result, prefer_content_html=False)
-    if not content_text and not content_html:
-        return _no_change(
-            lesson,
-            "板书文档编辑 AI 返回了空内容。",
-        )
+        content_text, content_html = _edit_payload(result, prefer_content_html=False)
+        if not content_text and not content_html:
+            failure_reason = "板书文档编辑 AI 返回了空内容。"
+            continue
 
-    new_document = build_document(
-        title=result.title.strip() or lesson.board_document.title or lesson.title,
-        content_text=content_text,
-        content_html=content_html,
-        document_id=lesson.board_document.id,
-        page_settings=lesson.board_document.page_settings,
-    )
-    return _changed(
-        lesson=lesson,
-        new_document=new_document,
-        operation="replace_document",
-        summary=result.summary.strip(),
-        chatbot_message=result.chatbot_message.strip() or result.summary.strip(),
-        section_titles=result.section_titles,
-        reason="板书文档编辑 AI 已根据学习需求清单生成空白板书。",
-    )
+        new_document = build_document(
+            title=result.title.strip() or lesson.board_document.title or lesson.title,
+            content_text=content_text,
+            content_html=content_html,
+            document_id=lesson.board_document.id,
+            page_settings=lesson.board_document.page_settings,
+        )
+        if _would_store_flat_initial_board(new_document):
+            failure_reason = "首次板书生成结果缺少标题层级，已阻止写入。"
+            continue
+        return _changed(
+            lesson=lesson,
+            new_document=new_document,
+            operation="replace_document",
+            summary=result.summary.strip(),
+            chatbot_message=result.chatbot_message.strip() or result.summary.strip(),
+            section_titles=result.section_titles,
+            reason="板书文档编辑 AI 已根据学习需求清单生成空白板书。",
+        )
+    return _no_change(lesson, failure_reason)
 
 
 def edit_existing_document(
@@ -407,6 +410,16 @@ def _would_flatten_rich_document(
     if new_score > max(2, old_score // 10):
         return False
     return new_counts.get("paragraph", 0) >= max(8, old_counts.get("paragraph", 0) // 2)
+
+
+def _would_store_flat_initial_board(document: BoardDocument) -> bool:
+    text = _document_text(document).strip()
+    if len(text) < 1000:
+        return False
+    counts = _rich_structure_counts(document)
+    if counts.get("heading", 0) or counts.get("table", 0):
+        return False
+    return counts.get("paragraph", 0) >= 8
 
 
 def _target_excerpt(*, selection_excerpt: str | None, focus: BoardFocusRef | None) -> str | None:
