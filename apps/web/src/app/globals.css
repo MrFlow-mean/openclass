@@ -197,11 +197,22 @@ select {
 .word-editor__content {
   position: relative;
   z-index: 1;
+  max-width: 100%;
   min-height: var(--page-content-min-height, 720px);
+  overflow-x: hidden;
   outline: none;
   color: #1f2937;
   font-size: 15px;
   line-height: 1.9;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.word-editor__content .ProseMirror {
+  max-width: 100%;
+  overflow-x: hidden;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .word-editor__content > *:first-child {
@@ -233,6 +244,9 @@ select {
 
 .word-editor__content p {
   margin: 0.85em 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .word-editor__content .tiptap-mathematics-render {
