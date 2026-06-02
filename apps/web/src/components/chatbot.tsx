@@ -60,6 +60,19 @@ function splitMarkdownBlocks(content: string): Array<{ kind: "text" | "code"; va
   return blocks.length ? blocks : [{ kind: "text", value: content }];
 }
 
+const MARKDOWN_HEADING_RE = /^(#{1,3})\s+(.+)$/;
+const MARKDOWN_BULLET_RE = /^[-*]\s+(.+)$/;
+const MARKDOWN_ORDERED_RE = /^\d+[.、]\s+(.+)$/;
+
+function canOpenInlineMark(value: string, index: number, markerLength: number) {
+  const previous = index === 0 ? "" : value[index - 1];
+  const next = value[index + markerLength] ?? "";
+  if (!next || /\s/.test(next)) {
+    return false;
+  }
+  return !previous || /[\s([{"'，。；;:：、]/.test(previous);
+}
+
 type MathSegment =
   | {
       kind: "text";
@@ -132,6 +145,217 @@ function TextWithMath({ content }: { content: string }) {
   return <>{nodes}</>;
 }
 
+function InlineMarkdown({ content, prefix }: { content: string; prefix: string }) {
+  const nodes: ReactNode[] = [];
+  let index = 0;
+  let textBuffer = "";
+  let nodeIndex = 0;
+
+  function flushText() {
+    if (!textBuffer) {
+      return;
+    }
+    nodes.push(<TextWithMath key={`${prefix}-text-${nodeIndex++}`} content={textBuffer} />);
+    textBuffer = "";
+  }
+
+  while (index < content.length) {
+    if (content[index] === "`") {
+      const closeIndex = content.indexOf("`", index + 1);
+      if (closeIndex > index + 1) {
+        flushText();
+        nodes.push(
+          <code
+            key={`${prefix}-code-${nodeIndex++}`}
+            className="rounded bg-black/5 px-1 py-0.5 font-mono text-[0.92em]"
+          >
+            {content.slice(index + 1, closeIndex)}
+          </code>
+        );
+        index = closeIndex + 1;
+        continue;
+      }
+    }
+
+    if (content.startsWith("**", index) && canOpenInlineMark(content, index, 2)) {
+      const closeIndex = content.indexOf("**", index + 2);
+      const contentEnd = closeIndex > index + 2 ? closeIndex : content.length;
+      flushText();
+      nodes.push(
+        <strong key={`${prefix}-strong-${nodeIndex++}`} className="font-semibold">
+          <TextWithMath content={content.slice(index + 2, contentEnd)} />
+        </strong>
+      );
+      index = closeIndex > index + 2 ? closeIndex + 2 : content.length;
+      continue;
+    }
+
+    if (content[index] === "*" && content[index + 1] !== "*" && canOpenInlineMark(content, index, 1)) {
+      const closeIndex = content.indexOf("*", index + 1);
+      if (closeIndex > index + 1 && !/\s/.test(content[closeIndex - 1] ?? "")) {
+        flushText();
+        nodes.push(
+          <em key={`${prefix}-em-${nodeIndex++}`} className="italic">
+            <TextWithMath content={content.slice(index + 1, closeIndex)} />
+          </em>
+        );
+        index = closeIndex + 1;
+        continue;
+      }
+    }
+
+    textBuffer += content[index];
+    index += 1;
+  }
+
+  flushText();
+  return <>{nodes}</>;
+}
+
+function lineStartsMarkdownBlock(line: string) {
+  const trimmed = line.trim();
+  return (
+    !trimmed ||
+    MARKDOWN_HEADING_RE.test(trimmed) ||
+    MARKDOWN_BULLET_RE.test(trimmed) ||
+    MARKDOWN_ORDERED_RE.test(trimmed) ||
+    trimmed.startsWith(">")
+  );
+}
+
+function renderTextMarkdownBlock(value: string, blockKey: string) {
+  const lines = value.split(/\r?\n/);
+  const nodes: ReactNode[] = [];
+  let index = 0;
+  let nodeIndex = 0;
+
+  while (index < lines.length) {
+    const line = lines[index].trim();
+    if (!line) {
+      index += 1;
+      continue;
+    }
+
+    const headingMatch = MARKDOWN_HEADING_RE.exec(line);
+    if (headingMatch) {
+      const level = Math.min(headingMatch[1].length, 3);
+      const className =
+        level === 1
+          ? "text-[15px] font-semibold leading-6"
+          : level === 2
+            ? "text-[14px] font-semibold leading-6"
+            : "text-[13px] font-semibold leading-6";
+      const headingKey = `${blockKey}-heading-${nodeIndex++}`;
+      const headingContent = (
+        <InlineMarkdown content={headingMatch[2].trim()} prefix={`${headingKey}-content`} />
+      );
+      if (level === 1) {
+        nodes.push(
+          <h1 key={headingKey} className={className}>
+            {headingContent}
+          </h1>
+        );
+      } else if (level === 2) {
+        nodes.push(
+          <h2 key={headingKey} className={className}>
+            {headingContent}
+          </h2>
+        );
+      } else {
+        nodes.push(
+          <h3 key={headingKey} className={className}>
+            {headingContent}
+          </h3>
+        );
+      }
+      index += 1;
+      continue;
+    }
+
+    const bulletMatch = MARKDOWN_BULLET_RE.exec(line);
+    if (bulletMatch) {
+      const items: string[] = [];
+      while (index < lines.length) {
+        const itemMatch = MARKDOWN_BULLET_RE.exec(lines[index].trim());
+        if (!itemMatch) {
+          break;
+        }
+        items.push(itemMatch[1].trim());
+        index += 1;
+      }
+      nodes.push(
+        <ul key={`${blockKey}-ul-${nodeIndex++}`} className="list-disc space-y-1 pl-4">
+          {items.map((item, itemIndex) => (
+            <li key={`${blockKey}-ul-${nodeIndex}-${itemIndex}`} className="break-words">
+              <InlineMarkdown content={item} prefix={`${blockKey}-ul-${nodeIndex}-${itemIndex}`} />
+            </li>
+          ))}
+        </ul>
+      );
+      continue;
+    }
+
+    const orderedMatch = MARKDOWN_ORDERED_RE.exec(line);
+    if (orderedMatch) {
+      const items: string[] = [];
+      while (index < lines.length) {
+        const itemMatch = MARKDOWN_ORDERED_RE.exec(lines[index].trim());
+        if (!itemMatch) {
+          break;
+        }
+        items.push(itemMatch[1].trim());
+        index += 1;
+      }
+      nodes.push(
+        <ol key={`${blockKey}-ol-${nodeIndex++}`} className="list-decimal space-y-1 pl-4">
+          {items.map((item, itemIndex) => (
+            <li key={`${blockKey}-ol-${nodeIndex}-${itemIndex}`} className="break-words">
+              <InlineMarkdown content={item} prefix={`${blockKey}-ol-${nodeIndex}-${itemIndex}`} />
+            </li>
+          ))}
+        </ol>
+      );
+      continue;
+    }
+
+    if (line.startsWith(">")) {
+      const quoteLines: string[] = [];
+      while (index < lines.length && lines[index].trim().startsWith(">")) {
+        quoteLines.push(lines[index].trim().replace(/^>\s?/, ""));
+        index += 1;
+      }
+      nodes.push(
+        <blockquote
+          key={`${blockKey}-quote-${nodeIndex++}`}
+          className="border-l-2 border-gray-300 pl-3 text-gray-600"
+        >
+          <InlineMarkdown content={quoteLines.join(" ")} prefix={`${blockKey}-quote-${nodeIndex}`} />
+        </blockquote>
+      );
+      continue;
+    }
+
+    const paragraphLines = [line];
+    index += 1;
+    while (index < lines.length && !lineStartsMarkdownBlock(lines[index])) {
+      paragraphLines.push(lines[index].trim());
+      index += 1;
+    }
+    nodes.push(
+      <p key={`${blockKey}-p-${nodeIndex++}`} className="break-words">
+        {paragraphLines.map((paragraphLine, paragraphIndex) => (
+          <span key={`${blockKey}-p-${nodeIndex}-${paragraphIndex}`}>
+            {paragraphIndex > 0 ? <br /> : null}
+            <InlineMarkdown content={paragraphLine} prefix={`${blockKey}-p-${nodeIndex}-${paragraphIndex}`} />
+          </span>
+        ))}
+      </p>
+    );
+  }
+
+  return nodes;
+}
+
 function ChatMessageContent({ content }: { content: string }) {
   return (
     <div className="space-y-3">
@@ -146,15 +370,7 @@ function ChatMessageContent({ content }: { content: string }) {
             </pre>
           );
         }
-        return block.value
-          .split(/\n{2,}/)
-          .map((paragraph) => paragraph.trim())
-          .filter(Boolean)
-          .map((paragraph, paragraphIndex) => (
-            <p key={`${block.kind}-${index}-${paragraphIndex}`} className="whitespace-pre-wrap break-words">
-              <TextWithMath content={paragraph} />
-            </p>
-          ));
+        return renderTextMarkdownBlock(block.value, `${block.kind}-${index}`);
       })}
     </div>
   );
