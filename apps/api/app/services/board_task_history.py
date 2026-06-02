@@ -402,6 +402,35 @@ class BoardTaskHistoryRecorder:
             metadata={"reason": reason},
         )
 
+    def execution_failed(
+        self,
+        *,
+        reason: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> BoardTaskHistoryStamp:
+        if not self.snapshot.run_id:
+            return self.current_stamp()
+        created_at = now_iso()
+        active_status = self.snapshot.status if self.snapshot.status in ACTIVE_BOARD_TASK_STATUSES else "ready"
+        self.operations.append(
+            {
+                "type": "update_board_task_run",
+                "id": self.snapshot.run_id,
+                "status": active_status,
+                "updated_at": created_at,
+            }
+        )
+        self._append_event(
+            event_type="execution_failed",
+            from_version_id=self.snapshot.latest_version_id,
+            to_version_id=self.snapshot.latest_version_id,
+            change_summary=reason,
+            metadata=metadata or {},
+            created_at=created_at,
+        )
+        self.snapshot.status = active_status
+        return self.current_stamp()
+
     def _finish(
         self,
         *,

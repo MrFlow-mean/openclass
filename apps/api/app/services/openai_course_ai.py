@@ -915,7 +915,6 @@ class OpenAICourseAI:
         user_message: str,
         action_type: str,
         resource_summary: str,
-        conversation_summary: str,
         interaction_context: dict[str, Any] | None = None,
     ) -> BoardExplanationDirective | None:
         if not self.enabled:
@@ -946,7 +945,6 @@ class OpenAICourseAI:
                 "user_message": user_message,
                 "action_type": action_type,
                 "resource_summary": resource_summary,
-                "recent_conversation": conversation_summary,
                 "interaction_context": interaction_context or None,
                 "response_contract": {
                     "status": "approved、needs_clarification 或 blocked。",

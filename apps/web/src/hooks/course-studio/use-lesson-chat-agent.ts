@@ -273,10 +273,22 @@ export function useLessonChatAgent({
       setLastReferenceRequest(response.reference_prompt ? payloadWithConversation : null);
       setLastBoardEditRequest(response.board_edit_prompt ? payloadWithConversation : null);
       const chatbotMessage = response.chatbot_message.trim();
+      const streamedFallbackMessage = streamedChatContent.trim();
       const assistantMessages: ChatMessage[] = [];
       if (chatbotMessage) {
         assistantMessages.push(
           createChatMessage("assistant", chatbotMessage, "ready", undefined, null, response.teaching_progress ?? null)
+        );
+      } else if (streamedFallbackMessage) {
+        assistantMessages.push(
+          createChatMessage(
+            "assistant",
+            streamedFallbackMessage,
+            "ready",
+            undefined,
+            null,
+            response.teaching_progress ?? null
+          )
         );
       }
       updateLessonMessages(lessonId, (current) => [

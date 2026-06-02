@@ -42,7 +42,6 @@ def generate_board_directed_explanation_message(
         user_message=user_message,
         action_type=action_type,
         resource_summary=resource_summary,
-        conversation_summary=conversation_summary,
         interaction_context=interaction_context,
     )
     directive_payload = directive.model_dump(mode="json") if directive else None
@@ -72,7 +71,7 @@ def generate_board_directed_explanation_message(
         gated_user_message = _board_directed_clarification_message(user_message=user_message, directive=directive)
         source = "chatbot_board_directed_clarification"
 
-    ai_reply = openai_course_ai.generate_chatbot_reply(
+    chatbot_message = _generate_chatbot_message_from_directive(
         lesson_title=lesson_title,
         learning_goal=learning_goal,
         board_summary=board_summary,
@@ -85,11 +84,11 @@ def generate_board_directed_explanation_message(
             **(interaction_context or {}),
             "board_explanation_directive": directive_payload,
         },
+        retry_once=directive.status == "approved",
     )
-    chatbot_message = (ai_reply.chatbot_message if ai_reply else "").strip()
     return BoardDirectedExplanationResult(
         chatbot_message=chatbot_message,
-        assistant_message_source=source if chatbot_message else "chatbot_empty",
+        assistant_message_source=source if chatbot_message else _empty_source_for_directive(directive),
         directive_payload=directive_payload,
     )
 
@@ -106,6 +105,44 @@ def _board_directed_instruction_message(*, user_message: str, directive: BoardEx
         f"限制：{constraints}" if constraints else "",
     ]
     return "\n".join(part for part in parts if part.strip())
+
+
+def _generate_chatbot_message_from_directive(
+    *,
+    lesson_title: str,
+    learning_goal: str,
+    board_summary: str,
+    resource_summary: str,
+    conversation_summary: str,
+    user_message: str,
+    selection_excerpt: str | None,
+    interaction_mode: str,
+    interaction_context: dict[str, Any],
+    retry_once: bool,
+) -> str:
+    attempts = 2 if retry_once else 1
+    for _ in range(attempts):
+        ai_reply = openai_course_ai.generate_chatbot_reply(
+            lesson_title=lesson_title,
+            learning_goal=learning_goal,
+            board_summary=board_summary,
+            resource_summary=resource_summary,
+            conversation_summary=conversation_summary,
+            user_message=user_message,
+            selection_excerpt=selection_excerpt,
+            interaction_mode=interaction_mode,
+            interaction_context=interaction_context,
+        )
+        chatbot_message = (ai_reply.chatbot_message if ai_reply else "").strip()
+        if chatbot_message:
+            return chatbot_message
+    return ""
+
+
+def _empty_source_for_directive(directive: BoardExplanationDirective) -> str:
+    if directive.status == "approved":
+        return "chatbot_board_directed_empty"
+    return "chatbot_empty"
 
 
 def _board_directed_clarification_message(*, user_message: str, directive: BoardExplanationDirective) -> str:

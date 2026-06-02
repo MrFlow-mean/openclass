@@ -1752,6 +1752,38 @@ def _handle_existing_board_task_flow(
         )
         stamp = board_task_history.record_update(sheet=board_task, status="ready")
         cleared = chatbot_message_source == "chatbot_board_directed" and bool(chatbot_message)
+        if not chatbot_message:
+            failed_stamp = board_task_history.execution_failed(
+                reason="Board-directed explanation failed because Chatbot returned empty.",
+                metadata={
+                    "assistant_message_source": chatbot_message_source,
+                    "board_explanation_failed": True,
+                    "board_task_route": "explain",
+                    "board_task_cleared": False,
+                    "board_explanation_directive": board_explanation_directive,
+                    "board_task_decision": decision.model_dump(mode="json"),
+                    **_board_search_evidence_metadata(resolution),
+                },
+            )
+            workspace_state.normalize_package_state(package)
+            _save_workspace_for_user(
+                user_id=user_id,
+                workspace=workspace,
+                requirement_history=requirement_history,
+                board_task_history=board_task_history,
+            )
+            return _response(
+                workspace=workspace,
+                package=package,
+                lesson=lesson,
+                chatbot_message="",
+                requirements=requirements,
+                learning_clarification=learning_clarification,
+                board_decision=BoardDecision(action="no_change", reason="Board-directed explanation failed because Chatbot returned empty."),
+                resolved_focus=focus,
+                requirement_cleared=False,
+                board_task_stamp=failed_stamp,
+            )
         commit_operations(
             lesson,
             [],
