@@ -24,7 +24,12 @@ from app.routers.auth import current_user
 from app.services.chat_service import document_ai_edit_request
 from app.services.course_runtime import refresh_lesson_runtime
 from app.services.history import create_branch, current_head_commit, restore_commit, switch_branch
-from app.services.rich_document import document_changed, export_docx, import_docx
+from app.services.rich_document import (
+    document_changed,
+    export_docx,
+    import_docx,
+    would_flatten_rich_document,
+)
 from app.services.route_context import bind_ai_request_context
 from app.services.workspace_state import (
     EXPORT_DIR,
@@ -65,6 +70,11 @@ def _save_document_request(lesson_id: str, request: DocumentSaveRequest, user_id
             return package_view_for_lesson(workspace, package, lesson.id)
         raise HTTPException(status_code=409, detail="文档已在本次保存前更新，请刷新后再保存")
     if not document_changed(lesson.board_document, request.document):
+        return package_view_for_lesson(workspace, package, lesson.id)
+    if is_autosave and would_flatten_rich_document(
+        current_document=current_head.snapshot,
+        new_document=request.document,
+    ):
         return package_view_for_lesson(workspace, package, lesson.id)
     with bind_ai_request_context(
         "/api/lessons/{lesson_id}/document/save",

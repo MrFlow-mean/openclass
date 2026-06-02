@@ -93,6 +93,79 @@ function looksLikeSameRenderedDocument(left: BoardDocument, right: BoardDocument
   return left.id === right.id && visibleDocumentText(left) === visibleDocumentText(right);
 }
 
+function richStructureCounts(document: BoardDocument) {
+  const counts = {
+    heading: 0,
+    bold: 0,
+    italic: 0,
+    bulletList: 0,
+    orderedList: 0,
+    listItem: 0,
+    table: 0,
+    blockquote: 0,
+    paragraph: 0,
+  };
+
+  function walk(value: unknown) {
+    if (Array.isArray(value)) {
+      value.forEach(walk);
+      return;
+    }
+    if (!value || typeof value !== "object") {
+      return;
+    }
+    const node = value as { type?: unknown; marks?: unknown };
+    if (typeof node.type === "string" && node.type in counts) {
+      counts[node.type as keyof typeof counts] += 1;
+    }
+    if (Array.isArray(node.marks)) {
+      for (const mark of node.marks) {
+        if (!mark || typeof mark !== "object") {
+          continue;
+        }
+        const markType = (mark as { type?: unknown }).type;
+        if (typeof markType === "string" && markType in counts) {
+          counts[markType as keyof typeof counts] += 1;
+        }
+      }
+    }
+    Object.values(value).forEach(walk);
+  }
+
+  walk(document.content_json);
+  return counts;
+}
+
+function richStructureScore(counts: ReturnType<typeof richStructureCounts>) {
+  return (
+    counts.heading * 3 +
+    counts.table * 4 +
+    counts.bulletList * 2 +
+    counts.orderedList * 2 +
+    counts.listItem +
+    counts.blockquote * 2 +
+    counts.bold +
+    counts.italic
+  );
+}
+
+function wouldFlattenRenderedDocument(currentDocument: BoardDocument, nextDocument: BoardDocument) {
+  const currentCounts = richStructureCounts(currentDocument);
+  const nextCounts = richStructureCounts(nextDocument);
+  const currentScore = richStructureScore(currentCounts);
+  if (currentScore < 8 || currentCounts.heading + currentCounts.table <= 0) {
+    return false;
+  }
+  if (nextCounts.heading || nextCounts.table) {
+    return false;
+  }
+  const nextScore = richStructureScore(nextCounts);
+  return (
+    nextScore <= Math.max(2, Math.floor(currentScore * 0.5)) &&
+    nextCounts.paragraph >= Math.max(8, Math.floor(currentCounts.paragraph / 2))
+  );
+}
+
 export function useBoardDraft({
   activeLesson,
   setError,
@@ -337,6 +410,18 @@ export function useBoardDraft({
         ignoredStreamingPreview &&
         looksLikeSameRenderedDocument(nextDocument, ignoredStreamingPreview) &&
         !documentsEqual(nextDocument, lesson.board_document)
+      ) {
+        ignoredStreamingPreviewRef.current = null;
+        draftDocumentRef.current = lesson.board_document;
+        isDocumentDirtyRef.current = false;
+        setDraftDocument(lesson.board_document);
+        setIsDocumentDirty(false);
+        setAutoSaveStatus("idle");
+        return;
+      }
+      if (
+        looksLikeSameRenderedDocument(nextDocument, lesson.board_document) &&
+        wouldFlattenRenderedDocument(lesson.board_document, nextDocument)
       ) {
         ignoredStreamingPreviewRef.current = null;
         draftDocumentRef.current = lesson.board_document;

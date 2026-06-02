@@ -1006,6 +1006,84 @@ def document_changed(left: BoardDocument, right: BoardDocument) -> bool:
     )
 
 
+def rich_structure_counts(document: BoardDocument) -> dict[str, int]:
+    counts = {
+        "heading": 0,
+        "bold": 0,
+        "italic": 0,
+        "bulletList": 0,
+        "orderedList": 0,
+        "listItem": 0,
+        "table": 0,
+        "blockquote": 0,
+        "paragraph": 0,
+    }
+
+    def walk(value: Any) -> None:
+        if isinstance(value, dict):
+            node_type = value.get("type")
+            if isinstance(node_type, str) and node_type in counts:
+                counts[node_type] += 1
+            marks = value.get("marks")
+            if isinstance(marks, list):
+                for mark in marks:
+                    if isinstance(mark, dict):
+                        mark_type = mark.get("type")
+                        if isinstance(mark_type, str) and mark_type in counts:
+                            counts[mark_type] += 1
+            for child in value.values():
+                walk(child)
+        elif isinstance(value, list):
+            for child in value:
+                walk(child)
+
+    walk(document.content_json if isinstance(document.content_json, dict) else {})
+    return counts
+
+
+def rich_structure_score(counts: dict[str, int]) -> int:
+    return (
+        counts.get("heading", 0) * 3
+        + counts.get("table", 0) * 4
+        + counts.get("bulletList", 0) * 2
+        + counts.get("orderedList", 0) * 2
+        + counts.get("listItem", 0)
+        + counts.get("blockquote", 0) * 2
+        + counts.get("bold", 0)
+        + counts.get("italic", 0)
+    )
+
+
+def would_flatten_rich_document(
+    *,
+    current_document: BoardDocument,
+    new_document: BoardDocument,
+    operation: str | None = None,
+) -> bool:
+    if operation is not None and operation != "replace_document":
+        return False
+    if is_document_empty(current_document):
+        return False
+
+    old_counts = rich_structure_counts(current_document)
+    old_score = rich_structure_score(old_counts)
+    if old_score < 8:
+        return False
+
+    new_counts = rich_structure_counts(new_document)
+    if new_counts.get("heading", 0) or new_counts.get("table", 0):
+        return False
+
+    old_primary_structure = old_counts.get("heading", 0) + old_counts.get("table", 0)
+    if old_primary_structure <= 0:
+        return False
+
+    new_score = rich_structure_score(new_counts)
+    structure_dropped = new_score <= max(2, int(old_score * 0.5))
+    paragraph_heavy = new_counts.get("paragraph", 0) >= max(8, old_counts.get("paragraph", 0) // 2)
+    return structure_dropped and paragraph_heavy
+
+
 def append_html_section(document: BoardDocument, section_html: str) -> BoardDocument:
     next_html = "\n".join(part for part in [document.content_html.strip(), section_html.strip()] if part)
     return build_document(
