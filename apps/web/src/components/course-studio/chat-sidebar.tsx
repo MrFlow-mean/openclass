@@ -12,7 +12,7 @@ import {
   Volume2,
   X,
 } from "lucide-react";
-import type { Dispatch, HTMLAttributes, ReactNode, RefObject, SetStateAction } from "react";
+import { useState, type Dispatch, type HTMLAttributes, type ReactNode, type RefObject, type SetStateAction } from "react";
 
 import { CourseChatMessage } from "@/components/chatbot";
 import {
@@ -82,6 +82,7 @@ type CourseStudioChatSidebarProps = {
   onApplySelection: (selection: SelectionRef, popoverPosition: ReturnType<typeof popoverPositionFromDomSelection>) => void;
   onContinueTeaching: () => void;
   onSubmitChat: (payload?: ChatRequestPayload) => void | Promise<void>;
+  onEditMessage: (message: ChatMessage, nextContent: string) => void | Promise<void>;
   onScopeAction: (option: ScopeOption) => void | Promise<void>;
   onReferenceAction: (action: "confirm" | "skip") => void | Promise<void>;
   onBoardEditAction: (action: "confirm" | "skip") => void | Promise<void>;
@@ -132,6 +133,7 @@ export function CourseStudioChatSidebar({
   onApplySelection,
   onContinueTeaching,
   onSubmitChat,
+  onEditMessage,
   onScopeAction,
   onReferenceAction,
   onBoardEditAction,
@@ -143,6 +145,24 @@ export function CourseStudioChatSidebar({
   onUpdateComposerState,
   onAdjustComposerHeight,
 }: CourseStudioChatSidebarProps) {
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [editingMessageContent, setEditingMessageContent] = useState("");
+
+  function startEditingMessage(message: ChatMessage) {
+    setEditingMessageId(message.id);
+    setEditingMessageContent(message.editableContent ?? message.content);
+  }
+
+  async function submitEditedMessage(message: ChatMessage) {
+    const nextContent = editingMessageContent.trim();
+    if (!nextContent || isChatBusy) {
+      return;
+    }
+    await onEditMessage(message, nextContent);
+    setEditingMessageId(null);
+    setEditingMessageContent("");
+  }
+
   return (
     <aside className="relative flex h-full min-h-0 flex-col border-r border-gray-200 bg-white">
       <div
@@ -248,6 +268,23 @@ export function CourseStudioChatSidebar({
               >
                 <CourseChatMessage
                   message={message}
+                  onStartEdit={
+                    !isPreviewMode &&
+                    !isChatBusy &&
+                    message.role === "user" &&
+                    Boolean(message.commitId && message.parentCommitIds?.[0])
+                      ? () => startEditingMessage(message)
+                      : undefined
+                  }
+                  isEditing={editingMessageId === message.id}
+                  editingContent={editingMessageContent}
+                  onEditingContentChange={setEditingMessageContent}
+                  onCancelEdit={() => {
+                    setEditingMessageId(null);
+                    setEditingMessageContent("");
+                  }}
+                  onSubmitEdit={() => void submitEditedMessage(message)}
+                  isEditDisabled={!editingMessageContent.trim() || isChatBusy}
                   onContinueTeaching={
                     !isPreviewMode &&
                     index === displayedMessages.length - 1 &&

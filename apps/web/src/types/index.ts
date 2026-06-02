@@ -478,6 +478,9 @@ export interface ChatRequestPayload {
   board_edit_topic?: string | null;
   board_generation_action?: "start" | null;
   teaching_action?: "continue" | "restart" | null;
+  chat_edit_source_commit_id?: string | null;
+  chat_edit_base_commit_id?: string | null;
+  chat_edit_original_message?: string | null;
   conversation?: ConversationTurn[];
 }
 

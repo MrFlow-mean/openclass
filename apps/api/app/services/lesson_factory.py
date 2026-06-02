@@ -83,13 +83,18 @@ def build_teaching_guide(
     )
 
 
-def _initial_history(document: BoardDocument) -> LessonHistoryGraph:
+def _initial_history(document: BoardDocument, requirements: LearningRequirementSheet) -> LessonHistoryGraph:
     commit = CommitRecord(
         label="Initial document",
         message=f"Generated starter rich document for {document.title}",
         branch_name="main",
         snapshot=document,
-        metadata={"kind": "initial_document"},
+        metadata={
+            "kind": "initial_document",
+            "active_requirement_sheet_after": requirements.model_dump(mode="json"),
+            "active_interaction_session_after": None,
+            "active_board_task_sheet_after": None,
+        },
     )
     return LessonHistoryGraph(
         branches={
@@ -124,7 +129,7 @@ def create_lesson(
         board_document=document,
         learning_requirements=normalized_requirements,
         teaching_guide=guide,
-        history_graph=_initial_history(document),
+        history_graph=_initial_history(document, normalized_requirements),
     )
 
 
@@ -143,5 +148,5 @@ def create_empty_lesson(title: str) -> Lesson:
         board_document=document,
         learning_requirements=normalized_requirements,
         teaching_guide=guide,
-        history_graph=_initial_history(document),
+        history_graph=_initial_history(document, normalized_requirements),
     )

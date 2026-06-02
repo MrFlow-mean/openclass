@@ -9,7 +9,7 @@ from app.services.course_runtime import (
     refresh_lesson_runtime,
 )
 from app.services.document_ops import apply_patch
-from app.services.history import create_branch, restore_commit
+from app.services.history import bind_commit_metadata, commit_operations, create_branch, restore_commit, switch_branch
 from app.services.lesson_factory import create_empty_lesson, create_lesson
 from app.services.openai_course_ai import GeneratedCatalogChapter, GeneratedResourceCatalog, OpenAICourseAI, openai_course_ai
 from app.services.resource_library import _epub_section_body_score, build_resource_item, extract_reference_context
@@ -110,6 +110,82 @@ def test_branch_and_restore_keep_history() -> None:
     restore_metadata = lesson.history_graph.commits[-1].metadata
     assert restore_metadata["kind"] == "restore_snapshot"
     assert restore_metadata["restored_commit_id"] == first_commit_id
+
+
+def test_initial_history_records_requirement_runtime_for_branching() -> None:
+    lesson = create_empty_lesson("空白页")
+
+    initial_metadata = lesson.history_graph.commits[0].metadata
+
+    assert initial_metadata["kind"] == "initial_document"
+    assert initial_metadata["active_requirement_sheet_after"]["theme"] == "空白页"
+    assert initial_metadata["active_interaction_session_after"] is None
+    assert initial_metadata["active_board_task_sheet_after"] is None
+
+
+def test_branch_and_switch_restore_runtime_state_from_commit_metadata() -> None:
+    lesson = create_empty_lesson("运行态恢复")
+    initial_commit_id = lesson.history_graph.commits[0].id
+    board_task = BoardTaskRequirementSheet(
+        target_hint="当前板书",
+        requested_action="explain",
+        question_or_topic="讲解目标",
+        progress=80,
+    )
+    lesson.learning_requirements = None
+    lesson.board_task_requirements = board_task
+    commit_operations(
+        lesson,
+        [],
+        label="Board task collecting",
+        message="Stored an active board task",
+        metadata={
+            "kind": "chat_flow",
+            "board_task_sheet": board_task.model_dump(mode="json"),
+            "board_task_cleared": False,
+            "active_requirement_sheet_after": None,
+            "active_board_task_sheet_after": board_task.model_dump(mode="json"),
+        },
+    )
+    board_task_commit_id = lesson.history_graph.commits[-1].id
+    lesson.board_task_requirements = None
+    lesson.learning_requirements = None
+
+    create_branch(lesson, "edited-path", initial_commit_id)
+    assert lesson.learning_requirements is not None
+    assert lesson.learning_requirements.theme == "运行态恢复"
+    assert lesson.board_task_requirements is None
+
+    switch_branch(lesson, "main")
+    create_branch(lesson, "task-path", board_task_commit_id)
+    assert lesson.learning_requirements is None
+    assert lesson.board_task_requirements is not None
+    assert lesson.board_task_requirements.question_or_topic == "讲解目标"
+
+
+def test_commit_metadata_context_marks_edited_chat_branch() -> None:
+    lesson = create_empty_lesson("编辑来源")
+
+    with bind_commit_metadata(
+        {
+            "chat_edit_source_commit_id": "commit_old",
+            "chat_edit_base_commit_id": lesson.history_graph.commits[0].id,
+            "chat_edit_original_message": "原问题",
+        }
+    ):
+        commit_operations(
+            lesson,
+            [],
+            label="Chat turn",
+            message="Recorded edited chat turn",
+            metadata={"kind": "chat_flow", "user_message": "新问题"},
+        )
+
+    metadata = lesson.history_graph.commits[-1].metadata
+    assert metadata["kind"] == "chat_flow"
+    assert metadata["chat_edit_source_commit_id"] == "commit_old"
+    assert metadata["chat_edit_base_commit_id"] == lesson.history_graph.commits[0].id
+    assert metadata["chat_edit_original_message"] == "原问题"
 
 
 def test_create_empty_lesson_starts_with_blank_rich_document() -> None:

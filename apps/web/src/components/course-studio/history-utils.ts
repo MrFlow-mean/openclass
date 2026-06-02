@@ -36,7 +36,13 @@ export function createChatMessage(
   status: ChatMessage["status"] = "ready",
   id?: string,
   selection?: SelectionRef | null,
-  teachingProgress?: SectionTeachingProgress | null
+  teachingProgress?: SectionTeachingProgress | null,
+  metadata?: Partial<
+    Pick<
+      ChatMessage,
+      "commitId" | "parentCommitIds" | "editableContent" | "interactionMode" | "editedFromCommitId"
+    >
+  >
 ): ChatMessage {
   return {
     id: id ?? crypto.randomUUID(),
@@ -45,6 +51,7 @@ export function createChatMessage(
     status,
     ...(selection ? { selection } : {}),
     ...(teachingProgress ? { teachingProgress } : {}),
+    ...metadata,
   };
 }
 
@@ -225,6 +232,10 @@ function chatUserContentFromCommit(commit: CommitRecord): string | null {
   return metadataText(commit, "interaction_mode") === "direct_edit" ? `直接编辑讲义：${userMessage}` : userMessage;
 }
 
+function chatInteractionModeFromCommit(commit: CommitRecord): ChatInteractionMode {
+  return metadataText(commit, "interaction_mode") === "direct_edit" ? "direct_edit" : "ask";
+}
+
 export function buildLessonMessagesFromHistory(lesson: Lesson, commitId?: string | null): ChatMessage[] {
   const targetCommitId = conversationTargetCommitId(lesson, commitId);
   const lineageIds = commitLineageIds(lesson, targetCommitId);
@@ -246,7 +257,15 @@ export function buildLessonMessagesFromHistory(lesson: Lesson, commitId?: string
           userContent,
           "ready",
           `${commit.id}:user`,
-          selectionFromMetadata(commit.metadata?.selection)
+          selectionFromMetadata(commit.metadata?.selection),
+          null,
+          {
+            commitId: commit.id,
+            parentCommitIds: commit.parent_ids,
+            editableContent: metadataText(commit, "user_message") ?? userContent,
+            interactionMode: chatInteractionModeFromCommit(commit),
+            editedFromCommitId: metadataText(commit, "chat_edit_source_commit_id"),
+          }
         )
       );
     }
@@ -352,6 +371,16 @@ export function nextBranchName(lesson: Lesson) {
   while (lesson.history_graph.branches[name]) {
     index += 1;
     name = `branch-${index}`;
+  }
+  return name;
+}
+
+export function nextEditBranchName(lesson: Lesson) {
+  let index = 1;
+  let name = `edit-${index}`;
+  while (lesson.history_graph.branches[name]) {
+    index += 1;
+    name = `edit-${index}`;
   }
   return name;
 }

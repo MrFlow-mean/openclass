@@ -7,6 +7,7 @@ import { streamingMarkdownToHtml } from "@/lib/streaming-rich-document";
 import {
   createChatMessage,
   isBoardDocumentEmpty,
+  nextEditBranchName,
   type ChatMessage,
   type LessonComposerState,
 } from "@/components/course-studio/history-utils";
@@ -19,6 +20,7 @@ import type {
   BoardEditPrompt,
   BoardTaskRequirementSheet,
   ChatRequestPayload,
+  CommitRecord,
   CoursePackage,
   LearningClarificationStatus,
   LearningRequirementSheet,
@@ -41,7 +43,10 @@ type UseLessonChatAgentOptions = {
   chatRequestInFlightRef: MutableRefObject<boolean>;
   flushAutoSave: (reason: AutoSaveReason) => Promise<boolean>;
   exitPreviewMode: () => void;
-  updateCoursePackage: (nextPackage: CoursePackage, options?: CoursePackageApplyOptions) => void;
+  updateCoursePackage: (
+    nextPackage: CoursePackage,
+    options?: CoursePackageApplyOptions
+  ) => { activeLesson: Lesson | null } | void;
   updateLessonMessages: (lessonId: string, updater: (messages: ChatMessage[]) => ChatMessage[]) => void;
   updateLessonComposerState: (lessonId: string, updater: (current: LessonComposerState) => LessonComposerState) => void;
   setStreamingDocumentPreview: (document: BoardDocument) => void;
@@ -90,7 +95,32 @@ export function useLessonChatAgent({
   const chatInput = activeComposerState.chatInput;
   const composerMode = activeComposerState.composerMode;
   const includeSelectionInPrompt = activeComposerState.includeSelectionInPrompt;
-  const isChatBusy = busyAction === "chat" || busyAction === "agent-edit";
+  const isChatBusy = busyAction === "chat" || busyAction === "agent-edit" || busyAction === "chat-edit";
+
+  type ChatTurnBusyAction = "chat" | "agent-edit" | "chat-edit";
+  type ChatTurnBeforeRequestResult = {
+    lesson?: Lesson | null;
+    document?: BoardDocument | null;
+  };
+  type ChatTurnBeforeRequestContext = {
+    lessonId: string;
+    pendingMessageId: string;
+  };
+  type RunChatTurnOptions = {
+    lesson: Lesson;
+    payload: ChatRequestPayload;
+    conversationMessages: ChatMessage[];
+    userMessageContent: string;
+    submittedSelection: SelectionRef | null;
+    busyActionName: ChatTurnBusyAction;
+    flushReason: AutoSaveReason;
+    clearComposerInput?: boolean;
+    restoreComposerInput?: string;
+    rollbackMessages?: ChatMessage[];
+    speakResponse?: boolean;
+    beforeRequest?: (context: ChatTurnBeforeRequestContext) => Promise<ChatTurnBeforeRequestResult | void>;
+    messageListUpdater?: (current: ChatMessage[], userMessage: ChatMessage, pendingAssistant: ChatMessage) => ChatMessage[];
+  };
 
   function updatePendingAssistant(
     lessonId: string,
@@ -100,6 +130,45 @@ export function useLessonChatAgent({
     updateLessonMessages(lessonId, (current) =>
       current.map((message) => (message.id === messageId ? { ...message, ...patch } : message))
     );
+  }
+
+  function conversationFromMessages(messages: ChatMessage[]) {
+    return messages.slice(-8).map(({ role, content }) => ({ role, content }));
+  }
+
+  function displayContentForPayload(payload: ChatRequestPayload) {
+    if (payload.scope_action) {
+      return `继续执行：${payload.scope_action}`;
+    }
+    if (payload.teaching_action === "continue") {
+      return "继续讲下一节";
+    }
+    if (payload.teaching_action === "restart") {
+      return "从第一节重新讲";
+    }
+    if (payload.board_edit_action === "confirm") {
+      return `扩选板书：${payload.board_edit_topic ?? payload.message}`;
+    }
+    if (payload.board_edit_action === "skip") {
+      return `暂不扩选板书：${payload.board_edit_topic ?? payload.message}`;
+    }
+    if (payload.resource_reference_action === "confirm") {
+      return "继续执行：参考推荐章节生成讲义";
+    }
+    if (payload.resource_reference_action === "skip") {
+      return "继续执行：先不参考推荐章节";
+    }
+    return payload.interaction_mode === "direct_edit" ? `直接编辑讲义：${payload.message}` : payload.message;
+  }
+
+  function latestCommitFromPackage(coursePackage: CoursePackage, lessonId: string): CommitRecord | null {
+    const lesson = coursePackage.lessons.find((item) => item.id === lessonId);
+    if (!lesson) {
+      return null;
+    }
+    const branch = lesson.history_graph.branches[lesson.history_graph.current_branch];
+    const commitId = branch?.head_commit_id ?? lesson.history_graph.commits[lesson.history_graph.commits.length - 1]?.id;
+    return lesson.history_graph.commits.find((commit) => commit.id === commitId) ?? null;
   }
 
   function shouldStreamDocumentPreview(payload: ChatRequestPayload, document: BoardDocument | null) {
@@ -130,93 +199,91 @@ export function useLessonChatAgent({
     clearSelection();
   }
 
-  async function handleSubmitChat(payloadOverride?: ChatRequestPayload, options?: { speakResponse?: boolean }) {
-    if (!activeLesson || chatRequestInFlightRef.current || isChatBusy) {
-      return;
-    }
-    if (isPreviewMode) {
-      exitPreviewMode();
-    }
-    const lessonId = activeLesson.id;
-    const submittedInput = chatInput;
-    const payload =
-      payloadOverride ??
-      ({
-        message: chatInput.trim(),
-        selection: includeSelectionInPrompt && composerSelection ? composerSelection : null,
-        interaction_mode: composerMode,
-      } satisfies ChatRequestPayload);
+  async function runChatTurn({
+    lesson,
+    payload,
+    conversationMessages,
+    userMessageContent,
+    submittedSelection,
+    busyActionName,
+    flushReason,
+    clearComposerInput = false,
+    restoreComposerInput,
+    rollbackMessages,
+    speakResponse = false,
+    beforeRequest,
+    messageListUpdater,
+  }: RunChatTurnOptions) {
+    const lessonId = lesson.id;
     const payloadWithConversation: ChatRequestPayload = {
       ...payload,
       text_model: payload.text_model ?? selectedTextModel,
-      conversation: activeMessages.slice(-8).map(({ role, content }) => ({ role, content })),
+      conversation: payload.conversation ?? conversationFromMessages(conversationMessages),
     };
-    const submittedSelection = payloadWithConversation.selection ?? null;
 
     if (!payloadWithConversation.message.trim()) {
       return;
     }
 
-    const isDirectEdit = payloadWithConversation.interaction_mode === "direct_edit";
-    const userMessageContent = payloadOverride?.scope_action
-      ? `继续执行：${payloadOverride.scope_action}`
-      : payloadOverride?.teaching_action === "continue"
-        ? "继续讲下一节"
-        : payloadOverride?.teaching_action === "restart"
-          ? "从第一节重新讲"
-          : payloadOverride?.board_edit_action === "confirm"
-            ? `扩选板书：${payloadOverride.board_edit_topic ?? payloadWithConversation.message}`
-            : payloadOverride?.board_edit_action === "skip"
-              ? `暂不扩选板书：${payloadOverride.board_edit_topic ?? payloadWithConversation.message}`
-              : payloadOverride?.resource_reference_action === "confirm"
-                ? "继续执行：参考推荐章节生成讲义"
-                : payloadOverride?.resource_reference_action === "skip"
-                  ? "继续执行：先不参考推荐章节"
-                  : isDirectEdit
-                    ? `直接编辑讲义：${payloadWithConversation.message}`
-                    : payloadWithConversation.message;
     const userMessage = createChatMessage("user", userMessageContent, "ready", undefined, submittedSelection);
     const pendingAssistantMessage: ChatMessage = {
       ...createChatMessage("assistant", "", "pending"),
       statusLabel: "正在保存当前文档",
     };
-    const baseStreamingDocument = currentBoardDocument ?? activeLesson.board_document;
-    const canStreamDocumentPreview = shouldStreamDocumentPreview(payloadWithConversation, baseStreamingDocument);
     let requestStarted = false;
     let streamedChatContent = "";
     let streamedDocumentText = "";
+    let requestLesson = lesson;
+    let baseStreamingDocument = currentBoardDocument ?? lesson.board_document;
 
     chatRequestInFlightRef.current = true;
-    setBusyAction(isDirectEdit ? "agent-edit" : "chat");
+    setBusyAction(busyActionName);
     setError(null);
-    if (!payloadOverride) {
+    if (clearComposerInput) {
       updateLessonComposerState(lessonId, (current) => ({
         ...current,
         chatInput: "",
       }));
     }
-    updateLessonMessages(lessonId, (current) => [
-      ...current,
-      userMessage,
-      pendingAssistantMessage,
-    ]);
+    updateLessonMessages(lessonId, (current) =>
+      messageListUpdater
+        ? messageListUpdater(current, userMessage, pendingAssistantMessage)
+        : [...current, userMessage, pendingAssistantMessage]
+    );
 
     try {
-      if (!(await flushAutoSave("chat"))) {
-        updateLessonMessages(lessonId, (current) =>
-          current.filter((message) => message.id !== pendingAssistantMessage.id && message.id !== userMessage.id)
-        );
-        if (!payloadOverride) {
+      if (!(await flushAutoSave(flushReason))) {
+        if (rollbackMessages) {
+          updateLessonMessages(lessonId, () => rollbackMessages);
+        } else {
+          updateLessonMessages(lessonId, (current) =>
+            current.filter((message) => message.id !== pendingAssistantMessage.id && message.id !== userMessage.id)
+          );
+        }
+        if (restoreComposerInput !== undefined) {
           updateLessonComposerState(lessonId, (current) => ({
             ...current,
-            chatInput: submittedInput,
+            chatInput: restoreComposerInput,
           }));
         }
         return;
       }
+      const beforeRequestResult = await beforeRequest?.({
+        lessonId,
+        pendingMessageId: pendingAssistantMessage.id,
+      });
+      if (beforeRequestResult?.lesson) {
+        requestLesson = beforeRequestResult.lesson;
+      }
+      if (beforeRequestResult?.document !== undefined) {
+        baseStreamingDocument = beforeRequestResult.document ?? baseStreamingDocument;
+      } else if (beforeRequestResult?.lesson) {
+        baseStreamingDocument = beforeRequestResult.lesson.board_document;
+      }
+      const canStreamDocumentPreview = shouldStreamDocumentPreview(payloadWithConversation, baseStreamingDocument);
       requestStarted = true;
       updatePendingAssistant(lessonId, pendingAssistantMessage.id, { statusLabel: "正在回复" });
-      const response = await api.streamChatOnLesson(lessonId, payloadWithConversation, {
+      const response = await api.streamChatOnLesson(requestLesson.id, payloadWithConversation, {
         onPhase(label) {
           updatePendingAssistant(lessonId, pendingAssistantMessage.id, { statusLabel: label });
         },
@@ -251,8 +318,20 @@ export function useLessonChatAgent({
           setStreamedBoardTaskSheet(payload.active_board_task_sheet ?? payload.board_task_sheet);
         },
       });
+      const responseCommit = latestCommitFromPackage(response.course_package, requestLesson.id);
+      const committedUserMessage: ChatMessage = responseCommit
+        ? {
+            ...userMessage,
+            id: `${responseCommit.id}:user`,
+            commitId: responseCommit.id,
+            parentCommitIds: responseCommit.parent_ids,
+            editableContent: payloadWithConversation.message,
+            interactionMode: payloadWithConversation.interaction_mode ?? "ask",
+            editedFromCommitId: payloadWithConversation.chat_edit_source_commit_id ?? null,
+          }
+        : userMessage;
       updateCoursePackage(response.course_package, {
-        activeLessonId: response.created_lesson ? undefined : lessonId,
+        activeLessonId: response.created_lesson ? undefined : requestLesson.id,
       });
       setLatestBoardDecision(response.board_decision);
       setClarificationQuestions(response.clarification_questions);
@@ -277,7 +356,15 @@ export function useLessonChatAgent({
       const assistantMessages: ChatMessage[] = [];
       if (chatbotMessage) {
         assistantMessages.push(
-          createChatMessage("assistant", chatbotMessage, "ready", undefined, null, response.teaching_progress ?? null)
+          createChatMessage(
+            "assistant",
+            chatbotMessage,
+            "ready",
+            responseCommit ? `${responseCommit.id}:assistant` : undefined,
+            null,
+            response.teaching_progress ?? null,
+            responseCommit ? { commitId: responseCommit.id, parentCommitIds: responseCommit.parent_ids } : undefined
+          )
         );
       } else if (streamedFallbackMessage) {
         assistantMessages.push(
@@ -285,40 +372,145 @@ export function useLessonChatAgent({
             "assistant",
             streamedFallbackMessage,
             "ready",
-            undefined,
+            responseCommit ? `${responseCommit.id}:assistant` : undefined,
             null,
-            response.teaching_progress ?? null
+            response.teaching_progress ?? null,
+            responseCommit ? { commitId: responseCommit.id, parentCommitIds: responseCommit.parent_ids } : undefined
           )
         );
       }
       updateLessonMessages(lessonId, (current) => [
-        ...current.filter((message) => message.id !== pendingAssistantMessage.id),
+        ...current
+          .map((message) => (message.id === userMessage.id ? committedUserMessage : message))
+          .filter((message) => message.id !== pendingAssistantMessage.id),
         ...assistantMessages,
       ]);
-      if (options?.speakResponse && chatbotMessage) {
+      if (speakResponse && chatbotMessage) {
         onSpeakResponse(chatbotMessage);
       }
       if (!payloadWithConversation.scope_action) {
         clearSelection();
       }
     } catch (chatError) {
-      if (!payloadOverride) {
+      if (restoreComposerInput !== undefined) {
         updateLessonComposerState(lessonId, (current) => ({
           ...current,
-          chatInput: submittedInput,
+          chatInput: restoreComposerInput,
         }));
       }
-      updateLessonMessages(lessonId, (current) =>
-        current.filter(
-          (message) =>
-            message.id !== pendingAssistantMessage.id && (requestStarted || message.id !== userMessage.id)
-        )
-      );
+      if (!requestStarted && rollbackMessages) {
+        updateLessonMessages(lessonId, () => rollbackMessages);
+      } else {
+        updateLessonMessages(lessonId, (current) =>
+          current.filter(
+            (message) =>
+              message.id !== pendingAssistantMessage.id && (requestStarted || message.id !== userMessage.id)
+          )
+        );
+      }
       setError(chatError instanceof Error ? chatError.message : "聊天失败");
     } finally {
       chatRequestInFlightRef.current = false;
       setBusyAction(null);
     }
+  }
+
+  async function handleSubmitChat(payloadOverride?: ChatRequestPayload, options?: { speakResponse?: boolean }) {
+    if (!activeLesson || chatRequestInFlightRef.current || isChatBusy) {
+      return;
+    }
+    if (isPreviewMode) {
+      exitPreviewMode();
+    }
+    const submittedInput = chatInput;
+    const payload =
+      payloadOverride ??
+      ({
+        message: chatInput.trim(),
+        selection: includeSelectionInPrompt && composerSelection ? composerSelection : null,
+        interaction_mode: composerMode,
+      } satisfies ChatRequestPayload);
+    const submittedSelection = payload.selection ?? null;
+    const payloadMessage = payload.message.trim();
+    if (!payloadMessage) {
+      return;
+    }
+    const payloadForTurn = { ...payload, message: payloadMessage };
+
+    await runChatTurn({
+      lesson: activeLesson,
+      payload: payloadForTurn,
+      conversationMessages: activeMessages,
+      userMessageContent: displayContentForPayload(payloadForTurn),
+      submittedSelection,
+      busyActionName: payloadForTurn.interaction_mode === "direct_edit" ? "agent-edit" : "chat",
+      flushReason: "chat",
+      clearComposerInput: !payloadOverride,
+      restoreComposerInput: payloadOverride ? undefined : submittedInput,
+      speakResponse: options?.speakResponse ?? false,
+    });
+  }
+
+  async function handleEditMessage(sourceMessage: ChatMessage, nextContent: string) {
+    if (!activeLesson || chatRequestInFlightRef.current || isChatBusy || isPreviewMode) {
+      return;
+    }
+    const editedMessage = nextContent.trim();
+    const sourceCommitId = sourceMessage.commitId;
+    const baseCommitId = sourceMessage.parentCommitIds?.[0];
+    if (!sourceCommitId || !baseCommitId || !editedMessage) {
+      setError("这条消息缺少可分叉的历史版本");
+      return;
+    }
+    const sourceIndex = activeMessages.findIndex((message) => message.id === sourceMessage.id);
+    if (sourceIndex < 0) {
+      setError("没有找到要编辑的历史消息");
+      return;
+    }
+    const originalMessage = sourceMessage.editableContent ?? sourceMessage.content;
+    if (editedMessage === originalMessage.trim()) {
+      return;
+    }
+    const prefixMessages = activeMessages.slice(0, sourceIndex);
+    const rollbackMessages = activeMessages;
+    const payload: ChatRequestPayload = {
+      message: editedMessage,
+      selection: sourceMessage.selection ?? null,
+      interaction_mode: sourceMessage.interactionMode ?? "ask",
+      chat_edit_source_commit_id: sourceCommitId,
+      chat_edit_base_commit_id: baseCommitId,
+      chat_edit_original_message: originalMessage,
+    };
+
+    await runChatTurn({
+      lesson: activeLesson,
+      payload,
+      conversationMessages: prefixMessages,
+      userMessageContent: editedMessage,
+      submittedSelection: sourceMessage.selection ?? null,
+      busyActionName: "chat-edit",
+      flushReason: "chat",
+      rollbackMessages,
+      messageListUpdater: (_current, userMessage, pendingAssistant) => [
+        ...prefixMessages,
+        userMessage,
+        pendingAssistant,
+      ],
+      beforeRequest: async ({ lessonId, pendingMessageId }) => {
+        updatePendingAssistant(lessonId, pendingMessageId, { statusLabel: "正在创建新链路" });
+        const branchName = nextEditBranchName(activeLesson);
+        const branchedPackage = await api.createBranch(activeLesson.id, branchName, baseCommitId);
+        const applied = updateCoursePackage(branchedPackage, {
+          activeLessonId: activeLesson.id,
+        });
+        const branchedLesson =
+          applied?.activeLesson ?? branchedPackage.lessons.find((lesson) => lesson.id === activeLesson.id) ?? null;
+        return {
+          lesson: branchedLesson,
+          document: branchedLesson?.board_document ?? null,
+        };
+      },
+    });
   }
 
   async function handleScopeAction(option: ScopeOption) {
@@ -401,6 +593,7 @@ export function useLessonChatAgent({
     selectedReference,
     resetAgentState,
     handleSubmitChat,
+    handleEditMessage,
     handleScopeAction,
     handleReferenceAction,
     handleBoardEditAction,

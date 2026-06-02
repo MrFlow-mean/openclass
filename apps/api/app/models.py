@@ -778,6 +778,9 @@ class ChatRequest(BaseModel):
     board_edit_topic: str | None = None
     board_generation_action: BoardGenerationAction | None = None
     teaching_action: TeachingAction | None = None
+    chat_edit_source_commit_id: str | None = None
+    chat_edit_base_commit_id: str | None = None
+    chat_edit_original_message: str | None = None
     conversation: list[ConversationTurn] = Field(default_factory=list)
 
 
