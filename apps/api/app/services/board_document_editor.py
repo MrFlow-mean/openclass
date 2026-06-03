@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 from app.models import (
     BoardDecision,
@@ -13,6 +13,7 @@ from app.models import (
     Lesson,
 )
 from app.services.openai_course_ai import BoardDocumentEditResult, openai_course_ai
+from app.services.board_segment_index import build_board_segment_index
 from app.services.rich_document import (
     build_document,
     document_to_markdown,
@@ -162,7 +163,7 @@ def edit_existing_document(
     target_scope: str | None = None,
     allow_replace_document: bool = False,
 ) -> BoardDocumentEditOutcome:
-    target_excerpt = _target_excerpt(selection_excerpt=selection_excerpt, focus=focus)
+    target_excerpt = _target_excerpt(selection_excerpt=selection_excerpt, focus=focus, current_document=lesson.board_document)
     is_append_request = requirements.action_type == "append_section"
     is_whole_document_scope = target_scope == "whole_document"
     if not target_excerpt and not is_document_empty(lesson.board_document) and not is_append_request and not is_whole_document_scope:
@@ -374,13 +375,59 @@ def _looks_like_whole_document_replacement(
     replacement = (replacement_text or "").strip()
     if not current_text or not selection or not replacement:
         return False
-    heading_count = len(re.findall(r"(?m)^\s*#{1,6}\s+\S+", replacement))
-    if heading_count >= 2 and len(replacement) > max(len(selection) * 2, 240):
+    current_heading_titles = set(_document_heading_titles(current_document) or _markdown_heading_titles(current_text))
+    replacement_heading_titles = set(_markdown_heading_titles(replacement))
+    reused_document_headings = current_heading_titles.intersection(replacement_heading_titles)
+    if len(reused_document_headings) >= 2 and len(replacement) > len(selection) * 2:
         return True
     if len(replacement) > max(len(selection) * 4, 1200) and len(replacement) > len(current_text) * 0.6:
         return True
     prefix = current_text[: min(240, len(current_text))]
     return len(prefix) >= 80 and prefix in replacement and len(replacement) > len(selection) * 2
+
+
+def _markdown_heading_titles(text: str) -> list[str]:
+    titles: list[str] = []
+    for match in re.finditer(r"(?m)^\s*#{1,6}\s+(?P<title>.+?)\s*$", text or ""):
+        title = re.sub(r"\s+", " ", match.group("title")).strip()
+        if title:
+            titles.append(title)
+    return titles
+
+
+def _document_heading_titles(document: BoardDocument) -> list[str]:
+    content_json = document.content_json if isinstance(document.content_json, dict) else {}
+    content = content_json.get("content")
+    if not isinstance(content, list):
+        return []
+    titles: list[str] = []
+
+    def node_text(value: Any) -> str:
+        if isinstance(value, dict):
+            if value.get("type") == "text":
+                text = value.get("text")
+                return text if isinstance(text, str) else ""
+            children = value.get("content")
+            if isinstance(children, list):
+                return "".join(node_text(child) for child in children)
+        return ""
+
+    def walk(value: Any) -> None:
+        if isinstance(value, dict):
+            if value.get("type") == "heading":
+                title = re.sub(r"\s+", " ", node_text(value)).strip()
+                if title:
+                    titles.append(title)
+            children = value.get("content")
+            if isinstance(children, list):
+                for child in children:
+                    walk(child)
+        elif isinstance(value, list):
+            for child in value:
+                walk(child)
+
+    walk(content)
+    return titles
 
 
 def _changed(
@@ -560,10 +607,41 @@ def _would_store_flat_initial_board(document: BoardDocument) -> bool:
     return counts.get("paragraph", 0) >= 8
 
 
-def _target_excerpt(*, selection_excerpt: str | None, focus: BoardFocusRef | None) -> str | None:
+def _target_excerpt(
+    *,
+    selection_excerpt: str | None,
+    focus: BoardFocusRef | None,
+    current_document: BoardDocument | None = None,
+) -> str | None:
+    if focus and current_document is not None:
+        expanded = _expanded_focus_excerpt(focus=focus, current_document=current_document)
+        if expanded:
+            return expanded
     if focus and focus.excerpt.strip():
         return focus.excerpt.strip()
     return selection_excerpt.strip() if selection_excerpt else None
+
+
+def _expanded_focus_excerpt(*, focus: BoardFocusRef, current_document: BoardDocument) -> str:
+    if focus.order_start is None or focus.order_end is None or focus.order_end <= focus.order_start:
+        return ""
+    index = build_board_segment_index(current_document)
+    selected_segments = [
+        segment
+        for segment in index.segments
+        if focus.order_start <= segment.order_index <= focus.order_end
+        and (not focus.source_segment_ids or segment.segment_id in set(focus.source_segment_ids))
+    ]
+    if len(selected_segments) < 2:
+        return ""
+    expanded = "\n\n".join(segment.text for segment in selected_segments if segment.text.strip()).strip()
+    if not expanded:
+        return ""
+    focus_key = re.sub(r"\s+", "", focus.excerpt or "")
+    expanded_key = re.sub(r"\s+", "", expanded)
+    if focus_key and focus_key not in expanded_key:
+        return ""
+    return expanded
 
 
 def _requirement_context(

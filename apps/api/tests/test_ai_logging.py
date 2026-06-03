@@ -19,6 +19,7 @@ from app.models import (
     InteractionRuleDraft,
     InteractionSession,
     InteractionTurnDecision,
+    LearningClarificationStatus,
     LearningRequirementChecklistItem,
     LearningRequirementKeyFact,
     RealtimeTranscriptLogRequest,
@@ -30,6 +31,7 @@ from app.routers import documents as documents_router
 from app.routers import realtime as realtime_router
 from app.services.ai_logging import ai_log_context, ai_usage_logger, current_ai_log_context
 from app.services.board_segment_index import build_board_segment_index, segment_text_hash
+from app.services.board_document_editor import edit_existing_document
 from app.services import chat_service, workspace_state
 from app.services.board_explanation_gate import generate_board_directed_explanation_message
 from app.services.course_runtime import refresh_lesson_runtime
@@ -4382,6 +4384,155 @@ def test_local_edit_rejects_replace_document_when_target_scope_is_focus(
     assert metadata["target_scope"] == "focus"
     assert metadata["board_task_cleared"] is False
     assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_local_replace_selection_allows_target_section_expansion_with_subheadings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lesson = create_empty_lesson("已有板书")
+    lesson.board_document = build_document(
+        title="已有板书",
+        content_text=(
+            "# 主线\n"
+            "## 完整对话脚本\n"
+            "对话 1：开头\n"
+            "开头正文。\n\n"
+            "对话 3：选择\n"
+            "Moi : J'**aurais hésité** entre deux options.\n"
+            "Serveur : Première réponse.\n"
+            "Moi : Deuxième réponse.\n\n"
+            "对话 4：结束\n"
+            "结束正文。"
+        ),
+    )
+    index = build_board_segment_index(lesson.board_document)
+    target = next(segment for segment in index.segments if segment.text == "对话 3：选择")
+    focus = BoardFocusRef(
+        source="board",
+        lesson_id=lesson.id,
+        document_id=lesson.board_document.id,
+        segment_id=target.segment_id,
+        kind=target.kind,
+        heading_path=target.heading_path,
+        excerpt=target.text,
+        text_hash=target.text_hash,
+        confidence=0.95,
+        reason="测试目标小节。",
+        source_segment_ids=[segment.segment_id for segment in index.segments[target.order_index : target.order_index + 4]],
+        order_start=target.order_index,
+        order_end=target.order_index + 3,
+    )
+    requirements = build_requirements("目标小节扩写")
+    requirements.action_type = "expand_target"
+    requirements.action_instruction = "在目标小节中扩写更多例句。"
+    clarification = LearningClarificationStatus(progress=100, label="ready", reason="ready", can_start=True)
+
+    def _fake_board_edit(**kwargs):
+        assert "Serveur : Première réponse." in (kwargs.get("selection_excerpt") or "")
+        return BoardDocumentEditResult(
+            operation="replace_selection",
+            title="已有板书",
+            content_text=(
+                "对话 3：选择\n\n"
+                "Moi : J'**aurais hésité** entre two options.\n"
+                "Serveur : Première réponse.\n"
+                "Moi : Deuxième réponse.\n\n"
+                "### 更多表达\n"
+                "- **J'aurais balancé** entre deux choix.\n\n"
+                "### 结构表\n"
+                "| 动词 | 形式 |\n"
+                "| --- | --- |\n"
+                "| hésiter | j'aurais hésité |"
+            ),
+            summary="扩写目标小节。",
+            chatbot_message="已扩写目标小节。",
+            section_titles=["更多表达", "结构表"],
+        )
+
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _fake_board_edit)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_board_document_quality_review",
+        lambda **kwargs: BoardDocumentQualityReview(status="pass"),
+    )
+
+    outcome = edit_existing_document(
+        lesson=lesson,
+        requirements=requirements,
+        clarification=clarification,
+        resource_summary="暂无已上传资料摘要",
+        conversation_summary="",
+        user_instruction="在目标小节中扩写更多例句。",
+        selection_excerpt=None,
+        focus=focus,
+        target_scope="focus",
+        allow_replace_document=False,
+    )
+
+    assert outcome.changed is True
+    assert "更多表达" in outcome.new_document.content_text
+    assert "结构表" in outcome.new_document.content_text
+    assert outcome.new_document.content_text.count("Serveur : Première réponse.") == 1
+    assert "对话 4：结束" in outcome.new_document.content_text
+
+
+def test_local_replace_selection_still_rejects_whole_document_shaped_replacement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lesson = create_empty_lesson("已有板书")
+    lesson.board_document = build_document(
+        title="已有板书",
+        content_text="# 主线\n## 第一节\n第一节原文。\n## 第二节\n第二节原文。\n## 第三节\n第三节原文。",
+    )
+    index = build_board_segment_index(lesson.board_document)
+    target = next(segment for segment in index.segments if segment.text == "第一节")
+    focus = BoardFocusRef(
+        source="board",
+        lesson_id=lesson.id,
+        document_id=lesson.board_document.id,
+        segment_id=target.segment_id,
+        kind=target.kind,
+        heading_path=target.heading_path,
+        excerpt=target.text,
+        text_hash=target.text_hash,
+        confidence=0.95,
+        reason="测试目标小节。",
+        source_segment_ids=[target.segment_id],
+        order_start=target.order_index,
+        order_end=target.order_index,
+    )
+    requirements = build_requirements("局部编辑")
+    requirements.action_type = "rewrite_target"
+    requirements.action_instruction = "把第一节改短。"
+    clarification = LearningClarificationStatus(progress=100, label="ready", reason="ready", can_start=True)
+
+    def _fake_board_edit(**kwargs):
+        return BoardDocumentEditResult(
+            operation="replace_selection",
+            title="已有板书",
+            content_text="# 主线\n## 第一节\n短版。\n## 第二节\n第二节也被带进来了。\n## 第三节\n第三节也被带进来了。",
+            summary="错误返回了整份文档。",
+            chatbot_message="已尝试改写。",
+            section_titles=["第一节", "第二节", "第三节"],
+        )
+
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _fake_board_edit)
+
+    outcome = edit_existing_document(
+        lesson=lesson,
+        requirements=requirements,
+        clarification=clarification,
+        resource_summary="暂无已上传资料摘要",
+        conversation_summary="",
+        user_instruction="把第一节改短。",
+        selection_excerpt=None,
+        focus=focus,
+        target_scope="focus",
+        allow_replace_document=False,
+    )
+
+    assert outcome.changed is False
+    assert outcome.failure_reason == "局部替换结果看起来像整份文档，已阻止写入。"
 
 
 def test_explicit_whole_document_simplify_allows_replace_document(

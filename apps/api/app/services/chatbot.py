@@ -3697,6 +3697,26 @@ def _chat_response(
         )
 
         requirement_cleared = bool(chatbot_message)
+        if not chatbot_message:
+            workspace_state.normalize_package_state(package)
+            _save_workspace_for_user(
+                user_id=user_id,
+                workspace=workspace,
+                requirement_history=requirement_history,
+            )
+            return _response(
+                workspace=workspace,
+                package=package,
+                lesson=lesson,
+                chatbot_message="",
+                requirements=requirements,
+                learning_clarification=learning_clarification,
+                board_decision=BoardDecision(action="no_change", reason="Board-directed explanation failed because Chatbot returned empty."),
+                resolved_focus=resolution.focus,
+                focus_candidates=resolution.candidates,
+                requirement_cleared=False,
+                requirement_history=requirement_history if track_initial_requirement_run else None,
+            )
         commit_operations(
             lesson,
             [],
