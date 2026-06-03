@@ -111,6 +111,7 @@ RECENT_EDIT_FOLLOWUP_PATTERN = re.compile(
     r"(太长|篇幅|缩短|改短|短(?:一点|点|些)|精简|压缩|控制.{0,8}(?:以内|以下)|"
     r"[0-9０-９一二三四五六七八九十两]+.{0,8}(?:以内|以下)|来回|回合)"
 )
+RECENT_WRITE_FOLLOWUP_PATTERN = re.compile(r"(继续|接着|直接|再|进一步|你自己看|自己看|自行|自己判断)")
 WHOLE_DOCUMENT_SCOPE_PATTERN = re.compile(r"(全文|整篇|整份|整个(?:文档|板书)|全篇|全部内容|整体)")
 EXISTING_BOARD_GENERATION_CONTROL_PATTERN = re.compile(r"(生成|创建|制作|准备).{0,8}(板书|版书|文档)")
 EDIT_ACTIONS: set[BoardTaskAction] = {"rewrite_target", "expand_target", "simplify_target"}
@@ -454,6 +455,42 @@ def _looks_like_recent_edit_followup(text: str) -> bool:
     return bool(compact and RECENT_EDIT_FOLLOWUP_PATTERN.search(compact))
 
 
+def _looks_like_recent_write_followup(text: str) -> bool:
+    compact = _compact_text(text, limit=180)
+    return bool(compact and RECENT_WRITE_FOLLOWUP_PATTERN.search(compact))
+
+
+def _text_overlap_tokens(text: str) -> set[str]:
+    compact = re.sub(r"\s+", "", (text or "").lower())
+    tokens: set[str] = set(re.findall(r"[a-zÀ-ÿ][a-zÀ-ÿ'’_-]{2,}", compact))
+    for chunk in re.findall(r"[\u4e00-\u9fff]{2,}", compact):
+        tokens.update(chunk[index : index + 2] for index in range(0, max(0, len(chunk) - 1)))
+    return {token for token in tokens if len(token) >= 2}
+
+
+def _recent_focus_matches_board_task(focus: BoardFocusRef, board_task: BoardTaskRequirementSheet) -> bool:
+    query = _compact_text(" ".join([board_task.target_hint, board_task.question_or_topic]), limit=500)
+    if not query:
+        return True
+    focus_text = _compact_text(
+        " ".join(
+            [
+                focus.display_label,
+                " ".join(focus.heading_path),
+                focus.excerpt,
+                focus.before_text,
+                focus.after_text,
+            ]
+        ),
+        limit=1200,
+    )
+    query_tokens = _text_overlap_tokens(query)
+    focus_tokens = _text_overlap_tokens(focus_text)
+    if not query_tokens or not focus_tokens:
+        return False
+    return len(query_tokens & focus_tokens) >= 2
+
+
 def _requests_whole_document_scope(*values: str) -> bool:
     compact = _compact_text(" ".join(value for value in values if value), limit=300)
     return bool(compact and WHOLE_DOCUMENT_SCOPE_PATTERN.search(compact))
@@ -514,16 +551,28 @@ def _maybe_inherit_recent_board_edit_focus(
     board_task: BoardTaskRequirementSheet,
     request_message: str,
 ) -> BoardTaskRequirementSheet:
-    if board_task.requested_action != "edit":
-        return board_task
-    if not _looks_like_recent_edit_followup(request_message):
+    if board_task.requested_action not in {"edit", "write"}:
         return board_task
     if board_task.target_location is not None and board_task.location_status in {"selected", "resolved"}:
         return board_task
-    if board_task.target_hint.strip() and not _looks_like_recent_edit_followup(board_task.target_hint):
+    if board_task.requested_action == "edit":
+        if not _looks_like_recent_edit_followup(request_message):
+            return board_task
+        if board_task.target_hint.strip() and not _looks_like_recent_edit_followup(board_task.target_hint):
+            return board_task
+    elif board_task.requested_action == "write":
+        if not _looks_like_recent_write_followup(request_message):
+            return board_task
+        if board_task.target_hint.strip() and not _looks_like_recent_write_followup(board_task.target_hint):
+            return board_task
+        if board_task.location_status not in {"missing", "ambiguous"}:
+            return board_task
+    else:
         return board_task
     focus = _latest_successful_board_edit_focus(lesson)
     if focus is None:
+        return board_task
+    if board_task.requested_action == "write" and not _recent_focus_matches_board_task(focus, board_task):
         return board_task
     inherited = BoardTaskRequirementSheet.model_validate(board_task.model_dump(mode="json"))
     inherited.target_location = focus

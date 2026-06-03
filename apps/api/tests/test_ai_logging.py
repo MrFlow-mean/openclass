@@ -38,6 +38,7 @@ from app.services.course_runtime import refresh_lesson_runtime
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
 from app.services.lesson_factory import build_requirements, create_empty_lesson
 from app.services.openai_course_ai import (
+    AIOutputParseError,
     BoardExplanationDirective,
     BoardDocumentEditResult,
     BoardDocumentQualityReview,
@@ -202,6 +203,35 @@ def test_openai_parse_logs_prompt_and_output(isolated_ai_log) -> None:
     assert entry["payload"]["duration_ms"] >= 0
     assert entry["payload"]["user_prompt"]
     assert entry["payload"]["parsed_output"]["title"] == "工作台标题"
+
+
+def test_chatbot_reply_recovers_model_generated_plain_text(isolated_ai_log, monkeypatch: pytest.MonkeyPatch) -> None:
+    ai = OpenAICourseAI()
+    monkeypatch.setattr(ai, "_model_for", lambda role: ("deepseek", "unit-chatbot-model"))
+    monkeypatch.setattr(ai, "_provider_available", lambda provider: True)
+
+    def _plain_text_response(**kwargs):
+        raise AIOutputParseError(
+            "Model response did not contain a JSON object",
+            output_text="我理解你想继续围绕刚才的内容学习，这里先确认你的目标。",
+        )
+
+    monkeypatch.setattr(ai, "_call_parse", _plain_text_response)
+
+    reply = ai.generate_chatbot_reply(
+        lesson_title="测试页面",
+        learning_goal="围绕当前学习任务继续交流",
+        board_summary="",
+        resource_summary="",
+        conversation_summary="",
+        user_message="继续",
+    )
+
+    assert reply is not None
+    assert reply.chatbot_message == "我理解你想继续围绕刚才的内容学习，这里先确认你的目标。"
+    entries = _read_log_entries(isolated_ai_log)
+    assert entries[-1]["event_type"] == "deepseek_text_call_recovered"
+    assert entries[-1]["payload"]["parsed_output"]["chatbot_message"] == reply.chatbot_message
 
 
 def test_openai_parse_retries_model_not_found_with_fallback(isolated_ai_log) -> None:
@@ -4337,6 +4367,114 @@ def test_recent_append_focus_is_inherited_for_length_followup(
     assert commit.metadata["board_task_route"] == "edit"
     assert commit.metadata["target_scope"] == "focus"
     assert commit.metadata["recent_board_edit_focus"]["excerpt"]
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_recent_write_focus_is_inherited_for_direct_expand_followup(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    calls: list[str | None] = []
+
+    def _fake_board_task_sheet(**kwargs):
+        message = kwargs.get("user_message", "")
+        if "直接" in message:
+            return BoardTaskRequirementSheet(
+                target_hint="",
+                target_location=None,
+                location_status="ambiguous",
+                requested_action="write",
+                question_or_topic="继续扩写新增样本的更多说明",
+                missing_items=["目标位置"],
+                progress=75,
+            )
+        return BoardTaskRequirementSheet(
+            target_hint="",
+            target_location=None,
+            location_status="missing",
+            requested_action="write",
+            question_or_topic="新增样本",
+            missing_items=[],
+            progress=100,
+        )
+
+    def _fake_board_route(**kwargs):
+        board_task = kwargs["board_task"]
+        if board_task.target_location is not None:
+            return BoardTaskRouteDecision(
+                route="write",
+                location_status="found",
+                target_focus=board_task.target_location,
+                reason="沿用最近一次成功写入区域继续扩写。",
+                write_proposal=board_task.question_or_topic,
+                target_scope="focus",
+            )
+        return BoardTaskRouteDecision(
+            route="write",
+            location_status="missing",
+            reason="新增无目标内容。",
+            write_proposal=board_task.question_or_topic,
+            target_scope="append",
+        )
+
+    def _fake_board_edit(**kwargs):
+        calls.append(kwargs.get("selection_excerpt"))
+        if len(calls) == 1:
+            return BoardDocumentEditResult(
+                operation="append_section",
+                title="已有板书",
+                content_text="## 新增样本\n这是刚新增的较长样本内容。",
+                summary="追加了样本。",
+                chatbot_message="AI生成：已追加样本。",
+                section_titles=["新增样本"],
+            )
+        return BoardDocumentEditResult(
+            operation="replace_selection",
+            title="已有板书",
+            content_text="## 新增样本\n这是继续扩写后的样本内容。",
+            summary="继续扩写最近新增样本。",
+            chatbot_message="AI生成：已继续扩写。",
+            section_titles=["新增样本"],
+        )
+
+    monkeypatch.setattr(openai_course_ai, "generate_board_task_requirement_sheet", _fake_board_task_sheet)
+    monkeypatch.setattr(openai_course_ai, "generate_board_task_route_decision", _fake_board_route)
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _fake_board_edit)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_chatbot_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="AI生成：已处理。"),
+    )
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.board_document = build_document(title="已有板书", content_text="# 主线\n## 课后任务\n已有任务。")
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    store.save_for_user(TEST_USER.id, workspace)
+
+    first = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="写一段新增样本"),
+        user_id=TEST_USER.id,
+    )
+    assert first.active_board_task_sheet is None
+
+    second = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="你自己看，直接扩写"),
+        user_id=TEST_USER.id,
+    )
+
+    updated_lesson = second.course_package.lessons[0]
+    assert second.active_board_task_sheet is None
+    assert "继续扩写后的样本内容" in updated_lesson.board_document.content_text
+    assert "刚新增的较长样本内容" in (calls[-1] or "")
+    commit = updated_lesson.history_graph.commits[-1]
+    assert commit.metadata["board_task_route"] == "write"
+    assert commit.metadata["target_scope"] == "focus"
+    assert commit.metadata["board_task_cleared"] is True
     assert _read_log_entries(isolated_ai_log) == []
 
 

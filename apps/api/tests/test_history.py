@@ -460,6 +460,24 @@ def test_board_task_normalization_downgrades_unverified_target_location() -> Non
     assert normalized.missing_items == []
 
 
+def test_board_task_normalization_keeps_ambiguous_write_location_incomplete() -> None:
+    sheet = BoardTaskRequirementSheet(
+        target_hint="",
+        target_location=None,
+        location_status="ambiguous",
+        requested_action="write",
+        question_or_topic="扩写某个已有内容主题的更多说明",
+        progress=100,
+        missing_items=[],
+    )
+
+    normalized = normalize_board_task_sheet(sheet)
+
+    assert normalized.progress == 75
+    assert "目标位置" in normalized.missing_items
+    assert normalized.clarification_question
+
+
 def _collect_node_types(node: dict) -> list[str]:
     node_type = node.get("type")
     result = [node_type] if isinstance(node_type, str) else []

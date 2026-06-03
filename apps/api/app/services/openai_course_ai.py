@@ -261,6 +261,31 @@ class ChatbotReply(BaseModel):
     chatbot_message: str
 
 
+def _chatbot_reply_from_unstructured_output(exc: Exception) -> ChatbotReply | None:
+    if not isinstance(exc, AIOutputParseError):
+        return None
+    for raw in (exc.output_text, exc.repair_output_text):
+        text = _coerce_unstructured_chatbot_text(raw)
+        if text:
+            return ChatbotReply(chatbot_message=text)
+    return None
+
+
+def _coerce_unstructured_chatbot_text(raw: str | None) -> str:
+    text = (raw or "").strip()
+    if not text:
+        return ""
+    partial_field = _partial_json_string_field_value(text, "chatbot_message").strip()
+    if partial_field:
+        return partial_field
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json|markdown|md)?\s*", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\s*```$", "", text).strip()
+    if not text or text.startswith(("{", "[")) or '"chatbot_message"' in text:
+        return ""
+    return text
+
+
 class BoardExplanationDirective(BaseModel):
     status: Literal["approved", "needs_clarification", "blocked"] = "approved"
     target_summary: str = ""
@@ -2292,6 +2317,18 @@ class OpenAICourseAI:
             return response.output_parsed
         except Exception as exc:  # pragma: no cover - network/runtime dependent
             primary_duration_ms = _elapsed_ms(primary_started_at)
+            recovered_chatbot_reply = _chatbot_reply_from_unstructured_output(exc) if schema is ChatbotReply else None
+            if recovered_chatbot_reply is not None:
+                ai_usage_logger.log_event(
+                    self._log_event_name(provider, "_recovered"),
+                    **call_details,
+                    duration_ms=primary_duration_ms,
+                    error=str(exc),
+                    output_text=getattr(exc, "output_text", None),
+                    repair_output_text=getattr(exc, "repair_output_text", None),
+                    parsed_output=recovered_chatbot_reply,
+                )
+                return recovered_chatbot_reply
             fallback_model = self._fallback_model_for(provider, exc, requested_model)
             if fallback_model:
                 ai_usage_logger.log_event(
@@ -2323,6 +2360,21 @@ class OpenAICourseAI:
                     )
                     return response.output_parsed
                 except Exception as retry_exc:  # pragma: no cover - network/runtime dependent
+                    recovered_chatbot_reply = (
+                        _chatbot_reply_from_unstructured_output(retry_exc) if schema is ChatbotReply else None
+                    )
+                    if recovered_chatbot_reply is not None:
+                        ai_usage_logger.log_event(
+                            self._log_event_name(provider, "_recovered"),
+                            **{**call_details, "model": fallback_model},
+                            fallback_from_model=requested_model,
+                            duration_ms=_elapsed_ms(retry_started_at),
+                            error=str(retry_exc),
+                            output_text=getattr(retry_exc, "output_text", None),
+                            repair_output_text=getattr(retry_exc, "repair_output_text", None),
+                            parsed_output=recovered_chatbot_reply,
+                        )
+                        return recovered_chatbot_reply
                     ai_usage_logger.log_event(
                         self._log_event_name(provider, "_error"),
                         **{**call_details, "model": fallback_model},

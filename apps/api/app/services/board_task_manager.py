@@ -167,12 +167,19 @@ def _fallback_board_task_sheet(
 
 
 def _has_target_signal(sheet: BoardTaskRequirementSheet) -> bool:
-    if sheet.requested_action == "write":
-        return bool(sheet.question_or_topic.strip())
     target_hint = sheet.target_hint.strip()
-    return bool(
+    has_explicit_target = bool(
         (target_hint and not _is_only_generic_reference(target_hint))
         or sheet.target_location
+    )
+    if sheet.requested_action == "write":
+        if has_explicit_target:
+            return True
+        if sheet.location_status == "ambiguous":
+            return False
+        return bool(sheet.question_or_topic.strip())
+    return bool(
+        has_explicit_target
         or (sheet.question_or_topic.strip() and not _is_only_generic_reference(sheet.question_or_topic))
     )
 
