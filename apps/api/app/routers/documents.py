@@ -68,6 +68,7 @@ def _save_document_request(lesson_id: str, request: DocumentSaveRequest, user_id
     package.active_lesson_id = lesson.id
     current_head = current_head_commit(lesson)
     is_autosave = request.metadata.get("autosave") is True or request.metadata.get("kind") == "auto_document_save"
+    guard_document: BoardDocument | None = None
     if request.base_commit_id and request.base_commit_id != current_head.id:
         if is_autosave:
             return package_view_for_lesson(workspace, package, lesson.id)
@@ -86,6 +87,7 @@ def _save_document_request(lesson_id: str, request: DocumentSaveRequest, user_id
         lesson=lesson,
         trace_prefix="document_save",
     ):
+        previous_updated_at = lesson.updated_at
         lesson.board_document = request.document
         commit_metadata: dict[str, object] = {
             "kind": "manual_document_save",
@@ -103,6 +105,27 @@ def _save_document_request(lesson_id: str, request: DocumentSaveRequest, user_id
             label=request.label,
             message=request.message,
             metadata=commit_metadata,
+        )
+        committed_head = current_head_commit(lesson)
+        if is_autosave and guard_document and would_flatten_rich_document(
+            current_document=guard_document,
+            new_document=committed_head.snapshot,
+        ):
+            _rollback_unpersisted_commit(
+                lesson,
+                commit_id=committed_head.id,
+                restore_head=current_head,
+                updated_at=previous_updated_at,
+            )
+            return package_view_for_lesson(workspace, package, lesson.id)
+        committed_head.metadata.update(
+            _document_save_structure_metadata(
+                base_commit_id=request.base_commit_id or current_head.id,
+                current_head_commit_id=current_head.id,
+                before_document=current_head.snapshot,
+                after_document=committed_head.snapshot,
+                flatten_guard_evaluated=is_autosave,
+            )
         )
         refresh_lesson_runtime(lesson)
         save_workspace_for_user(user_id, workspace)
@@ -135,6 +158,16 @@ def _recent_structured_snapshot_for_autosave(
         parent_id = cursor.parent_ids[0] if cursor.parent_ids else None
         cursor = commits_by_id.get(parent_id) if parent_id else None
     return None
+
+
+def _rollback_unpersisted_commit(lesson, *, commit_id: str, restore_head, updated_at: str) -> None:
+    branch = lesson.history_graph.branches[lesson.history_graph.current_branch]
+    branch.head_commit_id = restore_head.id
+    lesson.board_document = restore_head.snapshot
+    lesson.updated_at = updated_at
+    lesson.history_graph.commits = [
+        commit for commit in lesson.history_graph.commits if commit.id != commit_id
+    ]
 
 
 def _document_save_structure_metadata(

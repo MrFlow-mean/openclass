@@ -417,6 +417,7 @@ export function documentsEqual(left: BoardDocument | null | undefined, right: Bo
   }
   return (
     left.title === right.title &&
+    JSON.stringify(left.content_json) === JSON.stringify(right.content_json) &&
     left.content_html === right.content_html &&
     left.content_text === right.content_text &&
     JSON.stringify(normalizePageSettings(left.page_settings)) ===

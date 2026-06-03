@@ -2663,6 +2663,97 @@ def test_autosave_does_not_flatten_current_rich_document(
     assert len(updated_lesson.history_graph.commits) == original_commit_count
 
 
+def test_autosave_rolls_back_when_committed_snapshot_loses_structure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    rich_document = build_document(
+        title="结构化板书",
+        content_text=(
+            "# 结构化板书\n\n"
+            "## 第一部分\n\n"
+            "**目标**：保留标题、加粗和表格结构。\n\n"
+            "- 第一条\n"
+            "- 第二条\n\n"
+            "| 项目 | 内容 |\n"
+            "| --- | --- |\n"
+            "| A | B |\n"
+        ),
+        document_id=lesson.board_document.id,
+        page_settings=lesson.board_document.page_settings,
+    )
+    lesson.board_document = rich_document
+    lesson.history_graph.commits[-1].snapshot = rich_document
+    store.save_for_user(TEST_USER.id, workspace)
+    base_commit_id = lesson.history_graph.commits[-1].id
+    original_commit_count = len(lesson.history_graph.commits)
+    original_updated_at = lesson.updated_at
+
+    structured_request_document = build_document(
+        title=rich_document.title,
+        content_text=(
+            rich_document.content_text
+            + "\n\n## 第二部分\n\n"
+            + "**补充**：这次 autosave 请求本身仍然保留结构。"
+        ),
+        document_id=rich_document.id,
+        page_settings=rich_document.page_settings,
+    )
+
+    original_commit_document_snapshot = documents_router.commit_document_snapshot
+
+    def _commit_then_flatten_snapshot(target_lesson, **kwargs) -> None:
+        original_commit_document_snapshot(target_lesson, **kwargs)
+        flattened_snapshot = build_document(
+            title=rich_document.title,
+            content_html=(
+                "<p>结构化板书</p>"
+                "<p>第一部分</p>"
+                "<p>目标：保留标题、加粗和表格结构。</p>"
+                "<p>第一条</p>"
+                "<p>第二条</p>"
+                "<p>项目 内容</p>"
+                "<p>A B</p>"
+                "<p>第二部分</p>"
+                "<p>补充：这次 autosave 请求本身仍然保留结构。</p>"
+            ),
+            document_id=rich_document.id,
+            page_settings=rich_document.page_settings,
+        )
+        target_lesson.history_graph.commits[-1].snapshot = flattened_snapshot
+        target_lesson.board_document = flattened_snapshot
+
+    monkeypatch.setattr(documents_router, "commit_document_snapshot", _commit_then_flatten_snapshot)
+
+    package = documents_router.save_document(
+        lesson.id,
+        DocumentSaveRequest(
+            document=structured_request_document,
+            label="Auto Save",
+            message="Auto-saved Word-like rich document changes from the editor",
+            metadata={
+                "kind": "auto_document_save",
+                "autosave": True,
+                "autosave_reason": "debounce",
+                "source": "word_board_editor",
+            },
+            base_commit_id=base_commit_id,
+        ),
+        user=TEST_USER,
+    )
+
+    updated_lesson = next(current for current in package.lessons if current.id == lesson.id)
+    assert updated_lesson.board_document.content_html == rich_document.content_html
+    assert updated_lesson.board_document.content_text == rich_document.content_text
+    assert updated_lesson.updated_at == original_updated_at
+    assert updated_lesson.history_graph.commits[-1].id == base_commit_id
+    assert len(updated_lesson.history_graph.commits) == original_commit_count
+
+
 def test_autosave_checks_recent_structured_snapshot_when_current_head_is_flat(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:

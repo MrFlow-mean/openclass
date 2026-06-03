@@ -21,11 +21,55 @@ function canOpenInlineMark(value: string, index: number, markerLength: number) {
   return !previous || /[\s([{"'，。；;:：、]/.test(previous);
 }
 
-function renderInlineMarkdown(value: string) {
+function findClosingSingleAsterisk(value: string, startIndex: number) {
+  for (let index = startIndex; index < value.length; index += 1) {
+    const isSingleAsterisk = value[index] === "*" && value[index + 1] !== "*" && value[index - 1] !== "*";
+    if (isSingleAsterisk && !/\s/.test(value[index - 1] ?? "")) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function renderDelimitedMath(value: string, index: number) {
+  const delimiters: Array<[string, string]> = [
+    ["\\(", "\\)"],
+    ["$", "$"],
+  ];
+  for (const [opener, closer] of delimiters) {
+    if (!value.startsWith(opener, index)) {
+      continue;
+    }
+    if (opener === "$" && /\d/.test(value[index + opener.length] ?? "")) {
+      continue;
+    }
+    const closeIndex = value.indexOf(closer, index + opener.length);
+    if (closeIndex <= index + opener.length) {
+      return null;
+    }
+    const latex = value.slice(index + opener.length, closeIndex).trim();
+    if (!latex) {
+      return null;
+    }
+    return {
+      endIndex: closeIndex + closer.length,
+      html: `<span data-type="inline-math" data-latex="${escapeHtml(latex)}"></span>`,
+    };
+  }
+  return null;
+}
+
+function renderInlineMarkdown(value: string): string {
   const parts: string[] = [];
   let index = 0;
-
   while (index < value.length) {
+    const math = renderDelimitedMath(value, index);
+    if (math) {
+      parts.push(math.html);
+      index = math.endIndex;
+      continue;
+    }
+
     if (value[index] === "`") {
       const closeIndex = value.indexOf("`", index + 1);
       if (closeIndex > index + 1) {
@@ -37,19 +81,24 @@ function renderInlineMarkdown(value: string) {
 
     if (value.startsWith("**", index) && canOpenInlineMark(value, index, 2)) {
       const closeIndex = value.indexOf("**", index + 2);
-      const contentEnd = closeIndex > index + 2 ? closeIndex : value.length;
-      parts.push(`<strong>${escapeHtml(value.slice(index + 2, contentEnd))}</strong>`);
-      index = closeIndex > index + 2 ? closeIndex + 2 : value.length;
-      continue;
+      if (closeIndex > index + 2) {
+        parts.push(`<strong>${escapeHtml(value.slice(index + 2, closeIndex))}</strong>`);
+        index = closeIndex + 2;
+        continue;
+      }
+      parts.push(`<strong>${escapeHtml(value.slice(index + 2))}</strong>`);
+      break;
     }
 
     if (value[index] === "*" && value[index + 1] !== "*" && canOpenInlineMark(value, index, 1)) {
-      const closeIndex = value.indexOf("*", index + 1);
-      if (closeIndex > index + 1 && !/\s/.test(value[closeIndex - 1] ?? "")) {
+      const closeIndex = findClosingSingleAsterisk(value, index + 1);
+      if (closeIndex > index + 1) {
         parts.push(`<em>${escapeHtml(value.slice(index + 1, closeIndex))}</em>`);
         index = closeIndex + 1;
         continue;
       }
+      parts.push(`<em>${escapeHtml(value.slice(index + 1))}</em>`);
+      break;
     }
 
     parts.push(escapeHtml(value[index]));
@@ -86,6 +135,38 @@ function renderTable(rows: string[][]) {
     .join("")}</tbody></table>`;
 }
 
+function displayMathBlock(lines: string[], index: number) {
+  const line = lines[index].trim();
+  const delimiters: Array<[string, string]> = [
+    ["\\[", "\\]"],
+    ["$$", "$$"],
+  ];
+  for (const [opener, closer] of delimiters) {
+    if (line.startsWith(opener) && line.endsWith(closer) && line.length > opener.length + closer.length) {
+      const latex = line.slice(opener.length, -closer.length).trim();
+      return {
+        html: `<div data-type="block-math" data-latex="${escapeHtml(latex)}"></div>`,
+        nextIndex: index + 1,
+      };
+    }
+    if (line !== opener) {
+      continue;
+    }
+    const formulaLines: string[] = [];
+    for (let cursor = index + 1; cursor < lines.length; cursor += 1) {
+      if (lines[cursor].trim() === closer) {
+        const latex = formulaLines.join("\n").trim();
+        if (!latex) {
+          return null;
+        }
+        return { html: `<div data-type="block-math" data-latex="${escapeHtml(latex)}"></div>`, nextIndex: cursor + 1 };
+      }
+      formulaLines.push(lines[cursor]);
+    }
+  }
+  return null;
+}
+
 function lineStartsBlock(line: string) {
   const trimmed = line.trim();
   return (
@@ -93,7 +174,17 @@ function lineStartsBlock(line: string) {
     MARKDOWN_HEADING_RE.test(trimmed) ||
     MARKDOWN_BULLET_RE.test(trimmed) ||
     MARKDOWN_ORDERED_RE.test(trimmed) ||
-    trimmed.startsWith(">")
+    trimmed.startsWith(">") ||
+    trimmed === "\\[" ||
+    trimmed === "$$" ||
+    isInlineDisplayMath(trimmed)
+  );
+}
+
+function isInlineDisplayMath(line: string) {
+  return (
+    (line.startsWith("\\[") && line.endsWith("\\]") && line.length > 4) ||
+    (line.startsWith("$$") && line.endsWith("$$") && line.length > 4)
   );
 }
 
@@ -106,6 +197,13 @@ export function streamingMarkdownToHtml(contentText: string) {
     const line = lines[index].trim();
     if (!line) {
       index += 1;
+      continue;
+    }
+
+    const displayMath = displayMathBlock(lines, index);
+    if (displayMath) {
+      parts.push(displayMath.html);
+      index = displayMath.nextIndex;
       continue;
     }
 
