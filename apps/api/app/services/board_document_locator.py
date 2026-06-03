@@ -152,6 +152,16 @@ class BoardDocumentLocator:
         if task_location_resolution is not None:
             return task_location_resolution
 
+        task_hint_resolution = _resolution_from_board_task_text_evidence(
+            lesson=lesson,
+            board_task=board_task,
+            plan=plan,
+            segments=index.segments,
+            action_type=action_type,
+        )
+        if task_hint_resolution is not None:
+            return task_hint_resolution
+
         speaker_candidates = _speaker_candidate_focuses(
             lesson=lesson,
             query_text=plan.query_text,
@@ -397,24 +407,38 @@ def _matching_segment(
 def _segment_text_is_selection(segment_text: str, excerpt: str) -> bool:
     compact_segment = compact_segment_text(segment_text, limit=1200)
     compact_excerpt = compact_segment_text(excerpt, limit=1200)
-    if not compact_segment or compact_segment not in compact_excerpt:
+    segment_key = _excerpt_match_key(segment_text)
+    excerpt_key = _excerpt_match_key(excerpt)
+    if not compact_segment or (compact_segment not in compact_excerpt and segment_key not in excerpt_key):
         return False
     minimum_length = min(len(compact_excerpt), max(8, int(len(compact_excerpt) * 0.6)))
-    return len(compact_segment) >= minimum_length
+    return len(compact_segment) >= minimum_length or len(segment_key) >= max(8, int(len(excerpt_key) * 0.6))
+
+
+def _excerpt_match_key(value: str) -> str:
+    compact = compact_segment_text(value, limit=1200).casefold()
+    compact = compact.replace("’", "'").replace("‘", "'").replace("`", "'")
+    compact = re.sub(r"['']\s+", "'", compact)
+    compact = re.sub(r"\s+([,.;:!?，。；：！？)])", r"\1", compact)
+    compact = re.sub(r"([(])\s+", r"\1", compact)
+    return re.sub(r"\s+", " ", compact).strip()
 
 
 def _matching_segments_for_excerpt(*, excerpt: str, segments: list[BoardSegment]) -> list[BoardSegment]:
     compact_excerpt = compact_segment_text(excerpt, limit=1200)
     if not compact_excerpt:
         return []
+    excerpt_key = _excerpt_match_key(excerpt)
     matches: list[BoardSegment] = []
     for segment in segments:
         compact_segment = compact_segment_text(segment.text, limit=1200)
         if not compact_segment:
             continue
+        segment_key = _excerpt_match_key(segment.text)
         if (
             compact_excerpt == compact_segment
             or compact_excerpt in compact_segment
+            or (excerpt_key and (excerpt_key == segment_key or excerpt_key in segment_key))
             or _segment_text_is_selection(segment.text, excerpt)
         ):
             matches.append(segment)
@@ -494,6 +518,81 @@ def _resolution_from_board_task_location(
         force_unique=True,
         source="task_location_exact",
     )
+
+
+def _resolution_from_board_task_text_evidence(
+    *,
+    lesson: Lesson,
+    board_task: BoardTaskRequirementSheet | None,
+    plan: BoardSearchQueryPlan,
+    segments: list[BoardSegment],
+    action_type: BoardTaskAction | None,
+) -> FocusResolution | None:
+    if board_task is None:
+        return None
+    candidates: list[BoardFocusRef] = []
+    seen: set[tuple[str, str]] = set()
+    for snippet in _board_task_text_snippets(board_task):
+        for segment in _matching_segments_for_excerpt(excerpt=snippet, segments=segments):
+            key = (segment.segment_id, _excerpt_match_key(snippet))
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append(
+                _focus_from_segment_excerpt(
+                    lesson=lesson,
+                    segment=segment,
+                    segments=segments,
+                    excerpt=snippet,
+                    confidence=0.95,
+                    reason="任务清单里的目标线索已被板书侧文本匹配。",
+                    score_breakdown={"task_hint_exact": 0.95},
+                )
+            )
+    if not candidates:
+        return None
+    return _resolution_from_candidates(
+        candidates=candidates[:5],
+        plan=plan,
+        source_reason="任务清单目标线索已映射到真实板书片段。",
+        resolved_question="我找到了多个与任务清单目标线索一致的位置。请确认你要操作哪一处。",
+        action_type=action_type,
+        force_unique=True,
+        source="task_hint_exact",
+    )
+
+
+def _board_task_text_snippets(board_task: BoardTaskRequirementSheet) -> list[str]:
+    raw_values = [board_task.target_hint, board_task.question_or_topic]
+    if board_task.target_location and board_task.target_location.excerpt:
+        raw_values.insert(0, board_task.target_location.excerpt)
+
+    snippets: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: str) -> None:
+        compact = compact_segment_text(value.strip(" \t\r\n，,。！？!?；;\"“”‘’"), limit=500)
+        if len(compact) < 8:
+            return
+        key = _excerpt_match_key(compact)
+        if key and key not in seen:
+            seen.add(key)
+            snippets.append(compact)
+
+    for raw in raw_values:
+        if not raw:
+            continue
+        for match in re.finditer(r"[\"“”「『](?P<body>[^\"“”「」『』]{8,500})[\"“”」』]", raw):
+            add(match.group("body"))
+        for separator in ("：", ":"):
+            if separator in raw:
+                add(raw.rsplit(separator, 1)[-1])
+        for match in re.finditer(
+            r"[A-Za-zÀ-ÖØ-öø-ÿ0-9][A-Za-zÀ-ÖØ-öø-ÿ0-9'’.,;!?()\\/\-\s]{11,}",
+            raw,
+        ):
+            add(match.group(0))
+    return snippets[:8]
 
 
 def _speaker_candidate_focuses(

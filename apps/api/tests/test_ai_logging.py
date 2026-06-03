@@ -3789,6 +3789,68 @@ def test_existing_board_how_expression_question_uses_board_task_flow(
     assert _read_log_entries(isolated_ai_log) == []
 
 
+def test_existing_board_task_hint_excerpt_maps_to_segment_before_structured_ordinals(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    captured: dict[str, str | None] = {}
+
+    def _fake_board_task_sheet(**kwargs):
+        return BoardTaskRequirementSheet(
+            target_hint="对话脚本中的目标部分，特别是对话3第一句：J'aurais hésité entre un croissant et un pain au chocolat",
+            location_status="selected",
+            requested_action="explain",
+            question_or_topic="文章中是怎么表达目标状态的",
+            progress=100,
+        )
+
+    def _fake_chatbot_reply(**kwargs):
+        captured["selection_excerpt"] = kwargs.get("selection_excerpt")
+        captured["user_message"] = kwargs.get("user_message")
+        return ChatbotReply(chatbot_message="AI生成：这是目标句的讲解。")
+
+    monkeypatch.setattr(openai_course_ai, "generate_board_task_requirement_sheet", _fake_board_task_sheet)
+    monkeypatch.setattr(openai_course_ai, "generate_chatbot_reply", _fake_chatbot_reply)
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.board_document = build_document(
+        title="已有板书",
+        content_text=(
+            "# 主线\n"
+            "## 语法回顾\n"
+            "第一句只介绍背景。第二句只介绍结构。\n\n"
+            "## 完整对话脚本\n"
+            "**对话 3：选择**\n\n"
+            "Moi : J'**aurais hésité** entre un croissant et un pain au chocolat, mais je me suis décidé.\n"
+        ),
+    )
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="文章中是怎么表达目标状态的？"),
+        user_id=TEST_USER.id,
+    )
+
+    assert response.chatbot_message == "AI生成：这是目标句的讲解。"
+    assert response.active_board_task_sheet is None
+    assert response.resolved_focus is not None
+    assert "J'aurais hésité entre un croissant et un pain au chocolat" in response.resolved_focus.excerpt
+    assert response.resolved_focus.segment_id is not None
+    assert "完整对话脚本" in response.resolved_focus.heading_path
+    assert "J'aurais hésité entre un croissant et un pain au chocolat" in (captured["selection_excerpt"] or "")
+    commit = response.course_package.lessons[0].history_graph.commits[-1]
+    assert commit.metadata["assistant_message_source"] == "chatbot_board_directed"
+    assert commit.metadata["board_task_route"] == "explain"
+    assert commit.metadata["board_search_evidence"]["status"] == "found"
+    assert commit.metadata["board_search_evidence"]["candidates"][0]["source"] == "task_hint_exact"
+    assert _read_log_entries(isolated_ai_log) == []
+
+
 def test_existing_board_directive_empty_chatbot_reply_retries_once(
     monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
 ) -> None:
