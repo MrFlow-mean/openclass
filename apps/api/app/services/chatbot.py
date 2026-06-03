@@ -1655,6 +1655,7 @@ def _handle_existing_board_task_flow(
 
     board_action = _board_task_action_to_board_action(board_task)
     resolution = None
+    original_location_status = board_task.location_status
     if _requests_whole_document_scope(request.message, board_task.target_hint, board_task.question_or_topic):
         resolution = _synthetic_focus_resolution(_whole_document_focus(lesson))
     elif board_task.requested_action != "write" or board_task.target_hint or selection_excerpt:
@@ -1678,12 +1679,22 @@ def _handle_existing_board_task_flow(
         )
         _emit_board_task_update(lesson=lesson, sheet=resolved_task, stamp=stamp)
         board_task = resolved_task
-    decision = openai_course_ai.generate_board_task_route_decision(
-        lesson_title=lesson.title,
-        board_task=board_task,
-        location_evidence=_task_location_evidence(resolution),
-        resource_summary=_resource_summary(resources),
-    ) or _fallback_board_task_decision(board_task=board_task, resolution=resolution)
+    can_use_local_route_decision = (
+        resolution is not None
+        and resolution.resolved
+        and board_task.requested_action in {"write", "edit", "explain", "chat"}
+        and original_location_status != "ambiguous"
+        and not _requests_sequential_explanation(request.message)
+    )
+    if can_use_local_route_decision:
+        decision = _fallback_board_task_decision(board_task=board_task, resolution=resolution)
+    else:
+        decision = openai_course_ai.generate_board_task_route_decision(
+            lesson_title=lesson.title,
+            board_task=board_task,
+            location_evidence=_task_location_evidence(resolution),
+            resource_summary=_resource_summary(resources),
+        ) or _fallback_board_task_decision(board_task=board_task, resolution=resolution)
     decision = _with_decision_target_scope(
         decision=decision,
         board_task=board_task,

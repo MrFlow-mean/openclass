@@ -2663,6 +2663,91 @@ def test_autosave_does_not_flatten_current_rich_document(
     assert len(updated_lesson.history_graph.commits) == original_commit_count
 
 
+def test_autosave_checks_recent_structured_snapshot_when_current_head_is_flat(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    rich_document = build_document(
+        title="结构化板书",
+        content_html=(
+            "<h1>结构化板书</h1>"
+            "<h2>第一部分</h2>"
+            "<p><strong>目标</strong>：保留标题、加粗和列表结构。</p>"
+            "<ul><li>第一条</li><li>第二条</li></ul>"
+        ),
+        document_id=lesson.board_document.id,
+        page_settings=lesson.board_document.page_settings,
+    )
+    lesson.board_document = rich_document
+    workspace_state.commit_document_snapshot(
+        lesson,
+        label="Rich document",
+        message="Saved rich document",
+        metadata={"kind": "board_document_generation"},
+    )
+
+    flattened_head = build_document(
+        title=rich_document.title,
+        content_html=(
+            "<p>结构化板书</p>"
+            "<p>第一部分</p>"
+            "<p>目标：保留标题、加粗和列表结构。</p>"
+            "<p>第一条</p>"
+            "<p>第二条</p>"
+        ),
+        document_id=rich_document.id,
+        page_settings=rich_document.page_settings,
+    )
+    lesson.board_document = flattened_head
+    workspace_state.commit_document_snapshot(
+        lesson,
+        label="Legacy flat document",
+        message="Simulated previously flattened editor state",
+        metadata={"kind": "legacy_flattened_snapshot"},
+    )
+    store.save_for_user(TEST_USER.id, workspace)
+    flat_head_id = lesson.history_graph.commits[-1].id
+    original_commit_count = len(lesson.history_graph.commits)
+
+    next_flattened_autosave = build_document(
+        title=rich_document.title,
+        content_html=(
+            "<p>结构化板书</p>\n"
+            "<p>第一部分</p>\n"
+            "<p>目标：保留标题、加粗和列表结构。</p>\n"
+            "<p>第一条</p>\n"
+            "<p>第二条</p>"
+        ),
+        document_id=rich_document.id,
+        page_settings=rich_document.page_settings,
+    )
+
+    package = documents_router.save_document(
+        lesson.id,
+        DocumentSaveRequest(
+            document=next_flattened_autosave,
+            label="Auto Save",
+            message="Auto-saved Word-like rich document changes from the editor",
+            metadata={
+                "kind": "auto_document_save",
+                "autosave": True,
+                "autosave_reason": "debounce",
+                "source": "word_board_editor",
+            },
+            base_commit_id=flat_head_id,
+        ),
+        user=TEST_USER,
+    )
+
+    updated_lesson = next(current for current in package.lessons if current.id == lesson.id)
+    assert updated_lesson.history_graph.commits[-1].id == flat_head_id
+    assert len(updated_lesson.history_graph.commits) == original_commit_count
+
+
 def test_autosave_rejects_heading_loss_to_plain_lists(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:

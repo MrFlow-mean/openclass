@@ -198,6 +198,7 @@ export function CourseStudio() {
     learningClarity,
     streamedRequirementSheet,
     streamedBoardTaskSheet,
+    currentNeedPending,
     latestBoardDecision,
     referencePrompt,
     boardEditPrompt,
@@ -510,6 +511,7 @@ export function CourseStudio() {
           boardEditPrompt={boardEditPrompt}
           clarificationQuestions={clarificationQuestions}
           activeBoardTask={activeBoardTask}
+          currentNeedPending={currentNeedPending}
           latestBoardDecision={latestBoardDecision}
           selectedReference={selectedReference}
           chatScrollEndRef={chatScrollEndRef}

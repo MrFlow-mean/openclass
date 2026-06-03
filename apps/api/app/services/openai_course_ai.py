@@ -2317,6 +2317,52 @@ class OpenAICourseAI:
             return response.output_parsed
         except Exception as exc:  # pragma: no cover - network/runtime dependent
             primary_duration_ms = _elapsed_ms(primary_started_at)
+            if schema is ChatbotReply and isinstance(exc, AIOutputParseError):
+                ai_usage_logger.log_event(
+                    self._log_event_name(provider, "_retry"),
+                    **call_details,
+                    duration_ms=primary_duration_ms,
+                    retry_model=requested_model,
+                    retry_reason="chatbot_reply_parse",
+                    error=str(exc),
+                    output_text=getattr(exc, "output_text", None),
+                    repair_output_text=getattr(exc, "repair_output_text", None),
+                )
+                retry_started_at = time.perf_counter()
+                try:
+                    response = self._call_parse(
+                        role=role,
+                        provider=provider,
+                        model=requested_model,
+                        system_prompt=system_prompt,
+                        user_prompt=user_prompt,
+                        schema=schema,
+                    )
+                    ai_usage_logger.log_event(
+                        self._log_event_name(provider, ""),
+                        **call_details,
+                        retry_reason="chatbot_reply_parse",
+                        duration_ms=_elapsed_ms(retry_started_at),
+                        response_id=getattr(response, "id", None),
+                        output_text=getattr(response, "output_text", None),
+                        usage=getattr(response, "usage", None),
+                        parsed_output=response.output_parsed,
+                    )
+                    return response.output_parsed
+                except Exception as retry_exc:  # pragma: no cover - network/runtime dependent
+                    recovered_chatbot_reply = _chatbot_reply_from_unstructured_output(retry_exc)
+                    if recovered_chatbot_reply is not None:
+                        ai_usage_logger.log_event(
+                            self._log_event_name(provider, "_recovered"),
+                            **call_details,
+                            duration_ms=_elapsed_ms(retry_started_at),
+                            error=str(retry_exc),
+                            output_text=getattr(retry_exc, "output_text", None),
+                            repair_output_text=getattr(retry_exc, "repair_output_text", None),
+                            parsed_output=recovered_chatbot_reply,
+                            recovered_after_retry=True,
+                        )
+                        return recovered_chatbot_reply
             recovered_chatbot_reply = _chatbot_reply_from_unstructured_output(exc) if schema is ChatbotReply else None
             if recovered_chatbot_reply is not None:
                 ai_usage_logger.log_event(

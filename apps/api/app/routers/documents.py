@@ -74,11 +74,13 @@ def _save_document_request(lesson_id: str, request: DocumentSaveRequest, user_id
         raise HTTPException(status_code=409, detail="文档已在本次保存前更新，请刷新后再保存")
     if not document_changed(lesson.board_document, request.document):
         return package_view_for_lesson(workspace, package, lesson.id)
-    if is_autosave and would_flatten_rich_document(
-        current_document=current_head.snapshot,
-        new_document=request.document,
-    ):
-        return package_view_for_lesson(workspace, package, lesson.id)
+    if is_autosave:
+        guard_document = _recent_structured_snapshot_for_autosave(lesson, current_head, request.document) or current_head.snapshot
+        if would_flatten_rich_document(
+            current_document=guard_document,
+            new_document=request.document,
+        ):
+            return package_view_for_lesson(workspace, package, lesson.id)
     with bind_ai_request_context(
         "/api/lessons/{lesson_id}/document/save",
         lesson=lesson,
@@ -105,6 +107,34 @@ def _save_document_request(lesson_id: str, request: DocumentSaveRequest, user_id
         refresh_lesson_runtime(lesson)
         save_workspace_for_user(user_id, workspace)
     return package_view_for_lesson(workspace, package, lesson.id)
+
+
+def _visible_document_text(document: BoardDocument) -> str:
+    return " ".join((document.content_text or "").split())
+
+
+def _structured_document_score(document: BoardDocument) -> int:
+    return rich_structure_score(rich_structure_counts(document))
+
+
+def _recent_structured_snapshot_for_autosave(
+    lesson,
+    current_head,
+    new_document: BoardDocument,
+) -> BoardDocument | None:
+    target_text = _visible_document_text(new_document)
+    if not target_text:
+        return None
+    commits_by_id = {commit.id: commit for commit in lesson.history_graph.commits}
+    cursor = current_head
+    seen: set[str] = set()
+    while cursor and cursor.id not in seen:
+        seen.add(cursor.id)
+        if _structured_document_score(cursor.snapshot) >= 8 and _visible_document_text(cursor.snapshot) == target_text:
+            return cursor.snapshot
+        parent_id = cursor.parent_ids[0] if cursor.parent_ids else None
+        cursor = commits_by_id.get(parent_id) if parent_id else None
+    return None
 
 
 def _document_save_structure_metadata(

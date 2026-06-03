@@ -84,6 +84,7 @@ export function useLessonChatAgent({
   const [learningClarity, setLearningClarity] = useState<LearningClarificationStatus | null>(null);
   const [streamedRequirementSheet, setStreamedRequirementSheet] = useState<LearningRequirementSheet | null>(null);
   const [streamedBoardTaskSheet, setStreamedBoardTaskSheet] = useState<BoardTaskRequirementSheet | null>(null);
+  const [currentNeedPending, setCurrentNeedPending] = useState(false);
   const [latestBoardDecision, setLatestBoardDecision] = useState<BoardDecision | null>(null);
   const [referencePrompt, setReferencePrompt] = useState<ResourceReferencePrompt | null>(null);
   const [boardEditPrompt, setBoardEditPrompt] = useState<BoardEditPrompt | null>(null);
@@ -189,6 +190,7 @@ export function useLessonChatAgent({
     setLearningClarity(null);
     setStreamedRequirementSheet(null);
     setStreamedBoardTaskSheet(null);
+    setCurrentNeedPending(false);
     setLatestBoardDecision(null);
     setReferencePrompt(null);
     setBoardEditPrompt(null);
@@ -239,6 +241,12 @@ export function useLessonChatAgent({
     chatRequestInFlightRef.current = true;
     setBusyAction(busyActionName);
     setError(null);
+    if (!isBoardDocumentEmpty(currentBoardDocument ?? lesson.board_document)) {
+      setLearningClarity(null);
+      setStreamedRequirementSheet(null);
+      setStreamedBoardTaskSheet(null);
+      setCurrentNeedPending(true);
+    }
     if (clearComposerInput) {
       updateLessonComposerState(lessonId, (current) => ({
         ...current,
@@ -266,6 +274,7 @@ export function useLessonChatAgent({
             chatInput: restoreComposerInput,
           }));
         }
+        setCurrentNeedPending(false);
         return;
       }
       const beforeRequestResult = await beforeRequest?.({
@@ -307,11 +316,13 @@ export function useLessonChatAgent({
           });
         },
         onRequirementUpdate(payload) {
+          setCurrentNeedPending(false);
           setClarificationQuestions(payload.clarification_questions);
           setLearningClarity(payload.learning_clarification);
           setStreamedRequirementSheet(payload.active_requirement_sheet ?? payload.learning_requirement_sheet);
         },
         onBoardTaskUpdate(payload) {
+          setCurrentNeedPending(false);
           setStreamedRequirementSheet(null);
           setLearningClarity(null);
           setClarificationQuestions([]);
@@ -349,6 +360,7 @@ export function useLessonChatAgent({
         setError(response.board_document_operation_failure_reason ?? "右侧文档生成失败，已保留未保存的预览草稿。");
       }
       setLatestBoardDecision(response.board_decision);
+      setCurrentNeedPending(false);
       setClarificationQuestions(response.clarification_questions);
       setLearningClarity(response.learning_clarification);
       const nextBoardTaskSheet = response.active_board_task_sheet ?? response.board_task_sheet ?? null;
@@ -424,6 +436,7 @@ export function useLessonChatAgent({
         );
       }
       setError(chatError instanceof Error ? chatError.message : "聊天失败");
+      setCurrentNeedPending(false);
     } finally {
       chatRequestInFlightRef.current = false;
       setBusyAction(null);
@@ -602,6 +615,7 @@ export function useLessonChatAgent({
     learningClarity,
     streamedRequirementSheet,
     streamedBoardTaskSheet,
+    currentNeedPending,
     latestBoardDecision,
     referencePrompt,
     boardEditPrompt,

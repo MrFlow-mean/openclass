@@ -406,6 +406,108 @@ def test_segment_resolver_can_target_sentence_inside_speaker_turn() -> None:
     assert resolution.evidence.candidates[0].source == "speaker_sentence"
 
 
+def test_segment_resolver_can_target_reverse_speaker_turn() -> None:
+    lesson = create_empty_lesson("定位测试")
+    lesson.board_document = build_document(
+        title="定位测试",
+        content_text=(
+            "# 主线\n"
+            "## 情景对话\n"
+            "Marc: Bonjour, je prendrai un café crème.\n"
+            "Sophie: Oui, un thé vert, merci.\n"
+            "Marc: Bien sûr ! Je pensais que nous irions à la librairie.\n"
+            "Sophie: Tu savais que Paul voudrait un roman policier ?\n"
+            "Marc: Oui, il me l’avait dit. Il espérait que je lui offrirais le dernier prix Goncourt.\n"
+            "Marc: C’était sérieux. Je t’avais promis que ce serait mon invitation."
+        ),
+    )
+
+    resolution = resolve_board_focus(
+        lesson=lesson,
+        user_message="Marc 说的倒数第二句话是什么意思？",
+        action_type="explain_target",
+    )
+
+    assert resolution.resolved
+    assert resolution.focus is not None
+    assert "Il espérait que je lui offrirais" in resolution.focus.excerpt
+    assert "Marc 倒数第2次发言" in resolution.focus.display_label
+    assert resolution.evidence is not None
+    assert resolution.evidence.query_plan.structured_target == "倒数2句"
+    assert resolution.evidence.candidates[0].source == "speaker_turn"
+
+
+def test_segment_resolver_can_target_last_speaker_turn() -> None:
+    lesson = create_empty_lesson("定位测试")
+    lesson.board_document = build_document(
+        title="定位测试",
+        content_text=(
+            "# 主线\n"
+            "Sophie: Bonjour.\n"
+            "Marc: Salut.\n"
+            "Sophie: Je commanderais un café crème."
+        ),
+    )
+
+    resolution = resolve_board_focus(
+        lesson=lesson,
+        user_message="Sophie 最后一句是什么意思？",
+        action_type="explain_target",
+    )
+
+    assert resolution.resolved
+    assert resolution.focus is not None
+    assert "Je commanderais un café crème" in resolution.focus.excerpt
+    assert "Sophie 倒数第1次发言" in resolution.focus.display_label
+
+
+def test_segment_resolver_can_target_reverse_sentence_without_speaker() -> None:
+    lesson = create_empty_lesson("定位测试")
+    lesson.board_document = build_document(
+        title="定位测试",
+        content_text="# 主线\n第一句说明。第二句是目标。第三句收尾。",
+    )
+
+    resolution = resolve_board_focus(
+        lesson=lesson,
+        user_message="倒数第二句是什么意思？",
+        action_type="explain_target",
+    )
+
+    assert resolution.resolved
+    assert resolution.focus is not None
+    assert resolution.focus.excerpt == "第二句是目标。"
+    assert resolution.evidence is not None
+    assert resolution.evidence.query_plan.structured_target == "倒数2句"
+
+
+def test_commit_snapshot_is_isolated_from_runtime_document_mutation() -> None:
+    lesson = create_empty_lesson("历史快照")
+    document = build_document(
+        title="历史快照",
+        content_json={
+            "type": "doc",
+            "content": [
+                {
+                    "type": "heading",
+                    "attrs": {"level": 1},
+                    "content": [{"type": "text", "text": "结构标题"}],
+                }
+            ],
+        },
+        content_text="结构标题",
+        document_id=lesson.board_document.id,
+        page_settings=lesson.board_document.page_settings,
+    )
+
+    commit_operations(lesson, [], label="Rich snapshot", message="Save rich document", new_document=document)
+    commit = lesson.history_graph.commits[-1]
+    lesson.board_document.content_json["content"][0]["type"] = "paragraph"
+
+    assert commit.snapshot is not lesson.board_document
+    assert commit.snapshot.content_json["content"][0]["type"] == "heading"
+
+
 def test_segment_resolver_maps_unverified_task_excerpt_to_real_segment() -> None:
     lesson = create_empty_lesson("定位测试")
     lesson.board_document = build_document(

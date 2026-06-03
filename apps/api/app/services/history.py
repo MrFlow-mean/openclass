@@ -58,6 +58,7 @@ def commit_operations(
     branch_name = lesson.history_graph.current_branch
     if new_document is None:
         new_document = lesson.board_document
+    snapshot_document = BoardDocument.model_validate(new_document.model_dump(mode="json"))
     context_metadata = _commit_metadata_context.get() or {}
     commit_metadata = {**context_metadata, **(metadata or {})}
 
@@ -67,7 +68,7 @@ def commit_operations(
         branch_name=branch_name,
         parent_ids=[head.id],
         operations=operations,
-        snapshot=new_document,
+        snapshot=snapshot_document,
         metadata=commit_metadata,
     )
     lesson.board_document = new_document

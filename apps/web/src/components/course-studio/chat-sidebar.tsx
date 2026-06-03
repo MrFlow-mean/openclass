@@ -44,6 +44,111 @@ import type { ChatMessage, LessonComposerState } from "@/components/course-studi
 
 type ModelMenu = "text" | "realtime" | null;
 
+const BOARD_TASK_ACTION_LABELS: Partial<Record<NonNullable<BoardTaskRequirementSheet["requested_action"]>, string>> = {
+  write: "写入",
+  edit: "修改",
+  explain: "讲解",
+  chat: "互动",
+};
+
+function boardTaskActionLabel(action: BoardTaskRequirementSheet["requested_action"]) {
+  return action ? BOARD_TASK_ACTION_LABELS[action] ?? action : "待确认";
+}
+
+function CurrentNeedCard({
+  activeBoardTask,
+  barTone,
+  clarityStatus,
+  currentNeedPending,
+  isChatBusy,
+  lesson,
+  targetCommitId,
+}: {
+  activeBoardTask: BoardTaskRequirementSheet | null;
+  barTone: string;
+  clarityStatus: LearningClarificationStatus;
+  currentNeedPending: boolean;
+  isChatBusy: boolean;
+  lesson: Lesson;
+  targetCommitId: string | null;
+}) {
+  if (currentNeedPending) {
+    return (
+      <div className="rounded-xl border border-sky-200 bg-sky-50 p-4">
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-[11px] font-bold uppercase tracking-widest text-sky-700">当前任务</p>
+          <span className="inline-flex items-center gap-1 rounded-full bg-white px-2 py-1 text-[11px] font-semibold text-sky-700">
+            <LoaderCircle className="h-3 w-3 animate-spin" />
+            识别中
+          </span>
+        </div>
+        <div className="mt-3 h-2 rounded-full bg-white">
+          <div className="h-full w-1/3 rounded-full bg-sky-500 transition-all" />
+        </div>
+        <p className="mt-3 text-xs leading-6 text-sky-950">正在把你的新问题整理成目标位置、动作类型、问题内容和互动要求。</p>
+      </div>
+    );
+  }
+
+  if (activeBoardTask) {
+    const progress = Math.max(0, Math.min(100, activeBoardTask.progress));
+    const statusLabel = isChatBusy ? "执行中" : progress >= 100 ? "已完成" : "收集中";
+    return (
+      <div className="rounded-xl border border-sky-200 bg-sky-50 p-4">
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-[11px] font-bold uppercase tracking-widest text-sky-700">当前任务</p>
+          <span className="rounded-full bg-white px-2 py-1 text-[11px] font-semibold text-sky-700">
+            {statusLabel} · {progress}%
+          </span>
+        </div>
+        <div className="mt-3 h-2 rounded-full bg-white">
+          <div className="h-full rounded-full bg-sky-500 transition-all" style={{ width: `${progress}%` }} />
+        </div>
+        <div className="mt-3 grid gap-2 text-xs leading-5 text-sky-950">
+          <p>位置：{activeBoardTask.target_hint || activeBoardTask.target_location?.display_label || activeBoardTask.location_status}</p>
+          <p>动作：{boardTaskActionLabel(activeBoardTask.requested_action)}</p>
+          <p>内容：{activeBoardTask.question_or_topic || "待确认"}</p>
+          <p>
+            互动：
+            {activeBoardTask.interaction_rule_draft?.rule_text ||
+              (activeBoardTask.requested_action === "chat" ? "待确认" : "无特殊规则")}
+          </p>
+        </div>
+        {activeBoardTask.confirmation_status === "awaiting" ? (
+          <p className="mt-3 text-xs leading-6 text-sky-900">等待你确认是否先扩写板书。</p>
+        ) : null}
+        {activeBoardTask.missing_items.length ? (
+          <p className="mt-3 text-xs leading-6 text-sky-900">待补充：{activeBoardTask.missing_items.join("、")}</p>
+        ) : null}
+      </div>
+    );
+  }
+
+  if (lesson.board_document.content_text.trim()) {
+    return (
+      <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-[11px] font-bold uppercase tracking-widest text-gray-600">当前任务</p>
+          <span className="rounded-full bg-white px-2 py-1 text-[11px] font-semibold text-gray-600">待输入</span>
+        </div>
+        <div className="mt-3 h-2 rounded-full bg-white">
+          <div className="h-full w-0 rounded-full bg-gray-400" />
+        </div>
+        <p className="mt-3 text-xs leading-6 text-gray-700">等待新的板书任务。</p>
+      </div>
+    );
+  }
+
+  return (
+    <LearningClarityCard
+      barTone={barTone}
+      clarityStatus={clarityStatus}
+      lesson={lesson}
+      targetCommitId={targetCommitId}
+    />
+  );
+}
+
 type CourseStudioChatSidebarProps = {
   resizeHandleProps: HTMLAttributes<HTMLDivElement>;
   isResizing: boolean;
@@ -61,6 +166,7 @@ type CourseStudioChatSidebarProps = {
   boardEditPrompt: BoardEditPrompt | null;
   clarificationQuestions: string[];
   activeBoardTask: BoardTaskRequirementSheet | null;
+  currentNeedPending: boolean;
   latestBoardDecision: BoardDecision | null;
   selectedReference: ResourceReferenceContext | null;
   chatScrollEndRef: RefObject<HTMLDivElement | null>;
@@ -112,6 +218,7 @@ export function CourseStudioChatSidebar({
   boardEditPrompt,
   clarificationQuestions,
   activeBoardTask,
+  currentNeedPending,
   latestBoardDecision,
   selectedReference,
   chatScrollEndRef,
@@ -181,46 +288,15 @@ export function CourseStudioChatSidebar({
       </div>
       <div className="flex-1 overflow-y-auto p-6 custom-scrollbar">
         <div className="space-y-6">
-          {!activeBoardTask ? (
-            <LearningClarityCard
-              barTone={clarityBarTone}
-              clarityStatus={clarityStatus}
-              lesson={activeLesson}
-              targetCommitId={targetCommitId}
-            />
-          ) : null}
-          {!isPreviewMode && activeBoardTask ? (
-            <div className="rounded-xl border border-sky-200 bg-sky-50 p-4">
-              <div className="flex items-center justify-between gap-3">
-                <p className="text-[11px] font-bold uppercase tracking-widest text-sky-700">板书任务清单</p>
-                <span className="rounded-full bg-white px-2 py-1 text-[11px] font-semibold text-sky-700">
-                  {activeBoardTask.progress}%
-                </span>
-              </div>
-              <div className="mt-3 h-2 rounded-full bg-white">
-                <div
-                  className="h-full rounded-full bg-sky-500 transition-all"
-                  style={{ width: `${Math.max(0, Math.min(100, activeBoardTask.progress))}%` }}
-                />
-              </div>
-              <div className="mt-3 grid gap-2 text-xs leading-5 text-sky-950">
-                <p>位置：{activeBoardTask.target_hint || activeBoardTask.location_status}</p>
-                <p>动作：{activeBoardTask.requested_action ?? "待确认"}</p>
-                <p>内容：{activeBoardTask.question_or_topic || "待确认"}</p>
-                <p>
-                  互动：{activeBoardTask.interaction_rule_draft?.rule_text || (activeBoardTask.requested_action === "chat" ? "待确认" : "无特殊规则")}
-                </p>
-              </div>
-              {activeBoardTask.confirmation_status === "awaiting" ? (
-                <p className="mt-3 text-xs leading-6 text-sky-900">等待你确认是否先扩写板书。</p>
-              ) : null}
-              {activeBoardTask.missing_items.length ? (
-                <p className="mt-3 text-xs leading-6 text-sky-900">
-                  待补充：{activeBoardTask.missing_items.join("、")}
-                </p>
-              ) : null}
-            </div>
-          ) : null}
+          <CurrentNeedCard
+            activeBoardTask={!isPreviewMode ? activeBoardTask : null}
+            barTone={clarityBarTone}
+            clarityStatus={clarityStatus}
+            currentNeedPending={!isPreviewMode && currentNeedPending}
+            isChatBusy={isChatBusy}
+            lesson={activeLesson}
+            targetCommitId={targetCommitId}
+          />
           {!isPreviewMode && !activeBoardTask && activeLesson?.active_interaction_session ? (
             <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
               <div className="flex items-center justify-between gap-3">

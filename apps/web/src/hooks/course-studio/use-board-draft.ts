@@ -149,6 +149,10 @@ function richStructureScore(counts: ReturnType<typeof richStructureCounts>) {
   );
 }
 
+function isStructuredDocument(document: BoardDocument) {
+  return richStructureScore(richStructureCounts(document)) >= 8;
+}
+
 function wouldFlattenRenderedDocument(currentDocument: BoardDocument, nextDocument: BoardDocument) {
   const currentCounts = richStructureCounts(currentDocument);
   const nextCounts = richStructureCounts(nextDocument);
@@ -193,6 +197,7 @@ export function useBoardDraft({
   const isDocumentDirtyRef = useRef(false);
   const isPreviewingRef = useRef(false);
   const ignoredStreamingPreviewRef = useRef<BoardDocument | null>(null);
+  const lastStructuredDocumentRef = useRef<BoardDocument | null>(null);
 
   const [draftDocument, setDraftDocument] = useState<BoardDocument | null>(null);
   const [isDocumentDirty, setIsDocumentDirty] = useState(false);
@@ -220,6 +225,7 @@ export function useBoardDraft({
       documentDraftVersionRef.current += 1;
       activeLessonRef.current = lesson;
       draftDocumentRef.current = nextDocument;
+      lastStructuredDocumentRef.current = nextDocument && isStructuredDocument(nextDocument) ? nextDocument : null;
       isDocumentDirtyRef.current = false;
       isPreviewingRef.current = false;
       if (!nextDocument || ignoredStreamingPreviewRef.current?.id !== nextDocument.id) {
@@ -278,6 +284,9 @@ export function useBoardDraft({
       if (documentDraftVersionRef.current === savedVersion) {
         setDraftDocument(savedLesson.board_document);
         draftDocumentRef.current = savedLesson.board_document;
+        if (isStructuredDocument(savedLesson.board_document)) {
+          lastStructuredDocumentRef.current = savedLesson.board_document;
+        }
         setIsDocumentDirty(false);
         isDocumentDirtyRef.current = false;
         setAutoSaveStatus("saved");
@@ -286,6 +295,9 @@ export function useBoardDraft({
       }
 
       const latestDraft = draftDocumentRef.current;
+      if (isStructuredDocument(savedLesson.board_document)) {
+        lastStructuredDocumentRef.current = savedLesson.board_document;
+      }
       const stillDirty = Boolean(latestDraft && !documentsEqual(latestDraft, savedLesson.board_document));
       setIsDocumentDirty(stillDirty);
       isDocumentDirtyRef.current = stillDirty;
@@ -310,6 +322,20 @@ export function useBoardDraft({
       const lesson = activeLessonRef.current;
       const document = draftDocumentRef.current;
       if (!lesson || !document || !isDocumentDirtyRef.current || isPreviewingRef.current) {
+        return true;
+      }
+      const structuredGuard = lastStructuredDocumentRef.current;
+      if (
+        structuredGuard &&
+        structuredGuard.id === document.id &&
+        looksLikeSameRenderedDocument(document, structuredGuard) &&
+        wouldFlattenRenderedDocument(structuredGuard, document)
+      ) {
+        draftDocumentRef.current = structuredGuard;
+        isDocumentDirtyRef.current = false;
+        setDraftDocument(structuredGuard);
+        setIsDocumentDirty(false);
+        setAutoSaveStatus("idle");
         return true;
       }
       if (documentsEqual(document, lesson.board_document)) {
@@ -393,6 +419,20 @@ export function useBoardDraft({
       if (!lesson || !document || !isDocumentDirtyRef.current || isPreviewingRef.current) {
         return;
       }
+      const structuredGuard = lastStructuredDocumentRef.current;
+      if (
+        structuredGuard &&
+        structuredGuard.id === document.id &&
+        looksLikeSameRenderedDocument(document, structuredGuard) &&
+        wouldFlattenRenderedDocument(structuredGuard, document)
+      ) {
+        draftDocumentRef.current = structuredGuard;
+        isDocumentDirtyRef.current = false;
+        setDraftDocument(structuredGuard);
+        setIsDocumentDirty(false);
+        setAutoSaveStatus("idle");
+        return;
+      }
       if (documentsEqual(document, lesson.board_document)) {
         ignoredStreamingPreviewRef.current = null;
         return;
@@ -414,6 +454,7 @@ export function useBoardDraft({
         return;
       }
       const ignoredStreamingPreview = ignoredStreamingPreviewRef.current;
+      const structuredGuard = lastStructuredDocumentRef.current;
       if (
         ignoredStreamingPreview &&
         looksLikeSameRenderedDocument(nextDocument, ignoredStreamingPreview) &&
@@ -439,6 +480,20 @@ export function useBoardDraft({
         setAutoSaveStatus("idle");
         return;
       }
+      if (
+        structuredGuard &&
+        structuredGuard.id === nextDocument.id &&
+        looksLikeSameRenderedDocument(nextDocument, structuredGuard) &&
+        wouldFlattenRenderedDocument(structuredGuard, nextDocument)
+      ) {
+        ignoredStreamingPreviewRef.current = null;
+        draftDocumentRef.current = structuredGuard;
+        isDocumentDirtyRef.current = false;
+        setDraftDocument(structuredGuard);
+        setIsDocumentDirty(false);
+        setAutoSaveStatus("idle");
+        return;
+      }
       const hasChanged = !documentsEqual(draftDocumentRef.current, nextDocument);
       const dirty = !documentsEqual(nextDocument, lesson.board_document);
       if (!dirty) {
@@ -453,6 +508,9 @@ export function useBoardDraft({
         documentDraftVersionRef.current += 1;
       }
       draftDocumentRef.current = nextDocument;
+      if (isStructuredDocument(nextDocument)) {
+        lastStructuredDocumentRef.current = nextDocument;
+      }
       isDocumentDirtyRef.current = dirty;
       setDraftDocument((current) => {
         if (current && current.id === nextDocument.id && documentsEqual(current, nextDocument)) {

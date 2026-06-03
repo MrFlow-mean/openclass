@@ -24,17 +24,27 @@ EXPLAIN_CONFIDENCE_THRESHOLD = 0.65
 ORDINAL_LOCATION_PATTERN = re.compile(
     r"(?:第\s*)?(?P<number>[0-9０-９一二三四五六七八九十两]+)\s*(?P<unit>小节|章节|章|节|部分|段)"
 )
+REVERSE_STRUCTURED_TARGET_PATTERN = re.compile(
+    r"(?:(?P<reverse>倒数)\s*(?:第\s*)?(?P<reverse_number>[0-9０-９一二三四五六七八九十两]+)"
+    r"|(?P<last>最后|末尾)\s*(?:第\s*)?(?P<last_number>[0-9０-９一二三四五六七八九十两]+)?)"
+    r"\s*(?:个|道)?\s*(?P<unit>空|题|问题|项|条|选项|句|句话|行|段)"
+)
 STRUCTURED_TARGET_PATTERN = re.compile(
     r"(?:第\s*)?(?P<number>[0-9０-９一二三四五六七八九十两]+)\s*(?:个|道)?\s*"
-    r"(?P<unit>空|题|问题|项|条|选项|句|行)"
+    r"(?P<unit>空|题|问题|项|条|选项|句|句话|行)"
 )
 SPEAKER_LABEL_PATTERN = re.compile(
     r"(?P<speaker>[A-Za-zÀ-ÖØ-öø-ÿ][A-Za-zÀ-ÖØ-öø-ÿ0-9_'’.-]{0,40}|[\u4e00-\u9fff]{1,12})\s*[:：]\s*"
 )
 SPEAKER_EXPLICIT_TURN_PATTERN = re.compile(
-    r"(?:第\s*)?(?P<turn>[0-9０-９一二三四五六七八九十两]+)\s*(?:次|个)?\s*"
+    r"(?P<turn_origin>倒数|最后|末尾)?\s*(?:第\s*)?(?P<turn>[0-9０-９一二三四五六七八九十两]+)?\s*(?:次|个)?\s*"
     r"(?:发言|话轮|台词|回复|说话)"
-    r"(?:\s*(?:的|里|中)\s*(?:第\s*)?(?P<sentence>[0-9０-９一二三四五六七八九十两]+)\s*(?:句|句话))?"
+    r"(?:\s*(?:的|里|中)\s*(?P<sentence_origin>倒数|最后|末尾)?\s*(?:第\s*)?(?P<sentence>[0-9０-９一二三四五六七八九十两]+)?\s*(?:句|句话))?"
+)
+SPEAKER_REVERSE_DEFAULT_ORDINAL_PATTERN = re.compile(
+    r"(?:(?P<reverse>倒数)\s*(?:第\s*)?(?P<reverse_number>[0-9０-９一二三四五六七八九十两]+)"
+    r"|(?P<last>最后|末尾)\s*(?:第\s*)?(?P<last_number>[0-9０-９一二三四五六七八九十两]+)?)"
+    r"\s*(?:句|句话|次发言|个话轮|次说话|条台词)"
 )
 SPEAKER_DEFAULT_ORDINAL_PATTERN = re.compile(
     r"(?:第\s*)?(?P<number>[0-9０-９一二三四五六七八九十两]+)\s*(?:句|句话|次发言|个话轮|次说话|条台词)"
@@ -87,6 +97,7 @@ class FocusResolution:
 class StructuredTarget:
     number: int
     unit: str
+    origin: str = "start"
 
 
 @dataclass(frozen=True)
@@ -101,7 +112,9 @@ class SpeakerTurn:
 class SpeakerTarget:
     speaker: str
     turn_number: int
+    origin: str = "start"
     sentence_number: int | None = None
+    sentence_origin: str = "start"
 
 
 class BoardDocumentLocator:
@@ -607,22 +620,28 @@ def _speaker_candidate_focuses(
         return []
 
     speaker_turns = [turn for turn in turns if _speaker_key(turn.speaker) == _speaker_key(target.speaker)]
-    if not speaker_turns or target.turn_number > len(speaker_turns):
+    turn_index = _ordinal_index(target.turn_number, len(speaker_turns), target.origin)
+    if turn_index is None:
         return []
 
-    turn = speaker_turns[target.turn_number - 1]
+    turn = speaker_turns[turn_index]
     excerpt_body = turn.body
     source = "speaker_turn"
     reason = "根据用户给出的角色名和第几次发言定位。"
-    display_label = _speaker_display_label(turn=turn, sentence_number=None)
+    if target.origin == "end":
+        reason = "根据用户给出的角色名和倒序发言序号定位。"
+    display_label = _speaker_display_label(turn=turn, target=target, sentence_number=None)
     if target.sentence_number is not None:
         sentences = _sentences_for_text(turn.body)
-        if target.sentence_number > len(sentences):
+        sentence_index = _ordinal_index(target.sentence_number, len(sentences), target.sentence_origin)
+        if sentence_index is None:
             return []
-        excerpt_body = sentences[target.sentence_number - 1]
+        excerpt_body = sentences[sentence_index]
         source = "speaker_sentence"
         reason = "根据用户给出的角色名、发言轮次和句子序号定位。"
-        display_label = _speaker_display_label(turn=turn, sentence_number=target.sentence_number)
+        if target.sentence_origin == "end":
+            reason = "根据用户给出的角色名、发言轮次和倒序句子序号定位。"
+        display_label = _speaker_display_label(turn=turn, target=target, sentence_number=target.sentence_number)
 
     excerpt = compact_segment_text(f"{turn.speaker}: {excerpt_body}", limit=600)
     focus = _focus_from_segment_excerpt(
@@ -673,10 +692,26 @@ def _speaker_target_from_query(*, query_text: str, turns: list[SpeakerTurn]) -> 
 
     explicit = SPEAKER_EXPLICIT_TURN_PATTERN.search(query_text)
     if explicit:
-        turn_number = _parse_ordinal_number(explicit.group("turn"))
+        turn_origin = _target_origin(explicit.group("turn_origin"))
+        turn_number = _parse_ordinal_number(explicit.group("turn") or "") or (1 if turn_origin == "end" else None)
+        sentence_origin = _target_origin(explicit.group("sentence_origin"))
         sentence_number = _parse_ordinal_number(explicit.group("sentence") or "") if explicit.group("sentence") else None
+        if sentence_number is None and sentence_origin == "end" and explicit.group("sentence_origin"):
+            sentence_number = 1
         if turn_number is not None:
-            return SpeakerTarget(speaker=speaker, turn_number=turn_number, sentence_number=sentence_number)
+            return SpeakerTarget(
+                speaker=speaker,
+                turn_number=turn_number,
+                origin=turn_origin,
+                sentence_number=sentence_number,
+                sentence_origin=sentence_origin,
+            )
+
+    reverse_default = SPEAKER_REVERSE_DEFAULT_ORDINAL_PATTERN.search(query_text)
+    if reverse_default:
+        turn_number, origin = _reverse_match_number_and_origin(reverse_default)
+        if turn_number is not None:
+            return SpeakerTarget(speaker=speaker, turn_number=turn_number, origin=origin)
 
     default = SPEAKER_DEFAULT_ORDINAL_PATTERN.search(query_text)
     if default:
@@ -713,15 +748,42 @@ def _speaker_is_latin(value: str) -> bool:
     return bool(re.search(r"[A-Za-zÀ-ÖØ-öø-ÿ]", value))
 
 
+def _target_origin(raw: str | None) -> str:
+    return "end" if raw in {"倒数", "最后", "末尾"} else "start"
+
+
+def _reverse_match_number_and_origin(match: re.Match[str]) -> tuple[int | None, str]:
+    origin = "end" if match.groupdict().get("reverse") or match.groupdict().get("last") else "start"
+    raw_number = (
+        match.groupdict().get("reverse_number")
+        or match.groupdict().get("last_number")
+        or ("一" if origin == "end" else "")
+    )
+    return _parse_ordinal_number(raw_number), origin
+
+
+def _ordinal_index(number: int, size: int, origin: str) -> int | None:
+    if number < 1 or number > size:
+        return None
+    return size - number if origin == "end" else number - 1
+
+
+def _normalized_target_unit(unit: str) -> str:
+    return "句" if unit == "句话" else unit
+
+
 def _sentences_for_text(text: str) -> list[str]:
     return [match.group(0).strip() for match in SENTENCE_SPLIT_PATTERN.finditer(text) if match.group(0).strip()]
 
 
-def _speaker_display_label(*, turn: SpeakerTurn, sentence_number: int | None) -> str:
+def _speaker_display_label(*, turn: SpeakerTurn, target: SpeakerTarget, sentence_number: int | None) -> str:
     path = " / ".join(turn.segment.heading_path)
-    label = f"{turn.speaker} 第{turn.speaker_turn_index}次发言"
+    if target.origin == "end":
+        label = f"{turn.speaker} 倒数第{target.turn_number}次发言"
+    else:
+        label = f"{turn.speaker} 第{turn.speaker_turn_index}次发言"
     if sentence_number is not None:
-        label += f"第{sentence_number}句"
+        label += f"倒数第{sentence_number}句" if target.sentence_origin == "end" else f"第{sentence_number}句"
     return f"{label} · {path}" if path else label
 
 
@@ -814,6 +876,10 @@ def _structured_candidate_focuses(
         list_candidates = _list_item_candidate_focuses(lesson=lesson, target=target, segments=segments)
         if list_candidates:
             return list_candidates
+    if target.unit == "段":
+        paragraph_candidates = _paragraph_candidate_focuses(lesson=lesson, target=target, segments=segments)
+        if paragraph_candidates:
+            return paragraph_candidates
 
     candidates: list[BoardFocusRef] = []
     seen: set[tuple[str | None, str]] = set()
@@ -842,18 +908,27 @@ def _structured_target_from_message(text: str) -> StructuredTarget | None:
     compact = compact_segment_text(text, limit=300)
     if _looks_like_quantity_or_length_constraint(compact):
         return None
+    reverse_match = REVERSE_STRUCTURED_TARGET_PATTERN.search(compact)
+    if reverse_match:
+        number, origin = _reverse_match_number_and_origin(reverse_match)
+        if number is None:
+            return None
+        return StructuredTarget(number=number, unit=_normalized_target_unit(reverse_match.group("unit")), origin=origin)
     match = STRUCTURED_TARGET_PATTERN.search(compact)
     if not match:
         return None
     number = _parse_ordinal_number(match.group("number"))
     if number is None:
         return None
-    return StructuredTarget(number=number, unit=match.group("unit"))
+    return StructuredTarget(number=number, unit=_normalized_target_unit(match.group("unit")))
 
 
 def _structured_target_label(text: str) -> str:
     target = _structured_target_from_message(text)
-    return f"{target.number}{target.unit}" if target else ""
+    if not target:
+        return ""
+    prefix = "倒数" if target.origin == "end" else ""
+    return f"{prefix}{target.number}{target.unit}"
 
 
 def _structured_excerpts_for_segment(text: str, target: StructuredTarget) -> list[tuple[str, str]]:
@@ -862,9 +937,9 @@ def _structured_excerpts_for_segment(text: str, target: StructuredTarget) -> lis
     if target.unit in {"题", "问题", "项", "条", "选项"}:
         return _numbered_item_excerpts_for_segment(text, target.number)
     if target.unit == "句":
-        return _nth_sentence_excerpt_for_segment(text, target.number)
+        return _nth_sentence_excerpt_for_segment(text, target.number, target.origin)
     if target.unit == "行":
-        return _nth_line_excerpt_for_segment(text, target.number)
+        return _nth_line_excerpt_for_segment(text, target.number, target.origin)
     return []
 
 
@@ -887,17 +962,21 @@ def _numbered_item_excerpts_for_segment(text: str, ordinal: int) -> list[tuple[s
     return excerpts
 
 
-def _nth_sentence_excerpt_for_segment(text: str, ordinal: int) -> list[tuple[str, str]]:
+def _nth_sentence_excerpt_for_segment(text: str, ordinal: int, origin: str) -> list[tuple[str, str]]:
     sentences = [match.group(0).strip() for match in SENTENCE_SPLIT_PATTERN.finditer(text) if match.group(0).strip()]
-    if 1 <= ordinal <= len(sentences):
-        return [(compact_segment_text(sentences[ordinal - 1], limit=500), "根据用户给出的句子序号定位。")]
+    index = _ordinal_index(ordinal, len(sentences), origin)
+    if index is not None:
+        reason = "根据用户给出的倒序句子序号定位。" if origin == "end" else "根据用户给出的句子序号定位。"
+        return [(compact_segment_text(sentences[index], limit=500), reason)]
     return []
 
 
-def _nth_line_excerpt_for_segment(text: str, ordinal: int) -> list[tuple[str, str]]:
+def _nth_line_excerpt_for_segment(text: str, ordinal: int, origin: str) -> list[tuple[str, str]]:
     lines = [line.strip() for line in re.split(r"[\n\r]+", text) if line.strip()]
-    if 1 <= ordinal <= len(lines):
-        return [(compact_segment_text(lines[ordinal - 1], limit=500), "根据用户给出的行号定位。")]
+    index = _ordinal_index(ordinal, len(lines), origin)
+    if index is not None:
+        reason = "根据用户给出的倒序行号定位。" if origin == "end" else "根据用户给出的行号定位。"
+        return [(compact_segment_text(lines[index], limit=500), reason)]
     return []
 
 
@@ -922,6 +1001,30 @@ def _list_item_candidate_focuses(
             )
         ]
     return []
+
+
+def _paragraph_candidate_focuses(
+    *,
+    lesson: Lesson,
+    target: StructuredTarget,
+    segments: list[BoardSegment],
+) -> list[BoardFocusRef]:
+    paragraph_segments = [segment for segment in segments if segment.kind == "paragraph" and segment.text.strip()]
+    index = _ordinal_index(target.number, len(paragraph_segments), target.origin)
+    if index is None:
+        return []
+    segment = paragraph_segments[index]
+    return [
+        _focus_from_segment(
+            lesson=lesson,
+            segment=segment,
+            segments=segments,
+            confidence=0.9,
+            reason="根据用户给出的倒序段落序号定位。" if target.origin == "end" else "根据用户给出的段落序号定位。",
+            source_segment_ids=[segment.segment_id],
+            score_breakdown={"structured_paragraph": 0.9},
+        )
+    ]
 
 
 def _bounded_excerpt(text: str, start: int, end: int) -> str:
