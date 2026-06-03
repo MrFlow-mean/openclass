@@ -1069,6 +1069,77 @@ def rich_structure_score(counts: dict[str, int]) -> int:
     )
 
 
+def _compact_node_text(value: Any) -> str:
+    parts: list[str] = []
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            node_type = node.get("type")
+            if node_type == "text":
+                text = node.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+                return
+            if node_type in {"inlineMath", "blockMath"}:
+                attrs = node.get("attrs")
+                if isinstance(attrs, dict) and isinstance(attrs.get("latex"), str):
+                    parts.append(attrs["latex"])
+                return
+            content = node.get("content")
+            if isinstance(content, list):
+                for child in content:
+                    walk(child)
+        elif isinstance(node, list):
+            for child in node:
+                walk(child)
+
+    walk(value)
+    return re.sub(r"\s+", " ", "".join(parts)).strip()
+
+
+def _leading_document_blocks(document: BoardDocument, *, limit: int = 16) -> list[tuple[str, str]]:
+    content_json = document.content_json if isinstance(document.content_json, dict) else {}
+    content = content_json.get("content")
+    if not isinstance(content, list):
+        return []
+    blocks: list[tuple[str, str]] = []
+    for node in content:
+        if not isinstance(node, dict):
+            continue
+        node_type = node.get("type")
+        if not isinstance(node_type, str):
+            continue
+        text = _compact_node_text(node)
+        if not text and node_type == "paragraph":
+            continue
+        blocks.append((node_type, text))
+        if len(blocks) >= limit:
+            break
+    return blocks
+
+
+def _would_degrade_leading_heading_hierarchy(current_document: BoardDocument, new_document: BoardDocument) -> bool:
+    current_blocks = _leading_document_blocks(current_document)
+    new_blocks = _leading_document_blocks(new_document)
+    if not current_blocks or not new_blocks:
+        return False
+
+    current_heading_indexes = [index for index, (node_type, _) in enumerate(current_blocks[:8]) if node_type == "heading"]
+    if not current_heading_indexes or current_heading_indexes[0] > 2:
+        return False
+
+    new_heading_indexes = [index for index, (node_type, _) in enumerate(new_blocks[:8]) if node_type == "heading"]
+    if new_heading_indexes and new_heading_indexes[0] <= current_heading_indexes[0] + 1:
+        return False
+
+    current_heading_count = len(current_heading_indexes)
+    new_heading_count = len(new_heading_indexes)
+    new_leading_plain_count = sum(1 for node_type, text in new_blocks[:8] if node_type == "paragraph" and text)
+    if new_heading_count == 0 and new_leading_plain_count >= 2:
+        return True
+    return current_heading_count >= 2 and new_heading_count * 2 < current_heading_count and new_blocks[0][0] != "heading"
+
+
 def would_flatten_rich_document(
     *,
     current_document: BoardDocument,
@@ -1086,6 +1157,8 @@ def would_flatten_rich_document(
         return False
 
     new_counts = rich_structure_counts(new_document)
+    if _would_degrade_leading_heading_hierarchy(current_document, new_document):
+        return True
     if new_counts.get("heading", 0) or new_counts.get("table", 0):
         return False
 

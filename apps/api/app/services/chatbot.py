@@ -76,7 +76,8 @@ from app.services.segment_resolver import FocusResolution, focus_context, resolv
 MAX_CONTEXT_CHARS = 1800
 MAX_CONVERSATION_TURNS = 8
 EXPLAIN_REQUEST_PATTERN = re.compile(
-    r"(讲解|解释|说明|讲一下|解释一下|帮我理解|为什么|是什么|什么意思|是什么意思|什么含义|含义)"
+    r"(讲解|解释|说明|讲一下|解释一下|帮我理解|为什么|是什么|什么意思|是什么意思|什么含义|含义|"
+    r"(?:怎么|如何|怎样).{0,12}(?:表达|体现|说明|运用|使用|写出|看出|表现))"
 )
 APPEND_REQUEST_PATTERN = re.compile(
     r"(续写|继续写|接着写|往后写|后续|新增|追加|新加|新章节|新小节|下一节|下一章|下一部分|末尾|"

@@ -84,7 +84,7 @@ def generate_board_directed_explanation_message(
             **(interaction_context or {}),
             "board_explanation_directive": directive_payload,
         },
-        retry_once=directive.status == "approved",
+        retry_once=True,
     )
     return BoardDirectedExplanationResult(
         chatbot_message=chatbot_message,

@@ -404,6 +404,46 @@ def test_board_explanation_gate_keeps_conversation_away_from_board_directive(
     assert "原始聊天" not in json.dumps(captured, ensure_ascii=False)
 
 
+def test_board_explanation_gate_retries_empty_clarification_reply(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_board_explanation_directive",
+        lambda **kwargs: BoardExplanationDirective(
+            status="needs_clarification",
+            board_feedback="目标片段不足以直接讲解。",
+            clarification_question="请先确认要讲哪一处。",
+            reason="目标不清楚。",
+        ),
+    )
+
+    def _fake_chatbot_reply(**kwargs):
+        calls.append(kwargs.get("user_message") or "")
+        if len(calls) == 1:
+            return ChatbotReply(chatbot_message="")
+        return ChatbotReply(chatbot_message="AI生成：请先确认要讲哪一处。")
+
+    monkeypatch.setattr(openai_course_ai, "generate_chatbot_reply", _fake_chatbot_reply)
+
+    result = generate_board_directed_explanation_message(
+        lesson_title="测试页",
+        learning_goal="学习一个通用主题",
+        board_summary="已隔离的板书摘要",
+        resource_summary="暂无已上传资料摘要",
+        conversation_summary="user: 原始聊天",
+        user_message="讲一下",
+        action_type="explain_target",
+        target_excerpt="目标摘录",
+    )
+
+    assert len(calls) == 2
+    assert result.assistant_message_source == "chatbot_board_directed_clarification"
+    assert result.chatbot_message == "AI生成：请先确认要讲哪一处。"
+
+
 def test_board_document_generation_prompt_requests_substantial_default_length(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2658,6 +2698,73 @@ def test_autosave_rejects_heading_loss_to_plain_lists(
     assert len(updated_lesson.history_graph.commits) == original_commit_count
 
 
+def test_autosave_rejects_leading_heading_hierarchy_degradation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    rich_document = build_document(
+        title="结构化板书",
+        content_text=(
+            "# 总标题\n\n"
+            "## 第一部分\n\n"
+            "这是一段说明。\n\n"
+            "## 第二部分\n\n"
+            "- **要点**：保留标题层级。\n"
+            "- **练习**：继续完成任务。\n"
+        ),
+        document_id=lesson.board_document.id,
+        page_settings=lesson.board_document.page_settings,
+    )
+    lesson.board_document = rich_document
+    lesson.history_graph.commits[-1].snapshot = rich_document
+    store.save_for_user(TEST_USER.id, workspace)
+    base_commit_id = lesson.history_graph.commits[-1].id
+    original_commit_count = len(lesson.history_graph.commits)
+
+    degraded_document = build_document(
+        title=rich_document.title,
+        content_html=(
+            "<p>改写后的背景说明</p>"
+            "<p>这一段来自编辑器里尚未确认的临时状态。</p>"
+            "<p>第一部分</p>"
+            "<p>这是一段说明。</p>"
+            "<p>第二部分</p>"
+            "<ul><li><strong>要点</strong>：保留标题层级。</li></ul>"
+            "<h2>后续保留的结构</h2>"
+            "<p>即使后面还有标题，前面的主层级也不能被段落化覆盖。</p>"
+        ),
+        document_id=rich_document.id,
+        page_settings=rich_document.page_settings,
+    )
+
+    package = documents_router.save_document(
+        lesson.id,
+        DocumentSaveRequest(
+            document=degraded_document,
+            label="Auto Save",
+            message="Auto-saved Word-like rich document changes from the editor",
+            metadata={
+                "kind": "auto_document_save",
+                "autosave": True,
+                "autosave_reason": "debounce",
+                "source": "word_board_editor",
+            },
+            base_commit_id=base_commit_id,
+        ),
+        user=TEST_USER,
+    )
+
+    updated_lesson = next(current for current in package.lessons if current.id == lesson.id)
+    assert updated_lesson.board_document.content_html == rich_document.content_html
+    assert updated_lesson.board_document.content_text == rich_document.content_text
+    assert updated_lesson.history_graph.commits[-1].id == base_commit_id
+    assert len(updated_lesson.history_graph.commits) == original_commit_count
+
+
 def test_stale_manual_document_save_is_rejected(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
     monkeypatch.setattr(workspace_state, "STORE", store)
@@ -3626,6 +3733,59 @@ def test_existing_board_meaning_question_uses_board_task_directive(
     assert commit.metadata["board_task_route"] == "explain"
     assert commit.metadata["board_task_cleared"] is True
     assert commit.metadata["board_explanation_directive"]["status"] == "approved"
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_existing_board_how_expression_question_uses_board_task_flow(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    captured: dict[str, str | None] = {}
+
+    def _fake_chatbot_reply(**kwargs):
+        captured["user_message"] = kwargs.get("user_message")
+        return ChatbotReply(chatbot_message="AI生成：这是根据板书中表达方式的讲解。")
+
+    monkeypatch.setattr(openai_course_ai, "generate_chatbot_reply", _fake_chatbot_reply)
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.board_document = build_document(
+        title="已有板书",
+        content_text=(
+            "# 主线\n"
+            "## 读文分析\n"
+            "文章里通过反复停顿和条件句表达目标状态。\n"
+            "另一个段落只介绍背景。"
+        ),
+    )
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="文章中是怎么表达目标状态的？"),
+        user_id=TEST_USER.id,
+    )
+
+    assert response.chatbot_message == "AI生成：这是根据板书中表达方式的讲解。"
+    assert response.active_requirement_sheet is None
+    assert response.active_board_task_sheet is None
+    assert response.resolved_focus is not None
+    assert "表达目标状态" in response.resolved_focus.excerpt
+    assert "板书侧已允许 Chatbot 进行讲解" in (captured["user_message"] or "")
+    versions = store.list_board_task_versions(owner_user_id=TEST_USER.id, lesson_id=lesson.id)
+    assert versions
+    events = store.list_board_task_events(owner_user_id=TEST_USER.id, lesson_id=lesson.id)
+    assert events[-1]["event_type"] == "consumed"
+    commit = response.course_package.lessons[0].history_graph.commits[-1]
+    assert commit.metadata["assistant_message_source"] == "chatbot_board_directed"
+    assert commit.metadata["board_task_route"] == "explain"
+    assert commit.metadata["board_task_cleared"] is True
+    assert commit.metadata["task_requirement_sheet"]["action_type"] == "explain_target"
+    assert commit.metadata["active_requirement_sheet_after"] is None
     assert _read_log_entries(isolated_ai_log) == []
 
 
