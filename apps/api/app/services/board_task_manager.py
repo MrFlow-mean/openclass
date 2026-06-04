@@ -20,7 +20,11 @@ EDIT_PATTERN = re.compile(
     r"控制.{0,8}(?:以内|以下)|[0-9０-９一二三四五六七八九十两]+.{0,8}(?:以内|以下))"
 )
 EXPLAIN_PATTERN = re.compile(
-    r"(讲解|解释|说明|讲一下|解释一下|帮我理解|为什么|是什么|什么意思|是什么意思|什么含义|含义|"
+    r"(讲解|讲述|解释|说明|讲一下|解释一下|帮我理解|为什么|是什么|什么意思|是什么意思|什么含义|含义|"
+    r"(?:怎么|如何|怎样).{0,12}(?:表达|体现|说明|运用|使用|写出|看出|表现))"
+)
+STRONG_EXPLAIN_PATTERN = re.compile(
+    r"(讲解|讲述|解释|讲一下|解释一下|帮我理解|为什么|是什么|什么意思|是什么意思|什么含义|含义|"
     r"(?:怎么|如何|怎样).{0,12}(?:表达|体现|说明|运用|使用|写出|看出|表现))"
 )
 CHAT_PATTERN = re.compile(r"(练习|互动|你问我答|问答|角色|轮流|按.{0,12}规则|对话|测验|检查我)")
@@ -185,12 +189,13 @@ def _has_target_signal(sheet: BoardTaskRequirementSheet) -> bool:
 
 
 def _infer_action(text: str) -> BoardTaskRequestedAction | None:
+    has_write = bool(WRITE_PATTERN.search(text))
+    if EXPLAIN_PATTERN.search(text) and (not has_write or STRONG_EXPLAIN_PATTERN.search(text)):
+        return "explain"
     if EDIT_PATTERN.search(text):
         return "edit"
-    if WRITE_PATTERN.search(text):
+    if has_write:
         return "write"
-    if EXPLAIN_PATTERN.search(text):
-        return "explain"
     if CHAT_PATTERN.search(text):
         return "chat"
     return None
@@ -213,7 +218,7 @@ def _extract_target_hint(text: str) -> str:
 def _extract_topic(text: str) -> str:
     compact = _compact_text(text, limit=220)
     compact = re.sub(r"^(请|帮我|你能不能|能不能|可以)?\s*", "", compact)
-    compact = re.sub(r"(讲解|解释|说明|讲一下|解释一下|帮我理解|改写|修改|编辑|新增|追加|扩写|补充|练习|互动)", "", compact)
+    compact = re.sub(r"(讲解|讲述|解释|说明|讲一下|解释一下|帮我理解|改写|修改|编辑|新增|追加|扩写|补充|练习|互动)", "", compact)
     compact = compact.strip(" ：:，,。！？!?；;\"'“”‘’")
     if _is_only_generic_reference(compact):
         return ""

@@ -77,7 +77,11 @@ from app.services.segment_resolver import FocusResolution, focus_context, resolv
 MAX_CONTEXT_CHARS = 1800
 MAX_CONVERSATION_TURNS = 8
 EXPLAIN_REQUEST_PATTERN = re.compile(
-    r"(讲解|解释|说明|讲一下|解释一下|帮我理解|为什么|是什么|什么意思|是什么意思|什么含义|含义|"
+    r"(讲解|讲述|解释|说明|讲一下|解释一下|帮我理解|为什么|是什么|什么意思|是什么意思|什么含义|含义|"
+    r"(?:怎么|如何|怎样).{0,12}(?:表达|体现|说明|运用|使用|写出|看出|表现))"
+)
+STRONG_EXPLAIN_REQUEST_PATTERN = re.compile(
+    r"(讲解|讲述|解释|讲一下|解释一下|帮我理解|为什么|是什么|什么意思|是什么意思|什么含义|含义|"
     r"(?:怎么|如何|怎样).{0,12}(?:表达|体现|说明|运用|使用|写出|看出|表现))"
 )
 APPEND_REQUEST_PATTERN = re.compile(
@@ -282,6 +286,15 @@ def _should_preserve_requirement_update_for_action(request: ChatRequest) -> bool
     return bool(INTERACTION_RULE_REQUEST_PATTERN.search(_compact_text(request.message, limit=280)))
 
 
+def _should_force_explain_task(message: str) -> bool:
+    if not EXPLAIN_REQUEST_PATTERN.search(message):
+        return False
+    has_write_intent = _requests_append_section(message) or bool(EXPAND_REQUEST_PATTERN.search(message))
+    if has_write_intent and not STRONG_EXPLAIN_REQUEST_PATTERN.search(message):
+        return False
+    return True
+
+
 def _infer_board_task_action(request: ChatRequest, *, has_selection: bool, document_empty: bool) -> BoardTaskAction | None:
     if request.board_generation_action == "start":
         return "generate_board"
@@ -296,6 +309,8 @@ def _infer_board_task_action(request: ChatRequest, *, has_selection: bool, docum
         return "rewrite_target"
     if not has_selection and _has_explicit_resource_reference(message):
         return None
+    if not document_empty and _should_force_explain_task(message):
+        return "explain_target"
     if _requests_append_section(message) and not document_empty:
         return "append_section"
     if not document_empty and SIMPLIFY_REQUEST_PATTERN.search(message):
@@ -313,7 +328,7 @@ def _infer_board_task_action(request: ChatRequest, *, has_selection: bool, docum
             return "simplify_target"
         if EXPAND_REQUEST_PATTERN.search(message):
             return "expand_target"
-    if EXPLAIN_REQUEST_PATTERN.search(message) and (has_selection or TARGET_LOCATION_HINT_PATTERN.search(message)):
+    if _should_force_explain_task(message) and (has_selection or TARGET_LOCATION_HINT_PATTERN.search(message)):
         return "explain_target"
     if not has_selection and RESOURCE_REFERENCE_HINT_PATTERN.search(message):
         return None
@@ -1301,7 +1316,11 @@ def _fallback_board_task_decision(
                 candidate_focuses=resolution.candidates,
                 reason=resolution.question,
             )
-        if board_task.requested_action in {"explain", "chat"} and board_task.question_or_topic:
+        if (
+            board_task.requested_action in {"explain", "chat"}
+            and board_task.question_or_topic
+            and not _is_vague_explanation_topic(board_task.question_or_topic)
+        ):
             return BoardTaskRouteDecision(
                 route="await_write_confirmation",
                 location_status="content_absent",
@@ -1330,6 +1349,19 @@ def _fallback_board_task_decision(
         candidate_focuses=resolution.candidates,
         reason="定位器已找到可操作的板书位置。",
     )
+
+
+def _is_vague_explanation_topic(topic: str) -> bool:
+    compact = _compact_text(topic, limit=160)
+    if not compact:
+        return True
+    residue = re.sub(
+        r"(你|我|帮我|为我|请|就|当|当作|作为|是|零基础|0基础|基础|直接|开始|从头|先|"
+        r"讲|讲解|讲述|解释|说明|生成|准备|板书|内容|一下|的|地|，|,|。|！|!|？|\?|\s)+",
+        "",
+        compact,
+    )
+    return len(residue.strip()) < 2
 
 
 def _decision_focus(decision: BoardTaskRouteDecision, resolution: FocusResolution | None) -> BoardFocusRef | None:
@@ -1385,6 +1417,7 @@ def _ordered_explanation_candidates(
 
 def _apply_explicit_sequential_explanation_choice(
     *,
+    lesson: Lesson,
     board_task: BoardTaskRequirementSheet,
     decision: BoardTaskRouteDecision,
     resolution: FocusResolution | None,
@@ -1398,6 +1431,9 @@ def _apply_explicit_sequential_explanation_choice(
         return decision
     candidates = _ordered_explanation_candidates(decision=decision, resolution=resolution)
     if not candidates:
+        return decision
+    segments = build_board_segment_index(lesson.board_document).segments
+    if _parent_heading_for_section_sequence(segments=segments, candidates=candidates) is None:
         return decision
     return BoardTaskRouteDecision(
         route="explain",
@@ -1495,18 +1531,6 @@ def _path_starts_with(path: list[str], prefix: list[str]) -> bool:
     return len(path) >= len(prefix) and path[: len(prefix)] == prefix
 
 
-def _common_heading_path(candidates: list[BoardFocusRef]) -> list[str]:
-    paths = [candidate.heading_path for candidate in candidates if candidate.heading_path]
-    if not paths:
-        return []
-    common: list[str] = []
-    for parts in zip(*paths):
-        if len(set(parts)) != 1:
-            break
-        common.append(parts[0])
-    return common
-
-
 def _dedupe_focuses(candidates: list[BoardFocusRef]) -> list[BoardFocusRef]:
     seen: set[tuple[str | None, str]] = set()
     deduped: list[BoardFocusRef] = []
@@ -1600,6 +1624,7 @@ def _parent_heading_for_section_sequence(
     segments: list[BoardSegment],
     candidates: list[BoardFocusRef],
 ) -> BoardSegment | None:
+    candidates = _dedupe_focuses(candidates)
     for candidate in candidates:
         if candidate.kind != "heading" or not candidate.heading_path:
             continue
@@ -1608,13 +1633,41 @@ def _parent_heading_for_section_sequence(
             if heading and _direct_child_section_headings(segments, heading):
                 return heading
 
-    common_path = _common_heading_path(candidates)
-    while len(common_path) >= 2:
-        heading = _find_heading_segment_by_path(segments, common_path)
+    if len(candidates) == 1:
+        candidate_path = candidates[0].heading_path
+        while candidate_path:
+            heading = _find_heading_segment_by_path(segments, candidate_path)
+            if heading and _direct_child_section_headings(segments, heading):
+                return heading
+            candidate_path = candidate_path[:-1]
+        return None
+
+    direct_parent_paths: list[list[str]] = []
+    for candidate in candidates:
+        if not candidate.heading_path:
+            return None
+        direct_parent_path = candidate.heading_path[:-1]
+        if not direct_parent_path:
+            return None
+        direct_parent_paths.append(direct_parent_path)
+    if direct_parent_paths and all(path == direct_parent_paths[0] for path in direct_parent_paths):
+        heading = _find_heading_segment_by_path(segments, direct_parent_paths[0])
         if heading and _direct_child_section_headings(segments, heading):
             return heading
-        common_path = common_path[:-1]
     return None
+
+
+def _is_current_sequence_followup(text: str) -> bool:
+    compact = _compact_text(text, limit=160)
+    if not compact:
+        return False
+    if SEQUENCE_CONTINUE_PATTERN.search(compact) or SEQUENCE_EXIT_PATTERN.search(compact):
+        return False
+    if re.search(r"(第\s*[0-9０-９一二三四五六七八九十两]+.{0,8}[章节部分段]|下一节|下一个)", compact):
+        return False
+    if _requests_explanation(compact):
+        return True
+    return bool(re.search(r"(这个|这里|这段|刚才|上面|为什么|怎么|如何|哪里|哪儿|吗|呢|？|\?)", compact))
 
 
 def _section_explanation_sequence(
@@ -1623,21 +1676,28 @@ def _section_explanation_sequence(
     board_task: BoardTaskRequirementSheet,
     decision: BoardTaskRouteDecision,
     resolution: FocusResolution | None,
+    request_message: str,
 ) -> list[BoardFocusRef]:
     if board_task.requested_action != "explain":
         return []
-    candidates = decision.candidate_focuses or (resolution.candidates if resolution else [])
     focus = _decision_focus(decision, resolution)
-    if focus is not None:
-        candidates = [focus, *candidates]
-    candidates = _dedupe_focuses(candidates)
-    if not candidates:
-        return []
-
     segments = build_board_segment_index(lesson.board_document).segments
-    parent_heading = _parent_heading_for_section_sequence(segments=segments, candidates=candidates)
-    if parent_heading is None:
-        return []
+    if not _requests_sequential_explanation(request_message):
+        if focus is None or focus.kind != "heading" or not focus.heading_path:
+            return []
+        parent_heading = _find_heading_segment_by_path(segments, focus.heading_path)
+        if parent_heading is None or not _direct_child_section_headings(segments, parent_heading):
+            return []
+    else:
+        candidates = decision.candidate_focuses or (resolution.candidates if resolution else [])
+        if focus is not None:
+            candidates = [focus, *candidates]
+        candidates = _dedupe_focuses(candidates)
+        if not candidates:
+            return []
+        parent_heading = _parent_heading_for_section_sequence(segments=segments, candidates=candidates)
+        if parent_heading is None:
+            return []
     child_headings = _direct_child_section_headings(segments, parent_heading)
     if len(child_headings) < 2:
         return []
@@ -1802,6 +1862,7 @@ def _start_section_explanation_sequence(
         focus_candidates=sequence_items,
         requirement_cleared=True,
         board_task_stamp=consumed_stamp,
+        completed_board_task_sheet=board_task,
     )
 
 
@@ -1831,9 +1892,12 @@ def _handle_existing_board_task_flow(
     interaction_metadata = source_interaction_metadata or {}
     compact_request = _compact_text(request.message, limit=280)
     if not existing_task and (
-        _requests_learning_start(request.message)
-        or bool(re.search(r"(开始|直接|从头|零基础).{0,12}(讲解|讲|学)", compact_request))
-        or _requests_existing_board_generation_control(request.message)
+        not _should_force_explain_task(compact_request)
+        and (
+            _requests_learning_start(request.message)
+            or bool(re.search(r"(开始|直接|从头|零基础).{0,12}(讲解|讲|学)", compact_request))
+            or _requests_existing_board_generation_control(request.message)
+        )
     ):
         return None
 
@@ -1920,6 +1984,15 @@ def _handle_existing_board_task_flow(
         selection_excerpt=selection_excerpt,
         existing=existing_task,
     )
+    if _should_force_explain_task(compact_request) and board_task.requested_action != "explain":
+        explain_task = BoardTaskRequirementSheet.model_validate(board_task.model_dump(mode="json"))
+        explain_task.requested_action = "explain"
+        explain_task.confirmation_status = "none"
+        board_task = normalize_board_task_sheet(
+            explain_task,
+            selection=request.selection,
+            selection_excerpt=selection_excerpt,
+        )
     board_task = _maybe_inherit_recent_board_edit_focus(
         lesson=lesson,
         board_task=board_task,
@@ -2023,6 +2096,7 @@ def _handle_existing_board_task_flow(
     if _decision_must_have_focus(board_task=board_task, decision=decision) and _decision_focus(decision, resolution) is None:
         decision = _clarify_decision_for_missing_focus(decision=decision, resolution=resolution)
     decision = _apply_explicit_sequential_explanation_choice(
+        lesson=lesson,
         board_task=board_task,
         decision=decision,
         resolution=resolution,
@@ -2039,6 +2113,7 @@ def _handle_existing_board_task_flow(
         board_task=board_task,
         decision=decision,
         resolution=resolution,
+        request_message=request.message,
     )
     if section_sequence:
         return _start_section_explanation_sequence(
@@ -2408,6 +2483,7 @@ def _handle_existing_board_task_flow(
             board_task_stamp=consumed_stamp,
             board_document_operation_status=edit_outcome.operation_status,
             board_document_operation_failure_reason=edit_outcome.failure_reason,
+            completed_board_task_sheet=board_task,
         )
 
     if decision.route == "explain":
@@ -2524,6 +2600,7 @@ def _handle_existing_board_task_flow(
             resolved_focus=focus,
             requirement_cleared=cleared,
             board_task_stamp=consumed_stamp,
+            completed_board_task_sheet=board_task if cleared else None,
         )
 
     if decision.route == "chat":
@@ -2744,6 +2821,7 @@ def _execute_board_task_write(
         board_task_stamp=consumed_stamp,
         board_document_operation_status=edit_outcome.operation_status,
         board_document_operation_failure_reason=edit_outcome.failure_reason,
+        completed_board_task_sheet=board_task if edit_outcome.changed else None,
     )
 
 
@@ -2804,23 +2882,25 @@ def _response(
     requirement_stamp: RequirementHistoryStamp | None = None,
     board_task_history: BoardTaskHistoryRecorder | None = None,
     board_task_stamp: BoardTaskHistoryStamp | None = None,
+    completed_board_task_sheet: BoardTaskRequirementSheet | None = None,
     board_document_operation_status: str = "none",
     board_document_operation_failure_reason: str | None = None,
 ) -> ChatResponse:
     stamp = _response_requirement_stamp(requirement_history, requirement_stamp)
     board_task_stamp_value = _response_board_task_stamp(board_task_history, board_task_stamp)
+    visible_board_task_sheet = lesson.board_task_requirements or completed_board_task_sheet
     visible_requirement_cleared = requirement_cleared or lesson.board_task_requirements is not None
     return ChatResponse(
         chatbot_message=chatbot_message,
         learning_requirement_sheet=requirements,
-        active_requirement_sheet=lesson.learning_requirements,
+        active_requirement_sheet=None if visible_board_task_sheet is not None else lesson.learning_requirements,
         active_interaction_session=lesson.active_interaction_session,
         interaction_decision=interaction_decision,
         learning_clarification=learning_clarification,
         requirement_run_id=stamp.run_id if stamp else None,
         requirement_version_id=stamp.version_id if stamp else None,
         requirement_phase=stamp.phase if stamp else None,
-        board_task_sheet=lesson.board_task_requirements,
+        board_task_sheet=visible_board_task_sheet,
         active_board_task_sheet=lesson.board_task_requirements,
         board_task_run_id=board_task_stamp_value.run_id if board_task_stamp_value else None,
         board_task_version_id=board_task_stamp_value.version_id if board_task_stamp_value else None,
@@ -2990,7 +3070,82 @@ def _handle_section_explanation_sequence_turn(
             requirement_history=requirement_history,
         )
     if not _is_sequence_continue_message(request.message):
-        return None
+        if not _is_current_sequence_followup(request.message):
+            return None
+        focus = session_before.target_focus or session_before.sequence_items[session_before.sequence_index]
+        session_after = session_before.model_copy(
+            update={
+                "target_focus": focus,
+                "reference_context": focus_context(focus),
+                "turn_count": session_before.turn_count + 1,
+                "status": "active",
+                "pause_reason": "",
+            }
+        )
+        lesson.active_interaction_session = session_after
+        sequence_request = request.model_copy(
+            update={
+                "message": (
+                    f"{request.message}\n"
+                    f"系统顺序讲解要求：用户正在追问当前第 "
+                    f"{session_after.sequence_index + 1}/{len(session_after.sequence_items)} 个子节："
+                    f"{focus.display_label or ' / '.join(focus.heading_path)}。"
+                    "请只围绕当前子节补充解释，不要推进到下一子节。结尾询问当前小节是否还有问题，或是否继续下一小节。"
+                )
+            }
+        )
+        chatbot_message, chatbot_message_source, board_explanation_directive = _generate_board_directed_explanation_message(
+            lesson=lesson,
+            requirements=requirements.model_copy(update={"target_location": focus, "location_status": "resolved"}),
+            resources=resources,
+            conversation=request.conversation,
+            request=sequence_request,
+            learning_clarification=learning_clarification,
+            action_type="explain_target",
+            target_excerpt=focus_context(focus),
+            interaction_context=interaction_context_payload(session=session_after),
+        )
+        decision = InteractionTurnDecision(
+            route="continue_rule",
+            reason="用户追问当前子节，继续围绕当前子节讲解。",
+            progress_note=session_after.progress_note,
+            user_intent="追问当前子节",
+        )
+        commit_operations(
+            lesson,
+            [],
+            label="Section explanation follow-up",
+            message="Answered a follow-up within the current sequential section",
+            new_document=lesson.board_document,
+            metadata={
+                "kind": "interaction_flow",
+                "user_message": request.message,
+                "assistant_message": chatbot_message,
+                "assistant_message_source": chatbot_message_source,
+                "board_explanation_directive": board_explanation_directive,
+                **_task_metadata(
+                    requirements=requirements,
+                    learning_clarification=learning_clarification,
+                    focus=focus,
+                    requirement_cleared=False,
+                ),
+                **interaction_session_metadata(before=session_before, after=session_after, decision=decision),
+            },
+        )
+        workspace_state.normalize_package_state(package)
+        _save_workspace_for_user(user_id=user_id, workspace=workspace, requirement_history=requirement_history)
+        return _response(
+            workspace=workspace,
+            package=package,
+            lesson=lesson,
+            chatbot_message=chatbot_message,
+            learning_clarification=learning_clarification,
+            requirements=requirements,
+            board_decision=BoardDecision(action="no_change", reason=decision.reason),
+            interaction_decision=decision,
+            resolved_focus=focus,
+            requirement_history=requirement_history,
+        )
 
     next_index = session_before.sequence_index + 1
     if next_index >= len(session_before.sequence_items):
@@ -3699,11 +3854,12 @@ def _chat_response(
     track_initial_requirement_run = _should_track_initial_requirement_run(lesson)
     visible_package = workspace_state.package_context_for_lesson(workspace, package, lesson.id)
     selection_excerpt = _selection_excerpt(request.selection, selection_text)
-    action_type = _infer_board_task_action(
+    initial_board_task_action = _infer_board_task_action(
         request,
         has_selection=bool(selection_excerpt),
         document_empty=is_document_empty(lesson.board_document),
     )
+    action_type = initial_board_task_action
     action_type = _prefer_requirement_action(
         action_type,
         requirements.action_type,
@@ -3745,7 +3901,14 @@ def _chat_response(
     if interaction_response is not None:
         return interaction_response
 
-    if resource_resolution.selected_reference is None and resource_resolution.reference_prompt is None:
+    should_try_existing_board_task = resource_resolution.selected_reference is None and resource_resolution.reference_prompt is None
+    if (
+        initial_board_task_action == "explain_target"
+        and request.interaction_mode != "direct_edit"
+        and not is_document_empty(lesson.board_document)
+    ):
+        should_try_existing_board_task = True
+    if should_try_existing_board_task:
         board_task_response = _handle_existing_board_task_flow(
             workspace=workspace,
             package=package,

@@ -55,6 +55,25 @@ function boardTaskActionLabel(action: BoardTaskRequirementSheet["requested_actio
   return action ? BOARD_TASK_ACTION_LABELS[action] ?? action : "待确认";
 }
 
+function sequenceFocusLabel(lesson: Lesson) {
+  const session = lesson.active_interaction_session;
+  if (!session || session.sequence_mode !== "section_explanation" || !session.sequence_items?.length) {
+    return null;
+  }
+  const total = session.sequence_items.length;
+  const index = Math.max(0, Math.min(session.sequence_index ?? 0, total - 1));
+  const focus = session.sequence_items[index] ?? session.target_focus;
+  const current = index + 1;
+  const label = focus?.display_label || focus?.heading_path?.join(" / ") || session.interaction_goal || "当前子节";
+  return {
+    current,
+    label,
+    progress: Math.max(0, Math.min(100, Math.round((current / total) * 100))),
+    session,
+    total,
+  };
+}
+
 function CurrentNeedCard({
   activeBoardTask,
   barTone,
@@ -86,6 +105,28 @@ function CurrentNeedCard({
           <div className="h-full w-1/3 rounded-full bg-sky-500 transition-all" />
         </div>
         <p className="mt-3 text-xs leading-6 text-sky-950">正在把你的新问题整理成目标位置、动作类型、问题内容和互动要求。</p>
+      </div>
+    );
+  }
+
+  const sequence = sequenceFocusLabel(lesson);
+  if (sequence) {
+    return (
+      <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-[11px] font-bold uppercase tracking-widest text-emerald-700">当前顺序讲解</p>
+          <span className="rounded-full bg-white px-2 py-1 text-[11px] font-semibold text-emerald-700">
+            {sequence.current}/{sequence.total}
+          </span>
+        </div>
+        <div className="mt-3 h-2 rounded-full bg-white">
+          <div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${sequence.progress}%` }} />
+        </div>
+        <div className="mt-3 grid gap-2 text-xs leading-5 text-emerald-950">
+          <p>当前：{sequence.label}</p>
+          <p>目标：{sequence.session.interaction_goal || "按板书子节顺序讲解"}</p>
+          <p>状态：{isChatBusy ? "讲解中" : "等待确认是否继续"}</p>
+        </div>
       </div>
     );
   }
@@ -297,7 +338,10 @@ export function CourseStudioChatSidebar({
             lesson={activeLesson}
             targetCommitId={targetCommitId}
           />
-          {!isPreviewMode && !activeBoardTask && activeLesson?.active_interaction_session ? (
+          {!isPreviewMode &&
+          !activeBoardTask &&
+          activeLesson?.active_interaction_session &&
+          activeLesson.active_interaction_session.sequence_mode !== "section_explanation" ? (
             <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
               <div className="flex items-center justify-between gap-3">
                 <p className="text-[11px] font-bold uppercase tracking-widest text-emerald-700">互动规则</p>
