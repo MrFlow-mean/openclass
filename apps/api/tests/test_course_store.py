@@ -1,10 +1,10 @@
 import json
 import sqlite3
 
-from app.models import BoardTeachingProgress, ResourceLibraryItem
+from app.models import BoardDocument, BoardTeachingProgress, ResourceLibraryItem
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
 from app.services.lesson_factory import create_empty_lesson
-from app.services.rich_document import build_document
+from app.services.rich_document import build_document, rich_structure_counts
 
 
 def _append_lesson(workspace, title: str = "测试页面"):
@@ -123,6 +123,57 @@ def test_sqlite_store_indexes_and_searches_board_document_segments(tmp_path) -> 
     assert chunk_rows
     assert any("retrieval anchor" in row[1] and "检索标题" in row[1] for row in chunk_rows)
     assert any(len(json.loads(row[0])) >= 2 for row in chunk_rows)
+
+
+def test_sqlite_store_preserves_rich_json_when_editor_text_is_plain(tmp_path) -> None:
+    db_path = tmp_path / "openclass.sqlite3"
+    store = SqliteCourseStore(db_path, legacy_json_path=None)
+
+    workspace = build_initial_workspace_state()
+    lesson = _append_lesson(workspace, "结构保护")
+    rich_document = build_document(
+        title="结构保护",
+        content_text=(
+            "# 结构保护\n\n"
+            "## 1. 父章节\n\n"
+            "**目标**：保留标题、强调和表格。\n\n"
+            "- 第一点\n"
+            "- 第二点\n\n"
+            "| 项目 | 内容 |\n"
+            "| --- | --- |\n"
+            "| A | B |"
+        ),
+        document_id=lesson.board_document.id,
+        page_settings=lesson.board_document.page_settings,
+    )
+    editor_plain_text_document = BoardDocument(
+        id=rich_document.id,
+        title=rich_document.title,
+        content_json=rich_document.content_json,
+        content_html=rich_document.content_html,
+        content_text=(
+            "结构保护\n\n"
+            "1. 父章节\n\n"
+            "目标：保留标题、强调和表格。\n\n"
+            "第一点\n"
+            "第二点\n\n"
+            "项目 内容\n"
+            "A B"
+        ),
+        page_settings=rich_document.page_settings,
+    )
+    lesson.board_document = editor_plain_text_document
+    lesson.history_graph.commits[-1].snapshot = editor_plain_text_document
+
+    store.save_for_user("user_a", workspace)
+    reloaded = store.load_for_user("user_a")
+    reloaded_lesson = reloaded.packages[0].lessons[-1]
+
+    counts = rich_structure_counts(reloaded_lesson.board_document)
+    assert counts["heading"] == 2
+    assert counts["bold"] >= 1
+    assert counts["bulletList"] == 1
+    assert counts["table"] == 1
 
 
 def test_sqlite_store_imports_and_archives_legacy_store_json(tmp_path) -> None:

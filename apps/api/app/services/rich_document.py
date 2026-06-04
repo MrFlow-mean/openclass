@@ -985,27 +985,46 @@ def _looks_like_markdown_document(content_text: str) -> bool:
 
 
 def upgrade_markdown_like_document(document: BoardDocument) -> BoardDocument:
+    existing_document = _repair_existing_document(document)
     if not _looks_like_markdown_document(document.content_text):
-        content_json = document.content_json if isinstance(document.content_json, dict) else {}
-        sanitized_json, repaired_math = _sanitize_suspicious_math_json(content_json)
-        repaired_html = _repair_suspicious_math_html(document.content_html)
-        if not repaired_math and repaired_html == document.content_html:
-            return document
-        return BoardDocument(
-            id=document.id,
-            title=document.title,
-            content_json=sanitized_json,
-            content_html=repaired_html,
-            content_text=document.content_text,
-            page_settings=document.page_settings,
-        )
+        return existing_document
     upgraded = build_document(
         title=document.title,
         content_text=document.content_text,
         document_id=document.id,
         page_settings=document.page_settings,
     )
+    if _would_downgrade_existing_rich_structure(existing_document, upgraded):
+        return existing_document
     return upgraded
+
+
+def _repair_existing_document(document: BoardDocument) -> BoardDocument:
+    content_json = document.content_json if isinstance(document.content_json, dict) else {}
+    sanitized_json, repaired_math = _sanitize_suspicious_math_json(content_json)
+    repaired_html = _repair_suspicious_math_html(document.content_html)
+    if not repaired_math and repaired_html == document.content_html:
+        return document
+    return BoardDocument(
+        id=document.id,
+        title=document.title,
+        content_json=sanitized_json,
+        content_html=repaired_html,
+        content_text=document.content_text,
+        page_settings=document.page_settings,
+    )
+
+
+def _would_downgrade_existing_rich_structure(current_document: BoardDocument, upgraded_document: BoardDocument) -> bool:
+    current_counts = rich_structure_counts(current_document)
+    current_score = rich_structure_score(current_counts)
+    if current_score < 8:
+        return False
+    upgraded_counts = rich_structure_counts(upgraded_document)
+    upgraded_score = rich_structure_score(upgraded_counts)
+    if would_flatten_rich_document(current_document=current_document, new_document=upgraded_document):
+        return True
+    return upgraded_score < current_score
 
 
 def is_document_empty(document: BoardDocument) -> bool:
