@@ -137,6 +137,19 @@ def interaction_context_payload(
         payload["source_board_task_version_id"] = session.source_board_task_version_id
     if session.source_board_task_route:
         payload["source_board_task_route"] = session.source_board_task_route
+    if session.sequence_items:
+        payload["sequence_mode"] = session.sequence_mode
+        payload["sequence_index"] = session.sequence_index
+        payload["sequence_total"] = len(session.sequence_items)
+        payload["sequence_items"] = [
+            {
+                "display_label": item.display_label,
+                "heading_path": item.heading_path,
+                "order_start": item.order_start,
+                "order_end": item.order_end,
+            }
+            for item in session.sequence_items
+        ]
     if session.target_focus is not None:
         payload["target_focus"] = session.target_focus.model_dump(mode="json")
     if decision is not None:

@@ -395,6 +395,9 @@ class InteractionSession(BaseModel):
     source_board_task_run_id: str | None = None
     source_board_task_version_id: str | None = None
     source_board_task_route: str | None = None
+    sequence_items: list[BoardFocusRef] = Field(default_factory=list)
+    sequence_index: int = Field(default=0, ge=0)
+    sequence_mode: str = ""
 
 
 class InteractionTurnDecision(BaseModel):

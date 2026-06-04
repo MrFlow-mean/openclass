@@ -378,6 +378,9 @@ export interface InteractionSession {
   source_board_task_run_id?: string | null;
   source_board_task_version_id?: string | null;
   source_board_task_route?: string | null;
+  sequence_items?: BoardFocusRef[];
+  sequence_index?: number;
+  sequence_mode?: string;
 }
 
 export interface InteractionTurnDecision {
