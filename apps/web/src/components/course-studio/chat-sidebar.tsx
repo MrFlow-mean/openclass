@@ -570,6 +570,7 @@ export function CourseStudioChatSidebar({
           <button
             type="button"
             onClick={() => void onVoiceToggle()}
+            aria-label={voiceStatusText}
             title={voiceStatusText}
             className={clsx(
               "flex h-10 w-10 items-center justify-center rounded-xl text-white shadow-sm transition-all hover:scale-105 hover:shadow-md",
@@ -605,6 +606,7 @@ export function CourseStudioChatSidebar({
               <button
                 type="button"
                 onClick={onClearSelection}
+                aria-label="移除引用"
                 className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-gray-400 transition-colors hover:bg-white hover:text-black"
                 title="移除引用"
               >
@@ -654,6 +656,7 @@ export function CourseStudioChatSidebar({
               <div className="flex shrink-0 items-center gap-1 rounded-md border border-gray-200 bg-gray-50 p-0.5">
                 <button
                   type="button"
+                  aria-label="Ask Mode"
                   onClick={() =>
                     onUpdateComposerState((current) => ({
                       ...current,
@@ -670,6 +673,7 @@ export function CourseStudioChatSidebar({
                 </button>
                 <button
                   type="button"
+                  aria-label="Agent Edit Mode"
                   onClick={() => {
                     onUpdateComposerState((current) => ({
                       ...current,
@@ -710,6 +714,8 @@ export function CourseStudioChatSidebar({
             <button
               type="button"
               onClick={() => void onSubmitChat()}
+              aria-label={isChatBusy ? "正在处理上一条请求" : "发送消息"}
+              title={isChatBusy ? "正在处理上一条请求" : "发送消息"}
               disabled={isChatBusy || !chatInput.trim()}
               className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#1a1a1a] text-white shadow-sm transition-colors hover:bg-black disabled:cursor-not-allowed disabled:opacity-60"
             >

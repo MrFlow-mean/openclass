@@ -138,6 +138,9 @@ export function useLessonChatAgent({
   }
 
   function displayContentForPayload(payload: ChatRequestPayload) {
+    if (payload.board_generation_action === "start") {
+      return "开始生成板书";
+    }
     if (payload.scope_action) {
       return `继续执行：${payload.scope_action}`;
     }
@@ -235,6 +238,7 @@ export function useLessonChatAgent({
     let requestStarted = false;
     let streamedChatContent = "";
     let streamedDocumentText = "";
+    let sawReadyForBoardRequirementUpdate = false;
     let requestLesson = lesson;
     let baseStreamingDocument = currentBoardDocument ?? lesson.board_document;
 
@@ -316,6 +320,9 @@ export function useLessonChatAgent({
           });
         },
         onRequirementUpdate(payload) {
+          if (payload.learning_clarification?.ready_for_board) {
+            sawReadyForBoardRequirementUpdate = true;
+          }
           setCurrentNeedPending(false);
           setClarificationQuestions(payload.clarification_questions);
           setLearningClarity(payload.learning_clarification);
@@ -419,7 +426,17 @@ export function useLessonChatAgent({
         clearSelection();
       }
     } catch (chatError) {
-      if (restoreComposerInput !== undefined) {
+      const rawErrorMessage = chatError instanceof Error ? chatError.message : "聊天失败";
+      const isTransientNetworkError =
+        rawErrorMessage.toLowerCase().includes("network error") ||
+        rawErrorMessage.toLowerCase().includes("failed to fetch");
+      const userFacingError =
+        payloadWithConversation.board_generation_action === "start" && isTransientNetworkError
+          ? "板书生成连接中断，可以再次点击“开始生成板书”重试；已确认的学习需求会保留。"
+          : sawReadyForBoardRequirementUpdate && isTransientNetworkError
+            ? "学习需求已确认，但板书生成连接中断；可以点击“开始生成板书”继续。"
+          : rawErrorMessage;
+      if (restoreComposerInput !== undefined && !sawReadyForBoardRequirementUpdate) {
         updateLessonComposerState(lessonId, (current) => ({
           ...current,
           chatInput: restoreComposerInput,
@@ -435,7 +452,7 @@ export function useLessonChatAgent({
           )
         );
       }
-      setError(chatError instanceof Error ? chatError.message : "聊天失败");
+      setError(userFacingError);
       setCurrentNeedPending(false);
     } finally {
       chatRequestInFlightRef.current = false;
@@ -464,6 +481,7 @@ export function useLessonChatAgent({
       return;
     }
     const payloadForTurn = { ...payload, message: payloadMessage };
+    const isBoardGenerationControl = payloadForTurn.board_generation_action === "start";
 
     await runChatTurn({
       lesson: activeLesson,
@@ -473,8 +491,8 @@ export function useLessonChatAgent({
       submittedSelection,
       busyActionName: payloadForTurn.interaction_mode === "direct_edit" ? "agent-edit" : "chat",
       flushReason: "chat",
-      clearComposerInput: !payloadOverride,
-      restoreComposerInput: payloadOverride ? undefined : submittedInput,
+      clearComposerInput: !payloadOverride || isBoardGenerationControl,
+      restoreComposerInput: payloadOverride || isBoardGenerationControl ? undefined : submittedInput,
       speakResponse: options?.speakResponse ?? false,
     });
   }
