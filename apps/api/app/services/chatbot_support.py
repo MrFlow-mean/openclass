@@ -355,6 +355,12 @@ def _infer_board_task_action(request: ChatRequest, *, has_selection: bool, docum
         return None
     if _requests_append_section(message) and not document_empty:
         return "append_section"
+    if (
+        not document_empty
+        and EXPAND_REQUEST_PATTERN.search(message)
+        and (has_selection or TARGET_LOCATION_HINT_PATTERN.search(message))
+    ):
+        return "expand_target"
     if REWRITE_REQUEST_PATTERN.search(message):
         if SIMPLIFY_REQUEST_PATTERN.search(message):
             return "simplify_target"
@@ -384,6 +390,8 @@ def _prefer_requirement_action(
 ) -> BoardTaskAction | None:
     if inferred is None and _is_followup_execution_request(request_message) and _requirements_imply_append(requirements):
         return "append_section"
+    if inferred is not None:
+        return inferred
     if requirement_action == "append_section":
         return requirement_action
     if requirement_action in EDIT_ACTIONS:

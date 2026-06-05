@@ -248,6 +248,17 @@ class ChatbotReply(BaseModel):
     chatbot_message: str
 
 
+def _parse_schema_or_plain_chatbot_reply(schema: type[BaseModel], output_text: str) -> BaseModel:
+    try:
+        return schema.model_validate(_extract_json_object(output_text))
+    except Exception:
+        if schema is ChatbotReply:
+            message = output_text.strip()
+            if message:
+                return ChatbotReply(chatbot_message=message)
+        raise
+
+
 BoardDocumentEditOperation = Literal["replace_document", "replace_selection", "append_section"]
 
 
@@ -1326,7 +1337,7 @@ class OpenAICourseAI:
                     use_response_format=False,
                 )
             return ParsedAIResponse(
-                output_parsed=schema.model_validate(_extract_json_object(output_text)),
+                output_parsed=_parse_schema_or_plain_chatbot_reply(schema, output_text),
                 output_text=output_text,
             )
         try:
@@ -1349,7 +1360,7 @@ class OpenAICourseAI:
 
         output_text = self._chat_completion_text(response)
         try:
-            output_parsed = schema.model_validate(_extract_json_object(output_text))
+            output_parsed = _parse_schema_or_plain_chatbot_reply(schema, output_text)
         except Exception as exc:
             repair_prompt = (
                 "The previous response could not be parsed as valid JSON. "

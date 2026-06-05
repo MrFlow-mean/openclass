@@ -16,6 +16,7 @@ from app.services.rich_document import (
     document_to_markdown,
     document_changed,
     html_to_text,
+    insert_after_selection_in_document,
     is_document_empty,
     replace_selection_in_document,
     text_to_html,
@@ -135,10 +136,13 @@ def edit_existing_document(
             "板书文档编辑 AI 没有返回编辑结果。",
         )
 
-    if is_append_request:
+    append_after_target = requirements.action_type == "expand_target" and focus is not None and focus.kind == "heading"
+    if is_append_request or append_after_target:
         operation = "append_section"
     elif allow_replace_document:
         operation = "replace_document"
+    elif result.operation == "replace_document" and target_excerpt:
+        operation = "replace_selection"
     else:
         operation = result.operation
     new_document = _apply_edit_result(
@@ -146,6 +150,7 @@ def edit_existing_document(
         result=result,
         selection_excerpt=target_excerpt,
         operation_override=operation,
+        append_after_selection=append_after_target,
     )
     if not document_changed(lesson.board_document, new_document):
         return _no_change(
@@ -170,6 +175,7 @@ def _apply_edit_result(
     result: BoardDocumentEditResult,
     selection_excerpt: str | None,
     operation_override: str | None = None,
+    append_after_selection: bool = False,
 ) -> BoardDocument:
     content_text, content_html = _edit_payload(result, prefer_content_html=True)
     if not content_text and not content_html:
@@ -177,6 +183,13 @@ def _apply_edit_result(
 
     operation = operation_override or result.operation
     if operation == "append_section":
+        if append_after_selection and selection_excerpt:
+            return insert_after_selection_in_document(
+                lesson.board_document,
+                selection_text=selection_excerpt,
+                insertion_text=content_text,
+                insertion_html=content_html,
+            )
         next_text = "\n\n".join(
             part for part in [_document_text(lesson.board_document).strip(), content_text] if part
         )

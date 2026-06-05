@@ -1030,6 +1030,88 @@ def replace_selection_in_document(
     )
 
 
+def insert_after_selection_in_document(
+    document: BoardDocument,
+    *,
+    selection_text: str,
+    insertion_text: str,
+    insertion_html: str | None = None,
+) -> BoardDocument:
+    selected = selection_text.strip()
+    insertion = insertion_text.strip()
+    if not selected or not insertion:
+        return document
+
+    source_text = document.content_text.strip()
+    if source_text:
+        next_text = _insert_after_selection_in_text(source_text, selected, insertion)
+        if next_text is not None:
+            return build_document(
+                title=document.title,
+                content_text=next_text,
+                document_id=document.id,
+                page_settings=document.page_settings,
+            )
+
+    escaped_selection = html.escape(selected)
+    block_insertion_html = _replacement_html(insertion, insertion_html)
+    for tag in ("p", "h1", "h2", "h3", "li", "blockquote"):
+        exact_block_html = f"<{tag}>{escaped_selection}</{tag}>"
+        if exact_block_html in document.content_html:
+            next_html = document.content_html.replace(
+                exact_block_html,
+                f"{exact_block_html}{block_insertion_html}",
+                1,
+            )
+            return build_document(
+                title=document.title,
+                content_html=next_html,
+                document_id=document.id,
+                page_settings=document.page_settings,
+            )
+
+    if escaped_selection in document.content_html:
+        next_html = document.content_html.replace(
+            escaped_selection,
+            f"{escaped_selection}{block_insertion_html}",
+            1,
+        )
+        return build_document(
+            title=document.title,
+            content_html=next_html,
+            document_id=document.id,
+            page_settings=document.page_settings,
+        )
+
+    next_text = f"{document.content_text.rstrip()}\n\n{insertion}".strip()
+    next_html = "\n".join(
+        part for part in [document.content_html.strip(), block_insertion_html.strip()] if part
+    )
+    return build_document(
+        title=document.title,
+        content_html=next_html,
+        content_text=next_text,
+        document_id=document.id,
+        page_settings=document.page_settings,
+    )
+
+
+def _insert_after_selection_in_text(source_text: str, selected: str, insertion: str) -> str | None:
+    lines = source_text.splitlines()
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        marker = re.match(r"^(#{1,6})\s+(.+)$", stripped)
+        if stripped == selected or (marker and marker.group(2).strip() == selected):
+            next_lines = [*lines[: index + 1], "", insertion, "", *lines[index + 1 :]]
+            return "\n".join(next_lines).strip()
+
+    index = source_text.find(selected)
+    if index < 0:
+        return None
+    insert_at = index + len(selected)
+    return f"{source_text[:insert_at]}\n\n{insertion}\n\n{source_text[insert_at:]}".strip()
+
+
 def import_docx(path: Path, *, title: str | None = None) -> BoardDocument:
     source = DocxDocument(path)
     html_parts: list[str] = []

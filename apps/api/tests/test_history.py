@@ -23,6 +23,7 @@ from app.services.rich_document import (
     document_to_markdown,
     export_docx,
     import_docx,
+    insert_after_selection_in_document,
     replace_selection_in_document,
     upgrade_markdown_like_document,
 )
@@ -433,6 +434,24 @@ def test_segment_resolver_uses_numbered_heading_location_without_selection() -> 
     assert resolution.focus.excerpt == "4. 检查问题"
 
 
+def test_segment_resolver_uses_explicit_heading_text_without_selection() -> None:
+    lesson = create_empty_lesson("定位测试")
+    lesson.board_document = build_document(
+        title="定位测试",
+        content_text="# 主线\n## 开场脚本\n已有开场。\n## 复盘问题\n已有问题。",
+    )
+
+    resolution = resolve_board_focus(
+        lesson=lesson,
+        user_message="在开场脚本后面补一个反例",
+        action_type="expand_target",
+    )
+
+    assert resolution.resolved
+    assert resolution.focus is not None
+    assert resolution.focus.excerpt == "开场脚本"
+
+
 def test_segment_resolver_uses_numbered_list_item_location_without_selection() -> None:
     lesson = create_empty_lesson("定位测试")
     lesson.board_document = build_document(
@@ -450,6 +469,65 @@ def test_segment_resolver_uses_numbered_list_item_location_without_selection() -
     assert resolution.focus is not None
     assert resolution.focus.kind == "list"
     assert resolution.focus.excerpt == "拆分任务"
+
+
+def test_segment_resolver_scopes_numbered_list_item_to_parent_hint() -> None:
+    lesson = create_empty_lesson("定位测试")
+    lesson.board_document = build_document(
+        title="定位测试",
+        content_text=(
+            "# 主线\n"
+            "## 学习路线\n"
+            "1. 先看目标\n"
+            "2. 再做练习\n"
+            "3. 最后复盘\n"
+            "## 常见失误清单\n"
+            "1. 只看标题\n"
+            "2. 忽略证据\n"
+            "3. 没有复查\n"
+        ),
+    )
+
+    resolution = resolve_board_focus(
+        lesson=lesson,
+        user_message="把常见失误里的第3项改得更具体",
+        action_type="rewrite_target",
+    )
+
+    assert resolution.resolved
+    assert resolution.focus is not None
+    assert resolution.focus.kind == "list"
+    assert resolution.focus.excerpt == "没有复查"
+    assert "常见失误清单" in resolution.focus.heading_path
+
+
+def test_segment_resolver_does_not_fall_back_to_global_list_when_parent_hint_misses() -> None:
+    lesson = create_empty_lesson("定位测试")
+    lesson.board_document = build_document(
+        title="定位测试",
+        content_text=(
+            "# 主线\n"
+            "## 开场脚本\n"
+            "1. 第一句式\n"
+            "2. 第二句式\n"
+            "3. 第三句式\n"
+            "## 风险清单\n"
+            "风险类别 具体风险 应对方式\n"
+            "技术风险 接口不稳定 准备降级方案\n"
+            "法律风险 授权不清晰 请法务确认\n"
+            "资源风险 人力冲突 明确优先级\n"
+        ),
+    )
+
+    resolution = resolve_board_focus(
+        lesson=lesson,
+        user_message="把风险清单里的第3项改得更具体",
+        action_type="rewrite_target",
+    )
+
+    assert resolution.focus is None
+    assert resolution.status == "missing"
+    assert resolution.candidates == []
 
 
 def _collect_node_types(node: dict) -> list[str]:
@@ -592,6 +670,36 @@ def test_replace_selection_preserves_existing_rich_document_structure() -> None:
     assert "bulletList" in node_types
     assert "table" in node_types
     assert "bold" in _collect_mark_types(updated.content_json)
+
+
+def test_insert_after_heading_preserves_markdown_structure() -> None:
+    document = build_document(
+        title="Doc",
+        content_text=(
+            "# Root\n"
+            "## Target\n"
+            "1. Existing item\n"
+            "## Keep\n"
+            "| Term | Meaning |\n"
+            "| --- | --- |\n"
+            "| target | selected line |"
+        ),
+    )
+
+    updated = insert_after_selection_in_document(
+        document,
+        selection_text="Target",
+        insertion_text="## Inserted\nNew explanation.",
+    )
+    node_types = _collect_node_types(updated.content_json)
+
+    assert "## Target" in updated.content_text
+    assert "## Inserted" in updated.content_text
+    assert "1. Existing item" in updated.content_text
+    assert "## Keep" in updated.content_text
+    assert "heading" in node_types
+    assert "orderedList" in node_types
+    assert "table" in node_types
 
 
 def test_upgrade_markdown_like_document_repairs_legacy_plain_paragraphs() -> None:

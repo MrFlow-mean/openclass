@@ -505,6 +505,45 @@ def test_chat_completions_accepts_jsonish_object_response(isolated_ai_log) -> No
     assert ai.client.chat.completions.calls == 1
 
 
+def test_chatbot_reply_accepts_plain_text_chat_completion(isolated_ai_log) -> None:
+    class _Message:
+        content = "请确认你要修改的是哪一项。"
+
+    class _Choice:
+        message = _Message()
+
+    class _Response:
+        id = "chatcmpl_plain_chatbot"
+        choices = [_Choice()]
+        usage = {"total_tokens": 12}
+
+    class _FakeChatCompletions:
+        def create(self, **kwargs):
+            return _Response()
+
+    class _FakeChat:
+        def __init__(self) -> None:
+            self.completions = _FakeChatCompletions()
+
+    class _FakeClient:
+        def __init__(self) -> None:
+            self.chat = _FakeChat()
+
+    ai = OpenAICourseAI()
+    ai.client = _FakeClient()
+    ai.config.compat_api = "chat_completions"
+    ai.config.default_model = "gpt-5.4"
+
+    with bind_text_model_selection(AIModelSelection(provider="openai", model="gpt-5.4")):
+        result = ai._parse("chatbot", "system", "user", ChatbotReply)
+
+    assert result is not None
+    assert result.chatbot_message == "请确认你要修改的是哪一项。"
+    entries = _read_log_entries(isolated_ai_log)
+    assert entries[0]["event_type"] == "openai_text_call"
+    assert entries[0]["payload"]["parsed_output"]["chatbot_message"] == "请确认你要修改的是哪一项。"
+
+
 def test_chat_completions_repairs_unparseable_structured_response(isolated_ai_log) -> None:
     class _Output(BaseModel):
         title: str
@@ -3274,6 +3313,142 @@ def test_append_section_request_writes_to_existing_board_without_requirement_upd
         "user_instruction": "在右侧续写板书",
     }
     assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_colloquial_targeted_supplement_uses_board_editor_without_requirement_update(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    captured: dict[str, str | None] = {}
+
+    def _fake_board_edit(**kwargs):
+        captured["intent"] = kwargs.get("intent")
+        captured["selection_excerpt"] = kwargs.get("selection_excerpt")
+        captured["user_instruction"] = kwargs.get("user_instruction")
+        return BoardDocumentEditResult(
+            operation="replace_selection",
+            content_text="## 失败开场反例\n这是补写的反例和纠错。",
+            summary="已围绕目标位置补写内容。",
+            chatbot_message="AI生成：已在右侧板书补写。",
+            section_titles=["失败开场反例"],
+        )
+
+    def _unexpected_requirement_update(**kwargs):
+        raise AssertionError("targeted supplement requests should not wait for requirement collection")
+
+    def _unexpected_chatbot_reply(**kwargs):
+        raise AssertionError("targeted supplement requests should use the board document editor AI")
+
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _fake_board_edit)
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _unexpected_requirement_update)
+    monkeypatch.setattr(openai_course_ai, "generate_chatbot_reply", _unexpected_chatbot_reply)
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.board_document = build_document(title="已有板书", content_text="# 已有板书\n## 开场脚本\n已有开场。")
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="在开场脚本后面补一个失败开场的反例和逐句纠错"),
+        user_id=TEST_USER.id,
+    )
+
+    updated_lesson = response.course_package.lessons[0]
+    assert response.chatbot_message == "AI生成：已在右侧板书补写。"
+    assert response.board_decision.action == "edit_board"
+    assert response.requirement_cleared is True
+    assert "## 开场脚本" in updated_lesson.board_document.content_text
+    assert "已有开场" in updated_lesson.board_document.content_text
+    assert "这是补写的反例和纠错" in updated_lesson.board_document.content_text
+    assert captured == {
+        "intent": "edit_existing_document",
+        "selection_excerpt": "开场脚本",
+        "user_instruction": "在开场脚本后面补一个失败开场的反例和逐句纠错",
+    }
+    commit = updated_lesson.history_graph.commits[-1]
+    assert commit.metadata["kind"] == "board_document_edit"
+    assert commit.metadata["board_edit_operation"] == "append_section"
+    assert commit.metadata["task_requirement_sheet"]["action_type"] == "expand_target"
+    assert commit.metadata["requirement_cleared"] is True
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_contextual_numbered_edit_without_matching_item_asks_for_focus(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+
+    def _fake_chatbot_reply(**kwargs):
+        return ChatbotReply(chatbot_message="AI生成：请确认你要修改的具体条目。")
+
+    def _unexpected_board_edit(**kwargs):
+        raise AssertionError("missing contextual numbered targets must not call the board editor")
+
+    def _unexpected_requirement_update(**kwargs):
+        raise AssertionError("explicit edit requests should not wait for requirement collection")
+
+    monkeypatch.setattr(openai_course_ai, "generate_chatbot_reply", _fake_chatbot_reply)
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _unexpected_board_edit)
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _unexpected_requirement_update)
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    original_text = (
+        "# 已有板书\n"
+        "## 开场脚本\n"
+        "1. 第一句式\n"
+        "2. 第二句式\n"
+        "3. 第三句式\n"
+        "## 风险清单\n"
+        "风险类别 具体风险 应对方式\n"
+        "技术风险 接口不稳定 准备降级方案\n"
+        "法律风险 授权不清晰 请法务确认\n"
+        "资源风险 人力冲突 明确优先级\n"
+    )
+    lesson.board_document = build_document(title="已有板书", content_text=original_text)
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="把风险清单里的第3项改得更具体"),
+        user_id=TEST_USER.id,
+    )
+
+    updated_lesson = response.course_package.lessons[0]
+    assert response.board_decision.action == "await_focus_choice"
+    assert response.chatbot_message == "AI生成：请确认你要修改的具体条目。"
+    assert updated_lesson.board_document.content_text == original_text.strip()
+    commit = updated_lesson.history_graph.commits[-1]
+    assert commit.metadata["kind"] == "chat_flow"
+    assert commit.metadata["task_requirement_sheet"]["action_type"] == "rewrite_target"
+    assert commit.metadata["requirement_cleared"] is False
+    assert _read_log_entries(isolated_ai_log) == []
+
+    followup = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(
+            message="解释这句为什么重要",
+            selection=SelectionRef(
+                kind="board",
+                document_id=updated_lesson.board_document.id,
+                excerpt="资源风险 人力冲突 明确优先级",
+                heading_path=["已有板书", "风险清单"],
+            ),
+        ),
+        user_id=TEST_USER.id,
+    )
+
+    followed_lesson = followup.course_package.lessons[0]
+    assert followup.board_decision.action == "no_change"
+    assert followed_lesson.board_document.content_text == original_text.strip()
+    followup_commit = followed_lesson.history_graph.commits[-1]
+    assert followup_commit.metadata["kind"] == "chat_flow"
+    assert followup_commit.metadata["task_requirement_sheet"]["action_type"] == "explain_target"
 
 
 def test_followup_write_executes_existing_append_requirement(

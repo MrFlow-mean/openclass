@@ -58,6 +58,7 @@ class FocusResolution:
 class StructuredTarget:
     number: int
     unit: str
+    context_text: str = ""
 
 
 def resolve_board_focus(
@@ -79,10 +80,12 @@ def resolve_board_focus(
         )
         return FocusResolution(focus=focus, candidates=[focus], status="selected")
 
+    structured_target = _structured_target_from_message(user_message)
     structured_candidates = _structured_candidate_focuses(
         lesson=lesson,
         user_message=user_message,
         segments=index.segments,
+        target=structured_target,
     )
     if structured_candidates:
         if len(structured_candidates) == 1:
@@ -92,6 +95,28 @@ def resolve_board_focus(
             candidates=structured_candidates[:3],
             status="ambiguous",
             question="我按编号内容找到了几个可能的位置。请确认你要讲解或操作的是哪一处。",
+        )
+    if structured_target is not None and structured_target.context_text:
+        return FocusResolution(
+            focus=None,
+            candidates=[],
+            status="missing",
+            question="我没有在你说的位置下找到对应编号的条目。请确认目标位置，或先把那部分内容整理成可定位的条目。",
+        )
+
+    heading_candidates = _explicit_heading_candidate_focuses(
+        lesson=lesson,
+        user_message=user_message,
+        segments=index.segments,
+    )
+    if heading_candidates:
+        if len(heading_candidates) == 1:
+            return FocusResolution(focus=heading_candidates[0], candidates=heading_candidates, status="resolved")
+        return FocusResolution(
+            focus=None,
+            candidates=heading_candidates[:3],
+            status="ambiguous",
+            question="我按标题找到了几个可能的位置。请确认你要讲解或操作的是哪一处。",
         )
 
     ordinal_candidates = _ordinal_candidate_focuses(lesson=lesson, user_message=user_message, segments=index.segments)
@@ -255,13 +280,18 @@ def _structured_candidate_focuses(
     lesson: Lesson,
     user_message: str,
     segments: list[BoardSegment],
+    target: StructuredTarget | None = None,
 ) -> list[BoardFocusRef]:
-    target = _structured_target_from_message(user_message)
+    target = target or _structured_target_from_message(user_message)
     if target is None:
         return []
 
     if target.unit in {"项", "条", "选项"}:
-        list_candidates = _list_item_candidate_focuses(lesson=lesson, target=target, segments=segments)
+        list_candidates = _list_item_candidate_focuses(
+            lesson=lesson,
+            target=target,
+            segments=segments,
+        )
         if list_candidates:
             return list_candidates
 
@@ -295,7 +325,33 @@ def _structured_target_from_message(text: str) -> StructuredTarget | None:
     number = _parse_ordinal_number(match.group("number"))
     if number is None:
         return None
-    return StructuredTarget(number=number, unit=match.group("unit"))
+    return StructuredTarget(
+        number=number,
+        unit=match.group("unit"),
+        context_text=_structured_target_context(compact, match.start(), match.end()),
+    )
+
+
+def _structured_target_context(text: str, start: int, end: int) -> str:
+    before = text[:start]
+    context = ""
+    for marker in ("里", "中", "下"):
+        index = before.rfind(marker)
+        if index >= 0:
+            context = before[:index]
+            break
+    if not context:
+        for marker in ("部分", "章节", "小节", "段落", "清单", "列表"):
+            index = before.rfind(marker)
+            if index >= 0:
+                context = before[: index + len(marker)]
+                break
+    if not context:
+        context = before
+    context = re.sub(r"^(请|帮我|帮|把|将|给我|替我|修改|改写|改|调整|优化|讲解|解释|说明|补充|补|扩写|写|删除|删|一下)+", "", context).strip()
+    if len(compact_segment_text(context, limit=120)) < 2:
+        return ""
+    return compact_segment_text(context, limit=120)
 
 
 def _structured_excerpts_for_segment(text: str, target: StructuredTarget) -> list[tuple[str, str]]:
@@ -308,6 +364,41 @@ def _structured_excerpts_for_segment(text: str, target: StructuredTarget) -> lis
     if target.unit == "行":
         return _nth_line_excerpt_for_segment(text, target.number)
     return []
+
+
+def _explicit_heading_candidate_focuses(
+    *,
+    lesson: Lesson,
+    user_message: str,
+    segments: list[BoardSegment],
+) -> list[BoardFocusRef]:
+    compact_message = compact_segment_text(user_message, limit=280)
+    if not compact_message:
+        return []
+
+    candidates: list[BoardFocusRef] = []
+    seen: set[str | None] = set()
+    for segment in segments:
+        heading_text = compact_segment_text(segment.text, limit=120)
+        if (
+            segment.kind != "heading"
+            or segment.segment_id in seen
+            or _looks_like_document_title(lesson=lesson, segment=segment)
+            or len(heading_text) < 2
+            or heading_text not in compact_message
+        ):
+            continue
+        seen.add(segment.segment_id)
+        candidates.append(
+            _focus_from_segment(
+                lesson=lesson,
+                segment=segment,
+                segments=segments,
+                confidence=0.94,
+                reason="根据用户明确提到的标题文本定位。",
+            )
+        )
+    return candidates[:5]
 
 
 def _blank_excerpts_for_segment(text: str, ordinal: int) -> list[tuple[str, str]]:
@@ -360,6 +451,12 @@ def _list_item_candidate_focuses(
     segments: list[BoardSegment],
 ) -> list[BoardFocusRef]:
     list_segments = [segment for segment in segments if segment.kind == "list" and segment.text.strip()]
+    has_context_terms = bool(_query_terms(target.context_text))
+    if has_context_terms:
+        scoped_segments = _scope_list_segments_by_context(list_segments, target.context_text)
+        if not scoped_segments:
+            return []
+        list_segments = scoped_segments
     if 1 <= target.number <= len(list_segments):
         segment = list_segments[target.number - 1]
         return [
@@ -367,11 +464,44 @@ def _list_item_candidate_focuses(
                 lesson=lesson,
                 segment=segment,
                 segments=segments,
-                confidence=0.9,
-                reason="根据用户给出的条目序号定位到列表项。",
+                confidence=0.93 if target.context_text else 0.9,
+                reason=(
+                    "根据用户给出的父级位置和条目序号定位到列表项。"
+                    if target.context_text
+                    else "根据用户给出的条目序号定位到列表项。"
+                ),
             )
         ]
     return []
+
+
+def _scope_list_segments_by_context(
+    list_segments: list[BoardSegment],
+    context_text: str,
+) -> list[BoardSegment]:
+    context_terms = _query_terms(context_text)
+    if not context_terms:
+        return []
+
+    scored: list[tuple[float, int, BoardSegment]] = []
+    for index, segment in enumerate(list_segments):
+        heading_parts = segment.heading_path[1:] if len(segment.heading_path) > 1 else segment.heading_path
+        heading_text = " ".join(heading_parts)
+        score = _similarity_score(context_terms, heading_text)
+        if score <= 0:
+            continue
+        scored.append((score, index, segment))
+    if not scored:
+        return []
+
+    best_score = max(score for score, _, _ in scored)
+    matching_indexes = [index for score, index, _ in scored if score >= best_score * 0.8]
+    if not matching_indexes:
+        return []
+
+    start = min(matching_indexes)
+    end = max(matching_indexes)
+    return list_segments[start : end + 1]
 
 
 def _bounded_excerpt(text: str, start: int, end: int) -> str:
