@@ -12,7 +12,7 @@ export function BrandMark({ alt = "开放课堂 logo", className, priority = fal
   return (
     <span className={clsx("inline-flex shrink-0 items-center justify-center overflow-hidden", className)}>
       <Image
-        src="/openclass-mark.png"
+        src="/openclass-mark-rounded.png"
         alt={alt}
         width={size}
         height={size}
