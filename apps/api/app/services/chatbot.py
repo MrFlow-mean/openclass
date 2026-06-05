@@ -120,6 +120,18 @@ SEQUENTIAL_EXPLANATION_REQUEST_PATTERN = re.compile(
     r"(?:讲解|解释|讲|说明).{0,12}(?:所有|全部|每个|每一(?:个|道|题|节|小节|部分|段)?|每道|每题|各个)|"
     r"(?:所有|全部|每个|每一(?:个|道|题|节|小节|部分|段)?|每道|每题|各个).{0,12}(?:都)?(?:讲|讲解|解释|说明))"
 )
+COLLECTION_EXPLANATION_TARGET_PATTERN = re.compile(
+    r"(练习|习题|题目|小题|题项|问题|问答|测验|例题|示例题|步骤|条目|项目|"
+    r"exercise|exercises|question|questions|problem|problems|quiz|quizzes|task|tasks)",
+    re.IGNORECASE,
+)
+SINGLE_EXPLANATION_TARGET_PATTERN = re.compile(
+    r"(第\s*[0-9０-９一二三四五六七八九十两]+.{0,8}(?:章|节|小节|部分|段|句|行|题|项|条|步)|"
+    r"(?:练习|习题|题目|小题|题项|问题|问答|测验|例题|示例题|步骤|条目|项目)"
+    r"\s*[0-9０-９一二三四五六七八九十两]+|"
+    r"倒数|选中|这里|这(?:一|个)?(?:段|句|行|题|项|条|步|部分)|某(?:段|句|行|题|项|条|步))",
+    re.IGNORECASE,
+)
 OVERVIEW_EXPLANATION_REQUEST_PATTERN = re.compile(r"(概括|总结|总览|整体把握|大意|框架|梳理(?:框架|结构)?)")
 SEQUENCE_CONTINUE_PATTERN = re.compile(
     r"^(可以|可以的|没问题|没有问题|没啥问题|没有啥问题|好|好的|继续|继续讲|下一节|下一个|明白了|懂了|可以接受)$"
@@ -1407,6 +1419,28 @@ def _requests_sequential_explanation(text: str) -> bool:
     return bool(compact and SEQUENTIAL_EXPLANATION_REQUEST_PATTERN.search(compact))
 
 
+def _requests_collection_explanation_sequence(
+    *,
+    board_task: BoardTaskRequirementSheet,
+    request_message: str,
+) -> bool:
+    if board_task.requested_action != "explain":
+        return False
+    if _requests_sequential_explanation(request_message):
+        return True
+    request_compact = _compact_text(request_message, limit=160)
+    sheet_compact = _compact_text(
+        " ".join(part for part in [board_task.target_hint, board_task.question_or_topic] if part),
+        limit=240,
+    )
+    combined = _compact_text(" ".join(part for part in [request_compact, sheet_compact] if part), limit=360)
+    if not combined or not COLLECTION_EXPLANATION_TARGET_PATTERN.search(combined):
+        return False
+    if SINGLE_EXPLANATION_TARGET_PATTERN.search(combined):
+        return False
+    return True
+
+
 def _requests_overview_explanation(text: str) -> bool:
     compact = _compact_text(text, limit=120)
     return bool(compact and OVERVIEW_EXPLANATION_REQUEST_PATTERN.search(compact))
@@ -1441,7 +1475,7 @@ def _apply_explicit_sequential_explanation_choice(
         return decision
     if decision.route != "clarify_location" or decision.location_status != "ambiguous":
         return decision
-    if not _requests_sequential_explanation(request_message):
+    if not _requests_collection_explanation_sequence(board_task=board_task, request_message=request_message):
         return decision
     candidates = _ordered_explanation_candidates(decision=decision, resolution=resolution)
     if not candidates:
@@ -1461,8 +1495,8 @@ def _apply_explicit_sequential_explanation_choice(
         target_focus=candidates[0],
         candidate_focuses=candidates,
         reason=(
-            "用户已经明确要求全部或按顺序讲解多个候选目标；"
-            "本轮先从第一个候选目标开始讲解，不再反复要求用户选择位置。"
+            "用户请求讲解同一父级下的集合型内容；"
+            "本轮按最小可讲单元从第一个目标开始讲解，不再反复要求用户选择位置。"
         ),
         write_proposal=decision.write_proposal,
     )
@@ -1698,7 +1732,10 @@ def _section_explanation_sequence(
         return []
     focus = _decision_focus(decision, resolution)
     segments = build_board_segment_index(lesson.board_document).segments
-    explicit_sequence = _requests_sequential_explanation(request_message)
+    explicit_sequence = _requests_collection_explanation_sequence(
+        board_task=board_task,
+        request_message=request_message,
+    )
     if explicit_sequence:
         candidates = decision.candidate_focuses or (resolution.candidates if resolution else [])
         if focus is not None:

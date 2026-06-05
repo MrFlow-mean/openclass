@@ -12,6 +12,15 @@ _ANSWER_MARKER_PATTERN = re.compile(
     r"^(?:答案|参考答案|解答|解析|答案解析|answer|answers|solution|solutions)\s*[:：]?$",
     re.IGNORECASE,
 )
+_ANSWER_NOTE_PATTERN = re.compile(
+    r"(答案|参考答案|解答|解析|answer|answers|solution|solutions)",
+    re.IGNORECASE,
+)
+_EXERCISE_GROUP_PATTERN = re.compile(
+    r"(练习|习题|题目|小题|题项|问题|问答|测验|例题|示例题|步骤|条目|项目|"
+    r"exercise|exercises|question|questions|problem|problems|quiz|quizzes|task|tasks)",
+    re.IGNORECASE,
+)
 _SENTENCE_PATTERN = re.compile(r"[^。！？!?；;.\n]+[。！？!?；;.]?")
 
 
@@ -117,6 +126,17 @@ def _exercise_item_focuses(
     next_index: int,
 ) -> list[BoardFocusRef]:
     marker_index = next((index for index, segment in enumerate(group) if _is_answer_marker(segment)), None)
+    if marker_index is None and _looks_like_exercise_group(group):
+        return _exercise_list_item_focuses(
+            lesson=lesson,
+            group=group,
+            question_segments=[
+                segment
+                for segment in group
+                if segment.kind == "list" and segment.text.strip() and not _is_answer_note(segment)
+            ],
+            next_index=next_index,
+        )
     if marker_index is None:
         return []
 
@@ -156,6 +176,43 @@ def _exercise_item_focuses(
             )
         )
     return atoms
+
+
+def _exercise_list_item_focuses(
+    *,
+    lesson: Lesson,
+    group: list[BoardSegment],
+    question_segments: list[BoardSegment],
+    next_index: int,
+) -> list[BoardFocusRef]:
+    if not question_segments:
+        return []
+    atoms: list[BoardFocusRef] = []
+    for offset, question in enumerate(question_segments):
+        atoms.append(
+            _make_focus(
+                lesson=lesson,
+                primary=question,
+                excerpt=f"题目：{question.text.strip()}",
+                before_text=_nearest_instruction_text(group=group, segment=question),
+                after_text=_next_question_text(question_segments=question_segments, offset=offset),
+                source_segments=[question],
+                index=next_index + len(atoms),
+                reason="按题目列表拆成逐题讲解单元。",
+            )
+        )
+    return atoms
+
+
+def _looks_like_exercise_group(group: list[BoardSegment]) -> bool:
+    for segment in group:
+        if segment.heading_path and _EXERCISE_GROUP_PATTERN.search(" ".join(segment.heading_path)):
+            return True
+        if segment.kind in {"paragraph", "list"} and _EXERCISE_GROUP_PATTERN.search(
+            compact_segment_text(segment.text, limit=240)
+        ):
+            return True
+    return False
 
 
 def _make_focus(
@@ -205,10 +262,23 @@ def _is_answer_marker(segment: BoardSegment) -> bool:
     return bool(_ANSWER_MARKER_PATTERN.match(compact_segment_text(segment.text, limit=80)))
 
 
+def _is_answer_note(segment: BoardSegment) -> bool:
+    compact = compact_segment_text(segment.text, limit=160)
+    return bool(compact and _ANSWER_NOTE_PATTERN.search(compact))
+
+
+def _nearest_instruction_text(*, group: list[BoardSegment], segment: BoardSegment) -> str:
+    index = group.index(segment)
+    for candidate in reversed(group[:index]):
+        if candidate.kind == "paragraph" and candidate.text.strip() and not _is_answer_note(candidate):
+            return candidate.text
+    return _nearest_before_text(group=group, segment=segment, fallback="")
+
+
 def _nearest_before_text(*, group: list[BoardSegment], segment: BoardSegment, fallback: str) -> str:
     index = group.index(segment)
     for candidate in reversed(group[:index]):
-        if candidate.text.strip() and not _is_answer_marker(candidate):
+        if candidate.text.strip() and not _is_answer_marker(candidate) and not _is_answer_note(candidate):
             return candidate.text
     return fallback
 
@@ -216,7 +286,7 @@ def _nearest_before_text(*, group: list[BoardSegment], segment: BoardSegment, fa
 def _nearest_after_text(*, group: list[BoardSegment], segment: BoardSegment, fallback: str) -> str:
     index = group.index(segment)
     for candidate in group[index + 1 :]:
-        if candidate.text.strip() and not _is_answer_marker(candidate):
+        if candidate.text.strip() and not _is_answer_marker(candidate) and not _is_answer_note(candidate):
             return candidate.text
     return fallback
 
