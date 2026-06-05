@@ -37,6 +37,7 @@ from app.services import chatbot as chatbot_module
 from app.services.board_explanation_gate import generate_board_directed_explanation_message
 from app.services.course_runtime import refresh_lesson_runtime
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
+from app.services.explanation_atoms import ATOMIC_EXPLANATION_SEQUENCE_MODE
 from app.services.lesson_factory import build_requirements, create_empty_lesson
 from app.services.openai_course_ai import (
     AIOutputParseError,
@@ -4406,18 +4407,144 @@ def test_existing_board_sequential_explanation_confirmation_executes_first_candi
     assert response.board_task_sheet is not None
     assert response.board_task_sheet.requested_action == "explain"
     assert response.active_interaction_session is not None
-    assert response.active_interaction_session.sequence_mode == "section_explanation"
+    assert response.active_interaction_session.sequence_mode == ATOMIC_EXPLANATION_SEQUENCE_MODE
     assert response.active_interaction_session.sequence_index == 0
     assert len(response.active_interaction_session.sequence_items) == 2
     assert response.resolved_focus is not None
-    assert "第一段" in response.resolved_focus.excerpt
-    assert "第 1/2 个子节" in (captured["user_message"] or "")
+    assert response.resolved_focus.excerpt == "第一段内容。"
+    assert "第 1/2 个讲解单元" in (captured["user_message"] or "")
     commit = response.course_package.lessons[0].history_graph.commits[-1]
     assert commit.label == "Section explanation session start"
     assert commit.metadata["assistant_message_source"] == "chatbot_board_directed"
     assert commit.metadata["board_task_route"] == "explain"
     assert commit.metadata["board_task_cleared"] is True
-    assert commit.metadata["active_interaction_session_after"]["sequence_mode"] == "section_explanation"
+    assert commit.metadata["active_interaction_session_after"]["sequence_mode"] == ATOMIC_EXPLANATION_SEQUENCE_MODE
+    assert commit.metadata["explanation_sequence_mode"] == ATOMIC_EXPLANATION_SEQUENCE_MODE
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_existing_board_all_exercises_sequence_uses_each_question_atom(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    captured: dict[str, object | None] = {}
+
+    def _fake_chatbot_reply(**kwargs):
+        captured["user_message"] = kwargs.get("user_message")
+        captured["interaction_context"] = kwargs.get("interaction_context")
+        return ChatbotReply(chatbot_message="AI生成：逐题讲第一题。")
+
+    monkeypatch.setattr(openai_course_ai, "generate_chatbot_reply", _fake_chatbot_reply)
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_board_task_requirement_sheet",
+        lambda **kwargs: BoardTaskRequirementSheet(
+            target_hint="所有练习题",
+            location_status="ambiguous",
+            requested_action="explain",
+            question_or_topic="讲解所有练习题",
+            progress=100,
+            missing_items=[],
+        ),
+    )
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.board_document = build_document(
+        title="已有板书",
+        content_text=(
+            "# 主线\n"
+            "## 练习\n"
+            "### 练习一\n"
+            "将括号中的动词变为合适形式。\n"
+            "- Paul m’a dit qu’il (venir) _____.\n"
+            "- Nous pensions que tu (pouvoir) _____.\n"
+            "- Elle m’a promis qu’elle (écrire) _____.\n"
+            "- Ils espéraient qu’ils (avoir) _____.\n"
+            "- Je savais que vous (être) _____.\n"
+            "答案：\n"
+            "- viendrait\n"
+            "- pourrais\n"
+            "- écrirait\n"
+            "- auraient\n"
+            "- seriez\n"
+            "### 练习二\n"
+            "- 后续练习题。"
+        ),
+    )
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    index = build_board_segment_index(lesson.board_document)
+    first_question = next(segment for segment in index.segments if "(venir)" in segment.text)
+    fourth_question = next(segment for segment in index.segments if "(avoir)" in segment.text)
+    first_candidate = BoardFocusRef(
+        source="board",
+        lesson_id=lesson.id,
+        document_id=lesson.board_document.id,
+        segment_id=first_question.segment_id,
+        kind=first_question.kind,
+        heading_path=first_question.heading_path,
+        excerpt=first_question.text,
+        confidence=0.9,
+        reason="测试候选一。",
+        display_label=" / ".join(first_question.heading_path),
+        source_segment_ids=[first_question.segment_id],
+        order_start=first_question.order_index,
+        order_end=first_question.order_index,
+    )
+    fourth_candidate = BoardFocusRef(
+        source="board",
+        lesson_id=lesson.id,
+        document_id=lesson.board_document.id,
+        segment_id=fourth_question.segment_id,
+        kind=fourth_question.kind,
+        heading_path=fourth_question.heading_path,
+        excerpt=fourth_question.text,
+        confidence=0.88,
+        reason="测试候选二。",
+        display_label=" / ".join(fourth_question.heading_path),
+        source_segment_ids=[fourth_question.segment_id],
+        order_start=fourth_question.order_index,
+        order_end=fourth_question.order_index,
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_board_task_route_decision",
+        lambda **kwargs: BoardTaskRouteDecision(
+            route="clarify_location",
+            location_status="ambiguous",
+            candidate_focuses=[first_candidate, fourth_candidate],
+            reason="同一小节内多个题目候选。",
+        ),
+    )
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="讲解所有练习题"),
+        user_id=TEST_USER.id,
+    )
+
+    assert response.active_interaction_session is not None
+    session = response.active_interaction_session
+    assert session.sequence_mode == ATOMIC_EXPLANATION_SEQUENCE_MODE
+    assert len(session.sequence_items) == 5
+    assert session.target_focus is not None
+    assert "Paul m’a dit" in session.target_focus.excerpt
+    assert "参考答案：viendrait" in session.target_focus.excerpt
+    assert "Nous pensions" not in session.target_focus.excerpt
+    assert "pouvoir" in session.sequence_items[1].excerpt
+    assert "参考答案：pourrais" in session.sequence_items[1].excerpt
+    assert "后续练习题" not in " ".join(item.excerpt for item in session.sequence_items)
+    assert "推理步骤" in str(captured["user_message"])
+    context = captured["interaction_context"]
+    assert isinstance(context, dict)
+    assert context["sequence_mode"] == ATOMIC_EXPLANATION_SEQUENCE_MODE
+    assert context["sequence_total"] == 5
+    commit = response.course_package.lessons[0].history_graph.commits[-1]
+    assert commit.metadata["explanation_sequence_mode"] == ATOMIC_EXPLANATION_SEQUENCE_MODE
+    assert len(commit.metadata["explanation_sequence"]) == 5
     assert _read_log_entries(isolated_ai_log) == []
 
 
@@ -4501,26 +4628,178 @@ def test_parent_section_explanation_starts_child_sequence(
     assert response.chatbot_message == "AI生成：先讲3.1。"
     assert response.active_board_task_sheet is None
     assert response.active_interaction_session is not None
-    assert response.active_interaction_session.sequence_mode == "section_explanation"
+    assert response.active_interaction_session.sequence_mode == ATOMIC_EXPLANATION_SEQUENCE_MODE
     assert response.active_interaction_session.sequence_index == 0
     assert len(response.active_interaction_session.sequence_items) == 3
     assert response.active_interaction_session.target_focus is not None
-    assert "3.1 第一小节" in response.active_interaction_session.target_focus.excerpt
+    assert response.active_interaction_session.target_focus.excerpt == "第一小节内容。"
+    assert response.active_interaction_session.target_focus.heading_path[-1] == "3.1 第一小节"
     assert "3.2 第二小节" not in response.active_interaction_session.target_focus.excerpt
     assert response.resolved_focus is not None
-    assert "3.1 第一小节" in response.resolved_focus.excerpt
-    assert "第 1/3 个子节" in str(captured["user_message"])
+    assert response.resolved_focus.excerpt == "第一小节内容。"
+    assert "第 1/3 个讲解单元" in str(captured["user_message"])
     context = captured["interaction_context"]
     assert isinstance(context, dict)
-    assert context["sequence_mode"] == "section_explanation"
+    assert context["sequence_mode"] == ATOMIC_EXPLANATION_SEQUENCE_MODE
     assert context["sequence_total"] == 3
     commit = response.course_package.lessons[0].history_graph.commits[-1]
     assert commit.label == "Section explanation session start"
     assert commit.metadata["board_task_route"] == "explain"
     assert commit.metadata["board_task_cleared"] is True
     assert commit.metadata["active_interaction_session_after"]["sequence_index"] == 0
+    assert commit.metadata["explanation_sequence_mode"] == ATOMIC_EXPLANATION_SEQUENCE_MODE
     events = store.list_board_task_events(owner_user_id=TEST_USER.id, lesson_id=lesson.id)
     assert events[-1]["event_type"] == "consumed"
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_parent_explanation_splits_plain_paragraphs_into_sentence_atoms(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+
+    monkeypatch.setattr(openai_course_ai, "generate_chatbot_reply", lambda **kwargs: ChatbotReply(chatbot_message="AI生成：先讲第一句。"))
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_board_task_requirement_sheet",
+        lambda **kwargs: BoardTaskRequirementSheet(
+            target_hint="核心章节",
+            location_status="missing",
+            requested_action="explain",
+            question_or_topic="讲解核心章节",
+            progress=100,
+            missing_items=[],
+        ),
+    )
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.board_document = build_document(
+        title="已有板书",
+        content_text="# 主线\n## 核心章节\n第一句说明概念。第二句说明原因。第三句说明应用。",
+    )
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    index = build_board_segment_index(lesson.board_document)
+    parent_segment = next(segment for segment in index.segments if segment.text == "核心章节")
+    parent_focus = BoardFocusRef(
+        source="board",
+        lesson_id=lesson.id,
+        document_id=lesson.board_document.id,
+        segment_id=parent_segment.segment_id,
+        kind="heading",
+        heading_path=parent_segment.heading_path,
+        excerpt=parent_segment.text,
+        confidence=0.94,
+        reason="测试定位到父级章节。",
+        display_label=" / ".join(parent_segment.heading_path),
+        source_segment_ids=[parent_segment.segment_id],
+        order_start=parent_segment.order_index,
+        order_end=parent_segment.order_index,
+    )
+    monkeypatch.setattr(
+        chatbot_module,
+        "resolve_board_focus",
+        lambda **kwargs: chatbot_module.FocusResolution(
+            focus=parent_focus,
+            candidates=[parent_focus],
+            status="resolved",
+            question="",
+        ),
+    )
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="讲解核心章节"),
+        user_id=TEST_USER.id,
+    )
+
+    assert response.active_interaction_session is not None
+    assert response.active_interaction_session.sequence_mode == ATOMIC_EXPLANATION_SEQUENCE_MODE
+    assert [item.excerpt for item in response.active_interaction_session.sequence_items] == [
+        "第一句说明概念。",
+        "第二句说明原因。",
+        "第三句说明应用。",
+    ]
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_overview_request_keeps_single_board_directed_explanation(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    captured: dict[str, str | None] = {}
+
+    def _fake_chatbot_reply(**kwargs):
+        captured["user_message"] = kwargs.get("user_message")
+        return ChatbotReply(chatbot_message="AI生成：这是章节概括。")
+
+    monkeypatch.setattr(openai_course_ai, "generate_chatbot_reply", _fake_chatbot_reply)
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_board_task_requirement_sheet",
+        lambda **kwargs: BoardTaskRequirementSheet(
+            target_hint="核心章节",
+            location_status="missing",
+            requested_action="explain",
+            question_or_topic="概括核心章节",
+            progress=100,
+            missing_items=[],
+        ),
+    )
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.board_document = build_document(
+        title="已有板书",
+        content_text="# 主线\n## 核心章节\n第一句说明概念。第二句说明原因。",
+    )
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    index = build_board_segment_index(lesson.board_document)
+    parent_segment = next(segment for segment in index.segments if segment.text == "核心章节")
+    parent_focus = BoardFocusRef(
+        source="board",
+        lesson_id=lesson.id,
+        document_id=lesson.board_document.id,
+        segment_id=parent_segment.segment_id,
+        kind="heading",
+        heading_path=parent_segment.heading_path,
+        excerpt=parent_segment.text,
+        confidence=0.94,
+        reason="测试定位到父级章节。",
+        display_label=" / ".join(parent_segment.heading_path),
+        source_segment_ids=[parent_segment.segment_id],
+        order_start=parent_segment.order_index,
+        order_end=parent_segment.order_index,
+    )
+    monkeypatch.setattr(
+        chatbot_module,
+        "resolve_board_focus",
+        lambda **kwargs: chatbot_module.FocusResolution(
+            focus=parent_focus,
+            candidates=[parent_focus],
+            status="resolved",
+            question="",
+        ),
+    )
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="概括核心章节"),
+        user_id=TEST_USER.id,
+    )
+
+    assert response.chatbot_message == "AI生成：这是章节概括。"
+    assert response.active_interaction_session is None
+    assert "第 1/" not in str(captured["user_message"])
+    commit = response.course_package.lessons[0].history_graph.commits[-1]
+    assert commit.metadata["board_task_route"] == "explain"
+    assert "explanation_sequence_mode" not in commit.metadata
     assert _read_log_entries(isolated_ai_log) == []
 
 
@@ -4609,6 +4888,78 @@ def test_parent_section_explanation_continue_advances_to_next_child(
     assert _read_log_entries(isolated_ai_log) == []
 
 
+def test_atomic_explanation_continue_advances_to_next_unit(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    captured_messages: list[str | None] = []
+
+    def _fake_chatbot_reply(**kwargs):
+        captured_messages.append(kwargs.get("user_message"))
+        return ChatbotReply(chatbot_message="AI生成：继续讲第二题。")
+
+    monkeypatch.setattr(openai_course_ai, "generate_chatbot_reply", _fake_chatbot_reply)
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.board_document = build_document(
+        title="已有板书",
+        content_text="# 主线\n## 练习\n- 第一题\n- 第二题",
+    )
+    index = build_board_segment_index(lesson.board_document)
+    list_segments = [segment for segment in index.segments if segment.kind == "list"]
+    sequence_items = [
+        BoardFocusRef(
+            source="board",
+            lesson_id=lesson.id,
+            document_id=lesson.board_document.id,
+            segment_id=segment.segment_id,
+            kind=segment.kind,
+            heading_path=segment.heading_path,
+            excerpt=segment.text,
+            confidence=0.94,
+            reason="测试原子讲解单元。",
+            display_label=f"{' / '.join(segment.heading_path)} · 第{index + 1}个讲解单元",
+            source_segment_ids=[segment.segment_id],
+            order_start=segment.order_index,
+            order_end=segment.order_index,
+        )
+        for index, segment in enumerate(list_segments)
+    ]
+    lesson.active_interaction_session = InteractionSession(
+        status="active",
+        rule_text="按板书内容的最小可讲单元顺序逐个讲解。",
+        interaction_goal="按顺序讲解练习。",
+        target_focus=sequence_items[0],
+        reference_context="第一题",
+        expected_user_behavior="用户确认当前讲解单元是否可以接受。",
+        assistant_behavior="每轮只讲当前讲解单元。",
+        progress_note="准备讲解第 1/2 个讲解单元。",
+        sequence_items=sequence_items,
+        sequence_index=0,
+        sequence_mode=ATOMIC_EXPLANATION_SEQUENCE_MODE,
+    )
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="继续"),
+        user_id=TEST_USER.id,
+    )
+
+    assert response.active_interaction_session is not None
+    assert response.active_interaction_session.sequence_index == 1
+    assert response.active_interaction_session.target_focus is not None
+    assert response.active_interaction_session.target_focus.excerpt == "第二题"
+    assert "第 2/2 个讲解单元" in str(captured_messages[-1])
+    assert response.interaction_decision is not None
+    assert response.interaction_decision.route == "continue_rule"
+    assert _read_log_entries(isolated_ai_log) == []
+
+
 def test_parent_section_explanation_followup_keeps_current_child(
     monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
 ) -> None:
@@ -4686,7 +5037,7 @@ def test_parent_section_explanation_followup_keeps_current_child(
     assert "3.1 第一小节" in response.active_interaction_session.target_focus.excerpt
     assert response.resolved_focus is not None
     assert "3.1 第一小节" in response.resolved_focus.excerpt
-    assert "不要推进到下一子节" in str(captured_messages[-1])
+    assert "不要推进到下一个子节" in str(captured_messages[-1])
     commit = response.course_package.lessons[0].history_graph.commits[-1]
     assert commit.label == "Section explanation follow-up"
     assert commit.metadata["active_interaction_session_after"]["sequence_index"] == 0
