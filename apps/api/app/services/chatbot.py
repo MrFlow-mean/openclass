@@ -110,7 +110,9 @@ LEARNING_START_REQUEST_PATTERN = re.compile(r"(我要学|我想学|想学习|学
 FOLLOWUP_EXECUTION_PATTERN = re.compile(r"^(写啊|写|开始|执行|可以|好的|好|就这样|按这个来|照这个来|继续)$")
 INTERACTION_RULE_REQUEST_PATTERN = re.compile(r"(规则|互动|轮流|你问我答|按.{0,12}来)")
 SEQUENTIAL_EXPLANATION_REQUEST_PATTERN = re.compile(
-    r"(都讲|全都讲|全部讲|都解释|全部解释|逐个|一个个|挨个|依次|按顺序|从头到尾)"
+    r"(都讲|全都讲|全部讲|都解释|全部解释|逐个|一个个|挨个|依次|按顺序|从头到尾|"
+    r"(?:讲解|解释|讲|说明).{0,12}(?:所有|全部|每个|每一(?:个|道|题|节|小节|部分|段)?|每道|每题|各个)|"
+    r"(?:所有|全部|每个|每一(?:个|道|题|节|小节|部分|段)?|每道|每题|各个).{0,12}(?:都)?(?:讲|讲解|解释|说明))"
 )
 SEQUENCE_CONTINUE_PATTERN = re.compile(
     r"^(可以|可以的|没问题|没有问题|没啥问题|没有啥问题|好|好的|继续|继续讲|下一节|下一个|明白了|懂了|可以接受)$"
@@ -2854,11 +2856,19 @@ def _board_document_failure_metadata(edit_outcome) -> dict[str, object]:
         "board_edit_operation": edit_outcome.operation,
         "board_edit_summary": edit_outcome.summary,
         "board_document_operation_status": edit_outcome.operation_status,
+        **_board_document_quality_metadata(edit_outcome),
     }
     trace_id = context.get("trace_id")
     if trace_id:
         metadata["trace_id"] = trace_id
     return metadata
+
+
+def _board_document_quality_metadata(edit_outcome) -> dict[str, object]:
+    return {
+        "quality_repair_attempts": edit_outcome.quality_repair_attempts,
+        "quality_review_status": edit_outcome.quality_review_status,
+    }
 
 
 def _response(
@@ -3797,6 +3807,7 @@ def _generate_board_from_confirmed_resource(
             "board_edit_operation": edit_outcome.operation,
             "board_edit_summary": edit_outcome.summary,
             "board_section_titles": edit_outcome.section_titles,
+            **_board_document_quality_metadata(edit_outcome),
             **_requirement_history_metadata(
                 frozen_requirement,
                 run_status_after_commit="consumed" if frozen_requirement is not None else None,
@@ -4006,6 +4017,7 @@ def _chat_response(
             "board_edit_operation": edit_outcome.operation,
             "board_edit_summary": edit_outcome.summary,
             "board_section_titles": edit_outcome.section_titles,
+            **_board_document_quality_metadata(edit_outcome),
             **_requirement_history_metadata(
                 frozen_requirement,
                 run_status_after_commit="consumed" if frozen_requirement is not None else None,
@@ -4749,6 +4761,7 @@ def _chat_response(
                     "board_edit_operation": edit_outcome.operation,
                     "board_edit_summary": edit_outcome.summary,
                     "board_section_titles": edit_outcome.section_titles,
+                    **_board_document_quality_metadata(edit_outcome),
                     **_requirement_history_metadata(
                         frozen_requirement,
                         run_status_after_commit="consumed" if frozen_requirement is not None else None,
@@ -5151,6 +5164,7 @@ def _chat_response(
                 "board_edit_operation": edit_outcome.operation,
                 "board_edit_summary": edit_outcome.summary,
                 "board_section_titles": edit_outcome.section_titles,
+                **_board_document_quality_metadata(edit_outcome),
                 **_requirement_history_metadata(
                     frozen_requirement,
                     run_status_after_commit="consumed" if frozen_requirement is not None else None,

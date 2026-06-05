@@ -124,7 +124,7 @@ def create_lesson(
         id=lesson_id,
         title=clean_title,
         slug=slugify(clean_title),
-        summary=normalized_requirements.learning_goal,
+        summary=normalized_requirements.learning_goal if requirements is not None else "",
         tags=[],
         board_document=document,
         learning_requirements=normalized_requirements,

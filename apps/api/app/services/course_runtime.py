@@ -62,6 +62,16 @@ def active_task_requirements(lesson: Lesson) -> LearningRequirementSheet | None:
     )
 
 
+def visible_lesson_summary(requirements: LearningRequirementSheet, *, lesson_title: str) -> str:
+    default_requirements = build_requirements(lesson_title)
+    is_default_empty_state = (
+        requirements.learning_goal == default_requirements.learning_goal
+        and not requirements.learning_need_checklist
+        and requirements.action_type is None
+    )
+    return "" if is_default_empty_state else requirements.learning_goal
+
+
 def build_internal_teaching_guide(
     *,
     lesson_id: str,
@@ -94,7 +104,7 @@ def refresh_lesson_runtime(
         document=current_document,
         requirements=normalized,
     )
-    lesson.summary = normalized.learning_goal
+    lesson.summary = visible_lesson_summary(normalized, lesson_title=lesson.title)
     return lesson
 
 

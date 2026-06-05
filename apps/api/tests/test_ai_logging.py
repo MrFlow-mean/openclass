@@ -235,6 +235,37 @@ def test_chatbot_reply_recovers_model_generated_plain_text(isolated_ai_log, monk
     assert entries[-1]["payload"]["parsed_output"]["chatbot_message"] == reply.chatbot_message
 
 
+def test_chatbot_reply_recovers_partial_json_message_with_invalid_control_char(
+    isolated_ai_log, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ai = OpenAICourseAI()
+    monkeypatch.setattr(ai, "_model_for", lambda role: ("deepseek", "unit-chatbot-model"))
+    monkeypatch.setattr(ai, "_provider_available", lambda provider: True)
+
+    def _invalid_json_response(**kwargs):
+        raise AIOutputParseError(
+            "Invalid control character at: line 1 column 28 (char 27)",
+            output_text='{"chatbot_message":"第一行\n第二行"}',
+        )
+
+    monkeypatch.setattr(ai, "_call_parse", _invalid_json_response)
+
+    reply = ai.generate_chatbot_reply(
+        lesson_title="测试页面",
+        learning_goal="围绕当前学习任务继续交流",
+        board_summary="",
+        resource_summary="",
+        conversation_summary="",
+        user_message="继续",
+    )
+
+    assert reply is not None
+    assert reply.chatbot_message == "第一行\n第二行"
+    entries = _read_log_entries(isolated_ai_log)
+    assert entries[-1]["event_type"] == "deepseek_text_call_recovered"
+    assert entries[-1]["payload"]["parsed_output"]["chatbot_message"] == reply.chatbot_message
+
+
 def test_openai_parse_retries_model_not_found_with_fallback(isolated_ai_log) -> None:
     class _Output(BaseModel):
         title: str
@@ -3288,6 +3319,15 @@ def test_board_generation_repairs_inconsistent_candidate_before_commit(
     assert "答案：概念A" in updated_document.content_text
     assert "答案：概念B" not in updated_document.content_text
     assert response.board_document_operation_status == "succeeded"
+    commit = response.course_package.lessons[0].history_graph.commits[-1]
+    assert commit.metadata["quality_repair_attempts"] == 1
+    assert commit.metadata["quality_review_status"] == "pass"
+    generation_commits = [
+        item
+        for item in response.course_package.lessons[0].history_graph.commits
+        if item.metadata.get("kind") == "board_document_generation"
+    ]
+    assert len(generation_commits) == 1
     assert _read_log_entries(isolated_ai_log) == []
 
 
@@ -3347,6 +3387,9 @@ def test_board_generation_rejects_repeated_inconsistent_candidates(
     assert "一致性审查未通过" in (response.board_document_operation_failure_reason or "")
     events = store.list_learning_requirement_events(owner_user_id=TEST_USER.id, lesson_id=lesson.id)
     assert events[-1]["event_type"] == "generation_failed"
+    event_metadata = json.loads(events[-1]["metadata_json"])
+    assert event_metadata["quality_repair_attempts"] == 3
+    assert event_metadata["quality_review_status"] == "repair_required"
     assert _read_log_entries(isolated_ai_log) == []
 
 
@@ -3639,7 +3682,7 @@ def test_numbered_blank_edit_routes_to_board_editor(
     assert _read_log_entries(isolated_ai_log) == []
 
 
-def test_ambiguous_numbered_edit_asks_for_focus_confirmation(
+def test_ambiguous_numbered_edit_with_all_quantifier_still_asks_for_focus_confirmation(
     monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
 ) -> None:
     store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
@@ -3666,7 +3709,7 @@ def test_ambiguous_numbered_edit_asks_for_focus_confirmation(
 
     response = chat_service.process_chat_on_lesson(
         lesson.id,
-        ChatRequest(message="修改第3题"),
+        ChatRequest(message="修改所有第3题"),
         user_id=TEST_USER.id,
     )
 
@@ -4272,8 +4315,12 @@ def test_existing_board_explain_content_goes_through_board_task_not_learning_req
     assert _read_log_entries(isolated_ai_log) == []
 
 
+@pytest.mark.parametrize(
+    "request_message",
+    ["都讲", "讲解所有填空练习", "讲解每个小节", "全部练习都讲"],
+)
 def test_existing_board_sequential_explanation_confirmation_executes_first_candidate(
-    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+    request_message: str, monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
 ) -> None:
     store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
     monkeypatch.setattr(workspace_state, "STORE", store)
@@ -4285,6 +4332,18 @@ def test_existing_board_sequential_explanation_confirmation_executes_first_candi
 
     monkeypatch.setattr(openai_course_ai, "generate_chatbot_reply", _fake_chatbot_reply)
     monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_board_task_requirement_sheet",
+        lambda **kwargs: BoardTaskRequirementSheet(
+            target_hint="第一段和第二段",
+            location_status="ambiguous",
+            requested_action="explain",
+            question_or_topic="围绕多个候选目标讲解",
+            progress=100,
+            missing_items=[],
+        ),
+    )
 
     workspace = _seed_test_user_workspace(store)
     lesson = workspace.packages[0].lessons[0]
@@ -4338,7 +4397,7 @@ def test_existing_board_sequential_explanation_confirmation_executes_first_candi
 
     response = chat_service.process_chat_on_lesson(
         lesson.id,
-        ChatRequest(message="都讲"),
+        ChatRequest(message=request_message),
         user_id=TEST_USER.id,
     )
 
@@ -4702,7 +4761,7 @@ def test_sequential_explanation_across_parent_candidates_clarifies_location(
 
     response = chat_service.process_chat_on_lesson(
         lesson.id,
-        ChatRequest(message="都讲"),
+        ChatRequest(message="所有都讲"),
         user_id=TEST_USER.id,
     )
 

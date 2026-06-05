@@ -46,6 +46,8 @@ class BoardDocumentEditOutcome:
     changed: bool = False
     operation_status: Literal["succeeded", "failed"] = "failed"
     failure_reason: str | None = None
+    quality_repair_attempts: int = 0
+    quality_review_status: str = "not_run"
 
 
 def generate_from_requirements(
@@ -79,6 +81,8 @@ def generate_from_requirements(
     }
     failure_reason = "板书文档编辑 AI 没有返回生成结果。"
     repair_feedback: dict[str, object] | None = None
+    quality_repair_attempts = 0
+    quality_review_status = "not_run"
     for attempt in range(_MAX_BOARD_DOCUMENT_QUALITY_ATTEMPTS):
         result = _request_board_document_edit(request_kwargs, repair_feedback=repair_feedback)
         if not result:
@@ -88,6 +92,8 @@ def generate_from_requirements(
         format_issue = _model_output_quality_issue(result)
         if format_issue:
             failure_reason = format_issue
+            quality_repair_attempts = attempt + 1
+            quality_review_status = "repair_required"
             repair_feedback = _quality_repair_feedback(
                 reason=failure_reason,
                 attempt=attempt,
@@ -98,6 +104,8 @@ def generate_from_requirements(
         content_text, content_html = _edit_payload(result, prefer_content_html=False)
         if not content_text and not content_html:
             failure_reason = "板书文档编辑 AI 返回了空内容。"
+            quality_repair_attempts = attempt + 1
+            quality_review_status = "repair_required"
             repair_feedback = _quality_repair_feedback(
                 reason=failure_reason,
                 attempt=attempt,
@@ -114,6 +122,8 @@ def generate_from_requirements(
         )
         if _would_store_flat_initial_board(new_document):
             failure_reason = "首次板书生成结果缺少标题层级，已阻止写入。"
+            quality_repair_attempts = attempt + 1
+            quality_review_status = "repair_required"
             repair_feedback = _quality_repair_feedback(
                 reason=failure_reason,
                 attempt=attempt,
@@ -132,6 +142,8 @@ def generate_from_requirements(
         )
         if consistency_issue:
             failure_reason = consistency_issue
+            quality_repair_attempts = attempt + 1
+            quality_review_status = "repair_required"
             repair_feedback = _quality_repair_feedback(
                 reason=failure_reason,
                 attempt=attempt,
@@ -146,8 +158,15 @@ def generate_from_requirements(
             chatbot_message=result.chatbot_message.strip() or result.summary.strip(),
             section_titles=result.section_titles,
             reason="板书文档编辑 AI 已根据学习需求清单生成空白板书。",
+            quality_repair_attempts=quality_repair_attempts,
+            quality_review_status="pass",
         )
-    return _no_change(lesson, failure_reason)
+    return _no_change(
+        lesson,
+        failure_reason,
+        quality_repair_attempts=quality_repair_attempts,
+        quality_review_status=quality_review_status,
+    )
 
 
 def edit_existing_document(
@@ -185,6 +204,8 @@ def edit_existing_document(
     }
     failure_reason = "板书文档编辑 AI 没有返回编辑结果。"
     repair_feedback: dict[str, object] | None = None
+    quality_repair_attempts = 0
+    quality_review_status = "not_run"
     for attempt in range(_MAX_BOARD_DOCUMENT_QUALITY_ATTEMPTS):
         result = _request_board_document_edit(request_kwargs, repair_feedback=repair_feedback)
         if not result:
@@ -194,6 +215,8 @@ def edit_existing_document(
         format_issue = _model_output_quality_issue(result)
         if format_issue:
             failure_reason = format_issue
+            quality_repair_attempts = attempt + 1
+            quality_review_status = "repair_required"
             repair_feedback = _quality_repair_feedback(
                 reason=failure_reason,
                 attempt=attempt,
@@ -205,6 +228,8 @@ def edit_existing_document(
         content_text, _content_html = _edit_payload(result, prefer_content_html=True)
         if not content_text:
             failure_reason = "板书文档编辑 AI 返回了空内容。"
+            quality_repair_attempts = attempt + 1
+            quality_review_status = "repair_required"
             repair_feedback = _quality_repair_feedback(
                 reason=failure_reason,
                 attempt=attempt,
@@ -217,6 +242,8 @@ def edit_existing_document(
             and not (allow_replace_document or is_whole_document_scope)
         ):
             failure_reason = "非全文编辑返回了整篇替换结果，已阻止写入。"
+            quality_repair_attempts = attempt + 1
+            quality_review_status = "repair_required"
             repair_feedback = _quality_repair_feedback(
                 reason=failure_reason,
                 attempt=attempt,
@@ -233,6 +260,8 @@ def edit_existing_document(
             )
         ):
             failure_reason = "局部替换结果看起来像整份文档，已阻止写入。"
+            quality_repair_attempts = attempt + 1
+            quality_review_status = "repair_required"
             repair_feedback = _quality_repair_feedback(
                 reason=failure_reason,
                 attempt=attempt,
@@ -248,6 +277,8 @@ def edit_existing_document(
         )
         if not document_changed(lesson.board_document, new_document):
             failure_reason = "板书文档编辑 AI 的结果没有改变当前文档。"
+            quality_repair_attempts = attempt + 1
+            quality_review_status = "repair_required"
             repair_feedback = _quality_repair_feedback(
                 reason=failure_reason,
                 attempt=attempt,
@@ -260,6 +291,8 @@ def edit_existing_document(
             operation=operation,
         ):
             failure_reason = "全文替换结果丢失了原有标题、列表、加粗或表格结构，已阻止写入。"
+            quality_repair_attempts = attempt + 1
+            quality_review_status = "repair_required"
             repair_feedback = _quality_repair_feedback(
                 reason=failure_reason,
                 attempt=attempt,
@@ -278,6 +311,8 @@ def edit_existing_document(
         )
         if consistency_issue:
             failure_reason = consistency_issue
+            quality_repair_attempts = attempt + 1
+            quality_review_status = "repair_required"
             repair_feedback = _quality_repair_feedback(
                 reason=failure_reason,
                 attempt=attempt,
@@ -293,9 +328,16 @@ def edit_existing_document(
             chatbot_message=result.chatbot_message.strip() or result.summary.strip(),
             section_titles=result.section_titles,
             reason="板书文档编辑 AI 已根据解析出的目标位置和指令更新板书。",
+            quality_repair_attempts=quality_repair_attempts,
+            quality_review_status="pass",
         )
 
-    return _no_change(lesson, failure_reason)
+    return _no_change(
+        lesson,
+        failure_reason,
+        quality_repair_attempts=quality_repair_attempts,
+        quality_review_status=quality_review_status,
+    )
 
 
 def _apply_edit_result(
@@ -439,6 +481,8 @@ def _changed(
     chatbot_message: str,
     section_titles: list[str],
     reason: str,
+    quality_repair_attempts: int = 0,
+    quality_review_status: str = "not_run",
 ) -> BoardDocumentEditOutcome:
     return BoardDocumentEditOutcome(
         chatbot_message=chatbot_message,
@@ -451,10 +495,18 @@ def _changed(
         changed=True,
         operation_status="succeeded",
         failure_reason=None,
+        quality_repair_attempts=quality_repair_attempts,
+        quality_review_status=quality_review_status,
     )
 
 
-def _no_change(lesson: Lesson, reason: str) -> BoardDocumentEditOutcome:
+def _no_change(
+    lesson: Lesson,
+    reason: str,
+    *,
+    quality_repair_attempts: int = 0,
+    quality_review_status: str = "not_run",
+) -> BoardDocumentEditOutcome:
     return BoardDocumentEditOutcome(
         chatbot_message="",
         new_document=lesson.board_document,
@@ -466,6 +518,8 @@ def _no_change(lesson: Lesson, reason: str) -> BoardDocumentEditOutcome:
         changed=False,
         operation_status="failed",
         failure_reason=reason,
+        quality_repair_attempts=quality_repair_attempts,
+        quality_review_status=quality_review_status,
     )
 
 
