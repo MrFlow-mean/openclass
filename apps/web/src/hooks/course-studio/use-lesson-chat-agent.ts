@@ -298,9 +298,11 @@ export function useLessonChatAgent({
       updatePendingAssistant(lessonId, pendingAssistantMessage.id, { statusLabel: "正在回复" });
       const response = await api.streamChatOnLesson(requestLesson.id, payloadWithConversation, {
         onPhase(label) {
+          // 后端告诉前端当前阶段，例如“正在回复”或“正在生成右侧文档”。
           updatePendingAssistant(lessonId, pendingAssistantMessage.id, { statusLabel: label });
         },
         onChatDelta(delta) {
+          // Chatbot 的文字增量先写到 pending 消息里，最终响应回来后再替换成正式历史消息。
           streamedChatContent += delta;
           updatePendingAssistant(lessonId, pendingAssistantMessage.id, {
             content: streamedChatContent,
@@ -308,6 +310,7 @@ export function useLessonChatAgent({
           });
         },
         onDocumentDelta(delta) {
+          // BoardEditor 生成文档时，前端先把 Markdown 增量渲染成右侧临时预览。
           if (!canStreamDocumentPreview) {
             return;
           }
@@ -320,6 +323,7 @@ export function useLessonChatAgent({
           });
         },
         onRequirementUpdate(payload) {
+          // 空白板书阶段：后端实时推送学习需求清单和澄清进度。
           if (payload.learning_clarification?.ready_for_board) {
             sawReadyForBoardRequirementUpdate = true;
           }
@@ -329,6 +333,7 @@ export function useLessonChatAgent({
           setStreamedRequirementSheet(payload.active_requirement_sheet ?? payload.learning_requirement_sheet);
         },
         onBoardTaskUpdate(payload) {
+          // 已有板书阶段：后端实时推送四字段任务单，前端隐藏旧的学习需求状态。
           setCurrentNeedPending(false);
           setStreamedRequirementSheet(null);
           setLearningClarity(null);
@@ -348,6 +353,7 @@ export function useLessonChatAgent({
             }
           : null;
       const responseCommit = latestCommitFromPackage(response.course_package, requestLesson.id);
+      // 最终 response 带回新的课程包和 commit，聊天消息会绑定到对应历史版本。
       const committedUserMessage: ChatMessage = responseCommit
         ? {
             ...userMessage,

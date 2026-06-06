@@ -73,6 +73,7 @@ function clearSessionToken(name: string) {
 }
 
 export function getApiBase() {
+  // 前端统一从这里决定后端地址：本地默认 8000，线上默认同源。
   if (configuredApiBase) {
     return configuredApiBase;
   }
@@ -219,6 +220,7 @@ type ChatStreamHandlers = {
 };
 
 function parseSseBlock(block: string): { event: string; data: string } | null {
+  // 后端的流式聊天用 SSE 传输，这里把一个 event/data 块解析出来。
   let event = "message";
   const dataLines: string[] = [];
   for (const line of block.split(/\r?\n/)) {
@@ -235,6 +237,7 @@ function parseSseBlock(block: string): { event: string; data: string } | null {
 }
 
 function handleChatStreamBlock(block: string, handlers: ChatStreamHandlers) {
+  // 不同 SSE 事件对应不同教学状态：聊天增量、文档增量、需求更新、任务更新或最终结果。
   const parsed = parseSseBlock(block);
   if (!parsed) {
     return;
@@ -280,6 +283,7 @@ function handleChatStreamBlock(block: string, handlers: ChatStreamHandlers) {
 }
 
 async function streamRequest(path: string, payload: unknown, handlers: ChatStreamHandlers): Promise<ChatResponse> {
+  // chat/stream 请求会边读边分发事件，所以学生能实时看到 Chatbot 和右侧板书变化。
   const response = await fetch(`${getApiBase()}${path}`, {
     method: "POST",
     headers: authHeaders({ "Content-Type": "application/json" }),

@@ -1816,6 +1816,7 @@ def _start_section_explanation_sequence(
     requirement_history: LearningRequirementHistoryRecorder,
     interaction_metadata: dict[str, object],
 ) -> ChatResponse:
+    # “都讲/逐个讲”时，把多个候选变成顺序讲解 session，一次只授权当前最小单元。
     first_focus = sequence_items[0]
     session_before = lesson.active_interaction_session
     sequence_mode = ATOMIC_EXPLANATION_SEQUENCE_MODE
@@ -1950,6 +1951,7 @@ def _handle_existing_board_task_flow(
     source_interaction_metadata: dict[str, object] | None = None,
     force_task_attempt: bool = False,
 ) -> ChatResponse | None:
+    # 第二层入口：只要右侧已有板书，本轮写/改/讲/聊都先进入 BoardTaskRequirementSheet 链路。
     if is_document_empty(lesson.board_document):
         return None
     if request.board_generation_action == "start" or request.teaching_action is not None:
@@ -1975,6 +1977,7 @@ def _handle_existing_board_task_flow(
         and existing_task.confirmation_status == "awaiting"
         and existing_task.requested_action == "write"
     ):
+        # 已确认“板书没有对应内容，是否扩写”时，本轮只处理确认/取消，不另开新任务。
         if is_write_decline(request.message):
             stamp = board_task_history.not_executed(reason="用户取消了扩写确认。")
             lesson.board_task_requirements = None
@@ -2044,6 +2047,7 @@ def _handle_existing_board_task_flow(
         return None
 
     board_task = update_board_task_from_chat(
+        # 先把学生话语整理成四字段任务单，后续定位和裁决都依赖它。
         lesson=lesson,
         resources=resources,
         conversation=request.conversation,
@@ -2070,6 +2074,7 @@ def _handle_existing_board_task_flow(
     stamp = board_task_history.record_update(sheet=board_task)
     _emit_board_task_update(lesson=lesson, sheet=board_task, stamp=stamp)
     if board_task.progress < 100:
+        # 任务单不完整时只追问缺项，不执行写、改、讲、聊。
         chatbot_message, chatbot_message_source = _generate_board_task_clarification_message(
             lesson=lesson,
             resources=resources,
@@ -2149,6 +2154,7 @@ def _handle_existing_board_task_flow(
     if can_use_local_route_decision:
         decision = _fallback_board_task_decision(board_task=board_task, resolution=resolution)
     else:
+        # 定位后再裁决路线；AI 只能根据任务单和定位证据决定下一步。
         decision = openai_course_ai.generate_board_task_route_decision(
             lesson_title=lesson.title,
             board_task=board_task,
@@ -2204,6 +2210,7 @@ def _handle_existing_board_task_flow(
         )
 
     if decision.route == "clarify_location":
+        # 位置缺失或多候选时必须澄清，不能让 Chatbot 先讲，也不能让 BoardEditor 先写。
         next_task = BoardTaskRequirementSheet.model_validate(board_task.model_dump(mode="json"))
         next_task.location_status = "ambiguous" if decision.location_status == "ambiguous" else "missing"
         next_task.failure_count += 1 if board_task.requested_action == "edit" else 0
@@ -2401,6 +2408,7 @@ def _handle_existing_board_task_flow(
         )
 
     if decision.route == "write":
+        # write 路线交给 BoardEditor 写入右侧板书，Chatbot 只负责承接结果。
         return _execute_board_task_write(
             workspace=workspace,
             package=package,
@@ -2419,6 +2427,7 @@ def _handle_existing_board_task_flow(
         )
 
     if decision.route == "edit":
+        # edit 路线必须带已定位目标；BoardEditor 只改目标范围或被明确允许的全文范围。
         focus = decision.target_focus or (resolution.focus if resolution else None)
         edit_action = action_type if action_type in EDIT_ACTIONS else "rewrite_target"
         target_scope = decision.target_scope or (
@@ -2555,6 +2564,7 @@ def _handle_existing_board_task_flow(
         )
 
     if decision.route == "explain":
+        # explain 路线不会改文档，但必须先拿到板书侧 directive，再让 Chatbot 讲目标片段。
         focus = decision.target_focus or (resolution.focus if resolution else None)
         focus_excerpt = _board_task_explanation_target_excerpt(
             board_task=board_task,
@@ -2672,6 +2682,7 @@ def _handle_existing_board_task_flow(
         )
 
     if decision.route == "chat":
+        # chat 路线表示学生要求按规则练习/互动，启动 InteractionSession 而不是普通问答。
         focus = _decision_focus(decision, resolution)
         task_requirements = _requirements_from_board_task(
             base=requirements,
@@ -2723,6 +2734,7 @@ def _execute_board_task_write(
     search_evidence: dict[str, object] | None = None,
     source_interaction_metadata: dict[str, object] | None = None,
 ) -> ChatResponse:
+    # write 路线统一在这里执行：把任务单转成 BoardEditor 可理解的写入需求，再保存 commit。
     interaction_metadata = source_interaction_metadata or {}
     target_focus = route_decision.target_focus if route_decision else None
     target_scope = (route_decision.target_scope if route_decision else None) or ("focus" if target_focus else "append")
@@ -2962,6 +2974,7 @@ def _response(
     board_document_operation_status: str = "none",
     board_document_operation_failure_reason: str | None = None,
 ) -> ChatResponse:
+    # 统一出口：把最新课程包、需求单、任务单、定位结果和操作状态一起返回给前端。
     stamp = _response_requirement_stamp(requirement_history, requirement_stamp)
     board_task_stamp_value = _response_board_task_stamp(board_task_history, board_task_stamp)
     visible_board_task_sheet = lesson.board_task_requirements or completed_board_task_sheet
@@ -3094,6 +3107,7 @@ def _handle_section_explanation_sequence_turn(
     resources: list[ResourceLibraryItem],
     requirement_history: LearningRequirementHistoryRecorder,
 ) -> ChatResponse | None:
+    # 顺序讲解 session 的续讲入口：判断本轮是否继续讲下一个单元或结束该序列。
     session_before = lesson.active_interaction_session
     if session_before is None or not _is_section_explanation_session(session_before):
         return None
@@ -3370,6 +3384,7 @@ def _handle_existing_interaction_session(
     requirement_history: LearningRequirementHistoryRecorder,
     board_task_history: BoardTaskHistoryRecorder,
 ) -> ChatResponse | None:
+    # 已有互动 session 的总入口：先处理顺序讲解，再判断本轮是继续互动还是开启新任务。
     session_before = lesson.active_interaction_session
     if session_before is None:
         return None
@@ -3929,6 +3944,7 @@ def _chat_response(
     user_id: str,
     selection_text: str | None = None,
 ) -> ChatResponse:
+    # 单次教学回合总编排：加载 workspace、识别选区/资料/动作，再按当前状态选择唯一主路线。
     workspace = workspace_state.load_workspace_for_user(user_id)
     package, lesson = workspace_state.find_lesson_package(workspace, lesson_id)
     requirements = effective_requirements(lesson)
@@ -3950,6 +3966,7 @@ def _chat_response(
         requirements=requirements,
     )
     resource_resolution = resolve_resource_reference(
+        # 资料选择必须先由 ResourceResolver 明确处理，不能把所有资料默认污染进 Chatbot 上下文。
         resources=visible_package.resources,
         user_message=request.message,
         reference_action=request.resource_reference_action,
@@ -3969,6 +3986,7 @@ def _chat_response(
     resource_summary_for_turn = _resource_summary_with_reference(visible_package.resources, selected_reference)
 
     interaction_response = _handle_existing_interaction_session(
+        # 如果已有互动 session，先判断本轮是否继续规则、退出规则或转成新任务。
         workspace=workspace,
         package=package,
         lesson=lesson,
@@ -3993,6 +4011,7 @@ def _chat_response(
         should_try_existing_board_task = True
     if should_try_existing_board_task:
         board_task_response = _handle_existing_board_task_flow(
+            # 已有板书时优先走第二层任务单链路，防止 Chatbot 绕过定位和授权直接回答。
             workspace=workspace,
             package=package,
             lesson=lesson,
@@ -4745,6 +4764,7 @@ def _chat_response(
             requirements=requirements,
             learning_clarification=learning_clarification,
         ):
+            # 学生明确要求生成板书时，先冻结当前需求单，再让 BoardEditor 生成第一版板书。
             requirements = _with_task_details(
                 requirements,
                 action_type="generate_board",
@@ -4767,6 +4787,7 @@ def _chat_response(
                 stamp=frozen_requirement,
             )
             edit_outcome = generate_from_requirements(
+                # 首次生成只消费冻结需求和资料摘要，不让 BoardEditor 直接吃原始聊天记录。
                 lesson=lesson,
                 requirements=requirements,
                 clarification=learning_clarification,
@@ -4775,6 +4796,7 @@ def _chat_response(
                 frozen_requirement_version_id=frozen_requirement.version_id if frozen_requirement else None,
             )
             if not edit_outcome.changed:
+                # 生成失败时写 generation_failed 历史，不污染当前板书快照。
                 failed_stamp = (
                     requirement_history.generation_failed(
                         reason=edit_outcome.summary or edit_outcome.chatbot_message,

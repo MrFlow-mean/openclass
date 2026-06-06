@@ -17,11 +17,13 @@ router = APIRouter()
 
 
 def _sse_event(event: str, data: object) -> str:
+    # SSE 事件格式：前端靠 event 名区分“聊天增量、文档增量、需求更新、任务更新、最终结果”。
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
 def _chat_stream_events(lesson_id: str, request: ChatRequest, *, user_id: str) -> Iterator[str]:
     events: queue.Queue[tuple[str, object] | None] = queue.Queue()
+    # role_start 会被翻译成学生能理解的阶段标签，显示在前端 pending 消息上。
     phase_labels = {
         "chatbot": "正在回复",
         "pm": "正在整理学习需求",
@@ -32,6 +34,7 @@ def _chat_stream_events(lesson_id: str, request: ChatRequest, *, user_id: str) -
         events.put((event, data))
 
     def observer(payload: dict[str, object]) -> None:
+        # AI 调用层把结构化进度回调到这里，router 再转成前端可消费的 SSE 事件。
         if payload.get("type") == "board_task_update":
             data = payload.get("payload")
             if isinstance(data, dict):
@@ -65,6 +68,7 @@ def _chat_stream_events(lesson_id: str, request: ChatRequest, *, user_id: str) -
     def run() -> None:
         try:
             emit("phase", {"label": "正在准备回复", "role": "request"})
+            # bind_ai_output_stream 把底层 AI 的字段增量接进 observer，实现边生成边展示。
             with bind_ai_output_stream(observer):
                 response = process_chat_on_lesson(lesson_id, request, user_id=user_id)
             emit("final", response.model_dump(mode="json"))
@@ -89,6 +93,7 @@ def chat_on_lesson(
     request: ChatRequest,
     user: UserView = Depends(current_user),
 ) -> ChatResponse:
+    # 非流式聊天入口：调试和普通请求会走这里，核心流程仍在 service/chatbot 中。
     return process_chat_on_lesson(lesson_id, request, user_id=user.id)
 
 
@@ -98,6 +103,7 @@ def stream_chat_on_lesson(
     request: ChatRequest,
     user: UserView = Depends(current_user),
 ) -> StreamingResponse:
+    # 流式聊天入口：真实课堂体验主要走这里，前端能同步看到聊天和板书生成过程。
     return StreamingResponse(
         _chat_stream_events(lesson_id, request, user_id=user.id),
         media_type="text/event-stream",

@@ -843,6 +843,7 @@ class OpenAICourseAI:
         extracted_text: str,
         max_chapters: int = 8,
     ) -> GeneratedResourceCatalog | None:
+        # Directory AI：只根据上传材料生成通用目录，供资料检索和引用使用。
         compact_text = re.sub(r"\s+", " ", extracted_text or "").strip()
         if len(compact_text) < 80:
             return None
@@ -897,6 +898,7 @@ class OpenAICourseAI:
         interaction_mode: str = "ask",
         interaction_context: dict[str, Any] | None = None,
     ) -> ChatbotReply | None:
+        # Chatbot AI：只负责左侧对话和被授权的讲解，不负责生成右侧整篇板书。
         system_prompt = (
             "你是 OpenClass 的 Chatbot，负责左侧聊天框里的自然、连续、有帮助的你问我答交流。\n"
             "规则：\n"
@@ -957,6 +959,7 @@ class OpenAICourseAI:
         resource_summary: str,
         interaction_context: dict[str, Any] | None = None,
     ) -> BoardExplanationDirective | None:
+        # 板书讲解指令 AI：先判断目标片段能不能讲，再给 Chatbot 讲解边界和依据。
         if not self.enabled:
             return None
         system_prompt = (
@@ -1017,6 +1020,7 @@ class OpenAICourseAI:
         user_message: str,
         selection_excerpt: str | None = None,
     ) -> BoardTaskRequirementSheet | None:
+        # 已有板书任务清单 AI：把学生话语整理成“位置、动作、主题、互动规则”四字段。
         if not self.enabled:
             return None
         system_prompt = (
@@ -1114,6 +1118,7 @@ class OpenAICourseAI:
         location_evidence: dict[str, Any],
         resource_summary: str,
     ) -> BoardTaskRouteDecision | None:
+        # 路线裁决 AI：只根据任务单和定位证据决定写、改、讲、聊或继续澄清。
         if not self.enabled:
             return None
         system_prompt = (
@@ -1374,6 +1379,7 @@ class OpenAICourseAI:
         target_scope: str | None = None,
         allow_replace_document: bool = False,
     ) -> BoardDocumentEditResult | None:
+        # BoardEditor AI：唯一负责右侧板书正文生成/改写/扩写的模型调用。
         is_initial_generation = intent == "generate_from_requirements"
         system_prompt = (
             "你是 OpenClass 的板书文档编辑 AI，只负责生成或编辑板书文档，不负责学习需求澄清，"
@@ -1516,6 +1522,7 @@ class OpenAICourseAI:
         user_message: str,
         chatbot_message: str,
     ) -> LearningRequirementUpdate | None:
+        # 学习需求清单 AI：后台更新结构化需求状态，不直接对学生说话，也不写板书。
         system_prompt = (
             "你是 OpenClass 的学习需求清单管理 AI，只在后端更新结构化状态，不直接和用户聊天，"
             "也不生成板书。\n"

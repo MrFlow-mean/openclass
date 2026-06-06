@@ -8,12 +8,14 @@ from app.services.openai_course_ai import BoardExplanationDirective, openai_cour
 
 @dataclass(frozen=True)
 class BoardDirectedExplanationResult:
+    # 讲解门禁的返回值：Chatbot 最终能说什么，以及是否拿到了板书侧 directive。
     chatbot_message: str
     assistant_message_source: str
     directive_payload: dict[str, object] | None
 
 
 def requirement_probe_instead_of_explanation_message(user_message: str) -> str:
+    # 没有板书侧授权时，Chatbot 只能继续澄清需求，不能直接展开实质讲解。
     return (
         "当前没有板书侧讲解指令。请不要讲解，只继续探寻学习需求："
         "确认学习目标、当前水平、使用场景，或询问是否先生成/定位板书。\n"
@@ -34,6 +36,7 @@ def generate_board_directed_explanation_message(
     interaction_mode: str = "ask",
     interaction_context: dict[str, Any] | None = None,
 ) -> BoardDirectedExplanationResult:
+    # 讲解前先让板书侧判断“目标片段是否足以支持讲解”，通过后才把指令交给 Chatbot。
     directive = openai_course_ai.generate_board_explanation_directive(
         lesson_title=lesson_title,
         learning_goal=learning_goal,
@@ -65,6 +68,7 @@ def generate_board_directed_explanation_message(
         )
 
     if directive.status == "approved":
+        # approved 表示 Chatbot 可以讲，但只能依据 directive 给出的片段、边界和教学指令。
         gated_user_message = _board_directed_instruction_message(user_message=user_message, directive=directive)
         source = "chatbot_board_directed"
     else:
@@ -94,6 +98,7 @@ def generate_board_directed_explanation_message(
 
 
 def _board_directed_instruction_message(*, user_message: str, directive: BoardExplanationDirective) -> str:
+    # 这里把板书侧 directive 包装成 Chatbot 可读的内部指令，不直接暴露给学生。
     constraints = "；".join(directive.constraints)
     parts = [
         "板书侧已允许 Chatbot 进行讲解。请只依据下面的板书反馈和指令回答学习者。",

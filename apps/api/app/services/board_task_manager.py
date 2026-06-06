@@ -50,6 +50,7 @@ def update_board_task_from_chat(
     selection_excerpt: str | None,
     existing: BoardTaskRequirementSheet | None = None,
 ) -> BoardTaskRequirementSheet:
+    # 已有板书时先维护四字段任务单，而不是让 Chatbot 或 BoardEditor 直接执行。
     ai_sheet = openai_course_ai.generate_board_task_requirement_sheet(
         lesson_title=lesson.title,
         existing_task=existing.model_dump(mode="json") if existing else None,
@@ -74,6 +75,7 @@ def normalize_board_task_sheet(
     selection: SelectionRef | None = None,
     selection_excerpt: str | None = None,
 ) -> BoardTaskRequirementSheet:
+    # 规范化会补齐选区、目标线索、缺失字段和进度，决定本轮能不能执行。
     normalized = BoardTaskRequirementSheet.model_validate(sheet.model_dump(mode="json"))
     if selection_excerpt:
         normalized.target_hint = normalized.target_hint or _compact_text(selection_excerpt, limit=240)
@@ -120,6 +122,7 @@ def is_write_decline(text: str) -> bool:
 
 
 def make_write_task_from_topic(topic: str) -> BoardTaskRequirementSheet:
+    # 找不到可讲/可编辑内容时，转成“是否先扩写板书”的待确认写入任务。
     return normalize_board_task_sheet(
         BoardTaskRequirementSheet(
             target_hint=_compact_text(topic, limit=240),
@@ -138,6 +141,7 @@ def _fallback_board_task_sheet(
     selection_excerpt: str | None,
     existing: BoardTaskRequirementSheet | None,
 ) -> BoardTaskRequirementSheet:
+    # AI 没有返回任务单时，用通用动作词兜底；这里不能写学科或教材关键词分支。
     sheet = (
         BoardTaskRequirementSheet.model_validate(existing.model_dump(mode="json"))
         if existing
@@ -189,6 +193,7 @@ def _has_target_signal(sheet: BoardTaskRequirementSheet) -> bool:
 
 
 def _infer_action(text: str) -> BoardTaskRequestedAction | None:
+    # 只把学生话语归类为通用动作：写、改、讲解或互动。
     has_write = bool(WRITE_PATTERN.search(text))
     if EXPLAIN_PATTERN.search(text) and (not has_write or STRONG_EXPLAIN_PATTERN.search(text)):
         return "explain"

@@ -11,6 +11,7 @@ from app.services.ai_model_catalog import build_model_catalog, realtime_runtime_
 from app.services.openai_course_ai import openai_course_ai
 from app.services.workspace_state import ensure_data_dirs
 
+# 后端启动时先确保 SQLite、上传文件和导出文件所在目录存在。
 ensure_data_dirs()
 
 app = FastAPI(title="AI Board Course System API", version="0.2.0")
@@ -28,6 +29,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# 这里把产品的几大功能入口挂到 FastAPI：工作台、认证、文档、聊天和实时语音。
 app.include_router(workspace.router)
 app.include_router(auth.router)
 app.include_router(documents.router)
@@ -47,4 +49,5 @@ def health() -> dict[str, object]:
 
 @app.get("/api/ai-models", response_model=AIModelCatalog)
 def get_ai_models() -> AIModelCatalog:
+    # 前端模型选择器读取这个接口，知道哪些 provider/model 当前可用。
     return build_model_catalog()

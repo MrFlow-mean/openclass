@@ -369,6 +369,7 @@ class BoardSearchRerankResult(BaseModel):
     reason: str = ""
 
 
+# 互动规则草稿：学生要求“你问我答、角色扮演、按规则练习”时，先把规则记成结构化草稿。
 class InteractionRuleDraft(BaseModel):
     should_start: bool = False
     rule_text: str = ""
@@ -379,6 +380,7 @@ class InteractionRuleDraft(BaseModel):
     reference_instruction: str = ""
 
 
+# 互动会话：真正进入连续练习后保存规则、目标板书片段和当前进度。
 class InteractionSession(BaseModel):
     id: str = Field(default_factory=lambda: new_id("interaction"))
     status: InteractionSessionStatus = "active"
@@ -407,6 +409,7 @@ class InteractionTurnDecision(BaseModel):
     user_intent: str = ""
 
 
+# 第一层学习需求单：右侧板书为空时，先用它记录学生想学什么、水平如何、想要什么产出。
 class LearningRequirementSheet(BaseModel):
     theme: str
     learning_goal: str
@@ -428,6 +431,7 @@ class LearningRequirementSheet(BaseModel):
     interaction_rule_draft: InteractionRuleDraft | None = None
 
 
+# 第二层板书任务单：右侧已有板书时，用四字段记录“哪里、做什么、围绕什么、怎么互动”。
 class BoardTaskRequirementSheet(BaseModel):
     target_hint: str = ""
     target_location: BoardFocusRef | None = None
@@ -769,6 +773,7 @@ class SectionTeachingProgressView(BaseModel):
     waiting_for_continue: bool = False
 
 
+# 前端每次聊天会把消息、选区、模型、资料确认和历史一起打包成 ChatRequest。
 class ChatRequest(BaseModel):
     message: str
     text_model: AIModelSelection | None = None
@@ -789,6 +794,7 @@ class ChatRequest(BaseModel):
     conversation: list[ConversationTurn] = Field(default_factory=list)
 
 
+# 返回给前端的 lesson 视图：包含板书、需求单、任务单、互动 session 和历史图。
 class LessonView(BaseModel):
     id: str
     title: str
@@ -881,6 +887,7 @@ class AdminOverview(BaseModel):
     users: list[UserView] = Field(default_factory=list)
 
 
+# 后端一次教学回合的完整结果，不只是聊天文字，也包括板书状态、任务状态、资料匹配和课程包快照。
 class ChatResponse(BaseModel):
     chatbot_message: str
     learning_requirement_sheet: LearningRequirementSheet
@@ -916,6 +923,7 @@ class ChatResponse(BaseModel):
     course_package: CoursePackageView
 
 
+# SSE 里的需求更新事件：让前端在 AI 运行中实时显示“需求清单正在变清楚”。
 class RequirementUpdateStreamPayload(BaseModel):
     learning_requirement_sheet: LearningRequirementSheet
     active_requirement_sheet: LearningRequirementSheet | None = None
@@ -926,6 +934,7 @@ class RequirementUpdateStreamPayload(BaseModel):
     clarification_questions: list[str] = Field(default_factory=list)
 
 
+# SSE 里的板书任务更新事件：让前端实时看到已有板书任务是否已定位、是否还缺信息。
 class BoardTaskUpdateStreamPayload(BaseModel):
     board_task_sheet: BoardTaskRequirementSheet
     active_board_task_sheet: BoardTaskRequirementSheet | None = None
