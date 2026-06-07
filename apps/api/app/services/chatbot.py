@@ -72,11 +72,13 @@ from app.services.chat.handlers.interaction import (
 from app.services.chat.response import _board_task_questions, _response
 from app.services.chat.sequence import (
     SequenceRuntime,
-    _apply_explicit_sequential_explanation_choice,
     _handle_section_explanation_sequence_turn,
+    _start_section_explanation_sequence,
+)
+from app.services.chat.sequence_planner import (
+    _apply_explicit_sequential_explanation_choice,
     _requests_sequential_explanation,
     _section_explanation_sequence,
-    _start_section_explanation_sequence,
 )
 from app.services.board_segment_index import build_board_segment_index
 from app.services.board_teaching import build_board_teaching_guide, teach_first_section, teach_next_section
