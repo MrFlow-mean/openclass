@@ -57,6 +57,9 @@ from app.services.chat.metadata import (
     _requirement_history_metadata,
     _task_metadata,
 )
+from app.services.chat.handlers.board_task import BoardTaskRouteRuntime, dispatch_board_task_route
+from app.services.chat.handlers.edit_blackboard import EditBlackboardRuntime, handle_board_task_write
+from app.services.chat.handlers.explain import ExplainHandlerRuntime
 from app.services.chat.response import _board_task_questions, _response
 from app.services.chat.sequence import (
     SequenceRuntime,
@@ -712,6 +715,41 @@ def _sequence_runtime() -> SequenceRuntime:
     )
 
 
+def _edit_blackboard_runtime() -> EditBlackboardRuntime:
+    return EditBlackboardRuntime(
+        resource_summary=_resource_summary,
+        conversation_summary=_conversation_summary,
+        requirements_from_board_task=_requirements_from_board_task,
+        generate_board_directed_explanation_message=_generate_board_directed_explanation_message,
+        recent_board_edit_focus_for_commit=_recent_board_edit_focus_for_commit,
+        implicit_board_search_evidence=_implicit_board_search_evidence,
+        board_search_evidence_metadata=_board_search_evidence_metadata,
+        clear_task_requirements=_clear_task_requirements,
+        save_workspace_for_user=_save_workspace_for_user,
+    )
+
+
+def _explain_handler_runtime() -> ExplainHandlerRuntime:
+    return ExplainHandlerRuntime(
+        requirements_from_board_task=_requirements_from_board_task,
+        generate_board_directed_explanation_message=_generate_board_directed_explanation_message,
+        board_search_evidence_metadata=_board_search_evidence_metadata,
+        clear_task_requirements=_clear_task_requirements,
+        save_workspace_for_user=_save_workspace_for_user,
+    )
+
+
+def _board_task_route_runtime() -> BoardTaskRouteRuntime:
+    return BoardTaskRouteRuntime(
+        edit_runtime=_edit_blackboard_runtime(),
+        explain_runtime=_explain_handler_runtime(),
+        decision_focus=_decision_focus,
+        requirements_from_board_task=_requirements_from_board_task,
+        board_search_evidence_metadata=_board_search_evidence_metadata,
+        maybe_start_interaction_session=_maybe_start_interaction_session,
+    )
+
+
 def _clarification_questions(learning_clarification: LearningClarificationStatus) -> list[str]:
     question = learning_clarification.next_question.strip()
     return [question] if question else []
@@ -1215,35 +1253,6 @@ def _chatbot_visible_board_task(board_task: BoardTaskRequirementSheet) -> dict[s
     return payload
 
 
-def _board_task_explanation_target_excerpt(
-    *,
-    board_task: BoardTaskRequirementSheet,
-    focus: BoardFocusRef | None,
-    decision: BoardTaskRouteDecision,
-    resolution: FocusResolution | None,
-) -> str:
-    parts = [
-        "已有板书任务清单已进入 explain 路线。",
-        f"用户目标线索：{board_task.target_hint or '未单独提供'}",
-        f"用户问题/主题：{board_task.question_or_topic or '未单独提供'}",
-        f"定位裁决：{decision.reason or '已定位目标内容'}",
-    ]
-    if focus is not None:
-        parts.append(f"当前允许讲解的目标内容：\n{focus_context(focus)}")
-    other_candidates = [
-        candidate
-        for candidate in (decision.candidate_focuses or (resolution.candidates if resolution else []))
-        if focus is None or (candidate.segment_id, candidate.excerpt) != (focus.segment_id, focus.excerpt)
-    ]
-    if other_candidates:
-        candidate_lines = [
-            f"{index}. {candidate.display_label or ' / '.join(candidate.heading_path) or '板书片段'}（正文摘录仅供板书侧后续授权，不交给 Chatbot）"
-            for index, candidate in enumerate(other_candidates[:4], start=1)
-        ]
-        parts.append("同一任务中还存在的后续候选目标，仅作为顺序讲解上下文，不得越界讲解：\n" + "\n".join(candidate_lines))
-    return "\n\n".join(part for part in parts if part.strip())
-
-
 def _handle_existing_board_task_flow(
     *,
     workspace,
@@ -1326,7 +1335,7 @@ def _handle_existing_board_task_flow(
             confirmed_task = BoardTaskRequirementSheet.model_validate(existing_task.model_dump(mode="json"))
             confirmed_task.confirmation_status = "confirmed"
             confirmed_task.progress = 100
-            return _execute_board_task_write(
+            return handle_board_task_write(
                 workspace=workspace,
                 package=package,
                 lesson=lesson,
@@ -1338,6 +1347,7 @@ def _handle_existing_board_task_flow(
                 board_task=confirmed_task,
                 requirement_history=requirement_history,
                 board_task_history=board_task_history,
+                runtime=_edit_blackboard_runtime(),
             )
 
     action_type = _infer_board_task_action(
@@ -1717,502 +1727,31 @@ def _handle_existing_board_task_flow(
             board_task_history=board_task_history,
         )
 
-    if decision.route == "write":
-        # write 路线交给 BoardEditor 写入右侧板书，Chatbot 只负责承接结果。
-        return _execute_board_task_write(
-            workspace=workspace,
-            package=package,
-            lesson=lesson,
-            user_id=user_id,
-            request=request,
-            requirements=requirements,
-            learning_clarification=learning_clarification,
-            resources=resources,
-            board_task=board_task,
-            requirement_history=requirement_history,
-            board_task_history=board_task_history,
-            route_decision=decision,
-            search_evidence=resolution.evidence.model_dump(mode="json") if resolution and resolution.evidence else None,
-            source_interaction_metadata=interaction_metadata,
-        )
-
-    if decision.route == "edit":
-        # edit 路线必须带已定位目标；BoardEditor 只改目标范围或被明确允许的全文范围。
-        focus = decision.target_focus or (resolution.focus if resolution else None)
-        edit_action = action_type if action_type in EDIT_ACTIONS else "rewrite_target"
-        target_scope = decision.target_scope or (
-            "whole_document" if focus and focus.match_id and focus.match_id.startswith("whole_document:") else "focus"
-        )
-        task_requirements = _requirements_from_board_task(
-            base=requirements,
-            board_task=board_task,
-            action_type=edit_action,
-            focus=focus,
-        )
-        edit_outcome = edit_existing_document(
-            lesson=lesson,
-            requirements=task_requirements,
-            clarification=learning_clarification,
-            resource_summary=_resource_summary(resources),
-            conversation_summary=_conversation_summary(request.conversation),
-            user_instruction=request.message,
-            selection_excerpt=selection_excerpt,
-            focus=focus,
-            target_scope=target_scope,
-            allow_replace_document=target_scope == "whole_document",
-        )
-        if edit_outcome.changed:
-            refresh_lesson_runtime(lesson, document=edit_outcome.new_document, requirements=task_requirements)
-            lesson.board_teaching_guide = build_board_teaching_guide(lesson)
-            lesson.board_teaching_progress = None
-        stamp = board_task_history.record_update(sheet=board_task, status="ready")
-        if not edit_outcome.changed:
-            failed_stamp = board_task_history.execution_failed(
-                reason=edit_outcome.summary or "Board task edit did not produce a safe document change.",
-                metadata={
-                    "assistant_message_source": edit_outcome.assistant_message_source,
-                    "board_edit_operation": edit_outcome.operation,
-                    "board_edit_summary": edit_outcome.summary,
-                    "board_task_route": "edit",
-                    "board_task_decision": decision.model_dump(mode="json"),
-                    "board_task_cleared": False,
-                    "target_scope": target_scope,
-                    **_board_search_evidence_metadata(resolution),
-                },
-            )
-            workspace_state.normalize_package_state(package)
-            _save_workspace_for_user(
-                user_id=user_id,
-                workspace=workspace,
-                requirement_history=requirement_history,
-                board_task_history=board_task_history,
-            )
-            return _response(
-                workspace=workspace,
-                package=package,
-                lesson=lesson,
-                chatbot_message=edit_outcome.chatbot_message,
-                requirements=task_requirements,
-                learning_clarification=learning_clarification,
-                board_decision=edit_outcome.board_decision,
-                resolved_focus=focus,
-                requirement_cleared=False,
-                board_task_stamp=failed_stamp,
-                board_document_operation_status=edit_outcome.operation_status,
-                board_document_operation_failure_reason=edit_outcome.failure_reason,
-            )
-        recent_focus = _recent_board_edit_focus_for_commit(
-            lesson=lesson,
-            fallback_focus=None if target_scope == "whole_document" else focus,
-            section_titles=edit_outcome.section_titles,
-        )
-        commit_operations(
-            lesson,
-            [],
-            label="Board task edit",
-            message="Executed an existing-board edit task",
-            new_document=lesson.board_document,
-            metadata={
-                "kind": "board_document_edit",
-                "user_message": request.message,
-                "assistant_message": edit_outcome.chatbot_message,
-                "assistant_message_source": edit_outcome.assistant_message_source,
-                "board_edit_operation": edit_outcome.operation,
-                "board_edit_summary": edit_outcome.summary,
-                "board_section_titles": edit_outcome.section_titles,
-                "target_scope": target_scope,
-                "recent_board_edit_focus": recent_focus.model_dump(mode="json") if recent_focus else None,
-                **interaction_metadata,
-                "board_search_evidence": (
-                    resolution.evidence.model_dump(mode="json")
-                    if resolution and resolution.evidence
-                    else _implicit_board_search_evidence(
-                        route="edit",
-                        target_scope=target_scope,
-                        reason="编辑链路使用全文或继承目标范围，没有独立检索证据。",
-                    )
-                ),
-                **_task_metadata(
-                    requirements=task_requirements,
-                    learning_clarification=learning_clarification,
-                    focus=focus,
-                    requirement_cleared=True,
-                ),
-                **_board_task_metadata(
-                    board_task=board_task,
-                    stamp=stamp,
-                    route="edit",
-                    decision=decision.model_dump(mode="json"),
-                    cleared=True,
-                ),
-            },
-        )
-        consumed_stamp = board_task_history.consume(commit_id=lesson.history_graph.commits[-1].id)
-        lesson.board_task_requirements = None
-        _clear_task_requirements(lesson)
-        workspace_state.normalize_package_state(package)
-        _save_workspace_for_user(
-            user_id=user_id,
-            workspace=workspace,
-            requirement_history=requirement_history,
-            board_task_history=board_task_history,
-        )
-        return _response(
-            workspace=workspace,
-            package=package,
-            lesson=lesson,
-            chatbot_message=edit_outcome.chatbot_message,
-            requirements=task_requirements,
-            learning_clarification=learning_clarification,
-            board_decision=edit_outcome.board_decision,
-            resolved_focus=focus,
-            requirement_cleared=True,
-            board_task_stamp=consumed_stamp,
-            board_document_operation_status=edit_outcome.operation_status,
-            board_document_operation_failure_reason=edit_outcome.failure_reason,
-            completed_board_task_sheet=board_task,
-        )
-
-    if decision.route == "explain":
-        # explain 路线不会改文档，但必须先拿到板书侧 directive，再让 Chatbot 讲目标片段。
-        focus = decision.target_focus or (resolution.focus if resolution else None)
-        focus_excerpt = _board_task_explanation_target_excerpt(
-            board_task=board_task,
-            focus=focus,
-            decision=decision,
-            resolution=resolution,
-        )
-        chatbot_message, chatbot_message_source, board_explanation_directive = _generate_board_directed_explanation_message(
-            lesson=lesson,
-            requirements=_requirements_from_board_task(
-                base=requirements,
-                board_task=board_task,
-                action_type="explain_target",
-                focus=focus,
-            ),
-            resources=resources,
-            conversation=request.conversation,
-            request=request,
-            learning_clarification=learning_clarification,
-            action_type="explain_target",
-            target_excerpt=focus_excerpt,
-        )
-        stamp = board_task_history.record_update(sheet=board_task, status="ready")
-        cleared = chatbot_message_source == "chatbot_board_directed" and bool(chatbot_message)
-        if not chatbot_message:
-            failed_stamp = board_task_history.execution_failed(
-                reason="Board-directed explanation failed because Chatbot returned empty.",
-                metadata={
-                    "assistant_message_source": chatbot_message_source,
-                    "board_explanation_failed": True,
-                    "board_task_route": "explain",
-                    "board_task_cleared": False,
-                    "board_explanation_directive": board_explanation_directive,
-                    "board_task_decision": decision.model_dump(mode="json"),
-                    **_board_search_evidence_metadata(resolution),
-                },
-            )
-            workspace_state.normalize_package_state(package)
-            _save_workspace_for_user(
-                user_id=user_id,
-                workspace=workspace,
-                requirement_history=requirement_history,
-                board_task_history=board_task_history,
-            )
-            return _response(
-                workspace=workspace,
-                package=package,
-                lesson=lesson,
-                chatbot_message="",
-                requirements=requirements,
-                learning_clarification=learning_clarification,
-                board_decision=BoardDecision(action="no_change", reason="Board-directed explanation failed because Chatbot returned empty."),
-                resolved_focus=focus,
-                requirement_cleared=False,
-                board_task_stamp=failed_stamp,
-            )
-        commit_operations(
-            lesson,
-            [],
-            label="Board task explanation",
-            message="Executed an existing-board explanation task",
-            new_document=lesson.board_document,
-            metadata={
-                "kind": "chat_flow",
-                "user_message": request.message,
-                "assistant_message": chatbot_message,
-                "assistant_message_source": chatbot_message_source,
-                "board_explanation_directive": board_explanation_directive,
-                **interaction_metadata,
-                **_board_search_evidence_metadata(resolution),
-                **_task_metadata(
-                    requirements=_requirements_from_board_task(
-                        base=requirements,
-                        board_task=board_task,
-                        action_type="explain_target",
-                        focus=focus,
-                    ),
-                    learning_clarification=learning_clarification,
-                    focus=focus,
-                    focus_candidates=resolution.candidates if resolution else [],
-                    requirement_cleared=cleared,
-                ),
-                **_board_task_metadata(
-                    board_task=board_task,
-                    stamp=stamp,
-                    route="explain",
-                    decision=decision.model_dump(mode="json"),
-                    cleared=cleared,
-                ),
-            },
-        )
-        consumed_stamp = board_task_history.consume(commit_id=lesson.history_graph.commits[-1].id) if cleared else stamp
-        if cleared:
-            lesson.board_task_requirements = None
-            _clear_task_requirements(lesson)
-        workspace_state.normalize_package_state(package)
-        _save_workspace_for_user(
-            user_id=user_id,
-            workspace=workspace,
-            requirement_history=requirement_history,
-            board_task_history=board_task_history,
-        )
-        return _response(
-            workspace=workspace,
-            package=package,
-            lesson=lesson,
-            chatbot_message=chatbot_message,
-            requirements=requirements,
-            learning_clarification=learning_clarification,
-            board_decision=BoardDecision(action="no_change", reason=decision.reason),
-            resolved_focus=focus,
-            requirement_cleared=cleared,
-            board_task_stamp=consumed_stamp,
-            completed_board_task_sheet=board_task if cleared else None,
-        )
-
-    if decision.route == "chat":
-        # chat 路线表示学生要求按规则练习/互动，启动 InteractionSession 而不是普通问答。
-        focus = _decision_focus(decision, resolution)
-        task_requirements = _requirements_from_board_task(
-            base=requirements,
-            board_task=board_task,
-            action_type="explain_target",
-            focus=focus,
-        )
-        lesson.learning_requirements = task_requirements
-        return _maybe_start_interaction_session(
-            workspace=workspace,
-            package=package,
-            lesson=lesson,
-            user_id=user_id,
-            request=request,
-            requirements=task_requirements,
-            learning_clarification=learning_clarification,
-            resources=resources,
-            selection_text=selection_text,
-            action_type="explain_target",
-            requirement_history=requirement_history,
-            board_task=board_task,
-            board_task_history=board_task_history,
-            board_task_stamp=stamp,
-            board_task_decision=decision,
-            resolved_focus=focus,
-            source_interaction_metadata={
-                **interaction_metadata,
-                **_board_search_evidence_metadata(resolution),
-            },
-        )
-
-    return None
-
-
-def _execute_board_task_write(
-    *,
-    workspace,
-    package,
-    lesson: Lesson,
-    user_id: str,
-    request: ChatRequest,
-    requirements: LearningRequirementSheet,
-    learning_clarification: LearningClarificationStatus,
-    resources: list[ResourceLibraryItem],
-    board_task: BoardTaskRequirementSheet,
-    requirement_history: LearningRequirementHistoryRecorder,
-    board_task_history: BoardTaskHistoryRecorder,
-    route_decision: BoardTaskRouteDecision | None = None,
-    search_evidence: dict[str, object] | None = None,
-    source_interaction_metadata: dict[str, object] | None = None,
-) -> ChatResponse:
-    # write 路线统一在这里执行：把任务单转成 BoardEditor 可理解的写入需求，再保存 commit。
-    interaction_metadata = source_interaction_metadata or {}
-    target_focus = route_decision.target_focus if route_decision else None
-    target_scope = (route_decision.target_scope if route_decision else None) or ("focus" if target_focus else "append")
-    task_requirements = _requirements_from_board_task(
-        base=requirements,
-        board_task=board_task,
-        action_type="expand_target" if target_focus else "append_section",
-        focus=target_focus,
-    )
-    task_requirements.action_instruction = route_decision.write_proposal if route_decision and route_decision.write_proposal else board_task.question_or_topic
-    stamp = board_task_history.record_update(
-        sheet=board_task,
-        status="awaiting_confirmation" if board_task.confirmation_status == "confirmed" else "ready",
-    )
-    edit_outcome = edit_existing_document(
-        lesson=lesson,
-        requirements=task_requirements,
-        clarification=learning_clarification,
-        resource_summary=_resource_summary(resources),
-        conversation_summary=_conversation_summary(request.conversation),
-        user_instruction=task_requirements.action_instruction,
-        selection_excerpt=None,
-        focus=target_focus,
-        target_scope=target_scope,
-        allow_replace_document=False,
-    )
-    if edit_outcome.changed:
-        old_text = lesson.board_document.content_text
-        refresh_lesson_runtime(lesson, document=edit_outcome.new_document, requirements=task_requirements)
-        lesson.board_teaching_guide = build_board_teaching_guide(lesson)
-        lesson.board_teaching_progress = None
-        recent_focus = _recent_board_edit_focus_for_commit(
-            lesson=lesson,
-            fallback_focus=target_focus,
-            section_titles=edit_outcome.section_titles,
-        )
-        new_text = lesson.board_document.content_text
-        appended_excerpt = new_text[len(old_text):].strip() if new_text.startswith(old_text) else edit_outcome.new_document.content_text
-        if edit_outcome.chatbot_message and board_task.confirmation_status != "confirmed":
-            chatbot_message = edit_outcome.chatbot_message
-            chatbot_message_source = edit_outcome.assistant_message_source
-            board_explanation_directive = {
-                "status": "approved",
-                "source": "board_document_editor_ai",
-                "target_excerpt": appended_excerpt or edit_outcome.new_document.content_text,
-            }
-        else:
-            chatbot_message, chatbot_message_source, board_explanation_directive = _generate_board_directed_explanation_message(
-                lesson=lesson,
-                requirements=task_requirements,
-                resources=resources,
-                conversation=request.conversation,
-                request=request,
-                learning_clarification=learning_clarification,
-                action_type="explain_target",
-                target_excerpt=appended_excerpt or edit_outcome.new_document.content_text,
-            )
-    else:
-        chatbot_message = edit_outcome.chatbot_message
-        chatbot_message_source = edit_outcome.assistant_message_source
-        board_explanation_directive = None
-        recent_focus = None
-
-    if not edit_outcome.changed:
-        failed_stamp = board_task_history.execution_failed(
-            reason=edit_outcome.summary or "Board task write did not produce a safe document change.",
-            metadata={
-                "assistant_message_source": chatbot_message_source,
-                "board_edit_operation": edit_outcome.operation,
-                "board_edit_summary": edit_outcome.summary,
-                "board_task_route": "write",
-                "board_task_decision": route_decision.model_dump(mode="json") if route_decision else None,
-                "board_task_cleared": False,
-                "target_scope": target_scope,
-                "board_search_evidence": search_evidence
-                or _implicit_board_search_evidence(
-                    route="write",
-                    target_scope=target_scope,
-                    reason="写链路没有独立定位证据；由任务清单和 Board AI 裁决进入。",
-                ),
-            },
-        )
-        workspace_state.normalize_package_state(package)
-        _save_workspace_for_user(
-            user_id=user_id,
-            workspace=workspace,
-            requirement_history=requirement_history,
-            board_task_history=board_task_history,
-        )
-        return _response(
-            workspace=workspace,
-            package=package,
-            lesson=lesson,
-            chatbot_message=chatbot_message,
-            requirements=task_requirements,
-            learning_clarification=learning_clarification,
-            board_decision=edit_outcome.board_decision,
-            requirement_cleared=False,
-            board_task_stamp=failed_stamp,
-            board_document_operation_status=edit_outcome.operation_status,
-            board_document_operation_failure_reason=edit_outcome.failure_reason,
-        )
-
-    commit_operations(
-        lesson,
-        [],
-        label="Board task write",
-        message="Wrote missing existing-board task content and prepared a board-grounded explanation",
-        new_document=lesson.board_document,
-        metadata={
-            "kind": "board_document_edit",
-            "user_message": request.message,
-            "assistant_message": chatbot_message,
-            "assistant_message_source": chatbot_message_source,
-            "board_editor_message": edit_outcome.chatbot_message,
-            "board_edit_operation": edit_outcome.operation,
-            "board_edit_summary": edit_outcome.summary,
-            "board_section_titles": edit_outcome.section_titles,
-            "target_scope": target_scope,
-            "recent_board_edit_focus": recent_focus.model_dump(mode="json") if recent_focus else None,
-            "board_explanation_directive": board_explanation_directive,
-            **interaction_metadata,
-            "board_search_evidence": search_evidence
-            or _implicit_board_search_evidence(
-                route="write",
-                target_scope=target_scope,
-                reason="写链路没有独立定位证据；由任务清单和 Board AI 裁决进入。",
-            ),
-            **_task_metadata(
-                requirements=task_requirements,
-                learning_clarification=learning_clarification,
-                focus=target_focus,
-                requirement_cleared=edit_outcome.changed,
-            ),
-            **_board_task_metadata(
-                board_task=board_task,
-                stamp=stamp,
-                route="write",
-                decision=route_decision.model_dump(mode="json") if route_decision else None,
-                cleared=edit_outcome.changed,
-            ),
-        },
-    )
-    consumed_stamp = board_task_history.consume(commit_id=lesson.history_graph.commits[-1].id) if edit_outcome.changed else stamp
-    if edit_outcome.changed:
-        lesson.board_task_requirements = None
-        _clear_task_requirements(lesson)
-    workspace_state.normalize_package_state(package)
-    _save_workspace_for_user(
-        user_id=user_id,
-        workspace=workspace,
-        requirement_history=requirement_history,
-        board_task_history=board_task_history,
-    )
-    return _response(
+    dispatched_response = dispatch_board_task_route(
         workspace=workspace,
         package=package,
         lesson=lesson,
-        chatbot_message=chatbot_message,
-        requirements=task_requirements,
+        user_id=user_id,
+        request=request,
+        requirements=requirements,
         learning_clarification=learning_clarification,
-        board_decision=edit_outcome.board_decision,
-        requirement_cleared=edit_outcome.changed,
-        board_task_stamp=consumed_stamp,
-        board_document_operation_status=edit_outcome.operation_status,
-        board_document_operation_failure_reason=edit_outcome.failure_reason,
-        completed_board_task_sheet=board_task if edit_outcome.changed else None,
+        resources=resources,
+        selection_excerpt=selection_excerpt,
+        selection_text=selection_text,
+        action_type=action_type,
+        board_task=board_task,
+        requirement_history=requirement_history,
+        board_task_history=board_task_history,
+        board_task_stamp=stamp,
+        decision=decision,
+        resolution=resolution,
+        source_interaction_metadata=interaction_metadata,
+        runtime=_board_task_route_runtime(),
     )
+    if dispatched_response is not None:
+        return dispatched_response
+
+    return None
 
 
 def _generate_interaction_chatbot_message(
