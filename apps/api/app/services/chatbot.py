@@ -60,6 +60,13 @@ from app.services.chat.metadata import (
 from app.services.chat.handlers.board_task import BoardTaskRouteRuntime, dispatch_board_task_route
 from app.services.chat.handlers.edit_blackboard import EditBlackboardRuntime, handle_board_task_write
 from app.services.chat.handlers.explain import ExplainHandlerRuntime
+from app.services.chat.handlers.general_chat import GeneralChatRuntime, commit_general_chat_turn
+from app.services.chat.handlers.initial_board import InitialBoardRuntime, generate_board_from_confirmed_resource
+from app.services.chat.handlers.interaction import (
+    InteractionRuntime,
+    handle_existing_interaction_session,
+    maybe_start_interaction_session,
+)
 from app.services.chat.response import _board_task_questions, _response
 from app.services.chat.sequence import (
     SequenceRuntime,
@@ -747,6 +754,39 @@ def _board_task_route_runtime() -> BoardTaskRouteRuntime:
         requirements_from_board_task=_requirements_from_board_task,
         board_search_evidence_metadata=_board_search_evidence_metadata,
         maybe_start_interaction_session=_maybe_start_interaction_session,
+    )
+
+
+def _interaction_runtime() -> InteractionRuntime:
+    return InteractionRuntime(
+        board_summary=_board_summary,
+        resource_summary=_resource_summary,
+        conversation_summary=_conversation_summary,
+        generate_board_directed_explanation_message=_generate_board_directed_explanation_message,
+        latest_learning_clarification=_latest_learning_clarification,
+        generate_focus_candidate_message=_generate_focus_candidate_message,
+        clear_task_requirements=_clear_task_requirements,
+        save_workspace_for_user=_save_workspace_for_user,
+        sequence_runtime=_sequence_runtime,
+        handle_existing_board_task_flow=_handle_existing_board_task_flow,
+    )
+
+
+def _initial_board_runtime() -> InitialBoardRuntime:
+    return InitialBoardRuntime(
+        with_task_details=_with_task_details,
+        prepare_initial_requirement_for_board_generation=_prepare_initial_requirement_for_board_generation,
+        checkpoint_initial_requirement_before_generation=_checkpoint_initial_requirement_before_generation,
+        post_initial_board_generation_message=_post_initial_board_generation_message,
+        clear_task_requirements=_clear_task_requirements,
+        save_workspace_for_user=_save_workspace_for_user,
+    )
+
+
+def _general_chat_runtime() -> GeneralChatRuntime:
+    return GeneralChatRuntime(
+        clear_task_requirements=_clear_task_requirements,
+        save_workspace_for_user=_save_workspace_for_user,
     )
 
 
@@ -1754,44 +1794,6 @@ def _handle_existing_board_task_flow(
     return None
 
 
-def _generate_interaction_chatbot_message(
-    *,
-    lesson: Lesson,
-    requirements: LearningRequirementSheet,
-    resources: list[ResourceLibraryItem],
-    conversation: list[ConversationTurn],
-    request: ChatRequest,
-    session: InteractionSession,
-    decision: InteractionTurnDecision | None,
-) -> tuple[str, str, dict[str, object] | None]:
-    context = interaction_context_payload(session=session, decision=decision)
-    if decision is not None and decision.route == "side_learning_request":
-        return _generate_board_directed_explanation_message(
-            lesson=lesson,
-            requirements=requirements,
-            resources=resources,
-            conversation=conversation,
-            request=request,
-            learning_clarification=_latest_learning_clarification(lesson, requirements=requirements),
-            action_type="side_learning_request",
-            target_excerpt=session.reference_context,
-            interaction_context=context,
-        )
-    ai_reply = openai_course_ai.generate_chatbot_reply(
-        lesson_title=lesson.title,
-        learning_goal=session.interaction_goal or requirements.learning_goal,
-        board_summary=_board_summary(lesson),
-        resource_summary=_resource_summary(resources),
-        conversation_summary=_conversation_summary(conversation),
-        user_message=request.message,
-        selection_excerpt=session.reference_context,
-        interaction_mode="interaction_rule",
-        interaction_context=context,
-    )
-    chatbot_message = (ai_reply.chatbot_message if ai_reply else "").strip()
-    return chatbot_message, "chatbot_interaction" if chatbot_message else "chatbot_empty", None
-
-
 def _handle_existing_interaction_session(
     *,
     workspace,
@@ -1806,205 +1808,19 @@ def _handle_existing_interaction_session(
     requirement_history: LearningRequirementHistoryRecorder,
     board_task_history: BoardTaskHistoryRecorder,
 ) -> ChatResponse | None:
-    # 已有互动 session 的总入口：先处理顺序讲解，再判断本轮是继续互动还是开启新任务。
-    session_before = lesson.active_interaction_session
-    if session_before is None:
-        return None
-
-    learning_clarification = _latest_learning_clarification(lesson, requirements=requirements)
-    section_sequence_response = _handle_section_explanation_sequence_turn(
+    return handle_existing_interaction_session(
         workspace=workspace,
         package=package,
         lesson=lesson,
         user_id=user_id,
         request=request,
         requirements=requirements,
-        learning_clarification=learning_clarification,
         resources=resources,
-        requirement_history=requirement_history,
-        runtime=_sequence_runtime(),
-    )
-    if section_sequence_response is not None:
-        return section_sequence_response
-    decision = decide_interaction_turn(
-        lesson=lesson,
-        session=session_before,
-        resource_summary=_resource_summary(resources),
-        conversation_summary=_conversation_summary(request.conversation),
-        user_message=request.message,
         selection_excerpt=selection_excerpt,
-    )
-    if decision is None:
-        chatbot_message = ""
-        lesson.active_interaction_session = session_before
-        commit_operations(
-            lesson,
-            [],
-            label="Interaction turn",
-            message="Recorded an interaction-rule turn without a route decision",
-            new_document=lesson.board_document,
-            metadata={
-                "kind": "interaction_flow",
-                "user_message": request.message,
-                "assistant_message": chatbot_message,
-                "assistant_message_source": "interaction_decision_empty",
-                "interaction_mode": request.interaction_mode,
-                "selection": request.selection.model_dump(mode="json") if request.selection else None,
-                **_task_metadata(
-                    requirements=requirements,
-                    learning_clarification=learning_clarification,
-                    requirement_cleared=False,
-                ),
-                **interaction_session_metadata(before=session_before, after=session_before),
-            },
-        )
-        workspace_state.normalize_package_state(package)
-        _save_workspace_for_user(
-            user_id=user_id,
-            workspace=workspace,
-            requirement_history=requirement_history,
-        )
-        return _response(
-            workspace=workspace,
-            package=package,
-            lesson=lesson,
-            chatbot_message=chatbot_message,
-            learning_clarification=learning_clarification,
-            requirements=requirements,
-            board_decision=BoardDecision(action="no_change", reason=""),
-            requirement_history=requirement_history,
-        )
-
-    if decision.route in {"exit_rule", "new_task", "side_learning_request"}:
-        lesson.active_interaction_session = None
-        interaction_exit_metadata = interaction_session_metadata(before=session_before, after=None, decision=decision)
-        should_attempt_board_task = decision.route in {"new_task", "side_learning_request"} or bool(
-            _infer_board_task_action(
-                request,
-                has_selection=bool(selection_excerpt),
-                document_empty=is_document_empty(lesson.board_document),
-            )
-            or _requests_explanation(request.message)
-        )
-        if should_attempt_board_task:
-            board_task_response = _handle_existing_board_task_flow(
-                workspace=workspace,
-                package=package,
-                lesson=lesson,
-                user_id=user_id,
-                request=request,
-                requirements=requirements,
-                resources=resources,
-                selection_excerpt=selection_excerpt,
-                selection_text=selection_text,
-                requirement_history=requirement_history,
-                board_task_history=board_task_history,
-                source_interaction_metadata=interaction_exit_metadata,
-                force_task_attempt=decision.route in {"new_task", "side_learning_request"},
-            )
-            if board_task_response is not None:
-                board_task_response.interaction_decision = decision
-                return board_task_response
-        chatbot_message, chatbot_message_source, board_explanation_directive = _generate_interaction_chatbot_message(
-            lesson=lesson,
-            requirements=requirements,
-            resources=resources,
-            conversation=request.conversation,
-            request=request,
-            session=session_before,
-            decision=decision,
-        )
-        commit_operations(
-            lesson,
-            [],
-            label="Interaction session ended",
-            message="Exited a rule-based interaction session and found no executable board task in the same turn",
-            new_document=lesson.board_document,
-            metadata={
-                "kind": "interaction_flow",
-                "user_message": request.message,
-                "assistant_message": chatbot_message,
-                "assistant_message_source": chatbot_message_source,
-                "board_explanation_directive": board_explanation_directive,
-                "interaction_mode": request.interaction_mode,
-                "selection": request.selection.model_dump(mode="json") if request.selection else None,
-                **_task_metadata(
-                    requirements=requirements,
-                    learning_clarification=learning_clarification,
-                    requirement_cleared=False,
-                ),
-                **interaction_exit_metadata,
-            },
-        )
-        workspace_state.normalize_package_state(package)
-        _save_workspace_for_user(
-            user_id=user_id,
-            workspace=workspace,
-            requirement_history=requirement_history,
-            board_task_history=board_task_history,
-        )
-        return _response(
-            workspace=workspace,
-            package=package,
-            lesson=lesson,
-            chatbot_message=chatbot_message,
-            learning_clarification=learning_clarification,
-            requirements=requirements,
-            board_decision=BoardDecision(action="no_change", reason=decision.reason),
-            interaction_decision=decision,
-            requirement_history=requirement_history,
-        )
-
-    session_after = apply_interaction_decision(session_before, decision)
-    reply_session = session_after or session_before
-    lesson.active_interaction_session = session_after
-    chatbot_message, chatbot_message_source, board_explanation_directive = _generate_interaction_chatbot_message(
-        lesson=lesson,
-        requirements=requirements,
-        resources=resources,
-        conversation=request.conversation,
-        request=request,
-        session=reply_session,
-        decision=decision,
-    )
-    commit_operations(
-        lesson,
-        [],
-        label="Interaction turn",
-        message="Recorded an interaction-rule chat turn",
-        new_document=lesson.board_document,
-        metadata={
-            "kind": "interaction_flow",
-            "user_message": request.message,
-            "assistant_message": chatbot_message,
-            "assistant_message_source": chatbot_message_source,
-            "board_explanation_directive": board_explanation_directive,
-            "interaction_mode": request.interaction_mode,
-            "selection": request.selection.model_dump(mode="json") if request.selection else None,
-            **_task_metadata(
-                requirements=requirements,
-                learning_clarification=learning_clarification,
-                requirement_cleared=False,
-            ),
-            **interaction_session_metadata(before=session_before, after=session_after, decision=decision),
-        },
-    )
-    workspace_state.normalize_package_state(package)
-    _save_workspace_for_user(
-        user_id=user_id,
-        workspace=workspace,
+        selection_text=selection_text,
         requirement_history=requirement_history,
-    )
-    return _response(
-        workspace=workspace,
-        package=package,
-        lesson=lesson,
-        chatbot_message=chatbot_message,
-        learning_clarification=learning_clarification,
-        requirements=requirements,
-        board_decision=BoardDecision(action="no_change", reason=decision.reason),
-        interaction_decision=decision,
-        requirement_history=requirement_history,
+        board_task_history=board_task_history,
+        runtime=_interaction_runtime(),
     )
 
 
@@ -2028,188 +1844,25 @@ def _maybe_start_interaction_session(
     resolved_focus: BoardFocusRef | None = None,
     source_interaction_metadata: dict[str, object] | None = None,
 ) -> ChatResponse | None:
-    interaction_metadata = source_interaction_metadata or {}
-    if request.interaction_mode == "direct_edit" and action_type != "append_section":
-        return None
-    if not should_start_interaction(requirements.interaction_rule_draft):
-        return None
-
-    start_resolution = build_interaction_start(
-        lesson=lesson,
-        draft=requirements.interaction_rule_draft,
-        user_message=request.message,
-        selection=request.selection,
-        selection_text=selection_text,
-        resolved_focus=resolved_focus,
-    )
-    if start_resolution.session is None and start_resolution.focus_resolution is not None:
-        chatbot_message, chatbot_message_source = _generate_focus_candidate_message(
-            lesson=lesson,
-            requirements=requirements,
-            resources=resources,
-            conversation=request.conversation,
-            request=request,
-            resolution=start_resolution.focus_resolution,
-        )
-        lesson.learning_requirements = requirements
-        commit_operations(
-            lesson,
-            [],
-            label="Interaction focus clarification",
-            message="Asked the learner to confirm the source content for an interaction rule",
-            new_document=lesson.board_document,
-            metadata={
-                "kind": "interaction_flow",
-                "user_message": request.message,
-                "assistant_message": chatbot_message,
-                "assistant_message_source": chatbot_message_source,
-                "interaction_mode": request.interaction_mode,
-                "selection": request.selection.model_dump(mode="json") if request.selection else None,
-                **interaction_metadata,
-                **_task_metadata(
-                    requirements=requirements,
-                    learning_clarification=learning_clarification,
-                    focus=None,
-                    focus_candidates=start_resolution.focus_resolution.candidates,
-                    requirement_cleared=False,
-                ),
-                **(
-                    _board_task_metadata(
-                        board_task=board_task,
-                        stamp=board_task_stamp,
-                        route="chat",
-                        decision=board_task_decision.model_dump(mode="json") if board_task_decision else None,
-                        cleared=False,
-                    )
-                    if board_task is not None
-                    else {}
-                ),
-                **interaction_session_metadata(before=None, after=None),
-            },
-        )
-        workspace_state.normalize_package_state(package)
-        _save_workspace_for_user(
-            user_id=user_id,
-            workspace=workspace,
-            requirement_history=requirement_history,
-            board_task_history=board_task_history,
-        )
-        return _response(
-            workspace=workspace,
-            package=package,
-            lesson=lesson,
-            chatbot_message=chatbot_message,
-            learning_clarification=learning_clarification,
-            requirements=requirements,
-            board_decision=BoardDecision(
-                action="await_focus_choice",
-                reason=start_resolution.focus_resolution.question,
-            ),
-            focus_candidates=start_resolution.focus_resolution.candidates,
-            requirement_history=requirement_history,
-        )
-
-    if start_resolution.session is None:
-        return None
-
-    session_before = lesson.active_interaction_session
-    session_after = start_resolution.session
-    if board_task is not None and board_task_stamp is not None:
-        session_after = session_after.model_copy(
-            update={
-                "source_board_task_run_id": board_task_stamp.run_id,
-                "source_board_task_version_id": board_task_stamp.version_id,
-                "source_board_task_route": "chat",
-            }
-        )
-    lesson.active_interaction_session = session_after
-    chatbot_message, chatbot_message_source, board_explanation_directive = _generate_interaction_chatbot_message(
-        lesson=lesson,
-        requirements=requirements,
-        resources=resources,
-        conversation=request.conversation,
-        request=request,
-        session=session_after,
-        decision=None,
-    )
-    _clear_task_requirements(lesson)
-    if board_task is not None:
-        lesson.board_task_requirements = None
-    commit_operations(
-        lesson,
-        [],
-        label="Interaction session start",
-        message="Started a rule-based interaction session",
-        new_document=lesson.board_document,
-        metadata={
-            "kind": "interaction_flow",
-            "user_message": request.message,
-            "assistant_message": chatbot_message,
-            "assistant_message_source": chatbot_message_source,
-            "board_explanation_directive": board_explanation_directive,
-            "interaction_mode": request.interaction_mode,
-            "selection": request.selection.model_dump(mode="json") if request.selection else None,
-            **interaction_metadata,
-            **_task_metadata(
-                requirements=requirements,
-                learning_clarification=learning_clarification,
-                focus=session_after.target_focus,
-                focus_candidates=(
-                    start_resolution.focus_resolution.candidates
-                    if start_resolution.focus_resolution
-                    else []
-                ),
-                requirement_cleared=True,
-            ),
-            **(
-                _board_task_metadata(
-                    board_task=board_task,
-                    stamp=board_task_stamp,
-                    route="chat",
-                    decision=board_task_decision.model_dump(mode="json") if board_task_decision else None,
-                    cleared=board_task is not None,
-                )
-                if board_task is not None
-                else {}
-            ),
-            **interaction_session_metadata(
-                before=session_before,
-                after=session_after,
-            ),
-        },
-    )
-    consumed_board_task_stamp = (
-        board_task_history.consume(commit_id=lesson.history_graph.commits[-1].id)
-        if board_task is not None and board_task_history is not None
-        else board_task_stamp
-    )
-    workspace_state.normalize_package_state(package)
-    _save_workspace_for_user(
-        user_id=user_id,
-        workspace=workspace,
-        requirement_history=requirement_history,
-        board_task_history=board_task_history,
-    )
-    return _response(
+    return maybe_start_interaction_session(
         workspace=workspace,
         package=package,
         lesson=lesson,
-        chatbot_message=chatbot_message,
-        learning_clarification=learning_clarification,
+        user_id=user_id,
+        request=request,
         requirements=requirements,
-        board_decision=BoardDecision(
-            action="no_change",
-            reason=session_after.interaction_goal,
-        ),
-        resolved_focus=session_after.target_focus,
-        focus_candidates=(
-            start_resolution.focus_resolution.candidates
-            if start_resolution.focus_resolution
-            else []
-        ),
-        requirement_cleared=True,
+        learning_clarification=learning_clarification,
+        resources=resources,
+        selection_text=selection_text,
+        action_type=action_type,
         requirement_history=requirement_history,
-        board_task_stamp=consumed_board_task_stamp,
+        board_task=board_task,
+        board_task_history=board_task_history,
+        board_task_stamp=board_task_stamp,
+        board_task_decision=board_task_decision,
+        resolved_focus=resolved_focus,
+        source_interaction_metadata=source_interaction_metadata,
+        runtime=_interaction_runtime(),
     )
 
 
@@ -2227,136 +1880,19 @@ def _generate_board_from_confirmed_resource(
     requirement_history: LearningRequirementHistoryRecorder,
     track_initial_requirement_run: bool,
 ) -> ChatResponse:
-    requirements = _with_task_details(
-        requirements,
-        action_type="generate_board",
-        instruction=request.message,
-    )
-    requirements, learning_clarification, frozen_requirement = _prepare_initial_requirement_for_board_generation(
-        requirement_history,
-        enabled=track_initial_requirement_run,
-        requirements=requirements,
-        learning_clarification=learning_clarification,
-    )
-    _checkpoint_initial_requirement_before_generation(
-        user_id=user_id,
+    return generate_board_from_confirmed_resource(
         workspace=workspace,
         package=package,
         lesson=lesson,
-        requirement_history=requirement_history,
-        requirements=requirements,
-        learning_clarification=learning_clarification,
-        stamp=frozen_requirement,
-    )
-    edit_outcome = generate_from_requirements(
-        lesson=lesson,
-        requirements=requirements,
-        clarification=learning_clarification,
-        resource_summary=resource_summary_for_turn,
-        requirement_run_id=frozen_requirement.run_id if frozen_requirement else None,
-        frozen_requirement_version_id=frozen_requirement.version_id if frozen_requirement else None,
-    )
-    chatbot_message = edit_outcome.chatbot_message
-    if not edit_outcome.changed:
-        failed_stamp = (
-            requirement_history.generation_failed(
-                reason=edit_outcome.summary or chatbot_message,
-                metadata=_board_document_failure_metadata(edit_outcome),
-            )
-            if frozen_requirement is not None
-            else None
-        )
-        workspace_state.normalize_package_state(package)
-        _save_workspace_for_user(
-            user_id=user_id,
-            workspace=workspace,
-            requirement_history=requirement_history,
-        )
-        return _response(
-            workspace=workspace,
-            package=package,
-            lesson=lesson,
-            chatbot_message=chatbot_message,
-            learning_clarification=learning_clarification,
-            requirements=requirements,
-            board_decision=edit_outcome.board_decision,
-            resource_matches=resource_resolution.matches,
-            selected_reference=resource_resolution.selected_reference,
-            requirement_stamp=failed_stamp,
-            board_document_operation_status=edit_outcome.operation_status,
-            board_document_operation_failure_reason=edit_outcome.failure_reason,
-        )
-    if edit_outcome.changed:
-        refresh_lesson_runtime(lesson, document=edit_outcome.new_document, requirements=requirements)
-        lesson.board_teaching_guide = build_board_teaching_guide(lesson)
-        lesson.board_teaching_progress = None
-        chatbot_message, chatbot_message_source = _post_initial_board_generation_message(
-            lesson=lesson,
-            requirements=requirements,
-            learning_clarification=learning_clarification,
-            resource_summary=resource_summary_for_turn,
-            edit_outcome=edit_outcome,
-        )
-    requirement_cleared = edit_outcome.changed
-    commit_operations(
-        lesson,
-        [],
-        label="Resource-backed board generation",
-        message="Generated board document from a confirmed uploaded resource chapter",
-        new_document=lesson.board_document,
-        metadata={
-            "kind": "board_document_generation",
-            "resource_backed_generation": True,
-            "user_message": request.message,
-            "assistant_message": chatbot_message,
-            "assistant_message_source": chatbot_message_source,
-            "board_editor_message": edit_outcome.chatbot_message,
-            "interaction_mode": request.interaction_mode,
-            "resource_reference_action": request.resource_reference_action,
-            "board_generation_action": "resource_reference_confirm",
-            "board_edit_operation": edit_outcome.operation,
-            "board_edit_summary": edit_outcome.summary,
-            "board_section_titles": edit_outcome.section_titles,
-            **_board_document_quality_metadata(edit_outcome),
-            **_requirement_history_metadata(
-                frozen_requirement,
-                run_status_after_commit="consumed" if frozen_requirement is not None else None,
-            ),
-            **_task_metadata(
-                requirements=requirements,
-                learning_clarification=learning_clarification,
-                requirement_cleared=requirement_cleared,
-            ),
-            **_reference_metadata(resolution=resource_resolution),
-        },
-    )
-    consumed_stamp = (
-        requirement_history.consume(commit_id=lesson.history_graph.commits[-1].id)
-        if frozen_requirement is not None
-        else None
-    )
-    if requirement_cleared:
-        _clear_task_requirements(lesson)
-    workspace_state.normalize_package_state(package)
-    _save_workspace_for_user(
         user_id=user_id,
-        workspace=workspace,
-        requirement_history=requirement_history,
-    )
-    return _response(
-        workspace=workspace,
-        package=package,
-        lesson=lesson,
-        chatbot_message=chatbot_message,
-        learning_clarification=learning_clarification,
+        request=request,
         requirements=requirements,
-        board_decision=edit_outcome.board_decision,
-        resource_matches=resource_resolution.matches,
-        selected_reference=resource_resolution.selected_reference,
-        requirement_cleared=requirement_cleared,
-        requirement_stamp=consumed_stamp,
-        board_document_operation_status=edit_outcome.operation_status,
-        board_document_operation_failure_reason=edit_outcome.failure_reason,
+        learning_clarification=learning_clarification,
+        resource_resolution=resource_resolution,
+        resource_summary_for_turn=resource_summary_for_turn,
+        requirement_history=requirement_history,
+        track_initial_requirement_run=track_initial_requirement_run,
+        runtime=_initial_board_runtime(),
     )
 
 
@@ -3719,51 +3255,22 @@ def _chat_response(
             board_document_operation_failure_reason=edit_outcome.failure_reason,
         )
 
-    board_decision = BoardDecision(action="no_change", reason="本轮是通用问答聊天，不自动修改讲义。")
-    requirement_cleared = False
-
-    commit_operations(
-        lesson,
-        [],
-        label="Chat turn",
-        message="Recorded a learner and chatbot chat turn",
-        new_document=lesson.board_document,
-        metadata={
-            "kind": "chat_flow",
-            "user_message": request.message,
-            "assistant_message": chatbot_message,
-            "assistant_message_source": chatbot_message_source,
-            "interaction_mode": request.interaction_mode,
-            "selection": request.selection.model_dump(mode="json") if request.selection else None,
-            **_task_metadata(
-                requirements=requirements,
-                learning_clarification=learning_clarification,
-                requirement_cleared=requirement_cleared,
-            ),
-            **_reference_metadata(resolution=resource_resolution),
-            **solver_metadata,
-        },
-    )
-    if requirement_cleared:
-        _clear_task_requirements(lesson)
-    workspace_state.normalize_package_state(package)
-    _save_workspace_for_user(
-        user_id=user_id,
-        workspace=workspace,
-        requirement_history=requirement_history,
-    )
-    return _response(
+    return commit_general_chat_turn(
         workspace=workspace,
         package=package,
         lesson=lesson,
-        chatbot_message=chatbot_message,
-        learning_clarification=learning_clarification,
+        user_id=user_id,
+        request=request,
         requirements=requirements,
-        board_decision=board_decision,
-        resource_matches=resource_resolution.matches,
+        learning_clarification=learning_clarification,
+        resource_resolution=resource_resolution,
         selected_reference=selected_reference,
-        requirement_cleared=requirement_cleared,
-        requirement_history=requirement_history if track_initial_requirement_run else None,
+        requirement_history=requirement_history,
+        track_initial_requirement_run=track_initial_requirement_run,
+        chatbot_message=chatbot_message,
+        chatbot_message_source=chatbot_message_source,
+        solver_metadata=solver_metadata,
+        runtime=_general_chat_runtime(),
     )
 
 
