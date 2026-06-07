@@ -415,6 +415,52 @@ AI 角色权责：
 4. 是否存在 PM 事后决策、Chatbot 抢先回答、资料上下文污染或板书定位绕过。
 5. 用哪些测试或日志证明旧链路协作流程没有被破坏。
 
+### Natural Language Rule Governance
+
+自然语言规则是 OpenClass 最容易补丁化的区域。任何新增或修改自然语言行为，都必须先证明它是通用信号、通用动作、通用目标定位或通用内容形态，而不是某个单句、单资料、单 demo 的特殊分支。
+
+- Do not add a new regex directly inside `chatbot.py`.
+- When adding or changing natural-language behavior, add a golden fixture first.
+- Add at least two negative examples for each new positive fixture.
+- Put signal extraction in `turn_intent.py`.
+- Put action decisions in `board_task_decider.py`.
+- Put target location in `target_resolvers/`.
+- Put sequence decisions in `sequence_planner.py`.
+- Put exercise / paragraph atom extraction in `explanation_atom_extractors/`.
+- Include the matched rule name in `DecisionTrace`.
+- A regex without positive and negative tests is not acceptable.
+
+自然语言规则的职责边界：
+
+- `turn_intent.py` 只抽取用户话语中的意图信号，例如 `wants_explain`、`wants_collection`、`wants_edit`、`wants_interaction`；不得直接决定写、改、讲、聊。
+- `board_task_decider.py` 只根据意图信号、板书状态、任务清单和定位状态决定动作；不得直接做目标定位或生成回复。
+- `target_resolvers/` 只做目标位置解析，例如选区、标题、编号、段落、练习集合、前后文；不得直接执行讲解或写入。
+- `sequence_planner.py` 只决定是否进入顺序讲解、逐段讲解、逐题讲解或继续当前 sequence；不得直接生成最终讲解。
+- `explanation_atom_extractors/` 只把板书内容切成可讲解的原子单元，例如段落、条目、练习题、问答对；不得写入板书或改变任务清单。
+
+### DecisionTrace
+
+AI 路由必须可审计。每次修改 AI 路由时，必须保证 response 或 commit metadata 里能看到本轮为什么走到这个行为。可追踪信息至少应覆盖：
+
+```json
+{
+  "intent_signals": ["wants_explain", "wants_collection"],
+  "matched_rules": ["collection_explanation_request"],
+  "selected_action": "explain",
+  "target_resolver": "ExerciseCollectionResolver",
+  "sequence_mode": "atomic_explanation",
+  "role_executed": "chatbot",
+  "document_changed": false,
+  "reason": "collection explanation requested for exercise group"
+}
+```
+
+- Any AI routing change must preserve or improve `DecisionTrace`.
+- If a behavior is hard to debug, add trace fields instead of adding hidden branching.
+- `DecisionTrace` 必须描述通用决策原因，不得记录学科关键词、教材关键词、demo 内容或固定讲义内容作为路由依据。
+- 如果新增规则会改变 `TurnDecision -> ResolveTarget -> BuildContext -> ExecuteRole -> PersistHistory -> UpdateRequirement` 中任一步，必须在 `DecisionTrace` 中标明被改变的步骤和原因。
+- 如果某条规则匹配了用户输入，但最终没有被选为动作，也应在 `DecisionTrace` 或测试断言中说明它为什么被拒绝，防止多个自然语言规则静默抢占。
+
 ## 常用命令（仓库根执行）
 
 ```bash
