@@ -516,6 +516,100 @@ PR 形状约束：
 
 OpenClass 以后不得靠“更多判断”变强，而要靠更清楚的链路、更稳定的角色边界、更可审计的决策和更可复用的测试来变强。任何修法都必须证明：它不会让系统继续变乱。
 
+## Engineering workflow for OpenClass
+
+Codex must work like an engineer on a reviewed codebase, not like a patch generator.
+
+### Required workflow
+
+For every task, follow this order:
+
+1. Read the relevant files and summarize the current behavior.
+2. Identify the smallest safe change.
+3. Add or update tests/fixtures before changing production code.
+4. Make the implementation change.
+5. Run the narrowest relevant tests.
+6. Run the broader verification command when practical.
+7. Report changed files, behavior changes, test results, and remaining risks.
+
+### No patch-first development
+
+Do not add ad-hoc regexes, flags, or branches directly inside `chatbot.py` unless the task explicitly says to do so.
+
+If a bug involves intent detection, routing, target resolution, sequence planning, or document write safety, prefer one of these modules:
+
+- `turn_intent.py` for user-language signals
+- `board_task_decider.py` for board task action decisions
+- `board_task_manager.py` for BoardTaskRequirementSheet state updates
+- `sequence_planner.py` for sequential explanation planning
+- `segment_resolver.py` / target resolver modules for board target location
+- `explanation_atoms.py` or atom extractor modules for atomic explanation units
+- `board_document_editor.py` / quality gate modules for document write safety
+
+### Core architecture boundary
+
+OpenClass AI turns must follow this pipeline:
+
+User message
+→ Intent signals
+→ Board task decision
+→ Board task sheet update
+→ Target resolution
+→ Route decision
+→ Optional sequence planning
+→ Role execution
+→ Commit metadata
+→ Response
+
+Chatbot may explain.
+BoardEditor may write.
+Target resolver may locate.
+BoardTaskManager may update sheets.
+SequencePlanner may plan sequence.
+No single module should do all of these.
+
+### Tests are mandatory
+
+Every behavior change must include tests or fixtures.
+
+For board task changes, add or update at least one fixture under:
+
+- `apps/api/tests/fixtures/`
+- `apps/api/tests/board_task/`
+- `apps/api/tests/sequence/`
+- `apps/api/tests/locator/`
+
+For every new positive case, add at least one negative case.
+
+Examples:
+
+- If adding “为我讲解练习题” as collection explanation, also test “讲解第 2 题” as single-target explanation.
+- If adding an append/write phrase, also test that explain phrases do not write the document.
+- If adding whole-document scope, also test selected-scope behavior.
+
+### Forbidden shortcuts
+
+Do not:
+
+- Make broad rewrites without a migration plan.
+- Change schema and behavior in the same PR unless required.
+- Add production dependencies without approval.
+- Modify prompts to compensate for missing state-machine logic.
+- Let Chatbot write board documents directly.
+- Let BoardEditor decide user intent.
+- Hide behavior changes in refactor PRs.
+- Change tests just to fit a new implementation.
+
+### Definition of done
+
+A task is done only when:
+
+- The intended behavior is covered by tests or fixtures.
+- The implementation touches the smallest reasonable set of files.
+- Public behavior changes are documented.
+- Relevant tests were run and results are reported.
+- Remaining risks are explicitly listed.
+
 ### Natural Language Rule Governance
 
 自然语言规则是 OpenClass 最容易补丁化的区域。任何新增或修改自然语言行为，都必须先证明它是通用信号、通用动作、通用目标定位或通用内容形态，而不是某个单句、单资料、单 demo 的特殊分支。
