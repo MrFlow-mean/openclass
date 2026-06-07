@@ -20,7 +20,8 @@ from app.models import (
 )
 from app.services import workspace_state
 from app.services.board_task_history import BoardTaskHistoryRecorder, BoardTaskHistoryStamp
-from app.services.chat.intent import _infer_board_task_action, _requests_explanation
+from app.services.chat.board_task_decider import infer_board_task_action
+from app.services.chat.intent import _requests_explanation
 from app.services.chat.metadata import _board_task_metadata, _task_metadata
 from app.services.chat.response import _response
 from app.services.chat.sequence import SequenceRuntime, _handle_section_explanation_sequence_turn
@@ -178,7 +179,7 @@ def handle_existing_interaction_session(
         lesson.active_interaction_session = None
         interaction_exit_metadata = interaction_session_metadata(before=session_before, after=None, decision=decision)
         should_attempt_board_task = decision.route in {"new_task", "side_learning_request"} or bool(
-            _infer_board_task_action(
+            infer_board_task_action(
                 request,
                 has_selection=bool(selection_excerpt),
                 document_empty=is_document_empty(lesson.board_document),

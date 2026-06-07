@@ -36,17 +36,19 @@ from app.services.board_task_manager import (
     normalize_board_task_sheet,
     update_board_task_from_chat,
 )
-from app.services.chat.intent import (
+from app.services.chat.board_task_decider import (
     DOCUMENT_WRITE_ACTIONS,
     EDIT_ACTIONS,
-    _infer_board_task_action,
-    _prefer_requirement_action,
+    infer_board_task_action as _infer_board_task_action,
+    prefer_requirement_action as _prefer_requirement_action,
+    should_force_explain_task as _should_force_explain_task,
+)
+from app.services.chat.intent import (
     _requests_append_section,
     _requests_document_artifact_generation,
     _requests_explanation,
     _requests_learning_start,
     _requests_resource_backed_answer,
-    _should_force_explain_task,
     _should_prompt_resource_reference,
 )
 from app.services.chat.metadata import (
