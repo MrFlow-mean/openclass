@@ -168,6 +168,7 @@ def _requests_immediate_board_generation(text: str) -> bool:
 
 
 def is_explicit_board_generation_request(text: str) -> bool:
+    # 学生明确说“生成板书”时，才允许从需求澄清推进到首次板书生成。
     return _requests_immediate_board_generation(text)
 
 
@@ -182,6 +183,7 @@ def _requests_immediate_generation(text: str) -> bool:
 
 def is_generation_control_request(text: str) -> bool:
     """Whether the user is trying to move from PM clarification into generation."""
+    # 这类话不是普通聊天，而是在控制“是否现在开始生成板书”。
     return _requests_immediate_board_generation(text) or _requests_immediate_generation(text)
 
 
@@ -200,6 +202,7 @@ def _infer_action_type(
     forced_board_generation: bool = False,
     fallback: BoardTaskAction | None = None,
 ) -> BoardTaskAction | None:
+    # 只识别通用动作形态：生成、追加、简化、扩写、改写、讲解；不按具体学科分支。
     compact = _compact_text(text, limit=280)
     if forced_board_generation:
         return "generate_board"

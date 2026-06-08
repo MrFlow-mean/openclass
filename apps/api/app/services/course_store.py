@@ -382,6 +382,7 @@ class SqliteCourseStore:
                 PRIMARY KEY (lesson_id, name)
             );
 
+            -- 资料库表：保存上传资料的文件信息、目录抽取状态和可引用文本。
             CREATE TABLE IF NOT EXISTS resources (
                 id TEXT PRIMARY KEY,
                 package_id TEXT NOT NULL REFERENCES course_packages(id) ON DELETE CASCADE,
@@ -401,6 +402,7 @@ class SqliteCourseStore:
             CREATE INDEX IF NOT EXISTS idx_resources_package
                 ON resources(package_id, sort_order);
 
+            -- 资料章节表：把一份资料拆成可检索、可确认、可引用的章节单元。
             CREATE TABLE IF NOT EXISTS resource_chapters (
                 id TEXT NOT NULL,
                 resource_id TEXT NOT NULL REFERENCES resources(id) ON DELETE CASCADE,
@@ -885,6 +887,7 @@ class SqliteCourseStore:
         resource: ResourceLibraryItem,
         resource_index: int,
     ) -> None:
+        # 保存资料时先写资源主表，再写它的章节目录；资料匹配依赖这些章节记录。
         conn.execute(
             """
             INSERT INTO resources(

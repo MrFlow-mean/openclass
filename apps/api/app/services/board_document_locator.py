@@ -128,10 +128,12 @@ class BoardDocumentLocator:
         action_type: BoardTaskAction | None = None,
         board_task: BoardTaskRequirementSheet | None = None,
     ) -> FocusResolution:
+        # FocusResolver 的主入口：把“这里、第二段、某个标题、选区”解析成可执行的板书位置。
         index = build_board_segment_index(lesson.board_document)
         plan = _query_plan(query_text=query_text, board_task=board_task, action_type=action_type)
         excerpt = compact_segment_text(selection.excerpt if selection else selection_text, limit=1200)
         if excerpt:
+            # 学生已经选中文本时，选区拥有最高优先级，直接映射成目标位置。
             focus = _focus_from_selection(
                 lesson=lesson,
                 selection=selection,
@@ -163,6 +165,7 @@ class BoardDocumentLocator:
             action_type=action_type,
         )
         if task_location_resolution is not None:
+            # 如果任务单已经保存过明确位置，优先复用它，保证同一任务链路可追溯。
             return task_location_resolution
 
         task_hint_resolution = _resolution_from_board_task_text_evidence(
@@ -198,6 +201,7 @@ class BoardDocumentLocator:
             segments=index.segments,
         )
         if structured_candidates:
+            # 编号、题号、空格、行号等都属于通用文档结构定位，不是具体学科特例。
             return _resolution_from_candidates(
                 candidates=structured_candidates,
                 plan=plan,
@@ -225,6 +229,7 @@ class BoardDocumentLocator:
             chunks=index.chunks,
         )
         if not search_candidates:
+            # 找不到候选时不能让 Chatbot 凭常识讲；要么澄清位置，要么进入缺失内容扩写确认。
             status = "content_absent" if board_task and board_task.requested_action in {"explain", "chat"} else "missing"
             return FocusResolution(
                 focus=None,

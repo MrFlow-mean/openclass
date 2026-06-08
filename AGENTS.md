@@ -415,6 +415,247 @@ AI 角色权责：
 4. 是否存在 PM 事后决策、Chatbot 抢先回答、资料上下文污染或板书定位绕过。
 5. 用哪些测试或日志证明旧链路协作流程没有被破坏。
 
+### 反补丁式工程治理
+
+OpenClass 禁止通过“眼前行为坏了就往核心链路再补一个判断”的方式开发。AI 工作流必须像严格工程项目一样维护：每个模块知道自己不该做什么，每个行为有测试固定，每个路由决策有 trace 可查，每个 PR 只改变一个清晰方向。
+
+补丁式开发的典型风险：
+
+- 同一句自然语言被多个规则同时抢占，触发优先级越来越难解释。
+- Chatbot 越过需求清单、目标定位、资料选择、写入确认或板书侧 directive，提前给出最终回答。
+- BoardEditor 混入原始聊天、临时摘要或旧需求，吃错上下文后改错板书。
+- 历史记录看不出是谁在什么时候清空了清单、消费了任务或改了文档。
+- 测试只覆盖某个补丁样例，其他主链路被旁路破坏。
+
+任何改动前必须先回答：
+
+```text
+这次要解决的是：
+[ ] 通用能力
+[ ] 内容形态
+[ ] 链路状态
+[ ] 角色边界
+[ ] UI 交互
+[ ] 测试缺口
+[ ] 单个样例补丁
+```
+
+如果本次改动属于“单个样例补丁”，必须停止，重新设计为通用能力、内容形态、链路状态或测试缺口修复。
+
+任何开发前必须定位本次改动属于标准链路的哪一步：
+
+```text
+TurnDecision:
+ResolveTarget:
+BuildContext:
+ExecuteRole:
+PersistHistory:
+UpdateRequirement:
+```
+
+如果说不清属于哪一步，不得修改代码。严格工程化开发依赖职责归位，而不是靠更多隐藏判断。
+
+测试先于规则：
+
+- 任何自然语言规则、路由规则、任务判断，必须先写 golden fixture。
+- 每个正例至少配两个反例。
+- 没有反例，不允许新增规则。
+- 如果一个 bug 只能通过新增 `if` / regex 修好，必须先证明这是通用信号，而不是单句补丁。
+
+PR 形状约束：
+
+```text
+本 PR 只解决一个问题。
+最多改 5 个文件。
+不改数据库。
+不改认证。
+不改部署。
+不新增依赖。
+不改无关 UI。
+不顺手重构。
+```
+
+如果预计超过 5 个文件，必须先拆 PR。任何需要新增依赖、改数据库、改认证、改上传、改日志、改部署或改环境变量的方案，都必须标为“暂停，需要人工确认”。
+
+核心文件不得继续吞职责：
+
+- `chatbot.py` 不允许新增自然语言正则，不允许新增大 handler。
+- `course-studio.tsx` 不允许继续新增复杂 state / effect / realtime / editor / model selection 逻辑。
+- `openai_course_ai.py` 不允许写业务分支、学科分支或路由特例。
+- `board_document_editor.py` 不允许混入聊天路由、任务判断或目标定位职责。
+- 如果没有合适模块承接新能力，必须先设计模块边界，再实现。
+
+每次 AI 路由相关改动必须回答：
+
+1. 这个行为在 metadata 或 response 里能看到什么？
+2. 能不能知道匹配了什么信号？
+3. 能不能知道为什么选择这个 action？
+4. 能不能知道为什么没有选择另一个 action？
+5. 能不能知道哪个角色执行了？
+6. 能不能知道文档是否被修改？
+
+如果调试只能靠猜，说明代码正在变成黑箱。此时应增加 `DecisionTrace` 或测试断言，而不是继续增加隐藏分支。
+
+开发口令：
+
+```text
+不要补丁式开发。
+
+修改前必须先说明：
+1. 这个问题属于哪条标准链路。
+2. 当前旧行为是什么。
+3. 要固定哪些 golden tests。
+4. 本次改动的模块边界是什么。
+5. 哪些文件绝对不能动。
+6. 是否会新增自然语言规则；如果会，必须有正例和至少两个反例。
+7. 是否会增加 DecisionTrace。
+8. 如果需要超过 5 个文件，先拆 PR，不要直接实现。
+
+没有完成以上说明，不要写代码。
+```
+
+OpenClass 以后不得靠“更多判断”变强，而要靠更清楚的链路、更稳定的角色边界、更可审计的决策和更可复用的测试来变强。任何修法都必须证明：它不会让系统继续变乱。
+
+## Engineering workflow for OpenClass
+
+Codex must work like an engineer on a reviewed codebase, not like a patch generator.
+
+### Required workflow
+
+For every task, follow this order:
+
+1. Read the relevant files and summarize the current behavior.
+2. Identify the smallest safe change.
+3. Add or update tests/fixtures before changing production code.
+4. Make the implementation change.
+5. Run the narrowest relevant tests.
+6. Run the broader verification command when practical.
+7. Report changed files, behavior changes, test results, and remaining risks.
+
+### No patch-first development
+
+Do not add ad-hoc regexes, flags, or branches directly inside `chatbot.py` unless the task explicitly says to do so.
+
+If a bug involves intent detection, routing, target resolution, sequence planning, or document write safety, prefer one of these modules:
+
+- `turn_intent.py` for user-language signals
+- `board_task_decider.py` for board task action decisions
+- `board_task_manager.py` for BoardTaskRequirementSheet state updates
+- `sequence_planner.py` for sequential explanation planning
+- `segment_resolver.py` / target resolver modules for board target location
+- `explanation_atoms.py` or atom extractor modules for atomic explanation units
+- `board_document_editor.py` / quality gate modules for document write safety
+
+### Core architecture boundary
+
+OpenClass AI turns must follow this pipeline:
+
+User message
+→ Intent signals
+→ Board task decision
+→ Board task sheet update
+→ Target resolution
+→ Route decision
+→ Optional sequence planning
+→ Role execution
+→ Commit metadata
+→ Response
+
+Chatbot may explain.
+BoardEditor may write.
+Target resolver may locate.
+BoardTaskManager may update sheets.
+SequencePlanner may plan sequence.
+No single module should do all of these.
+
+### Tests are mandatory
+
+Every behavior change must include tests or fixtures.
+
+For board task changes, add or update at least one fixture under:
+
+- `apps/api/tests/fixtures/`
+- `apps/api/tests/board_task/`
+- `apps/api/tests/sequence/`
+- `apps/api/tests/locator/`
+
+For every new positive case, add at least one negative case.
+
+Examples:
+
+- If adding “为我讲解练习题” as collection explanation, also test “讲解第 2 题” as single-target explanation.
+- If adding an append/write phrase, also test that explain phrases do not write the document.
+- If adding whole-document scope, also test selected-scope behavior.
+
+### Forbidden shortcuts
+
+Do not:
+
+- Make broad rewrites without a migration plan.
+- Change schema and behavior in the same PR unless required.
+- Add production dependencies without approval.
+- Modify prompts to compensate for missing state-machine logic.
+- Let Chatbot write board documents directly.
+- Let BoardEditor decide user intent.
+- Hide behavior changes in refactor PRs.
+- Change tests just to fit a new implementation.
+
+### Definition of done
+
+A task is done only when:
+
+- The intended behavior is covered by tests or fixtures.
+- The implementation touches the smallest reasonable set of files.
+- Public behavior changes are documented.
+- Relevant tests were run and results are reported.
+- Remaining risks are explicitly listed.
+
+### Natural Language Rule Governance
+
+自然语言规则是 OpenClass 最容易补丁化的区域。任何新增或修改自然语言行为，都必须先证明它是通用信号、通用动作、通用目标定位或通用内容形态，而不是某个单句、单资料、单 demo 的特殊分支。
+
+- Do not add a new regex directly inside `chatbot.py`.
+- When adding or changing natural-language behavior, add a golden fixture first.
+- Add at least two negative examples for each new positive fixture.
+- Put signal extraction in `turn_intent.py`.
+- Put action decisions in `board_task_decider.py`.
+- Put target location in `target_resolvers/`.
+- Put sequence decisions in `sequence_planner.py`.
+- Put exercise / paragraph atom extraction in `explanation_atom_extractors/`.
+- Include the matched rule name in `DecisionTrace`.
+- A regex without positive and negative tests is not acceptable.
+
+自然语言规则的职责边界：
+
+- `turn_intent.py` 只抽取用户话语中的意图信号，例如 `wants_explain`、`wants_collection`、`wants_edit`、`wants_interaction`；不得直接决定写、改、讲、聊。
+- `board_task_decider.py` 只根据意图信号、板书状态、任务清单和定位状态决定动作；不得直接做目标定位或生成回复。
+- `target_resolvers/` 只做目标位置解析，例如选区、标题、编号、段落、练习集合、前后文；不得直接执行讲解或写入。
+- `sequence_planner.py` 只决定是否进入顺序讲解、逐段讲解、逐题讲解或继续当前 sequence；不得直接生成最终讲解。
+- `explanation_atom_extractors/` 只把板书内容切成可讲解的原子单元，例如段落、条目、练习题、问答对；不得写入板书或改变任务清单。
+
+### DecisionTrace
+
+AI 路由必须可审计。每次修改 AI 路由时，必须保证 response 或 commit metadata 里能看到本轮为什么走到这个行为。可追踪信息至少应覆盖：
+
+```json
+{
+  "intent_signals": ["wants_explain", "wants_collection"],
+  "matched_rules": ["collection_explanation_request"],
+  "selected_action": "explain",
+  "target_resolver": "ExerciseCollectionResolver",
+  "sequence_mode": "atomic_explanation",
+  "role_executed": "chatbot",
+  "document_changed": false,
+  "reason": "collection explanation requested for exercise group"
+}
+```
+
+- Any AI routing change must preserve or improve `DecisionTrace`.
+- If a behavior is hard to debug, add trace fields instead of adding hidden branching.
+- `DecisionTrace` 必须描述通用决策原因，不得记录学科关键词、教材关键词、demo 内容或固定讲义内容作为路由依据。
+- 如果新增规则会改变 `TurnDecision -> ResolveTarget -> BuildContext -> ExecuteRole -> PersistHistory -> UpdateRequirement` 中任一步，必须在 `DecisionTrace` 中标明被改变的步骤和原因。
+- 如果某条规则匹配了用户输入，但最终没有被选为动作，也应在 `DecisionTrace` 或测试断言中说明它为什么被拒绝，防止多个自然语言规则静默抢占。
+
 ## 常用命令（仓库根执行）
 
 ```bash

@@ -36,6 +36,7 @@ _QUALITY_REVIEW_CONTENT_CHARS = 10000
 
 @dataclass(frozen=True)
 class BoardDocumentEditOutcome:
+    # BoardEditor 的统一返回值：既包含新文档，也包含是否成功、失败原因和质量修复次数。
     chatbot_message: str
     new_document: BoardDocument
     board_decision: BoardDecision
@@ -59,6 +60,7 @@ def generate_from_requirements(
     requirement_run_id: str | None = None,
     frozen_requirement_version_id: str | None = None,
 ) -> BoardDocumentEditOutcome:
+    # 第一层链路：空白板书只能根据冻结后的学习需求生成第一版正式板书。
     if not is_document_empty(lesson.board_document):
         return _no_change(
             lesson,
@@ -66,6 +68,7 @@ def generate_from_requirements(
         )
 
     request_kwargs = {
+        # 传给模型的是结构化需求上下文，不是原始聊天记录，避免 Chatbot/BoardEditor 职责混在一起。
         "intent": "generate_from_requirements",
         "lesson_title": lesson.title,
         "learning_requirement_context": _requirement_context(
@@ -84,6 +87,7 @@ def generate_from_requirements(
     quality_repair_attempts = 0
     quality_review_status = "not_run"
     for attempt in range(_MAX_BOARD_DOCUMENT_QUALITY_ATTEMPTS):
+        # AI 输出必须通过格式和结构门禁；不合格时把失败原因交回 BoardEditor 重写。
         result = _request_board_document_edit(request_kwargs, repair_feedback=repair_feedback)
         if not result:
             failure_reason = "板书文档编辑 AI 没有返回生成结果。"
@@ -182,6 +186,7 @@ def edit_existing_document(
     target_scope: str | None = None,
     allow_replace_document: bool = False,
 ) -> BoardDocumentEditOutcome:
+    # 第二层链路：已有板书的写/改必须带目标选区或定位结果，不能随便覆盖全文。
     target_excerpt = _target_excerpt(selection_excerpt=selection_excerpt, focus=focus, current_document=lesson.board_document)
     is_append_request = requirements.action_type == "append_section"
     is_whole_document_scope = target_scope == "whole_document"
@@ -192,6 +197,7 @@ def edit_existing_document(
         )
 
     request_kwargs = {
+        # 这里把当前文档、目标摘录、结构化需求和资料摘要交给 BoardEditor。
         "intent": "edit_existing_document",
         "lesson_title": lesson.title,
         "learning_requirement_context": _requirement_context(requirements, clarification),
@@ -207,6 +213,7 @@ def edit_existing_document(
     quality_repair_attempts = 0
     quality_review_status = "not_run"
     for attempt in range(_MAX_BOARD_DOCUMENT_QUALITY_ATTEMPTS):
+        # 局部编辑同样经过质量门禁，防止 HTML、空内容、结构压扁或越界替换污染板书。
         result = _request_board_document_edit(request_kwargs, repair_feedback=repair_feedback)
         if not result:
             failure_reason = "板书文档编辑 AI 没有返回编辑结果。"

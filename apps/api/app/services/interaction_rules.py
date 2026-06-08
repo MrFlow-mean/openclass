@@ -22,6 +22,7 @@ class InteractionStartResolution:
 
 
 def should_start_interaction(draft: InteractionRuleDraft | None) -> bool:
+    # 只有学生明确提出规则互动、练习、问答等要求时，才启动 InteractionSession。
     return bool(draft and draft.should_start and draft.rule_text.strip())
 
 
@@ -34,6 +35,7 @@ def build_interaction_start(
     selection_text: str | None = None,
     resolved_focus: BoardFocusRef | None = None,
 ) -> InteractionStartResolution:
+    # 启动互动前仍要定位目标板书片段，互动不能脱离具体可引用内容。
     focus_resolution: FocusResolution | None = None
     focus: BoardFocusRef | None = resolved_focus
     target_query = compact_segment_text(draft.target_hint or "", limit=500)
@@ -57,6 +59,7 @@ def build_interaction_start(
         selection_text=selection_text,
     )
     session = InteractionSession(
+        # session 保存规则、目标、参考文本和进度，后续每一轮都用它判断是否继续同一个互动。
         status="active",
         rule_text=compact_segment_text(draft.rule_text, limit=1000),
         interaction_goal=compact_segment_text(draft.interaction_goal, limit=500),
@@ -81,6 +84,7 @@ def decide_interaction_turn(
     user_message: str,
     selection_excerpt: str | None = None,
 ) -> InteractionTurnDecision | None:
+    # 每轮互动先判断用户是在继续规则、违反规则、退出规则，还是提出了新任务。
     return openai_course_ai.generate_interaction_turn_decision(
         lesson_title=lesson.title,
         session=session,
@@ -96,6 +100,7 @@ def apply_interaction_decision(
     session: InteractionSession,
     decision: InteractionTurnDecision,
 ) -> InteractionSession | None:
+    # exit_rule/new_task 会结束当前互动；其他路线会更新进度并继续 session。
     if decision.route in {"exit_rule", "new_task"}:
         return None
     updates: dict[str, object] = {

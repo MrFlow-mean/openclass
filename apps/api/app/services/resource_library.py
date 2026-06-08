@@ -279,6 +279,7 @@ def _generic_chapter_from_text(title: str, text: str, *, summary_prefix: str) ->
 
 
 def _ai_generated_outline(original_name: str, text: str) -> list[LibraryChapter]:
+    # 资料没有清晰目录时，才让 Directory AI 根据原文生成通用目录，不允许补外部知识。
     normalized_text = _normalize_extracted_text(text)
     if len(normalized_text) < 80:
         return []
@@ -1379,6 +1380,7 @@ def _toc_entries_to_chapters(reader: PdfReader, toc_pages: list[tuple[int, str]]
 
 
 def extract_outline(file_path: Path, original_name: str, mime_type: str) -> tuple[list[LibraryChapter], bool, str | None]:
+    # 资料解析入口：按图片、文本、DOCX、EPUB、PDF 等格式提取目录和可检索文本。
     if mime_type.startswith("image/"):
         generic_title = Path(original_name).stem
         extracted_text = extract_image_text(file_path)
@@ -1538,6 +1540,7 @@ def extract_outline(file_path: Path, original_name: str, mime_type: str) -> tupl
 
 
 def build_resource_item(file_path: Path, original_name: str) -> ResourceLibraryItem:
+    # 上传资料会被整理成 ResourceLibraryItem：文件信息、目录、关键词和可引用文本都在这里汇总。
     mime_type = mimetypes.guess_type(original_name)[0] or "application/octet-stream"
     outline, extracted, text_content = extract_outline(file_path, original_name, mime_type)
     outline = _attach_outline_hierarchy(outline)
@@ -1566,6 +1569,7 @@ def extract_reference_context(
     *,
     user_query: str,
 ) -> ResourceReferenceContext | None:
+    # 选中资料章节后，从原文件或已抽取文本里拿到本轮可以交给 AI 的引用片段。
     chapter = next((candidate for candidate in resource.outline if candidate.id == chapter_id), None)
     if chapter is None:
         return None

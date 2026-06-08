@@ -55,6 +55,7 @@ def search_documents(
     limit: int = Query(20, ge=1, le=100),
     user: UserView = Depends(current_user),
 ) -> DocumentSegmentSearchResponse:
+    # 文档搜索查的是由板书快照派生出的段落索引，供跨 lesson 检索和定位使用。
     return DocumentSegmentSearchResponse(
         query=q,
         kind=kind,
@@ -63,6 +64,7 @@ def search_documents(
 
 
 def _save_document_request(lesson_id: str, request: DocumentSaveRequest, user_id: str) -> CoursePackageView:
+    # 右侧编辑器手动保存和自动保存都会走这里，保存前先做版本和结构保护。
     workspace = load_workspace_for_user(user_id)
     package, lesson = find_lesson_package(workspace, lesson_id)
     package.active_lesson_id = lesson.id
@@ -70,12 +72,14 @@ def _save_document_request(lesson_id: str, request: DocumentSaveRequest, user_id
     is_autosave = request.metadata.get("autosave") is True or request.metadata.get("kind") == "auto_document_save"
     guard_document: BoardDocument | None = None
     if request.base_commit_id and request.base_commit_id != current_head.id:
+        # 自动保存遇到旧 base commit 直接放弃，避免旧草稿覆盖新版本。
         if is_autosave:
             return package_view_for_lesson(workspace, package, lesson.id)
         raise HTTPException(status_code=409, detail="文档已在本次保存前更新，请刷新后再保存")
     if not document_changed(lesson.board_document, request.document):
         return package_view_for_lesson(workspace, package, lesson.id)
     if is_autosave:
+        # 自动保存不能把原本有层级的富文档压成普通段落，发现风险就不写入。
         guard_document = _recent_structured_snapshot_for_autosave(lesson, current_head, request.document) or current_head.snapshot
         if would_flatten_rich_document(
             current_document=guard_document,
@@ -101,6 +105,7 @@ def _save_document_request(lesson_id: str, request: DocumentSaveRequest, user_id
             ),
         }
         commit_document_snapshot(
+            # 每次正式保存都写一个 commit，历史面板和回退功能依赖这个快照。
             lesson,
             label=request.label,
             message=request.message,
@@ -198,6 +203,7 @@ def manual_commit(
     request: ManualCommitRequest,
     user: UserView = Depends(current_user),
 ) -> CoursePackageView:
+    # 手动 commit 是学生主动保存一个版本点，类似给当前黑板拍一张可回退快照。
     workspace = load_workspace_for_user(user.id)
     package, lesson = find_lesson_package(workspace, lesson_id)
     package.active_lesson_id = lesson.id
@@ -249,6 +255,7 @@ def ai_edit_document(
     request: DocumentAIEditRequest,
     user: UserView = Depends(current_user),
 ) -> ChatResponse:
+    # 编辑器里的“AI 修改”也复用聊天编排，保证写入仍经过同一套板书编辑和历史规则。
     return document_ai_edit_request(
         lesson_id,
         request.instruction,
@@ -264,6 +271,7 @@ def import_document_docx(
     file: UploadFile = File(...),
     user: UserView = Depends(current_user),
 ) -> CoursePackageView:
+    # DOCX 导入会把外部文档转成 OpenClass 的 BoardDocument，并立即写入历史版本。
     workspace = load_workspace_for_user(user.id)
     package, lesson = find_lesson_package(workspace, lesson_id)
     package.active_lesson_id = lesson.id
@@ -291,6 +299,7 @@ def import_document_docx(
 
 @router.get("/api/lessons/{lesson_id}/document/export-docx")
 def export_document_docx(lesson_id: str, user: UserView = Depends(current_user)) -> FileResponse:
+    # DOCX 导出把当前右侧板书变成 Word 文件，方便线下备课、分享和归档。
     workspace = load_workspace_for_user(user.id)
     _, lesson = find_lesson_package(workspace, lesson_id)
     target_path = EXPORT_DIR / f"{lesson.slug or lesson.id}.docx"
@@ -308,6 +317,7 @@ def create_lesson_branch(
     request: CreateBranchRequest,
     user: UserView = Depends(current_user),
 ) -> CoursePackageView:
+    # 分支让同一节课可以尝试不同讲法，满意再保留，不满意可以切回旧分支。
     workspace = load_workspace_for_user(user.id)
     package, lesson = find_lesson_package(workspace, lesson_id)
     package.active_lesson_id = lesson.id

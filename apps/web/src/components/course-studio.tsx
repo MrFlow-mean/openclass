@@ -39,6 +39,7 @@ const CHAT_PANEL_MIN_WIDTH = 300;
 const CHAT_PANEL_MAX_WIDTH = 640;
 
 export function CourseStudio() {
+  // CourseStudio 是工作台总组合层：把聊天、板书、历史、资源、模型和语音能力装配在一起。
   const router = useRouter();
   const { texts: txt } = useInterfaceLanguage();
   const studioTexts = txt.studio;
@@ -47,6 +48,7 @@ export function CourseStudio() {
   const chatScrollEndRef = useRef<HTMLDivElement | null>(null);
   const chatRequestInFlightRef = useRef(false);
 
+  // workspace hook 负责课程包、lesson、打开标签页和前端消息状态。
   const workspace = useCourseWorkspace();
   const {
     coursePackage,
@@ -63,6 +65,7 @@ export function CourseStudio() {
     updateActiveLessonComposerState,
     applyCoursePackage: applyWorkspaceCoursePackage,
   } = workspace;
+  // model catalog hook 负责读取后端 /api/ai-models，并维护学生当前选择的文本/实时模型。
   const modelSelection = useModelCatalog();
   const {
     modelCatalog,
@@ -94,6 +97,7 @@ export function CourseStudio() {
   const [sidebarTab, setSidebarTab] = useState<CourseStudioSidebarTab>("history");
   const [isCreatingLessonInline, setIsCreatingLessonInline] = useState(false);
 
+  // board draft hook 负责右侧板书草稿、自动保存、DOCX 导入导出和预览状态。
   const boardDraft = useBoardDraft({
     activeLesson,
     setError,
@@ -110,6 +114,7 @@ export function CourseStudio() {
     return result;
   }
 
+  // history hook 负责 commit、分支、预览和恢复，避免 CourseStudio 自己堆历史逻辑。
   const history = useLessonHistory({
     activeLesson,
     flushAutoSave: boardDraft.flushAutoSave,

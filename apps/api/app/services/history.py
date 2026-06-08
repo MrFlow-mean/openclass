@@ -24,6 +24,7 @@ _commit_metadata_context: ContextVar[dict[str, object] | None] = ContextVar(
 
 @contextmanager
 def bind_commit_metadata(metadata: dict[str, object]) -> Iterator[None]:
+    # 给当前调用链临时绑定 metadata，后续 commit_operations 会自动合并进去。
     token = _commit_metadata_context.set(metadata or None)
     try:
         yield
@@ -54,6 +55,7 @@ def commit_operations(
     new_document: BoardDocument | None = None,
     metadata: dict[str, object] | None = None,
 ) -> Lesson:
+    # OpenClass 的历史像一个小型 Git：每次板书/聊天状态变化都生成带快照的 commit。
     head = current_head_commit(lesson)
     branch_name = lesson.history_graph.current_branch
     if new_document is None:
@@ -72,6 +74,7 @@ def commit_operations(
         metadata=commit_metadata,
     )
     lesson.board_document = new_document
+    # 当前分支 head 指向新 commit，前端历史面板和回退功能都依赖这条链。
     lesson.history_graph.commits.append(commit)
     lesson.history_graph.branches[branch_name].head_commit_id = commit.id
     lesson.updated_at = now_iso()
@@ -95,6 +98,7 @@ def _active_board_task_after(commit: CommitRecord) -> BoardTaskRequirementSheet 
 
 
 def restore_lesson_runtime_from_commit(lesson: Lesson, commit: CommitRecord) -> Lesson:
+    # 回退历史时不只恢复板书，还恢复当时的需求单、任务单和互动 session。
     lesson.board_document = commit.snapshot
     lesson.learning_requirements = _metadata_model(commit, "active_requirement_sheet_after", LearningRequirementSheet)
     lesson.active_interaction_session = _metadata_model(
@@ -108,6 +112,7 @@ def restore_lesson_runtime_from_commit(lesson: Lesson, commit: CommitRecord) -> 
 
 
 def create_branch(lesson: Lesson, branch_name: str, from_commit_id: str | None = None) -> Lesson:
+    # 分支从某个 commit 开始，让一节课可以并行尝试不同讲法。
     source_commit = get_commit(lesson, from_commit_id) if from_commit_id else current_head_commit(lesson)
     lesson.history_graph.branches[branch_name] = BranchRef(
         name=branch_name,

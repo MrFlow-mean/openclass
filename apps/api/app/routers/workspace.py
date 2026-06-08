@@ -40,6 +40,7 @@ router = APIRouter()
 
 @router.get("/api/workspace", response_model=WorkspaceStateView)
 def get_workspace(user: UserView = Depends(current_user)) -> WorkspaceStateView:
+    # 打开前端工作台时先读取当前用户的所有课程包和活动课程。
     return workspace_view(load_workspace_for_user(user.id))
 
 
@@ -49,6 +50,7 @@ def create_package(request: CreatePackageRequest, user: UserView = Depends(curre
     if not title:
         raise HTTPException(status_code=400, detail="Package title is required")
 
+    # 课程包是最外层学习空间，里面可以放多个 lesson、资料和课程图谱关系。
     workspace = load_workspace_for_user(user.id)
     package = CoursePackage(
         title=title,
@@ -191,6 +193,7 @@ def generate_lesson(
     request: GenerateLessonRequest,
     user: UserView = Depends(current_user),
 ) -> CoursePackageView:
+    # 创建 lesson 时只负责把一节课放进课程包；真正的 AI 教学回合发生在 chat 接口。
     workspace = load_workspace_for_user(user.id)
     source_package = None
     if request.branch_from_lesson_id:
@@ -218,6 +221,7 @@ def generate_lesson(
                 topic=request.topic,
                 branch_from_lesson_id=request.branch_from_lesson_id,
             )
+        # start_blank=true 会创建空白板书，后续由聊天链路收集需求并生成第一版板书。
         lesson = (
             create_empty_lesson(request.topic)
             if request.start_blank
@@ -265,6 +269,7 @@ def reorder_workspace_tabs(
 
 @router.post("/api/lessons/{lesson_id}/open", response_model=CoursePackageView)
 def open_lesson_tab(lesson_id: str, user: UserView = Depends(current_user)) -> CoursePackageView:
+    # 前端打开 lesson tab 时，后端只更新活动 lesson 和 tab 顺序，不触发 AI。
     workspace = load_workspace_for_user(user.id)
     package, _ = find_lesson_package(workspace, lesson_id)
     if lesson_id not in package.open_lesson_ids:

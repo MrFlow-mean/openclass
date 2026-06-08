@@ -7,6 +7,7 @@ from app.services.history import bind_commit_metadata
 
 
 def process_chat_on_lesson(lesson_id: str, request: ChatRequest, *, user_id: str) -> ChatResponse:
+    # 聊天 service 是 router 和核心编排之间的薄层，顺手把“编辑已有聊天”的来源写进 commit metadata。
     with bind_commit_metadata(_chat_edit_metadata(request)):
         return _process_chat_on_lesson(lesson_id, request, user_id=user_id)
 
@@ -29,6 +30,7 @@ def document_ai_edit_request(
     *,
     user_id: str,
 ) -> ChatResponse:
+    # 文档 AI 编辑入口也复用同一条 chat 编排链，避免出现另一套绕过历史/定位的写入路径。
     return _document_ai_edit_request(
         lesson_id,
         instruction,

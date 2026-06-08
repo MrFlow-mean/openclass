@@ -138,6 +138,9 @@ export function useLessonChatAgent({
   }
 
   function displayContentForPayload(payload: ChatRequestPayload) {
+    if (payload.board_generation_action === "start") {
+      return "开始生成板书";
+    }
     if (payload.scope_action) {
       return `继续执行：${payload.scope_action}`;
     }
@@ -235,6 +238,7 @@ export function useLessonChatAgent({
     let requestStarted = false;
     let streamedChatContent = "";
     let streamedDocumentText = "";
+    let sawReadyForBoardRequirementUpdate = false;
     let requestLesson = lesson;
     let baseStreamingDocument = currentBoardDocument ?? lesson.board_document;
 
@@ -294,9 +298,11 @@ export function useLessonChatAgent({
       updatePendingAssistant(lessonId, pendingAssistantMessage.id, { statusLabel: "正在回复" });
       const response = await api.streamChatOnLesson(requestLesson.id, payloadWithConversation, {
         onPhase(label) {
+          // 后端告诉前端当前阶段，例如“正在回复”或“正在生成右侧文档”。
           updatePendingAssistant(lessonId, pendingAssistantMessage.id, { statusLabel: label });
         },
         onChatDelta(delta) {
+          // Chatbot 的文字增量先写到 pending 消息里，最终响应回来后再替换成正式历史消息。
           streamedChatContent += delta;
           updatePendingAssistant(lessonId, pendingAssistantMessage.id, {
             content: streamedChatContent,
@@ -304,6 +310,7 @@ export function useLessonChatAgent({
           });
         },
         onDocumentDelta(delta) {
+          // BoardEditor 生成文档时，前端先把 Markdown 增量渲染成右侧临时预览。
           if (!canStreamDocumentPreview) {
             return;
           }
@@ -316,12 +323,17 @@ export function useLessonChatAgent({
           });
         },
         onRequirementUpdate(payload) {
+          // 空白板书阶段：后端实时推送学习需求清单和澄清进度。
+          if (payload.learning_clarification?.ready_for_board) {
+            sawReadyForBoardRequirementUpdate = true;
+          }
           setCurrentNeedPending(false);
           setClarificationQuestions(payload.clarification_questions);
           setLearningClarity(payload.learning_clarification);
           setStreamedRequirementSheet(payload.active_requirement_sheet ?? payload.learning_requirement_sheet);
         },
         onBoardTaskUpdate(payload) {
+          // 已有板书阶段：后端实时推送四字段任务单，前端隐藏旧的学习需求状态。
           setCurrentNeedPending(false);
           setStreamedRequirementSheet(null);
           setLearningClarity(null);
@@ -341,6 +353,7 @@ export function useLessonChatAgent({
             }
           : null;
       const responseCommit = latestCommitFromPackage(response.course_package, requestLesson.id);
+      // 最终 response 带回新的课程包和 commit，聊天消息会绑定到对应历史版本。
       const committedUserMessage: ChatMessage = responseCommit
         ? {
             ...userMessage,
@@ -419,7 +432,17 @@ export function useLessonChatAgent({
         clearSelection();
       }
     } catch (chatError) {
-      if (restoreComposerInput !== undefined) {
+      const rawErrorMessage = chatError instanceof Error ? chatError.message : "聊天失败";
+      const isTransientNetworkError =
+        rawErrorMessage.toLowerCase().includes("network error") ||
+        rawErrorMessage.toLowerCase().includes("failed to fetch");
+      const userFacingError =
+        payloadWithConversation.board_generation_action === "start" && isTransientNetworkError
+          ? "板书生成连接中断，可以再次点击“开始生成板书”重试；已确认的学习需求会保留。"
+          : sawReadyForBoardRequirementUpdate && isTransientNetworkError
+            ? "学习需求已确认，但板书生成连接中断；可以点击“开始生成板书”继续。"
+          : rawErrorMessage;
+      if (restoreComposerInput !== undefined && !sawReadyForBoardRequirementUpdate) {
         updateLessonComposerState(lessonId, (current) => ({
           ...current,
           chatInput: restoreComposerInput,
@@ -435,7 +458,7 @@ export function useLessonChatAgent({
           )
         );
       }
-      setError(chatError instanceof Error ? chatError.message : "聊天失败");
+      setError(userFacingError);
       setCurrentNeedPending(false);
     } finally {
       chatRequestInFlightRef.current = false;
@@ -464,6 +487,7 @@ export function useLessonChatAgent({
       return;
     }
     const payloadForTurn = { ...payload, message: payloadMessage };
+    const isBoardGenerationControl = payloadForTurn.board_generation_action === "start";
 
     await runChatTurn({
       lesson: activeLesson,
@@ -473,8 +497,8 @@ export function useLessonChatAgent({
       submittedSelection,
       busyActionName: payloadForTurn.interaction_mode === "direct_edit" ? "agent-edit" : "chat",
       flushReason: "chat",
-      clearComposerInput: !payloadOverride,
-      restoreComposerInput: payloadOverride ? undefined : submittedInput,
+      clearComposerInput: !payloadOverride || isBoardGenerationControl,
+      restoreComposerInput: payloadOverride || isBoardGenerationControl ? undefined : submittedInput,
       speakResponse: options?.speakResponse ?? false,
     });
   }

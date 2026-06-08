@@ -36,9 +36,11 @@ def _path_from_env(name: str, default: Path) -> Path:
 
 _load_root_dotenv()
 
+# 工作台的持久化入口：课程包、lesson、板书、历史和资料最终都保存在 SQLite 里。
 DATABASE_PATH = _path_from_env("OPENCLASS_DATABASE_PATH", DATA_DIR / "openclass.sqlite3")
 LEGACY_STORE_PATH = _path_from_env("OPENCLASS_LEGACY_STORE_PATH", DATA_DIR / "store.json")
 STORE = SqliteCourseStore(DATABASE_PATH, legacy_json_path=LEGACY_STORE_PATH)
+# 上传和导出目录可以通过环境变量放到线上持久化路径，避免被部署覆盖。
 UPLOAD_DIR = _path_from_env("OPENCLASS_UPLOAD_DIR", DATA_DIR / "uploads")
 EXPORT_DIR = _path_from_env("OPENCLASS_EXPORT_DIR", DATA_DIR / "exports")
 
@@ -78,6 +80,7 @@ def save_workspace_for_user_with_requirement_history(
     requirement_history_operations: list[dict[str, object]],
     board_task_history_operations: list[dict[str, object]] | None = None,
 ) -> None:
+    # 学习需求历史和 workspace 一起保存，避免“板书变了但需求版本没落库”。
     get_store().save_for_user_with_requirement_history(
         user_id,
         workspace,
@@ -93,6 +96,7 @@ def save_workspace_for_user_with_histories(
     requirement_history_operations: list[dict[str, object]] | None = None,
     board_task_history_operations: list[dict[str, object]] | None = None,
 ) -> None:
+    # 已有板书任务历史也可以和 workspace 同事务保存，保证任务单、commit、运行态一致。
     get_store().save_for_user_with_histories(
         user_id,
         workspace,
@@ -258,6 +262,7 @@ def package_view(
     resource_lesson_id: str | None = None,
     isolate_lesson_resources: bool = False,
 ) -> CoursePackageView:
+    # 返回给前端前按当前 lesson 过滤可见资料，并把内部教学 guide 这类字段剥离掉。
     lessons_for_view = [
         lesson.model_copy(update={"learning_requirements": active_task_requirements(lesson)})
         for lesson in package.lessons

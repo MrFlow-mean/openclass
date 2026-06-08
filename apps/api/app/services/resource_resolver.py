@@ -31,6 +31,7 @@ GENERIC_CONCEPT_GROUPS: tuple[tuple[str, ...], ...] = (
 
 @dataclass(frozen=True)
 class ResourceResolution:
+    # 资料解析结果：可能直接选中一个章节，也可能只给出“是否参考此章节”的确认提示。
     matches: list[ResourceMatch]
     selected_reference: ResourceReferenceContext | None = None
     reference_prompt: ResourceReferencePrompt | None = None
@@ -50,6 +51,7 @@ def resolve_resource_reference(
     reference_chapter_id: str | None = None,
     allow_direct_reference: bool = False,
 ) -> ResourceResolution:
+    # ResourceResolver 只负责选资料证据，不把所有上传资料默认塞进 Chatbot prompt。
     if reference_action == "skip":
         return ResourceResolution(matches=[], status="skipped")
 
@@ -70,6 +72,7 @@ def resolve_resource_reference(
 
     best = matches[0]
     if allow_direct_reference and best.score >= DIRECT_REFERENCE_THRESHOLD:
+        # 高置信度且本轮允许直接引用时，才自动抽取资料片段交给后续 AI。
         reference = _extract_reference(resources, best, user_message)
         if reference is not None:
             return ResourceResolution(
@@ -79,6 +82,7 @@ def resolve_resource_reference(
             )
 
     if best.score >= REFERENCE_PROMPT_THRESHOLD:
+        # 中等置信度时先问学生要不要参考，避免资料上下文污染无关问题。
         return ResourceResolution(
             matches=matches[:5],
             reference_prompt=_reference_prompt(best),
@@ -89,6 +93,7 @@ def resolve_resource_reference(
 
 
 def _rank_resource_matches(resources: list[ResourceLibraryItem], user_message: str) -> list[ResourceMatch]:
+    # 用通用词重合、标题、目录、摘要和关键词给资料章节排序，不写具体教材规则。
     query_terms = _query_terms(user_message)
     if not query_terms:
         return []
