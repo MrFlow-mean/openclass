@@ -1,0 +1,403 @@
+[
+  {
+    "id": "existing_explain_selection_meaning",
+    "title": "已有板书 + 解释这里是什么意思",
+    "coverage": "选区解释必须进入 explain_target，不允许写右侧板书。",
+    "board_state": "existing",
+    "user_message": "解释这里是什么意思",
+    "request": {
+      "has_selection": true,
+      "interaction_mode": "ask",
+      "board_generation_action": null
+    },
+    "expected": {
+      "path": "existing_board_task",
+      "board_action": "explain_target",
+      "board_task_requested_action": "explain",
+      "document_write_allowed": false,
+      "resource_reference": false,
+      "collection_sequence_candidate": false,
+      "learning_requirement_path": false,
+      "initial_board_generation_path": false
+    },
+    "negative_examples": [
+      {
+        "message": "把这里改短一点",
+        "has_selection": true,
+        "must_not": {
+          "board_action": "explain_target",
+          "document_write_allowed": false
+        }
+      },
+      {
+        "message": "继续写下一节",
+        "has_selection": false,
+        "must_not": {
+          "board_task_requested_action": "explain",
+          "collection_sequence_candidate": true
+        }
+      }
+    ]
+  },
+  {
+    "id": "existing_append_next_section",
+    "title": "已有板书 + 继续写下一节",
+    "coverage": "续写请求必须走 append_section，并允许写入右侧板书。",
+    "board_state": "existing",
+    "user_message": "继续写下一节",
+    "request": {
+      "has_selection": false,
+      "interaction_mode": "ask",
+      "board_generation_action": null
+    },
+    "expected": {
+      "path": "existing_board_task",
+      "board_action": "append_section",
+      "board_task_requested_action": "write",
+      "document_write_allowed": true,
+      "resource_reference": false,
+      "collection_sequence_candidate": false,
+      "learning_requirement_path": false,
+      "initial_board_generation_path": false
+    },
+    "negative_examples": [
+      {
+        "message": "解释这里是什么意思",
+        "has_selection": true,
+        "must_not": {
+          "board_action": "append_section",
+          "document_write_allowed": true
+        }
+      },
+      {
+        "message": "根据上传资料回答这个问题",
+        "has_selection": false,
+        "must_not": {
+          "board_action": "append_section",
+          "document_write_allowed": true
+        }
+      }
+    ]
+  },
+  {
+    "id": "existing_expand_selection",
+    "title": "已有板书 + 扩写这一段",
+    "coverage": "扩写目标内容必须识别为 expand_target。",
+    "board_state": "existing",
+    "user_message": "扩写这一段",
+    "request": {
+      "has_selection": true,
+      "interaction_mode": "ask",
+      "board_generation_action": null
+    },
+    "expected": {
+      "path": "existing_board_task",
+      "board_action": "expand_target",
+      "board_task_requested_action": "write",
+      "document_write_allowed": true,
+      "resource_reference": false,
+      "collection_sequence_candidate": false,
+      "learning_requirement_path": false,
+      "initial_board_generation_path": false
+    },
+    "negative_examples": [
+      {
+        "message": "讲解第 2 题",
+        "has_selection": false,
+        "must_not": {
+          "board_action": "expand_target",
+          "collection_sequence_candidate": true
+        }
+      },
+      {
+        "message": "润色这一段",
+        "has_selection": true,
+        "must_not": {
+          "board_action": "expand_target",
+          "board_task_requested_action": "write"
+        }
+      }
+    ]
+  },
+  {
+    "id": "existing_simplify_selection",
+    "title": "已有板书 + 把这里改短一点",
+    "coverage": "缩短 / 改短目标内容必须识别为 simplify_target。",
+    "board_state": "existing",
+    "user_message": "把这里改短一点",
+    "request": {
+      "has_selection": true,
+      "interaction_mode": "ask",
+      "board_generation_action": null
+    },
+    "expected": {
+      "path": "existing_board_task",
+      "board_action": "simplify_target",
+      "board_task_requested_action": "edit",
+      "document_write_allowed": true,
+      "resource_reference": false,
+      "collection_sequence_candidate": false,
+      "learning_requirement_path": false,
+      "initial_board_generation_path": false
+    },
+    "negative_examples": [
+      {
+        "message": "扩写这一段",
+        "has_selection": true,
+        "must_not": {
+          "board_action": "simplify_target",
+          "board_task_requested_action": "edit"
+        }
+      },
+      {
+        "message": "解释这里是什么意思",
+        "has_selection": true,
+        "must_not": {
+          "board_action": "simplify_target",
+          "document_write_allowed": true
+        }
+      }
+    ]
+  },
+  {
+    "id": "existing_rewrite_polish_selection",
+    "title": "已有板书 + 润色这一段",
+    "coverage": "润色目标内容必须识别为 rewrite_target。",
+    "board_state": "existing",
+    "user_message": "润色这一段",
+    "request": {
+      "has_selection": true,
+      "interaction_mode": "ask",
+      "board_generation_action": null
+    },
+    "expected": {
+      "path": "existing_board_task",
+      "board_action": "rewrite_target",
+      "board_task_requested_action": "edit",
+      "document_write_allowed": true,
+      "resource_reference": false,
+      "collection_sequence_candidate": false,
+      "learning_requirement_path": false,
+      "initial_board_generation_path": false
+    },
+    "negative_examples": [
+      {
+        "message": "把这里改短一点",
+        "has_selection": true,
+        "must_not": {
+          "board_action": "rewrite_target"
+        }
+      },
+      {
+        "message": "继续写下一节",
+        "has_selection": false,
+        "must_not": {
+          "board_action": "rewrite_target",
+          "board_task_requested_action": "edit"
+        }
+      }
+    ]
+  },
+  {
+    "id": "existing_resource_answer",
+    "title": "已有板书 + 根据上传资料回答这个问题",
+    "coverage": "明确资料引用必须走 resource path，不进入 board write。",
+    "board_state": "existing",
+    "user_message": "根据上传资料回答这个问题",
+    "request": {
+      "has_selection": false,
+      "interaction_mode": "ask",
+      "board_generation_action": null
+    },
+    "expected": {
+      "path": "resource_reference",
+      "board_action": null,
+      "board_task_requested_action": null,
+      "document_write_allowed": false,
+      "resource_reference": true,
+      "collection_sequence_candidate": false,
+      "learning_requirement_path": false,
+      "initial_board_generation_path": false
+    },
+    "negative_examples": [
+      {
+        "message": "根据资料生成讲义",
+        "has_selection": false,
+        "must_not": {
+          "board_action": "rewrite_target",
+          "board_task_requested_action": "edit"
+        }
+      },
+      {
+        "message": "根据资料解释这段",
+        "has_selection": true,
+        "must_not": {
+          "board_action": "append_section",
+          "document_write_allowed": true
+        }
+      }
+    ]
+  },
+  {
+    "id": "existing_explain_exercise_collection",
+    "title": "已有板书 + 为我讲解练习题",
+    "coverage": "练习题集合讲解应成为 collection explain / sequence candidate。",
+    "board_state": "existing",
+    "user_message": "为我讲解练习题",
+    "request": {
+      "has_selection": false,
+      "interaction_mode": "ask",
+      "board_generation_action": null
+    },
+    "expected": {
+      "path": "existing_board_task",
+      "board_action": "explain_target",
+      "board_task_requested_action": "explain",
+      "document_write_allowed": false,
+      "resource_reference": false,
+      "collection_sequence_candidate": true,
+      "learning_requirement_path": false,
+      "initial_board_generation_path": false
+    },
+    "negative_examples": [
+      {
+        "message": "讲解第 2 题",
+        "has_selection": false,
+        "must_not": {
+          "collection_sequence_candidate": true
+        }
+      },
+      {
+        "message": "把练习题补充到板书里",
+        "has_selection": false,
+        "must_not": {
+          "board_task_requested_action": "explain",
+          "collection_sequence_candidate": true
+        }
+      }
+    ]
+  },
+  {
+    "id": "existing_explain_question_2",
+    "title": "已有板书 + 讲解第 2 题",
+    "coverage": "单题讲解必须是 single target explain，不是 collection sequence。",
+    "board_state": "existing",
+    "user_message": "讲解第 2 题",
+    "request": {
+      "has_selection": false,
+      "interaction_mode": "ask",
+      "board_generation_action": null
+    },
+    "expected": {
+      "path": "existing_board_task",
+      "board_action": "explain_target",
+      "board_task_requested_action": "explain",
+      "document_write_allowed": false,
+      "resource_reference": false,
+      "collection_sequence_candidate": false,
+      "learning_requirement_path": false,
+      "initial_board_generation_path": false
+    },
+    "negative_examples": [
+      {
+        "message": "为我讲解练习题",
+        "has_selection": false,
+        "must_not": {
+          "collection_sequence_candidate": false
+        }
+      },
+      {
+        "message": "把练习题补充到板书里",
+        "has_selection": false,
+        "must_not": {
+          "board_task_requested_action": "explain",
+          "collection_sequence_candidate": true
+        }
+      }
+    ]
+  },
+  {
+    "id": "blank_learning_topic",
+    "title": "空白板书 + 我想学习这个主题",
+    "coverage": "空白板书学习表达必须进入 learning requirement path。",
+    "board_state": "blank",
+    "user_message": "我想学习这个主题",
+    "request": {
+      "has_selection": false,
+      "interaction_mode": "ask",
+      "board_generation_action": null
+    },
+    "expected": {
+      "path": "learning_requirement",
+      "board_action": null,
+      "board_task_requested_action": null,
+      "document_write_allowed": false,
+      "resource_reference": false,
+      "collection_sequence_candidate": false,
+      "learning_requirement_path": true,
+      "initial_board_generation_path": false
+    },
+    "negative_examples": [
+      {
+        "message": "解释这里是什么意思",
+        "board_state": "existing",
+        "has_selection": true,
+        "must_not": {
+          "learning_requirement_path": true
+        }
+      },
+      {
+        "message": "继续写下一节",
+        "board_state": "existing",
+        "has_selection": false,
+        "must_not": {
+          "learning_requirement_path": true
+        }
+      }
+    ]
+  },
+  {
+    "id": "blank_start_board_generation",
+    "title": "空白板书 + 开始生成板书",
+    "coverage": "空白板书生成指令必须进入 initial board generation path。",
+    "board_state": "blank",
+    "user_message": "开始生成板书",
+    "request": {
+      "has_selection": false,
+      "interaction_mode": "ask",
+      "board_generation_action": "start"
+    },
+    "expected": {
+      "path": "initial_board_generation",
+      "board_action": "generate_board",
+      "board_task_requested_action": null,
+      "document_write_allowed": true,
+      "resource_reference": false,
+      "collection_sequence_candidate": false,
+      "learning_requirement_path": false,
+      "initial_board_generation_path": true
+    },
+    "negative_examples": [
+      {
+        "message": "我想学习这个主题",
+        "board_state": "blank",
+        "has_selection": false,
+        "board_generation_action": null,
+        "must_not": {
+          "initial_board_generation_path": true,
+          "document_write_allowed": true
+        }
+      },
+      {
+        "message": "根据资料生成讲义",
+        "board_state": "existing",
+        "has_selection": false,
+        "board_generation_action": null,
+        "must_not": {
+          "board_action": "generate_board",
+          "board_task_requested_action": "edit"
+        }
+      }
+    ]
+  }
+]
