@@ -60,6 +60,192 @@ class BoardTaskEditHandlerDeps:
     build_response: Callable[..., ChatResponse]
 
 
+@dataclass(frozen=True)
+class DirectEditHandlerDeps:
+    update_learning_requirements_from_chat: Callable[..., tuple[LearningRequirementSheet, LearningClarificationStatus]]
+    maybe_record_initial_requirement_update: Callable[..., None]
+    prefer_requirement_action: Callable[..., BoardTaskAction | None]
+    resolve_board_focus: Callable[..., FocusResolution]
+    with_task_details: Callable[..., LearningRequirementSheet]
+    generate_focus_candidate_message: Callable[..., tuple[str, str]]
+    resource_summary: Callable[[list[ResourceLibraryItem]], str]
+    conversation_summary: Callable[[list[ConversationTurn]], str]
+    task_metadata: Callable[..., dict[str, object]]
+    clear_task_requirements: Callable[[Lesson], None]
+    save_workspace_for_user: Callable[..., None]
+    build_response: Callable[..., ChatResponse]
+
+
+def execute_direct_edit(
+    *,
+    workspace: Any,
+    package: Any,
+    lesson: Lesson,
+    user_id: str,
+    request: ChatRequest,
+    requirements: LearningRequirementSheet,
+    resources: list[ResourceLibraryItem],
+    selection_text: str | None,
+    selection_excerpt: str | None,
+    action_type: BoardTaskAction | None,
+    requirement_history: LearningRequirementHistoryRecorder,
+    track_initial_requirement_run: bool,
+    deps: DirectEditHandlerDeps,
+) -> ChatResponse:
+    requirement_conversation = [
+        *request.conversation,
+        ConversationTurn(role="user", content=request.message),
+    ]
+    requirements, learning_clarification = deps.update_learning_requirements_from_chat(
+        lesson=lesson,
+        resources=resources,
+        conversation=requirement_conversation,
+        user_message=request.message,
+        chatbot_message="",
+    )
+    deps.maybe_record_initial_requirement_update(
+        requirement_history,
+        enabled=track_initial_requirement_run,
+        requirements=requirements,
+        learning_clarification=learning_clarification,
+    )
+    action_type = deps.prefer_requirement_action(
+        action_type,
+        requirements.action_type,
+        request_message=request.message,
+        requirements=requirements,
+    ) or "rewrite_target"
+    resolution = deps.resolve_board_focus(
+        lesson=lesson,
+        user_message=request.message,
+        selection=request.selection,
+        selection_text=selection_text,
+        action_type=action_type,
+    )
+    requirements = deps.with_task_details(
+        requirements,
+        action_type=action_type,
+        instruction=request.message,
+        focus=resolution.focus,
+        resolution=resolution,
+    )
+    if not resolution.resolved:
+        lesson.learning_requirements = requirements
+        chatbot_message, chatbot_message_source = deps.generate_focus_candidate_message(
+            lesson=lesson,
+            requirements=requirements,
+            resources=resources,
+            conversation=request.conversation,
+            request=request,
+            resolution=resolution,
+        )
+        commit_operations(
+            lesson,
+            [],
+            label="Board focus clarification",
+            message="Asked the learner to confirm the board focus before editing",
+            new_document=lesson.board_document,
+            metadata={
+                "kind": "chat_flow",
+                "user_message": request.message,
+                "assistant_message": chatbot_message,
+                "assistant_message_source": chatbot_message_source,
+                "interaction_mode": request.interaction_mode,
+                "selection": request.selection.model_dump(mode="json") if request.selection else None,
+                **deps.task_metadata(
+                    requirements=requirements,
+                    learning_clarification=learning_clarification,
+                    focus=None,
+                    focus_candidates=resolution.candidates,
+                    requirement_cleared=False,
+                ),
+            },
+        )
+        workspace_state.normalize_package_state(package)
+        deps.save_workspace_for_user(
+            user_id=user_id,
+            workspace=workspace,
+            requirement_history=requirement_history,
+        )
+        return deps.build_response(
+            workspace=workspace,
+            package=package,
+            lesson=lesson,
+            chatbot_message=chatbot_message,
+            requirements=requirements,
+            learning_clarification=learning_clarification,
+            board_decision=BoardDecision(action="await_focus_choice", reason=resolution.question),
+            focus_candidates=resolution.candidates,
+            requirement_history=requirement_history if track_initial_requirement_run else None,
+        )
+
+    edit_outcome = edit_existing_document(
+        lesson=lesson,
+        requirements=requirements,
+        clarification=learning_clarification,
+        resource_summary=deps.resource_summary(resources),
+        conversation_summary=deps.conversation_summary(request.conversation),
+        user_instruction=request.message,
+        selection_excerpt=selection_excerpt,
+        focus=resolution.focus,
+    )
+    if edit_outcome.changed:
+        refresh_lesson_runtime(lesson, document=edit_outcome.new_document, requirements=requirements)
+        requirements = lesson.learning_requirements
+        lesson.board_teaching_guide = build_board_teaching_guide(lesson)
+        lesson.board_teaching_progress = None
+    requirement_cleared = edit_outcome.changed
+    commit_operations(
+        lesson,
+        [],
+        label="Board document edit",
+        message="Applied a Board Document Editor AI update",
+        new_document=lesson.board_document,
+        metadata={
+            "kind": "board_document_edit",
+            "user_message": request.message,
+            "assistant_message": edit_outcome.chatbot_message,
+            "assistant_message_source": edit_outcome.assistant_message_source,
+            "interaction_mode": request.interaction_mode,
+            "selection": request.selection.model_dump(mode="json") if request.selection else None,
+            "selection_text": selection_excerpt,
+            "board_edit_operation": edit_outcome.operation,
+            "board_edit_summary": edit_outcome.summary,
+            "board_section_titles": edit_outcome.section_titles,
+            **deps.task_metadata(
+                requirements=requirements,
+                learning_clarification=learning_clarification,
+                focus=resolution.focus,
+                focus_candidates=resolution.candidates,
+                requirement_cleared=requirement_cleared,
+            ),
+        },
+    )
+    if requirement_cleared:
+        deps.clear_task_requirements(lesson)
+    workspace_state.normalize_package_state(package)
+    deps.save_workspace_for_user(
+        user_id=user_id,
+        workspace=workspace,
+        requirement_history=requirement_history,
+    )
+    return deps.build_response(
+        workspace=workspace,
+        package=package,
+        lesson=lesson,
+        chatbot_message=edit_outcome.chatbot_message,
+        requirements=requirements,
+        learning_clarification=learning_clarification,
+        board_decision=edit_outcome.board_decision,
+        resolved_focus=resolution.focus,
+        focus_candidates=resolution.candidates,
+        requirement_cleared=requirement_cleared,
+        requirement_history=requirement_history if track_initial_requirement_run else None,
+        board_document_operation_status=edit_outcome.operation_status,
+        board_document_operation_failure_reason=edit_outcome.failure_reason,
+    )
+
+
 def execute_board_task_edit(
     *,
     workspace: Any,
