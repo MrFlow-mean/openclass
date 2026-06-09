@@ -46,6 +46,15 @@ class BoardExplanationFallbackDeps:
     build_response: Callable[..., ChatResponse]
 
 
+@dataclass(frozen=True)
+class LegacyTargetExplanationDeps:
+    generate_board_directed_explanation_message: Callable[..., tuple[str, str, dict[str, object] | None]]
+    task_metadata: Callable[..., dict[str, object]]
+    clear_task_requirements: Callable[[Lesson], None]
+    save_workspace_for_user: Callable[..., None]
+    build_response: Callable[..., ChatResponse]
+
+
 def execute_board_task_explain(
     *,
     workspace: Any,
@@ -177,6 +186,102 @@ def execute_board_task_explain(
         requirement_cleared=cleared,
         board_task_stamp=consumed_stamp,
         completed_board_task_sheet=board_task if cleared else None,
+    )
+
+
+def execute_legacy_target_explanation(
+    *,
+    workspace: Any,
+    package: Any,
+    lesson: Lesson,
+    user_id: str,
+    request: ChatRequest,
+    requirements: LearningRequirementSheet,
+    learning_clarification: LearningClarificationStatus,
+    resources: list[ResourceLibraryItem],
+    resolution: FocusResolution,
+    requirement_history: LearningRequirementHistoryRecorder,
+    track_initial_requirement_run: bool,
+    deps: LegacyTargetExplanationDeps,
+) -> ChatResponse:
+    focus_excerpt = focus_context(resolution.focus) if resolution.focus else ""
+    chatbot_message, chatbot_message_source, board_explanation_directive = deps.generate_board_directed_explanation_message(
+        lesson=lesson,
+        requirements=requirements,
+        resources=resources,
+        conversation=request.conversation,
+        request=request,
+        learning_clarification=learning_clarification,
+        action_type="explain_target",
+        target_excerpt=focus_excerpt,
+    )
+
+    requirement_cleared = bool(chatbot_message)
+    if not chatbot_message:
+        workspace_state.normalize_package_state(package)
+        deps.save_workspace_for_user(
+            user_id=user_id,
+            workspace=workspace,
+            requirement_history=requirement_history,
+        )
+        return deps.build_response(
+            workspace=workspace,
+            package=package,
+            lesson=lesson,
+            chatbot_message="",
+            requirements=requirements,
+            learning_clarification=learning_clarification,
+            board_decision=BoardDecision(
+                action="no_change",
+                reason="Board-directed explanation failed because Chatbot returned empty.",
+            ),
+            resolved_focus=resolution.focus,
+            focus_candidates=resolution.candidates,
+            requirement_cleared=False,
+            requirement_history=requirement_history if track_initial_requirement_run else None,
+        )
+    commit_operations(
+        lesson,
+        [],
+        label="Board target explanation",
+        message="Answered a learner question about a resolved board segment",
+        new_document=lesson.board_document,
+        metadata={
+            "kind": "chat_flow",
+            "user_message": request.message,
+            "assistant_message": chatbot_message,
+            "assistant_message_source": chatbot_message_source,
+            "interaction_mode": request.interaction_mode,
+            "selection": request.selection.model_dump(mode="json") if request.selection else None,
+            **deps.task_metadata(
+                requirements=requirements,
+                learning_clarification=learning_clarification,
+                focus=resolution.focus,
+                focus_candidates=resolution.candidates,
+                requirement_cleared=requirement_cleared,
+            ),
+            "board_explanation_directive": board_explanation_directive,
+        },
+    )
+    if requirement_cleared:
+        deps.clear_task_requirements(lesson)
+    workspace_state.normalize_package_state(package)
+    deps.save_workspace_for_user(
+        user_id=user_id,
+        workspace=workspace,
+        requirement_history=requirement_history,
+    )
+    return deps.build_response(
+        workspace=workspace,
+        package=package,
+        lesson=lesson,
+        chatbot_message=chatbot_message,
+        requirements=requirements,
+        learning_clarification=learning_clarification,
+        board_decision=BoardDecision(action="no_change", reason="本轮是目标文段讲解，不修改板书。"),
+        resolved_focus=resolution.focus,
+        focus_candidates=resolution.candidates,
+        requirement_cleared=requirement_cleared,
     )
 
 

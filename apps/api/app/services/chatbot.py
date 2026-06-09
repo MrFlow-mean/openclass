@@ -54,8 +54,10 @@ from app.services.chat.handlers.edit_blackboard import (
 from app.services.chat.handlers.explain import (
     BoardExplanationFallbackDeps,
     BoardTaskExplainHandlerDeps,
+    LegacyTargetExplanationDeps,
     execute_board_explanation_fallback,
     execute_board_task_explain,
+    execute_legacy_target_explanation,
 )
 from app.services.chat.handlers.general_chat import GeneralChatHandlerDeps, execute_general_chat
 from app.services.chat.handlers.initial_board import (
@@ -2998,81 +3000,25 @@ def _chat_response(
                 ),
             )
 
-        focus_excerpt = focus_context(resolution.focus) if resolution.focus else ""
-        chatbot_message, chatbot_message_source, board_explanation_directive = _generate_board_directed_explanation_message(
-            lesson=lesson,
-            requirements=requirements,
-            resources=visible_package.resources,
-            conversation=request.conversation,
-            request=request,
-            learning_clarification=learning_clarification,
-            action_type="explain_target",
-            target_excerpt=focus_excerpt,
-        )
-
-        requirement_cleared = bool(chatbot_message)
-        if not chatbot_message:
-            workspace_state.normalize_package_state(package)
-            _save_workspace_for_user(
-                user_id=user_id,
-                workspace=workspace,
-                requirement_history=requirement_history,
-            )
-            return _response(
-                workspace=workspace,
-                package=package,
-                lesson=lesson,
-                chatbot_message="",
-                requirements=requirements,
-                learning_clarification=learning_clarification,
-                board_decision=BoardDecision(action="no_change", reason="Board-directed explanation failed because Chatbot returned empty."),
-                resolved_focus=resolution.focus,
-                focus_candidates=resolution.candidates,
-                requirement_cleared=False,
-                requirement_history=requirement_history if track_initial_requirement_run else None,
-            )
-        commit_operations(
-            lesson,
-            [],
-            label="Board target explanation",
-            message="Answered a learner question about a resolved board segment",
-            new_document=lesson.board_document,
-            metadata={
-                "kind": "chat_flow",
-                "user_message": request.message,
-                "assistant_message": chatbot_message,
-                "assistant_message_source": chatbot_message_source,
-                "interaction_mode": request.interaction_mode,
-                "selection": request.selection.model_dump(mode="json") if request.selection else None,
-                **_task_metadata(
-                    requirements=requirements,
-                    learning_clarification=learning_clarification,
-                    focus=resolution.focus,
-                    focus_candidates=resolution.candidates,
-                    requirement_cleared=requirement_cleared,
-                ),
-                "board_explanation_directive": board_explanation_directive,
-            },
-        )
-        if requirement_cleared:
-            _clear_task_requirements(lesson)
-        workspace_state.normalize_package_state(package)
-        _save_workspace_for_user(
-            user_id=user_id,
-            workspace=workspace,
-            requirement_history=requirement_history,
-        )
-        return _response(
+        return execute_legacy_target_explanation(
             workspace=workspace,
             package=package,
             lesson=lesson,
-            chatbot_message=chatbot_message,
+            user_id=user_id,
+            request=request,
             requirements=requirements,
             learning_clarification=learning_clarification,
-            board_decision=BoardDecision(action="no_change", reason="本轮是目标文段讲解，不修改板书。"),
-            resolved_focus=resolution.focus,
-            focus_candidates=resolution.candidates,
-            requirement_cleared=requirement_cleared,
+            resources=visible_package.resources,
+            resolution=resolution,
+            requirement_history=requirement_history,
+            track_initial_requirement_run=track_initial_requirement_run,
+            deps=LegacyTargetExplanationDeps(
+                generate_board_directed_explanation_message=_generate_board_directed_explanation_message,
+                task_metadata=_task_metadata,
+                clear_task_requirements=_clear_task_requirements,
+                save_workspace_for_user=_save_workspace_for_user,
+                build_response=_response,
+            ),
         )
 
     if is_generation_control_request(request.message) or _requests_document_artifact_generation(
