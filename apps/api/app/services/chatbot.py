@@ -60,6 +60,7 @@ from app.services.chat.handlers.explain import (
     execute_legacy_target_explanation,
 )
 from app.services.chat.handlers.general_chat import GeneralChatHandlerDeps, execute_general_chat
+from app.services.chat.handlers.focus import FocusClarificationDeps, execute_focus_clarification
 from app.services.chat.handlers.initial_board import (
     InitialBoardExplicitGenerationDeps,
     InitialBoardGenerationStartDeps,
@@ -2927,53 +2928,25 @@ def _chat_response(
             resolution=resolution,
         )
         if not resolution.resolved:
-            lesson.learning_requirements = requirements
-            chatbot_message, chatbot_message_source = _generate_focus_candidate_message(
-                lesson=lesson,
-                requirements=requirements,
-                resources=visible_package.resources,
-                conversation=request.conversation,
-                request=request,
-                resolution=resolution,
-            )
-            commit_operations(
-                lesson,
-                [],
-                label="Board focus clarification",
-                message="Asked the learner to confirm the board focus before acting",
-                new_document=lesson.board_document,
-                metadata={
-                    "kind": "chat_flow",
-                    "user_message": request.message,
-                    "assistant_message": chatbot_message,
-                    "assistant_message_source": chatbot_message_source,
-                    "interaction_mode": request.interaction_mode,
-                    "selection": request.selection.model_dump(mode="json") if request.selection else None,
-                    **_task_metadata(
-                        requirements=requirements,
-                        learning_clarification=learning_clarification,
-                        focus=None,
-                        focus_candidates=resolution.candidates,
-                        requirement_cleared=False,
-                    ),
-                },
-            )
-            workspace_state.normalize_package_state(package)
-            _save_workspace_for_user(
-                user_id=user_id,
-                workspace=workspace,
-                requirement_history=requirement_history,
-            )
-            return _response(
+            return execute_focus_clarification(
                 workspace=workspace,
                 package=package,
                 lesson=lesson,
-                chatbot_message=chatbot_message,
+                user_id=user_id,
+                request=request,
                 requirements=requirements,
                 learning_clarification=learning_clarification,
-                board_decision=BoardDecision(action="await_focus_choice", reason=resolution.question),
-                focus_candidates=resolution.candidates,
-                requirement_history=requirement_history if track_initial_requirement_run else None,
+                resources=visible_package.resources,
+                resolution=resolution,
+                requirement_history=requirement_history,
+                track_initial_requirement_run=track_initial_requirement_run,
+                commit_message="Asked the learner to confirm the board focus before acting",
+                deps=FocusClarificationDeps(
+                    generate_focus_candidate_message=_generate_focus_candidate_message,
+                    task_metadata=_task_metadata,
+                    save_workspace_for_user=_save_workspace_for_user,
+                    build_response=_response,
+                ),
             )
 
         if action_type in EDIT_ACTIONS:
