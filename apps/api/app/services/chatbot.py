@@ -43,9 +43,11 @@ from app.services.chat.handlers.edit_blackboard import (
     BoardTaskEditHandlerDeps,
     BoardTaskWriteHandlerDeps,
     DirectEditHandlerDeps,
+    LegacyAppendSectionDeps,
     execute_board_task_edit,
     execute_board_task_write,
     execute_direct_edit,
+    execute_legacy_append_section,
 )
 from app.services.chat.handlers.explain import (
     BoardExplanationFallbackDeps,
@@ -2884,71 +2886,26 @@ def _chat_response(
             learning_clarification = _latest_learning_clarification(lesson, requirements=requirements)
 
         if action_type == "append_section":
-            requirements = _with_task_details(
-                requirements,
-                action_type=action_type,
-                instruction=request.message,
-            )
-            edit_outcome = edit_existing_document(
-                lesson=lesson,
-                requirements=requirements,
-                clarification=learning_clarification,
-                resource_summary=_resource_summary(visible_package.resources),
-                conversation_summary=_conversation_summary(request.conversation),
-                user_instruction=request.message,
-                selection_excerpt=None,
-                focus=None,
-            )
-            if edit_outcome.changed:
-                refresh_lesson_runtime(lesson, document=edit_outcome.new_document, requirements=requirements)
-                requirements = lesson.learning_requirements
-                lesson.board_teaching_guide = build_board_teaching_guide(lesson)
-                lesson.board_teaching_progress = None
-            requirement_cleared = edit_outcome.changed
-            commit_operations(
-                lesson,
-                [],
-                label="Board document edit",
-                message="Appended new board content at the end of the current document",
-                new_document=lesson.board_document,
-                metadata={
-                    "kind": "board_document_edit",
-                    "user_message": request.message,
-                    "assistant_message": edit_outcome.chatbot_message,
-                    "assistant_message_source": edit_outcome.assistant_message_source,
-                    "interaction_mode": request.interaction_mode,
-                    "selection": request.selection.model_dump(mode="json") if request.selection else None,
-                    "selection_text": None,
-                    "board_edit_operation": edit_outcome.operation,
-                    "board_edit_summary": edit_outcome.summary,
-                    "board_section_titles": edit_outcome.section_titles,
-                    **_task_metadata(
-                        requirements=requirements,
-                        learning_clarification=learning_clarification,
-                        requirement_cleared=requirement_cleared,
-                    ),
-                },
-            )
-            if requirement_cleared:
-                _clear_task_requirements(lesson)
-            workspace_state.normalize_package_state(package)
-            _save_workspace_for_user(
-                user_id=user_id,
-                workspace=workspace,
-                requirement_history=requirement_history,
-            )
-            return _response(
+            return execute_legacy_append_section(
                 workspace=workspace,
                 package=package,
                 lesson=lesson,
-                chatbot_message=edit_outcome.chatbot_message,
+                user_id=user_id,
+                request=request,
                 requirements=requirements,
                 learning_clarification=learning_clarification,
-                board_decision=edit_outcome.board_decision,
-                requirement_cleared=requirement_cleared,
-                requirement_history=requirement_history if track_initial_requirement_run else None,
-                board_document_operation_status=edit_outcome.operation_status,
-                board_document_operation_failure_reason=edit_outcome.failure_reason,
+                resources=visible_package.resources,
+                requirement_history=requirement_history,
+                track_initial_requirement_run=track_initial_requirement_run,
+                deps=LegacyAppendSectionDeps(
+                    with_task_details=_with_task_details,
+                    resource_summary=_resource_summary,
+                    conversation_summary=_conversation_summary,
+                    task_metadata=_task_metadata,
+                    clear_task_requirements=_clear_task_requirements,
+                    save_workspace_for_user=_save_workspace_for_user,
+                    build_response=_response,
+                ),
             )
 
         resolution = resolve_board_focus(
