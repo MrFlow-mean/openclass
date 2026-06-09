@@ -31,7 +31,7 @@ from app.services.board_explanation_gate import (
     generate_board_directed_explanation_message as _gate_board_directed_explanation_message,
     requirement_probe_instead_of_explanation_message,
 )
-from app.services.board_task_decider import decide_board_task_action
+from app.services.board_task_decider import BoardTaskActionDecision, decide_board_task_action
 from app.services.explanation_atoms import (
     ATOMIC_EXPLANATION_SEQUENCE_MODE,
 )
@@ -47,6 +47,7 @@ from app.services.board_segment_index import build_board_segment_index
 from app.services.board_teaching import build_board_teaching_guide, teach_first_section, teach_next_section
 from app.services.course_runtime import effective_requirements
 from app.services.course_runtime import refresh_lesson_runtime
+from app.services.decision_trace import decision_trace_metadata
 from app.services.history import commit_operations
 from app.services.interaction_rules import (
     apply_interaction_decision,
@@ -74,6 +75,7 @@ from app.services.openai_course_ai import (
 from app.services.rich_document import is_document_empty
 from app.services.route_context import bind_ai_request_context
 from app.services.sequence_planner import (
+    SequencePlan,
     maybe_apply_sequential_explanation_choice,
     plan_explanation_sequence,
     requests_collection_explanation_sequence,
@@ -248,9 +250,14 @@ def _should_force_explain_task(message: str) -> bool:
     return turn_intent.should_force_explain_task(message)
 
 
-def _infer_board_task_action(request: ChatRequest, *, has_selection: bool, document_empty: bool) -> BoardTaskAction | None:
+def _board_task_action_decision(
+    request: ChatRequest,
+    *,
+    has_selection: bool,
+    document_empty: bool,
+) -> BoardTaskActionDecision:
     signals = turn_intent.extract_intent_signals(request.message)
-    decision = decide_board_task_action(
+    return decide_board_task_action(
         message=request.message,
         signals=signals,
         has_selection=has_selection,
@@ -259,7 +266,14 @@ def _infer_board_task_action(request: ChatRequest, *, has_selection: bool, docum
         board_generation_action=request.board_generation_action,
         has_explicit_resource_reference=signals.wants_explicit_resource,
     )
-    return decision.board_action
+
+
+def _infer_board_task_action(request: ChatRequest, *, has_selection: bool, document_empty: bool) -> BoardTaskAction | None:
+    return _board_task_action_decision(
+        request,
+        has_selection=has_selection,
+        document_empty=document_empty,
+    ).board_action
 
 
 def _prefer_requirement_action(
@@ -1498,12 +1512,14 @@ def _start_section_explanation_sequence(
     board_task: BoardTaskRequirementSheet,
     board_task_history: BoardTaskHistoryRecorder,
     board_task_stamp: BoardTaskHistoryStamp,
+    action_decision: BoardTaskActionDecision | None,
     decision: BoardTaskRouteDecision,
     resolution: FocusResolution | None,
-    sequence_items: list[BoardFocusRef],
+    sequence_plan: SequencePlan,
     requirement_history: LearningRequirementHistoryRecorder,
     interaction_metadata: dict[str, object],
 ) -> ChatResponse:
+    sequence_items = sequence_plan.items
     first_focus = sequence_items[0]
     session_before = lesson.active_interaction_session
     sequence_mode = ATOMIC_EXPLANATION_SEQUENCE_MODE
@@ -1576,6 +1592,15 @@ def _start_section_explanation_sequence(
             "section_explanation_sequence": [item.model_dump(mode="json") for item in sequence_items],
             "explanation_sequence": [item.model_dump(mode="json") for item in sequence_items],
             "explanation_sequence_mode": sequence_mode,
+            **decision_trace_metadata(
+                message=request.message,
+                board_action_decision=action_decision,
+                route_decision=decision,
+                sequence_plan=sequence_plan,
+                role_executed="chatbot_board_directed",
+                document_changed=False,
+                reason=sequence_plan.reason,
+            ),
             **_task_metadata(
                 requirements=_requirements_from_board_task(
                     base=requirements,
@@ -1716,11 +1741,12 @@ def _handle_existing_board_task_flow(
                 board_task_history=board_task_history,
             )
 
-    action_type = _infer_board_task_action(
+    action_decision = _board_task_action_decision(
         request,
         has_selection=bool(selection_excerpt),
         document_empty=False,
     )
+    action_type = action_decision.board_action
     if (
         action_type is None
         and not existing_task
@@ -1780,6 +1806,13 @@ def _handle_existing_board_task_flow(
                 "interaction_mode": request.interaction_mode,
                 "selection": request.selection.model_dump(mode="json") if request.selection else None,
                 **interaction_metadata,
+                **decision_trace_metadata(
+                    message=request.message,
+                    board_action_decision=action_decision,
+                    role_executed="board_task_manager",
+                    document_changed=False,
+                    reason=board_task.clarification_question,
+                ),
                 **_board_task_metadata(board_task=board_task, stamp=stamp, route="clarify_location", cleared=False),
             },
         )
@@ -1864,14 +1897,14 @@ def _handle_existing_board_task_flow(
         request_message=request.message,
         resolution=resolution,
     )
-    section_sequence = _section_explanation_sequence(
+    sequence_plan = plan_explanation_sequence(
         lesson=lesson,
         board_task=board_task,
         decision=decision,
         resolution=resolution,
         request_message=request.message,
     )
-    if section_sequence:
+    if sequence_plan:
         return _start_section_explanation_sequence(
             workspace=workspace,
             package=package,
@@ -1884,9 +1917,10 @@ def _handle_existing_board_task_flow(
             board_task=board_task,
             board_task_history=board_task_history,
             board_task_stamp=stamp,
+            action_decision=action_decision,
             decision=decision,
             resolution=resolution,
-            sequence_items=section_sequence,
+            sequence_plan=sequence_plan,
             requirement_history=requirement_history,
             interaction_metadata=interaction_metadata,
         )
@@ -1930,6 +1964,14 @@ def _handle_existing_board_task_flow(
                     "assistant_message_source": chatbot_message_source,
                     **interaction_metadata,
                     **_board_search_evidence_metadata(resolution),
+                    **decision_trace_metadata(
+                        message=request.message,
+                        board_action_decision=action_decision,
+                        route_decision=decision,
+                        role_executed="focus_resolver",
+                        document_changed=False,
+                        reason="编辑目标未定位，已转为扩写确认。",
+                    ),
                     **_board_task_metadata(board_task=board_task, stamp=old_stamp, route="clarify_location", cleared=True),
                     "new_board_task": new_task.model_dump(mode="json"),
                     "new_board_task_run_id": new_stamp.run_id,
@@ -1986,6 +2028,14 @@ def _handle_existing_board_task_flow(
                 "assistant_message_source": chatbot_message_source,
                 **interaction_metadata,
                 **_board_search_evidence_metadata(resolution),
+                **decision_trace_metadata(
+                    message=request.message,
+                    board_action_decision=action_decision,
+                    route_decision=decision,
+                    role_executed="focus_resolver",
+                    document_changed=False,
+                    reason=decision.reason,
+                ),
                 **_task_metadata(
                     requirements=_requirements_from_board_task(
                         base=requirements,
@@ -2061,6 +2111,14 @@ def _handle_existing_board_task_flow(
                 "assistant_message_source": chatbot_message_source,
                 **interaction_metadata,
                 **_board_search_evidence_metadata(resolution),
+                **decision_trace_metadata(
+                    message=request.message,
+                    board_action_decision=action_decision,
+                    route_decision=decision,
+                    role_executed="board_task_route_decider",
+                    document_changed=False,
+                    reason=decision.reason,
+                ),
                 **_board_task_metadata(
                     board_task=next_task,
                     stamp=stamp,
@@ -2102,6 +2160,7 @@ def _handle_existing_board_task_flow(
             requirement_history=requirement_history,
             board_task_history=board_task_history,
             route_decision=decision,
+            action_decision=action_decision,
             search_evidence=resolution.evidence.model_dump(mode="json") if resolution and resolution.evidence else None,
             source_interaction_metadata=interaction_metadata,
         )
@@ -2192,6 +2251,15 @@ def _handle_existing_board_task_flow(
                 "target_scope": target_scope,
                 "recent_board_edit_focus": recent_focus.model_dump(mode="json") if recent_focus else None,
                 **interaction_metadata,
+                **decision_trace_metadata(
+                    message=request.message,
+                    board_action_decision=action_decision,
+                    route_decision=decision,
+                    role_executed="board_editor",
+                    document_changed=edit_outcome.changed,
+                    reason=edit_outcome.summary or decision.reason,
+                    target_scope=target_scope,
+                ),
                 "board_search_evidence": (
                     resolution.evidence.model_dump(mode="json")
                     if resolution and resolution.evidence
@@ -2313,6 +2381,14 @@ def _handle_existing_board_task_flow(
                 "board_explanation_directive": board_explanation_directive,
                 **interaction_metadata,
                 **_board_search_evidence_metadata(resolution),
+                **decision_trace_metadata(
+                    message=request.message,
+                    board_action_decision=action_decision,
+                    route_decision=decision,
+                    role_executed="chatbot_board_directed",
+                    document_changed=False,
+                    reason=decision.reason,
+                ),
                 **_task_metadata(
                     requirements=_requirements_from_board_task(
                         base=requirements,
@@ -2388,6 +2464,14 @@ def _handle_existing_board_task_flow(
             source_interaction_metadata={
                 **interaction_metadata,
                 **_board_search_evidence_metadata(resolution),
+                **decision_trace_metadata(
+                    message=request.message,
+                    board_action_decision=action_decision,
+                    route_decision=decision,
+                    role_executed="interaction_session",
+                    document_changed=False,
+                    reason=decision.reason,
+                ),
             },
         )
 
@@ -2408,6 +2492,7 @@ def _execute_board_task_write(
     requirement_history: LearningRequirementHistoryRecorder,
     board_task_history: BoardTaskHistoryRecorder,
     route_decision: BoardTaskRouteDecision | None = None,
+    action_decision: BoardTaskActionDecision | None = None,
     search_evidence: dict[str, object] | None = None,
     source_interaction_metadata: dict[str, object] | None = None,
 ) -> ChatResponse:
@@ -2533,6 +2618,15 @@ def _execute_board_task_write(
             "recent_board_edit_focus": recent_focus.model_dump(mode="json") if recent_focus else None,
             "board_explanation_directive": board_explanation_directive,
             **interaction_metadata,
+            **decision_trace_metadata(
+                message=request.message,
+                board_action_decision=action_decision,
+                route_decision=route_decision,
+                role_executed="board_editor",
+                document_changed=edit_outcome.changed,
+                reason=edit_outcome.summary or (route_decision.reason if route_decision else ""),
+                target_scope=target_scope,
+            ),
             "board_search_evidence": search_evidence
             or _implicit_board_search_evidence(
                 route="write",
@@ -3625,11 +3719,12 @@ def _chat_response(
     track_initial_requirement_run = _should_track_initial_requirement_run(lesson)
     visible_package = workspace_state.package_context_for_lesson(workspace, package, lesson.id)
     selection_excerpt = _selection_excerpt(request.selection, selection_text)
-    initial_board_task_action = _infer_board_task_action(
+    initial_action_decision = _board_task_action_decision(
         request,
         has_selection=bool(selection_excerpt),
         document_empty=is_document_empty(lesson.board_document),
     )
+    initial_board_task_action = initial_action_decision.board_action
     action_type = initial_board_task_action
     action_type = _prefer_requirement_action(
         action_type,
@@ -3936,6 +4031,13 @@ def _chat_response(
                     "assistant_message_source": chatbot_message_source,
                     "interaction_mode": request.interaction_mode,
                     "selection": request.selection.model_dump(mode="json") if request.selection else None,
+                    **decision_trace_metadata(
+                        message=request.message,
+                        board_action_decision=initial_action_decision,
+                        role_executed="resource_resolver",
+                        document_changed=False,
+                        reason=resource_resolution.reference_prompt.reason,
+                    ),
                     **_task_metadata(
                         requirements=requirements,
                         learning_clarification=learning_clarification,
@@ -4641,6 +4743,13 @@ def _chat_response(
                 "assistant_message_source": "resource_resolver",
                 "interaction_mode": request.interaction_mode,
                 "selection": request.selection.model_dump(mode="json") if request.selection else None,
+                **decision_trace_metadata(
+                    message=request.message,
+                    board_action_decision=initial_action_decision,
+                    role_executed="resource_resolver",
+                    document_changed=False,
+                    reason=resource_resolution.reference_prompt.reason,
+                ),
                 **_task_metadata(
                     requirements=requirements,
                     learning_clarification=learning_clarification,
