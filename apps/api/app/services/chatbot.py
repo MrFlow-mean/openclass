@@ -44,7 +44,9 @@ from app.services.board_task_manager import (
     update_board_task_from_chat,
 )
 from app.services.chat.handlers.edit_blackboard import (
+    BoardTaskEditHandlerDeps,
     BoardTaskWriteHandlerDeps,
+    execute_board_task_edit,
     execute_board_task_write,
 )
 from app.services.chat.handlers.explain import (
@@ -2086,139 +2088,36 @@ def _handle_existing_board_task_flow(
         )
 
     if decision.route == "edit":
-        focus = decision.target_focus or (resolution.focus if resolution else None)
-        edit_action = action_type if action_type in EDIT_ACTIONS else "rewrite_target"
-        target_scope = decision.target_scope or (
-            "whole_document" if focus and focus.match_id and focus.match_id.startswith("whole_document:") else "focus"
-        )
-        task_requirements = _requirements_from_board_task(
-            base=requirements,
-            board_task=board_task,
-            action_type=edit_action,
-            focus=focus,
-        )
-        edit_outcome = edit_existing_document(
-            lesson=lesson,
-            requirements=task_requirements,
-            clarification=learning_clarification,
-            resource_summary=_resource_summary(resources),
-            conversation_summary=_conversation_summary(request.conversation),
-            user_instruction=request.message,
-            selection_excerpt=selection_excerpt,
-            focus=focus,
-            target_scope=target_scope,
-            allow_replace_document=target_scope == "whole_document",
-        )
-        if edit_outcome.changed:
-            refresh_lesson_runtime(lesson, document=edit_outcome.new_document, requirements=task_requirements)
-            lesson.board_teaching_guide = build_board_teaching_guide(lesson)
-            lesson.board_teaching_progress = None
-        stamp = board_task_history.record_update(sheet=board_task, status="ready")
-        if not edit_outcome.changed:
-            failed_stamp = board_task_history.execution_failed(
-                reason=edit_outcome.summary or "Board task edit did not produce a safe document change.",
-                metadata={
-                    "assistant_message_source": edit_outcome.assistant_message_source,
-                    "board_edit_operation": edit_outcome.operation,
-                    "board_edit_summary": edit_outcome.summary,
-                    "board_task_route": "edit",
-                    "board_task_decision": decision.model_dump(mode="json"),
-                    "board_task_cleared": False,
-                    "target_scope": target_scope,
-                    **_board_search_evidence_metadata(resolution),
-                },
-            )
-            workspace_state.normalize_package_state(package)
-            _save_workspace_for_user(
-                user_id=user_id,
-                workspace=workspace,
-                requirement_history=requirement_history,
-                board_task_history=board_task_history,
-            )
-            return _response(
-                workspace=workspace,
-                package=package,
-                lesson=lesson,
-                chatbot_message=edit_outcome.chatbot_message,
-                requirements=task_requirements,
-                learning_clarification=learning_clarification,
-                board_decision=edit_outcome.board_decision,
-                resolved_focus=focus,
-                requirement_cleared=False,
-                board_task_stamp=failed_stamp,
-                board_document_operation_status=edit_outcome.operation_status,
-                board_document_operation_failure_reason=edit_outcome.failure_reason,
-            )
-        recent_focus = _recent_board_edit_focus_for_commit(
-            lesson=lesson,
-            fallback_focus=None if target_scope == "whole_document" else focus,
-            section_titles=edit_outcome.section_titles,
-        )
-        commit_operations(
-            lesson,
-            [],
-            label="Board task edit",
-            message="Executed an existing-board edit task",
-            new_document=lesson.board_document,
-            metadata={
-                "kind": "board_document_edit",
-                "user_message": request.message,
-                "assistant_message": edit_outcome.chatbot_message,
-                "assistant_message_source": edit_outcome.assistant_message_source,
-                "board_edit_operation": edit_outcome.operation,
-                "board_edit_summary": edit_outcome.summary,
-                "board_section_titles": edit_outcome.section_titles,
-                "target_scope": target_scope,
-                "recent_board_edit_focus": recent_focus.model_dump(mode="json") if recent_focus else None,
-                **interaction_metadata,
-                "board_search_evidence": (
-                    resolution.evidence.model_dump(mode="json")
-                    if resolution and resolution.evidence
-                    else _implicit_board_search_evidence(
-                        route="edit",
-                        target_scope=target_scope,
-                        reason="编辑链路使用全文或继承目标范围，没有独立检索证据。",
-                    )
-                ),
-                **_task_metadata(
-                    requirements=task_requirements,
-                    learning_clarification=learning_clarification,
-                    focus=focus,
-                    requirement_cleared=True,
-                ),
-                **_board_task_metadata(
-                    board_task=board_task,
-                    stamp=stamp,
-                    route="edit",
-                    decision=decision.model_dump(mode="json"),
-                    cleared=True,
-                ),
-            },
-        )
-        consumed_stamp = board_task_history.consume(commit_id=lesson.history_graph.commits[-1].id)
-        lesson.board_task_requirements = None
-        _clear_task_requirements(lesson)
-        workspace_state.normalize_package_state(package)
-        _save_workspace_for_user(
-            user_id=user_id,
-            workspace=workspace,
-            requirement_history=requirement_history,
-            board_task_history=board_task_history,
-        )
-        return _response(
+        return execute_board_task_edit(
             workspace=workspace,
             package=package,
             lesson=lesson,
-            chatbot_message=edit_outcome.chatbot_message,
-            requirements=task_requirements,
+            user_id=user_id,
+            request=request,
+            requirements=requirements,
             learning_clarification=learning_clarification,
-            board_decision=edit_outcome.board_decision,
-            resolved_focus=focus,
-            requirement_cleared=True,
-            board_task_stamp=consumed_stamp,
-            board_document_operation_status=edit_outcome.operation_status,
-            board_document_operation_failure_reason=edit_outcome.failure_reason,
-            completed_board_task_sheet=board_task,
+            resources=resources,
+            board_task=board_task,
+            requirement_history=requirement_history,
+            board_task_history=board_task_history,
+            decision=decision,
+            resolution=resolution,
+            selection_excerpt=selection_excerpt,
+            action_type=action_type,
+            interaction_metadata=interaction_metadata,
+            deps=BoardTaskEditHandlerDeps(
+                requirements_from_board_task=_requirements_from_board_task,
+                resource_summary=_resource_summary,
+                conversation_summary=_conversation_summary,
+                recent_board_edit_focus_for_commit=_recent_board_edit_focus_for_commit,
+                implicit_board_search_evidence=_implicit_board_search_evidence,
+                board_search_evidence_metadata=_board_search_evidence_metadata,
+                task_metadata=_task_metadata,
+                board_task_metadata=_board_task_metadata,
+                clear_task_requirements=_clear_task_requirements,
+                save_workspace_for_user=_save_workspace_for_user,
+                build_response=_response,
+            ),
         )
 
     if decision.route == "explain":
