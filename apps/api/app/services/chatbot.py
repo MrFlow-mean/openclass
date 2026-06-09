@@ -25,7 +25,7 @@ from app.models import (
     ResourceReferencePrompt,
     SelectionRef,
 )
-from app.services import workspace_state
+from app.services import turn_intent, workspace_state
 from app.services.ai_logging import current_ai_log_context
 from app.services.board_document_editor import edit_existing_document, generate_from_requirements
 from app.services.board_explanation_gate import (
@@ -80,58 +80,8 @@ from app.services.segment_resolver import FocusResolution, focus_context, resolv
 
 MAX_CONTEXT_CHARS = 1800
 MAX_CONVERSATION_TURNS = 8
-EXPLAIN_REQUEST_PATTERN = re.compile(
-    r"(讲解|讲述|解释|说明|讲一下|解释一下|帮我理解|为什么|是什么|什么意思|是什么意思|什么含义|含义|"
-    r"概括|总结|总览|整体把握|大意|框架|梳理(?:框架|结构)?|"
-    r"(?:怎么|如何|怎样).{0,12}(?:表达|体现|说明|运用|使用|写出|看出|表现))"
-)
-STRONG_EXPLAIN_REQUEST_PATTERN = re.compile(
-    r"(讲解|讲述|解释|讲一下|解释一下|帮我理解|为什么|是什么|什么意思|是什么意思|什么含义|含义|"
-    r"概括|总结|总览|整体把握|大意|框架|梳理(?:框架|结构)?|"
-    r"(?:怎么|如何|怎样).{0,12}(?:表达|体现|说明|运用|使用|写出|看出|表现))"
-)
-APPEND_REQUEST_PATTERN = re.compile(
-    r"(续写|继续写|接着写|往后写|后续|新增|追加|新加|新章节|新小节|下一节|下一章|下一部分|末尾|"
-    r"(?:帮我|为我|请|可以|能不能|你可以)?.{0,8}(?:写|编写|生成|设计|创建|做)"
-    r"(?:一|几|[0-9０-９一二三四五六七八九十两]|个|段|篇|份|条|点|些|一下))"
-)
-EXPAND_REQUEST_PATTERN = re.compile(r"(扩写|扩展|补充|增加|添加)")
-SIMPLIFY_REQUEST_PATTERN = re.compile(
-    r"(简化|简单(?:一点|点|些)?|更简单|通俗|更容易懂|更好懂|好理解|容易理解|降低难度|浅显|"
-    r"缩短|改短|短(?:一点|点|些)|精简|压缩|太长|篇幅|"
-    r"控制.{0,8}(?:以内|以下)|[0-9０-９一二三四五六七八九十两]+.{0,8}(?:以内|以下))"
-)
-REWRITE_REQUEST_PATTERN = re.compile(
-    r"(改写|重写|修改|编辑|润色|优化|"
-    r"改(?:得|的)?(?:简单|通俗|容易|好懂|清楚|更清楚|更难|难一点|有难度|更有区分度)|"
-    r"(?:提高|增加|提升).{0,6}难度|换(?:个|一种)说法)"
-)
-TARGET_LOCATION_HINT_PATTERN = re.compile(
-    r"(选中|这一段|这段|这部分|这里|前面|上面|下面|"
-    r"第.{0,8}[章节部分段空题项条句行]|定义|概念|例子|示例|结论|总结|表格|为什么)"
-)
-RESOURCE_REFERENCE_HINT_PATTERN = re.compile(r"(资料|材料|文档|上传|教材|课本|原文|参考|根据|来自|文件|PDF|Word|章节|小节|第.{0,8}[章节部分])", re.IGNORECASE)
-EXPLICIT_RESOURCE_REFERENCE_PATTERN = re.compile(r"(资料|材料|上传|教材|课本|原文|参考|根据|来自|文件|PDF|Word)", re.IGNORECASE)
-LEARNING_START_REQUEST_PATTERN = re.compile(r"(我要学|我想学|想学习|学习一下|开始学|帮我学|学一学)")
 FOLLOWUP_EXECUTION_PATTERN = re.compile(r"^(写啊|写|开始|执行|可以|好的|好|就这样|按这个来|照这个来|继续)$")
 INTERACTION_RULE_REQUEST_PATTERN = re.compile(r"(规则|互动|轮流|你问我答|按.{0,12}来)")
-SEQUENTIAL_EXPLANATION_REQUEST_PATTERN = re.compile(
-    r"(都讲|全都讲|全部讲|都解释|全部解释|逐个|一个个|挨个|依次|按顺序|从头到尾|"
-    r"(?:讲解|解释|讲|说明).{0,12}(?:所有|全部|每个|每一(?:个|道|题|节|小节|部分|段)?|每道|每题|各个)|"
-    r"(?:所有|全部|每个|每一(?:个|道|题|节|小节|部分|段)?|每道|每题|各个).{0,12}(?:都)?(?:讲|讲解|解释|说明))"
-)
-COLLECTION_EXPLANATION_TARGET_PATTERN = re.compile(
-    r"(练习|习题|题目|小题|题项|问题|问答|测验|例题|示例题|步骤|条目|项目|"
-    r"exercise|exercises|question|questions|problem|problems|quiz|quizzes|task|tasks)",
-    re.IGNORECASE,
-)
-SINGLE_EXPLANATION_TARGET_PATTERN = re.compile(
-    r"(第\s*[0-9０-９一二三四五六七八九十两]+.{0,8}(?:章|节|小节|部分|段|句|行|题|项|条|步)|"
-    r"(?:练习|习题|题目|小题|题项|问题|问答|测验|例题|示例题|步骤|条目|项目)"
-    r"\s*[0-9０-９一二三四五六七八九十两]+|"
-    r"倒数|选中|这里|这(?:一|个)?(?:段|句|行|题|项|条|步|部分)|某(?:段|句|行|题|项|条|步))",
-    re.IGNORECASE,
-)
 OVERVIEW_EXPLANATION_REQUEST_PATTERN = re.compile(r"(概括|总结|总览|整体把握|大意|框架|梳理(?:框架|结构)?)")
 SEQUENCE_CONTINUE_PATTERN = re.compile(
     r"^(可以|可以的|没问题|没有问题|没啥问题|没有啥问题|好|好的|继续|继续讲|下一节|下一个|明白了|懂了|可以接受)$"
@@ -142,22 +92,9 @@ RECENT_EDIT_FOLLOWUP_PATTERN = re.compile(
     r"[0-9０-９一二三四五六七八九十两]+.{0,8}(?:以内|以下)|来回|回合)"
 )
 RECENT_WRITE_FOLLOWUP_PATTERN = re.compile(r"(继续|接着|直接|再|进一步|你自己看|自己看|自行|自己判断)")
-WHOLE_DOCUMENT_SCOPE_PATTERN = re.compile(r"(全文|整篇|整份|整个(?:文档|板书)|全篇|全部内容|整体)")
 EXISTING_BOARD_GENERATION_CONTROL_PATTERN = re.compile(r"(生成|创建|制作|准备).{0,8}(板书|版书|文档)")
 EDIT_ACTIONS: set[BoardTaskAction] = {"rewrite_target", "expand_target", "simplify_target"}
 DOCUMENT_WRITE_ACTIONS: set[BoardTaskAction] = {*EDIT_ACTIONS, "append_section"}
-DOCUMENT_GENERATION_ACTIONS = r"(生成|写|撰写|创建|整理|制作|设计|输出|产出|编写)"
-DOCUMENT_ARTIFACT_NOUNS = (
-    r"(文档|讲义|板书|版书|课文|文章|作文|报告|对话|练习|题目|试题|测验|课程|"
-    r"教案|教程|学习计划|提纲|大纲|案例|表格|清单|材料|页面|章节|小节)"
-)
-DOCUMENT_ARTIFACT_REQUEST_PATTERN = re.compile(
-    rf"{DOCUMENT_GENERATION_ACTIONS}.{{0,48}}{DOCUMENT_ARTIFACT_NOUNS}"
-    r"|"
-    rf"{DOCUMENT_ARTIFACT_NOUNS}.{{0,24}}{DOCUMENT_GENERATION_ACTIONS}"
-    r"|"
-    rf"{DOCUMENT_GENERATION_ACTIONS}.{{0,12}}(?:一|几|若干|多)?(?:篇|份|个|套|道|组|页|段|部分)[^吧吗呢啊。！？!?；;\n]{{2,80}}"
-)
 COMPLEX_REASONING_REQUEST_PATTERN = re.compile(
     r"(深入|深度|严谨|复杂|难题|多步骤|推理|推导|证明|系统分析|仔细分析|完整分析|高质量|complex|reasoning)",
     re.IGNORECASE,
@@ -213,8 +150,7 @@ def _requests_complex_reasoning(text: str) -> bool:
 
 
 def _requests_explanation(text: str) -> bool:
-    compact = _compact_text(text, limit=280)
-    return bool(compact and EXPLAIN_REQUEST_PATTERN.search(compact))
+    return turn_intent.wants_explain(text)
 
 
 def _chatbot_message_with_solver_context(
@@ -274,13 +210,11 @@ def _chatbot_visible_selection_excerpt(request: ChatRequest, excerpt: str | None
 
 
 def _has_explicit_resource_reference(text: str) -> bool:
-    compact = _compact_text(text, limit=280)
-    return bool(compact and EXPLICIT_RESOURCE_REFERENCE_PATTERN.search(compact))
+    return turn_intent.has_explicit_resource_reference(text)
 
 
 def _requests_append_section(text: str) -> bool:
-    compact = _compact_text(text, limit=280)
-    return bool(compact and APPEND_REQUEST_PATTERN.search(compact))
+    return turn_intent.wants_append(text)
 
 
 def _is_followup_execution_request(text: str) -> bool:
@@ -308,50 +242,45 @@ def _should_preserve_requirement_update_for_action(request: ChatRequest) -> bool
 
 
 def _should_force_explain_task(message: str) -> bool:
-    if not EXPLAIN_REQUEST_PATTERN.search(message):
-        return False
-    has_write_intent = _requests_append_section(message) or bool(EXPAND_REQUEST_PATTERN.search(message))
-    if has_write_intent and not STRONG_EXPLAIN_REQUEST_PATTERN.search(message):
-        return False
-    return True
+    return turn_intent.should_force_explain_task(message)
 
 
 def _infer_board_task_action(request: ChatRequest, *, has_selection: bool, document_empty: bool) -> BoardTaskAction | None:
     if request.board_generation_action == "start":
         return "generate_board"
-    message = _compact_text(request.message, limit=280)
+    signals = turn_intent.extract_intent_signals(request.message)
     if request.interaction_mode == "direct_edit":
-        if _requests_append_section(message):
+        if signals.wants_append:
             return "append_section"
-        if SIMPLIFY_REQUEST_PATTERN.search(message):
+        if signals.wants_simplify:
             return "simplify_target"
-        if EXPAND_REQUEST_PATTERN.search(message):
+        if signals.wants_expand:
             return "expand_target"
         return "rewrite_target"
-    if not has_selection and _has_explicit_resource_reference(message):
+    if not has_selection and signals.wants_explicit_resource:
         return None
-    if not document_empty and _should_force_explain_task(message):
+    if not document_empty and turn_intent.should_force_explain_task(request.message):
         return "explain_target"
-    if _requests_append_section(message) and not document_empty:
+    if signals.wants_append and not document_empty:
         return "append_section"
-    if not document_empty and SIMPLIFY_REQUEST_PATTERN.search(message):
+    if not document_empty and signals.wants_simplify:
         return "simplify_target"
-    if not document_empty and EXPAND_REQUEST_PATTERN.search(message):
+    if not document_empty and signals.wants_expand:
         return "expand_target"
-    if REWRITE_REQUEST_PATTERN.search(message):
-        if SIMPLIFY_REQUEST_PATTERN.search(message):
+    if signals.wants_rewrite:
+        if signals.wants_simplify:
             return "simplify_target"
-        if EXPAND_REQUEST_PATTERN.search(message):
+        if signals.wants_expand:
             return "expand_target"
         return "rewrite_target"
     if has_selection and not document_empty:
-        if SIMPLIFY_REQUEST_PATTERN.search(message):
+        if signals.wants_simplify:
             return "simplify_target"
-        if EXPAND_REQUEST_PATTERN.search(message):
+        if signals.wants_expand:
             return "expand_target"
-    if _should_force_explain_task(message) and (has_selection or TARGET_LOCATION_HINT_PATTERN.search(message)):
+    if turn_intent.should_force_explain_task(request.message) and (has_selection or signals.has_target_hint):
         return "explain_target"
-    if not has_selection and RESOURCE_REFERENCE_HINT_PATTERN.search(message):
+    if not has_selection and signals.wants_resource:
         return None
     if has_selection and not document_empty:
         return "explain_target"
@@ -377,10 +306,7 @@ def _prefer_requirement_action(
 
 
 def _requests_document_artifact_generation(text: str) -> bool:
-    compact = _compact_text(text, limit=280)
-    if not compact:
-        return False
-    return bool(DOCUMENT_ARTIFACT_REQUEST_PATTERN.search(compact))
+    return turn_intent.wants_document_artifact_generation(text)
 
 
 def _has_actionable_generation_context(
@@ -533,8 +459,7 @@ def _recent_focus_matches_board_task(focus: BoardFocusRef, board_task: BoardTask
 
 
 def _requests_whole_document_scope(*values: str) -> bool:
-    compact = _compact_text(" ".join(value for value in values if value), limit=300)
-    return bool(compact and WHOLE_DOCUMENT_SCOPE_PATTERN.search(compact))
+    return turn_intent.wants_whole_document_scope(" ".join(value for value in values if value))
 
 
 def _requests_existing_board_generation_control(text: str) -> bool:
@@ -763,13 +688,11 @@ def _generate_focus_candidate_message(
 
 
 def _requests_resource_backed_answer(text: str) -> bool:
-    compact = _compact_text(text, limit=280)
-    return bool(compact and RESOURCE_REFERENCE_HINT_PATTERN.search(compact))
+    return turn_intent.wants_resource_reference(text)
 
 
 def _requests_learning_start(text: str) -> bool:
-    compact = _compact_text(text, limit=280)
-    return bool(compact and LEARNING_START_REQUEST_PATTERN.search(compact))
+    return turn_intent.wants_learning_start(text)
 
 
 def _should_prompt_resource_reference(text: str) -> bool:
@@ -1415,8 +1338,7 @@ def _clarify_decision_for_missing_focus(
 
 
 def _requests_sequential_explanation(text: str) -> bool:
-    compact = _compact_text(text, limit=120)
-    return bool(compact and SEQUENTIAL_EXPLANATION_REQUEST_PATTERN.search(compact))
+    return turn_intent.wants_sequential_explanation(text)
 
 
 def _requests_collection_explanation_sequence(
@@ -1434,11 +1356,9 @@ def _requests_collection_explanation_sequence(
         limit=240,
     )
     combined = _compact_text(" ".join(part for part in [request_compact, sheet_compact] if part), limit=360)
-    if not combined or not COLLECTION_EXPLANATION_TARGET_PATTERN.search(combined):
+    if not combined:
         return False
-    if SINGLE_EXPLANATION_TARGET_PATTERN.search(combined):
-        return False
-    return True
+    return turn_intent.wants_collection_explanation(combined)
 
 
 def _requests_overview_explanation(text: str) -> bool:

@@ -11,23 +11,10 @@ from app.models import (
     ResourceLibraryItem,
     SelectionRef,
 )
+from app.services import turn_intent
 from app.services.openai_course_ai import openai_course_ai
 
 
-WRITE_PATTERN = re.compile(r"(写|编写|生成|设计|创建|新增|追加|补充|扩写|添加|加一段|加一节|加入)")
-EDIT_PATTERN = re.compile(
-    r"(改|修改|改写|重写|编辑|润色|优化|简化|扩展|缩短|改短|调整|精简|压缩|太长|篇幅|"
-    r"控制.{0,8}(?:以内|以下)|[0-9０-９一二三四五六七八九十两]+.{0,8}(?:以内|以下))"
-)
-EXPLAIN_PATTERN = re.compile(
-    r"(讲解|讲述|解释|说明|讲一下|解释一下|帮我理解|为什么|是什么|什么意思|是什么意思|什么含义|含义|"
-    r"(?:怎么|如何|怎样).{0,12}(?:表达|体现|说明|运用|使用|写出|看出|表现))"
-)
-STRONG_EXPLAIN_PATTERN = re.compile(
-    r"(讲解|讲述|解释|讲一下|解释一下|帮我理解|为什么|是什么|什么意思|是什么意思|什么含义|含义|"
-    r"(?:怎么|如何|怎样).{0,12}(?:表达|体现|说明|运用|使用|写出|看出|表现))"
-)
-CHAT_PATTERN = re.compile(r"(练习|互动|你问我答|问答|角色|轮流|按.{0,12}规则|对话|测验|检查我)")
 CONFIRM_PATTERN = re.compile(r"^(好|好的|可以|确认|扩写|写吧|加吧|开始|继续|就这样|按这个来|是|要)$")
 DECLINE_PATTERN = re.compile(r"^(不用|不要|先不|取消|算了|否|不用写|别写)$")
 GENERIC_REFERENCE_PATTERN = re.compile(r"(这里|这个|这段|这一段|上述|上面|下面|前面|后面|该部分|选中)")
@@ -189,14 +176,14 @@ def _has_target_signal(sheet: BoardTaskRequirementSheet) -> bool:
 
 
 def _infer_action(text: str) -> BoardTaskRequestedAction | None:
-    has_write = bool(WRITE_PATTERN.search(text))
-    if EXPLAIN_PATTERN.search(text) and (not has_write or STRONG_EXPLAIN_PATTERN.search(text)):
+    signals = turn_intent.extract_intent_signals(text)
+    if signals.wants_explain and (not signals.wants_write or signals.wants_strong_explain):
         return "explain"
-    if EDIT_PATTERN.search(text):
+    if signals.wants_edit:
         return "edit"
-    if has_write:
+    if signals.wants_write:
         return "write"
-    if CHAT_PATTERN.search(text):
+    if signals.wants_chat:
         return "chat"
     return None
 
