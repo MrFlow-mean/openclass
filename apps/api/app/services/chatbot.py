@@ -25,7 +25,6 @@ from app.models import (
     SelectionRef,
 )
 from app.services import turn_intent, workspace_state
-from app.services.ai_logging import current_ai_log_context
 from app.services.board_document_editor import edit_existing_document, generate_from_requirements
 from app.services.board_explanation_gate import (
     generate_board_directed_explanation_message as _gate_board_directed_explanation_message,
@@ -59,6 +58,15 @@ from app.services.chat.handlers.interaction import (
     InteractionTurnHandlerDeps,
     execute_board_task_chat_interaction,
     handle_existing_interaction_session,
+)
+from app.services.chat.metadata import (
+    board_document_failure_metadata as _board_document_failure_metadata,
+    board_document_quality_metadata as _board_document_quality_metadata,
+    board_search_evidence_metadata as _board_search_evidence_metadata,
+    board_task_metadata as _board_task_metadata,
+    reference_metadata as _reference_metadata,
+    requirement_history_metadata as _requirement_history_metadata,
+    task_metadata as _task_metadata,
 )
 from app.services.board_segment_index import build_board_segment_index
 from app.services.board_teaching import build_board_teaching_guide, teach_first_section, teach_next_section
@@ -357,45 +365,6 @@ def _structured_action_instruction(
     if requirements.target_depth.strip():
         parts.append(f"讲解深度：{requirements.target_depth.strip()}")
     return _compact_text("；".join(parts), limit=360)
-
-
-def _task_metadata(
-    *,
-    requirements: LearningRequirementSheet,
-    learning_clarification: LearningClarificationStatus,
-    focus: BoardFocusRef | None = None,
-    focus_candidates: list[BoardFocusRef] | None = None,
-    requirement_cleared: bool = False,
-) -> dict[str, object]:
-    return {
-        "task_requirement_sheet": requirements.model_dump(mode="json"),
-        "learning_clarification": learning_clarification.model_dump(mode="json"),
-        "resolved_focus": focus.model_dump(mode="json") if focus else None,
-        "focus_candidates": [candidate.model_dump(mode="json") for candidate in (focus_candidates or [])],
-        "requirement_cleared": requirement_cleared,
-        "active_requirement_sheet_after": None if requirement_cleared else requirements.model_dump(mode="json"),
-    }
-
-
-def _requirement_history_metadata(
-    stamp: RequirementHistoryStamp | None,
-    *,
-    run_status_after_commit: str | None = None,
-) -> dict[str, object]:
-    if stamp is None:
-        return {
-            "requirement_run_id": None,
-            "frozen_requirement_version_id": None,
-        }
-    metadata = {
-        "requirement_run_id": stamp.run_id,
-        "frozen_requirement_version_id": stamp.version_id,
-        "requirement_phase": stamp.phase,
-        "frozen_requirement_phase": stamp.phase,
-    }
-    if run_status_after_commit is not None:
-        metadata["requirement_run_status_after_commit"] = run_status_after_commit
-    return metadata
 
 
 def _clear_task_requirements(lesson: Lesson) -> None:
@@ -722,30 +691,6 @@ def _merge_selection_and_reference(
 ) -> str | None:
     reference_excerpt = _resource_context_excerpt(reference)
     return "\n\n".join(part for part in [selection_excerpt, reference_excerpt] if part)
-
-
-def _reference_metadata(
-    *,
-    resolution: ResourceResolution,
-) -> dict[str, object]:
-    return {
-        "resource_matches": [match.model_dump(mode="json") for match in resolution.matches],
-        "reference_prompt": (
-            resolution.reference_prompt.model_dump(mode="json") if resolution.reference_prompt else None
-        ),
-        "selected_reference": (
-            {
-                "resource_id": resolution.selected_reference.resource_id,
-                "chapter_id": resolution.selected_reference.chapter_id,
-                "resource_name": resolution.selected_reference.resource_name,
-                "chapter_title": resolution.selected_reference.chapter_title,
-                "summary": resolution.selected_reference.summary,
-            }
-            if resolution.selected_reference
-            else None
-        ),
-        "resource_resolution_status": resolution.status,
-    }
 
 
 def _should_generate_board_from_explicit_request(
@@ -1132,27 +1077,6 @@ def _generate_board_directed_explanation_message(
     return directed.chatbot_message, directed.assistant_message_source, directed.directive_payload
 
 
-def _board_task_metadata(
-    *,
-    board_task: BoardTaskRequirementSheet | None,
-    stamp: BoardTaskHistoryStamp | None,
-    route: str | None = None,
-    decision: dict[str, object] | None = None,
-    cleared: bool = False,
-) -> dict[str, object]:
-    return {
-        "board_task_sheet": board_task.model_dump(mode="json") if board_task else None,
-        "board_task_run_id": stamp.run_id if stamp else None,
-        "board_task_version_id": stamp.version_id if stamp else None,
-        "board_task_phase": stamp.phase if stamp else None,
-        "board_task_route": route,
-        "board_task_decision": decision,
-        "board_task_cleared": cleared,
-        "requirement_cleared": True,
-        "active_requirement_sheet_after": None,
-    }
-
-
 def _requirements_from_board_task(
     *,
     base: LearningRequirementSheet,
@@ -1183,12 +1107,6 @@ def _task_location_evidence(resolution: FocusResolution | None) -> dict[str, obj
         "candidates": [candidate.model_dump(mode="json") for candidate in resolution.candidates],
         "question": resolution.question,
         "board_search_evidence": resolution.evidence.model_dump(mode="json") if resolution.evidence else None,
-    }
-
-
-def _board_search_evidence_metadata(resolution: FocusResolution | None) -> dict[str, object]:
-    return {
-        "board_search_evidence": resolution.evidence.model_dump(mode="json") if resolution and resolution.evidence else None,
     }
 
 
@@ -2249,28 +2167,6 @@ def _response_board_task_stamp(
     if board_task_history is None:
         return None
     return board_task_history.current_stamp()
-
-
-def _board_document_failure_metadata(edit_outcome) -> dict[str, object]:
-    context = current_ai_log_context()
-    metadata: dict[str, object] = {
-        "assistant_message_source": edit_outcome.assistant_message_source,
-        "board_edit_operation": edit_outcome.operation,
-        "board_edit_summary": edit_outcome.summary,
-        "board_document_operation_status": edit_outcome.operation_status,
-        **_board_document_quality_metadata(edit_outcome),
-    }
-    trace_id = context.get("trace_id")
-    if trace_id:
-        metadata["trace_id"] = trace_id
-    return metadata
-
-
-def _board_document_quality_metadata(edit_outcome) -> dict[str, object]:
-    return {
-        "quality_repair_attempts": edit_outcome.quality_repair_attempts,
-        "quality_review_status": edit_outcome.quality_review_status,
-    }
 
 
 def _response(
