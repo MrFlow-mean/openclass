@@ -71,6 +71,7 @@ from app.services.chat.handlers.resource_reference import (
     ResourceReferencePromptDeps,
     execute_resource_reference_prompt,
 )
+from app.services.chat.handlers.teaching import BoardTeachingTurnDeps, execute_board_teaching_turn
 from app.services.chat.metadata import (
     board_search_evidence_metadata as _board_search_evidence_metadata,
     board_task_metadata as _board_task_metadata,
@@ -82,7 +83,7 @@ from app.services.chat.response import (
     build_chat_response as _response,
 )
 from app.services.board_segment_index import build_board_segment_index
-from app.services.board_teaching import build_board_teaching_guide, teach_first_section, teach_next_section
+from app.services.board_teaching import build_board_teaching_guide
 from app.services.course_runtime import effective_requirements
 from app.services.course_runtime import refresh_lesson_runtime
 from app.services.history import commit_operations
@@ -2786,54 +2787,23 @@ def _chat_response(
         )
 
     if request.teaching_action in {"continue", "restart"}:
-        learning_clarification = _latest_learning_clarification(lesson, requirements=requirements)
-        if request.teaching_action == "restart":
-            lesson.board_teaching_progress = None
-            teaching_result = teach_first_section(
-                lesson=lesson,
-                resource_summary=_resource_summary(visible_package.resources),
-                conversation_summary=_conversation_summary(request.conversation),
-            )
-        else:
-            teaching_result = teach_next_section(
-                lesson=lesson,
-                resource_summary=_resource_summary(visible_package.resources),
-                conversation_summary=_conversation_summary(request.conversation),
-            )
-        commit_operations(
-            lesson,
-            [],
-            label="Board teaching turn",
-            message="Recorded a section-by-section board teaching turn",
-            new_document=lesson.board_document,
-            metadata={
-                "kind": "chat_flow",
-                "user_message": request.message,
-                "assistant_message": teaching_result.chatbot_message,
-                "assistant_message_source": teaching_result.assistant_message_source,
-                "interaction_mode": request.interaction_mode,
-                "teaching_action": request.teaching_action,
-                "teaching_progress": teaching_result.progress_view.model_dump(mode="json"),
-                "board_explanation_directive": teaching_result.board_explanation_directive,
-                "learning_clarification": learning_clarification.model_dump(mode="json"),
-            },
-        )
-        workspace_state.normalize_package_state(package)
-        _save_workspace_for_user(
-            user_id=user_id,
-            workspace=workspace,
-            requirement_history=requirement_history,
-        )
-        return _response(
+        return execute_board_teaching_turn(
             workspace=workspace,
             package=package,
             lesson=lesson,
-            chatbot_message=teaching_result.chatbot_message,
+            user_id=user_id,
+            request=request,
             requirements=requirements,
-            learning_clarification=learning_clarification,
-            board_decision=BoardDecision(action="no_change", reason="本轮是分节讲解，不修改板书。"),
-            teaching_progress=teaching_result.progress_view,
-            requirement_history=requirement_history if track_initial_requirement_run else None,
+            resources=visible_package.resources,
+            requirement_history=requirement_history,
+            track_initial_requirement_run=track_initial_requirement_run,
+            deps=BoardTeachingTurnDeps(
+                latest_learning_clarification=_latest_learning_clarification,
+                resource_summary=_resource_summary,
+                conversation_summary=_conversation_summary,
+                save_workspace_for_user=_save_workspace_for_user,
+                build_response=_response,
+            ),
         )
 
     if request.interaction_mode == "direct_edit" and action_type != "append_section":
