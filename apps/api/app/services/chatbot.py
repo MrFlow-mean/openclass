@@ -67,6 +67,10 @@ from app.services.chat.handlers.interaction import (
     execute_board_task_chat_interaction,
     handle_existing_interaction_session,
 )
+from app.services.chat.handlers.resource_reference import (
+    ResourceReferencePromptDeps,
+    execute_resource_reference_prompt,
+)
 from app.services.chat.metadata import (
     board_search_evidence_metadata as _board_search_evidence_metadata,
     board_task_metadata as _board_task_metadata,
@@ -3327,48 +3331,22 @@ def _chat_response(
         )
         if resource_resolution.reference_prompt is not None and request.resource_reference_action is None:
             lesson.learning_requirements = requirements
-            chatbot_message = resource_resolution.reference_prompt.question
-            commit_operations(
-                lesson,
-                [],
-                label="Resource reference prompt",
-                message="Asked the learner to confirm a relevant resource chapter before continuing",
-                new_document=lesson.board_document,
-                metadata={
-                    "kind": "chat_flow",
-                    "user_message": request.message,
-                    "assistant_message": chatbot_message,
-                    "assistant_message_source": "resource_resolver",
-                    "interaction_mode": request.interaction_mode,
-                    "selection": request.selection.model_dump(mode="json") if request.selection else None,
-                    **_task_metadata(
-                        requirements=requirements,
-                        learning_clarification=learning_clarification,
-                        requirement_cleared=False,
-                    ),
-                    **_reference_metadata(resolution=resource_resolution),
-                },
-            )
-            workspace_state.normalize_package_state(package)
-            _save_workspace_for_user(
-                user_id=user_id,
-                workspace=workspace,
-                requirement_history=requirement_history,
-            )
-            return _response(
+            return execute_resource_reference_prompt(
                 workspace=workspace,
                 package=package,
                 lesson=lesson,
-                chatbot_message=chatbot_message,
-                learning_clarification=learning_clarification,
+                user_id=user_id,
+                request=request,
                 requirements=requirements,
-                board_decision=BoardDecision(
-                    action="await_reference_choice",
-                    reason=resource_resolution.reference_prompt.reason,
+                learning_clarification=learning_clarification,
+                resource_resolution=resource_resolution,
+                requirement_history=requirement_history,
+                track_initial_requirement_run=track_initial_requirement_run,
+                commit_message="Asked the learner to confirm a relevant resource chapter before continuing",
+                deps=ResourceReferencePromptDeps(
+                    save_workspace_for_user=_save_workspace_for_user,
+                    build_response=_response,
                 ),
-                resource_matches=resource_resolution.matches,
-                reference_prompt=resource_resolution.reference_prompt,
-                requirement_history=requirement_history if track_initial_requirement_run else None,
             )
         if request.resource_reference_action == "confirm" and selected_reference is not None:
             return _generate_board_from_confirmed_resource(
@@ -3485,48 +3463,22 @@ def _chat_response(
         and _should_prompt_resource_reference(request.message)
     ):
         learning_clarification = _latest_learning_clarification(lesson, requirements=requirements)
-        chatbot_message = resource_resolution.reference_prompt.question
-        commit_operations(
-            lesson,
-            [],
-            label="Resource reference prompt",
-            message="Asked the learner to confirm a relevant resource chapter before answering",
-            new_document=lesson.board_document,
-            metadata={
-                "kind": "chat_flow",
-                "user_message": request.message,
-                "assistant_message": chatbot_message,
-                "assistant_message_source": "resource_resolver",
-                "interaction_mode": request.interaction_mode,
-                "selection": request.selection.model_dump(mode="json") if request.selection else None,
-                **_task_metadata(
-                    requirements=requirements,
-                    learning_clarification=learning_clarification,
-                    requirement_cleared=False,
-                ),
-                **_reference_metadata(resolution=resource_resolution),
-            },
-        )
-        workspace_state.normalize_package_state(package)
-        _save_workspace_for_user(
-            user_id=user_id,
-            workspace=workspace,
-            requirement_history=requirement_history,
-        )
-        return _response(
+        return execute_resource_reference_prompt(
             workspace=workspace,
             package=package,
             lesson=lesson,
-            chatbot_message=chatbot_message,
-            learning_clarification=learning_clarification,
+            user_id=user_id,
+            request=request,
             requirements=requirements,
-            board_decision=BoardDecision(
-                action="await_reference_choice",
-                reason=resource_resolution.reference_prompt.reason,
+            learning_clarification=learning_clarification,
+            resource_resolution=resource_resolution,
+            requirement_history=requirement_history,
+            track_initial_requirement_run=track_initial_requirement_run,
+            commit_message="Asked the learner to confirm a relevant resource chapter before answering",
+            deps=ResourceReferencePromptDeps(
+                save_workspace_for_user=_save_workspace_for_user,
+                build_response=_response,
             ),
-            resource_matches=resource_resolution.matches,
-            reference_prompt=resource_resolution.reference_prompt,
-            requirement_history=requirement_history if track_initial_requirement_run else None,
         )
 
     if (
