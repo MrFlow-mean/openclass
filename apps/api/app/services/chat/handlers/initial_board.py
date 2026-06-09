@@ -2,7 +2,21 @@ from __future__ import annotations
 
 import json
 
-from app.models import LearningClarificationStatus, LearningRequirementSheet, Lesson
+from dataclasses import dataclass
+from typing import Any, Callable
+
+from app.models import ChatRequest, ChatResponse, LearningClarificationStatus, LearningRequirementSheet, Lesson
+from app.services import workspace_state
+from app.services.board_document_editor import generate_from_requirements
+from app.services.board_teaching import build_board_teaching_guide
+from app.services.chat.metadata import (
+    board_document_failure_metadata,
+    board_document_quality_metadata,
+    requirement_history_metadata,
+    task_metadata,
+)
+from app.services.course_runtime import refresh_lesson_runtime
+from app.services.history import commit_operations
 from app.services.learning_requirement_history import (
     LearningRequirementHistoryRecorder,
     RequirementHistoryStamp,
@@ -86,3 +100,156 @@ def prepare_initial_requirement_for_board_generation(
         learning_clarification=frozen_clarification,
     )
     return frozen_requirements, frozen_clarification, frozen_stamp
+
+
+@dataclass(frozen=True)
+class InitialBoardGenerationStartDeps:
+    with_task_details: Callable[..., LearningRequirementSheet]
+    latest_learning_clarification: Callable[..., LearningClarificationStatus]
+    resource_summary: Callable[[list[Any]], str]
+    checkpoint_initial_requirement_before_generation: Callable[..., None]
+    post_initial_board_generation_message: Callable[..., tuple[str, str]]
+    clear_task_requirements: Callable[[Lesson], None]
+    save_workspace_for_user: Callable[..., None]
+    build_response: Callable[..., ChatResponse]
+
+
+def execute_initial_board_generation_start(
+    *,
+    workspace: Any,
+    package: Any,
+    lesson: Lesson,
+    user_id: str,
+    request: ChatRequest,
+    requirements: LearningRequirementSheet,
+    resources: list[Any],
+    requirement_history: LearningRequirementHistoryRecorder,
+    track_initial_requirement_run: bool,
+    deps: InitialBoardGenerationStartDeps,
+) -> ChatResponse:
+    learning_clarification = deps.latest_learning_clarification(lesson, requirements=requirements)
+    requirements = deps.with_task_details(
+        requirements,
+        action_type="generate_board",
+        instruction=request.message,
+    )
+    requirements, learning_clarification, frozen_requirement = prepare_initial_requirement_for_board_generation(
+        requirement_history,
+        enabled=track_initial_requirement_run,
+        requirements=requirements,
+        learning_clarification=learning_clarification,
+    )
+    deps.checkpoint_initial_requirement_before_generation(
+        user_id=user_id,
+        workspace=workspace,
+        package=package,
+        lesson=lesson,
+        requirement_history=requirement_history,
+        requirements=requirements,
+        learning_clarification=learning_clarification,
+        stamp=frozen_requirement,
+    )
+    edit_outcome = generate_from_requirements(
+        lesson=lesson,
+        requirements=requirements,
+        clarification=learning_clarification,
+        resource_summary=deps.resource_summary(resources),
+        requirement_run_id=frozen_requirement.run_id if frozen_requirement else None,
+        frozen_requirement_version_id=frozen_requirement.version_id if frozen_requirement else None,
+    )
+    chatbot_message = edit_outcome.chatbot_message
+    if not edit_outcome.changed:
+        failed_stamp = (
+            requirement_history.generation_failed(
+                reason=edit_outcome.summary or chatbot_message,
+                metadata=board_document_failure_metadata(edit_outcome),
+            )
+            if frozen_requirement is not None
+            else None
+        )
+        workspace_state.normalize_package_state(package)
+        deps.save_workspace_for_user(
+            user_id=user_id,
+            workspace=workspace,
+            requirement_history=requirement_history,
+        )
+        return deps.build_response(
+            workspace=workspace,
+            package=package,
+            lesson=lesson,
+            chatbot_message=chatbot_message,
+            requirements=requirements,
+            learning_clarification=learning_clarification,
+            board_decision=edit_outcome.board_decision,
+            requirement_stamp=failed_stamp,
+            board_document_operation_status=edit_outcome.operation_status,
+            board_document_operation_failure_reason=edit_outcome.failure_reason,
+        )
+    if edit_outcome.changed:
+        refresh_lesson_runtime(lesson, document=edit_outcome.new_document, requirements=requirements)
+        lesson.board_teaching_guide = build_board_teaching_guide(lesson)
+        lesson.board_teaching_progress = None
+        chatbot_message, chatbot_message_source = deps.post_initial_board_generation_message(
+            lesson=lesson,
+            requirements=requirements,
+            learning_clarification=learning_clarification,
+            resource_summary=deps.resource_summary(resources),
+            edit_outcome=edit_outcome,
+        )
+    requirement_cleared = edit_outcome.changed
+    metadata = {
+        "kind": "board_document_generation",
+        "user_message": request.message,
+        "assistant_message": chatbot_message,
+        "assistant_message_source": chatbot_message_source,
+        "board_editor_message": edit_outcome.chatbot_message,
+        "board_generation_action": request.board_generation_action,
+        "board_edit_operation": edit_outcome.operation,
+        "board_edit_summary": edit_outcome.summary,
+        "board_section_titles": edit_outcome.section_titles,
+        **board_document_quality_metadata(edit_outcome),
+        **requirement_history_metadata(
+            frozen_requirement,
+            run_status_after_commit="consumed" if frozen_requirement is not None else None,
+        ),
+        **task_metadata(
+            requirements=requirements,
+            learning_clarification=learning_clarification,
+            requirement_cleared=requirement_cleared,
+        ),
+    }
+
+    commit_operations(
+        lesson,
+        [],
+        label="Board document generation",
+        message="Generated board document from the learning requirement sheet",
+        new_document=lesson.board_document,
+        metadata=metadata,
+    )
+    consumed_stamp = (
+        requirement_history.consume(commit_id=lesson.history_graph.commits[-1].id)
+        if frozen_requirement is not None
+        else None
+    )
+    if requirement_cleared:
+        deps.clear_task_requirements(lesson)
+    workspace_state.normalize_package_state(package)
+    deps.save_workspace_for_user(
+        user_id=user_id,
+        workspace=workspace,
+        requirement_history=requirement_history,
+    )
+    return deps.build_response(
+        workspace=workspace,
+        package=package,
+        lesson=lesson,
+        chatbot_message=chatbot_message,
+        requirements=requirements,
+        learning_clarification=learning_clarification,
+        board_decision=edit_outcome.board_decision,
+        requirement_cleared=requirement_cleared,
+        requirement_stamp=consumed_stamp,
+        board_document_operation_status=edit_outcome.operation_status,
+        board_document_operation_failure_reason=edit_outcome.failure_reason,
+    )
