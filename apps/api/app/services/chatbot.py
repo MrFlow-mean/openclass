@@ -53,6 +53,10 @@ from app.services.chat.handlers.explain import (
     BoardTaskExplainHandlerDeps,
     execute_board_task_explain,
 )
+from app.services.chat.handlers.interaction import (
+    BoardTaskInteractionHandlerDeps,
+    execute_board_task_chat_interaction,
+)
 from app.services.board_segment_index import build_board_segment_index
 from app.services.board_teaching import build_board_teaching_guide, teach_first_section, teach_next_section
 from app.services.course_runtime import effective_requirements
@@ -2149,35 +2153,28 @@ def _handle_existing_board_task_flow(
         )
 
     if decision.route == "chat":
-        focus = _decision_focus(decision, resolution)
-        task_requirements = _requirements_from_board_task(
-            base=requirements,
-            board_task=board_task,
-            action_type="explain_target",
-            focus=focus,
-        )
-        lesson.learning_requirements = task_requirements
-        return _maybe_start_interaction_session(
+        return execute_board_task_chat_interaction(
             workspace=workspace,
             package=package,
             lesson=lesson,
             user_id=user_id,
             request=request,
-            requirements=task_requirements,
+            requirements=requirements,
             learning_clarification=learning_clarification,
             resources=resources,
             selection_text=selection_text,
-            action_type="explain_target",
-            requirement_history=requirement_history,
             board_task=board_task,
             board_task_history=board_task_history,
             board_task_stamp=stamp,
-            board_task_decision=decision,
-            resolved_focus=focus,
-            source_interaction_metadata={
-                **interaction_metadata,
-                **_board_search_evidence_metadata(resolution),
-            },
+            requirement_history=requirement_history,
+            decision=decision,
+            resolution=resolution,
+            interaction_metadata=interaction_metadata,
+            deps=BoardTaskInteractionHandlerDeps(
+                requirements_from_board_task=_requirements_from_board_task,
+                board_search_evidence_metadata=_board_search_evidence_metadata,
+                start_interaction_session=_maybe_start_interaction_session,
+            ),
         )
 
     return None
