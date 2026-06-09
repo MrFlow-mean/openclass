@@ -32,6 +32,7 @@ from app.services.board_explanation_gate import (
     generate_board_directed_explanation_message as _gate_board_directed_explanation_message,
     requirement_probe_instead_of_explanation_message,
 )
+from app.services.board_task_decider import decide_board_task_action
 from app.services.explanation_atoms import (
     ATOMIC_EXPLANATION_SEQUENCE_MODE,
     build_atomic_explanation_sequence,
@@ -246,45 +247,17 @@ def _should_force_explain_task(message: str) -> bool:
 
 
 def _infer_board_task_action(request: ChatRequest, *, has_selection: bool, document_empty: bool) -> BoardTaskAction | None:
-    if request.board_generation_action == "start":
-        return "generate_board"
     signals = turn_intent.extract_intent_signals(request.message)
-    if request.interaction_mode == "direct_edit":
-        if signals.wants_append:
-            return "append_section"
-        if signals.wants_simplify:
-            return "simplify_target"
-        if signals.wants_expand:
-            return "expand_target"
-        return "rewrite_target"
-    if not has_selection and signals.wants_explicit_resource:
-        return None
-    if not document_empty and turn_intent.should_force_explain_task(request.message):
-        return "explain_target"
-    if signals.wants_append and not document_empty:
-        return "append_section"
-    if not document_empty and signals.wants_simplify:
-        return "simplify_target"
-    if not document_empty and signals.wants_expand:
-        return "expand_target"
-    if signals.wants_rewrite:
-        if signals.wants_simplify:
-            return "simplify_target"
-        if signals.wants_expand:
-            return "expand_target"
-        return "rewrite_target"
-    if has_selection and not document_empty:
-        if signals.wants_simplify:
-            return "simplify_target"
-        if signals.wants_expand:
-            return "expand_target"
-    if turn_intent.should_force_explain_task(request.message) and (has_selection or signals.has_target_hint):
-        return "explain_target"
-    if not has_selection and signals.wants_resource:
-        return None
-    if has_selection and not document_empty:
-        return "explain_target"
-    return None
+    decision = decide_board_task_action(
+        message=request.message,
+        signals=signals,
+        has_selection=has_selection,
+        document_empty=document_empty,
+        interaction_mode=request.interaction_mode,
+        board_generation_action=request.board_generation_action,
+        has_explicit_resource_reference=signals.wants_explicit_resource,
+    )
+    return decision.board_action
 
 
 def _prefer_requirement_action(
