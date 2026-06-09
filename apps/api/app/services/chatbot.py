@@ -53,6 +53,7 @@ from app.services.chat.handlers.explain import (
     BoardTaskExplainHandlerDeps,
     execute_board_task_explain,
 )
+from app.services.chat.handlers.general_chat import GeneralChatHandlerDeps, execute_general_chat
 from app.services.chat.handlers.interaction import (
     BoardTaskInteractionHandlerDeps,
     InteractionTurnHandlerDeps,
@@ -4437,51 +4438,27 @@ def _chat_response(
             board_document_operation_failure_reason=edit_outcome.failure_reason,
         )
 
-    board_decision = BoardDecision(action="no_change", reason="本轮是通用问答聊天，不自动修改讲义。")
-    requirement_cleared = False
-
-    commit_operations(
-        lesson,
-        [],
-        label="Chat turn",
-        message="Recorded a learner and chatbot chat turn",
-        new_document=lesson.board_document,
-        metadata={
-            "kind": "chat_flow",
-            "user_message": request.message,
-            "assistant_message": chatbot_message,
-            "assistant_message_source": chatbot_message_source,
-            "interaction_mode": request.interaction_mode,
-            "selection": request.selection.model_dump(mode="json") if request.selection else None,
-            **_task_metadata(
-                requirements=requirements,
-                learning_clarification=learning_clarification,
-                requirement_cleared=requirement_cleared,
-            ),
-            **_reference_metadata(resolution=resource_resolution),
-            **solver_metadata,
-        },
-    )
-    if requirement_cleared:
-        _clear_task_requirements(lesson)
-    workspace_state.normalize_package_state(package)
-    _save_workspace_for_user(
-        user_id=user_id,
-        workspace=workspace,
-        requirement_history=requirement_history,
-    )
-    return _response(
+    return execute_general_chat(
         workspace=workspace,
         package=package,
         lesson=lesson,
+        user_id=user_id,
+        request=request,
         chatbot_message=chatbot_message,
-        learning_clarification=learning_clarification,
+        chatbot_message_source=chatbot_message_source,
         requirements=requirements,
-        board_decision=board_decision,
-        resource_matches=resource_resolution.matches,
+        learning_clarification=learning_clarification,
+        resource_resolution=resource_resolution,
         selected_reference=selected_reference,
-        requirement_cleared=requirement_cleared,
-        requirement_history=requirement_history if track_initial_requirement_run else None,
+        solver_metadata=solver_metadata,
+        requirement_history=requirement_history,
+        track_initial_requirement_run=track_initial_requirement_run,
+        deps=GeneralChatHandlerDeps(
+            task_metadata=_task_metadata,
+            reference_metadata=_reference_metadata,
+            save_workspace_for_user=_save_workspace_for_user,
+            build_response=_response,
+        ),
     )
 
 
