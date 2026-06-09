@@ -46,7 +46,9 @@ from app.services.chat.handlers.edit_blackboard import (
     execute_board_task_write,
 )
 from app.services.chat.handlers.explain import (
+    BoardExplanationFallbackDeps,
     BoardTaskExplainHandlerDeps,
+    execute_board_explanation_fallback,
     execute_board_task_explain,
 )
 from app.services.chat.handlers.general_chat import GeneralChatHandlerDeps, execute_general_chat
@@ -3498,64 +3500,29 @@ def _chat_response(
     learning_clarification = _latest_learning_clarification(lesson, requirements=requirements)
     if _requests_explanation(request.message) and not is_document_empty(lesson.board_document):
         target_excerpt = selection_or_reference_excerpt or _board_summary(lesson)
-        requirements = _with_task_details(
-            requirements,
-            action_type="explain_target",
-            instruction=request.message,
-        )
-        chatbot_message, chatbot_message_source, board_explanation_directive = _generate_board_directed_explanation_message(
-            lesson=lesson,
-            requirements=requirements,
-            resources=visible_package.resources,
-            conversation=request.conversation,
-            request=request,
-            learning_clarification=learning_clarification,
-            action_type="explain_target",
-            target_excerpt=target_excerpt,
-        )
-        requirement_cleared = bool(chatbot_message)
-        commit_operations(
-            lesson,
-            [],
-            label="Board explanation",
-            message="Answered only after receiving a board-side explanation directive",
-            new_document=lesson.board_document,
-            metadata={
-                "kind": "chat_flow",
-                "user_message": request.message,
-                "assistant_message": chatbot_message,
-                "assistant_message_source": chatbot_message_source,
-                "interaction_mode": request.interaction_mode,
-                "selection": request.selection.model_dump(mode="json") if request.selection else None,
-                **_task_metadata(
-                    requirements=requirements,
-                    learning_clarification=learning_clarification,
-                    requirement_cleared=requirement_cleared,
-                ),
-                "board_explanation_directive": board_explanation_directive,
-                **_reference_metadata(resolution=resource_resolution),
-            },
-        )
-        if requirement_cleared:
-            _clear_task_requirements(lesson)
-        workspace_state.normalize_package_state(package)
-        _save_workspace_for_user(
-            user_id=user_id,
-            workspace=workspace,
-            requirement_history=requirement_history,
-        )
-        return _response(
+        return execute_board_explanation_fallback(
             workspace=workspace,
             package=package,
             lesson=lesson,
-            chatbot_message=chatbot_message,
-            learning_clarification=learning_clarification,
+            user_id=user_id,
+            request=request,
             requirements=requirements,
-            board_decision=BoardDecision(action="no_change", reason="本轮是板书指令授权后的讲解，不修改板书。"),
-            resource_matches=resource_resolution.matches,
+            learning_clarification=learning_clarification,
+            resources=visible_package.resources,
+            target_excerpt=target_excerpt,
+            resource_resolution=resource_resolution,
             selected_reference=selected_reference,
-            requirement_cleared=requirement_cleared,
-            requirement_history=requirement_history if track_initial_requirement_run else None,
+            requirement_history=requirement_history,
+            track_initial_requirement_run=track_initial_requirement_run,
+            deps=BoardExplanationFallbackDeps(
+                with_task_details=_with_task_details,
+                generate_board_directed_explanation_message=_generate_board_directed_explanation_message,
+                task_metadata=_task_metadata,
+                reference_metadata=_reference_metadata,
+                clear_task_requirements=_clear_task_requirements,
+                save_workspace_for_user=_save_workspace_for_user,
+                build_response=_response,
+            ),
         )
 
     free_chat_user_message = (
