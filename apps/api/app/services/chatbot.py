@@ -51,6 +51,8 @@ from app.services.chat.handlers.explain import (
 )
 from app.services.chat.handlers.general_chat import GeneralChatHandlerDeps, execute_general_chat
 from app.services.chat.handlers.initial_board import (
+    InitialBoardGenerationStartDeps,
+    execute_initial_board_generation_start,
     prepare_initial_requirement_for_board_generation as _prepare_initial_requirement_for_board_generation,
     should_track_initial_requirement_run as _should_track_initial_requirement_run,
 )
@@ -2902,131 +2904,26 @@ def _chat_response(
             return board_task_response
 
     if request.board_generation_action == "start":
-        learning_clarification = _latest_learning_clarification(lesson, requirements=requirements)
-        requirements = _with_task_details(
-            requirements,
-            action_type="generate_board",
-            instruction=request.message,
-        )
-        requirements, learning_clarification, frozen_requirement = _prepare_initial_requirement_for_board_generation(
-            requirement_history,
-            enabled=track_initial_requirement_run,
-            requirements=requirements,
-            learning_clarification=learning_clarification,
-        )
-        _checkpoint_initial_requirement_before_generation(
-            user_id=user_id,
+        return execute_initial_board_generation_start(
             workspace=workspace,
             package=package,
             lesson=lesson,
-            requirement_history=requirement_history,
-            requirements=requirements,
-            learning_clarification=learning_clarification,
-            stamp=frozen_requirement,
-        )
-        edit_outcome = generate_from_requirements(
-            lesson=lesson,
-            requirements=requirements,
-            clarification=learning_clarification,
-            resource_summary=_resource_summary(visible_package.resources),
-            requirement_run_id=frozen_requirement.run_id if frozen_requirement else None,
-            frozen_requirement_version_id=frozen_requirement.version_id if frozen_requirement else None,
-        )
-        chatbot_message = edit_outcome.chatbot_message
-        if not edit_outcome.changed:
-            failed_stamp = (
-                requirement_history.generation_failed(
-                    reason=edit_outcome.summary or chatbot_message,
-                    metadata=_board_document_failure_metadata(edit_outcome),
-                )
-                if frozen_requirement is not None
-                else None
-            )
-            workspace_state.normalize_package_state(package)
-            _save_workspace_for_user(
-                user_id=user_id,
-                workspace=workspace,
-                requirement_history=requirement_history,
-            )
-            return _response(
-                workspace=workspace,
-                package=package,
-                lesson=lesson,
-                chatbot_message=chatbot_message,
-                requirements=requirements,
-                learning_clarification=learning_clarification,
-                board_decision=edit_outcome.board_decision,
-                requirement_stamp=failed_stamp,
-                board_document_operation_status=edit_outcome.operation_status,
-                board_document_operation_failure_reason=edit_outcome.failure_reason,
-            )
-        if edit_outcome.changed:
-            refresh_lesson_runtime(lesson, document=edit_outcome.new_document, requirements=requirements)
-            lesson.board_teaching_guide = build_board_teaching_guide(lesson)
-            lesson.board_teaching_progress = None
-            chatbot_message, chatbot_message_source = _post_initial_board_generation_message(
-                lesson=lesson,
-                requirements=requirements,
-                learning_clarification=learning_clarification,
-                resource_summary=_resource_summary(visible_package.resources),
-                edit_outcome=edit_outcome,
-            )
-        requirement_cleared = edit_outcome.changed
-        metadata = {
-            "kind": "board_document_generation",
-            "user_message": request.message,
-            "assistant_message": chatbot_message,
-            "assistant_message_source": chatbot_message_source,
-            "board_editor_message": edit_outcome.chatbot_message,
-            "board_generation_action": request.board_generation_action,
-            "board_edit_operation": edit_outcome.operation,
-            "board_edit_summary": edit_outcome.summary,
-            "board_section_titles": edit_outcome.section_titles,
-            **_board_document_quality_metadata(edit_outcome),
-            **_requirement_history_metadata(
-                frozen_requirement,
-                run_status_after_commit="consumed" if frozen_requirement is not None else None,
-            ),
-            **_task_metadata(
-                requirements=requirements,
-                learning_clarification=learning_clarification,
-                requirement_cleared=requirement_cleared,
-            ),
-        }
-
-        commit_operations(
-            lesson,
-            [],
-            label="Board document generation",
-            message="Generated board document from the learning requirement sheet",
-            new_document=lesson.board_document,
-            metadata=metadata,
-        )
-        consumed_stamp = (
-            requirement_history.consume(commit_id=lesson.history_graph.commits[-1].id)
-            if frozen_requirement is not None
-            else None
-        )
-        if requirement_cleared:
-            _clear_task_requirements(lesson)
-        workspace_state.normalize_package_state(package)
-        _save_workspace_for_user(
             user_id=user_id,
-            workspace=workspace,
-            requirement_history=requirement_history,
-        )
-        return _response(
-            workspace=workspace,
-            package=package,
-            lesson=lesson,
-            chatbot_message=chatbot_message,
+            request=request,
             requirements=requirements,
-            learning_clarification=learning_clarification,
-            board_decision=edit_outcome.board_decision,
-            requirement_cleared=requirement_cleared,
-            requirement_stamp=consumed_stamp,
-            board_document_operation_status=edit_outcome.operation_status,
-            board_document_operation_failure_reason=edit_outcome.failure_reason,
+            resources=visible_package.resources,
+            requirement_history=requirement_history,
+            track_initial_requirement_run=track_initial_requirement_run,
+            deps=InitialBoardGenerationStartDeps(
+                with_task_details=_with_task_details,
+                latest_learning_clarification=_latest_learning_clarification,
+                resource_summary=_resource_summary,
+                checkpoint_initial_requirement_before_generation=_checkpoint_initial_requirement_before_generation,
+                post_initial_board_generation_message=_post_initial_board_generation_message,
+                clear_task_requirements=_clear_task_requirements,
+                save_workspace_for_user=_save_workspace_for_user,
+                build_response=_response,
+            ),
         )
 
     if request.teaching_action in {"continue", "restart"}:
