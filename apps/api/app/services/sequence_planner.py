@@ -1,89 +1,58 @@
 from __future__ import annotations
 
-import re
+from dataclasses import dataclass
 
 from app.models import BoardFocusRef, BoardSegment, BoardTaskRequirementSheet, Lesson
 from app.services.board_segment_index import build_board_segment_index
-from app.services.chat.intent import _compact_text
-from app.services.explanation_atoms import build_atomic_explanation_sequence
+from app.services.explanation_atoms import ATOMIC_EXPLANATION_SEQUENCE_MODE, build_atomic_explanation_sequence
 from app.services.openai_course_ai import BoardTaskRouteDecision
 from app.services.segment_resolver import FocusResolution
-
-
-SEQUENTIAL_EXPLANATION_REQUEST_PATTERN = re.compile(
-    r"(都讲|全都讲|全部讲|都解释|全部解释|逐个|一个个|挨个|依次|按顺序|从头到尾|"
-    r"(?:讲解|解释|讲|说明).{0,12}(?:所有|全部|每个|每一(?:个|道|题|节|小节|部分|段)?|每道|每题|各个)|"
-    r"(?:所有|全部|每个|每一(?:个|道|题|节|小节|部分|段)?|每道|每题|各个).{0,12}(?:都)?(?:讲|讲解|解释|说明))"
+from app.services.turn_intent import (
+    OVERVIEW_EXPLANATION_REQUEST_PATTERN,
+    compact_text,
+    has_collection_target,
+    has_single_target,
+    wants_sequential_explanation,
 )
-COLLECTION_EXPLANATION_TARGET_PATTERN = re.compile(
-    r"(练习|习题|题目|小题|题项|问题|问答|测验|例题|示例题|步骤|条目|项目|"
-    r"exercise|exercises|question|questions|problem|problems|quiz|quizzes|task|tasks)",
-    re.IGNORECASE,
-)
-SINGLE_EXPLANATION_TARGET_PATTERN = re.compile(
-    r"(第\s*[0-9０-９一二三四五六七八九十两]+.{0,8}(?:章|节|小节|部分|段|句|行|题|项|条|步)|"
-    r"(?:练习|习题|题目|小题|题项|问题|问答|测验|例题|示例题|步骤|条目|项目)"
-    r"\s*[0-9０-９一二三四五六七八九十两]+|"
-    r"倒数|选中|这里|这(?:一|个)?(?:段|句|行|题|项|条|步|部分)|某(?:段|句|行|题|项|条|步))",
-    re.IGNORECASE,
-)
-OVERVIEW_EXPLANATION_REQUEST_PATTERN = re.compile(r"(概括|总结|总览|整体把握|大意|框架|梳理(?:框架|结构)?)")
 
 
-def _decision_focus(decision: BoardTaskRouteDecision, resolution: FocusResolution | None) -> BoardFocusRef | None:
-    return decision.target_focus or (resolution.focus if resolution else None)
+@dataclass(frozen=True)
+class SequencePlan:
+    mode: str
+    items: list[BoardFocusRef]
+    start_index: int
+    scope_label: str
+    reason: str
+    planner_name: str
 
 
-def _requests_sequential_explanation(text: str) -> bool:
-    compact = _compact_text(text, limit=120)
-    return bool(compact and SEQUENTIAL_EXPLANATION_REQUEST_PATTERN.search(compact))
+def requests_sequential_explanation(text: str) -> bool:
+    return wants_sequential_explanation(text)
 
 
-def _requests_collection_explanation_sequence(
+def requests_collection_explanation_sequence(
     *,
     board_task: BoardTaskRequirementSheet,
     request_message: str,
 ) -> bool:
     if board_task.requested_action != "explain":
         return False
-    if _requests_sequential_explanation(request_message):
+    if requests_sequential_explanation(request_message):
         return True
-    request_compact = _compact_text(request_message, limit=160)
-    sheet_compact = _compact_text(
+    request_compact = compact_text(request_message, limit=160)
+    sheet_compact = compact_text(
         " ".join(part for part in [board_task.target_hint, board_task.question_or_topic] if part),
         limit=240,
     )
-    combined = _compact_text(" ".join(part for part in [request_compact, sheet_compact] if part), limit=360)
-    if not combined or not COLLECTION_EXPLANATION_TARGET_PATTERN.search(combined):
+    combined = compact_text(" ".join(part for part in [request_compact, sheet_compact] if part), limit=360)
+    if not combined or not has_collection_target(combined):
         return False
-    if SINGLE_EXPLANATION_TARGET_PATTERN.search(combined):
+    if has_single_target(combined):
         return False
     return True
 
 
-def _requests_overview_explanation(text: str) -> bool:
-    compact = _compact_text(text, limit=120)
-    return bool(compact and OVERVIEW_EXPLANATION_REQUEST_PATTERN.search(compact))
-
-
-def _ordered_explanation_candidates(
-    *,
-    decision: BoardTaskRouteDecision,
-    resolution: FocusResolution | None,
-) -> list[BoardFocusRef]:
-    candidates = decision.candidate_focuses or (resolution.candidates if resolution else [])
-    seen: set[tuple[str | None, str]] = set()
-    ordered: list[BoardFocusRef] = []
-    for candidate in candidates:
-        key = (candidate.segment_id, candidate.excerpt)
-        if key in seen:
-            continue
-        seen.add(key)
-        ordered.append(candidate)
-    return ordered
-
-
-def _apply_explicit_sequential_explanation_choice(
+def maybe_apply_sequential_explanation_choice(
     *,
     lesson: Lesson,
     board_task: BoardTaskRequirementSheet,
@@ -95,7 +64,7 @@ def _apply_explicit_sequential_explanation_choice(
         return decision
     if decision.route != "clarify_location" or decision.location_status != "ambiguous":
         return decision
-    if not _requests_collection_explanation_sequence(board_task=board_task, request_message=request_message):
+    if not requests_collection_explanation_sequence(board_task=board_task, request_message=request_message):
         return decision
     candidates = _ordered_explanation_candidates(decision=decision, resolution=resolution)
     if not candidates:
@@ -120,6 +89,89 @@ def _apply_explicit_sequential_explanation_choice(
         ),
         write_proposal=decision.write_proposal,
     )
+
+
+def plan_explanation_sequence(
+    *,
+    lesson: Lesson,
+    board_task: BoardTaskRequirementSheet,
+    decision: BoardTaskRouteDecision,
+    resolution: FocusResolution | None,
+    request_message: str,
+) -> SequencePlan | None:
+    if board_task.requested_action != "explain":
+        return None
+    if _requests_overview_explanation(request_message):
+        return None
+    focus = _decision_focus(decision, resolution)
+    segments = build_board_segment_index(lesson.board_document).segments
+    explicit_sequence = requests_collection_explanation_sequence(
+        board_task=board_task,
+        request_message=request_message,
+    )
+    if explicit_sequence:
+        candidates = decision.candidate_focuses or (resolution.candidates if resolution else [])
+        if focus is not None:
+            candidates = [focus, *candidates]
+        candidates = _dedupe_focuses(candidates)
+        if not candidates:
+            return None
+    else:
+        candidates = [focus] if focus is not None else []
+    scope_heading = _scope_heading_for_explanation_sequence(
+        segments=segments,
+        focus=focus,
+        candidates=candidates,
+        explicit_sequence=explicit_sequence,
+    )
+    if scope_heading is None:
+        return None
+    atomic_items = build_atomic_explanation_sequence(
+        lesson=lesson,
+        segments=segments,
+        scope_heading=scope_heading,
+    )
+    if len(atomic_items) < 2:
+        return None
+    scope_label = " / ".join(scope_heading.heading_path) or scope_heading.text
+    return SequencePlan(
+        mode=ATOMIC_EXPLANATION_SEQUENCE_MODE,
+        items=atomic_items,
+        start_index=0,
+        scope_label=scope_label,
+        reason=(
+            "explicit_collection_explanation"
+            if explicit_sequence
+            else "heading_explanation_contains_multiple_atomic_units"
+        ),
+        planner_name="sequence_planner",
+    )
+
+
+def _decision_focus(decision: BoardTaskRouteDecision, resolution: FocusResolution | None) -> BoardFocusRef | None:
+    return decision.target_focus or (resolution.focus if resolution else None)
+
+
+def _requests_overview_explanation(text: str) -> bool:
+    compact = compact_text(text, limit=120)
+    return bool(compact and OVERVIEW_EXPLANATION_REQUEST_PATTERN.search(compact))
+
+
+def _ordered_explanation_candidates(
+    *,
+    decision: BoardTaskRouteDecision,
+    resolution: FocusResolution | None,
+) -> list[BoardFocusRef]:
+    candidates = decision.candidate_focuses or (resolution.candidates if resolution else [])
+    seen: set[tuple[str | None, str]] = set()
+    ordered: list[BoardFocusRef] = []
+    for candidate in candidates:
+        key = (candidate.segment_id, candidate.excerpt)
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(candidate)
+    return ordered
 
 
 def _path_starts_with(path: list[str], prefix: list[str]) -> bool:
@@ -147,7 +199,7 @@ def _find_heading_segment_by_path(segments: list[BoardSegment], heading_path: li
             for segment in segments
             if segment.kind == "heading"
             and segment.heading_path == heading_path
-            and _compact_text(segment.text, limit=240) == _compact_text(heading_path[-1], limit=240)
+            and compact_text(segment.text, limit=240) == compact_text(heading_path[-1], limit=240)
         ),
         None,
     )
@@ -244,48 +296,3 @@ def _scope_heading_for_explanation_sequence(
     if focus is None or focus.kind != "heading" or not focus.heading_path:
         return None
     return _find_heading_segment_by_path(segments, focus.heading_path)
-
-
-def _section_explanation_sequence(
-    *,
-    lesson: Lesson,
-    board_task: BoardTaskRequirementSheet,
-    decision: BoardTaskRouteDecision,
-    resolution: FocusResolution | None,
-    request_message: str,
-) -> list[BoardFocusRef]:
-    if board_task.requested_action != "explain":
-        return []
-    if _requests_overview_explanation(request_message):
-        return []
-    focus = _decision_focus(decision, resolution)
-    segments = build_board_segment_index(lesson.board_document).segments
-    explicit_sequence = _requests_collection_explanation_sequence(
-        board_task=board_task,
-        request_message=request_message,
-    )
-    if explicit_sequence:
-        candidates = decision.candidate_focuses or (resolution.candidates if resolution else [])
-        if focus is not None:
-            candidates = [focus, *candidates]
-        candidates = _dedupe_focuses(candidates)
-        if not candidates:
-            return []
-    else:
-        candidates = [focus] if focus is not None else []
-    scope_heading = _scope_heading_for_explanation_sequence(
-        segments=segments,
-        focus=focus,
-        candidates=candidates,
-        explicit_sequence=explicit_sequence,
-    )
-    if scope_heading is None:
-        return []
-    atomic_items = build_atomic_explanation_sequence(
-        lesson=lesson,
-        segments=segments,
-        scope_heading=scope_heading,
-    )
-    if len(atomic_items) < 2:
-        return []
-    return atomic_items

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from app.models import ChatRequest, ChatResponse, ConversationTurn
-from app.services.chatbot import document_ai_edit_request as _document_ai_edit_request
-from app.services.chatbot import process_chat_on_lesson as _process_chat_on_lesson
+from app.services.chat_turn_orchestrator import document_ai_edit_request as _document_ai_edit_request
+from app.services.chat_turn_orchestrator import process_chat_on_lesson as _process_chat_on_lesson
 from app.services.history import bind_commit_metadata
 
 

@@ -1,43 +1,52 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
+from typing import Literal
 
 from app.models import (
+    BoardFocusRef,
+    BoardTaskConfirmationStatus,
+    BoardTaskLocationStatus,
     BoardTaskRequirementSheet,
     BoardTaskRequestedAction,
+    ChatInteractionMode,
     ConversationTurn,
     InteractionRuleDraft,
     Lesson,
     ResourceLibraryItem,
     SelectionRef,
 )
+from app.services.board_task_decider import (
+    BoardTaskActionDecision,
+    decide_board_task_action,
+    decide_board_task_requested_action,
+)
 from app.services.openai_course_ai import openai_course_ai
+from app.services.turn_intent import (
+    extract_target_hint,
+    extract_intent_signals,
+    has_structured_location_hint,
+    has_explicit_resource_reference,
+)
 
 
-WRITE_PATTERN = re.compile(r"(写|编写|生成|设计|创建|新增|追加|补充|扩写|添加|加一段|加一节|加入)")
-EDIT_PATTERN = re.compile(
-    r"(改|修改|改写|重写|编辑|润色|优化|简化|扩展|缩短|改短|调整|精简|压缩|太长|篇幅|"
-    r"控制.{0,8}(?:以内|以下)|[0-9０-９一二三四五六七八九十两]+.{0,8}(?:以内|以下))"
-)
-EXPLAIN_PATTERN = re.compile(
-    r"(讲解|讲述|解释|说明|讲一下|解释一下|帮我理解|为什么|是什么|什么意思|是什么意思|什么含义|含义|"
-    r"(?:怎么|如何|怎样).{0,12}(?:表达|体现|说明|运用|使用|写出|看出|表现))"
-)
-STRONG_EXPLAIN_PATTERN = re.compile(
-    r"(讲解|讲述|解释|讲一下|解释一下|帮我理解|为什么|是什么|什么意思|是什么意思|什么含义|含义|"
-    r"(?:怎么|如何|怎样).{0,12}(?:表达|体现|说明|运用|使用|写出|看出|表现))"
-)
-CHAT_PATTERN = re.compile(r"(练习|互动|你问我答|问答|角色|轮流|按.{0,12}规则|对话|测验|检查我)")
 CONFIRM_PATTERN = re.compile(r"^(好|好的|可以|确认|扩写|写吧|加吧|开始|继续|就这样|按这个来|是|要)$")
 DECLINE_PATTERN = re.compile(r"^(不用|不要|先不|取消|算了|否|不用写|别写)$")
 GENERIC_REFERENCE_PATTERN = re.compile(r"(这里|这个|这段|这一段|上述|上面|下面|前面|后面|该部分|选中)")
-ORDINAL_HINT_PATTERN = re.compile(r"(第\s*[0-9０-９一二三四五六七八九十两]+|[0-9０-９一二三四五六七八九十两]+\s*[.．、:：)）])")
-TARGET_BEFORE_ACTION_PATTERN = re.compile(
-    r"(?:在|把|对|给)?(?P<hint>[^，。！？!?；;\n\r]{1,80}?)"
-    r"(?:里|中|下|后面|前面|旁边|部分|这一段|这段)"
-    r"[^，。！？!?；;\n\r]{0,24}?"
-    r"(?:写|编写|生成|设计|创建|新增|追加|补充|扩写|添加|改|修改|改写|重写|编辑|润色|优化|简化|精简|压缩|缩短|改短|讲解|解释|说明)"
-)
+
+
+@dataclass(frozen=True)
+class BoardTaskIntentPatch:
+    requested_action: BoardTaskRequestedAction | None = None
+    target_hint: str = ""
+    question_or_topic: str = ""
+    interaction_rule_draft: InteractionRuleDraft | None = None
+    confirmation_status: BoardTaskConfirmationStatus | None = None
+    source: Literal["ai_sheet", "fallback", "selection", "existing"] = "fallback"
+    target_location: BoardFocusRef | None = None
+    location_status: BoardTaskLocationStatus | None = None
+    clarification_question: str = ""
 
 
 def update_board_task_from_chat(
@@ -60,13 +69,72 @@ def update_board_task_from_chat(
         user_message=user_message,
         selection_excerpt=selection_excerpt,
     )
-    base = ai_sheet or _fallback_board_task_sheet(
+    patch = _intent_patch_from_ai_sheet(ai_sheet) if ai_sheet is not None else _fallback_intent_patch(
         user_message=user_message,
         selection=selection,
         selection_excerpt=selection_excerpt,
         existing=existing,
+        interaction_mode="ask",
+        document_empty=False,
     )
-    return normalize_board_task_sheet(base, selection=selection, selection_excerpt=selection_excerpt)
+    return update_board_task_from_intent(
+        patch=patch,
+        selection=selection,
+        selection_excerpt=selection_excerpt,
+        existing=existing,
+    )
+
+
+def update_board_task_from_intent(
+    *,
+    patch: BoardTaskIntentPatch,
+    selection: SelectionRef | None = None,
+    selection_excerpt: str | None = None,
+    existing: BoardTaskRequirementSheet | None = None,
+) -> BoardTaskRequirementSheet:
+    sheet = (
+        BoardTaskRequirementSheet.model_validate(existing.model_dump(mode="json"))
+        if existing
+        else BoardTaskRequirementSheet()
+    )
+    replace_existing = patch.source == "ai_sheet"
+
+    if patch.requested_action is not None or replace_existing:
+        sheet.requested_action = patch.requested_action
+    if patch.target_location is not None or replace_existing:
+        sheet.target_location = patch.target_location
+    if patch.location_status is not None:
+        sheet.location_status = patch.location_status
+    if patch.confirmation_status is not None:
+        sheet.confirmation_status = patch.confirmation_status
+    if patch.clarification_question or replace_existing:
+        sheet.clarification_question = patch.clarification_question
+
+    if selection_excerpt:
+        sheet.target_hint = _compact_text(selection_excerpt, limit=240)
+        sheet.location_status = "selected"
+    elif patch.target_hint:
+        sheet.target_hint = patch.target_hint if replace_existing else sheet.target_hint or patch.target_hint
+    elif replace_existing:
+        sheet.target_hint = ""
+
+    if patch.question_or_topic:
+        sheet.question_or_topic = (
+            patch.question_or_topic if replace_existing else sheet.question_or_topic or patch.question_or_topic
+        )
+    elif replace_existing:
+        sheet.question_or_topic = ""
+
+    if patch.interaction_rule_draft is not None:
+        sheet.interaction_rule_draft = (
+            patch.interaction_rule_draft
+            if replace_existing
+            else sheet.interaction_rule_draft or patch.interaction_rule_draft
+        )
+    elif replace_existing:
+        sheet.interaction_rule_draft = None
+
+    return normalize_board_task_sheet(sheet, selection=selection, selection_excerpt=selection_excerpt)
 
 
 def normalize_board_task_sheet(
@@ -134,6 +202,75 @@ def make_write_task_from_topic(topic: str) -> BoardTaskRequirementSheet:
     )
 
 
+def _intent_patch_from_ai_sheet(sheet: BoardTaskRequirementSheet) -> BoardTaskIntentPatch:
+    return BoardTaskIntentPatch(
+        requested_action=sheet.requested_action,
+        target_hint=sheet.target_hint,
+        question_or_topic=sheet.question_or_topic,
+        interaction_rule_draft=sheet.interaction_rule_draft,
+        confirmation_status=sheet.confirmation_status,
+        source="ai_sheet",
+        target_location=sheet.target_location,
+        location_status=sheet.location_status,
+        clarification_question=sheet.clarification_question,
+    )
+
+
+def _fallback_intent_patch(
+    *,
+    user_message: str,
+    selection: SelectionRef | None,
+    selection_excerpt: str | None,
+    existing: BoardTaskRequirementSheet | None,
+    interaction_mode: ChatInteractionMode,
+    document_empty: bool,
+) -> BoardTaskIntentPatch:
+    # AI 没有返回任务单时，只把本轮意图整理成 patch；合并和缺项计算交给 update/normalize。
+    message = _compact_text(user_message, limit=280)
+    signals = extract_intent_signals(message)
+    decision = decide_board_task_action(
+        message=message,
+        signals=signals,
+        has_selection=bool(selection_excerpt),
+        document_empty=document_empty,
+        interaction_mode=interaction_mode,
+        board_generation_action=None,
+        has_explicit_resource_reference=has_explicit_resource_reference(message),
+    )
+    action = _infer_action(message, decision=decision)
+    target_hint = ""
+    if selection_excerpt:
+        target_hint = _compact_text(selection_excerpt, limit=240)
+    else:
+        extracted_hint = _extract_target_hint(message)
+        if extracted_hint:
+            target_hint = extracted_hint
+        elif _has_structured_location_hint(message):
+            target_hint = message
+    question_or_topic = _extract_topic(message)
+    interaction_rule_draft = None
+    if action == "chat":
+        interaction_rule_draft = InteractionRuleDraft(
+            should_start=True,
+            rule_text=message,
+            interaction_goal=question_or_topic or message,
+            target_hint=target_hint,
+            expected_user_behavior="用户按自己提出的互动方式回应。",
+            assistant_behavior="Chatbot 按用户提出的互动方式推进交流。",
+            reference_instruction="只围绕当前板书定位到的内容互动。",
+        )
+    source: Literal["ai_sheet", "fallback", "selection", "existing"] = "selection" if selection_excerpt else "fallback"
+    if existing is not None and not any([action, target_hint, question_or_topic, interaction_rule_draft]):
+        source = "existing"
+    return BoardTaskIntentPatch(
+        requested_action=action,
+        target_hint=target_hint,
+        question_or_topic=question_or_topic,
+        interaction_rule_draft=interaction_rule_draft,
+        source=source,
+    )
+
+
 def _fallback_board_task_sheet(
     *,
     user_message: str,
@@ -141,37 +278,20 @@ def _fallback_board_task_sheet(
     selection_excerpt: str | None,
     existing: BoardTaskRequirementSheet | None,
 ) -> BoardTaskRequirementSheet:
-    # AI 没有返回任务单时，用通用动作词兜底；这里不能写学科或教材关键词分支。
-    sheet = (
-        BoardTaskRequirementSheet.model_validate(existing.model_dump(mode="json"))
-        if existing
-        else BoardTaskRequirementSheet()
+    # 兼容旧测试/调试入口；实际更新路径已经走 BoardTaskIntentPatch。
+    return update_board_task_from_intent(
+        patch=_fallback_intent_patch(
+            user_message=user_message,
+            selection=selection,
+            selection_excerpt=selection_excerpt,
+            existing=existing,
+            interaction_mode="ask",
+            document_empty=False,
+        ),
+        selection=selection,
+        selection_excerpt=selection_excerpt,
+        existing=existing,
     )
-    message = _compact_text(user_message, limit=280)
-    action = _infer_action(message) or sheet.requested_action
-    sheet.requested_action = action
-    if selection_excerpt:
-        sheet.target_hint = _compact_text(selection_excerpt, limit=240)
-        sheet.location_status = "selected"
-    else:
-        target_hint = _extract_target_hint(message)
-        if target_hint:
-            sheet.target_hint = sheet.target_hint or target_hint
-        elif _has_structured_location_hint(message):
-            sheet.target_hint = sheet.target_hint or message
-    if not sheet.question_or_topic:
-        sheet.question_or_topic = _extract_topic(message)
-    if action == "chat":
-        sheet.interaction_rule_draft = sheet.interaction_rule_draft or InteractionRuleDraft(
-            should_start=True,
-            rule_text=message,
-            interaction_goal=sheet.question_or_topic or message,
-            target_hint=sheet.target_hint,
-            expected_user_behavior="用户按自己提出的互动方式回应。",
-            assistant_behavior="Chatbot 按用户提出的互动方式推进交流。",
-            reference_instruction="只围绕当前板书定位到的内容互动。",
-        )
-    return sheet
 
 
 def _has_target_signal(sheet: BoardTaskRequirementSheet) -> bool:
@@ -192,32 +312,26 @@ def _has_target_signal(sheet: BoardTaskRequirementSheet) -> bool:
     )
 
 
-def _infer_action(text: str) -> BoardTaskRequestedAction | None:
+def _infer_action(text: str, decision: BoardTaskActionDecision | None = None) -> BoardTaskRequestedAction | None:
     # 只把学生话语归类为通用动作：写、改、讲解或互动。
-    has_write = bool(WRITE_PATTERN.search(text))
-    if EXPLAIN_PATTERN.search(text) and (not has_write or STRONG_EXPLAIN_PATTERN.search(text)):
-        return "explain"
-    if EDIT_PATTERN.search(text):
-        return "edit"
-    if has_write:
-        return "write"
-    if CHAT_PATTERN.search(text):
-        return "chat"
-    return None
+    action_decision = decision or decide_board_task_action(
+        message=text,
+        signals=extract_intent_signals(text),
+        has_selection=False,
+        document_empty=False,
+        interaction_mode="ask",
+        board_generation_action=None,
+        has_explicit_resource_reference=has_explicit_resource_reference(text),
+    )
+    return decide_board_task_requested_action(message=text, decision=action_decision)
 
 
 def _has_structured_location_hint(text: str) -> bool:
-    return bool(ORDINAL_HINT_PATTERN.search(text))
+    return has_structured_location_hint(text)
 
 
 def _extract_target_hint(text: str) -> str:
-    match = TARGET_BEFORE_ACTION_PATTERN.search(text)
-    if not match:
-        return ""
-    hint = _compact_text(match.group("hint"), limit=160)
-    hint = re.sub(r"^(请|帮我|你能不能|能不能|可以|可以为我|为我)\s*", "", hint)
-    hint = hint.strip(" ：:，,。！？!?；;\"'“”‘’")
-    return "" if _is_only_generic_reference(hint) else hint
+    return extract_target_hint(text)
 
 
 def _extract_topic(text: str) -> str:

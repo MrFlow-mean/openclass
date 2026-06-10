@@ -33,7 +33,7 @@ from app.services.ai_logging import ai_log_context, ai_usage_logger, current_ai_
 from app.services.board_segment_index import build_board_segment_index, segment_text_hash
 from app.services.board_document_editor import edit_existing_document
 from app.services import chat_service, workspace_state
-from app.services import chatbot as chatbot_module
+from app.services import chat_turn_orchestrator as chatbot_module
 from app.services.board_explanation_gate import generate_board_directed_explanation_message
 from app.services.course_runtime import refresh_lesson_runtime
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
@@ -6248,6 +6248,107 @@ def test_rule_based_interaction_start_creates_session_and_clears_task_sheet(
     assert commit.metadata["active_interaction_session_after"]["status"] == "active"
     events = store.list_board_task_events(owner_user_id=TEST_USER.id, lesson_id=lesson.id)
     assert events[-1]["event_type"] == "consumed"
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_roleplay_request_starts_interaction_before_general_chatbot_reply(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    captured_contexts: list[dict | None] = []
+
+    def _fake_chatbot_reply(**kwargs):
+        interaction_context = kwargs.get("interaction_context")
+        captured_contexts.append(interaction_context)
+        if interaction_context is None:
+            raise AssertionError("role-play start must not stream a general Chatbot reply first")
+        return ChatbotReply(chatbot_message="AI生成：服务员角色开场。")
+
+    def _unexpected_requirement_update(**kwargs):
+        raise AssertionError("interaction start should use the existing-board task flow before general chat")
+
+    monkeypatch.setattr(openai_course_ai, "generate_chatbot_reply", _fake_chatbot_reply)
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _unexpected_requirement_update)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_board_task_requirement_sheet",
+        lambda **kwargs: BoardTaskRequirementSheet(
+            target_hint="咖啡馆点餐对话场景",
+            location_status="missing",
+            requested_action="chat",
+            question_or_topic="模拟咖啡馆点餐角色对话。",
+            interaction_rule_draft=InteractionRuleDraft(
+                should_start=True,
+                rule_text="用户和 Chatbot 分别扮演角色，围绕目标场景进行对话练习。",
+                interaction_goal="练习目标场景中的角色对话。",
+                target_hint="咖啡馆点餐对话场景",
+                expected_user_behavior="用户保持自己选择的角色身份进行回应。",
+                assistant_behavior="Chatbot 扮演配对角色，自然推动对话。",
+                reference_instruction="围绕已定位的目标场景互动。",
+            ),
+            progress=100,
+            missing_items=[],
+        ),
+    )
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.board_document = build_document(
+        title="已有板书",
+        content_text=(
+            "# 目标场景\n"
+            "## 咖啡馆点餐对话\n"
+            "Serveur : Bonjour monsieur, vous désirez ?\n"
+            "Marc : Un expresso, s'il vous plaît."
+        ),
+    )
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    index = build_board_segment_index(lesson.board_document)
+    target_segment = next(segment for segment in index.segments if "Serveur : Bonjour" in segment.text)
+    target_focus = BoardFocusRef(
+        source="board",
+        lesson_id=lesson.id,
+        document_id=lesson.board_document.id,
+        segment_id=target_segment.segment_id,
+        kind=target_segment.kind,
+        heading_path=target_segment.heading_path,
+        excerpt=target_segment.text,
+        confidence=0.95,
+        reason="测试固定定位到角色对话片段。",
+        display_label=" / ".join(target_segment.heading_path),
+        source_segment_ids=[target_segment.segment_id],
+        order_start=target_segment.order_index,
+        order_end=target_segment.order_index,
+    )
+    monkeypatch.setattr(
+        chatbot_module,
+        "resolve_board_focus",
+        lambda **kwargs: chatbot_module.FocusResolution(
+            focus=target_focus,
+            candidates=[target_focus],
+            status="resolved",
+            question="",
+        ),
+    )
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="我扮演Marc，我们模拟对话"),
+        user_id=TEST_USER.id,
+    )
+
+    assert response.chatbot_message == "AI生成：服务员角色开场。"
+    assert response.active_interaction_session is not None
+    assert response.active_interaction_session.status == "active"
+    assert response.active_board_task_sheet is None
+    assert len(captured_contexts) == 1
+    assert captured_contexts[0] is not None
+    commit = response.course_package.lessons[0].history_graph.commits[-1]
+    assert commit.metadata["kind"] == "interaction_flow"
+    assert commit.metadata["assistant_message_source"] == "chatbot_interaction"
+    assert commit.metadata["board_task_route"] == "chat"
     assert _read_log_entries(isolated_ai_log) == []
 
 

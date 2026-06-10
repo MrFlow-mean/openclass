@@ -28,6 +28,12 @@ from app.services.history import commit_operations
 from app.services.interaction_rules import interaction_context_payload, interaction_session_metadata
 from app.services.learning_requirement_history import LearningRequirementHistoryRecorder
 from app.services.openai_course_ai import BoardTaskRouteDecision, openai_course_ai
+from app.services.sequence_planner import (
+    maybe_apply_sequential_explanation_choice,
+    plan_explanation_sequence,
+    requests_collection_explanation_sequence,
+    requests_sequential_explanation,
+)
 from app.services.segment_resolver import FocusResolution, focus_context
 
 
@@ -49,6 +55,35 @@ class SequenceRuntime:
     save_workspace_for_user: Callable[..., None]
 
 
+def _requests_sequential_explanation(text: str) -> bool:
+    return requests_sequential_explanation(text)
+
+
+def _requests_collection_explanation_sequence(
+    *,
+    board_task: BoardTaskRequirementSheet,
+    request_message: str,
+) -> bool:
+    return requests_collection_explanation_sequence(board_task=board_task, request_message=request_message)
+
+
+def _apply_explicit_sequential_explanation_choice(
+    *,
+    lesson: Lesson,
+    board_task: BoardTaskRequirementSheet,
+    decision: BoardTaskRouteDecision,
+    resolution: FocusResolution | None,
+    request_message: str,
+) -> BoardTaskRouteDecision:
+    return maybe_apply_sequential_explanation_choice(
+        lesson=lesson,
+        board_task=board_task,
+        decision=decision,
+        resolution=resolution,
+        request_message=request_message,
+    )
+
+
 def _is_current_sequence_followup(text: str) -> bool:
     compact = _compact_text(text, limit=160)
     if not compact:
@@ -60,6 +95,24 @@ def _is_current_sequence_followup(text: str) -> bool:
     if _requests_explanation(compact):
         return True
     return bool(re.search(r"(这个|这里|这段|刚才|上面|为什么|怎么|如何|哪里|哪儿|吗|呢|？|\?)", compact))
+
+
+def _section_explanation_sequence(
+    *,
+    lesson: Lesson,
+    board_task: BoardTaskRequirementSheet,
+    decision: BoardTaskRouteDecision,
+    resolution: FocusResolution | None,
+    request_message: str,
+) -> list[BoardFocusRef]:
+    plan = plan_explanation_sequence(
+        lesson=lesson,
+        board_task=board_task,
+        decision=decision,
+        resolution=resolution,
+        request_message=request_message,
+    )
+    return plan.items if plan is not None else []
 
 
 def _section_sequence_instruction(

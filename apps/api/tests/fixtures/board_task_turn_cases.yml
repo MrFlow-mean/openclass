@@ -1,0 +1,373 @@
+[
+  {
+    "id": "blank_learning_topic",
+    "title": "空白板书 + 我想学 X",
+    "coverage": "空白板书时，学习请求进入学习需求收集，不进入已有板书任务流。",
+    "board_state": "blank",
+    "user_message": "我想学一次函数",
+    "request": {
+      "has_selection": false,
+      "interaction_mode": "ask",
+      "board_generation_action": null,
+      "resource_reference": false,
+      "active_sequence": false
+    },
+    "contract": {
+      "entry": "initial_board",
+      "trigger": "collect_learning_requirement",
+      "chatbot_board_action": null,
+      "board_task_requested_action": null,
+      "route": "clarify_requirement",
+      "write_gate": "blocked_until_requirement_frozen",
+      "priority": ["blank_document_boundary"],
+      "sequence": false
+    },
+    "current_baseline": {
+      "chatbot_board_action": null,
+      "board_task_requested_action": null
+    }
+  },
+  {
+    "id": "blank_generate_board",
+    "title": "空白板书 + 生成板书",
+    "coverage": "空白板书时，明确生成动作进入 generate_board，不进入已有板书任务流。",
+    "board_state": "blank",
+    "user_message": "生成板书",
+    "request": {
+      "has_selection": false,
+      "interaction_mode": "ask",
+      "board_generation_action": "start",
+      "resource_reference": false,
+      "active_sequence": false
+    },
+    "contract": {
+      "entry": "initial_board",
+      "trigger": "generate_board",
+      "chatbot_board_action": "generate_board",
+      "board_task_requested_action": null,
+      "route": "generate_board",
+      "write_gate": "allowed_after_requirement_freeze",
+      "priority": ["blank_document_boundary"],
+      "sequence": false
+    },
+    "current_baseline": {
+      "chatbot_board_action": "generate_board",
+      "board_task_requested_action": null
+    }
+  },
+  {
+    "id": "existing_explain_selection",
+    "title": "已有板书 + 讲解这一段",
+    "coverage": "有板书选区时，选区优先，讲解必须走 board task 和 board explanation directive。",
+    "board_state": "existing",
+    "user_message": "讲解这一段",
+    "request": {
+      "has_selection": true,
+      "interaction_mode": "ask",
+      "board_generation_action": null,
+      "resource_reference": false,
+      "active_sequence": false
+    },
+    "contract": {
+      "entry": "existing_board_task",
+      "trigger": "explain",
+      "chatbot_board_action": "explain_target",
+      "board_task_requested_action": "explain",
+      "route": "explain",
+      "write_gate": "blocked_explain_only",
+      "priority": ["selection", "target_hint"],
+      "sequence": false
+    },
+    "current_baseline": {
+      "chatbot_board_action": "explain_target",
+      "board_task_requested_action": "explain",
+      "board_task_progress": 75,
+      "board_task_missing_items": ["问题内容"],
+      "location_status": "selected",
+      "known_gap": "已有选区和讲解动作时，任务单仍缺 question_or_topic，可能先澄清而不是直接进入讲解 directive。"
+    },
+    "contract_xfail": "选区 + 讲解动作应该足以形成可执行 explain task；当前任务单仍要求问题内容。"
+  },
+  {
+    "id": "existing_explain_section_2",
+    "title": "已有板书 + 解释第 2 节",
+    "coverage": "结构化位置线索进入 explain，后续应由定位器解析第 2 节。",
+    "board_state": "existing",
+    "user_message": "解释第 2 节",
+    "request": {
+      "has_selection": false,
+      "interaction_mode": "ask",
+      "board_generation_action": null,
+      "resource_reference": false,
+      "active_sequence": false
+    },
+    "contract": {
+      "entry": "existing_board_task",
+      "trigger": "explain",
+      "chatbot_board_action": "explain_target",
+      "board_task_requested_action": "explain",
+      "route": "explain_or_clarify_location",
+      "write_gate": "blocked_explain_only",
+      "priority": ["target_hint", "ordinal_locator"],
+      "sequence": false
+    },
+    "current_baseline": {
+      "chatbot_board_action": "explain_target",
+      "board_task_requested_action": "explain",
+      "board_task_progress": 100,
+      "board_task_missing_items": [],
+      "location_status": "missing"
+    }
+  },
+  {
+    "id": "existing_simplify_selection",
+    "title": "已有板书 + 把这段改简单点",
+    "coverage": "有选区的简化请求进入 edit，必须先定位到选区再写入。",
+    "board_state": "existing",
+    "user_message": "把这段改简单点",
+    "request": {
+      "has_selection": true,
+      "interaction_mode": "ask",
+      "board_generation_action": null,
+      "resource_reference": false,
+      "active_sequence": false
+    },
+    "contract": {
+      "entry": "existing_board_task",
+      "trigger": "edit",
+      "chatbot_board_action": "simplify_target",
+      "board_task_requested_action": "edit",
+      "route": "edit",
+      "write_gate": "allowed_after_selected_target",
+      "priority": ["selection", "edit_intent"],
+      "sequence": false
+    },
+    "current_baseline": {
+      "chatbot_board_action": "simplify_target",
+      "board_task_requested_action": "edit",
+      "board_task_progress": 100,
+      "board_task_missing_items": [],
+      "location_status": "selected"
+    }
+  },
+  {
+    "id": "existing_add_example",
+    "title": "已有板书 + 补充一个例子",
+    "coverage": "补充新内容应进入 write gate；没有明确位置时不能猜测写入。",
+    "board_state": "existing",
+    "user_message": "补充一个例子",
+    "request": {
+      "has_selection": false,
+      "interaction_mode": "ask",
+      "board_generation_action": null,
+      "resource_reference": false,
+      "active_sequence": false
+    },
+    "contract": {
+      "entry": "existing_board_task",
+      "trigger": "write",
+      "chatbot_board_action": "append_section",
+      "board_task_requested_action": "write",
+      "route": "write_or_await_write_confirmation",
+      "write_gate": "clarify_or_confirm_before_write",
+      "priority": ["write_intent", "target_hint"],
+      "sequence": false
+    },
+    "current_baseline": {
+      "chatbot_board_action": "expand_target",
+      "board_task_requested_action": "write",
+      "board_task_progress": 100,
+      "board_task_missing_items": [],
+      "location_status": "missing",
+      "known_gap": "chatbot intent 将“补充”判为 expand_target，board_task_manager 将它判为 write，动作判断仍是双源。"
+    },
+    "contract_xfail": "补充新例子应统一归入 write/append，而不是在 chatbot 侧表现为 expand_target。"
+  },
+  {
+    "id": "existing_explain_all_sections",
+    "title": "已有板书 + 讲解所有小节",
+    "coverage": "集合型讲解触发 sequence explanation，而不是一次性泛讲全文。",
+    "board_state": "existing",
+    "user_message": "讲解所有小节",
+    "request": {
+      "has_selection": false,
+      "interaction_mode": "ask",
+      "board_generation_action": null,
+      "resource_reference": false,
+      "active_sequence": false
+    },
+    "contract": {
+      "entry": "existing_board_task",
+      "trigger": "explain_sequence",
+      "chatbot_board_action": "explain_target",
+      "board_task_requested_action": "explain",
+      "route": "start_sequence",
+      "write_gate": "blocked_explain_only",
+      "priority": ["explicit_sequence", "whole_collection"],
+      "sequence": true
+    },
+    "current_baseline": {
+      "chatbot_board_action": "explain_target",
+      "board_task_requested_action": "explain",
+      "board_task_progress": 100,
+      "board_task_missing_items": [],
+      "location_status": "missing",
+      "sequence_requested": true
+    }
+  },
+  {
+    "id": "existing_explain_exercises",
+    "title": "已有板书 + 为我讲解练习题",
+    "coverage": "练习题是集合目标，默认进入 sequence explanation。",
+    "board_state": "existing",
+    "user_message": "为我讲解练习题",
+    "request": {
+      "has_selection": false,
+      "interaction_mode": "ask",
+      "board_generation_action": null,
+      "resource_reference": false,
+      "active_sequence": false
+    },
+    "contract": {
+      "entry": "existing_board_task",
+      "trigger": "explain_sequence",
+      "chatbot_board_action": "explain_target",
+      "board_task_requested_action": "explain",
+      "route": "start_sequence",
+      "write_gate": "blocked_explain_only",
+      "priority": ["collection_target", "target_hint"],
+      "sequence": true
+    },
+    "current_baseline": {
+      "chatbot_board_action": "explain_target",
+      "board_task_requested_action": "explain",
+      "board_task_progress": 100,
+      "board_task_missing_items": [],
+      "location_status": "missing",
+      "sequence_requested": true
+    }
+  },
+  {
+    "id": "existing_explain_question_2",
+    "title": "已有板书 + 讲解第 2 题",
+    "coverage": "单题讲解是单点 explain，不应启动 sequence。",
+    "board_state": "existing",
+    "user_message": "讲解第 2 题",
+    "request": {
+      "has_selection": false,
+      "interaction_mode": "ask",
+      "board_generation_action": null,
+      "resource_reference": false,
+      "active_sequence": false
+    },
+    "contract": {
+      "entry": "existing_board_task",
+      "trigger": "explain",
+      "chatbot_board_action": "explain_target",
+      "board_task_requested_action": "explain",
+      "route": "explain_or_clarify_location",
+      "write_gate": "blocked_explain_only",
+      "priority": ["target_hint", "structured_item_locator"],
+      "sequence": false
+    },
+    "current_baseline": {
+      "chatbot_board_action": "explain_target",
+      "board_task_requested_action": "explain",
+      "board_task_progress": 100,
+      "board_task_missing_items": [],
+      "location_status": "missing",
+      "sequence_requested": false
+    }
+  },
+  {
+    "id": "existing_sequence_continue",
+    "title": "已有板书 + 继续",
+    "coverage": "已有 active sequence 时，继续应推进 sequence，不重新建立 board task。",
+    "board_state": "existing",
+    "user_message": "继续",
+    "request": {
+      "has_selection": false,
+      "interaction_mode": "ask",
+      "board_generation_action": null,
+      "resource_reference": false,
+      "active_sequence": true
+    },
+    "contract": {
+      "entry": "interaction_sequence",
+      "trigger": "continue_sequence",
+      "chatbot_board_action": null,
+      "board_task_requested_action": null,
+      "route": "continue_sequence",
+      "write_gate": "blocked_sequence_only",
+      "priority": ["active_interaction_session"],
+      "sequence": true
+    },
+    "current_baseline": {
+      "chatbot_board_action": null,
+      "board_task_requested_action": null,
+      "sequence_continue": true,
+      "sequence_exit": false
+    }
+  },
+  {
+    "id": "existing_sequence_exit",
+    "title": "已有板书 + 不用继续了",
+    "coverage": "已有 active sequence 时，退出语句应结束 sequence，不进入普通聊天或写入。",
+    "board_state": "existing",
+    "user_message": "不用继续了",
+    "request": {
+      "has_selection": false,
+      "interaction_mode": "ask",
+      "board_generation_action": null,
+      "resource_reference": false,
+      "active_sequence": true
+    },
+    "contract": {
+      "entry": "interaction_sequence",
+      "trigger": "exit_sequence",
+      "chatbot_board_action": null,
+      "board_task_requested_action": null,
+      "route": "exit_sequence",
+      "write_gate": "blocked_sequence_only",
+      "priority": ["active_interaction_session"],
+      "sequence": false
+    },
+    "current_baseline": {
+      "chatbot_board_action": null,
+      "board_task_requested_action": null,
+      "sequence_continue": false,
+      "sequence_exit": true
+    }
+  },
+  {
+    "id": "existing_resource_explain_selection",
+    "title": "已有板书 + 根据资料解释这段",
+    "coverage": "资料引用不能替代板书目标；有选区时仍以选区为解释对象，资料只做参考。",
+    "board_state": "existing",
+    "user_message": "根据资料解释这段",
+    "request": {
+      "has_selection": true,
+      "interaction_mode": "ask",
+      "board_generation_action": null,
+      "resource_reference": true,
+      "active_sequence": false
+    },
+    "contract": {
+      "entry": "existing_board_task",
+      "trigger": "explain_with_resource_reference",
+      "chatbot_board_action": "explain_target",
+      "board_task_requested_action": "explain",
+      "route": "explain",
+      "write_gate": "blocked_explain_only",
+      "priority": ["selection", "resource_reference"],
+      "sequence": false
+    },
+    "current_baseline": {
+      "chatbot_board_action": "explain_target",
+      "board_task_requested_action": "explain",
+      "board_task_progress": 100,
+      "board_task_missing_items": [],
+      "location_status": "selected"
+    }
+  }
+]
