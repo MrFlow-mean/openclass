@@ -4,16 +4,68 @@ import json
 import queue
 import threading
 from collections.abc import Iterator
+from dataclasses import dataclass
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
-from app.models import ChatRequest, ChatResponse, UserView
+from app.models import ChatRequest, ChatResponse, UserView, new_id, now_iso
 from app.routers.auth import current_user
+from app.services.ai_logging import ai_log_context, ai_usage_logger
 from app.services.chat_service import process_chat_on_lesson
 from app.services.openai_course_ai import bind_ai_output_stream
 
 router = APIRouter()
+CHAT_STREAM_HEARTBEAT_SECONDS = 10.0
+
+
+@dataclass
+class ChatStreamState:
+    trace_id: str
+    lesson_id: str
+    user_id: str
+    user_message_excerpt: str
+    last_phase: str = "request"
+    final_enqueued: bool = False
+    final_yielded: bool = False
+    error_enqueued: bool = False
+    produced_commit_id: str | None = None
+
+
+def _message_excerpt(message: str, limit: int = 180) -> str:
+    compact = " ".join(message.split())
+    if len(compact) <= limit:
+        return compact
+    return f"{compact[: limit - 1]}…"
+
+
+def _head_commit_id(response: ChatResponse, lesson_id: str) -> str | None:
+    lesson = next((item for item in response.course_package.lessons if item.id == lesson_id), None)
+    if lesson is None:
+        return None
+    branch = lesson.history_graph.branches.get(lesson.history_graph.current_branch)
+    if branch is not None:
+        return branch.head_commit_id
+    if lesson.history_graph.commits:
+        return lesson.history_graph.commits[-1].id
+    return None
+
+
+def _log_stream_lifecycle(state: ChatStreamState, event: str, **payload: object) -> None:
+    ai_usage_logger.log_event(
+        "chat_stream_lifecycle",
+        stream_event=event,
+        trace_id=state.trace_id,
+        lesson_id=state.lesson_id,
+        user_id=state.user_id,
+        user_message_excerpt=state.user_message_excerpt,
+        last_phase=state.last_phase,
+        final_enqueued=state.final_enqueued,
+        final_yielded=state.final_yielded,
+        error_enqueued=state.error_enqueued,
+        produced_commit_id=state.produced_commit_id,
+        **payload,
+    )
 
 
 def _sse_event(event: str, data: object) -> str:
@@ -22,6 +74,12 @@ def _sse_event(event: str, data: object) -> str:
 
 def _chat_stream_events(lesson_id: str, request: ChatRequest, *, user_id: str) -> Iterator[str]:
     events: queue.Queue[tuple[str, object] | None] = queue.Queue()
+    state = ChatStreamState(
+        trace_id=new_id("chat"),
+        lesson_id=lesson_id,
+        user_id=user_id,
+        user_message_excerpt=_message_excerpt(request.message),
+    )
     phase_labels = {
         "chatbot": "正在回复",
         "pm": "正在整理学习需求",
@@ -44,6 +102,8 @@ def _chat_stream_events(lesson_id: str, request: ChatRequest, *, user_id: str) -
             return
         if payload.get("type") == "role_start":
             role = str(payload.get("role") or "")
+            if role:
+                state.last_phase = role
             label = phase_labels.get(role)
             if label:
                 emit("phase", {"label": label, "role": role})
@@ -63,24 +123,46 @@ def _chat_stream_events(lesson_id: str, request: ChatRequest, *, user_id: str) -
                 emit("document_delta", {"delta": char})
 
     def run() -> None:
-        try:
-            emit("phase", {"label": "正在准备回复", "role": "request"})
-            with bind_ai_output_stream(observer):
-                response = process_chat_on_lesson(lesson_id, request, user_id=user_id)
-            emit("final", response.model_dump(mode="json"))
-        except Exception as exc:  # pragma: no cover - route safety net
-            emit("error", {"message": str(exc)})
-        finally:
-            events.put(None)
+        with ai_log_context(
+            trace_id=state.trace_id,
+            route="/api/lessons/{lesson_id}/chat/stream",
+            lesson_id=lesson_id,
+            user_id=user_id,
+        ):
+            _log_stream_lifecycle(state, "stream_started")
+            try:
+                emit("phase", {"label": "正在准备回复", "role": "request"})
+                with bind_ai_output_stream(observer):
+                    response = process_chat_on_lesson(lesson_id, request, user_id=user_id)
+                state.produced_commit_id = _head_commit_id(response, lesson_id)
+                state.final_enqueued = True
+                emit("final", response.model_dump(mode="json"))
+                _log_stream_lifecycle(state, "stream_final_sent")
+            except Exception as exc:  # pragma: no cover - route safety net
+                state.error_enqueued = True
+                emit("error", {"message": str(exc), "trace_id": state.trace_id})
+                _log_stream_lifecycle(state, "stream_error", error_message=str(exc))
+            finally:
+                events.put(None)
 
     worker = threading.Thread(target=run, daemon=True)
     worker.start()
-    while True:
-        item = events.get()
-        if item is None:
-            break
-        event, data = item
-        yield _sse_event(event, data)
+    try:
+        while True:
+            try:
+                item = events.get(timeout=CHAT_STREAM_HEARTBEAT_SECONDS)
+            except queue.Empty:
+                yield _sse_event("heartbeat", {"trace_id": state.trace_id, "ts": now_iso()})
+                continue
+            if item is None:
+                break
+            event, data = item
+            if event == "final":
+                state.final_yielded = True
+            yield _sse_event(event, data)
+    finally:
+        if not state.final_yielded and not state.error_enqueued:
+            _log_stream_lifecycle(state, "stream_disconnected_or_no_final")
 
 
 @router.post("/api/lessons/{lesson_id}/chat", response_model=ChatResponse)
