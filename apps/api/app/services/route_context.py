@@ -4,7 +4,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 
 from app.models import Lesson
-from app.services.ai_logging import ai_log_context, new_trace_id
+from app.services.ai_logging import ai_log_context, current_ai_log_context, new_trace_id
 
 
 @contextmanager
@@ -16,8 +16,9 @@ def bind_ai_request_context(
     trace_id: str | None = None,
     **extra: object,
 ) -> Iterator[dict[str, object]]:
+    existing_trace_id = current_ai_log_context().get("trace_id")
     context: dict[str, object] = {
-        "trace_id": trace_id or new_trace_id(trace_prefix),
+        "trace_id": trace_id or (str(existing_trace_id) if existing_trace_id else new_trace_id(trace_prefix)),
         "route": route_name,
     }
     if lesson is not None:

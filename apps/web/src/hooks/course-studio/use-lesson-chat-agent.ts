@@ -2,7 +2,7 @@
 
 import { useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 
-import { api } from "@/lib/api";
+import { api, isMissingChatStreamFinalError } from "@/lib/api";
 import { streamingMarkdownToHtml } from "@/lib/streaming-rich-document";
 import {
   createChatMessage,
@@ -175,6 +175,26 @@ export function useLessonChatAgent({
     return lesson.history_graph.commits.find((commit) => commit.id === commitId) ?? null;
   }
 
+  function lessonFromPackage(coursePackage: CoursePackage, lessonId: string) {
+    return coursePackage.lessons.find((item) => item.id === lessonId) ?? null;
+  }
+
+  function recoveredCommitForTurn(lesson: Lesson, submittedMessage: string, requestStartedAtMs: number) {
+    const earliestCommitMs = requestStartedAtMs - 5000;
+    const normalizedMessage = submittedMessage.trim();
+    return (
+      [...lesson.history_graph.commits]
+        .reverse()
+        .find((commit) => {
+          const userMessage = commit.metadata?.user_message;
+          if (typeof userMessage !== "string" || userMessage.trim() !== normalizedMessage) {
+            return false;
+          }
+          return new Date(commit.created_at).getTime() >= earliestCommitMs;
+        }) ?? null
+    );
+  }
+
   function shouldStreamDocumentPreview(payload: ChatRequestPayload, document: BoardDocument | null) {
     if (payload.interaction_mode === "direct_edit" || payload.board_edit_action) {
       return false;
@@ -241,6 +261,7 @@ export function useLessonChatAgent({
     let sawReadyForBoardRequirementUpdate = false;
     let requestLesson = lesson;
     let baseStreamingDocument = currentBoardDocument ?? lesson.board_document;
+    let requestStartedAtMs = Date.now();
 
     chatRequestInFlightRef.current = true;
     setBusyAction(busyActionName);
@@ -295,6 +316,7 @@ export function useLessonChatAgent({
       }
       const canStreamDocumentPreview = shouldStreamDocumentPreview(payloadWithConversation, baseStreamingDocument);
       requestStarted = true;
+      requestStartedAtMs = Date.now();
       updatePendingAssistant(lessonId, pendingAssistantMessage.id, { statusLabel: "正在回复" });
       const response = await api.streamChatOnLesson(requestLesson.id, payloadWithConversation, {
         onPhase(label) {
@@ -433,6 +455,54 @@ export function useLessonChatAgent({
       }
     } catch (chatError) {
       const rawErrorMessage = chatError instanceof Error ? chatError.message : "聊天失败";
+      if (isMissingChatStreamFinalError(chatError)) {
+        try {
+          const refreshedPackage = await api.getCoursePackage();
+          const refreshedLesson = lessonFromPackage(refreshedPackage, requestLesson.id);
+          const recoveredCommit =
+            refreshedLesson !== null
+              ? recoveredCommitForTurn(refreshedLesson, payloadWithConversation.message, requestStartedAtMs)
+              : null;
+          updateCoursePackage(refreshedPackage, {
+            activeLessonId: requestLesson.id,
+            rebuildMessageLessonIds: recoveredCommit ? [requestLesson.id] : undefined,
+          });
+          if (refreshedLesson) {
+            setStreamedRequirementSheet(
+              recoveredCommit || refreshedLesson.board_task_requirements
+                ? null
+                : refreshedLesson.learning_requirements ?? null
+            );
+            setStreamedBoardTaskSheet(refreshedLesson.board_task_requirements ?? null);
+            setLearningClarity(null);
+            setClarificationQuestions([]);
+          }
+          setCurrentNeedPending(false);
+          if (recoveredCommit) {
+            setError(null);
+            return;
+          }
+          updateLessonMessages(lessonId, (current) =>
+            current.filter(
+              (message) =>
+                message.id !== pendingAssistantMessage.id && (requestStarted || message.id !== userMessage.id)
+            )
+          );
+          setError("聊天连接在最终结果返回前中断，本轮没有写入历史；可以重试。");
+          return;
+        } catch (refreshError) {
+          const refreshMessage = refreshError instanceof Error ? refreshError.message : "刷新失败";
+          updateLessonMessages(lessonId, (current) =>
+            current.filter(
+              (message) =>
+                message.id !== pendingAssistantMessage.id && (requestStarted || message.id !== userMessage.id)
+            )
+          );
+          setError(`${rawErrorMessage}；刷新最新历史失败：${refreshMessage}`);
+          setCurrentNeedPending(false);
+          return;
+        }
+      }
       const isTransientNetworkError =
         rawErrorMessage.toLowerCase().includes("network error") ||
         rawErrorMessage.toLowerCase().includes("failed to fetch");
