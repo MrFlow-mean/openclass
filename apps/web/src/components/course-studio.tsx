@@ -94,7 +94,7 @@ export function CourseStudio() {
     minWidth: CHAT_PANEL_MIN_WIDTH,
     maxWidth: CHAT_PANEL_MAX_WIDTH,
   });
-  const [sidebarTab, setSidebarTab] = useState<CourseStudioSidebarTab>("history");
+  const [sidebarTab, setSidebarTab] = useState<CourseStudioSidebarTab>("versions");
   const [isCreatingLessonInline, setIsCreatingLessonInline] = useState(false);
 
   // board draft hook 负责右侧板书草稿、自动保存、DOCX 导入导出和预览状态。

@@ -1,12 +1,11 @@
 import clsx from "clsx";
 import { X } from "lucide-react";
 
-import { BranchPanel } from "@/components/course-studio/branch-panel";
 import { ResourcePanel } from "@/components/course-studio/resource-panel";
-import { VersionHistoryPanel } from "@/components/course-studio/version-history-panel";
+import { VersionControlPanel } from "@/components/course-studio/version-control-panel";
 import type { BoardDecision, CommitRecord, CoursePackage, Lesson } from "@/types";
 
-export type CourseStudioSidebarTab = "history" | "branch" | "library";
+export type CourseStudioSidebarTab = "versions" | "library";
 
 type CourseStudioSidePanelProps = {
   open: boolean;
@@ -73,8 +72,7 @@ export function CourseStudioSidePanel({
 
       <div className="flex border-b border-gray-200 bg-white">
         {[
-          { value: "history", label: "History" },
-          { value: "branch", label: "Branch" },
+          { value: "versions", label: "Versions" },
           { value: "library", label: "Library" },
         ].map((tab) => (
           <button
@@ -94,27 +92,20 @@ export function CourseStudioSidePanel({
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-5 custom-scrollbar">
-        {sidebarTab === "history" ? (
-          <VersionHistoryPanel
-            activeLesson={activeLesson}
-            previewCommitId={previewCommitId}
-            onPreviewCommit={onPreviewCommit}
-            onRestoreCommit={onRestoreCommit}
-            onCreateBranchFromCommit={onCreateBranchFromCommit}
-            onSwitchBranch={onSwitchBranch}
-          />
-        ) : null}
-
-        {sidebarTab === "branch" ? (
-          <BranchPanel
+        {sidebarTab === "versions" ? (
+          <VersionControlPanel
             activeLesson={activeLesson}
             previewCommit={previewCommit}
+            previewCommitId={previewCommitId}
             activeRequirements={activeRequirements}
             activeBoardTask={activeBoardTask}
             latestBoardDecision={latestBoardDecision}
             newBranchName={newBranchName}
             onNewBranchNameChange={onNewBranchNameChange}
             onCreateBranch={onCreateBranch}
+            onPreviewCommit={onPreviewCommit}
+            onRestoreCommit={onRestoreCommit}
+            onCreateBranchFromCommit={onCreateBranchFromCommit}
             onSwitchBranch={onSwitchBranch}
           />
         ) : null}
