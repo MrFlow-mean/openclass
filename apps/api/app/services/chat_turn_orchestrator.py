@@ -1853,30 +1853,6 @@ def _chat_response(
     if interaction_start_response is not None:
         return interaction_start_response
 
-    if (
-        track_initial_requirement_run
-        and learning_clarification.ready_for_board
-        and requirements.action_type == "generate_board"
-    ):
-        return run_initial_board_generation(
-            trigger="ready_requirement_sheet",
-            workspace=workspace,
-            package=package,
-            lesson=lesson,
-            user_id=user_id,
-            request=request,
-            requirements=requirements,
-            learning_clarification=learning_clarification,
-            resource_summary=resource_summary_for_turn,
-            resource_resolution=resource_resolution,
-            requirement_history=requirement_history,
-            track_initial_requirement_run=track_initial_requirement_run,
-            runtime=_initial_board_runtime(),
-            chatbot_requirement_reply=chatbot_message,
-            solver_metadata=solver_metadata,
-            action_instruction=requirements.action_instruction or request.message,
-        )
-
     return commit_general_chat_turn(
         workspace=workspace,
         package=package,

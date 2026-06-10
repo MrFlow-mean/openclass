@@ -123,6 +123,22 @@ def _sse_payload(block: str) -> dict[str, object]:
     return json.loads("\n".join(lines))
 
 
+def _prepare_ready_requirement_without_generation(store: SqliteCourseStore, lesson) -> None:
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="目标已经完整"),
+        user_id=TEST_USER_ID,
+    )
+    assert response.requirement_phase == "ready"
+    assert response.learning_clarification.ready_for_board is True
+    assert response.requirement_cleared is False
+    assert response.active_requirement_sheet is not None
+    assert response.course_package.lessons[0].board_document.content_text == ""
+    reloaded = store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
+    assert reloaded.learning_requirements is not None
+    assert reloaded.board_document.content_text == ""
+
+
 def test_requirement_history_records_changed_versions_and_events(tmp_path) -> None:
     store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
     workspace, lesson = _seed_workspace(store)
@@ -248,13 +264,13 @@ def test_existing_board_content_does_not_enter_initial_requirement_history(
     assert _history_kinds(store, lesson.id) == ([], [])
 
 
-def test_ready_blank_board_freezes_then_generates_and_consumes_requirement(
+def test_ready_blank_board_waits_for_generation_confirmation(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
     store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
     monkeypatch.setattr(workspace_state, "STORE", store)
-    captured: dict[str, object] = {}
+    board_calls = []
 
     monkeypatch.setattr(
         openai_course_ai,
@@ -267,30 +283,11 @@ def test_ready_blank_board_freezes_then_generates_and_consumes_requirement(
         lambda **kwargs: _requirement_update(ready=True, action_type="generate_board"),
     )
 
-    def _fake_board_edit(**kwargs):
-        captured["learning_requirement_context"] = kwargs["learning_requirement_context"]
-        captured["user_instruction_present"] = "user_instruction" in kwargs
-        captured["conversation_summary_present"] = "conversation_summary" in kwargs
-        captured["state_before_board"] = store.load_learning_requirement_history_state(
-            owner_user_id=TEST_USER_ID,
-            lesson_id=lesson.id,
-        )
-        captured["history_before_board"] = _history_kinds(store, lesson.id)
-        return BoardDocumentEditResult(
-            operation="replace_document",
-            title="第一版板书",
-            content_text="# 第一版板书\n\n## 起点\n\n这是一段根据冻结需求清单生成的通用板书。",
-            summary="已生成第一版板书。",
-            chatbot_message="已生成第一版板书。",
-            section_titles=["起点"],
-        )
+    def _unexpected_board_edit(**kwargs):
+        board_calls.append(kwargs)
+        raise AssertionError("ready requirement sheets must wait for the explicit generation control")
 
-    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _fake_board_edit)
-    monkeypatch.setattr(
-        openai_course_ai,
-        "generate_post_board_generation_reply",
-        lambda **kwargs: ChatbotReply(chatbot_message="板书已经就绪，要我按它从开头讲起吗？"),
-    )
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _unexpected_board_edit)
     _, lesson = _seed_workspace(store)
 
     response = chat_service.process_chat_on_lesson(
@@ -302,33 +299,38 @@ def test_ready_blank_board_freezes_then_generates_and_consumes_requirement(
     versions = store.list_learning_requirement_versions(owner_user_id=TEST_USER_ID, lesson_id=lesson.id)
     version_kinds, event_kinds = _history_kinds(store, lesson.id)
     commit = response.course_package.lessons[0].history_graph.commits[-1]
-    assert response.requirement_phase == "consumed"
-    assert response.requirement_cleared is True
-    assert response.chatbot_message == "板书已经就绪，要我按它从开头讲起吗？"
-    assert response.active_requirement_sheet is None
-    assert "第一版板书" in response.course_package.lessons[0].board_document.content_text
-    assert captured["learning_requirement_context"]["summary"] == "用户想学习一个通用主题。"
-    assert captured["learning_requirement_context"]["requirement_run_id"] is not None
-    assert captured["learning_requirement_context"]["frozen_requirement_version_id"] is not None
-    assert captured["user_instruction_present"] is False
-    assert captured["conversation_summary_present"] is False
-    assert captured["state_before_board"]["status"] == "frozen"
-    assert captured["history_before_board"] == (["completed", "frozen"], ["created", "completed", "frozen"])
-    assert version_kinds == ["completed", "frozen"]
-    assert event_kinds == ["created", "completed", "frozen", "consumed"]
-    assert commit.metadata["board_generation_action"] == "ready_requirement_sheet"
+    assert board_calls == []
+    assert response.requirement_phase == "ready"
+    assert response.requirement_cleared is False
+    assert response.chatbot_message == "需求已经够清楚。"
+    assert response.active_requirement_sheet is not None
+    assert response.course_package.lessons[0].board_document.content_text == ""
+    assert version_kinds == ["completed"]
+    assert event_kinds == ["created", "completed"]
+    assert commit.metadata["kind"] == "chat_flow"
     assert commit.metadata["assistant_message"] == response.chatbot_message
-    assert commit.metadata["assistant_message_source"] == "chatbot_post_board_generation"
-    assert commit.metadata["board_editor_message"] == "已生成第一版板书。"
-    assert commit.metadata["requirement_run_id"] == response.requirement_run_id
-    assert commit.metadata["frozen_requirement_version_id"] is not None
-    assert commit.metadata["requirement_phase"] == "frozen"
-    assert commit.metadata["frozen_requirement_phase"] == "frozen"
-    assert commit.metadata["requirement_run_status_after_commit"] == "consumed"
+    assert commit.metadata["assistant_message_source"] == "chatbot"
+    assert response.requirement_run_id is not None
+    assert response.requirement_version_id is not None
+    assert commit.metadata["learning_clarification"]["ready_for_board"] is True
+    assert commit.metadata["requirement_cleared"] is False
+    assert "board_generation_action" not in commit.metadata
+    assert "frozen_requirement_version_id" not in commit.metadata
     assert commit.metadata["task_requirement_sheet"] == json.loads(versions[-1]["sheet_json"])
-    assert "起点" not in commit.metadata["task_requirement_sheet"]["board_scope"]
-    assert commit.metadata["task_requirement_sheet"]["action_instruction"].startswith("生成第一版板书；学习目标：")
-    assert commit.metadata["task_requirement_sheet"]["action_instruction"] != "我已经说明目标、水平和输出形式"
+    assert commit.metadata["task_requirement_sheet"]["action_instruction"] == "生成第一版板书"
+
+    followup = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="我再想一下"),
+        user_id=TEST_USER_ID,
+    )
+    assert board_calls == []
+    assert followup.requirement_phase == "ready"
+    assert followup.requirement_cleared is False
+    assert followup.course_package.lessons[0].board_document.content_text == ""
+    version_kinds, event_kinds = _history_kinds(store, lesson.id)
+    assert "frozen" not in version_kinds
+    assert "consumed" not in event_kinds
 
 
 def test_forced_generation_writes_forced_frozen_before_board_generation(
@@ -395,10 +397,12 @@ def test_generation_failure_keeps_frozen_requirement_retryable(
 
     monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _failed_board_edit)
     _, lesson = _seed_workspace(store)
+    _prepare_ready_requirement_without_generation(store, lesson)
+    assert board_calls == []
 
     response = chat_service.process_chat_on_lesson(
         lesson.id,
-        ChatRequest(message="目标已经完整"),
+        ChatRequest(message="开始生成板书", board_generation_action="start"),
         user_id=TEST_USER_ID,
     )
 
@@ -450,10 +454,12 @@ def test_generation_retry_success_consumes_frozen_requirement(
 
     monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _retrying_board_edit)
     _, lesson = _seed_workspace(store)
+    _prepare_ready_requirement_without_generation(store, lesson)
+    assert board_calls == []
 
     response = chat_service.process_chat_on_lesson(
         lesson.id,
-        ChatRequest(message="目标已经完整"),
+        ChatRequest(message="开始生成板书", board_generation_action="start"),
         user_id=TEST_USER_ID,
     )
 
@@ -510,10 +516,12 @@ def test_initial_generation_retries_flat_long_document_before_consuming_requirem
 
     monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _retrying_board_edit)
     _, lesson = _seed_workspace(store)
+    _prepare_ready_requirement_without_generation(store, lesson)
+    assert board_calls == []
 
     response = chat_service.process_chat_on_lesson(
         lesson.id,
-        ChatRequest(message="目标已经完整"),
+        ChatRequest(message="开始生成板书", board_generation_action="start"),
         user_id=TEST_USER_ID,
     )
 
@@ -562,10 +570,12 @@ def test_initial_generation_rejects_flat_long_document_without_headings(
 
     monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _flat_board_edit)
     _, lesson = _seed_workspace(store)
+    _prepare_ready_requirement_without_generation(store, lesson)
+    assert board_calls == []
 
     response = chat_service.process_chat_on_lesson(
         lesson.id,
-        ChatRequest(message="目标已经完整"),
+        ChatRequest(message="开始生成板书", board_generation_action="start"),
         user_id=TEST_USER_ID,
     )
 
@@ -617,11 +627,12 @@ def test_stream_emits_requirement_update_before_document_delta(
 
     monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _fake_board_edit)
     _, lesson = _seed_workspace(store)
+    _prepare_ready_requirement_without_generation(store, lesson)
 
     events = list(
         _chat_stream_events(
             lesson.id,
-            ChatRequest(message="我已经说明目标、水平和输出形式"),
+            ChatRequest(message="开始生成板书", board_generation_action="start"),
             user_id=TEST_USER_ID,
         )
     )

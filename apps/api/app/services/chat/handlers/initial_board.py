@@ -30,7 +30,6 @@ from app.services.resource_resolver import ResourceResolution
 InitialBoardGenerationTrigger = Literal[
     "explicit_start",
     "explicit_board_request",
-    "ready_requirement_sheet",
     "resource_reference_confirm",
 ]
 
@@ -279,28 +278,6 @@ def _generation_commit_details(
         if resource_resolution is not None:
             metadata.update(_reference_metadata(resolution=resource_resolution))
         return "Board document generation", "Generated board document from an explicit learner request", metadata
-
-    if trigger == "ready_requirement_sheet":
-        metadata = {
-            **_base_generation_metadata(
-                request=request,
-                chatbot_message=chatbot_message,
-                chatbot_message_source=chatbot_message_source,
-                edit_outcome=edit_outcome,
-                requirements=requirements,
-                learning_clarification=learning_clarification,
-                frozen_requirement=frozen_requirement,
-                requirement_cleared=requirement_cleared,
-                board_generation_action="ready_requirement_sheet",
-            ),
-            "chatbot_requirement_reply": chatbot_requirement_reply,
-            "interaction_mode": request.interaction_mode,
-            "selection": request.selection.model_dump(mode="json") if request.selection else None,
-            **solver_metadata,
-        }
-        if resource_resolution is not None:
-            metadata.update(_reference_metadata(resolution=resource_resolution))
-        return "Board document generation", "Generated board document from a frozen learning requirement sheet", metadata
 
     metadata = {
         **_base_generation_metadata(
