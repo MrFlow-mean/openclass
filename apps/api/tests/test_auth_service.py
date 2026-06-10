@@ -132,7 +132,7 @@ def test_provider_list_includes_supported_social_logins(tmp_path) -> None:
 
     provider_ids = {provider.id for provider in auth.providers()}
 
-    assert {"google", "wechat", "apple", "github", "microsoft", "x"}.issubset(provider_ids)
+    assert provider_ids == {"email", "google", "apple", "github", "microsoft", "x"}
 
 
 def test_provider_configuration_reflects_env(tmp_path, monkeypatch) -> None:
@@ -146,7 +146,7 @@ def test_provider_configuration_reflects_env(tmp_path, monkeypatch) -> None:
     providers = {provider.id: provider for provider in auth.providers()}
 
     assert providers["google"].configured is True
-    assert providers["wechat"].configured is False
+    assert set(providers) == {"email", "google", "apple", "github", "microsoft", "x"}
 
 
 def test_x_oauth_authorization_url_uses_pkce(tmp_path, monkeypatch) -> None:
