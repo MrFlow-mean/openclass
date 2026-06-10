@@ -142,7 +142,7 @@ export function VersionControlPanel({
       </section>
 
       <section className="space-y-4 border-t border-gray-200 pt-6">
-        <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">历史记录</p>
+        <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">修订记录</p>
         {[...activeLesson.history_graph.commits].reverse().map((commit, index) => (
           <CommitTimelineItem
             key={commit.id}
