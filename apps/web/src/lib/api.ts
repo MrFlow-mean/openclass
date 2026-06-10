@@ -218,6 +218,24 @@ type ChatStreamHandlers = {
   onFinal?: (response: ChatResponse) => void;
 };
 
+export type ChatStreamFailureKind = "http" | "sse" | "missing_final";
+
+export class ChatStreamTransportError extends Error {
+  kind: ChatStreamFailureKind;
+  status?: number;
+
+  constructor(message: string, kind: ChatStreamFailureKind, status?: number) {
+    super(message);
+    this.name = "ChatStreamTransportError";
+    this.kind = kind;
+    this.status = status;
+  }
+}
+
+export function isMissingChatStreamFinalError(error: unknown) {
+  return error instanceof ChatStreamTransportError && error.kind === "missing_final";
+}
+
 function parseSseBlock(block: string): { event: string; data: string } | null {
   let event = "message";
   const dataLines: string[] = [];
@@ -240,6 +258,9 @@ function handleChatStreamBlock(block: string, handlers: ChatStreamHandlers) {
     return;
   }
   const payload = JSON.parse(parsed.data) as Record<string, unknown>;
+  if (parsed.event === "heartbeat") {
+    return;
+  }
   if (parsed.event === "phase") {
     const label = typeof payload.label === "string" ? payload.label : "";
     if (label) {
@@ -275,20 +296,26 @@ function handleChatStreamBlock(block: string, handlers: ChatStreamHandlers) {
   }
   if (parsed.event === "error") {
     const message = typeof payload.message === "string" ? payload.message : "聊天失败";
-    throw new Error(message);
+    throw new ChatStreamTransportError(message, "sse");
   }
 }
 
 async function streamRequest(path: string, payload: unknown, handlers: ChatStreamHandlers): Promise<ChatResponse> {
-  const response = await fetch(`${getApiBase()}${path}`, {
-    method: "POST",
-    headers: authHeaders({ "Content-Type": "application/json" }),
-    body: JSON.stringify(payload),
-    cache: "no-store",
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${getApiBase()}${path}`, {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify(payload),
+      cache: "no-store",
+    });
+  } catch (fetchError) {
+    const message = fetchError instanceof Error ? fetchError.message : "聊天流连接失败";
+    throw new ChatStreamTransportError(message, "missing_final");
+  }
   if (!response.ok || !response.body) {
     const text = await response.text();
-    throw new Error(text || `Request failed with ${response.status}`);
+    throw new ChatStreamTransportError(text || `Request failed with ${response.status}`, "http", response.status);
   }
 
   const reader = response.body.getReader();
@@ -303,28 +330,36 @@ async function streamRequest(path: string, payload: unknown, handlers: ChatStrea
     },
   };
 
-  while (true) {
-    const { value, done } = await reader.read();
-    buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
-    let boundary = buffer.indexOf("\n\n");
-    while (boundary >= 0) {
-      const block = buffer.slice(0, boundary).trim();
-      buffer = buffer.slice(boundary + 2);
-      if (block) {
-        handleChatStreamBlock(block, streamHandlers);
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
+      let boundary = buffer.indexOf("\n\n");
+      while (boundary >= 0) {
+        const block = buffer.slice(0, boundary).trim();
+        buffer = buffer.slice(boundary + 2);
+        if (block) {
+          handleChatStreamBlock(block, streamHandlers);
+        }
+        boundary = buffer.indexOf("\n\n");
       }
-      boundary = buffer.indexOf("\n\n");
+      if (done) {
+        break;
+      }
     }
-    if (done) {
-      break;
+  } catch (streamError) {
+    if (streamError instanceof ChatStreamTransportError) {
+      throw streamError;
     }
+    const message = streamError instanceof Error ? streamError.message : "聊天流连接中断";
+    throw new ChatStreamTransportError(message, "missing_final");
   }
   const rest = buffer.trim();
   if (rest) {
     handleChatStreamBlock(rest, streamHandlers);
   }
   if (!finalResponse) {
-    throw new Error("聊天流没有返回最终结果");
+    throw new ChatStreamTransportError("聊天流没有返回最终结果", "missing_final");
   }
   return finalResponse;
 }
