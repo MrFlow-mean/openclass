@@ -16,6 +16,7 @@ import {
   ChevronRight,
   Code2,
   Eye,
+  FileText,
   Flame,
   FolderClosed,
   GitFork,
@@ -69,6 +70,7 @@ import {
 import type { CoursePackage, Lesson, WorkspaceState } from "@/types";
 
 const CONTRIBUTION_WEEKS = 32;
+const GITHUB_REPOSITORY_URL = "https://github.com/MrFlow-mean/openclass";
 
 type ActivityDay = {
   key: string;
@@ -508,6 +510,9 @@ export function LearningHome() {
   const followingUnreadCount = followedProjectUpdates.length;
   const followingBadge = followingUnreadCount > 99 ? "99+" : followingUnreadCount.toString();
   const notificationUpdates = followedProjectUpdates.slice(0, 4);
+  const quickLinksLabel = language === "zh-CN" ? "项目链接" : "Project links";
+  const githubLinkLabel = language === "zh-CN" ? "打开 GitHub 仓库" : "Open GitHub repository";
+  const techDocsLinkLabel = language === "zh-CN" ? "打开技术文档" : "Open technical docs";
 
   async function handleOpenLesson(lessonId: string) {
     setSelectedLessonId(lessonId);
@@ -1383,6 +1388,32 @@ export function LearningHome() {
       <div className="fixed right-4 top-4 z-[130] w-[calc(100vw-2rem)] max-w-[27rem] xl:right-8 xl:top-6">
         {renderNotificationPanel()}
       </div>
+
+      <nav
+        aria-label={quickLinksLabel}
+        className="fixed bottom-4 right-4 z-[130] flex max-w-[calc(100vw-2rem)] items-center gap-2 rounded-xl border border-stone-200 bg-white/92 p-1.5 shadow-[0_18px_40px_rgba(15,23,42,0.14)] backdrop-blur xl:right-8 xl:bottom-6"
+      >
+        <a
+          href={GITHUB_REPOSITORY_URL}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex h-10 items-center gap-2 rounded-lg px-3 text-sm font-semibold text-stone-700 transition hover:bg-stone-950 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-stone-950"
+          aria-label={githubLinkLabel}
+          title={githubLinkLabel}
+        >
+          <GitFork className="h-4 w-4" />
+          <span>GitHub</span>
+        </a>
+        <Link
+          href="/tech-docs"
+          className="inline-flex h-10 items-center gap-2 rounded-lg bg-stone-950 px-3 text-sm font-semibold text-white transition hover:bg-stone-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-stone-950"
+          aria-label={techDocsLinkLabel}
+          title={techDocsLinkLabel}
+        >
+          <FileText className="h-4 w-4" />
+          <span>{language === "zh-CN" ? "技术文档" : "Docs"}</span>
+        </Link>
+      </nav>
     </div>
   );
 
