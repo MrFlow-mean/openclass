@@ -21,7 +21,7 @@ from app.models import (
 from app.services import workspace_state
 from app.services.board_task_history import BoardTaskHistoryRecorder, BoardTaskHistoryStamp
 from app.services.chat.intent import _infer_board_task_action, _requests_explanation
-from app.services.chat.metadata import _board_task_metadata, _task_metadata
+from app.services.chat.metadata import _board_task_metadata, _focus_metadata
 from app.services.chat.response import _response
 from app.services.chat.sequence import SequenceRuntime, _handle_section_explanation_sequence_turn
 from app.services.history import commit_operations
@@ -149,11 +149,8 @@ def handle_existing_interaction_session(
                 "assistant_message_source": "interaction_decision_empty",
                 "interaction_mode": request.interaction_mode,
                 "selection": request.selection.model_dump(mode="json") if request.selection else None,
-                **_task_metadata(
-                    requirements=requirements,
-                    learning_clarification=learning_clarification,
-                    requirement_cleared=False,
-                ),
+                "requirement_cleared": True,
+                "active_requirement_sheet_after": None,
                 **interaction_session_metadata(before=session_before, after=session_before),
             },
         )
@@ -228,11 +225,8 @@ def handle_existing_interaction_session(
                 "board_explanation_directive": board_explanation_directive,
                 "interaction_mode": request.interaction_mode,
                 "selection": request.selection.model_dump(mode="json") if request.selection else None,
-                **_task_metadata(
-                    requirements=requirements,
-                    learning_clarification=learning_clarification,
-                    requirement_cleared=False,
-                ),
+                "requirement_cleared": True,
+                "active_requirement_sheet_after": None,
                 **interaction_exit_metadata,
             },
         )
@@ -282,11 +276,8 @@ def handle_existing_interaction_session(
             "board_explanation_directive": board_explanation_directive,
             "interaction_mode": request.interaction_mode,
             "selection": request.selection.model_dump(mode="json") if request.selection else None,
-            **_task_metadata(
-                requirements=requirements,
-                learning_clarification=learning_clarification,
-                requirement_cleared=False,
-            ),
+            "requirement_cleared": True,
+            "active_requirement_sheet_after": None,
             **interaction_session_metadata(before=session_before, after=session_after, decision=decision),
         },
     )
@@ -368,13 +359,9 @@ def maybe_start_interaction_session(
                 "interaction_mode": request.interaction_mode,
                 "selection": request.selection.model_dump(mode="json") if request.selection else None,
                 **interaction_metadata,
-                **_task_metadata(
-                    requirements=requirements,
-                    learning_clarification=learning_clarification,
-                    focus=None,
-                    focus_candidates=start_resolution.focus_resolution.candidates,
-                    requirement_cleared=False,
-                ),
+                **_focus_metadata(focus=None, focus_candidates=start_resolution.focus_resolution.candidates),
+                "requirement_cleared": True,
+                "active_requirement_sheet_after": None,
                 **(
                     _board_task_metadata(
                         board_task=board_task,
@@ -453,17 +440,12 @@ def maybe_start_interaction_session(
             "interaction_mode": request.interaction_mode,
             "selection": request.selection.model_dump(mode="json") if request.selection else None,
             **interaction_metadata,
-            **_task_metadata(
-                requirements=requirements,
-                learning_clarification=learning_clarification,
+            **_focus_metadata(
                 focus=session_after.target_focus,
-                focus_candidates=(
-                    start_resolution.focus_resolution.candidates
-                    if start_resolution.focus_resolution
-                    else []
-                ),
-                requirement_cleared=True,
+                focus_candidates=start_resolution.focus_resolution.candidates if start_resolution.focus_resolution else [],
             ),
+            "requirement_cleared": True,
+            "active_requirement_sheet_after": None,
             **(
                 _board_task_metadata(
                     board_task=board_task,

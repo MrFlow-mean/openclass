@@ -16,7 +16,7 @@ from app.models import (
 )
 from app.services import workspace_state
 from app.services.board_task_history import BoardTaskHistoryRecorder
-from app.services.chat.metadata import _board_task_metadata, _task_metadata
+from app.services.chat.metadata import _board_task_metadata, _focus_metadata
 from app.services.chat.response import _response
 from app.services.history import commit_operations
 from app.services.learning_requirement_history import LearningRequirementHistoryRecorder
@@ -151,18 +151,7 @@ def handle_board_task_explain(
             "board_explanation_directive": board_explanation_directive,
             **interaction_metadata,
             **runtime.board_search_evidence_metadata(resolution),
-            **_task_metadata(
-                requirements=runtime.requirements_from_board_task(
-                    base=requirements,
-                    board_task=board_task,
-                    action_type="explain_target",
-                    focus=focus,
-                ),
-                learning_clarification=learning_clarification,
-                focus=focus,
-                focus_candidates=resolution.candidates if resolution else [],
-                requirement_cleared=cleared,
-            ),
+            **_focus_metadata(focus=focus, focus_candidates=resolution.candidates if resolution else []),
             **_board_task_metadata(
                 board_task=board_task,
                 stamp=stamp,

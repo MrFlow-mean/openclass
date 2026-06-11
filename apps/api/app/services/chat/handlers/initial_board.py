@@ -18,7 +18,7 @@ from app.services.chat.metadata import (
     _board_document_quality_metadata,
     _reference_metadata,
     _requirement_history_metadata,
-    _task_metadata,
+    _learning_requirement_metadata,
 )
 from app.services.chat.response import _response
 from app.services.course_runtime import refresh_lesson_runtime
@@ -222,7 +222,7 @@ def _base_generation_metadata(
             frozen_requirement,
             run_status_after_commit="consumed" if frozen_requirement is not None else None,
         ),
-        **_task_metadata(
+        **_learning_requirement_metadata(
             requirements=requirements,
             learning_clarification=learning_clarification,
             requirement_cleared=requirement_cleared,

@@ -21,7 +21,7 @@ from app.models import (
 from app.services import workspace_state
 from app.services.board_task_history import BoardTaskHistoryRecorder, BoardTaskHistoryStamp
 from app.services.chat.intent import _compact_text, _requests_explanation
-from app.services.chat.metadata import _board_task_metadata, _task_metadata
+from app.services.chat.metadata import _board_task_metadata, _focus_metadata
 from app.services.chat.response import _response
 from app.services.explanation_atoms import ATOMIC_EXPLANATION_SEQUENCE_MODE
 from app.services.history import commit_operations
@@ -242,13 +242,9 @@ def _start_section_explanation_sequence(
             "section_explanation_sequence": [item.model_dump(mode="json") for item in sequence_items],
             "explanation_sequence": [item.model_dump(mode="json") for item in sequence_items],
             "explanation_sequence_mode": sequence_mode,
-            **_task_metadata(
-                requirements=task_requirements,
-                learning_clarification=learning_clarification,
-                focus=first_focus,
-                focus_candidates=sequence_items,
-                requirement_cleared=True,
-            ),
+            **_focus_metadata(focus=first_focus, focus_candidates=sequence_items),
+            "requirement_cleared": True,
+            "active_requirement_sheet_after": None,
             **_board_task_metadata(
                 board_task=board_task,
                 stamp=board_task_stamp,
@@ -371,11 +367,8 @@ def _handle_section_explanation_sequence_turn(
                 "user_message": request.message,
                 "assistant_message": chatbot_message,
                 "assistant_message_source": chatbot_message_source,
-                **_task_metadata(
-                    requirements=requirements,
-                    learning_clarification=learning_clarification,
-                    requirement_cleared=False,
-                ),
+                "requirement_cleared": True,
+                "active_requirement_sheet_after": None,
                 **interaction_session_metadata(before=session_before, after=session_after, decision=decision),
             },
         )
@@ -448,12 +441,9 @@ def _handle_section_explanation_sequence_turn(
                 "assistant_message": chatbot_message,
                 "assistant_message_source": chatbot_message_source,
                 "board_explanation_directive": board_explanation_directive,
-                **_task_metadata(
-                    requirements=requirements,
-                    learning_clarification=learning_clarification,
-                    focus=focus,
-                    requirement_cleared=False,
-                ),
+                **_focus_metadata(focus=focus),
+                "requirement_cleared": True,
+                "active_requirement_sheet_after": None,
                 **interaction_session_metadata(before=session_before, after=session_after, decision=decision),
             },
         )
@@ -502,11 +492,8 @@ def _handle_section_explanation_sequence_turn(
                 "user_message": request.message,
                 "assistant_message": chatbot_message,
                 "assistant_message_source": chatbot_message_source,
-                **_task_metadata(
-                    requirements=requirements,
-                    learning_clarification=learning_clarification,
-                    requirement_cleared=False,
-                ),
+                "requirement_cleared": True,
+                "active_requirement_sheet_after": None,
                 **interaction_session_metadata(before=session_before, after=None, decision=decision),
             },
         )
@@ -578,12 +565,9 @@ def _handle_section_explanation_sequence_turn(
             "assistant_message": chatbot_message,
             "assistant_message_source": chatbot_message_source,
             "board_explanation_directive": board_explanation_directive,
-            **_task_metadata(
-                requirements=requirements,
-                learning_clarification=learning_clarification,
-                focus=focus,
-                requirement_cleared=False,
-            ),
+            **_focus_metadata(focus=focus),
+            "requirement_cleared": True,
+            "active_requirement_sheet_after": None,
             **interaction_session_metadata(before=session_before, after=session_after, decision=decision),
         },
     )

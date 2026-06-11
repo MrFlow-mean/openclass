@@ -13,7 +13,7 @@ from app.models import (
     ResourceReferenceContext,
 )
 from app.services import workspace_state
-from app.services.chat.metadata import _reference_metadata, _task_metadata
+from app.services.chat.metadata import _reference_metadata, _learning_requirement_metadata
 from app.services.chat.response import _response
 from app.services.history import commit_operations
 from app.services.learning_requirement_history import LearningRequirementHistoryRecorder
@@ -59,7 +59,7 @@ def commit_general_chat_turn(
             "assistant_message_source": chatbot_message_source,
             "interaction_mode": request.interaction_mode,
             "selection": request.selection.model_dump(mode="json") if request.selection else None,
-            **_task_metadata(
+            **_learning_requirement_metadata(
                 requirements=requirements,
                 learning_clarification=learning_clarification,
                 requirement_cleared=requirement_cleared,

@@ -62,9 +62,9 @@ from app.services.chatbot import (
     generate_post_initial_board_generation_reply,
 )
 from app.services.chat.metadata import (
-    _board_task_metadata,
+    _focus_metadata,
     _reference_metadata,
-    _task_metadata,
+    _learning_requirement_metadata,
 )
 from app.services.chat.strong_reasoning import chatbot_message_with_solver_context as _chatbot_message_with_solver_context
 from app.services.chat.handlers.board_task import BoardTaskRouteRuntime
@@ -1120,13 +1120,9 @@ def _chat_response(
                     "assistant_message_source": chatbot_message_source,
                     "interaction_mode": request.interaction_mode,
                     "selection": request.selection.model_dump(mode="json") if request.selection else None,
-                    **_task_metadata(
-                        requirements=requirements,
-                        learning_clarification=learning_clarification,
-                        focus=None,
-                        focus_candidates=resolution.candidates,
-                        requirement_cleared=False,
-                    ),
+                    **_focus_metadata(focus=None, focus_candidates=resolution.candidates),
+                    "requirement_cleared": True,
+                    "active_requirement_sheet_after": None,
                 },
             )
             workspace_state.normalize_package_state(package)
@@ -1180,13 +1176,9 @@ def _chat_response(
                 "board_edit_operation": edit_outcome.operation,
                 "board_edit_summary": edit_outcome.summary,
                 "board_section_titles": edit_outcome.section_titles,
-                **_task_metadata(
-                    requirements=requirements,
-                    learning_clarification=learning_clarification,
-                    focus=resolution.focus,
-                    focus_candidates=resolution.candidates,
-                    requirement_cleared=requirement_cleared,
-                ),
+                **_focus_metadata(focus=resolution.focus, focus_candidates=resolution.candidates),
+                "requirement_cleared": True,
+                "active_requirement_sheet_after": None,
             },
         )
         if requirement_cleared:
@@ -1295,11 +1287,8 @@ def _chat_response(
                     "board_edit_operation": edit_outcome.operation,
                     "board_edit_summary": edit_outcome.summary,
                     "board_section_titles": edit_outcome.section_titles,
-                    **_task_metadata(
-                        requirements=requirements,
-                        learning_clarification=learning_clarification,
-                        requirement_cleared=requirement_cleared,
-                    ),
+                    "requirement_cleared": True,
+                    "active_requirement_sheet_after": None,
                 },
             )
             if requirement_cleared:
@@ -1361,13 +1350,9 @@ def _chat_response(
                     "assistant_message_source": chatbot_message_source,
                     "interaction_mode": request.interaction_mode,
                     "selection": request.selection.model_dump(mode="json") if request.selection else None,
-                    **_task_metadata(
-                        requirements=requirements,
-                        learning_clarification=learning_clarification,
-                        focus=None,
-                        focus_candidates=resolution.candidates,
-                        requirement_cleared=False,
-                    ),
+                    **_focus_metadata(focus=None, focus_candidates=resolution.candidates),
+                    "requirement_cleared": True,
+                    "active_requirement_sheet_after": None,
                 },
             )
             workspace_state.normalize_package_state(package)
@@ -1422,13 +1407,9 @@ def _chat_response(
                     "board_edit_operation": edit_outcome.operation,
                     "board_edit_summary": edit_outcome.summary,
                     "board_section_titles": edit_outcome.section_titles,
-                    **_task_metadata(
-                        requirements=requirements,
-                        learning_clarification=learning_clarification,
-                        focus=resolution.focus,
-                        focus_candidates=resolution.candidates,
-                        requirement_cleared=requirement_cleared,
-                    ),
+                    **_focus_metadata(focus=resolution.focus, focus_candidates=resolution.candidates),
+                    "requirement_cleared": True,
+                    "active_requirement_sheet_after": None,
                 },
             )
             if requirement_cleared:
@@ -1501,13 +1482,9 @@ def _chat_response(
                 "assistant_message_source": chatbot_message_source,
                 "interaction_mode": request.interaction_mode,
                 "selection": request.selection.model_dump(mode="json") if request.selection else None,
-                **_task_metadata(
-                    requirements=requirements,
-                    learning_clarification=learning_clarification,
-                    focus=resolution.focus,
-                    focus_candidates=resolution.candidates,
-                    requirement_cleared=requirement_cleared,
-                ),
+                **_focus_metadata(focus=resolution.focus, focus_candidates=resolution.candidates),
+                "requirement_cleared": True,
+                "active_requirement_sheet_after": None,
                 "board_explanation_directive": board_explanation_directive,
             },
         )
@@ -1637,7 +1614,7 @@ def _chat_response(
                 "assistant_message_source": chatbot_message_source,
                 "interaction_mode": request.interaction_mode,
                 "selection": request.selection.model_dump(mode="json") if request.selection else None,
-                **_task_metadata(
+                **_learning_requirement_metadata(
                     requirements=requirements,
                     learning_clarification=learning_clarification,
                     requirement_cleared=False,
@@ -1756,11 +1733,8 @@ def _chat_response(
                 "assistant_message_source": chatbot_message_source,
                 "interaction_mode": request.interaction_mode,
                 "selection": request.selection.model_dump(mode="json") if request.selection else None,
-                **_task_metadata(
-                    requirements=requirements,
-                    learning_clarification=learning_clarification,
-                    requirement_cleared=requirement_cleared,
-                ),
+                "requirement_cleared": True,
+                "active_requirement_sheet_after": None,
                 "board_explanation_directive": board_explanation_directive,
                 **_reference_metadata(resolution=resource_resolution),
             },

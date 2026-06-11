@@ -28,7 +28,7 @@ from app.services.board_task_manager import (
 from app.services.chat.context import compact_text as _compact_text
 from app.services.chat.handlers.board_task import BoardTaskRouteRuntime, dispatch_board_task_route
 from app.services.chat.handlers.edit_blackboard import EditBlackboardRuntime, handle_board_task_write
-from app.services.chat.metadata import _board_task_metadata, _task_metadata
+from app.services.chat.metadata import _board_task_metadata, _focus_metadata
 from app.services.chat.response import _response
 from app.services.chat.sequence import SequenceRuntime, _requests_sequential_explanation, _start_section_explanation_sequence
 from app.services.chat.intent import (
@@ -767,17 +767,7 @@ def _handle_focus_clarification(
             "assistant_message_source": chatbot_message_source,
             **interaction_metadata,
             **runtime.board_search_evidence_metadata(resolution),
-            **_task_metadata(
-                requirements=runtime.requirements_from_board_task(
-                    base=requirements,
-                    board_task=next_task,
-                    action_type=board_action,
-                ),
-                learning_clarification=learning_clarification,
-                focus=None,
-                focus_candidates=decision.candidate_focuses,
-                requirement_cleared=False,
-            ),
+            **_focus_metadata(focus=None, focus_candidates=decision.candidate_focuses),
             **_board_task_metadata(
                 board_task=next_task,
                 stamp=stamp,

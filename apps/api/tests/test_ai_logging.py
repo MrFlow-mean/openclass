@@ -71,6 +71,20 @@ def _read_log_entries(path):
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
+def _assert_no_learning_metadata(commit) -> None:
+    assert "learning_clarification" not in commit.metadata
+    assert "learning_requirement_sheet" not in commit.metadata
+    assert "task_requirement_sheet" not in commit.metadata
+    assert commit.metadata["active_requirement_sheet_after"] is None
+
+
+def _assert_board_task_metadata(commit, *, route: str, requested_action: str, cleared: bool) -> None:
+    _assert_no_learning_metadata(commit)
+    assert commit.metadata["board_task_route"] == route
+    assert commit.metadata["board_task_cleared"] is cleared
+    assert commit.metadata["board_task_sheet"]["requested_action"] == requested_action
+
+
 def _seed_test_user_workspace(store: SqliteCourseStore):
     workspace = build_initial_workspace_state()
     workspace.packages[0].title = "测试课程工作台"
@@ -1576,9 +1590,7 @@ def test_requirement_manager_direct_teaching_start_does_not_keep_clarifying(
     assert response.course_package.lessons[0].board_document.content_text == "已有内容"
     commit = response.course_package.lessons[0].history_graph.commits[-1]
     assert commit.label == "Board task location clarification"
-    assert commit.metadata["board_task_route"] == "clarify_location"
-    assert commit.metadata["board_task_cleared"] is False
-    assert commit.metadata["active_requirement_sheet_after"] is None
+    _assert_board_task_metadata(commit, route="clarify_location", requested_action="explain", cleared=False)
     assert _read_log_entries(isolated_ai_log) == []
 
 
@@ -2098,8 +2110,7 @@ def test_requirement_manager_explicit_board_generation_sets_progress_to_complete
     assert response.course_package.lessons[0].board_document.content_text == "已有内容"
     commit = response.course_package.lessons[0].history_graph.commits[-1]
     assert commit.label == "Board task location clarification"
-    assert commit.metadata["board_task_route"] == "clarify_location"
-    assert commit.metadata["board_task_cleared"] is False
+    _assert_board_task_metadata(commit, route="clarify_location", requested_action="explain", cleared=False)
     assert _read_log_entries(isolated_ai_log) == []
 
 
@@ -3168,7 +3179,8 @@ def test_board_generation_from_ready_sheet_writes_empty_document_without_chat_bo
     commit = updated_lesson.history_graph.commits[-1]
     assert commit.metadata["kind"] == "board_document_generation"
     assert commit.metadata["requirement_cleared"] is True
-    assert commit.metadata["task_requirement_sheet"]["action_type"] == "generate_board"
+    assert commit.metadata["learning_requirement_sheet"]["action_type"] == "generate_board"
+    assert "task_requirement_sheet" not in commit.metadata
     assert commit.metadata["active_requirement_sheet_after"] is None
     assert "teaching_progress" not in commit.metadata
     assert _read_log_entries(isolated_ai_log) == []
@@ -3473,8 +3485,7 @@ def test_document_ai_edit_updates_selected_board_content(
     assert commit.metadata["kind"] == "board_document_edit"
     assert commit.metadata["board_edit_operation"] == "replace_selection"
     assert commit.metadata["requirement_cleared"] is True
-    assert commit.metadata["task_requirement_sheet"]["action_type"] == "rewrite_target"
-    assert commit.metadata["active_requirement_sheet_after"] is None
+    _assert_no_learning_metadata(commit)
     assert captured == {"selection_excerpt": "原文", "intent": "edit_existing_document"}
     assert _read_log_entries(isolated_ai_log) == []
 
@@ -3610,8 +3621,8 @@ def test_selected_simplify_request_in_chat_routes_to_board_editor(
     assert "原文复杂句子" not in updated_lesson.board_document.content_text
     commit = updated_lesson.history_graph.commits[-1]
     assert commit.metadata["kind"] == "board_document_edit"
-    assert commit.metadata["task_requirement_sheet"]["action_type"] == "simplify_target"
     assert commit.metadata["assistant_message_source"] == "board_document_editor_ai"
+    _assert_no_learning_metadata(commit)
     assert captured == {
         "selection_excerpt": "原文复杂句子",
         "intent": "edit_existing_document",
@@ -3678,8 +3689,8 @@ def test_numbered_blank_edit_routes_to_board_editor(
     assert "which responsibilities deserve immediate attention" in updated_lesson.board_document.content_text
     commit = updated_lesson.history_graph.commits[-1]
     assert commit.metadata["kind"] == "board_document_edit"
-    assert commit.metadata["task_requirement_sheet"]["action_type"] == "rewrite_target"
     assert commit.metadata["requirement_cleared"] is True
+    _assert_no_learning_metadata(commit)
     assert _read_log_entries(isolated_ai_log) == []
 
 
@@ -3770,8 +3781,8 @@ def test_numbered_target_explanation_uses_structured_focus(
     assert commit.metadata["kind"] == "chat_flow"
     assert commit.metadata["assistant_message_source"] == "chatbot_board_directed"
     assert commit.metadata["board_explanation_directive"]["status"] == "approved"
-    assert commit.metadata["task_requirement_sheet"]["action_type"] == "explain_target"
     assert commit.metadata["requirement_cleared"] is True
+    _assert_board_task_metadata(commit, route="explain", requested_action="explain", cleared=True)
     assert _read_log_entries(isolated_ai_log) == []
 
 
@@ -3821,8 +3832,7 @@ def test_targeted_explanation_uses_resolved_board_focus_and_clears_task_sheet(
     assert commit.metadata["assistant_message_source"] == "chatbot_board_directed"
     assert commit.metadata["board_explanation_directive"]["status"] == "approved"
     assert commit.metadata["requirement_cleared"] is True
-    assert commit.metadata["task_requirement_sheet"]["action_type"] == "explain_target"
-    assert commit.metadata["active_requirement_sheet_after"] is None
+    _assert_board_task_metadata(commit, route="explain", requested_action="explain", cleared=True)
     assert commit.metadata["board_search_evidence"]["status"] == "found"
     assert commit.metadata["board_search_evidence"]["selected_match_id"]
     assert commit.metadata["board_search_evidence"]["candidates"]
@@ -3873,8 +3883,8 @@ def test_numbered_target_explanation_skips_requirement_update(
     assert "4. 检查问题" in (captured["selection_excerpt"] or "")
     commit = response.course_package.lessons[0].history_graph.commits[-1]
     assert commit.metadata["kind"] == "chat_flow"
-    assert commit.metadata["task_requirement_sheet"]["action_type"] == "explain_target"
     assert commit.metadata["requirement_cleared"] is True
+    _assert_board_task_metadata(commit, route="explain", requested_action="explain", cleared=True)
     assert _read_log_entries(isolated_ai_log) == []
 
 
@@ -4048,10 +4058,7 @@ def test_existing_board_how_expression_question_uses_board_task_flow(
     assert events[-1]["event_type"] == "consumed"
     commit = response.course_package.lessons[0].history_graph.commits[-1]
     assert commit.metadata["assistant_message_source"] == "chatbot_board_directed"
-    assert commit.metadata["board_task_route"] == "explain"
-    assert commit.metadata["board_task_cleared"] is True
-    assert commit.metadata["task_requirement_sheet"]["action_type"] == "explain_target"
-    assert commit.metadata["active_requirement_sheet_after"] is None
+    _assert_board_task_metadata(commit, route="explain", requested_action="explain", cleared=True)
     assert _read_log_entries(isolated_ai_log) == []
 
 
@@ -5305,8 +5312,7 @@ def test_existing_board_missing_content_waits_for_write_confirmation_then_writes
     assert "新增内容" in confirmed.course_package.lessons[0].board_document.content_text
     assert "板书侧已允许 Chatbot 进行讲解" in (captured["user_message"] or "")
     commit = confirmed.course_package.lessons[0].history_graph.commits[-1]
-    assert commit.metadata["board_task_route"] == "write"
-    assert commit.metadata["board_task_cleared"] is True
+    _assert_board_task_metadata(commit, route="write", requested_action="write", cleared=True)
     events = store.list_board_task_events(owner_user_id=TEST_USER.id, lesson_id=lesson.id)
     assert events[-1]["event_type"] == "consumed"
     assert _read_log_entries(isolated_ai_log) == []
@@ -5352,9 +5358,8 @@ def test_existing_board_targeted_write_uses_found_location_without_confirmation(
     assert response.active_board_task_sheet is None
     assert "第一节" in (captured["selection_excerpt"] or "")
     commit = response.course_package.lessons[0].history_graph.commits[-1]
-    assert commit.metadata["board_task_route"] == "write"
+    _assert_board_task_metadata(commit, route="write", requested_action="write", cleared=True)
     assert commit.metadata["board_task_decision"]["location_status"] == "found"
-    assert commit.metadata["board_task_cleared"] is True
     assert commit.metadata["board_search_evidence"]["status"] == "found"
     assert commit.metadata["board_search_evidence"]["selected_match_id"]
     assert _read_log_entries(isolated_ai_log) == []
@@ -5499,7 +5504,7 @@ def test_recent_append_focus_is_inherited_for_length_followup(
     assert "缩短后的样本" in updated_lesson.board_document.content_text
     assert "较长样本内容" in (calls[-1] or "")
     commit = updated_lesson.history_graph.commits[-1]
-    assert commit.metadata["board_task_route"] == "edit"
+    _assert_board_task_metadata(commit, route="edit", requested_action="edit", cleared=True)
     assert commit.metadata["target_scope"] == "focus"
     assert commit.metadata["recent_board_edit_focus"]["excerpt"]
     assert _read_log_entries(isolated_ai_log) == []
@@ -5844,10 +5849,9 @@ def test_explicit_whole_document_simplify_allows_replace_document(
     updated_lesson = response.course_package.lessons[0]
     assert updated_lesson.board_document.content_text == "# 短版\n## 核心内容\n这是全文精简后的短版。"
     commit = updated_lesson.history_graph.commits[-1]
-    assert commit.metadata["board_task_route"] == "edit"
+    _assert_board_task_metadata(commit, route="edit", requested_action="edit", cleared=True)
     assert commit.metadata["target_scope"] == "whole_document"
     assert commit.metadata["board_edit_operation"] == "replace_document"
-    assert commit.metadata["board_task_cleared"] is True
     assert _read_log_entries(isolated_ai_log) == []
 
 
@@ -6113,8 +6117,7 @@ def test_append_section_request_writes_to_existing_board_without_requirement_upd
     commit = updated_lesson.history_graph.commits[-1]
     assert commit.metadata["kind"] == "board_document_edit"
     assert commit.metadata["board_edit_operation"] == "append_section"
-    assert commit.metadata["task_requirement_sheet"]["action_type"] == "append_section"
-    assert commit.metadata["active_requirement_sheet_after"] is None
+    _assert_no_learning_metadata(commit)
     assert captured == {
         "intent": "edit_existing_document",
         "selection_excerpt": None,
@@ -6166,7 +6169,7 @@ def test_followup_write_executes_existing_append_requirement(
     assert "按前文需求追加的内容" in updated_lesson.board_document.content_text
     commit = updated_lesson.history_graph.commits[-1]
     assert commit.metadata["board_edit_operation"] == "append_section"
-    assert commit.metadata["task_requirement_sheet"]["action_type"] == "append_section"
+    _assert_no_learning_metadata(commit)
     assert _read_log_entries(isolated_ai_log) == []
 
 
@@ -6242,9 +6245,7 @@ def test_rule_based_interaction_start_creates_session_and_clears_task_sheet(
     commit = updated_lesson.history_graph.commits[-1]
     assert commit.metadata["kind"] == "interaction_flow"
     assert commit.metadata["requirement_cleared"] is True
-    assert commit.metadata["board_task_route"] == "chat"
-    assert commit.metadata["board_task_cleared"] is True
-    assert commit.metadata["active_requirement_sheet_after"] is None
+    _assert_board_task_metadata(commit, route="chat", requested_action="chat", cleared=True)
     assert commit.metadata["active_interaction_session_after"]["status"] == "active"
     events = store.list_board_task_events(owner_user_id=TEST_USER.id, lesson_id=lesson.id)
     assert events[-1]["event_type"] == "consumed"
@@ -6348,7 +6349,7 @@ def test_roleplay_request_starts_interaction_before_general_chatbot_reply(
     commit = response.course_package.lessons[0].history_graph.commits[-1]
     assert commit.metadata["kind"] == "interaction_flow"
     assert commit.metadata["assistant_message_source"] == "chatbot_interaction"
-    assert commit.metadata["board_task_route"] == "chat"
+    _assert_board_task_metadata(commit, route="chat", requested_action="chat", cleared=True)
     assert _read_log_entries(isolated_ai_log) == []
 
 

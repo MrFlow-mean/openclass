@@ -7,7 +7,18 @@ from app.services.learning_requirement_history import RequirementHistoryStamp
 from app.services.resource_resolver import ResourceResolution
 
 
-def _task_metadata(
+def _focus_metadata(
+    *,
+    focus: BoardFocusRef | None = None,
+    focus_candidates: list[BoardFocusRef] | None = None,
+) -> dict[str, object]:
+    return {
+        "resolved_focus": focus.model_dump(mode="json") if focus else None,
+        "focus_candidates": [candidate.model_dump(mode="json") for candidate in (focus_candidates or [])],
+    }
+
+
+def _learning_requirement_metadata(
     *,
     requirements: LearningRequirementSheet,
     learning_clarification: LearningClarificationStatus,
@@ -16,10 +27,9 @@ def _task_metadata(
     requirement_cleared: bool = False,
 ) -> dict[str, object]:
     return {
-        "task_requirement_sheet": requirements.model_dump(mode="json"),
+        "learning_requirement_sheet": requirements.model_dump(mode="json"),
         "learning_clarification": learning_clarification.model_dump(mode="json"),
-        "resolved_focus": focus.model_dump(mode="json") if focus else None,
-        "focus_candidates": [candidate.model_dump(mode="json") for candidate in (focus_candidates or [])],
+        **_focus_metadata(focus=focus, focus_candidates=focus_candidates),
         "requirement_cleared": requirement_cleared,
         "active_requirement_sheet_after": None if requirement_cleared else requirements.model_dump(mode="json"),
     }
@@ -88,6 +98,7 @@ def _board_task_metadata(
         "board_task_cleared": cleared,
         "requirement_cleared": True,
         "active_requirement_sheet_after": None,
+        "active_board_task_sheet_after": None if cleared or board_task is None else board_task.model_dump(mode="json"),
     }
 
 

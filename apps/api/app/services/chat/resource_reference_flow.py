@@ -13,7 +13,7 @@ from app.models import (
 from app.services import workspace_state
 from app.services.chat.handlers.initial_board import InitialBoardRuntime, run_initial_board_generation
 from app.services.chat.intent import _requests_document_artifact_generation, _requests_learning_start
-from app.services.chat.metadata import _reference_metadata, _task_metadata
+from app.services.chat.metadata import _reference_metadata, _learning_requirement_metadata
 from app.services.chat.response import _response
 from app.services.history import commit_operations
 from app.services.learning_requirement_history import LearningRequirementHistoryRecorder
@@ -95,7 +95,7 @@ def prompt_for_resource_reference(
             "assistant_message_source": "resource_resolver",
             "interaction_mode": request.interaction_mode,
             "selection": request.selection.model_dump(mode="json") if request.selection else None,
-            **_task_metadata(
+            **_learning_requirement_metadata(
                 requirements=requirements,
                 learning_clarification=learning_clarification,
                 requirement_cleared=False,

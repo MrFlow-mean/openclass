@@ -19,7 +19,7 @@ from app.services.board_document_editor import edit_existing_document
 from app.services.board_task_history import BoardTaskHistoryRecorder
 from app.services.board_teaching import build_board_teaching_guide
 from app.services.chat.intent import EDIT_ACTIONS
-from app.services.chat.metadata import _board_task_metadata, _task_metadata
+from app.services.chat.metadata import _board_task_metadata, _focus_metadata
 from app.services.chat.response import _response
 from app.services.course_runtime import refresh_lesson_runtime
 from app.services.history import commit_operations
@@ -189,12 +189,7 @@ def handle_board_task_write(
                 target_scope=target_scope,
                 reason="写链路没有独立定位证据；由任务清单和 Board AI 裁决进入。",
             ),
-            **_task_metadata(
-                requirements=task_requirements,
-                learning_clarification=learning_clarification,
-                focus=target_focus,
-                requirement_cleared=edit_outcome.changed,
-            ),
+            **_focus_metadata(focus=target_focus),
             **_board_task_metadata(
                 board_task=board_task,
                 stamp=stamp,
@@ -346,12 +341,7 @@ def handle_board_task_edit(
                     reason="编辑链路使用全文或继承目标范围，没有独立检索证据。",
                 )
             ),
-            **_task_metadata(
-                requirements=task_requirements,
-                learning_clarification=learning_clarification,
-                focus=focus,
-                requirement_cleared=True,
-            ),
+            **_focus_metadata(focus=focus),
             **_board_task_metadata(
                 board_task=board_task,
                 stamp=stamp,

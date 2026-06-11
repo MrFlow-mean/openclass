@@ -316,8 +316,9 @@ def test_ready_blank_board_waits_for_generation_confirmation(
     assert commit.metadata["requirement_cleared"] is False
     assert "board_generation_action" not in commit.metadata
     assert "frozen_requirement_version_id" not in commit.metadata
-    assert commit.metadata["task_requirement_sheet"] == json.loads(versions[-1]["sheet_json"])
-    assert commit.metadata["task_requirement_sheet"]["action_instruction"] == "生成第一版板书"
+    assert commit.metadata["learning_requirement_sheet"] == json.loads(versions[-1]["sheet_json"])
+    assert commit.metadata["learning_requirement_sheet"]["action_instruction"] == "生成第一版板书"
+    assert "task_requirement_sheet" not in commit.metadata
 
     followup = chat_service.process_chat_on_lesson(
         lesson.id,
