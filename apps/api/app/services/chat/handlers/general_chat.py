@@ -10,6 +10,7 @@ from app.models import (
     LearningClarificationStatus,
     LearningRequirementSheet,
     Lesson,
+    ResourceBoardProposal,
     ResourceReferenceContext,
 )
 from app.services import workspace_state
@@ -43,6 +44,7 @@ def commit_general_chat_turn(
     chatbot_message_source: str,
     solver_metadata: dict[str, object],
     runtime: GeneralChatRuntime,
+    resource_board_proposal: ResourceBoardProposal | None = None,
 ) -> ChatResponse:
     board_decision = BoardDecision(action="no_change", reason="本轮是通用问答聊天，不自动修改讲义。")
     requirement_cleared = False
@@ -65,6 +67,14 @@ def commit_general_chat_turn(
                 requirement_cleared=requirement_cleared,
             ),
             **_reference_metadata(resolution=resource_resolution),
+            "resource_board_proposal": (
+                resource_board_proposal.model_dump(mode="json") if resource_board_proposal else None
+            ),
+            "pending_resource_board_proposal": (
+                lesson.pending_resource_board_proposal.model_dump(mode="json")
+                if lesson.pending_resource_board_proposal
+                else None
+            ),
             **solver_metadata,
         },
     )
@@ -86,6 +96,7 @@ def commit_general_chat_turn(
         board_decision=board_decision,
         resource_matches=resource_resolution.matches,
         resource_evidence_bundle=resource_resolution.evidence_bundle,
+        resource_board_proposal=resource_board_proposal,
         selected_reference=selected_reference,
         requirement_cleared=requirement_cleared,
         requirement_history=requirement_history if track_initial_requirement_run else None,

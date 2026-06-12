@@ -31,6 +31,7 @@ InitialBoardGenerationTrigger = Literal[
     "explicit_start",
     "explicit_board_request",
     "resource_reference_confirm",
+    "resource_board_proposal_generate",
 ]
 
 
@@ -215,6 +216,8 @@ def _base_generation_metadata(
         "assistant_message_source": chatbot_message_source,
         "board_editor_message": edit_outcome.chatbot_message,
         "board_generation_action": board_generation_action,
+        "resource_board_action": request.resource_board_action,
+        "resource_board_proposal_id": request.resource_board_proposal_id,
         "board_edit_operation": edit_outcome.operation,
         "board_edit_summary": edit_outcome.summary,
         "board_section_titles": edit_outcome.section_titles,
@@ -258,6 +261,8 @@ def _generation_commit_details(
             requirement_cleared=requirement_cleared,
             board_generation_action=request.board_generation_action,
         )
+        metadata.update(solver_metadata)
+        metadata = _sanitize_generation_metadata_location(metadata, resource_resolution)
         return "Board document generation", "Generated board document from the learning requirement sheet", metadata
 
     if trigger == "explicit_board_request":
@@ -278,8 +283,16 @@ def _generation_commit_details(
         }
         if resource_resolution is not None:
             metadata.update(_reference_metadata(resolution=resource_resolution))
+        metadata["resource_backed_generation"] = _has_resource_evidence_target(resource_resolution)
+        metadata.update(solver_metadata)
+        metadata = _sanitize_generation_metadata_location(metadata, resource_resolution)
         return "Board document generation", "Generated board document from an explicit learner request", metadata
 
+    resource_board_generation_action = (
+        "resource_board_proposal_generate"
+        if trigger == "resource_board_proposal_generate"
+        else "resource_reference_confirm"
+    )
     metadata = {
         **_base_generation_metadata(
             request=request,
@@ -290,16 +303,46 @@ def _generation_commit_details(
             learning_clarification=learning_clarification,
             frozen_requirement=frozen_requirement,
             requirement_cleared=requirement_cleared,
-            board_generation_action="resource_reference_confirm",
+            board_generation_action=resource_board_generation_action,
         ),
-        "resource_backed_generation": True,
+        "resource_backed_generation": _has_resource_evidence_target(resource_resolution),
         "interaction_mode": request.interaction_mode,
         "resource_reference_action": request.resource_reference_action,
+        "resource_board_action": request.resource_board_action,
+        "resource_board_proposal_id": request.resource_board_proposal_id,
     }
     if resource_resolution is not None:
         metadata.update(_reference_metadata(resolution=resource_resolution))
+    metadata.update(solver_metadata)
+    metadata = _sanitize_generation_metadata_location(metadata, resource_resolution)
     return (
         "Resource-backed board generation",
         "Generated board document from a confirmed uploaded resource chapter",
         metadata,
     )
+
+
+def _has_resource_evidence_target(resource_resolution: ResourceResolution | None) -> bool:
+    return bool(
+        resource_resolution is not None
+        and resource_resolution.evidence_bundle is not None
+        and resource_resolution.evidence_bundle.target_id
+    )
+
+
+def _sanitize_generation_metadata_location(
+    metadata: dict[str, object],
+    resource_resolution: ResourceResolution | None,
+) -> dict[str, object]:
+    if _has_resource_evidence_target(resource_resolution):
+        return metadata
+    for key in ("learning_requirement_sheet", "active_requirement_sheet_after"):
+        raw_sheet = metadata.get(key)
+        if not isinstance(raw_sheet, dict):
+            continue
+        if raw_sheet.get("location_status") == "resolved" and raw_sheet.get("target_location") is None:
+            metadata[key] = {
+                **raw_sheet,
+                "location_status": "missing",
+            }
+    return metadata

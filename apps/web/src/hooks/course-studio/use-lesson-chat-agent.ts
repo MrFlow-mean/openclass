@@ -164,6 +164,12 @@ export function useLessonChatAgent({
     if (payload.resource_reference_action === "skip") {
       return "继续执行：先不参考推荐章节";
     }
+    if (payload.resource_board_action === "generate") {
+      return "生成资料板书";
+    }
+    if (payload.resource_board_action === "skip") {
+      return "暂不生成资料板书";
+    }
     return payload.interaction_mode === "direct_edit" ? `直接编辑讲义：${payload.message}` : payload.message;
   }
 
@@ -204,6 +210,7 @@ export function useLessonChatAgent({
     return (
       payload.board_generation_action === "start" ||
       payload.resource_reference_action === "confirm" ||
+      payload.resource_board_action === "generate" ||
       isBoardDocumentEmpty(document)
     );
   }
@@ -415,7 +422,7 @@ export function useLessonChatAgent({
       setBoardEditPrompt(response.board_edit_prompt ?? null);
       setSelectedReference(response.selected_reference ?? null);
       setLastScopedRequest(response.scope_options.length ? payloadWithConversation : null);
-      setLastReferenceRequest(response.reference_prompt ? payloadWithConversation : null);
+      setLastReferenceRequest(response.reference_prompt || response.resource_board_proposal ? payloadWithConversation : null);
       setLastBoardEditRequest(response.board_edit_prompt ? payloadWithConversation : null);
       const chatbotMessage = response.chatbot_message.trim();
       const streamedFallbackMessage = streamedChatContent.trim();
@@ -673,6 +680,22 @@ export function useLessonChatAgent({
     setLastReferenceRequest(null);
   }
 
+  async function handleResourceBoardAction(action: "generate" | "skip") {
+    if (!resourceBoardProposal) {
+      return;
+    }
+    await handleSubmitChat({
+      message: action === "generate" ? "生成板书" : "先不生成板书",
+      selection: lastReferenceRequest?.selection ?? null,
+      interaction_mode: lastReferenceRequest?.interaction_mode ?? "ask",
+      resource_board_action: action,
+      resource_board_proposal_id: resourceBoardProposal.id,
+    });
+    setReferencePrompt(null);
+    setResourceBoardProposal(null);
+    setLastReferenceRequest(null);
+  }
+
   async function handleBoardEditAction(action: "confirm" | "skip") {
     if (!boardEditPrompt || !lastBoardEditRequest) {
       return;
@@ -725,6 +748,7 @@ export function useLessonChatAgent({
     handleEditMessage,
     handleScopeAction,
     handleReferenceAction,
+    handleResourceBoardAction,
     handleBoardEditAction,
     handleContinueTeaching,
   };

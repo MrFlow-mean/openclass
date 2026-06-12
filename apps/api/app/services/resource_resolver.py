@@ -66,11 +66,13 @@ def resolve_resource_reference(
             return ResourceResolution(matches=[], status="missing")
         reference = _extract_reference(resources, match, user_message)
         evidence_bundle = _extract_evidence_bundle(resources, match, user_message)
+        if reference is None or evidence_bundle is None:
+            return ResourceResolution(matches=[match], status="missing")
         return ResourceResolution(
             matches=[match],
             selected_reference=reference,
             evidence_bundle=evidence_bundle,
-            status="selected" if reference else "missing",
+            status="selected",
         )
 
     matches = _rank_resource_matches(resources, user_message)
@@ -82,7 +84,7 @@ def resolve_resource_reference(
         # 高置信度且本轮允许直接引用时，才自动抽取资料片段交给后续 AI。
         reference = _extract_reference(resources, best, user_message)
         evidence_bundle = _extract_evidence_bundle(resources, best, user_message)
-        if reference is not None:
+        if reference is not None and evidence_bundle is not None:
             return ResourceResolution(
                 matches=matches[:5],
                 selected_reference=reference,
@@ -278,6 +280,8 @@ def _exact_body_path_matches(resources: list[ResourceLibraryItem], user_message:
                 continue
             if entry.chapter_id is None:
                 continue
+            if not any(block.chapter_id == entry.chapter_id and block.text.strip() for block in resource.body_blocks):
+                continue
             matches.append(
                 ResourceMatch(
                     resource_id=resource.id,
@@ -377,13 +381,16 @@ def _reference_from_body_blocks(
     if not compact_text.strip():
         return None
     chapter_title = match.chapter_title
-    body_pages = _page_range([block.body_page_no for block in blocks])
+    body_pages = _page_range(_body_page_values(blocks))
     physical_pages = _page_range([block.physical_page_no for block in blocks])
+    source_locations = _source_location_range(blocks)
     summary_parts = [f"《{resource.name}》的《{chapter_title}》已通过正文逻辑路径定位。"]
     if body_pages:
         summary_parts.append(f"正文页码：{body_pages}。")
     if physical_pages:
         summary_parts.append(f"全文物理页：{physical_pages}。")
+    if source_locations and not physical_pages:
+        summary_parts.append(f"原始位置：{source_locations}。")
     return ResourceReferenceContext(
         resource_id=resource.id,
         chapter_id=match.chapter_id,
@@ -419,16 +426,20 @@ def _extract_evidence_bundle(
     if not blocks:
         return None
     chapter_title = match.chapter_title
-    body_pages = [block.body_page_no for block in blocks if block.body_page_no is not None]
+    body_pages = _body_page_values(blocks)
     physical_pages = [block.physical_page_no for block in blocks if block.physical_page_no is not None]
+    body_page_range = _page_range(body_pages)
+    if body_page_range is None:
+        return None
     return ResourceEvidenceBundle(
         resource_id=resource.id,
         resource_name=resource.name,
         query=user_message,
         target_id=match.chapter_id,
         target_title=chapter_title,
-        body_page_range=_page_range(body_pages),
+        body_page_range=body_page_range,
         physical_page_range=_page_range(physical_pages),
+        source_location_range=_source_location_range(blocks),
         score=match.score,
         evidence=[match.reason, "证据只来自 page_role=body 的正文逻辑块。"],
         chunks=[
@@ -449,6 +460,27 @@ def _page_range(values: list[int | None]) -> str | None:
     if len(pages) == 1:
         return str(pages[0])
     return f"{pages[0]}-{pages[-1]}"
+
+
+def _body_page_values(blocks: list[ResourceBodyBlock]) -> list[int | None]:
+    values: list[int | None] = []
+    for block in blocks:
+        if block.body_page_no is not None:
+            values.append(block.body_page_no)
+        elif block.body_page_idx is not None:
+            values.append(block.body_page_idx + 1)
+        elif block.block_order is not None:
+            values.append(block.block_order + 1)
+    return values
+
+
+def _source_location_range(blocks: list[ResourceBodyBlock]) -> str | None:
+    locations = [block.source_location_range for block in blocks if block.source_location_range]
+    if not locations:
+        return None
+    first = locations[0]
+    last = locations[-1]
+    return first if first == last else f"{first} - {last}"
 
 
 def _reference_prompt(match: ResourceMatch) -> ResourceReferencePrompt:

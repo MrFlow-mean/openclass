@@ -289,6 +289,7 @@ class SqliteCourseStore:
                 learning_requirements_json TEXT,
                 board_task_requirements_json TEXT,
                 interaction_session_json TEXT,
+                pending_resource_board_proposal_json TEXT,
                 teaching_guide_json TEXT NOT NULL,
                 current_branch TEXT NOT NULL,
                 created_at TEXT NOT NULL,
@@ -397,6 +398,11 @@ class SqliteCourseStore:
                 extracted_text_available INTEGER NOT NULL,
                 text_content TEXT,
                 source_path TEXT,
+                index_status TEXT NOT NULL DEFAULT 'ready',
+                index_message TEXT NOT NULL DEFAULT '',
+                index_updated_at TEXT NOT NULL DEFAULT '',
+                page_count INTEGER NOT NULL DEFAULT 0,
+                indexed_block_count INTEGER NOT NULL DEFAULT 0,
                 structure_regions_json TEXT NOT NULL DEFAULT '[]',
                 body_blocks_json TEXT NOT NULL DEFAULT '[]',
                 toc_entries_json TEXT NOT NULL DEFAULT '[]',
@@ -457,6 +463,8 @@ class SqliteCourseStore:
             conn.execute("ALTER TABLE lessons ADD COLUMN interaction_session_json TEXT")
         if "board_task_requirements_json" not in lesson_columns:
             conn.execute("ALTER TABLE lessons ADD COLUMN board_task_requirements_json TEXT")
+        if "pending_resource_board_proposal_json" not in lesson_columns:
+            conn.execute("ALTER TABLE lessons ADD COLUMN pending_resource_board_proposal_json TEXT")
         resource_columns = {
             row["name"]
             for row in conn.execute("PRAGMA table_info(resources)").fetchall()
@@ -473,6 +481,16 @@ class SqliteCourseStore:
             conn.execute("ALTER TABLE resources ADD COLUMN chapter_shards_json TEXT NOT NULL DEFAULT '[]'")
         if "parse_warnings_json" not in resource_columns:
             conn.execute("ALTER TABLE resources ADD COLUMN parse_warnings_json TEXT NOT NULL DEFAULT '[]'")
+        if "index_status" not in resource_columns:
+            conn.execute("ALTER TABLE resources ADD COLUMN index_status TEXT NOT NULL DEFAULT 'ready'")
+        if "index_message" not in resource_columns:
+            conn.execute("ALTER TABLE resources ADD COLUMN index_message TEXT NOT NULL DEFAULT ''")
+        if "index_updated_at" not in resource_columns:
+            conn.execute("ALTER TABLE resources ADD COLUMN index_updated_at TEXT NOT NULL DEFAULT ''")
+        if "page_count" not in resource_columns:
+            conn.execute("ALTER TABLE resources ADD COLUMN page_count INTEGER NOT NULL DEFAULT 0")
+        if "indexed_block_count" not in resource_columns:
+            conn.execute("ALTER TABLE resources ADD COLUMN indexed_block_count INTEGER NOT NULL DEFAULT 0")
         package_columns = {
             row["name"]
             for row in conn.execute("PRAGMA table_info(course_packages)").fetchall()
@@ -646,6 +664,7 @@ class SqliteCourseStore:
             learning_requirements=_loads_optional(row["learning_requirements_json"]),
             board_task_requirements=_loads_optional(row["board_task_requirements_json"]),
             active_interaction_session=_loads_optional(row["interaction_session_json"]),
+            pending_resource_board_proposal=_loads_optional(row["pending_resource_board_proposal_json"]),
             teaching_guide=_loads(row["teaching_guide_json"], {}),
             history_graph=history_graph,
             created_at=row["created_at"],
@@ -717,6 +736,11 @@ class SqliteCourseStore:
             extracted_text_available=bool(row["extracted_text_available"]),
             text_content=row["text_content"],
             source_path=row["source_path"],
+            index_status=row["index_status"],
+            index_message=row["index_message"],
+            index_updated_at=row["index_updated_at"],
+            page_count=row["page_count"],
+            indexed_block_count=row["indexed_block_count"],
             structure_regions=_loads(row["structure_regions_json"], []),
             body_blocks=_loads(row["body_blocks_json"], []),
             toc_entries=_loads(row["toc_entries_json"], []),
@@ -814,9 +838,10 @@ class SqliteCourseStore:
                 board_document_id, board_document_title, board_content_json,
                 board_content_html, board_content_text, board_page_settings_json,
                 board_teaching_guide_json, board_teaching_progress_json, learning_requirements_json,
-                board_task_requirements_json, interaction_session_json, teaching_guide_json,
+                board_task_requirements_json, interaction_session_json, pending_resource_board_proposal_json,
+                teaching_guide_json,
                 current_branch, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 lesson.id,
@@ -837,6 +862,7 @@ class SqliteCourseStore:
                 _dumps_optional(lesson.learning_requirements),
                 _dumps_optional(lesson.board_task_requirements),
                 _dumps_optional(lesson.active_interaction_session),
+                _dumps_optional(lesson.pending_resource_board_proposal),
                 _dumps(lesson.teaching_guide.model_dump(mode="json")),
                 lesson.history_graph.current_branch,
                 lesson.created_at,
@@ -913,8 +939,9 @@ class SqliteCourseStore:
             INSERT INTO resources(
                 id, package_id, sort_order, name, mime_type, resource_type, size_bytes,
                 uploaded_at, scope_lesson_id, concept_index_json, extracted_text_available, text_content, source_path,
+                index_status, index_message, index_updated_at, page_count, indexed_block_count,
                 structure_regions_json, body_blocks_json, toc_entries_json, chapter_shards_json, parse_warnings_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 resource.id,
@@ -930,6 +957,11 @@ class SqliteCourseStore:
                 int(resource.extracted_text_available),
                 resource.text_content,
                 resource.source_path,
+                resource.index_status,
+                resource.index_message,
+                resource.index_updated_at,
+                resource.page_count,
+                resource.indexed_block_count,
                 _dumps([region.model_dump(mode="json") for region in resource.structure_regions]),
                 _dumps([block.model_dump(mode="json") for block in resource.body_blocks]),
                 _dumps([entry.model_dump(mode="json") for entry in resource.toc_entries]),

@@ -198,6 +198,7 @@ export interface Lesson {
   learning_requirements?: LearningRequirementSheet | null;
   board_task_requirements?: BoardTaskRequirementSheet | null;
   active_interaction_session?: InteractionSession | null;
+  pending_resource_board_proposal?: ResourceBoardProposal | null;
   history_graph: LessonHistoryGraph;
   created_at: string;
   updated_at: string;
@@ -268,6 +269,8 @@ export interface ResourceChapterShard {
   body_page_end?: number | null;
   physical_page_start?: number | null;
   physical_page_end?: number | null;
+  source_locator?: string | null;
+  source_location_range?: string | null;
   block_ids: string[];
   summary: string;
   keywords: string[];
@@ -285,6 +288,11 @@ export interface ResourceLibraryItem {
   outline: LibraryChapter[];
   concept_index: Record<string, string[]>;
   extracted_text_available: boolean;
+  index_status: string;
+  index_message: string;
+  index_updated_at: string;
+  page_count: number;
+  indexed_block_count: number;
   structure_regions: ResourceStructureRegion[];
   toc_entries: ResourceTOCEntry[];
   chapter_shards: ResourceChapterShard[];
@@ -500,6 +508,7 @@ export interface ResourceEvidenceBundle {
   target_title?: string | null;
   body_page_range?: string | null;
   physical_page_range?: string | null;
+  source_location_range?: string | null;
   score: number;
   evidence: string[];
   chunks: ResourceContextChunk[];

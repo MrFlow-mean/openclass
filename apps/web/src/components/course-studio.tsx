@@ -213,6 +213,7 @@ export function CourseStudio() {
     handleEditMessage,
     handleScopeAction,
     handleReferenceAction,
+    handleResourceBoardAction,
     handleBoardEditAction,
     handleContinueTeaching,
   } = chatAgent;
@@ -544,6 +545,7 @@ export function CourseStudio() {
           onEditMessage={(message, nextContent) => handleEditMessage(message, nextContent)}
           onScopeAction={(option) => handleScopeAction(option)}
           onReferenceAction={(action) => handleReferenceAction(action)}
+          onResourceBoardAction={(action) => handleResourceBoardAction(action)}
           onBoardEditAction={(action) => handleBoardEditAction(action)}
           onSelectTextModel={selectTextModel}
           onSelectRealtimeModel={handleSelectRealtimeModel}

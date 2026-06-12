@@ -132,6 +132,9 @@ def test_resource_upload_endpoint_adds_resource_to_active_package(api_client: Te
     resource = package["resources"][0]
     assert resource["name"] == "notes.md"
     assert resource["outline"][0]["title"] == "Chapter One"
+    assert resource["page_count"] >= 1
+    assert resource["indexed_block_count"] >= 1
+    assert resource["index_status"] == "ready"
     assert resource["structure_regions"]
     assert resource["toc_entries"]
     assert resource["chapter_shards"]

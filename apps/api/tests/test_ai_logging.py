@@ -6825,6 +6825,178 @@ def test_explicit_resource_chapter_generation_directly_uses_body_evidence(
     assert _read_log_entries(isolated_ai_log) == []
 
 
+def test_resource_chapter_hit_persists_pending_board_proposal_for_next_turn(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    captured: dict[str, str | None] = {}
+
+    def _fake_chatbot_reply(**kwargs):
+        return ChatbotReply(chatbot_message="AI生成：已按正文证据讲解这一节。")
+
+    def _fake_board_edit(**kwargs):
+        captured["resource_summary"] = kwargs.get("resource_summary")
+        return BoardDocumentEditResult(
+            operation="replace_document",
+            title="章节板书",
+            content_text="# 章节板书\n根据正文证据生成。",
+            summary="已根据正文证据生成板书。",
+            chatbot_message="AI生成：已根据正文证据生成板书。",
+            section_titles=["章节板书"],
+        )
+
+    monkeypatch.setattr(openai_course_ai, "generate_chatbot_reply", _fake_chatbot_reply)
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _fake_board_edit)
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
+
+    workspace = _seed_test_user_workspace(store)
+    package = workspace.packages[0]
+    lesson = package.lessons[0]
+    resource_path = tmp_path / "resource.md"
+    resource_path.write_text(
+        "# 第七章\n章节总览。\n\n## 7.4 Relocatable Object Files\n"
+        "这是第七章第四节正文证据，用于说明可重定位目标文件。",
+        encoding="utf-8",
+    )
+    resource = build_resource_item(resource_path, "resource.md")
+    resource.scope_lesson_id = lesson.id
+    package.resources.append(resource)
+    store.save_for_user(TEST_USER.id, workspace)
+
+    first = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="再为我讲解第七章第四节"),
+        user_id=TEST_USER.id,
+    )
+
+    assert first.selected_reference is not None
+    assert first.resource_evidence_bundle is not None
+    assert first.resource_board_proposal is not None
+    assert first.course_package.lessons[0].pending_resource_board_proposal is not None
+    proposal_id = first.resource_board_proposal.id
+    first_commit = first.course_package.lessons[0].history_graph.commits[-1]
+    assert first_commit.metadata["pending_resource_board_proposal"]["id"] == proposal_id
+    assert first_commit.metadata["resource_evidence_bundle"]["target_title"] == "7.4 Relocatable Object Files"
+
+    generated = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="直接生成相关板书"),
+        user_id=TEST_USER.id,
+    )
+
+    assert generated.board_decision.action == "edit_board"
+    assert generated.requirement_cleared is True
+    assert generated.selected_reference is not None
+    assert "第七章第四节正文证据" in (captured["resource_summary"] or "")
+    assert generated.course_package.lessons[0].pending_resource_board_proposal is None
+    generated_commit = generated.course_package.lessons[0].history_graph.commits[-1]
+    assert generated_commit.metadata["kind"] == "board_document_generation"
+    assert generated_commit.metadata["board_generation_action"] == "resource_board_proposal_generate"
+    assert generated_commit.metadata["resource_board_action"] == "generate"
+    assert generated_commit.metadata["resource_board_proposal_id"] == proposal_id
+    assert generated_commit.metadata["resource_resolution_status"] == "selected"
+    assert generated_commit.metadata["resource_backed_generation"] is True
+    assert generated_commit.metadata["resource_evidence_bundle"]["target_title"] == "7.4 Relocatable Object Files"
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_resource_board_proposal_skip_clears_pending_without_generation(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_chatbot_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="AI生成：已按资料讲解。"),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_board_document_edit",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("skip must not call BoardEditor")),
+    )
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
+
+    workspace = _seed_test_user_workspace(store)
+    package = workspace.packages[0]
+    lesson = package.lessons[0]
+    resource_path = tmp_path / "resource.md"
+    resource_path.write_text(
+        "# 第一章\n这是第一章正文证据，命中后可以生成但本测试会跳过。",
+        encoding="utf-8",
+    )
+    resource = build_resource_item(resource_path, "resource.md")
+    resource.scope_lesson_id = lesson.id
+    package.resources.append(resource)
+    store.save_for_user(TEST_USER.id, workspace)
+
+    first = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="讲解第一章"),
+        user_id=TEST_USER.id,
+    )
+    assert first.resource_board_proposal is not None
+
+    skipped = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(
+            message="先不生成板书",
+            resource_board_action="skip",
+            resource_board_proposal_id=first.resource_board_proposal.id,
+        ),
+        user_id=TEST_USER.id,
+    )
+
+    assert skipped.board_decision.action == "no_change"
+    assert skipped.course_package.lessons[0].pending_resource_board_proposal is None
+    commit = skipped.course_package.lessons[0].history_graph.commits[-1]
+    assert commit.metadata["resource_board_action"] == "skip"
+    assert commit.metadata["resource_board_proposal_id"] == first.resource_board_proposal.id
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_board_generation_metadata_does_not_mark_location_resolved_without_target_or_evidence(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_board_document_edit",
+        lambda **kwargs: BoardDocumentEditResult(
+            operation="replace_document",
+            title="普通板书",
+            content_text="# 普通板书\n没有资料证据的普通生成。",
+            summary="已生成普通板书。",
+            chatbot_message="AI生成：已生成普通板书。",
+            section_titles=["普通板书"],
+        ),
+    )
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.learning_requirements = build_requirements("普通主题").model_copy(
+        update={"location_status": "resolved", "target_location": None}
+    )
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="开始生成板书", board_generation_action="start"),
+        user_id=TEST_USER.id,
+    )
+
+    commit = response.course_package.lessons[0].history_graph.commits[-1]
+    assert commit.metadata["kind"] == "board_document_generation"
+    assert commit.metadata["learning_requirement_sheet"]["location_status"] == "missing"
+    assert commit.metadata["active_requirement_sheet_after"] is None
+    assert commit.metadata.get("resource_backed_generation") is not True
+    assert _read_log_entries(isolated_ai_log) == []
+
+
 def test_board_teaching_continue_advances_to_next_section(
     monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
 ) -> None:

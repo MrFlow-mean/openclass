@@ -6,6 +6,7 @@ import mimetypes
 import posixpath
 import re
 import zipfile
+from dataclasses import dataclass
 from xml.etree import ElementTree as ET
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from docx import Document as DocxDocument
 
 from app.models import (
     LibraryChapter,
+    now_iso,
     ResourceBodyBlock,
     ResourceChapterShard,
     ResourceContextChunk,
@@ -30,6 +32,20 @@ _PDF_LOCATOR_SEPARATOR = " || "
 _BODY_BLOCK_TEXT_LIMIT = 5000
 _EPUB_HTML_TEXT_NORMALIZE_LIMIT = 120_000
 _EPUB_STORED_TEXT_LIMIT = 200_000
+
+
+@dataclass(frozen=True)
+class IndexedSourceUnit:
+    chapter: LibraryChapter
+    heading_path: list[str]
+    block_text: str
+    page_number_scope: str
+    body_page_no: int | None
+    body_page_idx: int | None
+    physical_page_no: int | None
+    physical_page_idx: int | None
+    source_locator: str | None
+    source_location_range: str | None
 
 
 def _normalize_extracted_text(text: str) -> str:
@@ -113,6 +129,24 @@ def _pdf_locator_hint(
     return _PDF_LOCATOR_SEPARATOR.join(parts)
 
 
+def _resource_source_locator(
+    title: str,
+    *,
+    source: str,
+    source_index: int | None = None,
+    body_page: int | None = None,
+    physical_page: int | None = None,
+) -> str:
+    parts = [title, f"source={source}"]
+    if source_index is not None:
+        parts.append(f"source_index={source_index}")
+    if body_page is not None:
+        parts.append(f"body_page={body_page}")
+    if physical_page is not None:
+        parts.append(f"physical_page={physical_page}")
+    return _PDF_LOCATOR_SEPARATOR.join(parts)
+
+
 def _pdf_locator_value(locator_hint: str | None, key: str) -> int | None:
     if not locator_hint:
         return None
@@ -134,6 +168,13 @@ def _pdf_locator_source(locator_hint: str | None) -> str | None:
         if sep and name.strip() == "source":
             return value.strip()
     return None
+
+
+def _locator_title(locator_hint: str | None, fallback: str) -> str:
+    if not locator_hint:
+        return fallback
+    title = locator_hint.split(_PDF_LOCATOR_SEPARATOR, 1)[0].strip()
+    return title or fallback
 
 
 def _chapter(
@@ -645,13 +686,52 @@ def _is_epub_separator_title(title: str) -> bool:
 
 def _looks_like_epub_heading(line: str) -> bool:
     cleaned = line.strip()
+    if _looks_like_epub_heading_artifact(cleaned):
+        return False
     if len(cleaned) > 90:
         return False
     if _looks_like_reference_heading(cleaned):
         return True
-    if re.match(r"^(?:chapter\s+\d+|\d+\s*[.．]\s*\d+|\d+\s+[A-Za-z\u4e00-\u9fff])", cleaned, flags=re.IGNORECASE):
+    if re.match(r"^(?:chapter\s+\d+|\d+\s*[.．]\s*\d+)", cleaned, flags=re.IGNORECASE):
+        return True
+    if _looks_like_numbered_title(cleaned):
         return True
     return False
+
+
+def _looks_like_epub_heading_artifact(line: str) -> bool:
+    cleaned = re.sub(r"\s+", " ", line.strip())
+    if not cleaned:
+        return True
+    compact = re.sub(r"\s+", "", cleaned)
+    if compact.isdigit() and len(compact) <= 4:
+        return True
+    if re.search(r"[{}();#$]|/\*|\*/|//|\\n|%[a-zA-Z]|0x[0-9a-fA-F]+", cleaned):
+        return True
+    if re.match(
+        r"^\d+\s+(?:int|long|char|short|float|double|void|return|if|else|for|while|foreach|subq|mov[lq]?|add[qbl]?|call|retq?|push|pop|jmp|cmp|lea)\b",
+        cleaned,
+        flags=re.IGNORECASE,
+    ):
+        return True
+    if re.match(r"^\d+\s+[A-Z]+\s+/", cleaned):
+        return True
+    if re.match(r"^\d+\s+(?:Host|GET|POST|HTTP|Client|Server)\b", cleaned, flags=re.IGNORECASE):
+        return True
+    return False
+
+
+def _looks_like_numbered_title(line: str) -> bool:
+    if re.search(r"[{}();#$]|/", line):
+        return False
+    match = re.match(r"^\d+\s+(.+)$", line)
+    if not match:
+        return False
+    words = re.findall(r"[A-Za-z\u4e00-\u9fff]+", match.group(1))
+    if len(words) < 2:
+        return False
+    first_word = words[0]
+    return bool(re.match(r"^[A-Z\u4e00-\u9fff]", first_word))
 
 
 def _epub_sections(file_path: Path) -> list[dict[str, object]]:
@@ -721,19 +801,20 @@ def _extract_epub_outline_from_sections(sections: list[dict[str, object]]) -> li
     chapters: list[LibraryChapter] = []
     for section in sections:
         title = str(section["title"]).strip()
-        if not title or _is_epub_separator_title(title):
+        if not title or _is_epub_separator_title(title) or _looks_like_epub_heading_artifact(title):
             continue
         content = str(section["content"])
         summary_seed = re.sub(r"\s+", " ", content).strip()[:120]
         summary = summary_seed or f"来自 EPUB 标题“{title}”的章节摘要待进一步展开。"
+        order_index = int(section["order_index"])
         chapters.append(
             _chapter(
                 title=title,
                 summary=summary,
                 keywords=_keywords_from_text(f"{title}\n{content}"),
                 level=int(section["level"]),
-                locator_hint=title,
-                order_index=int(section["order_index"]),
+                locator_hint=_resource_source_locator(title, source="epub_section", source_index=order_index + 1),
+                order_index=order_index,
                 scan_strategy="heading_section",
             )
         )
@@ -838,7 +919,7 @@ def _extract_epub_section_text(file_path: Path, chapter: LibraryChapter, user_qu
             section = sections[best_index]
             return str(section["title"]), _epub_section_with_children(sections, best_index)
 
-    target_title = (chapter.locator_hint or chapter.title).strip()
+    target_title = _locator_title(chapter.locator_hint, chapter.title).strip()
     title_candidates = [
         index
         for index, section in enumerate(sections)
@@ -874,6 +955,8 @@ def _looks_like_page_artifact(line: str) -> bool:
     if not cleaned:
         return True
     if cleaned.isdigit() and len(cleaned) <= 3:
+        return True
+    if _looks_like_epub_heading_artifact(line):
         return True
     if re.fullmatch(r"第[0-9一二三四五六七八九十百〇零两]+章(?:概论|绪论)?", cleaned):
         return True
@@ -1490,6 +1573,118 @@ def _text_window_for_chapter(text_content: str, chapter: LibraryChapter) -> str:
     return text_content[start : start + _BODY_BLOCK_TEXT_LIMIT * 2]
 
 
+def _source_location_range(
+    *,
+    body_page_no: int | None,
+    physical_page_no: int | None,
+    source_index: int | None,
+) -> str | None:
+    if physical_page_no is not None and body_page_no is not None:
+        return f"正文第 {body_page_no} 页 / 全文第 {physical_page_no} 页"
+    if body_page_no is not None:
+        return f"正文逻辑页 {body_page_no}"
+    if physical_page_no is not None:
+        return f"全文第 {physical_page_no} 页"
+    if source_index is not None:
+        return f"源顺序单元 {source_index}"
+    return None
+
+
+def _source_locator_for_chapter(
+    *,
+    file_path: Path,
+    chapter: LibraryChapter,
+    chapter_index: int,
+    body_page_no: int | None,
+    physical_page_no: int | None,
+) -> str | None:
+    locator_source = _pdf_locator_source(chapter.locator_hint)
+    source_index = _pdf_locator_value(chapter.locator_hint, "source_index") or chapter_index + 1
+    if locator_source:
+        return _resource_source_locator(
+            _locator_title(chapter.locator_hint, chapter.title),
+            source=locator_source,
+            source_index=source_index,
+            body_page=body_page_no,
+            physical_page=physical_page_no,
+        )
+    suffix = file_path.suffix.lower().lstrip(".") or "resource"
+    return _resource_source_locator(
+        chapter.title,
+        source=f"{suffix}_section",
+        source_index=chapter_index + 1,
+        body_page=body_page_no,
+        physical_page=physical_page_no,
+    )
+
+
+def _build_indexed_source_units(
+    *,
+    file_path: Path,
+    mime_type: str,
+    outline: list[LibraryChapter],
+    text_content: str | None,
+    body_start_page: int | None,
+) -> list[IndexedSourceUnit]:
+    units: list[IndexedSourceUnit] = []
+    for chapter_index, chapter in enumerate(outline):
+        locator_source = _pdf_locator_source(chapter.locator_hint)
+        printed_page = _pdf_locator_value(chapter.locator_hint, "printed_page")
+        actual_page = chapter.page_start or _pdf_locator_value(chapter.locator_hint, "actual_page")
+        if locator_source == "toc_page" and printed_page:
+            body_page_no = printed_page
+            page_scope = "body"
+        elif actual_page and body_start_page:
+            body_page_no = actual_page - body_start_page + 1
+            page_scope = "body" if body_page_no >= 1 else "physical"
+        else:
+            body_page_no = chapter_index + 1
+            page_scope = "body"
+
+        physical_page_no = actual_page
+        if body_start_page and body_page_no and page_scope == "body":
+            physical_page_no = body_start_page + body_page_no - 1
+
+        heading_path = chapter.path or [chapter.title]
+        raw_text = _chapter_body_text_for_index(
+            file_path=file_path,
+            mime_type=mime_type,
+            chapter=chapter,
+            text_content=text_content,
+        )
+        block_text = _normalize_extracted_text(raw_text)[:_BODY_BLOCK_TEXT_LIMIT]
+        if not block_text:
+            block_text = _normalize_extracted_text(f"{chapter.title}\n{chapter.summary}\n{' '.join(chapter.keywords)}")
+
+        source_locator = _source_locator_for_chapter(
+            file_path=file_path,
+            chapter=chapter,
+            chapter_index=chapter_index,
+            body_page_no=body_page_no if page_scope == "body" else None,
+            physical_page_no=physical_page_no,
+        )
+        source_index = _pdf_locator_value(source_locator, "source_index")
+        units.append(
+            IndexedSourceUnit(
+                chapter=chapter,
+                heading_path=heading_path,
+                block_text=block_text,
+                page_number_scope=page_scope,
+                body_page_no=body_page_no if page_scope == "body" else None,
+                body_page_idx=body_page_no - 1 if body_page_no and page_scope == "body" else None,
+                physical_page_no=physical_page_no,
+                physical_page_idx=physical_page_no - 1 if physical_page_no else None,
+                source_locator=source_locator,
+                source_location_range=_source_location_range(
+                    body_page_no=body_page_no if page_scope == "body" else None,
+                    physical_page_no=physical_page_no,
+                    source_index=source_index,
+                ),
+            )
+        )
+    return units
+
+
 def _build_resource_structure_regions(
     *,
     outline: list[LibraryChapter],
@@ -1620,45 +1815,30 @@ def _build_resource_indexes(
     body_blocks: list[ResourceBodyBlock] = []
     toc_entries: list[ResourceTOCEntry] = []
     chapter_shards: list[ResourceChapterShard] = []
+    source_units = _build_indexed_source_units(
+        file_path=file_path,
+        mime_type=mime_type,
+        outline=outline,
+        text_content=text_content,
+        body_start_page=body_start_page,
+    )
 
-    for chapter_index, chapter in enumerate(outline):
+    for chapter_index, unit in enumerate(source_units):
+        chapter = unit.chapter
         locator_source = _pdf_locator_source(chapter.locator_hint)
         printed_page = _pdf_locator_value(chapter.locator_hint, "printed_page")
-        actual_page = chapter.page_start or _pdf_locator_value(chapter.locator_hint, "actual_page")
-        if locator_source == "toc_page" and printed_page:
-            body_page_no = printed_page
-            page_scope = "body"
-        elif actual_page and body_start_page:
-            body_page_no = actual_page - body_start_page + 1
-            page_scope = "body" if body_page_no >= 1 else "physical"
-        else:
-            body_page_no = chapter_index + 1 if not actual_page else None
-            page_scope = "unknown" if not actual_page else "physical"
-        physical_page_no = actual_page
-        if body_start_page and body_page_no and page_scope == "body":
-            physical_page_no = body_start_page + body_page_no - 1
-
-        heading_path = chapter.path or [chapter.title]
-        raw_text = _chapter_body_text_for_index(
-            file_path=file_path,
-            mime_type=mime_type,
-            chapter=chapter,
-            text_content=text_content,
-        )
-        block_text = _normalize_extracted_text(raw_text)[:_BODY_BLOCK_TEXT_LIMIT]
-        if not block_text:
-            block_text = _normalize_extracted_text(f"{chapter.title}\n{chapter.summary}\n{' '.join(chapter.keywords)}")
-
         block = ResourceBodyBlock(
             chapter_id=chapter.id,
-            physical_page_no=physical_page_no,
-            physical_page_idx=physical_page_no - 1 if physical_page_no else None,
-            body_page_no=body_page_no if page_scope == "body" else None,
-            body_page_idx=body_page_no - 1 if body_page_no and page_scope == "body" else None,
+            physical_page_no=unit.physical_page_no,
+            physical_page_idx=unit.physical_page_idx,
+            body_page_no=unit.body_page_no,
+            body_page_idx=unit.body_page_idx,
+            source_locator=unit.source_locator,
+            source_location_range=unit.source_location_range,
             block_order=chapter_index,
-            heading_path=heading_path,
-            text=block_text,
-            text_hash=_stable_text_hash(block_text),
+            heading_path=unit.heading_path,
+            text=unit.block_text,
+            text_hash=_stable_text_hash(unit.block_text),
         )
         body_blocks.append(block)
 
@@ -1667,41 +1847,55 @@ def _build_resource_indexes(
                 chapter_id=chapter.id,
                 title=chapter.title,
                 level=chapter.level,
-                heading_path=heading_path,
+                heading_path=unit.heading_path,
                 printed_page_label=str(printed_page) if printed_page else _page_label(chapter.page_start, chapter.page_end),
-                page_number_scope=page_scope,  # type: ignore[arg-type]
-                body_page_no=body_page_no if page_scope == "body" else None,
-                physical_page_no=physical_page_no,
-                confidence=0.84 if locator_source == "toc_page" and printed_page and physical_page_no else 0.58,
+                page_number_scope=unit.page_number_scope,  # type: ignore[arg-type]
+                body_page_no=unit.body_page_no,
+                physical_page_no=unit.physical_page_no,
+                confidence=0.84 if locator_source == "toc_page" and printed_page and unit.physical_page_no else 0.58,
                 evidence=[
                     "目录页码默认按正文页码解释。"
                     if locator_source == "toc_page" and printed_page
-                    else "按章节页码或章节顺序建立目录入口。"
+                    else "按章节正文逻辑页码或章节顺序建立目录入口。"
                 ],
             )
         )
 
         page_end = chapter.page_end
-        body_page_end = None
-        if page_end and body_start_page and page_scope == "body":
-            body_page_end = max(body_page_no or 1, page_end - body_start_page + 1)
+        body_page_end = unit.body_page_no
+        if page_end and body_start_page and unit.body_page_no is not None:
+            body_page_end = max(unit.body_page_no, page_end - body_start_page + 1)
         chapter_shards.append(
             ResourceChapterShard(
                 chapter_id=chapter.id,
                 title=chapter.title,
-                heading_path=heading_path,
-                body_page_start=body_page_no if page_scope == "body" else None,
+                heading_path=unit.heading_path,
+                body_page_start=unit.body_page_no,
                 body_page_end=body_page_end,
-                physical_page_start=physical_page_no,
+                physical_page_start=unit.physical_page_no,
                 physical_page_end=page_end,
+                source_locator=unit.source_locator,
+                source_location_range=unit.source_location_range,
                 block_ids=[block.id],
                 summary=chapter.summary,
                 keywords=chapter.keywords,
-                text_hash=_stable_text_hash(f"{chapter.title}\n{chapter.summary}\n{block_text}"),
+                text_hash=_stable_text_hash(f"{chapter.title}\n{chapter.summary}\n{unit.block_text}"),
             )
         )
 
     return structure_regions, body_blocks, toc_entries, chapter_shards, warnings
+
+
+def _resource_index_stats(body_blocks: list[ResourceBodyBlock]) -> tuple[int, int, str]:
+    indexed_block_count = len([block for block in body_blocks if block.text.strip()])
+    physical_pages = [block.physical_page_no for block in body_blocks if block.physical_page_no is not None]
+    body_pages = [block.body_page_no for block in body_blocks if block.body_page_no is not None]
+    page_count = max(physical_pages or body_pages or [0])
+    if physical_pages:
+        message = f"已完成索引：{page_count} 页，{indexed_block_count} 个正文块。"
+    else:
+        message = f"已完成索引：{page_count} 个正文逻辑单元，{indexed_block_count} 个正文块。"
+    return page_count, indexed_block_count, message
 
 
 def extract_outline(file_path: Path, original_name: str, mime_type: str) -> tuple[list[LibraryChapter], bool, str | None]:
@@ -1881,6 +2075,7 @@ def build_resource_item(file_path: Path, original_name: str) -> ResourceLibraryI
         outline=outline,
         text_content=text_content,
     )
+    page_count, indexed_block_count, index_message = _resource_index_stats(body_blocks)
 
     return ResourceLibraryItem(
         name=original_name,
@@ -1892,11 +2087,33 @@ def build_resource_item(file_path: Path, original_name: str) -> ResourceLibraryI
         extracted_text_available=extracted,
         text_content=text_content,
         source_path=str(file_path),
+        index_status="ready",
+        index_message=index_message,
+        index_updated_at=now_iso(),
+        page_count=page_count,
+        indexed_block_count=indexed_block_count,
         structure_regions=structure_regions,
         body_blocks=body_blocks,
         toc_entries=toc_entries,
         chapter_shards=chapter_shards,
         parse_warnings=parse_warnings,
+    )
+
+
+def reindex_resource_item(resource: ResourceLibraryItem) -> ResourceLibraryItem:
+    if not resource.source_path:
+        raise ValueError("resource cannot be reindexed without a source_path")
+    source_path = Path(resource.source_path)
+    if not source_path.exists():
+        raise FileNotFoundError(resource.source_path)
+    rebuilt = build_resource_item(source_path, resource.name)
+    return rebuilt.model_copy(
+        update={
+            "id": resource.id,
+            "uploaded_at": resource.uploaded_at,
+            "scope_lesson_id": resource.scope_lesson_id,
+            "source_path": resource.source_path,
+        }
     )
 
 

@@ -532,6 +532,7 @@ class Lesson(BaseModel):
     learning_requirements: LearningRequirementSheet | None = None
     board_task_requirements: BoardTaskRequirementSheet | None = None
     active_interaction_session: InteractionSession | None = None
+    pending_resource_board_proposal: ResourceBoardProposal | None = None
     teaching_guide: TeachingGuide
     history_graph: LessonHistoryGraph
     created_at: str = Field(default_factory=now_iso)
@@ -582,6 +583,8 @@ class ResourceBodyBlock(BaseModel):
     physical_page_idx: int | None = None
     body_page_no: int | None = None
     body_page_idx: int | None = None
+    source_locator: str | None = None
+    source_location_range: str | None = None
     block_order: int = 0
     heading_path: list[str] = Field(default_factory=list)
     text: str
@@ -611,6 +614,8 @@ class ResourceChapterShard(BaseModel):
     body_page_end: int | None = None
     physical_page_start: int | None = None
     physical_page_end: int | None = None
+    source_locator: str | None = None
+    source_location_range: str | None = None
     block_ids: list[str] = Field(default_factory=list)
     summary: str
     keywords: list[str] = Field(default_factory=list)
@@ -630,6 +635,11 @@ class ResourceLibraryItem(BaseModel):
     extracted_text_available: bool = False
     text_content: str | None = None
     source_path: str | None = None
+    index_status: str = "ready"
+    index_message: str = ""
+    index_updated_at: str = ""
+    page_count: int = 0
+    indexed_block_count: int = 0
     structure_regions: list[ResourceStructureRegion] = Field(default_factory=list)
     body_blocks: list[ResourceBodyBlock] = Field(default_factory=list)
     toc_entries: list[ResourceTOCEntry] = Field(default_factory=list)
@@ -648,6 +658,11 @@ class ResourceLibraryItemView(BaseModel):
     outline: list[LibraryChapter] = Field(default_factory=list)
     concept_index: dict[str, list[str]] = Field(default_factory=dict)
     extracted_text_available: bool = False
+    index_status: str = "ready"
+    index_message: str = ""
+    index_updated_at: str = ""
+    page_count: int = 0
+    indexed_block_count: int = 0
     structure_regions: list[ResourceStructureRegion] = Field(default_factory=list)
     toc_entries: list[ResourceTOCEntry] = Field(default_factory=list)
     chapter_shards: list[ResourceChapterShard] = Field(default_factory=list)
@@ -761,6 +776,7 @@ class ResourceEvidenceBundle(BaseModel):
     target_title: str | None = None
     body_page_range: str | None = None
     physical_page_range: str | None = None
+    source_location_range: str | None = None
     score: float = 0.0
     evidence: list[str] = Field(default_factory=list)
     chunks: list[ResourceContextChunk] = Field(default_factory=list)
@@ -897,6 +913,7 @@ class LessonView(BaseModel):
     learning_requirements: LearningRequirementSheet | None = None
     board_task_requirements: BoardTaskRequirementSheet | None = None
     active_interaction_session: InteractionSession | None = None
+    pending_resource_board_proposal: ResourceBoardProposal | None = None
     history_graph: LessonHistoryGraph
     created_at: str
     updated_at: str

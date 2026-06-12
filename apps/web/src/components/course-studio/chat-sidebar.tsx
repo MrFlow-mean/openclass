@@ -234,6 +234,7 @@ type CourseStudioChatSidebarProps = {
   onEditMessage: (message: ChatMessage, nextContent: string) => void | Promise<void>;
   onScopeAction: (option: ScopeOption) => void | Promise<void>;
   onReferenceAction: (action: "confirm" | "skip") => void | Promise<void>;
+  onResourceBoardAction: (action: "generate" | "skip") => void | Promise<void>;
   onBoardEditAction: (action: "confirm" | "skip") => void | Promise<void>;
   onSelectTextModel: (option: AIModelOption) => void;
   onSelectRealtimeModel: (option: AIModelOption) => void;
@@ -287,6 +288,7 @@ export function CourseStudioChatSidebar({
   onEditMessage,
   onScopeAction,
   onReferenceAction,
+  onResourceBoardAction,
   onBoardEditAction,
   onSelectTextModel,
   onSelectRealtimeModel,
@@ -466,32 +468,39 @@ export function CourseStudioChatSidebar({
             </div>
           ) : null}
 
-          {!isPreviewMode && referencePrompt ? (
+          {!isPreviewMode && (referencePrompt || resourceBoardProposal) ? (
             <div className="rounded-xl border border-violet-200 bg-violet-50 p-4">
               <p className="text-[11px] font-bold uppercase tracking-widest text-violet-700">
                 {resourceBoardProposal ? "板书生成建议" : "章节参考建议"}
               </p>
-              <p className="mt-2 text-sm leading-6 text-violet-950">{referencePrompt.question}</p>
+              <p className="mt-2 text-sm leading-6 text-violet-950">
+                {referencePrompt?.question ??
+                  `已定位到资料章节：${resourceBoardProposal?.target_title ?? "当前章节"}。是否生成板书？`}
+              </p>
               <p className="mt-2 text-xs leading-6 text-violet-900/80">
-                {resourceBoardProposal?.reason ?? referencePrompt.reason}
+                {resourceBoardProposal?.reason ?? referencePrompt?.reason}
               </p>
               <div className="mt-3 grid gap-2">
                 <button
                   type="button"
-                  onClick={() => void onReferenceAction("confirm")}
+                  onClick={() =>
+                    void (resourceBoardProposal ? onResourceBoardAction("generate") : onReferenceAction("confirm"))
+                  }
                   className="w-full rounded-xl border border-violet-200 bg-white px-4 py-3 text-left transition hover:border-violet-300"
                 >
                   <span className="block text-sm font-semibold text-gray-900">
-                    {resourceBoardProposal?.confirm_label ?? referencePrompt.confirm_label}
+                    {resourceBoardProposal?.confirm_label ?? referencePrompt?.confirm_label}
                   </span>
                 </button>
                 <button
                   type="button"
-                  onClick={() => void onReferenceAction("skip")}
+                  onClick={() =>
+                    void (resourceBoardProposal ? onResourceBoardAction("skip") : onReferenceAction("skip"))
+                  }
                   className="w-full rounded-xl border border-violet-200 bg-white px-4 py-3 text-left transition hover:border-violet-300"
                 >
                   <span className="block text-sm font-semibold text-gray-900">
-                    {resourceBoardProposal?.skip_label ?? referencePrompt.skip_label}
+                    {resourceBoardProposal?.skip_label ?? referencePrompt?.skip_label}
                   </span>
                 </button>
               </div>

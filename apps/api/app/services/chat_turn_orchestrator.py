@@ -83,9 +83,15 @@ from app.services.chat.handlers.interaction import (
 )
 from app.services.chat.response import _board_task_questions, _response
 from app.services.chat.resource_reference_flow import (
+    matching_pending_resource_board_proposal,
     prompt_for_resource_reference,
+    remember_resource_board_proposal,
+    request_with_pending_resource_board_action,
+    resource_board_proposal_unavailable_response,
     run_confirmed_resource_initial_board_generation,
     should_generate_board_after_reference_confirmation,
+    should_store_resource_board_proposal,
+    skip_pending_resource_board_proposal,
 )
 from app.services.chat.sequence import (
     SequenceRuntime,
@@ -912,6 +918,7 @@ def _chat_response(
     workspace = workspace_state.load_workspace_for_user(user_id)
     package, lesson = workspace_state.find_lesson_package(workspace, lesson_id)
     requirements = effective_requirements(lesson)
+    request = request_with_pending_resource_board_action(lesson, request)
     requirement_history = _new_requirement_history_recorder(user_id=user_id, lesson_id=lesson.id)
     board_task_history = _new_board_task_history_recorder(user_id=user_id, lesson_id=lesson.id)
     track_initial_requirement_run = _should_track_initial_requirement_run(lesson)
@@ -937,6 +944,8 @@ def _chat_response(
     explicit_resource_board_generation = (
         is_document_empty(lesson.board_document)
         and (
+            request.resource_board_action == "generate"
+            or
             is_generation_control_request(request.message)
             or _requests_document_artifact_generation(request.message)
         )
@@ -947,18 +956,53 @@ def _chat_response(
         and request.board_generation_action != "start"
         and (resource_backed_answer_without_generation or explicit_resource_board_generation)
     )
+    pending_resource_board_proposal = matching_pending_resource_board_proposal(lesson, request)
+    resource_reference_action = request.resource_reference_action
+    resource_reference_resource_id = request.resource_reference_resource_id
+    resource_reference_chapter_id = request.resource_reference_chapter_id
+    if request.resource_board_action == "generate" and pending_resource_board_proposal is not None:
+        resource_reference_action = "confirm"
+        resource_reference_resource_id = pending_resource_board_proposal.resource_id
+        resource_reference_chapter_id = pending_resource_board_proposal.chapter_id
     resource_resolution = resolve_resource_reference(
         # 资料选择必须先由 ResourceResolver 明确处理，不能把所有资料默认污染进 Chatbot 上下文。
         resources=visible_package.resources,
         user_message=request.message,
-        reference_action=request.resource_reference_action,
-        reference_resource_id=request.resource_reference_resource_id,
-        reference_chapter_id=request.resource_reference_chapter_id,
+        reference_action=resource_reference_action,
+        reference_resource_id=resource_reference_resource_id,
+        reference_chapter_id=resource_reference_chapter_id,
         allow_direct_reference=allow_direct_resource_reference,
     )
     selected_reference = resource_resolution.selected_reference
     selection_or_reference_excerpt = _merge_selection_and_reference(selection_excerpt, selected_reference)
     resource_summary_for_turn = _resource_summary_with_reference(visible_package.resources, selected_reference)
+    resource_board_proposal_for_turn = (
+        remember_resource_board_proposal(
+            lesson,
+            resource_resolution,
+            require_empty_document=True,
+        )
+        if should_store_resource_board_proposal(
+            lesson=lesson,
+            request=request,
+            resource_resolution=resource_resolution,
+        )
+        else None
+    )
+
+    resource_board_skip_response = skip_pending_resource_board_proposal(
+        workspace=workspace,
+        package=package,
+        lesson=lesson,
+        user_id=user_id,
+        request=request,
+        requirements=requirements,
+        learning_clarification=_latest_learning_clarification(lesson, requirements=requirements),
+        requirement_history=requirement_history,
+        save_workspace_for_user=_save_workspace_for_user,
+    )
+    if resource_board_skip_response is not None:
+        return resource_board_skip_response
 
     interaction_response = _handle_existing_interaction_session(
         # 如果已有互动 session，先判断本轮是否继续规则、退出规则或转成新任务。
@@ -1520,7 +1564,7 @@ def _chat_response(
             requirement_cleared=requirement_cleared,
         )
 
-    if is_generation_control_request(request.message) or _requests_document_artifact_generation(
+    if request.resource_board_action == "generate" or is_generation_control_request(request.message) or _requests_document_artifact_generation(
         request.message
     ):
         requirement_conversation = [
@@ -1540,6 +1584,44 @@ def _chat_response(
             requirements=requirements,
             learning_clarification=learning_clarification,
         )
+        if request.resource_board_action == "generate" and pending_resource_board_proposal is not None:
+            lesson.learning_requirements = requirements
+            if resource_resolution.selected_reference is not None and resource_resolution.evidence_bundle is not None:
+                lesson.pending_resource_board_proposal = None
+                return run_initial_board_generation(
+                    trigger="resource_board_proposal_generate",
+                    workspace=workspace,
+                    package=package,
+                    lesson=lesson,
+                    user_id=user_id,
+                    request=request,
+                    requirements=requirements,
+                    learning_clarification=learning_clarification,
+                    resource_summary=resource_summary_for_turn,
+                    resource_resolution=resource_resolution,
+                    requirement_history=requirement_history,
+                    track_initial_requirement_run=track_initial_requirement_run,
+                    runtime=_initial_board_runtime(),
+                    action_instruction=pending_resource_board_proposal.target_title,
+                    solver_metadata={
+                        "resource_board_action": "generate",
+                        "resource_board_proposal_id": pending_resource_board_proposal.id,
+                        "resource_board_proposal": pending_resource_board_proposal.model_dump(mode="json"),
+                    },
+                )
+        if request.resource_board_action == "generate":
+            lesson.learning_requirements = requirements
+            return resource_board_proposal_unavailable_response(
+                workspace=workspace,
+                package=package,
+                lesson=lesson,
+                user_id=user_id,
+                request=request,
+                requirements=requirements,
+                learning_clarification=learning_clarification,
+                requirement_history=requirement_history,
+                save_workspace_for_user=_save_workspace_for_user,
+            )
         if resource_resolution.reference_prompt is not None and request.resource_reference_action is None:
             lesson.learning_requirements = requirements
             return prompt_for_resource_reference(
@@ -1850,6 +1932,7 @@ def _chat_response(
         learning_clarification=learning_clarification,
         resource_resolution=resource_resolution,
         selected_reference=selected_reference,
+        resource_board_proposal=resource_board_proposal_for_turn,
         requirement_history=requirement_history,
         track_initial_requirement_run=track_initial_requirement_run,
         chatbot_message=chatbot_message,

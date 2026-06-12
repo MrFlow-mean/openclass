@@ -1150,6 +1150,136 @@ def test_build_resource_item_indexes_epub_without_reparsing_per_chapter(
     assert "第3章正文" in resource.body_blocks[2].text
 
 
+def test_build_resource_item_filters_epub_code_headings_and_assigns_logical_pages(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    resource_path = tmp_path / "csapp.epub"
+    resource_path.write_bytes(b"epub placeholder")
+
+    def _fake_epub_sections(_file_path):
+        return [
+            {
+                "title": "Chapter 7 Linking",
+                "level": 1,
+                "content": "Linking collects and combines code and data.",
+                "order_index": 0,
+            },
+            {
+                "title": "7.4 Relocatable Object Files",
+                "level": 2,
+                "content": "Figure 7.3 shows an ELF relocatable object file.\n23 int main()\n5 printf(\"hello\")",
+                "order_index": 1,
+            },
+            {
+                "title": "23 int main()",
+                "level": 1,
+                "content": "{",
+                "order_index": 2,
+            },
+            {
+                "title": "5 GET / HTTP/1.1 Client: request line",
+                "level": 1,
+                "content": "protocol example",
+                "order_index": 3,
+            },
+        ]
+
+    monkeypatch.setattr(resource_library, "_epub_sections", _fake_epub_sections)
+
+    resource = build_resource_item(resource_path, "csapp.epub")
+    titles = [chapter.title for chapter in resource.outline]
+
+    assert "7.4 Relocatable Object Files" in titles
+    assert "23 int main()" not in titles
+    assert not any("GET / HTTP" in title for title in titles)
+    target = next(block for block in resource.body_blocks if block.heading_path[-1] == "7.4 Relocatable Object Files")
+    assert target.body_page_no is not None
+    assert target.body_page_idx == target.body_page_no - 1
+    assert target.source_locator and "source=epub_section" in target.source_locator
+    assert "printf" in target.text
+    assert resource.page_count >= 2
+    assert resource.indexed_block_count == len(resource.body_blocks)
+
+
+def test_resource_resolver_epub_evidence_has_body_page_and_source_location(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    resource_path = tmp_path / "csapp.epub"
+    resource_path.write_bytes(b"epub placeholder")
+
+    def _fake_epub_sections(_file_path):
+        return [
+            {
+                "title": "Chapter 7 Linking",
+                "level": 1,
+                "content": "Linking overview.",
+                "order_index": 0,
+            },
+            {
+                "title": "7.4 Relocatable Object Files",
+                "level": 2,
+                "content": "Relocatable object files contain ELF headers, sections, symbols, and relocation entries.",
+                "order_index": 1,
+            },
+        ]
+
+    monkeypatch.setattr(resource_library, "_epub_sections", _fake_epub_sections)
+    resource = build_resource_item(resource_path, "csapp.epub")
+
+    resolution = resolve_resource_reference(
+        resources=[resource],
+        user_message="我要学第七章第四节",
+        allow_direct_reference=True,
+    )
+
+    assert resolution.selected_reference is not None
+    assert resolution.selected_reference.chapter_title == "7.4 Relocatable Object Files"
+    assert resolution.evidence_bundle is not None
+    assert resolution.evidence_bundle.body_page_range
+    assert resolution.evidence_bundle.physical_page_range is None
+    assert resolution.evidence_bundle.source_location_range
+    assert "Relocatable object files" in resolution.evidence_bundle.chunks[0].excerpt
+
+
+def test_resource_resolver_does_not_resolve_toc_entry_without_body_block() -> None:
+    chapter = LibraryChapter(
+        title="第七章第三节",
+        level=2,
+        summary="只有目录，没有正文块。",
+        keywords=["目录"],
+        path=["第七章", "第三节"],
+    )
+    resource = ResourceLibraryItem(
+        name="broken.md",
+        mime_type="text/markdown",
+        resource_type="document",
+        size_bytes=100,
+        outline=[chapter],
+        toc_entries=[
+            ResourceTOCEntry(
+                chapter_id=chapter.id,
+                title="第七章第三节",
+                level=2,
+                heading_path=["第七章", "第三节"],
+                body_page_no=160,
+                page_number_scope="body",
+            )
+        ],
+    )
+
+    resolution = resolve_resource_reference(
+        resources=[resource],
+        user_message="我要学第七章第三节",
+        allow_direct_reference=True,
+    )
+
+    assert resolution.status != "resolved"
+    assert resolution.selected_reference is None
+    assert resolution.evidence_bundle is None
+
+
 def test_build_resource_item_uses_catalog_ai_when_material_has_no_outline(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
