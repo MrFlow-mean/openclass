@@ -9,12 +9,12 @@
   <key>RunAtLoad</key>
   <true/>
   <key>WorkingDirectory</key>
-  <string>__LAUNCH_DIR__</string>
+  <string>__PROJECT_DIR__</string>
   <key>ProgramArguments</key>
   <array>
     <string>/bin/zsh</string>
     <string>-lc</string>
-    <string>cd "__LAUNCH_DIR__" &amp;&amp; export NEXT_TELEMETRY_DISABLED=1 NODE_ENV=production; while true; do if [[ ! -f "__LAUNCH_DIR__/apps/web/.next/BUILD_ID" ]]; then npm run build:web; fi; echo "[openclass-web] $(date '+%Y-%m-%d %H:%M:%S') starting Next.js production server on :3000"; npm --prefix apps/web run start; code=$?; echo "[openclass-web] $(date '+%Y-%m-%d %H:%M:%S') server exited with code $code; restarting in 5s"; sleep 5; done</string>
+    <string>cd "__PROJECT_DIR__" &amp;&amp; export NEXT_TELEMETRY_DISABLED=1 NODE_ENV=production; LOG_PREFIX="[openclass-web]"; while true; do BUILD_DIR="__PROJECT_DIR__/apps/web/.next"; BUILD_ID="$BUILD_DIR/BUILD_ID"; STAMP="$BUILD_DIR/openclass-source-stamp"; HEAD_SHA="$(git rev-parse HEAD 2&gt;/dev/null || printf nogit)"; REBUILD_REASON=""; if [[ ! -f "$BUILD_ID" ]]; then REBUILD_REASON="missing production build"; elif [[ ! -f "$STAMP" ]] || [[ "$(cat "$STAMP" 2&gt;/dev/null || true)" != "$HEAD_SHA" ]]; then REBUILD_REASON="source revision changed"; else CHANGED_FILE="$(find "__PROJECT_DIR__/apps/web/src" "__PROJECT_DIR__/apps/web/package.json" "__PROJECT_DIR__/package.json" -type f -newer "$BUILD_ID" -print -quit 2&gt;/dev/null || true)"; if [[ -n "$CHANGED_FILE" ]]; then REBUILD_REASON="source file changed: ${CHANGED_FILE#__PROJECT_DIR__/}"; fi; fi; if [[ -n "$REBUILD_REASON" ]]; then echo "$LOG_PREFIX $(date '+%Y-%m-%d %H:%M:%S') $REBUILD_REASON; rebuilding web"; rm -rf "$BUILD_DIR" 2&gt;/dev/null || true; if ! npm run build:web; then echo "$LOG_PREFIX $(date '+%Y-%m-%d %H:%M:%S') web build failed; retrying in 5s"; sleep 5; continue; fi; mkdir -p "$BUILD_DIR"; printf "%s\n" "$HEAD_SHA" &gt; "$STAMP"; else echo "$LOG_PREFIX $(date '+%Y-%m-%d %H:%M:%S') production build is current"; fi; echo "$LOG_PREFIX $(date '+%Y-%m-%d %H:%M:%S') starting Next.js production server on :3000"; npm --prefix apps/web run start; code=$?; echo "$LOG_PREFIX $(date '+%Y-%m-%d %H:%M:%S') server exited with code $code; restarting in 5s"; sleep 5; done</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>

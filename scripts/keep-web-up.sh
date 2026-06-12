@@ -11,9 +11,10 @@ export NEXT_TELEMETRY_DISABLED=1
 export NODE_ENV=production
 
 while true; do
-  if [[ ! -f "$PROJECT_DIR/apps/web/.next/BUILD_ID" ]]; then
-    echo "$LOG_PREFIX $(date '+%Y-%m-%d %H:%M:%S') missing production build; building first"
-    npm run build:web
+  if ! "$PROJECT_DIR/scripts/build-web-if-stale.sh" "$PROJECT_DIR"; then
+    echo "$LOG_PREFIX $(date '+%Y-%m-%d %H:%M:%S') web build failed; retrying in 5s"
+    sleep 5
+    continue
   fi
 
   echo "$LOG_PREFIX $(date '+%Y-%m-%d %H:%M:%S') starting Next.js production server on :3000"

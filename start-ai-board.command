@@ -9,11 +9,10 @@ has_listener() {
   lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1
 }
 
-chmod +x "$PROJECT_DIR/scripts/keep-web-up.sh" "$PROJECT_DIR/scripts/keep-api-up.sh" "$PROJECT_DIR/scripts/install-launch-agents.sh"
+chmod +x "$PROJECT_DIR/scripts/keep-web-up.sh" "$PROJECT_DIR/scripts/keep-api-up.sh" \
+  "$PROJECT_DIR/scripts/install-launch-agents.sh" "$PROJECT_DIR/scripts/build-web-if-stale.sh"
 
-if [[ ! -f "$PROJECT_DIR/apps/web/.next/BUILD_ID" ]]; then
-  npm run build:web
-fi
+"$PROJECT_DIR/scripts/build-web-if-stale.sh" "$PROJECT_DIR"
 
 "$PROJECT_DIR/scripts/install-launch-agents.sh"
 

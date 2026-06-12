@@ -78,8 +78,8 @@ export function CourseStudioSidePanel({
 
       <div className="flex border-b border-gray-200 bg-white">
         {[
-          { value: "versions", label: "Versions" },
-          { value: "library", label: "Library" },
+          { value: "versions", label: "版本" },
+          { value: "library", label: "图书馆" },
         ].map((tab) => (
           <button
             key={tab.value}
