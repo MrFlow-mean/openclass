@@ -9,6 +9,7 @@ from app.models import (
     LearningClarificationStatus,
     LearningRequirementSheet,
     Lesson,
+    ResourceBoardProposal,
 )
 from app.services import workspace_state
 from app.services.chat.handlers.initial_board import InitialBoardRuntime, run_initial_board_generation
@@ -18,6 +19,7 @@ from app.services.chat.response import _response
 from app.services.history import commit_operations
 from app.services.learning_requirement_history import LearningRequirementHistoryRecorder
 from app.services.learning_requirement_manager import is_generation_control_request
+from app.services.rich_document import is_document_empty
 from app.services.resource_resolver import ResourceResolution
 
 
@@ -82,6 +84,11 @@ def prompt_for_resource_reference(
     if reference_prompt is None:
         raise ValueError("resource reference prompt response requires a reference prompt")
     chatbot_message = reference_prompt.question
+    board_proposal = (
+        _resource_board_proposal(resource_resolution)
+        if is_document_empty(lesson.board_document)
+        else None
+    )
     commit_operations(
         lesson,
         [],
@@ -101,6 +108,7 @@ def prompt_for_resource_reference(
                 requirement_cleared=False,
             ),
             **_reference_metadata(resolution=resource_resolution),
+            "resource_board_proposal": board_proposal.model_dump(mode="json") if board_proposal else None,
         },
     )
     workspace_state.normalize_package_state(package)
@@ -122,6 +130,22 @@ def prompt_for_resource_reference(
             reason=reference_prompt.reason,
         ),
         resource_matches=resource_resolution.matches,
+        resource_evidence_bundle=resource_resolution.evidence_bundle,
+        resource_board_proposal=board_proposal,
         reference_prompt=reference_prompt,
         requirement_history=requirement_history_arg,
+    )
+
+
+def _resource_board_proposal(resource_resolution: ResourceResolution) -> ResourceBoardProposal | None:
+    reference_prompt = resource_resolution.reference_prompt
+    evidence_bundle = resource_resolution.evidence_bundle
+    if reference_prompt is None or evidence_bundle is None:
+        return None
+    return ResourceBoardProposal(
+        resource_id=reference_prompt.resource_id,
+        chapter_id=reference_prompt.chapter_id,
+        target_title=reference_prompt.chapter_title,
+        reason=reference_prompt.reason,
+        evidence_bundle=evidence_bundle,
     )

@@ -76,6 +76,9 @@ def _reference_metadata(
             if resolution.selected_reference
             else None
         ),
+        "resource_evidence_bundle": (
+            resolution.evidence_bundle.model_dump(mode="json") if resolution.evidence_bundle else None
+        ),
         "resource_resolution_status": resolution.status,
     }
 

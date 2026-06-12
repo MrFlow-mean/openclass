@@ -929,6 +929,24 @@ def _chat_response(
         request_message=request.message,
         requirements=requirements,
     )
+    resource_backed_answer_without_generation = (
+        _requests_resource_backed_answer(request.message)
+        and not _requests_document_artifact_generation(request.message)
+        and not _requests_learning_start(request.message)
+    )
+    explicit_resource_board_generation = (
+        is_document_empty(lesson.board_document)
+        and (
+            is_generation_control_request(request.message)
+            or _requests_document_artifact_generation(request.message)
+        )
+    )
+    allow_direct_resource_reference = (
+        request.interaction_mode != "direct_edit"
+        and action_type not in DOCUMENT_WRITE_ACTIONS
+        and request.board_generation_action != "start"
+        and (resource_backed_answer_without_generation or explicit_resource_board_generation)
+    )
     resource_resolution = resolve_resource_reference(
         # 资料选择必须先由 ResourceResolver 明确处理，不能把所有资料默认污染进 Chatbot 上下文。
         resources=visible_package.resources,
@@ -936,14 +954,7 @@ def _chat_response(
         reference_action=request.resource_reference_action,
         reference_resource_id=request.resource_reference_resource_id,
         reference_chapter_id=request.resource_reference_chapter_id,
-        allow_direct_reference=(
-            _requests_resource_backed_answer(request.message)
-            and request.interaction_mode != "direct_edit"
-            and action_type not in DOCUMENT_WRITE_ACTIONS
-            and request.board_generation_action != "start"
-            and not _requests_document_artifact_generation(request.message)
-            and not _requests_learning_start(request.message)
-        ),
+        allow_direct_reference=allow_direct_resource_reference,
     )
     selected_reference = resource_resolution.selected_reference
     selection_or_reference_excerpt = _merge_selection_and_reference(selection_excerpt, selected_reference)
@@ -1637,6 +1648,7 @@ def _chat_response(
             requirements=requirements,
             board_decision=BoardDecision(action="no_change", reason="本轮是需求确认到板书生成的交接，不自动写入板书。"),
             resource_matches=resource_resolution.matches,
+            resource_evidence_bundle=resource_resolution.evidence_bundle,
             selected_reference=selected_reference,
             requirement_history=requirement_history if track_initial_requirement_run else None,
         )
@@ -1756,6 +1768,7 @@ def _chat_response(
             requirements=requirements,
             board_decision=BoardDecision(action="no_change", reason="本轮是板书指令授权后的讲解，不修改板书。"),
             resource_matches=resource_resolution.matches,
+            resource_evidence_bundle=resource_resolution.evidence_bundle,
             selected_reference=selected_reference,
             requirement_cleared=requirement_cleared,
             requirement_history=requirement_history if track_initial_requirement_run else None,

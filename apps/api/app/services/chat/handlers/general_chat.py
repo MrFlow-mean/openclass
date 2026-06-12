@@ -85,6 +85,7 @@ def commit_general_chat_turn(
         requirements=requirements,
         board_decision=board_decision,
         resource_matches=resource_resolution.matches,
+        resource_evidence_bundle=resource_resolution.evidence_bundle,
         selected_reference=selected_reference,
         requirement_cleared=requirement_cleared,
         requirement_history=requirement_history if track_initial_requirement_run else None,

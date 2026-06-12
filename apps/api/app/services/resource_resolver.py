@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import re
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 from app.models import (
     LibraryChapter,
+    ResourceBodyBlock,
+    ResourceContextChunk,
+    ResourceEvidenceBundle,
     ResourceLibraryItem,
     ResourceMatch,
     ResourceReferenceAction,
@@ -34,6 +38,7 @@ class ResourceResolution:
     # 资料解析结果：可能直接选中一个章节，也可能只给出“是否参考此章节”的确认提示。
     matches: list[ResourceMatch]
     selected_reference: ResourceReferenceContext | None = None
+    evidence_bundle: ResourceEvidenceBundle | None = None
     reference_prompt: ResourceReferencePrompt | None = None
     status: str = "none"
 
@@ -60,9 +65,11 @@ def resolve_resource_reference(
         if match is None:
             return ResourceResolution(matches=[], status="missing")
         reference = _extract_reference(resources, match, user_message)
+        evidence_bundle = _extract_evidence_bundle(resources, match, user_message)
         return ResourceResolution(
             matches=[match],
             selected_reference=reference,
+            evidence_bundle=evidence_bundle,
             status="selected" if reference else "missing",
         )
 
@@ -74,10 +81,12 @@ def resolve_resource_reference(
     if allow_direct_reference and best.score >= DIRECT_REFERENCE_THRESHOLD:
         # 高置信度且本轮允许直接引用时，才自动抽取资料片段交给后续 AI。
         reference = _extract_reference(resources, best, user_message)
+        evidence_bundle = _extract_evidence_bundle(resources, best, user_message)
         if reference is not None:
             return ResourceResolution(
                 matches=matches[:5],
                 selected_reference=reference,
+                evidence_bundle=evidence_bundle,
                 status="resolved",
             )
 
@@ -85,6 +94,7 @@ def resolve_resource_reference(
         # 中等置信度时先问学生要不要参考，避免资料上下文污染无关问题。
         return ResourceResolution(
             matches=matches[:5],
+            evidence_bundle=_extract_evidence_bundle(resources, best, user_message),
             reference_prompt=_reference_prompt(best),
             status="prompt",
         )
@@ -93,20 +103,33 @@ def resolve_resource_reference(
 
 
 def _rank_resource_matches(resources: list[ResourceLibraryItem], user_message: str) -> list[ResourceMatch]:
-    # 用通用词重合、标题、目录、摘要和关键词给资料章节排序，不写具体教材规则。
+    # 精确的章节 / 正文页目标先走目录和正文逻辑路径，避免把目录页码当全文页码。
+    exact_matches = _exact_body_path_matches(resources, user_message)
+    if exact_matches:
+        return exact_matches
+
+    # 相关内容检索以章节 shard 为单位并行打分；每个 shard 只引用正文 block。
     query_terms = _query_terms(user_message)
     if not query_terms:
         return []
 
-    scored: list[tuple[float, ResourceLibraryItem, LibraryChapter, str]] = []
     compact_message = _compact_text(user_message, limit=500)
-    for resource in resources:
-        for chapter in resource.outline:
-            score = _chapter_score(query_terms, compact_message, resource, chapter)
-            if score <= 0:
-                continue
-            reason = "根据用户描述与资料目录、章节摘要和关键词的匹配度定位。"
-            scored.append((score, resource, chapter, reason))
+    shard_inputs = [
+        (resource, chapter)
+        for resource in resources
+        for chapter in _chapters_for_parallel_search(resource)
+    ]
+    if not shard_inputs:
+        return []
+
+    with ThreadPoolExecutor(max_workers=min(8, max(1, len(shard_inputs)))) as executor:
+        scored = list(
+            executor.map(
+                lambda item: _score_parallel_chapter(query_terms, compact_message, item[0], item[1]),
+                shard_inputs,
+            )
+        )
+    scored = [item for item in scored if item[0] > 0]
 
     scored.sort(key=lambda item: item[0], reverse=True)
     if not scored:
@@ -169,6 +192,139 @@ def _chapter_score(
     return score
 
 
+def _chapters_for_parallel_search(resource: ResourceLibraryItem) -> list[LibraryChapter]:
+    if not resource.chapter_shards:
+        return resource.outline
+    by_id = {chapter.id: chapter for chapter in resource.outline}
+    chapters: list[LibraryChapter] = []
+    for shard in resource.chapter_shards:
+        chapter = by_id.get(shard.chapter_id)
+        if chapter is not None:
+            chapters.append(chapter)
+    return chapters or resource.outline
+
+
+def _score_parallel_chapter(
+    query_terms: set[str],
+    compact_message: str,
+    resource: ResourceLibraryItem,
+    chapter: LibraryChapter,
+) -> tuple[float, ResourceLibraryItem, LibraryChapter, str]:
+    shard = next((candidate for candidate in resource.chapter_shards if candidate.chapter_id == chapter.id), None)
+    body_text = " ".join(
+        block.text
+        for block in resource.body_blocks
+        if block.chapter_id == chapter.id and block.text.strip()
+    )
+    shard_text = ""
+    if shard is not None:
+        shard_text = " ".join(
+            [
+                shard.summary,
+                " ".join(shard.keywords),
+                " ".join(shard.heading_path),
+            ]
+        )
+    score = _chapter_score(
+        query_terms,
+        compact_message,
+        resource,
+        chapter.model_copy(
+            update={
+                "summary": " ".join(part for part in [chapter.summary, shard_text, body_text[:1600]] if part),
+                "keywords": list({*chapter.keywords, *(_value_terms(body_text[:1200]) if body_text else set())})[:16],
+            }
+        ),
+    )
+    reason = "按章节 shard 并行检索正文块后命中相关内容。"
+    return score, resource, chapter, reason
+
+
+def _exact_body_path_matches(resources: list[ResourceLibraryItem], user_message: str) -> list[ResourceMatch]:
+    target = _parse_explicit_body_target(user_message)
+    if target is None:
+        return []
+    matches: list[ResourceMatch] = []
+    for resource in resources:
+        if target.get("body_page_no") is not None:
+            body_page_no = int(target["body_page_no"])
+            block = next((candidate for candidate in resource.body_blocks if candidate.body_page_no == body_page_no), None)
+            if block is None or block.chapter_id is None:
+                continue
+            chapter = next((candidate for candidate in resource.outline if candidate.id == block.chapter_id), None)
+            if chapter is None:
+                continue
+            matches.append(
+                ResourceMatch(
+                    resource_id=resource.id,
+                    chapter_id=chapter.id,
+                    resource_name=resource.name,
+                    chapter_title=chapter.title,
+                    reason=f"用户指定正文第 {body_page_no} 页，已通过正文逻辑页码定位到正文块。",
+                    score=1.0,
+                    is_high_overlap=True,
+                )
+            )
+            continue
+        chapter_no = target.get("chapter_no")
+        section_no = target.get("section_no")
+        for entry in resource.toc_entries:
+            entry_ref = _parse_explicit_body_target(" ".join([*entry.heading_path, entry.title]))
+            if entry_ref is None:
+                continue
+            if chapter_no is not None and entry_ref.get("chapter_no") != chapter_no:
+                continue
+            if section_no is not None and entry_ref.get("section_no") != section_no:
+                continue
+            if entry.chapter_id is None:
+                continue
+            matches.append(
+                ResourceMatch(
+                    resource_id=resource.id,
+                    chapter_id=entry.chapter_id,
+                    resource_name=resource.name,
+                    chapter_title=entry.title,
+                    reason="用户指定章节目标，已通过目录索引映射到正文逻辑路径。",
+                    score=1.0,
+                    is_high_overlap=True,
+                )
+            )
+    return matches[:8]
+
+
+def _parse_explicit_body_target(text: str) -> dict[str, int] | None:
+    compact = _compact_text(text, limit=300)
+    body_page = re.search(r"正文\s*第\s*([0-9一二两三四五六七八九十百]+)\s*页", compact)
+    if body_page:
+        return {"body_page_no": _parse_number(body_page.group(1))}
+    dotted = re.search(r"\b([0-9]{1,3})\s*[.．]\s*([0-9]{1,3})\b", compact)
+    chapter = re.search(r"第\s*([0-9一二两三四五六七八九十百]+)\s*章", compact)
+    section = re.search(r"第\s*([0-9一二两三四五六七八九十百]+)\s*(?:节|小节)", compact)
+    if dotted:
+        return {"chapter_no": int(dotted.group(1)), "section_no": int(dotted.group(2))}
+    if chapter:
+        result = {"chapter_no": _parse_number(chapter.group(1))}
+        if section:
+            result["section_no"] = _parse_number(section.group(1))
+        return result
+    return None
+
+
+def _parse_number(value: str) -> int:
+    if value.isdigit():
+        return int(value)
+    digits = {"零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+    if value == "十":
+        return 10
+    if "百" in value:
+        left, _, right = value.partition("百")
+        return (digits.get(left, 1) * 100) + (_parse_number(right) if right else 0)
+    if "十" in value:
+        left, _, right = value.partition("十")
+        return (digits.get(left, 1) * 10) + (digits.get(right, 0) if right else 0)
+    return digits.get(value, 0)
+
+
 def _explicit_match(
     resources: list[ResourceLibraryItem],
     resource_id: str,
@@ -199,11 +355,100 @@ def _extract_reference(
     resource = next((candidate for candidate in resources if candidate.id == match.resource_id), None)
     if resource is None:
         return None
+    body_reference = _reference_from_body_blocks(resource, match, user_message)
+    if body_reference is not None:
+        return body_reference
     return extract_reference_context(
         resource,
         match.chapter_id,
         user_query=user_message,
     )
+
+
+def _reference_from_body_blocks(
+    resource: ResourceLibraryItem,
+    match: ResourceMatch,
+    user_message: str,
+) -> ResourceReferenceContext | None:
+    blocks = [block for block in resource.body_blocks if block.chapter_id == match.chapter_id and block.text.strip()]
+    if not blocks:
+        return None
+    compact_text = "\n\n".join(block.text for block in blocks[:4])
+    if not compact_text.strip():
+        return None
+    chapter_title = match.chapter_title
+    body_pages = _page_range([block.body_page_no for block in blocks])
+    physical_pages = _page_range([block.physical_page_no for block in blocks])
+    summary_parts = [f"《{resource.name}》的《{chapter_title}》已通过正文逻辑路径定位。"]
+    if body_pages:
+        summary_parts.append(f"正文页码：{body_pages}。")
+    if physical_pages:
+        summary_parts.append(f"全文物理页：{physical_pages}。")
+    return ResourceReferenceContext(
+        resource_id=resource.id,
+        chapter_id=match.chapter_id,
+        resource_name=resource.name,
+        chapter_title=chapter_title,
+        summary="".join(summary_parts),
+        teaching_points=[
+            "只依据正文逻辑块讲解，不引用封面、前言、目录或附录内容。",
+            "先说明本节在目录结构中的位置，再展开正文证据。",
+            "保留页码映射，方便回到原文核对。",
+        ],
+        chunks=[
+            ResourceContextChunk(
+                title=f"{chapter_title} / 正文证据 {index}",
+                excerpt=block.text[:420],
+                teaching_hint=f"结合用户问题“{_compact_text(user_message, limit=80)}”解释这一段正文。",
+            )
+            for index, block in enumerate(blocks[:4], start=1)
+        ],
+        full_text=compact_text,
+    )
+
+
+def _extract_evidence_bundle(
+    resources: list[ResourceLibraryItem],
+    match: ResourceMatch,
+    user_message: str,
+) -> ResourceEvidenceBundle | None:
+    resource = next((candidate for candidate in resources if candidate.id == match.resource_id), None)
+    if resource is None:
+        return None
+    blocks = [block for block in resource.body_blocks if block.chapter_id == match.chapter_id]
+    if not blocks:
+        return None
+    chapter_title = match.chapter_title
+    body_pages = [block.body_page_no for block in blocks if block.body_page_no is not None]
+    physical_pages = [block.physical_page_no for block in blocks if block.physical_page_no is not None]
+    return ResourceEvidenceBundle(
+        resource_id=resource.id,
+        resource_name=resource.name,
+        query=user_message,
+        target_id=match.chapter_id,
+        target_title=chapter_title,
+        body_page_range=_page_range(body_pages),
+        physical_page_range=_page_range(physical_pages),
+        score=match.score,
+        evidence=[match.reason, "证据只来自 page_role=body 的正文逻辑块。"],
+        chunks=[
+            ResourceContextChunk(
+                title=f"{chapter_title} / 正文证据 {index}",
+                excerpt=block.text[:420],
+                teaching_hint=f"围绕“{chapter_title}”的正文证据展开，不引用目录或前言内容。",
+            )
+            for index, block in enumerate(blocks[:3], start=1)
+        ],
+    )
+
+
+def _page_range(values: list[int | None]) -> str | None:
+    pages = sorted({value for value in values if value is not None})
+    if not pages:
+        return None
+    if len(pages) == 1:
+        return str(pages[0])
+    return f"{pages[0]}-{pages[-1]}"
 
 
 def _reference_prompt(match: ResourceMatch) -> ResourceReferencePrompt:

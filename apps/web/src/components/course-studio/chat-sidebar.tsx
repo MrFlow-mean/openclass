@@ -35,6 +35,7 @@ import type {
   CommitRecord,
   LearningClarificationStatus,
   Lesson,
+  ResourceBoardProposal,
   ResourceReferenceContext,
   ResourceReferencePrompt,
   ScopeOption,
@@ -204,6 +205,7 @@ type CourseStudioChatSidebarProps = {
   showReadyForBoardCard: boolean;
   scopeOptions: ScopeOption[];
   referencePrompt: ResourceReferencePrompt | null;
+  resourceBoardProposal: ResourceBoardProposal | null;
   boardEditPrompt: BoardEditPrompt | null;
   clarificationQuestions: string[];
   activeBoardTask: BoardTaskRequirementSheet | null;
@@ -256,6 +258,7 @@ export function CourseStudioChatSidebar({
   showReadyForBoardCard,
   scopeOptions,
   referencePrompt,
+  resourceBoardProposal,
   boardEditPrompt,
   clarificationQuestions,
   activeBoardTask,
@@ -465,9 +468,13 @@ export function CourseStudioChatSidebar({
 
           {!isPreviewMode && referencePrompt ? (
             <div className="rounded-xl border border-violet-200 bg-violet-50 p-4">
-              <p className="text-[11px] font-bold uppercase tracking-widest text-violet-700">章节参考建议</p>
+              <p className="text-[11px] font-bold uppercase tracking-widest text-violet-700">
+                {resourceBoardProposal ? "板书生成建议" : "章节参考建议"}
+              </p>
               <p className="mt-2 text-sm leading-6 text-violet-950">{referencePrompt.question}</p>
-              <p className="mt-2 text-xs leading-6 text-violet-900/80">{referencePrompt.reason}</p>
+              <p className="mt-2 text-xs leading-6 text-violet-900/80">
+                {resourceBoardProposal?.reason ?? referencePrompt.reason}
+              </p>
               <div className="mt-3 grid gap-2">
                 <button
                   type="button"
@@ -475,7 +482,7 @@ export function CourseStudioChatSidebar({
                   className="w-full rounded-xl border border-violet-200 bg-white px-4 py-3 text-left transition hover:border-violet-300"
                 >
                   <span className="block text-sm font-semibold text-gray-900">
-                    {referencePrompt.confirm_label}
+                    {resourceBoardProposal?.confirm_label ?? referencePrompt.confirm_label}
                   </span>
                 </button>
                 <button
@@ -484,7 +491,7 @@ export function CourseStudioChatSidebar({
                   className="w-full rounded-xl border border-violet-200 bg-white px-4 py-3 text-left transition hover:border-violet-300"
                 >
                   <span className="block text-sm font-semibold text-gray-900">
-                    {referencePrompt.skip_label}
+                    {resourceBoardProposal?.skip_label ?? referencePrompt.skip_label}
                   </span>
                 </button>
               </div>

@@ -230,6 +230,50 @@ export interface LibraryChapter {
   scan_strategy: "outline_only" | "heading_section" | "page_window" | "fulltext_match";
 }
 
+export type ResourcePageRole = "cover" | "front_matter" | "toc" | "body" | "appendix" | "epilogue" | "unknown";
+export type ResourcePageNumberScope = "body" | "physical" | "unknown";
+
+export interface ResourceStructureRegion {
+  id: string;
+  role: ResourcePageRole;
+  label: string;
+  physical_page_start?: number | null;
+  physical_page_end?: number | null;
+  body_page_start?: number | null;
+  body_page_end?: number | null;
+  confidence: number;
+  evidence: string[];
+}
+
+export interface ResourceTOCEntry {
+  id: string;
+  chapter_id?: string | null;
+  title: string;
+  level: number;
+  heading_path: string[];
+  printed_page_label?: string | null;
+  page_number_scope: ResourcePageNumberScope;
+  body_page_no?: number | null;
+  physical_page_no?: number | null;
+  confidence: number;
+  evidence: string[];
+}
+
+export interface ResourceChapterShard {
+  id: string;
+  chapter_id: string;
+  title: string;
+  heading_path: string[];
+  body_page_start?: number | null;
+  body_page_end?: number | null;
+  physical_page_start?: number | null;
+  physical_page_end?: number | null;
+  block_ids: string[];
+  summary: string;
+  keywords: string[];
+  text_hash: string;
+}
+
 export interface ResourceLibraryItem {
   id: string;
   name: string;
@@ -241,6 +285,10 @@ export interface ResourceLibraryItem {
   outline: LibraryChapter[];
   concept_index: Record<string, string[]>;
   extracted_text_available: boolean;
+  structure_regions: ResourceStructureRegion[];
+  toc_entries: ResourceTOCEntry[];
+  chapter_shards: ResourceChapterShard[];
+  parse_warnings: string[];
 }
 
 export interface CoursePackage {
@@ -444,6 +492,30 @@ export interface ResourceContextChunk {
   teaching_hint: string;
 }
 
+export interface ResourceEvidenceBundle {
+  resource_id: string;
+  resource_name: string;
+  query: string;
+  target_id?: string | null;
+  target_title?: string | null;
+  body_page_range?: string | null;
+  physical_page_range?: string | null;
+  score: number;
+  evidence: string[];
+  chunks: ResourceContextChunk[];
+}
+
+export interface ResourceBoardProposal {
+  id: string;
+  resource_id: string;
+  chapter_id?: string | null;
+  target_title: string;
+  reason: string;
+  confirm_label: string;
+  skip_label: string;
+  evidence_bundle: ResourceEvidenceBundle;
+}
+
 export interface ResourceReferenceContext {
   resource_id: string;
   chapter_id: string;
@@ -479,6 +551,8 @@ export interface ChatRequestPayload {
   resource_reference_action?: ResourceReferenceAction | null;
   resource_reference_resource_id?: string | null;
   resource_reference_chapter_id?: string | null;
+  resource_board_action?: "generate" | "skip" | null;
+  resource_board_proposal_id?: string | null;
   board_edit_action?: BoardEditConfirmationAction | null;
   board_edit_topic?: string | null;
   board_generation_action?: "start" | null;
@@ -519,6 +593,9 @@ export interface ChatResponse {
   patch_proposal?: PatchProposal | null;
   scope_options: ScopeOption[];
   resource_matches: ResourceMatch[];
+  resource_evidence_bundle?: ResourceEvidenceBundle | null;
+  resource_board_proposal?: ResourceBoardProposal | null;
+  resource_generation_plan?: ResourceBoardProposal[];
   reference_prompt?: ResourceReferencePrompt | null;
   board_edit_prompt?: BoardEditPrompt | null;
   selected_reference?: ResourceReferenceContext | null;

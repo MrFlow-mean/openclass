@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import hashlib
 import mimetypes
 import posixpath
 import re
@@ -13,7 +14,11 @@ from docx import Document as DocxDocument
 
 from app.models import (
     LibraryChapter,
+    ResourceBodyBlock,
+    ResourceChapterShard,
     ResourceContextChunk,
+    ResourceStructureRegion,
+    ResourceTOCEntry,
     ResourceLibraryItem,
     ResourceReferenceContext,
 )
@@ -22,6 +27,7 @@ from app.services.image_ocr import extract_image_text, extract_pdf_pages_text
 
 _PDF_TEXT_SUMMARY_LIMIT = 140
 _PDF_LOCATOR_SEPARATOR = " || "
+_BODY_BLOCK_TEXT_LIMIT = 5000
 
 
 def _normalize_extracted_text(text: str) -> str:
@@ -41,6 +47,19 @@ def _normalize_extracted_text(text: str) -> str:
 def _summary_snippet(text: str, *, limit: int = _PDF_TEXT_SUMMARY_LIMIT) -> str:
     compact = re.sub(r"\s+", " ", _normalize_extracted_text(text)).strip()
     return compact[:limit].strip(" ，,。") if compact else ""
+
+
+def _stable_text_hash(text: str) -> str:
+    compact = re.sub(r"\s+", " ", text or "").strip()
+    return hashlib.sha256(compact.encode("utf-8")).hexdigest()[:16]
+
+
+def _page_label(start: int | None, end: int | None) -> str | None:
+    if start is None:
+        return None
+    if end is None or end == start:
+        return str(start)
+    return f"{start}-{end}"
 
 
 def _read_pdf_text_window(
@@ -1379,6 +1398,279 @@ def _toc_entries_to_chapters(reader: PdfReader, toc_pages: list[tuple[int, str]]
     return chapters
 
 
+def _infer_body_start_page(outline: list[LibraryChapter]) -> tuple[int | None, list[str]]:
+    candidates: list[int] = []
+    evidence: list[str] = []
+    for chapter in outline:
+        locator_source = _pdf_locator_source(chapter.locator_hint)
+        printed_page = _pdf_locator_value(chapter.locator_hint, "printed_page")
+        actual_page = chapter.page_start or _pdf_locator_value(chapter.locator_hint, "actual_page")
+        if locator_source == "toc_page" and printed_page and actual_page:
+            candidate = actual_page - printed_page + 1
+            if candidate >= 1:
+                candidates.append(candidate)
+                evidence.append(f"目录项“{chapter.title}”标注正文页 {printed_page}，映射到物理页 {actual_page}。")
+    if candidates:
+        body_start = sorted(candidates)[0]
+        return body_start, evidence[:6]
+
+    page_starts = [chapter.page_start for chapter in outline if chapter.page_start]
+    if page_starts:
+        body_start = min(page_starts)
+        return body_start, [f"资料目录最早正文候选页为物理页 {body_start}。"]
+    return None, ["资料没有可靠页码线索，正文逻辑路径以抽取到的章节顺序建立。"]
+
+
+def _chapter_body_text_for_index(
+    *,
+    file_path: Path,
+    mime_type: str,
+    chapter: LibraryChapter,
+    text_content: str | None,
+) -> str:
+    suffix = file_path.suffix.lower()
+    try:
+        if text_content and file_path.suffix.lower() not in {".pdf"}:
+            if mime_type in {"text/plain", "text/markdown"} or suffix in {".md", ".txt"}:
+                return (
+                    _extract_markdown_section_text(file_path, chapter)
+                    if chapter.scan_strategy == "heading_section" and file_path.exists()
+                    else text_content
+                )
+            if suffix == ".docx" and file_path.exists():
+                return (
+                    _extract_docx_section_text(file_path, chapter)
+                    if chapter.scan_strategy == "heading_section"
+                    else text_content
+                )
+            if suffix == ".epub" and file_path.exists():
+                _, raw_text = _extract_epub_section_text(file_path, chapter, chapter.title)
+                return raw_text or text_content
+            return text_content
+
+        if suffix == ".pdf" and file_path.exists() and chapter.page_start:
+            raw_text = _extract_pdf_chapter_text(file_path, chapter, chapter.title)
+            if raw_text:
+                return raw_text
+    except Exception:
+        return ""
+    return ""
+
+
+def _build_resource_structure_regions(
+    *,
+    outline: list[LibraryChapter],
+    body_start_page: int | None,
+    body_start_evidence: list[str],
+    text_content: str | None,
+) -> list[ResourceStructureRegion]:
+    max_page = max((chapter.page_end or chapter.page_start or 0 for chapter in outline), default=0)
+    toc_pages = sorted(
+        {
+            value
+            for chapter in outline
+            for value in [_pdf_locator_value(chapter.locator_hint, "toc_page")]
+            if value is not None
+        }
+    )
+    if max_page <= 0 and text_content:
+        max_page = 1
+    if max_page <= 0:
+        return [
+            ResourceStructureRegion(
+                role="unknown",
+                label="未识别结构",
+                confidence=0.25,
+                evidence=["资料没有页码或章节正文可用于结构分区。"],
+            )
+        ]
+
+    regions: list[ResourceStructureRegion] = []
+    if body_start_page and body_start_page > 1:
+        regions.append(
+            ResourceStructureRegion(
+                role="cover",
+                label="封面 / 起始材料",
+                physical_page_start=1,
+                physical_page_end=1,
+                confidence=0.55,
+                evidence=["正文第一页之前的第一页按通用资料结构标记为起始材料。"],
+            )
+        )
+        toc_start = min(toc_pages) if toc_pages else None
+        toc_end = max(toc_pages) if toc_pages else None
+        if toc_start and toc_start > 2:
+            regions.append(
+                ResourceStructureRegion(
+                    role="front_matter",
+                    label="前言 / 正文前材料",
+                    physical_page_start=2,
+                    physical_page_end=toc_start - 1,
+                    confidence=0.58,
+                    evidence=["正文第一页之前、目录之前的页面按通用结构归为前置材料。"],
+                )
+            )
+        elif not toc_start and body_start_page > 2:
+            regions.append(
+                ResourceStructureRegion(
+                    role="front_matter",
+                    label="前言 / 正文前材料",
+                    physical_page_start=2,
+                    physical_page_end=body_start_page - 1,
+                    confidence=0.5,
+                    evidence=["未识别独立目录页，正文第一页之前的页面归为前置材料。"],
+                )
+            )
+        if toc_start and toc_end:
+            regions.append(
+                ResourceStructureRegion(
+                    role="toc",
+                    label="目录",
+                    physical_page_start=toc_start,
+                    physical_page_end=toc_end,
+                    confidence=0.82,
+                    evidence=[f"PDF 目录项来自物理页 {toc_start}-{toc_end}。"],
+                )
+            )
+            if toc_end + 1 < body_start_page:
+                regions.append(
+                    ResourceStructureRegion(
+                        role="front_matter",
+                        label="目录后正文前材料",
+                        physical_page_start=toc_end + 1,
+                        physical_page_end=body_start_page - 1,
+                        confidence=0.48,
+                        evidence=["目录结束后到正文开始前仍存在前置材料。"],
+                    )
+                )
+
+    body_start = body_start_page or 1
+    regions.append(
+        ResourceStructureRegion(
+            role="body",
+            label="正文",
+            physical_page_start=body_start,
+            physical_page_end=max_page,
+            body_page_start=1,
+            body_page_end=max_page - body_start + 1 if max_page >= body_start else None,
+            confidence=0.78 if body_start_page else 0.46,
+            evidence=body_start_evidence,
+        )
+    )
+    return regions
+
+
+def _build_resource_indexes(
+    *,
+    file_path: Path,
+    mime_type: str,
+    outline: list[LibraryChapter],
+    text_content: str | None,
+) -> tuple[
+    list[ResourceStructureRegion],
+    list[ResourceBodyBlock],
+    list[ResourceTOCEntry],
+    list[ResourceChapterShard],
+    list[str],
+]:
+    body_start_page, body_start_evidence = _infer_body_start_page(outline)
+    structure_regions = _build_resource_structure_regions(
+        outline=outline,
+        body_start_page=body_start_page,
+        body_start_evidence=body_start_evidence,
+        text_content=text_content,
+    )
+    warnings: list[str] = []
+    if body_start_page is None:
+        warnings.append("未识别可靠正文第一页，正文逻辑页码按章节顺序建立。")
+
+    body_blocks: list[ResourceBodyBlock] = []
+    toc_entries: list[ResourceTOCEntry] = []
+    chapter_shards: list[ResourceChapterShard] = []
+
+    for chapter_index, chapter in enumerate(outline):
+        locator_source = _pdf_locator_source(chapter.locator_hint)
+        printed_page = _pdf_locator_value(chapter.locator_hint, "printed_page")
+        actual_page = chapter.page_start or _pdf_locator_value(chapter.locator_hint, "actual_page")
+        if locator_source == "toc_page" and printed_page:
+            body_page_no = printed_page
+            page_scope = "body"
+        elif actual_page and body_start_page:
+            body_page_no = actual_page - body_start_page + 1
+            page_scope = "body" if body_page_no >= 1 else "physical"
+        else:
+            body_page_no = chapter_index + 1 if not actual_page else None
+            page_scope = "unknown" if not actual_page else "physical"
+        physical_page_no = actual_page
+        if body_start_page and body_page_no and page_scope == "body":
+            physical_page_no = body_start_page + body_page_no - 1
+
+        heading_path = chapter.path or [chapter.title]
+        raw_text = _chapter_body_text_for_index(
+            file_path=file_path,
+            mime_type=mime_type,
+            chapter=chapter,
+            text_content=text_content,
+        )
+        block_text = _normalize_extracted_text(raw_text)[:_BODY_BLOCK_TEXT_LIMIT]
+        if not block_text:
+            block_text = _normalize_extracted_text(f"{chapter.title}\n{chapter.summary}\n{' '.join(chapter.keywords)}")
+
+        block = ResourceBodyBlock(
+            chapter_id=chapter.id,
+            physical_page_no=physical_page_no,
+            physical_page_idx=physical_page_no - 1 if physical_page_no else None,
+            body_page_no=body_page_no if page_scope == "body" else None,
+            body_page_idx=body_page_no - 1 if body_page_no and page_scope == "body" else None,
+            block_order=chapter_index,
+            heading_path=heading_path,
+            text=block_text,
+            text_hash=_stable_text_hash(block_text),
+        )
+        body_blocks.append(block)
+
+        toc_entries.append(
+            ResourceTOCEntry(
+                chapter_id=chapter.id,
+                title=chapter.title,
+                level=chapter.level,
+                heading_path=heading_path,
+                printed_page_label=str(printed_page) if printed_page else _page_label(chapter.page_start, chapter.page_end),
+                page_number_scope=page_scope,  # type: ignore[arg-type]
+                body_page_no=body_page_no if page_scope == "body" else None,
+                physical_page_no=physical_page_no,
+                confidence=0.84 if locator_source == "toc_page" and printed_page and physical_page_no else 0.58,
+                evidence=[
+                    "目录页码默认按正文页码解释。"
+                    if locator_source == "toc_page" and printed_page
+                    else "按章节页码或章节顺序建立目录入口。"
+                ],
+            )
+        )
+
+        page_end = chapter.page_end
+        body_page_end = None
+        if page_end and body_start_page and page_scope == "body":
+            body_page_end = max(body_page_no or 1, page_end - body_start_page + 1)
+        chapter_shards.append(
+            ResourceChapterShard(
+                chapter_id=chapter.id,
+                title=chapter.title,
+                heading_path=heading_path,
+                body_page_start=body_page_no if page_scope == "body" else None,
+                body_page_end=body_page_end,
+                physical_page_start=physical_page_no,
+                physical_page_end=page_end,
+                block_ids=[block.id],
+                summary=chapter.summary,
+                keywords=chapter.keywords,
+                text_hash=_stable_text_hash(f"{chapter.title}\n{chapter.summary}\n{block_text}"),
+            )
+        )
+
+    return structure_regions, body_blocks, toc_entries, chapter_shards, warnings
+
+
 def extract_outline(file_path: Path, original_name: str, mime_type: str) -> tuple[list[LibraryChapter], bool, str | None]:
     # 资料解析入口：按图片、文本、DOCX、EPUB、PDF 等格式提取目录和可检索文本。
     if mime_type.startswith("image/"):
@@ -1549,6 +1841,12 @@ def build_resource_item(file_path: Path, original_name: str) -> ResourceLibraryI
         path_keywords = _keywords_from_text(" ".join(chapter.path))
         for keyword in [*chapter.keywords, *path_keywords]:
             concept_index.setdefault(keyword, []).append(chapter.id)
+    structure_regions, body_blocks, toc_entries, chapter_shards, parse_warnings = _build_resource_indexes(
+        file_path=file_path,
+        mime_type=mime_type,
+        outline=outline,
+        text_content=text_content,
+    )
 
     return ResourceLibraryItem(
         name=original_name,
@@ -1560,6 +1858,11 @@ def build_resource_item(file_path: Path, original_name: str) -> ResourceLibraryI
         extracted_text_available=extracted,
         text_content=text_content,
         source_path=str(file_path),
+        structure_regions=structure_regions,
+        body_blocks=body_blocks,
+        toc_entries=toc_entries,
+        chapter_shards=chapter_shards,
+        parse_warnings=parse_warnings,
     )
 
 

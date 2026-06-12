@@ -1,6 +1,17 @@
 import pytest
 
-from app.models import BoardDocument, BoardFocusRef, BoardTaskRequirementSheet, LearningRequirementSheet, PatchOperation
+from app.models import (
+    BoardDocument,
+    BoardFocusRef,
+    BoardTaskRequirementSheet,
+    LearningRequirementSheet,
+    LibraryChapter,
+    PatchOperation,
+    ResourceBodyBlock,
+    ResourceChapterShard,
+    ResourceLibraryItem,
+    ResourceTOCEntry,
+)
 from app.services.chart_generation import extract_chart_data_fragments
 from app.services.course_runtime import (
     build_lesson_for_topic,
@@ -884,6 +895,13 @@ def test_build_resource_item_extracts_markdown_outline_and_reference_context(tmp
     context = extract_reference_context(resource, resource.outline[0].id, user_query="第一章")
 
     assert resource.outline
+    assert resource.structure_regions
+    assert resource.body_blocks
+    assert resource.toc_entries
+    assert resource.chapter_shards
+    assert resource.body_blocks[0].heading_path == ["第一章"]
+    assert resource.toc_entries[0].title == "第一章"
+    assert resource.chapter_shards[0].block_ids == [resource.body_blocks[0].id]
     assert context is not None
     assert context.chapter_title == "第一章"
     assert "第一章正文" in context.full_text
@@ -907,6 +925,177 @@ def test_resource_resolver_selects_relevant_uploaded_chapter(tmp_path) -> None:
     assert resolution.selected_reference.chapter_title == "第一章"
     assert "第一章正文" in resolution.selected_reference.full_text
     assert resolution.matches
+
+
+def test_resource_resolver_uses_toc_entry_to_locate_nested_body_blocks(tmp_path) -> None:
+    resource_path = tmp_path / "resource.md"
+    resource_path.write_text(
+        "# 第七章\n章节导语。\n\n## 第三节\n这是第七章第三节的正文证据，应该用于生成板书。",
+        encoding="utf-8",
+    )
+    resource = build_resource_item(resource_path, "resource.md")
+
+    resolution = resolve_resource_reference(
+        resources=[resource],
+        user_message="我要学第七章第三节",
+        allow_direct_reference=True,
+    )
+
+    assert resolution.selected_reference is not None
+    assert resolution.selected_reference.chapter_title == "第三节"
+    assert "第七章第三节的正文证据" in resolution.selected_reference.full_text
+    assert resolution.evidence_bundle is not None
+    assert resolution.evidence_bundle.target_title == "第三节"
+    assert "正文逻辑路径" in resolution.matches[0].reason
+
+
+def test_resource_resolver_maps_body_page_to_physical_page_without_using_toc_text() -> None:
+    chapter = LibraryChapter(
+        title="第七章第三节",
+        level=2,
+        summary="正文页码映射测试。",
+        keywords=["正文页码", "映射"],
+        path=["第七章", "第三节"],
+    )
+    body_block = ResourceBodyBlock(
+        chapter_id=chapter.id,
+        physical_page_no=180,
+        physical_page_idx=179,
+        body_page_no=160,
+        body_page_idx=159,
+        block_order=0,
+        heading_path=["第七章", "第三节"],
+        text="正文第160页的真实正文内容。",
+        text_hash="body160",
+    )
+    resource = ResourceLibraryItem(
+        name="body-map.md",
+        mime_type="text/markdown",
+        resource_type="document",
+        size_bytes=100,
+        outline=[chapter],
+        body_blocks=[body_block],
+        toc_entries=[
+            ResourceTOCEntry(
+                chapter_id=chapter.id,
+                title="第七章第三节",
+                level=2,
+                heading_path=["第七章", "第三节"],
+                printed_page_label="160",
+                page_number_scope="body",
+                body_page_no=160,
+                physical_page_no=180,
+                confidence=0.9,
+                evidence=["目录页码默认按正文页码解释。"],
+            )
+        ],
+        chapter_shards=[
+            ResourceChapterShard(
+                chapter_id=chapter.id,
+                title=chapter.title,
+                heading_path=["第七章", "第三节"],
+                body_page_start=160,
+                body_page_end=160,
+                physical_page_start=180,
+                physical_page_end=180,
+                block_ids=[body_block.id],
+                summary=chapter.summary,
+                keywords=chapter.keywords,
+                text_hash="shard160",
+            )
+        ],
+    )
+
+    resolution = resolve_resource_reference(
+        resources=[resource],
+        user_message="请打开正文第160页",
+        allow_direct_reference=True,
+    )
+
+    assert resolution.selected_reference is not None
+    assert "真实正文内容" in resolution.selected_reference.full_text
+    assert "目录页码默认" not in resolution.selected_reference.full_text
+    assert resolution.evidence_bundle is not None
+    assert resolution.evidence_bundle.body_page_range == "160"
+    assert resolution.evidence_bundle.physical_page_range == "180"
+    assert "正文第 160 页" in resolution.matches[0].reason
+
+
+def test_resource_resolver_parallel_searches_chapter_shards_for_related_content() -> None:
+    overview = LibraryChapter(
+        title="第一章 总览",
+        level=1,
+        summary="介绍资料结构。",
+        keywords=["结构"],
+        path=["第一章 总览"],
+    )
+    retrieval = LibraryChapter(
+        title="第二章 检索",
+        level=1,
+        summary="讲解章节并行检索、候选章节召回和延迟控制。",
+        keywords=["章节检索", "并行", "延迟"],
+        path=["第二章 检索"],
+    )
+    blocks = [
+        ResourceBodyBlock(
+            chapter_id=overview.id,
+            block_order=0,
+            heading_path=overview.path,
+            text="这里说明资料结构地图。",
+            text_hash="overview",
+        ),
+        ResourceBodyBlock(
+            chapter_id=retrieval.id,
+            block_order=1,
+            heading_path=retrieval.path,
+            text="这里说明相关内容问题如何按章节 shard 并行检索，并降低等待延迟。",
+            text_hash="retrieval",
+        ),
+    ]
+    resource = ResourceLibraryItem(
+        name="parallel.md",
+        mime_type="text/markdown",
+        resource_type="document",
+        size_bytes=120,
+        outline=[overview, retrieval],
+        body_blocks=blocks,
+        toc_entries=[
+            ResourceTOCEntry(chapter_id=overview.id, title=overview.title, heading_path=overview.path),
+            ResourceTOCEntry(chapter_id=retrieval.id, title=retrieval.title, heading_path=retrieval.path),
+        ],
+        chapter_shards=[
+            ResourceChapterShard(
+                chapter_id=overview.id,
+                title=overview.title,
+                heading_path=overview.path,
+                block_ids=[blocks[0].id],
+                summary=overview.summary,
+                keywords=overview.keywords,
+                text_hash="overview-shard",
+            ),
+            ResourceChapterShard(
+                chapter_id=retrieval.id,
+                title=retrieval.title,
+                heading_path=retrieval.path,
+                block_ids=[blocks[1].id],
+                summary=retrieval.summary,
+                keywords=retrieval.keywords,
+                text_hash="retrieval-shard",
+            ),
+        ],
+    )
+
+    resolution = resolve_resource_reference(
+        resources=[resource],
+        user_message="这本书哪里讲如何降低检索延迟",
+        allow_direct_reference=True,
+    )
+
+    assert resolution.selected_reference is not None
+    assert resolution.selected_reference.chapter_title == "第二章 检索"
+    assert "章节 shard 并行检索" in resolution.matches[0].reason
+    assert resolution.evidence_bundle is not None
+    assert resolution.evidence_bundle.target_title == "第二章 检索"
 
 
 def test_epub_section_scoring_penalizes_generic_structural_shells() -> None:

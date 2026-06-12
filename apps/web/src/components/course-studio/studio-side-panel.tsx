@@ -18,6 +18,7 @@ type CourseStudioSidePanelProps = {
   activeRequirements: Lesson["learning_requirements"];
   activeBoardTask: Lesson["board_task_requirements"];
   latestBoardDecision: BoardDecision | null;
+  resources: CoursePackage["resources"];
   newBranchName: string;
   onNewBranchNameChange: (value: string) => void;
   relatedEdges: CoursePackage["course_graph"];
@@ -41,6 +42,7 @@ export function CourseStudioSidePanel({
   activeRequirements,
   activeBoardTask,
   latestBoardDecision,
+  resources,
   newBranchName,
   onNewBranchNameChange,
   relatedEdges,
@@ -113,6 +115,7 @@ export function CourseStudioSidePanel({
         {sidebarTab === "library" ? (
           <ResourcePanel
             activeLesson={activeLesson}
+            resources={resources}
             relatedEdges={relatedEdges}
             lessonMap={lessonMap}
             onOpenLesson={onOpenLesson}

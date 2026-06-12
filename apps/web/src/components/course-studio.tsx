@@ -206,6 +206,7 @@ export function CourseStudio() {
     currentNeedPending,
     latestBoardDecision,
     referencePrompt,
+    resourceBoardProposal,
     boardEditPrompt,
     selectedReference,
     handleSubmitChat,
@@ -513,6 +514,7 @@ export function CourseStudio() {
           showReadyForBoardCard={showReadyForBoardCard}
           scopeOptions={scopeOptions}
           referencePrompt={referencePrompt}
+          resourceBoardProposal={resourceBoardProposal}
           boardEditPrompt={boardEditPrompt}
           clarificationQuestions={clarificationQuestions}
           activeBoardTask={activeBoardTask}
@@ -577,6 +579,7 @@ export function CourseStudio() {
           activeRequirements={activeRequirements}
           activeBoardTask={activeBoardTask}
           latestBoardDecision={latestBoardDecision}
+          resources={coursePackage.resources}
           newBranchName={newBranchName}
           onNewBranchNameChange={setNewBranchName}
           relatedEdges={relatedEdges}

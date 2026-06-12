@@ -26,7 +26,7 @@ from app.services.document_segment_store import DocumentSegmentStore
 from app.services.learning_requirement_history import LearningRequirementHistoryStore
 from app.services.rich_document import upgrade_markdown_like_document
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 
 def _active_package_setting_key(owner_user_id: str | None) -> str:
@@ -396,7 +396,12 @@ class SqliteCourseStore:
                 concept_index_json TEXT NOT NULL,
                 extracted_text_available INTEGER NOT NULL,
                 text_content TEXT,
-                source_path TEXT
+                source_path TEXT,
+                structure_regions_json TEXT NOT NULL DEFAULT '[]',
+                body_blocks_json TEXT NOT NULL DEFAULT '[]',
+                toc_entries_json TEXT NOT NULL DEFAULT '[]',
+                chapter_shards_json TEXT NOT NULL DEFAULT '[]',
+                parse_warnings_json TEXT NOT NULL DEFAULT '[]'
             );
 
             CREATE INDEX IF NOT EXISTS idx_resources_package
@@ -458,6 +463,16 @@ class SqliteCourseStore:
         }
         if "scope_lesson_id" not in resource_columns:
             conn.execute("ALTER TABLE resources ADD COLUMN scope_lesson_id TEXT")
+        if "structure_regions_json" not in resource_columns:
+            conn.execute("ALTER TABLE resources ADD COLUMN structure_regions_json TEXT NOT NULL DEFAULT '[]'")
+        if "body_blocks_json" not in resource_columns:
+            conn.execute("ALTER TABLE resources ADD COLUMN body_blocks_json TEXT NOT NULL DEFAULT '[]'")
+        if "toc_entries_json" not in resource_columns:
+            conn.execute("ALTER TABLE resources ADD COLUMN toc_entries_json TEXT NOT NULL DEFAULT '[]'")
+        if "chapter_shards_json" not in resource_columns:
+            conn.execute("ALTER TABLE resources ADD COLUMN chapter_shards_json TEXT NOT NULL DEFAULT '[]'")
+        if "parse_warnings_json" not in resource_columns:
+            conn.execute("ALTER TABLE resources ADD COLUMN parse_warnings_json TEXT NOT NULL DEFAULT '[]'")
         package_columns = {
             row["name"]
             for row in conn.execute("PRAGMA table_info(course_packages)").fetchall()
@@ -702,6 +717,11 @@ class SqliteCourseStore:
             extracted_text_available=bool(row["extracted_text_available"]),
             text_content=row["text_content"],
             source_path=row["source_path"],
+            structure_regions=_loads(row["structure_regions_json"], []),
+            body_blocks=_loads(row["body_blocks_json"], []),
+            toc_entries=_loads(row["toc_entries_json"], []),
+            chapter_shards=_loads(row["chapter_shards_json"], []),
+            parse_warnings=_loads(row["parse_warnings_json"], []),
         )
 
     def _replace_workspace(
@@ -892,8 +912,9 @@ class SqliteCourseStore:
             """
             INSERT INTO resources(
                 id, package_id, sort_order, name, mime_type, resource_type, size_bytes,
-                uploaded_at, scope_lesson_id, concept_index_json, extracted_text_available, text_content, source_path
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                uploaded_at, scope_lesson_id, concept_index_json, extracted_text_available, text_content, source_path,
+                structure_regions_json, body_blocks_json, toc_entries_json, chapter_shards_json, parse_warnings_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 resource.id,
@@ -909,6 +930,11 @@ class SqliteCourseStore:
                 int(resource.extracted_text_available),
                 resource.text_content,
                 resource.source_path,
+                _dumps([region.model_dump(mode="json") for region in resource.structure_regions]),
+                _dumps([block.model_dump(mode="json") for block in resource.body_blocks]),
+                _dumps([entry.model_dump(mode="json") for entry in resource.toc_entries]),
+                _dumps([shard.model_dump(mode="json") for shard in resource.chapter_shards]),
+                _dumps(resource.parse_warnings),
             ),
         )
         for chapter_index, chapter in enumerate(resource.outline):

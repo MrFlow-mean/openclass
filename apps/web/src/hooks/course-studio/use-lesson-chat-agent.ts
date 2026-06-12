@@ -25,6 +25,7 @@ import type {
   LearningClarificationStatus,
   LearningRequirementSheet,
   Lesson,
+  ResourceBoardProposal,
   ResourceMatch,
   ResourceReferenceContext,
   ResourceReferencePrompt,
@@ -87,6 +88,7 @@ export function useLessonChatAgent({
   const [currentNeedPending, setCurrentNeedPending] = useState(false);
   const [latestBoardDecision, setLatestBoardDecision] = useState<BoardDecision | null>(null);
   const [referencePrompt, setReferencePrompt] = useState<ResourceReferencePrompt | null>(null);
+  const [resourceBoardProposal, setResourceBoardProposal] = useState<ResourceBoardProposal | null>(null);
   const [boardEditPrompt, setBoardEditPrompt] = useState<BoardEditPrompt | null>(null);
   const [selectedReference, setSelectedReference] = useState<ResourceReferenceContext | null>(null);
   const [lastScopedRequest, setLastScopedRequest] = useState<ChatRequestPayload | null>(null);
@@ -216,6 +218,7 @@ export function useLessonChatAgent({
     setCurrentNeedPending(false);
     setLatestBoardDecision(null);
     setReferencePrompt(null);
+    setResourceBoardProposal(null);
     setBoardEditPrompt(null);
     setSelectedReference(null);
     setLastScopedRequest(null);
@@ -408,6 +411,7 @@ export function useLessonChatAgent({
       setScopeOptions(response.scope_options);
       setResourceMatches(response.resource_matches);
       setReferencePrompt(response.reference_prompt ?? null);
+      setResourceBoardProposal(response.resource_board_proposal ?? null);
       setBoardEditPrompt(response.board_edit_prompt ?? null);
       setSelectedReference(response.selected_reference ?? null);
       setLastScopedRequest(response.scope_options.length ? payloadWithConversation : null);
@@ -665,6 +669,7 @@ export function useLessonChatAgent({
       resource_reference_chapter_id: referencePrompt.chapter_id,
     });
     setReferencePrompt(null);
+    setResourceBoardProposal(null);
     setLastReferenceRequest(null);
   }
 
@@ -712,6 +717,7 @@ export function useLessonChatAgent({
     currentNeedPending,
     latestBoardDecision,
     referencePrompt,
+    resourceBoardProposal,
     boardEditPrompt,
     selectedReference,
     resetAgentState,

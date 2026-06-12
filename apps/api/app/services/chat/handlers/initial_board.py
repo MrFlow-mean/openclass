@@ -191,6 +191,7 @@ def _reference_response_kwargs(resource_resolution: ResourceResolution | None) -
         return {}
     return {
         "resource_matches": resource_resolution.matches,
+        "resource_evidence_bundle": resource_resolution.evidence_bundle,
         "selected_reference": resource_resolution.selected_reference,
     }
 

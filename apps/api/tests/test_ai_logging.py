@@ -6740,6 +6740,9 @@ def test_learning_request_generates_board_after_resource_reference_confirmation(
 
     assert first.board_decision.action == "await_reference_choice"
     assert first.reference_prompt is not None
+    assert first.resource_board_proposal is not None
+    assert first.resource_board_proposal.confirm_label == "生成板书"
+    assert first.resource_evidence_bundle is not None
     assert first.resource_matches
     assert first.course_package.lessons[0].board_document.content_text == ""
 
@@ -6766,6 +6769,59 @@ def test_learning_request_generates_board_after_resource_reference_confirmation(
     assert commit.metadata["selected_reference"]["chapter_title"] == "第一章"
     assert commit.metadata["active_requirement_sheet_after"] is None
     assert captured["intent"] == "generate_from_requirements"
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_explicit_resource_chapter_generation_directly_uses_body_evidence(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    captured: dict[str, str | None] = {}
+
+    def _fake_board_edit(**kwargs):
+        captured["resource_summary"] = kwargs.get("resource_summary")
+        return BoardDocumentEditResult(
+            operation="replace_document",
+            title="第一章板书",
+            content_text="# 第一章板书\n基于正文证据生成。",
+            summary="已生成指定章节板书。",
+            chatbot_message="AI生成：已生成指定章节板书。",
+            section_titles=["第一章板书"],
+        )
+
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _fake_board_edit)
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
+
+    workspace = _seed_test_user_workspace(store)
+    package = workspace.packages[0]
+    lesson = package.lessons[0]
+    resource_path = tmp_path / "resource.md"
+    resource_path.write_text(
+        "# 第一章\n这是第一章正文证据，明确生成请求应直接交给 BoardEditor。",
+        encoding="utf-8",
+    )
+    resource = build_resource_item(resource_path, "resource.md")
+    resource.scope_lesson_id = lesson.id
+    package.resources.append(resource)
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="请生成第一章的板书"),
+        user_id=TEST_USER.id,
+    )
+
+    assert response.reference_prompt is None
+    assert response.resource_board_proposal is None
+    assert response.selected_reference is not None
+    assert response.resource_evidence_bundle is not None
+    assert response.board_decision.action == "edit_board"
+    assert "第一章正文证据" in (captured["resource_summary"] or "")
+    commit = response.course_package.lessons[0].history_graph.commits[-1]
+    assert commit.metadata["kind"] == "board_document_generation"
+    assert commit.metadata["selected_reference"]["chapter_title"] == "第一章"
+    assert commit.metadata["resource_evidence_bundle"]["target_title"] == "第一章"
     assert _read_log_entries(isolated_ai_log) == []
 
 
