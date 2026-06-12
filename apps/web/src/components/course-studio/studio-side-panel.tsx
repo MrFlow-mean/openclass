@@ -19,6 +19,7 @@ type CourseStudioSidePanelProps = {
   activeBoardTask: Lesson["board_task_requirements"];
   latestBoardDecision: BoardDecision | null;
   resources: CoursePackage["resources"];
+  isUploadingResource: boolean;
   newBranchName: string;
   onNewBranchNameChange: (value: string) => void;
   relatedEdges: CoursePackage["course_graph"];
@@ -29,6 +30,7 @@ type CourseStudioSidePanelProps = {
   onCreateBranchFromCommit: (commit: CommitRecord) => void | Promise<void>;
   onSwitchBranch: (branchName: string) => void | Promise<void>;
   onOpenLesson: (lessonId: string) => void | Promise<void>;
+  onUploadResource: (file: File) => void | Promise<void>;
 };
 
 export function CourseStudioSidePanel({
@@ -43,6 +45,7 @@ export function CourseStudioSidePanel({
   activeBoardTask,
   latestBoardDecision,
   resources,
+  isUploadingResource,
   newBranchName,
   onNewBranchNameChange,
   relatedEdges,
@@ -53,6 +56,7 @@ export function CourseStudioSidePanel({
   onCreateBranchFromCommit,
   onSwitchBranch,
   onOpenLesson,
+  onUploadResource,
 }: CourseStudioSidePanelProps) {
   return (
     <aside
@@ -116,9 +120,11 @@ export function CourseStudioSidePanel({
           <ResourcePanel
             activeLesson={activeLesson}
             resources={resources}
+            isUploading={isUploadingResource}
             relatedEdges={relatedEdges}
             lessonMap={lessonMap}
             onOpenLesson={onOpenLesson}
+            onUploadResource={onUploadResource}
           />
         ) : null}
       </div>

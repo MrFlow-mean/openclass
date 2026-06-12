@@ -21,6 +21,7 @@ export type AutoSaveReason =
   | "open-lesson"
   | "close-lesson"
   | "create-lesson"
+  | "upload-resource"
   | "chat"
   | "branch"
   | "preview"

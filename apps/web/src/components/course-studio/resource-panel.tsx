@@ -1,12 +1,17 @@
+import { useRef } from "react";
+import { LoaderCircle, Upload } from "lucide-react";
+
 import { CourseGraphPanel } from "@/components/course-studio/course-graph-panel";
 import type { CoursePackage, Lesson } from "@/types";
 
 type ResourcePanelProps = {
   activeLesson: Lesson;
   resources: CoursePackage["resources"];
+  isUploading: boolean;
   relatedEdges: CoursePackage["course_graph"];
   lessonMap: Map<string, Lesson>;
   onOpenLesson: (lessonId: string) => void | Promise<void>;
+  onUploadResource: (file: File) => void | Promise<void>;
 };
 
 const ROLE_LABEL: Record<string, string> = {
@@ -32,20 +37,59 @@ function pageRange(start?: number | null, end?: number | null) {
 export function ResourcePanel({
   activeLesson,
   resources,
+  isUploading,
   relatedEdges,
   lessonMap,
   onOpenLesson,
+  onUploadResource,
 }: ResourcePanelProps) {
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  function handleFile(file: File | null | undefined) {
+    if (!file || isUploading) {
+      return;
+    }
+    void onUploadResource(file);
+  }
+
   return (
     <div className="space-y-8">
       <div>
         <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">资料区</p>
         <div className="mt-4 space-y-3">
-          {resources.length === 0 ? (
-            <div className="min-h-40 rounded-lg border border-dashed border-gray-200 bg-white px-4 py-5 text-sm text-gray-500">
-              暂无上传资料。
+          <div
+            className="flex min-h-40 items-center justify-center rounded-lg border border-dashed border-gray-200 bg-white px-4 py-5"
+            onDragOver={(event) => {
+              event.preventDefault();
+            }}
+            onDrop={(event) => {
+              event.preventDefault();
+              handleFile(event.dataTransfer.files.item(0));
+            }}
+          >
+            <input
+              ref={fileInputRef}
+              type="file"
+              className="hidden"
+              accept=".pdf,.doc,.docx,.txt,.md,.markdown,.epub,image/*"
+              onChange={(event) => {
+                handleFile(event.currentTarget.files?.item(0));
+                event.currentTarget.value = "";
+              }}
+            />
+            <div className="flex flex-col items-center gap-3 text-center">
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={isUploading}
+                className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-gray-200 bg-white px-3 text-xs font-semibold text-gray-800 shadow-sm transition hover:border-gray-300 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {isUploading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+                {isUploading ? "上传中" : "上传资料"}
+              </button>
+              <p className="text-xs text-gray-500">PDF / Word / Markdown / EPUB / 图片</p>
             </div>
-          ) : null}
+          </div>
 
           {resources.map((resource) => (
             <article key={resource.id} className="rounded-lg border border-gray-200 bg-white p-4">

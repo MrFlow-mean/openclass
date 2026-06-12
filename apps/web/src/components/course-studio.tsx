@@ -352,6 +352,7 @@ export function CourseStudio() {
     handleOpenLesson,
     handleCloseLesson,
     handleSelectLesson,
+    handleUploadResource,
   } = workspaceActions;
 
   function handleSelectRealtimeModel(option: AIModelOption) {
@@ -580,6 +581,7 @@ export function CourseStudio() {
           activeBoardTask={activeBoardTask}
           latestBoardDecision={latestBoardDecision}
           resources={coursePackage.resources}
+          isUploadingResource={busyAction === "upload-resource"}
           newBranchName={newBranchName}
           onNewBranchNameChange={setNewBranchName}
           relatedEdges={relatedEdges}
@@ -590,6 +592,9 @@ export function CourseStudio() {
           onCreateBranchFromCommit={(commit) => handleCreateBranchFromCommit(commit)}
           onSwitchBranch={(branchName) => handleSwitchBranch(branchName)}
           onOpenLesson={(lessonId) => handleOpenLesson(lessonId)}
+          onUploadResource={(file) => {
+            void handleUploadResource(file);
+          }}
         />
       </div>
     </CourseStudioPageShell>

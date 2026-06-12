@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from pathlib import Path
+from uuid import uuid4
+
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
 from app.models import (
     CourseGraphEdge,
@@ -19,6 +22,7 @@ from app.services.ai_logging import ai_usage_logger
 from app.services.course_runtime import build_lesson_for_topic
 from app.services.history import current_head_commit
 from app.services.lesson_factory import create_empty_lesson
+from app.services.resource_library import build_resource_item
 from app.services.route_context import bind_ai_request_context
 from app.services.resource_service import delete_uploaded_resource_file
 from app.services.workspace_state import (
@@ -36,6 +40,11 @@ from app.services.workspace_state import (
 )
 
 router = APIRouter()
+
+
+def _safe_upload_name(filename: str | None) -> str:
+    name = Path(filename or "").name.strip()
+    return name or "resource"
 
 
 @router.get("/api/workspace", response_model=WorkspaceStateView)
@@ -185,6 +194,37 @@ def delete_lesson(lesson_id: str, user: UserView = Depends(current_user)) -> Wor
 @router.get("/api/course-package", response_model=CoursePackageView)
 def get_course_package(user: UserView = Depends(current_user)) -> CoursePackageView:
     workspace, package = load_workspace_package_for_user(user.id)
+    return package_view_for_lesson(workspace, package, package.active_lesson_id)
+
+
+@router.post("/api/resources/upload", response_model=CoursePackageView)
+async def upload_resource(file: UploadFile = File(...), user: UserView = Depends(current_user)) -> CoursePackageView:
+    # 资料上传只负责保存原文件并建立通用资料索引；具体引用和生成仍由 ResourceResolver / BoardEditor 决定。
+    original_name = _safe_upload_name(file.filename)
+    suffix = Path(original_name).suffix
+    stored_path = UPLOAD_DIR / f"{uuid4().hex}{suffix}"
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        content = await file.read()
+        if not content:
+            raise HTTPException(status_code=400, detail="上传文件不能为空")
+        stored_path.write_bytes(content)
+        resource = build_resource_item(stored_path, original_name)
+    except HTTPException:
+        stored_path.unlink(missing_ok=True)
+        raise
+    except Exception as exc:
+        stored_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail="资料解析失败，请换一个文件再试") from exc
+    finally:
+        await file.close()
+
+    workspace, package = load_workspace_package_for_user(user.id)
+    if is_standalone_package(workspace, package):
+        resource.scope_lesson_id = package.active_lesson_id
+    package.resources.append(resource)
+    normalize_package_state(package)
+    save_workspace_for_user(user.id, workspace)
     return package_view_for_lesson(workspace, package, package.active_lesson_id)
 
 

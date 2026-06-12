@@ -109,10 +109,30 @@ export function useWorkspaceActions({
     resetDraftToLesson(lessonMap.get(lessonId) ?? null);
   }
 
+  async function handleUploadResource(file: File) {
+    if (!(await flushAutoSave("upload-resource"))) {
+      return false;
+    }
+    setBusyAction("upload-resource");
+    try {
+      const nextPackage = await api.uploadResource(file);
+      updateCoursePackage(nextPackage, {
+        activeLessonId: activeLesson?.id,
+      });
+      return true;
+    } catch (uploadError) {
+      setError(uploadError instanceof Error ? uploadError.message : "上传资料失败");
+      return false;
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
   return {
     handleCreateLessonFromName,
     handleOpenLesson,
     handleCloseLesson,
     handleSelectLesson,
+    handleUploadResource,
   };
 }

@@ -9,6 +9,7 @@ import app.main as main_module
 from app.models import UserView
 from app.routers import auth as auth_router
 from app.routers import documents as documents_router
+from app.routers import workspace as workspace_router
 from app.services import workspace_state
 from app.services.course_store import SqliteCourseStore
 
@@ -32,6 +33,7 @@ def api_client(monkeypatch: pytest.MonkeyPatch, tmp_path):
     monkeypatch.setattr(workspace_state, "EXPORT_DIR", export_dir)
     monkeypatch.setattr(documents_router, "UPLOAD_DIR", upload_dir)
     monkeypatch.setattr(documents_router, "EXPORT_DIR", export_dir)
+    monkeypatch.setattr(workspace_router, "UPLOAD_DIR", upload_dir)
     workspace_state.ensure_data_dirs()
 
     main_module.app.dependency_overrides[auth_router.current_user] = lambda: TEST_USER
@@ -106,7 +108,30 @@ def test_workspace_document_history_flow(api_client: TestClient) -> None:
     assert restored.json()["lessons"][0]["board_document"]["content_text"] == "First smoke version"
 
 
-def test_resource_upload_endpoint_is_not_exposed(api_client: TestClient) -> None:
-    upload = api_client.post("/api/resources/upload")
+def test_resource_upload_endpoint_adds_resource_to_active_package(api_client: TestClient) -> None:
+    created_workspace = api_client.post(
+        "/api/packages",
+        json={"title": "Resource package", "summary": ""},
+    )
+    assert created_workspace.status_code == 200
+    target_package_id = created_workspace.json()["active_package_id"]
+    generated = api_client.post(
+        "/api/lessons/generate",
+        json={"topic": "Resource lesson", "target_package_id": target_package_id, "start_blank": True},
+    )
+    assert generated.status_code == 200
 
-    assert upload.status_code == 404
+    upload = api_client.post(
+        "/api/resources/upload",
+        files={"file": ("notes.md", b"# Chapter One\nBody evidence for upload.", "text/markdown")},
+    )
+
+    assert upload.status_code == 200
+    package = upload.json()
+    assert len(package["resources"]) == 1
+    resource = package["resources"][0]
+    assert resource["name"] == "notes.md"
+    assert resource["outline"][0]["title"] == "Chapter One"
+    assert resource["structure_regions"]
+    assert resource["toc_entries"]
+    assert resource["chapter_shards"]
