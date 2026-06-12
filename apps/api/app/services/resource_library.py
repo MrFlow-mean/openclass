@@ -28,6 +28,8 @@ from app.services.image_ocr import extract_image_text, extract_pdf_pages_text
 _PDF_TEXT_SUMMARY_LIMIT = 140
 _PDF_LOCATOR_SEPARATOR = " || "
 _BODY_BLOCK_TEXT_LIMIT = 5000
+_EPUB_HTML_TEXT_NORMALIZE_LIMIT = 120_000
+_EPUB_STORED_TEXT_LIMIT = 200_000
 
 
 def _normalize_extracted_text(text: str) -> str:
@@ -534,7 +536,7 @@ def _epub_text_from_html(raw_html: str) -> str:
     cleaned = re.sub(r"(?is)<[^>]+>", "", cleaned)
     text = html.unescape(cleaned)
     lines = [line.strip() for line in text.splitlines() if line.strip()]
-    return _normalize_extracted_text("\n".join(lines))
+    return _normalize_extracted_text("\n".join(lines)[:_EPUB_HTML_TEXT_NORMALIZE_LIMIT])
 
 
 def _epub_fragment_text(fragment: str) -> str:
@@ -699,9 +701,25 @@ def _read_epub_text(file_path: Path) -> str:
     return _normalize_extracted_text("\n\n".join(str(item["text"]) for item in _epub_html_items(file_path)))
 
 
-def _extract_epub_outline(file_path: Path) -> list[LibraryChapter]:
+def _read_epub_text_from_sections(sections: list[dict[str, object]]) -> str:
+    parts: list[str] = []
+    remaining = _EPUB_STORED_TEXT_LIMIT
+    for section in sections:
+        if remaining <= 0:
+            break
+        title = str(section["title"]).strip()
+        content = str(section["content"]).strip()
+        chunk = f"{title}\n{content}".strip()
+        if not chunk:
+            continue
+        parts.append(chunk[:remaining])
+        remaining -= len(parts[-1])
+    return _normalize_extracted_text("\n\n".join(parts))
+
+
+def _extract_epub_outline_from_sections(sections: list[dict[str, object]]) -> list[LibraryChapter]:
     chapters: list[LibraryChapter] = []
-    for section in _epub_sections(file_path):
+    for section in sections:
         title = str(section["title"]).strip()
         if not title or _is_epub_separator_title(title):
             continue
@@ -720,6 +738,10 @@ def _extract_epub_outline(file_path: Path) -> list[LibraryChapter]:
             )
         )
     return chapters
+
+
+def _extract_epub_outline(file_path: Path) -> list[LibraryChapter]:
+    return _extract_epub_outline_from_sections(_epub_sections(file_path))
 
 
 def _epub_section_with_children(sections: list[dict[str, object]], start_index: int) -> str:
@@ -1444,8 +1466,7 @@ def _chapter_body_text_for_index(
                     else text_content
                 )
             if suffix == ".epub" and file_path.exists():
-                _, raw_text = _extract_epub_section_text(file_path, chapter, chapter.title)
-                return raw_text or text_content
+                return _text_window_for_chapter(text_content, chapter)
             return text_content
 
         if suffix == ".pdf" and file_path.exists() and chapter.page_start:
@@ -1455,6 +1476,18 @@ def _chapter_body_text_for_index(
     except Exception:
         return ""
     return ""
+
+
+def _text_window_for_chapter(text_content: str, chapter: LibraryChapter) -> str:
+    title = chapter.title.strip()
+    if not text_content:
+        return f"{title}\n{chapter.summary}\n{' '.join(chapter.keywords)}"
+    if not title:
+        return text_content[: _BODY_BLOCK_TEXT_LIMIT * 2]
+    start = text_content.casefold().find(title.casefold())
+    if start < 0:
+        return f"{title}\n{chapter.summary}\n{' '.join(chapter.keywords)}"
+    return text_content[start : start + _BODY_BLOCK_TEXT_LIMIT * 2]
 
 
 def _build_resource_structure_regions(
@@ -1746,14 +1779,15 @@ def extract_outline(file_path: Path, original_name: str, mime_type: str) -> tupl
         )
 
     if file_path.suffix.lower() == ".epub":
-        text = _read_epub_text(file_path)
-        outline = _extract_epub_outline(file_path)
+        sections = _epub_sections(file_path)
+        text = _read_epub_text_from_sections(sections)
+        outline = _extract_epub_outline_from_sections(sections)
         if outline:
-            return outline, True, text[:200000] if text else None
+            return outline, True, text if text else None
         if text:
             ai_outline = _ai_generated_outline(original_name, text)
             if ai_outline:
-                return ai_outline, True, text[:200000]
+                return ai_outline, True, text
             return (
                 [
                     _generic_chapter_from_text(
@@ -1763,7 +1797,7 @@ def extract_outline(file_path: Path, original_name: str, mime_type: str) -> tupl
                     )
                 ],
                 True,
-                text[:200000],
+                text,
             )
 
     if file_path.suffix.lower() == ".pdf":

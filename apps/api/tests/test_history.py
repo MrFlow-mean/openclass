@@ -1,5 +1,6 @@
 import pytest
 
+from app.services import resource_library
 from app.models import (
     BoardDocument,
     BoardFocusRef,
@@ -1116,6 +1117,37 @@ def test_epub_section_scoring_penalizes_generic_structural_shells() -> None:
 
     assert _epub_section_body_score(shell_sections, 0)[0] < 0
     assert _epub_section_body_score(body_sections, 0)[0] > _epub_section_body_score(shell_sections, 0)[0]
+
+
+def test_build_resource_item_indexes_epub_without_reparsing_per_chapter(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    resource_path = tmp_path / "book.epub"
+    resource_path.write_bytes(b"epub placeholder")
+    calls = 0
+
+    def _fake_epub_sections(_file_path):
+        nonlocal calls
+        calls += 1
+        return [
+            {
+                "title": f"第 {index} 章",
+                "level": 1,
+                "content": f"第 {index} 章正文。这里是可检索的章节内容，用来建立资料索引。",
+                "order_index": index,
+            }
+            for index in range(1, 8)
+        ]
+
+    monkeypatch.setattr(resource_library, "_epub_sections", _fake_epub_sections)
+
+    resource = build_resource_item(resource_path, "book.epub")
+
+    assert calls == 1
+    assert len(resource.outline) == 7
+    assert len(resource.body_blocks) == 7
+    assert "第3章正文" in resource.body_blocks[2].text
 
 
 def test_build_resource_item_uses_catalog_ai_when_material_has_no_outline(
