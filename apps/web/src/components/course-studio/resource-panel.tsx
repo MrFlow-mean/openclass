@@ -1,4 +1,5 @@
-import { useRef } from "react";
+import clsx from "clsx";
+import { useRef, useState, type DragEvent } from "react";
 import { LoaderCircle, Upload } from "lucide-react";
 
 import { CourseGraphPanel } from "@/components/course-studio/course-graph-panel";
@@ -34,6 +35,10 @@ function pageRange(start?: number | null, end?: number | null) {
   return `${start}-${end}`;
 }
 
+function dragIncludesFiles(event: DragEvent<HTMLElement>) {
+  return Array.from(event.dataTransfer.types).includes("Files");
+}
+
 export function ResourcePanel({
   activeLesson,
   resources,
@@ -44,6 +49,8 @@ export function ResourcePanel({
   onUploadResource,
 }: ResourcePanelProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const dragDepthRef = useRef(0);
+  const [isDragActive, setIsDragActive] = useState(false);
 
   function handleFile(file: File | null | undefined) {
     if (!file || isUploading) {
@@ -52,20 +59,77 @@ export function ResourcePanel({
     void onUploadResource(file);
   }
 
+  function handleDragEnter(event: DragEvent<HTMLDivElement>) {
+    if (!dragIncludesFiles(event)) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    dragDepthRef.current += 1;
+    if (!isUploading) {
+      event.dataTransfer.dropEffect = "copy";
+      setIsDragActive(true);
+    }
+  }
+
+  function handleDragOver(event: DragEvent<HTMLDivElement>) {
+    if (!dragIncludesFiles(event)) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = isUploading ? "none" : "copy";
+    if (!isUploading) {
+      setIsDragActive(true);
+    }
+  }
+
+  function handleDragLeave(event: DragEvent<HTMLDivElement>) {
+    if (!dragIncludesFiles(event)) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) {
+      setIsDragActive(false);
+    }
+  }
+
+  function handleDrop(event: DragEvent<HTMLDivElement>) {
+    if (!dragIncludesFiles(event)) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    dragDepthRef.current = 0;
+    setIsDragActive(false);
+    if (isUploading) {
+      return;
+    }
+    handleFile(event.dataTransfer.files.item(0));
+  }
+
   return (
     <div className="space-y-8">
       <div>
         <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">资料区</p>
         <div className="mt-4 space-y-3">
           <div
-            className="flex min-h-40 items-center justify-center rounded-lg border border-dashed border-gray-200 bg-white px-4 py-5"
-            onDragOver={(event) => {
-              event.preventDefault();
-            }}
-            onDrop={(event) => {
-              event.preventDefault();
-              handleFile(event.dataTransfer.files.item(0));
-            }}
+            className={clsx(
+              "flex min-h-40 items-center justify-center rounded-lg border border-dashed bg-white px-4 py-5 transition",
+              isUploading
+                ? "cursor-not-allowed border-gray-200 text-gray-400"
+                : "border-gray-200 hover:border-gray-300",
+              isDragActive && !isUploading && "border-blue-400 bg-blue-50 text-blue-700 ring-2 ring-blue-100"
+            )}
+            aria-busy={isUploading}
+            aria-disabled={isUploading}
+            data-testid="resource-upload-dropzone"
+            onDragEnter={handleDragEnter}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
           >
             <input
               ref={fileInputRef}
@@ -85,7 +149,7 @@ export function ResourcePanel({
                 className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-gray-200 bg-white px-3 text-xs font-semibold text-gray-800 shadow-sm transition hover:border-gray-300 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {isUploading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
-                {isUploading ? "上传中" : "上传资料"}
+                {isDragActive && !isUploading ? "松开上传" : isUploading ? "上传中" : "上传资料"}
               </button>
               <p className="text-xs text-gray-500">PDF / Word / Markdown / EPUB / 图片</p>
             </div>
