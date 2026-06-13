@@ -373,6 +373,16 @@ select {
   outline: 2px solid rgba(15, 23, 42, 0.2);
 }
 
+.word-editor__teaching-focus-highlight {
+  border-radius: 5px;
+  background: rgba(252, 211, 77, 0.24);
+  box-shadow:
+    0 0 0 3px rgba(245, 158, 11, 0.18),
+    0 10px 24px rgba(180, 83, 9, 0.14);
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+
 .word-editor__content a {
   color: #1d4ed8;
   text-decoration: underline;

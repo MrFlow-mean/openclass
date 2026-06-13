@@ -11,10 +11,16 @@ import TableRow from "@tiptap/extension-table-row";
 import TextAlign from "@tiptap/extension-text-align";
 import { TextStyle } from "@tiptap/extension-text-style";
 import UnderlineExtension from "@tiptap/extension-underline";
+import { Plugin, PluginKey } from "@tiptap/pm/state";
+import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import StarterKit from "@tiptap/starter-kit";
 
 declare module "@tiptap/core" {
   interface Commands<ReturnType> {
+    teachingFocusHighlight: {
+      setTeachingFocusHighlight: (range: { from: number; to: number }) => ReturnType;
+      clearTeachingFocusHighlight: () => ReturnType;
+    };
     fontSize: {
       setFontSize: (fontSize: string) => ReturnType;
       unsetFontSize: () => ReturnType;
@@ -96,6 +102,84 @@ const FontFamily = Extension.create({
   },
 });
 
+type TeachingFocusHighlightRange = { from: number; to: number };
+
+const teachingFocusHighlightPluginKey = new PluginKey<TeachingFocusHighlightRange | null>("teachingFocusHighlight");
+
+const TeachingFocusHighlight = Extension.create({
+  name: "teachingFocusHighlight",
+  addProseMirrorPlugins() {
+    return [
+      new Plugin<TeachingFocusHighlightRange | null>({
+        key: teachingFocusHighlightPluginKey,
+        state: {
+          init: (): TeachingFocusHighlightRange | null => null,
+          apply(transaction, currentRange): TeachingFocusHighlightRange | null {
+            const meta = transaction.getMeta(teachingFocusHighlightPluginKey) as
+              | { type: "set"; range: { from: number; to: number } }
+              | { type: "clear" }
+              | undefined;
+            if (meta?.type === "clear") {
+              return null;
+            }
+            if (meta?.type === "set") {
+              return meta.range.from < meta.range.to ? meta.range : null;
+            }
+            if (!currentRange || !transaction.docChanged) {
+              return currentRange;
+            }
+            const from = transaction.mapping.map(currentRange.from, -1);
+            const to = transaction.mapping.map(currentRange.to, 1);
+            return from < to && to <= transaction.doc.content.size ? { from, to } : null;
+          },
+        },
+        props: {
+          decorations(state) {
+            const range = teachingFocusHighlightPluginKey.getState(state);
+            if (!range || range.from >= range.to) {
+              return null;
+            }
+            return DecorationSet.create(state.doc, [
+              Decoration.inline(range.from, range.to, {
+                class: "word-editor__teaching-focus-highlight",
+                "data-teaching-focus": "true",
+              }),
+            ]);
+          },
+        },
+      }),
+    ];
+  },
+  addCommands() {
+    return {
+      setTeachingFocusHighlight:
+        (range) =>
+        ({ tr, dispatch }) => {
+          if (dispatch) {
+            dispatch(
+              tr
+                .setMeta(teachingFocusHighlightPluginKey, { type: "set", range })
+                .setMeta("addToHistory", false)
+            );
+          }
+          return true;
+        },
+      clearTeachingFocusHighlight:
+        () =>
+        ({ tr, dispatch }) => {
+          if (dispatch) {
+            dispatch(
+              tr
+                .setMeta(teachingFocusHighlightPluginKey, { type: "clear" })
+                .setMeta("addToHistory", false)
+            );
+          }
+          return true;
+        },
+    };
+  },
+});
+
 const PageBreak = Node.create({
   name: "pageBreak",
   group: "block",
@@ -159,6 +243,7 @@ export const WORD_EDITOR_EXTENSIONS = [
   TableRow,
   TableHeader,
   TableCell,
+  TeachingFocusHighlight,
   BlockMath.configure({
     katexOptions: {
       displayMode: true,
