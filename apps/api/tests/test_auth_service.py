@@ -132,7 +132,8 @@ def test_provider_list_includes_supported_social_logins(tmp_path) -> None:
 
     provider_ids = {provider.id for provider in auth.providers()}
 
-    assert {"google", "wechat", "apple", "github", "microsoft", "x"}.issubset(provider_ids)
+    assert {"google", "apple", "github", "microsoft", "x"}.issubset(provider_ids)
+    assert "wechat" not in provider_ids
 
 
 def test_provider_configuration_reflects_env(tmp_path, monkeypatch) -> None:
@@ -146,7 +147,7 @@ def test_provider_configuration_reflects_env(tmp_path, monkeypatch) -> None:
     providers = {provider.id: provider for provider in auth.providers()}
 
     assert providers["google"].configured is True
-    assert providers["wechat"].configured is False
+    assert "wechat" not in providers
 
 
 def test_x_oauth_authorization_url_uses_pkce(tmp_path, monkeypatch) -> None:
@@ -155,6 +156,8 @@ def test_x_oauth_authorization_url_uses_pkce(tmp_path, monkeypatch) -> None:
     auth = AuthService(db_path)
     monkeypatch.setenv("OPENCLASS_OAUTH_X_CLIENT_ID", "x-client")
     monkeypatch.setenv("OPENCLASS_OAUTH_X_CLIENT_SECRET", "x-secret")
+    monkeypatch.delenv("OPENCLASS_PUBLIC_ORIGIN", raising=False)
+    monkeypatch.delenv("OPENCLASS_WEB_ORIGIN", raising=False)
     request = Request(
         {
             "type": "http",

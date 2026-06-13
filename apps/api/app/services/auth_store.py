@@ -412,12 +412,11 @@ class AuthStore:
                 CASE provider
                     WHEN 'email' THEN 0
                     WHEN 'phone' THEN 1
-                    WHEN 'wechat' THEN 2
-                    WHEN 'google' THEN 3
-                    WHEN 'apple' THEN 4
-                    WHEN 'github' THEN 5
-                    WHEN 'microsoft' THEN 6
-                    WHEN 'x' THEN 7
+                    WHEN 'google' THEN 2
+                    WHEN 'apple' THEN 3
+                    WHEN 'github' THEN 4
+                    WHEN 'microsoft' THEN 5
+                    WHEN 'x' THEN 6
                     ELSE 9
                 END,
                 created_at
