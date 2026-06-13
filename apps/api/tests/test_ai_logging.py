@@ -49,6 +49,7 @@ from app.services.openai_course_ai import (
     GeneratedResourceCatalog,
     LearningRequirementUpdate,
     OpenAICourseAI,
+    bind_board_model_selection,
     bind_text_model_selection,
     openai_course_ai,
 )
@@ -1208,6 +1209,20 @@ def test_chat_route_binds_requested_text_model_selection(
     assert response.chatbot_message == "AI生成：这是一段测试讲解。"
     assert captured_models["chatbot"] == ("deepseek", "deepseek-v4-pro")
     assert captured_models["pm"] == ("deepseek", "deepseek-v4-pro")
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_board_model_selection_only_overrides_board_role(isolated_ai_log) -> None:
+    chat_selection = AIModelSelection(provider="deepseek", model="deepseek-v4-pro")
+    board_selection = AIModelSelection(provider="kimi", model="kimi-k2.6")
+
+    with bind_text_model_selection(chat_selection):
+        assert openai_course_ai._model_for("board") == ("deepseek", "deepseek-v4-pro")
+        with bind_board_model_selection(board_selection):
+            assert openai_course_ai._model_for("chatbot") == ("deepseek", "deepseek-v4-pro")
+            assert openai_course_ai._model_for("pm") == ("deepseek", "deepseek-v4-pro")
+            assert openai_course_ai._model_for("board") == ("kimi", "kimi-k2.6")
+
     assert _read_log_entries(isolated_ai_log) == []
 
 

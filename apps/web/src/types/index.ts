@@ -472,6 +472,7 @@ export interface PatchProposal {
 export interface ChatRequestPayload {
   message: string;
   text_model?: AIModelSelection | null;
+  board_model?: AIModelSelection | null;
   selection?: SelectionRef | null;
   interaction_mode?: ChatInteractionMode;
   scope_action?: ScopeAction | null;

@@ -772,6 +772,7 @@ class SectionTeachingProgressView(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     text_model: AIModelSelection | None = None
+    board_model: AIModelSelection | None = None
     selection: SelectionRef | None = None
     interaction_mode: ChatInteractionMode = "ask"
     scope_action: ScopeAction | None = None

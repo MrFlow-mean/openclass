@@ -71,13 +71,16 @@ export function CourseStudio() {
   const {
     modelCatalog,
     selectedTextModel,
+    selectedBoardModel,
     selectedRealtimeModel,
     selectedTextOption,
+    selectedBoardOption,
     selectedRealtimeOption,
     selectedRealtimeTransport,
     openModelMenu,
     setOpenModelMenu,
     selectTextModel,
+    selectBoardModel,
     selectRealtimeModel,
   } = modelSelection;
   const [selection, setSelection] = useState<SelectionRef | null>(null);
@@ -191,6 +194,7 @@ export function CourseStudio() {
     composerSelection,
     currentBoardDocument: displayedDocument,
     selectedTextModel,
+    selectedBoardModel,
     isPreviewMode: isPreviewMode || isDraftPreviewMode,
     chatRequestInFlightRef,
     flushAutoSave,
@@ -575,10 +579,14 @@ export function CourseStudio() {
           isDraftPreviewMode={isDraftPreviewMode}
           previewCommit={previewCommit}
           toolbarCollapsed={topCollapsed}
+          modelCatalog={modelCatalog}
+          selectedBoardModel={selectedBoardModel}
+          selectedBoardOption={selectedBoardOption}
           onExitPreviewMode={exitAnyPreviewMode}
           onDocumentChange={handleLocalDocumentChange}
           onApplySelection={applySelection}
           onClearSelection={clearSelection}
+          onSelectBoardModel={selectBoardModel}
           onImportDocx={(file) => void handleImportDocx(file)}
           onExportDocx={() => void handleExportDocx()}
         />

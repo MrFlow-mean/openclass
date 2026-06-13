@@ -81,8 +81,9 @@ import {
   ToolbarButton,
   WordPageZoomControls,
 } from "@/components/course-studio/word-editor-toolbar";
+import { BoardModelPicker } from "@/components/course-studio/board-model-picker";
 import { MATH_TEXT_SERIALIZERS, normalizeEditorMath } from "@/lib/math-content";
-import type { BoardDocument, DocumentPageSettings } from "@/types";
+import type { AIModelOption, AIModelSelection, BoardDocument, DocumentPageSettings } from "@/types";
 
 type WordRibbonTab = "home" | "insert" | "page";
 
@@ -258,14 +259,21 @@ export function WordBoardEditor({
   document,
   readOnly,
   toolbarCollapsed,
+  modelOptions,
+  selectedBoardModel,
+  selectedBoardOption,
   onDocumentChange,
   onSelectionChange,
+  onSelectBoardModel,
   onImportDocx,
   onExportDocx,
 }: {
   document: BoardDocument;
   readOnly: boolean;
   toolbarCollapsed: boolean;
+  modelOptions: AIModelOption[];
+  selectedBoardModel: AIModelSelection;
+  selectedBoardOption: AIModelOption | null;
   onDocumentChange: (document: BoardDocument) => void;
   onSelectionChange: (
     selection: {
@@ -276,6 +284,7 @@ export function WordBoardEditor({
       afterText: string;
     } | null
   ) => void;
+  onSelectBoardModel: (option: AIModelOption) => void;
   onImportDocx: (file: File) => void;
   onExportDocx: () => void;
 }) {
@@ -1278,6 +1287,12 @@ export function WordBoardEditor({
             {activeRibbonTab === "page" ? renderPageRibbon() : null}
 
             <div className="ml-auto flex items-center gap-2">
+              <BoardModelPicker
+                modelOptions={modelOptions}
+                selectedBoardModel={selectedBoardModel}
+                selectedBoardOption={selectedBoardOption}
+                onSelectBoardModel={onSelectBoardModel}
+              />
               <WordPageZoomControls
                 value={pageZoom}
                 onChange={updatePageZoom}
