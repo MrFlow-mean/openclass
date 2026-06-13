@@ -256,7 +256,11 @@ export function useBoardDraft({
   );
 
   const setStreamingDocumentPreview = useCallback(
-    (document: BoardDocument) => {
+    (lessonId: string, document: BoardDocument) => {
+      const activeLesson = activeLessonRef.current;
+      if (!activeLesson || activeLesson.id !== lessonId) {
+        return;
+      }
       clearAutoSaveTimer();
       documentDraftVersionRef.current += 1;
       draftDocumentRef.current = document;

@@ -42,6 +42,10 @@ const RIGHT_SIDEBAR_DEFAULT_WIDTH = 360;
 const RIGHT_SIDEBAR_MIN_WIDTH = 280;
 const RIGHT_SIDEBAR_MAX_WIDTH = 640;
 
+type StudioCoursePackageApplyOptions = CoursePackageApplyOptions & {
+  transientLessonId?: string | null;
+};
+
 export function CourseStudio() {
   const router = useRouter();
   const { texts: txt } = useInterfaceLanguage();
@@ -50,6 +54,7 @@ export function CourseStudio() {
   const chatInputRef = useRef<HTMLTextAreaElement | null>(null);
   const chatScrollEndRef = useRef<HTMLDivElement | null>(null);
   const chatRequestInFlightRef = useRef(false);
+  const activeLessonIdRef = useRef<string | null>(null);
 
   const workspace = useCourseWorkspace();
   const {
@@ -114,6 +119,10 @@ export function CourseStudio() {
   const [sidebarTab, setSidebarTab] = useState<CourseStudioSidebarTab>("history");
   const [isCreatingLessonInline, setIsCreatingLessonInline] = useState(false);
 
+  useEffect(() => {
+    activeLessonIdRef.current = activeLesson?.id ?? null;
+  }, [activeLesson?.id]);
+
   const boardDraft = useBoardDraft({
     activeLesson,
     setError,
@@ -123,10 +132,10 @@ export function CourseStudio() {
     onPackageApplied: resetTransientUi,
   });
 
-  function updateCoursePackage(nextPackage: CoursePackage, options?: CoursePackageApplyOptions) {
+  function updateCoursePackage(nextPackage: CoursePackage, options?: StudioCoursePackageApplyOptions) {
     const result = applyWorkspaceCoursePackage(nextPackage, options);
     boardDraft.resetToLesson(result.activeLesson);
-    resetTransientUi();
+    resetTransientUi(options?.transientLessonId ?? result.activeLesson?.id ?? null);
     return result;
   }
 
@@ -344,9 +353,12 @@ export function CourseStudio() {
     adjustComposerHeightEffectEvent();
   }, [chatInput, composerSelection?.excerpt]);
 
-  function resetTransientUi() {
-    history.setPreviewCommitId(null);
-    chatAgent.resetAgentState();
+  function resetTransientUi(lessonId?: string | null) {
+    const targetLessonId = lessonId ?? activeLessonIdRef.current;
+    if (!targetLessonId || targetLessonId === activeLessonIdRef.current) {
+      history.setPreviewCommitId(null);
+    }
+    chatAgent.resetAgentState(targetLessonId);
   }
 
   const workspaceActions = useWorkspaceActions({
