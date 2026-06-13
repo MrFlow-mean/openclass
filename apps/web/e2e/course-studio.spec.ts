@@ -68,6 +68,12 @@ test("creates a package and lesson, edits the document, and persists a version",
   await expect(page.getByText("Auto Save").first()).toBeVisible();
 });
 
+test("returns guest login to the protected next path", async ({ page }) => {
+  await page.goto(`/login?next=${encodeURIComponent("/studio")}`);
+  await page.getByRole("button", { name: /游客登录/ }).click();
+  await expect(page).toHaveURL(/\/studio$/);
+});
+
 test("keeps the document scroll position when toolbar formatting actions run", async ({ page }) => {
   const unique = Date.now();
   await enterAsGuest(page);
@@ -140,7 +146,7 @@ test("restores an older document version from history", async ({ page }) => {
   const restoreResponse = page.waitForResponse(
     (response) => response.url().includes("/restore") && response.request().method() === "POST"
   );
-  await page.getByRole("button", { name: "Restore" }).nth(1).click();
+  await page.getByRole("button", { name: `Restore ${firstVersion}` }).click();
   await restoreResponse;
 
   const editor = page.locator(".ProseMirror").first();

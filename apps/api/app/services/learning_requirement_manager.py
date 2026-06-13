@@ -136,6 +136,18 @@ def _dedupe_compact_items(items: list[str], *, limit: int = 80) -> list[str]:
     return result
 
 
+def _missing_item_label_from_checklist_title(title: str) -> str:
+    compact = _compact_text(title, limit=80)
+    key = re.sub(r"[\s，。！？!?、；;：:]+", "", compact)
+    if "具体想学什么" in key or "解决什么问题" in key:
+        return "具体学习内容"
+    if "当前水平" in key or "目前是什么水平" in key or "已有基础" in key:
+        return "当前水平"
+    if "为什么学" in key or "学习目的" in key or "使用场景" in key or "面对什么场景" in key:
+        return "学习目的或使用场景"
+    return compact
+
+
 def _board_summary(lesson: Lesson) -> str:
     return _compact_text(lesson.board_document.content_text, limit=MAX_CONTEXT_CHARS) or lesson.board_document.title
 
@@ -514,7 +526,7 @@ def _normalize_update(update: LearningRequirementUpdate, *, user_message: str = 
     missing_items = _dedupe_compact_items(
         [
             *update.missing_items,
-            *[item.title for item in checklist if not item.is_clear],
+            *[_missing_item_label_from_checklist_title(item.title) for item in checklist if not item.is_clear],
         ]
     )
     ready = update.ready_for_board and not missing_items

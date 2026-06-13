@@ -4,7 +4,6 @@ const AUTH_COOKIE_NAME = "openclass.auth.token";
 const GUEST_AUTH_COOKIE_NAME = "openclass.guest.auth.token";
 const publicRoutes = ["/login", "/register", "/auth/callback", "/trending"];
 const publicRoutePrefixes = ["/courses"];
-const productLandingRedirects = ["/admin", "/following", "/profile", "/studio"];
 
 function isPublicRoute(pathname: string) {
   return (
@@ -18,9 +17,6 @@ function safeNextPath(value: string | null) {
     return "/";
   }
   if (value === "/login" || value.startsWith("/login?") || value === "/register" || value.startsWith("/register?")) {
-    return "/";
-  }
-  if (productLandingRedirects.some((route) => value === route || value.startsWith(`${route}?`) || value.startsWith(`${route}/`))) {
     return "/";
   }
   return value;
