@@ -1,24 +1,237 @@
 #!/bin/zsh
 
-set -u
+set -uo pipefail
 
-PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+PROJECT_DIR="${OPENCLASS_PROJECT_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 LOG_PREFIX="[openclass-web]"
+BUILD_DIR="$PROJECT_DIR/apps/web/.next"
+BUILD_ID="$BUILD_DIR/BUILD_ID"
+STAMP="$BUILD_DIR/openclass-source-stamp"
 
 cd "$PROJECT_DIR"
 
 export NEXT_TELEMETRY_DISABLED=1
 export NODE_ENV=production
 
-while true; do
-  if [[ ! -f "$PROJECT_DIR/apps/web/.next/BUILD_ID" ]]; then
-    echo "$LOG_PREFIX $(date '+%Y-%m-%d %H:%M:%S') missing production build; building first"
-    npm run build:web
+log() {
+  echo "$LOG_PREFIX $(date '+%Y-%m-%d %H:%M:%S') $*"
+}
+
+source_revision() {
+  git rev-parse HEAD 2>/dev/null || printf "nogit"
+}
+
+source_changed_after_build() {
+  [[ -f "$BUILD_ID" ]] || return 1
+
+  local changed_file
+  changed_file="$(
+    find \
+      "$PROJECT_DIR/apps/web/src" \
+      "$PROJECT_DIR/apps/web/public" \
+      "$PROJECT_DIR/apps/web/package.json" \
+      "$PROJECT_DIR/apps/web/next.config.js" \
+      "$PROJECT_DIR/apps/web/next.config.mjs" \
+      "$PROJECT_DIR/apps/web/tsconfig.json" \
+      "$PROJECT_DIR/package.json" \
+      "$PROJECT_DIR/package-lock.json" \
+      -type f -newer "$BUILD_ID" -print -quit 2>/dev/null || true
+  )"
+  [[ -n "$changed_file" ]]
+}
+
+validate_static_assets() {
+  [[ -d "$BUILD_DIR/static" ]] || return 1
+
+  node - "$BUILD_DIR" <<'NODE'
+const fs = require("fs");
+const path = require("path");
+
+const buildDir = process.argv[2];
+const missing = [];
+
+function walk(dir) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (entry.name === "cache" || entry.name === "dev" || entry.name === "diagnostics" || entry.name === "types") {
+        continue;
+      }
+      walk(fullPath);
+    } else if (entry.isFile() && entry.name.endsWith(".json")) {
+      inspectManifest(fullPath);
+    }
+  }
+}
+
+function collect(value, out) {
+  if (typeof value === "string") {
+    if (value.startsWith("static/") || value.startsWith("/_next/static/")) {
+      out.add(value.replace(/^\/?_next\//, ""));
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collect(item, out);
+    return;
+  }
+  if (value && typeof value === "object") {
+    for (const item of Object.values(value)) collect(item, out);
+  }
+}
+
+function inspectManifest(filePath) {
+  let data;
+  try {
+    data = JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch {
+    return;
+  }
+  const assets = new Set();
+  collect(data, assets);
+  for (const asset of assets) {
+    if (!fs.existsSync(path.join(buildDir, asset))) {
+      missing.push(`${path.relative(buildDir, filePath)} -> ${asset}`);
+    }
+  }
+}
+
+walk(buildDir);
+if (missing.length) {
+  console.error(missing.join("\n"));
+  process.exit(1);
+}
+NODE
+}
+
+build_refresh_reason() {
+  local head_sha
+  head_sha="$(source_revision)"
+
+  if [[ ! -f "$BUILD_ID" ]]; then
+    printf "missing production build"
+    return
+  fi
+  if [[ ! -f "$STAMP" ]]; then
+    printf "missing source stamp"
+    return
+  fi
+  if [[ "$(cat "$STAMP" 2>/dev/null || true)" != "$head_sha" ]]; then
+    printf "source revision changed"
+    return
+  fi
+  if source_changed_after_build; then
+    printf "source files changed after build"
+    return
+  fi
+  if ! validate_static_assets >/tmp/openclass-web-asset-check.log 2>&1; then
+    printf "static asset manifest mismatch"
+    return
+  fi
+}
+
+release_port() {
+  local raw
+  local pids
+  raw="$(lsof -tiTCP:3000 -sTCP:LISTEN 2>/dev/null || true)"
+  if [[ -z "$raw" ]]; then
+    return
   fi
 
-  echo "$LOG_PREFIX $(date '+%Y-%m-%d %H:%M:%S') starting Next.js production server on :3000"
-  npm --prefix apps/web run start
-  exit_code=$?
-  echo "$LOG_PREFIX $(date '+%Y-%m-%d %H:%M:%S') server exited with code $exit_code; restarting in 5s"
-  sleep 5
+  pids=("${(@f)raw}")
+  if (( ${#pids[@]} == 0 )); then
+    return
+  fi
+
+  log "stopping stale process on :3000: ${pids[*]}"
+  kill "${pids[@]}" >/dev/null 2>&1 || true
+  sleep 1
+
+  raw="$(lsof -tiTCP:3000 -sTCP:LISTEN 2>/dev/null || true)"
+  if [[ -z "$raw" ]]; then
+    return
+  fi
+
+  pids=("${(@f)raw}")
+  if (( ${#pids[@]} > 0 )); then
+    log "force-stopping stale process on :3000: ${pids[*]}"
+    kill -9 "${pids[@]}" >/dev/null 2>&1 || true
+  fi
+}
+
+rebuild_web() {
+  local reason="$1"
+  local head_sha
+  head_sha="$(source_revision)"
+
+  log "$reason; rebuilding web"
+  release_port
+  rm -rf "$BUILD_DIR" 2>/dev/null || true
+  if ! npm run build:web; then
+    log "web build failed; retrying in 5s"
+    sleep 5
+    return 1
+  fi
+  mkdir -p "$BUILD_DIR"
+  printf "%s\n" "$head_sha" > "$STAMP"
+  if ! validate_static_assets >/tmp/openclass-web-asset-check.log 2>&1; then
+    log "web build produced missing static assets; see /tmp/openclass-web-asset-check.log"
+    rm -rf "$BUILD_DIR" 2>/dev/null || true
+    sleep 5
+    return 1
+  fi
+}
+
+ensure_build_current() {
+  local reason
+  reason="$(build_refresh_reason)"
+  if [[ -n "$reason" ]]; then
+    rebuild_web "$reason"
+    return $?
+  fi
+  log "production build is current"
+}
+
+stop_server_tree() {
+  local server_pid="$1"
+  local children
+
+  children="$(pgrep -P "$server_pid" 2>/dev/null || true)"
+  if [[ -n "$children" ]]; then
+    kill ${=children} >/dev/null 2>&1 || true
+  fi
+  kill "$server_pid" >/dev/null 2>&1 || true
+  sleep 1
+
+  children="$(pgrep -P "$server_pid" 2>/dev/null || true)"
+  if [[ -n "$children" ]]; then
+    kill -9 ${=children} >/dev/null 2>&1 || true
+  fi
+  kill -9 "$server_pid" >/dev/null 2>&1 || true
+}
+
+while true; do
+  if ! ensure_build_current; then
+    continue
+  fi
+
+  release_port
+  log "starting Next.js production server on :3000"
+  npm --prefix apps/web run start &
+  server_pid=$!
+
+  while kill -0 "$server_pid" >/dev/null 2>&1; do
+    sleep 5
+    reason="$(build_refresh_reason)"
+    if [[ -n "$reason" ]]; then
+      log "$reason while server is running; restarting web"
+      stop_server_tree "$server_pid"
+      break
+    fi
+  done
+
+  wait "$server_pid" >/dev/null 2>&1 || exit_code=$?
+  log "server exited with code ${exit_code:-0}; restarting in 2s"
+  unset exit_code
+  sleep 2
 done
