@@ -763,6 +763,8 @@ def _should_generate_board_from_explicit_request(
 ) -> bool:
     if not is_document_empty(lesson.board_document):
         return False
+    if not (learning_clarification.ready_for_board or learning_clarification.forced_start):
+        return False
     if is_explicit_board_generation_request(request.message) or _requests_document_artifact_generation(request.message):
         return True
     return is_generation_control_request(request.message) and _has_actionable_generation_context(

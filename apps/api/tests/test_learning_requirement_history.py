@@ -400,6 +400,90 @@ def test_blank_board_practice_activity_uses_existing_requirement_collection(
     assert commit.metadata["initial_learning_intent"]["board_editor_called"] is False
 
 
+def test_explicit_document_request_with_unclear_checklist_stays_collecting(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_chatbot_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="我先确认你的当前水平，再决定练习材料的难度。"),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_learning_requirement_update",
+        lambda **kwargs: LearningRequirementUpdate(
+            progress=80,
+            summary="用户想围绕一个真实任务练习，并要求生成情景对话课文。",
+            key_facts=[
+                LearningRequirementKeyFact(
+                    label="学习内容",
+                    value="一个真实任务",
+                    evidence="来自用户输入。",
+                    category="learning",
+                ),
+                LearningRequirementKeyFact(
+                    label="输出需求",
+                    value="生成情景对话课文",
+                    evidence="来自用户输入。",
+                    category="output",
+                ),
+            ],
+            checklist=[
+                LearningRequirementChecklistItem(
+                    title="具体练习场景",
+                    is_clear=True,
+                    evidence="用户已经说明练习场景。",
+                ),
+                LearningRequirementChecklistItem(
+                    title="当前水平",
+                    is_clear=False,
+                    evidence="用户还没有说明已有基础。",
+                ),
+                LearningRequirementChecklistItem(
+                    title="输出形式",
+                    is_clear=True,
+                    evidence="用户要求情景对话课文。",
+                ),
+            ],
+            missing_items=["当前水平"],
+            next_question="",
+            ready_for_board=True,
+            action_type="generate_board",
+            action_instruction="生成情景对话课文",
+        ),
+    )
+
+    def _unexpected_board_edit(**kwargs):
+        raise AssertionError("unclear requirement checklists must not generate a board")
+
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _unexpected_board_edit)
+    _, lesson = _seed_workspace(store)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="请给我生成一篇面向真实任务的情景对话课文"),
+        user_id=TEST_USER_ID,
+    )
+
+    commit = response.course_package.lessons[0].history_graph.commits[-1]
+    version_kinds, event_kinds = _history_kinds(store, lesson.id)
+    assert response.requirement_phase == "collecting"
+    assert response.learning_clarification.ready_for_board is False
+    assert response.learning_clarification.can_start is False
+    assert response.learning_clarification.missing_items == ["当前水平"]
+    assert response.learning_clarification.next_question == ""
+    assert response.learning_requirement_sheet.current_questions == ["当前水平"]
+    assert response.course_package.lessons[0].board_document.content_text == ""
+    assert response.board_decision.action == "no_change"
+    assert commit.label == "Chat turn"
+    assert commit.metadata["learning_clarification"]["ready_for_board"] is False
+    assert version_kinds == ["created"]
+    assert event_kinds == ["created"]
+
+
 def test_blank_board_undecided_learning_mode_asks_mode_first(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
