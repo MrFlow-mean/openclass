@@ -2,13 +2,13 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { ArrowLeft, BookOpen, Database, LoaderCircle, ShieldCheck, UsersRound } from "lucide-react";
+import { ArrowLeft, BookOpen, Check, Database, LoaderCircle, ShieldAlert, ShieldCheck, UsersRound, X } from "lucide-react";
 
 import { AccountMenu } from "@/components/account-menu";
 import { BrandMark } from "@/components/brand-mark";
 import { api } from "@/lib/api";
 import { userAccountLabel } from "@/lib/account";
-import type { AdminOverview } from "@/types";
+import type { AdminOverview, ResourceCopyrightAppealDecision, ResourceCopyrightAppealView } from "@/types";
 
 function formatDate(value: string | null | undefined) {
   if (!value) {
@@ -29,17 +29,24 @@ function formatDate(value: string | null | undefined) {
 
 export function AdminDashboard() {
   const [overview, setOverview] = useState<AdminOverview | null>(null);
+  const [appeals, setAppeals] = useState<ResourceCopyrightAppealView[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [resolvingAppealId, setResolvingAppealId] = useState<string | null>(null);
 
   useEffect(() => {
     let disposed = false;
 
     async function loadOverview() {
       try {
-        const payload = await api.getAdminOverview();
+        const [payload, appealPayload] = await Promise.all([
+          api.getAdminOverview(),
+          api.getAdminCopyrightAppeals(),
+        ]);
         if (!disposed) {
           setOverview(payload);
+          setAppeals(appealPayload);
           setError(null);
         }
       } catch (loadError) {
@@ -59,6 +66,22 @@ export function AdminDashboard() {
       disposed = true;
     };
   }, []);
+
+  async function resolveAppeal(appealId: string, decision: ResourceCopyrightAppealDecision) {
+    if (resolvingAppealId) {
+      return;
+    }
+    setResolvingAppealId(appealId);
+    setActionError(null);
+    try {
+      await api.resolveAdminCopyrightAppeal(appealId, decision);
+      setAppeals((current) => current.filter((appeal) => appeal.id !== appealId));
+    } catch (resolveError) {
+      setActionError(resolveError instanceof Error ? resolveError.message : "处理申诉失败");
+    } finally {
+      setResolvingAppealId(null);
+    }
+  }
 
   const statCards = overview
     ? [
@@ -124,6 +147,80 @@ export function AdminDashboard() {
                 );
               })}
             </div>
+
+            <section className="overflow-hidden rounded-lg border border-stone-200 bg-white">
+              <div className="flex items-center justify-between gap-3 border-b border-stone-200 px-5 py-4">
+                <div>
+                  <h2 className="text-base font-semibold text-stone-950">资料公开申诉</h2>
+                  <p className="mt-1 text-xs text-stone-500">{appeals.length} 个待处理</p>
+                </div>
+                <ShieldAlert className="h-4 w-4 text-stone-400" />
+              </div>
+              {actionError ? (
+                <div className="border-b border-rose-100 bg-rose-50 px-5 py-3 text-sm text-rose-700">{actionError}</div>
+              ) : null}
+              {appeals.length ? (
+                <div className="divide-y divide-stone-200">
+                  {appeals.map((appeal) => (
+                    <article key={appeal.id} className="px-5 py-4">
+                      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-semibold text-stone-950">{appeal.resource_name || appeal.resource_id}</p>
+                          <p className="mt-1 text-xs text-stone-500">
+                            {appeal.owner_label} · {formatDate(appeal.created_at)}
+                          </p>
+                          {appeal.resource_audit.signals.length ? (
+                            <p className="mt-2 text-xs text-stone-500">{appeal.resource_audit.signals.join(" · ")}</p>
+                          ) : null}
+                          {appeal.message || appeal.evidence_text ? (
+                            <p className="mt-3 max-w-3xl text-sm leading-6 text-stone-700">
+                              {[appeal.message, appeal.evidence_text].filter(Boolean).join(" ")}
+                            </p>
+                          ) : null}
+                          {appeal.resource_audit.evidence_urls.length ? (
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              {appeal.resource_audit.evidence_urls.slice(0, 3).map((url) => (
+                                <a
+                                  key={url}
+                                  href={url}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="max-w-xs truncate rounded-md border border-stone-200 px-2.5 py-1 text-xs font-medium text-stone-600 transition hover:border-stone-300 hover:text-stone-950"
+                                >
+                                  {url}
+                                </a>
+                              ))}
+                            </div>
+                          ) : null}
+                        </div>
+                        <div className="flex shrink-0 gap-2">
+                          <button
+                            type="button"
+                            onClick={() => void resolveAppeal(appeal.id, "approved")}
+                            disabled={resolvingAppealId === appeal.id}
+                            className="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-emerald-700 px-3 text-xs font-semibold text-white transition hover:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {resolvingAppealId === appeal.id ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+                            批准
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void resolveAppeal(appeal.id, "rejected")}
+                            disabled={resolvingAppealId === appeal.id}
+                            className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-stone-200 bg-white px-3 text-xs font-semibold text-stone-700 transition hover:border-stone-300 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            <X className="h-4 w-4" />
+                            拒绝
+                          </button>
+                        </div>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              ) : (
+                <div className="px-5 py-8 text-sm text-stone-500">暂无待处理申诉</div>
+              )}
+            </section>
 
             <section className="overflow-hidden rounded-lg border border-stone-200 bg-white">
               <div className="border-b border-stone-200 px-5 py-4">

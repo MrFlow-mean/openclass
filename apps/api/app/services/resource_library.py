@@ -2113,6 +2113,7 @@ def reindex_resource_item(resource: ResourceLibraryItem) -> ResourceLibraryItem:
             "uploaded_at": resource.uploaded_at,
             "scope_lesson_id": resource.scope_lesson_id,
             "source_path": resource.source_path,
+            "copyright_audit": resource.copyright_audit,
         }
     )
 

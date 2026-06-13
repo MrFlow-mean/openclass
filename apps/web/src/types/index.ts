@@ -297,6 +297,48 @@ export interface ResourceLibraryItem {
   toc_entries: ResourceTOCEntry[];
   chapter_shards: ResourceChapterShard[];
   parse_warnings: string[];
+  copyright_audit: ResourceCopyrightAudit;
+}
+
+export type ResourceCopyrightAuditStatus = "not_checked" | "clear" | "needs_review" | "public_blocked" | "error";
+export type ResourcePublicDistribution = "allowed" | "blocked" | "pending";
+export type ResourceCopyrightRiskLevel = "low" | "medium" | "high" | "unknown";
+export type ResourceCopyrightAppealStatus = "open" | "approved" | "rejected" | "canceled";
+export type ResourceCopyrightAppealDecision = "approved" | "rejected";
+
+export interface ResourceCopyrightAudit {
+  status: ResourceCopyrightAuditStatus;
+  public_distribution: ResourcePublicDistribution;
+  risk_level: ResourceCopyrightRiskLevel;
+  signals: string[];
+  evidence_urls: string[];
+  checked_at?: string | null;
+  reason: string;
+  provider?: string | null;
+  override_source?: string | null;
+  appeal_id?: string | null;
+  file_hash?: string | null;
+}
+
+export interface ResourceCopyrightAppeal {
+  id: string;
+  resource_id: string;
+  owner_user_id: string;
+  status: ResourceCopyrightAppealStatus;
+  message: string;
+  evidence_text: string;
+  evidence_urls: string[];
+  resource_file_hash?: string | null;
+  created_at: string;
+  resolved_at?: string | null;
+  resolved_by_user_id?: string | null;
+  resolution_reason: string;
+}
+
+export interface ResourceCopyrightAppealView extends ResourceCopyrightAppeal {
+  resource_name: string;
+  owner_label: string;
+  resource_audit: ResourceCopyrightAudit;
 }
 
 export interface CoursePackage {

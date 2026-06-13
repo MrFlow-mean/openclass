@@ -15,6 +15,9 @@ import type {
   RealtimeConnectResponse,
   RealtimeEventLogPayload,
   RequirementUpdateStreamPayload,
+  ResourceCopyrightAppeal,
+  ResourceCopyrightAppealDecision,
+  ResourceCopyrightAppealView,
   ScopeAction,
   WorkspaceState,
   UserView,
@@ -395,6 +398,18 @@ export const api = {
   getAdminOverview() {
     return request<AdminOverview>("/api/admin/overview");
   },
+  getAdminCopyrightAppeals() {
+    return request<ResourceCopyrightAppealView[]>("/api/admin/copyright-appeals");
+  },
+  resolveAdminCopyrightAppeal(appealId: string, decision: ResourceCopyrightAppealDecision, resolutionReason = "") {
+    return request<ResourceCopyrightAppealView>(`/api/admin/copyright-appeals/${appealId}/resolve`, {
+      method: "POST",
+      body: JSON.stringify({
+        decision,
+        resolution_reason: resolutionReason,
+      }),
+    });
+  },
   getAIModels() {
     return request<AIModelCatalog>("/api/ai-models");
   },
@@ -522,6 +537,19 @@ export const api = {
       throw new Error(text || `Upload failed with ${response.status}`);
     }
     return response.json() as Promise<CoursePackage>;
+  },
+  createResourceCopyrightAppeal(resourceId: string, payload: { message?: string; evidence_text?: string; evidence_urls?: string[] }) {
+    return request<ResourceCopyrightAppeal>(`/api/resources/${resourceId}/copyright-appeals`, {
+      method: "POST",
+      body: JSON.stringify({
+        message: payload.message ?? "",
+        evidence_text: payload.evidence_text ?? "",
+        evidence_urls: payload.evidence_urls ?? [],
+      }),
+    });
+  },
+  listResourceCopyrightAppeals(resourceId: string) {
+    return request<ResourceCopyrightAppeal[]>(`/api/resources/${resourceId}/copyright-appeals`);
   },
   async exportDocx(lessonId: string) {
     const response = await fetch(`${getApiBase()}/api/lessons/${lessonId}/document/export-docx`, {

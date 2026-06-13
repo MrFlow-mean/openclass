@@ -103,6 +103,11 @@ ResourceScanStrategy = Literal["outline_only", "heading_section", "page_window",
 ResourcePageRole = Literal["cover", "front_matter", "toc", "body", "appendix", "epilogue", "unknown"]
 ResourcePageNumberScope = Literal["body", "physical", "unknown"]
 ResourceBoardAction = Literal["generate", "skip"]
+ResourceCopyrightAuditStatus = Literal["not_checked", "clear", "needs_review", "public_blocked", "error"]
+ResourcePublicDistribution = Literal["allowed", "blocked", "pending"]
+ResourceCopyrightRiskLevel = Literal["low", "medium", "high", "unknown"]
+ResourceCopyrightAppealStatus = Literal["open", "approved", "rejected", "canceled"]
+ResourceCopyrightAppealDecision = Literal["approved", "rejected"]
 ChatInteractionMode = Literal["ask", "direct_edit"]
 TeachingAction = Literal["continue", "restart"]
 BoardGenerationAction = Literal["start"]
@@ -622,6 +627,20 @@ class ResourceChapterShard(BaseModel):
     text_hash: str
 
 
+class ResourceCopyrightAudit(BaseModel):
+    status: ResourceCopyrightAuditStatus = "not_checked"
+    public_distribution: ResourcePublicDistribution = "pending"
+    risk_level: ResourceCopyrightRiskLevel = "unknown"
+    signals: list[str] = Field(default_factory=list)
+    evidence_urls: list[str] = Field(default_factory=list)
+    checked_at: str | None = None
+    reason: str = ""
+    provider: str | None = None
+    override_source: str | None = None
+    appeal_id: str | None = None
+    file_hash: str | None = None
+
+
 class ResourceLibraryItem(BaseModel):
     id: str = Field(default_factory=lambda: new_id("resource"))
     name: str
@@ -645,6 +664,7 @@ class ResourceLibraryItem(BaseModel):
     toc_entries: list[ResourceTOCEntry] = Field(default_factory=list)
     chapter_shards: list[ResourceChapterShard] = Field(default_factory=list)
     parse_warnings: list[str] = Field(default_factory=list)
+    copyright_audit: ResourceCopyrightAudit = Field(default_factory=ResourceCopyrightAudit)
 
 
 class ResourceLibraryItemView(BaseModel):
@@ -667,6 +687,39 @@ class ResourceLibraryItemView(BaseModel):
     toc_entries: list[ResourceTOCEntry] = Field(default_factory=list)
     chapter_shards: list[ResourceChapterShard] = Field(default_factory=list)
     parse_warnings: list[str] = Field(default_factory=list)
+    copyright_audit: ResourceCopyrightAudit = Field(default_factory=ResourceCopyrightAudit)
+
+
+class ResourceCopyrightAppeal(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("appeal"))
+    resource_id: str
+    owner_user_id: str
+    status: ResourceCopyrightAppealStatus = "open"
+    message: str = ""
+    evidence_text: str = ""
+    evidence_urls: list[str] = Field(default_factory=list)
+    resource_file_hash: str | None = None
+    created_at: str = Field(default_factory=now_iso)
+    resolved_at: str | None = None
+    resolved_by_user_id: str | None = None
+    resolution_reason: str = ""
+
+
+class ResourceCopyrightAppealCreateRequest(BaseModel):
+    message: str = ""
+    evidence_text: str = ""
+    evidence_urls: list[str] = Field(default_factory=list)
+
+
+class ResourceCopyrightAppealResolveRequest(BaseModel):
+    decision: ResourceCopyrightAppealDecision
+    resolution_reason: str = ""
+
+
+class ResourceCopyrightAppealView(ResourceCopyrightAppeal):
+    resource_name: str = ""
+    owner_label: str = ""
+    resource_audit: ResourceCopyrightAudit = Field(default_factory=ResourceCopyrightAudit)
 
 
 class CoursePackage(BaseModel):

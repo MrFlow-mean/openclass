@@ -13,21 +13,28 @@ from app.models import (
     GenerateLessonRequest,
     MoveLessonRequest,
     ReorderTabsRequest,
+    ResourceCopyrightAppeal,
+    ResourceCopyrightAppealCreateRequest,
+    ResourceCopyrightAppealResolveRequest,
+    ResourceCopyrightAppealView,
+    ResourceLibraryItem,
     UpdatePackageRequest,
     UserView,
     WorkspaceStateView,
 )
-from app.routers.auth import current_user
+from app.routers.auth import current_admin, current_user
 from app.services.ai_logging import ai_usage_logger
 from app.services.course_runtime import build_lesson_for_topic
 from app.services.history import current_head_commit
 from app.services.lesson_factory import create_empty_lesson
+from app.services.resource_copyright_audit import audit_resource_public_distribution
 from app.services.resource_library import build_resource_item
 from app.services.route_context import bind_ai_request_context
 from app.services.resource_service import delete_uploaded_resource_file
 from app.services.workspace_state import (
     UPLOAD_DIR,
     find_lesson_package,
+    get_course_store,
     get_package,
     get_standalone_package,
     is_standalone_package,
@@ -45,6 +52,15 @@ router = APIRouter()
 def _safe_upload_name(filename: str | None) -> str:
     name = Path(filename or "").name.strip()
     return name or "resource"
+
+
+def _find_resource_for_user(user_id: str, resource_id: str) -> ResourceLibraryItem:
+    workspace = load_workspace_for_user(user_id)
+    for package in workspace.packages:
+        for resource in package.resources:
+            if resource.id == resource_id:
+                return resource
+    raise HTTPException(status_code=404, detail="没有找到这份资料")
 
 
 @router.get("/api/workspace", response_model=WorkspaceStateView)
@@ -210,6 +226,7 @@ async def upload_resource(file: UploadFile = File(...), user: UserView = Depends
             raise HTTPException(status_code=400, detail="上传文件不能为空")
         stored_path.write_bytes(content)
         resource = build_resource_item(stored_path, original_name)
+        resource.copyright_audit = audit_resource_public_distribution(resource)
     except HTTPException:
         stored_path.unlink(missing_ok=True)
         raise
@@ -226,6 +243,58 @@ async def upload_resource(file: UploadFile = File(...), user: UserView = Depends
     normalize_package_state(package)
     save_workspace_for_user(user.id, workspace)
     return package_view_for_lesson(workspace, package, package.active_lesson_id)
+
+
+@router.post("/api/resources/{resource_id}/copyright-appeals", response_model=ResourceCopyrightAppeal)
+def create_resource_copyright_appeal(
+    resource_id: str,
+    request: ResourceCopyrightAppealCreateRequest,
+    user: UserView = Depends(current_user),
+) -> ResourceCopyrightAppeal:
+    resource = _find_resource_for_user(user.id, resource_id)
+    return get_course_store().create_resource_copyright_appeal(
+        owner_user_id=user.id,
+        resource=resource,
+        message=request.message,
+        evidence_text=request.evidence_text,
+        evidence_urls=request.evidence_urls,
+    )
+
+
+@router.get("/api/resources/{resource_id}/copyright-appeals", response_model=list[ResourceCopyrightAppeal])
+def list_resource_copyright_appeals(
+    resource_id: str,
+    user: UserView = Depends(current_user),
+) -> list[ResourceCopyrightAppeal]:
+    _find_resource_for_user(user.id, resource_id)
+    return get_course_store().list_resource_copyright_appeals(
+        owner_user_id=user.id,
+        resource_id=resource_id,
+    )
+
+
+@router.get("/api/admin/copyright-appeals", response_model=list[ResourceCopyrightAppealView])
+def list_admin_resource_copyright_appeals(
+    _: UserView = Depends(current_admin),
+) -> list[ResourceCopyrightAppealView]:
+    return get_course_store().list_admin_resource_copyright_appeals(status="open")
+
+
+@router.post("/api/admin/copyright-appeals/{appeal_id}/resolve", response_model=ResourceCopyrightAppealView)
+def resolve_admin_resource_copyright_appeal(
+    appeal_id: str,
+    request: ResourceCopyrightAppealResolveRequest,
+    user: UserView = Depends(current_admin),
+) -> ResourceCopyrightAppealView:
+    try:
+        return get_course_store().resolve_resource_copyright_appeal(
+            appeal_id=appeal_id,
+            reviewer_user_id=user.id,
+            decision=request.decision,
+            resolution_reason=request.resolution_reason,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/api/lessons/generate", response_model=CoursePackageView)

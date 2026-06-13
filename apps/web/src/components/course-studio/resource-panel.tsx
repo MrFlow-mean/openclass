@@ -1,9 +1,10 @@
 import clsx from "clsx";
 import { useRef, useState, type DragEvent } from "react";
-import { LoaderCircle, Upload } from "lucide-react";
+import { LoaderCircle, Send, ShieldAlert, ShieldCheck, Upload, X } from "lucide-react";
 
 import { CourseGraphPanel } from "@/components/course-studio/course-graph-panel";
-import type { CoursePackage, Lesson } from "@/types";
+import { api } from "@/lib/api";
+import type { CoursePackage, Lesson, ResourceLibraryItem } from "@/types";
 
 type ResourcePanelProps = {
   activeLesson: Lesson;
@@ -39,6 +40,29 @@ function dragIncludesFiles(event: DragEvent<HTMLElement>) {
   return Array.from(event.dataTransfer.types).includes("Files");
 }
 
+function auditBadge(resource: ResourceLibraryItem) {
+  const audit = resource.copyright_audit;
+  if (audit.public_distribution === "allowed") {
+    return {
+      label: audit.override_source === "admin_appeal" ? "已解封公开" : "可公开",
+      className: "border-emerald-200 bg-emerald-50 text-emerald-700",
+      Icon: ShieldCheck,
+    };
+  }
+  if (audit.public_distribution === "blocked") {
+    return {
+      label: "禁止公开",
+      className: "border-rose-200 bg-rose-50 text-rose-700",
+      Icon: ShieldAlert,
+    };
+  }
+  return {
+    label: audit.status === "error" ? "审核失败" : "待复核",
+    className: "border-amber-200 bg-amber-50 text-amber-700",
+    Icon: ShieldAlert,
+  };
+}
+
 export function ResourcePanel({
   activeLesson,
   resources,
@@ -51,6 +75,11 @@ export function ResourcePanel({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const dragDepthRef = useRef(0);
   const [isDragActive, setIsDragActive] = useState(false);
+  const [appealResource, setAppealResource] = useState<ResourceLibraryItem | null>(null);
+  const [appealMessage, setAppealMessage] = useState("");
+  const [appealEvidence, setAppealEvidence] = useState("");
+  const [appealStatus, setAppealStatus] = useState<string | null>(null);
+  const [isSubmittingAppeal, setIsSubmittingAppeal] = useState(false);
 
   function handleFile(file: File | null | undefined) {
     if (!file || isUploading) {
@@ -110,6 +139,27 @@ export function ResourcePanel({
     handleFile(event.dataTransfer.files.item(0));
   }
 
+  async function submitAppeal() {
+    if (!appealResource || isSubmittingAppeal) {
+      return;
+    }
+    setIsSubmittingAppeal(true);
+    setAppealStatus(null);
+    try {
+      await api.createResourceCopyrightAppeal(appealResource.id, {
+        message: appealMessage,
+        evidence_text: appealEvidence,
+      });
+      setAppealStatus("申诉已提交");
+      setAppealMessage("");
+      setAppealEvidence("");
+    } catch (error) {
+      setAppealStatus(error instanceof Error ? error.message : "申诉提交失败");
+    } finally {
+      setIsSubmittingAppeal(false);
+    }
+  }
+
   return (
     <div className="space-y-8">
       <div>
@@ -155,7 +205,11 @@ export function ResourcePanel({
             </div>
           </div>
 
-          {resources.map((resource) => (
+          {resources.map((resource) => {
+            const badge = auditBadge(resource);
+            const BadgeIcon = badge.Icon;
+            const showAppeal = resource.copyright_audit.public_distribution !== "allowed";
+            return (
             <article key={resource.id} className="rounded-lg border border-gray-200 bg-white p-4">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
@@ -165,12 +219,38 @@ export function ResourcePanel({
                     {resource.chapter_shards.length} 个章节索引
                   </p>
                 </div>
-                {resource.parse_warnings.length > 0 ? (
-                  <span className="shrink-0 rounded-md bg-amber-50 px-2 py-1 text-[10px] font-semibold text-amber-700">
-                    {resource.parse_warnings.length} 项需复核
+                <div className="flex shrink-0 flex-col items-end gap-2">
+                  <span className={clsx("inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[10px] font-semibold", badge.className)}>
+                    <BadgeIcon className="h-3 w-3" />
+                    {badge.label}
                   </span>
-                ) : null}
+                  {resource.parse_warnings.length > 0 ? (
+                    <span className="rounded-md bg-amber-50 px-2 py-1 text-[10px] font-semibold text-amber-700">
+                      {resource.parse_warnings.length} 项需复核
+                    </span>
+                  ) : null}
+                </div>
               </div>
+
+              <section className="mt-4 rounded-md border border-gray-100 bg-gray-50 px-3 py-2">
+                <p className="text-xs font-medium text-gray-800">{resource.copyright_audit.reason || "版权公开传播状态待确认"}</p>
+                {resource.copyright_audit.signals.length > 0 ? (
+                  <p className="mt-1 truncate text-[11px] text-gray-500">{resource.copyright_audit.signals.join(" · ")}</p>
+                ) : null}
+                {showAppeal ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAppealResource(resource);
+                      setAppealStatus(null);
+                    }}
+                    className="mt-3 inline-flex h-8 items-center justify-center gap-2 rounded-md border border-gray-200 bg-white px-3 text-xs font-semibold text-gray-700 transition hover:border-gray-300 hover:text-gray-950"
+                  >
+                    <ShieldAlert className="h-3.5 w-3.5" />
+                    申诉
+                  </button>
+                ) : null}
+              </section>
 
               {resource.structure_regions.length > 0 ? (
                 <section className="mt-4">
@@ -227,7 +307,8 @@ export function ResourcePanel({
                 </section>
               ) : null}
             </article>
-          ))}
+            );
+          })}
         </div>
       </div>
 
@@ -237,6 +318,62 @@ export function ResourcePanel({
         lessonMap={lessonMap}
         onOpenLesson={onOpenLesson}
       />
+
+      {appealResource ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-950/35 px-4">
+          <div className="w-full max-w-lg rounded-lg border border-gray-200 bg-white p-5 shadow-xl">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-base font-semibold text-gray-950">资料公开申诉</h3>
+                <p className="mt-1 max-w-md truncate text-xs text-gray-500">{appealResource.name}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAppealResource(null)}
+                className="inline-flex h-8 w-8 items-center justify-center rounded-md text-gray-500 transition hover:bg-gray-100 hover:text-gray-900"
+                aria-label="关闭"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <label className="mt-4 block text-xs font-semibold text-gray-700">
+              申诉说明
+              <textarea
+                value={appealMessage}
+                onChange={(event) => setAppealMessage(event.target.value)}
+                className="mt-2 min-h-24 w-full resize-y rounded-md border border-gray-200 px-3 py-2 text-sm font-normal text-gray-900 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+              />
+            </label>
+            <label className="mt-4 block text-xs font-semibold text-gray-700">
+              证明内容
+              <textarea
+                value={appealEvidence}
+                onChange={(event) => setAppealEvidence(event.target.value)}
+                className="mt-2 min-h-24 w-full resize-y rounded-md border border-gray-200 px-3 py-2 text-sm font-normal text-gray-900 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+              />
+            </label>
+            {appealStatus ? <p className="mt-3 text-xs font-medium text-gray-600">{appealStatus}</p> : null}
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setAppealResource(null)}
+                className="inline-flex h-9 items-center justify-center rounded-md border border-gray-200 bg-white px-3 text-xs font-semibold text-gray-700 transition hover:border-gray-300"
+              >
+                关闭
+              </button>
+              <button
+                type="button"
+                onClick={submitAppeal}
+                disabled={isSubmittingAppeal}
+                className="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-gray-950 px-3 text-xs font-semibold text-white transition hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {isSubmittingAppeal ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                提交
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

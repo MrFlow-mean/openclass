@@ -18,15 +18,19 @@ from app.models import (
     Lesson,
     LessonHistoryGraph,
     LibraryChapter,
+    ResourceCopyrightAppeal,
+    ResourceCopyrightAppealView,
+    ResourceCopyrightAudit,
     ResourceLibraryItem,
     WorkspaceState,
+    now_iso,
 )
 from app.services.board_task_history import BoardTaskHistoryStore
 from app.services.document_segment_store import DocumentSegmentStore
 from app.services.learning_requirement_history import LearningRequirementHistoryStore
 from app.services.rich_document import upgrade_markdown_like_document
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 
 def _active_package_setting_key(owner_user_id: str | None) -> str:
@@ -234,6 +238,195 @@ class SqliteCourseStore:
                     limit=limit,
                 )
 
+    def create_resource_copyright_appeal(
+        self,
+        *,
+        owner_user_id: str,
+        resource: ResourceLibraryItem,
+        message: str = "",
+        evidence_text: str = "",
+        evidence_urls: list[str] | None = None,
+    ) -> ResourceCopyrightAppeal:
+        appeal = ResourceCopyrightAppeal(
+            resource_id=resource.id,
+            owner_user_id=owner_user_id,
+            message=message.strip(),
+            evidence_text=evidence_text.strip(),
+            evidence_urls=[url.strip() for url in evidence_urls or [] if url.strip()],
+            resource_file_hash=resource.copyright_audit.file_hash,
+        )
+        with self._lock:
+            with self._connect() as conn:
+                with conn:
+                    conn.execute(
+                        """
+                        INSERT INTO resource_copyright_appeals(
+                            id, resource_id, owner_user_id, status, message, evidence_text,
+                            evidence_urls_json, resource_file_hash, created_at, resolved_at,
+                            resolved_by_user_id, resolution_reason
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            appeal.id,
+                            appeal.resource_id,
+                            appeal.owner_user_id,
+                            appeal.status,
+                            appeal.message,
+                            appeal.evidence_text,
+                            _dumps(appeal.evidence_urls),
+                            appeal.resource_file_hash,
+                            appeal.created_at,
+                            appeal.resolved_at,
+                            appeal.resolved_by_user_id,
+                            appeal.resolution_reason,
+                        ),
+                    )
+        return appeal
+
+    def list_resource_copyright_appeals(
+        self,
+        *,
+        owner_user_id: str,
+        resource_id: str,
+    ) -> list[ResourceCopyrightAppeal]:
+        with self._lock:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM resource_copyright_appeals
+                    WHERE owner_user_id = ? AND resource_id = ?
+                    ORDER BY created_at DESC, id DESC
+                    """,
+                    (owner_user_id, resource_id),
+                ).fetchall()
+        return [_appeal_from_row(row) for row in rows]
+
+    def list_admin_resource_copyright_appeals(
+        self,
+        *,
+        status: str = "open",
+    ) -> list[ResourceCopyrightAppealView]:
+        with self._lock:
+            with self._connect() as conn:
+                rows = self._select_appeal_views(conn, status=status)
+        return [_appeal_view_from_row(row) for row in rows]
+
+    def resolve_resource_copyright_appeal(
+        self,
+        *,
+        appeal_id: str,
+        reviewer_user_id: str,
+        decision: str,
+        resolution_reason: str = "",
+    ) -> ResourceCopyrightAppealView:
+        with self._lock:
+            with self._connect() as conn:
+                with conn:
+                    row = conn.execute(
+                        "SELECT * FROM resource_copyright_appeals WHERE id = ?",
+                        (appeal_id,),
+                    ).fetchone()
+                    if row is None:
+                        raise ValueError(f"Unknown appeal {appeal_id}")
+                    if row["status"] != "open":
+                        raise ValueError("Appeal is already resolved")
+
+                    now = now_iso()
+                    conn.execute(
+                        """
+                        UPDATE resource_copyright_appeals
+                        SET status = ?, resolved_at = ?, resolved_by_user_id = ?, resolution_reason = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            decision,
+                            now,
+                            reviewer_user_id,
+                            resolution_reason.strip(),
+                            appeal_id,
+                        ),
+                    )
+
+                    if decision == "approved":
+                        resource_row = conn.execute(
+                            "SELECT copyright_audit_json FROM resources WHERE id = ?",
+                            (row["resource_id"],),
+                        ).fetchone()
+                        if resource_row is not None:
+                            from app.services.resource_copyright_audit import audit_after_admin_approval
+
+                            current_audit = ResourceCopyrightAudit.model_validate(
+                                _loads(resource_row["copyright_audit_json"], {})
+                            )
+                            appeal_file_hash = row["resource_file_hash"]
+                            if appeal_file_hash and current_audit.file_hash and appeal_file_hash != current_audit.file_hash:
+                                raise ValueError("Appeal no longer matches the current resource file")
+                            next_audit = audit_after_admin_approval(current_audit, appeal_id=appeal_id)
+                            conn.execute(
+                                "UPDATE resources SET copyright_audit_json = ? WHERE id = ?",
+                                (_dumps(next_audit.model_dump(mode="json")), row["resource_id"]),
+                            )
+
+                    view_row = self._select_appeal_view(conn, appeal_id)
+                    if view_row is None:
+                        raise ValueError(f"Unknown appeal {appeal_id}")
+        return _appeal_view_from_row(view_row)
+
+    def _select_appeal_views(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        status: str | None = None,
+    ) -> list[sqlite3.Row]:
+        where = ""
+        params: tuple[str, ...] = ()
+        if status:
+            where = "WHERE appeals.status = ?"
+            params = (status,)
+        user_join = "LEFT JOIN users ON users.id = appeals.owner_user_id" if _table_exists(conn, "users") else ""
+        user_label = (
+            "COALESCE(users.email, users.phone, users.display_name, appeals.owner_user_id)"
+            if _table_exists(conn, "users")
+            else "appeals.owner_user_id"
+        )
+        return conn.execute(
+            f"""
+            SELECT
+                appeals.*,
+                COALESCE(resources.name, '') AS resource_name,
+                COALESCE(resources.copyright_audit_json, '{{}}') AS resource_audit_json,
+                {user_label} AS owner_label
+            FROM resource_copyright_appeals AS appeals
+            LEFT JOIN resources ON resources.id = appeals.resource_id
+            {user_join}
+            {where}
+            ORDER BY appeals.created_at DESC, appeals.id DESC
+            """,
+            params,
+        ).fetchall()
+
+    def _select_appeal_view(self, conn: sqlite3.Connection, appeal_id: str) -> sqlite3.Row | None:
+        user_join = "LEFT JOIN users ON users.id = appeals.owner_user_id" if _table_exists(conn, "users") else ""
+        user_label = (
+            "COALESCE(users.email, users.phone, users.display_name, appeals.owner_user_id)"
+            if _table_exists(conn, "users")
+            else "appeals.owner_user_id"
+        )
+        return conn.execute(
+            f"""
+            SELECT
+                appeals.*,
+                COALESCE(resources.name, '') AS resource_name,
+                COALESCE(resources.copyright_audit_json, '{{}}') AS resource_audit_json,
+                {user_label} AS owner_label
+            FROM resource_copyright_appeals AS appeals
+            LEFT JOIN resources ON resources.id = appeals.resource_id
+            {user_join}
+            WHERE appeals.id = ?
+            """,
+            (appeal_id,),
+        ).fetchone()
+
     def _initialize(self) -> None:
         with self._lock:
             with self._connect() as conn:
@@ -407,7 +600,8 @@ class SqliteCourseStore:
                 body_blocks_json TEXT NOT NULL DEFAULT '[]',
                 toc_entries_json TEXT NOT NULL DEFAULT '[]',
                 chapter_shards_json TEXT NOT NULL DEFAULT '[]',
-                parse_warnings_json TEXT NOT NULL DEFAULT '[]'
+                parse_warnings_json TEXT NOT NULL DEFAULT '[]',
+                copyright_audit_json TEXT NOT NULL DEFAULT '{}'
             );
 
             CREATE INDEX IF NOT EXISTS idx_resources_package
@@ -434,6 +628,27 @@ class SqliteCourseStore:
                 scan_strategy TEXT NOT NULL,
                 PRIMARY KEY (resource_id, id)
             );
+
+            CREATE TABLE IF NOT EXISTS resource_copyright_appeals (
+                id TEXT PRIMARY KEY,
+                resource_id TEXT NOT NULL,
+                owner_user_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                message TEXT NOT NULL,
+                evidence_text TEXT NOT NULL,
+                evidence_urls_json TEXT NOT NULL,
+                resource_file_hash TEXT,
+                created_at TEXT NOT NULL,
+                resolved_at TEXT,
+                resolved_by_user_id TEXT,
+                resolution_reason TEXT NOT NULL DEFAULT ''
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_resource_copyright_appeals_resource
+                ON resource_copyright_appeals(resource_id, created_at);
+
+            CREATE INDEX IF NOT EXISTS idx_resource_copyright_appeals_status
+                ON resource_copyright_appeals(status, created_at);
             """
         )
         self._migrate_schema(conn)
@@ -491,6 +706,38 @@ class SqliteCourseStore:
             conn.execute("ALTER TABLE resources ADD COLUMN page_count INTEGER NOT NULL DEFAULT 0")
         if "indexed_block_count" not in resource_columns:
             conn.execute("ALTER TABLE resources ADD COLUMN indexed_block_count INTEGER NOT NULL DEFAULT 0")
+        if "copyright_audit_json" not in resource_columns:
+            conn.execute("ALTER TABLE resources ADD COLUMN copyright_audit_json TEXT NOT NULL DEFAULT '{}'")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS resource_copyright_appeals (
+                id TEXT PRIMARY KEY,
+                resource_id TEXT NOT NULL,
+                owner_user_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                message TEXT NOT NULL,
+                evidence_text TEXT NOT NULL,
+                evidence_urls_json TEXT NOT NULL,
+                resource_file_hash TEXT,
+                created_at TEXT NOT NULL,
+                resolved_at TEXT,
+                resolved_by_user_id TEXT,
+                resolution_reason TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_resource_copyright_appeals_resource
+                ON resource_copyright_appeals(resource_id, created_at)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_resource_copyright_appeals_status
+                ON resource_copyright_appeals(status, created_at)
+            """
+        )
         package_columns = {
             row["name"]
             for row in conn.execute("PRAGMA table_info(course_packages)").fetchall()
@@ -746,6 +993,9 @@ class SqliteCourseStore:
             toc_entries=_loads(row["toc_entries_json"], []),
             chapter_shards=_loads(row["chapter_shards_json"], []),
             parse_warnings=_loads(row["parse_warnings_json"], []),
+            copyright_audit=ResourceCopyrightAudit.model_validate(
+                _loads(row["copyright_audit_json"], {})
+            ),
         )
 
     def _replace_workspace(
@@ -940,8 +1190,9 @@ class SqliteCourseStore:
                 id, package_id, sort_order, name, mime_type, resource_type, size_bytes,
                 uploaded_at, scope_lesson_id, concept_index_json, extracted_text_available, text_content, source_path,
                 index_status, index_message, index_updated_at, page_count, indexed_block_count,
-                structure_regions_json, body_blocks_json, toc_entries_json, chapter_shards_json, parse_warnings_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                structure_regions_json, body_blocks_json, toc_entries_json, chapter_shards_json, parse_warnings_json,
+                copyright_audit_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 resource.id,
@@ -967,6 +1218,7 @@ class SqliteCourseStore:
                 _dumps([entry.model_dump(mode="json") for entry in resource.toc_entries]),
                 _dumps([shard.model_dump(mode="json") for shard in resource.chapter_shards]),
                 _dumps(resource.parse_warnings),
+                _dumps(resource.copyright_audit.model_dump(mode="json")),
             ),
         )
         for chapter_index, chapter in enumerate(resource.outline):
@@ -1094,6 +1346,33 @@ def _loads_optional(raw: str | None) -> Any:
     if raw is None or raw == "":
         return None
     return json.loads(raw)
+
+
+def _appeal_from_row(row: sqlite3.Row) -> ResourceCopyrightAppeal:
+    return ResourceCopyrightAppeal(
+        id=row["id"],
+        resource_id=row["resource_id"],
+        owner_user_id=row["owner_user_id"],
+        status=row["status"],
+        message=row["message"],
+        evidence_text=row["evidence_text"],
+        evidence_urls=_loads(row["evidence_urls_json"], []),
+        resource_file_hash=row["resource_file_hash"],
+        created_at=row["created_at"],
+        resolved_at=row["resolved_at"],
+        resolved_by_user_id=row["resolved_by_user_id"],
+        resolution_reason=row["resolution_reason"],
+    )
+
+
+def _appeal_view_from_row(row: sqlite3.Row) -> ResourceCopyrightAppealView:
+    appeal = _appeal_from_row(row)
+    return ResourceCopyrightAppealView(
+        **appeal.model_dump(mode="json"),
+        resource_name=row["resource_name"],
+        owner_label=row["owner_label"],
+        resource_audit=ResourceCopyrightAudit.model_validate(_loads(row["resource_audit_json"], {})),
+    )
 
 
 def _contains_legacy_blocks(raw_data: object) -> bool:
