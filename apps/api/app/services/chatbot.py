@@ -72,6 +72,7 @@ from app.services.learning_requirement_history import (
 from app.services.openai_course_ai import (
     BoardTaskRouteDecision,
     InitialLearningWorkModeDecision,
+    bind_board_model_selection,
     bind_text_model_selection,
     emit_ai_stream_event,
     openai_course_ai,
@@ -5632,7 +5633,8 @@ def process_chat_on_lesson(lesson_id: str, request: ChatRequest, *, user_id: str
         user_id=user_id,
     ):
         with bind_text_model_selection(request.text_model):
-            return _chat_response(lesson_id=lesson_id, request=request, user_id=user_id)
+            with bind_board_model_selection(request.board_model):
+                return _chat_response(lesson_id=lesson_id, request=request, user_id=user_id)
 
 
 def document_ai_edit_request(

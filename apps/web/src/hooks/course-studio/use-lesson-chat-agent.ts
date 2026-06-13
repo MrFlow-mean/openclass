@@ -39,6 +39,7 @@ type UseLessonChatAgentOptions = {
   composerSelection: SelectionRef | null;
   currentBoardDocument: BoardDocument | null;
   selectedTextModel: AIModelSelection;
+  selectedBoardModel: AIModelSelection;
   isPreviewMode: boolean;
   chatRequestInFlightRef: MutableRefObject<boolean>;
   flushAutoSave: (reason: AutoSaveReason) => Promise<boolean>;
@@ -64,6 +65,7 @@ export function useLessonChatAgent({
   composerSelection,
   currentBoardDocument,
   selectedTextModel,
+  selectedBoardModel,
   isPreviewMode,
   chatRequestInFlightRef,
   flushAutoSave,
@@ -240,6 +242,7 @@ export function useLessonChatAgent({
     const payloadWithConversation: ChatRequestPayload = {
       ...payload,
       text_model: payload.text_model ?? selectedTextModel,
+      board_model: payload.board_model ?? selectedBoardModel,
       conversation: payload.conversation ?? conversationFromMessages(conversationMessages),
     };
 

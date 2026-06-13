@@ -68,6 +68,9 @@ DEFAULT_TEXT_MODEL = OPENAI_DEFAULT_TEXT_MODEL
 _text_model_selection: ContextVar[AIModelSelection | None] = ContextVar(
     "text_model_selection", default=None
 )
+_board_model_selection: ContextVar[AIModelSelection | None] = ContextVar(
+    "board_model_selection", default=None
+)
 AIStreamObserver = Callable[[dict[str, Any]], None]
 _ai_stream_observer: ContextVar[AIStreamObserver | None] = ContextVar("ai_stream_observer", default=None)
 CHATBOT_BOARD_DOCUMENT_REDACTION = (
@@ -376,6 +379,15 @@ def bind_text_model_selection(selection: AIModelSelection | None):
         yield
     finally:
         _text_model_selection.reset(token)
+
+
+@contextmanager
+def bind_board_model_selection(selection: AIModelSelection | None):
+    token = _board_model_selection.set(selection)
+    try:
+        yield
+    finally:
+        _board_model_selection.reset(token)
 
 
 @contextmanager
@@ -2194,7 +2206,9 @@ class OpenAICourseAI:
         if role == "catalog":
             return "openai", self.config.model_for(role)
 
-        selection = _text_model_selection.get()
+        selection = _board_model_selection.get() if role == "board" else None
+        if selection is None:
+            selection = _text_model_selection.get()
         if selection:
             return selection.provider, selection.model
 
