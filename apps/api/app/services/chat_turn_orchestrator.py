@@ -93,6 +93,7 @@ from app.services.chat.resource_reference_flow import (
     should_store_resource_board_proposal,
     skip_pending_resource_board_proposal,
 )
+from app.services.chat.recommendations import requirement_recommendation_context
 from app.services.chat.sequence import (
     SequenceRuntime,
     _handle_section_explanation_sequence_turn,
@@ -907,6 +908,41 @@ def _maybe_start_interaction_session(
     )
 
 
+def _chatbot_recommendation_context(
+    *,
+    lesson: Lesson,
+    requirements: LearningRequirementSheet,
+    learning_clarification: LearningClarificationStatus,
+    resources: list[ResourceLibraryItem],
+    conversation: list[ConversationTurn],
+    request: ChatRequest,
+    action_type: BoardTaskAction | None,
+    selected_reference,
+    reference_prompt,
+) -> str:
+    if not is_document_empty(lesson.board_document):
+        return ""
+    if learning_clarification.ready_for_board or learning_clarification.forced_start:
+        return ""
+    if request.interaction_mode == "direct_edit":
+        return ""
+    if action_type is not None:
+        return ""
+    if selected_reference is not None or reference_prompt is not None:
+        return ""
+    if request.board_generation_action == "start" or request.teaching_action is not None:
+        return ""
+    if request.resource_reference_action is not None or request.resource_board_action is not None:
+        return ""
+    return requirement_recommendation_context(
+        lesson=lesson,
+        requirements=requirements,
+        resources=resources,
+        conversation=conversation,
+        user_message=request.message,
+    )
+
+
 def _chat_response(
     *,
     lesson_id: str,
@@ -1690,6 +1726,17 @@ def _chat_response(
             user_message=chatbot_user_message,
             selection_excerpt=_chatbot_visible_selection_excerpt(request, selection_or_reference_excerpt),
             interaction_mode=request.interaction_mode,
+            recommendation_context=_chatbot_recommendation_context(
+                lesson=lesson,
+                requirements=requirements,
+                learning_clarification=learning_clarification,
+                resources=visible_package.resources,
+                conversation=request.conversation,
+                request=request,
+                action_type=action_type,
+                selected_reference=selected_reference,
+                reference_prompt=resource_resolution.reference_prompt,
+            ),
         )
         chatbot_message = role_reply.chatbot_message
         chatbot_message_source = role_reply.assistant_message_source
@@ -1882,6 +1929,17 @@ def _chat_response(
         user_message=solver_user_message,
         selection_excerpt=_chatbot_visible_selection_excerpt(request, selection_or_reference_excerpt),
         interaction_mode=request.interaction_mode,
+        recommendation_context=_chatbot_recommendation_context(
+            lesson=lesson,
+            requirements=requirements,
+            learning_clarification=learning_clarification,
+            resources=visible_package.resources,
+            conversation=request.conversation,
+            request=request,
+            action_type=action_type,
+            selected_reference=selected_reference,
+            reference_prompt=resource_resolution.reference_prompt,
+        ),
     )
     chatbot_message = role_reply.chatbot_message
     chatbot_message_source = role_reply.assistant_message_source

@@ -27,6 +27,7 @@ def generate_chatbot_role_reply(
     selection_excerpt: str | None = None,
     interaction_mode: str = "ask",
     interaction_context: dict[str, Any] | None = None,
+    recommendation_context: str | None = None,
     assistant_message_source: str = "chatbot",
     empty_message_source: str = "chatbot_empty",
 ) -> ChatbotRoleReply:
@@ -40,6 +41,7 @@ def generate_chatbot_role_reply(
         selection_excerpt=selection_excerpt,
         interaction_mode=interaction_mode,
         interaction_context=interaction_context,
+        recommendation_context=recommendation_context,
     )
     chatbot_message = (ai_reply.chatbot_message if ai_reply else "").strip()
     return ChatbotRoleReply(

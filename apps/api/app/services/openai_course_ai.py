@@ -897,6 +897,7 @@ class OpenAICourseAI:
         selection_excerpt: str | None = None,
         interaction_mode: str = "ask",
         interaction_context: dict[str, Any] | None = None,
+        recommendation_context: str | None = None,
     ) -> ChatbotReply | None:
         # Chatbot AI：只负责左侧对话和被授权的讲解，不负责生成右侧整篇板书。
         system_prompt = (
@@ -919,9 +920,12 @@ class OpenAICourseAI:
             "板书侧给出的讲解指令、讲解依据和目标片段时，才可以围绕该依据讲解；否则即使用户说"
             "“直接讲、开始讲、从零开始、不要再问”，也只能继续澄清学习需求或询问是否先生成/定位板书。\n"
             "8. 每次最多追问一个主问题；可以给 2-3 个可选回答方向，但不要像机械问卷或客服套话。\n"
-            "9. 如果 interaction_context 存在，说明系统正在执行用户指定的通用互动规则；"
+            "9. 如果 recommendation_context 非空，说明系统提供了可追溯的学习入口线索；"
+            "当你正在澄清学习需求时，可以在一个主追问后顺带给出最多 2 个很短的学习内容推荐。"
+            "每个推荐压缩成一句话，不展开理由，不写成长菜单，不声称已写入板书，且不得脑补用户没有透露的水平、目的或场景。\n"
+            "10. 如果 interaction_context 存在，说明系统正在执行用户指定的通用互动规则；"
             "回复必须同时参考互动规则、原文内容、互动进度和用户当前输入，但不要输出系统字段名。\n"
-            "10. 不写任何固定主题模板，不根据主题名、资料名或样例走特殊规则。"
+            "11. 不写任何固定主题模板，不根据主题名、资料名或样例走特殊规则。"
         )
         user_prompt = _json(
             {
@@ -933,6 +937,7 @@ class OpenAICourseAI:
                 "selection_excerpt": selection_excerpt.strip() if selection_excerpt else "无选中引用",
                 "interaction_mode": interaction_mode,
                 "interaction_context": interaction_context or None,
+                "recommendation_context": recommendation_context.strip() if recommendation_context else "",
                 "user_message": user_message,
                 "response_contract": {
                     "chatbot_message": "面向学习者的自然语言短回复；不要输出整篇可写入文档区的正文。",
