@@ -1,73 +1,53 @@
 # 开放课堂（OpenClass）
 
-开放课堂（OpenClass）是一个面向课程设计、讲义创作和资料管理的课程工作台。当前代码保留前端工作台、富文本讲义编辑、资料库、版本历史、课程图谱和持久化后端；旧的后端 AI 工作流程运行框架已经移除，新的产品工作架构等待重新接入。
+OpenClass 是面向课程设计、讲义创作和资料管理的 AI 课程工作台。当前保留工作台 UI、富文本讲义编辑、资料库、版本历史、课程图谱、模型配置入口和持久化后端；AI 工作流按 `AGENTS.md` 的通用能力约束继续接入。
 
-## 产品能力
+## 核心能力
 
-- 前端课程工作台：围绕课程包、lesson、资料和文档编辑提供统一操作界面。
+- 课程包与 lesson 管理：按主题、章节或教学单元组织内容。
 - 富文本讲义编辑：右侧类 Word 编辑器支持手动编辑、DOCX 导入导出。
-- 资料库与引用：上传课程资料，抽取章节结构，作为后续文档整理和新架构接入的资料基础。
-- 课程包管理：一个课程包可以包含多节 lesson，适合按主题、章节或教学单元组织内容。
-- 版本与分支：每节课支持 commit / branch / restore，可以尝试不同讲法再安全回退。
-- 课程图谱：用结构化关系串联 lesson、知识点和课程路径。
-- 模型配置入口：保留文本模型配置与健康检查，供后续新架构复用。
+- 资料库：上传课程资料，保存 metadata 并抽取章节结构。
+- 版本与分支：lesson 支持 commit / branch / restore。
+- 课程图谱：用结构化关系串联 lesson 和课程路径。
+- 模型配置：通过 provider catalog 和健康检查展示可用模型。
 
-## AI 工作流架构方向
+## AI 架构方向
 
-OpenClass 的新 AI 工作流接回时，空白板书的第一步不是直接套完整学习清单，而是先做通用学习形态判别。系统需要先判断用户是在学习某个知识内容，还是想基于当前水平和目标场景做练习型教学。
+OpenClass 默认保持通用，不把学科、教材、考试或 demo 写进核心路径。空白板书先走 `InitialLearningIntentGate`，判断用户是在学习知识内容、做练习型教学，还是目标仍过宽；已有板书则走 `BoardTaskRequirementSheet`、目标定位、route decision 和可追溯执行。
 
-- 当用户目标已经是具体知识点或明确问题时，系统可以冻结最小学习需求并生成第一版右侧板书。
-- 当用户只给出宽泛领域时，系统先追问具体想学的知识点或问题，不默认生成固定课程路径。
-- 当用户表达练习、测验、对话、纠错、角色互动等练习型教学时，系统进入学习需求清单澄清，补齐练习内容、当前水平、目的场景、练习形式和成功标准。
-
-这套判别只依赖通用学习形态、目标颗粒度和用户意图，不依赖学科、教材、考试或 demo 关键词。详细约束见 `AGENTS.md` 与 `docs/initial-learning-intent-contract.md`。
-
-## 产品 Workflow
-
-1. 创建课程包：为一门课、一个专题或一次培训建立独立课程空间。
-2. 添加 lesson：按章节、知识点或教学任务拆分课程内容。
-3. 上传资料：导入讲义、参考文档、案例材料或课堂素材，系统记录 metadata 并抽取结构。
-4. 整理资料：通过资料库保存上传文件 metadata、抽取结果和章节入口。
-5. 手动打磨：在富文本编辑器中直接调整标题、段落、重点、示例和课堂活动。
-6. 保存版本：对稳定结果创建 commit；需要探索新讲法时创建 branch，满意后再保留或回退。
-7. 组织课程路径：通过课程包、标签页和课程图谱把多个 lesson 串成完整教学流程。
-8. 导入导出：用 DOCX 导入导出进入线下备课、分享和归档流程。
+详细约束见 `AGENTS.md`；空白板书第一层契约见 `docs/initial-learning-intent-contract.md`。
 
 ## 本地运行
 
 需要 Node.js 20+ 和 Python 3.13+。
 
 ```bash
-npm run setup            # 首次安装：npm install + .venv + editable 装后端
-cp .env.example .env     # 配置至少一个 provider
-npm run dev              # 同时启动前后端
+npm run setup
+cp .env.example .env
+npm run dev
 ```
 
-- 前端 http://localhost:3000，后端 http://localhost:8000（健康检查 `/health`）。
-- SQLite 主库：`apps/api/data/openclass.sqlite3`。首次启动会从旧 `apps/api/data/store.json` 导入并归档旧文件；线上部署可用 `OPENCLASS_DATABASE_PATH`、`OPENCLASS_UPLOAD_DIR`、`OPENCLASS_EXPORT_DIR` 指到持久化目录。
-- AI 调用日志：`apps/api/data/logs/ai-usage.jsonl`。
-- 也可以双击 `start-ai-board.command`，它会用后台守护进程启动前后端并打开 `launcher/personal-home.html`。日常长时间使用优先用这个入口。
+- 前端：http://localhost:3000
+- 后端：http://localhost:8000，健康检查 `/health`
+- SQLite：`apps/api/data/openclass.sqlite3`
+- AI 调用日志：`apps/api/data/logs/ai-usage.jsonl`
+- 本地桌面入口：双击 `start-ai-board.command` 启动守护进程并打开 `launcher/personal-home.html`
 
-## 模型配置
+## 配置
 
-最小配置：
+最小配置见 `.env.example`。常用项：
 
 ```bash
+AI_TEXT_PROVIDER=openai
 OPENAI_API_KEY=...
 OPENAI_COMPAT_API=chat_completions
 OPENAI_MODEL=gpt-5.5
 OPENAI_CATALOG_MODEL=gpt-5.4-mini
 OPENCLASS_REALTIME_ENABLED=false
 OPENCLASS_REALTIME_TOOLS_ENABLED=false
-OPENAI_REALTIME_MODEL=gpt-realtime-2
-OPENAI_IMAGE_MODEL=gpt-image-2
-AI_TEXT_PROVIDER=openai
-AI_REALTIME_PROVIDER=openai
 ```
 
-OpenAI/GPT 文本交互和 GPT Image 2 默认走官方 OpenAI API：`https://api.openai.com/v1`。交互 AI 文本默认用 GPT-5.5；语音交互默认用 GPT Realtime 2，但需要显式设置 `OPENCLASS_REALTIME_ENABLED=true` 才会启用后端 WebRTC 连接，`OPENCLASS_REALTIME_TOOLS_ENABLED=true` 才允许 Realtime 调用后端 Chatbot 工具。复杂问题的隐藏强推理工具默认使用 `OPENAI_STRONG_REASONING_MODEL=gpt-5.5` 和 `OPENAI_STRONG_REASONING_EFFORT=high`，只有设置 `OPENCLASS_STRONG_REASONING_ALLOW_PRO=true` 时才会使用 `OPENAI_PRO_REASONING_MODEL`。上传资料的目录 AI 通过 `OPENAI_CATALOG_MODEL` 独立配置，默认用 GPT-5.4 mini。其他 provider（Anthropic / Google / DeepSeek / Kimi / MiniMax / 自定义兼容网关）和默认模型见 `.env.example`。
-
-前端"选择模型"调 `/api/ai-models`，未配置 key 的 provider 会标为未配置。当前保留并启用的是模型目录、课程聊天入口、文档保存/导入/导出和资料解析等工作台能力；Realtime 默认关闭，开启后仍作为同一个 Chatbot 的实时输入/输出形态，而不是新的教学角色。`BoardTeachingGuide` / `BoardTeachingProgress` 等教学工作流 schema 仅作为历史兼容和 future workflow 预留，不代表完整 AI 教学编排已经接回。
+文本模型、目录模型、Realtime、强推理、图像模型和其他 provider 都从 `.env.example` 扩展配置。Realtime 默认关闭；开启后仍是同一个 Chatbot 的实时形态，不是新的教学角色。
 
 ## 测试
 
@@ -76,10 +56,12 @@ npm run lint:web
 npm run typecheck:web
 npm run test:api
 npm run build:web
-npm run test:e2e          # Playwright 主流程，默认启动 127.0.0.1:3110 / 127.0.0.1:8110
-npm run verify            # 文件尺寸安全线 + 前端 lint/typecheck + 后端测试 + 前端构建
+npm run test:e2e
+npm run verify
 ```
+
+`npm run verify` 是提交前 gate：文件尺寸检查、前端 lint/typecheck、后端测试和前端构建。
 
 ## 协作
 
-工程与 AI 协作约定见 `AGENTS.md`（根）和 `apps/web/AGENTS.md`（前端）。提交前跑 `npm run verify`。
+工程与 AI 协作约定见根 `AGENTS.md`、`apps/web/AGENTS.md` 和 `apps/api/app/services/AGENTS.md`。提交前不要包含 `.env`、`.venv/`、`apps/api/data/`、`node_modules/`、`.next/`。

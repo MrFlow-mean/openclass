@@ -1,32 +1,29 @@
-# 开放课堂 Web — AI 协作指南
+# 开放课堂 Web 协作指南
 
-仓库根 `AGENTS.md` 介绍整体架构、命令与后端约定。本文件覆盖前端独有约定。
+根 `AGENTS.md` 管整体架构和 AI 链路；本文件只补前端边界。
 
-<!-- BEGIN:nextjs-agent-rules -->
-## 这不是你熟悉的 Next.js
+## Next.js
 
-仓库使用 Next.js 16，API、约定、文件结构都可能与你训练数据里的不一样。**写代码前先读 `node_modules/next/dist/docs/` 下对应指南，并尊重 deprecation 提示。**
-<!-- END:nextjs-agent-rules -->
+仓库使用 Next.js 16。写 App Router、Server/Client Component、metadata、cache 或 route handler 前，先读 `node_modules/next/dist/docs/` 中对应指南，并按 deprecation 提示调整。
 
-## 目录约定
+## 目录
 
 - `src/app/`：App Router 页面入口。
-- `src/components/`：课程工作台、学习首页、个人主页等顶层组件。
-- `src/components/course-studio/`：课程工作台视图组件。`course-studio.tsx` 只负责组合；右侧栏、编辑器、聊天、历史、资源、图谱分别放在独立组件里。
-- `src/hooks/`：可复用交互状态与副作用，例如实时转写日志队列。
-- `src/hooks/course-studio/`：课程工作台的状态和副作用边界，包括 workspace、document draft、history、resource/action、AI chat、model catalog、realtime voice。
-- `src/lib/`：API client、数学内容规范化、实时音频编解码等纯工具。
-- `src/types/`：与后端 API 视图一一对应的 TypeScript 类型。
+- `src/components/`：顶层产品组件。
+- `src/components/course-studio/`：课程工作台视图组件；`course-studio.tsx` 只做组合。
+- `src/hooks/`：可复用交互状态和副作用。
+- `src/hooks/course-studio/`：workspace、draft、history、resource/action、AI chat、model catalog、realtime voice 等工作台边界。
+- `src/lib/`：API client、数学内容规范化、实时音频编解码等工具。
+- `src/types/`：与后端 API 视图对应的 TypeScript 类型。
 
-## 编码原则
+## 边界
 
-- `course-studio.tsx` 已是最大的容器。新功能优先抽到 `hooks/` / `lib/` / 子组件再由它组合，**不要继续在这个文件里堆状态和 effect**。
-- API 调用走 `src/lib/` 里的 client，组件层不直接 `fetch`。
-- 视图类型放 `src/types/`，与后端返回字段一一对应；后端剥离了资料原文与本地路径，前端类型也不应包含。
-- 实时音频 / PCM 编解码等底层逻辑放 `src/lib/`，组件只调用。
-- `course-studio.tsx` 超过 1000 行要先拆分；拆出的单个组件或 hook 接近 800-1200 行时，优先继续拆边界。
+- 新功能优先落在子组件、hook 或 `src/lib/`；不要继续把 state / effect 堆进 `course-studio.tsx`。
+- 组件层不直接 `fetch`；API 调用走 `src/lib/` client。
+- 前端类型必须匹配后端返回字段；后端剥离的资料原文和本地路径，前端类型也不应包含。
+- 实时音频、PCM、低层协议放 `src/lib/`，组件只调用。
+- `course-studio.tsx` 超过 1000 行要先拆；拆出的组件或 hook 接近 800-1200 行时继续拆边界。
 
 ## 命令
 
-日常命令从仓库根执行：`npm run dev:web | lint:web | typecheck:web | build:web`。
-前端主流程回归：`npm run test:e2e`。
+从仓库根执行：`npm run dev:web`、`npm run lint:web`、`npm run typecheck:web`、`npm run build:web`、`npm run test:e2e`。
