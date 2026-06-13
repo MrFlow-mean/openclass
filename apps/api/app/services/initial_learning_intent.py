@@ -43,6 +43,18 @@ LEARNING_REQUEST_PATTERN = re.compile(
 REQUIREMENT_DETAIL_PATTERN = re.compile(
     r"(目标|水平|基础|场景|用途|目的|输出|要求|已经|完整|清楚|为了|用于|用来|面向|准备)"
 )
+HOW_TO_PATTERN = re.compile(r"(怎么|如何|怎样|方法|流程|思路|路径|策略)")
+PROCESS_CAPABILITY_PATTERN = re.compile(
+    r"(优化|调参|配置|训练|评估|部署|建模|设计|实现|应用|分析|改进|提升|排查|解决|规划|管理)"
+)
+DOMAIN_CONTAINER_PATTERN = re.compile(r"(里|中|里面|当中|领域|场景|流程|项目|系统)")
+CONCRETE_PROCESS_SCOPE_PATTERN = re.compile(
+    r"(第[0-9０-９一二三四五六七八九十两]+[章节节]|选中|"
+    r"这(?:份|个|一)?(?:段|句|节|章|部分|数据|项目|模型|任务|问题|实验)|"
+    r"当前(?:数据|项目|模型|任务|问题|实验)|"
+    r"`[^`]{1,50}`|《[^》]{1,50}》|“[^”]{1,50}”|\"[^\"]{1,50}\"|"
+    r"[A-Za-z_][A-Za-z0-9_]{2,})"
+)
 
 
 class InitialLearningIntentDecision(BaseModel):
@@ -93,8 +105,37 @@ def decide_initial_learning_intent(
         user_message=user_message,
     )
     if isinstance(ai_decision, InitialLearningIntentDecision):
-        return ai_decision
+        return _apply_granularity_guard(ai_decision, user_message=user_message)
     return fallback_initial_learning_intent_decision(user_message)
+
+
+def _apply_granularity_guard(
+    decision: InitialLearningIntentDecision,
+    *,
+    user_message: str,
+) -> InitialLearningIntentDecision:
+    if decision.next_action != "freeze_minimal_and_generate_board":
+        return decision
+    if not _is_underbounded_process_goal(user_message):
+        return decision
+    return InitialLearningIntentDecision(
+        learning_mode="learn_concept",
+        target_granularity="broad_domain",
+        next_action="ask_specific_concept",
+        trace_reason=(
+            "用户给出了领域内的流程型学习方向，但还没有说明具体对象、任务场景或约束，"
+            "暂不能作为最小冻结知识点。"
+        ),
+    )
+
+
+def _is_underbounded_process_goal(user_message: str) -> bool:
+    compact = _compact_text(user_message, limit=240)
+    if not (HOW_TO_PATTERN.search(compact) and PROCESS_CAPABILITY_PATTERN.search(compact)):
+        return False
+    if CONCRETE_PROCESS_SCOPE_PATTERN.search(compact):
+        return False
+    return bool(DOMAIN_CONTAINER_PATTERN.search(compact))
 
 
 def build_requirements_from_initial_learning_intent(

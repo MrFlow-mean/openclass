@@ -35,6 +35,33 @@ def test_initial_learning_intent_uses_ai_schema_decision(monkeypatch) -> None:
     assert decision.next_action == "freeze_minimal_and_generate_board"
 
 
+def test_initial_learning_intent_downgrades_underbounded_process_goal(monkeypatch) -> None:
+    model_decision = InitialLearningIntentDecision(
+        learning_mode="learn_concept",
+        target_granularity="specific_concept",
+        next_action="freeze_minimal_and_generate_board",
+        trace_reason="model treated the process goal as bounded",
+    )
+    monkeypatch.setattr(
+        initial_learning_intent.openai_course_ai,
+        "generate_initial_learning_intent_decision",
+        lambda **kwargs: model_decision,
+    )
+
+    decision = decide_initial_learning_intent(
+        lesson_title="空白页",
+        existing_summary="",
+        existing_checklist=[],
+        conversation=[],
+        user_message="我想学一个领域里怎么做优化流程",
+    )
+
+    assert decision.learning_mode == "learn_concept"
+    assert decision.target_granularity == "broad_domain"
+    assert decision.next_action == "ask_specific_concept"
+    assert "具体对象" in decision.trace_reason
+
+
 def test_initial_learning_intent_fallback_is_conservative(monkeypatch) -> None:
     monkeypatch.setattr(
         initial_learning_intent.openai_course_ai,

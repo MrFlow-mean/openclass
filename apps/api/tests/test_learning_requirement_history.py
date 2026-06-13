@@ -354,6 +354,47 @@ def test_blank_board_broad_learning_goal_asks_for_specific_concept(
     assert commit.metadata["initial_learning_intent"]["board_editor_called"] is False
 
 
+def test_blank_board_underbounded_process_goal_does_not_generate(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_initial_learning_intent_decision",
+        lambda **kwargs: InitialLearningIntentDecision(
+            learning_mode="learn_concept",
+            target_granularity="specific_concept",
+            next_action="freeze_minimal_and_generate_board",
+            trace_reason="模型误把流程型方向当成最小知识点。",
+        ),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_chatbot_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="你想先聚焦哪个具体对象、任务场景或约束？"),
+    )
+
+    def _unexpected_board_edit(**kwargs):
+        raise AssertionError("underbounded process goals must not generate the first board")
+
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _unexpected_board_edit)
+    _, lesson = _seed_workspace(store)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="我想学一个领域里怎么做优化流程"),
+        user_id=TEST_USER_ID,
+    )
+
+    commit = response.course_package.lessons[0].history_graph.commits[-1]
+    assert response.requirement_phase == "collecting"
+    assert response.course_package.lessons[0].board_document.content_text == ""
+    assert commit.metadata["initial_learning_intent"]["next_action"] == "ask_specific_concept"
+    assert commit.metadata["initial_learning_intent"]["board_editor_called"] is False
+
+
 def test_blank_board_practice_activity_uses_existing_requirement_collection(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
