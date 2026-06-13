@@ -973,7 +973,6 @@ export function LearningHome() {
                   filteredLessonItems.map(({ lesson }) => {
                     const isActive = lesson.id === selectedLessonId;
                     const buttonBusy = busyKey === `lesson:${lesson.id}`;
-                    const isBranching = busyKey === `branch:${lesson.id}`;
                     const isMenuOpen = lessonMenuState?.lessonId === lesson.id;
                     return (
                       <article
@@ -986,21 +985,6 @@ export function LearningHome() {
                             : "border-transparent bg-white/65 hover:border-stone-200 hover:bg-white"
                         )}
                       >
-                        <div className="absolute right-11 top-2 z-20" data-lesson-menu-root>
-                          <button
-                            type="button"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              void handleBranchLesson(lesson);
-                            }}
-                            disabled={buttonBusy || isBranching}
-                            className="flex h-8 w-8 items-center justify-center rounded-lg text-stone-400 transition hover:bg-stone-100 hover:text-stone-950 disabled:cursor-wait disabled:opacity-60"
-                            aria-label={h.branchLessonTitle}
-                            title={h.branchLessonTitle}
-                          >
-                            {isBranching ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <GitFork className="h-4 w-4" />}
-                          </button>
-                        </div>
                         <div className="absolute right-2 top-2 z-20" data-lesson-menu-root>
                           <button
                             type="button"
