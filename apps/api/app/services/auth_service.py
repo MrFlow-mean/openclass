@@ -246,7 +246,6 @@ def _provider_label(provider: str) -> str:
         "google": "Google",
         "apple": "Apple",
         "github": "GitHub",
-        "wechat": "微信",
         "microsoft": "Microsoft",
         "x": "X",
     }.get(provider, provider)
@@ -327,17 +326,6 @@ def _oauth_providers() -> dict[str, OAuthProviderConfig]:
             client_id_env="OPENCLASS_OAUTH_GITHUB_CLIENT_ID",
             client_secret_env="OPENCLASS_OAUTH_GITHUB_CLIENT_SECRET",
         ),
-        "wechat": OAuthProviderConfig(
-            id="wechat",
-            label="微信",
-            description="使用微信扫码登录开放课堂。",
-            auth_url="https://open.weixin.qq.com/connect/qrconnect",
-            token_url="https://api.weixin.qq.com/sns/oauth2/access_token",
-            userinfo_url="https://api.weixin.qq.com/sns/userinfo",
-            scopes=("snsapi_login",),
-            client_id_env="OPENCLASS_OAUTH_WECHAT_APP_ID",
-            client_secret_env="OPENCLASS_OAUTH_WECHAT_APP_SECRET",
-        ),
         "microsoft": OAuthProviderConfig(
             id="microsoft",
             label="Microsoft",
@@ -395,23 +383,6 @@ def _get_json(url: str, access_token: str) -> dict[str, Any] | list[Any]:
         headers={
             "Accept": "application/json",
             "Authorization": f"Bearer {access_token}",
-            "User-Agent": "OpenClass OAuth",
-        },
-        method="GET",
-    )
-    try:
-        with urlrequest.urlopen(req, timeout=12, context=_URLLIB_SSL_CONTEXT) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail="第三方账号资料读取失败") from exc
-
-
-def _get_json_with_params(url: str, params: dict[str, str]) -> dict[str, Any] | list[Any]:
-    target = f"{url}?{parse.urlencode(params)}"
-    req = urlrequest.Request(
-        target,
-        headers={
-            "Accept": "application/json",
             "User-Agent": "OpenClass OAuth",
         },
         method="GET",
@@ -631,22 +602,13 @@ class AuthService:
         redirect_uri = self._oauth_redirect_uri(provider.id, request)
         guest_user_id = self._guest_user_id_for_token(guest_token)
         code_verifier = _oauth_code_verifier() if provider.pkce else None
-        if provider.id == "wechat":
-            params = {
-                "appid": provider.client_id or "",
-                "redirect_uri": redirect_uri,
-                "response_type": "code",
-                "scope": " ".join(provider.scopes),
-                "state": state,
-            }
-        else:
-            params = {
-                "client_id": provider.client_id or "",
-                "redirect_uri": redirect_uri,
-                "response_type": "code",
-                "scope": " ".join(provider.scopes),
-                "state": state,
-            }
+        params = {
+            "client_id": provider.client_id or "",
+            "redirect_uri": redirect_uri,
+            "response_type": "code",
+            "scope": " ".join(provider.scopes),
+            "state": state,
+        }
         if provider.id == "google":
             params["prompt"] = "select_account"
         if provider.pkce and code_verifier:
@@ -666,8 +628,7 @@ class AuthService:
                 code_verifier=code_verifier,
                 created_at=_now_iso(),
             )
-        suffix = "#wechat_redirect" if provider.id == "wechat" else ""
-        return f"{provider.auth_url}?{parse.urlencode(params)}{suffix}"
+        return f"{provider.auth_url}?{parse.urlencode(params)}"
 
     def complete_oauth_callback(self, provider_id: str, payload: dict[str, str], request: Request) -> tuple[str, UserView, str, str]:
         provider = self._configured_provider(provider_id)
@@ -689,21 +650,6 @@ class AuthService:
         *,
         code_verifier: str | None = None,
     ) -> dict[str, Any]:
-        if provider.id == "wechat":
-            payload = _get_json_with_params(
-                provider.token_url,
-                {
-                    "appid": provider.client_id or "",
-                    "secret": provider.client_secret or "",
-                    "code": code,
-                    "grant_type": "authorization_code",
-                },
-            )
-            if not isinstance(payload, dict):
-                raise HTTPException(status_code=502, detail="微信登录令牌格式异常")
-            if payload.get("errcode"):
-                raise HTTPException(status_code=502, detail=str(payload.get("errmsg") or "微信登录令牌交换失败"))
-            return payload
         token_data = {
             "client_id": provider.client_id or "",
             "client_secret": provider.client_secret or "",
@@ -843,30 +789,6 @@ class AuthService:
             )
         if not access_token:
             raise HTTPException(status_code=502, detail="第三方登录没有返回访问令牌")
-        if provider.id == "wechat":
-            openid = str(token_payload.get("openid") or "")
-            if not openid:
-                raise HTTPException(status_code=502, detail="微信登录没有返回 OpenID")
-            raw_profile = _get_json_with_params(
-                provider.userinfo_url or "",
-                {
-                    "access_token": access_token,
-                    "openid": openid,
-                    "lang": "zh_CN",
-                },
-            )
-            if not isinstance(raw_profile, dict):
-                raise HTTPException(status_code=502, detail="微信账号资料格式异常")
-            if raw_profile.get("errcode"):
-                raise HTTPException(status_code=502, detail=str(raw_profile.get("errmsg") or "微信账号资料读取失败"))
-            subject = str(raw_profile.get("unionid") or raw_profile.get("openid") or openid)
-            return OAuthProfile(
-                provider=provider.id,
-                subject=subject,
-                email=None,
-                display_name=str(raw_profile.get("nickname") or "") or None,
-                avatar_url=str(raw_profile.get("headimgurl") or "") or None,
-            )
         if provider.id == "github":
             raw_profile = _get_json(provider.userinfo_url or "", access_token)
             if not isinstance(raw_profile, dict):
