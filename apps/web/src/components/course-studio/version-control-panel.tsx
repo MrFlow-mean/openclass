@@ -29,6 +29,11 @@ function branchLabel(branchName: string) {
   return branchName === "main" ? "主分支" : branchName;
 }
 
+function sortByCreatedAtDesc(left: CommitRecord, right: CommitRecord) {
+  const timeDelta = new Date(right.created_at).getTime() - new Date(left.created_at).getTime();
+  return timeDelta || right.id.localeCompare(left.id);
+}
+
 export function VersionControlPanel({
   activeLesson,
   previewCommit,
@@ -56,6 +61,17 @@ export function VersionControlPanel({
     return timeDelta || left.name.localeCompare(right.name, "zh-CN", { numeric: true });
   });
   const branchBaseLabel = previewCommit ? previewCommit.label : "当前最新节点";
+  const currentBranch = activeLesson.history_graph.branches[activeLesson.history_graph.current_branch] ?? null;
+  const currentHeadCommitId = currentBranch?.head_commit_id ?? activeLesson.history_graph.commits.at(-1)?.id ?? null;
+  const branchLaneByName = new Map(orderedBranches.map((branch, index) => [branch.name, index]));
+  const branchHeads = new Map(orderedBranches.map((branch) => [branch.head_commit_id, branch.name]));
+  const childCountByCommitId = activeLesson.history_graph.commits.reduce<Map<string, number>>((counts, commit) => {
+    commit.parent_ids.forEach((parentId) => {
+      counts.set(parentId, (counts.get(parentId) ?? 0) + 1);
+    });
+    return counts;
+  }, new Map());
+  const timelineCommits = [...activeLesson.history_graph.commits].sort(sortByCreatedAtDesc);
   const taskTitle =
     activeBoardTask?.requested_action ??
     activeRequirements?.action_type ??
@@ -99,11 +115,15 @@ export function VersionControlPanel({
       </section>
 
       <section className="space-y-3">
-        <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">分支顺序</p>
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">分支顺序</p>
+          <span className="text-[10px] font-semibold text-gray-400">按创建时间排列</span>
+        </div>
         <div className="space-y-2">
           {orderedBranches.map((branch, index) => {
             const headCommit = commitsById.get(branch.head_commit_id);
             const isCurrent = branch.name === activeLesson.history_graph.current_branch;
+            const baseCommit = commitsById.get(branch.base_commit_id);
             return (
               <button
                 key={branch.name}
@@ -131,6 +151,9 @@ export function VersionControlPanel({
                   <span className={clsx("mt-1 block truncate text-[11px]", isCurrent ? "text-gray-300" : "text-gray-500")}>
                     {headCommit ? compactText(headCommit.label || headCommit.message, 80) : "分支起点"}
                   </span>
+                  <span className={clsx("mt-1 block truncate text-[10px]", isCurrent ? "text-gray-400" : "text-gray-400")}>
+                    从 {baseCommit ? compactText(baseCommit.label || baseCommit.message, 48) : "初始节点"} 分出
+                  </span>
                 </span>
                 <span className={clsx("text-[10px] font-bold uppercase tracking-[0.14em]", isCurrent ? "text-white" : "text-gray-400")}>
                   {isCurrent ? "当前" : formatDate(headCommit?.created_at ?? branch.created_at)}
@@ -142,13 +165,28 @@ export function VersionControlPanel({
       </section>
 
       <section className="space-y-4 border-t border-gray-200 pt-6">
-        <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">修订记录</p>
-        {[...activeLesson.history_graph.commits].reverse().map((commit, index) => (
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">修订记录</p>
+          <span className="text-[10px] font-semibold text-gray-400">版本树 · 最新在上</span>
+        </div>
+        {timelineCommits.map((commit, index) => {
+          const parentCommit = commitsById.get(commit.parent_ids[0] ?? "");
+          const branchLane = branchLaneByName.get(commit.branch_name) ?? 0;
+          const branchHeadName = branchHeads.get(commit.id) ?? null;
+          return (
           <CommitTimelineItem
             key={commit.id}
             commit={commit}
             active={commit.id === previewCommitId}
             latest={index === 0}
+            current={commit.id === currentHeadCommitId}
+            branchLabel={branchLabel(commit.branch_name)}
+            branchLane={branchLane}
+            branchOrder={branchLane + 1}
+            isBranchHead={Boolean(branchHeadName)}
+            isCurrentBranch={commit.branch_name === activeLesson.history_graph.current_branch}
+            parentLabel={parentCommit ? parentCommit.label : null}
+            childCount={childCountByCommitId.get(commit.id) ?? 0}
             branchSequence={branchSequenceForCommit(activeLesson, commit)}
             currentBranchName={activeLesson.history_graph.current_branch}
             onPreview={() => void onPreviewCommit(commit)}
@@ -156,7 +194,8 @@ export function VersionControlPanel({
             onBranch={() => void onCreateBranchFromCommit(commit)}
             onSwitchBranch={(branchName) => void onSwitchBranch(branchName)}
           />
-        ))}
+          );
+        })}
       </section>
 
       <section className="border-t border-gray-200 pt-6">

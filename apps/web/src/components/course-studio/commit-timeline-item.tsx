@@ -1,5 +1,5 @@
 import clsx from "clsx";
-import { GitBranch } from "lucide-react";
+import { Eye, GitBranch, RotateCcw } from "lucide-react";
 
 import { BranchSequenceSelector, type BranchSequenceOption } from "@/components/branch-sequence-selector";
 import {
@@ -14,6 +14,14 @@ type CommitTimelineItemProps = {
   commit: CommitRecord;
   active: boolean;
   latest: boolean;
+  current: boolean;
+  branchLabel: string;
+  branchLane: number;
+  branchOrder: number;
+  isBranchHead: boolean;
+  isCurrentBranch: boolean;
+  parentLabel: string | null;
+  childCount: number;
   branchSequence: BranchSequenceOption[];
   currentBranchName: string;
   onPreview: () => void;
@@ -26,6 +34,14 @@ export function CommitTimelineItem({
   commit,
   active,
   latest,
+  current,
+  branchLabel,
+  branchLane,
+  branchOrder,
+  isBranchHead,
+  isCurrentBranch,
+  parentLabel,
+  childCount,
   branchSequence,
   currentBranchName,
   onPreview,
@@ -39,19 +55,69 @@ export function CommitTimelineItem({
   const assistantMessage = metadataText(commit, "assistant_message");
   const boardAction = metadataText(commit, "board_action");
   const autoApplied = metadataBool(commit, "auto_applied");
+  const visibleLane = Math.min(branchLane, 3);
+  const laneOffset = visibleLane * 12 + 14;
 
   return (
-    <div className="relative flex gap-4 pl-3">
-      <div className={clsx("absolute left-0 top-1.5 h-full w-px", latest ? "bg-black" : "bg-gray-200")} />
+    <div className={clsx("relative grid grid-cols-[3.25rem_minmax(0,1fr)] gap-3 pb-4", active && "rounded-lg bg-blue-50/40")}>
+      <div className="relative min-h-16">
+        <div
+          className={clsx("absolute top-0 h-full w-px", current ? "bg-black" : latest ? "bg-gray-500" : "bg-gray-200")}
+          style={{ left: laneOffset }}
+        />
+        {visibleLane > 0 ? (
+          <div
+            className={clsx("absolute top-3 h-px bg-gray-200", isCurrentBranch && "bg-gray-400")}
+            style={{ left: 6, width: laneOffset }}
+          />
+        ) : null}
+        <div
+          className={clsx(
+            "absolute top-1.5 flex h-6 w-6 items-center justify-center rounded-md border text-[10px] font-bold",
+            current
+              ? "border-black bg-black text-white"
+              : active
+                ? "border-blue-300 bg-white text-blue-700"
+                : isBranchHead
+                  ? "border-gray-300 bg-white text-gray-700"
+                  : "border-gray-200 bg-white text-gray-400"
+          )}
+          style={{ left: laneOffset - 12 }}
+          aria-hidden="true"
+        >
+          {branchOrder}
+        </div>
+      </div>
+
       <div
         className={clsx(
-          "absolute -left-[4px] top-1.5 h-2 w-2 rounded-full",
-          latest ? "bg-black" : active ? "bg-gray-500" : "bg-gray-300"
+          "min-w-0 rounded-lg border bg-white p-3 transition",
+          current
+            ? "border-black shadow-sm"
+            : active
+              ? "border-blue-200 shadow-sm"
+              : "border-gray-100 hover:border-gray-200"
         )}
-      />
-      <div className="flex-1 pb-4">
+      >
         <div className="flex flex-wrap items-center gap-2">
-          <p className={clsx("text-xs font-bold", latest ? "text-black" : "text-gray-800")}>{commit.label}</p>
+          <span
+            className={clsx(
+              "rounded-full px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.16em]",
+              isCurrentBranch ? "bg-black text-white" : "bg-gray-100 text-gray-500"
+            )}
+          >
+            {branchLabel}
+          </span>
+          {current ? (
+            <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.16em] text-emerald-700">
+              Current
+            </span>
+          ) : null}
+          {isBranchHead && !current ? (
+            <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.16em] text-gray-600">
+              Head
+            </span>
+          ) : null}
           {isChatFlow ? (
             <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.16em] text-blue-700">
               Flow
@@ -68,8 +134,16 @@ export function CommitTimelineItem({
             </span>
           ) : null}
         </div>
+        <div className="mt-2 min-w-0">
+          <p className={clsx("truncate text-xs font-bold", current ? "text-black" : "text-gray-800")}>{commit.label}</p>
+          <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-gray-400">
+            <span>{formatDate(commit.created_at)}</span>
+            {parentLabel ? <span>基于 {compactText(parentLabel, 42)}</span> : null}
+            {childCount > 0 ? <span>{childCount} 个后续节点</span> : null}
+          </div>
+        </div>
         {isChatFlow && userMessage ? (
-          <div className="mt-2 rounded-xl border border-gray-100 bg-white p-3 text-[11px] leading-5 text-gray-600 shadow-sm">
+          <div className="mt-2 rounded-lg border border-gray-100 bg-white p-3 text-[11px] leading-5 text-gray-600 shadow-sm">
             <p className="font-bold text-gray-400">用户输入</p>
             <p className="mt-1 text-gray-700">{compactText(userMessage)}</p>
             {assistantMessage ? (
@@ -87,28 +161,29 @@ export function CommitTimelineItem({
         ) : (
           <p className="mt-1 whitespace-pre-wrap text-[11px] text-gray-500">{commit.message}</p>
         )}
-        <p className="mt-1 text-[11px] text-gray-400">{formatDate(commit.created_at)}</p>
         <div className="mt-2 flex flex-wrap gap-2">
           <button
             type="button"
             onClick={onPreview}
-            className="rounded-md border border-gray-200 bg-white px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-gray-500 hover:border-gray-300 hover:text-black"
+            className="inline-flex items-center gap-1 rounded-md border border-gray-200 bg-white px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-gray-500 hover:border-gray-300 hover:text-black"
           >
+            <Eye className="h-3 w-3" />
             Preview
           </button>
           <button
             type="button"
             onClick={onRestore}
-            className="rounded-md border border-gray-200 bg-white px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-gray-500 hover:border-gray-300 hover:text-black"
+            className="inline-flex items-center gap-1 rounded-md border border-gray-200 bg-white px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-gray-500 hover:border-gray-300 hover:text-black"
           >
+            <RotateCcw className="h-3 w-3" />
             Restore
           </button>
           <button
             type="button"
             onClick={onBranch}
-            className="rounded-md border border-gray-200 bg-white px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-gray-500 hover:border-gray-300 hover:text-black"
+            className="inline-flex items-center gap-1 rounded-md border border-gray-200 bg-white px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-gray-500 hover:border-gray-300 hover:text-black"
           >
-            <GitBranch className="mr-1 inline h-3 w-3" />
+            <GitBranch className="h-3 w-3" />
             Branch
           </button>
         </div>
