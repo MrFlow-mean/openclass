@@ -1,5 +1,8 @@
+"use client";
+
 import clsx from "clsx";
 import { BrainCircuit, GitBranch } from "lucide-react";
+import { useState } from "react";
 
 import { CommitTimelineItem } from "@/components/course-studio/commit-timeline-item";
 import {
@@ -34,6 +37,11 @@ function sortByCreatedAtDesc(left: CommitRecord, right: CommitRecord) {
   return timeDelta || right.id.localeCompare(left.id);
 }
 
+function sortByCreatedAtAsc(left: CommitRecord, right: CommitRecord) {
+  const timeDelta = new Date(left.created_at).getTime() - new Date(right.created_at).getTime();
+  return timeDelta || left.id.localeCompare(right.id);
+}
+
 export function VersionControlPanel({
   activeLesson,
   previewCommit,
@@ -49,6 +57,7 @@ export function VersionControlPanel({
   onCreateBranchFromCommit,
   onSwitchBranch,
 }: VersionControlPanelProps) {
+  const [detailCommitId, setDetailCommitId] = useState<string | null>(null);
   const commitsById = new Map(activeLesson.history_graph.commits.map((commit) => [commit.id, commit]));
   const orderedBranches = Object.values(activeLesson.history_graph.branches).sort((left, right) => {
     if (left.name === "main" && right.name !== "main") {
@@ -71,7 +80,8 @@ export function VersionControlPanel({
     });
     return counts;
   }, new Map());
-  const timelineCommits = [...activeLesson.history_graph.commits].sort(sortByCreatedAtDesc);
+  const timelineCommits = [...activeLesson.history_graph.commits].sort(sortByCreatedAtAsc);
+  const latestCommitId = [...activeLesson.history_graph.commits].sort(sortByCreatedAtDesc)[0]?.id ?? null;
   const taskTitle =
     activeBoardTask?.requested_action ??
     activeRequirements?.action_type ??
@@ -167,7 +177,7 @@ export function VersionControlPanel({
       <section className="space-y-4 border-t border-gray-200 pt-6">
         <div className="flex items-center justify-between gap-3">
           <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">修订记录</p>
-          <span className="text-[10px] font-semibold text-gray-400">版本树 · 最新在上</span>
+          <span className="text-[10px] font-semibold text-gray-400">版本树 · 从起点往后</span>
         </div>
         {timelineCommits.map((commit, index) => {
           const parentCommit = commitsById.get(commit.parent_ids[0] ?? "");
@@ -178,8 +188,10 @@ export function VersionControlPanel({
             key={commit.id}
             commit={commit}
             active={commit.id === previewCommitId}
-            latest={index === 0}
+            latest={commit.id === latestCommitId}
             current={commit.id === currentHeadCommitId}
+            first={index === 0}
+            last={index === timelineCommits.length - 1}
             branchLabel={branchLabel(commit.branch_name)}
             branchLane={branchLane}
             branchOrder={branchLane + 1}
@@ -187,12 +199,15 @@ export function VersionControlPanel({
             isCurrentBranch={commit.branch_name === activeLesson.history_graph.current_branch}
             parentLabel={parentCommit ? parentCommit.label : null}
             childCount={childCountByCommitId.get(commit.id) ?? 0}
+            detailOpen={detailCommitId === commit.id}
             branchSequence={branchSequenceForCommit(activeLesson, commit)}
             currentBranchName={activeLesson.history_graph.current_branch}
             onPreview={() => void onPreviewCommit(commit)}
             onRestore={() => void onRestoreCommit(commit.id)}
             onBranch={() => void onCreateBranchFromCommit(commit)}
             onSwitchBranch={(branchName) => void onSwitchBranch(branchName)}
+            onOpenDetail={() => setDetailCommitId(commit.id)}
+            onCloseDetail={() => setDetailCommitId(null)}
           />
           );
         })}
