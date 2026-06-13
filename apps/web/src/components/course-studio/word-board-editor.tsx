@@ -875,6 +875,15 @@ export function WordBoardEditor({
 
   const renderHomeRibbon = () => (
     <>
+      <div className="flex items-center gap-2 border-r border-amber-100 pr-4">
+        <BoardModelPicker
+          modelOptions={modelOptions}
+          selectedBoardModel={selectedBoardModel}
+          selectedBoardOption={selectedBoardOption}
+          onSelectBoardModel={onSelectBoardModel}
+        />
+      </div>
+
       <div className="flex items-center gap-2 border-r border-gray-100 pr-4">
         <select
           disabled={!editor || readOnly}
@@ -1287,12 +1296,6 @@ export function WordBoardEditor({
             {activeRibbonTab === "page" ? renderPageRibbon() : null}
 
             <div className="ml-auto flex items-center gap-2">
-              <BoardModelPicker
-                modelOptions={modelOptions}
-                selectedBoardModel={selectedBoardModel}
-                selectedBoardOption={selectedBoardOption}
-                onSelectBoardModel={onSelectBoardModel}
-              />
               <WordPageZoomControls
                 value={pageZoom}
                 onChange={updatePageZoom}
