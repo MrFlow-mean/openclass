@@ -1577,6 +1577,60 @@ class OpenAICourseAI:
         )
         return result if isinstance(result, LearningRequirementUpdate) else None
 
+    def generate_initial_learning_intent_decision(
+        self,
+        *,
+        lesson_title: str,
+        existing_summary: str,
+        existing_checklist: list[str],
+        conversation_summary: str,
+        user_message: str,
+    ):
+        from app.services.initial_learning_intent import InitialLearningIntentDecision
+
+        system_prompt = (
+            "你是 OpenClass 的初始学习意图门禁 AI，只在空白板书第一层更新结构化状态，不直接和用户聊天，"
+            "也不生成板书。\n"
+            "任务：判断用户是在学习知识内容，还是想做练习型教学，并判断目标颗粒度是否足以生成第一版板书。\n"
+            "规则：\n"
+            "1. 只判断通用学习形态、目标颗粒度和下一步动作；不要根据主题名、资料名、测评名或样例走特殊规则。\n"
+            "2. learning_mode 只能是 learn_concept、practice_activity、undecided。\n"
+            "3. target_granularity 只能是 specific_concept、broad_domain、ambiguous。\n"
+            "4. next_action 只能是 freeze_minimal_and_generate_board、ask_specific_concept、"
+            "collect_practice_requirements、ask_learning_mode。\n"
+            "5. 如果用户目标已经是单个知识点、明确问题或明确主题单元，选择 freeze_minimal_and_generate_board。\n"
+            "6. 如果用户只给出宽泛方向，选择 ask_specific_concept。\n"
+            "7. 如果用户表达练习、测验、对话、角色互动、纠错、问答、做题或类似活动，"
+            "选择 collect_practice_requirements。\n"
+            "8. 如果无法判断是学习知识内容还是做练习型教学，选择 ask_learning_mode。\n"
+            "9. trace_reason 只描述通用信号，不要复述或扩展任何专属规则。"
+        )
+        user_prompt = _json(
+            {
+                "lesson_title": lesson_title,
+                "existing_summary": existing_summary,
+                "existing_checklist": existing_checklist,
+                "recent_conversation": conversation_summary,
+                "current_user_message": user_message,
+                "response_contract": {
+                    "learning_mode": "learn_concept | practice_activity | undecided",
+                    "target_granularity": "specific_concept | broad_domain | ambiguous",
+                    "next_action": (
+                        "freeze_minimal_and_generate_board | ask_specific_concept | "
+                        "collect_practice_requirements | ask_learning_mode"
+                    ),
+                    "trace_reason": "选择该动作的通用原因，并说明为什么没有选择其他学习形态。",
+                },
+            }
+        )
+        result = self._parse(
+            "pm",
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            schema=InitialLearningIntentDecision,
+        )
+        return result if isinstance(result, InitialLearningIntentDecision) else None
+
     def _call_parse(
         self,
         *,
