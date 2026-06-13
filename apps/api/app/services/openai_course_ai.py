@@ -1640,14 +1640,21 @@ class OpenAICourseAI:
             "3. target_granularity 只能是 specific_concept、broad_domain、ambiguous。\n"
             "4. next_action 只能是 freeze_minimal_and_generate_board、ask_specific_concept、"
             "collect_practice_requirements、ask_learning_mode。\n"
-            "5. 如果用户目标已经是单个知识点、明确问题或明确主题单元，选择 freeze_minimal_and_generate_board。\n"
-            "6. 如果用户只给出宽泛方向，选择 ask_specific_concept。"
-            "领域容器 + how-to 流程型能力（例如某领域里如何优化、调参、训练、设计、分析、部署）"
-            "不等于最小知识点；除非用户给出具体对象、任务场景或约束，否则也选择 ask_specific_concept。\n"
-            "7. 如果用户表达练习、测验、对话、角色互动、纠错、问答、做题或类似活动，"
+            "5. 先判断 readiness.goal_shape：atomic_concept、bounded_question、bounded_task_slice、"
+            "underbounded_process、broad_domain、practice_activity、ambiguous。\n"
+            "6. 如果用户目标已经是单个知识点、明确问题或带有具体对象、任务场景、"
+            "问题、章节、选区或约束的任务切片，readiness_for_initial_board=ready，"
+            "并选择 freeze_minimal_and_generate_board。\n"
+            "7. 如果用户只给出宽泛方向，选择 ask_specific_concept。"
+            "领域容器 + how-to 流程型能力（例如某领域里如何优化、调参、训练、设计、"
+            "分析、部署）不等于最小知识点；除非用户给出具体对象、任务场景或约束，"
+            "否则 goal_shape=underbounded_process，readiness_for_initial_board=needs_narrowing，"
+            "并选择 ask_specific_concept。\n"
+            "8. 如果用户表达练习、测验、对话、角色互动、纠错、问答、做题或类似活动，"
             "选择 collect_practice_requirements。\n"
-            "8. 如果无法判断是学习知识内容还是做练习型教学，选择 ask_learning_mode。\n"
-            "9. trace_reason 只描述通用信号，不要复述或扩展任何专属规则。"
+            "9. 如果无法判断是学习知识内容还是做练习型教学，选择 ask_learning_mode。\n"
+            "10. missing_boundaries 只列缺失的通用边界，例如具体对象、任务场景、约束、学习形态。\n"
+            "11. trace_reason 只描述通用信号，不要复述或扩展任何专属规则。"
         )
         user_prompt = _json(
             {
@@ -1663,6 +1670,17 @@ class OpenAICourseAI:
                         "freeze_minimal_and_generate_board | ask_specific_concept | "
                         "collect_practice_requirements | ask_learning_mode"
                     ),
+                    "readiness": {
+                        "goal_shape": (
+                            "atomic_concept | bounded_question | bounded_task_slice | underbounded_process | "
+                            "broad_domain | practice_activity | ambiguous"
+                        ),
+                        "readiness_for_initial_board": (
+                            "ready | needs_narrowing | needs_practice_requirements | needs_learning_mode"
+                        ),
+                        "missing_boundaries": "缺失的通用边界列表；已 ready 时为空列表。",
+                        "trace_reason": "readiness 判断的通用原因。",
+                    },
                     "trace_reason": "选择该动作的通用原因，并说明为什么没有选择其他学习形态。",
                 },
             }

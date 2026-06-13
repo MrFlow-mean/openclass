@@ -35,6 +35,22 @@
   - `ask_specific_concept`
   - `collect_practice_requirements`
   - `ask_learning_mode`
+- `readiness`
+  - `goal_shape`
+    - `atomic_concept`：用户目标像单个可讲解概念。
+    - `bounded_question`：用户提出了边界明确的问题。
+    - `bounded_task_slice`：用户提出了流程 / 能力类目标，同时给出了具体对象、任务场景、资料位置、问题或约束。
+    - `underbounded_process`：用户提出了流程 / 能力类目标，但还缺少具体对象、任务场景或约束。
+    - `broad_domain`：用户仍在描述领域、方向或长期范围。
+    - `practice_activity`：用户要通过练习、互动、测验或纠错学习。
+    - `ambiguous`：目标形态不可靠。
+  - `readiness_for_initial_board`
+    - `ready`
+    - `needs_narrowing`
+    - `needs_practice_requirements`
+    - `needs_learning_mode`
+  - `missing_boundaries`：还缺少的通用边界，例如具体对象、任务场景、约束或学习形态。
+  - `trace_reason`：readiness 判断的通用原因。
 - `trace_reason`：用通用信号说明为什么选择该动作，以及为什么没有选择其他动作。
 
 ## 状态转移
@@ -57,6 +73,15 @@
 2. 不提前询问练习型字段。
 3. Chatbot 只追问用户具体想学的知识点、问题或范围。
 4. 如果用户随后给出足够小的知识目标，再进入最小冻结需求生成。
+
+### 流程型目标，但边界不足
+
+当 `readiness.goal_shape=underbounded_process`：
+
+1. 不生成默认课程路径。
+2. 不进入练习型字段澄清，除非用户明确要求练习或互动。
+3. Chatbot 只追问一个收窄问题，方向是具体对象、任务场景或约束。
+4. response / commit metadata 必须记录 readiness，说明为什么没有调用 BoardEditor。
 
 ### 练习型教学
 

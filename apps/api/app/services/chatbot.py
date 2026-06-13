@@ -775,8 +775,17 @@ def _should_generate_board_from_explicit_request(
 
 def _initial_learning_intent_instruction(decision: InitialLearningIntentDecision) -> str:
     if decision.next_action == "ask_specific_concept":
+        if decision.readiness.goal_shape == "underbounded_process":
+            missing = "、".join(decision.readiness.missing_boundaries or ["具体对象", "任务场景", "约束"])
+            return (
+                "用户给出了领域或流程里的学习方向，"
+                "但还没有缩小到可生成第一版板书的任务切片。"
+                f"请自然地只追问一个收窄问题，方向是确认{missing}；"
+                "不要询问当前水平或练习目的，也不要生成默认课程路径。"
+            )
         return (
-            "用户给出了学习方向，但还没有缩小到可生成第一版板书的具体知识点、问题或范围。"
+            "用户给出了学习方向，"
+            "但还没有缩小到可生成第一版板书的具体知识点、问题或范围。"
             "请自然地只追问这一个缺口，不要询问当前水平或目的场景。"
         )
     return (
@@ -787,6 +796,8 @@ def _initial_learning_intent_instruction(decision: InitialLearningIntentDecision
 
 def _fallback_initial_learning_intent_question(decision: InitialLearningIntentDecision) -> str:
     if decision.next_action == "ask_specific_concept":
+        if decision.readiness.goal_shape == "underbounded_process":
+            return "你想先聚焦哪个具体对象、任务场景或约束？"
         return "你具体想弄懂哪一个知识点、问题或范围？"
     return "你是想先学习一个知识内容，还是做练习型教学？"
 

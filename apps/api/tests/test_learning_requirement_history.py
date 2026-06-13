@@ -303,7 +303,12 @@ def test_blank_board_specific_knowledge_goal_generates_from_minimal_requirement(
     assert version_kinds == ["completed", "frozen"]
     assert event_kinds == ["created", "completed", "frozen", "consumed"]
     assert commit.metadata["board_generation_action"] == "initial_learning_intent_gate"
-    assert commit.metadata["initial_learning_intent"]["next_action"] == "freeze_minimal_and_generate_board"
+    assert (
+        commit.metadata["initial_learning_intent"]["next_action"]
+        == "freeze_minimal_and_generate_board"
+    )
+    assert commit.metadata["initial_learning_intent"]["readiness"]["goal_shape"] == "bounded_question"
+    assert commit.metadata["initial_learning_intent"]["readiness"]["readiness_for_initial_board"] == "ready"
     assert commit.metadata["initial_learning_intent"]["minimal_frozen_requirement"] is True
     assert commit.metadata["initial_learning_intent"]["board_editor_called"] is True
 
@@ -351,6 +356,11 @@ def test_blank_board_broad_learning_goal_asks_for_specific_concept(
     assert response.requirement_phase == "collecting"
     assert response.course_package.lessons[0].board_document.content_text == ""
     assert commit.metadata["initial_learning_intent"]["next_action"] == "ask_specific_concept"
+    assert commit.metadata["initial_learning_intent"]["readiness"]["goal_shape"] == "broad_domain"
+    assert (
+        commit.metadata["initial_learning_intent"]["readiness"]["readiness_for_initial_board"]
+        == "needs_narrowing"
+    )
     assert commit.metadata["initial_learning_intent"]["board_editor_called"] is False
 
 
@@ -392,7 +402,71 @@ def test_blank_board_underbounded_process_goal_does_not_generate(
     assert response.requirement_phase == "collecting"
     assert response.course_package.lessons[0].board_document.content_text == ""
     assert commit.metadata["initial_learning_intent"]["next_action"] == "ask_specific_concept"
+    assert commit.metadata["initial_learning_intent"]["readiness"]["goal_shape"] == "underbounded_process"
+    assert (
+        commit.metadata["initial_learning_intent"]["readiness"]["readiness_for_initial_board"]
+        == "needs_narrowing"
+    )
+    assert commit.metadata["initial_learning_intent"]["readiness"]["missing_boundaries"] == [
+        "具体对象",
+        "任务场景",
+        "约束",
+    ]
     assert commit.metadata["initial_learning_intent"]["board_editor_called"] is False
+
+
+def test_blank_board_bounded_process_slice_generates_after_narrowing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_initial_learning_intent_decision",
+        lambda **kwargs: InitialLearningIntentDecision(
+            learning_mode="learn_concept",
+            target_granularity="specific_concept",
+            next_action="freeze_minimal_and_generate_board",
+            trace_reason="用户补充了具体任务切片。",
+        ),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_board_document_edit",
+        lambda **kwargs: BoardDocumentEditResult(
+            operation="replace_document",
+            title="任务切片板书",
+            content_text="# 任务切片板书\n\n## 具体对象\n\n围绕具体对象和约束组织第一版内容。",
+            summary="已围绕任务切片生成。",
+            chatbot_message="已生成第一版板书。",
+            section_titles=["具体对象"],
+        ),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_post_board_generation_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="板书已经就绪，要我按它从开头讲起吗？"),
+    )
+    _, lesson = _seed_workspace(store)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="我想学当前模型怎么优化训练流程"),
+        user_id=TEST_USER_ID,
+    )
+
+    commit = response.course_package.lessons[0].history_graph.commits[-1]
+    assert response.requirement_phase == "consumed"
+    assert response.requirement_cleared is True
+    assert "任务切片板书" in response.course_package.lessons[0].board_document.content_text
+    assert (
+        commit.metadata["initial_learning_intent"]["next_action"]
+        == "freeze_minimal_and_generate_board"
+    )
+    assert commit.metadata["initial_learning_intent"]["readiness"]["goal_shape"] == "bounded_task_slice"
+    assert commit.metadata["initial_learning_intent"]["readiness"]["readiness_for_initial_board"] == "ready"
+    assert commit.metadata["initial_learning_intent"]["board_editor_called"] is True
 
 
 def test_blank_board_practice_activity_uses_existing_requirement_collection(
@@ -438,6 +512,11 @@ def test_blank_board_practice_activity_uses_existing_requirement_collection(
     assert response.requirement_phase == "collecting"
     assert response.course_package.lessons[0].board_document.content_text == ""
     assert commit.metadata["initial_learning_intent"]["next_action"] == "collect_practice_requirements"
+    assert commit.metadata["initial_learning_intent"]["readiness"]["goal_shape"] == "practice_activity"
+    assert (
+        commit.metadata["initial_learning_intent"]["readiness"]["readiness_for_initial_board"]
+        == "needs_practice_requirements"
+    )
     assert commit.metadata["initial_learning_intent"]["board_editor_called"] is False
 
 
