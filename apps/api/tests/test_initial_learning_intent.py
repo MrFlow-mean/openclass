@@ -93,6 +93,31 @@ def test_initial_learning_intent_keeps_bare_process_problem_underbounded(monkeyp
     assert decision.readiness.readiness_for_initial_board == "needs_narrowing"
 
 
+def test_initial_learning_intent_continuation_freezes_after_boundary(monkeypatch) -> None:
+    def _unexpected_ai_call(**kwargs):
+        raise AssertionError("boundary continuations should not need another PM model decision")
+
+    monkeypatch.setattr(
+        initial_learning_intent.openai_course_ai,
+        "generate_initial_learning_intent_decision",
+        _unexpected_ai_call,
+    )
+
+    decision = decide_initial_learning_intent(
+        lesson_title="空白页",
+        existing_summary="我想学一个领域里怎么做优化流程",
+        existing_checklist=["我想学一个领域里怎么做优化流程"],
+        conversation=[],
+        user_message="如果是面对一个目标系统降低错误率，应该怎么做？",
+    )
+
+    assert decision.learning_mode == "learn_concept"
+    assert decision.target_granularity == "specific_concept"
+    assert decision.next_action == "freeze_minimal_and_generate_board"
+    assert decision.readiness.goal_shape == "bounded_task_slice"
+    assert decision.readiness.readiness_for_initial_board == "ready"
+
+
 def test_initial_learning_intent_keeps_bounded_process_slice_ready(monkeypatch) -> None:
     model_decision = InitialLearningIntentDecision(
         learning_mode="learn_concept",

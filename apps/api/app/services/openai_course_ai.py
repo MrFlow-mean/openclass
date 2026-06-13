@@ -64,6 +64,7 @@ def _load_root_dotenv() -> None:
 
 _load_root_dotenv()
 DEFAULT_TEXT_MODEL = OPENAI_DEFAULT_TEXT_MODEL
+DEFAULT_AI_HTTP_TIMEOUT_SECONDS = 90.0
 _text_model_selection: ContextVar[AIModelSelection | None] = ContextVar(
     "text_model_selection", default=None
 )
@@ -393,6 +394,18 @@ def emit_ai_stream_event(payload: dict[str, Any]) -> None:
     observer = _ai_stream_observer.get()
     if observer:
         observer(payload)
+
+
+def _ai_http_timeout_seconds() -> float:
+    raw = os.getenv("OPENCLASS_AI_HTTP_TIMEOUT_SECONDS", "").strip()
+    if not raw:
+        return DEFAULT_AI_HTTP_TIMEOUT_SECONDS
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning("Invalid OPENCLASS_AI_HTTP_TIMEOUT_SECONDS=%r; using default", raw)
+        return DEFAULT_AI_HTTP_TIMEOUT_SECONDS
+    return max(5.0, value)
 
 
 class OpenAIConfig(BaseModel):
@@ -784,23 +797,36 @@ class OpenAICourseAI:
         self.anthropic_config = AnthropicConfig()
         self.anthropic_compatible_config = AnthropicCompatibleConfig()
         self.google_config = GoogleTextConfig()
+        openai_timeout = _ai_http_timeout_seconds()
         self.client = (
-            OpenAI(api_key=self.config.api_key, base_url=self.config.base_url)
+            OpenAI(api_key=self.config.api_key, base_url=self.config.base_url, timeout=openai_timeout)
             if self.config.enabled
             else None
         )
         self.deepseek_client = (
-            OpenAI(api_key=self.deepseek_config.api_key, base_url=self.deepseek_config.base_url)
+            OpenAI(
+                api_key=self.deepseek_config.api_key,
+                base_url=self.deepseek_config.base_url,
+                timeout=openai_timeout,
+            )
             if self.deepseek_config.enabled
             else None
         )
         self.kimi_client = (
-            OpenAI(api_key=self.kimi_config.api_key, base_url=self.kimi_config.base_url)
+            OpenAI(
+                api_key=self.kimi_config.api_key,
+                base_url=self.kimi_config.base_url,
+                timeout=openai_timeout,
+            )
             if self.kimi_config.enabled
             else None
         )
         self.minimax_client = (
-            OpenAI(api_key=self.minimax_config.api_key, base_url=self.minimax_config.base_url)
+            OpenAI(
+                api_key=self.minimax_config.api_key,
+                base_url=self.minimax_config.base_url,
+                timeout=openai_timeout,
+            )
             if self.minimax_config.enabled
             else None
         )
@@ -808,6 +834,7 @@ class OpenAICourseAI:
             OpenAI(
                 api_key=self.openai_compatible_config.api_key,
                 base_url=self.openai_compatible_config.base_url,
+                timeout=openai_timeout,
             )
             if self.openai_compatible_config.enabled
             else None

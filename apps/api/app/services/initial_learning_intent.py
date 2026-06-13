@@ -64,7 +64,7 @@ REQUIREMENT_DETAIL_PATTERN = re.compile(
 HOW_TO_PATTERN = re.compile(r"(怎么|如何|怎样|方法|流程|思路|路径|策略)")
 PROCESS_CAPABILITY_PATTERN = re.compile(
     r"(优化|调参|配置|训练|评估|部署|建模|设计|实现|应用|分析|"
-    r"改进|提升|排查|解决|规划|管理)"
+    r"改进|提升|排查|解决|规划|管理|减少|降低|避免|控制|处理|应对)"
 )
 DOMAIN_CONTAINER_PATTERN = re.compile(r"(里|中|里面|当中|领域|场景|流程|项目|系统)")
 CONCRETE_PROCESS_SCOPE_PATTERN = re.compile(
@@ -76,17 +76,19 @@ CONCRETE_PROCESS_SCOPE_PATTERN = re.compile(
 )
 PROCESS_BOUNDARY_PATTERN = re.compile(
     r"(约束|限制|要求|目标是|希望达到|用于|用来|面向|为了|"
+    r"(?:面对|针对|围绕|关于)[^，。！？!?；;\n]{1,40}|"
     r"(?:错误|报错|失败|卡住|瓶颈)[^，。！？!?；;\n]{1,24}|"
     r"在[^，。！？!?；;\n]{1,24}(?:场景|情况下|时候|环境))"
 )
 PROCESS_OBJECT_PATTERN = re.compile(
     r"(?:优化|调参|配置|训练|评估|部署|建模|设计|实现|应用|分析|"
-    r"改进|提升|排查|解决|规划|管理)"
+    r"改进|提升|排查|解决|规划|管理|减少|降低|避免|控制|处理|应对)"
     r"(?P<object>[^，。！？!?；;\n]{1,40})"
 )
 PROCESS_WORD_CLEANER = re.compile(
     r"(怎么|如何|怎样|方法|流程|思路|路径|策略|优化|调参|配置|训练|评估|部署|建模|设计|"
-    r"实现|应用|分析|改进|提升|排查|解决|规划|管理|一下|下|的|呢|吗|啊|吧)"
+    r"实现|应用|分析|改进|提升|排查|解决|规划|管理|减少|降低|避免|控制|处理|应对|"
+    r"一下|下|的|呢|吗|啊|吧)"
 )
 GENERIC_PROCESS_BOUNDARY_PATTERN = re.compile(
     r"^(这个|那个|这些|那些|它|内容|东西|方向|领域|场景|流程|项目|"
@@ -161,6 +163,14 @@ def decide_initial_learning_intent(
     conversation: list[ConversationTurn],
     user_message: str,
 ) -> InitialLearningIntentDecision:
+    continuation_decision = _decide_initial_intent_continuation(
+        existing_summary=existing_summary,
+        existing_checklist=existing_checklist,
+        user_message=user_message,
+    )
+    if continuation_decision is not None:
+        return continuation_decision
+
     ai_decision = openai_course_ai.generate_initial_learning_intent_decision(
         lesson_title=lesson_title,
         existing_summary=existing_summary,
@@ -171,6 +181,41 @@ def decide_initial_learning_intent(
     if isinstance(ai_decision, InitialLearningIntentDecision):
         return _apply_readiness_guard(ai_decision, user_message=user_message)
     return fallback_initial_learning_intent_decision(user_message)
+
+
+def _decide_initial_intent_continuation(
+    *,
+    existing_summary: str,
+    existing_checklist: list[str],
+    user_message: str,
+) -> InitialLearningIntentDecision | None:
+    if not _has_underbounded_existing_goal(existing_summary, existing_checklist):
+        return None
+    compact = _compact_text(user_message, limit=240)
+    if not compact or EXPLICIT_PRACTICE_ACTIVITY_PATTERN.search(compact):
+        return None
+    if not _has_process_boundary(compact):
+        return None
+    return InitialLearningIntentDecision(
+        learning_mode="learn_concept",
+        target_granularity="specific_concept",
+        next_action="freeze_minimal_and_generate_board",
+        trace_reason=(
+            "用户在上一轮未收窄流程型目标后补充了具体对象、任务场景或约束，"
+            "可以形成最小冻结知识切片。"
+        ),
+        readiness=LearningRequestReadiness(
+            goal_shape=_ready_goal_shape(compact),
+            readiness_for_initial_board="ready",
+            missing_boundaries=[],
+            trace_reason="本轮补充内容提供了生成第一版板书所需的边界。",
+        ),
+    )
+
+
+def _has_underbounded_existing_goal(existing_summary: str, existing_checklist: list[str]) -> bool:
+    candidates = [existing_summary, *existing_checklist]
+    return any(_is_underbounded_process_goal(candidate) for candidate in candidates if candidate)
 
 
 def _apply_readiness_guard(
@@ -325,7 +370,11 @@ def build_requirements_from_initial_learning_intent(
     ready_for_board: bool,
 ) -> LearningRequirementSheet:
     updated = LearningRequirementSheet.model_validate(base.model_dump(mode="json"))
-    compact_goal = _compact_text(user_message, limit=240)
+    compact_goal = _initial_learning_goal_text(
+        base_goal=base.learning_goal,
+        user_message=user_message,
+        ready_for_board=ready_for_board,
+    )
     if compact_goal:
         updated.learning_goal = compact_goal
         updated.learning_need_checklist = [compact_goal]
@@ -341,6 +390,25 @@ def build_requirements_from_initial_learning_intent(
         else ""
     )
     return updated
+
+
+def _initial_learning_goal_text(
+    *,
+    base_goal: str,
+    user_message: str,
+    ready_for_board: bool,
+) -> str:
+    compact_goal = _compact_text(user_message, limit=240)
+    compact_base = _compact_text(base_goal, limit=240)
+    if (
+        ready_for_board
+        and compact_goal
+        and compact_base
+        and _is_underbounded_process_goal(compact_base)
+        and compact_base not in compact_goal
+    ):
+        return _compact_text(f"{compact_base}；补充边界：{compact_goal}", limit=360)
+    return compact_goal
 
 
 def build_clarification_from_initial_learning_intent(

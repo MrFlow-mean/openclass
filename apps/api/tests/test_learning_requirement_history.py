@@ -469,6 +469,79 @@ def test_blank_board_bounded_process_slice_generates_after_narrowing(
     assert commit.metadata["initial_learning_intent"]["board_editor_called"] is True
 
 
+def test_blank_board_boundary_followup_generates_from_existing_initial_gate(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    initial_gate_calls = 0
+
+    def _initial_decision(**kwargs):
+        nonlocal initial_gate_calls
+        initial_gate_calls += 1
+        if initial_gate_calls > 1:
+            raise AssertionError("boundary follow-up should reuse existing initial gate state")
+        return InitialLearningIntentDecision(
+            learning_mode="learn_concept",
+            target_granularity="specific_concept",
+            next_action="freeze_minimal_and_generate_board",
+            trace_reason="模型误把未收窄流程型目标当成最小知识点。",
+        )
+
+    monkeypatch.setattr(openai_course_ai, "generate_initial_learning_intent_decision", _initial_decision)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_chatbot_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="你想先聚焦哪个具体对象、任务场景或约束？"),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_board_document_edit",
+        lambda **kwargs: BoardDocumentEditResult(
+            operation="replace_document",
+            title="边界明确后的板书",
+            content_text="# 边界明确后的板书\n\n## 任务切片\n\n围绕补充边界生成第一版内容。",
+            summary="已生成第一版板书。",
+            chatbot_message="已生成第一版板书。",
+            section_titles=["任务切片"],
+        ),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_post_board_generation_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="板书已经就绪，要我按它从开头讲起吗？"),
+    )
+    _, lesson = _seed_workspace(store)
+
+    first_response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="我想学一个领域里怎么做优化流程"),
+        user_id=TEST_USER_ID,
+    )
+    second_response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="如果是面对一个目标系统降低错误率，应该怎么做？"),
+        user_id=TEST_USER_ID,
+    )
+
+    version_kinds, event_kinds = _history_kinds(store, lesson.id)
+    commit = second_response.course_package.lessons[0].history_graph.commits[-1]
+    assert first_response.requirement_phase == "collecting"
+    assert second_response.requirement_phase == "consumed"
+    assert second_response.requirement_cleared is True
+    assert initial_gate_calls == 1
+    assert "边界明确后的板书" in second_response.course_package.lessons[0].board_document.content_text
+    assert version_kinds == ["created", "completed", "frozen"]
+    assert event_kinds == ["created", "completed", "frozen", "consumed"]
+    assert (
+        commit.metadata["initial_learning_intent"]["next_action"]
+        == "freeze_minimal_and_generate_board"
+    )
+    assert commit.metadata["initial_learning_intent"]["readiness"]["goal_shape"] == "bounded_task_slice"
+    assert commit.metadata["initial_learning_intent"]["board_editor_called"] is True
+
+
 def test_blank_board_practice_activity_uses_existing_requirement_collection(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
