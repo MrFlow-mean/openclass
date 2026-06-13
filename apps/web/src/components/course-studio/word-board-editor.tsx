@@ -86,6 +86,7 @@ import { MATH_TEXT_SERIALIZERS, normalizeEditorMath } from "@/lib/math-content";
 import type { AIModelOption, AIModelSelection, BoardDocument, DocumentPageSettings } from "@/types";
 
 type WordRibbonTab = "home" | "insert" | "page";
+type PageScrollPosition = { left: number; top: number };
 
 declare module "@tiptap/core" {
   interface Commands<ReturnType> {
@@ -493,53 +494,87 @@ export function WordBoardEditor({
     return () => pageScroll.removeEventListener("wheel", handlePageWheelZoom, { capture: true });
   }, [handlePageWheelZoom]);
 
-  const handleInsertBlankPage = useCallback(() => {
-    if (!editor || readOnly) {
+  const restorePageScrollPosition = useCallback((position: PageScrollPosition | null) => {
+    if (!position) {
       return;
     }
-    editor
-      .chain()
-      .focus()
-      .insertContent([
-        { type: "pageBreak" },
-        { type: "paragraph" },
-        { type: "pageBreak" },
-        { type: "paragraph" },
-      ])
-      .run();
-  }, [editor, readOnly]);
+
+    const restore = () => {
+      const pageScroll = pageScrollRef.current;
+      if (!pageScroll) {
+        return;
+      }
+      pageScroll.scrollLeft = position.left;
+      pageScroll.scrollTop = position.top;
+    };
+
+    restore();
+    window.requestAnimationFrame(() => {
+      restore();
+      window.requestAnimationFrame(restore);
+    });
+  }, []);
+
+  const runEditorCommand = useCallback(
+    (command: (currentEditor: TiptapEditor) => void) => {
+      if (!editor || readOnly) {
+        return;
+      }
+      const pageScroll = pageScrollRef.current;
+      const scrollPosition = pageScroll
+        ? { left: pageScroll.scrollLeft, top: pageScroll.scrollTop }
+        : null;
+      command(editor);
+      restorePageScrollPosition(scrollPosition);
+    },
+    [editor, readOnly, restorePageScrollPosition]
+  );
+
+  const handleInsertBlankPage = useCallback(() => {
+    runEditorCommand((currentEditor) => {
+      currentEditor
+        .chain()
+        .focus(null, { scrollIntoView: false })
+        .insertContent([
+          { type: "pageBreak" },
+          { type: "paragraph" },
+          { type: "pageBreak" },
+          { type: "paragraph" },
+        ])
+        .run();
+    });
+  }, [runEditorCommand]);
 
   const handleInsertCoverPage = useCallback(() => {
-    if (!editor || readOnly) {
-      return;
-    }
     const coverTitle = document.title.trim() || "未命名讲义";
-    editor
-      .chain()
-      .focus("start")
-      .insertContent([
-        { type: "paragraph" },
-        {
-          type: "heading",
-          attrs: { level: 1, textAlign: "center" },
-          content: [{ type: "text", text: coverTitle }],
-        },
-        {
-          type: "paragraph",
-          attrs: { textAlign: "center" },
-          content: [{ type: "text", text: "课程讲义 / Lesson Notes" }],
-        },
-        {
-          type: "paragraph",
-          attrs: { textAlign: "center" },
-          content: [{ type: "text", text: "在这里补充授课对象、目标和使用场景" }],
-        },
-        { type: "paragraph" },
-        { type: "pageBreak" },
-        { type: "paragraph" },
-      ])
-      .run();
-  }, [document.title, editor, readOnly]);
+    runEditorCommand((currentEditor) => {
+      currentEditor
+        .chain()
+        .focus("start", { scrollIntoView: false })
+        .insertContent([
+          { type: "paragraph" },
+          {
+            type: "heading",
+            attrs: { level: 1, textAlign: "center" },
+            content: [{ type: "text", text: coverTitle }],
+          },
+          {
+            type: "paragraph",
+            attrs: { textAlign: "center" },
+            content: [{ type: "text", text: "课程讲义 / Lesson Notes" }],
+          },
+          {
+            type: "paragraph",
+            attrs: { textAlign: "center" },
+            content: [{ type: "text", text: "在这里补充授课对象、目标和使用场景" }],
+          },
+          { type: "paragraph" },
+          { type: "pageBreak" },
+          { type: "paragraph" },
+        ])
+        .run();
+    });
+  }, [document.title, runEditorCommand]);
 
   const handleInsertTableOfContents = useCallback(() => {
     if (!editor || readOnly) {
@@ -555,64 +590,64 @@ export function WordBoardEditor({
       }
     });
 
-    editor
-      .chain()
-      .focus("start")
-      .insertContent([
-        {
-          type: "heading",
-          attrs: { level: 2 },
-          content: [{ type: "text", text: "目录" }],
-        },
-        {
-          type: "orderedList",
-          content: (headings.length ? headings : ["正文里出现标题后，可再次插入目录页自动整理结构"]).map(
-            (heading) => ({
-              type: "listItem",
-              content: [
-                {
-                  type: "paragraph",
-                  content: [{ type: "text", text: heading }],
-                },
-              ],
-            })
-          ),
-        },
-        { type: "paragraph" },
-      ])
-      .run();
-  }, [editor, readOnly]);
+    runEditorCommand((currentEditor) => {
+      currentEditor
+        .chain()
+        .focus("start", { scrollIntoView: false })
+        .insertContent([
+          {
+            type: "heading",
+            attrs: { level: 2 },
+            content: [{ type: "text", text: "目录" }],
+          },
+          {
+            type: "orderedList",
+            content: (headings.length ? headings : ["正文里出现标题后，可再次插入目录页自动整理结构"]).map(
+              (heading) => ({
+                type: "listItem",
+                content: [
+                  {
+                    type: "paragraph",
+                    content: [{ type: "text", text: heading }],
+                  },
+                ],
+              })
+            ),
+          },
+          { type: "paragraph" },
+        ])
+        .run();
+    });
+  }, [editor, readOnly, runEditorCommand]);
 
   const handleInsertTextBox = useCallback(() => {
-    if (!editor || readOnly) {
-      return;
-    }
-    editor
-      .chain()
-      .focus()
-      .insertContent({
-        type: "blockquote",
-        content: [
-          {
-            type: "paragraph",
-            content: [{ type: "text", text: "重点说明：在这里补充定义、提醒或课堂旁注。" }],
-          },
-        ],
-      })
-      .run();
-  }, [editor, readOnly]);
+    runEditorCommand((currentEditor) => {
+      currentEditor
+        .chain()
+        .focus(null, { scrollIntoView: false })
+        .insertContent({
+          type: "blockquote",
+          content: [
+            {
+              type: "paragraph",
+              content: [{ type: "text", text: "重点说明：在这里补充定义、提醒或课堂旁注。" }],
+            },
+          ],
+        })
+        .run();
+    });
+  }, [runEditorCommand]);
 
   const handleInsertTable = useCallback(() => {
-    if (!editor || readOnly) {
-      return;
-    }
-    editor
-      .chain()
-      .focus()
-      .insertTable({ rows: tableRows, cols: tableCols, withHeaderRow: tableHasHeaderRow })
-      .run();
+    runEditorCommand((currentEditor) => {
+      currentEditor
+        .chain()
+        .focus(null, { scrollIntoView: false })
+        .insertTable({ rows: tableRows, cols: tableCols, withHeaderRow: tableHasHeaderRow })
+        .run();
+    });
     setIsTableActive(true);
-  }, [editor, readOnly, tableCols, tableHasHeaderRow, tableRows]);
+  }, [runEditorCommand, tableCols, tableHasHeaderRow, tableRows]);
 
   const handleInsertLink = useCallback(() => {
     if (!editor || readOnly) {
@@ -627,7 +662,9 @@ export function WordBoardEditor({
       return;
     }
     if (selectedText) {
-      editor.chain().focus().extendMarkRange("link").setLink({ href }).run();
+      runEditorCommand((currentEditor) =>
+        currentEditor.chain().focus(null, { scrollIntoView: false }).extendMarkRange("link").setLink({ href }).run()
+      );
       return;
     }
     const labelInput = window.prompt("请输入显示文本", "查看资料");
@@ -635,16 +672,18 @@ export function WordBoardEditor({
     if (!label) {
       return;
     }
-    editor
-      .chain()
-      .focus()
-      .insertContent({
-        type: "text",
-        text: label,
-        marks: [{ type: "link", attrs: { href } }],
-      })
-      .run();
-  }, [editor, readOnly]);
+    runEditorCommand((currentEditor) => {
+      currentEditor
+        .chain()
+        .focus(null, { scrollIntoView: false })
+        .insertContent({
+          type: "text",
+          text: label,
+          marks: [{ type: "link", attrs: { href } }],
+        })
+        .run();
+    });
+  }, [editor, readOnly, runEditorCommand]);
 
   const handleInsertHeaderFooter = useCallback(() => {
     if (readOnly) {
@@ -686,11 +725,13 @@ export function WordBoardEditor({
         if (!src) {
           return;
         }
-        editor.chain().focus().setImage({ src, alt: file.name }).run();
+        runEditorCommand((currentEditor) =>
+          currentEditor.chain().focus(null, { scrollIntoView: false }).setImage({ src, alt: file.name }).run()
+        );
       };
       reader.readAsDataURL(file);
     },
-    [editor, readOnly]
+    [editor, readOnly, runEditorCommand]
   );
 
   const tableInsertHint = `${tableRows} x ${tableCols}${tableHasHeaderRow ? " · 表头" : ""}`;
@@ -753,49 +794,77 @@ export function WordBoardEditor({
           <ToolbarButton
             title="上方插入行"
             disabled={tableEditDisabled}
-            onClick={() => editor?.chain().focus().addRowBefore().run()}
+            onClick={() =>
+              runEditorCommand((currentEditor) =>
+                currentEditor.chain().focus(null, { scrollIntoView: false }).addRowBefore().run()
+              )
+            }
           >
             <ChevronUp className="h-4 w-4" />
           </ToolbarButton>
           <ToolbarButton
             title="下方插入行"
             disabled={tableEditDisabled}
-            onClick={() => editor?.chain().focus().addRowAfter().run()}
+            onClick={() =>
+              runEditorCommand((currentEditor) =>
+                currentEditor.chain().focus(null, { scrollIntoView: false }).addRowAfter().run()
+              )
+            }
           >
             <ChevronDown className="h-4 w-4" />
           </ToolbarButton>
           <ToolbarButton
             title="左侧插入列"
             disabled={tableEditDisabled}
-            onClick={() => editor?.chain().focus().addColumnBefore().run()}
+            onClick={() =>
+              runEditorCommand((currentEditor) =>
+                currentEditor.chain().focus(null, { scrollIntoView: false }).addColumnBefore().run()
+              )
+            }
           >
             <ArrowLeft className="h-4 w-4" />
           </ToolbarButton>
           <ToolbarButton
             title="右侧插入列"
             disabled={tableEditDisabled}
-            onClick={() => editor?.chain().focus().addColumnAfter().run()}
+            onClick={() =>
+              runEditorCommand((currentEditor) =>
+                currentEditor.chain().focus(null, { scrollIntoView: false }).addColumnAfter().run()
+              )
+            }
           >
             <ArrowRight className="h-4 w-4" />
           </ToolbarButton>
           <ToolbarButton
             title="合并单元格"
             disabled={tableEditDisabled}
-            onClick={() => editor?.chain().focus().mergeCells().run()}
+            onClick={() =>
+              runEditorCommand((currentEditor) =>
+                currentEditor.chain().focus(null, { scrollIntoView: false }).mergeCells().run()
+              )
+            }
           >
             <TableCellsMerge className="h-4 w-4" />
           </ToolbarButton>
           <ToolbarButton
             title="拆分单元格"
             disabled={tableEditDisabled}
-            onClick={() => editor?.chain().focus().splitCell().run()}
+            onClick={() =>
+              runEditorCommand((currentEditor) =>
+                currentEditor.chain().focus(null, { scrollIntoView: false }).splitCell().run()
+              )
+            }
           >
             <TableCellsSplit className="h-4 w-4" />
           </ToolbarButton>
           <ToolbarButton
             title="删除表格"
             disabled={tableEditDisabled}
-            onClick={() => editor?.chain().focus().deleteTable().run()}
+            onClick={() =>
+              runEditorCommand((currentEditor) =>
+                currentEditor.chain().focus(null, { scrollIntoView: false }).deleteTable().run()
+              )
+            }
           >
             <Trash2 className="h-4 w-4" />
           </ToolbarButton>
@@ -811,7 +880,11 @@ export function WordBoardEditor({
           hint="当前表格"
           icon={<Rows3 className="h-4 w-4" />}
           disabled={tableEditDisabled}
-          onClick={() => editor?.chain().focus().addRowAfter().run()}
+          onClick={() =>
+            runEditorCommand((currentEditor) =>
+              currentEditor.chain().focus(null, { scrollIntoView: false }).addRowAfter().run()
+            )
+          }
         />
         <RibbonActionButton
           title="右侧插入一列"
@@ -819,7 +892,11 @@ export function WordBoardEditor({
           hint="当前表格"
           icon={<Columns3 className="h-4 w-4" />}
           disabled={tableEditDisabled}
-          onClick={() => editor?.chain().focus().addColumnAfter().run()}
+          onClick={() =>
+            runEditorCommand((currentEditor) =>
+              currentEditor.chain().focus(null, { scrollIntoView: false }).addColumnAfter().run()
+            )
+          }
         />
         <RibbonActionButton
           title="删除当前行"
@@ -827,7 +904,11 @@ export function WordBoardEditor({
           hint="当前表格"
           icon={<Rows3 className="h-4 w-4" />}
           disabled={tableEditDisabled}
-          onClick={() => editor?.chain().focus().deleteRow().run()}
+          onClick={() =>
+            runEditorCommand((currentEditor) =>
+              currentEditor.chain().focus(null, { scrollIntoView: false }).deleteRow().run()
+            )
+          }
         />
         <RibbonActionButton
           title="删除当前列"
@@ -835,7 +916,11 @@ export function WordBoardEditor({
           hint="当前表格"
           icon={<Columns3 className="h-4 w-4" />}
           disabled={tableEditDisabled}
-          onClick={() => editor?.chain().focus().deleteColumn().run()}
+          onClick={() =>
+            runEditorCommand((currentEditor) =>
+              currentEditor.chain().focus(null, { scrollIntoView: false }).deleteColumn().run()
+            )
+          }
         />
         <RibbonActionButton
           title="合并单元格"
@@ -843,7 +928,11 @@ export function WordBoardEditor({
           hint="选中单元格"
           icon={<TableCellsMerge className="h-4 w-4" />}
           disabled={tableEditDisabled}
-          onClick={() => editor?.chain().focus().mergeCells().run()}
+          onClick={() =>
+            runEditorCommand((currentEditor) =>
+              currentEditor.chain().focus(null, { scrollIntoView: false }).mergeCells().run()
+            )
+          }
         />
         <RibbonActionButton
           title="拆分单元格"
@@ -851,7 +940,11 @@ export function WordBoardEditor({
           hint="当前单元格"
           icon={<TableCellsSplit className="h-4 w-4" />}
           disabled={tableEditDisabled}
-          onClick={() => editor?.chain().focus().splitCell().run()}
+          onClick={() =>
+            runEditorCommand((currentEditor) =>
+              currentEditor.chain().focus(null, { scrollIntoView: false }).splitCell().run()
+            )
+          }
         />
         <RibbonActionButton
           title="切换表头行"
@@ -859,7 +952,11 @@ export function WordBoardEditor({
           hint="当前表格"
           icon={<PanelTop className="h-4 w-4" />}
           disabled={tableEditDisabled}
-          onClick={() => editor?.chain().focus().toggleHeaderRow().run()}
+          onClick={() =>
+            runEditorCommand((currentEditor) =>
+              currentEditor.chain().focus(null, { scrollIntoView: false }).toggleHeaderRow().run()
+            )
+          }
         />
         <RibbonActionButton
           title="删除表格"
@@ -867,7 +964,11 @@ export function WordBoardEditor({
           hint="当前表格"
           icon={<Trash2 className="h-4 w-4" />}
           disabled={tableEditDisabled}
-          onClick={() => editor?.chain().focus().deleteTable().run()}
+          onClick={() =>
+            runEditorCommand((currentEditor) =>
+              currentEditor.chain().focus(null, { scrollIntoView: false }).deleteTable().run()
+            )
+          }
         />
       </div>
     );
@@ -888,7 +989,12 @@ export function WordBoardEditor({
         <select
           disabled={!editor || readOnly}
           value={currentFontFamily}
-          onChange={(event) => editor?.chain().focus().setFontFamily(event.target.value).run()}
+          onChange={(event) => {
+            const fontFamily = event.target.value;
+            runEditorCommand((currentEditor) =>
+              currentEditor.chain().focus(null, { scrollIntoView: false }).setFontFamily(fontFamily).run()
+            );
+          }}
           className="rounded-lg border border-gray-200 bg-white px-2.5 py-2 text-[12px] font-medium outline-none"
         >
           {FONT_FAMILY_OPTIONS.map((option) => (
@@ -900,7 +1006,12 @@ export function WordBoardEditor({
         <select
           disabled={!editor || readOnly}
           value={currentFontSize}
-          onChange={(event) => editor?.chain().focus().setFontSize(`${event.target.value}px`).run()}
+          onChange={(event) => {
+            const fontSize = `${event.target.value}px`;
+            runEditorCommand((currentEditor) =>
+              currentEditor.chain().focus(null, { scrollIntoView: false }).setFontSize(fontSize).run()
+            );
+          }}
           className="rounded-lg border border-gray-200 bg-white px-2.5 py-2 text-[12px] font-medium outline-none"
         >
           {FONT_SIZE_OPTIONS.map((option) => (
@@ -916,7 +1027,11 @@ export function WordBoardEditor({
           title="加粗"
           active={editor?.isActive("bold")}
           disabled={!editor || readOnly}
-          onClick={() => editor?.chain().focus().toggleBold().run()}
+          onClick={() =>
+            runEditorCommand((currentEditor) =>
+              currentEditor.chain().focus(null, { scrollIntoView: false }).toggleBold().run()
+            )
+          }
         >
           <Bold className="h-4 w-4" />
         </ToolbarButton>
@@ -924,7 +1039,11 @@ export function WordBoardEditor({
           title="斜体"
           active={editor?.isActive("italic")}
           disabled={!editor || readOnly}
-          onClick={() => editor?.chain().focus().toggleItalic().run()}
+          onClick={() =>
+            runEditorCommand((currentEditor) =>
+              currentEditor.chain().focus(null, { scrollIntoView: false }).toggleItalic().run()
+            )
+          }
         >
           <Italic className="h-4 w-4" />
         </ToolbarButton>
@@ -932,7 +1051,11 @@ export function WordBoardEditor({
           title="下划线"
           active={editor?.isActive("underline")}
           disabled={!editor || readOnly}
-          onClick={() => editor?.chain().focus().toggleUnderline().run()}
+          onClick={() =>
+            runEditorCommand((currentEditor) =>
+              currentEditor.chain().focus(null, { scrollIntoView: false }).toggleUnderline().run()
+            )
+          }
         >
           <Underline className="h-4 w-4" />
         </ToolbarButton>
@@ -940,14 +1063,22 @@ export function WordBoardEditor({
           title="高亮"
           active={editor?.isActive("highlight")}
           disabled={!editor || readOnly}
-          onClick={() => editor?.chain().focus().toggleHighlight({ color: "#fef08a" }).run()}
+          onClick={() =>
+            runEditorCommand((currentEditor) =>
+              currentEditor.chain().focus(null, { scrollIntoView: false }).toggleHighlight({ color: "#fef08a" }).run()
+            )
+          }
         >
           <Highlighter className="h-4 w-4" />
         </ToolbarButton>
         <ToolbarButton
           title="文字颜色"
           disabled={!editor || readOnly}
-          onClick={() => editor?.chain().focus().setColor("#c2410c").run()}
+          onClick={() =>
+            runEditorCommand((currentEditor) =>
+              currentEditor.chain().focus(null, { scrollIntoView: false }).setColor("#c2410c").run()
+            )
+          }
         >
           <Type className="h-4 w-4" />
         </ToolbarButton>
@@ -958,7 +1089,11 @@ export function WordBoardEditor({
           title="左对齐"
           active={editor?.isActive({ textAlign: "left" })}
           disabled={!editor || readOnly}
-          onClick={() => editor?.chain().focus().setTextAlign("left").run()}
+          onClick={() =>
+            runEditorCommand((currentEditor) =>
+              currentEditor.chain().focus(null, { scrollIntoView: false }).setTextAlign("left").run()
+            )
+          }
         >
           <AlignLeft className="h-4 w-4" />
         </ToolbarButton>
@@ -966,7 +1101,11 @@ export function WordBoardEditor({
           title="居中"
           active={editor?.isActive({ textAlign: "center" })}
           disabled={!editor || readOnly}
-          onClick={() => editor?.chain().focus().setTextAlign("center").run()}
+          onClick={() =>
+            runEditorCommand((currentEditor) =>
+              currentEditor.chain().focus(null, { scrollIntoView: false }).setTextAlign("center").run()
+            )
+          }
         >
           <AlignCenter className="h-4 w-4" />
         </ToolbarButton>
@@ -974,7 +1113,11 @@ export function WordBoardEditor({
           title="右对齐"
           active={editor?.isActive({ textAlign: "right" })}
           disabled={!editor || readOnly}
-          onClick={() => editor?.chain().focus().setTextAlign("right").run()}
+          onClick={() =>
+            runEditorCommand((currentEditor) =>
+              currentEditor.chain().focus(null, { scrollIntoView: false }).setTextAlign("right").run()
+            )
+          }
         >
           <AlignRight className="h-4 w-4" />
         </ToolbarButton>
@@ -982,7 +1125,11 @@ export function WordBoardEditor({
           title="引用"
           active={editor?.isActive("blockquote")}
           disabled={!editor || readOnly}
-          onClick={() => editor?.chain().focus().toggleBlockquote().run()}
+          onClick={() =>
+            runEditorCommand((currentEditor) =>
+              currentEditor.chain().focus(null, { scrollIntoView: false }).toggleBlockquote().run()
+            )
+          }
         >
           <Quote className="h-4 w-4" />
         </ToolbarButton>
@@ -993,7 +1140,11 @@ export function WordBoardEditor({
           title="项目符号"
           active={editor?.isActive("bulletList")}
           disabled={!editor || readOnly}
-          onClick={() => editor?.chain().focus().toggleBulletList().run()}
+          onClick={() =>
+            runEditorCommand((currentEditor) =>
+              currentEditor.chain().focus(null, { scrollIntoView: false }).toggleBulletList().run()
+            )
+          }
         >
           <List className="h-4 w-4" />
         </ToolbarButton>
@@ -1001,7 +1152,11 @@ export function WordBoardEditor({
           title="编号列表"
           active={editor?.isActive("orderedList")}
           disabled={!editor || readOnly}
-          onClick={() => editor?.chain().focus().toggleOrderedList().run()}
+          onClick={() =>
+            runEditorCommand((currentEditor) =>
+              currentEditor.chain().focus(null, { scrollIntoView: false }).toggleOrderedList().run()
+            )
+          }
         >
           <ListOrdered className="h-4 w-4" />
         </ToolbarButton>
@@ -1024,14 +1179,22 @@ export function WordBoardEditor({
         <ToolbarButton
           title="撤销"
           disabled={!editor || readOnly}
-          onClick={() => editor?.chain().focus().undo().run()}
+          onClick={() =>
+            runEditorCommand((currentEditor) =>
+              currentEditor.chain().focus(null, { scrollIntoView: false }).undo().run()
+            )
+          }
         >
           <Undo2 className="h-4 w-4" />
         </ToolbarButton>
         <ToolbarButton
           title="重做"
           disabled={!editor || readOnly}
-          onClick={() => editor?.chain().focus().redo().run()}
+          onClick={() =>
+            runEditorCommand((currentEditor) =>
+              currentEditor.chain().focus(null, { scrollIntoView: false }).redo().run()
+            )
+          }
         >
           <Redo2 className="h-4 w-4" />
         </ToolbarButton>
@@ -1317,6 +1480,7 @@ export function WordBoardEditor({
               <button
                 type="button"
                 onClick={() => importRef.current?.click()}
+                onMouseDown={(event) => event.preventDefault()}
                 className="inline-flex h-10 items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 text-[11px] font-bold uppercase tracking-wider text-gray-600 transition hover:border-gray-300"
               >
                 <Upload className="h-4 w-4" />
@@ -1325,6 +1489,7 @@ export function WordBoardEditor({
               <button
                 type="button"
                 onClick={onExportDocx}
+                onMouseDown={(event) => event.preventDefault()}
                 className="inline-flex h-10 items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 text-[11px] font-bold uppercase tracking-wider text-gray-600 transition hover:border-gray-300"
               >
                 <Download className="h-4 w-4" />
@@ -1337,6 +1502,7 @@ export function WordBoardEditor({
 
       <div
         ref={pageScrollRef}
+        data-word-editor-scroll
         className="min-h-0 flex-1 overflow-auto bg-[radial-gradient(circle_at_top,#f7f5ef,transparent_28%),linear-gradient(180deg,#f3f0e7_0%,#eef2f8_100%)]"
       >
         <div className="mx-auto flex w-max min-w-full justify-center px-6 py-10 md:px-10">

@@ -68,6 +68,44 @@ test("creates a package and lesson, edits the document, and persists a version",
   await expect(page.getByText("Auto Save").first()).toBeVisible();
 });
 
+test("keeps the document scroll position when toolbar formatting actions run", async ({ page }) => {
+  const unique = Date.now();
+  await enterAsGuest(page);
+  await createPackageFromHome(page, `工具栏滚动测试课程包 ${unique}`);
+  await createLessonFromEmptyStudio(page, `工具栏滚动测试页面 ${unique}`);
+
+  const longDocumentText = Array.from(
+    { length: 120 },
+    (_, index) => `滚动保持段落 ${index + 1} ${unique}：点击工具栏时当前阅读位置不应改变。`
+  ).join("\n\n");
+  const editor = page.locator(".ProseMirror").first();
+  const saveResponse = page.waitForResponse(
+    (response) => response.url().includes("/document/save") && response.request().method() === "POST"
+  );
+  await editor.click();
+  await editor.fill(longDocumentText);
+  await saveResponse;
+  await expect(editor).toContainText(`滚动保持段落 120 ${unique}`);
+
+  const scrollContainer = page.locator("[data-word-editor-scroll]");
+  const maxScrollTop = await scrollContainer.evaluate((element) => element.scrollHeight - element.clientHeight);
+  expect(maxScrollTop).toBeGreaterThan(200);
+
+  const targetScrollTop = Math.floor(maxScrollTop * 0.45);
+  await scrollContainer.evaluate((element, scrollTop) => {
+    element.scrollTop = scrollTop;
+  }, targetScrollTop);
+  const beforeScrollTop = await scrollContainer.evaluate((element) => element.scrollTop);
+
+  await page.getByTitle("加粗").click();
+  await expect
+    .poll(async () => {
+      const afterScrollTop = await scrollContainer.evaluate((element) => element.scrollTop);
+      return Math.abs(afterScrollTop - beforeScrollTop);
+    })
+    .toBeLessThan(8);
+});
+
 test("localizes the empty course package page in English", async ({ page }) => {
   const unique = Date.now();
   await enterAsGuest(page);

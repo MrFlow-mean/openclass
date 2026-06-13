@@ -28,6 +28,7 @@ export function ToolbarButton({
       type="button"
       title={title}
       onClick={onClick}
+      onMouseDown={(event) => event.preventDefault()}
       disabled={disabled}
       className={clsx(
         "flex h-9 w-9 items-center justify-center rounded-lg border text-gray-600 transition",
@@ -55,6 +56,7 @@ export function RibbonTabButton({
     <button
       type="button"
       onClick={onClick}
+      onMouseDown={(event) => event.preventDefault()}
       className={clsx(
         "mr-4 flex h-full items-center gap-1.5 border-b-2 px-2 text-[10px] font-bold uppercase tracking-widest transition-colors",
         active ? "border-black text-black" : "border-transparent text-gray-400 hover:text-black"
@@ -87,6 +89,7 @@ export function RibbonActionButton({
       type="button"
       title={title}
       onClick={onClick}
+      onMouseDown={(event) => event.preventDefault()}
       disabled={disabled}
       className={clsx(
         "flex min-w-[86px] flex-col items-start rounded-lg border px-2.5 py-2 text-left transition",
@@ -132,6 +135,7 @@ export function WordPageZoomControls({
         title="适配页面宽度"
         aria-label="适配页面宽度"
         onClick={onFitToWidth}
+        onMouseDown={(event) => event.preventDefault()}
         className="flex h-7 w-7 items-center justify-center rounded-full transition hover:bg-white hover:text-black hover:shadow-sm"
       >
         <Maximize2 className="h-3.5 w-3.5" />
@@ -140,6 +144,7 @@ export function WordPageZoomControls({
         type="button"
         title="重置缩放为 100%"
         onClick={() => onChange(PAGE_ZOOM_DEFAULT)}
+        onMouseDown={(event) => event.preventDefault()}
         className="mx-0.5 flex h-7 min-w-14 items-center justify-center rounded-full border border-gray-200 bg-white px-2 text-[12px] font-semibold tabular-nums text-gray-800 shadow-[inset_0_1px_0_rgba(255,255,255,0.75)] transition hover:border-gray-300 hover:text-black"
       >
         {value}%
@@ -150,6 +155,7 @@ export function WordPageZoomControls({
         aria-label="缩小页面"
         disabled={value <= PAGE_ZOOM_MIN}
         onClick={() => onChange(value - PAGE_ZOOM_STEP)}
+        onMouseDown={(event) => event.preventDefault()}
         className="flex h-7 w-7 items-center justify-center rounded-full transition hover:bg-white hover:text-black hover:shadow-sm disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:bg-transparent disabled:hover:shadow-none"
       >
         <Minus className="h-3.5 w-3.5" />
@@ -171,6 +177,7 @@ export function WordPageZoomControls({
         aria-label="放大页面"
         disabled={value >= PAGE_ZOOM_MAX}
         onClick={() => onChange(value + PAGE_ZOOM_STEP)}
+        onMouseDown={(event) => event.preventDefault()}
         className="flex h-7 w-7 items-center justify-center rounded-full transition hover:bg-white hover:text-black hover:shadow-sm disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:bg-transparent disabled:hover:shadow-none"
       >
         <Plus className="h-3.5 w-3.5" />
