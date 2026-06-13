@@ -52,7 +52,7 @@ def _document_with_text(document: dict, text: str) -> dict:
     return next_document
 
 
-def test_workspace_document_history_flow(api_client: TestClient) -> None:
+def test_workspace_document_history_and_resource_flow(api_client: TestClient) -> None:
     created_workspace = api_client.post(
         "/api/packages",
         json={"title": "Smoke package", "summary": ""},
@@ -94,6 +94,13 @@ def test_workspace_document_history_flow(api_client: TestClient) -> None:
     assert second_save.status_code == 200
     assert second_save.json()["lessons"][0]["board_document"]["content_text"] == "Second smoke version"
 
+    upload = api_client.post(
+        "/api/resources/upload",
+        files={"file": ("notes.txt", b"# Notes\nReusable resource text.", "text/plain")},
+    )
+    assert upload.status_code == 200
+    assert upload.json()["resources"][0]["name"] == "notes.txt"
+
     search = api_client.get("/api/documents/search", params={"q": "Second smoke", "limit": 5})
     assert search.status_code == 200
     assert search.json()["results"]
@@ -104,9 +111,3 @@ def test_workspace_document_history_flow(api_client: TestClient) -> None:
     )
     assert restored.status_code == 200
     assert restored.json()["lessons"][0]["board_document"]["content_text"] == "First smoke version"
-
-
-def test_resource_upload_endpoint_is_not_exposed(api_client: TestClient) -> None:
-    upload = api_client.post("/api/resources/upload")
-
-    assert upload.status_code == 404

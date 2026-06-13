@@ -494,6 +494,21 @@ export const api = {
     }
     return response.json() as Promise<CoursePackage>;
   },
+  async uploadResource(file: File) {
+    const formData = new FormData();
+    formData.append("file", file);
+    const response = await fetch(`${getApiBase()}/api/resources/upload`, {
+      method: "POST",
+      body: formData,
+      headers: authHeaders(),
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(text || `Upload failed with ${response.status}`);
+    }
+    return response.json() as Promise<CoursePackage>;
+  },
   async exportDocx(lessonId: string) {
     const response = await fetch(`${getApiBase()}/api/lessons/${lessonId}/document/export-docx`, {
       headers: authHeaders(),

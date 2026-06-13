@@ -28,6 +28,7 @@ export type AutoSaveReason =
   | "restore"
   | "import"
   | "export"
+  | "upload-resource"
   | "voice"
   | "pagehide";
 

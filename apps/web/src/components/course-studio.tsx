@@ -378,6 +378,7 @@ export function CourseStudio() {
     handleCreateLessonFromName,
     handleOpenLesson,
     handleCloseLesson,
+    handleUploadResource,
     handleSelectLesson,
   } = workspaceActions;
 
@@ -618,6 +619,8 @@ export function CourseStudio() {
           latestBoardDecision={latestBoardDecision}
           newBranchName={newBranchName}
           onNewBranchNameChange={setNewBranchName}
+          busyAction={busyAction}
+          resources={coursePackage?.resources ?? []}
           relatedEdges={relatedEdges}
           lessonMap={lessonMap}
           onCreateBranch={() => handleCreateBranch()}
@@ -625,6 +628,7 @@ export function CourseStudio() {
           onRestoreCommit={(commitId) => handleRestoreCommit(commitId)}
           onCreateBranchFromCommit={(commit) => handleCreateBranchFromCommit(commit)}
           onSwitchBranch={(branchName) => handleSwitchBranch(branchName)}
+          onUploadResource={(file) => void handleUploadResource(file)}
           onOpenLesson={(lessonId) => handleOpenLesson(lessonId)}
         />
       </div>
