@@ -31,7 +31,7 @@ _MATH_SIGNAL_RE = re.compile(
 )
 _LATIN_WORD_RE = re.compile(r"[A-Za-z]+")
 _NON_FORMULA_LETTER_RE = re.compile(r"[^\W\d_A-Za-zα-ωΑ-Ω]", re.UNICODE)
-_FORMULA_CHARS_RE = re.compile(r"^[A-Za-z0-9α-ωΑ-Ω\\_{}^()+\-−*/=·∞→←≤≥≈≠±<>|'\s.,]+$")
+_FORMULA_CHARS_RE = re.compile(r"^[A-Za-z0-9α-ωΑ-Ω\\_{}^()+\-−*/=·∞→←≤≥≈≠±<>|'\s.,，]+$")
 _HTML_BLOCK_RE = re.compile(
     r"<(?P<tag>h[1-6]|p|li|blockquote)\b[^>]*>.*?</(?P=tag)>",
     re.IGNORECASE | re.DOTALL,
@@ -155,6 +155,22 @@ def _markdown_text_nodes(value: str) -> list[dict[str, Any]]:
     if cursor < len(value):
         nodes.append({"type": "text", "text": value[cursor:]})
     return nodes
+
+
+def _merge_marks(base_marks: list[dict[str, Any]], inline_marks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged = [dict(mark) for mark in base_marks if isinstance(mark, dict)]
+    for mark in inline_marks:
+        if not isinstance(mark, dict):
+            continue
+        mark_type = mark.get("type")
+        if mark_type and any(existing.get("type") == mark_type for existing in merged):
+            continue
+        merged.append(dict(mark))
+    return merged
+
+
+def _inline_markup_candidate(value: str) -> bool:
+    return bool(_MARKDOWN_INLINE_RE.search(value) or _DELIMITED_MATH_RE.search(value))
 
 
 def _inline_nodes(value: str) -> list[dict[str, Any]]:
@@ -891,6 +907,124 @@ def _sanitize_suspicious_math_json(content_json: dict[str, Any]) -> tuple[dict[s
     return sanitized, changed
 
 
+def _repair_inline_markup_text_node(node: dict[str, Any]) -> tuple[list[dict[str, Any]], bool]:
+    text = str(node.get("text") or "")
+    if not text or not _inline_markup_candidate(text):
+        return [dict(node)], False
+
+    inline_nodes = _inline_nodes(text)
+    if len(inline_nodes) == 1 and inline_nodes[0].get("type") == "text" and inline_nodes[0].get("text") == text:
+        return [dict(node)], False
+
+    inherited_marks = [mark for mark in node.get("marks", []) if isinstance(mark, dict)]
+    repaired_nodes: list[dict[str, Any]] = []
+    for inline_node in inline_nodes:
+        next_node = dict(inline_node)
+        if next_node.get("type") == "text":
+            merged_marks = _merge_marks(inherited_marks, next_node.get("marks", []))
+            if merged_marks:
+                next_node["marks"] = merged_marks
+            else:
+                next_node.pop("marks", None)
+        repaired_nodes.append(next_node)
+    return repaired_nodes or [dict(node)], True
+
+
+def _repair_inline_markup_node(node: dict[str, Any]) -> tuple[list[dict[str, Any]], bool]:
+    node_type = node.get("type")
+    if node_type == "text":
+        return _repair_inline_markup_text_node(node)
+    if node_type in {"codeBlock", "inlineMath", "blockMath"}:
+        return [dict(node)], False
+
+    repaired = dict(node)
+    content = repaired.get("content")
+    changed = False
+    if isinstance(content, list):
+        next_content: list[dict[str, Any]] = []
+        for child in content:
+            if not isinstance(child, dict):
+                next_content.append(child)
+                continue
+            next_children, child_changed = _repair_inline_markup_node(child)
+            changed = changed or child_changed
+            next_content.extend(next_children)
+        repaired["content"] = next_content
+    return [repaired], changed
+
+
+def _repair_inline_markup_json(content_json: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    repaired = dict(content_json)
+    content = repaired.get("content")
+    if not isinstance(content, list):
+        return repaired, False
+
+    changed = False
+    next_content: list[dict[str, Any]] = []
+    for child in content:
+        if not isinstance(child, dict):
+            next_content.append(child)
+            continue
+        next_children, child_changed = _repair_inline_markup_node(child)
+        changed = changed or child_changed
+        next_content.extend(next_children)
+    repaired["content"] = next_content
+    return repaired, changed
+
+
+def _serialize_html_attrs(attrs: dict[str, str]) -> str:
+    if not attrs:
+        return ""
+    rendered = [
+        f'{name}="{html.escape(str(value), quote=True)}"'
+        for name, value in attrs.items()
+        if value is not None
+    ]
+    return (" " + " ".join(rendered)) if rendered else ""
+
+
+def _repair_inline_markup_html(content_html: str) -> tuple[str, bool]:
+    if not content_html or not _inline_markup_candidate(content_html):
+        return content_html, False
+
+    parser = _HTMLTreeParser()
+    parser.feed(content_html)
+    changed = False
+
+    def serialize_child(child: Any, *, inline_enabled: bool = True) -> str:
+        nonlocal changed
+        if isinstance(child, str):
+            escaped = html.escape(child, quote=False)
+            if not inline_enabled or not _inline_markup_candidate(child):
+                return escaped
+            repaired = _inline_html(child)
+            if repaired != escaped:
+                changed = True
+            return repaired
+        if not isinstance(child, dict):
+            return ""
+
+        tag = str(child.get("tag") or "")
+        attrs = child.get("attrs", {})
+        attrs = attrs if isinstance(attrs, dict) else {}
+        node_type = (attrs.get("data-type") or "").strip()
+        next_inline_enabled = inline_enabled and tag not in {"code", "pre"} and node_type not in {
+            "inline-math",
+            "block-math",
+        }
+        attr_text = _serialize_html_attrs(attrs)
+        if tag in _VOID_HTML_TAGS:
+            return f"<{tag}{attr_text}>"
+        children = "".join(
+            serialize_child(grandchild, inline_enabled=next_inline_enabled)
+            for grandchild in child.get("children", [])
+        )
+        return f"<{tag}{attr_text}>{children}</{tag}>"
+
+    repaired_html = "".join(serialize_child(child) for child in parser.root["children"])
+    return (repaired_html if changed else content_html), changed
+
+
 def _html_attr(raw_tag: str, name: str) -> str:
     match = re.search(rf"\b{re.escape(name)}\s*=\s*(\"([^\"]*)\"|'([^']*)')", raw_tag, flags=re.IGNORECASE)
     if not match:
@@ -943,6 +1077,7 @@ def build_document(
     normalized_text = (content_text or "").strip()
     if normalized_html:
         normalized_html = _repair_suspicious_math_html(normalized_html)
+        normalized_html, _inline_html_repaired = _repair_inline_markup_html(normalized_html)
     if not normalized_text and normalized_html:
         normalized_text = html_to_text(normalized_html)
     if not normalized_html and normalized_text:
@@ -954,8 +1089,11 @@ def build_document(
     )
     if isinstance(normalized_json, dict):
         normalized_json, repaired_math = _sanitize_suspicious_math_json(normalized_json)
+        normalized_json, repaired_inline_markup = _repair_inline_markup_json(normalized_json)
         if repaired_math:
             normalized_html = _repair_suspicious_math_html(normalized_html)
+        if repaired_inline_markup:
+            normalized_html, _inline_html_repaired = _repair_inline_markup_html(normalized_html)
     kwargs: dict[str, Any] = {
         "title": title,
         "content_json": normalized_json,
@@ -1002,13 +1140,20 @@ def upgrade_markdown_like_document(document: BoardDocument) -> BoardDocument:
 def _repair_existing_document(document: BoardDocument) -> BoardDocument:
     content_json = document.content_json if isinstance(document.content_json, dict) else {}
     sanitized_json, repaired_math = _sanitize_suspicious_math_json(content_json)
+    repaired_json, repaired_inline_json = _repair_inline_markup_json(sanitized_json)
     repaired_html = _repair_suspicious_math_html(document.content_html)
-    if not repaired_math and repaired_html == document.content_html:
+    repaired_html, repaired_inline_html = _repair_inline_markup_html(repaired_html)
+    if (
+        not repaired_math
+        and not repaired_inline_json
+        and not repaired_inline_html
+        and repaired_html == document.content_html
+    ):
         return document
     return BoardDocument(
         id=document.id,
         title=document.title,
-        content_json=sanitized_json,
+        content_json=repaired_json,
         content_html=repaired_html,
         content_text=document.content_text,
         page_settings=document.page_settings,

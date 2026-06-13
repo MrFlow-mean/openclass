@@ -716,6 +716,19 @@ def test_build_document_still_converts_real_inline_math() -> None:
     assert "\\frac{1}{2}" in document.content_html
 
 
+def test_build_document_converts_inline_math_with_cjk_comma() -> None:
+    document = build_document(
+        title="Doc",
+        content_text="常用单位：$1\\,\\text{A} = 1000\\,\\text{mA}，1\\,\\text{mA}=1000\\,\\mu\\text{A}$。",
+    )
+
+    assert "inlineMath" in _collect_node_types(document.content_json)
+    assert 'data-type="inline-math"' in document.content_html
+    assert "**" not in document.content_html
+    assert "$1\\," not in document.content_html
+    assert "\\quad" in document.content_html
+
+
 def test_upgrade_markdown_like_document_repairs_suspicious_math_nodes() -> None:
     sentence = "Je me disais que tu allais peut-être oublier notre rendez-vous."
     legacy = BoardDocument(
@@ -846,6 +859,52 @@ def test_upgrade_markdown_like_document_repairs_legacy_plain_paragraphs() -> Non
     paragraph = upgraded.content_json["content"][1]
     assert paragraph["content"][0]["text"] == "Speaker:"
     assert paragraph["content"][0]["marks"][0]["type"] == "bold"
+
+
+def test_upgrade_markdown_like_document_repairs_inline_markdown_without_flattening_structure() -> None:
+    legacy = BoardDocument(
+        title="Doc",
+        content_text=(
+            "Title\n"
+            "Section\n"
+            "Details\n"
+            "Line with **emphasis** and $1\\,\\text{A} = 1000\\,\\text{mA}，1\\,\\text{mA}=1000\\,\\mu\\text{A}$."
+        ),
+        content_html=(
+            "<h1>Title</h1>"
+            "<h2>Section</h2>"
+            "<h2>Details</h2>"
+            "<p>Line with **emphasis** and $1\\,\\text{A} = 1000\\,\\text{mA}，1\\,\\text{mA}=1000\\,\\mu\\text{A}$.</p>"
+        ),
+        content_json={
+            "type": "doc",
+            "content": [
+                {"type": "heading", "attrs": {"level": 1}, "content": [{"type": "text", "text": "Title"}]},
+                {"type": "heading", "attrs": {"level": 2}, "content": [{"type": "text", "text": "Section"}]},
+                {"type": "heading", "attrs": {"level": 2}, "content": [{"type": "text", "text": "Details"}]},
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Line with **emphasis** and $1\\,\\text{A} = 1000\\,\\text{mA}，1\\,\\text{mA}=1000\\,\\mu\\text{A}$.",
+                        }
+                    ],
+                },
+            ],
+        },
+    )
+
+    upgraded = upgrade_markdown_like_document(legacy)
+    node_types = _collect_node_types(upgraded.content_json)
+
+    assert node_types.count("heading") == 3
+    assert "inlineMath" in node_types
+    assert "bold" in _collect_mark_types(upgraded.content_json)
+    assert "**emphasis**" not in upgraded.content_html
+    assert "$1\\," not in upgraded.content_html
+    assert "<strong>emphasis</strong>" in upgraded.content_html
+    assert 'data-type="inline-math"' in upgraded.content_html
 
 
 def test_upgrade_markdown_like_document_repairs_legacy_display_math() -> None:

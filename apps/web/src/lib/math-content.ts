@@ -9,7 +9,7 @@ const TRAILING_SENTENCE_MARKS = /[\s.,，。；;:：]+$/;
 const LEADING_SENTENCE_MARKS = /^[\s.,，。；;:：]+/;
 const LATIN_WORD = /[A-Za-z]+/g;
 const NON_FORMULA_LETTER = /[\u00c0-\u024f\u3400-\u9fff]/;
-const FORMULA_CHARS = /^[A-Za-z0-9α-ωΑ-Ω\\_{}^()+\-−*/=·∞→←≤≥≈≠±<>|'\s.,]+$/;
+const FORMULA_CHARS = /^[A-Za-z0-9α-ωΑ-Ω\\_{}^()+\-−*/=·∞→←≤≥≈≠±<>|'\s.,，]+$/;
 const LATEX_FUNCTIONS = new Set(["lim", "sin", "cos", "tan", "ln", "log", "sqrt", "exp"]);
 
 type MathSegment = {
@@ -210,6 +210,97 @@ function nodesForTextWithMath(schema: Schema, text: string, marks: readonly Mark
   return nodes;
 }
 
+function canOpenInlineMark(value: string, index: number, markerLength: number) {
+  const previous = index === 0 ? "" : value[index - 1];
+  const next = value[index + markerLength] ?? "";
+  if (!next || /\s/.test(next)) {
+    return false;
+  }
+  return !previous || /[\s([{"'，。；;:：、]/.test(previous);
+}
+
+function findClosingSingleAsterisk(value: string, startIndex: number) {
+  for (let index = startIndex; index < value.length; index += 1) {
+    const isSingleAsterisk = value[index] === "*" && value[index + 1] !== "*" && value[index - 1] !== "*";
+    if (isSingleAsterisk && !/\s/.test(value[index - 1] ?? "")) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function marksWith(schema: Schema, marks: readonly Mark[], markName: string) {
+  if (marks.some((mark) => mark.type.name === markName)) {
+    return marks;
+  }
+  const markType = schema.marks[markName];
+  return markType ? [...marks, markType.create()] : marks;
+}
+
+function nodesForTextWithInlineMarkdown(schema: Schema, text: string, marks: readonly Mark[]) {
+  if (!text || (!text.includes("**") && !text.includes("*") && !text.includes("`"))) {
+    return null;
+  }
+  if (marks.some((mark) => mark.type.name === "code")) {
+    return null;
+  }
+
+  const nodes: ProseMirrorNode[] = [];
+  let cursor = 0;
+  let index = 0;
+
+  function pushText(endIndex: number, nextMarks: readonly Mark[] = marks) {
+    if (endIndex <= cursor) {
+      return;
+    }
+    nodes.push(schema.text(text.slice(cursor, endIndex), nextMarks));
+    cursor = endIndex;
+  }
+
+  while (index < text.length) {
+    if (text[index] === "`") {
+      const closeIndex = text.indexOf("`", index + 1);
+      if (closeIndex > index + 1) {
+        pushText(index);
+        nodes.push(schema.text(text.slice(index + 1, closeIndex), marksWith(schema, marks, "code")));
+        cursor = closeIndex + 1;
+        index = cursor;
+        continue;
+      }
+    }
+
+    if (text.startsWith("**", index) && canOpenInlineMark(text, index, 2)) {
+      const closeIndex = text.indexOf("**", index + 2);
+      if (closeIndex > index + 2) {
+        pushText(index);
+        nodes.push(schema.text(text.slice(index + 2, closeIndex), marksWith(schema, marks, "bold")));
+        cursor = closeIndex + 2;
+        index = cursor;
+        continue;
+      }
+    }
+
+    if (text[index] === "*" && text[index + 1] !== "*" && canOpenInlineMark(text, index, 1)) {
+      const closeIndex = findClosingSingleAsterisk(text, index + 1);
+      if (closeIndex > index + 1) {
+        pushText(index);
+        nodes.push(schema.text(text.slice(index + 1, closeIndex), marksWith(schema, marks, "italic")));
+        cursor = closeIndex + 1;
+        index = cursor;
+        continue;
+      }
+    }
+
+    index += 1;
+  }
+
+  if (cursor === 0) {
+    return null;
+  }
+  pushText(text.length);
+  return nodes;
+}
+
 export function normalizeEditorMath(editor: TiptapEditor) {
   const { blockMath } = editor.schema.nodes;
   const { inlineMath } = editor.schema.nodes;
@@ -220,6 +311,26 @@ export function normalizeEditorMath(editor: TiptapEditor) {
 
   let tr = editor.state.tr;
   let changed = false;
+
+  const inlineMarkdownReplacements: Array<{ pos: number; size: number; nodes: ProseMirrorNode[] }> = [];
+
+  tr.doc.descendants((node, pos, parent) => {
+    if (!node.isText || !node.text || parent?.type.name === "codeBlock") {
+      return;
+    }
+
+    const nodes = nodesForTextWithInlineMarkdown(editor.schema, node.text, node.marks);
+    if (!nodes) {
+      return;
+    }
+
+    inlineMarkdownReplacements.push({ pos, size: node.nodeSize, nodes });
+  });
+
+  for (const replacement of inlineMarkdownReplacements.reverse()) {
+    tr = tr.replaceWith(replacement.pos, replacement.pos + replacement.size, replacement.nodes);
+    changed = true;
+  }
 
   const delimitedBlockReplacements = topLevelBlockMathDelimiterReplacements(tr.doc, blockMath);
   for (const replacement of delimitedBlockReplacements.reverse()) {
