@@ -6,11 +6,12 @@ import {
   useWordEditorController,
   type WordEditorSelection,
 } from "@/hooks/course-studio/use-word-editor-controller";
-import type { BoardDocument } from "@/types";
+import type { BoardDocument, BoardFocusRef } from "@/types";
 
 export function WordBoardEditor({
   document,
   readOnly,
+  teachingFocus,
   toolbarCollapsed,
   onDocumentChange,
   onSelectionChange,
@@ -19,6 +20,7 @@ export function WordBoardEditor({
 }: {
   document: BoardDocument;
   readOnly: boolean;
+  teachingFocus?: BoardFocusRef | null;
   toolbarCollapsed: boolean;
   onDocumentChange: (document: BoardDocument) => void;
   onSelectionChange: (selection: WordEditorSelection | null) => void;
@@ -55,6 +57,7 @@ export function WordBoardEditor({
   } = useWordEditorController({
     document,
     readOnly,
+    teachingFocus,
     onDocumentChange,
     onSelectionChange,
   });
