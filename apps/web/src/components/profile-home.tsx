@@ -120,6 +120,17 @@ function persistCollectedCourseIds(courseIds: Set<string>) {
   }
 }
 
+function replaceWorkspacePackage(workspace: WorkspaceState | null, coursePackage: CoursePackage) {
+  if (!workspace) {
+    return workspace;
+  }
+  return {
+    ...workspace,
+    active_package_id: coursePackage.id,
+    packages: workspace.packages.map((item) => (item.id === coursePackage.id ? coursePackage : item)),
+  };
+}
+
 export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
   const router = useRouter();
   const { texts: txt } = useInterfaceLanguage();
@@ -132,10 +143,12 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
 
   const loadWorkspaceErrorRef = useRef(ph.loadWorkspaceError);
   const lessonOpenErrRef = useRef(ph.lessonOpenError);
+  const branchLessonErrRef = useRef(ph.branchLessonFail);
 
   useEffect(() => {
     loadWorkspaceErrorRef.current = ph.loadWorkspaceError;
     lessonOpenErrRef.current = ph.lessonOpenError;
+    branchLessonErrRef.current = ph.branchLessonFail;
   });
 
   const [activeTab, setActiveTab] = useState<ProfileTab>(initialTab);
@@ -148,6 +161,7 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
   const [expandedPackageIds, setExpandedPackageIds] = useState<Set<string>>(() => new Set());
   const [starQuery, setStarQuery] = useState("");
   const [openingLessonId, setOpeningLessonId] = useState<string | null>(null);
+  const [branchingLessonId, setBranchingLessonId] = useState<string | null>(null);
   const [collectedCourseIds, setCollectedCourseIds] = useState<Set<string>>(
     () => new Set(DEFAULT_COLLECTED_COURSE_IDS)
   );
@@ -358,6 +372,34 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
       setError(openError instanceof Error ? openError.message : lessonOpenErrRef.current);
     } finally {
       setOpeningLessonId(null);
+    }
+  }
+
+  async function handleBranchLesson(lesson: Lesson, targetPackageId?: string) {
+    const sourcePackageId =
+      targetPackageId ?? packages.find((coursePackage) => coursePackage.lessons.some((item) => item.id === lesson.id))?.id ?? null;
+    if (!sourcePackageId) {
+      return;
+    }
+
+    setBranchingLessonId(lesson.id);
+
+    try {
+      const nextPackage = await api.generateLesson(ph.branchLessonName(lesson.title), {
+        branchFromLessonId: lesson.id,
+        startBlank: true,
+        targetPackageId: sourcePackageId,
+      });
+      setWorkspaceState((current) => replaceWorkspacePackage(current, nextPackage));
+      if (!nextPackage.is_standalone) {
+        setExpandedPackageIds((current) => new Set(current).add(nextPackage.id));
+      }
+      setError(null);
+      router.push("/studio");
+    } catch (branchError) {
+      setError(branchError instanceof Error ? branchError.message : branchLessonErrRef.current);
+    } finally {
+      setBranchingLessonId(null);
     }
   }
 
@@ -637,6 +679,7 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
   function renderLessonCard(lesson: Lesson) {
     const topics = getLessonTopics(lesson);
     const isOpening = openingLessonId === lesson.id;
+    const isBranching = branchingLessonId === lesson.id;
 
     return (
       <article key={lesson.id} className="border-b border-stone-200 bg-white p-5">
@@ -681,16 +724,28 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
             </div>
           </div>
 
-          <button
-            type="button"
-            onClick={() => void handleOpenLesson(lesson.id)}
-            disabled={isOpening}
-            className="inline-flex shrink-0 items-center justify-center gap-2 rounded-md border border-stone-200 bg-stone-50 px-3 py-2 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:bg-white hover:text-stone-950 disabled:cursor-wait disabled:opacity-70"
-          >
-            {isOpening ? <LoaderCircle className="h-4 w-4 animate-spin" /> : null}
-            打开
-            {!isOpening ? <ArrowUpRight className="h-4 w-4" /> : null}
-          </button>
+          <div className="flex shrink-0 flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void handleBranchLesson(lesson)}
+              disabled={isOpening || isBranching}
+              className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-stone-200 bg-white text-stone-500 transition hover:border-stone-300 hover:text-stone-950 disabled:cursor-wait disabled:opacity-70"
+              aria-label={ph.branchLessonTitle}
+              title={ph.branchLessonTitle}
+            >
+              {isBranching ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <GitFork className="h-4 w-4" />}
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleOpenLesson(lesson.id)}
+              disabled={isOpening || isBranching}
+              className="inline-flex items-center justify-center gap-2 rounded-md border border-stone-200 bg-stone-50 px-3 py-2 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:bg-white hover:text-stone-950 disabled:cursor-wait disabled:opacity-70"
+            >
+              {isOpening ? <LoaderCircle className="h-4 w-4 animate-spin" /> : null}
+              打开
+              {!isOpening ? <ArrowUpRight className="h-4 w-4" /> : null}
+            </button>
+          </div>
         </div>
       </article>
     );
@@ -701,6 +756,8 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
     const updatedAt = getPackageUpdatedAt(coursePackage);
     const isCompact = variant === "compact";
     const isExpanded = !isCompact && expandedPackageIds.has(coursePackage.id);
+    const latestLesson = sortLessonsByUpdatedAt(coursePackage.lessons)[0] ?? null;
+    const isBranchingLatestLesson = latestLesson ? branchingLessonId === latestLesson.id : false;
     const lessonsListId = `package-lessons-${coursePackage.id}`;
 
     return (
@@ -764,13 +821,29 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
             </div>
           </div>
 
-          <Link
-            href={`/?package=${coursePackage.id}`}
-            className="inline-flex shrink-0 items-center justify-center gap-2 rounded-md border border-stone-200 bg-stone-50 px-3 py-2 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:bg-white hover:text-stone-950"
-          >
-            打开
-            <ArrowUpRight className="h-4 w-4" />
-          </Link>
+          <div className="flex shrink-0 flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                if (latestLesson) {
+                  void handleBranchLesson(latestLesson, coursePackage.id);
+                }
+              }}
+              disabled={!latestLesson || isBranchingLatestLesson}
+              className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-stone-200 bg-white text-stone-500 transition hover:border-stone-300 hover:text-stone-950 disabled:cursor-not-allowed disabled:opacity-60"
+              aria-label={ph.branchLatestLessonTitle}
+              title={ph.branchLatestLessonTitle}
+            >
+              {isBranchingLatestLesson ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <GitFork className="h-4 w-4" />}
+            </button>
+            <Link
+              href={`/?package=${coursePackage.id}`}
+              className="inline-flex items-center justify-center gap-2 rounded-md border border-stone-200 bg-stone-50 px-3 py-2 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:bg-white hover:text-stone-950"
+            >
+              打开
+              <ArrowUpRight className="h-4 w-4" />
+            </Link>
+          </div>
         </div>
 
         {isExpanded ? (
@@ -782,6 +855,7 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
             {coursePackage.lessons.length ? (
               coursePackage.lessons.map((lesson, index) => {
                 const isOpening = openingLessonId === lesson.id;
+                const isBranching = branchingLessonId === lesson.id;
 
                 return (
                   <li
@@ -809,16 +883,28 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
                       </p>
                     </div>
 
-                    <button
-                      type="button"
-                      onClick={() => void handleOpenLesson(lesson.id)}
-                      disabled={isOpening}
-                      className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-md border border-stone-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-stone-700 transition hover:border-stone-300 hover:text-stone-950 disabled:cursor-wait disabled:opacity-70"
-                    >
-                      {isOpening ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : null}
-                      打开
-                      {!isOpening ? <ArrowUpRight className="h-3.5 w-3.5" /> : null}
-                    </button>
+                    <div className="flex shrink-0 flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void handleBranchLesson(lesson, coursePackage.id)}
+                        disabled={isOpening || isBranching}
+                        className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-stone-200 bg-white text-stone-500 transition hover:border-stone-300 hover:text-stone-950 disabled:cursor-wait disabled:opacity-70"
+                        aria-label={ph.branchLessonTitle}
+                        title={ph.branchLessonTitle}
+                      >
+                        {isBranching ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <GitFork className="h-3.5 w-3.5" />}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleOpenLesson(lesson.id)}
+                        disabled={isOpening || isBranching}
+                        className="inline-flex items-center justify-center gap-1.5 rounded-md border border-stone-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-stone-700 transition hover:border-stone-300 hover:text-stone-950 disabled:cursor-wait disabled:opacity-70"
+                      >
+                        {isOpening ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : null}
+                        打开
+                        {!isOpening ? <ArrowUpRight className="h-3.5 w-3.5" /> : null}
+                      </button>
+                    </div>
                   </li>
                 );
               })

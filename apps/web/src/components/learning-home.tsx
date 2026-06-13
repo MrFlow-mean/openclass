@@ -238,6 +238,17 @@ function feedKindTone(kind: "commit" | "resource") {
   return kind === "commit" ? "bg-rose-100 text-rose-700" : "bg-emerald-100 text-emerald-700";
 }
 
+function replaceWorkspacePackage(workspace: WorkspaceState | null, coursePackage: CoursePackage) {
+  if (!workspace) {
+    return workspace;
+  }
+  return {
+    ...workspace,
+    active_package_id: coursePackage.id,
+    packages: workspace.packages.map((item) => (item.id === coursePackage.id ? coursePackage : item)),
+  };
+}
+
 function feedKindLabel(kind: "commit" | "resource") {
   return kind === "commit" ? "Commit" : "Resource";
 }
@@ -439,7 +450,7 @@ export function LearningHome() {
   const coursePackage =
     selectedCoursePackage ?? coursePackages.find((item) => item.id === workspaceActivePackageId) ?? coursePackages[0] ?? null;
   const movablePackages = coursePackages;
-  const feedLessons = packages.flatMap((packageItem) =>
+  const allLessonItems = packages.flatMap((packageItem) =>
     packageItem.lessons.map((lesson) => ({
       lesson,
       packageId: packageItem.id,
@@ -447,6 +458,7 @@ export function LearningHome() {
       isStandalone: packageItem.id === standalonePackage?.id,
     }))
   );
+  const feedLessons = allLessonItems;
   const feedResources = packages.flatMap((packageItem) =>
     packageItem.resources.map((resource) => ({
       resource,
@@ -501,7 +513,7 @@ export function LearningHome() {
 
   const activity = buildActivitySummary(coursePackage);
   const lessonMenuLesson =
-    lessonMenuState ? standaloneLessonItems.find(({ lesson }) => lesson.id === lessonMenuState.lessonId)?.lesson ?? null : null;
+    lessonMenuState ? allLessonItems.find(({ lesson }) => lesson.id === lessonMenuState.lessonId)?.lesson ?? null : null;
   const feedItems = buildRecentFeed(feedLessons, feedResources);
   const visibleFeedItems = feedFilter === "all" ? feedItems : feedItems.filter((item) => item.kind === feedFilter);
   const followedProjectUpdates = useMemo(() => buildFollowedCourseUpdateItems(), []);
@@ -520,6 +532,37 @@ export function LearningHome() {
       router.push("/studio");
     } catch (actionError) {
       setError(actionError instanceof Error ? actionError.message : errMsgs.current.lessonOpenError);
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  async function handleBranchLesson(lesson: Lesson, targetPackageId?: string) {
+    const sourcePackageId =
+      targetPackageId ?? allLessonItems.find((item) => item.lesson.id === lesson.id)?.packageId ?? null;
+    if (!sourcePackageId) {
+      return;
+    }
+
+    setSelectedLessonId(lesson.id);
+    setBusyKey(`branch:${lesson.id}`);
+    setLessonMenuState(null);
+    setLessonMoveMenuState(null);
+
+    try {
+      const nextPackage = await api.generateLesson(h.branchLessonName(lesson.title), {
+        branchFromLessonId: lesson.id,
+        startBlank: true,
+        targetPackageId: sourcePackageId,
+      });
+      setWorkspaceState((current) => replaceWorkspacePackage(current, nextPackage));
+      setSelectedPackageId(nextPackage.is_standalone ? null : nextPackage.id);
+      setSelectedLessonId(nextPackage.active_lesson_id ?? null);
+      setPackageLessonsExpanded(true);
+      setError(null);
+      router.push("/studio");
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : errMsgs.current.branchLessonFail);
     } finally {
       setBusyKey(null);
     }
@@ -930,6 +973,7 @@ export function LearningHome() {
                   filteredLessonItems.map(({ lesson }) => {
                     const isActive = lesson.id === selectedLessonId;
                     const buttonBusy = busyKey === `lesson:${lesson.id}`;
+                    const isBranching = busyKey === `branch:${lesson.id}`;
                     const isMenuOpen = lessonMenuState?.lessonId === lesson.id;
                     return (
                       <article
@@ -942,6 +986,21 @@ export function LearningHome() {
                             : "border-transparent bg-white/65 hover:border-stone-200 hover:bg-white"
                         )}
                       >
+                        <div className="absolute right-11 top-2 z-20" data-lesson-menu-root>
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              void handleBranchLesson(lesson);
+                            }}
+                            disabled={buttonBusy || isBranching}
+                            className="flex h-8 w-8 items-center justify-center rounded-lg text-stone-400 transition hover:bg-stone-100 hover:text-stone-950 disabled:cursor-wait disabled:opacity-60"
+                            aria-label={h.branchLessonTitle}
+                            title={h.branchLessonTitle}
+                          >
+                            {isBranching ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <GitFork className="h-4 w-4" />}
+                          </button>
+                        </div>
                         <div className="absolute right-2 top-2 z-20" data-lesson-menu-root>
                           <button
                             type="button"
@@ -1310,6 +1369,24 @@ export function LearningHome() {
               {h.share}
             </button>
 
+            <button
+              type="button"
+              onClick={() => void handleBranchLesson(lessonMenuLesson)}
+              disabled={
+                busyKey === `branch:${lessonMenuLesson.id}` ||
+                busyKey === `move:${lessonMenuLesson.id}` ||
+                busyKey === `delete:${lessonMenuLesson.id}`
+              }
+              className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-stone-700 transition hover:bg-stone-50 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {busyKey === `branch:${lessonMenuLesson.id}` ? (
+                <LoaderCircle className="h-4 w-4 animate-spin" />
+              ) : (
+                <GitFork className="h-4 w-4" />
+              )}
+              {h.branchLesson}
+            </button>
+
             <div className="my-1 h-px bg-stone-100" />
 
             <button
@@ -1326,7 +1403,12 @@ export function LearningHome() {
                       }
                 );
               }}
-              disabled={!movablePackages.length || busyKey === `move:${lessonMenuLesson.id}` || busyKey === `delete:${lessonMenuLesson.id}`}
+              disabled={
+                !movablePackages.length ||
+                busyKey === `branch:${lessonMenuLesson.id}` ||
+                busyKey === `move:${lessonMenuLesson.id}` ||
+                busyKey === `delete:${lessonMenuLesson.id}`
+              }
               className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-stone-700 transition hover:bg-stone-50 disabled:cursor-not-allowed disabled:opacity-50"
             >
               <FolderClosed className="h-4 w-4" />
@@ -1339,7 +1421,11 @@ export function LearningHome() {
             <button
               type="button"
               onClick={() => void handleDeleteLesson(lessonMenuLesson)}
-              disabled={busyKey === `move:${lessonMenuLesson.id}` || busyKey === `delete:${lessonMenuLesson.id}`}
+              disabled={
+                busyKey === `branch:${lessonMenuLesson.id}` ||
+                busyKey === `move:${lessonMenuLesson.id}` ||
+                busyKey === `delete:${lessonMenuLesson.id}`
+              }
               className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-rose-600 transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {busyKey === `delete:${lessonMenuLesson.id}` ? (
@@ -1366,7 +1452,11 @@ export function LearningHome() {
                   key={packageItem.id}
                   type="button"
                   onClick={() => void handleMoveLesson(lessonMenuLesson, packageItem.id)}
-                  disabled={busyKey === `move:${lessonMenuLesson.id}` || busyKey === `delete:${lessonMenuLesson.id}`}
+                  disabled={
+                    busyKey === `branch:${lessonMenuLesson.id}` ||
+                    busyKey === `move:${lessonMenuLesson.id}` ||
+                    busyKey === `delete:${lessonMenuLesson.id}`
+                  }
                   className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-sm text-stone-700 transition hover:bg-stone-50 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <span className="truncate">{packageItem.title}</span>
@@ -1654,7 +1744,9 @@ export function LearningHome() {
     }
     const isDeletingPackage = busyKey === `package:delete:${selectedCoursePackage.id}`;
     const isRenamingPackage = busyKey === `package:rename:${selectedCoursePackage.id}`;
-    const packageActionBusy = isDeletingPackage || isRenamingPackage;
+    const latestPackageLesson = selectedPackageLessons[0] ?? null;
+    const isBranchingLatestLesson = latestPackageLesson ? busyKey === `branch:${latestPackageLesson.id}` : false;
+    const packageActionBusy = isDeletingPackage || isRenamingPackage || isBranchingLatestLesson;
 
     return (
       <div className="w-full rounded-[28px] border border-white/80 bg-white/95 p-5 shadow-[0_18px_50px_rgba(15,23,42,0.1)] backdrop-blur">
@@ -1695,6 +1787,20 @@ export function LearningHome() {
                 {isRenamingPackage ? <LoaderCircle className="h-2 w-2 animate-spin" /> : <PencilLine className="h-2 w-2" />}
                 {h.renamePackage}
               </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (latestPackageLesson) {
+                    void handleBranchLesson(latestPackageLesson, selectedCoursePackage.id);
+                  }
+                }}
+                disabled={packageActionBusy || !latestPackageLesson}
+                className="inline-flex h-3.5 shrink-0 items-center gap-px rounded-full border border-stone-200 bg-white px-1 text-[8px] font-normal leading-none text-stone-600 transition hover:border-stone-300 hover:text-stone-950 disabled:cursor-not-allowed disabled:opacity-45"
+                title={h.branchLatestLessonTitle}
+              >
+                {isBranchingLatestLesson ? <LoaderCircle className="h-2 w-2 animate-spin" /> : <GitFork className="h-2 w-2" />}
+                {h.branchLesson}
+              </button>
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
@@ -1723,44 +1829,64 @@ export function LearningHome() {
               selectedPackageLessons.map((lesson) => {
                 const isPreviewActive = lesson.id === selectedPackageActiveLesson?.id;
                 const buttonBusy = busyKey === `lesson:${lesson.id}`;
+                const isBranching = busyKey === `branch:${lesson.id}`;
                 return (
-                  <button
+                  <div
                     key={lesson.id}
-                    type="button"
                     data-lesson-selection-root
-                    onClick={() => void handleOpenLesson(lesson.id)}
-                    disabled={buttonBusy}
                     className={clsx(
-                      "w-full rounded-2xl border px-3 py-3 text-left transition disabled:cursor-wait",
+                      "flex w-full items-start gap-2 rounded-2xl border px-3 py-3 text-left transition",
                       isPreviewActive
                         ? "border-stone-950 bg-stone-950 text-white"
                         : "border-stone-200 bg-stone-50/90 text-stone-800 hover:border-stone-300 hover:bg-white"
                     )}
                   >
-                    <div className="flex items-start gap-3">
-                      <div
-                        className={clsx(
-                          "mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border",
-                          isPreviewActive
-                            ? "border-white/10 bg-white/10 text-white"
-                            : "border-stone-200 bg-white text-stone-500"
-                        )}
-                      >
-                        {buttonBusy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <BookText className="h-4 w-4" />}
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center justify-between gap-2">
-                          <p className="truncate text-sm font-semibold">{lesson.title}</p>
-                          <span className={clsx("shrink-0 text-[10px]", isPreviewActive ? "text-white/70" : "text-stone-400")}>
-                            {homeRelFmt(lesson.updated_at)}
-                          </span>
+                    <button
+                      type="button"
+                      onClick={() => void handleOpenLesson(lesson.id)}
+                      disabled={buttonBusy || isBranching}
+                      className="min-w-0 flex-1 text-left disabled:cursor-wait"
+                    >
+                      <div className="flex items-start gap-3">
+                        <div
+                          className={clsx(
+                            "mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border",
+                            isPreviewActive
+                              ? "border-white/10 bg-white/10 text-white"
+                              : "border-stone-200 bg-white text-stone-500"
+                          )}
+                        >
+                          {buttonBusy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <BookText className="h-4 w-4" />}
                         </div>
-                        <p className={clsx("mt-1 line-clamp-2 text-xs leading-5", isPreviewActive ? "text-white/75" : "text-stone-500")}>
-                          {lesson.summary || h.lessonSummaryFallback}
-                        </p>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center justify-between gap-2">
+                            <p className="truncate text-sm font-semibold">{lesson.title}</p>
+                            <span className={clsx("shrink-0 text-[10px]", isPreviewActive ? "text-white/70" : "text-stone-400")}>
+                              {homeRelFmt(lesson.updated_at)}
+                            </span>
+                          </div>
+                          <p className={clsx("mt-1 line-clamp-2 text-xs leading-5", isPreviewActive ? "text-white/75" : "text-stone-500")}>
+                            {lesson.summary || h.lessonSummaryFallback}
+                          </p>
+                        </div>
                       </div>
-                    </div>
-                  </button>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleBranchLesson(lesson, selectedCoursePackage.id)}
+                      disabled={buttonBusy || isBranching}
+                      className={clsx(
+                        "mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border transition disabled:cursor-wait disabled:opacity-60",
+                        isPreviewActive
+                          ? "border-white/10 bg-white/10 text-white hover:bg-white/20"
+                          : "border-stone-200 bg-white text-stone-500 hover:border-stone-300 hover:text-stone-950"
+                      )}
+                      aria-label={h.branchLessonTitle}
+                      title={h.branchLessonTitle}
+                    >
+                      {isBranching ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <GitFork className="h-4 w-4" />}
+                    </button>
+                  </div>
                 );
               })
             ) : (
