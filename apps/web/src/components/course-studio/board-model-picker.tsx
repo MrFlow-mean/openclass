@@ -26,10 +26,10 @@ export function BoardModelPicker({
   return (
     <label
       title={`板书编辑 AI：${boardModelLabel}`}
-      className="flex h-10 max-w-[260px] items-center gap-2 rounded-lg border border-gray-200 bg-white px-2.5 text-gray-700 transition hover:border-gray-300 hover:bg-gray-50"
+      className="flex h-10 min-w-[236px] max-w-[286px] items-center gap-2 rounded-lg border-2 border-amber-400 bg-amber-50 px-3 text-amber-950 shadow-sm transition hover:border-amber-500 hover:bg-amber-100"
     >
-      <BrainCircuit className="h-4 w-4 shrink-0 text-gray-500" />
-      <span className="shrink-0 text-[11px] font-bold uppercase tracking-wider text-gray-600">板书 AI</span>
+      <BrainCircuit className="h-4 w-4 shrink-0 text-amber-700" />
+      <span className="shrink-0 text-[11px] font-bold uppercase tracking-wider text-amber-800">板书编辑 AI</span>
       <select
         aria-label="板书编辑 AI 模型"
         value={boardModelValue}
@@ -40,7 +40,7 @@ export function BoardModelPicker({
             onSelectBoardModel(nextOption);
           }
         }}
-        className="min-w-0 max-w-36 flex-1 border-0 bg-transparent text-[11px] font-medium text-gray-500 outline-none"
+        className="min-w-0 flex-1 border-0 bg-transparent text-[11px] font-semibold text-amber-950 outline-none"
       >
         {boardModelValue ? null : <option value="">{boardModelLabel}</option>}
         {modelOptions.map((option) => (
