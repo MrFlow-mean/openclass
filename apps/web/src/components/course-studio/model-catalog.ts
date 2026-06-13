@@ -60,6 +60,7 @@ export const FALLBACK_MODEL_CATALOG: AIModelCatalog = {
 
 export const PROVIDER_LABELS: Record<AIModelSelection["provider"], string> = {
   openai: "OpenAI",
+  openai_codex: "OpenAI Codex",
   anthropic: "Anthropic",
   google: "Google",
   deepseek: "DeepSeek",

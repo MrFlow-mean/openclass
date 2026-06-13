@@ -27,6 +27,7 @@ export type BoardTaskAction =
   | "simplify_target";
 export type AIProvider =
   | "openai"
+  | "openai_codex"
   | "anthropic"
   | "google"
   | "deepseek"
@@ -376,6 +377,35 @@ export interface AIModelCatalog {
     text: AIModelSelection;
     realtime: AIModelSelection;
   };
+}
+
+export interface CodexAccountView {
+  type?: string | null;
+  email?: string | null;
+  plan_type?: string | null;
+}
+
+export interface CodexProviderStatus {
+  enabled: boolean;
+  available: boolean;
+  configured: boolean;
+  account?: CodexAccountView | null;
+  rate_limits?: Record<string, unknown> | null;
+  message: string;
+}
+
+export interface CodexLoginStartResponse {
+  login_id: string;
+  verification_url: string;
+  user_code: string;
+  expires_at?: string | null;
+}
+
+export interface CodexLoginStatusResponse {
+  login_id: string;
+  status: "pending" | "succeeded" | "failed" | "cancelled" | "expired";
+  error?: string | null;
+  account?: CodexAccountView | null;
 }
 
 export interface SelectionRef {

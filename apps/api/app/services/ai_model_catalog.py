@@ -5,11 +5,13 @@ import os
 from typing import Any
 
 from app.models import AIModelCatalog, AIModelOption, AIModelSelection, AIProvider
+from app.services.codex_app_server import CODEX_DEFAULT_MODELS, codex_provider_status, list_codex_models
 
 OPENAI_OFFICIAL_BASE_URL = "https://api.openai.com/v1"
 OPENAI_PREMIUM_TEXT_MODEL = "gpt-5.5"
 OPENAI_ECONOMY_TEXT_MODEL = "gpt-5.4"
 OPENAI_FAST_TEXT_MODEL = "gpt-5.4-mini"
+OPENAI_CODEX_DEFAULT_TEXT_MODEL = "gpt-5.5"
 OPENAI_DEFAULT_TEXT_MODEL = OPENAI_PREMIUM_TEXT_MODEL
 OPENAI_DEFAULT_CATALOG_MODEL = OPENAI_FAST_TEXT_MODEL
 OPENAI_IMAGE_MODEL = "gpt-image-2"
@@ -35,6 +37,7 @@ ANTHROPIC_COMPATIBLE_DEFAULT_TEXT_MODEL = ANTHROPIC_FAST_TEXT_MODEL
 
 PROVIDER_LABELS: dict[AIProvider, str] = {
     "openai": "OpenAI",
+    "openai_codex": "OpenAI Codex",
     "anthropic": "Anthropic",
     "google": "Google",
     "deepseek": "DeepSeek",
@@ -48,6 +51,7 @@ CURATED_TEXT_MODELS: dict[AIProvider, tuple[tuple[str, str], ...]] = {
     "openai": (
         (OPENAI_PREMIUM_TEXT_MODEL, "OpenAI GPT-5.5"),
     ),
+    "openai_codex": CODEX_DEFAULT_MODELS,
     "anthropic": (
         (ANTHROPIC_ECONOMY_TEXT_MODEL, "Anthropic Claude Haiku 4.5"),
         (ANTHROPIC_FAST_TEXT_MODEL, "Anthropic Claude Sonnet 4.6"),
@@ -167,6 +171,8 @@ def _provider_enabled(provider: AIProvider) -> bool:
         return False
     if provider == "openai":
         return bool(_normalize_optional_secret(_shared_api_key()))
+    if provider == "openai_codex":
+        return codex_provider_status().configured
     if provider == "anthropic":
         return bool(_normalize_optional_secret(_env_any("ANTHROPIC_API_KEY")))
     if provider == "google":
@@ -206,6 +212,8 @@ def default_text_selection() -> AIModelSelection:
         return AIModelSelection(provider="openai", model=model)
     if provider == "anthropic":
         model = os.getenv("ANTHROPIC_MODEL", ANTHROPIC_DEFAULT_TEXT_MODEL)
+    elif provider == "openai_codex":
+        model = os.getenv("OPENAI_CODEX_MODEL", OPENAI_CODEX_DEFAULT_TEXT_MODEL)
     elif provider == "google":
         model = os.getenv("GOOGLE_TEXT_MODEL", GOOGLE_DEFAULT_TEXT_MODEL)
     elif provider == "deepseek":
@@ -242,6 +250,23 @@ def provider_is_configured(provider: AIProvider) -> bool:
 
 def _model_label(provider: AIProvider, model: str) -> str:
     return f"{PROVIDER_LABELS[provider]} {model}"
+
+
+def _codex_text_models() -> tuple[tuple[str, str], ...]:
+    try:
+        models = list_codex_models()
+    except Exception:
+        return CODEX_DEFAULT_MODELS
+    options: list[tuple[str, str]] = []
+    for item in models:
+        if not isinstance(item, dict):
+            continue
+        model = str(item.get("model") or item.get("id") or "").strip()
+        if not model:
+            continue
+        label = str(item.get("displayName") or item.get("display_name") or model).strip()
+        options.append((model, f"OpenAI Codex {label}"))
+    return tuple(options) or CODEX_DEFAULT_MODELS
 
 
 def _option(
@@ -341,7 +366,10 @@ def _catalog_default_selection(
 def build_model_catalog() -> AIModelCatalog:
     requested_text_default = default_text_selection()
     requested_realtime_default = default_realtime_selection()
-    text_curated_models = CURATED_TEXT_MODELS
+    text_curated_models = {
+        **CURATED_TEXT_MODELS,
+        "openai_codex": _codex_text_models(),
+    }
     if _single_api_key_mode():
         text_curated_models = {"openai": SINGLE_KEY_TEXT_MODELS}
         text_options = [
@@ -363,7 +391,7 @@ def build_model_catalog() -> AIModelCatalog:
                 capability="text",
                 default=False,
             )
-            for provider, models in CURATED_TEXT_MODELS.items()
+            for provider, models in text_curated_models.items()
             for model, label in models
         ]
         if _provider_enabled("openai_compatible"):

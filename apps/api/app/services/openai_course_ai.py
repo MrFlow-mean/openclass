@@ -47,12 +47,14 @@ from app.services.ai_model_catalog import (
     KIMI_DEFAULT_TEXT_MODEL,
     MINIMAX_DEFAULT_TEXT_MODEL,
     OPENAI_DEFAULT_CATALOG_MODEL,
+    OPENAI_CODEX_DEFAULT_TEXT_MODEL,
     OPENAI_DEFAULT_TEXT_MODEL,
     OPENAI_COMPATIBLE_DEFAULT_TEXT_MODEL,
     OPENAI_OFFICIAL_BASE_URL,
     OPENAI_IMAGE_MODEL,
     default_text_selection,
 )
+from app.services.codex_app_server import CodexAppServerTextClient, codex_provider_status
 from app.services.config import load_root_dotenv
 
 logger = logging.getLogger(__name__)
@@ -554,6 +556,24 @@ class OpenAICompatibleConfig(BaseModel):
         return value or self.default_model
 
 
+class OpenAICodexConfig(BaseModel):
+    default_model: str = Field(default_factory=lambda: os.getenv("OPENAI_CODEX_MODEL", OPENAI_CODEX_DEFAULT_TEXT_MODEL))
+    pm_model: str | None = Field(default_factory=lambda: os.getenv("OPENAI_CODEX_PM_MODEL"))
+    board_model: str | None = Field(default_factory=lambda: os.getenv("OPENAI_CODEX_BOARD_MODEL"))
+    guide_model: str | None = Field(default_factory=lambda: os.getenv("OPENAI_CODEX_GUIDE_MODEL"))
+    chatbot_model: str | None = Field(default_factory=lambda: os.getenv("OPENAI_CODEX_CHATBOT_MODEL"))
+    lesson_model: str | None = Field(default_factory=lambda: os.getenv("OPENAI_CODEX_LESSON_MODEL"))
+    catalog_model: str | None = Field(default_factory=lambda: os.getenv("OPENAI_CODEX_CATALOG_MODEL"))
+
+    @property
+    def enabled(self) -> bool:
+        return codex_provider_status().configured
+
+    def model_for(self, role: str) -> str:
+        value = getattr(self, f"{role}_model", None)
+        return value or self.default_model
+
+
 class AnthropicConfig(BaseModel):
     api_key: str | None = Field(default_factory=lambda: os.getenv("ANTHROPIC_API_KEY"))
     base_url: str = Field(default_factory=lambda: os.getenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com"))
@@ -772,6 +792,7 @@ class OpenAICourseAI:
         self.kimi_config = KimiConfig()
         self.minimax_config = MiniMaxConfig()
         self.openai_compatible_config = OpenAICompatibleConfig()
+        self.openai_codex_config = OpenAICodexConfig()
         self.anthropic_config = AnthropicConfig()
         self.anthropic_compatible_config = AnthropicCompatibleConfig()
         self.google_config = GoogleTextConfig()
@@ -803,6 +824,7 @@ class OpenAICourseAI:
             if self.openai_compatible_config.enabled
             else None
         )
+        self.openai_codex_client: CodexAppServerTextClient | None = None
         self.anthropic_client = (
             AnthropicTextClient(self.anthropic_config) if self.anthropic_config.enabled else None
         )
@@ -817,6 +839,11 @@ class OpenAICourseAI:
             else None
         )
 
+    def _ensure_openai_codex_client(self) -> CodexAppServerTextClient | None:
+        if self.openai_codex_client is None and self.openai_codex_config.enabled:
+            self.openai_codex_client = CodexAppServerTextClient()
+        return self.openai_codex_client
+
     @property
     def enabled(self) -> bool:
         return any(
@@ -826,6 +853,7 @@ class OpenAICourseAI:
                 self.kimi_client is not None,
                 self.minimax_client is not None,
                 self.openai_compatible_client is not None,
+                self._ensure_openai_codex_client() is not None,
                 self.anthropic_client is not None,
                 self.anthropic_compatible_client is not None,
                 self.google_client is not None,
@@ -837,6 +865,7 @@ class OpenAICourseAI:
             "enabled": self.enabled,
             "providers": {
                 "openai": self.client is not None,
+                "openai_codex": self._ensure_openai_codex_client() is not None,
                 "anthropic": self.anthropic_client is not None,
                 "google": self.google_client is not None,
                 "deepseek": self.deepseek_client is not None,
@@ -855,6 +884,7 @@ class OpenAICourseAI:
                 "deepseek": self.deepseek_config.default_model,
                 "kimi": self.kimi_config.default_model,
                 "minimax": self.minimax_config.default_model,
+                "openai_codex": self.openai_codex_config.default_model,
                 "openai_compatible": self.openai_compatible_config.default_model,
                 "anthropic_compatible": self.anthropic_compatible_config.default_model,
             },
@@ -1761,6 +1791,16 @@ class OpenAICourseAI:
                 user_prompt=user_prompt,
                 schema=schema,
             )
+        if provider == "openai_codex":
+            client = self._ensure_openai_codex_client()
+            if not client:
+                raise RuntimeError("OpenAI Codex app-server is not configured")
+            return client.parse(
+                model=model,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                schema=schema,
+            )
         if provider == "deepseek":
             return self._call_openai_parse(
                 role=role,
@@ -2224,6 +2264,8 @@ class OpenAICourseAI:
             return self.anthropic_config.default_model
         if provider == "google":
             return self.google_config.default_model
+        if provider == "openai_codex":
+            return self.openai_codex_config.model_for(role)
         if provider == "deepseek":
             return self.deepseek_config.model_for(role)
         if provider == "kimi":
@@ -2244,6 +2286,8 @@ class OpenAICourseAI:
             return self.anthropic_client is not None
         if provider == "google":
             return self.google_client is not None
+        if provider == "openai_codex":
+            return self._ensure_openai_codex_client() is not None
         if provider == "deepseek":
             return self.deepseek_client is not None
         if provider == "kimi":
@@ -2257,6 +2301,8 @@ class OpenAICourseAI:
         return self.client is not None
 
     def _fallback_provider_candidates(self, failed_provider: AIProvider, role: str) -> list[tuple[AIProvider, str]]:
+        if failed_provider == "openai_codex":
+            return []
         ordered_providers: tuple[AIProvider, ...] = (
             "google",
             "deepseek",

@@ -1,0 +1,555 @@
+from __future__ import annotations
+
+import json
+import os
+import queue
+import shutil
+import subprocess
+import tempfile
+import threading
+import time
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any
+
+from pydantic import BaseModel
+
+from app.models import CodexAccountView, CodexLoginStartResponse, CodexLoginStatusResponse, CodexProviderStatus
+
+
+CODEX_DEFAULT_MODELS: tuple[tuple[str, str], ...] = (
+    ("gpt-5.5", "OpenAI Codex GPT-5.5"),
+    ("gpt-5.4", "OpenAI Codex GPT-5.4"),
+    ("gpt-5.4-mini", "OpenAI Codex GPT-5.4 Mini"),
+)
+CODEX_APP_SERVER_TIMEOUT_SECONDS = 180
+CODEX_LOGIN_TIMEOUT_SECONDS = 15 * 60
+_STATUS_CACHE_TTL_SECONDS = 10
+
+
+class CodexAppServerError(RuntimeError):
+    pass
+
+
+@dataclass
+class CodexParsedResponse:
+    output_parsed: BaseModel
+    id: str | None = None
+    output_text: str | None = None
+    usage: Any = None
+
+
+def _env_truthy(name: str) -> bool:
+    return (os.getenv(name) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def codex_app_server_runtime_enabled() -> bool:
+    return _env_truthy("OPENCLASS_CODEX_APP_SERVER_ENABLED")
+
+
+def codex_binary_path() -> str | None:
+    configured = (os.getenv("OPENCLASS_CODEX_CLI_PATH") or "").strip()
+    if configured:
+        return configured if Path(configured).exists() else None
+    return shutil.which("codex")
+
+
+def codex_app_server_available() -> bool:
+    return codex_binary_path() is not None
+
+
+def _normalize_account(raw: dict[str, Any] | None) -> CodexAccountView | None:
+    if not isinstance(raw, dict):
+        return None
+    return CodexAccountView(
+        type=str(raw.get("type") or "") or None,
+        email=str(raw.get("email") or "") or None,
+        plan_type=str(raw.get("planType") or raw.get("plan_type") or "") or None,
+    )
+
+
+def _json_response_error(message: dict[str, Any]) -> CodexAppServerError:
+    error = message.get("error")
+    if isinstance(error, dict):
+        return CodexAppServerError(str(error.get("message") or error))
+    return CodexAppServerError(str(error or message))
+
+
+class CodexAppServerSession:
+    def __init__(self, *, timeout_seconds: int = CODEX_APP_SERVER_TIMEOUT_SECONDS) -> None:
+        binary = codex_binary_path()
+        if not binary:
+            raise CodexAppServerError("Codex CLI is not installed or OPENCLASS_CODEX_CLI_PATH is invalid")
+        self.timeout_seconds = timeout_seconds
+        self.process = subprocess.Popen(
+            [binary, "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
+        self._messages: queue.Queue[dict[str, Any]] = queue.Queue()
+        self._stderr: queue.Queue[str] = queue.Queue()
+        self._next_id = 0
+        self.notifications: list[dict[str, Any]] = []
+        threading.Thread(target=self._read_stdout, daemon=True).start()
+        threading.Thread(target=self._read_stderr, daemon=True).start()
+        self.request(
+            "initialize",
+            {
+                "clientInfo": {
+                    "name": "openclass",
+                    "title": "OpenClass",
+                    "version": "0.1.0",
+                }
+            },
+            timeout_seconds=20,
+        )
+        self.notify("initialized", {})
+
+    def close(self) -> None:
+        if self.process.poll() is not None:
+            return
+        self.process.terminate()
+        try:
+            self.process.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+
+    def _read_stdout(self) -> None:
+        stream = self.process.stdout
+        if stream is None:
+            return
+        for line in stream:
+            text = line.strip()
+            if not text:
+                continue
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                self._stderr.put(text)
+                continue
+            if isinstance(parsed, dict):
+                self._messages.put(parsed)
+
+    def _read_stderr(self) -> None:
+        stream = self.process.stderr
+        if stream is None:
+            return
+        for line in stream:
+            text = line.strip()
+            if text:
+                self._stderr.put(text)
+
+    def _write(self, payload: dict[str, Any]) -> None:
+        if self.process.stdin is None or self.process.poll() is not None:
+            raise CodexAppServerError("Codex app-server is not running")
+        self.process.stdin.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        self.process.stdin.flush()
+
+    def _answer_server_request(self, message: dict[str, Any]) -> None:
+        request_id = message.get("id")
+        method = str(message.get("method") or "")
+        if request_id is None or not method:
+            return
+        self._write(
+            {
+                "id": request_id,
+                "error": {
+                    "code": -32000,
+                    "message": "OpenClass Codex adapter does not grant interactive tool requests.",
+                },
+            }
+        )
+
+    def notify(self, method: str, params: dict[str, Any] | None = None) -> None:
+        self._write({"method": method, "params": params or {}})
+
+    def request(
+        self,
+        method: str,
+        params: dict[str, Any] | None = None,
+        *,
+        timeout_seconds: int | None = None,
+    ) -> dict[str, Any]:
+        request_id = self._next_id
+        self._next_id += 1
+        self._write({"method": method, "id": request_id, "params": params or {}})
+        return self.wait_for_response(request_id, timeout_seconds=timeout_seconds)
+
+    def wait_for_response(self, request_id: int, *, timeout_seconds: int | None = None) -> dict[str, Any]:
+        deadline = time.monotonic() + (timeout_seconds or self.timeout_seconds)
+        while time.monotonic() < deadline:
+            if self.process.poll() is not None:
+                stderr = self._collect_stderr()
+                raise CodexAppServerError(f"Codex app-server exited unexpectedly{': ' + stderr if stderr else ''}")
+            try:
+                message = self._messages.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            if message.get("id") == request_id:
+                if "error" in message:
+                    raise _json_response_error(message)
+                result = message.get("result")
+                return result if isinstance(result, dict) else {}
+            if "method" in message and "id" in message and "result" not in message and "error" not in message:
+                self._answer_server_request(message)
+            else:
+                self.notifications.append(message)
+        raise CodexAppServerError(f"Timed out waiting for Codex app-server response to {request_id}")
+
+    def _collect_stderr(self) -> str:
+        lines: list[str] = []
+        while not self._stderr.empty():
+            lines.append(self._stderr.get())
+        return "\n".join(lines[-10:])
+
+
+def _read_account(refresh_token: bool = False) -> tuple[CodexAccountView | None, bool]:
+    with _managed_session(timeout_seconds=30) as session:
+        result = session.request("account/read", {"refreshToken": refresh_token}, timeout_seconds=30)
+    return _normalize_account(result.get("account")), bool(result.get("requiresOpenaiAuth"))
+
+
+@dataclass
+class _ManagedSession:
+    timeout_seconds: int
+    session: CodexAppServerSession | None = None
+
+    def __enter__(self) -> CodexAppServerSession:
+        self.session = CodexAppServerSession(timeout_seconds=self.timeout_seconds)
+        return self.session
+
+    def __exit__(self, *_exc: object) -> None:
+        if self.session:
+            self.session.close()
+
+
+def _managed_session(*, timeout_seconds: int) -> _ManagedSession:
+    return _ManagedSession(timeout_seconds=timeout_seconds)
+
+
+_cached_status: tuple[float, CodexProviderStatus] | None = None
+
+
+def codex_provider_status(*, refresh: bool = False, include_rate_limits: bool = False) -> CodexProviderStatus:
+    global _cached_status
+    enabled = codex_app_server_runtime_enabled()
+    available = codex_app_server_available()
+    now = time.monotonic()
+    if not refresh and not include_rate_limits and _cached_status and now - _cached_status[0] < _STATUS_CACHE_TTL_SECONDS:
+        cached = _cached_status[1]
+        if cached.enabled == enabled and cached.available == available:
+            return cached
+    if not enabled:
+        status = CodexProviderStatus(
+            enabled=False,
+            available=available,
+            configured=False,
+            message="Set OPENCLASS_CODEX_APP_SERVER_ENABLED=true to enable the ChatGPT/Codex provider.",
+        )
+        _cached_status = (now, status)
+        return status
+    if not available:
+        status = CodexProviderStatus(
+            enabled=True,
+            available=False,
+            configured=False,
+            message="Codex CLI is not installed or OPENCLASS_CODEX_CLI_PATH is invalid.",
+        )
+        _cached_status = (now, status)
+        return status
+    try:
+        account, _requires_openai_auth = _read_account(refresh_token=refresh)
+        rate_limits: dict[str, Any] | None = None
+        if include_rate_limits and account and account.type == "chatgpt":
+            with _managed_session(timeout_seconds=30) as session:
+                rate_limits = session.request("account/rateLimits/read", {}, timeout_seconds=30)
+        status = CodexProviderStatus(
+            enabled=True,
+            available=True,
+            configured=bool(account and account.type == "chatgpt"),
+            account=account,
+            rate_limits=rate_limits,
+            message="" if account and account.type == "chatgpt" else "Sign in with ChatGPT/Codex to use subscription models.",
+        )
+        _cached_status = (now, status)
+        return status
+    except Exception as exc:
+        status = CodexProviderStatus(
+            enabled=True,
+            available=True,
+            configured=False,
+            message=str(exc),
+        )
+        _cached_status = (now, status)
+        return status
+
+
+def list_codex_models() -> list[dict[str, Any]]:
+    if not codex_app_server_runtime_enabled() or not codex_app_server_available():
+        return []
+    with _managed_session(timeout_seconds=30) as session:
+        result = session.request("model/list", {"limit": 20, "includeHidden": False}, timeout_seconds=30)
+    data = result.get("data")
+    return data if isinstance(data, list) else []
+
+
+@dataclass
+class _LoginAttempt:
+    login_id: str
+    verification_url: str
+    user_code: str
+    expires_at: datetime
+    status: str = "pending"
+    error: str | None = None
+    account: CodexAccountView | None = None
+    session: CodexAppServerSession | None = None
+    thread: threading.Thread | None = None
+    completed_at: datetime | None = None
+    notifications: list[dict[str, Any]] = field(default_factory=list)
+
+
+_login_lock = threading.Lock()
+_login_attempts: dict[str, _LoginAttempt] = {}
+
+
+def start_codex_device_login() -> CodexLoginStartResponse:
+    if not codex_app_server_runtime_enabled():
+        raise CodexAppServerError("OPENCLASS_CODEX_APP_SERVER_ENABLED is not enabled")
+    session = CodexAppServerSession(timeout_seconds=CODEX_LOGIN_TIMEOUT_SECONDS)
+    try:
+        result = session.request(
+            "account/login/start",
+            {"type": "chatgptDeviceCode"},
+            timeout_seconds=30,
+        )
+        login_id = str(result.get("loginId") or "")
+        verification_url = str(result.get("verificationUrl") or "")
+        user_code = str(result.get("userCode") or "")
+        if not login_id or not verification_url or not user_code:
+            raise CodexAppServerError(f"Invalid Codex device login response: {result}")
+        attempt = _LoginAttempt(
+            login_id=login_id,
+            verification_url=verification_url,
+            user_code=user_code,
+            expires_at=datetime.now(timezone.utc) + timedelta(seconds=CODEX_LOGIN_TIMEOUT_SECONDS),
+            session=session,
+        )
+        thread = threading.Thread(target=_watch_login_attempt, args=(attempt,), daemon=True)
+        attempt.thread = thread
+        with _login_lock:
+            _login_attempts[login_id] = attempt
+        thread.start()
+        return CodexLoginStartResponse(
+            login_id=login_id,
+            verification_url=verification_url,
+            user_code=user_code,
+            expires_at=attempt.expires_at.isoformat(),
+        )
+    except Exception:
+        session.close()
+        raise
+
+
+def _watch_login_attempt(attempt: _LoginAttempt) -> None:
+    assert attempt.session is not None
+    try:
+        deadline = time.monotonic() + CODEX_LOGIN_TIMEOUT_SECONDS
+        while time.monotonic() < deadline:
+            try:
+                message = attempt.session._messages.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            attempt.notifications.append(message)
+            method = message.get("method")
+            params = message.get("params") if isinstance(message.get("params"), dict) else {}
+            if method == "account/login/completed" and params.get("loginId") == attempt.login_id:
+                success = bool(params.get("success"))
+                attempt.status = "succeeded" if success else "failed"
+                attempt.error = None if success else str(params.get("error") or "Codex login failed")
+                attempt.completed_at = datetime.now(timezone.utc)
+                continue
+            if method == "account/updated" and attempt.status == "succeeded":
+                account, _requires = _read_account(refresh_token=False)
+                attempt.account = account
+                break
+        if attempt.status == "pending":
+            attempt.status = "expired"
+            attempt.error = "Codex login timed out"
+    except Exception as exc:
+        attempt.status = "failed"
+        attempt.error = str(exc)
+    finally:
+        attempt.completed_at = attempt.completed_at or datetime.now(timezone.utc)
+        attempt.session.close()
+        attempt.session = None
+        global _cached_status
+        _cached_status = None
+
+
+def codex_login_status(login_id: str) -> CodexLoginStatusResponse:
+    with _login_lock:
+        attempt = _login_attempts.get(login_id)
+    if not attempt:
+        raise CodexAppServerError("Unknown Codex login id")
+    return CodexLoginStatusResponse(
+        login_id=attempt.login_id,
+        status=attempt.status,  # type: ignore[arg-type]
+        error=attempt.error,
+        account=attempt.account,
+    )
+
+
+def cancel_codex_login(login_id: str) -> CodexLoginStatusResponse:
+    with _login_lock:
+        attempt = _login_attempts.get(login_id)
+    if not attempt:
+        raise CodexAppServerError("Unknown Codex login id")
+    if attempt.status == "pending":
+        attempt.status = "cancelled"
+        attempt.error = "Login cancelled"
+        if attempt.session:
+            try:
+                attempt.session.request("account/login/cancel", {"loginId": login_id}, timeout_seconds=10)
+            except Exception:
+                pass
+            attempt.session.close()
+            attempt.session = None
+    return codex_login_status(login_id)
+
+
+def logout_codex() -> None:
+    if not codex_app_server_runtime_enabled() or not codex_app_server_available():
+        return
+    with _managed_session(timeout_seconds=30) as session:
+        session.request("account/logout", {}, timeout_seconds=30)
+    global _cached_status
+    _cached_status = None
+
+
+class CodexAppServerTextClient:
+    def parse(
+        self,
+        *,
+        model: str,
+        system_prompt: str,
+        user_prompt: str,
+        schema: type[BaseModel],
+    ) -> CodexParsedResponse:
+        status = codex_provider_status(refresh=False)
+        if not status.configured:
+            raise CodexAppServerError(status.message or "ChatGPT/Codex provider is not signed in")
+        with _managed_session(timeout_seconds=CODEX_APP_SERVER_TIMEOUT_SECONDS) as session:
+            output_text, usage = _run_structured_turn(
+                session=session,
+                model=model,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                schema=schema,
+            )
+        parsed = schema.model_validate(_extract_json(output_text))
+        return CodexParsedResponse(output_parsed=parsed, output_text=output_text, usage=usage)
+
+
+def _run_structured_turn(
+    *,
+    session: CodexAppServerSession,
+    model: str,
+    system_prompt: str,
+    user_prompt: str,
+    schema: type[BaseModel],
+) -> tuple[str, Any]:
+    with tempfile.TemporaryDirectory(prefix="openclass-codex-") as cwd:
+        thread_result = session.request(
+            "thread/start",
+            {
+                "model": model,
+                "cwd": cwd,
+                "approvalPolicy": "never",
+                "sandbox": "readOnly",
+                "serviceName": "openclass_codex_provider",
+            },
+            timeout_seconds=30,
+        )
+        thread = thread_result.get("thread") if isinstance(thread_result.get("thread"), dict) else {}
+        thread_id = str(thread.get("id") or "")
+        if not thread_id:
+            raise CodexAppServerError(f"Codex thread/start did not return a thread id: {thread_result}")
+        request_id = session._next_id
+        session._next_id += 1
+        prompt = (
+            "You are the model provider adapter for OpenClass. Follow the system instructions below, "
+            "then answer the user request. Return only a JSON object matching the provided output schema. "
+            "Do not inspect files, run shell commands, call tools, or modify anything.\n\n"
+            f"System instructions:\n{system_prompt}\n\n"
+            f"User request:\n{user_prompt}"
+        )
+        session._write(
+            {
+                "method": "turn/start",
+                "id": request_id,
+                "params": {
+                    "threadId": thread_id,
+                    "input": [{"type": "text", "text": prompt}],
+                    "model": model,
+                    "cwd": cwd,
+                    "approvalPolicy": "never",
+                    "sandboxPolicy": {"type": "readOnly"},
+                    "outputSchema": schema.model_json_schema(),
+                },
+            }
+        )
+        final_text = ""
+        usage: Any = None
+        deadline = time.monotonic() + CODEX_APP_SERVER_TIMEOUT_SECONDS
+        while time.monotonic() < deadline:
+            try:
+                message = session._messages.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            if message.get("id") == request_id and "error" in message:
+                raise _json_response_error(message)
+            if "method" in message and "id" in message and "result" not in message and "error" not in message:
+                session._answer_server_request(message)
+                continue
+            method = message.get("method")
+            params = message.get("params") if isinstance(message.get("params"), dict) else {}
+            if method == "thread/tokenUsage/updated":
+                usage = params
+            if method == "item/completed":
+                item = params.get("item") if isinstance(params.get("item"), dict) else {}
+                if item.get("type") == "agentMessage" and isinstance(item.get("text"), str):
+                    final_text = item["text"]
+            if method == "turn/completed":
+                turn = params.get("turn") if isinstance(params.get("turn"), dict) else {}
+                if turn.get("status") == "failed":
+                    error = turn.get("error") if isinstance(turn.get("error"), dict) else {}
+                    raise CodexAppServerError(str(error.get("message") or error or "Codex turn failed"))
+                if final_text:
+                    return final_text, usage
+                raise CodexAppServerError("Codex turn completed without an agent message")
+        raise CodexAppServerError("Timed out waiting for Codex turn completion")
+
+
+def _extract_json(text: str) -> Any:
+    stripped = (text or "").strip()
+    if not stripped:
+        raise CodexAppServerError("Codex returned an empty response")
+    if stripped.startswith("```"):
+        parts = stripped.split("```")
+        if len(parts) >= 3:
+            stripped = parts[1]
+            if stripped.lstrip().lower().startswith("json"):
+                stripped = stripped.lstrip()[4:]
+            stripped = stripped.strip()
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        start = stripped.find("{")
+        end = stripped.rfind("}")
+        if start >= 0 and end > start:
+            return json.loads(stripped[start : end + 1])
+        raise
