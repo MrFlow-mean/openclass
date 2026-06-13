@@ -19,6 +19,8 @@ from app.models import (
     ResourceBodyBlock,
     ResourceChapterShard,
     ResourceContextChunk,
+    ResourceCopyrightEvidencePacket,
+    ResourceCopyrightProbeSection,
     ResourceStructureRegion,
     ResourceTOCEntry,
     ResourceLibraryItem,
@@ -32,6 +34,43 @@ _PDF_LOCATOR_SEPARATOR = " || "
 _BODY_BLOCK_TEXT_LIMIT = 5000
 _EPUB_HTML_TEXT_NORMALIZE_LIMIT = 120_000
 _EPUB_STORED_TEXT_LIMIT = 200_000
+_COPYRIGHT_PROBE_SECTION_LIMIT = 10
+_COPYRIGHT_PROBE_TEXT_LIMIT = 800
+_COPYRIGHT_PROBE_PACKET_TEXT_LIMIT = 5000
+_COPYRIGHT_PROBE_WINDOW_LIMIT = 12_000
+_COPYRIGHT_PROBE_PATTERNS = (
+    "isbn",
+    "copyright",
+    "rights",
+    "license",
+    "licensed",
+    "publisher",
+    "published by",
+    "publication",
+    "creative commons",
+    "public domain",
+    "版权",
+    "版权所有",
+    "著作权",
+    "出版社",
+    "出版",
+    "版次",
+    "印次",
+    "许可",
+    "授权",
+    "cip",
+)
+_COPYRIGHT_LICENSE_PATTERNS = (
+    "license",
+    "licensed",
+    "creative commons",
+    "cc by",
+    "cc-by",
+    "cc0",
+    "public domain",
+    "许可",
+    "授权",
+)
 
 
 @dataclass(frozen=True)
@@ -1898,6 +1937,595 @@ def _resource_index_stats(body_blocks: list[ResourceBodyBlock]) -> tuple[int, in
     return page_count, indexed_block_count, message
 
 
+def build_copyright_evidence_packet(
+    file_path: Path,
+    original_name: str,
+    mime_type: str,
+    *,
+    structure_regions: list[ResourceStructureRegion],
+    text_content: str | None,
+) -> ResourceCopyrightEvidencePacket:
+    suffix = file_path.suffix.lower()
+    base_packet = ResourceCopyrightEvidencePacket(
+        title_candidates=[_metadata_phrase(Path(original_name).stem)],
+        source_markers=[f"filename:{original_name}"],
+        metadata_sources=["filename"],
+    )
+    if mime_type.startswith("image/"):
+        return _trim_copyright_packet(
+            _merge_copyright_packets(
+                base_packet,
+                _copyright_probe_from_image_summary(original_name, text_content),
+            )
+        )
+    if suffix == ".pdf":
+        return _trim_copyright_packet(
+            _merge_copyright_packets(
+                base_packet,
+                _copyright_probe_from_pdf(file_path, structure_regions),
+            )
+        )
+    if suffix == ".epub":
+        return _trim_copyright_packet(
+            _merge_copyright_packets(
+                base_packet,
+                _copyright_probe_from_epub(file_path),
+            )
+        )
+    if suffix == ".docx":
+        return _trim_copyright_packet(
+            _merge_copyright_packets(
+                base_packet,
+                _copyright_probe_from_docx(file_path),
+            )
+        )
+    if mime_type in {"text/plain", "text/markdown"} or suffix in {".md", ".txt"}:
+        return _trim_copyright_packet(
+            _merge_copyright_packets(
+                base_packet,
+                _copyright_probe_from_text(original_name, text_content or _read_text_file(file_path)),
+            )
+        )
+    return _trim_copyright_packet(base_packet)
+
+
+def _copyright_probe_from_pdf(
+    file_path: Path,
+    structure_regions: list[ResourceStructureRegion],
+) -> ResourceCopyrightEvidencePacket:
+    packet = ResourceCopyrightEvidencePacket()
+    try:
+        reader = PdfReader(str(file_path))
+    except Exception:
+        return packet
+
+    metadata_texts: list[str] = []
+    try:
+        metadata = reader.metadata or {}
+    except Exception:
+        metadata = {}
+    for key, source_name in (
+        ("/Title", "pdf_metadata:title"),
+        ("/Author", "pdf_metadata:author"),
+        ("/Subject", "pdf_metadata:subject"),
+        ("/Creator", "pdf_metadata:creator"),
+        ("/Producer", "pdf_metadata:producer"),
+    ):
+        value = str(metadata.get(key) or "").strip() if metadata else ""
+        if not value:
+            continue
+        metadata_texts.append(f"{key.lstrip('/')} {value}")
+        if key == "/Title":
+            _append_candidate(packet.title_candidates, value)
+        elif key == "/Author":
+            _append_candidate(packet.author_candidates, value)
+        _append_candidate(packet.metadata_sources, source_name)
+    if metadata_texts:
+        _add_probe_section(
+            packet,
+            role="metadata",
+            label="PDF metadata",
+            source_location="pdf:metadata",
+            text="\n".join(metadata_texts),
+            confidence=0.72,
+            evidence=["PDF document metadata"],
+            allow_header=True,
+        )
+        _collect_copyright_candidates(packet, "\n".join(metadata_texts))
+
+    total_pages = len(reader.pages)
+    selected_pages: list[int] = []
+    selected_pages.extend(range(1, min(total_pages, 6) + 1))
+    for region in structure_regions:
+        if region.role not in {"cover", "front_matter", "toc"}:
+            continue
+        if region.physical_page_start is None:
+            continue
+        end = region.physical_page_end or region.physical_page_start
+        selected_pages.extend(range(region.physical_page_start, min(end, region.physical_page_start + 5) + 1))
+    if total_pages > 2:
+        selected_pages.extend(range(max(1, total_pages - 1), total_pages + 1))
+
+    seen_pages: set[int] = set()
+    for page_no in selected_pages:
+        if page_no in seen_pages or page_no < 1 or page_no > total_pages:
+            continue
+        seen_pages.add(page_no)
+        try:
+            raw_text = reader.pages[page_no - 1].extract_text() or ""
+        except Exception:
+            continue
+        role = _pdf_probe_role(page_no, total_pages, structure_regions)
+        allow_header = role in {"cover", "title_page"} and page_no <= 2
+        if _add_probe_section(
+            packet,
+            role=role,
+            label=f"PDF page {page_no}",
+            source_location=f"pdf:page:{page_no}",
+            text=raw_text,
+            confidence=0.62 if role != "unknown" else 0.42,
+            evidence=["Selected from generic PDF front matter, table of contents, or back matter probes."],
+            allow_header=allow_header,
+        ):
+            _collect_copyright_candidates(packet, raw_text)
+
+    return packet
+
+
+def _copyright_probe_from_epub(file_path: Path) -> ResourceCopyrightEvidencePacket:
+    packet = ResourceCopyrightEvidencePacket()
+    try:
+        with zipfile.ZipFile(file_path) as archive:
+            rootfile_path = _epub_rootfile_path(archive)
+            opf_root = None
+            if rootfile_path:
+                try:
+                    opf_root = ET.fromstring(archive.read(rootfile_path))
+                except (KeyError, ET.ParseError):
+                    opf_root = None
+            if opf_root is not None:
+                metadata_text = _epub_metadata_text(opf_root)
+                if metadata_text:
+                    _add_probe_section(
+                        packet,
+                        role="metadata",
+                        label="EPUB OPF metadata",
+                        source_location=f"epub:{rootfile_path}:metadata",
+                        text=metadata_text,
+                        confidence=0.82,
+                        evidence=["EPUB package metadata"],
+                        allow_header=True,
+                    )
+                    _collect_epub_metadata_candidates(packet, opf_root)
+                    _collect_copyright_candidates(packet, metadata_text)
+                    _append_candidate(packet.metadata_sources, "epub_opf_metadata")
+            for path, label, order_index in _epub_probe_paths(archive, rootfile_path, opf_root):
+                try:
+                    raw_html = _decode_epub_bytes(archive.read(path))
+                except KeyError:
+                    continue
+                text = _epub_text_from_html(raw_html)
+                if not text:
+                    continue
+                role = _epub_probe_role(path, label, order_index)
+                allow_header = role in {"cover", "title_page", "front_matter"} and order_index <= 3
+                if _add_probe_section(
+                    packet,
+                    role=role,
+                    label=label,
+                    source_location=f"epub:{path}",
+                    text=text,
+                    confidence=0.66,
+                    evidence=["Selected from generic EPUB metadata, navigation, cover, or front matter probes."],
+                    allow_header=allow_header,
+                ):
+                    _collect_copyright_candidates(packet, text)
+    except (zipfile.BadZipFile, OSError):
+        return packet
+    return packet
+
+
+def _copyright_probe_from_docx(file_path: Path) -> ResourceCopyrightEvidencePacket:
+    packet = ResourceCopyrightEvidencePacket()
+    try:
+        document = DocxDocument(file_path)
+    except Exception:
+        return packet
+    properties = document.core_properties
+    metadata_parts: list[str] = []
+    for label, value in (
+        ("title", properties.title),
+        ("author", properties.author),
+        ("subject", properties.subject),
+        ("keywords", properties.keywords),
+        ("category", properties.category),
+        ("comments", properties.comments),
+    ):
+        cleaned = str(value or "").strip()
+        if not cleaned:
+            continue
+        metadata_parts.append(f"{label}: {cleaned}")
+        if label == "title":
+            _append_candidate(packet.title_candidates, cleaned)
+        elif label == "author":
+            _append_candidate(packet.author_candidates, cleaned)
+        _append_candidate(packet.metadata_sources, f"docx_core_properties:{label}")
+    if metadata_parts:
+        metadata_text = "\n".join(metadata_parts)
+        _add_probe_section(
+            packet,
+            role="metadata",
+            label="DOCX core properties",
+            source_location="docx:core_properties",
+            text=metadata_text,
+            confidence=0.78,
+            evidence=["DOCX core properties"],
+            allow_header=True,
+        )
+        _collect_copyright_candidates(packet, metadata_text)
+
+    first_items = [str(item["text"]) for item in _docx_items(file_path)[:24]]
+    start_text = "\n".join(first_items)[:_COPYRIGHT_PROBE_WINDOW_LIMIT]
+    if start_text and _contains_copyright_probe_signal(start_text):
+        if _add_probe_section(
+            packet,
+            role="document_start",
+            label="DOCX document start",
+            source_location="docx:start",
+            text=start_text,
+            confidence=0.58,
+            evidence=["First document window contains generic copyright or license markers."],
+        ):
+            _collect_copyright_candidates(packet, start_text)
+    return packet
+
+
+def _copyright_probe_from_text(original_name: str, text: str) -> ResourceCopyrightEvidencePacket:
+    packet = ResourceCopyrightEvidencePacket()
+    window = text[:_COPYRIGHT_PROBE_WINDOW_LIMIT]
+    heading_match = re.search(r"^\s{0,3}#{1,6}\s+(.+?)\s*$", window, flags=re.MULTILINE)
+    if heading_match:
+        _append_candidate(packet.title_candidates, heading_match.group(1))
+        _append_candidate(packet.metadata_sources, "document_start_heading")
+    if _contains_copyright_probe_signal(window):
+        if _add_probe_section(
+            packet,
+            role="document_start",
+            label=f"{Path(original_name).suffix.upper() or 'Text'} document start",
+            source_location="text:start",
+            text=window,
+            confidence=0.54,
+            evidence=["First text window contains generic copyright or license markers."],
+        ):
+            _collect_copyright_candidates(packet, window)
+    return packet
+
+
+def _copyright_probe_from_image_summary(original_name: str, text_content: str | None) -> ResourceCopyrightEvidencePacket:
+    packet = ResourceCopyrightEvidencePacket(metadata_sources=["filename"])
+    text = (text_content or "")[:_COPYRIGHT_PROBE_WINDOW_LIMIT]
+    if not text or not _contains_copyright_probe_signal(text):
+        return packet
+    if _add_probe_section(
+        packet,
+        role="ocr_summary",
+        label=f"Image OCR summary for {original_name}",
+        source_location="image:ocr_summary",
+        text=text,
+        confidence=0.5,
+        evidence=["Existing image OCR summary contains generic copyright or license markers."],
+    ):
+        _collect_copyright_candidates(packet, text)
+    return packet
+
+
+def _add_probe_section(
+    packet: ResourceCopyrightEvidencePacket,
+    *,
+    role: str,
+    label: str,
+    source_location: str,
+    text: str,
+    confidence: float,
+    evidence: list[str],
+    allow_header: bool = False,
+) -> bool:
+    if len(packet.probe_sections) >= _COPYRIGHT_PROBE_SECTION_LIMIT:
+        return False
+    excerpt = _copyright_excerpt(text, allow_header=allow_header)
+    if not excerpt:
+        return False
+    packet.probe_sections.append(
+        ResourceCopyrightProbeSection(
+            role=role,  # type: ignore[arg-type]
+            label=label[:120],
+            source_location=source_location,
+            text_excerpt=excerpt,
+            confidence=confidence,
+            evidence=evidence,
+        )
+    )
+    return True
+
+
+def _copyright_excerpt(text: str, *, allow_header: bool = False) -> str:
+    normalized = _normalize_extracted_text(text or "")
+    if not normalized:
+        return ""
+    lines = [line.strip() for line in normalized.splitlines() if line.strip()]
+    selected: list[str] = []
+    for index, line in enumerate(lines):
+        if not _line_has_copyright_probe_signal(line):
+            continue
+        if index > 0 and len(lines[index - 1]) <= 160 and len(selected) < 8:
+            selected.append(lines[index - 1])
+        selected.append(line)
+        if index + 1 < len(lines) and len(lines[index + 1]) <= 220:
+            selected.append(lines[index + 1])
+        if len("\n".join(selected)) >= _COPYRIGHT_PROBE_TEXT_LIMIT:
+            break
+    if not selected and allow_header:
+        selected = [line for line in lines[:8] if len(line) <= 140][:4]
+    return _dedupe_preserve_order(selected)[:_COPYRIGHT_PROBE_TEXT_LIMIT].strip()
+
+
+def _contains_copyright_probe_signal(text: str) -> bool:
+    lowered = text.lower()
+    return any(pattern in lowered for pattern in _COPYRIGHT_PROBE_PATTERNS)
+
+
+def _line_has_copyright_probe_signal(line: str) -> bool:
+    lowered = line.lower()
+    return any(pattern in lowered for pattern in _COPYRIGHT_PROBE_PATTERNS)
+
+
+def _collect_copyright_candidates(packet: ResourceCopyrightEvidencePacket, text: str) -> None:
+    for value in _isbn_candidates(text):
+        _append_candidate(packet.isbn_candidates, value)
+    for value in _line_candidates(text, ("publisher", "published by", "出版社", "出版者")):
+        _append_candidate(packet.publisher_candidates, value)
+    for value in _line_candidates(text, ("copyright", "rights", "版权所有", "著作权", "cip")):
+        _append_candidate(packet.rights_candidates, value)
+    for value in _line_candidates(text, _COPYRIGHT_LICENSE_PATTERNS):
+        _append_candidate(packet.license_candidates, value)
+    for value in _line_candidates(text, ("author", "作者")):
+        _append_candidate(packet.author_candidates, _strip_metadata_label(value))
+
+
+def _line_candidates(text: str, patterns: tuple[str, ...]) -> list[str]:
+    candidates: list[str] = []
+    for line in _normalize_extracted_text(text).splitlines():
+        cleaned = re.sub(r"\s+", " ", line).strip()
+        if not cleaned or len(cleaned) > 240:
+            continue
+        lowered = cleaned.lower()
+        if any(pattern in lowered for pattern in patterns):
+            candidates.append(cleaned)
+        if len(candidates) >= 6:
+            break
+    return candidates
+
+
+def _append_candidate(values: list[str], value: str | None, *, limit: int = 8) -> None:
+    cleaned = _metadata_phrase(value or "")
+    if not cleaned:
+        return
+    key = cleaned.lower()
+    if any(existing.lower() == key for existing in values):
+        return
+    values.append(cleaned)
+    del values[limit:]
+
+
+def _dedupe_preserve_order(values: list[str]) -> str:
+    seen: set[str] = set()
+    output: list[str] = []
+    for value in values:
+        key = value.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        output.append(value)
+    return "\n".join(output)
+
+
+def _metadata_phrase(value: str) -> str:
+    cleaned = re.sub(r"\s+", " ", value or "").strip(" .,:;()[]{}")
+    cleaned = re.sub(r"(?i)^(/?[a-z_ -]{2,24}|[\u4e00-\u9fff]{2,12})\s*[:：]\s*", "", cleaned)
+    return cleaned[:160].strip()
+
+
+def _strip_metadata_label(value: str) -> str:
+    return re.sub(r"(?i)^(author|by|作者)\s*[:：]?\s*", "", value).strip()
+
+
+def _isbn_candidates(text: str) -> list[str]:
+    matches: list[str] = []
+    for match in re.finditer(
+        r"(?i)\bISBN(?:-1[03])?\s*[:：]?\s*([0-9][0-9Xx][0-9Xx\- ]{7,20}[0-9Xx])",
+        text or "",
+    ):
+        value = re.sub(r"[^0-9Xx]", "", match.group(1)).upper()
+        if len(value) in {10, 13} and value not in matches:
+            matches.append(value)
+    return matches[:4]
+
+
+def _merge_copyright_packets(
+    first: ResourceCopyrightEvidencePacket,
+    second: ResourceCopyrightEvidencePacket,
+) -> ResourceCopyrightEvidencePacket:
+    merged = first.model_copy(deep=True)
+    for field_name in (
+        "title_candidates",
+        "author_candidates",
+        "publisher_candidates",
+        "isbn_candidates",
+        "rights_candidates",
+        "license_candidates",
+        "source_markers",
+        "metadata_sources",
+    ):
+        values = getattr(merged, field_name)
+        for value in getattr(second, field_name):
+            _append_candidate(values, value)
+    merged.probe_sections.extend(second.probe_sections)
+    return merged
+
+
+def _trim_copyright_packet(packet: ResourceCopyrightEvidencePacket) -> ResourceCopyrightEvidencePacket:
+    packet.probe_sections = packet.probe_sections[:_COPYRIGHT_PROBE_SECTION_LIMIT]
+    used = 0
+    trimmed_sections: list[ResourceCopyrightProbeSection] = []
+    for section in packet.probe_sections:
+        remaining = _COPYRIGHT_PROBE_PACKET_TEXT_LIMIT - used
+        if remaining <= 0:
+            break
+        excerpt = section.text_excerpt[: min(_COPYRIGHT_PROBE_TEXT_LIMIT, remaining)].strip()
+        if not excerpt:
+            continue
+        used += len(excerpt)
+        trimmed_sections.append(section.model_copy(update={"text_excerpt": excerpt}))
+    packet.probe_sections = trimmed_sections
+    return packet
+
+
+def _pdf_probe_role(
+    page_no: int,
+    total_pages: int,
+    structure_regions: list[ResourceStructureRegion],
+) -> str:
+    for region in structure_regions:
+        start = region.physical_page_start
+        end = region.physical_page_end or start
+        if start is not None and end is not None and start <= page_no <= end:
+            if region.role == "cover":
+                return "cover"
+            if region.role == "front_matter":
+                return "front_matter"
+            if region.role == "toc":
+                return "toc"
+    if page_no == 1:
+        return "cover"
+    if page_no <= 6:
+        return "front_matter"
+    if total_pages and page_no >= max(1, total_pages - 1):
+        return "back_matter"
+    return "unknown"
+
+
+def _epub_metadata_text(opf_root: ET.Element) -> str:
+    parts: list[str] = []
+    for node in opf_root.findall(".//{*}metadata/{*}*"):
+        name = _xml_local_name(node.tag).lower()
+        if name not in {"title", "creator", "publisher", "identifier", "rights", "language", "date"}:
+            continue
+        value = " ".join((node.text or "").split())
+        if value:
+            parts.append(f"{name}: {value}")
+    return "\n".join(parts)
+
+
+def _collect_epub_metadata_candidates(packet: ResourceCopyrightEvidencePacket, opf_root: ET.Element) -> None:
+    for node in opf_root.findall(".//{*}metadata/{*}*"):
+        name = _xml_local_name(node.tag).lower()
+        value = " ".join((node.text or "").split())
+        if not value:
+            continue
+        if name == "title":
+            _append_candidate(packet.title_candidates, value)
+        elif name == "creator":
+            _append_candidate(packet.author_candidates, value)
+        elif name == "publisher":
+            _append_candidate(packet.publisher_candidates, value)
+        elif name == "identifier":
+            for isbn in _isbn_candidates(value):
+                _append_candidate(packet.isbn_candidates, isbn)
+            if "isbn" in value.lower():
+                _append_candidate(packet.source_markers, "epub_identifier:isbn")
+        elif name == "rights":
+            _append_candidate(packet.rights_candidates, value)
+
+
+def _epub_probe_paths(
+    archive: zipfile.ZipFile,
+    rootfile_path: str | None,
+    opf_root: ET.Element | None,
+) -> list[tuple[str, str, int]]:
+    if opf_root is None or rootfile_path is None:
+        html_paths = [path for path in archive.namelist() if _epub_is_html_path(path)]
+        return [(path, Path(path).stem, index) for index, path in enumerate(html_paths[:6])]
+
+    base_dir = posixpath.dirname(rootfile_path)
+    manifest: dict[str, tuple[str, str, str]] = {}
+    for item in opf_root.findall(".//{*}manifest/{*}item"):
+        item_id = item.attrib.get("id", "").strip()
+        href = item.attrib.get("href", "").strip()
+        if not item_id or not href:
+            continue
+        path = posixpath.normpath(posixpath.join(base_dir, href))
+        properties = item.attrib.get("properties", "").strip()
+        media_type = item.attrib.get("media-type", "").strip()
+        manifest[item_id] = (path, properties, media_type)
+
+    ordered: list[tuple[str, str, int]] = []
+    for order_index, itemref in enumerate(opf_root.findall(".//{*}spine/{*}itemref")):
+        item_id = itemref.attrib.get("idref", "").strip()
+        path, properties, media_type = manifest.get(item_id, ("", "", ""))
+        if not path or not (media_type in {"application/xhtml+xml", "text/html"} or _epub_is_html_path(path)):
+            continue
+        ordered.append((path, " ".join(filter(None, [item_id, properties])), order_index))
+
+    manifest_only = [
+        (path, " ".join(filter(None, [item_id, properties])), len(ordered) + index)
+        for index, (item_id, (path, properties, media_type)) in enumerate(manifest.items())
+        if path not in {entry[0] for entry in ordered}
+        and (media_type in {"application/xhtml+xml", "text/html"} or _epub_is_html_path(path))
+    ]
+    selected: list[tuple[str, str, int]] = []
+    for path, label, order_index in [*ordered, *manifest_only]:
+        marker = f"{path} {label}".lower()
+        is_probe_path = any(
+            token in marker
+            for token in (
+                "cover",
+                "title",
+                "copyright",
+                "rights",
+                "license",
+                "front",
+                "preface",
+                "foreword",
+                "nav",
+                "toc",
+            )
+        )
+        if is_probe_path or order_index <= 3:
+            selected.append((path, label or Path(path).stem, order_index))
+        if len(selected) >= 8:
+            break
+    return [(path, label, index) for path, label, index in selected if path in archive.namelist()]
+
+
+def _epub_probe_role(path: str, label: str, order_index: int) -> str:
+    marker = f"{path} {label}".lower()
+    if "cover" in marker:
+        return "cover"
+    if "copyright" in marker or "rights" in marker or "license" in marker:
+        return "copyright_page"
+    if "title" in marker:
+        return "title_page"
+    if "nav" in marker or "toc" in marker:
+        return "toc"
+    if "front" in marker or "preface" in marker or "foreword" in marker:
+        return "front_matter"
+    return "unknown"
+
+
+def _xml_local_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1] if "}" in tag else tag
+
+
 def extract_outline(file_path: Path, original_name: str, mime_type: str) -> tuple[list[LibraryChapter], bool, str | None]:
     # 资料解析入口：按图片、文本、DOCX、EPUB、PDF 等格式提取目录和可检索文本。
     if mime_type.startswith("image/"):
@@ -2075,6 +2703,13 @@ def build_resource_item(file_path: Path, original_name: str) -> ResourceLibraryI
         outline=outline,
         text_content=text_content,
     )
+    copyright_probe = build_copyright_evidence_packet(
+        file_path,
+        original_name,
+        mime_type,
+        structure_regions=structure_regions,
+        text_content=text_content,
+    )
     page_count, indexed_block_count, index_message = _resource_index_stats(body_blocks)
 
     return ResourceLibraryItem(
@@ -2097,6 +2732,7 @@ def build_resource_item(file_path: Path, original_name: str) -> ResourceLibraryI
         toc_entries=toc_entries,
         chapter_shards=chapter_shards,
         parse_warnings=parse_warnings,
+        copyright_probe=copyright_probe,
     )
 
 

@@ -9,7 +9,7 @@ from typing import Protocol
 
 import httpx
 
-from app.models import CoursePackage, ResourceCopyrightAudit, ResourceLibraryItem, now_iso
+from app.models import CoursePackage, ResourceCopyrightAudit, ResourceCopyrightEvidencePacket, ResourceLibraryItem, now_iso
 from app.services.config import load_root_dotenv
 
 
@@ -68,11 +68,29 @@ class SearchResult:
     snippet: str = ""
 
 
+@dataclass(frozen=True)
+class ResourceCopyrightReviewResult:
+    summary: str = ""
+    signals: tuple[str, ...] = ()
+
+
 class ExternalSearchProvider(Protocol):
     name: str
 
     def search(self, query: str, *, limit: int = 8) -> list[SearchResult]:
         ...
+
+
+class ResourceCopyrightReviewer:
+    """Optional AI reviewer adapter; deterministic audit works when this is disabled."""
+
+    def __init__(self, *, enabled: bool = False) -> None:
+        self.enabled = enabled
+
+    def review(self, packet: ResourceCopyrightEvidencePacket) -> ResourceCopyrightReviewResult | None:
+        if not self.enabled:
+            return None
+        return None
 
 
 class BraveSearchProvider:
@@ -137,53 +155,70 @@ def audit_resource_public_distribution(
     resource: ResourceLibraryItem,
     *,
     search_provider: ExternalSearchProvider | None = None,
+    reviewer: ResourceCopyrightReviewer | None = None,
 ) -> ResourceCopyrightAudit:
     file_hash = resource_file_hash(resource)
+    reviewer_result = _review_evidence_packet(resource.copyright_probe, reviewer)
     provider = search_provider if search_provider is not None else default_search_provider()
     if provider is None:
-        return ResourceCopyrightAudit(
-            status="needs_review",
-            public_distribution="pending",
-            risk_level="unknown",
-            signals=["external_search_not_configured"],
-            checked_at=now_iso(),
-            reason="没有配置版权检索服务，公开传播前需要平台复核。",
-            provider=None,
-            file_hash=file_hash,
+        return _with_probe_context(
+            ResourceCopyrightAudit(
+                status="needs_review",
+                public_distribution="pending",
+                risk_level="unknown",
+                signals=["external_search_not_configured", *_reviewer_signals(reviewer_result)],
+                checked_at=now_iso(),
+                reason="没有配置版权检索服务，公开传播前需要平台复核。",
+                provider=None,
+                file_hash=file_hash,
+            ),
+            resource,
+            reviewer_result=reviewer_result,
         )
 
     query = copyright_metadata_query(resource)
     if not query:
-        return ResourceCopyrightAudit(
-            status="needs_review",
-            public_distribution="pending",
-            risk_level="unknown",
-            signals=["metadata_insufficient"],
-            checked_at=now_iso(),
-            reason="资料缺少可用于公开传播审核的标题或出版元数据。",
-            provider=provider.name,
-            file_hash=file_hash,
+        return _with_probe_context(
+            ResourceCopyrightAudit(
+                status="needs_review",
+                public_distribution="pending",
+                risk_level="unknown",
+                signals=["metadata_insufficient", *_reviewer_signals(reviewer_result)],
+                checked_at=now_iso(),
+                reason="资料缺少可用于公开传播审核的标题或出版元数据。",
+                provider=provider.name,
+                file_hash=file_hash,
+            ),
+            resource,
+            reviewer_result=reviewer_result,
         )
 
     try:
         results = provider.search(query, limit=8)
     except Exception as exc:
-        return ResourceCopyrightAudit(
-            status="error",
-            public_distribution="pending",
-            risk_level="unknown",
-            signals=["external_search_failed"],
-            checked_at=now_iso(),
-            reason=f"版权检索服务暂时不可用：{exc.__class__.__name__}",
-            provider=provider.name,
-            file_hash=file_hash,
+        return _with_probe_context(
+            ResourceCopyrightAudit(
+                status="error",
+                public_distribution="pending",
+                risk_level="unknown",
+                signals=["external_search_failed", *_reviewer_signals(reviewer_result)],
+                checked_at=now_iso(),
+                reason=f"版权检索服务暂时不可用：{exc.__class__.__name__}",
+                provider=provider.name,
+                file_hash=file_hash,
+            ),
+            resource,
+            reviewer_result=reviewer_result,
         )
 
-    return classify_search_results(
+    audit = classify_search_results(
         results,
         provider=provider.name,
         file_hash=file_hash,
     )
+    if reviewer_result and reviewer_result.signals:
+        audit = audit.model_copy(update={"signals": [*audit.signals, *_reviewer_signals(reviewer_result)]})
+    return _with_probe_context(audit, resource, reviewer_result=reviewer_result)
 
 
 def classify_search_results(
@@ -262,16 +297,30 @@ def classify_search_results(
 
 
 def copyright_metadata_query(resource: ResourceLibraryItem) -> str:
+    packet = resource.copyright_probe
     candidates: list[str] = []
-    stem = Path(resource.name).stem.strip()
-    if stem:
-        candidates.append(stem)
-    for chapter in resource.outline[:4]:
-        title = chapter.title.strip()
-        if title and title.lower() != stem.lower():
-            candidates.append(title)
-    for value in _isbn_candidates(resource.name):
+    for value in packet.isbn_candidates:
         candidates.append(value)
+    title = _first_metadata_value(packet.title_candidates)
+    author = _first_metadata_value(packet.author_candidates)
+    publisher = _first_metadata_value(packet.publisher_candidates)
+    if title and author:
+        candidates.append(f"{title} {author}")
+    if title and publisher:
+        candidates.append(f"{title} {publisher}")
+    if title:
+        candidates.append(title)
+    if publisher and not title:
+        candidates.append(publisher)
+    for value in [*packet.license_candidates[:2], *packet.rights_candidates[:2]]:
+        if len(value) <= 140:
+            candidates.append(value)
+    if not candidates:
+        stem = Path(resource.name).stem.strip()
+        if stem:
+            candidates.append(stem)
+        for value in _isbn_candidates(resource.name):
+            candidates.append(value)
 
     terms: list[str] = []
     seen: set[str] = set()
@@ -331,6 +380,95 @@ def audit_after_admin_approval(
             "reason": "平台管理员已根据资源申诉批准公开传播。",
         }
     )
+
+
+def _review_evidence_packet(
+    packet: ResourceCopyrightEvidencePacket,
+    reviewer: ResourceCopyrightReviewer | None,
+) -> ResourceCopyrightReviewResult | None:
+    if reviewer is None:
+        return None
+    try:
+        return reviewer.review(packet)
+    except Exception:
+        return ResourceCopyrightReviewResult(
+            summary="AI reviewer was unavailable; deterministic audit continued.",
+            signals=("ai_reviewer_unavailable",),
+        )
+
+
+def _reviewer_signals(result: ResourceCopyrightReviewResult | None) -> list[str]:
+    return list(result.signals) if result else []
+
+
+def _with_probe_context(
+    audit: ResourceCopyrightAudit,
+    resource: ResourceLibraryItem,
+    *,
+    reviewer_result: ResourceCopyrightReviewResult | None = None,
+) -> ResourceCopyrightAudit:
+    packet = resource.copyright_probe
+    signals = [*audit.signals]
+    if packet.isbn_candidates:
+        signals.append("metadata_isbn")
+    if packet.publisher_candidates:
+        signals.append("metadata_publisher")
+    if packet.rights_candidates:
+        signals.append("metadata_rights")
+    if packet.license_candidates:
+        signals.append("metadata_license")
+    signals = _dedupe(signals)
+    summary = _probe_summary(packet)
+    if reviewer_result and reviewer_result.summary:
+        summary = f"{summary} Reviewer: {reviewer_result.summary}".strip()
+    return audit.model_copy(
+        update={
+            "signals": signals,
+            "probe_summary": summary,
+            "probe_section_count": len(packet.probe_sections),
+            "metadata_sources": _dedupe([*packet.metadata_sources, *packet.source_markers]),
+        }
+    )
+
+
+def _probe_summary(packet: ResourceCopyrightEvidencePacket) -> str:
+    parts: list[str] = []
+    if packet.title_candidates:
+        parts.append(f"title={packet.title_candidates[0]}")
+    if packet.author_candidates:
+        parts.append(f"author={packet.author_candidates[0]}")
+    if packet.publisher_candidates:
+        parts.append(f"publisher={packet.publisher_candidates[0]}")
+    if packet.isbn_candidates:
+        parts.append(f"isbn={packet.isbn_candidates[0]}")
+    if packet.license_candidates:
+        parts.append(f"license={packet.license_candidates[0]}")
+    if packet.rights_candidates:
+        parts.append(f"rights={packet.rights_candidates[0]}")
+    if packet.probe_sections:
+        roles = _dedupe([section.role for section in packet.probe_sections])
+        parts.append(f"sections={len(packet.probe_sections)}:{','.join(roles)}")
+    return "; ".join(parts)[:600]
+
+
+def _first_metadata_value(values: list[str]) -> str | None:
+    for value in values:
+        normalized = _metadata_phrase(value)
+        if normalized:
+            return normalized
+    return None
+
+
+def _dedupe(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    output: list[str] = []
+    for value in values:
+        key = value.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        output.append(value)
+    return output
 
 
 def _env_any(*names: str) -> str | None:

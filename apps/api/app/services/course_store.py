@@ -21,6 +21,7 @@ from app.models import (
     ResourceCopyrightAppeal,
     ResourceCopyrightAppealView,
     ResourceCopyrightAudit,
+    ResourceCopyrightEvidencePacket,
     ResourceLibraryItem,
     WorkspaceState,
     now_iso,
@@ -30,7 +31,7 @@ from app.services.document_segment_store import DocumentSegmentStore
 from app.services.learning_requirement_history import LearningRequirementHistoryStore
 from app.services.rich_document import upgrade_markdown_like_document
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 
 def _active_package_setting_key(owner_user_id: str | None) -> str:
@@ -601,6 +602,7 @@ class SqliteCourseStore:
                 toc_entries_json TEXT NOT NULL DEFAULT '[]',
                 chapter_shards_json TEXT NOT NULL DEFAULT '[]',
                 parse_warnings_json TEXT NOT NULL DEFAULT '[]',
+                copyright_probe_json TEXT NOT NULL DEFAULT '{}',
                 copyright_audit_json TEXT NOT NULL DEFAULT '{}'
             );
 
@@ -696,6 +698,8 @@ class SqliteCourseStore:
             conn.execute("ALTER TABLE resources ADD COLUMN chapter_shards_json TEXT NOT NULL DEFAULT '[]'")
         if "parse_warnings_json" not in resource_columns:
             conn.execute("ALTER TABLE resources ADD COLUMN parse_warnings_json TEXT NOT NULL DEFAULT '[]'")
+        if "copyright_probe_json" not in resource_columns:
+            conn.execute("ALTER TABLE resources ADD COLUMN copyright_probe_json TEXT NOT NULL DEFAULT '{}'")
         if "index_status" not in resource_columns:
             conn.execute("ALTER TABLE resources ADD COLUMN index_status TEXT NOT NULL DEFAULT 'ready'")
         if "index_message" not in resource_columns:
@@ -993,6 +997,9 @@ class SqliteCourseStore:
             toc_entries=_loads(row["toc_entries_json"], []),
             chapter_shards=_loads(row["chapter_shards_json"], []),
             parse_warnings=_loads(row["parse_warnings_json"], []),
+            copyright_probe=ResourceCopyrightEvidencePacket.model_validate(
+                _loads(row["copyright_probe_json"], {})
+            ),
             copyright_audit=ResourceCopyrightAudit.model_validate(
                 _loads(row["copyright_audit_json"], {})
             ),
@@ -1191,8 +1198,8 @@ class SqliteCourseStore:
                 uploaded_at, scope_lesson_id, concept_index_json, extracted_text_available, text_content, source_path,
                 index_status, index_message, index_updated_at, page_count, indexed_block_count,
                 structure_regions_json, body_blocks_json, toc_entries_json, chapter_shards_json, parse_warnings_json,
-                copyright_audit_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                copyright_probe_json, copyright_audit_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 resource.id,
@@ -1218,6 +1225,7 @@ class SqliteCourseStore:
                 _dumps([entry.model_dump(mode="json") for entry in resource.toc_entries]),
                 _dumps([shard.model_dump(mode="json") for shard in resource.chapter_shards]),
                 _dumps(resource.parse_warnings),
+                _dumps(resource.copyright_probe.model_dump(mode="json")),
                 _dumps(resource.copyright_audit.model_dump(mode="json")),
             ),
         )

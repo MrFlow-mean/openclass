@@ -108,6 +108,18 @@ ResourcePublicDistribution = Literal["allowed", "blocked", "pending"]
 ResourceCopyrightRiskLevel = Literal["low", "medium", "high", "unknown"]
 ResourceCopyrightAppealStatus = Literal["open", "approved", "rejected", "canceled"]
 ResourceCopyrightAppealDecision = Literal["approved", "rejected"]
+ResourceCopyrightProbeRole = Literal[
+    "metadata",
+    "cover",
+    "title_page",
+    "copyright_page",
+    "front_matter",
+    "toc",
+    "back_matter",
+    "document_start",
+    "ocr_summary",
+    "unknown",
+]
 ChatInteractionMode = Literal["ask", "direct_edit"]
 TeachingAction = Literal["continue", "restart"]
 BoardGenerationAction = Literal["start"]
@@ -627,6 +639,27 @@ class ResourceChapterShard(BaseModel):
     text_hash: str
 
 
+class ResourceCopyrightProbeSection(BaseModel):
+    role: ResourceCopyrightProbeRole = "unknown"
+    label: str
+    source_location: str | None = None
+    text_excerpt: str = ""
+    confidence: float = 0.0
+    evidence: list[str] = Field(default_factory=list)
+
+
+class ResourceCopyrightEvidencePacket(BaseModel):
+    title_candidates: list[str] = Field(default_factory=list)
+    author_candidates: list[str] = Field(default_factory=list)
+    publisher_candidates: list[str] = Field(default_factory=list)
+    isbn_candidates: list[str] = Field(default_factory=list)
+    rights_candidates: list[str] = Field(default_factory=list)
+    license_candidates: list[str] = Field(default_factory=list)
+    source_markers: list[str] = Field(default_factory=list)
+    probe_sections: list[ResourceCopyrightProbeSection] = Field(default_factory=list)
+    metadata_sources: list[str] = Field(default_factory=list)
+
+
 class ResourceCopyrightAudit(BaseModel):
     status: ResourceCopyrightAuditStatus = "not_checked"
     public_distribution: ResourcePublicDistribution = "pending"
@@ -639,6 +672,9 @@ class ResourceCopyrightAudit(BaseModel):
     override_source: str | None = None
     appeal_id: str | None = None
     file_hash: str | None = None
+    probe_summary: str = ""
+    probe_section_count: int = 0
+    metadata_sources: list[str] = Field(default_factory=list)
 
 
 class ResourceLibraryItem(BaseModel):
@@ -664,6 +700,7 @@ class ResourceLibraryItem(BaseModel):
     toc_entries: list[ResourceTOCEntry] = Field(default_factory=list)
     chapter_shards: list[ResourceChapterShard] = Field(default_factory=list)
     parse_warnings: list[str] = Field(default_factory=list)
+    copyright_probe: ResourceCopyrightEvidencePacket = Field(default_factory=ResourceCopyrightEvidencePacket)
     copyright_audit: ResourceCopyrightAudit = Field(default_factory=ResourceCopyrightAudit)
 
 
@@ -687,6 +724,7 @@ class ResourceLibraryItemView(BaseModel):
     toc_entries: list[ResourceTOCEntry] = Field(default_factory=list)
     chapter_shards: list[ResourceChapterShard] = Field(default_factory=list)
     parse_warnings: list[str] = Field(default_factory=list)
+    copyright_probe: ResourceCopyrightEvidencePacket = Field(default_factory=ResourceCopyrightEvidencePacket)
     copyright_audit: ResourceCopyrightAudit = Field(default_factory=ResourceCopyrightAudit)
 
 
