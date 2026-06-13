@@ -20,6 +20,7 @@ The service layer must not keep growing `chatbot.py`.
 ### Where new logic belongs
 
 - User phrase recognition -> `turn_intent.py`
+- Initial blank-board learning mode and target-granularity gate -> `initial_learning_intent.py` or a similarly narrow first-board intent module
 - Board task action selection -> `board_task_decider.py`
 - BoardTaskRequirementSheet normalization -> `board_task_manager.py`
 - Board target location -> `segment_resolver.py` or target resolver modules

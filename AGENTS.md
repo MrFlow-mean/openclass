@@ -158,6 +158,8 @@ if "统计学习理论" in chapter_title:
 - `board_document` 非空：右侧已经有板书内容，系统处于“围绕已有板书处理具体任务”的第二层链路。此时不再用第一层学习需求清单决定本轮动作，而必须用第二层 `BoardTaskRequirementSheet` 决定“在什么地方、做什么、围绕什么、是否有特殊交互方式要求”。
 - `LearningRequirementSheet`：第一层学习需求清单，只服务于空白板书首次生成。它记录用户想学什么、目标、水平、背景、输出偏好、成功标准等。
 - `LearningClarificationStatus`：第一层需求澄清状态，只描述空白板书生成前的需求完整度、缺项、下一问、是否可生成。
+- `InitialLearningIntentGate`：第一层学习需求清单澄清之前的通用判别门。它只判断学习形态和目标颗粒度，例如 `learning_mode=learn_concept / practice_activity / undecided`、`target_granularity=specific_concept / broad_domain / ambiguous`，不得判断具体学科、教材、考试或 demo。
+- `minimal frozen requirement`：当空白板书里用户已经给出足够小的知识目标时形成的最小冻结需求。它仍然必须写入版本、冻结快照和 commit metadata，不是让 Chatbot 绕过 BoardEditor 自由讲解。
 - `BoardTaskRequirementSheet`：第二层已有板书任务清单，只服务于已有板书后的具体任务。它固定记录四个字段：目标位置、动作类型、问题 / 主题内容、是否有练习或特殊交互方式要求。
 - `frozen requirement payload`：第一层清单生成板书前的冻结快照。它必须来自数据库版本记录，不得由当前运行态对象、原始对话、临时 prompt 拼接或 Chatbot 自由判断替代。
 - `frozen board task` / board task version：第二层任务执行前的可追溯任务快照。写、改、讲、聊执行 commit 必须能追溯到该任务清单版本。
@@ -169,6 +171,7 @@ if "统计学习理论" in chapter_title:
 ### 全局不可变门禁
 
 - 每轮必须先判断 `board_document` 是否为空。空白板书和已有板书是两条不同链路，不得混用清单、状态机或生成入口。
+- 空白板书进入 `LearningRequirementSheet` 澄清前，必须先经过 `InitialLearningIntentGate`。这个门禁只判断通用学习形态、目标颗粒度和下一步清单动作；不得写成关键词表、学科分支或教材分支。
 - Chatbot 不得在需求未完整、目标未定位、资料未选择、写入动作未确认、板书侧未授权讲解时抢先给最终回答。
 - Chatbot、Realtime Chatbot、StrongReasoning 等 Chatbot 侧能力不得直接读取 `board_document` 全文、摘要、选区正文或候选片段正文。它们只能接收板书侧 directive、InteractionSession 或后端工具结果中明确交接的目标摘录、边界和指令。
 - BoardEditor / 板书文档编辑 AI 不得读取用户和 Chatbot 的原始聊天记录、recent conversation 或自由对话摘要；它只能接收 frozen requirement payload、BoardTaskRequirementSheet、定位证据、当前文档、目标摘录、资料摘要和结构化 action instruction。
@@ -180,29 +183,36 @@ if "统计学习理论" in chapter_title:
 
 ### 第一层：空白板书从零到有
 
-第一层链路只在 `board_document` 为空时启用。它的目标不是讲解，也不是编辑，而是像服务员记录点菜单一样，先把用户学习需求问清楚、记录成清单、冻结，再交给板书文档编辑 AI 生成右侧板书。
+第一层链路只在 `board_document` 为空时启用。它的目标不是讲解，也不是编辑，而是先判断用户要学习知识还是做练习，再决定是冻结最小需求生成板书，还是继续澄清学习需求清单。
 
 固定顺序：
 
 1. 用户输入进入 chat orchestrator。
-2. 系统确认当前 `board_document` 为空，进入第一层需求清单链路。
-3. Chatbot / Requirement Manager 从用户话语中探寻学习需求，只能围绕用户想学什么、为什么学、水平如何、已有背景、希望深度、输出形式、成功标准等继续澄清。
-4. Requirement Manager 维护 `LearningRequirementSheet + LearningClarificationStatus`。
-5. 如果清单发生真实变动，必须写入 `learning_requirement_versions`，并追加 `learning_requirement_events`。
-6. 如果清单未完整，Chatbot 只能追问关键缺项或进行需求澄清，不得让 BoardEditor 生成板书。
-7. 当 `ready_for_board=true` 或用户明确强制生成时，必须先写 completed / forced_frozen 版本，再写 frozen 快照。
-8. frozen 快照必须在调用 BoardEditor 前落库，并通过 SSE / response 让前端可见进度变化。
-9. BoardEditor 只能接收 frozen requirement payload、冻结澄清状态和必要资源摘要；不得接收未冻结 conversation、临时 PM 状态或 Chatbot 自由总结作为生成依据。
-10. BoardEditor 生成右侧板书，Chatbot 不生成板书正文。
-11. 生成成功后，必须写 lesson commit，commit metadata 必须包含 requirement run / frozen version 追踪信息。
-12. requirement run 必须标记为 consumed；当前 active requirement 清单清空，但历史版本保留。
-13. 生成失败时，必须写 generation_failed 事件，不写成功 commit，并允许同一 frozen version 后续重试。
-14. 从零生成完板书后，Chatbot 默认承接询问用户是否要从头开始讲解。
+2. 系统确认当前 `board_document` 为空，先进入 `InitialLearningIntentGate`。
+3. `InitialLearningIntentGate` 输出 `learning_mode`、`target_granularity`、`next_action` 和可审计原因；输出只能基于通用意图和目标颗粒度。
+4. 如果 `learning_mode=learn_concept` 且 `target_granularity=specific_concept`，Requirement Manager 形成 `minimal frozen requirement`，写 ready / frozen 版本，再交给 BoardEditor 生成第一版右侧板书。
+5. 如果 `learning_mode=learn_concept` 但 `target_granularity=broad_domain`，Chatbot 只追问用户具体想学的知识点、问题或范围；不得直接生成默认课程路径，也不得提前询问练习型清单字段。
+6. 如果 `learning_mode=practice_activity`，Requirement Manager 进入练习型学习需求清单澄清，围绕练习内容、当前水平、目的场景、练习形式、反馈方式和成功标准补齐清单。
+7. 如果 `learning_mode=undecided` 或目标颗粒度不可靠，Chatbot 先要求用户选择是学习知识内容还是做练习型教学；不得直接生成板书。
+8. Requirement Manager 维护 `LearningRequirementSheet + LearningClarificationStatus`。
+9. 如果清单发生真实变动，必须写入 `learning_requirement_versions`，并追加 `learning_requirement_events`。
+10. 如果清单未完整，Chatbot 只能追问关键缺项或进行需求澄清，不得让 BoardEditor 生成板书。
+11. 当 `ready_for_board=true`、形成 `minimal frozen requirement` 或用户明确强制生成时，必须先写 completed / forced_frozen / ready 版本，再写 frozen 快照。
+12. frozen 快照必须在调用 BoardEditor 前落库，并通过 SSE / response 让前端可见进度变化。
+13. BoardEditor 只能接收 frozen requirement payload、冻结澄清状态和必要资源摘要；不得接收未冻结 conversation、临时 PM 状态或 Chatbot 自由总结作为生成依据。
+14. BoardEditor 生成右侧板书，Chatbot 不生成板书正文。
+15. 生成成功后，必须写 lesson commit，commit metadata 必须包含 requirement run / frozen version 追踪信息。
+16. requirement run 必须标记为 consumed；当前 active requirement 清单清空，但历史版本保留。
+17. 生成失败时，必须写 generation_failed 事件，不写成功 commit，并允许同一 frozen version 后续重试。
+18. 从零生成完板书后，Chatbot 默认承接询问用户是否要从头开始讲解。
 
 第一层严禁：
 
 - 空白板书时让 BoardEditor 直接吃原始聊天记录生成板书。
 - 需求清单还没完整就偷偷生成板书。
+- 宽泛领域目标还没缩小到知识点、问题或练习任务时，直接生成默认课程路径。
+- 用户只是表达练习型教学时，把它当成普通知识讲解并生成讲义。
+- 用户想学习知识内容但目标仍然宽泛时，用当前水平、目的场景等练习型字段替代“具体想学什么”的澄清。
 - 生成后用运行态板书标题、摘录、临时 runtime 字段反写成“需求清单快照”。
 - 生成成功后静默清空清单而不消费 run、不留版本历史。
 - 为某个学科、教材、考试、demo 编写特殊第一层生成分支。
@@ -330,7 +340,9 @@ if "统计学习理论" in chapter_title:
 
 - 主动讲解：指用户没有明确要求本轮开始讲解、写入、改写或规则互动时，系统根据自己判断想推进教学内容。主动讲解只允许在对应清单已经足够完整、目标已经定位、板书侧已经授权时发生。
 - 被动行动：指用户本轮已经明确要求“讲解、解释、说明、开始讲、写、补充、修改、改写、练习、互动、按规则来”等动作。被动行动不要求清单达到理想丰满度，但必须达到可执行最低条件，并且仍然必须经过第二层任务清单、定位、route decision 和讲解 directive / 编辑器门禁。
-- 第一层空白板书中，如果学习需求清单未完整且用户没有明确要求生成，Chatbot 只能继续澄清学习需求，不得主动生成板书或展开教学。
+- 第一层空白板书中，如果用户给出的知识目标已经足够小，系统可以形成 `minimal frozen requirement` 并生成第一版板书；这仍然属于正式冻结和 BoardEditor 生成，不是 Chatbot 自由讲解。
+- 第一层空白板书中，如果用户只给出宽泛领域且还没说明是学习知识还是做练习，Chatbot 必须先询问学习形态；如果用户选择学习知识，继续追问具体知识点或问题；如果用户选择练习，进入练习型清单澄清。
+- 第一层空白板书中，如果练习型学习需求清单未完整且用户没有明确强制生成，Chatbot 只能继续澄清练习需求，不得主动生成板书或展开教学。
 - 第一层空白板书中，如果用户明确要求“直接生成、开始生成、别问了”，系统可以强制冻结当前清单并生成，但必须写 forced_frozen / frozen 历史；这不是绕过清单，而是把不完整清单以强制开始的方式审计下来。
 - 第二层已有板书中，如果四字段任务清单未完整且用户没有明确要求执行，Chatbot 只能追问缺项，不得主动讲解、写入、改写或启动互动。
 - 第二层已有板书中，如果用户明确要求讲解某个内容，例如“是什么意思、什么含义、为什么、解释这里、讲第几句”，系统必须进入 `BoardTaskRequirementSheet` 链路，而不能落回普通 Chatbot 自由回答。
@@ -569,6 +581,7 @@ AI 路由必须可审计。每次修改 AI 路由时，必须保证 response 或
 - Any AI routing change must preserve or improve `DecisionTrace`.
 - If a behavior is hard to debug, add trace fields instead of adding hidden branching.
 - `DecisionTrace` 必须描述通用决策原因，不得记录学科关键词、教材关键词、demo 内容或固定讲义内容作为路由依据。
+- 第一层空白板书的 `DecisionTrace` 至少应记录 `learning_mode`、`target_granularity`、`next_action`、`requirement_phase`，以及为什么没有选择其他学习形态。
 - 如果新增规则会改变 `TurnDecision -> ResolveTarget -> BuildContext -> ExecuteRole -> PersistHistory -> UpdateRequirement` 中任一步，必须在 `DecisionTrace` 中标明被改变的步骤和原因。
 - 如果某条规则匹配了用户输入，但最终没有被选为动作，也应在 `DecisionTrace` 或测试断言中说明它为什么被拒绝，防止多个自然语言规则静默抢占。
 
