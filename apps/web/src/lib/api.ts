@@ -7,6 +7,9 @@ import type {
   ChatRequestPayload,
   ChatResponse,
   CoursePackage,
+  CodexLoginStartResponse,
+  CodexLoginStatusResponse,
+  CodexProviderStatus,
   DocumentAIEditPayload,
   DocumentSavePayload,
   GoogleRealtimeSessionPayload,
@@ -358,6 +361,28 @@ export const api = {
   },
   getAIModels() {
     return request<AIModelCatalog>("/api/ai-models");
+  },
+  getCodexStatus(includeRateLimits = false) {
+    const query = includeRateLimits ? "?include_rate_limits=true" : "";
+    return request<CodexProviderStatus>(`/api/codex/status${query}`);
+  },
+  startCodexDeviceLogin() {
+    return request<CodexLoginStartResponse>("/api/codex/login/device", {
+      method: "POST",
+    });
+  },
+  getCodexLoginStatus(loginId: string) {
+    return request<CodexLoginStatusResponse>(`/api/codex/login/${encodeURIComponent(loginId)}`);
+  },
+  cancelCodexLogin(loginId: string) {
+    return request<CodexLoginStatusResponse>(`/api/codex/login/${encodeURIComponent(loginId)}/cancel`, {
+      method: "POST",
+    });
+  },
+  logoutCodex() {
+    return request<{ ok: boolean }>("/api/codex/logout", {
+      method: "POST",
+    });
   },
   getWorkspace() {
     return request<WorkspaceState>("/api/workspace");

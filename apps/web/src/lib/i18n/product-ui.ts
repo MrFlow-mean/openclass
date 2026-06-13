@@ -381,6 +381,19 @@ export function profileSettingsTexts(lang: InterfaceLanguage) {
         modelConfigured: z ? "已配置" : "Configured",
         capabilityRealtime: z ? "实时语音" : "Realtime",
         capabilityText: z ? "文本生成" : "Text",
+        codexTitle: z ? "ChatGPT / Codex 订阅" : "ChatGPT / Codex subscription",
+        codexDisabled: z
+          ? "后端未启用 Codex app-server。设置 OPENCLASS_CODEX_APP_SERVER_ENABLED=true 后可连接。"
+          : "Codex app-server is disabled. Set OPENCLASS_CODEX_APP_SERVER_ENABLED=true to connect.",
+        codexUnavailable: z ? "未找到 Codex CLI。请安装 Codex 或配置 OPENCLASS_CODEX_CLI_PATH。" : "Codex CLI was not found. Install Codex or set OPENCLASS_CODEX_CLI_PATH.",
+        codexSignedIn: z ? "已连接" : "Connected",
+        codexSignedOut: z ? "未连接" : "Not connected",
+        codexLogin: z ? "连接 ChatGPT" : "Connect ChatGPT",
+        codexLogout: z ? "断开" : "Disconnect",
+        codexCancel: z ? "取消登录" : "Cancel login",
+        codexOpen: z ? "打开验证页" : "Open verification page",
+        codexCodeLabel: z ? "验证码" : "Code",
+        codexWaiting: z ? "等待 OpenAI 授权完成" : "Waiting for OpenAI authorization",
       },
       security: {
         hidePathsTitle: z ? "隐藏本地路径" : "Hide local paths",

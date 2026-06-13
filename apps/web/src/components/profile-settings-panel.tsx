@@ -44,7 +44,7 @@ import {
   readStoredProfileSettings,
   type ProfileSettings,
 } from "@/lib/profile-settings-state";
-import type { AIModelCatalog, AIModelOption, UserView } from "@/types";
+import type { AIModelCatalog, AIModelOption, CodexLoginStartResponse, CodexProviderStatus, UserView } from "@/types";
 
 type SettingsSectionId =
   | "profile"
@@ -198,6 +198,10 @@ export function ProfileSettingsPanel({
   const [modelCatalog, setModelCatalog] = useState<AIModelCatalog | null>(null);
   const [isLoadingModels, setIsLoadingModels] = useState(true);
   const [modelError, setModelError] = useState<string | null>(null);
+  const [codexStatus, setCodexStatus] = useState<CodexProviderStatus | null>(null);
+  const [codexLogin, setCodexLogin] = useState<CodexLoginStartResponse | null>(null);
+  const [codexLoginStatus, setCodexLoginStatus] = useState<string | null>(null);
+  const [isCodexBusy, setIsCodexBusy] = useState(false);
   const [passwordMessage, setPasswordMessage] = useState<string | null>(null);
   const [notificationPermission, setNotificationPermission] =
     useState<BrowserNotificationPermission>("unsupported");
@@ -245,15 +249,17 @@ export function ProfileSettingsPanel({
 
     async function loadModels() {
       try {
-        const catalog = await api.getAIModels();
+        const [catalog, codex] = await Promise.all([api.getAIModels(), api.getCodexStatus()]);
         if (isDisposed) {
           return;
         }
         setModelCatalog(catalog);
+        setCodexStatus(codex);
         setModelError(null);
       } catch (error) {
         if (!isDisposed) {
           setModelCatalog(null);
+          setCodexStatus(null);
           setModelError(error instanceof Error ? error.message : s.models.fetchErrorFallback);
         }
       } finally {
@@ -271,6 +277,42 @@ export function ProfileSettingsPanel({
     };
      
   }, []); // eslint-disable-line react-hooks/exhaustive-deps -- fetch once per mount; error fallbacks reflect language when reopening Settings
+
+  useEffect(() => {
+    if (!codexLogin || ["succeeded", "failed", "cancelled", "expired"].includes(codexLoginStatus ?? "")) {
+      return;
+    }
+    let isDisposed = false;
+    const intervalId = window.setInterval(async () => {
+      try {
+        const status = await api.getCodexLoginStatus(codexLogin.login_id);
+        if (isDisposed) {
+          return;
+        }
+        setCodexLoginStatus(status.status);
+        if (status.status === "succeeded") {
+          const [catalog, codex] = await Promise.all([api.getAIModels(), api.getCodexStatus(true)]);
+          if (!isDisposed) {
+            setModelCatalog(catalog);
+            setCodexStatus(codex);
+            setCodexLogin(null);
+          }
+        }
+        if (["failed", "cancelled", "expired"].includes(status.status)) {
+          setModelError(status.error || s.models.fetchErrorFallback);
+          setCodexLogin(null);
+        }
+      } catch (error) {
+        if (!isDisposed) {
+          setModelError(error instanceof Error ? error.message : s.models.fetchErrorFallback);
+        }
+      }
+    }, 2500);
+    return () => {
+      isDisposed = true;
+      window.clearInterval(intervalId);
+    };
+  }, [codexLogin, codexLoginStatus, s.models.fetchErrorFallback]);
 
   const textModels = useMemo(() => configuredModels(modelCatalog?.text ?? []), [modelCatalog]);
   const realtimeModels = useMemo(() => configuredModels(modelCatalog?.realtime ?? []), [modelCatalog]);
@@ -404,6 +446,58 @@ export function ProfileSettingsPanel({
     window.localStorage.removeItem(OPENCLASS_AUTH_TOKEN_STORAGE_KEY);
     setCurrentUser(null);
     router.push("/login");
+  }
+
+  async function refreshCodexModels() {
+    const [catalog, codex] = await Promise.all([api.getAIModels(), api.getCodexStatus(true)]);
+    setModelCatalog(catalog);
+    setCodexStatus(codex);
+  }
+
+  async function handleStartCodexLogin() {
+    setIsCodexBusy(true);
+    setModelError(null);
+    try {
+      const login = await api.startCodexDeviceLogin();
+      setCodexLogin(login);
+      setCodexLoginStatus("pending");
+      window.open(login.verification_url, "_blank", "noopener,noreferrer");
+    } catch (error) {
+      setModelError(error instanceof Error ? error.message : s.models.fetchErrorFallback);
+    } finally {
+      setIsCodexBusy(false);
+    }
+  }
+
+  async function handleCancelCodexLogin() {
+    if (!codexLogin) {
+      return;
+    }
+    setIsCodexBusy(true);
+    try {
+      await api.cancelCodexLogin(codexLogin.login_id);
+      setCodexLogin(null);
+      setCodexLoginStatus("cancelled");
+    } catch (error) {
+      setModelError(error instanceof Error ? error.message : s.models.fetchErrorFallback);
+    } finally {
+      setIsCodexBusy(false);
+    }
+  }
+
+  async function handleCodexLogout() {
+    setIsCodexBusy(true);
+    setModelError(null);
+    try {
+      await api.logoutCodex();
+      setCodexLogin(null);
+      setCodexLoginStatus(null);
+      await refreshCodexModels();
+    } catch (error) {
+      setModelError(error instanceof Error ? error.message : s.models.fetchErrorFallback);
+    } finally {
+      setIsCodexBusy(false);
+    }
   }
 
   function handlePasswordSubmit(event: FormEvent<HTMLFormElement>) {
@@ -1225,6 +1319,17 @@ export function ProfileSettingsPanel({
   function renderModelsSection() {
     const m = s.models;
     const hasRealtimeModelSettings = Boolean(defaultRealtimeModel) || realtimeModels.length > 0;
+    const codexAccount = codexStatus?.account;
+    const codexStateLabel = codexStatus?.configured
+      ? `${m.codexSignedIn}${codexAccount?.email ? ` · ${codexAccount.email}` : ""}${
+          codexAccount?.plan_type ? ` · ${codexAccount.plan_type}` : ""
+        }`
+      : m.codexSignedOut;
+    const codexHelper = !codexStatus?.enabled
+      ? m.codexDisabled
+      : !codexStatus?.available
+        ? m.codexUnavailable
+        : codexStatus.message;
     return (
       <form className="max-w-3xl space-y-7" onSubmit={handleSave}>
         <section className={settingSectionClass}>
@@ -1243,6 +1348,68 @@ export function ProfileSettingsPanel({
               ) : null}
             </div>
           )}
+        </section>
+
+        <section className={clsx(settingSectionClass, "space-y-4")}>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <h3 className="text-sm font-semibold text-stone-950">{m.codexTitle}</h3>
+              <p className={clsx("mt-1 text-sm leading-6", codexStatus?.configured ? "text-emerald-700" : "text-stone-500")}>
+                {codexStateLabel}
+              </p>
+              {codexHelper ? <p className="mt-1 text-xs leading-5 text-stone-500">{codexHelper}</p> : null}
+            </div>
+            <div className="flex shrink-0 flex-wrap gap-2">
+              {codexStatus?.configured ? (
+                <button
+                  type="button"
+                  disabled={isCodexBusy}
+                  onClick={handleCodexLogout}
+                  className="inline-flex h-9 items-center justify-center rounded-md border border-stone-200 bg-white px-3 text-xs font-semibold text-stone-700 transition hover:border-stone-300 hover:text-stone-950 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {isCodexBusy ? <LoaderCircle className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
+                  {m.codexLogout}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  disabled={isCodexBusy || !codexStatus?.enabled || !codexStatus?.available}
+                  onClick={handleStartCodexLogin}
+                  className="inline-flex h-9 items-center justify-center rounded-md bg-stone-950 px-3 text-xs font-semibold text-white transition hover:bg-stone-800 disabled:cursor-not-allowed disabled:bg-stone-300"
+                >
+                  {isCodexBusy ? <LoaderCircle className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
+                  {m.codexLogin}
+                </button>
+              )}
+            </div>
+          </div>
+          {codexLogin ? (
+            <div className="rounded-md border border-stone-200 bg-stone-50 p-3">
+              <p className="text-xs font-semibold uppercase text-stone-500">{m.codexWaiting}</p>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <span className="text-sm font-semibold text-stone-950">{m.codexCodeLabel}</span>
+                <span className="rounded-md border border-stone-200 bg-white px-2 py-1 font-mono text-sm font-semibold text-stone-950">
+                  {codexLogin.user_code}
+                </span>
+                <a
+                  href={codexLogin.verification_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex h-8 items-center justify-center rounded-md border border-stone-200 bg-white px-2.5 text-xs font-semibold text-stone-700 transition hover:border-stone-300 hover:text-stone-950"
+                >
+                  {m.codexOpen}
+                </a>
+                <button
+                  type="button"
+                  onClick={handleCancelCodexLogin}
+                  className="inline-flex h-8 items-center justify-center rounded-md border border-stone-200 bg-white px-2.5 text-xs font-semibold text-stone-700 transition hover:border-stone-300 hover:text-stone-950"
+                >
+                  {m.codexCancel}
+                </button>
+              </div>
+              {codexLoginStatus ? <p className="mt-2 text-xs text-stone-500">{codexLoginStatus}</p> : null}
+            </div>
+          ) : null}
         </section>
 
         <label className="block">

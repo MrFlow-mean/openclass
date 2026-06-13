@@ -1,4 +1,5 @@
 from app.services import ai_model_catalog
+from app.models import CodexProviderStatus
 
 
 def _disable_realtime(monkeypatch) -> None:
@@ -176,3 +177,33 @@ def test_catalog_includes_official_and_configured_custom_text_providers(monkeypa
     assert enabled[("minimax", "MiniMax-M2.7-highspeed")]
     assert enabled[("openai_compatible", "router-model")]
     assert enabled[("anthropic_compatible", "claude-router")]
+
+
+def test_catalog_exposes_configured_codex_models(monkeypatch) -> None:
+    _disable_realtime(monkeypatch)
+    monkeypatch.delenv("AI_SINGLE_API_KEY_MODE", raising=False)
+    monkeypatch.setenv("OPENCLASS_CODEX_APP_SERVER_ENABLED", "true")
+    monkeypatch.setenv("AI_TEXT_PROVIDER", "openai_codex")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(
+        ai_model_catalog,
+        "codex_provider_status",
+        lambda: CodexProviderStatus(enabled=True, available=True, configured=True),
+    )
+    monkeypatch.setattr(
+        ai_model_catalog,
+        "list_codex_models",
+        lambda: [
+            {"model": "gpt-5.5", "displayName": "GPT-5.5"},
+            {"model": "gpt-5.4-mini", "displayName": "GPT-5.4 Mini"},
+        ],
+    )
+
+    catalog = ai_model_catalog.build_model_catalog()
+
+    assert _models_by_provider(catalog, "text", "openai_codex") == ["gpt-5.5", "gpt-5.4-mini"]
+    assert catalog.defaults["text"].provider == "openai_codex"
+    assert catalog.defaults["text"].model == "gpt-5.5"
+    codex_options = [option for option in catalog.text if option.provider == "openai_codex"]
+    assert codex_options
+    assert all(option.enabled and option.configured for option in codex_options)

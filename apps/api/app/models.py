@@ -87,6 +87,7 @@ ConversationRole = Literal["user", "assistant"]
 RealtimeTranscriptRole = Literal["user", "assistant", "tool"]
 AIProvider = Literal[
     "openai",
+    "openai_codex",
     "anthropic",
     "google",
     "deepseek",
@@ -646,6 +647,35 @@ class AIModelCatalog(BaseModel):
     text: list[AIModelOption] = Field(default_factory=list)
     realtime: list[AIModelOption] = Field(default_factory=list)
     defaults: dict[AIModelCapability, AIModelSelection]
+
+
+class CodexAccountView(BaseModel):
+    type: str | None = None
+    email: str | None = None
+    plan_type: str | None = None
+
+
+class CodexProviderStatus(BaseModel):
+    enabled: bool
+    available: bool
+    configured: bool
+    account: CodexAccountView | None = None
+    rate_limits: dict[str, Any] | None = None
+    message: str = ""
+
+
+class CodexLoginStartResponse(BaseModel):
+    login_id: str
+    verification_url: str
+    user_code: str
+    expires_at: str | None = None
+
+
+class CodexLoginStatusResponse(BaseModel):
+    login_id: str
+    status: Literal["pending", "succeeded", "failed", "cancelled", "expired"]
+    error: str | None = None
+    account: CodexAccountView | None = None
 
 
 class ScopeOption(BaseModel):
