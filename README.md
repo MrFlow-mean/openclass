@@ -1,5 +1,9 @@
 # 开放课堂（OpenClass）
 
+<p align="center">
+  <img src="docs/assets/openclass-product-cover.png" alt="OpenClass 产品封面" width="280" />
+</p>
+
 OpenClass 是面向课程设计、讲义创作和资料管理的 AI 课程工作台。当前保留工作台 UI、富文本讲义编辑、资料库、版本历史、课程图谱、模型配置入口和持久化后端；AI 工作流按 `AGENTS.md` 的通用能力约束继续接入。
 
 ## 核心能力
