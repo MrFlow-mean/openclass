@@ -1,5 +1,9 @@
 # 开放课堂（OpenClass）
 
+<p align="center">
+  <img src="docs/assets/openclass-product-cover.png" alt="OpenClass 产品封面" width="280" />
+</p>
+
 开放课堂（OpenClass）是一个面向课程设计、讲义创作和资料管理的课程工作台。当前代码保留前端工作台、富文本讲义编辑、资料库、版本历史、课程图谱和持久化后端；旧的后端 AI 工作流程运行框架已经移除，新的产品工作架构等待重新接入。
 
 ## 产品能力
