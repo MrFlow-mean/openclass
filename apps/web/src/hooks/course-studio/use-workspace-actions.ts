@@ -100,6 +100,25 @@ export function useWorkspaceActions({
     }
   }
 
+  async function handleUploadResource(file: File) {
+    if (!(await flushAutoSave("upload-resource"))) {
+      return false;
+    }
+    setBusyAction("upload-resource");
+    try {
+      const nextPackage = await api.uploadResource(file);
+      updateCoursePackage(nextPackage, {
+        activeLessonId: activeLesson?.id,
+      });
+      return true;
+    } catch (uploadError) {
+      setError(uploadError instanceof Error ? uploadError.message : "上传资料失败");
+      return false;
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
   async function handleSelectLesson(lessonId: string) {
     if (activeLesson?.id !== lessonId && !(await flushAutoSave("select-lesson"))) {
       return;
@@ -113,6 +132,7 @@ export function useWorkspaceActions({
     handleCreateLessonFromName,
     handleOpenLesson,
     handleCloseLesson,
+    handleUploadResource,
     handleSelectLesson,
   };
 }

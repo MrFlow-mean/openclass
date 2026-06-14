@@ -60,6 +60,7 @@ export const FALLBACK_MODEL_CATALOG: AIModelCatalog = {
 
 export const PROVIDER_LABELS: Record<AIModelSelection["provider"], string> = {
   openai: "OpenAI",
+  openai_codex: "OpenAI Codex",
   anthropic: "Anthropic",
   google: "Google",
   deepseek: "DeepSeek",
@@ -70,6 +71,7 @@ export const PROVIDER_LABELS: Record<AIModelSelection["provider"], string> = {
 };
 
 export const TEXT_MODEL_STORAGE_KEY = "blackboard-ai:selected-text-model";
+export const BOARD_MODEL_STORAGE_KEY = "blackboard-ai:selected-board-model";
 export const REALTIME_MODEL_STORAGE_KEY = "blackboard-ai:selected-realtime-model";
 
 const DISABLED_TEXT_MODEL_PROVIDERS = new Set<AIModelSelection["provider"]>();

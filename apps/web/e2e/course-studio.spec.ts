@@ -68,6 +68,50 @@ test("creates a package and lesson, edits the document, and persists a version",
   await expect(page.getByText("Auto Save").first()).toBeVisible();
 });
 
+test("returns guest login to the protected next path", async ({ page }) => {
+  await page.goto(`/login?next=${encodeURIComponent("/studio")}`);
+  await page.getByRole("button", { name: /游客登录/ }).click();
+  await expect(page).toHaveURL(/\/studio$/);
+});
+
+test("keeps the document scroll position when toolbar formatting actions run", async ({ page }) => {
+  const unique = Date.now();
+  await enterAsGuest(page);
+  await createPackageFromHome(page, `工具栏滚动测试课程包 ${unique}`);
+  await createLessonFromEmptyStudio(page, `工具栏滚动测试页面 ${unique}`);
+
+  const longDocumentText = Array.from(
+    { length: 120 },
+    (_, index) => `滚动保持段落 ${index + 1} ${unique}：点击工具栏时当前阅读位置不应改变。`
+  ).join("\n\n");
+  const editor = page.locator(".ProseMirror").first();
+  const saveResponse = page.waitForResponse(
+    (response) => response.url().includes("/document/save") && response.request().method() === "POST"
+  );
+  await editor.click();
+  await editor.fill(longDocumentText);
+  await saveResponse;
+  await expect(editor).toContainText(`滚动保持段落 120 ${unique}`);
+
+  const scrollContainer = page.locator("[data-word-editor-scroll]");
+  const maxScrollTop = await scrollContainer.evaluate((element) => element.scrollHeight - element.clientHeight);
+  expect(maxScrollTop).toBeGreaterThan(200);
+
+  const targetScrollTop = Math.floor(maxScrollTop * 0.45);
+  await scrollContainer.evaluate((element, scrollTop) => {
+    element.scrollTop = scrollTop;
+  }, targetScrollTop);
+  const beforeScrollTop = await scrollContainer.evaluate((element) => element.scrollTop);
+
+  await page.getByTitle("加粗").click();
+  await expect
+    .poll(async () => {
+      const afterScrollTop = await scrollContainer.evaluate((element) => element.scrollTop);
+      return Math.abs(afterScrollTop - beforeScrollTop);
+    })
+    .toBeLessThan(8);
+});
+
 test("localizes the empty course package page in English", async ({ page }) => {
   const unique = Date.now();
   await enterAsGuest(page);
@@ -102,7 +146,7 @@ test("restores an older document version from history", async ({ page }) => {
   const restoreResponse = page.waitForResponse(
     (response) => response.url().includes("/restore") && response.request().method() === "POST"
   );
-  await page.getByRole("button", { name: "Restore" }).nth(1).click();
+  await page.getByRole("button", { name: `Restore ${firstVersion}` }).click();
   await restoreResponse;
 
   const editor = page.locator(".ProseMirror").first();
@@ -158,4 +202,62 @@ test("DOCX import and export entry points complete without breaking the editor",
   await page.getByRole("button", { name: "导出 DOCX" }).click();
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toMatch(/\.docx$/);
+});
+
+test("uploads a resource when a file is dropped on the resource panel dropzone", async ({ page }) => {
+  const unique = Date.now();
+  await enterAsGuest(page);
+  await createPackageFromHome(page, `拖放上传课程包 ${unique}`);
+  await createLessonFromEmptyStudio(page, `拖放上传页面 ${unique}`);
+
+  await page.getByTitle("展开右侧栏").click();
+  await page.getByRole("button", { name: "Library" }).click();
+  const dropzone = page.getByTestId("resource-upload-dropzone");
+  await expect(dropzone).toBeVisible();
+
+  const fileName = `drop-upload-${unique}.md`;
+  let uploadedFileSeen = false;
+  await page.route("**/api/resources/upload", async (route) => {
+    const body = route.request().postDataBuffer();
+    uploadedFileSeen = Boolean(body?.includes(Buffer.from(fileName)));
+    const authHeader = route.request().headers().authorization;
+    const currentPackageResponse = await page.request.get(`${API_BASE_URL}/api/course-package`, {
+      headers: authHeader ? { Authorization: authHeader } : undefined,
+    });
+    const currentPackage = await currentPackageResponse.json();
+    currentPackage.resources = [
+      ...currentPackage.resources,
+      {
+        id: `res_${unique}`,
+        name: fileName,
+        mime_type: "text/markdown",
+        resource_type: "document",
+        size_bytes: 31,
+        uploaded_at: new Date().toISOString(),
+        scope_lesson_id: currentPackage.active_lesson_id,
+        outline: [],
+        concept_index: {},
+        extracted_text_available: true,
+      },
+    ];
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(currentPackage) });
+  });
+
+  const dataTransfer = await page.evaluateHandle((name) => {
+    const transfer = new DataTransfer();
+    transfer.items.add(new File(["# Drag upload smoke\n\nbody"], name, { type: "text/markdown" }));
+    return transfer;
+  }, fileName);
+
+  await dropzone.dispatchEvent("dragenter", { dataTransfer });
+  await expect(page.getByRole("button", { name: "松开上传" })).toBeVisible();
+  await dropzone.dispatchEvent("dragover", { dataTransfer });
+  const uploadResponse = page.waitForResponse(
+    (response) => response.url().endsWith("/api/resources/upload") && response.request().method() === "POST"
+  );
+  await dropzone.dispatchEvent("drop", { dataTransfer });
+  await uploadResponse;
+
+  expect(uploadedFileSeen).toBe(true);
+  await expect(page.getByText(fileName)).toBeVisible();
 });

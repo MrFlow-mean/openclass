@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
 from app.models import (
     CourseGraphEdge,
@@ -20,7 +20,7 @@ from app.services.course_runtime import build_lesson_for_topic
 from app.services.history import current_head_commit
 from app.services.lesson_factory import create_empty_lesson
 from app.services.route_context import bind_ai_request_context
-from app.services.resource_service import delete_uploaded_resource_file
+from app.services.resource_service import add_uploaded_resource, delete_uploaded_resource_file
 from app.services.workspace_state import (
     UPLOAD_DIR,
     find_lesson_package,
@@ -183,6 +183,16 @@ def delete_lesson(lesson_id: str, user: UserView = Depends(current_user)) -> Wor
 @router.get("/api/course-package", response_model=CoursePackageView)
 def get_course_package(user: UserView = Depends(current_user)) -> CoursePackageView:
     workspace, package = load_workspace_package_for_user(user.id)
+    return package_view_for_lesson(workspace, package, package.active_lesson_id)
+
+
+@router.post("/api/resources/upload", response_model=CoursePackageView)
+def upload_resource(file: UploadFile = File(...), user: UserView = Depends(current_user)) -> CoursePackageView:
+    workspace, package = load_workspace_package_for_user(user.id)
+    scope_lesson_id = package.active_lesson_id if is_standalone_package(workspace, package) else None
+    add_uploaded_resource(package, file, UPLOAD_DIR, scope_lesson_id=scope_lesson_id)
+    normalize_package_state(package)
+    save_workspace_for_user(user.id, workspace)
     return package_view_for_lesson(workspace, package, package.active_lesson_id)
 
 

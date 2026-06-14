@@ -37,6 +37,14 @@ const CHAT_PANEL_WIDTH_STORAGE_KEY = "openclass:studio:chat-panel-width";
 const CHAT_PANEL_DEFAULT_WIDTH = 380;
 const CHAT_PANEL_MIN_WIDTH = 300;
 const CHAT_PANEL_MAX_WIDTH = 640;
+const RIGHT_SIDEBAR_WIDTH_STORAGE_KEY = "openclass:studio:right-sidebar-width";
+const RIGHT_SIDEBAR_DEFAULT_WIDTH = 360;
+const RIGHT_SIDEBAR_MIN_WIDTH = 280;
+const RIGHT_SIDEBAR_MAX_WIDTH = 640;
+
+type StudioCoursePackageApplyOptions = CoursePackageApplyOptions & {
+  transientLessonId?: string | null;
+};
 
 export function CourseStudio() {
   const router = useRouter();
@@ -46,6 +54,7 @@ export function CourseStudio() {
   const chatInputRef = useRef<HTMLTextAreaElement | null>(null);
   const chatScrollEndRef = useRef<HTMLDivElement | null>(null);
   const chatRequestInFlightRef = useRef(false);
+  const activeLessonIdRef = useRef<string | null>(null);
 
   const workspace = useCourseWorkspace();
   const {
@@ -67,13 +76,16 @@ export function CourseStudio() {
   const {
     modelCatalog,
     selectedTextModel,
+    selectedBoardModel,
     selectedRealtimeModel,
     selectedTextOption,
+    selectedBoardOption,
     selectedRealtimeOption,
     selectedRealtimeTransport,
     openModelMenu,
     setOpenModelMenu,
     selectTextModel,
+    selectBoardModel,
     selectRealtimeModel,
   } = modelSelection;
   const [selection, setSelection] = useState<SelectionRef | null>(null);
@@ -90,9 +102,26 @@ export function CourseStudio() {
     defaultWidth: CHAT_PANEL_DEFAULT_WIDTH,
     minWidth: CHAT_PANEL_MIN_WIDTH,
     maxWidth: CHAT_PANEL_MAX_WIDTH,
+    label: "调整 Chatbot 宽度",
+  });
+  const {
+    width: rightSidebarWidth,
+    isResizing: isRightSidebarResizing,
+    dragHandleProps: rightSidebarResizeHandleProps,
+  } = useResizablePanelWidth({
+    storageKey: RIGHT_SIDEBAR_WIDTH_STORAGE_KEY,
+    defaultWidth: RIGHT_SIDEBAR_DEFAULT_WIDTH,
+    minWidth: RIGHT_SIDEBAR_MIN_WIDTH,
+    maxWidth: RIGHT_SIDEBAR_MAX_WIDTH,
+    dragDirection: "grow-left",
+    label: "调整课程工作台辅助宽度",
   });
   const [sidebarTab, setSidebarTab] = useState<CourseStudioSidebarTab>("history");
   const [isCreatingLessonInline, setIsCreatingLessonInline] = useState(false);
+
+  useEffect(() => {
+    activeLessonIdRef.current = activeLesson?.id ?? null;
+  }, [activeLesson?.id]);
 
   const boardDraft = useBoardDraft({
     activeLesson,
@@ -103,10 +132,10 @@ export function CourseStudio() {
     onPackageApplied: resetTransientUi,
   });
 
-  function updateCoursePackage(nextPackage: CoursePackage, options?: CoursePackageApplyOptions) {
+  function updateCoursePackage(nextPackage: CoursePackage, options?: StudioCoursePackageApplyOptions) {
     const result = applyWorkspaceCoursePackage(nextPackage, options);
     boardDraft.resetToLesson(result.activeLesson);
-    resetTransientUi();
+    resetTransientUi(options?.transientLessonId ?? result.activeLesson?.id ?? null);
     return result;
   }
 
@@ -174,6 +203,7 @@ export function CourseStudio() {
     composerSelection,
     currentBoardDocument: displayedDocument,
     selectedTextModel,
+    selectedBoardModel,
     isPreviewMode: isPreviewMode || isDraftPreviewMode,
     chatRequestInFlightRef,
     flushAutoSave,
@@ -323,9 +353,12 @@ export function CourseStudio() {
     adjustComposerHeightEffectEvent();
   }, [chatInput, composerSelection?.excerpt]);
 
-  function resetTransientUi() {
-    history.setPreviewCommitId(null);
-    chatAgent.resetAgentState();
+  function resetTransientUi(lessonId?: string | null) {
+    const targetLessonId = lessonId ?? activeLessonIdRef.current;
+    if (!targetLessonId || targetLessonId === activeLessonIdRef.current) {
+      history.setPreviewCommitId(null);
+    }
+    chatAgent.resetAgentState(targetLessonId);
   }
 
   const workspaceActions = useWorkspaceActions({
@@ -345,6 +378,7 @@ export function CourseStudio() {
     handleCreateLessonFromName,
     handleOpenLesson,
     handleCloseLesson,
+    handleUploadResource,
     handleSelectLesson,
   } = workspaceActions;
 
@@ -487,11 +521,16 @@ export function CourseStudio() {
     >
       <div
         ref={mainContainerRef}
-        style={{ "--chat-panel-width": `${chatPanelWidth}px` } as CSSProperties}
+        style={
+          {
+            "--chat-panel-width": `${chatPanelWidth}px`,
+            "--right-sidebar-width": `${rightSidebarWidth}px`,
+          } as CSSProperties
+        }
         className={clsx(
           "grid min-h-0 flex-1 grid-cols-[var(--chat-panel-width)_minmax(0,1fr)] overflow-hidden transition-[grid-template-columns]",
-          isChatPanelResizing ? "duration-0" : "duration-300",
-          rightSidebarOpen && "xl:grid-cols-[var(--chat-panel-width)_minmax(0,1fr)_360px]"
+          isChatPanelResizing || isRightSidebarResizing ? "duration-0" : "duration-300",
+          rightSidebarOpen && "xl:grid-cols-[var(--chat-panel-width)_minmax(0,1fr)_var(--right-sidebar-width)]"
         )}
       >
         <CourseStudioChatSidebar
@@ -553,16 +592,22 @@ export function CourseStudio() {
           isDraftPreviewMode={isDraftPreviewMode}
           previewCommit={previewCommit}
           toolbarCollapsed={topCollapsed}
+          modelCatalog={modelCatalog}
+          selectedBoardModel={selectedBoardModel}
+          selectedBoardOption={selectedBoardOption}
           onExitPreviewMode={exitAnyPreviewMode}
           onDocumentChange={handleLocalDocumentChange}
           onApplySelection={applySelection}
           onClearSelection={clearSelection}
+          onSelectBoardModel={selectBoardModel}
           onImportDocx={(file) => void handleImportDocx(file)}
           onExportDocx={() => void handleExportDocx()}
         />
 
         <CourseStudioSidePanel
           open={rightSidebarOpen}
+          resizeHandleProps={rightSidebarResizeHandleProps}
+          isResizing={isRightSidebarResizing}
           sidebarTab={sidebarTab}
           onSidebarTabChange={setSidebarTab}
           onClose={() => setRightSidebarOpen(false)}
@@ -574,6 +619,8 @@ export function CourseStudio() {
           latestBoardDecision={latestBoardDecision}
           newBranchName={newBranchName}
           onNewBranchNameChange={setNewBranchName}
+          busyAction={busyAction}
+          resources={coursePackage?.resources ?? []}
           relatedEdges={relatedEdges}
           lessonMap={lessonMap}
           onCreateBranch={() => handleCreateBranch()}
@@ -581,6 +628,7 @@ export function CourseStudio() {
           onRestoreCommit={(commitId) => handleRestoreCommit(commitId)}
           onCreateBranchFromCommit={(commit) => handleCreateBranchFromCommit(commit)}
           onSwitchBranch={(branchName) => handleSwitchBranch(branchName)}
+          onUploadResource={(file) => void handleUploadResource(file)}
           onOpenLesson={(lessonId) => handleOpenLesson(lessonId)}
         />
       </div>

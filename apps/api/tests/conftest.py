@@ -13,3 +13,12 @@ def allow_default_board_document_quality_review(monkeypatch: pytest.MonkeyPatch)
             checked_dimensions=["title_terms", "definitions", "examples", "exercises", "answers", "scope", "structure"],
         ),
     )
+
+
+@pytest.fixture(autouse=True)
+def disable_default_initial_learning_intent_ai(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_initial_learning_intent_decision",
+        lambda **kwargs: None,
+    )

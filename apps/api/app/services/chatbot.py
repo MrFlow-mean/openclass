@@ -47,7 +47,7 @@ from app.services.board_segment_index import build_board_segment_index
 from app.services.board_teaching import build_board_teaching_guide, teach_first_section, teach_next_section
 from app.services.course_runtime import effective_requirements
 from app.services.course_runtime import refresh_lesson_runtime
-from app.services.decision_trace import decision_trace_metadata
+from app.services.decision_trace import decision_trace_metadata, initial_learning_intent_trace_metadata
 from app.services.history import commit_operations
 from app.services.interaction_rules import (
     apply_interaction_decision,
@@ -66,8 +66,15 @@ from app.services.learning_requirement_history import (
     LearningRequirementHistoryRecorder,
     RequirementHistoryStamp,
 )
+from app.services.initial_learning_intent import (
+    InitialLearningIntentDecision,
+    build_clarification_from_initial_learning_intent,
+    build_requirements_from_initial_learning_intent,
+    decide_initial_learning_intent,
+)
 from app.services.openai_course_ai import (
     BoardTaskRouteDecision,
+    bind_board_model_selection,
     bind_text_model_selection,
     emit_ai_stream_event,
     openai_course_ai,
@@ -756,12 +763,69 @@ def _should_generate_board_from_explicit_request(
 ) -> bool:
     if not is_document_empty(lesson.board_document):
         return False
+    if not (learning_clarification.ready_for_board or learning_clarification.forced_start):
+        return False
     if is_explicit_board_generation_request(request.message) or _requests_document_artifact_generation(request.message):
         return True
     return is_generation_control_request(request.message) and _has_actionable_generation_context(
         requirements,
         learning_clarification,
     )
+
+
+def _initial_learning_intent_instruction(decision: InitialLearningIntentDecision) -> str:
+    if decision.next_action == "ask_specific_concept":
+        if decision.readiness.goal_shape == "underbounded_process":
+            missing = "、".join(decision.readiness.missing_boundaries or ["具体对象", "任务场景", "约束"])
+            return (
+                "用户给出了领域或流程里的学习方向，"
+                "但还没有缩小到可生成第一版板书的任务切片。"
+                f"请自然地只追问一个收窄问题，方向是确认{missing}；"
+                "不要询问当前水平或练习目的，也不要生成默认课程路径。"
+            )
+        return (
+            "用户给出了学习方向，"
+            "但还没有缩小到可生成第一版板书的具体知识点、问题或范围。"
+            "请自然地只追问这一个缺口，不要询问当前水平或目的场景。"
+        )
+    return (
+        "用户还没有说明是想学习知识内容，还是做练习型教学。"
+        "请自然地只追问这个选择，不要展开讲解，也不要生成板书正文。"
+    )
+
+
+def _fallback_initial_learning_intent_question(decision: InitialLearningIntentDecision) -> str:
+    if decision.next_action == "ask_specific_concept":
+        if decision.readiness.goal_shape == "underbounded_process":
+            return "你想先聚焦哪个具体对象、任务场景或约束？"
+        return "你具体想弄懂哪一个知识点、问题或范围？"
+    return "你是想先学习一个知识内容，还是做练习型教学？"
+
+
+def _generate_initial_learning_intent_clarification_message(
+    *,
+    lesson: Lesson,
+    request: ChatRequest,
+    decision: InitialLearningIntentDecision,
+    resource_summary: str,
+) -> tuple[str, str]:
+    ai_reply = openai_course_ai.generate_chatbot_reply(
+        lesson_title=lesson.title,
+        learning_goal=decision.trace_reason,
+        board_summary=_board_summary(lesson),
+        resource_summary=resource_summary,
+        conversation_summary=_conversation_summary(request.conversation),
+        user_message=(
+            f"{request.message}\n\n"
+            f"内部门禁指令：{_initial_learning_intent_instruction(decision)}"
+        ),
+        selection_excerpt=None,
+        interaction_mode=request.interaction_mode,
+    )
+    chatbot_message = (ai_reply.chatbot_message if ai_reply else "").strip()
+    if chatbot_message:
+        return chatbot_message, "chatbot_initial_learning_intent"
+    return _fallback_initial_learning_intent_question(decision), "initial_learning_intent_gate"
 
 
 def _latest_learning_clarification(
@@ -3704,6 +3768,258 @@ def _generate_board_from_confirmed_resource(
     )
 
 
+def _generate_board_from_initial_learning_intent(
+    *,
+    workspace,
+    package,
+    lesson: Lesson,
+    user_id: str,
+    request: ChatRequest,
+    requirements: LearningRequirementSheet,
+    resource_resolution: ResourceResolution,
+    selected_reference: ResourceReferenceContext | None,
+    resource_summary_for_turn: str,
+    requirement_history: LearningRequirementHistoryRecorder,
+    track_initial_requirement_run: bool,
+    decision: InitialLearningIntentDecision,
+) -> ChatResponse:
+    requirements = build_requirements_from_initial_learning_intent(
+        base=requirements,
+        user_message=request.message,
+        decision=decision,
+        ready_for_board=True,
+    )
+    learning_clarification = build_clarification_from_initial_learning_intent(
+        user_message=request.message,
+        decision=decision,
+        ready_for_board=True,
+    )
+    _maybe_record_initial_requirement_update(
+        requirement_history,
+        enabled=track_initial_requirement_run,
+        requirements=requirements,
+        learning_clarification=learning_clarification,
+    )
+    requirements, learning_clarification, frozen_requirement = _prepare_initial_requirement_for_board_generation(
+        requirement_history,
+        enabled=track_initial_requirement_run,
+        requirements=requirements,
+        learning_clarification=learning_clarification,
+    )
+    _checkpoint_initial_requirement_before_generation(
+        user_id=user_id,
+        workspace=workspace,
+        package=package,
+        lesson=lesson,
+        requirement_history=requirement_history,
+        requirements=requirements,
+        learning_clarification=learning_clarification,
+        stamp=frozen_requirement,
+    )
+    edit_outcome = generate_from_requirements(
+        lesson=lesson,
+        requirements=requirements,
+        clarification=learning_clarification,
+        resource_summary=resource_summary_for_turn,
+        requirement_run_id=frozen_requirement.run_id if frozen_requirement else None,
+        frozen_requirement_version_id=frozen_requirement.version_id if frozen_requirement else None,
+    )
+    initial_intent_metadata = initial_learning_intent_trace_metadata(
+        decision,
+        requirement_phase="frozen",
+        minimal_frozen_requirement=True,
+        board_editor_called=True,
+    )
+    if not edit_outcome.changed:
+        failed_stamp = (
+            requirement_history.generation_failed(
+                reason=edit_outcome.summary or edit_outcome.chatbot_message,
+                metadata={
+                    **_board_document_failure_metadata(edit_outcome),
+                    **initial_intent_metadata,
+                },
+            )
+            if frozen_requirement is not None
+            else None
+        )
+        workspace_state.normalize_package_state(package)
+        _save_workspace_for_user(
+            user_id=user_id,
+            workspace=workspace,
+            requirement_history=requirement_history,
+        )
+        return _response(
+            workspace=workspace,
+            package=package,
+            lesson=lesson,
+            chatbot_message=edit_outcome.chatbot_message,
+            learning_clarification=learning_clarification,
+            requirements=requirements,
+            board_decision=edit_outcome.board_decision,
+            resource_matches=resource_resolution.matches,
+            selected_reference=selected_reference,
+            requirement_stamp=failed_stamp,
+            board_document_operation_status=edit_outcome.operation_status,
+            board_document_operation_failure_reason=edit_outcome.failure_reason,
+        )
+    refresh_lesson_runtime(lesson, document=edit_outcome.new_document, requirements=requirements)
+    lesson.board_teaching_guide = build_board_teaching_guide(lesson)
+    lesson.board_teaching_progress = None
+    chatbot_message, chatbot_message_source = _post_initial_board_generation_message(
+        lesson=lesson,
+        requirements=requirements,
+        learning_clarification=learning_clarification,
+        resource_summary=resource_summary_for_turn,
+        edit_outcome=edit_outcome,
+    )
+    commit_operations(
+        lesson,
+        [],
+        label="Board document generation",
+        message="Generated board document from an initial learning intent gate decision",
+        new_document=lesson.board_document,
+        metadata={
+            "kind": "board_document_generation",
+            "user_message": request.message,
+            "assistant_message": chatbot_message,
+            "assistant_message_source": chatbot_message_source,
+            "board_editor_message": edit_outcome.chatbot_message,
+            "interaction_mode": request.interaction_mode,
+            "selection": request.selection.model_dump(mode="json") if request.selection else None,
+            "board_generation_action": "initial_learning_intent_gate",
+            "board_edit_operation": edit_outcome.operation,
+            "board_edit_summary": edit_outcome.summary,
+            "board_section_titles": edit_outcome.section_titles,
+            **_board_document_quality_metadata(edit_outcome),
+            **_requirement_history_metadata(
+                frozen_requirement,
+                run_status_after_commit="consumed" if frozen_requirement is not None else None,
+            ),
+            **_task_metadata(
+                requirements=requirements,
+                learning_clarification=learning_clarification,
+                requirement_cleared=True,
+            ),
+            **_reference_metadata(resolution=resource_resolution),
+            **initial_intent_metadata,
+        },
+    )
+    consumed_stamp = (
+        requirement_history.consume(commit_id=lesson.history_graph.commits[-1].id)
+        if frozen_requirement is not None
+        else None
+    )
+    _clear_task_requirements(lesson)
+    workspace_state.normalize_package_state(package)
+    _save_workspace_for_user(
+        user_id=user_id,
+        workspace=workspace,
+        requirement_history=requirement_history,
+    )
+    return _response(
+        workspace=workspace,
+        package=package,
+        lesson=lesson,
+        chatbot_message=chatbot_message,
+        learning_clarification=learning_clarification,
+        requirements=requirements,
+        board_decision=edit_outcome.board_decision,
+        resource_matches=resource_resolution.matches,
+        selected_reference=selected_reference,
+        requirement_cleared=True,
+        requirement_stamp=consumed_stamp,
+        board_document_operation_status=edit_outcome.operation_status,
+        board_document_operation_failure_reason=edit_outcome.failure_reason,
+    )
+
+
+def _handle_initial_learning_intent_clarification(
+    *,
+    workspace,
+    package,
+    lesson: Lesson,
+    user_id: str,
+    request: ChatRequest,
+    requirements: LearningRequirementSheet,
+    resource_resolution: ResourceResolution,
+    selected_reference: ResourceReferenceContext | None,
+    resource_summary_for_turn: str,
+    requirement_history: LearningRequirementHistoryRecorder,
+    track_initial_requirement_run: bool,
+    decision: InitialLearningIntentDecision,
+) -> ChatResponse:
+    requirements = build_requirements_from_initial_learning_intent(
+        base=requirements,
+        user_message=request.message,
+        decision=decision,
+        ready_for_board=False,
+    )
+    learning_clarification = build_clarification_from_initial_learning_intent(
+        user_message=request.message,
+        decision=decision,
+        ready_for_board=False,
+    )
+    stamp = _maybe_record_initial_requirement_update(
+        requirement_history,
+        enabled=track_initial_requirement_run,
+        requirements=requirements,
+        learning_clarification=learning_clarification,
+    )
+    lesson.learning_requirements = requirements
+    chatbot_message, chatbot_message_source = _generate_initial_learning_intent_clarification_message(
+        lesson=lesson,
+        request=request,
+        decision=decision,
+        resource_summary=resource_summary_for_turn,
+    )
+    commit_operations(
+        lesson,
+        [],
+        label="Initial learning intent clarification",
+        message="Asked the learner to clarify initial learning mode or target granularity",
+        new_document=lesson.board_document,
+        metadata={
+            "kind": "chat_flow",
+            "user_message": request.message,
+            "assistant_message": chatbot_message,
+            "assistant_message_source": chatbot_message_source,
+            "interaction_mode": request.interaction_mode,
+            "selection": request.selection.model_dump(mode="json") if request.selection else None,
+            **_task_metadata(
+                requirements=requirements,
+                learning_clarification=learning_clarification,
+                requirement_cleared=False,
+            ),
+            **_reference_metadata(resolution=resource_resolution),
+            **initial_learning_intent_trace_metadata(
+                decision,
+                requirement_phase=stamp.phase if stamp else None,
+                minimal_frozen_requirement=False,
+                board_editor_called=False,
+            ),
+        },
+    )
+    workspace_state.normalize_package_state(package)
+    _save_workspace_for_user(
+        user_id=user_id,
+        workspace=workspace,
+        requirement_history=requirement_history,
+    )
+    return _response(
+        workspace=workspace,
+        package=package,
+        lesson=lesson,
+        chatbot_message=chatbot_message,
+        learning_clarification=learning_clarification,
+        requirements=requirements,
+        board_decision=BoardDecision(action="no_change", reason=decision.trace_reason),
+        resource_matches=resource_resolution.matches,
+        selected_reference=selected_reference,
+        requirement_cleared=False,
+        requirement_stamp=stamp,
+    )
+
+
 def _chat_response(
     *,
     lesson_id: str,
@@ -4816,6 +5132,46 @@ def _chat_response(
             track_initial_requirement_run=track_initial_requirement_run,
         )
 
+    initial_learning_intent_decision: InitialLearningIntentDecision | None = None
+    if track_initial_requirement_run and is_document_empty(lesson.board_document):
+        initial_learning_intent_decision = decide_initial_learning_intent(
+            lesson_title=lesson.title,
+            existing_summary=requirements.learning_goal,
+            existing_checklist=list(requirements.learning_need_checklist),
+            conversation=request.conversation,
+            user_message=request.message,
+        )
+        if initial_learning_intent_decision.next_action == "freeze_minimal_and_generate_board":
+            return _generate_board_from_initial_learning_intent(
+                workspace=workspace,
+                package=package,
+                lesson=lesson,
+                user_id=user_id,
+                request=request,
+                requirements=requirements,
+                resource_resolution=resource_resolution,
+                selected_reference=selected_reference,
+                resource_summary_for_turn=resource_summary_for_turn,
+                requirement_history=requirement_history,
+                track_initial_requirement_run=track_initial_requirement_run,
+                decision=initial_learning_intent_decision,
+            )
+        if initial_learning_intent_decision.next_action in {"ask_specific_concept", "ask_learning_mode"}:
+            return _handle_initial_learning_intent_clarification(
+                workspace=workspace,
+                package=package,
+                lesson=lesson,
+                user_id=user_id,
+                request=request,
+                requirements=requirements,
+                resource_resolution=resource_resolution,
+                selected_reference=selected_reference,
+                resource_summary_for_turn=resource_summary_for_turn,
+                requirement_history=requirement_history,
+                track_initial_requirement_run=track_initial_requirement_run,
+                decision=initial_learning_intent_decision,
+            )
+
     learning_clarification = _latest_learning_clarification(lesson, requirements=requirements)
     if _requests_explanation(request.message) and not is_document_empty(lesson.board_document):
         target_excerpt = selection_or_reference_excerpt or _board_summary(lesson)
@@ -4980,9 +5336,18 @@ def _chat_response(
             frozen_requirement_version_id=frozen_requirement.version_id if frozen_requirement else None,
         )
         if not edit_outcome.changed:
+            initial_intent_metadata = initial_learning_intent_trace_metadata(
+                initial_learning_intent_decision,
+                requirement_phase="frozen",
+                minimal_frozen_requirement=False,
+                board_editor_called=True,
+            )
             failed_stamp = requirement_history.generation_failed(
                 reason=edit_outcome.summary or edit_outcome.chatbot_message,
-                metadata=_board_document_failure_metadata(edit_outcome),
+                metadata={
+                    **_board_document_failure_metadata(edit_outcome),
+                    **initial_intent_metadata,
+                },
             )
             workspace_state.normalize_package_state(package)
             _save_workspace_for_user(
@@ -5045,6 +5410,12 @@ def _chat_response(
                 ),
                 **_reference_metadata(resolution=resource_resolution),
                 **solver_metadata,
+                **initial_learning_intent_trace_metadata(
+                    initial_learning_intent_decision,
+                    requirement_phase="frozen",
+                    minimal_frozen_requirement=False,
+                    board_editor_called=True,
+                ),
             },
         )
         consumed_stamp = requirement_history.consume(commit_id=lesson.history_graph.commits[-1].id)
@@ -5094,6 +5465,16 @@ def _chat_response(
             ),
             **_reference_metadata(resolution=resource_resolution),
             **solver_metadata,
+            **initial_learning_intent_trace_metadata(
+                initial_learning_intent_decision,
+                requirement_phase=(
+                    requirement_history.current_stamp().phase
+                    if initial_learning_intent_decision is not None
+                    else None
+                ),
+                minimal_frozen_requirement=False,
+                board_editor_called=False,
+            ),
         },
     )
     if requirement_cleared:
@@ -5127,7 +5508,8 @@ def process_chat_on_lesson(lesson_id: str, request: ChatRequest, *, user_id: str
         user_id=user_id,
     ):
         with bind_text_model_selection(request.text_model):
-            return _chat_response(lesson_id=lesson_id, request=request, user_id=user_id)
+            with bind_board_model_selection(request.board_model):
+                return _chat_response(lesson_id=lesson_id, request=request, user_id=user_id)
 
 
 def document_ai_edit_request(

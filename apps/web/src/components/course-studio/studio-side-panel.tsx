@@ -1,5 +1,6 @@
 import clsx from "clsx";
 import { X } from "lucide-react";
+import type { HTMLAttributes } from "react";
 
 import { BranchPanel } from "@/components/course-studio/branch-panel";
 import { ResourcePanel } from "@/components/course-studio/resource-panel";
@@ -10,6 +11,8 @@ export type CourseStudioSidebarTab = "history" | "branch" | "library";
 
 type CourseStudioSidePanelProps = {
   open: boolean;
+  resizeHandleProps: HTMLAttributes<HTMLDivElement>;
+  isResizing: boolean;
   sidebarTab: CourseStudioSidebarTab;
   onSidebarTabChange: (tab: CourseStudioSidebarTab) => void;
   onClose: () => void;
@@ -21,6 +24,8 @@ type CourseStudioSidePanelProps = {
   latestBoardDecision: BoardDecision | null;
   newBranchName: string;
   onNewBranchNameChange: (value: string) => void;
+  busyAction: string | null;
+  resources: CoursePackage["resources"];
   relatedEdges: CoursePackage["course_graph"];
   lessonMap: Map<string, Lesson>;
   onCreateBranch: () => void | Promise<void>;
@@ -28,11 +33,14 @@ type CourseStudioSidePanelProps = {
   onRestoreCommit: (commitId: string) => void | Promise<void>;
   onCreateBranchFromCommit: (commit: CommitRecord) => void | Promise<void>;
   onSwitchBranch: (branchName: string) => void | Promise<void>;
+  onUploadResource: (file: File) => void | Promise<void>;
   onOpenLesson: (lessonId: string) => void | Promise<void>;
 };
 
 export function CourseStudioSidePanel({
   open,
+  resizeHandleProps,
+  isResizing,
   sidebarTab,
   onSidebarTabChange,
   onClose,
@@ -44,6 +52,8 @@ export function CourseStudioSidePanel({
   latestBoardDecision,
   newBranchName,
   onNewBranchNameChange,
+  busyAction,
+  resources,
   relatedEdges,
   lessonMap,
   onCreateBranch,
@@ -51,15 +61,31 @@ export function CourseStudioSidePanel({
   onRestoreCommit,
   onCreateBranchFromCommit,
   onSwitchBranch,
+  onUploadResource,
   onOpenLesson,
 }: CourseStudioSidePanelProps) {
   return (
     <aside
       className={clsx(
-        "h-full min-h-0 flex-col border-l border-gray-200 bg-[#fcfcfc]",
+        "relative h-full min-h-0 min-w-0 flex-col border-l border-gray-200 bg-[#fcfcfc]",
         open ? "hidden xl:flex" : "hidden"
       )}
     >
+      <div
+        {...resizeHandleProps}
+        className={clsx(
+          "group absolute inset-y-0 left-[-6px] z-30 flex w-3 cursor-col-resize items-center justify-center outline-none",
+          isResizing && "bg-gray-100/60"
+        )}
+      >
+        <span
+          className={clsx(
+            "h-14 w-1 rounded-full bg-gray-200 opacity-0 transition group-hover:opacity-100 group-focus-visible:opacity-100",
+            isResizing && "bg-gray-400 opacity-100"
+          )}
+        />
+      </div>
+
       <div className="flex h-12 items-center justify-between border-b border-gray-200 bg-white px-5">
         <h4 className="text-[10px] font-bold uppercase tracking-widest text-gray-500">课程工作台辅助</h4>
         <button
@@ -122,9 +148,12 @@ export function CourseStudioSidePanel({
         {sidebarTab === "library" ? (
           <ResourcePanel
             activeLesson={activeLesson}
+            resources={resources}
+            isUploading={busyAction === "upload-resource"}
             relatedEdges={relatedEdges}
             lessonMap={lessonMap}
             onOpenLesson={onOpenLesson}
+            onUploadResource={onUploadResource}
           />
         ) : null}
       </div>

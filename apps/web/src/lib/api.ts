@@ -7,6 +7,9 @@ import type {
   ChatRequestPayload,
   ChatResponse,
   CoursePackage,
+  CodexLoginStartResponse,
+  CodexLoginStatusResponse,
+  CodexProviderStatus,
   DocumentAIEditPayload,
   DocumentSavePayload,
   GoogleRealtimeSessionPayload,
@@ -359,6 +362,28 @@ export const api = {
   getAIModels() {
     return request<AIModelCatalog>("/api/ai-models");
   },
+  getCodexStatus(includeRateLimits = false) {
+    const query = includeRateLimits ? "?include_rate_limits=true" : "";
+    return request<CodexProviderStatus>(`/api/codex/status${query}`);
+  },
+  startCodexDeviceLogin() {
+    return request<CodexLoginStartResponse>("/api/codex/login/device", {
+      method: "POST",
+    });
+  },
+  getCodexLoginStatus(loginId: string) {
+    return request<CodexLoginStatusResponse>(`/api/codex/login/${encodeURIComponent(loginId)}`);
+  },
+  cancelCodexLogin(loginId: string) {
+    return request<CodexLoginStatusResponse>(`/api/codex/login/${encodeURIComponent(loginId)}/cancel`, {
+      method: "POST",
+    });
+  },
+  logoutCodex() {
+    return request<{ ok: boolean }>("/api/codex/logout", {
+      method: "POST",
+    });
+  },
   getWorkspace() {
     return request<WorkspaceState>("/api/workspace");
   },
@@ -458,6 +483,21 @@ export const api = {
     const formData = new FormData();
     formData.append("file", file);
     const response = await fetch(`${getApiBase()}/api/lessons/${lessonId}/document/import-docx`, {
+      method: "POST",
+      body: formData,
+      headers: authHeaders(),
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(text || `Upload failed with ${response.status}`);
+    }
+    return response.json() as Promise<CoursePackage>;
+  },
+  async uploadResource(file: File) {
+    const formData = new FormData();
+    formData.append("file", file);
+    const response = await fetch(`${getApiBase()}/api/resources/upload`, {
       method: "POST",
       body: formData,
       headers: authHeaders(),

@@ -123,6 +123,31 @@ def _compact_text(value: str | None, *, limit: int = MAX_CONTEXT_CHARS) -> str:
     return f"{compact[: limit - 1]}..."
 
 
+def _dedupe_compact_items(items: list[str], *, limit: int = 80) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        compact = _compact_text(item, limit=limit)
+        key = re.sub(r"\s+", "", compact).lower()
+        if not compact or key in seen:
+            continue
+        seen.add(key)
+        result.append(compact)
+    return result
+
+
+def _missing_item_label_from_checklist_title(title: str) -> str:
+    compact = _compact_text(title, limit=80)
+    key = re.sub(r"[\s，。！？!?、；;：:]+", "", compact)
+    if "具体想学什么" in key or "解决什么问题" in key:
+        return "具体学习内容"
+    if "当前水平" in key or "目前是什么水平" in key or "已有基础" in key:
+        return "当前水平"
+    if "为什么学" in key or "学习目的" in key or "使用场景" in key or "面对什么场景" in key:
+        return "学习目的或使用场景"
+    return compact
+
+
 def _board_summary(lesson: Lesson) -> str:
     return _compact_text(lesson.board_document.content_text, limit=MAX_CONTEXT_CHARS) or lesson.board_document.title
 
@@ -498,20 +523,26 @@ def _normalize_update(update: LearningRequirementUpdate, *, user_message: str = 
             )
         ]
 
-    ready = update.ready_for_board
+    missing_items = _dedupe_compact_items(
+        [
+            *update.missing_items,
+            *[_missing_item_label_from_checklist_title(item.title) for item in checklist if not item.is_clear],
+        ]
+    )
+    ready = update.ready_for_board and not missing_items
     progress = max(0, min(100, update.progress))
     if ready:
         progress = 100
     elif progress >= 100:
         progress = 99
-
+    next_question = _compact_text(update.next_question, limit=160)
     return LearningRequirementUpdate(
         progress=progress,
         summary=_compact_text(update.summary, limit=220),
         key_facts=key_facts,
         checklist=checklist,
-        missing_items=[_compact_text(item, limit=80) for item in update.missing_items if item.strip()][:5],
-        next_question=_compact_text(update.next_question, limit=160),
+        missing_items=missing_items[:5],
+        next_question=next_question,
         ready_for_board=ready,
         action_type=update.action_type,
         action_instruction=_compact_text(update.action_instruction, limit=240),
@@ -549,7 +580,9 @@ def _apply_update_to_requirements(
         updated.current_questions = []
         updated.risk_notes = []
     else:
-        updated.current_questions = [update.next_question] if update.next_question else updated.current_questions
+        updated.current_questions = [update.next_question] if update.next_question else (
+            update.missing_items or updated.current_questions
+        )
         updated.risk_notes = update.missing_items
     action_type = update.action_type or _infer_action_type(
         user_message,

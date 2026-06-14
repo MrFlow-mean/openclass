@@ -44,12 +44,14 @@ from app.services.ai_model_catalog import (
     KIMI_DEFAULT_TEXT_MODEL,
     MINIMAX_DEFAULT_TEXT_MODEL,
     OPENAI_DEFAULT_CATALOG_MODEL,
+    OPENAI_CODEX_DEFAULT_TEXT_MODEL,
     OPENAI_DEFAULT_TEXT_MODEL,
     OPENAI_COMPATIBLE_DEFAULT_TEXT_MODEL,
     OPENAI_OFFICIAL_BASE_URL,
     OPENAI_IMAGE_MODEL,
     default_text_selection,
 )
+from app.services.codex_app_server import CodexAppServerTextClient, codex_provider_status
 from app.services.config import load_root_dotenv
 
 logger = logging.getLogger(__name__)
@@ -62,8 +64,12 @@ def _load_root_dotenv() -> None:
 
 _load_root_dotenv()
 DEFAULT_TEXT_MODEL = OPENAI_DEFAULT_TEXT_MODEL
+DEFAULT_AI_HTTP_TIMEOUT_SECONDS = 90.0
 _text_model_selection: ContextVar[AIModelSelection | None] = ContextVar(
     "text_model_selection", default=None
+)
+_board_model_selection: ContextVar[AIModelSelection | None] = ContextVar(
+    "board_model_selection", default=None
 )
 AIStreamObserver = Callable[[dict[str, Any]], None]
 _ai_stream_observer: ContextVar[AIStreamObserver | None] = ContextVar("ai_stream_observer", default=None)
@@ -367,6 +373,15 @@ def bind_text_model_selection(selection: AIModelSelection | None):
 
 
 @contextmanager
+def bind_board_model_selection(selection: AIModelSelection | None):
+    token = _board_model_selection.set(selection)
+    try:
+        yield
+    finally:
+        _board_model_selection.reset(token)
+
+
+@contextmanager
 def bind_ai_output_stream(observer: AIStreamObserver | None) -> Iterator[None]:
     token = _ai_stream_observer.set(observer)
     try:
@@ -379,6 +394,18 @@ def emit_ai_stream_event(payload: dict[str, Any]) -> None:
     observer = _ai_stream_observer.get()
     if observer:
         observer(payload)
+
+
+def _ai_http_timeout_seconds() -> float:
+    raw = os.getenv("OPENCLASS_AI_HTTP_TIMEOUT_SECONDS", "").strip()
+    if not raw:
+        return DEFAULT_AI_HTTP_TIMEOUT_SECONDS
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning("Invalid OPENCLASS_AI_HTTP_TIMEOUT_SECONDS=%r; using default", raw)
+        return DEFAULT_AI_HTTP_TIMEOUT_SECONDS
+    return max(5.0, value)
 
 
 class OpenAIConfig(BaseModel):
@@ -524,6 +551,24 @@ class OpenAICompatibleConfig(BaseModel):
     @property
     def enabled(self) -> bool:
         return bool(_normalize_optional_api_key(self.api_key) and self.base_url)
+
+    def model_for(self, role: str) -> str:
+        value = getattr(self, f"{role}_model", None)
+        return value or self.default_model
+
+
+class OpenAICodexConfig(BaseModel):
+    default_model: str = Field(default_factory=lambda: os.getenv("OPENAI_CODEX_MODEL", OPENAI_CODEX_DEFAULT_TEXT_MODEL))
+    pm_model: str | None = Field(default_factory=lambda: os.getenv("OPENAI_CODEX_PM_MODEL"))
+    board_model: str | None = Field(default_factory=lambda: os.getenv("OPENAI_CODEX_BOARD_MODEL"))
+    guide_model: str | None = Field(default_factory=lambda: os.getenv("OPENAI_CODEX_GUIDE_MODEL"))
+    chatbot_model: str | None = Field(default_factory=lambda: os.getenv("OPENAI_CODEX_CHATBOT_MODEL"))
+    lesson_model: str | None = Field(default_factory=lambda: os.getenv("OPENAI_CODEX_LESSON_MODEL"))
+    catalog_model: str | None = Field(default_factory=lambda: os.getenv("OPENAI_CODEX_CATALOG_MODEL"))
+
+    @property
+    def enabled(self) -> bool:
+        return codex_provider_status().configured
 
     def model_for(self, role: str) -> str:
         value = getattr(self, f"{role}_model", None)
@@ -748,26 +793,40 @@ class OpenAICourseAI:
         self.kimi_config = KimiConfig()
         self.minimax_config = MiniMaxConfig()
         self.openai_compatible_config = OpenAICompatibleConfig()
+        self.openai_codex_config = OpenAICodexConfig()
         self.anthropic_config = AnthropicConfig()
         self.anthropic_compatible_config = AnthropicCompatibleConfig()
         self.google_config = GoogleTextConfig()
+        openai_timeout = _ai_http_timeout_seconds()
         self.client = (
-            OpenAI(api_key=self.config.api_key, base_url=self.config.base_url)
+            OpenAI(api_key=self.config.api_key, base_url=self.config.base_url, timeout=openai_timeout)
             if self.config.enabled
             else None
         )
         self.deepseek_client = (
-            OpenAI(api_key=self.deepseek_config.api_key, base_url=self.deepseek_config.base_url)
+            OpenAI(
+                api_key=self.deepseek_config.api_key,
+                base_url=self.deepseek_config.base_url,
+                timeout=openai_timeout,
+            )
             if self.deepseek_config.enabled
             else None
         )
         self.kimi_client = (
-            OpenAI(api_key=self.kimi_config.api_key, base_url=self.kimi_config.base_url)
+            OpenAI(
+                api_key=self.kimi_config.api_key,
+                base_url=self.kimi_config.base_url,
+                timeout=openai_timeout,
+            )
             if self.kimi_config.enabled
             else None
         )
         self.minimax_client = (
-            OpenAI(api_key=self.minimax_config.api_key, base_url=self.minimax_config.base_url)
+            OpenAI(
+                api_key=self.minimax_config.api_key,
+                base_url=self.minimax_config.base_url,
+                timeout=openai_timeout,
+            )
             if self.minimax_config.enabled
             else None
         )
@@ -775,10 +834,12 @@ class OpenAICourseAI:
             OpenAI(
                 api_key=self.openai_compatible_config.api_key,
                 base_url=self.openai_compatible_config.base_url,
+                timeout=openai_timeout,
             )
             if self.openai_compatible_config.enabled
             else None
         )
+        self.openai_codex_client: CodexAppServerTextClient | None = None
         self.anthropic_client = (
             AnthropicTextClient(self.anthropic_config) if self.anthropic_config.enabled else None
         )
@@ -793,6 +854,11 @@ class OpenAICourseAI:
             else None
         )
 
+    def _ensure_openai_codex_client(self) -> CodexAppServerTextClient | None:
+        if self.openai_codex_client is None and self.openai_codex_config.enabled:
+            self.openai_codex_client = CodexAppServerTextClient()
+        return self.openai_codex_client
+
     @property
     def enabled(self) -> bool:
         return any(
@@ -802,6 +868,7 @@ class OpenAICourseAI:
                 self.kimi_client is not None,
                 self.minimax_client is not None,
                 self.openai_compatible_client is not None,
+                self._ensure_openai_codex_client() is not None,
                 self.anthropic_client is not None,
                 self.anthropic_compatible_client is not None,
                 self.google_client is not None,
@@ -813,6 +880,7 @@ class OpenAICourseAI:
             "enabled": self.enabled,
             "providers": {
                 "openai": self.client is not None,
+                "openai_codex": self._ensure_openai_codex_client() is not None,
                 "anthropic": self.anthropic_client is not None,
                 "google": self.google_client is not None,
                 "deepseek": self.deepseek_client is not None,
@@ -831,6 +899,7 @@ class OpenAICourseAI:
                 "deepseek": self.deepseek_config.default_model,
                 "kimi": self.kimi_config.default_model,
                 "minimax": self.minimax_config.default_model,
+                "openai_codex": self.openai_codex_config.default_model,
                 "openai_compatible": self.openai_compatible_config.default_model,
                 "anthropic_compatible": self.anthropic_compatible_config.default_model,
             },
@@ -1577,6 +1646,80 @@ class OpenAICourseAI:
         )
         return result if isinstance(result, LearningRequirementUpdate) else None
 
+    def generate_initial_learning_intent_decision(
+        self,
+        *,
+        lesson_title: str,
+        existing_summary: str,
+        existing_checklist: list[str],
+        conversation_summary: str,
+        user_message: str,
+    ):
+        from app.services.initial_learning_intent import InitialLearningIntentDecision
+
+        system_prompt = (
+            "你是 OpenClass 的初始学习意图门禁 AI，只在空白板书第一层更新结构化状态，不直接和用户聊天，"
+            "也不生成板书。\n"
+            "任务：判断用户是在学习知识内容，还是想做练习型教学，并判断目标颗粒度是否足以生成第一版板书。\n"
+            "规则：\n"
+            "1. 只判断通用学习形态、目标颗粒度和下一步动作；不要根据主题名、资料名、测评名或样例走特殊规则。\n"
+            "2. learning_mode 只能是 learn_concept、practice_activity、undecided。\n"
+            "3. target_granularity 只能是 specific_concept、broad_domain、ambiguous。\n"
+            "4. next_action 只能是 freeze_minimal_and_generate_board、ask_specific_concept、"
+            "collect_practice_requirements、ask_learning_mode。\n"
+            "5. 先判断 readiness.goal_shape：atomic_concept、bounded_question、bounded_task_slice、"
+            "underbounded_process、broad_domain、practice_activity、ambiguous。\n"
+            "6. 如果用户目标已经是单个知识点、明确问题或带有具体对象、任务场景、"
+            "问题、章节、选区或约束的任务切片，readiness_for_initial_board=ready，"
+            "并选择 freeze_minimal_and_generate_board。\n"
+            "7. 如果用户只给出宽泛方向，选择 ask_specific_concept。"
+            "领域容器 + how-to 流程型能力（例如某领域里如何优化、调参、训练、设计、"
+            "分析、部署）不等于最小知识点；除非用户给出具体对象、任务场景或约束，"
+            "否则 goal_shape=underbounded_process，readiness_for_initial_board=needs_narrowing，"
+            "并选择 ask_specific_concept。\n"
+            "8. 如果用户表达练习、测验、对话、角色互动、纠错、问答、做题或类似活动，"
+            "选择 collect_practice_requirements。\n"
+            "9. 如果无法判断是学习知识内容还是做练习型教学，选择 ask_learning_mode。\n"
+            "10. missing_boundaries 只列缺失的通用边界，例如具体对象、任务场景、约束、学习形态。\n"
+            "11. trace_reason 只描述通用信号，不要复述或扩展任何专属规则。"
+        )
+        user_prompt = _json(
+            {
+                "lesson_title": lesson_title,
+                "existing_summary": existing_summary,
+                "existing_checklist": existing_checklist,
+                "recent_conversation": conversation_summary,
+                "current_user_message": user_message,
+                "response_contract": {
+                    "learning_mode": "learn_concept | practice_activity | undecided",
+                    "target_granularity": "specific_concept | broad_domain | ambiguous",
+                    "next_action": (
+                        "freeze_minimal_and_generate_board | ask_specific_concept | "
+                        "collect_practice_requirements | ask_learning_mode"
+                    ),
+                    "readiness": {
+                        "goal_shape": (
+                            "atomic_concept | bounded_question | bounded_task_slice | underbounded_process | "
+                            "broad_domain | practice_activity | ambiguous"
+                        ),
+                        "readiness_for_initial_board": (
+                            "ready | needs_narrowing | needs_practice_requirements | needs_learning_mode"
+                        ),
+                        "missing_boundaries": "缺失的通用边界列表；已 ready 时为空列表。",
+                        "trace_reason": "readiness 判断的通用原因。",
+                    },
+                    "trace_reason": "选择该动作的通用原因，并说明为什么没有选择其他学习形态。",
+                },
+            }
+        )
+        result = self._parse(
+            "pm",
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            schema=InitialLearningIntentDecision,
+        )
+        return result if isinstance(result, InitialLearningIntentDecision) else None
+
     def _call_parse(
         self,
         *,
@@ -1609,6 +1752,16 @@ class OpenAICourseAI:
             if not self.anthropic_compatible_client:
                 raise RuntimeError("Anthropic-compatible API is not configured")
             return self.anthropic_compatible_client.parse(
+                model=model,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                schema=schema,
+            )
+        if provider == "openai_codex":
+            client = self._ensure_openai_codex_client()
+            if not client:
+                raise RuntimeError("OpenAI Codex app-server is not configured")
+            return client.parse(
                 model=model,
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
@@ -2059,7 +2212,9 @@ class OpenAICourseAI:
         if role == "catalog":
             return "openai", self.config.model_for(role)
 
-        selection = _text_model_selection.get()
+        selection = _board_model_selection.get() if role == "board" else None
+        if selection is None:
+            selection = _text_model_selection.get()
         if selection:
             return selection.provider, selection.model
 
@@ -2075,6 +2230,8 @@ class OpenAICourseAI:
             return self.anthropic_config.default_model
         if provider == "google":
             return self.google_config.default_model
+        if provider == "openai_codex":
+            return self.openai_codex_config.model_for(role)
         if provider == "deepseek":
             return self.deepseek_config.model_for(role)
         if provider == "kimi":
@@ -2095,6 +2252,8 @@ class OpenAICourseAI:
             return self.anthropic_client is not None
         if provider == "google":
             return self.google_client is not None
+        if provider == "openai_codex":
+            return self._ensure_openai_codex_client() is not None
         if provider == "deepseek":
             return self.deepseek_client is not None
         if provider == "kimi":
@@ -2108,6 +2267,8 @@ class OpenAICourseAI:
         return self.client is not None
 
     def _fallback_provider_candidates(self, failed_provider: AIProvider, role: str) -> list[tuple[AIProvider, str]]:
+        if failed_provider == "openai_codex":
+            return []
         ordered_providers: tuple[AIProvider, ...] = (
             "google",
             "deepseek",

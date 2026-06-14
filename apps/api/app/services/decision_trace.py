@@ -46,6 +46,31 @@ def decision_trace_metadata(
     return {"decision_trace": trace}
 
 
+def initial_learning_intent_trace_metadata(
+    decision: Any | None,
+    *,
+    requirement_phase: str | None,
+    minimal_frozen_requirement: bool,
+    board_editor_called: bool,
+) -> dict[str, object]:
+    if decision is None:
+        return {}
+    if hasattr(decision, "model_dump"):
+        payload = decision.model_dump(mode="json")
+    elif isinstance(decision, dict):
+        payload = dict(decision)
+    else:
+        payload = {}
+    payload.update(
+        {
+            "requirement_phase": requirement_phase,
+            "minimal_frozen_requirement": minimal_frozen_requirement,
+            "board_editor_called": board_editor_called,
+        }
+    )
+    return {"initial_learning_intent": payload}
+
+
 def _intent_signals_payload(signals: IntentSignals) -> dict[str, bool]:
     return {
         "wants_write": signals.wants_write,

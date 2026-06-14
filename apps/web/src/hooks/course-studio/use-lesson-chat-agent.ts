@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
+import { useEffect, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 
 import { api } from "@/lib/api";
 import { streamingMarkdownToHtml } from "@/lib/streaming-rich-document";
@@ -25,7 +25,6 @@ import type {
   LearningClarificationStatus,
   LearningRequirementSheet,
   Lesson,
-  ResourceMatch,
   ResourceReferenceContext,
   ResourceReferencePrompt,
   ScopeOption,
@@ -39,23 +38,58 @@ type UseLessonChatAgentOptions = {
   composerSelection: SelectionRef | null;
   currentBoardDocument: BoardDocument | null;
   selectedTextModel: AIModelSelection;
+  selectedBoardModel: AIModelSelection;
   isPreviewMode: boolean;
   chatRequestInFlightRef: MutableRefObject<boolean>;
   flushAutoSave: (reason: AutoSaveReason) => Promise<boolean>;
   exitPreviewMode: () => void;
   updateCoursePackage: (
     nextPackage: CoursePackage,
-    options?: CoursePackageApplyOptions
+    options?: CoursePackageApplyOptions & { transientLessonId?: string | null }
   ) => { activeLesson: Lesson | null } | void;
   updateLessonMessages: (lessonId: string, updater: (messages: ChatMessage[]) => ChatMessage[]) => void;
   updateLessonComposerState: (lessonId: string, updater: (current: LessonComposerState) => LessonComposerState) => void;
-  setStreamingDocumentPreview: (document: BoardDocument) => void;
+  setStreamingDocumentPreview: (lessonId: string, document: BoardDocument) => void;
   clearSelection: () => void;
   setError: Dispatch<SetStateAction<string | null>>;
   setBusyAction: Dispatch<SetStateAction<string | null>>;
   busyAction: string | null;
   onSpeakResponse: (content: string) => void;
 };
+
+type LessonAgentState = {
+  scopeOptions: ScopeOption[];
+  clarificationQuestions: string[];
+  learningClarity: LearningClarificationStatus | null;
+  streamedRequirementSheet: LearningRequirementSheet | null;
+  streamedBoardTaskSheet: BoardTaskRequirementSheet | null;
+  currentNeedPending: boolean;
+  latestBoardDecision: BoardDecision | null;
+  referencePrompt: ResourceReferencePrompt | null;
+  boardEditPrompt: BoardEditPrompt | null;
+  selectedReference: ResourceReferenceContext | null;
+  lastScopedRequest: ChatRequestPayload | null;
+  lastReferenceRequest: ChatRequestPayload | null;
+  lastBoardEditRequest: ChatRequestPayload | null;
+};
+
+function createLessonAgentState(): LessonAgentState {
+  return {
+    scopeOptions: [],
+    clarificationQuestions: [],
+    learningClarity: null,
+    streamedRequirementSheet: null,
+    streamedBoardTaskSheet: null,
+    currentNeedPending: false,
+    latestBoardDecision: null,
+    referencePrompt: null,
+    boardEditPrompt: null,
+    selectedReference: null,
+    lastScopedRequest: null,
+    lastReferenceRequest: null,
+    lastBoardEditRequest: null,
+  };
+}
 
 export function useLessonChatAgent({
   activeLesson,
@@ -64,6 +98,7 @@ export function useLessonChatAgent({
   composerSelection,
   currentBoardDocument,
   selectedTextModel,
+  selectedBoardModel,
   isPreviewMode,
   chatRequestInFlightRef,
   flushAutoSave,
@@ -78,25 +113,54 @@ export function useLessonChatAgent({
   busyAction,
   onSpeakResponse,
 }: UseLessonChatAgentOptions) {
-  const [scopeOptions, setScopeOptions] = useState<ScopeOption[]>([]);
-  const [, setResourceMatches] = useState<ResourceMatch[]>([]);
-  const [clarificationQuestions, setClarificationQuestions] = useState<string[]>([]);
-  const [learningClarity, setLearningClarity] = useState<LearningClarificationStatus | null>(null);
-  const [streamedRequirementSheet, setStreamedRequirementSheet] = useState<LearningRequirementSheet | null>(null);
-  const [streamedBoardTaskSheet, setStreamedBoardTaskSheet] = useState<BoardTaskRequirementSheet | null>(null);
-  const [currentNeedPending, setCurrentNeedPending] = useState(false);
-  const [latestBoardDecision, setLatestBoardDecision] = useState<BoardDecision | null>(null);
-  const [referencePrompt, setReferencePrompt] = useState<ResourceReferencePrompt | null>(null);
-  const [boardEditPrompt, setBoardEditPrompt] = useState<BoardEditPrompt | null>(null);
-  const [selectedReference, setSelectedReference] = useState<ResourceReferenceContext | null>(null);
-  const [lastScopedRequest, setLastScopedRequest] = useState<ChatRequestPayload | null>(null);
-  const [lastReferenceRequest, setLastReferenceRequest] = useState<ChatRequestPayload | null>(null);
-  const [lastBoardEditRequest, setLastBoardEditRequest] = useState<ChatRequestPayload | null>(null);
+  const [agentStatesByLessonId, setAgentStatesByLessonId] = useState<Record<string, LessonAgentState>>({});
+  const activeLessonId = activeLesson?.id ?? null;
+  const activeLessonIdRef = useRef(activeLessonId);
+  const activeAgentState = activeLesson
+    ? agentStatesByLessonId[activeLesson.id] ?? createLessonAgentState()
+    : createLessonAgentState();
+  const {
+    scopeOptions,
+    clarificationQuestions,
+    learningClarity,
+    streamedRequirementSheet,
+    streamedBoardTaskSheet,
+    currentNeedPending,
+    latestBoardDecision,
+    referencePrompt,
+    boardEditPrompt,
+    selectedReference,
+    lastScopedRequest,
+    lastReferenceRequest,
+    lastBoardEditRequest,
+  } = activeAgentState;
 
   const chatInput = activeComposerState.chatInput;
   const composerMode = activeComposerState.composerMode;
   const includeSelectionInPrompt = activeComposerState.includeSelectionInPrompt;
   const isChatBusy = busyAction === "chat" || busyAction === "agent-edit" || busyAction === "chat-edit";
+
+  useEffect(() => {
+    activeLessonIdRef.current = activeLessonId;
+  }, [activeLessonId]);
+
+  function updateAgentState(lessonId: string, updater: (current: LessonAgentState) => LessonAgentState) {
+    setAgentStatesByLessonId((current) => ({
+      ...current,
+      [lessonId]: updater(current[lessonId] ?? createLessonAgentState()),
+    }));
+  }
+
+  function clearAgentState(lessonId: string) {
+    setAgentStatesByLessonId((current) => {
+      if (!(lessonId in current)) {
+        return current;
+      }
+      const next = { ...current };
+      delete next[lessonId];
+      return next;
+    });
+  }
 
   type ChatTurnBusyAction = "chat" | "agent-edit" | "chat-edit";
   type ChatTurnBeforeRequestResult = {
@@ -183,22 +247,15 @@ export function useLessonChatAgent({
     );
   }
 
-  function resetAgentState() {
-    setScopeOptions([]);
-    setResourceMatches([]);
-    setClarificationQuestions([]);
-    setLearningClarity(null);
-    setStreamedRequirementSheet(null);
-    setStreamedBoardTaskSheet(null);
-    setCurrentNeedPending(false);
-    setLatestBoardDecision(null);
-    setReferencePrompt(null);
-    setBoardEditPrompt(null);
-    setSelectedReference(null);
-    setLastScopedRequest(null);
-    setLastReferenceRequest(null);
-    setLastBoardEditRequest(null);
-    clearSelection();
+  function resetAgentState(lessonId?: string | null) {
+    const targetLessonId = lessonId ?? activeLessonIdRef.current;
+    if (!targetLessonId) {
+      return;
+    }
+    clearAgentState(targetLessonId);
+    if (targetLessonId === activeLessonIdRef.current) {
+      clearSelection();
+    }
   }
 
   async function runChatTurn({
@@ -220,6 +277,7 @@ export function useLessonChatAgent({
     const payloadWithConversation: ChatRequestPayload = {
       ...payload,
       text_model: payload.text_model ?? selectedTextModel,
+      board_model: payload.board_model ?? selectedBoardModel,
       conversation: payload.conversation ?? conversationFromMessages(conversationMessages),
     };
 
@@ -242,10 +300,13 @@ export function useLessonChatAgent({
     setBusyAction(busyActionName);
     setError(null);
     if (!isBoardDocumentEmpty(currentBoardDocument ?? lesson.board_document)) {
-      setLearningClarity(null);
-      setStreamedRequirementSheet(null);
-      setStreamedBoardTaskSheet(null);
-      setCurrentNeedPending(true);
+      updateAgentState(lessonId, (current) => ({
+        ...current,
+        learningClarity: null,
+        streamedRequirementSheet: null,
+        streamedBoardTaskSheet: null,
+        currentNeedPending: true,
+      }));
     }
     if (clearComposerInput) {
       updateLessonComposerState(lessonId, (current) => ({
@@ -274,7 +335,7 @@ export function useLessonChatAgent({
             chatInput: restoreComposerInput,
           }));
         }
-        setCurrentNeedPending(false);
+        updateAgentState(lessonId, (current) => ({ ...current, currentNeedPending: false }));
         return;
       }
       const beforeRequestResult = await beforeRequest?.({
@@ -308,7 +369,7 @@ export function useLessonChatAgent({
             return;
           }
           streamedDocumentText += delta;
-          setStreamingDocumentPreview({
+          setStreamingDocumentPreview(lessonId, {
             ...baseStreamingDocument,
             content_json: {},
             content_html: streamingMarkdownToHtml(streamedDocumentText),
@@ -316,17 +377,23 @@ export function useLessonChatAgent({
           });
         },
         onRequirementUpdate(payload) {
-          setCurrentNeedPending(false);
-          setClarificationQuestions(payload.clarification_questions);
-          setLearningClarity(payload.learning_clarification);
-          setStreamedRequirementSheet(payload.active_requirement_sheet ?? payload.learning_requirement_sheet);
+          updateAgentState(lessonId, (current) => ({
+            ...current,
+            currentNeedPending: false,
+            clarificationQuestions: payload.clarification_questions,
+            learningClarity: payload.learning_clarification,
+            streamedRequirementSheet: payload.active_requirement_sheet ?? payload.learning_requirement_sheet,
+          }));
         },
         onBoardTaskUpdate(payload) {
-          setCurrentNeedPending(false);
-          setStreamedRequirementSheet(null);
-          setLearningClarity(null);
-          setClarificationQuestions([]);
-          setStreamedBoardTaskSheet(payload.active_board_task_sheet ?? payload.board_task_sheet);
+          updateAgentState(lessonId, (current) => ({
+            ...current,
+            currentNeedPending: false,
+            streamedRequirementSheet: null,
+            learningClarity: null,
+            clarificationQuestions: [],
+            streamedBoardTaskSheet: payload.active_board_task_sheet ?? payload.board_task_sheet,
+          }));
         },
       });
       const failedStreamingDocumentPreview =
@@ -353,31 +420,33 @@ export function useLessonChatAgent({
           }
         : userMessage;
       updateCoursePackage(response.course_package, {
-        activeLessonId: response.created_lesson ? undefined : requestLesson.id,
+        activeLessonId: response.created_lesson ? undefined : activeLessonIdRef.current ?? requestLesson.id,
+        transientLessonId: requestLesson.id,
       });
       if (failedStreamingDocumentPreview) {
-        setStreamingDocumentPreview(failedStreamingDocumentPreview);
+        setStreamingDocumentPreview(requestLesson.id, failedStreamingDocumentPreview);
         setError(response.board_document_operation_failure_reason ?? "右侧文档生成失败，已保留未保存的预览草稿。");
       }
-      setLatestBoardDecision(response.board_decision);
-      setCurrentNeedPending(false);
-      setClarificationQuestions(response.clarification_questions);
-      setLearningClarity(response.learning_clarification);
       const nextBoardTaskSheet = response.active_board_task_sheet ?? response.board_task_sheet ?? null;
-      setStreamedRequirementSheet(
-        response.requirement_cleared || nextBoardTaskSheet
-          ? null
-          : response.active_requirement_sheet ?? response.learning_requirement_sheet
-      );
-      setStreamedBoardTaskSheet(nextBoardTaskSheet);
-      setScopeOptions(response.scope_options);
-      setResourceMatches(response.resource_matches);
-      setReferencePrompt(response.reference_prompt ?? null);
-      setBoardEditPrompt(response.board_edit_prompt ?? null);
-      setSelectedReference(response.selected_reference ?? null);
-      setLastScopedRequest(response.scope_options.length ? payloadWithConversation : null);
-      setLastReferenceRequest(response.reference_prompt ? payloadWithConversation : null);
-      setLastBoardEditRequest(response.board_edit_prompt ? payloadWithConversation : null);
+      updateAgentState(requestLesson.id, (current) => ({
+        ...current,
+        latestBoardDecision: response.board_decision,
+        currentNeedPending: false,
+        clarificationQuestions: response.clarification_questions,
+        learningClarity: response.learning_clarification,
+        streamedRequirementSheet:
+          response.requirement_cleared || nextBoardTaskSheet
+            ? null
+            : response.active_requirement_sheet ?? response.learning_requirement_sheet,
+        streamedBoardTaskSheet: nextBoardTaskSheet,
+        scopeOptions: response.scope_options,
+        referencePrompt: response.reference_prompt ?? null,
+        boardEditPrompt: response.board_edit_prompt ?? null,
+        selectedReference: response.selected_reference ?? null,
+        lastScopedRequest: response.scope_options.length ? payloadWithConversation : null,
+        lastReferenceRequest: response.reference_prompt ? payloadWithConversation : null,
+        lastBoardEditRequest: response.board_edit_prompt ? payloadWithConversation : null,
+      }));
       const chatbotMessage = response.chatbot_message.trim();
       const streamedFallbackMessage = streamedChatContent.trim();
       const assistantMessages: ChatMessage[] = [];
@@ -436,7 +505,7 @@ export function useLessonChatAgent({
         );
       }
       setError(chatError instanceof Error ? chatError.message : "聊天失败");
-      setCurrentNeedPending(false);
+      updateAgentState(lessonId, (current) => ({ ...current, currentNeedPending: false }));
     } finally {
       chatRequestInFlightRef.current = false;
       setBusyAction(null);
@@ -552,12 +621,15 @@ export function useLessonChatAgent({
       scope_action: option.action,
       resource_chapter_id: option.resource_chapter_id ?? undefined,
     });
-    setScopeOptions([]);
-    setLastScopedRequest(null);
+    updateAgentState(activeLesson.id, (current) => ({
+      ...current,
+      scopeOptions: [],
+      lastScopedRequest: null,
+    }));
   }
 
   async function handleReferenceAction(action: "confirm" | "skip") {
-    if (!referencePrompt || !lastReferenceRequest) {
+    if (!activeLesson || !referencePrompt || !lastReferenceRequest) {
       return;
     }
     await handleSubmitChat({
@@ -570,12 +642,15 @@ export function useLessonChatAgent({
       resource_reference_resource_id: referencePrompt.resource_id,
       resource_reference_chapter_id: referencePrompt.chapter_id,
     });
-    setReferencePrompt(null);
-    setLastReferenceRequest(null);
+    updateAgentState(activeLesson.id, (current) => ({
+      ...current,
+      referencePrompt: null,
+      lastReferenceRequest: null,
+    }));
   }
 
   async function handleBoardEditAction(action: "confirm" | "skip") {
-    if (!boardEditPrompt || !lastBoardEditRequest) {
+    if (!activeLesson || !boardEditPrompt || !lastBoardEditRequest) {
       return;
     }
     await handleSubmitChat({
@@ -590,8 +665,11 @@ export function useLessonChatAgent({
       board_edit_action: action,
       board_edit_topic: boardEditPrompt.topic,
     });
-    setBoardEditPrompt(null);
-    setLastBoardEditRequest(null);
+    updateAgentState(activeLesson.id, (current) => ({
+      ...current,
+      boardEditPrompt: null,
+      lastBoardEditRequest: null,
+    }));
   }
 
   async function handleContinueTeaching() {
