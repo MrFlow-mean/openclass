@@ -716,6 +716,54 @@ def test_build_document_still_converts_real_inline_math() -> None:
     assert "\\frac{1}{2}" in document.content_html
 
 
+def test_build_document_converts_latex_environment_inline_math() -> None:
+    document = build_document(
+        title="Doc",
+        content_text="- 方程组 $$\\begin{cases} x^2 + y^2 + z^2 = 1 \\\\ x + y + z = 0 \\end{cases}$$ 的解集。",
+    )
+
+    assert "inlineMath" in _collect_node_types(document.content_json)
+    assert 'data-type="inline-math"' in document.content_html
+    assert "\\begin{cases}" in document.content_html
+    assert "$$\\begin{cases}" not in document.content_html
+
+
+def test_build_document_converts_polynomial_ring_and_function_notation() -> None:
+    document = build_document(
+        title="Doc",
+        content_text="- 多项式环 $k[x_1, \\dots, x_n]$\n- 交集 $V(xy)$",
+    )
+
+    assert "inlineMath" in _collect_node_types(document.content_json)
+    assert document.content_html.count('data-type="inline-math"') == 2
+    assert "k[x_1, \\dots, x_n]" in document.content_html
+    assert "V(xy)" in document.content_html
+    assert "$V(xy)$" not in document.content_html
+
+
+def test_build_document_converts_escaped_set_notation() -> None:
+    document = build_document(title="Doc", content_text="解集是 $\\{2, -2\\}$。")
+
+    assert "inlineMath" in _collect_node_types(document.content_json)
+    assert 'data-type="inline-math"' in document.content_html
+    assert "\\{2, -2\\}" in document.content_html
+    assert "$\\{2, -2\\}$" not in document.content_html
+
+
+def test_build_document_converts_coordinate_arrow_and_text_annotation_math() -> None:
+    document = build_document(
+        title="Doc",
+        content_text="点 $(0,0)$，方向 $\\rightarrow$，映射 $V: \\text{理想} \\to \\text{代数簇}$。",
+    )
+
+    assert "inlineMath" in _collect_node_types(document.content_json)
+    assert document.content_html.count('data-type="inline-math"') == 3
+    assert "(0,0)" in document.content_html
+    assert "\\rightarrow" in document.content_html
+    assert "\\text{理想}" in document.content_html
+    assert "$(0,0)$" not in document.content_html
+
+
 def test_upgrade_markdown_like_document_repairs_suspicious_math_nodes() -> None:
     sentence = "Je me disais que tu allais peut-être oublier notre rendez-vous."
     legacy = BoardDocument(

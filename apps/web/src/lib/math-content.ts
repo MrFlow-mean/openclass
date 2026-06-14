@@ -3,13 +3,15 @@ import type { Mark, Node as ProseMirrorNode, Schema } from "@tiptap/pm/model";
 
 const CJK_TEXT = /[\u3400-\u9fff]/;
 const STRONG_MATH_SIGNAL =
-  /\\(?:frac|sqrt|lim|sum|int|sin|cos|tan|ln|log|exp|to|leftarrow|infty|cdot|times|div|leq?|geq?|approx|neq?|pm|alpha|beta|gamma|delta|theta|lambda|mu|pi|sigma|phi|omega)\b|[_^]|[A-Za-z0-9)]\s*(?:[+\-−*/=<>≤≥≈≠±]|→|←)\s*[A-Za-z0-9(\\]|\d+\s*\/\s*\d+/;
+  /\\(?:begin|end|frac|sqrt|lim|sum|prod|int|sin|cos|tan|ln|log|exp|to|leftarrow|rightarrow|leftrightarrow|infty|cdot|times|div|leq?|geq?|approx|neq?|pm|in|notin|mid|subseteq?|supseteq?|cup|cap|mathbb|mathcal|mathfrak|mathbf|mathrm|operatorname|dots|cdots|ldots|vdots|partial|nabla|forall|exists|alpha|beta|gamma|delta|theta|lambda|mu|pi|sigma|phi|omega)\b|[_^]|[A-Za-z0-9)]\s*(?:[+\-−*/=<>≤≥≈≠±]|→|←)\s*[A-Za-z0-9(\\]|\d+\s*\/\s*\d+|\\[{}]|^\([^()\n]{1,80},[^()\n]{1,80}\)$|^[A-Za-z]{1,3}\s*\([A-Za-z0-9α-ωΑ-Ω\\_{}\[\]^()+\-−*/=·∞→←≤≥≈≠±<>|&:'\s.,]+\)$/;
 const DELIMITED_MATH = /\\\[([\s\S]+?)\\\]|\\\((.+?)\\\)|\$\$([\s\S]+?)\$\$|\$(?!\d+\$)([^$\n]+?)\$(?!\d)/g;
 const TRAILING_SENTENCE_MARKS = /[\s.,，。；;:：]+$/;
 const LEADING_SENTENCE_MARKS = /^[\s.,，。；;:：]+/;
 const LATIN_WORD = /[A-Za-z]+/g;
 const NON_FORMULA_LETTER = /[\u00c0-\u024f\u3400-\u9fff]/;
-const FORMULA_CHARS = /^[A-Za-z0-9α-ωΑ-Ω\\_{}^()+\-−*/=·∞→←≤≥≈≠±<>|'\s.,]+$/;
+const FORMULA_CHARS = /^[A-Za-z0-9α-ωΑ-Ω\\_{}\[\]^()+\-−*/=·∞→←≤≥≈≠±<>|&:'\s.,]+$/;
+const LATEX_ENVIRONMENT = /\\(?:begin|end)\{[A-Za-z*]+\}/g;
+const LATEX_TEXT_ARGUMENT = /\\(?:text|mathrm|operatorname)\{[^{}]*\}/g;
 const LATEX_FUNCTIONS = new Set(["lim", "sin", "cos", "tan", "ln", "log", "sqrt", "exp"]);
 
 type MathSegment = {
@@ -22,8 +24,12 @@ function hasStrongMathSignal(value: string) {
   return STRONG_MATH_SIGNAL.test(value);
 }
 
+function latexValidationText(value: string) {
+  return value.replace(LATEX_ENVIRONMENT, "").replace(LATEX_TEXT_ARGUMENT, "");
+}
+
 function withoutLatexCommands(value: string) {
-  return value.replace(/\\[A-Za-z]+/g, "");
+  return latexValidationText(value).replace(/\\[A-Za-z]+/g, "");
 }
 
 function hasNonFormulaLetters(value: string) {
@@ -42,10 +48,17 @@ function latinWordsAreFormulaLike(value: string) {
 
 function isLikelyDelimitedMath(value: string) {
   const compact = value.trim().replace(TRAILING_SENTENCE_MARKS, "").replace(LEADING_SENTENCE_MARKS, "");
-  if (!compact || !FORMULA_CHARS.test(compact) || hasNonFormulaLetters(compact) || !latinWordsAreFormulaLike(compact)) {
+  const validationText = latexValidationText(compact);
+  if (
+    !compact ||
+    !validationText ||
+    !FORMULA_CHARS.test(validationText) ||
+    hasNonFormulaLetters(compact) ||
+    !latinWordsAreFormulaLike(compact)
+  ) {
     return false;
   }
-  return hasStrongMathSignal(compact) || /^[A-Za-zα-ωΑ-Ω]$/.test(compact);
+  return hasStrongMathSignal(compact) || /^[A-Za-zα-ωΑ-Ω]$/.test(validationText);
 }
 
 function normalizeLimitSubscript(value: string) {

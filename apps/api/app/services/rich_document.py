@@ -24,14 +24,19 @@ DocxBlock = tuple[str, list[InlineFragment], dict[str, Any]]
 
 _CJK_RE = re.compile(r"[\u3400-\u9fff]")
 _MATH_SIGNAL_RE = re.compile(
-    r"\\(?:frac|sqrt|lim|sum|int|sin|cos|tan|ln|log|exp|to|leftarrow|infty|cdot|times|div|leq?|geq?|approx|neq?|pm|alpha|beta|gamma|delta|theta|lambda|mu|pi|sigma|phi|omega)\b"
+    r"\\(?:begin|end|frac|sqrt|lim|sum|prod|int|sin|cos|tan|ln|log|exp|to|leftarrow|rightarrow|leftrightarrow|infty|cdot|times|div|leq?|geq?|approx|neq?|pm|in|notin|mid|subseteq?|supseteq?|cup|cap|mathbb|mathcal|mathfrak|mathbf|mathrm|operatorname|dots|cdots|ldots|vdots|partial|nabla|forall|exists|alpha|beta|gamma|delta|theta|lambda|mu|pi|sigma|phi|omega)\b"
     r"|[_^]"
     r"|[A-Za-z0-9)]\s*(?:[+\-−*/=<>≤≥≈≠±]|→|←)\s*[A-Za-z0-9(\\]"
     r"|\d+\s*/\s*\d+"
+    r"|\\[{}]"
+    r"|^\([^()\n]{1,80},[^()\n]{1,80}\)$"
+    r"|^[A-Za-z]{1,3}\s*\([A-Za-z0-9α-ωΑ-Ω\\_{}\[\]^()+\-−*/=·∞→←≤≥≈≠±<>|&:'\s.,]+\)$"
 )
 _LATIN_WORD_RE = re.compile(r"[A-Za-z]+")
 _NON_FORMULA_LETTER_RE = re.compile(r"[^\W\d_A-Za-zα-ωΑ-Ω]", re.UNICODE)
-_FORMULA_CHARS_RE = re.compile(r"^[A-Za-z0-9α-ωΑ-Ω\\_{}^()+\-−*/=·∞→←≤≥≈≠±<>|'\s.,]+$")
+_FORMULA_CHARS_RE = re.compile(r"^[A-Za-z0-9α-ωΑ-Ω\\_{}\[\]^()+\-−*/=·∞→←≤≥≈≠±<>|&:'\s.,]+$")
+_LATEX_ENVIRONMENT_RE = re.compile(r"\\(?:begin|end)\{[A-Za-z*]+\}")
+_LATEX_TEXT_ARGUMENT_RE = re.compile(r"\\(?:text|mathrm|operatorname)\{[^{}]*\}")
 _HTML_BLOCK_RE = re.compile(
     r"<(?P<tag>h[1-6]|p|li|blockquote)\b[^>]*>.*?</(?P=tag)>",
     re.IGNORECASE | re.DOTALL,
@@ -1378,13 +1383,17 @@ def _has_math_signal(value: str) -> bool:
     return bool(_MATH_SIGNAL_RE.search(value))
 
 
+def _latex_validation_text(value: str) -> str:
+    return _LATEX_TEXT_ARGUMENT_RE.sub("", _LATEX_ENVIRONMENT_RE.sub("", value))
+
+
 def _has_non_formula_letters(value: str) -> bool:
-    without_latex_commands = re.sub(r"\\[A-Za-z]+", "", value)
+    without_latex_commands = re.sub(r"\\[A-Za-z]+", "", _latex_validation_text(value))
     return bool(_CJK_RE.search(without_latex_commands) or _NON_FORMULA_LETTER_RE.search(without_latex_commands))
 
 
 def _latin_words_are_formula_like(value: str) -> bool:
-    without_latex_commands = re.sub(r"\\[A-Za-z]+", "", value)
+    without_latex_commands = re.sub(r"\\[A-Za-z]+", "", _latex_validation_text(value))
     for word in _LATIN_WORD_RE.findall(without_latex_commands):
         if len(word) > 3 and word not in _LATEX_FUNCTIONS:
             return False
@@ -1393,11 +1402,12 @@ def _latin_words_are_formula_like(value: str) -> bool:
 
 def _is_likely_delimited_math(value: str) -> bool:
     compact = _TRAILING_SENTENCE_MARKS_RE.sub("", _LEADING_SENTENCE_MARKS_RE.sub("", value.strip()))
-    if not compact or not _FORMULA_CHARS_RE.fullmatch(compact):
+    validation_text = _latex_validation_text(compact)
+    if not compact or not validation_text or not _FORMULA_CHARS_RE.fullmatch(validation_text):
         return False
     if _has_non_formula_letters(compact) or not _latin_words_are_formula_like(compact):
         return False
-    return _has_math_signal(compact) or bool(re.fullmatch(r"[A-Za-zα-ωΑ-Ω]", compact))
+    return _has_math_signal(compact) or bool(re.fullmatch(r"[A-Za-zα-ωΑ-Ω]", validation_text))
 
 
 def _normalize_limit_subscript(value: str) -> str:
