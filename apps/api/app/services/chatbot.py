@@ -102,6 +102,10 @@ RECENT_EDIT_FOLLOWUP_PATTERN = re.compile(
     r"[0-9０-９一二三四五六七八九十两]+.{0,8}(?:以内|以下)|来回|回合)"
 )
 RECENT_WRITE_FOLLOWUP_PATTERN = re.compile(r"(继续|接着|直接|再|进一步|你自己看|自己看|自行|自己判断)")
+AUTONOMOUS_LOCATION_CHOICE_PATTERN = re.compile(
+    r"(你自己|你来定|你定|自己定|自行|自己判断|自己决定|看着办|合适的位置|位置合适|不用确认|别问|不要再问|"
+    r"直接(?:写|扩写|处理|开始|执行))"
+)
 EXISTING_BOARD_GENERATION_CONTROL_PATTERN = re.compile(r"(生成|创建|制作|准备).{0,8}(板书|版书|文档)")
 EDIT_ACTIONS: set[BoardTaskAction] = {"rewrite_target", "expand_target", "simplify_target"}
 DOCUMENT_WRITE_ACTIONS: set[BoardTaskAction] = {*EDIT_ACTIONS, "append_section"}
@@ -624,6 +628,96 @@ def _with_decision_target_scope(
         write_proposal=decision.write_proposal,
         target_scope=scope,
     )
+
+
+def _maybe_apply_autonomous_write_location_choice(
+    *,
+    board_task: BoardTaskRequirementSheet,
+    request_message: str,
+    decision: BoardTaskRouteDecision,
+    resolution: FocusResolution | None,
+) -> tuple[BoardTaskRouteDecision, FocusResolution | None, bool]:
+    if board_task.requested_action != "write":
+        return decision, resolution, False
+    if decision.route != "clarify_location" or decision.location_status != "ambiguous":
+        return decision, resolution, False
+    if not _grants_autonomous_location_choice(request_message):
+        return decision, resolution, False
+    candidates = decision.candidate_focuses or (resolution.candidates if resolution else [])
+    focus = _autonomous_write_focus(candidates)
+    if focus is None:
+        return decision, resolution, False
+    reason = "用户已授权系统自行选择写入位置；候选位于同一板书结构范围，按扩写任务选择该范围末端作为写入锚点。"
+    next_resolution = _resolution_with_autonomous_write_focus(
+        resolution=resolution,
+        candidates=candidates,
+        focus=focus,
+        reason=reason,
+    )
+    return (
+        BoardTaskRouteDecision(
+            route="write",
+            location_status="found",
+            target_focus=focus,
+            candidate_focuses=candidates,
+            reason=reason,
+            write_proposal=decision.write_proposal or board_task.question_or_topic,
+            target_scope="focus",
+        ),
+        next_resolution,
+        True,
+    )
+
+
+def _grants_autonomous_location_choice(text: str) -> bool:
+    return bool(AUTONOMOUS_LOCATION_CHOICE_PATTERN.search(_compact_text(text, limit=180)))
+
+
+def _autonomous_write_focus(candidates: list[BoardFocusRef]) -> BoardFocusRef | None:
+    if not candidates:
+        return None
+    if max(candidate.confidence for candidate in candidates) < 0.55:
+        return None
+    if not _same_heading_scope(candidates):
+        return None
+    return max(
+        candidates,
+        key=lambda candidate: (_focus_order(candidate), candidate.confidence),
+    )
+
+
+def _focus_order(candidate: BoardFocusRef) -> int:
+    if candidate.order_end is not None:
+        return candidate.order_end
+    if candidate.order_start is not None:
+        return candidate.order_start
+    return -1
+
+
+def _same_heading_scope(candidates: list[BoardFocusRef]) -> bool:
+    first_scope = tuple(candidates[0].heading_path)
+    if not first_scope:
+        return False
+    return all(tuple(candidate.heading_path) == first_scope for candidate in candidates)
+
+
+def _resolution_with_autonomous_write_focus(
+    *,
+    resolution: FocusResolution | None,
+    candidates: list[BoardFocusRef],
+    focus: BoardFocusRef,
+    reason: str,
+) -> FocusResolution:
+    evidence = None
+    if resolution and resolution.evidence:
+        evidence = resolution.evidence.model_copy(
+            update={
+                "status": "found",
+                "selected_match_id": focus.match_id,
+                "reason": reason,
+            }
+        )
+    return FocusResolution(focus=focus, candidates=candidates, status="resolved", evidence=evidence)
 
 
 def _implicit_board_search_evidence(
@@ -2019,6 +2113,29 @@ def _handle_existing_board_task_flow(
         request_message=request.message,
         resolution=resolution,
     )
+    decision, resolution, autonomous_location_choice = _maybe_apply_autonomous_write_location_choice(
+        board_task=board_task,
+        request_message=request.message,
+        decision=decision,
+        resolution=resolution,
+    )
+    if autonomous_location_choice and decision.target_focus is not None:
+        resolved_task = BoardTaskRequirementSheet.model_validate(board_task.model_dump(mode="json"))
+        resolved_task.target_location = decision.target_focus
+        resolved_task.location_status = "resolved"
+        resolved_task.clarification_question = ""
+        resolved_task.missing_items = []
+        resolved_task.progress = 100
+        _activate_board_task_requirements(lesson, resolved_task)
+        stamp = board_task_history.record_update(sheet=resolved_task, change_summary=decision.reason)
+        _emit_board_task_update(lesson=lesson, sheet=resolved_task, stamp=stamp)
+        board_task = resolved_task
+        decision = _with_decision_target_scope(
+            decision=decision,
+            board_task=board_task,
+            request_message=request.message,
+            resolution=resolution,
+        )
     sequence_plan = plan_explanation_sequence(
         lesson=lesson,
         board_task=board_task,

@@ -5888,6 +5888,212 @@ def test_recent_write_focus_is_inherited_for_direct_expand_followup(
     assert _read_log_entries(isolated_ai_log) == []
 
 
+def test_autonomous_write_location_choice_uses_same_section_tail(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    captured: dict[str, str | None] = {}
+    candidate_refs: list[BoardFocusRef] = []
+
+    def _focus(lesson, excerpt: str, order: int) -> BoardFocusRef:
+        return BoardFocusRef(
+            source="board",
+            lesson_id=lesson.id,
+            document_id=lesson.board_document.id,
+            segment_id=f"seg_{order}",
+            kind="paragraph",
+            heading_path=["已有板书", "目标小节"],
+            excerpt=excerpt,
+            confidence=0.72,
+            reason="测试候选。",
+            display_label=f"已有板书 / 目标小节 · 第{order}段",
+            match_id=f"match_{order}",
+            source_segment_ids=[f"seg_{order}"],
+            order_start=order,
+            order_end=order,
+        )
+
+    def _fake_board_task_sheet(**kwargs):
+        return BoardTaskRequirementSheet(
+            target_hint="目标小节",
+            location_status="ambiguous",
+            requested_action="write",
+            question_or_topic="补充实现步骤",
+            missing_items=[],
+            progress=100,
+        )
+
+    def _fake_resolve_board_focus(**kwargs):
+        lesson = kwargs["lesson"]
+        candidate_refs[:] = [
+            _focus(lesson, "算法步骤。", 1),
+            _focus(lesson, "示例过程。", 2),
+            _focus(lesson, "检查问题。", 3),
+        ]
+        return chatbot_module.FocusResolution(
+            focus=None,
+            candidates=candidate_refs,
+            status="ambiguous",
+            question="同一小节中有多个可追加位置。",
+        )
+
+    def _fake_board_route(**kwargs):
+        return BoardTaskRouteDecision(
+            route="clarify_location",
+            location_status="ambiguous",
+            candidate_focuses=candidate_refs,
+            reason="同一小节有多个候选位置。",
+        )
+
+    def _fake_board_edit(**kwargs):
+        captured["selection_excerpt"] = kwargs.get("selection_excerpt")
+        captured["target_scope"] = kwargs.get("target_scope")
+        return BoardDocumentEditResult(
+            operation="replace_selection",
+            title="已有板书",
+            content_text="检查问题。\n\n### 补充实现\n新增实现内容。",
+            summary="在同一小节末尾补充实现内容。",
+            chatbot_message="已在合适位置补充实现内容。",
+            section_titles=["补充实现"],
+        )
+
+    monkeypatch.setattr(openai_course_ai, "generate_board_task_requirement_sheet", _fake_board_task_sheet)
+    monkeypatch.setattr(chatbot_module, "resolve_board_focus", _fake_resolve_board_focus)
+    monkeypatch.setattr(openai_course_ai, "generate_board_task_route_decision", _fake_board_route)
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _fake_board_edit)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_board_document_quality_review",
+        lambda **kwargs: BoardDocumentQualityReview(status="pass"),
+    )
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.board_document = build_document(
+        title="已有板书",
+        content_text="# 已有板书\n## 目标小节\n算法步骤。\n示例过程。\n检查问题。\n## 其他小节\n其他内容。",
+    )
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="你自己定那个位置合适，为我扩写相关内容"),
+        user_id=TEST_USER.id,
+    )
+
+    updated_lesson = response.course_package.lessons[0]
+    assert response.active_board_task_sheet is None
+    assert "新增实现内容" in updated_lesson.board_document.content_text
+    assert captured == {
+        "selection_excerpt": "检查问题。",
+        "target_scope": "focus",
+    }
+    commit = updated_lesson.history_graph.commits[-1]
+    assert commit.label == "Board task write"
+    assert commit.metadata["board_task_route"] == "write"
+    assert commit.metadata["board_task_decision"]["reason"].startswith("用户已授权系统自行选择写入位置")
+    assert commit.metadata["board_task_decision"]["target_focus"]["excerpt"] == "检查问题。"
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_autonomous_write_location_choice_does_not_cross_sections(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    candidate_refs: list[BoardFocusRef] = []
+
+    def _focus(lesson, heading: str, excerpt: str, order: int) -> BoardFocusRef:
+        return BoardFocusRef(
+            source="board",
+            lesson_id=lesson.id,
+            document_id=lesson.board_document.id,
+            segment_id=f"seg_{order}",
+            kind="paragraph",
+            heading_path=["已有板书", heading],
+            excerpt=excerpt,
+            confidence=0.74,
+            reason="测试候选。",
+            display_label=f"已有板书 / {heading} · 第{order}段",
+            match_id=f"match_{order}",
+            source_segment_ids=[f"seg_{order}"],
+            order_start=order,
+            order_end=order,
+        )
+
+    def _fake_board_task_sheet(**kwargs):
+        return BoardTaskRequirementSheet(
+            target_hint="相关小节",
+            location_status="ambiguous",
+            requested_action="write",
+            question_or_topic="补充实现步骤",
+            missing_items=[],
+            progress=100,
+        )
+
+    def _fake_resolve_board_focus(**kwargs):
+        lesson = kwargs["lesson"]
+        candidate_refs[:] = [
+            _focus(lesson, "第一小节", "第一处候选。", 1),
+            _focus(lesson, "第二小节", "第二处候选。", 2),
+        ]
+        return chatbot_module.FocusResolution(
+            focus=None,
+            candidates=candidate_refs,
+            status="ambiguous",
+            question="候选位置跨多个小节。",
+        )
+
+    def _fake_board_route(**kwargs):
+        return BoardTaskRouteDecision(
+            route="clarify_location",
+            location_status="ambiguous",
+            candidate_focuses=candidate_refs,
+            reason="候选位置跨多个小节，需要确认范围。",
+        )
+
+    def _unexpected_board_edit(**kwargs):
+        raise AssertionError("cross-section ambiguous write must still ask for location confirmation")
+
+    monkeypatch.setattr(openai_course_ai, "generate_board_task_requirement_sheet", _fake_board_task_sheet)
+    monkeypatch.setattr(chatbot_module, "resolve_board_focus", _fake_resolve_board_focus)
+    monkeypatch.setattr(openai_course_ai, "generate_board_task_route_decision", _fake_board_route)
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _unexpected_board_edit)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_chatbot_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="请确认要写入哪一个小节。"),
+    )
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.board_document = build_document(
+        title="已有板书",
+        content_text="# 已有板书\n## 第一小节\n第一处候选。\n## 第二小节\n第二处候选。",
+    )
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="你自己定那个位置合适，为我扩写相关内容"),
+        user_id=TEST_USER.id,
+    )
+
+    assert response.chatbot_message == "请确认要写入哪一个小节。"
+    assert response.board_decision.action == "await_focus_choice"
+    assert len(response.focus_candidates) == 2
+    commit = response.course_package.lessons[0].history_graph.commits[-1]
+    assert commit.label == "Board task location clarification"
+    assert commit.metadata["board_task_route"] == "clarify_location"
+    assert commit.metadata["board_task_cleared"] is False
+    assert _read_log_entries(isolated_ai_log) == []
+
+
 def test_local_edit_rejects_replace_document_when_target_scope_is_focus(
     monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
 ) -> None:
