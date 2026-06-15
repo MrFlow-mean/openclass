@@ -19,6 +19,7 @@ from app.models import (
     LessonHistoryGraph,
     LibraryChapter,
     ResourceLibraryItem,
+    ResourceSourceUnit,
     WorkspaceState,
 )
 from app.services.board_task_history import BoardTaskHistoryStore
@@ -26,7 +27,7 @@ from app.services.document_segment_store import DocumentSegmentStore
 from app.services.learning_requirement_history import LearningRequirementHistoryStore
 from app.services.rich_document import upgrade_markdown_like_document
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 
 def _active_package_setting_key(owner_user_id: str | None) -> str:
@@ -395,7 +396,12 @@ class SqliteCourseStore:
                 concept_index_json TEXT NOT NULL,
                 extracted_text_available INTEGER NOT NULL,
                 text_content TEXT,
-                source_path TEXT
+                source_path TEXT,
+                parser_provider TEXT NOT NULL DEFAULT 'native',
+                parser_artifacts_path TEXT,
+                parser_message TEXT NOT NULL DEFAULT '',
+                parse_warnings_json TEXT NOT NULL DEFAULT '[]',
+                source_units_json TEXT NOT NULL DEFAULT '[]'
             );
 
             CREATE INDEX IF NOT EXISTS idx_resources_package
@@ -456,6 +462,16 @@ class SqliteCourseStore:
         }
         if "scope_lesson_id" not in resource_columns:
             conn.execute("ALTER TABLE resources ADD COLUMN scope_lesson_id TEXT")
+        if "parser_provider" not in resource_columns:
+            conn.execute("ALTER TABLE resources ADD COLUMN parser_provider TEXT NOT NULL DEFAULT 'native'")
+        if "parser_artifacts_path" not in resource_columns:
+            conn.execute("ALTER TABLE resources ADD COLUMN parser_artifacts_path TEXT")
+        if "parser_message" not in resource_columns:
+            conn.execute("ALTER TABLE resources ADD COLUMN parser_message TEXT NOT NULL DEFAULT ''")
+        if "parse_warnings_json" not in resource_columns:
+            conn.execute("ALTER TABLE resources ADD COLUMN parse_warnings_json TEXT NOT NULL DEFAULT '[]'")
+        if "source_units_json" not in resource_columns:
+            conn.execute("ALTER TABLE resources ADD COLUMN source_units_json TEXT NOT NULL DEFAULT '[]'")
         package_columns = {
             row["name"]
             for row in conn.execute("PRAGMA table_info(course_packages)").fetchall()
@@ -700,6 +716,15 @@ class SqliteCourseStore:
             extracted_text_available=bool(row["extracted_text_available"]),
             text_content=row["text_content"],
             source_path=row["source_path"],
+            parser_provider=row["parser_provider"] or "native",
+            parser_artifacts_path=row["parser_artifacts_path"],
+            parser_message=row["parser_message"] or "",
+            parse_warnings=_loads(row["parse_warnings_json"], []),
+            source_units=[
+                ResourceSourceUnit.model_validate(unit)
+                for unit in _loads(row["source_units_json"], [])
+                if isinstance(unit, dict)
+            ],
         )
 
     def _replace_workspace(
@@ -889,8 +914,9 @@ class SqliteCourseStore:
             """
             INSERT INTO resources(
                 id, package_id, sort_order, name, mime_type, resource_type, size_bytes,
-                uploaded_at, scope_lesson_id, concept_index_json, extracted_text_available, text_content, source_path
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                uploaded_at, scope_lesson_id, concept_index_json, extracted_text_available, text_content, source_path,
+                parser_provider, parser_artifacts_path, parser_message, parse_warnings_json, source_units_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 resource.id,
@@ -906,6 +932,11 @@ class SqliteCourseStore:
                 int(resource.extracted_text_available),
                 resource.text_content,
                 resource.source_path,
+                resource.parser_provider,
+                resource.parser_artifacts_path,
+                resource.parser_message,
+                _dumps(resource.parse_warnings),
+                _dumps([unit.model_dump(mode="json") for unit in resource.source_units]),
             ),
         )
         for chapter_index, chapter in enumerate(resource.outline):

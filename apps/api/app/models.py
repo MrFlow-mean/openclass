@@ -585,6 +585,19 @@ class LibraryChapter(BaseModel):
     scan_strategy: ResourceScanStrategy = "outline_only"
 
 
+class ResourceSourceUnit(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("sourceunit"))
+    content_type: str = "text"
+    text: str = ""
+    page_idx: int | None = None
+    page_no: int | None = None
+    source_locator: str | None = None
+    asset_path: str | None = None
+    bbox: list[float] = Field(default_factory=list)
+    order_index: int = 0
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class ResourceLibraryItem(BaseModel):
     id: str = Field(default_factory=lambda: new_id("resource"))
     name: str
@@ -598,6 +611,11 @@ class ResourceLibraryItem(BaseModel):
     extracted_text_available: bool = False
     text_content: str | None = None
     source_path: str | None = None
+    parser_provider: str = "native"
+    parser_artifacts_path: str | None = None
+    parser_message: str = ""
+    parse_warnings: list[str] = Field(default_factory=list)
+    source_units: list[ResourceSourceUnit] = Field(default_factory=list)
 
 
 class ResourceLibraryItemView(BaseModel):
@@ -611,6 +629,11 @@ class ResourceLibraryItemView(BaseModel):
     outline: list[LibraryChapter] = Field(default_factory=list)
     concept_index: dict[str, list[str]] = Field(default_factory=dict)
     extracted_text_available: bool = False
+    parser_provider: str = "native"
+    parser_artifacts_path: str | None = None
+    parser_message: str = ""
+    parse_warnings: list[str] = Field(default_factory=list)
+    source_units: list[ResourceSourceUnit] = Field(default_factory=list)
 
 
 class CoursePackage(BaseModel):

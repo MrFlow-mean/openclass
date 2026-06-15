@@ -1,3 +1,5 @@
+import sys
+
 import pytest
 
 from app.models import (
@@ -8,8 +10,10 @@ from app.models import (
     LearningClarificationStatus,
     LearningRequirementSheet,
     PatchOperation,
+    ResourceSourceUnit,
 )
 from app.services.chart_generation import extract_chart_data_fragments
+from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
 from app.services.course_runtime import (
     build_lesson_for_topic,
     effective_requirements,
@@ -1058,6 +1062,141 @@ def test_build_resource_item_extracts_markdown_outline_and_reference_context(tmp
     assert context is not None
     assert context.chapter_title == "第一章"
     assert "第一章正文" in context.full_text
+
+
+def _write_fake_raganything(root) -> None:
+    package_dir = root / "raganything"
+    package_dir.mkdir(parents=True)
+    (package_dir / "__init__.py").write_text("", encoding="utf-8")
+    (package_dir / "parser.py").write_text(
+        """
+from pathlib import Path
+
+
+class FakeParser:
+    def parse_document(self, file_path, output_dir=None, method="auto", **kwargs):
+        if output_dir:
+            Path(output_dir).mkdir(parents=True, exist_ok=True)
+            Path(output_dir, "content_list.json").write_text("[]", encoding="utf-8")
+        return [
+            {"type": "text", "text": "# 第一章\\n正文第一段。", "page_idx": 0, "bbox": [1, 2, 3, 4]},
+            {"type": "table", "table_body": "A | B\\n1 | 2", "page_idx": 1},
+            {"type": "image", "img_path": "figures/one.png", "caption": "图像说明", "page_idx": 1},
+        ]
+
+
+def get_parser(name):
+    return FakeParser()
+""",
+        encoding="utf-8",
+    )
+
+
+def _clear_fake_raganything_modules() -> None:
+    for module_name in ["raganything.parser", "raganything"]:
+        sys.modules.pop(module_name, None)
+
+
+def test_build_resource_item_uses_rag_anything_parser_adapter(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    fake_root = tmp_path / "RAG-Anything-main"
+    _write_fake_raganything(fake_root)
+    _clear_fake_raganything_modules()
+    monkeypatch.setenv("OPENCLASS_RESOURCE_PARSER", "raganything")
+    monkeypatch.setenv("OPENCLASS_RAG_ANYTHING_PATH", str(fake_root))
+    monkeypatch.setenv("OPENCLASS_RAG_ANYTHING_OUTPUT_DIR", str(tmp_path / "rag-artifacts"))
+
+    resource_path = tmp_path / "material.pdf"
+    resource_path.write_bytes(b"%PDF fake input handled by fake parser")
+
+    resource = build_resource_item(resource_path, "material.pdf")
+    context = extract_reference_context(resource, resource.outline[0].id, user_query="第一章")
+
+    assert resource.parser_provider == "raganything:mineru"
+    assert resource.parser_artifacts_path
+    assert resource.parser_message
+    assert len(resource.source_units) == 3
+    assert resource.source_units[0].page_no == 1
+    assert resource.source_units[0].source_locator == "raganything:text:item=0:page=1"
+    assert "正文第一段" in (resource.text_content or "")
+    assert "A | B" in (resource.text_content or "")
+    assert context is not None
+    assert "正文第一段" in context.full_text
+
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    workspace = build_initial_workspace_state()
+    workspace.packages[0].resources.append(resource)
+    store.save(workspace)
+    reloaded = store.load().packages[0].resources[0]
+
+    assert reloaded.parser_provider == resource.parser_provider
+    assert reloaded.parser_artifacts_path == resource.parser_artifacts_path
+    assert reloaded.source_units[0].source_locator == resource.source_units[0].source_locator
+
+
+def test_build_resource_item_falls_back_to_native_parser_in_auto_mode(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("OPENCLASS_RESOURCE_PARSER", "auto")
+    monkeypatch.setenv("OPENCLASS_RAG_ANYTHING_PATH", str(tmp_path / "missing-rag"))
+    resource_path = tmp_path / "material.unknown"
+    resource_path.write_text("没有专用解析器的普通资料正文。", encoding="utf-8")
+
+    resource = build_resource_item(resource_path, "material.unknown")
+
+    assert resource.parser_provider == "native_fallback"
+    assert resource.outline
+    assert any("used native parser" in warning for warning in resource.parse_warnings)
+
+
+def test_build_resource_item_raises_when_explicit_raganything_parse_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    fake_root = tmp_path / "RAG-Anything-main"
+    package_dir = fake_root / "raganything"
+    package_dir.mkdir(parents=True)
+    (package_dir / "__init__.py").write_text("", encoding="utf-8")
+    (package_dir / "parser.py").write_text(
+        """
+class FailingParser:
+    def parse_document(self, *args, **kwargs):
+        raise RuntimeError("parse failed")
+
+
+def get_parser(name):
+    return FailingParser()
+""",
+        encoding="utf-8",
+    )
+    _clear_fake_raganything_modules()
+    monkeypatch.setenv("OPENCLASS_RESOURCE_PARSER", "raganything")
+    monkeypatch.setenv("OPENCLASS_RAG_ANYTHING_PATH", str(fake_root))
+
+    resource_path = tmp_path / "material.pdf"
+    resource_path.write_bytes(b"%PDF fake input")
+
+    with pytest.raises(RuntimeError, match="RAG-Anything parse failed"):
+        build_resource_item(resource_path, "material.pdf")
+
+
+def test_resource_source_unit_model_keeps_source_location_metadata() -> None:
+    unit = ResourceSourceUnit(
+        content_type="table",
+        text="A | B",
+        page_idx=2,
+        page_no=3,
+        source_locator="raganything:table:item=4:page=3",
+        asset_path="tables/4.html",
+        bbox=[1, 2, 3, 4],
+        metadata={"origin": "content_list"},
+    )
+
+    assert unit.page_no == 3
+    assert unit.metadata["origin"] == "content_list"
 
 
 def test_resource_resolver_selects_relevant_uploaded_chapter(tmp_path) -> None:

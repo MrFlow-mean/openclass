@@ -31,6 +31,7 @@ import { useRealtimeVoice } from "@/hooks/course-studio/use-realtime-voice";
 import { useWorkspaceActions } from "@/hooks/course-studio/use-workspace-actions";
 import { InlineNameForm } from "@/components/inline-name-form";
 import { useResizablePanelWidth } from "@/hooks/use-resizable-panel-width";
+import { api } from "@/lib/api";
 import type { AIModelOption, ChatInteractionMode, CoursePackage, LearningClarificationStatus, SelectionRef } from "@/types";
 
 const CHAT_PANEL_WIDTH_STORAGE_KEY = "openclass:studio:chat-panel-width";
@@ -328,6 +329,23 @@ export function CourseStudio() {
     chatAgent.resetAgentState();
   }
 
+  async function handleUploadResource(file: File) {
+    if (!activeLesson) {
+      return;
+    }
+    setBusyAction("resource-upload");
+    setError(null);
+    try {
+      const nextPackage = await api.uploadResource(activeLesson.id, file);
+      updateCoursePackage(nextPackage);
+      setSidebarTab("library");
+    } catch (error) {
+      setError(error instanceof Error ? error.message : "资料上传失败");
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
   const workspaceActions = useWorkspaceActions({
     coursePackage,
     activeLesson,
@@ -574,6 +592,9 @@ export function CourseStudio() {
           latestBoardDecision={latestBoardDecision}
           newBranchName={newBranchName}
           onNewBranchNameChange={setNewBranchName}
+          resources={coursePackage.resources}
+          isUploadingResource={busyAction === "resource-upload"}
+          onUploadResource={(file) => handleUploadResource(file)}
           relatedEdges={relatedEdges}
           lessonMap={lessonMap}
           onCreateBranch={() => handleCreateBranch()}
