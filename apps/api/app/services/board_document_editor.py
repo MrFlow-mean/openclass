@@ -8,10 +8,15 @@ from app.models import (
     BoardDecision,
     BoardDocument,
     BoardFocusRef,
+    BoardPatchValidationResult,
+    DiffPreviewItem,
     LearningClarificationStatus,
     LearningRequirementSheet,
     Lesson,
+    PatchOperation,
 )
+from app.services.document_ops import apply_board_patch, read_board_snapshot
+from app.services.history import current_head_commit
 from app.services.openai_course_ai import BoardDocumentEditResult, openai_course_ai
 from app.services.board_segment_index import build_board_segment_index
 from app.services.rich_document import (
@@ -48,6 +53,10 @@ class BoardDocumentEditOutcome:
     failure_reason: str | None = None
     quality_repair_attempts: int = 0
     quality_review_status: str = "not_run"
+    operations: list[PatchOperation] | None = None
+    diff_preview: list[DiffPreviewItem] | None = None
+    patch_validation: BoardPatchValidationResult | None = None
+    patch_risk_level: str | None = None
 
 
 def generate_from_requirements(
@@ -202,6 +211,19 @@ def edit_existing_document(
         "target_scope": target_scope,
         "allow_replace_document": allow_replace_document or is_whole_document_scope,
     }
+    if not is_whole_document_scope:
+        patch_outcome = _try_patch_existing_document(
+            lesson=lesson,
+            requirements=requirements,
+            clarification=clarification,
+            resource_summary=resource_summary,
+            selection_excerpt=target_excerpt,
+            target_scope=target_scope,
+            allow_replace_document=allow_replace_document,
+        )
+        if patch_outcome is not None:
+            return patch_outcome
+
     failure_reason = "板书文档编辑 AI 没有返回编辑结果。"
     repair_feedback: dict[str, object] | None = None
     quality_repair_attempts = 0
@@ -406,6 +428,70 @@ def _apply_edit_result(
     return lesson.board_document
 
 
+def _try_patch_existing_document(
+    *,
+    lesson: Lesson,
+    requirements: LearningRequirementSheet,
+    clarification: LearningClarificationStatus,
+    resource_summary: str,
+    selection_excerpt: str | None,
+    target_scope: str | None,
+    allow_replace_document: bool,
+) -> BoardDocumentEditOutcome | None:
+    head_commit = current_head_commit(lesson)
+    board_snapshot = read_board_snapshot(lesson.board_document, source_commit_id=head_commit.id)
+    patch = openai_course_ai.generate_board_patch_plan(
+        lesson_title=lesson.title,
+        learning_requirement_context=_requirement_context(requirements, clarification),
+        board_snapshot=board_snapshot,
+        resource_summary=resource_summary,
+        selection_excerpt=selection_excerpt,
+        target_scope=target_scope,
+        user_instruction=requirements.action_instruction,
+        allow_delete=allow_replace_document,
+        allow_whole_document=allow_replace_document,
+    )
+    if patch is None:
+        return None
+
+    patch = patch.model_copy(
+        update={
+            "source_commit_id": patch.source_commit_id or head_commit.id,
+            "source_document_hash": patch.source_document_hash or board_snapshot["source_document_hash"],
+            "target_scope": patch.target_scope or target_scope,
+        }
+    )
+    applied = apply_board_patch(
+        lesson.board_document,
+        patch,
+        current_commit_id=head_commit.id,
+        allow_high_risk=allow_replace_document,
+    )
+    if applied.validation.status == "failed":
+        reason = "；".join(applied.validation.issues) or "Board patch validation failed."
+        return _no_change(
+            lesson,
+            f"板书 patch 校验未通过：{reason}",
+            patch_validation=applied.validation,
+            patch_risk_level=patch.risk_level,
+        )
+
+    return _changed(
+        lesson=lesson,
+        new_document=applied.new_document,
+        operation="board_patch",
+        summary=patch.summary.strip() or "Applied a structured board patch.",
+        chatbot_message=patch.summary.strip() or "已按定位结果更新板书。",
+        section_titles=_patch_section_titles(applied.diff_preview),
+        reason="板书编辑 AI 已生成结构化 patch，并由后端校验后应用。",
+        operations=applied.operations,
+        diff_preview=applied.diff_preview,
+        patch_validation=applied.validation,
+        patch_risk_level=patch.risk_level,
+        quality_review_status="pass",
+    )
+
+
 def _looks_like_whole_document_replacement(
     *,
     current_document: BoardDocument,
@@ -483,6 +569,10 @@ def _changed(
     reason: str,
     quality_repair_attempts: int = 0,
     quality_review_status: str = "not_run",
+    operations: list[PatchOperation] | None = None,
+    diff_preview: list[DiffPreviewItem] | None = None,
+    patch_validation: BoardPatchValidationResult | None = None,
+    patch_risk_level: str | None = None,
 ) -> BoardDocumentEditOutcome:
     return BoardDocumentEditOutcome(
         chatbot_message=chatbot_message,
@@ -497,6 +587,10 @@ def _changed(
         failure_reason=None,
         quality_repair_attempts=quality_repair_attempts,
         quality_review_status=quality_review_status,
+        operations=operations or [],
+        diff_preview=diff_preview or [],
+        patch_validation=patch_validation,
+        patch_risk_level=patch_risk_level,
     )
 
 
@@ -506,6 +600,8 @@ def _no_change(
     *,
     quality_repair_attempts: int = 0,
     quality_review_status: str = "not_run",
+    patch_validation: BoardPatchValidationResult | None = None,
+    patch_risk_level: str | None = None,
 ) -> BoardDocumentEditOutcome:
     return BoardDocumentEditOutcome(
         chatbot_message="",
@@ -520,7 +616,22 @@ def _no_change(
         failure_reason=reason,
         quality_repair_attempts=quality_repair_attempts,
         quality_review_status=quality_review_status,
+        operations=[],
+        diff_preview=[],
+        patch_validation=patch_validation,
+        patch_risk_level=patch_risk_level,
     )
+
+
+def _patch_section_titles(diff_preview: list[DiffPreviewItem]) -> list[str]:
+    titles: list[str] = []
+    for item in diff_preview:
+        titles.extend(title for title in item.heading_path if title and title not in titles)
+        for text in (item.after_text, item.before_text):
+            for title in _markdown_heading_titles(text):
+                if title not in titles:
+                    titles.append(title)
+    return titles
 
 
 def _generate_board_document_edit_with_retry(**kwargs) -> BoardDocumentEditResult | None:

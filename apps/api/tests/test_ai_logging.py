@@ -9,6 +9,7 @@ import app.main as main_module
 from app.models import (
     AIModelSelection,
     BoardFocusRef,
+    BoardPatchRequest,
     BoardSearchRerankItem,
     BoardSearchRerankResult,
     BoardTaskRequirementSheet,
@@ -22,6 +23,7 @@ from app.models import (
     LearningClarificationStatus,
     LearningRequirementChecklistItem,
     LearningRequirementKeyFact,
+    PatchOperation,
     RealtimeTranscriptLogRequest,
     SelectionRef,
     UserView,
@@ -153,6 +155,7 @@ def disable_default_board_task_ai(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(openai_course_ai, "generate_board_task_requirement_sheet", lambda **kwargs: None)
     monkeypatch.setattr(openai_course_ai, "generate_board_task_route_decision", lambda **kwargs: None)
     monkeypatch.setattr(openai_course_ai, "generate_board_search_rerank", lambda **kwargs: None)
+    monkeypatch.setattr(openai_course_ai, "generate_board_patch_plan", lambda **kwargs: None)
 
 
 def test_openai_parse_logs_prompt_and_output(isolated_ai_log) -> None:
@@ -5559,6 +5562,61 @@ def test_existing_board_targeted_write_uses_found_location_without_confirmation(
     assert commit.metadata["board_task_cleared"] is True
     assert commit.metadata["board_search_evidence"]["status"] == "found"
     assert commit.metadata["board_search_evidence"]["selected_match_id"]
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_existing_board_write_commits_structured_patch_operations(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+
+    def _fake_patch_plan(**kwargs):
+        target = next(block for block in kwargs["board_snapshot"]["blocks"] if block["text"] == "第一节已有内容。")
+        return BoardPatchRequest(
+            source_commit_id=kwargs["board_snapshot"]["source_commit_id"],
+            source_document_hash=kwargs["board_snapshot"]["source_document_hash"],
+            target_scope="focus",
+            operations=[
+                PatchOperation(
+                    op="insert_block",
+                    after_block_id=target["block_id"],
+                    content="补充说明：这里新增一个通用说明块。",
+                )
+            ],
+            summary="已在目标位置后补充说明。",
+            risk_level="low",
+        )
+
+    monkeypatch.setattr(openai_course_ai, "generate_board_patch_plan", _fake_patch_plan)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_board_document_edit",
+        lambda **kwargs: pytest.fail("Structured patch path should not call document-level edit."),
+    )
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.board_document = build_document(title="已有板书", content_text="# 主线\n## 第一节\n第一节已有内容。")
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="在第一节补充一个说明"),
+        user_id=TEST_USER.id,
+    )
+
+    updated_lesson = response.course_package.lessons[0]
+    commit = updated_lesson.history_graph.commits[-1]
+    assert response.active_board_task_sheet is None
+    assert "补充说明" in updated_lesson.board_document.content_text
+    assert commit.operations
+    assert commit.operations[0].op == "insert_block"
+    assert commit.metadata["board_patch_validation"]["status"] == "pass"
+    assert commit.metadata["board_patch_diff"][0]["op"] == "insert_block"
+    assert response.board_patch_diff[0].op == "insert_block"
     assert _read_log_entries(isolated_ai_log) == []
 
 

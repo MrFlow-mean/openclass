@@ -2314,6 +2314,7 @@ def _handle_existing_board_task_flow(
                     "board_task_decision": decision.model_dump(mode="json"),
                     "board_task_cleared": False,
                     "target_scope": target_scope,
+                    **_board_patch_metadata(edit_outcome),
                     **_board_search_evidence_metadata(resolution),
                 },
             )
@@ -2337,6 +2338,7 @@ def _handle_existing_board_task_flow(
                 board_task_stamp=failed_stamp,
                 board_document_operation_status=edit_outcome.operation_status,
                 board_document_operation_failure_reason=edit_outcome.failure_reason,
+                board_patch_diff=edit_outcome.diff_preview,
             )
         recent_focus = _recent_board_edit_focus_for_commit(
             lesson=lesson,
@@ -2345,7 +2347,7 @@ def _handle_existing_board_task_flow(
         )
         commit_operations(
             lesson,
-            [],
+            edit_outcome.operations or [],
             label="Board task edit",
             message="Executed an existing-board edit task",
             new_document=lesson.board_document,
@@ -2359,6 +2361,7 @@ def _handle_existing_board_task_flow(
                 "board_section_titles": edit_outcome.section_titles,
                 "target_scope": target_scope,
                 "recent_board_edit_focus": recent_focus.model_dump(mode="json") if recent_focus else None,
+                **_board_patch_metadata(edit_outcome),
                 **interaction_metadata,
                 **decision_trace_metadata(
                     message=request.message,
@@ -2417,6 +2420,7 @@ def _handle_existing_board_task_flow(
             board_document_operation_status=edit_outcome.operation_status,
             board_document_operation_failure_reason=edit_outcome.failure_reason,
             completed_board_task_sheet=board_task,
+            board_patch_diff=edit_outcome.diff_preview,
         )
 
     if decision.route == "explain":
@@ -2679,6 +2683,7 @@ def _execute_board_task_write(
                 "board_task_decision": route_decision.model_dump(mode="json") if route_decision else None,
                 "board_task_cleared": False,
                 "target_scope": target_scope,
+                **_board_patch_metadata(edit_outcome),
                 "board_search_evidence": search_evidence
                 or _implicit_board_search_evidence(
                     route="write",
@@ -2706,11 +2711,12 @@ def _execute_board_task_write(
             board_task_stamp=failed_stamp,
             board_document_operation_status=edit_outcome.operation_status,
             board_document_operation_failure_reason=edit_outcome.failure_reason,
+            board_patch_diff=edit_outcome.diff_preview,
         )
 
     commit_operations(
         lesson,
-        [],
+        edit_outcome.operations or [],
         label="Board task write",
         message="Wrote missing existing-board task content and prepared a board-grounded explanation",
         new_document=lesson.board_document,
@@ -2726,6 +2732,7 @@ def _execute_board_task_write(
             "target_scope": target_scope,
             "recent_board_edit_focus": recent_focus.model_dump(mode="json") if recent_focus else None,
             "board_explanation_directive": board_explanation_directive,
+            **_board_patch_metadata(edit_outcome),
             **interaction_metadata,
             **decision_trace_metadata(
                 message=request.message,
@@ -2781,6 +2788,7 @@ def _execute_board_task_write(
         board_document_operation_status=edit_outcome.operation_status,
         board_document_operation_failure_reason=edit_outcome.failure_reason,
         completed_board_task_sheet=board_task if edit_outcome.changed else None,
+        board_patch_diff=edit_outcome.diff_preview,
     )
 
 
@@ -2814,6 +2822,7 @@ def _board_document_failure_metadata(edit_outcome) -> dict[str, object]:
         "board_edit_summary": edit_outcome.summary,
         "board_document_operation_status": edit_outcome.operation_status,
         **_board_document_quality_metadata(edit_outcome),
+        **_board_patch_metadata(edit_outcome),
     }
     trace_id = context.get("trace_id")
     if trace_id:
@@ -2826,6 +2835,17 @@ def _board_document_quality_metadata(edit_outcome) -> dict[str, object]:
         "quality_repair_attempts": edit_outcome.quality_repair_attempts,
         "quality_review_status": edit_outcome.quality_review_status,
     }
+
+
+def _board_patch_metadata(edit_outcome) -> dict[str, object]:
+    metadata: dict[str, object] = {}
+    if getattr(edit_outcome, "patch_validation", None) is not None:
+        metadata["board_patch_validation"] = edit_outcome.patch_validation.model_dump(mode="json")
+    if getattr(edit_outcome, "diff_preview", None):
+        metadata["board_patch_diff"] = [item.model_dump(mode="json") for item in edit_outcome.diff_preview]
+    if getattr(edit_outcome, "patch_risk_level", None):
+        metadata["board_patch_risk_level"] = edit_outcome.patch_risk_level
+    return metadata
 
 
 def _response(
@@ -2852,6 +2872,7 @@ def _response(
     completed_board_task_sheet: BoardTaskRequirementSheet | None = None,
     board_document_operation_status: str = "none",
     board_document_operation_failure_reason: str | None = None,
+    board_patch_diff=None,
 ) -> ChatResponse:
     stamp = _response_requirement_stamp(requirement_history, requirement_stamp)
     board_task_stamp_value = _response_board_task_stamp(board_task_history, board_task_stamp)
@@ -2887,6 +2908,7 @@ def _response(
         requirement_cleared=visible_requirement_cleared,
         board_document_operation_status=board_document_operation_status,
         board_document_operation_failure_reason=board_document_operation_failure_reason,
+        board_patch_diff=board_patch_diff or [],
         created_lesson=None,
         teaching_progress=teaching_progress,
         course_package=workspace_state.package_view_for_lesson(workspace, package, lesson.id),

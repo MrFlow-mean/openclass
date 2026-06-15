@@ -138,6 +138,9 @@ BoardTaskConfirmationStatus = Literal["none", "awaiting", "confirmed", "declined
 BoardTaskRoute = Literal["write", "edit", "explain", "chat", "clarify_location", "await_write_confirmation"]
 BoardTaskLocationStatus = Literal["missing", "selected", "resolved", "ambiguous", "content_absent"]
 BoardDocumentOperationStatus = Literal["none", "succeeded", "failed"]
+BoardPatchRiskLevel = Literal["low", "medium", "high"]
+BoardPatchTargetScope = Literal["focus", "section", "whole_document", "append"]
+BoardPatchContentFormat = Literal["markdown", "plain_text"]
 DocumentMarginPreset = Literal["narrow", "normal", "wide"]
 DocumentOrientation = Literal["portrait", "landscape"]
 DocumentPageSize = Literal["a4", "letter", "a3"]
@@ -235,11 +238,15 @@ class PatchOperation(BaseModel):
     op: PatchOperationType
     block_id: str | None = None
     after_block_id: str | None = None
+    node_path: list[int] = Field(default_factory=list)
     title: str | None = None
     content: str | None = None
+    content_format: BoardPatchContentFormat = "markdown"
     block: BoardBlock | None = None
     search: str | None = None
     replacement: str | None = None
+    expected_text: str | None = None
+    expected_text_hash: str | None = None
     style: BlockStyle | None = None
     asset_url: str | None = None
     note: str | None = None
@@ -248,9 +255,31 @@ class PatchOperation(BaseModel):
 class DiffPreviewItem(BaseModel):
     op: PatchOperationType
     block_id: str | None = None
+    node_path: list[int] = Field(default_factory=list)
+    heading_path: list[str] = Field(default_factory=list)
     before: BoardBlock | None = None
     after: BoardBlock | None = None
+    before_text: str = ""
+    after_text: str = ""
     summary: str
+
+
+class BoardPatchRequest(BaseModel):
+    source_commit_id: str | None = None
+    source_document_hash: str = ""
+    target_scope: BoardPatchTargetScope | None = None
+    operations: list[PatchOperation] = Field(default_factory=list)
+    summary: str = ""
+    risk_level: BoardPatchRiskLevel = "medium"
+
+
+class BoardPatchValidationResult(BaseModel):
+    status: Literal["pass", "failed"] = "pass"
+    issues: list[str] = Field(default_factory=list)
+    applied_operations: int = 0
+    source_commit_id: str | None = None
+    source_document_hash: str = ""
+    current_document_hash: str = ""
 
 
 class PatchProposal(BaseModel):
@@ -922,6 +951,7 @@ class ChatResponse(BaseModel):
     requirement_cleared: bool = False
     board_document_operation_status: BoardDocumentOperationStatus = "none"
     board_document_operation_failure_reason: str | None = None
+    board_patch_diff: list[DiffPreviewItem] = Field(default_factory=list)
     created_lesson: LessonView | None = None
     teaching_progress: SectionTeachingProgressView | None = None
     course_package: CoursePackageView
