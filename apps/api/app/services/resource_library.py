@@ -16,8 +16,10 @@ from app.models import (
     ResourceContextChunk,
     ResourceLibraryItem,
     ResourceReferenceContext,
+    ResourceSourceUnit,
 )
 from app.services.image_ocr import extract_image_text, extract_pdf_pages_text
+from app.services.rag_anything_adapter import parse_with_rag_anything
 
 
 _PDF_TEXT_SUMMARY_LIMIT = 140
@@ -1537,9 +1539,68 @@ def extract_outline(file_path: Path, original_name: str, mime_type: str) -> tupl
     )
 
 
+def _outline_from_source_text(original_name: str, text: str) -> list[LibraryChapter]:
+    outline = _extract_markdown_outline(text)
+    if outline:
+        return outline
+    ai_outline = _ai_generated_outline(original_name, text)
+    if ai_outline:
+        return ai_outline
+    return [
+        _generic_chapter_from_text(
+            Path(original_name).stem,
+            text,
+            summary_prefix="从资料解析结果中抽取到的内容摘要：",
+        )
+    ]
+
+
+def _source_units_from_native_text(original_name: str, text_content: str | None) -> list[ResourceSourceUnit]:
+    if not text_content:
+        return []
+    suffix = Path(original_name).suffix.lower().lstrip(".") or "document"
+    return [
+        ResourceSourceUnit(
+            content_type="text",
+            text=text_content[:500000],
+            source_locator=f"native:{suffix}:fulltext",
+            order_index=0,
+        )
+    ]
+
+
+def _native_provider_from_warnings(warnings: list[str]) -> tuple[str, str]:
+    fallback = any("used native parser" in warning.lower() for warning in warnings)
+    if fallback:
+        return "native_fallback", "Parsed by native OpenClass parser after RAG-Anything fallback."
+    return "native", "Parsed by native OpenClass parser."
+
+
 def build_resource_item(file_path: Path, original_name: str) -> ResourceLibraryItem:
     mime_type = mimetypes.guess_type(original_name)[0] or "application/octet-stream"
-    outline, extracted, text_content = extract_outline(file_path, original_name, mime_type)
+    parser_provider = "native"
+    parser_artifacts_path: str | None = None
+    parser_message = "Parsed by native OpenClass parser."
+    parse_warnings: list[str] = []
+    source_units: list[ResourceSourceUnit] = []
+
+    rag_attempt = parse_with_rag_anything(file_path, original_name, mime_type)
+    parse_warnings.extend(rag_attempt.warnings)
+    if rag_attempt.result is not None:
+        rag_result = rag_attempt.result
+        outline = _outline_from_source_text(original_name, rag_result.text_content)
+        extracted = True
+        text_content = rag_result.text_content
+        source_units = rag_result.source_units
+        parser_provider = rag_result.parser_provider
+        parser_artifacts_path = rag_result.parser_artifacts_path
+        parser_message = rag_result.parser_message
+        parse_warnings.extend(rag_result.warnings)
+    else:
+        outline, extracted, text_content = extract_outline(file_path, original_name, mime_type)
+        source_units = _source_units_from_native_text(original_name, text_content)
+        parser_provider, parser_message = _native_provider_from_warnings(parse_warnings)
+
     outline = _attach_outline_hierarchy(outline)
     concept_index: dict[str, list[str]] = {}
     for chapter in outline:
@@ -1557,6 +1618,11 @@ def build_resource_item(file_path: Path, original_name: str) -> ResourceLibraryI
         extracted_text_available=extracted,
         text_content=text_content,
         source_path=str(file_path),
+        parser_provider=parser_provider,
+        parser_artifacts_path=parser_artifacts_path,
+        parser_message=parser_message,
+        parse_warnings=parse_warnings,
+        source_units=source_units,
     )
 
 
@@ -1569,6 +1635,14 @@ def extract_reference_context(
     chapter = next((candidate for candidate in resource.outline if candidate.id == chapter_id), None)
     if chapter is None:
         return None
+
+    if resource.parser_provider.startswith("raganything") and resource.text_content and resource.source_units:
+        return _build_reference_context(
+            resource,
+            chapter,
+            user_query,
+            raw_text=resource.text_content,
+        )
 
     if resource.text_content and resource.resource_type == "image":
         return _build_reference_context(

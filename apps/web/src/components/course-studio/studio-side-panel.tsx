@@ -24,6 +24,9 @@ type CourseStudioSidePanelProps = {
   latestBoardDecision: BoardDecision | null;
   newBranchName: string;
   onNewBranchNameChange: (value: string) => void;
+  resources: CoursePackage["resources"];
+  isUploadingResource: boolean;
+  onUploadResource: (file: File) => void | Promise<void>;
   relatedEdges: CoursePackage["course_graph"];
   lessonMap: Map<string, Lesson>;
   onCreateBranch: () => void | Promise<void>;
@@ -49,6 +52,9 @@ export function CourseStudioSidePanel({
   latestBoardDecision,
   newBranchName,
   onNewBranchNameChange,
+  resources,
+  isUploadingResource,
+  onUploadResource,
   relatedEdges,
   lessonMap,
   onCreateBranch,
@@ -142,6 +148,9 @@ export function CourseStudioSidePanel({
         {sidebarTab === "library" ? (
           <ResourcePanel
             activeLesson={activeLesson}
+            resources={resources}
+            isUploadingResource={isUploadingResource}
+            onUploadResource={onUploadResource}
             relatedEdges={relatedEdges}
             lessonMap={lessonMap}
             onOpenLesson={onOpenLesson}

@@ -258,6 +258,19 @@ export interface LibraryChapter {
   scan_strategy: "outline_only" | "heading_section" | "page_window" | "fulltext_match";
 }
 
+export interface ResourceSourceUnit {
+  id: string;
+  content_type: string;
+  text: string;
+  page_idx?: number | null;
+  page_no?: number | null;
+  source_locator?: string | null;
+  asset_path?: string | null;
+  bbox: number[];
+  order_index: number;
+  metadata: Record<string, unknown>;
+}
+
 export interface ResourceLibraryItem {
   id: string;
   name: string;
@@ -269,6 +282,11 @@ export interface ResourceLibraryItem {
   outline: LibraryChapter[];
   concept_index: Record<string, string[]>;
   extracted_text_available: boolean;
+  parser_provider: string;
+  parser_artifacts_path?: string | null;
+  parser_message: string;
+  parse_warnings: string[];
+  source_units: ResourceSourceUnit[];
 }
 
 export interface CoursePackage {
