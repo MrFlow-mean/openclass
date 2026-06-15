@@ -1,0 +1,216 @@
+[
+  {
+    "id": "blank_ordinary_chat",
+    "title": "空白板书 + 普通聊天",
+    "board_state": "blank",
+    "user_message": "最近有点累，想随便聊聊",
+    "request": {
+      "has_selection": false,
+      "interaction_mode": "ask",
+      "board_generation_action": null,
+      "teaching_action": null,
+      "resource_reference_action": null
+    },
+    "expected": {
+      "route": "ordinary_chat",
+      "should_update_learning_requirement": false,
+      "should_try_board_task": false,
+      "requires_resource_reference": false
+    },
+    "negative_examples": [
+      {
+        "message": "我想学点东西但没想好",
+        "must_not": {
+          "route": "ordinary_chat",
+          "should_update_learning_requirement": false
+        }
+      },
+      {
+        "message": "开始生成板书",
+        "board_generation_action": "start",
+        "must_not": {
+          "route": "ordinary_chat",
+          "should_update_learning_requirement": false
+        }
+      }
+    ]
+  },
+  {
+    "id": "blank_learning_exploration",
+    "title": "空白板书 + 学习探索",
+    "board_state": "blank",
+    "user_message": "我想学点东西但没想好",
+    "request": {
+      "has_selection": false,
+      "interaction_mode": "ask",
+      "board_generation_action": null,
+      "teaching_action": null,
+      "resource_reference_action": null
+    },
+    "expected": {
+      "route": "initial_learning",
+      "should_update_learning_requirement": true,
+      "should_try_board_task": false,
+      "requires_resource_reference": false
+    },
+    "negative_examples": [
+      {
+        "message": "最近有点累，想随便聊聊",
+        "must_not": {
+          "route": "initial_learning",
+          "should_update_learning_requirement": true
+        }
+      },
+      {
+        "message": "根据上传资料回答这个问题",
+        "must_not": {
+          "route": "initial_learning",
+          "requires_resource_reference": false
+        }
+      }
+    ]
+  },
+  {
+    "id": "blank_practice_request",
+    "title": "空白板书 + 练习请求",
+    "board_state": "blank",
+    "user_message": "我们练习一下",
+    "request": {
+      "has_selection": false,
+      "interaction_mode": "ask",
+      "board_generation_action": null,
+      "teaching_action": null,
+      "resource_reference_action": null
+    },
+    "expected": {
+      "route": "initial_learning",
+      "should_update_learning_requirement": true,
+      "should_try_board_task": false,
+      "requires_resource_reference": false
+    },
+    "negative_examples": [
+      {
+        "message": "随便聊两句",
+        "must_not": {
+          "route": "initial_learning",
+          "should_update_learning_requirement": true
+        }
+      },
+      {
+        "message": "根据上传资料练习一下",
+        "must_not": {
+          "route": "initial_learning",
+          "requires_resource_reference": false
+        }
+      }
+    ]
+  },
+  {
+    "id": "existing_ordinary_chat",
+    "title": "已有板书 + 普通聊天",
+    "board_state": "existing",
+    "user_message": "今天先随便聊两句",
+    "request": {
+      "has_selection": false,
+      "interaction_mode": "ask",
+      "board_generation_action": null,
+      "teaching_action": null,
+      "resource_reference_action": null
+    },
+    "expected": {
+      "route": "ordinary_chat",
+      "should_update_learning_requirement": false,
+      "should_try_board_task": false,
+      "requires_resource_reference": false
+    },
+    "negative_examples": [
+      {
+        "message": "解释这里是什么意思",
+        "has_selection": true,
+        "must_not": {
+          "route": "ordinary_chat",
+          "should_try_board_task": false
+        }
+      },
+      {
+        "message": "继续写下一节",
+        "must_not": {
+          "route": "ordinary_chat",
+          "should_try_board_task": false
+        }
+      }
+    ]
+  },
+  {
+    "id": "existing_selection_explain",
+    "title": "已有板书 + 选区讲解",
+    "board_state": "existing",
+    "user_message": "解释这里是什么意思",
+    "request": {
+      "has_selection": true,
+      "interaction_mode": "ask",
+      "board_generation_action": null,
+      "teaching_action": null,
+      "resource_reference_action": null
+    },
+    "expected": {
+      "route": "existing_board_task",
+      "should_update_learning_requirement": false,
+      "should_try_board_task": true,
+      "requires_resource_reference": false
+    },
+    "negative_examples": [
+      {
+        "message": "今天先随便聊两句",
+        "has_selection": false,
+        "must_not": {
+          "route": "existing_board_task",
+          "should_try_board_task": true
+        }
+      },
+      {
+        "message": "根据上传资料回答这个问题",
+        "has_selection": false,
+        "must_not": {
+          "route": "existing_board_task",
+          "requires_resource_reference": false
+        }
+      }
+    ]
+  },
+  {
+    "id": "resource_reference",
+    "title": "明确资料引用",
+    "board_state": "existing",
+    "user_message": "根据上传资料回答这个问题",
+    "request": {
+      "has_selection": false,
+      "interaction_mode": "ask",
+      "board_generation_action": null,
+      "teaching_action": null,
+      "resource_reference_action": null
+    },
+    "expected": {
+      "route": "resource_reference",
+      "should_update_learning_requirement": false,
+      "should_try_board_task": false,
+      "requires_resource_reference": true
+    },
+    "negative_examples": [
+      {
+        "message": "今天先随便聊两句",
+        "must_not": {
+          "route": "resource_reference",
+          "requires_resource_reference": true
+        }
+      },
+      {
+        "message": "继续写下一节",
+        "must_not": {
+          "route": "resource_reference",
+          "requires_resource_reference": true
+        }
+      }
+    ]
+  }
+]
