@@ -47,6 +47,7 @@ from app.services.board_task_manager import (
 )
 from app.services.board_segment_index import build_board_segment_index
 from app.services.board_teaching import build_board_teaching_guide, teach_first_section, teach_next_section
+from app.services.chat_turn_gate import ChatTurnGateDecision, decide_chat_turn
 from app.services.course_runtime import effective_requirements
 from app.services.course_runtime import refresh_lesson_runtime
 from app.services.decision_trace import decision_trace_metadata
@@ -1293,6 +1294,10 @@ def _board_search_evidence_metadata(resolution: FocusResolution | None) -> dict[
     return {
         "board_search_evidence": resolution.evidence.model_dump(mode="json") if resolution and resolution.evidence else None,
     }
+
+
+def _chat_turn_gate_metadata(decision: ChatTurnGateDecision) -> dict[str, object]:
+    return {"chat_turn_gate": decision.metadata()}
 
 
 def _fallback_board_task_decision(
@@ -4081,10 +4086,22 @@ def _chat_response(
     track_initial_requirement_run = _should_track_initial_requirement_run(lesson)
     visible_package = workspace_state.package_context_for_lesson(workspace, package, lesson.id)
     selection_excerpt = _selection_excerpt(request.selection, selection_text)
+    document_empty = is_document_empty(lesson.board_document)
     initial_action_decision = _board_task_action_decision(
         request,
         has_selection=bool(selection_excerpt),
-        document_empty=is_document_empty(lesson.board_document),
+        document_empty=document_empty,
+    )
+    chat_turn_gate = decide_chat_turn(
+        message=request.message,
+        document_empty=document_empty,
+        has_selection=bool(selection_excerpt),
+        interaction_mode=request.interaction_mode,
+        board_generation_action=request.board_generation_action,
+        teaching_action=request.teaching_action,
+        resource_reference_action=request.resource_reference_action,
+        board_action_decision=initial_action_decision,
+        has_active_board_task=lesson.board_task_requirements is not None,
     )
     initial_board_task_action = initial_action_decision.board_action
     action_type = initial_board_task_action
@@ -4129,11 +4146,16 @@ def _chat_response(
     if interaction_response is not None:
         return interaction_response
 
-    should_try_existing_board_task = resource_resolution.selected_reference is None and resource_resolution.reference_prompt is None
+    should_try_existing_board_task = (
+        chat_turn_gate.should_try_board_task
+        and resource_resolution.selected_reference is None
+        and resource_resolution.reference_prompt is None
+    )
     if (
-        initial_board_task_action == "explain_target"
+        chat_turn_gate.should_try_board_task
+        and initial_board_task_action == "explain_target"
         and request.interaction_mode != "direct_edit"
-        and not is_document_empty(lesson.board_document)
+        and not document_empty
     ):
         should_try_existing_board_task = True
     if should_try_existing_board_task:
@@ -5257,6 +5279,68 @@ def _chat_response(
             requirement_history=requirement_history if track_initial_requirement_run else None,
         )
 
+    if chat_turn_gate.route == "ordinary_chat":
+        ai_reply = openai_course_ai.generate_chatbot_reply(
+            lesson_title=lesson.title,
+            learning_goal=requirements.learning_goal,
+            board_summary=_board_summary(lesson),
+            resource_summary=resource_summary_for_turn,
+            conversation_summary=_conversation_summary(request.conversation),
+            user_message=request.message,
+            selection_excerpt=None,
+            interaction_mode=request.interaction_mode,
+            interaction_context={
+                "turn_mode": "ordinary_chat",
+                "gate_reason": chat_turn_gate.reason,
+            },
+        )
+        chatbot_message = (ai_reply.chatbot_message if ai_reply else "").strip()
+        chatbot_message_source = "chatbot" if chatbot_message else "chatbot_empty"
+        board_decision = BoardDecision(action="no_change", reason="本轮是普通聊天，不进入学习需求或板书任务链路。")
+        requirement_cleared = False
+
+        commit_operations(
+            lesson,
+            [],
+            label="Chat turn",
+            message="Recorded an ordinary chatbot conversation turn",
+            new_document=lesson.board_document,
+            metadata={
+                "kind": "chat_flow",
+                "user_message": request.message,
+                "assistant_message": chatbot_message,
+                "assistant_message_source": chatbot_message_source,
+                "interaction_mode": request.interaction_mode,
+                "selection": request.selection.model_dump(mode="json") if request.selection else None,
+                **_task_metadata(
+                    requirements=requirements,
+                    learning_clarification=learning_clarification,
+                    requirement_cleared=requirement_cleared,
+                ),
+                **_reference_metadata(resolution=resource_resolution),
+                **_chat_turn_gate_metadata(chat_turn_gate),
+            },
+        )
+        workspace_state.normalize_package_state(package)
+        _save_workspace_for_user(
+            user_id=user_id,
+            workspace=workspace,
+            requirement_history=requirement_history,
+            board_task_history=board_task_history,
+        )
+        return _response(
+            workspace=workspace,
+            package=package,
+            lesson=lesson,
+            chatbot_message=chatbot_message,
+            learning_clarification=learning_clarification,
+            requirements=requirements,
+            board_decision=board_decision,
+            resource_matches=resource_resolution.matches,
+            selected_reference=selected_reference,
+            requirement_cleared=requirement_cleared,
+        )
+
     free_chat_user_message = (
         requirement_probe_instead_of_explanation_message(request.message)
         if _requests_explanation(request.message)
@@ -5471,6 +5555,7 @@ def _chat_response(
                 requirement_cleared=requirement_cleared,
             ),
             **_reference_metadata(resolution=resource_resolution),
+            **_chat_turn_gate_metadata(chat_turn_gate),
             **solver_metadata,
         },
     )
