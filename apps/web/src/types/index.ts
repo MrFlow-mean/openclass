@@ -64,6 +64,25 @@ export interface BoardDocument {
   page_settings: DocumentPageSettings;
 }
 
+export type PatchOperationType =
+  | "insert_block"
+  | "delete_block"
+  | "update_block_content"
+  | "replace_range_in_block"
+  | "move_block"
+  | "update_block_style"
+  | "attach_asset";
+
+export interface DiffPreviewItem {
+  op: PatchOperationType;
+  block_id?: string | null;
+  node_path?: number[];
+  heading_path?: string[];
+  before_text?: string;
+  after_text?: string;
+  summary: string;
+}
+
 export interface LearningRequirementSheet {
   theme: string;
   learning_goal: string;
@@ -172,7 +191,10 @@ export interface CommitRecord {
   parent_ids: string[];
   operations: Array<Record<string, unknown>>;
   snapshot: BoardDocument;
-  metadata?: Record<string, unknown>;
+  metadata?: Record<string, unknown> & {
+    board_patch_diff?: DiffPreviewItem[];
+    board_patch_risk_level?: "low" | "medium" | "high";
+  };
 }
 
 export interface BranchRef {
@@ -527,6 +549,7 @@ export interface ChatResponse {
   requirement_cleared?: boolean;
   board_document_operation_status?: BoardDocumentOperationStatus;
   board_document_operation_failure_reason?: string | null;
+  board_patch_diff?: DiffPreviewItem[];
   created_lesson?: Lesson | null;
   teaching_progress?: SectionTeachingProgress | null;
   course_package: CoursePackage;

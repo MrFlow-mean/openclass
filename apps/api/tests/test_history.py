@@ -1,6 +1,14 @@
 import pytest
 
-from app.models import BoardDocument, BoardFocusRef, BoardTaskRequirementSheet, LearningRequirementSheet, PatchOperation
+from app.models import (
+    BoardDocument,
+    BoardFocusRef,
+    BoardPatchRequest,
+    BoardTaskRequirementSheet,
+    LearningClarificationStatus,
+    LearningRequirementSheet,
+    PatchOperation,
+)
 from app.services.chart_generation import extract_chart_data_fragments
 from app.services.course_runtime import (
     build_lesson_for_topic,
@@ -8,7 +16,8 @@ from app.services.course_runtime import (
     normalize_requirements,
     refresh_lesson_runtime,
 )
-from app.services.document_ops import apply_patch
+from app.services.document_ops import apply_patch, document_hash, read_board_snapshot
+from app.services.board_document_editor import edit_existing_document
 from app.services.history import bind_commit_metadata, commit_operations, create_branch, restore_commit, switch_branch
 from app.services.lesson_factory import create_empty_lesson, create_lesson
 from app.services.openai_course_ai import GeneratedCatalogChapter, GeneratedResourceCatalog, OpenAICourseAI, openai_course_ai
@@ -86,15 +95,177 @@ def test_normalize_requirements_migrates_legacy_default_clarification() -> None:
     assert "应用场景" in normalized.success_criteria
 
 
-def test_apply_patch_is_a_document_snapshot_compatibility_shim() -> None:
-    document = build_document(title="Test", content_text="first\nsecond")
-    next_document, diff = apply_patch(
+def test_apply_patch_updates_target_block_with_snapshot_anchors() -> None:
+    document = build_document(title="Test", content_text="# Section\n\nfirst\n\nsecond")
+    snapshot = read_board_snapshot(document)
+    target = next(block for block in snapshot["blocks"] if block["text"] == "first")
+
+    next_document, diff, validation = apply_patch(
         document,
-        [PatchOperation(op="update_block_content", content="ignored by rich document mode")],
+        BoardPatchRequest(
+            source_document_hash=document_hash(document),
+            target_scope="focus",
+            operations=[
+                PatchOperation(
+                    op="update_block_content",
+                    block_id=target["block_id"],
+                    expected_text="first",
+                    expected_text_hash=target["text_hash"],
+                    content="first, revised",
+                )
+            ],
+            summary="Revise one block.",
+            risk_level="medium",
+        ),
     )
 
+    assert validation.status == "pass"
+    assert next_document.content_text == "# Section\n\nfirst, revised\n\nsecond"
+    assert diff[0].op == "update_block_content"
+    assert diff[0].before_text == "first"
+    assert diff[0].after_text == "first, revised"
+
+
+def test_apply_patch_inserts_after_target_block() -> None:
+    document = build_document(title="Test", content_text="# Section\n\nfirst")
+    snapshot = read_board_snapshot(document)
+    target = snapshot["blocks"][-1]
+
+    next_document, diff, validation = apply_patch(
+        document,
+        BoardPatchRequest(
+            source_document_hash=document_hash(document),
+            target_scope="append",
+            operations=[
+                PatchOperation(
+                    op="insert_block",
+                    after_block_id=target["block_id"],
+                    content="added block",
+                )
+            ],
+            summary="Add one block.",
+            risk_level="low",
+        ),
+    )
+
+    assert validation.status == "pass"
+    assert next_document.content_text.endswith("first\n\nadded block")
+    assert diff[0].op == "insert_block"
+
+
+def test_apply_patch_rejects_stale_hash_and_html_content() -> None:
+    document = build_document(title="Test", content_text="first")
+    snapshot = read_board_snapshot(document)
+    target = snapshot["blocks"][0]
+
+    next_document, diff, validation = apply_patch(
+        document,
+        BoardPatchRequest(
+            source_document_hash="stale",
+            operations=[
+                PatchOperation(
+                    op="update_block_content",
+                    block_id=target["block_id"],
+                    expected_text="first",
+                    content="<p>bad</p>",
+                )
+            ],
+            summary="Invalid patch.",
+        ),
+    )
+
+    assert validation.status == "failed"
     assert next_document.content_text == document.content_text
     assert diff == []
+    assert any("hash" in issue for issue in validation.issues)
+    assert any("HTML" in issue for issue in validation.issues)
+
+
+def test_apply_patch_rejects_delete_without_high_risk_confirmation() -> None:
+    document = build_document(title="Test", content_text="first")
+    target = read_board_snapshot(document)["blocks"][0]
+
+    next_document, diff, validation = apply_patch(
+        document,
+        BoardPatchRequest(
+            source_document_hash=document_hash(document),
+            operations=[
+                PatchOperation(
+                    op="delete_block",
+                    block_id=target["block_id"],
+                    expected_text_hash=target["text_hash"],
+                )
+            ],
+            summary="Delete target.",
+            risk_level="high",
+        ),
+    )
+
+    assert validation.status == "failed"
+    assert next_document.content_text == document.content_text
+    assert diff == []
+
+
+def test_board_document_editor_prefers_structured_patch_plan(monkeypatch: pytest.MonkeyPatch) -> None:
+    lesson = create_empty_lesson("板书编辑")
+    lesson.board_document = build_document(title="板书编辑", content_text="# 目标\n\n原始段落")
+    requirements = LearningRequirementSheet(
+        theme="板书编辑",
+        learning_goal="更新当前板书内容",
+        level="",
+        known_background="",
+        current_questions=[],
+        target_depth="",
+        output_preference="",
+        boundary="",
+        board_scope=[],
+        success_criteria="",
+        action_type="rewrite_target",
+        action_instruction="把目标段落改得更清楚",
+    )
+
+    def _fake_patch_plan(**kwargs):
+        target = next(block for block in kwargs["board_snapshot"]["blocks"] if block["text"] == "原始段落")
+        return BoardPatchRequest(
+            source_commit_id=kwargs["board_snapshot"]["source_commit_id"],
+            source_document_hash=kwargs["board_snapshot"]["source_document_hash"],
+            target_scope="focus",
+            operations=[
+                PatchOperation(
+                    op="update_block_content",
+                    block_id=target["block_id"],
+                    expected_text_hash=target["text_hash"],
+                    content="更新后的段落",
+                )
+            ],
+            summary="更新目标段落。",
+            risk_level="medium",
+        )
+
+    monkeypatch.setattr(openai_course_ai, "generate_board_patch_plan", _fake_patch_plan)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_board_document_edit",
+        lambda **kwargs: pytest.fail("Existing-board edit should use the patch planner first."),
+    )
+
+    outcome = edit_existing_document(
+        lesson=lesson,
+        requirements=requirements,
+        clarification=LearningClarificationStatus(progress=100, label="ready", reason=""),
+        resource_summary="",
+        conversation_summary="",
+        user_instruction="",
+        selection_excerpt="原始段落",
+        target_scope="focus",
+    )
+
+    assert outcome.changed is True
+    assert outcome.operation == "board_patch"
+    assert outcome.operations and outcome.operations[0].op == "update_block_content"
+    assert outcome.patch_validation is not None
+    assert outcome.patch_validation.status == "pass"
+    assert "更新后的段落" in outcome.new_document.content_text
 
 
 def test_branch_and_restore_keep_history() -> None:

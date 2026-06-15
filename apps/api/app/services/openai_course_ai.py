@@ -25,6 +25,7 @@ from app.models import (
     AIModelSelection,
     AIProvider,
     BoardFocusRef,
+    BoardPatchRequest,
     BoardSearchRerankResult,
     BoardTaskAction,
     BoardTaskRequirementSheet,
@@ -1361,6 +1362,69 @@ class OpenAICourseAI:
             schema=InteractionTurnDecision,
         )
         return result if isinstance(result, InteractionTurnDecision) else None
+
+    def generate_board_patch_plan(
+        self,
+        *,
+        lesson_title: str,
+        learning_requirement_context: dict[str, Any],
+        board_snapshot: dict[str, Any],
+        resource_summary: str,
+        selection_excerpt: str | None = None,
+        target_scope: str | None = None,
+        user_instruction: str | None = None,
+        allow_delete: bool = False,
+        allow_whole_document: bool = False,
+    ) -> BoardPatchRequest | None:
+        if not self.enabled:
+            return None
+        system_prompt = (
+            "你是 OpenClass 的板书 patch planning AI，只负责把已有板书写入/编辑任务转成结构化 BoardPatchRequest，"
+            "不直接输出整篇新版板书，也不扮演 Chatbot。\n"
+            "规则：\n"
+            "1. 只能根据结构化学习/任务上下文、board_snapshot、定位摘录和资料摘要规划修改；"
+            "不得读取或依赖原始聊天记录。\n"
+            "2. V1 只允许 operations 使用 insert_block、update_block_content、delete_block。"
+            "默认优先 insert_block 或 update_block_content；除非 allow_delete=true，否则不要 delete_block。\n"
+            "3. 每个修改既要填写 block_id 或 node_path，也要填写 expected_text 或 expected_text_hash。"
+            "insert_block 应使用 after_block_id 锚定插入位置；无锚点时只可用于 target_scope=append。\n"
+            "4. content 必须是 Markdown 或普通文本，不得包含 HTML 标签、style、class，不得把普通文字包成公式。\n"
+            "5. source_commit_id 与 source_document_hash 必须从 board_snapshot 原样复制；target_scope 使用输入值。\n"
+            "6. risk_level：纯插入为 low，局部改写为 medium，删除或全文范围为 high。"
+            "whole_document 只有 allow_whole_document=true 时才允许。\n"
+            "7. 不写任何固定主题模板，不根据主题名、资料名或样例走特殊规则。"
+        )
+        user_prompt = _json(
+            {
+                "lesson_title": lesson_title,
+                "learning_requirement_context": learning_requirement_context,
+                "board_snapshot": board_snapshot,
+                "resource_summary": resource_summary,
+                "selection_excerpt": selection_excerpt.strip() if selection_excerpt else "",
+                "target_scope": target_scope or "",
+                "user_instruction": user_instruction or "",
+                "allow_delete": allow_delete,
+                "allow_whole_document": allow_whole_document,
+                "response_contract": {
+                    "source_commit_id": "从 board_snapshot.source_commit_id 复制。",
+                    "source_document_hash": "从 board_snapshot.source_document_hash 复制。",
+                    "target_scope": "focus、section、append 或 whole_document。",
+                    "operations": (
+                        "PatchOperation 数组；V1 只用 insert_block、update_block_content、delete_block。"
+                        "更新/删除必须带 block_id 或 node_path，并带 expected_text 或 expected_text_hash。"
+                    ),
+                    "summary": "一句话说明这组 patch 会做什么。",
+                    "risk_level": "low、medium 或 high。",
+                },
+            }
+        )
+        result = self._parse(
+            "board",
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            schema=BoardPatchRequest,
+        )
+        return result if isinstance(result, BoardPatchRequest) else None
 
     def generate_board_document_edit(
         self,

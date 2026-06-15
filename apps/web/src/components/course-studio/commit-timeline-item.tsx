@@ -8,7 +8,7 @@ import {
   metadataBool,
   metadataText,
 } from "@/components/course-studio/history-utils";
-import type { CommitRecord } from "@/types";
+import type { CommitRecord, DiffPreviewItem } from "@/types";
 
 type CommitTimelineItemProps = {
   commit: CommitRecord;
@@ -39,6 +39,9 @@ export function CommitTimelineItem({
   const assistantMessage = metadataText(commit, "assistant_message");
   const boardAction = metadataText(commit, "board_action");
   const autoApplied = metadataBool(commit, "auto_applied");
+  const boardPatchDiff = Array.isArray(commit.metadata?.board_patch_diff) ? commit.metadata.board_patch_diff : [];
+  const patchRisk = commit.metadata?.board_patch_risk_level;
+  const operationCount = boardPatchDiff.length || commit.operations.length;
 
   return (
     <div className="relative flex gap-4 pl-3">
@@ -67,6 +70,11 @@ export function CommitTimelineItem({
               Auto Save
             </span>
           ) : null}
+          {operationCount > 0 ? (
+            <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.16em] text-emerald-700">
+              {operationCount} Patch{operationCount > 1 ? "es" : ""}
+            </span>
+          ) : null}
         </div>
         {isChatFlow && userMessage ? (
           <div className="mt-2 rounded-xl border border-gray-100 bg-white p-3 text-[11px] leading-5 text-gray-600 shadow-sm">
@@ -87,6 +95,18 @@ export function CommitTimelineItem({
         ) : (
           <p className="mt-1 whitespace-pre-wrap text-[11px] text-gray-500">{commit.message}</p>
         )}
+        {boardPatchDiff.length ? (
+          <div className="mt-2 border-l-2 border-emerald-200 pl-3 text-[11px] leading-5 text-gray-600">
+            <p className="font-bold text-gray-400">
+              Board patch{patchRisk ? ` · ${patchRisk}` : ""}
+            </p>
+            {boardPatchDiff.slice(0, 3).map((item, index) => (
+              <p key={`${commit.id}:patch:${index}`} className="mt-1 text-gray-700">
+                {patchOpLabel(item)} {compactText(item.summary || item.after_text || item.before_text || "", 96)}
+              </p>
+            ))}
+          </div>
+        ) : null}
         <p className="mt-1 text-[11px] text-gray-400">{formatDate(commit.created_at)}</p>
         <div className="mt-2 flex flex-wrap gap-2">
           <button
@@ -120,4 +140,14 @@ export function CommitTimelineItem({
       </div>
     </div>
   );
+}
+
+function patchOpLabel(item: DiffPreviewItem) {
+  if (item.op === "insert_block") {
+    return "+";
+  }
+  if (item.op === "delete_block") {
+    return "-";
+  }
+  return "~";
 }
