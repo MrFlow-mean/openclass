@@ -37,6 +37,10 @@ const CHAT_PANEL_WIDTH_STORAGE_KEY = "openclass:studio:chat-panel-width";
 const CHAT_PANEL_DEFAULT_WIDTH = 380;
 const CHAT_PANEL_MIN_WIDTH = 300;
 const CHAT_PANEL_MAX_WIDTH = 640;
+const RIGHT_SIDEBAR_WIDTH_STORAGE_KEY = "openclass:studio:right-sidebar-width";
+const RIGHT_SIDEBAR_DEFAULT_WIDTH = 360;
+const RIGHT_SIDEBAR_MIN_WIDTH = 280;
+const RIGHT_SIDEBAR_MAX_WIDTH = 640;
 
 export function CourseStudio() {
   const router = useRouter();
@@ -90,6 +94,19 @@ export function CourseStudio() {
     defaultWidth: CHAT_PANEL_DEFAULT_WIDTH,
     minWidth: CHAT_PANEL_MIN_WIDTH,
     maxWidth: CHAT_PANEL_MAX_WIDTH,
+    label: "调整 Chatbot 宽度",
+  });
+  const {
+    width: rightSidebarWidth,
+    isResizing: isRightSidebarResizing,
+    dragHandleProps: rightSidebarResizeHandleProps,
+  } = useResizablePanelWidth({
+    storageKey: RIGHT_SIDEBAR_WIDTH_STORAGE_KEY,
+    defaultWidth: RIGHT_SIDEBAR_DEFAULT_WIDTH,
+    minWidth: RIGHT_SIDEBAR_MIN_WIDTH,
+    maxWidth: RIGHT_SIDEBAR_MAX_WIDTH,
+    dragDirection: "grow-left",
+    label: "调整课程工作台辅助宽度",
   });
   const [sidebarTab, setSidebarTab] = useState<CourseStudioSidebarTab>("history");
   const [isCreatingLessonInline, setIsCreatingLessonInline] = useState(false);
@@ -487,11 +504,16 @@ export function CourseStudio() {
     >
       <div
         ref={mainContainerRef}
-        style={{ "--chat-panel-width": `${chatPanelWidth}px` } as CSSProperties}
+        style={
+          {
+            "--chat-panel-width": `${chatPanelWidth}px`,
+            "--right-sidebar-width": `${rightSidebarWidth}px`,
+          } as CSSProperties
+        }
         className={clsx(
           "grid min-h-0 flex-1 grid-cols-[var(--chat-panel-width)_minmax(0,1fr)] overflow-hidden transition-[grid-template-columns]",
-          isChatPanelResizing ? "duration-0" : "duration-300",
-          rightSidebarOpen && "xl:grid-cols-[var(--chat-panel-width)_minmax(0,1fr)_360px]"
+          isChatPanelResizing || isRightSidebarResizing ? "duration-0" : "duration-300",
+          rightSidebarOpen && "xl:grid-cols-[var(--chat-panel-width)_minmax(0,1fr)_var(--right-sidebar-width)]"
         )}
       >
         <CourseStudioChatSidebar
@@ -563,6 +585,8 @@ export function CourseStudio() {
 
         <CourseStudioSidePanel
           open={rightSidebarOpen}
+          resizeHandleProps={rightSidebarResizeHandleProps}
+          isResizing={isRightSidebarResizing}
           sidebarTab={sidebarTab}
           onSidebarTabChange={setSidebarTab}
           onClose={() => setRightSidebarOpen(false)}
