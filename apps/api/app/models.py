@@ -746,6 +746,19 @@ class ResourceContextChunk(BaseModel):
     teaching_hint: str
 
 
+class ResourceVisualEvidence(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("visual"))
+    content_type: str
+    caption: str = ""
+    page_no: int | None = None
+    page_idx: int | None = None
+    bbox: list[float] = Field(default_factory=list)
+    source_locator: str | None = None
+    relevance_reason: str = ""
+    relevance_score: float = 0.0
+    image_src: str = Field(default="", exclude=True, repr=False)
+
+
 class ResourceReferenceContext(BaseModel):
     resource_id: str
     chapter_id: str
@@ -754,6 +767,7 @@ class ResourceReferenceContext(BaseModel):
     summary: str
     teaching_points: list[str] = Field(default_factory=list)
     chunks: list[ResourceContextChunk] = Field(default_factory=list)
+    visual_evidence: list[ResourceVisualEvidence] = Field(default_factory=list)
     full_text: str = Field(default="", exclude=True, repr=False)
 
 

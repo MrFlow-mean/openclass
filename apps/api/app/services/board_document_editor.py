@@ -14,11 +14,16 @@ from app.models import (
     LearningRequirementSheet,
     Lesson,
     PatchOperation,
+    ResourceReferenceContext,
 )
 from app.services.document_ops import apply_board_patch, read_board_snapshot
 from app.services.history import current_head_commit
 from app.services.openai_course_ai import BoardDocumentEditResult, openai_course_ai
 from app.services.board_segment_index import build_board_segment_index
+from app.services.resource_visual_evidence import (
+    augment_document_with_resource_visual_evidence,
+    visual_evidence_metadata,
+)
 from app.services.rich_document import (
     build_document,
     document_to_markdown,
@@ -57,6 +62,8 @@ class BoardDocumentEditOutcome:
     diff_preview: list[DiffPreviewItem] | None = None
     patch_validation: BoardPatchValidationResult | None = None
     patch_risk_level: str | None = None
+    resource_visual_evidence_inserted: int = 0
+    resource_visual_evidence: list[dict[str, object]] | None = None
 
 
 def generate_from_requirements(
@@ -65,6 +72,7 @@ def generate_from_requirements(
     requirements: LearningRequirementSheet,
     clarification: LearningClarificationStatus,
     resource_summary: str,
+    reference_context: ResourceReferenceContext | None = None,
     requirement_run_id: str | None = None,
     frozen_requirement_version_id: str | None = None,
 ) -> BoardDocumentEditOutcome:
@@ -159,6 +167,18 @@ def generate_from_requirements(
                 result=result,
             )
             continue
+        visual_evidence_summary = visual_evidence_metadata(reference_context.visual_evidence) if reference_context else []
+        before_visual_html = new_document.content_html
+        if reference_context is not None:
+            new_document = augment_document_with_resource_visual_evidence(
+                new_document,
+                reference_context=reference_context,
+            )
+        visual_inserted = (
+            min(len([item for item in reference_context.visual_evidence if item.image_src]), 2)
+            if reference_context is not None and new_document.content_html != before_visual_html
+            else 0
+        )
         return _changed(
             lesson=lesson,
             new_document=new_document,
@@ -169,6 +189,8 @@ def generate_from_requirements(
             reason="板书文档编辑 AI 已根据学习需求清单生成空白板书。",
             quality_repair_attempts=quality_repair_attempts,
             quality_review_status="pass",
+            resource_visual_evidence_inserted=visual_inserted,
+            resource_visual_evidence=visual_evidence_summary,
         )
     return _no_change(
         lesson,
@@ -573,6 +595,8 @@ def _changed(
     diff_preview: list[DiffPreviewItem] | None = None,
     patch_validation: BoardPatchValidationResult | None = None,
     patch_risk_level: str | None = None,
+    resource_visual_evidence_inserted: int = 0,
+    resource_visual_evidence: list[dict[str, object]] | None = None,
 ) -> BoardDocumentEditOutcome:
     return BoardDocumentEditOutcome(
         chatbot_message=chatbot_message,
@@ -591,6 +615,8 @@ def _changed(
         diff_preview=diff_preview or [],
         patch_validation=patch_validation,
         patch_risk_level=patch_risk_level,
+        resource_visual_evidence_inserted=resource_visual_evidence_inserted,
+        resource_visual_evidence=resource_visual_evidence or [],
     )
 
 

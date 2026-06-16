@@ -537,6 +537,11 @@ export function CourseStudioChatSidebar({
               <p className="mt-2 text-sm font-semibold text-gray-900">
                 {selectedReference.resource_name} / {selectedReference.chapter_title}
               </p>
+              {selectedReference.visual_evidence.length > 0 ? (
+                <p className="mt-2 text-xs text-emerald-800">
+                  包含 {selectedReference.visual_evidence.length} 个视觉证据
+                </p>
+              ) : null}
             </div>
           ) : null}
         </div>

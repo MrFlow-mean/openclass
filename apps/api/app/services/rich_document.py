@@ -71,6 +71,7 @@ _HTML_BLOCK_TAGS = {
     "h5",
     "h6",
     "header",
+    "img",
     "li",
     "main",
     "nav",
