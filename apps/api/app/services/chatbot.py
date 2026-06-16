@@ -989,16 +989,69 @@ def _latest_learning_clarification(
             return LearningClarificationStatus.model_validate(raw)
         except Exception:
             continue
-    summary = requirements.learning_goal or "学习需求已确认，可以生成板书。"
+    summary = requirements.learning_goal or "用户还没有透露足够具体的学习需求。"
+    checklist = [
+        LearningRequirementChecklistItem(
+            title=item,
+            is_clear=False,
+            evidence="来自当前学习需求清单，仍需要用户继续确认。",
+        )
+        for item in requirements.learning_need_checklist[:5]
+        if item.strip()
+    ]
+    if not checklist:
+        checklist = [
+            LearningRequirementChecklistItem(
+                title="用户具体想学什么内容或解决什么问题",
+                is_clear=False,
+                evidence="最近对话还没有说明要围绕哪个主题、资料或问题学习。",
+            ),
+            LearningRequirementChecklistItem(
+                title="用户在这个领域目前是什么水平",
+                is_clear=False,
+                evidence="最近对话还没有说明已有基础、经验或卡点。",
+            ),
+            LearningRequirementChecklistItem(
+                title="用户为什么学以及要面对什么场景",
+                is_clear=False,
+                evidence="最近对话还没有说明学习目的、任务场景或输出要求。",
+            ),
+        ]
+    missing_items = requirements.risk_notes[:5] if requirements.risk_notes else [
+        "具体学习内容",
+        "当前水平",
+        "学习目的或使用场景",
+    ]
+    next_question = requirements.current_questions[0] if requirements.current_questions else "你想围绕哪个主题、资料或具体问题开始学习？"
     return LearningClarificationStatus(
-        progress=100,
-        label="准备生成板书",
+        progress=15,
+        label="继续澄清",
         reason=summary,
-        missing_items=[],
-        can_start=True,
+        missing_items=missing_items,
+        can_start=False,
         summary=summary,
-        ready_for_board=True,
+        key_facts=[],
+        checklist=checklist,
+        next_question=next_question,
+        ready_for_board=False,
     )
+
+
+def _complete_clarification_for_explicit_action(
+    learning_clarification: LearningClarificationStatus,
+    *,
+    reason: str,
+) -> LearningClarificationStatus:
+    updated = LearningClarificationStatus.model_validate(learning_clarification.model_dump(mode="json"))
+    updated.progress = 100
+    updated.label = "准备执行"
+    updated.reason = reason
+    updated.missing_items = []
+    updated.can_start = True
+    updated.summary = learning_clarification.summary or reason
+    updated.next_question = ""
+    updated.ready_for_board = True
+    return updated
 
 
 def _new_requirement_history_recorder(
@@ -1899,6 +1952,11 @@ def _handle_existing_board_task_flow(
         return None
 
     learning_clarification = _latest_learning_clarification(lesson, requirements=requirements)
+    if _requests_existing_board_generation_control(request.message) or is_generation_control_request(request.message):
+        learning_clarification = _complete_clarification_for_explicit_action(
+            learning_clarification,
+            reason="用户明确要求围绕已有板书执行下一步，系统进入第二层板书任务链路。",
+        )
     if (
         existing_task is not None
         and existing_task.confirmation_status == "awaiting"
@@ -5438,7 +5496,10 @@ def _chat_response(
             requirement_history=requirement_history if track_initial_requirement_run else None,
         )
 
-    if chat_turn_gate.route == "ordinary_chat":
+    has_active_initial_requirement_run = (
+        track_initial_requirement_run and requirement_history.snapshot.status in {"collecting", "ready"}
+    )
+    if chat_turn_gate.route == "ordinary_chat" and not has_active_initial_requirement_run:
         ai_reply = openai_course_ai.generate_chatbot_reply(
             lesson_title=lesson.title,
             learning_goal=requirements.learning_goal,

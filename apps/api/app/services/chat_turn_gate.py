@@ -57,6 +57,12 @@ def decide_chat_turn(
     matched_rules = sorted(signals.raw_matches)
 
     if board_generation_action == "start":
+        if not document_empty:
+            return _decision(
+                "existing_board_task",
+                reason="已有板书下的生成控制必须进入第二层板书任务链路。",
+                matched_rules=[*matched_rules, "board_generation_action:start", "existing_board"],
+            )
         return _decision(
             "initial_board_generation",
             reason="用户明确要求开始生成板书。",
@@ -71,6 +77,12 @@ def decide_chat_turn(
         )
 
     if is_generation_control_request(message) or is_explicit_board_generation_request(message):
+        if not document_empty:
+            return _decision(
+                "existing_board_task",
+                reason="已有板书下的生成或讲解控制必须进入第二层板书任务链路。",
+                matched_rules=[*matched_rules, "generation_control", "existing_board"],
+            )
         return _decision(
             "initial_board_generation",
             reason="用户正在把初始需求推进到板书生成。",
