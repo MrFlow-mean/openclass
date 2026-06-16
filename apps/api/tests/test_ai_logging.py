@@ -1698,6 +1698,64 @@ def test_broad_new_knowledge_asks_to_narrow_topic_without_board_generation(
     assert _read_log_entries(isolated_ai_log) == []
 
 
+def test_unclear_initial_learning_purpose_suggests_directions_without_board_generation(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_initial_learning_work_mode",
+        lambda **kwargs: InitialLearningWorkModeDecision(
+            work_mode="unknown",
+            granularity="unclear",
+            topic="学习方向未定",
+            reason="用户表达了学习意愿，但还没有说明想学新知识还是练习。",
+            next_question="你想先选一个知识点学习，还是先做一份练习材料？",
+            guided_discovery_reply=(
+                "我先按你现在给的信息给两个方向：可以从一个具体知识点开始，也可以先做一份可练习的材料。"
+                "你想先选一个知识点学习，还是先做一份练习材料？"
+            ),
+        ),
+    )
+
+    def _unexpected_board_edit(**kwargs):
+        raise AssertionError("unclear initial learning purposes must not generate a board")
+
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _unexpected_board_edit)
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.board_document = build_document(title="空白板书")
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="我想开始学习，但是还没想好怎么学"),
+        user_id=TEST_USER.id,
+    )
+
+    assert "具体知识点" in response.chatbot_message
+    assert "练习材料" in response.chatbot_message
+    assert response.board_decision.action == "no_change"
+    assert response.requirement_cleared is False
+    assert response.learning_clarification.work_mode == "unknown"
+    assert response.learning_clarification.ready_for_board is False
+    updated_lesson = response.course_package.lessons[0]
+    assert updated_lesson.board_document.content_text == ""
+    commit = updated_lesson.history_graph.commits[-1]
+    assert commit.metadata["kind"] == "chat_flow"
+    assert commit.metadata["assistant_message_source"] == "initial_learning_guided_discovery"
+    assert commit.metadata["initial_learning_work_mode"]["work_mode"] == "unknown"
+    assert commit.metadata["initial_learning_work_mode"]["guided_discovery_reply"] == response.chatbot_message
+    assert commit.metadata["requirement_cleared"] is False
+    saved_lesson = store.load_for_user(TEST_USER.id).packages[0].lessons[0]
+    assert saved_lesson.learning_requirements is not None
+    assert saved_lesson.board_document.content_text == ""
+    assert _read_log_entries(isolated_ai_log) == []
+
+
 def test_practice_artifact_uses_full_requirement_sheet_then_generates_board(
     monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
 ) -> None:

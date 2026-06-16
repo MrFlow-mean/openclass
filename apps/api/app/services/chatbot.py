@@ -803,16 +803,30 @@ def _minimal_initial_learning_state(
 ) -> tuple[LearningRequirementSheet, LearningClarificationStatus]:
     topic = _compact_text(decision.topic or user_message, limit=160) or "当前学习主题"
     reason = _compact_text(decision.reason, limit=220) or "用户已经表达了一个可处理的学习任务。"
+    question = decision.next_question.strip()
+    is_unknown = decision.work_mode == "unknown"
     requirements = LearningRequirementSheet.model_validate(base.model_dump(mode="json"))
     requirements.theme = topic
     requirements.learning_goal = reason
-    requirements.current_questions = [] if generate_board else [decision.next_question]
+    requirements.current_questions = [] if generate_board or not question else [question]
     requirements.learning_need_checklist = []
     requirements.target_depth = "围绕当前学习目标生成聚焦内容，不扩展成整门课程。"
-    requirements.output_preference = "右侧板书" if generate_board else "继续澄清学习起点"
+    requirements.output_preference = "右侧板书" if generate_board else (
+        "先建议学习方向" if is_unknown else "继续澄清学习起点"
+    )
     requirements.board_scope = [topic] if generate_board else []
-    requirements.success_criteria = "用户获得一份可继续讲解或练习的聚焦板书。" if generate_board else "用户把宽主题缩小到一个清晰起点。"
-    requirements.risk_notes = [] if generate_board else ["需要先缩小学习主题。"]
+    requirements.success_criteria = (
+        "用户获得一份可继续讲解或练习的聚焦板书。"
+        if generate_board
+        else (
+            "用户从建议中选择或修正一个清晰学习方向。"
+            if is_unknown
+            else "用户把宽主题缩小到一个清晰起点。"
+        )
+    )
+    requirements.risk_notes = [] if generate_board else [
+        "需要先明确学习工作模式。" if is_unknown else "需要先缩小学习主题。"
+    ]
     requirements.action_type = "generate_board" if generate_board else None
     requirements.action_instruction = user_message
     requirements.location_status = "resolved" if generate_board else "missing"
@@ -835,16 +849,18 @@ def _minimal_initial_learning_state(
         )
     ]
     clarification = LearningClarificationStatus(
-        progress=100 if generate_board else 35,
-        label="准备生成知识板书" if generate_board else "需要缩小学习主题",
+        progress=100 if generate_board else (20 if is_unknown else 35),
+        label="准备生成知识板书" if generate_board else ("建议学习方向" if is_unknown else "需要缩小学习主题"),
         reason=reason,
-        missing_items=[] if generate_board else ["具体知识点或学习起点"],
+        missing_items=[] if generate_board else [
+            "学习工作模式或学习方向" if is_unknown else "具体知识点或学习起点"
+        ],
         can_start=generate_board,
         forced_start=False,
         summary=reason,
         key_facts=key_facts,
         checklist=checklist,
-        next_question="" if generate_board else decision.next_question,
+        next_question="" if generate_board else question,
         ready_for_board=generate_board,
         work_mode=decision.work_mode,
         granularity=decision.granularity,
@@ -3817,8 +3833,54 @@ def _handle_initial_learning_work_mode(
         conversation_summary=_conversation_summary(request.conversation),
         user_message=request.message,
     )
-    if decision is None or decision.work_mode in {"unknown", "practice_artifact"}:
+    if decision is None or decision.work_mode == "practice_artifact":
         return None
+
+    if decision.work_mode == "unknown":
+        chatbot_message = decision.guided_discovery_reply.strip()
+        if not chatbot_message:
+            return None
+        requirements, learning_clarification = _minimal_initial_learning_state(
+            requirements,
+            decision=decision,
+            user_message=request.message,
+            generate_board=False,
+        )
+        lesson.learning_requirements = requirements
+        commit_operations(
+            lesson,
+            [],
+            label="Initial learning guided discovery",
+            message="Suggested learning directions when the initial learning purpose was unclear",
+            new_document=lesson.board_document,
+            metadata={
+                "kind": "chat_flow",
+                "user_message": request.message,
+                "assistant_message": chatbot_message,
+                "assistant_message_source": "initial_learning_guided_discovery",
+                "interaction_mode": request.interaction_mode,
+                **_task_metadata(
+                    requirements=requirements,
+                    learning_clarification=learning_clarification,
+                    requirement_cleared=False,
+                ),
+                **_initial_learning_work_mode_metadata(decision),
+                **_reference_metadata(resolution=resource_resolution),
+            },
+        )
+        workspace_state.normalize_package_state(package)
+        _save_workspace_for_user(user_id=user_id, workspace=workspace, requirement_history=requirement_history)
+        return _response(
+            workspace=workspace,
+            package=package,
+            lesson=lesson,
+            chatbot_message=chatbot_message,
+            requirements=requirements,
+            learning_clarification=learning_clarification,
+            board_decision=BoardDecision(action="no_change", reason="本轮学习目的不明确，只建议学习方向，不生成板书。"),
+            resource_matches=resource_resolution.matches,
+            selected_reference=selected_reference,
+        )
 
     if decision.work_mode == "narrow_topic":
         question = decision.next_question.strip()

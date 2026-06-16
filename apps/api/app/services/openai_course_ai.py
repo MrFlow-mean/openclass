@@ -356,6 +356,7 @@ class InitialLearningWorkModeDecision(BaseModel):
     topic: str = ""
     reason: str = ""
     next_question: str = ""
+    guided_discovery_reply: str = ""
 
 
 class ComplexProblemSolution(BaseModel):
@@ -1233,13 +1234,17 @@ class OpenAICourseAI:
             "2. narrow_topic：用户想学新知识，但范围太宽，尚不能聚焦到一个知识点或清晰起点；只需要追问一个缩小问题。\n"
             "3. practice_artifact：用户想练习，或要求生成可操练学习材料、任务、题目、测验、案例、情景材料、对话材料、角色任务等。"
             "系统后续会维护完整需求清单，再生成练习板书。\n"
-            "4. unknown：无法可靠判断。\n"
+            "4. unknown：无法可靠判断。此时必须根据已知上下文生成 guided_discovery_reply，"
+            "给出 2-3 个可选学习内容方向或学习产物方向，并只问一个选择/缩小问题。\n"
             "规则：\n"
             "1. 不写任何学科、教材、考试、语法点、场景或样例专属分支。\n"
             "2. 根据用户意图形态和产物形态判断，不根据具体主题名特殊处理。\n"
             "3. topic 只抽取用户已经表达的学习主题或产物目标，不脑补。\n"
-            "4. narrow_topic 必须给出自然的 next_question；其他模式 next_question 可以为空。\n"
-            "5. 如果用户要求生成可操练材料，即使材料里包含知识点，也归为 practice_artifact。"
+            "4. narrow_topic 必须给出自然的 next_question；unknown 必须给出 next_question 和 guided_discovery_reply。\n"
+            "5. 如果用户要求生成可操练材料，即使材料里包含知识点，也归为 practice_artifact。\n"
+            "6. guided_discovery_reply 必须像 Chatbot 在左侧聊天框自然说话：基于 lesson_title、resource_summary、"
+            "recent_conversation 和 current_user_message 中已经明确的信息给建议；上下文不足时，只建议通用学习切入方式，"
+            "不要编造具体事实或固定主题。"
         )
         user_prompt = _json(
             {
@@ -1252,7 +1257,8 @@ class OpenAICourseAI:
                     "granularity": "single_knowledge_point、broad_topic、practice_artifact 或 unclear。",
                     "topic": "用户已表达的学习主题、知识点或练习产物目标。",
                     "reason": "简短说明通用判断依据，不引用任何专属规则。",
-                    "next_question": "仅 narrow_topic 必填，只问一个缩小主题的问题。",
+                    "next_question": "narrow_topic 和 unknown 必填，只问一个缩小主题或选择方向的问题。",
+                    "guided_discovery_reply": "仅 unknown 必填。基于已知上下文给 2-3 个学习内容建议，并让用户选择或修正。",
                 },
             }
         )
