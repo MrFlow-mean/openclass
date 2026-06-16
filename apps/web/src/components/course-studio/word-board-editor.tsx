@@ -11,6 +11,8 @@ import TableRow from "@tiptap/extension-table-row";
 import TextAlign from "@tiptap/extension-text-align";
 import { TextStyle } from "@tiptap/extension-text-style";
 import UnderlineExtension from "@tiptap/extension-underline";
+import { Plugin, PluginKey } from "@tiptap/pm/state";
+import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import clsx from "clsx";
@@ -83,12 +85,16 @@ import {
 } from "@/components/course-studio/word-editor-toolbar";
 import { BoardModelPicker } from "@/components/course-studio/board-model-picker";
 import { MATH_TEXT_SERIALIZERS, normalizeEditorMath } from "@/lib/math-content";
-import type { AIModelOption, AIModelSelection, BoardDocument, DocumentPageSettings } from "@/types";
+import type { AIModelOption, AIModelSelection, BoardDocument, BoardFocusRef, DocumentPageSettings } from "@/types";
 
 type WordRibbonTab = "home" | "insert" | "page";
 
 declare module "@tiptap/core" {
   interface Commands<ReturnType> {
+    teachingFocusHighlight: {
+      setTeachingFocusHighlight: (range: { from: number; to: number }) => ReturnType;
+      clearTeachingFocusHighlight: () => ReturnType;
+    };
     fontSize: {
       setFontSize: (fontSize: string) => ReturnType;
       unsetFontSize: () => ReturnType;
@@ -170,6 +176,84 @@ const FontFamily = Extension.create({
   },
 });
 
+type TeachingFocusHighlightRange = { from: number; to: number };
+
+const teachingFocusHighlightPluginKey = new PluginKey<TeachingFocusHighlightRange | null>("teachingFocusHighlight");
+
+const TeachingFocusHighlight = Extension.create({
+  name: "teachingFocusHighlight",
+  addProseMirrorPlugins() {
+    return [
+      new Plugin<TeachingFocusHighlightRange | null>({
+        key: teachingFocusHighlightPluginKey,
+        state: {
+          init: (): TeachingFocusHighlightRange | null => null,
+          apply(transaction, currentRange): TeachingFocusHighlightRange | null {
+            const meta = transaction.getMeta(teachingFocusHighlightPluginKey) as
+              | { type: "set"; range: { from: number; to: number } }
+              | { type: "clear" }
+              | undefined;
+            if (meta?.type === "clear") {
+              return null;
+            }
+            if (meta?.type === "set") {
+              return meta.range.from < meta.range.to ? meta.range : null;
+            }
+            if (!currentRange || !transaction.docChanged) {
+              return currentRange;
+            }
+            const from = transaction.mapping.map(currentRange.from, -1);
+            const to = transaction.mapping.map(currentRange.to, 1);
+            return from < to && to <= transaction.doc.content.size ? { from, to } : null;
+          },
+        },
+        props: {
+          decorations(state) {
+            const range = teachingFocusHighlightPluginKey.getState(state);
+            if (!range || range.from >= range.to) {
+              return null;
+            }
+            return DecorationSet.create(state.doc, [
+              Decoration.inline(range.from, range.to, {
+                class: "word-editor__teaching-focus-highlight",
+                "data-teaching-focus": "true",
+              }),
+            ]);
+          },
+        },
+      }),
+    ];
+  },
+  addCommands() {
+    return {
+      setTeachingFocusHighlight:
+        (range) =>
+        ({ tr, dispatch }) => {
+          if (dispatch) {
+            dispatch(
+              tr
+                .setMeta(teachingFocusHighlightPluginKey, { type: "set", range })
+                .setMeta("addToHistory", false)
+            );
+          }
+          return true;
+        },
+      clearTeachingFocusHighlight:
+        () =>
+        ({ tr, dispatch }) => {
+          if (dispatch) {
+            dispatch(
+              tr
+                .setMeta(teachingFocusHighlightPluginKey, { type: "clear" })
+                .setMeta("addToHistory", false)
+            );
+          }
+          return true;
+        },
+    };
+  },
+});
+
 const PageBreak = Node.create({
   name: "pageBreak",
   group: "block",
@@ -233,6 +317,7 @@ const WORD_EDITOR_EXTENSIONS = [
   TableRow,
   TableHeader,
   TableCell,
+  TeachingFocusHighlight,
   BlockMath.configure({
     katexOptions: {
       displayMode: true,
@@ -255,9 +340,196 @@ const WORD_EDITOR_PROPS = {
   },
 };
 
+type FlatEditorChar = {
+  text: string;
+  pos: number | null;
+};
+
+type NormalizedEditorText = {
+  text: string;
+  map: number[];
+};
+
+function normalizeLookupText(value: string) {
+  return value.replace(/\s+/g, " ").trim().toLocaleLowerCase();
+}
+
+function appendBlockBoundary(chars: FlatEditorChar[]) {
+  const last = chars[chars.length - 1]?.text ?? "";
+  if (chars.length && !/\s/.test(last)) {
+    chars.push({ text: " ", pos: null });
+  }
+}
+
+function flattenEditorText(editor: TiptapEditor) {
+  const chars: FlatEditorChar[] = [];
+  editor.state.doc.descendants((node, pos) => {
+    if (node.isBlock) {
+      appendBlockBoundary(chars);
+    }
+    if (!node.isText || !node.text) {
+      return;
+    }
+    for (let offset = 0; offset < node.text.length; offset += 1) {
+      chars.push({ text: node.text[offset] ?? "", pos: pos + offset });
+    }
+  });
+  return chars;
+}
+
+function normalizedEditorText(chars: FlatEditorChar[]): NormalizedEditorText {
+  let text = "";
+  const map: number[] = [];
+  let lastWasSpace = true;
+  chars.forEach((char, index) => {
+    if (/\s/.test(char.text)) {
+      if (!lastWasSpace && text.length) {
+        text += " ";
+        map.push(index);
+        lastWasSpace = true;
+      }
+      return;
+    }
+    text += char.text.toLocaleLowerCase();
+    map.push(index);
+    lastWasSpace = false;
+  });
+  if (text.endsWith(" ")) {
+    return { text: text.slice(0, -1), map: map.slice(0, -1) };
+  }
+  return { text, map };
+}
+
+function uniqueNeedles(values: Array<string | undefined | null>) {
+  const seen = new Set<string>();
+  return values.flatMap((value) => {
+    const normalized = normalizeLookupText(value ?? "");
+    if (normalized.length < 2 || seen.has(normalized)) {
+      return [];
+    }
+    seen.add(normalized);
+    return [normalized];
+  });
+}
+
+function allMatchIndexes(haystack: string, needle: string) {
+  const indexes: number[] = [];
+  let fromIndex = 0;
+  while (fromIndex < haystack.length) {
+    const index = haystack.indexOf(needle, fromIndex);
+    if (index < 0) {
+      break;
+    }
+    indexes.push(index);
+    fromIndex = index + Math.max(needle.length, 1);
+  }
+  return indexes;
+}
+
+function contextScore(text: string, start: number, end: number, focus: BoardFocusRef) {
+  const before = normalizeLookupText(focus.before_text).slice(-96);
+  const after = normalizeLookupText(focus.after_text).slice(0, 96);
+  const previous = text.slice(Math.max(0, start - 160), start);
+  const next = text.slice(end, Math.min(text.length, end + 160));
+  let score = 0;
+  if (before && previous.endsWith(before)) {
+    score += 2;
+  } else if (before && previous.includes(before.slice(-48))) {
+    score += 1;
+  }
+  if (after && next.startsWith(after)) {
+    score += 2;
+  } else if (after && next.includes(after.slice(0, 48))) {
+    score += 1;
+  }
+  return score;
+}
+
+function rangeFromNormalizedMatch(
+  chars: FlatEditorChar[],
+  map: number[],
+  start: number,
+  length: number
+): { from: number; to: number } | null {
+  const startFlatIndex = map[start];
+  const endFlatIndex = map[start + length - 1];
+  if (startFlatIndex === undefined || endFlatIndex === undefined) {
+    return null;
+  }
+  let from: number | null = null;
+  let to: number | null = null;
+  for (let index = startFlatIndex; index <= endFlatIndex; index += 1) {
+    const pos = chars[index]?.pos;
+    if (typeof pos !== "number") {
+      continue;
+    }
+    from ??= pos;
+    to = pos + 1;
+  }
+  return from !== null && to !== null && from < to ? { from, to } : null;
+}
+
+function findTeachingFocusRange(editor: TiptapEditor, focus: BoardFocusRef): { from: number; to: number } | null {
+  const chars = flattenEditorText(editor);
+  const normalized = normalizedEditorText(chars);
+  const lastHeading = focus.heading_path[focus.heading_path.length - 1];
+  const needles = uniqueNeedles([focus.excerpt, focus.display_label, lastHeading]);
+  for (const needle of needles) {
+    const matches = allMatchIndexes(normalized.text, needle)
+      .map((index) => ({
+        index,
+        score: contextScore(normalized.text, index, index + needle.length, focus),
+      }))
+      .sort((a, b) => b.score - a.score || a.index - b.index);
+    for (const match of matches) {
+      const range = rangeFromNormalizedMatch(chars, normalized.map, match.index, needle.length);
+      if (range) {
+        return range;
+      }
+    }
+  }
+  return null;
+}
+
+function scrollTeachingFocusIntoView(
+  editor: TiptapEditor,
+  pageScroll: HTMLDivElement | null,
+  range: { from: number; to: number }
+) {
+  if (!pageScroll) {
+    return;
+  }
+  window.requestAnimationFrame(() => {
+    try {
+      const coords = editor.view.coordsAtPos(range.from);
+      const containerRect = pageScroll.getBoundingClientRect();
+      const targetTop = pageScroll.scrollTop + coords.top - containerRect.top - pageScroll.clientHeight * 0.34;
+      pageScroll.scrollTo({ top: Math.max(0, targetTop), behavior: "smooth" });
+    } catch {
+      editor.commands.scrollIntoView();
+    }
+  });
+}
+
+function teachingFocusKey(focus: BoardFocusRef | null | undefined) {
+  if (!focus) {
+    return "";
+  }
+  return [
+    focus.document_id ?? "",
+    focus.segment_id ?? "",
+    focus.text_hash ?? "",
+    focus.excerpt_hash ?? "",
+    focus.heading_path.join("/"),
+    focus.display_label ?? "",
+    focus.excerpt,
+  ].join("\u001f");
+}
+
 export function WordBoardEditor({
   document,
   readOnly,
+  teachingFocus,
   toolbarCollapsed,
   modelOptions,
   selectedBoardModel,
@@ -270,6 +542,7 @@ export function WordBoardEditor({
 }: {
   document: BoardDocument;
   readOnly: boolean;
+  teachingFocus?: BoardFocusRef | null;
   toolbarCollapsed: boolean;
   modelOptions: AIModelOption[];
   selectedBoardModel: AIModelSelection;
@@ -411,6 +684,29 @@ export function WordBoardEditor({
       normalizeEditorMath(editor);
     }
   }, [document.id, document.content_html, documentJson, editor, editorContent, readOnly]);
+
+  const currentTeachingFocusKey = teachingFocusKey(teachingFocus);
+
+  useEffect(() => {
+    if (!editor) {
+      return;
+    }
+    if (
+      !teachingFocus ||
+      teachingFocus.source !== "board" ||
+      (teachingFocus.document_id && teachingFocus.document_id !== document.id)
+    ) {
+      editor.commands.clearTeachingFocusHighlight();
+      return;
+    }
+    const range = findTeachingFocusRange(editor, teachingFocus);
+    if (!range) {
+      editor.commands.clearTeachingFocusHighlight();
+      return;
+    }
+    editor.commands.setTeachingFocusHighlight(range);
+    scrollTeachingFocusIntoView(editor, pageScrollRef.current, range);
+  }, [currentTeachingFocusKey, document.content_text, document.id, editor, teachingFocus]);
 
   const currentFontSize =
     ((editor?.getAttributes("textStyle").fontSize as string | null) ?? "14px").replace("px", "");
