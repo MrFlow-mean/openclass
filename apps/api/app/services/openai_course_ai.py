@@ -30,6 +30,8 @@ from app.models import (
     BoardTaskAction,
     BoardTaskRequirementSheet,
     BoardTaskRoute,
+    InitialLearningGranularity,
+    InitialLearningWorkMode,
     InteractionRuleDraft,
     InteractionSession,
     InteractionTurnDecision,
@@ -347,6 +349,14 @@ class LearningRequirementUpdate(BaseModel):
     action_instruction: str = ""
     target_hint: str = ""
     interaction_rule_draft: InteractionRuleDraft | None = None
+
+
+class InitialLearningWorkModeDecision(BaseModel):
+    work_mode: InitialLearningWorkMode = "unknown"
+    granularity: InitialLearningGranularity = "unclear"
+    topic: str = ""
+    reason: str = ""
+    next_question: str = ""
 
 
 class ComplexProblemSolution(BaseModel):
@@ -1207,6 +1217,57 @@ class OpenAICourseAI:
         )
         return result if isinstance(result, ChatbotReply) else None
 
+    def generate_initial_learning_work_mode(
+        self,
+        *,
+        lesson_title: str,
+        resource_summary: str,
+        conversation_summary: str,
+        user_message: str,
+    ) -> InitialLearningWorkModeDecision | None:
+        if not self.enabled:
+            return None
+        system_prompt = (
+            "你是 OpenClass 的初始学习入口分类 AI，只做通用学习工作模式判断，不直接回复用户，"
+            "也不生成板书。\n"
+            "任务：在右侧板书为空时，判断用户本轮学习意图应进入哪种通用链路。\n"
+            "分类：\n"
+            "1. knowledge_board：用户想学新知识，且目标已经小到一个可生成聚焦板书的知识点、概念、方法、步骤或单一问题。"
+            "系统后续会用最小清单生成相关知识板书。\n"
+            "2. narrow_topic：用户想学新知识，但范围太宽，尚不能聚焦到一个知识点或清晰起点；只需要追问一个缩小问题。\n"
+            "3. practice_artifact：用户想练习，或要求生成可操练学习材料、任务、题目、测验、案例、情景材料、对话材料、角色任务等。"
+            "系统后续会维护完整需求清单，再生成练习板书。\n"
+            "4. unknown：无法可靠判断。\n"
+            "规则：\n"
+            "1. 不写任何学科、教材、考试、语法点、场景或样例专属分支。\n"
+            "2. 根据用户意图形态和产物形态判断，不根据具体主题名特殊处理。\n"
+            "3. topic 只抽取用户已经表达的学习主题或产物目标，不脑补。\n"
+            "4. narrow_topic 必须给出自然的 next_question；其他模式 next_question 可以为空。\n"
+            "5. 如果用户要求生成可操练材料，即使材料里包含知识点，也归为 practice_artifact。"
+        )
+        user_prompt = _json(
+            {
+                "lesson_title": lesson_title,
+                "resource_summary": resource_summary,
+                "recent_conversation": conversation_summary,
+                "current_user_message": user_message,
+                "response_contract": {
+                    "work_mode": "knowledge_board、narrow_topic、practice_artifact 或 unknown。",
+                    "granularity": "single_knowledge_point、broad_topic、practice_artifact 或 unclear。",
+                    "topic": "用户已表达的学习主题、知识点或练习产物目标。",
+                    "reason": "简短说明通用判断依据，不引用任何专属规则。",
+                    "next_question": "仅 narrow_topic 必填，只问一个缩小主题的问题。",
+                },
+            }
+        )
+        result = self._parse(
+            "pm",
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            schema=InitialLearningWorkModeDecision,
+        )
+        return result if isinstance(result, InitialLearningWorkModeDecision) else None
+
     def solve_complex_problem(
         self,
         *,
@@ -1586,7 +1647,7 @@ class OpenAICourseAI:
         system_prompt = (
             "你是 OpenClass 的学习需求清单管理 AI，只在后端更新结构化状态，不直接和用户聊天，"
             "也不生成板书。\n"
-            "任务：从最近对话和课程上下文中动态判断用户当前学习需求是否足够清晰。\n"
+            "任务：从最近对话和课程上下文中动态判断用户当前学习产物或练习需求是否足够清晰。\n"
             "规则：\n"
             "1. key_facts 只写用户已经透露的关键信息，每项包含 category、label、value、evidence；"
             "category 必须是 learning、level、vocabulary、scenario、output、other 之一，"
@@ -1594,12 +1655,13 @@ class OpenAICourseAI:
             "不要使用 preferred_output、output_preference 等内部字段名，也不要记录输出形式偏好；"
             "不要把缺失信息、Chatbot 追问、系统默认选项或推测写进去；没有就返回空数组。\n"
             "2. checklist 必须是 3 到 5 个当前最关键的动态需求项，不使用固定栏目模板。\n"
-            "3. 优先判断三类通用信息是否足够：用户具体想学什么或解决什么问题、用户当前水平/已有基础、"
-            "用户为什么学以及要面对什么任务或使用场景；若对话中已有其他更关键约束，可以动态替换或合并。\n"
+            "3. 优先判断三类通用信息是否足够：用户要生成或练习的内容形态、用户当前水平/已有基础、"
+            "用户要面对什么任务或使用场景；若对话中已有其他更关键约束，可以动态替换或合并。\n"
             "4. checklist 每个已明确项必须有来自对话或上下文的简短 evidence；不确定就 is_clear=false。\n"
             "5. 不要猜用户没有透露的信息；缺失内容写入 missing_items 或 next_question。\n"
             "6. next_question 只问下一轮最有价值的一个问题，语言自然，避免机械套话。\n"
-            "7. ready_for_board 仅在这些动态需求足以支撑后续生成有用板书时为 true。\n"
+            "7. ready_for_board 仅在这些动态需求足以支撑后续生成有用板书时为 true；"
+            "单个新知识点的知识板书由初始学习模式分类链路处理，不要求补齐整篇课程需求。\n"
             "8. 如果用户表达的是对现有板书局部内容的动作，额外填写 action_type、action_instruction、target_hint："
             "action_type 只能是 generate_board、explain_target、rewrite_target、expand_target、simplify_target；"
             "target_hint 只写用户给出的定位线索，不猜具体段落 ID。\n"

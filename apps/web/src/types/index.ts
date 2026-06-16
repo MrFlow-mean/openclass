@@ -102,8 +102,12 @@ export interface LearningRequirementSheet {
   action_instruction?: string;
   location_clarification_question?: string;
   interaction_rule_draft?: InteractionRuleDraft | null;
+  work_mode?: InitialLearningWorkMode | null;
+  granularity?: InitialLearningGranularity | null;
 }
 
+export type InitialLearningWorkMode = "knowledge_board" | "narrow_topic" | "practice_artifact" | "unknown";
+export type InitialLearningGranularity = "single_knowledge_point" | "broad_topic" | "practice_artifact" | "unclear";
 export type BoardTaskRunStatus = "collecting" | "ready" | "awaiting_confirmation" | "consumed" | "not_executed" | "archived";
 export type BoardDocumentOperationStatus = "none" | "succeeded" | "failed";
 export type BoardTaskRequestedAction = "write" | "edit" | "explain" | "chat";
@@ -159,6 +163,8 @@ export interface LearningClarificationStatus {
   checklist: LearningRequirementChecklistItem[];
   next_question: string;
   ready_for_board: boolean;
+  work_mode?: InitialLearningWorkMode | null;
+  granularity?: InitialLearningGranularity | null;
 }
 
 export type LearningRequirementRunStatus = "collecting" | "ready" | "frozen" | "consumed" | "archived";
