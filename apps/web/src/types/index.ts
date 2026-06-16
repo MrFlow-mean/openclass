@@ -484,6 +484,18 @@ export interface ResourceContextChunk {
   teaching_hint: string;
 }
 
+export interface ResourceVisualEvidence {
+  id: string;
+  content_type: string;
+  caption: string;
+  page_no?: number | null;
+  page_idx?: number | null;
+  bbox: number[];
+  source_locator?: string | null;
+  relevance_reason: string;
+  relevance_score: number;
+}
+
 export interface ResourceReferenceContext {
   resource_id: string;
   chapter_id: string;
@@ -492,6 +504,7 @@ export interface ResourceReferenceContext {
   summary: string;
   teaching_points: string[];
   chunks: ResourceContextChunk[];
+  visual_evidence: ResourceVisualEvidence[];
 }
 
 export interface BoardDecision {

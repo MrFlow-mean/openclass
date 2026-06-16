@@ -711,6 +711,14 @@ def _resource_context_excerpt(reference: ResourceReferenceContext | None) -> str
     ]
     if reference.teaching_points:
         lines.append("讲解要点：" + "；".join(reference.teaching_points[:4]))
+    if reference.visual_evidence:
+        visual_labels = []
+        for visual in reference.visual_evidence[:2]:
+            page_text = f" 页码 {visual.page_no}" if visual.page_no is not None else ""
+            caption = _compact_text(visual.caption or visual.content_type, limit=80)
+            visual_labels.append(f"{caption}{page_text}".strip())
+        if visual_labels:
+            lines.append("视觉证据：" + "；".join(visual_labels))
     for chunk in reference.chunks[:4]:
         lines.append(f"{chunk.title}：{_compact_text(chunk.excerpt, limit=520)}")
     return "\n".join(line for line in lines if line.strip())
@@ -740,6 +748,10 @@ def _reference_metadata(
                 "resource_name": resolution.selected_reference.resource_name,
                 "chapter_title": resolution.selected_reference.chapter_title,
                 "summary": resolution.selected_reference.summary,
+                "visual_evidence": [
+                    item.model_dump(mode="json", exclude={"image_src"})
+                    for item in resolution.selected_reference.visual_evidence
+                ],
             }
             if resolution.selected_reference
             else None
@@ -2727,10 +2739,14 @@ def _board_document_failure_metadata(edit_outcome) -> dict[str, object]:
 
 
 def _board_document_quality_metadata(edit_outcome) -> dict[str, object]:
-    return {
+    metadata: dict[str, object] = {
         "quality_repair_attempts": edit_outcome.quality_repair_attempts,
         "quality_review_status": edit_outcome.quality_review_status,
     }
+    if getattr(edit_outcome, "resource_visual_evidence_inserted", 0):
+        metadata["resource_visual_evidence_inserted"] = edit_outcome.resource_visual_evidence_inserted
+        metadata["resource_visual_evidence"] = getattr(edit_outcome, "resource_visual_evidence", []) or []
+    return metadata
 
 
 def _board_patch_metadata(edit_outcome) -> dict[str, object]:
@@ -3624,6 +3640,7 @@ def _generate_board_from_confirmed_resource(
         requirements=requirements,
         clarification=learning_clarification,
         resource_summary=resource_summary_for_turn,
+        reference_context=resource_resolution.selected_reference,
         requirement_run_id=frozen_requirement.run_id if frozen_requirement else None,
         frozen_requirement_version_id=frozen_requirement.version_id if frozen_requirement else None,
     )
@@ -3863,6 +3880,7 @@ def _chat_response(
             requirements=requirements,
             clarification=learning_clarification,
             resource_summary=_resource_summary(visible_package.resources),
+            reference_context=selected_reference,
             requirement_run_id=frozen_requirement.run_id if frozen_requirement else None,
             frozen_requirement_version_id=frozen_requirement.version_id if frozen_requirement else None,
         )
@@ -4605,6 +4623,7 @@ def _chat_response(
                 requirements=requirements,
                 clarification=learning_clarification,
                 resource_summary=resource_summary_for_turn,
+                reference_context=selected_reference,
                 requirement_run_id=frozen_requirement.run_id if frozen_requirement else None,
                 frozen_requirement_version_id=frozen_requirement.version_id if frozen_requirement else None,
             )
@@ -5082,6 +5101,7 @@ def _chat_response(
             requirements=requirements,
             clarification=learning_clarification,
             resource_summary=resource_summary_for_turn,
+            reference_context=selected_reference,
             requirement_run_id=frozen_requirement.run_id if frozen_requirement else None,
             frozen_requirement_version_id=frozen_requirement.version_id if frozen_requirement else None,
         )

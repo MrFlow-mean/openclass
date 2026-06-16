@@ -20,6 +20,7 @@ from app.models import (
 )
 from app.services.image_ocr import extract_image_text, extract_pdf_pages_text
 from app.services.rag_anything_adapter import parse_with_rag_anything
+from app.services.resource_visual_evidence import select_resource_visual_evidence
 
 
 _PDF_TEXT_SUMMARY_LIMIT = 140
@@ -1039,6 +1040,7 @@ def _build_reference_context(
         summary=summary,
         teaching_points=unique_points[:6],
         chunks=chunks,
+        visual_evidence=select_resource_visual_evidence(resource, chapter, query=query, max_items=2),
         full_text=normalized_text,
     )
 

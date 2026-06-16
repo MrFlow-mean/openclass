@@ -1,3 +1,4 @@
+import base64
 import sys
 
 import pytest
@@ -7,9 +8,11 @@ from app.models import (
     BoardFocusRef,
     BoardPatchRequest,
     BoardTaskRequirementSheet,
+    LibraryChapter,
     LearningClarificationStatus,
     LearningRequirementSheet,
     PatchOperation,
+    ResourceLibraryItem,
     ResourceSourceUnit,
 )
 from app.services.chart_generation import extract_chart_data_fragments
@@ -21,12 +24,19 @@ from app.services.course_runtime import (
     refresh_lesson_runtime,
 )
 from app.services.document_ops import apply_patch, document_hash, read_board_snapshot
-from app.services.board_document_editor import edit_existing_document
+from app.services.board_document_editor import edit_existing_document, generate_from_requirements
 from app.services.history import bind_commit_metadata, commit_operations, create_branch, restore_commit, switch_branch
 from app.services.lesson_factory import create_empty_lesson, create_lesson
-from app.services.openai_course_ai import GeneratedCatalogChapter, GeneratedResourceCatalog, OpenAICourseAI, openai_course_ai
+from app.services.openai_course_ai import (
+    BoardDocumentEditResult,
+    GeneratedCatalogChapter,
+    GeneratedResourceCatalog,
+    OpenAICourseAI,
+    openai_course_ai,
+)
 from app.services.resource_library import _epub_section_body_score, build_resource_item, extract_reference_context
 from app.services.resource_resolver import resolve_resource_reference
+from app.services.resource_visual_evidence import augment_document_with_resource_visual_evidence
 from app.services.board_segment_index import build_board_segment_index
 from app.services.board_task_manager import normalize_board_task_sheet
 from app.services.rich_document import (
@@ -38,6 +48,11 @@ from app.services.rich_document import (
     upgrade_markdown_like_document,
 )
 from app.services.segment_resolver import resolve_board_focus
+
+
+_TINY_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+)
 
 
 def test_build_lesson_for_topic_creates_blank_lesson_without_ai_runtime() -> None:
@@ -1217,6 +1232,187 @@ def test_resource_resolver_selects_relevant_uploaded_chapter(tmp_path) -> None:
     assert resolution.selected_reference.chapter_title == "第一章"
     assert "第一章正文" in resolution.selected_reference.full_text
     assert resolution.matches
+
+
+def test_resource_reference_context_selects_visual_evidence_from_chapter_assets(tmp_path) -> None:
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    (artifacts / "figure.png").write_bytes(_TINY_PNG)
+    (artifacts / "outside.png").write_bytes(_TINY_PNG)
+    chapter = LibraryChapter(
+        title="第一章",
+        level=1,
+        summary="第一章摘要",
+        page_start=1,
+        page_end=1,
+        order_index=0,
+    )
+    next_chapter = LibraryChapter(
+        title="第二章",
+        level=1,
+        summary="第二章摘要",
+        page_start=2,
+        page_end=2,
+        order_index=1,
+    )
+    resource = ResourceLibraryItem(
+        name="resource.pdf",
+        mime_type="application/pdf",
+        resource_type="document",
+        size_bytes=100,
+        outline=[chapter, next_chapter],
+        extracted_text_available=True,
+        text_content="第一章\n这里解释结构关系。\n第二章\n其他内容。",
+        parser_provider="raganything:fake",
+        parser_artifacts_path=str(artifacts),
+        source_units=[
+            ResourceSourceUnit(content_type="text", text="第一章\n这里解释结构关系。", page_no=1, order_index=0),
+            ResourceSourceUnit(
+                content_type="image",
+                text="关键结构图",
+                page_no=1,
+                source_locator="page=1#image-1",
+                asset_path="figure.png",
+                order_index=1,
+            ),
+            ResourceSourceUnit(content_type="text", text="第二章\n其他内容。", page_no=2, order_index=2),
+            ResourceSourceUnit(
+                content_type="image",
+                text="章节外图片",
+                page_no=2,
+                source_locator="page=2#image-1",
+                asset_path="outside.png",
+                order_index=3,
+            ),
+        ],
+    )
+
+    context = extract_reference_context(resource, chapter.id, user_query="讲第一章的结构关系")
+
+    assert context is not None
+    assert len(context.visual_evidence) == 1
+    visual = context.visual_evidence[0]
+    assert visual.caption == "关键结构图"
+    assert visual.source_locator == "page=1#image-1"
+    assert visual.image_src.startswith("data:image/png;base64,")
+    dumped = context.model_dump(mode="json")
+    assert "image_src" not in str(dumped)
+    assert "data:image" not in str(dumped)
+
+    document = build_document(title="第一章板书", content_text="# 第一章\n\n正文内容")
+    augmented = augment_document_with_resource_visual_evidence(document, reference_context=context)
+
+    assert '<img src="data:image/png;base64,' in augmented.content_html
+    assert "data-openclass-resource-visual" in augmented.content_html
+    assert any(
+        node.get("type") == "image"
+        for node in augmented.content_json.get("content", [])
+        if isinstance(node, dict)
+    )
+
+
+def test_generate_from_requirements_appends_resource_visual_evidence(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    (artifacts / "figure.png").write_bytes(_TINY_PNG)
+    chapter = LibraryChapter(
+        title="第一章",
+        level=1,
+        summary="第一章摘要",
+        page_start=1,
+        page_end=1,
+        order_index=0,
+    )
+    resource = ResourceLibraryItem(
+        name="resource.pdf",
+        mime_type="application/pdf",
+        resource_type="document",
+        size_bytes=100,
+        outline=[chapter],
+        extracted_text_available=True,
+        text_content="第一章\n这里解释结构关系。",
+        parser_provider="raganything:fake",
+        parser_artifacts_path=str(artifacts),
+        source_units=[
+            ResourceSourceUnit(content_type="text", text="第一章\n这里解释结构关系。", page_no=1, order_index=0),
+            ResourceSourceUnit(
+                content_type="image",
+                text="关键结构图",
+                page_no=1,
+                source_locator="page=1#image-1",
+                asset_path="figure.png",
+                order_index=1,
+            ),
+        ],
+    )
+    context = extract_reference_context(resource, chapter.id, user_query="参考第一章生成板书")
+    assert context is not None
+    lesson = create_empty_lesson("视觉证据板书")
+    clarification = LearningClarificationStatus(
+        progress=100,
+        label="ready",
+        reason="ready",
+        ready_for_board=True,
+    )
+
+    def _fake_board_edit(**kwargs):
+        return BoardDocumentEditResult(
+            operation="replace_document",
+            title="第一章板书",
+            content_text="# 第一章\n\n根据资料整理的正文。",
+            summary="已生成。",
+            chatbot_message="已生成。",
+            section_titles=["第一章"],
+        )
+
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _fake_board_edit)
+
+    outcome = generate_from_requirements(
+        lesson=lesson,
+        requirements=lesson.learning_requirements or LearningRequirementSheet(theme="视觉证据板书"),
+        clarification=clarification,
+        resource_summary="参考第一章。",
+        reference_context=context,
+    )
+
+    assert outcome.changed is True
+    assert outcome.resource_visual_evidence_inserted == 1
+    assert outcome.resource_visual_evidence[0]["source_locator"] == "page=1#image-1"
+    assert '<img src="data:image/png;base64,' in outcome.new_document.content_html
+
+
+def test_resource_visual_evidence_skips_path_traversal_assets(tmp_path) -> None:
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    (tmp_path / "secret.png").write_bytes(_TINY_PNG)
+    chapter = LibraryChapter(title="第一章", level=1, summary="第一章摘要", page_start=1, page_end=1, order_index=0)
+    resource = ResourceLibraryItem(
+        name="resource.pdf",
+        mime_type="application/pdf",
+        resource_type="document",
+        size_bytes=100,
+        outline=[chapter],
+        extracted_text_available=True,
+        text_content="第一章\n这里解释结构关系。",
+        parser_provider="raganything:fake",
+        parser_artifacts_path=str(artifacts),
+        source_units=[
+            ResourceSourceUnit(content_type="text", text="第一章\n这里解释结构关系。", page_no=1, order_index=0),
+            ResourceSourceUnit(
+                content_type="image",
+                text="不安全图片",
+                page_no=1,
+                source_locator="page=1#image-1",
+                asset_path="../secret.png",
+                order_index=1,
+            ),
+        ],
+    )
+
+    context = extract_reference_context(resource, chapter.id, user_query="讲第一章")
+
+    assert context is not None
+    assert context.visual_evidence == []
 
 
 def test_epub_section_scoring_penalizes_generic_structural_shells() -> None:
