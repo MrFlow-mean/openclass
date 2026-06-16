@@ -398,7 +398,7 @@ def test_generation_failure_keeps_frozen_requirement_retryable(
 
     response = chat_service.process_chat_on_lesson(
         lesson.id,
-        ChatRequest(message="目标已经完整"),
+        ChatRequest(message="我想学习一个主题，目标已经完整"),
         user_id=TEST_USER_ID,
     )
 
@@ -453,7 +453,7 @@ def test_generation_retry_success_consumes_frozen_requirement(
 
     response = chat_service.process_chat_on_lesson(
         lesson.id,
-        ChatRequest(message="目标已经完整"),
+        ChatRequest(message="我想学习一个主题，目标已经完整"),
         user_id=TEST_USER_ID,
     )
 
@@ -513,7 +513,7 @@ def test_initial_generation_retries_flat_long_document_before_consuming_requirem
 
     response = chat_service.process_chat_on_lesson(
         lesson.id,
-        ChatRequest(message="目标已经完整"),
+        ChatRequest(message="我想学习一个主题，目标已经完整"),
         user_id=TEST_USER_ID,
     )
 
@@ -565,7 +565,7 @@ def test_initial_generation_rejects_flat_long_document_without_headings(
 
     response = chat_service.process_chat_on_lesson(
         lesson.id,
-        ChatRequest(message="目标已经完整"),
+        ChatRequest(message="我想学习一个主题，目标已经完整"),
         user_id=TEST_USER_ID,
     )
 

@@ -47,6 +47,7 @@ from app.services.openai_course_ai import (
     BoardTaskRouteDecision,
     ChatbotReply,
     GeneratedResourceCatalog,
+    InitialLearningWorkModeDecision,
     LearningRequirementUpdate,
     OpenAICourseAI,
     bind_text_model_selection,
@@ -1582,47 +1583,38 @@ def test_requirement_manager_direct_teaching_start_does_not_keep_clarifying(
     assert _read_log_entries(isolated_ai_log) == []
 
 
-def test_direct_teaching_on_blank_board_does_not_auto_generate_board(
+def test_new_knowledge_on_blank_board_generates_focused_board_before_teaching(
     monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
 ) -> None:
     store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
     monkeypatch.setattr(workspace_state, "STORE", store)
     monkeypatch.setattr(
         openai_course_ai,
-        "generate_chatbot_reply",
-        lambda **kwargs: ChatbotReply(chatbot_message="AI生成：第一小节讲解。"),
+        "generate_initial_learning_work_mode",
+        lambda **kwargs: InitialLearningWorkModeDecision(
+            work_mode="knowledge_board",
+            granularity="single_knowledge_point",
+            topic="一个通用主题",
+            reason="用户提出了一个聚焦的新知识学习请求。",
+        ),
     )
     monkeypatch.setattr(
         openai_course_ai,
-        "generate_learning_requirement_update",
-        lambda **kwargs: LearningRequirementUpdate(
-            progress=40,
-            summary="用户要求直接开始讲解一个通用主题。",
-            key_facts=[
-                LearningRequirementKeyFact(
-                    label="学习内容",
-                    value="一个通用主题",
-                    evidence="用户说要直接讲解。",
-                    category="learning",
-                )
-            ],
-            checklist=[
-                LearningRequirementChecklistItem(
-                    title="学习主题",
-                    is_clear=True,
-                    evidence="用户说明了要学的内容。",
-                )
-            ],
-            missing_items=["具体子知识点偏好"],
-            next_question="你想先讲哪个子知识点？",
-            ready_for_board=False,
-        ),
+        "generate_post_board_generation_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="板书已生成，要不要从开头讲？"),
     )
 
-    def _unexpected_board_edit(**kwargs):
-        raise AssertionError("direct teaching requests must not auto-generate a board document")
+    def _fake_board_edit(**kwargs):
+        return BoardDocumentEditResult(
+            operation="replace_document",
+            title="一个通用主题",
+            content_text="# 一个通用主题\n\n## 核心概念\n\n这里是聚焦知识板书。",
+            summary="已生成聚焦知识板书。",
+            chatbot_message="已生成聚焦知识板书。",
+            section_titles=["核心概念"],
+        )
 
-    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _unexpected_board_edit)
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _fake_board_edit)
 
     workspace = _seed_test_user_workspace(store)
     lesson = workspace.packages[0].lessons[0]
@@ -1636,21 +1628,173 @@ def test_direct_teaching_on_blank_board_does_not_auto_generate_board(
         user_id=TEST_USER.id,
     )
 
-    assert response.chatbot_message == "AI生成：第一小节讲解。"
+    assert response.chatbot_message == "板书已生成，要不要从开头讲？"
+    assert response.requirement_cleared is True
+    assert response.learning_clarification.ready_for_board is True
+    assert response.learning_clarification.work_mode == "knowledge_board"
+    updated_lesson = response.course_package.lessons[0]
+    assert "聚焦知识板书" in updated_lesson.board_document.content_text
+    commit = updated_lesson.history_graph.commits[-1]
+    assert commit.metadata["kind"] == "board_document_generation"
+    assert commit.metadata["board_generation_action"] == "knowledge_board_minimal_requirement"
+    assert commit.metadata["initial_learning_work_mode"]["work_mode"] == "knowledge_board"
+    assert commit.metadata["task_requirement_sheet"]["work_mode"] == "knowledge_board"
+    saved_lesson = store.load_for_user(TEST_USER.id).packages[0].lessons[0]
+    assert saved_lesson.learning_requirements is None
+    assert saved_lesson.board_teaching_guide is not None
+    assert saved_lesson.board_teaching_progress is None
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_broad_new_knowledge_asks_to_narrow_topic_without_board_generation(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_initial_learning_work_mode",
+        lambda **kwargs: InitialLearningWorkModeDecision(
+            work_mode="narrow_topic",
+            granularity="broad_topic",
+            topic="一个宽泛主题",
+            reason="用户提出的是宽泛新知识学习方向。",
+            next_question="你想先从哪个具体知识点开始？",
+        ),
+    )
+
+    def _unexpected_board_edit(**kwargs):
+        raise AssertionError("broad new-knowledge requests must narrow before board generation")
+
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _unexpected_board_edit)
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.board_document = build_document(title="空白板书")
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="我想学一个宽泛主题"),
+        user_id=TEST_USER.id,
+    )
+
+    assert response.chatbot_message == "你想先从哪个具体知识点开始？"
     assert response.board_decision.action == "no_change"
     assert response.requirement_cleared is False
-    assert response.learning_clarification.forced_start is True
+    assert response.learning_clarification.work_mode == "narrow_topic"
     assert response.learning_clarification.ready_for_board is False
     updated_lesson = response.course_package.lessons[0]
     assert updated_lesson.board_document.content_text == ""
     commit = updated_lesson.history_graph.commits[-1]
     assert commit.metadata["kind"] == "chat_flow"
+    assert commit.metadata["initial_learning_work_mode"]["work_mode"] == "narrow_topic"
     assert commit.metadata["requirement_cleared"] is False
-    assert "auto_board_generation" not in commit.metadata
     saved_lesson = store.load_for_user(TEST_USER.id).packages[0].lessons[0]
     assert saved_lesson.learning_requirements is not None
     assert saved_lesson.board_teaching_guide is None
     assert saved_lesson.board_teaching_progress is None
+    assert _read_log_entries(isolated_ai_log) == []
+
+
+def test_practice_artifact_uses_full_requirement_sheet_then_generates_board(
+    monkeypatch: pytest.MonkeyPatch, isolated_ai_log, tmp_path
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_initial_learning_work_mode",
+        lambda **kwargs: InitialLearningWorkModeDecision(
+            work_mode="practice_artifact",
+            granularity="practice_artifact",
+            topic="情景练习材料",
+            reason="用户要求生成可操练学习材料。",
+        ),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_learning_requirement_update",
+        lambda **kwargs: LearningRequirementUpdate(
+            progress=100,
+            summary="用户已经说明练习材料的目标、水平、场景和能力要求。",
+            key_facts=[
+                LearningRequirementKeyFact(
+                    label="学习内容",
+                    value="情景练习材料",
+                    evidence="用户要求生成可操练材料。",
+                    category="learning",
+                ),
+                LearningRequirementKeyFact(
+                    label="当前水平",
+                    value="已说明水平",
+                    evidence="用户给出了自己的水平。",
+                    category="level",
+                ),
+                LearningRequirementKeyFact(
+                    label="面向场景",
+                    value="已说明使用场景",
+                    evidence="用户给出了使用场景。",
+                    category="scenario",
+                ),
+            ],
+            checklist=[
+                LearningRequirementChecklistItem(
+                    title="练习材料形态",
+                    is_clear=True,
+                    evidence="用户要求生成可操练材料。",
+                ),
+                LearningRequirementChecklistItem(
+                    title="练习约束",
+                    is_clear=True,
+                    evidence="用户给出了水平、场景和能力要求。",
+                ),
+            ],
+            missing_items=[],
+            next_question="",
+            ready_for_board=True,
+            action_type="generate_board",
+            action_instruction="生成一份可操练情景材料板书。",
+        ),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_post_board_generation_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="练习板书已生成，要不要从开头讲？"),
+    )
+
+    def _fake_board_edit(**kwargs):
+        return BoardDocumentEditResult(
+            operation="replace_document",
+            title="情景练习材料",
+            content_text="# 情景练习材料\n\n## 任务\n\n这是一份可操练材料。",
+            summary="已生成练习板书。",
+            chatbot_message="已生成练习板书。",
+            section_titles=["任务"],
+        )
+
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _fake_board_edit)
+
+    workspace = _seed_test_user_workspace(store)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.board_document = build_document(title="空白板书")
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    store.save_for_user(TEST_USER.id, workspace)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="我已经说明水平、使用场景和能力要求，请生成一份情景练习材料。"),
+        user_id=TEST_USER.id,
+    )
+
+    assert response.chatbot_message == "练习板书已生成，要不要从开头讲？"
+    assert response.requirement_cleared is True
+    assert "可操练材料" in response.course_package.lessons[0].board_document.content_text
+    commit = response.course_package.lessons[0].history_graph.commits[-1]
+    assert commit.metadata["kind"] == "board_document_generation"
+    assert commit.metadata["board_generation_action"] == "explicit_board_request"
+    assert commit.metadata["task_requirement_sheet"]["action_type"] == "generate_board"
     assert _read_log_entries(isolated_ai_log) == []
 
 
