@@ -114,20 +114,24 @@ export function ResourcePanel({
     onDrop: handleDrop,
   };
 
+  const uploadButton = (
+    <button
+      type="button"
+      onClick={() => fileInputRef.current?.click()}
+      disabled={isUploadingResource}
+      className="inline-flex items-center gap-1.5 rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 shadow-sm transition-colors hover:border-gray-300 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
+    >
+      <UploadCloud className="h-3.5 w-3.5" />
+      {isUploadingResource ? "解析中" : isDragActive ? "松开上传" : "上传资料"}
+    </button>
+  );
+
   return (
     <div className="space-y-8">
       <div>
         <div className="flex items-center justify-between gap-3">
           <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">资料区</p>
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={isUploadingResource}
-            className="inline-flex items-center gap-1.5 rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 shadow-sm transition-colors hover:border-gray-300 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            <UploadCloud className="h-3.5 w-3.5" />
-            {isUploadingResource ? "解析中" : "上传资料"}
-          </button>
+          {visibleResources.length ? uploadButton : null}
           <input
             ref={fileInputRef}
             type="file"
@@ -186,13 +190,14 @@ export function ResourcePanel({
             <div
               aria-label="资料区预留位"
               className={clsx(
-                "flex min-h-40 items-center justify-center rounded-lg border border-dashed bg-white px-4 text-center text-xs transition-colors",
+                "flex min-h-40 flex-col items-center justify-center gap-3 rounded-lg border border-dashed bg-white px-4 text-center text-xs transition-colors",
                 isDragActive && !isUploadingResource
                   ? "border-blue-400 text-blue-700"
                   : "border-gray-200 text-gray-400"
               )}
             >
-              {isUploadingResource ? "正在解析资料。" : isDragActive ? "松开上传资料。" : "当前课还没有资料。"}
+              {uploadButton}
+              <span>{isUploadingResource ? "正在解析资料。" : "当前课还没有资料。"}</span>
             </div>
           )}
         </div>
