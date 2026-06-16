@@ -156,8 +156,9 @@ if "统计学习理论" in chapter_title:
 
 - `board_document` 为空：右侧板书文档没有可学习内容，系统处于“从零到有板书”的第一层链路。此时用户真正需要的是先把学习需求说清楚，而不是局部讲解、局部编辑或互动练习。
 - `board_document` 非空：右侧已经有板书内容，系统处于“围绕已有板书处理具体任务”的第二层链路。此时不再用第一层学习需求清单决定本轮动作，而必须用第二层 `BoardTaskRequirementSheet` 决定“在什么地方、做什么、围绕什么、是否有特殊交互方式要求”。
-- `LearningRequirementSheet`：第一层学习需求清单，只服务于空白板书首次生成。它记录用户想学什么、目标、水平、背景、输出偏好、成功标准等。
-- `LearningClarificationStatus`：第一层需求澄清状态，只描述空白板书生成前的需求完整度、缺项、下一问、是否可生成。
+- `InitialLearningWorkModeDecision`：第一层空白板书入口的学习工作模式判断。它只根据通用学习形态和内容产物形态判断 `knowledge_board`、`narrow_topic`、`practice_artifact` 或 `unknown`，不得根据学科、教材、语法点、旅游场景或样例关键词分支。
+- `LearningRequirementSheet`：第一层学习需求清单，只服务于空白板书首次生成。它记录用户想学什么、目标、水平、背景、输出偏好、成功标准等，并可记录 `work_mode` 与 `granularity`。不同 `work_mode` 对清单完整度的要求不同。
+- `LearningClarificationStatus`：第一层需求澄清状态，只描述空白板书生成前的需求完整度、缺项、下一问、是否可生成，并可记录当前 `work_mode` 与 `granularity`。
 - `BoardTaskRequirementSheet`：第二层已有板书任务清单，只服务于已有板书后的具体任务。它固定记录四个字段：目标位置、动作类型、问题 / 主题内容、是否有练习或特殊交互方式要求。
 - `frozen requirement payload`：第一层清单生成板书前的冻结快照。它必须来自数据库版本记录，不得由当前运行态对象、原始对话、临时 prompt 拼接或 Chatbot 自由判断替代。
 - `frozen board task` / board task version：第二层任务执行前的可追溯任务快照。写、改、讲、聊执行 commit 必须能追溯到该任务清单版本。
@@ -180,29 +181,47 @@ if "统计学习理论" in chapter_title:
 
 ### 第一层：空白板书从零到有
 
-第一层链路只在 `board_document` 为空时启用。它的目标不是讲解，也不是编辑，而是像服务员记录点菜单一样，先把用户学习需求问清楚、记录成清单、冻结，再交给板书文档编辑 AI 生成右侧板书。
+第一层链路只在 `board_document` 为空时启用。它的目标不是局部讲解、局部编辑或已有板书互动，而是先识别用户要进入哪一种通用学习工作模式，再按对应清单粒度冻结需求，交给板书文档编辑 AI 生成右侧板书。
+
+第一层固定工作模式：
+
+1. `knowledge_board`：用户想学新知识，且目标已经小到一个知识点或一个清晰概念。系统只构造最小清单，记录知识点、用户原始意图、可见背景和必要输出聚焦点；不要求补齐整篇课程需求、完整学习计划、成功标准或练习设计。最小清单冻结后由 BoardEditor 生成聚焦知识板书。生成成功后 Chatbot 只承接询问是否开始讲，不自动讲第一节。
+2. `narrow_topic`：用户想学新知识，但主题仍然过宽，无法生成聚焦板书。系统只维护最小清单和缩小主题所需的一个关键追问，不生成板书，不进入完整课程需求清单。
+3. `practice_artifact`：用户想练习、测验、角色互动、生成可操练材料、案例任务、对话课文、题目或类似可被练习的学习产物。系统必须维护完整需求清单；当练习目标、学习者背景、材料形态、约束和成功标准足够时，冻结清单并生成练习板书；不足时只追问最关键缺项。
+4. `unknown`：学习工作模式不确定时，不得生成板书。系统只能继续澄清用户到底是想学新知识、缩小主题，还是想练习 / 生成可操练材料。
+
+工作模式分类依据必须是通用学习形态和内容产物形态：
+
+- 允许依据：用户是否在学新知识、主题是否足够窄、是否要求练习或可操练材料、是否要求生成题目 / 测验 / 对话 / 案例 / 角色场景等通用内容形态。
+- 严禁依据：具体学科、语言、教材、考试、语法点、旅游场景、demo 文本或任何样例关键词。
+- 单知识点新知识也要生成板书；区别是只使用最小清单，不完善整篇需求清单。
+- 完整需求清单主要服务 `practice_artifact` 和明确需要复杂学习产物的首次板书生成，不得把所有新知识请求都拖入完整课程需求澄清。
 
 固定顺序：
 
 1. 用户输入进入 chat orchestrator。
-2. 系统确认当前 `board_document` 为空，进入第一层需求清单链路。
-3. Chatbot / Requirement Manager 从用户话语中探寻学习需求，只能围绕用户想学什么、为什么学、水平如何、已有背景、希望深度、输出形式、成功标准等继续澄清。
-4. Requirement Manager 维护 `LearningRequirementSheet + LearningClarificationStatus`。
-5. 如果清单发生真实变动，必须写入 `learning_requirement_versions`，并追加 `learning_requirement_events`。
-6. 如果清单未完整，Chatbot 只能追问关键缺项或进行需求澄清，不得让 BoardEditor 生成板书。
-7. 当 `ready_for_board=true` 或用户明确强制生成时，必须先写 completed / forced_frozen 版本，再写 frozen 快照。
-8. frozen 快照必须在调用 BoardEditor 前落库，并通过 SSE / response 让前端可见进度变化。
-9. BoardEditor 只能接收 frozen requirement payload、冻结澄清状态和必要资源摘要；不得接收未冻结 conversation、临时 PM 状态或 Chatbot 自由总结作为生成依据。
-10. BoardEditor 生成右侧板书，Chatbot 不生成板书正文。
-11. 生成成功后，必须写 lesson commit，commit metadata 必须包含 requirement run / frozen version 追踪信息。
-12. requirement run 必须标记为 consumed；当前 active requirement 清单清空，但历史版本保留。
-13. 生成失败时，必须写 generation_failed 事件，不写成功 commit，并允许同一 frozen version 后续重试。
-14. 从零生成完板书后，Chatbot 默认承接询问用户是否要从头开始讲解。
+2. 系统确认当前 `board_document` 为空，并且本轮确实是学习 / 练习 / 生成学习材料意图；普通聊天不得更新 `LearningRequirementSheet`。
+3. 系统先生成 `InitialLearningWorkModeDecision`，判断 `work_mode` 与 `granularity`。
+4. `knowledge_board`：Requirement Manager 构造最小 `LearningRequirementSheet + LearningClarificationStatus`，写入 collecting / ready / completed 或 frozen 相关版本和事件，冻结后交给 BoardEditor 生成聚焦知识板书。
+5. `narrow_topic`：Requirement Manager 构造最小清单状态并写入 collecting 版本和事件；Chatbot 只追问一个缩小主题的问题，不生成板书。
+6. `practice_artifact`：Requirement Manager 维护完整 `LearningRequirementSheet + LearningClarificationStatus`，围绕练习目标、学习者背景、材料形态、约束、输出偏好和成功标准等继续澄清。
+7. 如果当前工作模式要求的清单未完整，Chatbot 只能追问关键缺项或进行需求澄清，不得让 BoardEditor 生成板书。
+8. 当对应工作模式达到 `ready_for_board=true` 或用户明确强制生成时，必须先写 completed / forced_frozen 版本，再写 frozen 快照。
+9. frozen 快照必须在调用 BoardEditor 前落库，并通过 SSE / response 让前端可见进度变化。
+10. BoardEditor 只能接收 frozen requirement payload、冻结澄清状态和必要资源摘要；不得接收未冻结 conversation、临时 PM 状态或 Chatbot 自由总结作为生成依据。
+11. BoardEditor 生成右侧板书，Chatbot 不生成板书正文。
+12. 生成成功后，必须写 lesson commit，commit metadata 必须包含 requirement run / frozen version、`work_mode` 和 `granularity` 追踪信息。
+13. requirement run 必须标记为 consumed；当前 active requirement 清单清空，但历史版本保留。
+14. 生成失败时，必须写 generation_failed 事件，不写成功 commit，并允许同一 frozen version 后续重试。
+15. 从零生成完板书后，Chatbot 默认承接询问用户是否要从头开始讲解，不自动展开实质讲解。
 
 第一层严禁：
 
 - 空白板书时让 BoardEditor 直接吃原始聊天记录生成板书。
-- 需求清单还没完整就偷偷生成板书。
+- 未先判断 `work_mode` 就把所有学习请求都推进完整需求清单。
+- `narrow_topic` 或 `unknown` 状态下偷偷生成板书。
+- `knowledge_board` 已达到单知识点粒度时继续强迫用户补齐整篇课程需求清单。
+- `practice_artifact` 未达到可生成练习材料所需最低信息时偷偷生成板书。
 - 生成后用运行态板书标题、摘录、临时 runtime 字段反写成“需求清单快照”。
 - 生成成功后静默清空清单而不消费 run、不留版本历史。
 - 为某个学科、教材、考试、demo 编写特殊第一层生成分支。
