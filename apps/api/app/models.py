@@ -74,6 +74,13 @@ BoardTaskAction = Literal[
     "expand_target",
     "simplify_target",
 ]
+InitialLearningWorkMode = Literal["knowledge_board", "narrow_topic", "practice_artifact", "unknown"]
+InitialLearningGranularity = Literal[
+    "single_knowledge_point",
+    "broad_topic",
+    "practice_artifact",
+    "unclear",
+]
 InteractionSessionStatus = Literal["active", "paused"]
 InteractionTurnRoute = Literal[
     "continue_rule",
@@ -426,6 +433,8 @@ class LearningRequirementSheet(BaseModel):
     action_instruction: str = ""
     location_clarification_question: str = ""
     interaction_rule_draft: InteractionRuleDraft | None = None
+    work_mode: InitialLearningWorkMode | None = None
+    granularity: InitialLearningGranularity | None = None
 
 
 class BoardTaskRequirementSheet(BaseModel):
@@ -467,6 +476,8 @@ class LearningClarificationStatus(BaseModel):
     checklist: list[LearningRequirementChecklistItem] = Field(default_factory=list)
     next_question: str = ""
     ready_for_board: bool = False
+    work_mode: InitialLearningWorkMode | None = None
+    granularity: InitialLearningGranularity | None = None
 
 
 class TeachingGuideMapping(BaseModel):
