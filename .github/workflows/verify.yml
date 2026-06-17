@@ -1,0 +1,97 @@
+name: Verify
+
+"on":
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      run_e2e:
+        description: "Run optional Playwright smoke tests"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  required:
+    name: "Required: npm run verify"
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      OPENCLASS_DATABASE_PATH: /tmp/openclass-ci/openclass.sqlite3
+      OPENCLASS_UPLOAD_DIR: /tmp/openclass-ci/uploads
+      OPENCLASS_EXPORT_DIR: /tmp/openclass-ci/exports
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          npm run setup:api
+
+      - name: Prepare local data directories
+        run: mkdir -p "$(dirname "$OPENCLASS_DATABASE_PATH")" "$OPENCLASS_UPLOAD_DIR" "$OPENCLASS_EXPORT_DIR"
+
+      - name: Run repository verification
+        run: npm run verify
+
+  optional-e2e:
+    name: "Optional: Playwright smoke"
+    runs-on: ubuntu-latest
+    needs: required
+    if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.run_e2e == 'true' }}
+    timeout-minutes: 35
+    env:
+      OPENCLASS_DATABASE_PATH: /tmp/openclass-e2e/openclass.sqlite3
+      OPENCLASS_UPLOAD_DIR: /tmp/openclass-e2e/uploads
+      OPENCLASS_EXPORT_DIR: /tmp/openclass-e2e/exports
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          npm run setup:api
+          npx playwright install --with-deps chromium
+
+      - name: Prepare local data directories
+        run: mkdir -p "$(dirname "$OPENCLASS_DATABASE_PATH")" "$OPENCLASS_UPLOAD_DIR" "$OPENCLASS_EXPORT_DIR"
+
+      - name: Run optional Playwright smoke tests
+        run: npm run test:e2e

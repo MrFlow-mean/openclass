@@ -65,14 +65,25 @@ OpenAI/GPT 文本交互和 GPT Image 2 默认走官方 OpenAI API：`https://api
 
 ## 测试
 
+`npm run verify` 是本地和 CI 的必跑验证入口，不需要真实 LLM API key：
+
 ```bash
 npm run lint:web
 npm run typecheck:web
 npm run test:api
 npm run build:web
-npm run test:e2e          # Playwright 主流程，默认启动 127.0.0.1:3110 / 127.0.0.1:8110
 npm run verify            # 文件尺寸安全线 + 前端 lint/typecheck + 后端测试 + 前端构建
 ```
+
+GitHub Actions 会在 PR 和 `main` 分支 push 时运行同一条 required gate。该 workflow 合并并在 `main` 上通过后，应在 GitHub Branch protection 或 Rulesets 中要求 `Required: npm run verify` 通过后才能合并。
+
+Playwright 主流程 smoke test 是可选验证，默认不作为合并门禁：
+
+```bash
+npm run test:e2e          # 默认启动 127.0.0.1:3110 / 127.0.0.1:8110
+```
+
+CI 中的 Playwright smoke test 只在手动触发 `Verify` workflow 并勾选 `run_e2e` 时运行。
 
 ## 协作
 
