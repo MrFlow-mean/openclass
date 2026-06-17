@@ -1278,17 +1278,35 @@ def _lexical_score(plan: BoardSearchQueryPlan, value: str) -> tuple[float, dict[
     exact_bonus = sum(0.08 for term in query_terms if term in compact and len(term) >= 3)
     phrase_bonus = 0.18 if plan.query_text and compact_segment_text(plan.query_text, limit=80).lower() in compact else 0.0
     heading_bonus = 0.12 if any(term in " ".join(plan.search_terms) for term in overlap) else 0.0
-    score = min(1.0, term_score + exact_bonus + phrase_bonus + heading_bonus)
+    semantic_alias_hits = _generic_semantic_alias_hits(query_text=plan.query_text, value_text=compact)
+    semantic_alias_bonus = min(0.08, max(0, len(semantic_alias_hits) - 1) * 0.025)
+    score = min(1.0, term_score + exact_bonus + phrase_bonus + heading_bonus + semantic_alias_bonus)
     return score, {
         "term_overlap": round(term_score, 4),
         "exact_bonus": round(exact_bonus, 4),
         "phrase_bonus": round(phrase_bonus, 4),
         "heading_bonus": round(heading_bonus, 4),
+        "semantic_alias_bonus": round(semantic_alias_bonus, 4),
     }
 
 
 def _confidence_from_score(score: float) -> float:
     return max(0.0, min(0.94, 0.46 + score * 0.52))
+
+
+def _generic_semantic_alias_hits(*, query_text: str, value_text: str) -> set[str]:
+    query_compact = compact_segment_text(query_text, limit=800).lower()
+    value_compact = compact_segment_text(value_text, limit=2400).lower()
+    if not query_compact or not value_compact:
+        return set()
+
+    hits: set[str] = set()
+    for group in GENERIC_CONCEPT_GROUPS:
+        normalized_group = tuple(item.lower() for item in group)
+        if not any(item in query_compact for item in normalized_group):
+            continue
+        hits.update(item for item in normalized_group if item in value_compact)
+    return hits
 
 
 def _query_terms(text: str) -> set[str]:
