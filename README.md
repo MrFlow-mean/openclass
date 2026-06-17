@@ -4,76 +4,233 @@
   <img src="docs/assets/openclass-product-cover.png" alt="OpenClass 产品封面" width="280" />
 </p>
 
-开放课堂（OpenClass）是一个面向课程设计、讲义创作和资料管理的课程工作台。当前代码保留前端工作台、富文本讲义编辑、资料库、版本历史、课程图谱和持久化后端；旧的后端 AI 工作流程运行框架已经移除，新的产品工作架构等待重新接入。
+开放课堂（OpenClass）是一个面向学习内容生成、讲义编辑、资料管理和交互式学习的 AI 学习工作台。
 
-## 产品能力
+它不是普通聊天机器人，也不是单纯的富文本编辑器。OpenClass 的核心产品模型是：
 
-- 前端课程工作台：围绕课程包、lesson、资料和文档编辑提供统一操作界面。
-- 富文本讲义编辑：右侧类 Word 编辑器支持手动编辑、DOCX 导入导出。
-- 资料库与引用：上传课程资料，抽取章节结构，作为后续文档整理和新架构接入的资料基础。
-- 课程包管理：一个课程包可以包含多节 lesson，适合按主题、章节或教学单元组织内容。
-- 版本与分支：每节课支持 commit / branch / restore，可以尝试不同讲法再安全回退。
-- 课程图谱：用结构化关系串联 lesson、知识点和课程路径。
-- 模型配置入口：保留文本模型配置与健康检查，供后续新架构复用。
+* 左侧 Chatbot 负责理解学习意图、建议方向、追问缺项、承接下一步；
+* 右侧 BoardEditor 负责生成、扩写、改写正式学习内容；
+* Requirement Sheet 负责记录可追踪的学习需求状态；
+* FocusResolver / Board AI 负责在已有板书中定位目标内容，并决定写、改、讲或互动；
+* 版本历史和分支系统负责保留每次内容变化，支持回退和探索不同讲法。
 
-## 产品 Workflow
+## 产品核心模型
 
-1. 创建课程包：为一门课、一个专题或一次培训建立独立课程空间。
-2. 添加 lesson：按章节、知识点或教学任务拆分课程内容。
-3. 上传资料：导入讲义、参考文档、案例材料或课堂素材，系统记录 metadata 并抽取结构。
-4. 整理资料：通过资料库保存上传文件 metadata、抽取结果和章节入口。
-5. 手动打磨：在富文本编辑器中直接调整标题、段落、重点、示例和课堂活动。
-6. 保存版本：对稳定结果创建 commit；需要探索新讲法时创建 branch，满意后再保留或回退。
-7. 组织课程路径：通过课程包、标签页和课程图谱把多个 lesson 串成完整教学流程。
-8. 导入导出：用 DOCX 导入导出进入线下备课、分享和归档流程。
+OpenClass 的每一轮用户输入，第一步不是“直接回答”，而是判断右侧板书是否为空。
 
-## 本地运行
+```txt
+board_document 为空
+→ 第一层：从零开始建立学习内容
 
-需要 Node.js 20+ 和 Python 3.13+。
-
-```bash
-npm run setup            # 首次安装：npm install + .venv + editable 装后端
-cp .env.example .env     # 配置至少一个 provider
-npm run dev              # 同时启动前后端
+board_document 非空
+→ 第二层：围绕已有板书执行具体任务
 ```
 
-- 前端 http://localhost:3000，后端 http://localhost:8000（健康检查 `/health`）。
-- SQLite 主库：`apps/api/data/openclass.sqlite3`。首次启动会从旧 `apps/api/data/store.json` 导入并归档旧文件；线上部署可用 `OPENCLASS_DATABASE_PATH`、`OPENCLASS_UPLOAD_DIR`、`OPENCLASS_EXPORT_DIR` 指到持久化目录。
-- AI 调用日志：`apps/api/data/logs/ai-usage.jsonl`。
-- 也可以双击 `start-ai-board.command`，它会用后台守护进程启动前后端并打开 `launcher/personal-home.html`。日常长时间使用优先用这个入口。
+这使 OpenClass 的学习流程分成两层：
 
-## 模型配置
+第一层用于从零建立学习内容。系统会判断用户是在普通聊天，还是确实要学习、练习、生成学习材料。只有进入学习链路时，系统才会维护 LearningRequirementSheet，并在合适时生成右侧板书。
 
-最小配置：
+第二层用于围绕已有板书执行任务。系统不再重新收集整篇学习需求，而是进入 BoardTaskRequirementSheet，记录目标位置、动作类型、问题或主题内容、特殊交互方式要求，然后通过 FocusResolver 定位板书内容，再交给 Board AI 执行 write / edit / explain / chat。
 
-```bash
-OPENAI_API_KEY=...
-OPENAI_COMPAT_API=chat_completions
-OPENAI_MODEL=gpt-5.5
-OPENAI_CATALOG_MODEL=gpt-5.4-mini
-OPENCLASS_REALTIME_ENABLED=false
-OPENCLASS_REALTIME_TOOLS_ENABLED=false
-OPENAI_REALTIME_MODEL=gpt-realtime-2
-OPENAI_IMAGE_MODEL=gpt-image-2
-AI_TEXT_PROVIDER=openai
-AI_REALTIME_PROVIDER=openai
+## 当前 AI 工作流状态
+
+当前 OpenClass 已经接入新的两层学习工作流骨架：
+
+```txt
+ChatTurnGate
+→ ordinary_chat
+→ initial_learning
+→ initial_board_generation
+→ existing_board_task
+→ resource_reference
 ```
 
-OpenAI/GPT 文本交互和 GPT Image 2 默认走官方 OpenAI API：`https://api.openai.com/v1`。交互 AI 文本默认用 GPT-5.5；语音交互默认用 GPT Realtime 2，但需要显式设置 `OPENCLASS_REALTIME_ENABLED=true` 才会启用后端 WebRTC 连接，`OPENCLASS_REALTIME_TOOLS_ENABLED=true` 才允许 Realtime 调用后端 Chatbot 工具。复杂问题的隐藏强推理工具默认使用 `OPENAI_STRONG_REASONING_MODEL=gpt-5.5` 和 `OPENAI_STRONG_REASONING_EFFORT=high`，只有设置 `OPENCLASS_STRONG_REASONING_ALLOW_PRO=true` 时才会使用 `OPENAI_PRO_REASONING_MODEL`。上传资料的目录 AI 通过 `OPENAI_CATALOG_MODEL` 独立配置，默认用 GPT-5.4 mini。其他 provider（Anthropic / Google / DeepSeek / Kimi / MiniMax / 自定义兼容网关）和默认模型见 `.env.example`。
+其中：
 
-前端"选择模型"调 `/api/ai-models`，未配置 key 的 provider 会标为未配置。当前保留并启用的是模型目录、课程聊天入口、文档保存/导入/导出和资料解析等工作台能力；Realtime 默认关闭，开启后仍作为同一个 Chatbot 的实时输入/输出形态，而不是新的教学角色。`BoardTeachingGuide` / `BoardTeachingProgress` 等教学工作流 schema 仅作为历史兼容和 future workflow 预留，不代表完整 AI 教学编排已经接回。
+* ordinary_chat：普通聊天，不污染学习需求，不自动生成板书；
+* initial_learning：空白板书下识别到学习、练习或学习材料生成意图；
+* initial_board_generation：空白板书下明确进入板书生成；
+* existing_board_task：已有板书下围绕现有内容执行写、改、讲、互动；
+* resource_reference：处理资料引用、章节确认和资料驱动生成。
 
-## 测试
+## 空白板书链路
 
-```bash
-npm run lint:web
-npm run typecheck:web
-npm run test:api
-npm run build:web
-npm run test:e2e          # Playwright 主流程，默认启动 127.0.0.1:3110 / 127.0.0.1:8110
-npm run verify            # 文件尺寸安全线 + 前端 lint/typecheck + 后端测试 + 前端构建
+当右侧板书为空时，OpenClass 处在“从零到有”的阶段。这时系统不会直接进入局部讲解、局部修改或互动练习，因为还没有可依附的正式学习内容。
+
+空白板书下主要分为两类：
+
+```txt
+普通聊天
+→ 不更新 LearningRequirementSheet
+→ 不生成板书
+→ 只做自然对话
+
+学习 / 练习 / 生成学习材料意图
+→ 进入 InitialLearningWorkModeDecision
 ```
 
-## 协作
+进入学习链路后，系统会判断四种初始学习模式。
 
-工程与 AI 协作约定见 `AGENTS.md`（根）和 `apps/web/AGENTS.md`（前端）。提交前跑 `npm run verify`。
+### knowledge_board
+
+knowledge_board 对应用户想学一个相对聚焦的新知识点、概念、方法、步骤或清晰问题。
+
+例如：
+
+```txt
+我想学递归的基本思想
+我想理解过去将来时
+我想学贝叶斯公式是什么意思
+```
+
+这类请求不应该继续追问完整课程需求，而应该构造最小需求清单，冻结需求快照，然后由 BoardEditor 生成一份聚焦知识板书。
+
+链路：
+
+```txt
+knowledge_board
+→ 构造最小需求清单
+→ 记录知识点、用户原始意图、可见背景
+→ 冻结需求快照
+→ BoardEditor 生成聚焦知识板书
+→ Chatbot 询问是否开始讲解
+```
+
+生成板书后，Chatbot 不应该自动讲第一节，而是承接用户下一步。
+
+### narrow_topic
+
+narrow_topic 对应用户确实想学新知识，但主题过宽，无法直接生成聚焦板书。
+
+例如：
+
+```txt
+我想学机器学习
+我想学经济学
+我想学编程
+```
+
+链路：
+
+```txt
+narrow_topic
+→ 构造最小清单状态
+→ 只追问一个缩小问题
+→ 不生成板书
+```
+
+系统追问的目标不是机械收集表单，而是帮助用户把大方向压缩成一个可以开始学习的知识点。
+
+### practice_artifact
+
+practice_artifact 对应练习、测验、角色扮演、情景对话、案例任务、改错任务等可操练材料。
+
+例如：
+
+```txt
+生成一篇情景对话课文
+给我一组练习题
+设计一个角色扮演任务
+出一个测验
+给我一个案例任务
+```
+
+这类请求需要完整 LearningRequirementSheet，因为练习材料必须匹配学习者背景、难度、场景、材料形态、能力点和成功标准。
+
+链路：
+
+```txt
+practice_artifact
+→ 维护完整 LearningRequirementSheet
+→ 判断练习目标、学习者水平、材料形态、约束是否足够
+→ 清单不够：只问最关键缺项
+→ 清单足够：冻结需求
+→ BoardEditor 生成练习板书
+```
+
+practice_artifact 的判断依据不是学科，而是产物形态。
+
+### unknown
+
+unknown 对应用户表达了学习意愿，但目的还不清楚。
+
+例如：
+
+```txt
+我最近想开始学点东西，但不知道怎么开始
+```
+
+链路：
+
+```txt
+unknown
+→ 不生成板书
+→ 不进入完整需求清单
+→ Chatbot 给 2-3 个学习方向或学习产物方向建议
+→ 只问一个选择 / 缩小问题
+```
+
+这个分支让系统承担产品引导责任，但不会越权生成板书。
+
+## 已有板书链路
+
+当右侧已经有板书时，系统进入第二层任务链路。
+
+这时用户不再是在“从零开始要学什么”，而是在围绕已有内容做任务。因此系统不应该继续使用第一层 LearningRequirementSheet 作为主状态，而应该进入 BoardTaskRequirementSheet。
+
+BoardTaskRequirementSheet 记录四个核心字段：
+
+```txt
+目标位置
+动作类型
+问题 / 主题内容
+特殊交互方式要求
+```
+
+然后执行：
+
+```txt
+BoardTaskRequirementSheet
+→ FocusResolver 定位目标位置
+→ Board AI route decision
+→ write / edit / explain / chat
+```
+
+其中：
+
+* write：向板书中写入或追加内容；
+* edit：改写、扩写、简化或优化已有内容；
+* explain：围绕板书定位结果进行讲解；
+* chat：按用户指定规则围绕板书内容互动。
+
+这里有一个关键边界：Chatbot 不能直接读取整篇板书后自由讲解。它必须等板书侧给出目标摘录、讲解边界和 directive，才能回答用户。
+
+## 当前稳定能力与实验能力
+
+### Stable
+
+* 课程包、lesson、资料和文档编辑工作台；
+* 右侧富文本 BoardEditor；
+* DOCX 导入导出；
+* SQLite 持久化；
+* commit / branch / restore 版本历史；
+* ChatTurnGate 基础入口分流；
+* LearningRequirementSheet 基础需求状态；
+* BoardTaskRequirementSheet 基础任务状态；
+* 已有板书下的写、改、讲、互动 route 骨架；
+* 资料上传、章节抽取和资料引用确认。
+
+### Experimental
+
+* practice_artifact 完整需求链路；
+* resource-backed board generation；
+* interaction session；
+* sequential explanation；
+* Realtime 语音交互；
+* 多 provider 模型选择；
+* 复杂问题的隐藏强推理工具；
+* BoardTeachingGuide / BoardTeachingProgress 与新工作流的深度整合。
+
+### Legacy / Reserved
+
+部分旧教学工作流 schema 保留用于兼容历史数据和未来迁移，不代表所有旧 AI 教学编排都已经作为稳定能力重新接回。
