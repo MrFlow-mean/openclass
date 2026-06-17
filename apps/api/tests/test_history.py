@@ -447,6 +447,50 @@ def test_segment_resolver_uses_generic_semantic_aliases_without_selection() -> N
     assert resolution.evidence.status == "found"
 
 
+def test_segment_resolver_uses_generic_semantic_aliases_without_rerank(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(openai_course_ai, "generate_board_search_rerank", lambda **kwargs: None)
+    lesson = create_empty_lesson("定位测试")
+    lesson.board_document = build_document(
+        title="定位测试",
+        content_text="# 主线\n## 形成机制\n这里说明影响因素和形成过程。\n## 示例\n这里给出一个例子。",
+    )
+
+    resolution = resolve_board_focus(
+        lesson=lesson,
+        user_message="帮我讲一下为什么会这样",
+        action_type="explain_target",
+    )
+
+    assert resolution.resolved
+    assert resolution.focus is not None
+    assert "影响因素" in resolution.focus.excerpt or "形成机制" in resolution.focus.excerpt
+    assert resolution.evidence is not None
+    assert resolution.evidence.status == "found"
+    assert resolution.evidence.candidates[0].score_breakdown["semantic_alias_bonus"] > 0
+
+
+def test_segment_resolver_keeps_equivalent_semantic_alias_candidates_ambiguous(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(openai_course_ai, "generate_board_search_rerank", lambda **kwargs: None)
+    lesson = create_empty_lesson("定位测试")
+    lesson.board_document = build_document(
+        title="定位测试",
+        content_text="# 主线\n## 形成机制\n这里说明形成机制。\n## 原因来源\n这里说明原因来源。",
+    )
+
+    resolution = resolve_board_focus(
+        lesson=lesson,
+        user_message="帮我讲一下为什么会这样",
+        action_type="explain_target",
+    )
+
+    assert not resolution.resolved
+    assert resolution.status == "ambiguous"
+    assert resolution.evidence is not None
+    assert resolution.evidence.status == "ambiguous"
+
+
 def test_segment_resolver_uses_board_chunks_for_cross_segment_topic(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(openai_course_ai, "generate_board_search_rerank", lambda **kwargs: None)
     lesson = create_empty_lesson("定位测试")
