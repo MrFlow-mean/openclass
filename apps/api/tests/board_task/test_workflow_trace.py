@@ -20,6 +20,10 @@ from app.models import (
 from app.routers import chat as chat_router
 from app.services import chat_service, chatbot as chatbot_module, workspace_state
 from app.services.board_document_editor import BoardDocumentEditOutcome
+from app.services.chat.paths.active_interaction_exit import (
+    ActiveInteractionExitDependencies,
+    handle_active_interaction_exit,
+)
 from app.services.course_runtime import refresh_lesson_runtime
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
 from app.services.lesson_factory import create_empty_lesson
@@ -324,6 +328,27 @@ def _count_active_interaction_handler_calls(monkeypatch: pytest.MonkeyPatch) -> 
     return calls
 
 
+def _count_active_interaction_exit_handler_calls(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
+    calls = {"count": 0}
+    original_handler = chatbot_module.handle_active_interaction_exit
+
+    def _counting_handler(**kwargs):
+        calls["count"] += 1
+        return original_handler(**kwargs)
+
+    monkeypatch.setattr(chatbot_module, "handle_active_interaction_exit", _counting_handler)
+    return calls
+
+
+def _active_interaction_exit_test_deps() -> ActiveInteractionExitDependencies:
+    return ActiveInteractionExitDependencies(
+        generate_interaction_message=lambda **kwargs: ("", "chatbot_interaction", None),
+        task_metadata=lambda **kwargs: {},
+        save_workspace_for_user=lambda **kwargs: None,
+        build_response=lambda **kwargs: _fail_if_called("build_response"),
+    )
+
+
 def test_node_ids_match_latest_workflow_graph_document() -> None:
     doc = Path("docs/architecture/chat-workflow-graph.md").read_text(encoding="utf-8")
     table = doc.split("| NodeId | Type | Current source |", 1)[1].split("Current documented NodeId count", 1)[0]
@@ -613,6 +638,7 @@ def test_active_interaction_exit_rule_trace_records_pure_terminal_path(
         "handle_active_interaction_turn",
         lambda **kwargs: _fail_if_called("handle_active_interaction_turn"),
     )
+    handler_calls = _count_active_interaction_exit_handler_calls(monkeypatch)
     decision = _patch_interaction_turn(
         monkeypatch,
         "exit_rule",
@@ -628,6 +654,7 @@ def test_active_interaction_exit_rule_trace_records_pure_terminal_path(
         )
 
     commit = response.course_package.lessons[-1].history_graph.commits[-1]
+    assert handler_calls["count"] == 1
     assert response.active_interaction_session is None
     assert response.interaction_decision is not None
     assert response.interaction_decision.route == "exit_rule"
@@ -662,6 +689,87 @@ def test_active_interaction_exit_rule_trace_records_pure_terminal_path(
     assert collector.steps[9].commit_id == commit.id
 
 
+def test_active_interaction_exit_handler_rejects_unsupported_routes() -> None:
+    workspace, _lesson_id = _workspace_with_resource_prompt_candidate(active_session=True)
+    package = workspace.packages[0]
+    lesson = package.lessons[-1]
+    session_before = lesson.active_interaction_session
+    lesson.active_interaction_session = None
+
+    with pytest.raises(ValueError, match="unsupported active interaction exit route"):
+        handle_active_interaction_exit(
+            workspace=workspace,
+            package=package,
+            lesson=lesson,
+            user_id=TEST_USER_ID,
+            request=ChatRequest(message="继续互动"),
+            requirements=lesson.learning_requirements,
+            learning_clarification=chatbot_module._latest_learning_clarification(
+                lesson,
+                requirements=lesson.learning_requirements,
+            ),
+            resources=[],
+            session_before=session_before,
+            decision=_interaction_decision("continue_rule"),
+            requirement_history=None,
+            board_task_history=None,
+            deps=_active_interaction_exit_test_deps(),
+        )
+
+
+def test_active_interaction_exit_handler_requires_previous_session() -> None:
+    workspace, _lesson_id = _workspace_with_resource_prompt_candidate(active_session=False)
+    package = workspace.packages[0]
+    lesson = package.lessons[-1]
+
+    with pytest.raises(ValueError, match="previous interaction session"):
+        handle_active_interaction_exit(
+            workspace=workspace,
+            package=package,
+            lesson=lesson,
+            user_id=TEST_USER_ID,
+            request=ChatRequest(message="结束互动"),
+            requirements=lesson.learning_requirements,
+            learning_clarification=chatbot_module._latest_learning_clarification(
+                lesson,
+                requirements=lesson.learning_requirements,
+            ),
+            resources=[],
+            session_before=None,
+            decision=_interaction_decision("exit_rule"),
+            requirement_history=None,
+            board_task_history=None,
+            deps=_active_interaction_exit_test_deps(),
+        )
+
+
+def test_active_interaction_exit_handler_requires_cleared_active_session() -> None:
+    workspace, _lesson_id = _workspace_with_resource_prompt_candidate(active_session=True)
+    package = workspace.packages[0]
+    lesson = package.lessons[-1]
+    session_before = lesson.active_interaction_session
+
+    with pytest.raises(ValueError, match="active session to be cleared"):
+        handle_active_interaction_exit(
+            workspace=workspace,
+            package=package,
+            lesson=lesson,
+            user_id=TEST_USER_ID,
+            request=ChatRequest(message="结束互动"),
+            requirements=lesson.learning_requirements,
+            learning_clarification=chatbot_module._latest_learning_clarification(
+                lesson,
+                requirements=lesson.learning_requirements,
+            ),
+            resources=[],
+            session_before=session_before,
+            decision=_interaction_decision("exit_rule"),
+            requirement_history=None,
+            board_task_history=None,
+            deps=_active_interaction_exit_test_deps(),
+        )
+
+
 def test_interaction_empty_decision_does_not_call_active_interaction_handler(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -674,6 +782,11 @@ def test_interaction_empty_decision_does_not_call_active_interaction_handler(
         chatbot_module,
         "handle_active_interaction_turn",
         lambda **kwargs: _fail_if_called("handle_active_interaction_turn"),
+    )
+    monkeypatch.setattr(
+        chatbot_module,
+        "handle_active_interaction_exit",
+        lambda **kwargs: _fail_if_called("handle_active_interaction_exit"),
     )
 
     with bind_workflow_trace_collector() as collector:
@@ -705,6 +818,11 @@ def test_interaction_terminal_routes_do_not_record_continue_or_rule_violation(
         chatbot_module,
         "handle_active_interaction_turn",
         lambda **kwargs: _fail_if_called("handle_active_interaction_turn"),
+    )
+    monkeypatch.setattr(
+        chatbot_module,
+        "handle_active_interaction_exit",
+        lambda **kwargs: _fail_if_called("handle_active_interaction_exit"),
     )
     decision = _patch_interaction_turn(monkeypatch, route)
 
@@ -752,6 +870,11 @@ def test_exit_rule_board_task_handoff_remains_legacy_without_exit_terminal_trace
         chatbot_module,
         "handle_active_interaction_turn",
         lambda **kwargs: _fail_if_called("handle_active_interaction_turn"),
+    )
+    monkeypatch.setattr(
+        chatbot_module,
+        "handle_active_interaction_exit",
+        lambda **kwargs: _fail_if_called("handle_active_interaction_exit"),
     )
     decision = _patch_interaction_turn(monkeypatch, "exit_rule", reason="用户结束互动后提出板书讲解。")
 
@@ -823,6 +946,11 @@ def test_sequence_session_records_sequence_check_without_generic_continue(
         chatbot_module,
         "handle_active_interaction_turn",
         lambda **kwargs: _fail_if_called("handle_active_interaction_turn"),
+    )
+    monkeypatch.setattr(
+        chatbot_module,
+        "handle_active_interaction_exit",
+        lambda **kwargs: _fail_if_called("handle_active_interaction_exit"),
     )
     monkeypatch.setattr(
         chatbot_module,

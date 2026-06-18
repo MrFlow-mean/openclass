@@ -47,6 +47,10 @@ from app.services.board_task_manager import (
 )
 from app.services.board_segment_index import build_board_segment_index
 from app.services.board_teaching import build_board_teaching_guide, teach_first_section, teach_next_section
+from app.services.chat.paths.active_interaction_exit import (
+    ActiveInteractionExitDependencies,
+    handle_active_interaction_exit,
+)
 from app.services.chat.paths.active_interaction_turn import (
     ActiveInteractionTurnDependencies,
     handle_active_interaction_turn,
@@ -3594,6 +3598,27 @@ def _handle_existing_interaction_session(
             if board_task_response is not None:
                 board_task_response.interaction_decision = decision
                 return board_task_response
+        if decision.route == "exit_rule":
+            return handle_active_interaction_exit(
+                workspace=workspace,
+                package=package,
+                lesson=lesson,
+                user_id=user_id,
+                request=request,
+                requirements=requirements,
+                learning_clarification=learning_clarification,
+                resources=resources,
+                session_before=session_before,
+                decision=decision,
+                requirement_history=requirement_history,
+                board_task_history=board_task_history,
+                deps=ActiveInteractionExitDependencies(
+                    generate_interaction_message=_generate_interaction_chatbot_message,
+                    task_metadata=_task_metadata,
+                    save_workspace_for_user=_save_workspace_for_user,
+                    build_response=_response,
+                ),
+            )
         chatbot_message, chatbot_message_source, board_explanation_directive = _generate_interaction_chatbot_message(
             lesson=lesson,
             requirements=requirements,
@@ -3603,12 +3628,6 @@ def _handle_existing_interaction_session(
             session=session_before,
             decision=decision,
         )
-        if decision.route == "exit_rule":
-            record_workflow_step(
-                NodeId.INTERACTION_EXIT,
-                decision="exit_rule",
-                reason=decision.reason,
-            )
         commit_operations(
             lesson,
             [],
@@ -3638,12 +3657,6 @@ def _handle_existing_interaction_session(
             requirement_history=requirement_history,
             board_task_history=board_task_history,
         )
-        if decision.route == "exit_rule":
-            record_workflow_step(
-                NodeId.PERSIST_CHAT_COMMIT,
-                decision="committed",
-                commit_id=lesson.history_graph.commits[-1].id,
-            )
         response = _response(
             workspace=workspace,
             package=package,
@@ -3655,8 +3668,6 @@ def _handle_existing_interaction_session(
             interaction_decision=decision,
             requirement_history=requirement_history,
         )
-        if decision.route == "exit_rule":
-            record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
         return response
 
     return handle_active_interaction_turn(
