@@ -5366,6 +5366,7 @@ def _chat_response(
     ):
         learning_clarification = _latest_learning_clarification(lesson, requirements=requirements)
         chatbot_message = resource_resolution.reference_prompt.question
+        record_workflow_step(NodeId.RESOURCE_REFERENCE_PROMPT, decision="prompted")
         commit_operations(
             lesson,
             [],
@@ -5400,7 +5401,12 @@ def _chat_response(
             workspace=workspace,
             requirement_history=requirement_history,
         )
-        return _response(
+        record_workflow_step(
+            NodeId.PERSIST_CHAT_COMMIT,
+            decision="committed",
+            commit_id=lesson.history_graph.commits[-1].id,
+        )
+        response = _response(
             workspace=workspace,
             package=package,
             lesson=lesson,
@@ -5415,6 +5421,8 @@ def _chat_response(
             reference_prompt=resource_resolution.reference_prompt,
             requirement_history=requirement_history if track_initial_requirement_run else None,
         )
+        record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
+        return response
 
     if (
         request.resource_reference_action == "confirm"
