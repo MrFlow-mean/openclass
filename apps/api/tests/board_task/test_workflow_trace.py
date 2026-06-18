@@ -15,11 +15,16 @@ from app.models import (
     ResourceLibraryItem,
 )
 from app.routers import chat as chat_router
-from app.services import chat_service, workspace_state
+from app.services import chat_service, chatbot as chatbot_module, workspace_state
 from app.services.course_runtime import refresh_lesson_runtime
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
 from app.services.lesson_factory import create_empty_lesson
-from app.services.openai_course_ai import ChatbotReply, InitialLearningWorkModeDecision, openai_course_ai
+from app.services.openai_course_ai import (
+    ChatbotReply,
+    InitialLearningWorkModeDecision,
+    LearningRequirementUpdate,
+    openai_course_ai,
+)
 from app.services.rich_document import build_document
 from app.services.workflow_trace import (
     NodeId,
@@ -56,8 +61,8 @@ def _workspace_with_lesson(*, existing_board: bool = False):
     return workspace, lesson.id
 
 
-def _workspace_with_resource_prompt_candidate(*, active_session: bool = False):
-    workspace, lesson_id = _workspace_with_lesson(existing_board=True)
+def _workspace_with_resource_prompt_candidate(*, active_session: bool = False, existing_board: bool = True):
+    workspace, lesson_id = _workspace_with_lesson(existing_board=existing_board)
     package = workspace.packages[0]
     lesson = package.lessons[-1]
     package.resources.append(
@@ -171,6 +176,16 @@ def _patch_resource_prompt_guardrails(monkeypatch: pytest.MonkeyPatch) -> None:
         openai_course_ai,
         "generate_board_task_requirement_sheet",
         lambda **kwargs: _fail_if_called("generate_board_task_requirement_sheet"),
+    )
+
+
+def _ready_learning_requirement_update(**kwargs) -> LearningRequirementUpdate:
+    return LearningRequirementUpdate(
+        progress=100,
+        summary="用户已经说明当前学习目标，可以进入后续板书阶段。",
+        ready_for_board=True,
+        action_type="generate_board",
+        action_instruction="根据上传资料生成板书",
     )
 
 
@@ -340,6 +355,44 @@ def test_active_interaction_session_does_not_record_resource_reference_prompt(
     assert response.interaction_decision is not None
     assert response.interaction_decision.route == "continue_rule"
     assert collector.steps[5].decision == "handled"
+    assert NodeId.RESOURCE_REFERENCE_PROMPT.value not in _node_values(collector)
+
+
+def test_explicit_generation_resource_prompt_does_not_call_general_prompt_handler(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace, lesson_id = _workspace_with_resource_prompt_candidate(existing_board=False)
+    store = _store_with_workspace(tmp_path, workspace, name="legacy_generation_resource_prompt")
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    monkeypatch.setattr(
+        chatbot_module,
+        "handle_resource_reference_prompt",
+        lambda **kwargs: _fail_if_called("handle_resource_reference_prompt"),
+    )
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _ready_learning_requirement_update)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_chatbot_reply",
+        lambda **kwargs: _fail_if_called("generate_chatbot_reply"),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_board_task_requirement_sheet",
+        lambda **kwargs: _fail_if_called("generate_board_task_requirement_sheet"),
+    )
+
+    with bind_workflow_trace_collector() as collector:
+        response = chat_service.process_chat_on_lesson(
+            lesson_id,
+            ChatRequest(message="根据上传资料生成板书"),
+            user_id=TEST_USER_ID,
+        )
+
+    assert response.reference_prompt is not None
+    assert response.reference_prompt.resource_id == "resource-trace"
+    assert response.board_decision.action == "await_reference_choice"
+    assert response.learning_requirement_sheet.action_type == "generate_board"
     assert NodeId.RESOURCE_REFERENCE_PROMPT.value not in _node_values(collector)
 
 
