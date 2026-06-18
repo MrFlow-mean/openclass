@@ -100,6 +100,7 @@ def _negative_case(base: dict[str, Any], negative: dict[str, Any]) -> dict[str, 
     return {
         **base,
         "board_state": negative.get("board_state", base["board_state"]),
+        "has_active_board_task": negative.get("has_active_board_task", base.get("has_active_board_task", False)),
         "user_message": negative["message"],
         "request": request,
     }
