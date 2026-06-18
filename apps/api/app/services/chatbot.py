@@ -87,6 +87,7 @@ from app.services.sequence_planner import (
 )
 from app.services.resource_resolver import ResourceResolution, resolve_resource_reference
 from app.services.segment_resolver import FocusResolution, focus_context, resolve_board_focus
+from app.services.workflow_trace import NodeId, record_workflow_step
 
 
 MAX_CONTEXT_CHARS = 1800
@@ -4295,6 +4296,7 @@ def _chat_response(
 ) -> ChatResponse:
     workspace = workspace_state.load_workspace_for_user(user_id)
     package, lesson = workspace_state.find_lesson_package(workspace, lesson_id)
+    record_workflow_step(NodeId.CONTEXT_LOAD, decision="loaded")
     requirements = effective_requirements(lesson)
     requirement_history = _new_requirement_history_recorder(user_id=user_id, lesson_id=lesson.id)
     board_task_history = _new_board_task_history_recorder(user_id=user_id, lesson_id=lesson.id)
@@ -4302,10 +4304,20 @@ def _chat_response(
     visible_package = workspace_state.package_context_for_lesson(workspace, package, lesson.id)
     selection_excerpt = _selection_excerpt(request.selection, selection_text)
     document_empty = is_document_empty(lesson.board_document)
+    record_workflow_step(
+        NodeId.TURN_CONTEXT_BUILD,
+        decision="built",
+        reason="document_empty" if document_empty else "document_present",
+    )
     initial_action_decision = _board_task_action_decision(
         request,
         has_selection=bool(selection_excerpt),
         document_empty=document_empty,
+    )
+    record_workflow_step(
+        NodeId.BOARD_ACTION_DECIDE,
+        decision=initial_action_decision.board_action,
+        reason=initial_action_decision.reason,
     )
     chat_turn_gate = decide_chat_turn(
         message=request.message,
@@ -4318,6 +4330,7 @@ def _chat_response(
         board_action_decision=initial_action_decision,
         has_active_board_task=lesson.board_task_requirements is not None,
     )
+    record_workflow_step(NodeId.CHAT_TURN_GATE, decision=chat_turn_gate.route, reason=chat_turn_gate.reason)
     initial_board_task_action = initial_action_decision.board_action
     action_type = initial_board_task_action
     action_type = _prefer_requirement_action(
@@ -4341,6 +4354,7 @@ def _chat_response(
             and not _requests_learning_start(request.message)
         ),
     )
+    record_workflow_step(NodeId.RESOURCE_PREFLIGHT, decision=resource_resolution.status)
     selected_reference = resource_resolution.selected_reference
     selection_or_reference_excerpt = _merge_selection_and_reference(selection_excerpt, selected_reference)
     resource_summary_for_turn = _resource_summary_with_reference(visible_package.resources, selected_reference)
@@ -4357,6 +4371,10 @@ def _chat_response(
         selection_text=selection_text,
         requirement_history=requirement_history,
         board_task_history=board_task_history,
+    )
+    record_workflow_step(
+        NodeId.ACTIVE_INTERACTION_CHECK,
+        decision="handled" if interaction_response is not None else "not_handled",
     )
     if interaction_response is not None:
         return interaction_response
@@ -5516,6 +5534,11 @@ def _chat_response(
         )
         chatbot_message = (ai_reply.chatbot_message if ai_reply else "").strip()
         chatbot_message_source = "chatbot" if chatbot_message else "chatbot_empty"
+        record_workflow_step(
+            NodeId.ORDINARY_CHAT_GENERATE,
+            decision=chatbot_message_source,
+            reason=chat_turn_gate.reason,
+        )
         board_decision = BoardDecision(action="no_change", reason="本轮是普通聊天，不进入学习需求或板书任务链路。")
         requirement_cleared = False
 
@@ -5548,7 +5571,12 @@ def _chat_response(
             requirement_history=requirement_history,
             board_task_history=board_task_history,
         )
-        return _response(
+        record_workflow_step(
+            NodeId.PERSIST_CHAT_COMMIT,
+            decision="committed",
+            commit_id=lesson.history_graph.commits[-1].id,
+        )
+        response = _response(
             workspace=workspace,
             package=package,
             lesson=lesson,
@@ -5560,6 +5588,8 @@ def _chat_response(
             selected_reference=selected_reference,
             requirement_cleared=requirement_cleared,
         )
+        record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
+        return response
 
     free_chat_user_message = (
         requirement_probe_instead_of_explanation_message(request.message)
