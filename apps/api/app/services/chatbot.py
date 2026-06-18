@@ -3603,6 +3603,12 @@ def _handle_existing_interaction_session(
             session=session_before,
             decision=decision,
         )
+        if decision.route == "exit_rule":
+            record_workflow_step(
+                NodeId.INTERACTION_EXIT,
+                decision="exit_rule",
+                reason=decision.reason,
+            )
         commit_operations(
             lesson,
             [],
@@ -3632,7 +3638,13 @@ def _handle_existing_interaction_session(
             requirement_history=requirement_history,
             board_task_history=board_task_history,
         )
-        return _response(
+        if decision.route == "exit_rule":
+            record_workflow_step(
+                NodeId.PERSIST_CHAT_COMMIT,
+                decision="committed",
+                commit_id=lesson.history_graph.commits[-1].id,
+            )
+        response = _response(
             workspace=workspace,
             package=package,
             lesson=lesson,
@@ -3643,6 +3655,9 @@ def _handle_existing_interaction_session(
             interaction_decision=decision,
             requirement_history=requirement_history,
         )
+        if decision.route == "exit_rule":
+            record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
+        return response
 
     return handle_active_interaction_turn(
         workspace=workspace,
