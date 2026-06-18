@@ -3504,7 +3504,9 @@ def _handle_existing_interaction_session(
         requirement_history=requirement_history,
     )
     if section_sequence_response is not None:
+        record_workflow_step(NodeId.INTERACTION_SEQUENCE_CHECK, decision="handled")
         return section_sequence_response
+    record_workflow_step(NodeId.INTERACTION_SEQUENCE_CHECK, decision="not_handled")
     decision = decide_interaction_turn(
         lesson=lesson,
         session=session_before,
@@ -3512,6 +3514,11 @@ def _handle_existing_interaction_session(
         conversation_summary=_conversation_summary(request.conversation),
         user_message=request.message,
         selection_excerpt=selection_excerpt,
+    )
+    record_workflow_step(
+        NodeId.INTERACTION_DECIDE,
+        decision=decision.route if decision is not None else "empty",
+        reason=decision.reason if decision is not None else None,
     )
     if decision is None:
         chatbot_message = ""
@@ -3646,6 +3653,18 @@ def _handle_existing_interaction_session(
         session=reply_session,
         decision=decision,
     )
+    if decision.route in {"continue_rule", "resume_rule"}:
+        record_workflow_step(
+            NodeId.INTERACTION_CONTINUE,
+            decision=decision.route,
+            reason=decision.reason,
+        )
+    elif decision.route == "rule_violation":
+        record_workflow_step(
+            NodeId.INTERACTION_RULE_VIOLATION,
+            decision=decision.route,
+            reason=decision.reason,
+        )
     commit_operations(
         lesson,
         [],
@@ -3674,7 +3693,12 @@ def _handle_existing_interaction_session(
         workspace=workspace,
         requirement_history=requirement_history,
     )
-    return _response(
+    record_workflow_step(
+        NodeId.PERSIST_CHAT_COMMIT,
+        decision="committed",
+        commit_id=lesson.history_graph.commits[-1].id,
+    )
+    response = _response(
         workspace=workspace,
         package=package,
         lesson=lesson,
@@ -3685,6 +3709,8 @@ def _handle_existing_interaction_session(
         interaction_decision=decision,
         requirement_history=requirement_history,
     )
+    record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
+    return response
 
 
 def _maybe_start_interaction_session(
@@ -4370,6 +4396,10 @@ def _chat_response(
     selection_or_reference_excerpt = _merge_selection_and_reference(selection_excerpt, selected_reference)
     resource_summary_for_turn = _resource_summary_with_reference(visible_package.resources, selected_reference)
 
+    record_workflow_step(
+        NodeId.ACTIVE_INTERACTION_CHECK,
+        decision="handled" if lesson.active_interaction_session is not None else "not_handled",
+    )
     interaction_response = _handle_existing_interaction_session(
         workspace=workspace,
         package=package,
@@ -4382,10 +4412,6 @@ def _chat_response(
         selection_text=selection_text,
         requirement_history=requirement_history,
         board_task_history=board_task_history,
-    )
-    record_workflow_step(
-        NodeId.ACTIVE_INTERACTION_CHECK,
-        decision="handled" if interaction_response is not None else "not_handled",
     )
     if interaction_response is not None:
         return interaction_response
