@@ -47,6 +47,10 @@ from app.services.board_task_manager import (
 )
 from app.services.board_segment_index import build_board_segment_index
 from app.services.board_teaching import build_board_teaching_guide, teach_first_section, teach_next_section
+from app.services.chat.paths.generation_resource_prompt import (
+    GenerationResourcePromptDependencies,
+    handle_generation_resource_prompt,
+)
 from app.services.chat.paths.ordinary import OrdinaryChatHandlerDependencies, handle_ordinary_chat
 from app.services.chat.paths.resource_prompt import (
     ResourcePromptHandlerDependencies,
@@ -5112,74 +5116,25 @@ def _chat_response(
             learning_clarification=learning_clarification,
         )
         if resource_resolution.reference_prompt is not None and request.resource_reference_action is None:
-            if track_initial_requirement_run and requirement_stamp is None:
-                requirement_stamp = _record_requirement_update(
-                    requirement_history,
-                    requirements=requirements,
-                    learning_clarification=learning_clarification,
-                    change_summary="Generation requirement persisted while awaiting resource confirmation.",
-                )
-            record_workflow_step(
-                NodeId.INITIAL_REQUIREMENT_COLLECT,
-                decision="recorded" if requirement_stamp is not None else "not_tracked",
-                run_id=requirement_stamp.run_id if requirement_stamp is not None else None,
-                version_id=requirement_stamp.version_id if requirement_stamp is not None else None,
-            )
-            lesson.learning_requirements = requirements
-            chatbot_message = resource_resolution.reference_prompt.question
-            record_workflow_step(
-                NodeId.RESOURCE_REFERENCE_PROMPT,
-                decision="prompted_after_requirement_update",
-            )
-            commit_operations(
-                lesson,
-                [],
-                label="Resource reference prompt",
-                message="Asked the learner to confirm a relevant resource chapter before continuing",
-                new_document=lesson.board_document,
-                metadata={
-                    "kind": "chat_flow",
-                    "user_message": request.message,
-                    "assistant_message": chatbot_message,
-                    "assistant_message_source": "resource_resolver",
-                    "interaction_mode": request.interaction_mode,
-                    "selection": request.selection.model_dump(mode="json") if request.selection else None,
-                    **_task_metadata(
-                        requirements=requirements,
-                        learning_clarification=learning_clarification,
-                        requirement_cleared=False,
-                    ),
-                    **_reference_metadata(resolution=resource_resolution),
-                },
-            )
-            workspace_state.normalize_package_state(package)
-            _save_workspace_for_user(
-                user_id=user_id,
-                workspace=workspace,
-                requirement_history=requirement_history,
-            )
-            record_workflow_step(
-                NodeId.PERSIST_CHAT_COMMIT,
-                decision="committed",
-                commit_id=lesson.history_graph.commits[-1].id,
-            )
-            response = _response(
+            return handle_generation_resource_prompt(
                 workspace=workspace,
                 package=package,
                 lesson=lesson,
-                chatbot_message=chatbot_message,
-                learning_clarification=learning_clarification,
+                user_id=user_id,
+                request=request,
                 requirements=requirements,
-                board_decision=BoardDecision(
-                    action="await_reference_choice",
-                    reason=resource_resolution.reference_prompt.reason,
+                learning_clarification=learning_clarification,
+                resource_resolution=resource_resolution,
+                requirement_history=requirement_history,
+                include_requirement_history=track_initial_requirement_run,
+                requirement_stamp=requirement_stamp,
+                deps=GenerationResourcePromptDependencies(
+                    task_metadata=_task_metadata,
+                    reference_metadata=_reference_metadata,
+                    save_workspace_for_user=_save_workspace_for_user,
+                    build_response=_response,
                 ),
-                resource_matches=resource_resolution.matches,
-                reference_prompt=resource_resolution.reference_prompt,
-                requirement_history=requirement_history if track_initial_requirement_run else None,
             )
-            record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
-            return response
         if request.resource_reference_action == "confirm" and selected_reference is not None:
             return _generate_board_from_confirmed_resource(
                 workspace=workspace,
