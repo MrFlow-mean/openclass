@@ -47,6 +47,7 @@ from app.services.board_task_manager import (
 )
 from app.services.board_segment_index import build_board_segment_index
 from app.services.board_teaching import build_board_teaching_guide, teach_first_section, teach_next_section
+from app.services.chat.paths.ordinary import OrdinaryChatHandlerDependencies, handle_ordinary_chat
 from app.services.chat_turn_gate import ChatTurnGateDecision, decide_chat_turn
 from app.services.course_runtime import effective_requirements
 from app.services.course_runtime import refresh_lesson_runtime
@@ -5518,78 +5519,30 @@ def _chat_response(
         track_initial_requirement_run and requirement_history.snapshot.status in {"collecting", "ready"}
     )
     if chat_turn_gate.route == "ordinary_chat" and not has_active_initial_requirement_run:
-        ai_reply = openai_course_ai.generate_chatbot_reply(
-            lesson_title=lesson.title,
-            learning_goal=requirements.learning_goal,
-            board_summary=_board_summary(lesson),
-            resource_summary=resource_summary_for_turn,
-            conversation_summary=_conversation_summary(request.conversation),
-            user_message=request.message,
-            selection_excerpt=None,
-            interaction_mode=request.interaction_mode,
-            interaction_context={
-                "turn_mode": "ordinary_chat",
-                "gate_reason": chat_turn_gate.reason,
-            },
-        )
-        chatbot_message = (ai_reply.chatbot_message if ai_reply else "").strip()
-        chatbot_message_source = "chatbot" if chatbot_message else "chatbot_empty"
-        record_workflow_step(
-            NodeId.ORDINARY_CHAT_GENERATE,
-            decision=chatbot_message_source,
-            reason=chat_turn_gate.reason,
-        )
-        board_decision = BoardDecision(action="no_change", reason="本轮是普通聊天，不进入学习需求或板书任务链路。")
-        requirement_cleared = False
-
-        commit_operations(
-            lesson,
-            [],
-            label="Chat turn",
-            message="Recorded an ordinary chatbot conversation turn",
-            new_document=lesson.board_document,
-            metadata={
-                "kind": "chat_flow",
-                "user_message": request.message,
-                "assistant_message": chatbot_message,
-                "assistant_message_source": chatbot_message_source,
-                "interaction_mode": request.interaction_mode,
-                "selection": request.selection.model_dump(mode="json") if request.selection else None,
-                **_task_metadata(
-                    requirements=requirements,
-                    learning_clarification=learning_clarification,
-                    requirement_cleared=requirement_cleared,
-                ),
-                **_reference_metadata(resolution=resource_resolution),
-                **_chat_turn_gate_metadata(chat_turn_gate),
-            },
-        )
-        workspace_state.normalize_package_state(package)
-        _save_workspace_for_user(
-            user_id=user_id,
-            workspace=workspace,
-            requirement_history=requirement_history,
-            board_task_history=board_task_history,
-        )
-        record_workflow_step(
-            NodeId.PERSIST_CHAT_COMMIT,
-            decision="committed",
-            commit_id=lesson.history_graph.commits[-1].id,
-        )
-        response = _response(
+        return handle_ordinary_chat(
             workspace=workspace,
             package=package,
             lesson=lesson,
-            chatbot_message=chatbot_message,
-            learning_clarification=learning_clarification,
+            user_id=user_id,
+            request=request,
             requirements=requirements,
-            board_decision=board_decision,
-            resource_matches=resource_resolution.matches,
+            learning_clarification=learning_clarification,
+            resource_summary_for_turn=resource_summary_for_turn,
+            resource_resolution=resource_resolution,
             selected_reference=selected_reference,
-            requirement_cleared=requirement_cleared,
+            chat_turn_gate=chat_turn_gate,
+            requirement_history=requirement_history,
+            board_task_history=board_task_history,
+            deps=OrdinaryChatHandlerDependencies(
+                board_summary=_board_summary,
+                conversation_summary=_conversation_summary,
+                task_metadata=_task_metadata,
+                reference_metadata=_reference_metadata,
+                chat_turn_gate_metadata=_chat_turn_gate_metadata,
+                save_workspace_for_user=_save_workspace_for_user,
+                build_response=_response,
+            ),
         )
-        record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
-        return response
 
     free_chat_user_message = (
         requirement_probe_instead_of_explanation_message(request.message)
