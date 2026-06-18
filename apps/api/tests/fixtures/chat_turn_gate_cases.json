@@ -212,5 +212,362 @@
         }
       }
     ]
+  },
+  {
+    "id": "blank_board_generation_action_start",
+    "title": "空白板书 + 显式开始生成",
+    "board_state": "blank",
+    "user_message": "开始生成板书",
+    "request": {
+      "has_selection": false,
+      "interaction_mode": "ask",
+      "board_generation_action": "start",
+      "teaching_action": null,
+      "resource_reference_action": null
+    },
+    "expected": {
+      "route": "initial_board_generation",
+      "should_update_learning_requirement": true,
+      "should_try_board_task": false,
+      "requires_resource_reference": false
+    },
+    "negative_examples": [
+      {
+        "message": "可以",
+        "board_generation_action": null,
+        "must_not": {
+          "route": "initial_board_generation"
+        }
+      },
+      {
+        "message": "根据上传资料开始生成",
+        "board_generation_action": null,
+        "must_not": {
+          "requires_resource_reference": false
+        }
+      }
+    ]
+  },
+  {
+    "id": "existing_board_generation_action_start",
+    "title": "已有板书 + 显式开始生成",
+    "board_state": "existing",
+    "user_message": "开始生成板书",
+    "request": {
+      "has_selection": false,
+      "interaction_mode": "ask",
+      "board_generation_action": "start",
+      "teaching_action": null,
+      "resource_reference_action": null
+    },
+    "expected": {
+      "route": "existing_board_task",
+      "should_update_learning_requirement": false,
+      "should_try_board_task": true,
+      "requires_resource_reference": false
+    },
+    "negative_examples": [
+      {
+        "message": "可以",
+        "board_state": "blank",
+        "must_not": {
+          "route": "existing_board_task",
+          "should_try_board_task": true
+        }
+      },
+      {
+        "message": "今天先随便聊两句",
+        "board_generation_action": null,
+        "must_not": {
+          "route": "existing_board_task"
+        }
+      }
+    ]
+  },
+  {
+    "id": "blank_board_generation_start_with_resource_confirm",
+    "title": "空白板书 + 开始生成优先于资料确认",
+    "board_state": "blank",
+    "user_message": "开始生成板书",
+    "request": {
+      "has_selection": false,
+      "interaction_mode": "ask",
+      "board_generation_action": "start",
+      "teaching_action": null,
+      "resource_reference_action": "confirm"
+    },
+    "expected": {
+      "route": "initial_board_generation",
+      "should_update_learning_requirement": true,
+      "should_try_board_task": false,
+      "requires_resource_reference": false
+    },
+    "negative_examples": [
+      {
+        "message": "可以，参考这一章",
+        "board_generation_action": null,
+        "must_not": {
+          "route": "initial_board_generation",
+          "requires_resource_reference": false
+        }
+      },
+      {
+        "message": "开始生成板书",
+        "board_generation_action": null,
+        "resource_reference_action": "confirm",
+        "must_not": {
+          "requires_resource_reference": false
+        }
+      }
+    ]
+  },
+  {
+    "id": "existing_board_generation_start_with_resource_confirm",
+    "title": "已有板书 + 开始生成优先于资料确认",
+    "board_state": "existing",
+    "user_message": "开始生成板书",
+    "request": {
+      "has_selection": false,
+      "interaction_mode": "ask",
+      "board_generation_action": "start",
+      "teaching_action": null,
+      "resource_reference_action": "confirm"
+    },
+    "expected": {
+      "route": "existing_board_task",
+      "should_update_learning_requirement": false,
+      "should_try_board_task": true,
+      "requires_resource_reference": false
+    },
+    "negative_examples": [
+      {
+        "message": "可以，参考这一章",
+        "board_generation_action": null,
+        "must_not": {
+          "route": "existing_board_task",
+          "requires_resource_reference": false
+        }
+      },
+      {
+        "message": "开始生成板书",
+        "board_generation_action": null,
+        "resource_reference_action": "confirm",
+        "must_not": {
+          "requires_resource_reference": false
+        }
+      }
+    ]
+  },
+  {
+    "id": "existing_teaching_action_continue",
+    "title": "已有板书 + 分节讲解继续控制",
+    "board_state": "existing",
+    "user_message": "继续下一节",
+    "request": {
+      "has_selection": false,
+      "interaction_mode": "ask",
+      "board_generation_action": null,
+      "teaching_action": "continue",
+      "resource_reference_action": null
+    },
+    "expected": {
+      "route": "existing_board_task",
+      "should_update_learning_requirement": false,
+      "should_try_board_task": true,
+      "requires_resource_reference": false
+    },
+    "negative_examples": [
+      {
+        "message": "可以",
+        "teaching_action": null,
+        "must_not": {
+          "route": "existing_board_task"
+        }
+      },
+      {
+        "message": "根据上传资料继续下一节",
+        "resource_reference_action": "confirm",
+        "must_not": {
+          "requires_resource_reference": false
+        }
+      }
+    ]
+  },
+  {
+    "id": "existing_teaching_action_restart",
+    "title": "已有板书 + 分节讲解重来控制",
+    "board_state": "existing",
+    "user_message": "重新开始讲",
+    "request": {
+      "has_selection": false,
+      "interaction_mode": "ask",
+      "board_generation_action": null,
+      "teaching_action": "restart",
+      "resource_reference_action": null
+    },
+    "expected": {
+      "route": "existing_board_task",
+      "should_update_learning_requirement": false,
+      "should_try_board_task": true,
+      "requires_resource_reference": false
+    },
+    "negative_examples": [
+      {
+        "message": "可以",
+        "teaching_action": null,
+        "must_not": {
+          "route": "existing_board_task"
+        }
+      },
+      {
+        "message": "最近有点累，想随便聊聊",
+        "teaching_action": null,
+        "must_not": {
+          "route": "existing_board_task"
+        }
+      }
+    ]
+  },
+  {
+    "id": "existing_direct_edit_mode",
+    "title": "已有板书 + 直接编辑模式",
+    "board_state": "existing",
+    "user_message": "改一下",
+    "request": {
+      "has_selection": false,
+      "interaction_mode": "direct_edit",
+      "board_generation_action": null,
+      "teaching_action": null,
+      "resource_reference_action": null
+    },
+    "expected": {
+      "route": "existing_board_task",
+      "should_update_learning_requirement": false,
+      "should_try_board_task": true,
+      "requires_resource_reference": false
+    },
+    "negative_examples": [
+      {
+        "message": "这个",
+        "interaction_mode": "ask",
+        "must_not": {
+          "route": "existing_board_task"
+        }
+      },
+      {
+        "message": "根据上传资料改一下",
+        "resource_reference_action": "confirm",
+        "must_not": {
+          "requires_resource_reference": false
+        }
+      }
+    ]
+  },
+  {
+    "id": "explicit_resource_reference_action",
+    "title": "显式资料确认动作",
+    "board_state": "existing",
+    "user_message": "可以，参考这一章",
+    "request": {
+      "has_selection": false,
+      "interaction_mode": "ask",
+      "board_generation_action": null,
+      "teaching_action": null,
+      "resource_reference_action": "confirm"
+    },
+    "expected": {
+      "route": "resource_reference",
+      "should_update_learning_requirement": false,
+      "should_try_board_task": false,
+      "requires_resource_reference": true
+    },
+    "negative_examples": [
+      {
+        "message": "可以",
+        "resource_reference_action": null,
+        "must_not": {
+          "route": "resource_reference"
+        }
+      },
+      {
+        "message": "继续下一节",
+        "teaching_action": "continue",
+        "resource_reference_action": null,
+        "must_not": {
+          "requires_resource_reference": true
+        }
+      }
+    ]
+  },
+  {
+    "id": "existing_active_board_task_weak_followup",
+    "title": "已有板书 + 未完成任务弱追问",
+    "board_state": "existing",
+    "has_active_board_task": true,
+    "user_message": "可以",
+    "request": {
+      "has_selection": false,
+      "interaction_mode": "ask",
+      "board_generation_action": null,
+      "teaching_action": null,
+      "resource_reference_action": null
+    },
+    "expected": {
+      "route": "existing_board_task",
+      "should_update_learning_requirement": false,
+      "should_try_board_task": true,
+      "requires_resource_reference": false
+    },
+    "negative_examples": [
+      {
+        "message": "可以",
+        "has_active_board_task": false,
+        "must_not": {
+          "route": "existing_board_task"
+        }
+      },
+      {
+        "message": "根据上传资料可以",
+        "resource_reference_action": "confirm",
+        "must_not": {
+          "requires_resource_reference": false
+        }
+      }
+    ]
+  },
+  {
+    "id": "existing_selection_precedence",
+    "title": "已有板书 + 选区优先进入板书任务",
+    "board_state": "existing",
+    "user_message": "这个",
+    "request": {
+      "has_selection": true,
+      "interaction_mode": "ask",
+      "board_generation_action": null,
+      "teaching_action": null,
+      "resource_reference_action": null
+    },
+    "expected": {
+      "route": "existing_board_task",
+      "should_update_learning_requirement": false,
+      "should_try_board_task": true,
+      "requires_resource_reference": false
+    },
+    "negative_examples": [
+      {
+        "message": "这个",
+        "has_selection": false,
+        "must_not": {
+          "route": "existing_board_task"
+        }
+      },
+      {
+        "message": "根据上传资料看这个",
+        "has_selection": false,
+        "must_not": {
+          "requires_resource_reference": false
+        }
+      }
+    ]
   }
 ]
