@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -128,6 +129,24 @@ def _requirement_history_rows(store: SqliteCourseStore, lesson_id: str) -> list[
     ]
 
 
+def _requirement_run_rows(store: SqliteCourseStore, lesson_id: str) -> list[dict[str, Any]]:
+    conn = sqlite3.connect(store.path)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM learning_requirement_runs
+            WHERE owner_user_id = ? AND lesson_id = ?
+            ORDER BY created_at, id
+            """,
+            (TEST_USER_ID, lesson_id),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
 def _node_values(collector: WorkflowTraceCollector) -> list[str]:
     return [step.node_id.value for step in collector.steps]
 
@@ -153,6 +172,8 @@ def _normalize_visible_response(value: Any) -> Any:
         for key, item in value.items():
             if key in {"created_at", "updated_at"}:
                 normalized[key] = "<timestamp>"
+            elif key in {"requirement_run_id", "requirement_version_id"}:
+                normalized[key] = "<requirement_id>"
             elif is_commit and key == "id":
                 normalized[key] = "<commit_id>"
             elif key == "head_commit_id":
@@ -416,6 +437,7 @@ def test_generation_resource_prompt_trace_records_requirement_collect_before_pro
 
     lesson = response.course_package.lessons[-1]
     commit = lesson.history_graph.commits[-1]
+    runs = _requirement_run_rows(store, lesson_id)
     versions = store.list_learning_requirement_versions(owner_user_id=TEST_USER_ID, lesson_id=lesson_id)
     events = store.list_learning_requirement_events(owner_user_id=TEST_USER_ID, lesson_id=lesson_id)
     collect_step = collector.steps[6]
@@ -425,14 +447,25 @@ def test_generation_resource_prompt_trace_records_requirement_collect_before_pro
     assert response.learning_requirement_sheet.action_type == "generate_board"
     assert response.active_requirement_sheet is not None
     assert response.active_requirement_sheet.action_type == "generate_board"
-    assert response.requirement_run_id is None
-    assert response.requirement_version_id is None
-    assert response.requirement_phase is None
+    assert len(runs) == 1
+    assert len(versions) == 1
+    assert response.requirement_run_id == runs[0]["id"]
+    assert response.requirement_version_id == versions[0]["id"]
+    assert response.requirement_phase == "ready"
+    assert runs[0]["status"] == "ready"
+    assert runs[0]["active_version_id"] == versions[0]["id"]
+    assert runs[0]["frozen_version_id"] is None
+    assert runs[0]["consumed_commit_id"] is None
+    assert versions[0]["status"] == "ready"
+    assert versions[0]["change_kind"] == "completed"
+    assert versions[0]["change_summary"] == "Generation requirement persisted while awaiting resource confirmation."
+    assert json.loads(versions[0]["sheet_json"]) == response.active_requirement_sheet.model_dump(mode="json")
+    assert json.loads(versions[0]["clarification_json"])["ready_for_board"] is True
     assert calls["requirement_update"] == 1
     assert lesson.board_document.model_dump(mode="json") == original_board
     assert response.active_board_task_sheet is None
-    assert versions == []
-    assert events == []
+    assert store.list_board_task_versions(owner_user_id=TEST_USER_ID, lesson_id=lesson_id) == []
+    assert [event["event_type"] for event in events] == ["created", "completed"]
     assert commit.metadata["kind"] == "chat_flow"
     assert commit.metadata["assistant_message_source"] == "resource_resolver"
     assert commit.metadata["task_requirement_sheet"] == response.learning_requirement_sheet.model_dump(mode="json")
@@ -449,11 +482,44 @@ def test_generation_resource_prompt_trace_records_requirement_collect_before_pro
         NodeId.RESPONSE_ASSEMBLE.value,
     ]
     assert collector.steps[5].decision == "not_handled"
-    assert collect_step.decision == "not_tracked"
-    assert collect_step.run_id is None
-    assert collect_step.version_id is None
+    assert collect_step.decision == "recorded"
+    assert collect_step.run_id == response.requirement_run_id
+    assert collect_step.version_id == response.requirement_version_id
     assert collector.steps[7].decision == "prompted_after_requirement_update"
     assert collector.steps[8].commit_id == commit.id
+
+
+def test_generation_resource_prompt_repeated_turn_does_not_duplicate_requirement_version(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace, lesson_id = _workspace_with_resource_prompt_candidate(existing_board=False)
+    store = _store_with_workspace(tmp_path, workspace, name="generation_resource_prompt_idempotency")
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    _patch_generation_resource_prompt_guards(monkeypatch)
+
+    first_response = chat_service.process_chat_on_lesson(
+        lesson_id,
+        ChatRequest(message=GENERATION_RESOURCE_PROMPT_MESSAGE),
+        user_id=TEST_USER_ID,
+    )
+    first_versions = store.list_learning_requirement_versions(owner_user_id=TEST_USER_ID, lesson_id=lesson_id)
+    assert len(first_versions) == 1
+
+    second_response = chat_service.process_chat_on_lesson(
+        lesson_id,
+        ChatRequest(message=GENERATION_RESOURCE_PROMPT_MESSAGE),
+        user_id=TEST_USER_ID,
+    )
+    second_versions = store.list_learning_requirement_versions(owner_user_id=TEST_USER_ID, lesson_id=lesson_id)
+    runs = _requirement_run_rows(store, lesson_id)
+
+    assert len(runs) == 1
+    assert len(second_versions) == 1
+    assert second_versions[0]["id"] == first_versions[0]["id"]
+    assert first_response.requirement_run_id == second_response.requirement_run_id == runs[0]["id"]
+    assert first_response.requirement_version_id == second_response.requirement_version_id == first_versions[0]["id"]
+    assert second_response.requirement_phase == "ready"
 
 
 def test_non_ordinary_path_never_records_ordinary_chat_generate(
