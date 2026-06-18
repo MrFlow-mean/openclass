@@ -1214,10 +1214,12 @@ def _record_requirement_update(
     *,
     requirements: LearningRequirementSheet,
     learning_clarification: LearningClarificationStatus,
+    change_summary: str | None = None,
 ) -> RequirementHistoryStamp:
     return requirement_history.record_update(
         requirements=requirements,
         clarification=learning_clarification,
+        change_summary=change_summary,
     )
 
 
@@ -5110,6 +5112,13 @@ def _chat_response(
             learning_clarification=learning_clarification,
         )
         if resource_resolution.reference_prompt is not None and request.resource_reference_action is None:
+            if track_initial_requirement_run and requirement_stamp is None:
+                requirement_stamp = _record_requirement_update(
+                    requirement_history,
+                    requirements=requirements,
+                    learning_clarification=learning_clarification,
+                    change_summary="Generation requirement persisted while awaiting resource confirmation.",
+                )
             record_workflow_step(
                 NodeId.INITIAL_REQUIREMENT_COLLECT,
                 decision="recorded" if requirement_stamp is not None else "not_tracked",
