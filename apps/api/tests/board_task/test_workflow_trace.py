@@ -312,6 +312,18 @@ def _interaction_trace_prefix() -> list[str]:
     ]
 
 
+def _count_active_interaction_handler_calls(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
+    calls = {"count": 0}
+    original_handler = chatbot_module.handle_active_interaction_turn
+
+    def _counting_handler(**kwargs):
+        calls["count"] += 1
+        return original_handler(**kwargs)
+
+    monkeypatch.setattr(chatbot_module, "handle_active_interaction_turn", _counting_handler)
+    return calls
+
+
 def test_node_ids_match_latest_workflow_graph_document() -> None:
     doc = Path("docs/architecture/chat-workflow-graph.md").read_text(encoding="utf-8")
     table = doc.split("| NodeId | Type | Current source |", 1)[1].split("Current documented NodeId count", 1)[0]
@@ -441,6 +453,7 @@ def test_active_interaction_session_does_not_record_resource_reference_prompt(
     store = _store_with_workspace(tmp_path, workspace, name="resource_prompt_session")
     original_board = workspace.packages[0].lessons[-1].board_document.model_dump(mode="json")
     monkeypatch.setattr(workspace_state, "STORE", store)
+    handler_calls = _count_active_interaction_handler_calls(monkeypatch)
     decision = _patch_interaction_turn(
         monkeypatch,
         "continue_rule",
@@ -456,6 +469,7 @@ def test_active_interaction_session_does_not_record_resource_reference_prompt(
         )
 
     assert response.reference_prompt is None
+    assert handler_calls["count"] == 1
     assert response.active_interaction_session is not None
     assert response.interaction_decision is not None
     assert response.interaction_decision.route == "continue_rule"
@@ -496,6 +510,7 @@ def test_active_interaction_rule_violation_trace_records_current_path(
     store = _store_with_workspace(tmp_path, workspace, name="interaction_rule_violation")
     original_board = workspace.packages[0].lessons[-1].board_document.model_dump(mode="json")
     monkeypatch.setattr(workspace_state, "STORE", store)
+    handler_calls = _count_active_interaction_handler_calls(monkeypatch)
     decision = _patch_interaction_turn(
         monkeypatch,
         "rule_violation",
@@ -512,6 +527,7 @@ def test_active_interaction_rule_violation_trace_records_current_path(
         )
 
     commit = response.course_package.lessons[-1].history_graph.commits[-1]
+    assert handler_calls["count"] == 1
     assert response.active_interaction_session is not None
     assert response.active_interaction_session.status == "active"
     assert response.active_interaction_session.turn_count == 2
@@ -554,6 +570,7 @@ def test_active_interaction_resume_rule_records_interaction_continue(
     )
     store = _store_with_workspace(tmp_path, workspace, name="interaction_resume_rule")
     monkeypatch.setattr(workspace_state, "STORE", store)
+    handler_calls = _count_active_interaction_handler_calls(monkeypatch)
     decision = _patch_interaction_turn(
         monkeypatch,
         "resume_rule",
@@ -568,6 +585,7 @@ def test_active_interaction_resume_rule_records_interaction_continue(
             user_id=TEST_USER_ID,
         )
 
+    assert handler_calls["count"] == 1
     assert response.active_interaction_session is not None
     assert response.active_interaction_session.status == "active"
     assert response.active_interaction_session.pause_reason == ""
@@ -582,6 +600,35 @@ def test_active_interaction_resume_rule_records_interaction_continue(
     assert collector.steps[8].decision == "resume_rule"
 
 
+def test_interaction_empty_decision_does_not_call_active_interaction_handler(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace, lesson_id = _workspace_with_resource_prompt_candidate(active_session=True)
+    store = _store_with_workspace(tmp_path, workspace, name="interaction_empty_decision")
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    monkeypatch.setattr(openai_course_ai, "generate_interaction_turn_decision", lambda **kwargs: None)
+    monkeypatch.setattr(
+        chatbot_module,
+        "handle_active_interaction_turn",
+        lambda **kwargs: _fail_if_called("handle_active_interaction_turn"),
+    )
+
+    with bind_workflow_trace_collector() as collector:
+        response = chat_service.process_chat_on_lesson(
+            lesson_id,
+            ChatRequest(message="继续互动"),
+            user_id=TEST_USER_ID,
+        )
+
+    assert response.interaction_decision is None
+    assert response.active_interaction_session is not None
+    assert _node_values(collector) == _interaction_trace_prefix()
+    assert collector.steps[7].decision == "empty"
+    assert NodeId.INTERACTION_CONTINUE.value not in _node_values(collector)
+    assert NodeId.INTERACTION_RULE_VIOLATION.value not in _node_values(collector)
+
+
 @pytest.mark.parametrize("route", ["exit_rule", "new_task", "side_learning_request"])
 def test_interaction_terminal_routes_do_not_record_continue_or_rule_violation(
     monkeypatch: pytest.MonkeyPatch,
@@ -591,6 +638,11 @@ def test_interaction_terminal_routes_do_not_record_continue_or_rule_violation(
     workspace, lesson_id = _workspace_with_resource_prompt_candidate(active_session=True)
     store = _store_with_workspace(tmp_path, workspace, name=f"interaction_terminal_{route}")
     monkeypatch.setattr(workspace_state, "STORE", store)
+    monkeypatch.setattr(
+        chatbot_module,
+        "handle_active_interaction_turn",
+        lambda **kwargs: _fail_if_called("handle_active_interaction_turn"),
+    )
     decision = _patch_interaction_turn(monkeypatch, route)
 
     def _board_task_response(**kwargs):
@@ -657,6 +709,11 @@ def test_sequence_session_records_sequence_check_without_generic_continue(
     )
     store = _store_with_workspace(tmp_path, workspace, name="interaction_sequence")
     monkeypatch.setattr(workspace_state, "STORE", store)
+    monkeypatch.setattr(
+        chatbot_module,
+        "handle_active_interaction_turn",
+        lambda **kwargs: _fail_if_called("handle_active_interaction_turn"),
+    )
     monkeypatch.setattr(
         chatbot_module,
         "_generate_sequence_end_message",

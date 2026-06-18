@@ -47,6 +47,10 @@ from app.services.board_task_manager import (
 )
 from app.services.board_segment_index import build_board_segment_index
 from app.services.board_teaching import build_board_teaching_guide, teach_first_section, teach_next_section
+from app.services.chat.paths.active_interaction_turn import (
+    ActiveInteractionTurnDependencies,
+    handle_active_interaction_turn,
+)
 from app.services.chat.paths.generation_resource_prompt import (
     GenerationResourcePromptDependencies,
     handle_generation_resource_prompt,
@@ -62,7 +66,6 @@ from app.services.course_runtime import refresh_lesson_runtime
 from app.services.decision_trace import decision_trace_metadata
 from app.services.history import commit_operations
 from app.services.interaction_rules import (
-    apply_interaction_decision,
     build_interaction_start,
     decide_interaction_turn,
     interaction_context_payload,
@@ -3641,76 +3644,25 @@ def _handle_existing_interaction_session(
             requirement_history=requirement_history,
         )
 
-    session_after = apply_interaction_decision(session_before, decision)
-    reply_session = session_after or session_before
-    lesson.active_interaction_session = session_after
-    chatbot_message, chatbot_message_source, board_explanation_directive = _generate_interaction_chatbot_message(
-        lesson=lesson,
-        requirements=requirements,
-        resources=resources,
-        conversation=request.conversation,
-        request=request,
-        session=reply_session,
-        decision=decision,
-    )
-    if decision.route in {"continue_rule", "resume_rule"}:
-        record_workflow_step(
-            NodeId.INTERACTION_CONTINUE,
-            decision=decision.route,
-            reason=decision.reason,
-        )
-    elif decision.route == "rule_violation":
-        record_workflow_step(
-            NodeId.INTERACTION_RULE_VIOLATION,
-            decision=decision.route,
-            reason=decision.reason,
-        )
-    commit_operations(
-        lesson,
-        [],
-        label="Interaction turn",
-        message="Recorded an interaction-rule chat turn",
-        new_document=lesson.board_document,
-        metadata={
-            "kind": "interaction_flow",
-            "user_message": request.message,
-            "assistant_message": chatbot_message,
-            "assistant_message_source": chatbot_message_source,
-            "board_explanation_directive": board_explanation_directive,
-            "interaction_mode": request.interaction_mode,
-            "selection": request.selection.model_dump(mode="json") if request.selection else None,
-            **_task_metadata(
-                requirements=requirements,
-                learning_clarification=learning_clarification,
-                requirement_cleared=False,
-            ),
-            **interaction_session_metadata(before=session_before, after=session_after, decision=decision),
-        },
-    )
-    workspace_state.normalize_package_state(package)
-    _save_workspace_for_user(
-        user_id=user_id,
-        workspace=workspace,
-        requirement_history=requirement_history,
-    )
-    record_workflow_step(
-        NodeId.PERSIST_CHAT_COMMIT,
-        decision="committed",
-        commit_id=lesson.history_graph.commits[-1].id,
-    )
-    response = _response(
+    return handle_active_interaction_turn(
         workspace=workspace,
         package=package,
         lesson=lesson,
-        chatbot_message=chatbot_message,
-        learning_clarification=learning_clarification,
+        user_id=user_id,
+        request=request,
         requirements=requirements,
-        board_decision=BoardDecision(action="no_change", reason=decision.reason),
-        interaction_decision=decision,
+        learning_clarification=learning_clarification,
+        resources=resources,
+        session_before=session_before,
+        decision=decision,
         requirement_history=requirement_history,
+        deps=ActiveInteractionTurnDependencies(
+            generate_interaction_message=_generate_interaction_chatbot_message,
+            task_metadata=_task_metadata,
+            save_workspace_for_user=_save_workspace_for_user,
+            build_response=_response,
+        ),
     )
-    record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
-    return response
 
 
 def _maybe_start_interaction_session(
