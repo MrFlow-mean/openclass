@@ -10,6 +10,7 @@ import pytest
 
 from app.models import (
     BoardDecision,
+    BoardFocusRef,
     ChatRequest,
     InteractionSession,
     InteractionTurnDecision,
@@ -256,6 +257,61 @@ def _patch_generation_resource_prompt_guards(monkeypatch: pytest.MonkeyPatch) ->
     return calls
 
 
+def _interaction_decision(
+    route: str,
+    *,
+    reason: str | None = None,
+    progress_note: str | None = None,
+) -> InteractionTurnDecision:
+    return InteractionTurnDecision(
+        route=route,
+        reason=reason or f"{route} reason",
+        progress_note=progress_note or f"{route} progress",
+        user_intent=f"{route} intent",
+    )
+
+
+def _patch_interaction_turn(
+    monkeypatch: pytest.MonkeyPatch,
+    route: str,
+    *,
+    reason: str | None = None,
+    progress_note: str | None = None,
+    chatbot_message: str = "AI生成：按当前互动继续。",
+) -> InteractionTurnDecision:
+    decision = _interaction_decision(route, reason=reason, progress_note=progress_note)
+    monkeypatch.setattr(openai_course_ai, "generate_interaction_turn_decision", lambda **kwargs: decision)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_chatbot_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message=chatbot_message),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_learning_requirement_update",
+        lambda **kwargs: _fail_if_called("generate_learning_requirement_update"),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_board_task_requirement_sheet",
+        lambda **kwargs: _fail_if_called("generate_board_task_requirement_sheet"),
+    )
+    return decision
+
+
+def _interaction_trace_prefix() -> list[str]:
+    return [
+        NodeId.CONTEXT_LOAD.value,
+        NodeId.TURN_CONTEXT_BUILD.value,
+        NodeId.BOARD_ACTION_DECIDE.value,
+        NodeId.CHAT_TURN_GATE.value,
+        NodeId.RESOURCE_PREFLIGHT.value,
+        NodeId.ACTIVE_INTERACTION_CHECK.value,
+        NodeId.INTERACTION_SEQUENCE_CHECK.value,
+        NodeId.INTERACTION_DECIDE.value,
+    ]
+
+
 def test_node_ids_match_latest_workflow_graph_document() -> None:
     doc = Path("docs/architecture/chat-workflow-graph.md").read_text(encoding="utf-8")
     table = doc.split("| NodeId | Type | Current source |", 1)[1].split("Current documented NodeId count", 1)[0]
@@ -383,31 +439,13 @@ def test_active_interaction_session_does_not_record_resource_reference_prompt(
 ) -> None:
     workspace, lesson_id = _workspace_with_resource_prompt_candidate(active_session=True)
     store = _store_with_workspace(tmp_path, workspace, name="resource_prompt_session")
+    original_board = workspace.packages[0].lessons[-1].board_document.model_dump(mode="json")
     monkeypatch.setattr(workspace_state, "STORE", store)
-    monkeypatch.setattr(
-        openai_course_ai,
-        "generate_interaction_turn_decision",
-        lambda **kwargs: InteractionTurnDecision(
-            route="continue_rule",
-            reason="用户输入仍在当前互动规则内。",
-            progress_note="继续当前互动。",
-            user_intent="继续互动",
-        ),
-    )
-    monkeypatch.setattr(
-        openai_course_ai,
-        "generate_chatbot_reply",
-        lambda **kwargs: ChatbotReply(chatbot_message="AI生成：按当前互动继续。"),
-    )
-    monkeypatch.setattr(
-        openai_course_ai,
-        "generate_learning_requirement_update",
-        lambda **kwargs: _fail_if_called("generate_learning_requirement_update"),
-    )
-    monkeypatch.setattr(
-        openai_course_ai,
-        "generate_board_task_requirement_sheet",
-        lambda **kwargs: _fail_if_called("generate_board_task_requirement_sheet"),
+    decision = _patch_interaction_turn(
+        monkeypatch,
+        "continue_rule",
+        reason="用户输入仍在当前互动规则内。",
+        progress_note="继续当前互动。",
     )
 
     with bind_workflow_trace_collector() as collector:
@@ -421,8 +459,225 @@ def test_active_interaction_session_does_not_record_resource_reference_prompt(
     assert response.active_interaction_session is not None
     assert response.interaction_decision is not None
     assert response.interaction_decision.route == "continue_rule"
+    assert response.active_interaction_session.status == "active"
+    assert response.active_interaction_session.turn_count == 2
+    assert response.active_interaction_session.progress_note == decision.progress_note
+    assert response.course_package.lessons[-1].board_document.model_dump(mode="json") == original_board
+    assert store.list_learning_requirement_versions(owner_user_id=TEST_USER_ID, lesson_id=lesson_id) == []
+    assert store.list_board_task_versions(owner_user_id=TEST_USER_ID, lesson_id=lesson_id) == []
+    commit = response.course_package.lessons[-1].history_graph.commits[-1]
+    assert commit.metadata["kind"] == "interaction_flow"
+    assert commit.metadata["assistant_message_source"] == "chatbot_interaction"
+    assert commit.metadata["interaction_decision"] == decision.model_dump(mode="json")
+    assert commit.metadata["interaction_session_before"]["turn_count"] == 1
+    assert commit.metadata["interaction_session_after"]["turn_count"] == 2
+    assert commit.metadata["active_interaction_session_after"]["status"] == "active"
+    assert _node_values(collector) == [
+        *_interaction_trace_prefix(),
+        NodeId.INTERACTION_CONTINUE.value,
+        NodeId.PERSIST_CHAT_COMMIT.value,
+        NodeId.RESPONSE_ASSEMBLE.value,
+    ]
     assert collector.steps[5].decision == "handled"
+    assert collector.steps[6].decision == "not_handled"
+    assert collector.steps[7].decision == "continue_rule"
+    assert collector.steps[7].reason == decision.reason
+    assert collector.steps[8].decision == "continue_rule"
+    assert collector.steps[8].reason == decision.reason
+    assert collector.steps[9].commit_id == commit.id
     assert NodeId.RESOURCE_REFERENCE_PROMPT.value not in _node_values(collector)
+
+
+def test_active_interaction_rule_violation_trace_records_current_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace, lesson_id = _workspace_with_resource_prompt_candidate(active_session=True)
+    store = _store_with_workspace(tmp_path, workspace, name="interaction_rule_violation")
+    original_board = workspace.packages[0].lessons[-1].board_document.model_dump(mode="json")
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    decision = _patch_interaction_turn(
+        monkeypatch,
+        "rule_violation",
+        reason="用户输入不符合当前互动规则。",
+        progress_note="请按当前规则继续。",
+        chatbot_message="AI生成：请按当前规则来。",
+    )
+
+    with bind_workflow_trace_collector() as collector:
+        response = chat_service.process_chat_on_lesson(
+            lesson_id,
+            ChatRequest(message="随便说点别的"),
+            user_id=TEST_USER_ID,
+        )
+
+    commit = response.course_package.lessons[-1].history_graph.commits[-1]
+    assert response.active_interaction_session is not None
+    assert response.active_interaction_session.status == "active"
+    assert response.active_interaction_session.turn_count == 2
+    assert response.active_interaction_session.progress_note == decision.progress_note
+    assert response.interaction_decision is not None
+    assert response.interaction_decision.route == "rule_violation"
+    assert response.course_package.lessons[-1].board_document.model_dump(mode="json") == original_board
+    assert store.list_learning_requirement_versions(owner_user_id=TEST_USER_ID, lesson_id=lesson_id) == []
+    assert store.list_board_task_versions(owner_user_id=TEST_USER_ID, lesson_id=lesson_id) == []
+    assert commit.metadata["kind"] == "interaction_flow"
+    assert commit.metadata["assistant_message_source"] == "chatbot_interaction"
+    assert commit.metadata["interaction_decision"] == decision.model_dump(mode="json")
+    assert commit.metadata["interaction_session_before"]["turn_count"] == 1
+    assert commit.metadata["interaction_session_after"]["turn_count"] == 2
+    assert commit.metadata["active_interaction_session_after"]["status"] == "active"
+    assert _node_values(collector) == [
+        *_interaction_trace_prefix(),
+        NodeId.INTERACTION_RULE_VIOLATION.value,
+        NodeId.PERSIST_CHAT_COMMIT.value,
+        NodeId.RESPONSE_ASSEMBLE.value,
+    ]
+    assert collector.steps[5].decision == "handled"
+    assert collector.steps[6].decision == "not_handled"
+    assert collector.steps[7].decision == "rule_violation"
+    assert collector.steps[7].reason == decision.reason
+    assert collector.steps[8].decision == "rule_violation"
+    assert collector.steps[8].reason == decision.reason
+    assert collector.steps[9].commit_id == commit.id
+
+
+def test_active_interaction_resume_rule_records_interaction_continue(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace, lesson_id = _workspace_with_resource_prompt_candidate(active_session=True)
+    lesson = workspace.packages[0].lessons[-1]
+    assert lesson.active_interaction_session is not None
+    lesson.active_interaction_session = lesson.active_interaction_session.model_copy(
+        update={"status": "paused", "pause_reason": "临时讲解已结束。"}
+    )
+    store = _store_with_workspace(tmp_path, workspace, name="interaction_resume_rule")
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    decision = _patch_interaction_turn(
+        monkeypatch,
+        "resume_rule",
+        reason="用户回到原互动规则。",
+        progress_note="已回到原互动。",
+    )
+
+    with bind_workflow_trace_collector() as collector:
+        response = chat_service.process_chat_on_lesson(
+            lesson_id,
+            ChatRequest(message="继续原来的互动"),
+            user_id=TEST_USER_ID,
+        )
+
+    assert response.active_interaction_session is not None
+    assert response.active_interaction_session.status == "active"
+    assert response.active_interaction_session.pause_reason == ""
+    assert response.active_interaction_session.turn_count == 2
+    assert response.active_interaction_session.progress_note == decision.progress_note
+    assert _node_values(collector) == [
+        *_interaction_trace_prefix(),
+        NodeId.INTERACTION_CONTINUE.value,
+        NodeId.PERSIST_CHAT_COMMIT.value,
+        NodeId.RESPONSE_ASSEMBLE.value,
+    ]
+    assert collector.steps[8].decision == "resume_rule"
+
+
+@pytest.mark.parametrize("route", ["exit_rule", "new_task", "side_learning_request"])
+def test_interaction_terminal_routes_do_not_record_continue_or_rule_violation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    route: str,
+) -> None:
+    workspace, lesson_id = _workspace_with_resource_prompt_candidate(active_session=True)
+    store = _store_with_workspace(tmp_path, workspace, name=f"interaction_terminal_{route}")
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    decision = _patch_interaction_turn(monkeypatch, route)
+
+    def _board_task_response(**kwargs):
+        return chatbot_module._response(
+            workspace=kwargs["workspace"],
+            package=kwargs["package"],
+            lesson=kwargs["lesson"],
+            chatbot_message="转入板书任务。",
+            learning_clarification=chatbot_module._latest_learning_clarification(
+                kwargs["lesson"],
+                requirements=kwargs["requirements"],
+            ),
+            requirements=kwargs["requirements"],
+            board_decision=BoardDecision(action="no_change", reason=decision.reason),
+            requirement_history=kwargs["requirement_history"],
+        )
+
+    monkeypatch.setattr(chatbot_module, "_handle_existing_board_task_flow", _board_task_response)
+
+    with bind_workflow_trace_collector() as collector:
+        response = chat_service.process_chat_on_lesson(
+            lesson_id,
+            ChatRequest(message=f"{route} message"),
+            user_id=TEST_USER_ID,
+        )
+
+    assert response.interaction_decision is not None
+    assert response.interaction_decision.route == route
+    assert _node_values(collector)[:8] == _interaction_trace_prefix()
+    assert collector.steps[7].decision == route
+    assert NodeId.INTERACTION_CONTINUE.value not in _node_values(collector)
+    assert NodeId.INTERACTION_RULE_VIOLATION.value not in _node_values(collector)
+
+
+def test_sequence_session_records_sequence_check_without_generic_continue(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace, lesson_id = _workspace_with_lesson(existing_board=True)
+    lesson = workspace.packages[0].lessons[-1]
+    focus = BoardFocusRef(
+        source="board",
+        lesson_id=lesson.id,
+        document_id=lesson.board_document.id,
+        heading_path=["已有板书"],
+        excerpt="这一段已有内容。",
+        confidence=1.0,
+        reason="测试顺序讲解。",
+        display_label="已有板书",
+    )
+    lesson.active_interaction_session = InteractionSession(
+        status="active",
+        rule_text="按顺序讲解。",
+        interaction_goal="顺序讲解板书。",
+        target_focus=focus,
+        reference_context=focus.excerpt,
+        compliant_input_rule="用户确认继续。",
+        expected_user_behavior="用户确认继续。",
+        assistant_behavior="继续讲解下一个单元。",
+        turn_count=1,
+        sequence_items=[focus],
+        sequence_index=0,
+        sequence_mode="section_explanation",
+    )
+    store = _store_with_workspace(tmp_path, workspace, name="interaction_sequence")
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    monkeypatch.setattr(
+        chatbot_module,
+        "_generate_sequence_end_message",
+        lambda **kwargs: ("顺序讲解结束。", "chatbot_interaction"),
+    )
+
+    with bind_workflow_trace_collector() as collector:
+        response = chat_service.process_chat_on_lesson(
+            lesson_id,
+            ChatRequest(message="继续"),
+            user_id=TEST_USER_ID,
+        )
+
+    assert response.interaction_decision is not None
+    assert response.interaction_decision.route == "exit_rule"
+    assert collector.steps[5].decision == "handled"
+    assert collector.steps[6].node_id == NodeId.INTERACTION_SEQUENCE_CHECK
+    assert collector.steps[6].decision == "handled"
+    assert NodeId.INTERACTION_DECIDE.value not in _node_values(collector)
+    assert NodeId.INTERACTION_CONTINUE.value not in _node_values(collector)
+    assert NodeId.INTERACTION_RULE_VIOLATION.value not in _node_values(collector)
 
 
 def test_generation_resource_prompt_trace_records_requirement_collect_before_prompt(
@@ -730,6 +985,78 @@ def test_traced_and_untraced_generation_resource_prompt_have_same_visible_respon
     )
 
 
+def test_traced_and_untraced_interaction_continue_have_same_visible_response_and_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace, lesson_id = _workspace_with_resource_prompt_candidate(active_session=True)
+    untraced_store = _store_with_workspace(tmp_path, workspace, name="interaction_continue_untraced")
+    traced_store = _store_with_workspace(tmp_path, workspace, name="interaction_continue_traced")
+    _patch_interaction_turn(
+        monkeypatch,
+        "continue_rule",
+        reason="用户输入仍在当前互动规则内。",
+        progress_note="继续当前互动。",
+    )
+
+    monkeypatch.setattr(workspace_state, "STORE", untraced_store)
+    untraced_response = chat_service.process_chat_on_lesson(
+        lesson_id,
+        ChatRequest(message="继续互动"),
+        user_id=TEST_USER_ID,
+    )
+
+    monkeypatch.setattr(workspace_state, "STORE", traced_store)
+    with bind_workflow_trace_collector():
+        traced_response = chat_service.process_chat_on_lesson(
+            lesson_id,
+            ChatRequest(message="继续互动"),
+            user_id=TEST_USER_ID,
+        )
+
+    untraced_commit = untraced_response.course_package.lessons[-1].history_graph.commits[-1]
+    traced_commit = traced_response.course_package.lessons[-1].history_graph.commits[-1]
+    assert traced_commit.metadata == untraced_commit.metadata
+    assert _normalize_visible_response(traced_response.model_dump(mode="json")) == _normalize_visible_response(
+        untraced_response.model_dump(mode="json")
+    )
+
+
+def test_interaction_continue_does_not_record_persist_or_response_when_save_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace, lesson_id = _workspace_with_resource_prompt_candidate(active_session=True)
+    store = _store_with_workspace(tmp_path, workspace, name="interaction_save_failure")
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    _patch_interaction_turn(
+        monkeypatch,
+        "continue_rule",
+        reason="用户输入仍在当前互动规则内。",
+        progress_note="继续当前互动。",
+    )
+
+    def _raise_on_save(**kwargs):
+        raise RuntimeError("save failed")
+
+    monkeypatch.setattr(chatbot_module, "_save_workspace_for_user", _raise_on_save)
+
+    with bind_workflow_trace_collector() as collector:
+        with pytest.raises(RuntimeError, match="save failed"):
+            chat_service.process_chat_on_lesson(
+                lesson_id,
+                ChatRequest(message="继续互动"),
+                user_id=TEST_USER_ID,
+            )
+
+    assert _node_values(collector) == [
+        *_interaction_trace_prefix(),
+        NodeId.INTERACTION_CONTINUE.value,
+    ]
+    assert NodeId.PERSIST_CHAT_COMMIT.value not in _node_values(collector)
+    assert NodeId.RESPONSE_ASSEMBLE.value not in _node_values(collector)
+
+
 def test_workflow_trace_does_not_leak_to_response_or_commit_metadata(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -782,6 +1109,51 @@ def test_resource_prompt_trace_does_not_leak_to_response_sse_or_commit_metadata(
         chat_router._chat_stream_events(
             stream_lesson_id,
             ChatRequest(message=RESOURCE_PROMPT_MESSAGE),
+            user_id=TEST_USER_ID,
+        )
+    )
+
+    final_payload = next(payload for event, payload in events if event == "final")
+    assert TRACE_KEYS.isdisjoint(_all_keys(final_payload))
+
+
+def test_interaction_continue_trace_does_not_leak_to_response_sse_session_or_commit_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace, lesson_id = _workspace_with_resource_prompt_candidate(active_session=True)
+    store = _store_with_workspace(tmp_path, workspace, name="interaction_continue_leak")
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    _patch_interaction_turn(
+        monkeypatch,
+        "continue_rule",
+        reason="用户输入仍在当前互动规则内。",
+        progress_note="继续当前互动。",
+    )
+
+    with bind_workflow_trace_collector():
+        response = chat_service.process_chat_on_lesson(
+            lesson_id,
+            ChatRequest(message="继续互动"),
+            user_id=TEST_USER_ID,
+        )
+
+    commit = response.course_package.lessons[-1].history_graph.commits[-1]
+    assert TRACE_KEYS.isdisjoint(_all_keys(response.model_dump(mode="json")))
+    assert TRACE_KEYS.isdisjoint(_all_keys(commit.metadata))
+    assert TRACE_KEYS.isdisjoint(_all_keys(commit.metadata["interaction_session_after"]))
+    assert TRACE_KEYS.isdisjoint(_all_keys(_requirement_history_rows(store, lesson_id)))
+    assert TRACE_KEYS.isdisjoint(
+        _all_keys(store.list_board_task_versions(owner_user_id=TEST_USER_ID, lesson_id=lesson_id))
+    )
+
+    workspace_for_stream, stream_lesson_id = _workspace_with_resource_prompt_candidate(active_session=True)
+    stream_store = _store_with_workspace(tmp_path, workspace_for_stream, name="interaction_continue_stream")
+    monkeypatch.setattr(workspace_state, "STORE", stream_store)
+    events = _collect_sse_events(
+        chat_router._chat_stream_events(
+            stream_lesson_id,
+            ChatRequest(message="继续互动"),
             user_id=TEST_USER_ID,
         )
     )
