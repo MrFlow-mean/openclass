@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from app.models import (
+    BoardDecision,
     ChatRequest,
     InteractionSession,
     InteractionTurnDecision,
@@ -17,6 +18,7 @@ from app.models import (
 )
 from app.routers import chat as chat_router
 from app.services import chat_service, chatbot as chatbot_module, workspace_state
+from app.services.board_document_editor import BoardDocumentEditOutcome
 from app.services.course_runtime import refresh_lesson_runtime
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
 from app.services.lesson_factory import create_empty_lesson
@@ -191,6 +193,11 @@ def _fail_if_called(name: str):
 
 
 def _patch_resource_prompt_guardrails(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        chatbot_module,
+        "handle_generation_resource_prompt",
+        lambda **kwargs: _fail_if_called("handle_generation_resource_prompt"),
+    )
     monkeypatch.setattr(
         openai_course_ai,
         "generate_chatbot_reply",
@@ -520,6 +527,64 @@ def test_generation_resource_prompt_repeated_turn_does_not_duplicate_requirement
     assert first_response.requirement_run_id == second_response.requirement_run_id == runs[0]["id"]
     assert first_response.requirement_version_id == second_response.requirement_version_id == first_versions[0]["id"]
     assert second_response.requirement_phase == "ready"
+
+
+def test_resource_confirm_does_not_call_generation_resource_prompt_handler(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace, lesson_id = _workspace_with_resource_prompt_candidate(existing_board=False)
+    store = _store_with_workspace(tmp_path, workspace, name="generation_resource_prompt_confirm_guard")
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    _patch_generation_resource_prompt_guards(monkeypatch)
+
+    first_response = chat_service.process_chat_on_lesson(
+        lesson_id,
+        ChatRequest(message=GENERATION_RESOURCE_PROMPT_MESSAGE),
+        user_id=TEST_USER_ID,
+    )
+    assert first_response.reference_prompt is not None
+
+    monkeypatch.setattr(
+        chatbot_module,
+        "handle_generation_resource_prompt",
+        lambda **kwargs: _fail_if_called("handle_generation_resource_prompt"),
+    )
+    monkeypatch.setattr(
+        chatbot_module,
+        "generate_from_requirements",
+        lambda **kwargs: BoardDocumentEditOutcome(
+            chatbot_message="已根据确认资料生成板书。",
+            new_document=build_document(title="确认资料板书", content_text="# 确认资料板书\n\n生成后的内容。"),
+            board_decision=BoardDecision(action="edit_board", reason="已生成板书。"),
+            assistant_message_source="board_document_editor_ai",
+            operation="replace_document",
+            summary="已根据确认资料生成板书。",
+            section_titles=["确认资料板书"],
+            changed=True,
+            operation_status="succeeded",
+        ),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_post_board_generation_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="板书已生成。"),
+    )
+
+    confirmed_response = chat_service.process_chat_on_lesson(
+        lesson_id,
+        ChatRequest(
+            message=GENERATION_RESOURCE_PROMPT_MESSAGE,
+            resource_reference_action="confirm",
+            resource_reference_resource_id=first_response.reference_prompt.resource_id,
+            resource_reference_chapter_id=first_response.reference_prompt.chapter_id,
+        ),
+        user_id=TEST_USER_ID,
+    )
+
+    assert confirmed_response.board_decision.action == "edit_board"
+    assert confirmed_response.reference_prompt is None
+    assert "生成后的内容" in confirmed_response.course_package.lessons[-1].board_document.content_text
 
 
 def test_non_ordinary_path_never_records_ordinary_chat_generate(
