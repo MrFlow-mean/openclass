@@ -3660,6 +3660,11 @@ def _handle_existing_interaction_session(
             session=session_before,
             decision=decision,
         )
+        record_workflow_step(
+            NodeId.INTERACTION_TERMINAL,
+            decision=decision.route,
+            reason=decision.reason,
+        )
         commit_operations(
             lesson,
             [],
@@ -3689,6 +3694,11 @@ def _handle_existing_interaction_session(
             requirement_history=requirement_history,
             board_task_history=board_task_history,
         )
+        record_workflow_step(
+            NodeId.PERSIST_CHAT_COMMIT,
+            decision="committed",
+            commit_id=lesson.history_graph.commits[-1].id,
+        )
         response = _response(
             workspace=workspace,
             package=package,
@@ -3700,6 +3710,7 @@ def _handle_existing_interaction_session(
             interaction_decision=decision,
             requirement_history=requirement_history,
         )
+        record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
         return response
 
     return handle_active_interaction_turn(

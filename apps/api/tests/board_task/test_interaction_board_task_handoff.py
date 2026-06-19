@@ -589,14 +589,16 @@ def test_handoff_none_fallback_stays_in_chatbot_with_attempt_trace(
     assert response.interaction_decision is not None
     assert response.interaction_decision.route == route
     assert response.chatbot_message == "AI生成：暂时没有可执行的板书任务。"
-    assert _node_values(collector) == [
+    nodes = _node_values(collector)
+    assert nodes[:9] == [
         *_interaction_trace_prefix(),
         NodeId.INTERACTION_NEW_TASK.value,
     ]
     assert collector.steps[8].decision == route
     assert collector.steps[8].reason == decision.reason
-    assert NodeId.PERSIST_CHAT_COMMIT.value not in _node_values(collector)
-    assert NodeId.RESPONSE_ASSEMBLE.value not in _node_values(collector)
+    assert NodeId.INTERACTION_CONTINUE.value not in nodes
+    assert NodeId.INTERACTION_RULE_VIOLATION.value not in nodes
+    assert NodeId.INTERACTION_EXIT.value not in nodes
 
 
 def test_handoff_exception_propagates_with_attempt_trace_only(
