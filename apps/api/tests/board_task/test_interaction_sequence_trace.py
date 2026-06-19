@@ -10,6 +10,7 @@ from app.models import BoardFocusRef, ChatRequest, InteractionSession, Interacti
 from app.routers import chat as chat_router
 from app.services import chat_service, chatbot as chatbot_module, workspace_state
 from app.services.chat.paths import active_interaction_empty as active_interaction_empty_module
+from app.services.chat.paths import interaction_sequence_continue as interaction_sequence_continue_module
 from app.services.chat.paths import interaction_sequence_end as interaction_sequence_end_module
 from app.services.course_runtime import refresh_lesson_runtime
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
@@ -679,7 +680,11 @@ def test_sequence_failure_ordering(
     else:
         _patch_sequence_reply_generators(monkeypatch)
         if failure_point == "commit":
-            target_module = interaction_sequence_end_module if outcome_node == NodeId.INTERACTION_EXIT else chatbot_module
+            target_module = (
+                interaction_sequence_end_module
+                if outcome_node == NodeId.INTERACTION_EXIT
+                else interaction_sequence_continue_module
+            )
             monkeypatch.setattr(
                 target_module,
                 "commit_operations",
