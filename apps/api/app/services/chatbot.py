@@ -3242,6 +3242,7 @@ def _handle_section_explanation_sequence_turn(
     if session_before is None or not _is_section_explanation_session(session_before):
         return None
     if _is_sequence_exit_message(request.message):
+        record_workflow_step(NodeId.INTERACTION_SEQUENCE_CHECK, decision="exit_requested", reason=None)
         session_after = None
         lesson.active_interaction_session = None
         chatbot_message, chatbot_message_source = _generate_sequence_end_message(
@@ -3257,6 +3258,11 @@ def _handle_section_explanation_sequence_turn(
             reason="用户结束当前顺序讲解。",
             progress_note=session_before.progress_note,
             user_intent="结束顺序讲解",
+        )
+        record_workflow_step(
+            NodeId.INTERACTION_EXIT,
+            decision="exit_rule",
+            reason=decision.reason,
         )
         commit_operations(
             lesson,
@@ -3279,7 +3285,12 @@ def _handle_section_explanation_sequence_turn(
         )
         workspace_state.normalize_package_state(package)
         _save_workspace_for_user(user_id=user_id, workspace=workspace, requirement_history=requirement_history)
-        return _response(
+        record_workflow_step(
+            NodeId.PERSIST_CHAT_COMMIT,
+            decision="committed",
+            commit_id=lesson.history_graph.commits[-1].id,
+        )
+        response = _response(
             workspace=workspace,
             package=package,
             lesson=lesson,
@@ -3290,9 +3301,12 @@ def _handle_section_explanation_sequence_turn(
             interaction_decision=decision,
             requirement_history=requirement_history,
         )
+        record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
+        return response
     if not _is_sequence_continue_message(request.message):
         if not _is_current_sequence_followup(request.message):
             return None
+        record_workflow_step(NodeId.INTERACTION_SEQUENCE_CHECK, decision="follow_up_current", reason=None)
         focus = session_before.target_focus or session_before.sequence_items[session_before.sequence_index]
         session_after = session_before.model_copy(
             update={
@@ -3334,6 +3348,11 @@ def _handle_section_explanation_sequence_turn(
             progress_note=session_after.progress_note,
             user_intent=f"追问当前{unit_label}",
         )
+        record_workflow_step(
+            NodeId.INTERACTION_CONTINUE,
+            decision="continue_rule",
+            reason=decision.reason,
+        )
         commit_operations(
             lesson,
             [],
@@ -3357,7 +3376,12 @@ def _handle_section_explanation_sequence_turn(
         )
         workspace_state.normalize_package_state(package)
         _save_workspace_for_user(user_id=user_id, workspace=workspace, requirement_history=requirement_history)
-        return _response(
+        record_workflow_step(
+            NodeId.PERSIST_CHAT_COMMIT,
+            decision="committed",
+            commit_id=lesson.history_graph.commits[-1].id,
+        )
+        response = _response(
             workspace=workspace,
             package=package,
             lesson=lesson,
@@ -3369,9 +3393,12 @@ def _handle_section_explanation_sequence_turn(
             resolved_focus=focus,
             requirement_history=requirement_history,
         )
+        record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
+        return response
 
     next_index = session_before.sequence_index + 1
     if next_index >= len(session_before.sequence_items):
+        record_workflow_step(NodeId.INTERACTION_SEQUENCE_CHECK, decision="completed", reason=None)
         unit_label = _sequence_unit_label(session_before.sequence_mode)
         lesson.active_interaction_session = None
         chatbot_message, chatbot_message_source = _generate_sequence_end_message(
@@ -3387,6 +3414,11 @@ def _handle_section_explanation_sequence_turn(
             reason="顺序讲解已经完成。",
             progress_note="顺序讲解已经完成。",
             user_intent=f"确认最后一个{unit_label}无问题",
+        )
+        record_workflow_step(
+            NodeId.INTERACTION_EXIT,
+            decision="exit_rule",
+            reason=decision.reason,
         )
         commit_operations(
             lesson,
@@ -3409,7 +3441,12 @@ def _handle_section_explanation_sequence_turn(
         )
         workspace_state.normalize_package_state(package)
         _save_workspace_for_user(user_id=user_id, workspace=workspace, requirement_history=requirement_history)
-        return _response(
+        record_workflow_step(
+            NodeId.PERSIST_CHAT_COMMIT,
+            decision="committed",
+            commit_id=lesson.history_graph.commits[-1].id,
+        )
+        response = _response(
             workspace=workspace,
             package=package,
             lesson=lesson,
@@ -3420,7 +3457,10 @@ def _handle_section_explanation_sequence_turn(
             interaction_decision=decision,
             requirement_history=requirement_history,
         )
+        record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
+        return response
 
+    record_workflow_step(NodeId.INTERACTION_SEQUENCE_CHECK, decision="advance", reason=None)
     focus = session_before.sequence_items[next_index]
     unit_label = _sequence_unit_label(session_before.sequence_mode)
     session_after = session_before.model_copy(
@@ -3463,6 +3503,11 @@ def _handle_section_explanation_sequence_turn(
         progress_note=session_after.progress_note,
         user_intent="继续顺序讲解",
     )
+    record_workflow_step(
+        NodeId.INTERACTION_CONTINUE,
+        decision="continue_rule",
+        reason=decision.reason,
+    )
     commit_operations(
         lesson,
         [],
@@ -3486,7 +3531,12 @@ def _handle_section_explanation_sequence_turn(
     )
     workspace_state.normalize_package_state(package)
     _save_workspace_for_user(user_id=user_id, workspace=workspace, requirement_history=requirement_history)
-    return _response(
+    record_workflow_step(
+        NodeId.PERSIST_CHAT_COMMIT,
+        decision="committed",
+        commit_id=lesson.history_graph.commits[-1].id,
+    )
+    response = _response(
         workspace=workspace,
         package=package,
         lesson=lesson,
@@ -3498,6 +3548,8 @@ def _handle_section_explanation_sequence_turn(
         resolved_focus=focus,
         requirement_history=requirement_history,
     )
+    record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
+    return response
 
 
 def _handle_existing_interaction_session(
@@ -3531,7 +3583,6 @@ def _handle_existing_interaction_session(
         requirement_history=requirement_history,
     )
     if section_sequence_response is not None:
-        record_workflow_step(NodeId.INTERACTION_SEQUENCE_CHECK, decision="handled")
         return section_sequence_response
     record_workflow_step(NodeId.INTERACTION_SEQUENCE_CHECK, decision="not_handled")
     decision = decide_interaction_turn(
