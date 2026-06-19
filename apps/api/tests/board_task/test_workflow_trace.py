@@ -379,6 +379,17 @@ def _patch_single_target_explain_golden(
     return calls
 
 
+def _existing_board_task_trace_prefix() -> list[str]:
+    return [
+        NodeId.CONTEXT_LOAD.value,
+        NodeId.TURN_CONTEXT_BUILD.value,
+        NodeId.BOARD_ACTION_DECIDE.value,
+        NodeId.CHAT_TURN_GATE.value,
+        NodeId.RESOURCE_PREFLIGHT.value,
+        NodeId.ACTIVE_INTERACTION_CHECK.value,
+    ]
+
+
 def _interaction_trace_prefix() -> list[str]:
     return [
         NodeId.CONTEXT_LOAD.value,
@@ -1056,11 +1067,12 @@ def test_existing_board_single_target_explain_golden_commit_and_consumes_board_t
         focus=target_focus,
     )
 
-    response = chat_service.process_chat_on_lesson(
-        lesson_id,
-        ChatRequest(message="请讲解目标段落"),
-        user_id=TEST_USER_ID,
-    )
+    with bind_workflow_trace_collector() as collector:
+        response = chat_service.process_chat_on_lesson(
+            lesson_id,
+            ChatRequest(message="请讲解目标段落"),
+            user_id=TEST_USER_ID,
+        )
 
     lesson_after = response.course_package.lessons[-1]
     commit = lesson_after.history_graph.commits[-1]
@@ -1069,6 +1081,7 @@ def test_existing_board_single_target_explain_golden_commit_and_consumes_board_t
     events = store.list_board_task_events(owner_user_id=TEST_USER_ID, lesson_id=lesson_id)
     consumed_event = events[-1]
     consumed_metadata = json.loads(consumed_event["metadata_json"])
+    nodes = _node_values(collector)
 
     assert response.chatbot_message == "AI生成：这是基于目标段落的讲解。"
     assert response.active_board_task_sheet is None
@@ -1111,6 +1124,25 @@ def test_existing_board_single_target_explain_golden_commit_and_consumes_board_t
     assert consumed_metadata["commit_id"] == commit.id
     assert store.load_board_task_history_state(owner_user_id=TEST_USER_ID, lesson_id=lesson_id) is None
     assert store.list_learning_requirement_versions(owner_user_id=TEST_USER_ID, lesson_id=lesson_id) == []
+    assert nodes == [
+        *_existing_board_task_trace_prefix(),
+        NodeId.BOARD_EXPLAIN_DIRECTIVE.value,
+        NodeId.BOARD_EXPLAIN_COMMIT.value,
+        NodeId.RESPONSE_ASSEMBLE.value,
+    ]
+    assert collector.steps[5].decision == "not_handled"
+    assert collector.steps[6].decision == "chatbot_board_directed"
+    assert collector.steps[6].reason == "定位器已找到可操作的板书位置。"
+    assert collector.steps[6].run_id == runs[0]["id"]
+    assert collector.steps[6].version_id == versions[0]["id"]
+    assert collector.steps[7].decision == "committed"
+    assert collector.steps[7].run_id == runs[0]["id"]
+    assert collector.steps[7].version_id == versions[0]["id"]
+    assert collector.steps[7].commit_id == commit.id
+    assert collector.steps[8].decision == "assembled"
+    assert NodeId.BOARD_SEQUENCE_PLAN.value not in nodes
+    assert NodeId.BOARD_SEQUENCE_START.value not in nodes
+    assert NodeId.BOARD_TASK_FAILURE.value not in nodes
 
 
 def test_existing_board_single_target_explain_golden_failure_keeps_board_task_ready(
@@ -1144,11 +1176,12 @@ def test_existing_board_single_target_explain_golden_failure_keeps_board_task_re
     monkeypatch.setattr(workspace_state, "STORE", store)
     calls = _patch_single_target_explain_golden(monkeypatch, chatbot_message="", focus=target_focus)
 
-    response = chat_service.process_chat_on_lesson(
-        lesson_id,
-        ChatRequest(message="请讲解目标段落"),
-        user_id=TEST_USER_ID,
-    )
+    with bind_workflow_trace_collector() as collector:
+        response = chat_service.process_chat_on_lesson(
+            lesson_id,
+            ChatRequest(message="请讲解目标段落"),
+            user_id=TEST_USER_ID,
+        )
 
     lesson_after = response.course_package.lessons[-1]
     runs = _board_task_run_rows(store, lesson_id)
@@ -1156,6 +1189,7 @@ def test_existing_board_single_target_explain_golden_failure_keeps_board_task_re
     events = store.list_board_task_events(owner_user_id=TEST_USER_ID, lesson_id=lesson_id)
     failure_event = events[-1]
     failure_metadata = json.loads(failure_event["metadata_json"])
+    nodes = _node_values(collector)
 
     assert response.chatbot_message == ""
     assert response.active_board_task_sheet is not None
@@ -1183,6 +1217,24 @@ def test_existing_board_single_target_explain_golden_failure_keeps_board_task_re
     assert failure_metadata["board_task_cleared"] is False
     assert failure_metadata["board_explanation_directive"]["status"] == "approved"
     assert store.load_board_task_history_state(owner_user_id=TEST_USER_ID, lesson_id=lesson_id) is not None
+    assert nodes == [
+        *_existing_board_task_trace_prefix(),
+        NodeId.BOARD_EXPLAIN_DIRECTIVE.value,
+        NodeId.BOARD_TASK_FAILURE.value,
+        NodeId.RESPONSE_ASSEMBLE.value,
+    ]
+    assert collector.steps[6].decision == "chatbot_board_directed_empty"
+    assert collector.steps[6].reason == "定位器已找到可操作的板书位置。"
+    assert collector.steps[6].run_id == runs[0]["id"]
+    assert collector.steps[6].version_id == versions[0]["id"]
+    assert collector.steps[7].decision == "execution_failed"
+    assert collector.steps[7].reason == "Board-directed explanation failed because Chatbot returned empty."
+    assert collector.steps[7].run_id == runs[0]["id"]
+    assert collector.steps[7].version_id == versions[0]["id"]
+    assert collector.steps[8].decision == "assembled"
+    assert NodeId.BOARD_EXPLAIN_COMMIT.value not in nodes
+    assert NodeId.BOARD_SEQUENCE_PLAN.value not in nodes
+    assert NodeId.BOARD_SEQUENCE_START.value not in nodes
 
 
 def test_existing_board_sequence_request_golden_plans_sequence_and_consumes_board_task(
@@ -1240,17 +1292,19 @@ def test_existing_board_sequence_request_golden_plans_sequence_and_consumes_boar
     store = _store_with_workspace(tmp_path, workspace, name="board_task_sequence_plan")
     monkeypatch.setattr(workspace_state, "STORE", store)
 
-    response = chat_service.process_chat_on_lesson(
-        lesson_id,
-        ChatRequest(message="请把已有板书逐个讲解"),
-        user_id=TEST_USER_ID,
-    )
+    with bind_workflow_trace_collector() as collector:
+        response = chat_service.process_chat_on_lesson(
+            lesson_id,
+            ChatRequest(message="请把已有板书逐个讲解"),
+            user_id=TEST_USER_ID,
+        )
 
     lesson_after = response.course_package.lessons[-1]
     commit = lesson_after.history_graph.commits[-1]
     runs = _board_task_run_rows(store, lesson_id)
     versions = store.list_board_task_versions(owner_user_id=TEST_USER_ID, lesson_id=lesson_id)
     events = store.list_board_task_events(owner_user_id=TEST_USER_ID, lesson_id=lesson_id)
+    nodes = _node_values(collector)
 
     assert response.chatbot_message == "AI生成：先讲第一个讲解单元。"
     assert response.active_interaction_session is not None
@@ -1271,6 +1325,20 @@ def test_existing_board_sequence_request_golden_plans_sequence_and_consumes_boar
     assert runs[0]["status"] == "consumed"
     assert runs[0]["consumed_commit_id"] == commit.id
     assert [event["event_type"] for event in events] == ["created", "ready", "consumed"]
+    assert nodes == [
+        *_existing_board_task_trace_prefix(),
+        NodeId.BOARD_SEQUENCE_PLAN.value,
+        NodeId.RESPONSE_ASSEMBLE.value,
+    ]
+    assert collector.steps[6].decision == "atomic_explanation"
+    assert collector.steps[6].reason == "按板书范围生成最小可讲单元顺序讲解计划。"
+    assert collector.steps[6].run_id == runs[0]["id"]
+    assert collector.steps[6].version_id == versions[0]["id"]
+    assert collector.steps[7].decision == "assembled"
+    assert NodeId.BOARD_SEQUENCE_START.value not in nodes
+    assert NodeId.BOARD_EXPLAIN_DIRECTIVE.value not in nodes
+    assert NodeId.BOARD_EXPLAIN_COMMIT.value not in nodes
+    assert NodeId.BOARD_TASK_FAILURE.value not in nodes
 
 
 def test_generation_resource_prompt_trace_records_requirement_collect_before_prompt(
