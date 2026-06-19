@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
@@ -8,9 +7,7 @@ import pytest
 
 from app.models import (
     BoardDecision,
-    BoardFocusRef,
     ChatRequest,
-    InteractionSession,
     InteractionTurnDecision,
 )
 from app.routers import chat as chat_router
@@ -20,71 +17,52 @@ from app.services.chat.paths.active_interaction_empty import (
     ActiveInteractionEmptyDependencies,
     handle_active_interaction_empty_decision,
 )
-from app.services.course_runtime import refresh_lesson_runtime
-from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
-from app.services.lesson_factory import create_empty_lesson
+from app.services.course_store import SqliteCourseStore
 from app.services.openai_course_ai import openai_course_ai
-from app.services.rich_document import build_document
-from app.services.workflow_trace import NodeId, WorkflowTraceCollector, bind_workflow_trace_collector
+from app.services.workflow_trace import NodeId
+
+from .workflow_test_helpers import (
+    TRACE_KEYS,
+    active_interaction_session,
+    active_interaction_trace_prefix as _interaction_trace_prefix,
+    all_keys as _all_keys,
+    board_focus,
+    collect_sse_events as _collect_sse_events,
+    collect_workflow_trace as bind_workflow_trace_collector,
+    fail_if_called as _fail_if_called,
+    node_values as _node_values,
+    normalize_visible_response,
+    patch_chatbot_response_failure,
+    patch_chatbot_save_failure,
+    patch_commit_operations_failure,
+    save_workspace_to_store,
+    workspace_with_lesson,
+)
 
 
 TEST_USER_ID = "user_interaction_empty_decision"
-TRACE_KEYS = {
-    "workflow_trace",
-    "workflow_steps",
-    "workflow_node_id",
-    "workflow_step_trace",
-}
 
 
 def _workspace_with_active_session():
-    workspace = build_initial_workspace_state()
-    package = workspace.packages[0]
-    lesson = create_empty_lesson("测试页面")
-    refresh_lesson_runtime(
-        lesson,
-        document=build_document(title="已有板书", content_text="# 已有板书\n\n这一段已有内容。\n"),
-    )
-    lesson.active_interaction_session = InteractionSession(
-        status="active",
-        rule_text="按当前规则逐轮互动。",
-        interaction_goal="继续当前互动。",
-        reference_context="这一段已有内容。",
-        compliant_input_rule="用户继续按规则输入。",
-        expected_user_behavior="用户继续按规则输入。",
-        assistant_behavior="Chatbot 按当前规则回应。",
+    workspace, lesson_id = workspace_with_lesson(existing_board=True)
+    lesson = workspace.packages[0].lessons[-1]
+    lesson.active_interaction_session = active_interaction_session(
         progress_note="上一轮停在这里。",
         pause_reason="等待用户继续。",
         turn_count=3,
     )
-    package.lessons.append(lesson)
-    package.open_lesson_ids.append(lesson.id)
-    package.workspace_tab_order.append(lesson.id)
-    package.active_lesson_id = lesson.id
-    return workspace, lesson.id
+    return workspace, lesson_id
 
 
 def _workspace_with_sequence_session():
     workspace, lesson_id = _workspace_with_active_session()
     lesson = workspace.packages[0].lessons[-1]
-    focus = BoardFocusRef(
-        source="board",
-        lesson_id=lesson.id,
-        document_id=lesson.board_document.id,
-        heading_path=["已有板书"],
-        excerpt="这一段已有内容。",
-        confidence=1.0,
-        reason="测试顺序讲解。",
-        display_label="已有板书",
-    )
-    lesson.active_interaction_session = InteractionSession(
-        status="active",
+    focus = board_focus(lesson)
+    lesson.active_interaction_session = active_interaction_session(
         rule_text="按顺序讲解。",
         interaction_goal="顺序讲解板书。",
         target_focus=focus,
         reference_context=focus.excerpt,
-        compliant_input_rule="用户确认继续。",
-        expected_user_behavior="用户确认继续。",
         assistant_behavior="继续讲解下一个单元。",
         progress_note="准备讲解当前单元。",
         turn_count=1,
@@ -96,78 +74,11 @@ def _workspace_with_sequence_session():
 
 
 def _store_with_workspace(tmp_path: Path, workspace, *, name: str) -> SqliteCourseStore:
-    store = SqliteCourseStore(tmp_path / name / "openclass.sqlite3", legacy_json_path=None)
-    store.save_for_user(TEST_USER_ID, workspace.__class__.model_validate(workspace.model_dump(mode="json")))
-    return store
-
-
-def _parse_sse(block: str) -> tuple[str, dict[str, Any]]:
-    event = "message"
-    data_lines: list[str] = []
-    for line in block.strip().splitlines():
-        if line.startswith("event:"):
-            event = line.removeprefix("event:").strip()
-        elif line.startswith("data:"):
-            data_lines.append(line.removeprefix("data:").strip())
-    return event, json.loads("\n".join(data_lines))
-
-
-def _collect_sse_events(stream) -> list[tuple[str, dict[str, Any]]]:
-    return [_parse_sse(block) for block in stream]
-
-
-def _node_values(collector: WorkflowTraceCollector) -> list[str]:
-    return [step.node_id.value for step in collector.steps]
-
-
-def _all_keys(value: Any) -> set[str]:
-    if isinstance(value, dict):
-        keys = set(value)
-        for item in value.values():
-            keys.update(_all_keys(item))
-        return keys
-    if isinstance(value, list):
-        keys: set[str] = set()
-        for item in value:
-            keys.update(_all_keys(item))
-        return keys
-    return set()
+    return save_workspace_to_store(tmp_path, workspace, user_id=TEST_USER_ID, name=name)
 
 
 def _normalize_visible_response(value: Any) -> Any:
-    if isinstance(value, dict):
-        normalized: dict[str, Any] = {}
-        is_commit = {"label", "message", "branch_name", "snapshot", "metadata"}.issubset(value)
-        for key, item in value.items():
-            if key in {"created_at", "updated_at"}:
-                normalized[key] = "<timestamp>"
-            elif key in {"requirement_run_id", "requirement_version_id"}:
-                normalized[key] = "<requirement_id>"
-            elif key in {"board_task_run_id", "board_task_version_id"}:
-                normalized[key] = "<board_task_id>"
-            elif is_commit and key == "id":
-                normalized[key] = "<commit_id>"
-            elif key == "head_commit_id":
-                normalized[key] = "<commit_id>"
-            else:
-                normalized[key] = _normalize_visible_response(item)
-        return normalized
-    if isinstance(value, list):
-        return [_normalize_visible_response(item) for item in value]
-    return value
-
-
-def _interaction_trace_prefix() -> list[str]:
-    return [
-        NodeId.CONTEXT_LOAD.value,
-        NodeId.TURN_CONTEXT_BUILD.value,
-        NodeId.BOARD_ACTION_DECIDE.value,
-        NodeId.CHAT_TURN_GATE.value,
-        NodeId.RESOURCE_PREFLIGHT.value,
-        NodeId.ACTIVE_INTERACTION_CHECK.value,
-        NodeId.INTERACTION_SEQUENCE_CHECK.value,
-        NodeId.INTERACTION_DECIDE.value,
-    ]
+    return normalize_visible_response(value, normalize_board_task_ids=True)
 
 
 def _empty_decision_trace() -> list[str]:
@@ -181,10 +92,6 @@ def _empty_decision_trace() -> list[str]:
 
 def _request(message: str = "继续互动") -> ChatRequest:
     return ChatRequest(message=message, interaction_mode="ask")
-
-
-def _fail_if_called(name: str):
-    raise AssertionError(f"{name} should not be called for this workflow path")
 
 
 def _interaction_decision(route: str) -> InteractionTurnDecision:
@@ -415,11 +322,7 @@ def test_empty_decision_commit_failure_does_not_record_persist_or_response(
     store = _store_with_workspace(tmp_path, workspace, name="empty_commit_failure")
     monkeypatch.setattr(workspace_state, "STORE", store)
     _patch_empty_decision(monkeypatch)
-    monkeypatch.setattr(
-        active_interaction_empty_module,
-        "commit_operations",
-        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("commit failed")),
-    )
+    patch_commit_operations_failure(monkeypatch, active_interaction_empty_module)
 
     with bind_workflow_trace_collector() as collector:
         with pytest.raises(RuntimeError, match="commit failed"):
@@ -445,11 +348,7 @@ def test_empty_decision_workspace_save_failure_keeps_terminal_only(
     store = _store_with_workspace(tmp_path, workspace, name="empty_save_failure")
     monkeypatch.setattr(workspace_state, "STORE", store)
     _patch_empty_decision(monkeypatch)
-    monkeypatch.setattr(
-        chatbot_module,
-        "_save_workspace_for_user",
-        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("save failed")),
-    )
+    patch_chatbot_save_failure(monkeypatch, chatbot_module)
 
     with bind_workflow_trace_collector() as collector:
         with pytest.raises(RuntimeError, match="save failed"):
@@ -475,11 +374,7 @@ def test_empty_decision_response_failure_keeps_persist_but_not_response_node(
     store = _store_with_workspace(tmp_path, workspace, name="empty_response_failure")
     monkeypatch.setattr(workspace_state, "STORE", store)
     _patch_empty_decision(monkeypatch)
-    monkeypatch.setattr(
-        chatbot_module,
-        "_response",
-        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("response failed")),
-    )
+    patch_chatbot_response_failure(monkeypatch, chatbot_module)
 
     with bind_workflow_trace_collector() as collector:
         with pytest.raises(RuntimeError, match="response failed"):

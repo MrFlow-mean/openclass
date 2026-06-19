@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
@@ -8,12 +7,9 @@ import pytest
 
 from app.models import (
     BoardDecision,
-    BoardFocusRef,
     ChatRequest,
     InteractionSession,
     InteractionTurnDecision,
-    LibraryChapter,
-    ResourceLibraryItem,
 )
 from app.routers import chat as chat_router
 from app.services import chat_service, chatbot as chatbot_module, workspace_state
@@ -22,105 +18,59 @@ from app.services.chat.paths.interaction_board_task_handoff import (
     InteractionBoardTaskHandoffDependencies,
     attempt_interaction_board_task_handoff,
 )
-from app.services.course_runtime import refresh_lesson_runtime
-from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
+from app.services.course_store import SqliteCourseStore
 from app.services.history import commit_operations
 from app.services.interaction_rules import interaction_session_metadata
 from app.services.learning_requirement_history import LearningRequirementHistoryRecorder
-from app.services.lesson_factory import create_empty_lesson
 from app.services.openai_course_ai import ChatbotReply, openai_course_ai
-from app.services.rich_document import build_document
 from app.services.workflow_trace import (
     NodeId,
-    WorkflowTraceCollector,
-    bind_workflow_trace_collector,
     current_workflow_trace_collector,
+)
+
+from .workflow_test_helpers import (
+    TRACE_KEYS,
+    active_interaction_session,
+    active_interaction_trace_prefix as _interaction_trace_prefix,
+    all_keys as _all_keys,
+    append_resource,
+    board_focus,
+    collect_sse_events as _collect_sse_events,
+    collect_workflow_trace as bind_workflow_trace_collector,
+    fail_if_called as _fail_if_called,
+    node_values as _node_values,
+    normalize_visible_response,
+    save_workspace_to_store,
+    workspace_with_lesson as _workspace_with_lesson,
 )
 
 
 TEST_USER_ID = "user_interaction_handoff"
-TRACE_KEYS = {
-    "workflow_trace",
-    "workflow_steps",
-    "workflow_node_id",
-    "workflow_step_trace",
-}
-
-
-def _workspace_with_lesson(*, existing_board: bool = False):
-    workspace = build_initial_workspace_state()
-    package = workspace.packages[0]
-    lesson = create_empty_lesson("测试页面")
-    if existing_board:
-        refresh_lesson_runtime(
-            lesson,
-            document=build_document(title="已有板书", content_text="# 已有板书\n\n这一段已有内容。\n"),
-        )
-    package.lessons.append(lesson)
-    package.open_lesson_ids.append(lesson.id)
-    package.workspace_tab_order.append(lesson.id)
-    package.active_lesson_id = lesson.id
-    return workspace, lesson.id
 
 
 def _workspace_with_active_session():
     workspace, lesson_id = _workspace_with_lesson(existing_board=True)
     package = workspace.packages[0]
     lesson = package.lessons[-1]
-    package.resources.append(
-        ResourceLibraryItem(
-            id="resource-handoff",
-            name="参考资料",
-            mime_type="text/plain",
-            resource_type="document",
-            size_bytes=128,
-            scope_lesson_id=lesson.id,
-            outline=[
-                LibraryChapter(
-                    id="chapter-handoff",
-                    title="资料章节",
-                    level=1,
-                    summary="这一章包含参考内容。",
-                    keywords=["参考内容"],
-                    path=["资料章节"],
-                )
-            ],
-        )
+    append_resource(
+        package,
+        lesson,
+        resource_id="resource-handoff",
+        chapter_id="chapter-handoff",
     )
-    lesson.active_interaction_session = InteractionSession(
-        status="active",
-        rule_text="按当前规则逐轮互动。",
-        interaction_goal="继续当前互动。",
-        reference_context="这一段已有内容。",
-        compliant_input_rule="用户继续按规则输入。",
-        expected_user_behavior="用户继续按规则输入。",
-        assistant_behavior="Chatbot 按当前规则回应。",
-        turn_count=1,
-    )
+    lesson.active_interaction_session = active_interaction_session()
     return workspace, lesson_id
 
 
 def _workspace_with_sequence_session():
     workspace, lesson_id = _workspace_with_lesson(existing_board=True)
     lesson = workspace.packages[0].lessons[-1]
-    focus = BoardFocusRef(
-        source="board",
-        lesson_id=lesson.id,
-        document_id=lesson.board_document.id,
-        heading_path=["已有板书"],
-        excerpt="这一段已有内容。",
-        confidence=1.0,
-        reason="测试顺序讲解。",
-        display_label="已有板书",
-    )
-    lesson.active_interaction_session = InteractionSession(
-        status="active",
+    focus = board_focus(lesson)
+    lesson.active_interaction_session = active_interaction_session(
         rule_text="按顺序讲解。",
         interaction_goal="顺序讲解板书。",
         target_focus=focus,
         reference_context=focus.excerpt,
-        compliant_input_rule="用户确认继续。",
-        expected_user_behavior="用户确认继续。",
         assistant_behavior="继续讲解下一个单元。",
         turn_count=1,
         sequence_items=[focus],
@@ -131,69 +81,11 @@ def _workspace_with_sequence_session():
 
 
 def _store_with_workspace(tmp_path: Path, workspace, *, name: str) -> SqliteCourseStore:
-    store = SqliteCourseStore(tmp_path / name / "openclass.sqlite3", legacy_json_path=None)
-    store.save_for_user(TEST_USER_ID, workspace.__class__.model_validate(workspace.model_dump(mode="json")))
-    return store
-
-
-def _parse_sse(block: str) -> tuple[str, dict[str, Any]]:
-    event = "message"
-    data_lines: list[str] = []
-    for line in block.strip().splitlines():
-        if line.startswith("event:"):
-            event = line.removeprefix("event:").strip()
-        elif line.startswith("data:"):
-            data_lines.append(line.removeprefix("data:").strip())
-    return event, json.loads("\n".join(data_lines))
-
-
-def _collect_sse_events(stream) -> list[tuple[str, dict[str, Any]]]:
-    return [_parse_sse(block) for block in stream]
-
-
-def _node_values(collector: WorkflowTraceCollector) -> list[str]:
-    return [step.node_id.value for step in collector.steps]
-
-
-def _all_keys(value: Any) -> set[str]:
-    if isinstance(value, dict):
-        keys = set(value)
-        for item in value.values():
-            keys.update(_all_keys(item))
-        return keys
-    if isinstance(value, list):
-        keys: set[str] = set()
-        for item in value:
-            keys.update(_all_keys(item))
-        return keys
-    return set()
+    return save_workspace_to_store(tmp_path, workspace, user_id=TEST_USER_ID, name=name)
 
 
 def _normalize_visible_response(value: Any) -> Any:
-    if isinstance(value, dict):
-        normalized: dict[str, Any] = {}
-        is_commit = {"label", "message", "branch_name", "snapshot", "metadata"}.issubset(value)
-        for key, item in value.items():
-            if key in {"created_at", "updated_at"}:
-                normalized[key] = "<timestamp>"
-            elif key in {"requirement_run_id", "requirement_version_id"}:
-                normalized[key] = "<requirement_id>"
-            elif key in {"board_task_run_id", "board_task_version_id"}:
-                normalized[key] = "<board_task_id>"
-            elif is_commit and key == "id":
-                normalized[key] = "<commit_id>"
-            elif key == "head_commit_id":
-                normalized[key] = "<commit_id>"
-            else:
-                normalized[key] = _normalize_visible_response(item)
-        return normalized
-    if isinstance(value, list):
-        return [_normalize_visible_response(item) for item in value]
-    return value
-
-
-def _fail_if_called(name: str):
-    raise AssertionError(f"{name} should not be called for this workflow path")
+    return normalize_visible_response(value, normalize_board_task_ids=True)
 
 
 def _interaction_decision(
@@ -236,19 +128,6 @@ def _patch_interaction_turn(
         lambda **kwargs: _fail_if_called("generate_board_task_requirement_sheet"),
     )
     return decision
-
-
-def _interaction_trace_prefix() -> list[str]:
-    return [
-        NodeId.CONTEXT_LOAD.value,
-        NodeId.TURN_CONTEXT_BUILD.value,
-        NodeId.BOARD_ACTION_DECIDE.value,
-        NodeId.CHAT_TURN_GATE.value,
-        NodeId.RESOURCE_PREFLIGHT.value,
-        NodeId.ACTIVE_INTERACTION_CHECK.value,
-        NodeId.INTERACTION_SEQUENCE_CHECK.value,
-        NodeId.INTERACTION_DECIDE.value,
-    ]
 
 
 def _requirement_history(lesson_id: str) -> LearningRequirementHistoryRecorder:
