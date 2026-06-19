@@ -927,11 +927,22 @@ def test_sequence_session_records_sequence_check_without_generic_continue(
     assert response.interaction_decision.route == "exit_rule"
     assert collector.steps[5].decision == "handled"
     assert collector.steps[6].node_id == NodeId.INTERACTION_SEQUENCE_CHECK
-    assert collector.steps[6].decision == "handled"
+    assert collector.steps[6].decision == "completed"
+    assert _node_values(collector) == [
+        NodeId.CONTEXT_LOAD.value,
+        NodeId.TURN_CONTEXT_BUILD.value,
+        NodeId.BOARD_ACTION_DECIDE.value,
+        NodeId.CHAT_TURN_GATE.value,
+        NodeId.RESOURCE_PREFLIGHT.value,
+        NodeId.ACTIVE_INTERACTION_CHECK.value,
+        NodeId.INTERACTION_SEQUENCE_CHECK.value,
+        NodeId.INTERACTION_EXIT.value,
+        NodeId.PERSIST_CHAT_COMMIT.value,
+        NodeId.RESPONSE_ASSEMBLE.value,
+    ]
     assert NodeId.INTERACTION_DECIDE.value not in _node_values(collector)
     assert NodeId.INTERACTION_CONTINUE.value not in _node_values(collector)
     assert NodeId.INTERACTION_RULE_VIOLATION.value not in _node_values(collector)
-    assert NodeId.INTERACTION_EXIT.value not in _node_values(collector)
     assert NodeId.INTERACTION_NEW_TASK.value not in _node_values(collector)
 
 
