@@ -802,8 +802,14 @@ def test_interaction_empty_decision_does_not_call_active_interaction_handler(
 
     assert response.interaction_decision is None
     assert response.active_interaction_session is not None
-    assert _node_values(collector) == _interaction_trace_prefix()
+    assert _node_values(collector) == [
+        *_interaction_trace_prefix(),
+        NodeId.INTERACTION_TERMINAL.value,
+        NodeId.PERSIST_CHAT_COMMIT.value,
+        NodeId.RESPONSE_ASSEMBLE.value,
+    ]
     assert collector.steps[7].decision == "empty"
+    assert collector.steps[8].decision == "empty"
     assert NodeId.INTERACTION_CONTINUE.value not in _node_values(collector)
     assert NodeId.INTERACTION_RULE_VIOLATION.value not in _node_values(collector)
     assert NodeId.INTERACTION_EXIT.value not in _node_values(collector)

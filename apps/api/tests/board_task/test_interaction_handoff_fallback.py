@@ -754,7 +754,7 @@ def test_exit_rule_does_not_record_handoff_fallback_terminal(
     assert NodeId.INTERACTION_TERMINAL.value not in _node_values(collector)
 
 
-def test_empty_decision_does_not_record_handoff_fallback_terminal(
+def test_empty_decision_does_not_record_handoff_fallback_attempt(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -776,7 +776,11 @@ def test_empty_decision_does_not_record_handoff_fallback_terminal(
         )
 
     assert response.interaction_decision is None
-    assert NodeId.INTERACTION_TERMINAL.value not in _node_values(collector)
+    assert NodeId.INTERACTION_NEW_TASK.value not in _node_values(collector)
+    assert not any(
+        step.node_id == NodeId.INTERACTION_TERMINAL and step.decision in {"new_task", "side_learning_request"}
+        for step in collector.steps
+    )
 
 
 def test_sequence_session_does_not_record_handoff_fallback_terminal(

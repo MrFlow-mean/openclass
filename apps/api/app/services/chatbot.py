@@ -3538,6 +3538,7 @@ def _handle_existing_interaction_session(
     if decision is None:
         chatbot_message = ""
         lesson.active_interaction_session = session_before
+        record_workflow_step(NodeId.INTERACTION_TERMINAL, decision="empty", reason=None)
         commit_operations(
             lesson,
             [],
@@ -3565,7 +3566,12 @@ def _handle_existing_interaction_session(
             workspace=workspace,
             requirement_history=requirement_history,
         )
-        return _response(
+        record_workflow_step(
+            NodeId.PERSIST_CHAT_COMMIT,
+            decision="committed",
+            commit_id=lesson.history_graph.commits[-1].id,
+        )
+        response = _response(
             workspace=workspace,
             package=package,
             lesson=lesson,
@@ -3575,6 +3581,8 @@ def _handle_existing_interaction_session(
             board_decision=BoardDecision(action="no_change", reason=""),
             requirement_history=requirement_history,
         )
+        record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
+        return response
 
     if decision.route in {"exit_rule", "new_task", "side_learning_request"}:
         if decision.route in {"new_task", "side_learning_request"}:
