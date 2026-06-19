@@ -3580,6 +3580,12 @@ def _handle_existing_interaction_session(
             or _requests_explanation(request.message)
         )
         if should_attempt_board_task:
+            if decision.route in {"new_task", "side_learning_request"}:
+                record_workflow_step(
+                    NodeId.INTERACTION_NEW_TASK,
+                    decision=decision.route,
+                    reason=decision.reason,
+                )
             board_task_response = _handle_existing_board_task_flow(
                 workspace=workspace,
                 package=package,
