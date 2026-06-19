@@ -5336,7 +5336,7 @@ def _chat_response(
         user_message=request.message,
         chatbot_message=chatbot_message,
     )
-    _maybe_record_initial_requirement_update(
+    requirement_stamp = _maybe_record_initial_requirement_update(
         requirement_history,
         enabled=track_initial_requirement_run,
         requirements=requirements,
@@ -5487,6 +5487,9 @@ def _chat_response(
             board_document_operation_failure_reason=edit_outcome.failure_reason,
         )
 
+    should_trace_requirement_chat_update = (
+        requirement_stamp is not None and track_initial_requirement_run and not learning_clarification.ready_for_board
+    )
     board_decision = BoardDecision(action="no_change", reason="本轮是通用问答聊天，不自动修改讲义。")
     requirement_cleared = False
 
@@ -5521,7 +5524,20 @@ def _chat_response(
         workspace=workspace,
         requirement_history=requirement_history,
     )
-    return _response(
+    if should_trace_requirement_chat_update:
+        record_workflow_step(
+            NodeId.REQUIREMENT_CHAT_UPDATE,
+            decision=requirement_stamp.phase,
+            reason="not_ready_for_board",
+            run_id=requirement_stamp.run_id,
+            version_id=requirement_stamp.version_id,
+        )
+        record_workflow_step(
+            NodeId.PERSIST_CHAT_COMMIT,
+            decision="committed",
+            commit_id=lesson.history_graph.commits[-1].id,
+        )
+    response = _response(
         workspace=workspace,
         package=package,
         lesson=lesson,
@@ -5534,6 +5550,9 @@ def _chat_response(
         requirement_cleared=requirement_cleared,
         requirement_history=requirement_history if track_initial_requirement_run else None,
     )
+    if should_trace_requirement_chat_update:
+        record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
+    return response
 
 
 def process_chat_on_lesson(lesson_id: str, request: ChatRequest, *, user_id: str) -> ChatResponse:

@@ -15,6 +15,8 @@ from app.models import (
     InteractionSession,
     InteractionTurnDecision,
     LibraryChapter,
+    LearningRequirementChecklistItem,
+    LearningRequirementKeyFact,
     ResourceLibraryItem,
 )
 from app.routers import chat as chat_router
@@ -46,6 +48,7 @@ from app.services.workflow_trace import (
 TEST_USER_ID = "user_workflow_trace"
 RESOURCE_PROMPT_MESSAGE = "根据上传资料回答这个问题"
 GENERATION_RESOURCE_PROMPT_MESSAGE = "根据上传资料生成板书"
+REQUIREMENT_CHAT_UPDATE_MESSAGE = "我想学一个主题"
 TRACE_KEYS = {
     "workflow_trace",
     "workflow_steps",
@@ -230,6 +233,31 @@ def _collecting_generation_requirement_update(**kwargs) -> LearningRequirementUp
     )
 
 
+def _collecting_requirement_chat_update(**kwargs) -> LearningRequirementUpdate:
+    return LearningRequirementUpdate(
+        progress=55,
+        summary="用户正在补充一个通用学习需求，但目标还没有清晰到可以生成板书。",
+        key_facts=[
+            LearningRequirementKeyFact(
+                label="学习内容",
+                value="一个通用主题",
+                evidence="来自用户输入。",
+                category="learning",
+            )
+        ],
+        checklist=[
+            LearningRequirementChecklistItem(
+                title="明确学习内容",
+                is_clear=True,
+                evidence="来自用户输入。",
+            )
+        ],
+        missing_items=["还需要确认学习目标"],
+        next_question="你希望这次学习最后能完成什么？",
+        ready_for_board=False,
+    )
+
+
 def _patch_generation_resource_prompt_guards(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
     calls = {"requirement_update": 0}
 
@@ -247,6 +275,33 @@ def _patch_generation_resource_prompt_guards(monkeypatch: pytest.MonkeyPatch) ->
         openai_course_ai,
         "generate_chatbot_reply",
         lambda **kwargs: _fail_if_called("generate_chatbot_reply"),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_board_task_requirement_sheet",
+        lambda **kwargs: _fail_if_called("generate_board_task_requirement_sheet"),
+    )
+    monkeypatch.setattr(
+        chatbot_module,
+        "generate_from_requirements",
+        lambda **kwargs: _fail_if_called("generate_from_requirements"),
+    )
+    return calls
+
+
+def _patch_requirement_chat_update_guards(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
+    calls = {"requirement_update": 0}
+
+    def _requirement_update(**kwargs) -> LearningRequirementUpdate:
+        calls["requirement_update"] += 1
+        return _collecting_requirement_chat_update(**kwargs)
+
+    monkeypatch.setattr(openai_course_ai, "generate_initial_learning_work_mode", lambda **kwargs: None)
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _requirement_update)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_chatbot_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="AI生成：我先继续确认你的学习需求。"),
     )
     monkeypatch.setattr(
         openai_course_ai,
@@ -1108,6 +1163,106 @@ def test_resource_confirm_does_not_call_generation_resource_prompt_handler(
     assert "生成后的内容" in confirmed_response.course_package.lessons[-1].board_document.content_text
 
 
+def test_requirement_chat_update_trace_records_after_durable_save(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace, lesson_id = _workspace_with_lesson()
+    store = _store_with_workspace(tmp_path, workspace, name="requirement_chat_update")
+    original_board = workspace.packages[0].lessons[-1].board_document.model_dump(mode="json")
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    calls = _patch_requirement_chat_update_guards(monkeypatch)
+
+    with bind_workflow_trace_collector() as collector:
+        response = chat_service.process_chat_on_lesson(
+            lesson_id,
+            ChatRequest(message=REQUIREMENT_CHAT_UPDATE_MESSAGE),
+            user_id=TEST_USER_ID,
+        )
+
+    lesson = response.course_package.lessons[-1]
+    commit = lesson.history_graph.commits[-1]
+    runs = _requirement_run_rows(store, lesson_id)
+    versions = store.list_learning_requirement_versions(owner_user_id=TEST_USER_ID, lesson_id=lesson_id)
+    events = store.list_learning_requirement_events(owner_user_id=TEST_USER_ID, lesson_id=lesson_id)
+    nodes = _node_values(collector)
+    update_step = collector.steps[6]
+    persist_step = collector.steps[7]
+
+    assert response.requirement_run_id == runs[0]["id"]
+    assert response.requirement_version_id == versions[0]["id"]
+    assert response.requirement_phase == "collecting"
+    assert response.requirement_cleared is False
+    assert response.active_requirement_sheet is not None
+    assert response.learning_clarification.ready_for_board is False
+    assert runs[0]["status"] == "collecting"
+    assert runs[0]["active_version_id"] == versions[0]["id"]
+    assert runs[0]["frozen_version_id"] is None
+    assert runs[0]["consumed_commit_id"] is None
+    assert versions[0]["status"] == "collecting"
+    assert versions[0]["change_kind"] == "created"
+    assert [event["event_type"] for event in events] == ["created"]
+    assert calls["requirement_update"] == 1
+    assert lesson.board_document.model_dump(mode="json") == original_board
+    assert store.list_board_task_versions(owner_user_id=TEST_USER_ID, lesson_id=lesson_id) == []
+    assert commit.metadata["kind"] == "chat_flow"
+    assert commit.metadata["assistant_message_source"] == "chatbot"
+    assert commit.metadata["requirement_cleared"] is False
+    assert nodes == [
+        NodeId.CONTEXT_LOAD.value,
+        NodeId.TURN_CONTEXT_BUILD.value,
+        NodeId.BOARD_ACTION_DECIDE.value,
+        NodeId.CHAT_TURN_GATE.value,
+        NodeId.RESOURCE_PREFLIGHT.value,
+        NodeId.ACTIVE_INTERACTION_CHECK.value,
+        NodeId.REQUIREMENT_CHAT_UPDATE.value,
+        NodeId.PERSIST_CHAT_COMMIT.value,
+        NodeId.RESPONSE_ASSEMBLE.value,
+    ]
+    assert update_step.decision == "collecting"
+    assert update_step.reason == "not_ready_for_board"
+    assert update_step.run_id == response.requirement_run_id
+    assert update_step.version_id == response.requirement_version_id
+    assert persist_step.commit_id == commit.id
+    assert NodeId.INITIAL_REQUIREMENT_FREEZE.value not in nodes
+    assert NodeId.INITIAL_BOARD_GENERATE.value not in nodes
+
+
+def test_requirement_chat_update_does_not_trace_without_requirement_stamp(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace, lesson_id = _workspace_with_lesson()
+    store = _store_with_workspace(tmp_path, workspace, name="requirement_chat_update_no_stamp")
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    calls = _patch_requirement_chat_update_guards(monkeypatch)
+    monkeypatch.setattr(chatbot_module, "_maybe_record_initial_requirement_update", lambda *args, **kwargs: None)
+
+    with bind_workflow_trace_collector() as collector:
+        response = chat_service.process_chat_on_lesson(
+            lesson_id,
+            ChatRequest(message=REQUIREMENT_CHAT_UPDATE_MESSAGE),
+            user_id=TEST_USER_ID,
+        )
+
+    assert calls["requirement_update"] == 1
+    assert response.requirement_run_id is None
+    assert response.requirement_version_id is None
+    assert store.list_learning_requirement_versions(owner_user_id=TEST_USER_ID, lesson_id=lesson_id) == []
+    assert store.list_learning_requirement_events(owner_user_id=TEST_USER_ID, lesson_id=lesson_id) == []
+    assert _node_values(collector) == [
+        NodeId.CONTEXT_LOAD.value,
+        NodeId.TURN_CONTEXT_BUILD.value,
+        NodeId.BOARD_ACTION_DECIDE.value,
+        NodeId.CHAT_TURN_GATE.value,
+        NodeId.RESOURCE_PREFLIGHT.value,
+        NodeId.ACTIVE_INTERACTION_CHECK.value,
+    ]
+    assert NodeId.REQUIREMENT_CHAT_UPDATE.value not in _node_values(collector)
+    assert NodeId.PERSIST_CHAT_COMMIT.value not in _node_values(collector)
+    assert NodeId.RESPONSE_ASSEMBLE.value not in _node_values(collector)
+
+
 def test_non_ordinary_path_never_records_ordinary_chat_generate(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1240,6 +1395,38 @@ def test_traced_and_untraced_generation_resource_prompt_have_same_visible_respon
         traced_response = chat_service.process_chat_on_lesson(
             lesson_id,
             ChatRequest(message=GENERATION_RESOURCE_PROMPT_MESSAGE),
+            user_id=TEST_USER_ID,
+        )
+
+    untraced_commit = untraced_response.course_package.lessons[-1].history_graph.commits[-1]
+    traced_commit = traced_response.course_package.lessons[-1].history_graph.commits[-1]
+    assert traced_commit.metadata == untraced_commit.metadata
+    assert _normalize_visible_response(traced_response.model_dump(mode="json")) == _normalize_visible_response(
+        untraced_response.model_dump(mode="json")
+    )
+
+
+def test_traced_and_untraced_requirement_chat_update_have_same_visible_response_and_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace, lesson_id = _workspace_with_lesson()
+    untraced_store = _store_with_workspace(tmp_path, workspace, name="requirement_chat_update_untraced")
+    traced_store = _store_with_workspace(tmp_path, workspace, name="requirement_chat_update_traced")
+    _patch_requirement_chat_update_guards(monkeypatch)
+
+    monkeypatch.setattr(workspace_state, "STORE", untraced_store)
+    untraced_response = chat_service.process_chat_on_lesson(
+        lesson_id,
+        ChatRequest(message=REQUIREMENT_CHAT_UPDATE_MESSAGE),
+        user_id=TEST_USER_ID,
+    )
+
+    monkeypatch.setattr(workspace_state, "STORE", traced_store)
+    with bind_workflow_trace_collector():
+        traced_response = chat_service.process_chat_on_lesson(
+            lesson_id,
+            ChatRequest(message=REQUIREMENT_CHAT_UPDATE_MESSAGE),
             user_id=TEST_USER_ID,
         )
 
@@ -1397,6 +1584,134 @@ def test_interaction_exit_does_not_record_persist_or_response_when_save_fails(
         NodeId.INTERACTION_EXIT.value,
     ]
     assert NodeId.PERSIST_CHAT_COMMIT.value not in _node_values(collector)
+    assert NodeId.RESPONSE_ASSEMBLE.value not in _node_values(collector)
+
+
+def test_requirement_chat_update_does_not_record_update_when_commit_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace, lesson_id = _workspace_with_lesson()
+    store = _store_with_workspace(tmp_path, workspace, name="requirement_chat_update_commit_failure")
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    _patch_requirement_chat_update_guards(monkeypatch)
+
+    def _raise_on_commit(*args, **kwargs):
+        raise RuntimeError("commit failed")
+
+    monkeypatch.setattr(chatbot_module, "commit_operations", _raise_on_commit)
+
+    with bind_workflow_trace_collector() as collector:
+        with pytest.raises(RuntimeError, match="commit failed"):
+            chat_service.process_chat_on_lesson(
+                lesson_id,
+                ChatRequest(message=REQUIREMENT_CHAT_UPDATE_MESSAGE),
+                user_id=TEST_USER_ID,
+            )
+
+    assert _node_values(collector) == [
+        NodeId.CONTEXT_LOAD.value,
+        NodeId.TURN_CONTEXT_BUILD.value,
+        NodeId.BOARD_ACTION_DECIDE.value,
+        NodeId.CHAT_TURN_GATE.value,
+        NodeId.RESOURCE_PREFLIGHT.value,
+        NodeId.ACTIVE_INTERACTION_CHECK.value,
+    ]
+    assert store.list_learning_requirement_versions(owner_user_id=TEST_USER_ID, lesson_id=lesson_id) == []
+    assert store.list_learning_requirement_events(owner_user_id=TEST_USER_ID, lesson_id=lesson_id) == []
+    assert NodeId.PERSIST_CHAT_COMMIT.value not in _node_values(collector)
+    assert NodeId.REQUIREMENT_CHAT_UPDATE.value not in _node_values(collector)
+    assert NodeId.RESPONSE_ASSEMBLE.value not in _node_values(collector)
+
+
+def test_requirement_chat_update_does_not_record_update_when_save_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace, lesson_id = _workspace_with_lesson()
+    store = _store_with_workspace(tmp_path, workspace, name="requirement_chat_update_save_failure")
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    _patch_requirement_chat_update_guards(monkeypatch)
+
+    def _raise_on_save(**kwargs):
+        raise RuntimeError("save failed")
+
+    monkeypatch.setattr(chatbot_module, "_save_workspace_for_user", _raise_on_save)
+
+    with bind_workflow_trace_collector() as collector:
+        with pytest.raises(RuntimeError, match="save failed"):
+            chat_service.process_chat_on_lesson(
+                lesson_id,
+                ChatRequest(message=REQUIREMENT_CHAT_UPDATE_MESSAGE),
+                user_id=TEST_USER_ID,
+            )
+
+    assert _node_values(collector) == [
+        NodeId.CONTEXT_LOAD.value,
+        NodeId.TURN_CONTEXT_BUILD.value,
+        NodeId.BOARD_ACTION_DECIDE.value,
+        NodeId.CHAT_TURN_GATE.value,
+        NodeId.RESOURCE_PREFLIGHT.value,
+        NodeId.ACTIVE_INTERACTION_CHECK.value,
+    ]
+    assert store.list_learning_requirement_versions(owner_user_id=TEST_USER_ID, lesson_id=lesson_id) == []
+    assert store.list_learning_requirement_events(owner_user_id=TEST_USER_ID, lesson_id=lesson_id) == []
+    assert NodeId.PERSIST_CHAT_COMMIT.value not in _node_values(collector)
+    assert NodeId.REQUIREMENT_CHAT_UPDATE.value not in _node_values(collector)
+    assert NodeId.RESPONSE_ASSEMBLE.value not in _node_values(collector)
+
+
+def test_requirement_chat_update_records_durable_update_before_response_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace, lesson_id = _workspace_with_lesson()
+    store = _store_with_workspace(tmp_path, workspace, name="requirement_chat_update_response_failure")
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    _patch_requirement_chat_update_guards(monkeypatch)
+
+    def _raise_on_response(**kwargs):
+        raise RuntimeError("response failed")
+
+    monkeypatch.setattr(chatbot_module, "_response", _raise_on_response)
+
+    with bind_workflow_trace_collector() as collector:
+        with pytest.raises(RuntimeError, match="response failed"):
+            chat_service.process_chat_on_lesson(
+                lesson_id,
+                ChatRequest(message=REQUIREMENT_CHAT_UPDATE_MESSAGE),
+                user_id=TEST_USER_ID,
+            )
+
+    runs = _requirement_run_rows(store, lesson_id)
+    versions = store.list_learning_requirement_versions(owner_user_id=TEST_USER_ID, lesson_id=lesson_id)
+    events = store.list_learning_requirement_events(owner_user_id=TEST_USER_ID, lesson_id=lesson_id)
+    assert len(runs) == 1
+    assert len(versions) == 1
+    assert [event["event_type"] for event in events] == ["created"]
+    assert runs[0]["status"] == "collecting"
+    assert runs[0]["active_version_id"] == versions[0]["id"]
+    assert runs[0]["frozen_version_id"] is None
+    assert runs[0]["consumed_commit_id"] is None
+    assert versions[0]["status"] == "collecting"
+    assert versions[0]["change_kind"] == "created"
+    assert store.list_board_task_versions(owner_user_id=TEST_USER_ID, lesson_id=lesson_id) == []
+    assert _node_values(collector) == [
+        NodeId.CONTEXT_LOAD.value,
+        NodeId.TURN_CONTEXT_BUILD.value,
+        NodeId.BOARD_ACTION_DECIDE.value,
+        NodeId.CHAT_TURN_GATE.value,
+        NodeId.RESOURCE_PREFLIGHT.value,
+        NodeId.ACTIVE_INTERACTION_CHECK.value,
+        NodeId.REQUIREMENT_CHAT_UPDATE.value,
+        NodeId.PERSIST_CHAT_COMMIT.value,
+    ]
+    assert collector.steps[6].decision == "collecting"
+    assert collector.steps[6].reason == "not_ready_for_board"
+    assert collector.steps[6].run_id == runs[0]["id"]
+    assert collector.steps[6].version_id == versions[0]["id"]
+    assert collector.steps[7].decision == "committed"
+    assert collector.steps[7].commit_id is not None
     assert NodeId.RESPONSE_ASSEMBLE.value not in _node_values(collector)
 
 
@@ -1578,6 +1893,42 @@ def test_generation_resource_prompt_trace_does_not_leak_to_response_sse_history_
         chat_router._chat_stream_events(
             stream_lesson_id,
             ChatRequest(message=GENERATION_RESOURCE_PROMPT_MESSAGE),
+            user_id=TEST_USER_ID,
+        )
+    )
+
+    final_payload = next(payload for event, payload in events if event == "final")
+    assert TRACE_KEYS.isdisjoint(_all_keys(final_payload))
+
+
+def test_requirement_chat_update_trace_does_not_leak_to_response_history_or_commit_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace, lesson_id = _workspace_with_lesson()
+    store = _store_with_workspace(tmp_path, workspace, name="requirement_chat_update_leak")
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    _patch_requirement_chat_update_guards(monkeypatch)
+
+    with bind_workflow_trace_collector():
+        response = chat_service.process_chat_on_lesson(
+            lesson_id,
+            ChatRequest(message=REQUIREMENT_CHAT_UPDATE_MESSAGE),
+            user_id=TEST_USER_ID,
+        )
+
+    commit = response.course_package.lessons[-1].history_graph.commits[-1]
+    assert TRACE_KEYS.isdisjoint(_all_keys(response.model_dump(mode="json")))
+    assert TRACE_KEYS.isdisjoint(_all_keys(commit.metadata))
+    assert TRACE_KEYS.isdisjoint(_all_keys(_requirement_history_rows(store, lesson_id)))
+
+    workspace_for_stream, stream_lesson_id = _workspace_with_lesson()
+    stream_store = _store_with_workspace(tmp_path, workspace_for_stream, name="requirement_chat_update_stream")
+    monkeypatch.setattr(workspace_state, "STORE", stream_store)
+    events = _collect_sse_events(
+        chat_router._chat_stream_events(
+            stream_lesson_id,
+            ChatRequest(message=REQUIREMENT_CHAT_UPDATE_MESSAGE),
             user_id=TEST_USER_ID,
         )
     )
