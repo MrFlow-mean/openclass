@@ -3817,6 +3817,16 @@ def _handle_initial_learning_work_mode(
         chatbot_message = decision.guided_discovery_reply.strip()
         if not chatbot_message:
             return None
+        record_workflow_step(
+            NodeId.INITIAL_MODE_DECIDE,
+            decision=decision.work_mode,
+            reason=decision.reason,
+        )
+        record_workflow_step(
+            NodeId.INITIAL_UNKNOWN_GUIDANCE,
+            decision="guided_discovery",
+            reason=decision.reason,
+        )
         requirements, learning_clarification = _minimal_initial_learning_state(
             requirements,
             decision=decision,
@@ -3847,7 +3857,12 @@ def _handle_initial_learning_work_mode(
         )
         workspace_state.normalize_package_state(package)
         _save_workspace_for_user(user_id=user_id, workspace=workspace, requirement_history=requirement_history)
-        return _response(
+        record_workflow_step(
+            NodeId.PERSIST_CHAT_COMMIT,
+            decision="committed",
+            commit_id=lesson.history_graph.commits[-1].id,
+        )
+        response = _response(
             workspace=workspace,
             package=package,
             lesson=lesson,
@@ -3858,11 +3873,23 @@ def _handle_initial_learning_work_mode(
             resource_matches=resource_resolution.matches,
             selected_reference=selected_reference,
         )
+        record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
+        return response
 
     if decision.work_mode == "narrow_topic":
         question = decision.next_question.strip()
         if not question:
             return None
+        record_workflow_step(
+            NodeId.INITIAL_MODE_DECIDE,
+            decision=decision.work_mode,
+            reason=decision.reason,
+        )
+        record_workflow_step(
+            NodeId.INITIAL_NARROW_TOPIC,
+            decision="clarify_topic",
+            reason=decision.reason,
+        )
         requirements, learning_clarification = _minimal_initial_learning_state(
             requirements,
             decision=decision,
@@ -3893,7 +3920,12 @@ def _handle_initial_learning_work_mode(
         )
         workspace_state.normalize_package_state(package)
         _save_workspace_for_user(user_id=user_id, workspace=workspace, requirement_history=requirement_history)
-        return _response(
+        record_workflow_step(
+            NodeId.PERSIST_CHAT_COMMIT,
+            decision="committed",
+            commit_id=lesson.history_graph.commits[-1].id,
+        )
+        response = _response(
             workspace=workspace,
             package=package,
             lesson=lesson,
@@ -3904,6 +3936,8 @@ def _handle_initial_learning_work_mode(
             resource_matches=resource_resolution.matches,
             selected_reference=selected_reference,
         )
+        record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
+        return response
 
     if decision.work_mode != "knowledge_board":
         return None
