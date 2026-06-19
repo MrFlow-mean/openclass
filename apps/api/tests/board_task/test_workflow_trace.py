@@ -11,6 +11,7 @@ import pytest
 from app.models import (
     BoardDecision,
     BoardFocusRef,
+    BoardTaskRequirementSheet,
     ChatRequest,
     InteractionSession,
     InteractionTurnDecision,
@@ -28,12 +29,15 @@ from app.services.course_runtime import refresh_lesson_runtime
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
 from app.services.lesson_factory import create_empty_lesson
 from app.services.openai_course_ai import (
+    BoardExplanationDirective,
+    BoardTaskRouteDecision,
     ChatbotReply,
     InitialLearningWorkModeDecision,
     LearningRequirementUpdate,
     openai_course_ai,
 )
 from app.services.rich_document import build_document
+from app.services.segment_resolver import FocusResolution
 from app.services.workflow_trace import (
     NodeId,
     WorkflowTraceCollector,
@@ -144,6 +148,24 @@ def _requirement_run_rows(store: SqliteCourseStore, lesson_id: str) -> list[dict
             """
             SELECT *
             FROM learning_requirement_runs
+            WHERE owner_user_id = ? AND lesson_id = ?
+            ORDER BY created_at, id
+            """,
+            (TEST_USER_ID, lesson_id),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def _board_task_run_rows(store: SqliteCourseStore, lesson_id: str) -> list[dict[str, Any]]:
+    conn = sqlite3.connect(store.path)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM board_task_runs
             WHERE owner_user_id = ? AND lesson_id = ?
             ORDER BY created_at, id
             """,
@@ -301,6 +323,60 @@ def _patch_interaction_turn(
         lambda **kwargs: _fail_if_called("generate_board_task_requirement_sheet"),
     )
     return decision
+
+
+def _approved_board_explanation_directive(**kwargs) -> BoardExplanationDirective:
+    return BoardExplanationDirective(
+        status="approved",
+        target_summary="目标段落",
+        target_excerpt=kwargs.get("target_excerpt") or "目标段落已有内容。",
+        board_feedback="目标内容已经由板书侧定位。",
+        teaching_instruction="只围绕当前目标段落解释。",
+        constraints=["不要越界讲解其它段落"],
+        reason="目标摘录足以支持本轮讲解。",
+    )
+
+
+def _patch_single_target_explain_golden(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    chatbot_message: str,
+    focus: BoardFocusRef,
+) -> dict[str, list[dict[str, Any]]]:
+    calls: dict[str, list[dict[str, Any]]] = {"reply": [], "directive": []}
+
+    def _board_task_sheet(**kwargs) -> BoardTaskRequirementSheet:
+        return BoardTaskRequirementSheet(
+            target_location=focus,
+            location_status="resolved",
+            requested_action="explain",
+            question_or_topic="讲解目标段落",
+            progress=100,
+            missing_items=[],
+        )
+
+    def _directive(**kwargs) -> BoardExplanationDirective:
+        calls["directive"].append(kwargs)
+        return _approved_board_explanation_directive(**kwargs)
+
+    def _chatbot_reply(**kwargs) -> ChatbotReply:
+        calls["reply"].append(kwargs)
+        return ChatbotReply(chatbot_message=chatbot_message)
+
+    monkeypatch.setattr(openai_course_ai, "generate_board_task_requirement_sheet", _board_task_sheet)
+    monkeypatch.setattr(openai_course_ai, "generate_board_explanation_directive", _directive)
+    monkeypatch.setattr(openai_course_ai, "generate_chatbot_reply", _chatbot_reply)
+    monkeypatch.setattr(
+        chatbot_module,
+        "resolve_board_focus",
+        lambda **kwargs: FocusResolution(focus=focus, candidates=[focus], status="resolved"),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_learning_requirement_update",
+        lambda **kwargs: _fail_if_called("generate_learning_requirement_update"),
+    )
+    return calls
 
 
 def _interaction_trace_prefix() -> list[str]:
@@ -944,6 +1020,257 @@ def test_sequence_session_records_sequence_check_without_generic_continue(
     assert NodeId.INTERACTION_CONTINUE.value not in _node_values(collector)
     assert NodeId.INTERACTION_RULE_VIOLATION.value not in _node_values(collector)
     assert NodeId.INTERACTION_NEW_TASK.value not in _node_values(collector)
+
+
+def test_existing_board_single_target_explain_golden_commit_and_consumes_board_task(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace, lesson_id = _workspace_with_lesson(existing_board=True)
+    lesson = workspace.packages[0].lessons[-1]
+    refresh_lesson_runtime(
+        lesson,
+        document=build_document(
+            title="已有板书",
+            content_text="# 已有板书\n\n## 目标段落\n目标段落已有内容。\n\n## 另一段\n另一段已有内容。\n",
+        ),
+    )
+    original_board = lesson.board_document.model_dump(mode="json")
+    target_focus = BoardFocusRef(
+        source="board",
+        lesson_id=lesson.id,
+        document_id=lesson.board_document.id,
+        segment_id="seg-target",
+        kind="paragraph",
+        heading_path=["已有板书", "目标段落"],
+        excerpt="目标段落已有内容。",
+        confidence=1.0,
+        reason="测试固定单目标定位。",
+        display_label="目标段落",
+    )
+    store = _store_with_workspace(tmp_path, workspace, name="board_task_explain_success")
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    calls = _patch_single_target_explain_golden(
+        monkeypatch,
+        chatbot_message="AI生成：这是基于目标段落的讲解。",
+        focus=target_focus,
+    )
+
+    response = chat_service.process_chat_on_lesson(
+        lesson_id,
+        ChatRequest(message="请讲解目标段落"),
+        user_id=TEST_USER_ID,
+    )
+
+    lesson_after = response.course_package.lessons[-1]
+    commit = lesson_after.history_graph.commits[-1]
+    runs = _board_task_run_rows(store, lesson_id)
+    versions = store.list_board_task_versions(owner_user_id=TEST_USER_ID, lesson_id=lesson_id)
+    events = store.list_board_task_events(owner_user_id=TEST_USER_ID, lesson_id=lesson_id)
+    consumed_event = events[-1]
+    consumed_metadata = json.loads(consumed_event["metadata_json"])
+
+    assert response.chatbot_message == "AI生成：这是基于目标段落的讲解。"
+    assert response.active_board_task_sheet is None
+    assert response.board_task_sheet is not None
+    assert response.board_task_sheet.requested_action == "explain"
+    assert response.board_task_phase == "consumed"
+    assert response.board_task_run_id == runs[0]["id"]
+    assert response.board_task_version_id == versions[0]["id"]
+    assert response.active_interaction_session is None
+    assert response.resolved_focus is not None
+    assert "目标段落已有内容" in response.resolved_focus.excerpt
+    assert lesson_after.board_document.model_dump(mode="json") == original_board
+
+    assert len(calls["directive"]) == 1
+    assert len(calls["reply"]) == 1
+    assert "板书侧已允许 Chatbot 进行讲解" in calls["reply"][0]["user_message"]
+    assert "当前允许讲解的目标内容" in calls["directive"][0]["target_excerpt"]
+    assert "目标段落已有内容" in calls["directive"][0]["target_excerpt"]
+
+    assert commit.label == "Board task explanation"
+    assert commit.message == "Executed an existing-board explanation task"
+    assert commit.metadata["kind"] == "chat_flow"
+    assert commit.metadata["assistant_message_source"] == "chatbot_board_directed"
+    assert commit.metadata["board_task_route"] == "explain"
+    assert commit.metadata["board_task_cleared"] is True
+    assert commit.metadata["board_task_run_id"] == runs[0]["id"]
+    assert commit.metadata["board_task_version_id"] == versions[0]["id"]
+    assert commit.metadata["board_task_phase"] == "ready"
+    assert commit.metadata["board_explanation_directive"]["status"] == "approved"
+    assert commit.metadata["task_requirement_sheet"]["action_type"] == "explain_target"
+    assert commit.metadata["active_requirement_sheet_after"] is None
+
+    assert len(runs) == 1
+    assert runs[0]["status"] == "consumed"
+    assert runs[0]["consumed_commit_id"] == commit.id
+    assert len(versions) == 1
+    assert versions[0]["status"] == "ready"
+    assert [event["event_type"] for event in events] == ["created", "ready", "consumed"]
+    assert consumed_event["change_summary"] == "Board task was consumed by an execution commit."
+    assert consumed_metadata["commit_id"] == commit.id
+    assert store.load_board_task_history_state(owner_user_id=TEST_USER_ID, lesson_id=lesson_id) is None
+    assert store.list_learning_requirement_versions(owner_user_id=TEST_USER_ID, lesson_id=lesson_id) == []
+
+
+def test_existing_board_single_target_explain_golden_failure_keeps_board_task_ready(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace, lesson_id = _workspace_with_lesson(existing_board=True)
+    lesson = workspace.packages[0].lessons[-1]
+    refresh_lesson_runtime(
+        lesson,
+        document=build_document(
+            title="已有板书",
+            content_text="# 已有板书\n\n## 目标段落\n目标段落已有内容。\n\n## 另一段\n另一段已有内容。\n",
+        ),
+    )
+    initial_commit_count = len(lesson.history_graph.commits)
+    original_board = lesson.board_document.model_dump(mode="json")
+    target_focus = BoardFocusRef(
+        source="board",
+        lesson_id=lesson.id,
+        document_id=lesson.board_document.id,
+        segment_id="seg-target",
+        kind="paragraph",
+        heading_path=["已有板书", "目标段落"],
+        excerpt="目标段落已有内容。",
+        confidence=1.0,
+        reason="测试固定单目标定位。",
+        display_label="目标段落",
+    )
+    store = _store_with_workspace(tmp_path, workspace, name="board_task_explain_failure")
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    calls = _patch_single_target_explain_golden(monkeypatch, chatbot_message="", focus=target_focus)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson_id,
+        ChatRequest(message="请讲解目标段落"),
+        user_id=TEST_USER_ID,
+    )
+
+    lesson_after = response.course_package.lessons[-1]
+    runs = _board_task_run_rows(store, lesson_id)
+    versions = store.list_board_task_versions(owner_user_id=TEST_USER_ID, lesson_id=lesson_id)
+    events = store.list_board_task_events(owner_user_id=TEST_USER_ID, lesson_id=lesson_id)
+    failure_event = events[-1]
+    failure_metadata = json.loads(failure_event["metadata_json"])
+
+    assert response.chatbot_message == ""
+    assert response.active_board_task_sheet is not None
+    assert response.board_task_sheet is not None
+    assert response.board_task_phase == "ready"
+    assert response.board_task_run_id == runs[0]["id"]
+    assert response.board_task_version_id == versions[0]["id"]
+    assert response.resolved_focus is not None
+    assert "目标段落已有内容" in response.resolved_focus.excerpt
+    assert lesson_after.board_document.model_dump(mode="json") == original_board
+    assert len(lesson_after.history_graph.commits) == initial_commit_count
+    assert len(calls["directive"]) == 1
+    assert len(calls["reply"]) == 2
+
+    assert len(runs) == 1
+    assert runs[0]["status"] == "ready"
+    assert runs[0]["consumed_commit_id"] is None
+    assert len(versions) == 1
+    assert versions[0]["status"] == "ready"
+    assert [event["event_type"] for event in events] == ["created", "ready", "execution_failed"]
+    assert failure_event["change_summary"] == "Board-directed explanation failed because Chatbot returned empty."
+    assert failure_metadata["assistant_message_source"] == "chatbot_board_directed_empty"
+    assert failure_metadata["board_explanation_failed"] is True
+    assert failure_metadata["board_task_route"] == "explain"
+    assert failure_metadata["board_task_cleared"] is False
+    assert failure_metadata["board_explanation_directive"]["status"] == "approved"
+    assert store.load_board_task_history_state(owner_user_id=TEST_USER_ID, lesson_id=lesson_id) is not None
+
+
+def test_existing_board_sequence_request_golden_plans_sequence_and_consumes_board_task(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace, lesson_id = _workspace_with_lesson(existing_board=True)
+    lesson = workspace.packages[0].lessons[-1]
+    refresh_lesson_runtime(
+        lesson,
+        document=build_document(
+            title="已有板书",
+            content_text="# 已有板书\n\n## 第一段\n第一段已有内容。\n\n## 第二段\n第二段已有内容。\n",
+        ),
+    )
+    root_focus = BoardFocusRef(
+        source="board",
+        lesson_id=lesson.id,
+        document_id=lesson.board_document.id,
+        kind="heading",
+        heading_path=["已有板书"],
+        excerpt="已有板书",
+        confidence=1.0,
+        reason="测试顺序讲解范围。",
+        display_label="已有板书",
+    )
+
+    def _board_task_sheet(**kwargs) -> BoardTaskRequirementSheet:
+        return BoardTaskRequirementSheet(
+            target_hint="已有板书",
+            location_status="missing",
+            requested_action="explain",
+            question_or_topic="逐个讲解已有板书",
+            progress=100,
+            missing_items=[],
+        )
+
+    monkeypatch.setattr(openai_course_ai, "generate_board_task_requirement_sheet", _board_task_sheet)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_board_task_route_decision",
+        lambda **kwargs: BoardTaskRouteDecision(
+            route="explain",
+            location_status="found",
+            target_focus=root_focus,
+            reason="用户请求顺序讲解当前板书范围。",
+        ),
+    )
+    monkeypatch.setattr(openai_course_ai, "generate_board_explanation_directive", _approved_board_explanation_directive)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_chatbot_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="AI生成：先讲第一个讲解单元。"),
+    )
+    store = _store_with_workspace(tmp_path, workspace, name="board_task_sequence_plan")
+    monkeypatch.setattr(workspace_state, "STORE", store)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson_id,
+        ChatRequest(message="请把已有板书逐个讲解"),
+        user_id=TEST_USER_ID,
+    )
+
+    lesson_after = response.course_package.lessons[-1]
+    commit = lesson_after.history_graph.commits[-1]
+    runs = _board_task_run_rows(store, lesson_id)
+    versions = store.list_board_task_versions(owner_user_id=TEST_USER_ID, lesson_id=lesson_id)
+    events = store.list_board_task_events(owner_user_id=TEST_USER_ID, lesson_id=lesson_id)
+
+    assert response.chatbot_message == "AI生成：先讲第一个讲解单元。"
+    assert response.active_interaction_session is not None
+    assert response.active_interaction_session.sequence_mode == "atomic_explanation"
+    assert response.active_interaction_session.sequence_index == 0
+    assert len(response.active_interaction_session.sequence_items) == 2
+    assert response.active_board_task_sheet is None
+    assert response.board_task_phase == "consumed"
+    assert commit.label == "Section explanation session start"
+    assert commit.metadata["board_task_route"] == "explain"
+    assert commit.metadata["board_task_cleared"] is True
+    assert commit.metadata["board_task_run_id"] == runs[0]["id"]
+    assert commit.metadata["board_task_version_id"] == versions[0]["id"]
+    assert commit.metadata["active_interaction_session_after"]["source_board_task_run_id"] == runs[0]["id"]
+    assert commit.metadata["active_interaction_session_after"]["source_board_task_version_id"] == versions[0]["id"]
+    assert len(commit.metadata["explanation_sequence"]) == 2
+    assert len(runs) == 1
+    assert runs[0]["status"] == "consumed"
+    assert runs[0]["consumed_commit_id"] == commit.id
+    assert [event["event_type"] for event in events] == ["created", "ready", "consumed"]
 
 
 def test_generation_resource_prompt_trace_records_requirement_collect_before_prompt(
