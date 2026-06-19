@@ -2384,8 +2384,7 @@ def _handle_existing_board_task_flow(
                 run_id=not_executed_stamp.run_id,
                 version_id=not_executed_stamp.version_id,
             )
-            record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
-            return _response(
+            response = _response(
                 workspace=workspace,
                 package=package,
                 lesson=lesson,
@@ -2395,6 +2394,8 @@ def _handle_existing_board_task_flow(
                 board_decision=BoardDecision(action="no_change", reason="编辑目标未定位，已转为扩写确认。"),
                 board_task_stamp=new_stamp,
             )
+            record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
+            return response
         _activate_board_task_requirements(lesson, next_task)
         stamp = board_task_history.record_update(sheet=next_task, change_summary=decision.reason)
         _emit_board_task_update(lesson=lesson, sheet=next_task, stamp=stamp)
@@ -2463,9 +2464,7 @@ def _handle_existing_board_task_flow(
             requirement_history=requirement_history,
             board_task_history=board_task_history,
         )
-        if board_task.requested_action == "edit":
-            record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
-        return _response(
+        response = _response(
             workspace=workspace,
             package=package,
             lesson=lesson,
@@ -2476,6 +2475,9 @@ def _handle_existing_board_task_flow(
             focus_candidates=decision.candidate_focuses,
             board_task_history=board_task_history,
         )
+        if board_task.requested_action == "edit":
+            record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
+        return response
 
     if decision.route == "await_write_confirmation":
         next_task = BoardTaskRequirementSheet.model_validate(board_task.model_dump(mode="json"))
@@ -2632,8 +2634,7 @@ def _handle_existing_board_task_flow(
                 run_id=failed_stamp.run_id,
                 version_id=failed_stamp.version_id,
             )
-            record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
-            return _response(
+            response = _response(
                 workspace=workspace,
                 package=package,
                 lesson=lesson,
@@ -2648,6 +2649,8 @@ def _handle_existing_board_task_flow(
                 board_document_operation_failure_reason=edit_outcome.failure_reason,
                 board_patch_diff=edit_outcome.diff_preview,
             )
+            record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
+            return response
         recent_focus = _recent_board_edit_focus_for_commit(
             lesson=lesson,
             fallback_focus=None if target_scope == "whole_document" else focus,
@@ -2731,8 +2734,7 @@ def _handle_existing_board_task_flow(
             version_id=consumed_stamp.version_id,
             commit_id=commit.id,
         )
-        record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
-        return _response(
+        response = _response(
             workspace=workspace,
             package=package,
             lesson=lesson,
@@ -2748,6 +2750,8 @@ def _handle_existing_board_task_flow(
             completed_board_task_sheet=board_task,
             board_patch_diff=edit_outcome.diff_preview,
         )
+        record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
+        return response
 
     if decision.route == "explain":
         focus = decision.target_focus or (resolution.focus if resolution else None)

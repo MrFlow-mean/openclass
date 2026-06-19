@@ -220,6 +220,10 @@ def _fail_if_called(name: str):
     raise AssertionError(f"{name} should not be called for this workflow path")
 
 
+def _raise_response(**kwargs):
+    raise RuntimeError("response failed")
+
+
 def _patch_resource_prompt_guardrails(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         chatbot_module,
@@ -1273,6 +1277,82 @@ def test_existing_board_edit_success_trace_records_durable_commit_and_consumes_t
     assert collector.steps[10].version_id == response.board_task_version_id
 
 
+def test_existing_board_edit_success_does_not_record_response_when_response_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace, lesson_id = _workspace_with_lesson(existing_board=True)
+    lesson = workspace.packages[0].lessons[-1]
+    refresh_lesson_runtime(
+        lesson,
+        document=build_document(
+            title="已有板书",
+            content_text="# 主线\n## 第一节\n第一节原文。\n## 第二节\n第二节原文。",
+        ),
+    )
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    store = _store_with_workspace(tmp_path, workspace, name="board_task_edit_success_response_failure")
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_board_task_requirement_sheet",
+        lambda **kwargs: BoardTaskRequirementSheet(
+            target_hint="第一节",
+            requested_action="edit",
+            question_or_topic="把第一节改短",
+            missing_items=[],
+            progress=100,
+        ),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_board_task_route_decision",
+        lambda **kwargs: _fail_if_called("generate_board_task_route_decision"),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_learning_requirement_update",
+        lambda **kwargs: _fail_if_called("generate_learning_requirement_update"),
+    )
+
+    def _edit_existing_document(**kwargs) -> BoardDocumentEditOutcome:
+        return BoardDocumentEditOutcome(
+            chatbot_message="AI生成：第一节已经改短。",
+            new_document=build_document(
+                title="已有板书",
+                content_text="# 主线\n## 第一节\n短版内容。\n## 第二节\n第二节原文。",
+            ),
+            board_decision=BoardDecision(action="edit_board", reason="已执行局部 edit。"),
+            assistant_message_source="board_document_editor_ai",
+            operation="replace_selection",
+            summary="已把第一节改短。",
+            section_titles=["第一节"],
+            changed=True,
+            operation_status="succeeded",
+        )
+
+    monkeypatch.setattr(chatbot_module, "edit_existing_document", _edit_existing_document)
+    monkeypatch.setattr(chatbot_module, "_response", _raise_response)
+
+    with bind_workflow_trace_collector() as collector:
+        with pytest.raises(RuntimeError, match="response failed"):
+            chat_service.process_chat_on_lesson(
+                lesson_id,
+                ChatRequest(message="把第一节改短"),
+                user_id=TEST_USER_ID,
+            )
+
+    assert _node_values(collector) == [
+        *_existing_board_task_trace_prefix(),
+        NodeId.BOARD_TASK_READY_PERSIST.value,
+        NodeId.BOARD_TARGET_RESOLVE.value,
+        NodeId.BOARD_ROUTE_DECIDE.value,
+        NodeId.BOARD_EDIT_EXECUTE.value,
+        NodeId.PERSIST_BOARD_COMMIT.value,
+    ]
+    assert NodeId.RESPONSE_ASSEMBLE.value not in _node_values(collector)
+
+
 def test_existing_board_edit_target_miss_trace_keeps_task_active(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1338,6 +1418,58 @@ def test_existing_board_edit_target_miss_trace_keeps_task_active(
         NodeId.RESPONSE_ASSEMBLE.value,
     ]
     assert collector.steps[8].decision == "clarify_location"
+    assert NodeId.BOARD_TASK_FAILURE.value not in _node_values(collector)
+
+
+def test_existing_board_edit_target_miss_does_not_record_response_when_response_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace, lesson_id = _workspace_with_lesson(existing_board=True)
+    store = _store_with_workspace(tmp_path, workspace, name="board_task_edit_target_miss_response_failure")
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    monkeypatch.setattr(openai_course_ai, "generate_board_task_requirement_sheet", lambda **kwargs: None)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_board_task_route_decision",
+        lambda **kwargs: BoardTaskRouteDecision(
+            route="clarify_location",
+            location_status="missing",
+            reason="没有定位到可编辑内容。",
+        ),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_chatbot_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="AI生成：没有定位到可编辑内容。"),
+    )
+    monkeypatch.setattr(
+        chatbot_module,
+        "edit_existing_document",
+        lambda **kwargs: _fail_if_called("edit_existing_document"),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_learning_requirement_update",
+        lambda **kwargs: _fail_if_called("generate_learning_requirement_update"),
+    )
+    monkeypatch.setattr(chatbot_module, "_response", _raise_response)
+
+    with bind_workflow_trace_collector() as collector:
+        with pytest.raises(RuntimeError, match="response failed"):
+            chat_service.process_chat_on_lesson(
+                lesson_id,
+                ChatRequest(message="把不存在的内容改短"),
+                user_id=TEST_USER_ID,
+            )
+
+    assert _node_values(collector) == [
+        *_existing_board_task_trace_prefix(),
+        NodeId.BOARD_TASK_READY_PERSIST.value,
+        NodeId.BOARD_TARGET_RESOLVE.value,
+        NodeId.BOARD_ROUTE_DECIDE.value,
+    ]
+    assert NodeId.RESPONSE_ASSEMBLE.value not in _node_values(collector)
     assert NodeId.BOARD_TASK_FAILURE.value not in _node_values(collector)
 
 
@@ -1430,6 +1562,81 @@ def test_existing_board_edit_execution_failed_trace_records_history_without_comm
     assert NodeId.PERSIST_BOARD_COMMIT.value not in _node_values(collector)
 
 
+def test_existing_board_edit_execution_failed_does_not_record_response_when_response_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace, lesson_id = _workspace_with_lesson(existing_board=True)
+    lesson = workspace.packages[0].lessons[-1]
+    refresh_lesson_runtime(
+        lesson,
+        document=build_document(
+            title="已有板书",
+            content_text="# 主线\n## 第一节\n第一节原文。\n## 第二节\n第二节原文。",
+        ),
+    )
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    store = _store_with_workspace(tmp_path, workspace, name="board_task_edit_failed_response_failure")
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_board_task_requirement_sheet",
+        lambda **kwargs: BoardTaskRequirementSheet(
+            target_hint="第一节",
+            requested_action="edit",
+            question_or_topic="把第一节改短",
+            missing_items=[],
+            progress=100,
+        ),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_board_task_route_decision",
+        lambda **kwargs: _fail_if_called("generate_board_task_route_decision"),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_learning_requirement_update",
+        lambda **kwargs: _fail_if_called("generate_learning_requirement_update"),
+    )
+    monkeypatch.setattr(
+        chatbot_module,
+        "edit_existing_document",
+        lambda **kwargs: BoardDocumentEditOutcome(
+            chatbot_message="AI生成：这次没有写入板书。",
+            new_document=lesson.board_document,
+            board_decision=BoardDecision(action="no_change", reason="局部 edit 未通过安全门禁。"),
+            assistant_message_source="board_document_editor_ai",
+            operation="replace_selection",
+            summary="局部 edit 未通过安全门禁。",
+            section_titles=[],
+            changed=False,
+            operation_status="failed",
+            failure_reason="局部 edit 未通过安全门禁。",
+        ),
+    )
+    monkeypatch.setattr(chatbot_module, "_response", _raise_response)
+
+    with bind_workflow_trace_collector() as collector:
+        with pytest.raises(RuntimeError, match="response failed"):
+            chat_service.process_chat_on_lesson(
+                lesson_id,
+                ChatRequest(message="把第一节改短"),
+                user_id=TEST_USER_ID,
+            )
+
+    assert _node_values(collector) == [
+        *_existing_board_task_trace_prefix(),
+        NodeId.BOARD_TASK_READY_PERSIST.value,
+        NodeId.BOARD_TARGET_RESOLVE.value,
+        NodeId.BOARD_ROUTE_DECIDE.value,
+        NodeId.BOARD_EDIT_EXECUTE.value,
+        NodeId.BOARD_TASK_FAILURE.value,
+    ]
+    assert NodeId.RESPONSE_ASSEMBLE.value not in _node_values(collector)
+    assert NodeId.PERSIST_BOARD_COMMIT.value not in _node_values(collector)
+
+
 def test_existing_board_repeated_missing_edit_trace_converts_to_write_confirmation(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1508,6 +1715,67 @@ def test_existing_board_repeated_missing_edit_trace_converts_to_write_confirmati
     ]
     assert collector.steps[8].decision == "clarify_location"
     assert collector.steps[9].decision == "not_executed"
+
+
+def test_existing_board_repeated_missing_edit_does_not_record_response_when_response_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace, lesson_id = _workspace_with_lesson(existing_board=True)
+    store = _store_with_workspace(tmp_path, workspace, name="board_task_edit_repeated_miss_response_failure")
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    monkeypatch.setattr(openai_course_ai, "generate_board_task_requirement_sheet", lambda **kwargs: None)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_board_task_route_decision",
+        lambda **kwargs: BoardTaskRouteDecision(
+            route="clarify_location",
+            location_status="missing",
+            reason="没有定位到可编辑内容。",
+        ),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_chatbot_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="AI生成：没有定位到可编辑内容。"),
+    )
+    monkeypatch.setattr(
+        chatbot_module,
+        "edit_existing_document",
+        lambda **kwargs: _fail_if_called("edit_existing_document"),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_learning_requirement_update",
+        lambda **kwargs: _fail_if_called("generate_learning_requirement_update"),
+    )
+
+    first_response = chat_service.process_chat_on_lesson(
+        lesson_id,
+        ChatRequest(message="把不存在的内容改短"),
+        user_id=TEST_USER_ID,
+    )
+    assert first_response.active_board_task_sheet is not None
+    assert first_response.active_board_task_sheet.failure_count == 1
+
+    monkeypatch.setattr(chatbot_module, "_response", _raise_response)
+
+    with bind_workflow_trace_collector() as collector:
+        with pytest.raises(RuntimeError, match="response failed"):
+            chat_service.process_chat_on_lesson(
+                lesson_id,
+                ChatRequest(message="还是把不存在的内容改短"),
+                user_id=TEST_USER_ID,
+            )
+
+    assert _node_values(collector) == [
+        *_existing_board_task_trace_prefix(),
+        NodeId.BOARD_TASK_READY_PERSIST.value,
+        NodeId.BOARD_TARGET_RESOLVE.value,
+        NodeId.BOARD_ROUTE_DECIDE.value,
+        NodeId.BOARD_TASK_FAILURE.value,
+    ]
+    assert NodeId.RESPONSE_ASSEMBLE.value not in _node_values(collector)
 
 
 def test_non_ordinary_path_never_records_ordinary_chat_generate(
