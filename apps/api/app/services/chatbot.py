@@ -75,6 +75,10 @@ from app.services.chat.paths.interaction_sequence_end import (
     InteractionSequenceEndDependencies,
     handle_interaction_sequence_end,
 )
+from app.services.chat.paths.interaction_sequence_continue import (
+    InteractionSequenceContinueDependencies,
+    handle_interaction_sequence_continue,
+)
 from app.services.chat.paths.interaction_start_focus import (
     InteractionStartFocusDependencies,
     handle_interaction_start_focus_clarification,
@@ -3271,93 +3275,28 @@ def _handle_section_explanation_sequence_turn(
             return None
         record_workflow_step(NodeId.INTERACTION_SEQUENCE_CHECK, decision="follow_up_current", reason=None)
         focus = session_before.target_focus or session_before.sequence_items[session_before.sequence_index]
-        session_after = session_before.model_copy(
-            update={
-                "target_focus": focus,
-                "reference_context": focus_context(focus),
-                "turn_count": session_before.turn_count + 1,
-                "status": "active",
-                "pause_reason": "",
-            }
-        )
-        lesson.active_interaction_session = session_after
-        unit_label = _sequence_unit_label(session_after.sequence_mode)
-        sequence_request = request.model_copy(
-            update={
-                "message": (
-                    f"{request.message}\n"
-                    f"系统顺序讲解要求：用户正在追问当前第 "
-                    f"{session_after.sequence_index + 1}/{len(session_after.sequence_items)} 个{unit_label}："
-                    f"{focus.display_label or ' / '.join(focus.heading_path)}。"
-                    f"请只围绕当前{unit_label}补充解释，不要推进到下一个{unit_label}。"
-                    f"结尾询问当前{unit_label}是否还有问题，或是否继续下一个{unit_label}。"
-                )
-            }
-        )
-        chatbot_message, chatbot_message_source, board_explanation_directive = _generate_board_directed_explanation_message(
-            lesson=lesson,
-            requirements=requirements.model_copy(update={"target_location": focus, "location_status": "resolved"}),
-            resources=resources,
-            conversation=request.conversation,
-            request=sequence_request,
-            learning_clarification=learning_clarification,
-            action_type="explain_target",
-            target_excerpt=focus_context(focus),
-            interaction_context=interaction_context_payload(session=session_after),
-        )
-        decision = InteractionTurnDecision(
-            route="continue_rule",
-            reason=f"用户追问当前{unit_label}，继续围绕当前{unit_label}讲解。",
-            progress_note=session_after.progress_note,
-            user_intent=f"追问当前{unit_label}",
-        )
-        record_workflow_step(
-            NodeId.INTERACTION_CONTINUE,
-            decision="continue_rule",
-            reason=decision.reason,
-        )
-        commit_operations(
-            lesson,
-            [],
-            label="Section explanation follow-up",
-            message="Answered a follow-up within the current sequential section",
-            new_document=lesson.board_document,
-            metadata={
-                "kind": "interaction_flow",
-                "user_message": request.message,
-                "assistant_message": chatbot_message,
-                "assistant_message_source": chatbot_message_source,
-                "board_explanation_directive": board_explanation_directive,
-                **_task_metadata(
-                    requirements=requirements,
-                    learning_clarification=learning_clarification,
-                    focus=focus,
-                    requirement_cleared=False,
-                ),
-                **interaction_session_metadata(before=session_before, after=session_after, decision=decision),
-            },
-        )
-        workspace_state.normalize_package_state(package)
-        _save_workspace_for_user(user_id=user_id, workspace=workspace, requirement_history=requirement_history)
-        record_workflow_step(
-            NodeId.PERSIST_CHAT_COMMIT,
-            decision="committed",
-            commit_id=lesson.history_graph.commits[-1].id,
-        )
-        response = _response(
+        unit_label = _sequence_unit_label(session_before.sequence_mode)
+        return handle_interaction_sequence_continue(
+            outcome="follow_up_current",
             workspace=workspace,
             package=package,
             lesson=lesson,
-            chatbot_message=chatbot_message,
-            learning_clarification=learning_clarification,
+            user_id=user_id,
+            request=request,
             requirements=requirements,
-            board_decision=BoardDecision(action="no_change", reason=decision.reason),
-            interaction_decision=decision,
-            resolved_focus=focus,
+            learning_clarification=learning_clarification,
+            resources=resources,
+            session_before=session_before,
+            focus=focus,
+            unit_label=unit_label,
             requirement_history=requirement_history,
+            deps=InteractionSequenceContinueDependencies(
+                generate_board_directed_explanation_message=_generate_board_directed_explanation_message,
+                task_metadata=_task_metadata,
+                save_workspace_for_user=_save_workspace_for_user,
+                build_response=_response,
+            ),
         )
-        record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
-        return response
 
     next_index = session_before.sequence_index + 1
     if next_index >= len(session_before.sequence_items):
@@ -3387,93 +3326,28 @@ def _handle_section_explanation_sequence_turn(
     record_workflow_step(NodeId.INTERACTION_SEQUENCE_CHECK, decision="advance", reason=None)
     focus = session_before.sequence_items[next_index]
     unit_label = _sequence_unit_label(session_before.sequence_mode)
-    session_after = session_before.model_copy(
-        update={
-            "target_focus": focus,
-            "reference_context": focus_context(focus),
-            "sequence_index": next_index,
-            "progress_note": f"准备讲解第 {next_index + 1}/{len(session_before.sequence_items)} 个{unit_label}。",
-            "turn_count": session_before.turn_count + 1,
-            "status": "active",
-            "pause_reason": "",
-        }
-    )
-    lesson.active_interaction_session = session_after
-    sequence_request = request.model_copy(
-        update={
-            "message": _section_sequence_instruction(
-                request_message=request.message,
-                focus=focus,
-                index=next_index,
-                total=len(session_after.sequence_items),
-                sequence_mode=session_after.sequence_mode,
-            )
-        }
-    )
-    chatbot_message, chatbot_message_source, board_explanation_directive = _generate_board_directed_explanation_message(
-        lesson=lesson,
-        requirements=requirements.model_copy(update={"target_location": focus, "location_status": "resolved"}),
-        resources=resources,
-        conversation=request.conversation,
-        request=sequence_request,
-        learning_clarification=learning_clarification,
-        action_type="explain_target",
-        target_excerpt=focus_context(focus),
-        interaction_context=interaction_context_payload(session=session_after),
-    )
-    decision = InteractionTurnDecision(
-        route="continue_rule",
-        reason=f"用户确认当前{unit_label}后继续下一个{unit_label}。",
-        progress_note=session_after.progress_note,
-        user_intent="继续顺序讲解",
-    )
-    record_workflow_step(
-        NodeId.INTERACTION_CONTINUE,
-        decision="continue_rule",
-        reason=decision.reason,
-    )
-    commit_operations(
-        lesson,
-        [],
-        label="Section explanation turn",
-        message="Continued a sequential section explanation session",
-        new_document=lesson.board_document,
-        metadata={
-            "kind": "interaction_flow",
-            "user_message": request.message,
-            "assistant_message": chatbot_message,
-            "assistant_message_source": chatbot_message_source,
-            "board_explanation_directive": board_explanation_directive,
-            **_task_metadata(
-                requirements=requirements,
-                learning_clarification=learning_clarification,
-                focus=focus,
-                requirement_cleared=False,
-            ),
-            **interaction_session_metadata(before=session_before, after=session_after, decision=decision),
-        },
-    )
-    workspace_state.normalize_package_state(package)
-    _save_workspace_for_user(user_id=user_id, workspace=workspace, requirement_history=requirement_history)
-    record_workflow_step(
-        NodeId.PERSIST_CHAT_COMMIT,
-        decision="committed",
-        commit_id=lesson.history_graph.commits[-1].id,
-    )
-    response = _response(
+    return handle_interaction_sequence_continue(
+        outcome="advance",
         workspace=workspace,
         package=package,
         lesson=lesson,
-        chatbot_message=chatbot_message,
-        learning_clarification=learning_clarification,
+        user_id=user_id,
+        request=request,
         requirements=requirements,
-        board_decision=BoardDecision(action="no_change", reason=decision.reason),
-        interaction_decision=decision,
-        resolved_focus=focus,
+        learning_clarification=learning_clarification,
+        resources=resources,
+        session_before=session_before,
+        focus=focus,
+        unit_label=unit_label,
         requirement_history=requirement_history,
+        deps=InteractionSequenceContinueDependencies(
+            generate_board_directed_explanation_message=_generate_board_directed_explanation_message,
+            task_metadata=_task_metadata,
+            save_workspace_for_user=_save_workspace_for_user,
+            build_response=_response,
+        ),
+        next_index=next_index,
     )
-    record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
-    return response
 
 
 def _handle_existing_interaction_session(
