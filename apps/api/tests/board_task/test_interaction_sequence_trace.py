@@ -373,7 +373,7 @@ def _start_sequence_with_inputs(inputs: dict[str, Any]):
     )
 
 
-def test_sequence_start_current_behavior_starts_session_and_consumes_board_task_without_trace(
+def test_sequence_start_records_trace_and_consumes_board_task(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -388,7 +388,20 @@ def test_sequence_start_current_behavior_starts_session_and_consumes_board_task_
     lesson = response.course_package.lessons[-1]
     commit = lesson.history_graph.commits[-1]
     session = response.active_interaction_session
-    assert _node_values(collector) == []
+    assert _node_values(collector) == [
+        NodeId.BOARD_SEQUENCE_START.value,
+        NodeId.PERSIST_CHAT_COMMIT.value,
+        NodeId.RESPONSE_ASSEMBLE.value,
+    ]
+    assert collector.steps[0].decision == "started"
+    assert collector.steps[0].reason == inputs["sequence_plan"].reason
+    assert collector.steps[0].run_id == inputs["board_task_stamp"].run_id
+    assert collector.steps[0].version_id == inputs["board_task_stamp"].version_id
+    assert collector.steps[1].decision == "committed"
+    assert collector.steps[1].run_id == inputs["board_task_stamp"].run_id
+    assert collector.steps[1].version_id == inputs["board_task_stamp"].version_id
+    assert collector.steps[1].commit_id == commit.id
+    assert collector.steps[2].decision == "assembled"
     assert session is not None
     assert session.status == "active"
     assert session.sequence_mode == ATOMIC_EXPLANATION_SEQUENCE_MODE
@@ -447,7 +460,7 @@ def test_sequence_start_current_behavior_starts_session_and_consumes_board_task_
 
 
 @pytest.mark.parametrize("failure_point", ["reply", "commit", "consume", "save", "response"])
-def test_sequence_start_current_failure_ordering_does_not_trace_or_consume_early(
+def test_sequence_start_failure_ordering_records_trace_boundaries(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     failure_point: str,
@@ -498,7 +511,17 @@ def test_sequence_start_current_failure_ordering_does_not_trace_or_consume_early
         with pytest.raises(RuntimeError, match=expected_error):
             _start_sequence_with_inputs(inputs)
 
-    assert _node_values(collector) == []
+    expected_nodes = [NodeId.BOARD_SEQUENCE_START.value]
+    if failure_point == "response":
+        expected_nodes.append(NodeId.PERSIST_CHAT_COMMIT.value)
+    assert _node_values(collector) == expected_nodes
+    assert collector.steps[0].decision == "started"
+    assert collector.steps[0].run_id == inputs["board_task_stamp"].run_id
+    assert collector.steps[0].version_id == inputs["board_task_stamp"].version_id
+    if failure_point == "response":
+        assert collector.steps[1].decision == "committed"
+        assert collector.steps[1].commit_id == inputs["lesson"].history_graph.commits[-1].id
+    assert NodeId.RESPONSE_ASSEMBLE.value not in _node_values(collector)
     board_task_events = inputs["store"].list_board_task_events(owner_user_id=TEST_USER_ID, lesson_id=inputs["lesson_id"])
     if failure_point == "response":
         assert [event["event_type"] for event in board_task_events] == ["created", "ready", "consumed"]

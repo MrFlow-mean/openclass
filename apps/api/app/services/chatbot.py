@@ -1855,6 +1855,13 @@ def _start_section_explanation_sequence(
         sequence_mode=sequence_mode,
     )
     lesson.active_interaction_session = session_after
+    record_workflow_step(
+        NodeId.BOARD_SEQUENCE_START,
+        decision="started",
+        reason=sequence_plan.reason,
+        run_id=board_task_stamp.run_id,
+        version_id=board_task_stamp.version_id,
+    )
     chatbot_message, chatbot_message_source, board_explanation_directive = _generate_board_directed_explanation_message(
         lesson=lesson,
         requirements=_requirements_from_board_task(
@@ -1939,7 +1946,14 @@ def _start_section_explanation_sequence(
         requirement_history=requirement_history,
         board_task_history=board_task_history,
     )
-    return _response(
+    record_workflow_step(
+        NodeId.PERSIST_CHAT_COMMIT,
+        decision="committed",
+        run_id=consumed_stamp.run_id,
+        version_id=consumed_stamp.version_id,
+        commit_id=lesson.history_graph.commits[-1].id,
+    )
+    response = _response(
         workspace=workspace,
         package=package,
         lesson=lesson,
@@ -1953,6 +1967,8 @@ def _start_section_explanation_sequence(
         board_task_stamp=consumed_stamp,
         completed_board_task_sheet=board_task,
     )
+    record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
+    return response
 
 
 def _handle_existing_board_task_flow(
