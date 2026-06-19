@@ -4193,6 +4193,11 @@ def test_existing_board_meaning_question_uses_board_task_directive(
 
     monkeypatch.setattr(openai_course_ai, "generate_chatbot_reply", _fake_chatbot_reply)
     monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
+    monkeypatch.setattr(
+        chatbot_module,
+        "handle_board_task_write",
+        lambda **kwargs: pytest.fail("explain route must not call the BoardTask write handler"),
+    )
 
     workspace = _seed_test_user_workspace(store)
     lesson = workspace.packages[0].lessons[0]
@@ -5478,6 +5483,8 @@ def test_existing_board_missing_content_waits_for_write_confirmation_then_writes
     store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
     monkeypatch.setattr(workspace_state, "STORE", store)
     captured: dict[str, str | None] = {}
+    write_handler_calls: list[dict[str, object]] = []
+    original_write_handler = chatbot_module.handle_board_task_write
 
     def _fake_chatbot_reply(**kwargs):
         captured["user_message"] = kwargs.get("user_message")
@@ -5497,6 +5504,17 @@ def test_existing_board_missing_content_waits_for_write_confirmation_then_writes
     monkeypatch.setattr(openai_course_ai, "generate_chatbot_reply", _fake_chatbot_reply)
     monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _fake_board_edit)
     monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
+
+    def _spy_write_handler(**kwargs):
+        write_handler_calls.append(
+            {
+                "board_task": kwargs["board_task"].model_dump(mode="json"),
+                "route_decision": kwargs.get("route_decision"),
+            }
+        )
+        return original_write_handler(**kwargs)
+
+    monkeypatch.setattr(chatbot_module, "handle_board_task_write", _spy_write_handler)
 
     workspace = _seed_test_user_workspace(store)
     lesson = workspace.packages[0].lessons[0]
@@ -5523,6 +5541,9 @@ def test_existing_board_missing_content_waits_for_write_confirmation_then_writes
 
     assert confirmed.active_board_task_sheet is None
     assert "新增内容" in confirmed.course_package.lessons[0].board_document.content_text
+    assert len(write_handler_calls) == 1
+    assert write_handler_calls[0]["board_task"]["confirmation_status"] == "confirmed"
+    assert write_handler_calls[0]["route_decision"] is None
     assert "板书侧已允许 Chatbot 进行讲解" in (captured["user_message"] or "")
     commit = confirmed.course_package.lessons[0].history_graph.commits[-1]
     assert commit.metadata["board_task_route"] == "write"
@@ -5538,6 +5559,8 @@ def test_existing_board_targeted_write_uses_found_location_without_confirmation(
     store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
     monkeypatch.setattr(workspace_state, "STORE", store)
     captured: dict[str, str | None] = {}
+    write_handler_calls: list[dict[str, object]] = []
+    original_write_handler = chatbot_module.handle_board_task_write
 
     def _fake_chatbot_reply(**kwargs):
         return ChatbotReply(chatbot_message="AI生成：已围绕目标位置补充并讲解。")
@@ -5557,6 +5580,18 @@ def test_existing_board_targeted_write_uses_found_location_without_confirmation(
     monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _fake_board_edit)
     monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
 
+    def _spy_write_handler(**kwargs):
+        route_decision = kwargs.get("route_decision")
+        write_handler_calls.append(
+            {
+                "board_task": kwargs["board_task"].model_dump(mode="json"),
+                "route": route_decision.route if route_decision else None,
+            }
+        )
+        return original_write_handler(**kwargs)
+
+    monkeypatch.setattr(chatbot_module, "handle_board_task_write", _spy_write_handler)
+
     workspace = _seed_test_user_workspace(store)
     lesson = workspace.packages[0].lessons[0]
     lesson.board_document = build_document(title="已有板书", content_text="# 主线\n## 第一节\n第一节已有内容。\n## 第二节\n第二节已有内容。")
@@ -5571,6 +5606,9 @@ def test_existing_board_targeted_write_uses_found_location_without_confirmation(
 
     assert response.active_board_task_sheet is None
     assert "第一节" in (captured["selection_excerpt"] or "")
+    assert len(write_handler_calls) == 1
+    assert write_handler_calls[0]["route"] == "write"
+    assert write_handler_calls[0]["board_task"]["requested_action"] == "write"
     commit = response.course_package.lessons[0].history_graph.commits[-1]
     assert commit.metadata["board_task_route"] == "write"
     assert commit.metadata["board_task_decision"]["location_status"] == "found"
@@ -6068,6 +6106,11 @@ def test_autonomous_write_location_choice_does_not_cross_sections(
         lambda **kwargs: ChatbotReply(chatbot_message="请确认要写入哪一个小节。"),
     )
     monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
+    monkeypatch.setattr(
+        chatbot_module,
+        "handle_board_task_write",
+        lambda **kwargs: pytest.fail("clarify_location route must not call the BoardTask write handler"),
+    )
 
     workspace = _seed_test_user_workspace(store)
     lesson = workspace.packages[0].lessons[0]
@@ -6112,6 +6155,11 @@ def test_local_edit_rejects_replace_document_when_target_scope_is_focus(
 
     monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _fake_board_edit)
     monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
+    monkeypatch.setattr(
+        chatbot_module,
+        "handle_board_task_write",
+        lambda **kwargs: pytest.fail("edit route must not call the BoardTask write handler"),
+    )
 
     workspace = _seed_test_user_workspace(store)
     lesson = workspace.packages[0].lessons[0]
@@ -6510,6 +6558,11 @@ def test_existing_board_repeated_missing_edit_archives_old_task_and_opens_write_
         ),
     )
     monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", _fake_requirement_update)
+    monkeypatch.setattr(
+        chatbot_module,
+        "handle_board_task_write",
+        lambda **kwargs: pytest.fail("opening an await-write-confirmation task must not call the BoardTask write handler"),
+    )
 
     workspace = _seed_test_user_workspace(store)
     lesson = workspace.packages[0].lessons[0]
@@ -6683,6 +6736,11 @@ def test_rule_based_interaction_start_creates_session_and_clears_task_sheet(
             progress=100,
             missing_items=[],
         ),
+    )
+    monkeypatch.setattr(
+        chatbot_module,
+        "handle_board_task_write",
+        lambda **kwargs: pytest.fail("chat route must not call the BoardTask write handler"),
     )
 
     workspace = _seed_test_user_workspace(store)

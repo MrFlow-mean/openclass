@@ -75,6 +75,7 @@ from app.services.chat.paths.interaction_start_focus import (
     InteractionStartFocusDependencies,
     handle_interaction_start_focus_clarification,
 )
+from app.services.chat.paths.board_task_write import BoardTaskWriteDependencies, handle_board_task_write
 from app.services.chat.paths.ordinary import OrdinaryChatHandlerDependencies, handle_ordinary_chat
 from app.services.chat.paths.resource_prompt import (
     ResourcePromptHandlerDependencies,
@@ -441,6 +442,23 @@ def _requirement_history_metadata(
 
 def _clear_task_requirements(lesson: Lesson) -> None:
     lesson.learning_requirements = None
+
+
+def _board_task_write_dependencies() -> BoardTaskWriteDependencies:
+    return BoardTaskWriteDependencies(
+        requirements_from_board_task=_requirements_from_board_task,
+        resource_summary=_resource_summary,
+        conversation_summary=_conversation_summary,
+        generate_board_directed_explanation_message=_generate_board_directed_explanation_message,
+        recent_board_edit_focus_for_commit=_recent_board_edit_focus_for_commit,
+        board_patch_metadata=_board_patch_metadata,
+        implicit_board_search_evidence=_implicit_board_search_evidence,
+        task_metadata=_task_metadata,
+        board_task_metadata=_board_task_metadata,
+        clear_task_requirements=_clear_task_requirements,
+        save_workspace_for_user=_save_workspace_for_user,
+        build_response=_response,
+    )
 
 
 def _activate_board_task_requirements(lesson: Lesson, board_task: BoardTaskRequirementSheet) -> None:
@@ -2036,7 +2054,7 @@ def _handle_existing_board_task_flow(
             confirmed_task = BoardTaskRequirementSheet.model_validate(existing_task.model_dump(mode="json"))
             confirmed_task.confirmation_status = "confirmed"
             confirmed_task.progress = 100
-            return _execute_board_task_write(
+            return handle_board_task_write(
                 workspace=workspace,
                 package=package,
                 lesson=lesson,
@@ -2048,6 +2066,7 @@ def _handle_existing_board_task_flow(
                 board_task=confirmed_task,
                 requirement_history=requirement_history,
                 board_task_history=board_task_history,
+                deps=_board_task_write_dependencies(),
             )
 
     action_decision = _board_task_action_decision(
@@ -2479,7 +2498,7 @@ def _handle_existing_board_task_flow(
         )
 
     if decision.route == "write":
-        return _execute_board_task_write(
+        return handle_board_task_write(
             workspace=workspace,
             package=package,
             lesson=lesson,
@@ -2495,6 +2514,7 @@ def _handle_existing_board_task_flow(
             action_decision=action_decision,
             search_evidence=resolution.evidence.model_dump(mode="json") if resolution and resolution.evidence else None,
             source_interaction_metadata=interaction_metadata,
+            deps=_board_task_write_dependencies(),
         )
 
     if decision.route == "edit":
@@ -2812,207 +2832,6 @@ def _handle_existing_board_task_flow(
         )
 
     return None
-
-
-def _execute_board_task_write(
-    *,
-    workspace,
-    package,
-    lesson: Lesson,
-    user_id: str,
-    request: ChatRequest,
-    requirements: LearningRequirementSheet,
-    learning_clarification: LearningClarificationStatus,
-    resources: list[ResourceLibraryItem],
-    board_task: BoardTaskRequirementSheet,
-    requirement_history: LearningRequirementHistoryRecorder,
-    board_task_history: BoardTaskHistoryRecorder,
-    route_decision: BoardTaskRouteDecision | None = None,
-    action_decision: BoardTaskActionDecision | None = None,
-    search_evidence: dict[str, object] | None = None,
-    source_interaction_metadata: dict[str, object] | None = None,
-) -> ChatResponse:
-    interaction_metadata = source_interaction_metadata or {}
-    target_focus = route_decision.target_focus if route_decision else None
-    target_scope = (route_decision.target_scope if route_decision else None) or ("focus" if target_focus else "append")
-    task_requirements = _requirements_from_board_task(
-        base=requirements,
-        board_task=board_task,
-        action_type="expand_target" if target_focus else "append_section",
-        focus=target_focus,
-    )
-    task_requirements.action_instruction = route_decision.write_proposal if route_decision and route_decision.write_proposal else board_task.question_or_topic
-    stamp = board_task_history.record_update(
-        sheet=board_task,
-        status="awaiting_confirmation" if board_task.confirmation_status == "confirmed" else "ready",
-    )
-    edit_outcome = edit_existing_document(
-        lesson=lesson,
-        requirements=task_requirements,
-        clarification=learning_clarification,
-        resource_summary=_resource_summary(resources),
-        conversation_summary=_conversation_summary(request.conversation),
-        user_instruction=task_requirements.action_instruction,
-        selection_excerpt=None,
-        focus=target_focus,
-        target_scope=target_scope,
-        allow_replace_document=False,
-    )
-    if edit_outcome.changed:
-        old_text = lesson.board_document.content_text
-        refresh_lesson_runtime(lesson, document=edit_outcome.new_document, requirements=task_requirements)
-        lesson.board_teaching_guide = build_board_teaching_guide(lesson)
-        lesson.board_teaching_progress = None
-        recent_focus = _recent_board_edit_focus_for_commit(
-            lesson=lesson,
-            fallback_focus=target_focus,
-            section_titles=edit_outcome.section_titles,
-        )
-        new_text = lesson.board_document.content_text
-        appended_excerpt = new_text[len(old_text):].strip() if new_text.startswith(old_text) else edit_outcome.new_document.content_text
-        if edit_outcome.chatbot_message and board_task.confirmation_status != "confirmed":
-            chatbot_message = edit_outcome.chatbot_message
-            chatbot_message_source = edit_outcome.assistant_message_source
-            board_explanation_directive = {
-                "status": "approved",
-                "source": "board_document_editor_ai",
-                "target_excerpt": appended_excerpt or edit_outcome.new_document.content_text,
-            }
-        else:
-            chatbot_message, chatbot_message_source, board_explanation_directive = _generate_board_directed_explanation_message(
-                lesson=lesson,
-                requirements=task_requirements,
-                resources=resources,
-                conversation=request.conversation,
-                request=request,
-                learning_clarification=learning_clarification,
-                action_type="explain_target",
-                target_excerpt=appended_excerpt or edit_outcome.new_document.content_text,
-            )
-    else:
-        chatbot_message = edit_outcome.chatbot_message
-        chatbot_message_source = edit_outcome.assistant_message_source
-        board_explanation_directive = None
-        recent_focus = None
-
-    if not edit_outcome.changed:
-        failed_stamp = board_task_history.execution_failed(
-            reason=edit_outcome.summary or "Board task write did not produce a safe document change.",
-            metadata={
-                "assistant_message_source": chatbot_message_source,
-                "board_edit_operation": edit_outcome.operation,
-                "board_edit_summary": edit_outcome.summary,
-                "board_task_route": "write",
-                "board_task_decision": route_decision.model_dump(mode="json") if route_decision else None,
-                "board_task_cleared": False,
-                "target_scope": target_scope,
-                **_board_patch_metadata(edit_outcome),
-                "board_search_evidence": search_evidence
-                or _implicit_board_search_evidence(
-                    route="write",
-                    target_scope=target_scope,
-                    reason="写链路没有独立定位证据；由任务清单和 Board AI 裁决进入。",
-                ),
-            },
-        )
-        workspace_state.normalize_package_state(package)
-        _save_workspace_for_user(
-            user_id=user_id,
-            workspace=workspace,
-            requirement_history=requirement_history,
-            board_task_history=board_task_history,
-        )
-        return _response(
-            workspace=workspace,
-            package=package,
-            lesson=lesson,
-            chatbot_message=chatbot_message,
-            requirements=task_requirements,
-            learning_clarification=learning_clarification,
-            board_decision=edit_outcome.board_decision,
-            requirement_cleared=False,
-            board_task_stamp=failed_stamp,
-            board_document_operation_status=edit_outcome.operation_status,
-            board_document_operation_failure_reason=edit_outcome.failure_reason,
-            board_patch_diff=edit_outcome.diff_preview,
-        )
-
-    commit_operations(
-        lesson,
-        edit_outcome.operations or [],
-        label="Board task write",
-        message="Wrote missing existing-board task content and prepared a board-grounded explanation",
-        new_document=lesson.board_document,
-        metadata={
-            "kind": "board_document_edit",
-            "user_message": request.message,
-            "assistant_message": chatbot_message,
-            "assistant_message_source": chatbot_message_source,
-            "board_editor_message": edit_outcome.chatbot_message,
-            "board_edit_operation": edit_outcome.operation,
-            "board_edit_summary": edit_outcome.summary,
-            "board_section_titles": edit_outcome.section_titles,
-            "target_scope": target_scope,
-            "recent_board_edit_focus": recent_focus.model_dump(mode="json") if recent_focus else None,
-            "board_explanation_directive": board_explanation_directive,
-            **_board_patch_metadata(edit_outcome),
-            **interaction_metadata,
-            **decision_trace_metadata(
-                message=request.message,
-                board_action_decision=action_decision,
-                route_decision=route_decision,
-                role_executed="board_editor",
-                document_changed=edit_outcome.changed,
-                reason=edit_outcome.summary or (route_decision.reason if route_decision else ""),
-                target_scope=target_scope,
-            ),
-            "board_search_evidence": search_evidence
-            or _implicit_board_search_evidence(
-                route="write",
-                target_scope=target_scope,
-                reason="写链路没有独立定位证据；由任务清单和 Board AI 裁决进入。",
-            ),
-            **_task_metadata(
-                requirements=task_requirements,
-                learning_clarification=learning_clarification,
-                focus=target_focus,
-                requirement_cleared=edit_outcome.changed,
-            ),
-            **_board_task_metadata(
-                board_task=board_task,
-                stamp=stamp,
-                route="write",
-                decision=route_decision.model_dump(mode="json") if route_decision else None,
-                cleared=edit_outcome.changed,
-            ),
-        },
-    )
-    consumed_stamp = board_task_history.consume(commit_id=lesson.history_graph.commits[-1].id) if edit_outcome.changed else stamp
-    if edit_outcome.changed:
-        lesson.board_task_requirements = None
-        _clear_task_requirements(lesson)
-    workspace_state.normalize_package_state(package)
-    _save_workspace_for_user(
-        user_id=user_id,
-        workspace=workspace,
-        requirement_history=requirement_history,
-        board_task_history=board_task_history,
-    )
-    return _response(
-        workspace=workspace,
-        package=package,
-        lesson=lesson,
-        chatbot_message=chatbot_message,
-        requirements=task_requirements,
-        learning_clarification=learning_clarification,
-        board_decision=edit_outcome.board_decision,
-        requirement_cleared=edit_outcome.changed,
-        board_task_stamp=consumed_stamp,
-        board_document_operation_status=edit_outcome.operation_status,
-        board_document_operation_failure_reason=edit_outcome.failure_reason,
-        completed_board_task_sheet=board_task if edit_outcome.changed else None,
-        board_patch_diff=edit_outcome.diff_preview,
-    )
 
 
 def _response_requirement_stamp(
