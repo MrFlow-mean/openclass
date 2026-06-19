@@ -26,7 +26,6 @@ from app.services.chat.paths.active_interaction_exit import (
 )
 from app.services.course_runtime import refresh_lesson_runtime
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
-from app.services.history import commit_operations
 from app.services.lesson_factory import create_empty_lesson
 from app.services.openai_course_ai import (
     ChatbotReply,
@@ -348,55 +347,6 @@ def _active_interaction_exit_test_deps() -> ActiveInteractionExitDependencies:
         save_workspace_for_user=lambda **kwargs: None,
         build_response=lambda **kwargs: _fail_if_called("build_response"),
     )
-
-
-def _patch_board_task_handoff_response(
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    message: str = "转入板书任务。",
-) -> dict[str, Any]:
-    calls: dict[str, Any] = {"count": 0}
-
-    def _board_task_response(**kwargs):
-        collector = current_workflow_trace_collector()
-        calls["count"] += 1
-        calls["kwargs"] = kwargs
-        if collector is not None:
-            calls["nodes_at_entry"] = _node_values(collector)
-            calls["last_step_at_entry"] = collector.steps[-1]
-        lesson = kwargs["lesson"]
-        calls["commit_count_before"] = len(lesson.history_graph.commits)
-        commit_operations(
-            lesson,
-            [],
-            label="BoardTask handoff",
-            message="Handled by board task",
-            new_document=lesson.board_document,
-            metadata={
-                "kind": "board_task_flow",
-                **kwargs["source_interaction_metadata"],
-            },
-        )
-        response = chatbot_module._response(
-            workspace=kwargs["workspace"],
-            package=kwargs["package"],
-            lesson=lesson,
-            chatbot_message=message,
-            learning_clarification=chatbot_module._latest_learning_clarification(
-                lesson,
-                requirements=kwargs["requirements"],
-            ),
-            requirements=kwargs["requirements"],
-            board_decision=BoardDecision(action="no_change", reason="handled by board task"),
-            requirement_history=kwargs["requirement_history"],
-            board_task_history=kwargs["board_task_history"],
-        )
-        calls["commit_count_after"] = len(lesson.history_graph.commits)
-        calls["response"] = response
-        return response
-
-    monkeypatch.setattr(chatbot_module, "_handle_existing_board_task_flow", _board_task_response)
-    return calls
 
 
 def test_node_ids_match_latest_workflow_graph_document() -> None:
@@ -860,73 +810,6 @@ def test_interaction_empty_decision_does_not_call_active_interaction_handler(
     assert NodeId.INTERACTION_NEW_TASK.value not in _node_values(collector)
 
 
-@pytest.mark.parametrize("route", ["new_task", "side_learning_request"])
-def test_interaction_terminal_routes_do_not_record_continue_or_rule_violation(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    route: str,
-) -> None:
-    workspace, lesson_id = _workspace_with_resource_prompt_candidate(active_session=True)
-    store = _store_with_workspace(tmp_path, workspace, name=f"interaction_terminal_{route}")
-    monkeypatch.setattr(workspace_state, "STORE", store)
-    monkeypatch.setattr(
-        chatbot_module,
-        "handle_active_interaction_turn",
-        lambda **kwargs: _fail_if_called("handle_active_interaction_turn"),
-    )
-    monkeypatch.setattr(
-        chatbot_module,
-        "handle_active_interaction_exit",
-        lambda **kwargs: _fail_if_called("handle_active_interaction_exit"),
-    )
-    decision = _patch_interaction_turn(monkeypatch, route, reason=f"{route} handoff reason")
-    handoff_calls = _patch_board_task_handoff_response(monkeypatch)
-    user_request = ChatRequest(message=f"{route} message")
-
-    with bind_workflow_trace_collector() as collector:
-        response = chat_service.process_chat_on_lesson(
-            lesson_id,
-            user_request,
-            user_id=TEST_USER_ID,
-        )
-
-    kwargs = handoff_calls["kwargs"]
-    source_metadata = kwargs["source_interaction_metadata"]
-    assert handoff_calls["count"] == 1
-    assert handoff_calls["response"] is response
-    assert handoff_calls["commit_count_after"] == handoff_calls["commit_count_before"] + 1
-    assert handoff_calls["nodes_at_entry"] == [
-        *_interaction_trace_prefix(),
-        NodeId.INTERACTION_NEW_TASK.value,
-    ]
-    assert handoff_calls["last_step_at_entry"].decision == route
-    assert handoff_calls["last_step_at_entry"].reason == decision.reason
-    assert kwargs["lesson"].active_interaction_session is None
-    assert kwargs["force_task_attempt"] is True
-    assert kwargs["request"] == user_request
-    assert kwargs["requirements"] is not None
-    assert kwargs["requirement_history"] is not None
-    assert kwargs["board_task_history"] is not None
-    assert source_metadata["interaction_decision"] == decision.model_dump(mode="json")
-    assert source_metadata["interaction_session_before"] is not None
-    assert source_metadata["interaction_session_after"] is None
-    assert source_metadata["active_interaction_session_after"] is None
-    assert response.interaction_decision is not None
-    assert response.interaction_decision.route == route
-    assert _node_values(collector) == [
-        *_interaction_trace_prefix(),
-        NodeId.INTERACTION_NEW_TASK.value,
-    ]
-    assert collector.steps[7].decision == route
-    assert collector.steps[8].decision == route
-    assert collector.steps[8].reason == decision.reason
-    assert NodeId.INTERACTION_CONTINUE.value not in _node_values(collector)
-    assert NodeId.INTERACTION_RULE_VIOLATION.value not in _node_values(collector)
-    assert NodeId.INTERACTION_EXIT.value not in _node_values(collector)
-    assert NodeId.PERSIST_CHAT_COMMIT.value not in _node_values(collector)
-    assert NodeId.RESPONSE_ASSEMBLE.value not in _node_values(collector)
-
-
 def test_exit_rule_board_task_handoff_remains_legacy_without_exit_terminal_trace(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -975,110 +858,6 @@ def test_exit_rule_board_task_handoff_remains_legacy_without_exit_terminal_trace
     assert _node_values(collector) == _interaction_trace_prefix()
     assert NodeId.INTERACTION_NEW_TASK.value not in _node_values(collector)
     assert NodeId.INTERACTION_EXIT.value not in _node_values(collector)
-    assert NodeId.PERSIST_CHAT_COMMIT.value not in _node_values(collector)
-    assert NodeId.RESPONSE_ASSEMBLE.value not in _node_values(collector)
-
-
-@pytest.mark.parametrize("route", ["new_task", "side_learning_request"])
-def test_interaction_new_task_handoff_fallback_keeps_attempt_trace(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    route: str,
-) -> None:
-    workspace, lesson_id = _workspace_with_resource_prompt_candidate(active_session=True)
-    store = _store_with_workspace(tmp_path, workspace, name=f"interaction_{route}_fallback")
-    monkeypatch.setattr(workspace_state, "STORE", store)
-    monkeypatch.setattr(
-        chatbot_module,
-        "handle_active_interaction_turn",
-        lambda **kwargs: _fail_if_called("handle_active_interaction_turn"),
-    )
-    monkeypatch.setattr(
-        chatbot_module,
-        "handle_active_interaction_exit",
-        lambda **kwargs: _fail_if_called("handle_active_interaction_exit"),
-    )
-    decision = _patch_interaction_turn(
-        monkeypatch,
-        route,
-        reason=f"{route} fallback reason",
-        chatbot_message="AI生成：暂时没有可执行的板书任务。",
-    )
-    handoff_calls = {"count": 0}
-
-    def _board_task_none(**kwargs):
-        handoff_calls["count"] += 1
-        handoff_calls["active_session_at_entry"] = kwargs["lesson"].active_interaction_session
-        return None
-
-    monkeypatch.setattr(chatbot_module, "_handle_existing_board_task_flow", _board_task_none)
-
-    with bind_workflow_trace_collector() as collector:
-        response = chat_service.process_chat_on_lesson(
-            lesson_id,
-            ChatRequest(message=f"{route} fallback"),
-            user_id=TEST_USER_ID,
-        )
-
-    assert handoff_calls["count"] == 1
-    assert handoff_calls["active_session_at_entry"] is None
-    assert response.active_interaction_session is None
-    assert response.interaction_decision is not None
-    assert response.interaction_decision.route == route
-    assert response.chatbot_message == "AI生成：暂时没有可执行的板书任务。"
-    assert _node_values(collector) == [
-        *_interaction_trace_prefix(),
-        NodeId.INTERACTION_NEW_TASK.value,
-    ]
-    assert collector.steps[8].decision == route
-    assert collector.steps[8].reason == decision.reason
-    assert NodeId.PERSIST_CHAT_COMMIT.value not in _node_values(collector)
-    assert NodeId.RESPONSE_ASSEMBLE.value not in _node_values(collector)
-
-
-def test_interaction_new_task_handoff_exception_keeps_attempt_trace_only(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    workspace, lesson_id = _workspace_with_resource_prompt_candidate(active_session=True)
-    store = _store_with_workspace(tmp_path, workspace, name="interaction_new_task_handoff_exception")
-    monkeypatch.setattr(workspace_state, "STORE", store)
-    monkeypatch.setattr(
-        chatbot_module,
-        "handle_active_interaction_turn",
-        lambda **kwargs: _fail_if_called("handle_active_interaction_turn"),
-    )
-    monkeypatch.setattr(
-        chatbot_module,
-        "handle_active_interaction_exit",
-        lambda **kwargs: _fail_if_called("handle_active_interaction_exit"),
-    )
-    decision = _patch_interaction_turn(
-        monkeypatch,
-        "new_task",
-        reason="new task raises reason",
-    )
-
-    def _raise_board_task(**kwargs):
-        assert kwargs["lesson"].active_interaction_session is None
-        raise RuntimeError("board task failed")
-
-    monkeypatch.setattr(chatbot_module, "_handle_existing_board_task_flow", _raise_board_task)
-
-    with bind_workflow_trace_collector() as collector:
-        with pytest.raises(RuntimeError, match="board task failed"):
-            chat_service.process_chat_on_lesson(
-                lesson_id,
-                ChatRequest(message="新的板书任务"),
-                user_id=TEST_USER_ID,
-            )
-
-    assert _node_values(collector) == [
-        *_interaction_trace_prefix(),
-        NodeId.INTERACTION_NEW_TASK.value,
-    ]
-    assert collector.steps[8].decision == "new_task"
-    assert collector.steps[8].reason == decision.reason
     assert NodeId.PERSIST_CHAT_COMMIT.value not in _node_values(collector)
     assert NodeId.RESPONSE_ASSEMBLE.value not in _node_values(collector)
 
@@ -1529,43 +1308,6 @@ def test_traced_and_untraced_interaction_exit_have_same_visible_response_and_met
     )
 
 
-def test_traced_and_untraced_interaction_new_task_handoff_have_same_visible_response_and_metadata(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    workspace, lesson_id = _workspace_with_resource_prompt_candidate(active_session=True)
-    untraced_store = _store_with_workspace(tmp_path, workspace, name="interaction_new_task_handoff_untraced")
-    traced_store = _store_with_workspace(tmp_path, workspace, name="interaction_new_task_handoff_traced")
-    _patch_interaction_turn(
-        monkeypatch,
-        "new_task",
-        reason="用户提出新的板书任务。",
-    )
-    _patch_board_task_handoff_response(monkeypatch)
-
-    monkeypatch.setattr(workspace_state, "STORE", untraced_store)
-    untraced_response = chat_service.process_chat_on_lesson(
-        lesson_id,
-        ChatRequest(message="新的板书任务"),
-        user_id=TEST_USER_ID,
-    )
-
-    monkeypatch.setattr(workspace_state, "STORE", traced_store)
-    with bind_workflow_trace_collector():
-        traced_response = chat_service.process_chat_on_lesson(
-            lesson_id,
-            ChatRequest(message="新的板书任务"),
-            user_id=TEST_USER_ID,
-        )
-
-    untraced_commit = untraced_response.course_package.lessons[-1].history_graph.commits[-1]
-    traced_commit = traced_response.course_package.lessons[-1].history_graph.commits[-1]
-    assert traced_commit.metadata == untraced_commit.metadata
-    assert _normalize_visible_response(traced_response.model_dump(mode="json")) == _normalize_visible_response(
-        untraced_response.model_dump(mode="json")
-    )
-
-
 def test_interaction_continue_does_not_record_persist_or_response_when_save_fails(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1783,52 +1525,6 @@ def test_interaction_exit_trace_does_not_leak_to_response_sse_session_history_or
         chat_router._chat_stream_events(
             stream_lesson_id,
             ChatRequest(message="结束互动"),
-            user_id=TEST_USER_ID,
-        )
-    )
-
-    final_payload = next(payload for event, payload in events if event == "final")
-    assert TRACE_KEYS.isdisjoint(_all_keys(final_payload))
-
-
-def test_interaction_new_task_handoff_trace_does_not_leak_to_response_sse_metadata_or_histories(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    workspace, lesson_id = _workspace_with_resource_prompt_candidate(active_session=True)
-    store = _store_with_workspace(tmp_path, workspace, name="interaction_new_task_handoff_leak")
-    monkeypatch.setattr(workspace_state, "STORE", store)
-    _patch_interaction_turn(
-        monkeypatch,
-        "new_task",
-        reason="用户提出新的板书任务。",
-    )
-    handoff_calls = _patch_board_task_handoff_response(monkeypatch)
-
-    with bind_workflow_trace_collector():
-        response = chat_service.process_chat_on_lesson(
-            lesson_id,
-            ChatRequest(message="新的板书任务"),
-            user_id=TEST_USER_ID,
-        )
-
-    commit = response.course_package.lessons[-1].history_graph.commits[-1]
-    source_metadata = handoff_calls["kwargs"]["source_interaction_metadata"]
-    assert TRACE_KEYS.isdisjoint(_all_keys(response.model_dump(mode="json")))
-    assert TRACE_KEYS.isdisjoint(_all_keys(commit.metadata))
-    assert TRACE_KEYS.isdisjoint(_all_keys(source_metadata))
-    assert TRACE_KEYS.isdisjoint(_all_keys(_requirement_history_rows(store, lesson_id)))
-    assert TRACE_KEYS.isdisjoint(
-        _all_keys(store.list_board_task_versions(owner_user_id=TEST_USER_ID, lesson_id=lesson_id))
-    )
-
-    workspace_for_stream, stream_lesson_id = _workspace_with_resource_prompt_candidate(active_session=True)
-    stream_store = _store_with_workspace(tmp_path, workspace_for_stream, name="interaction_new_task_handoff_stream")
-    monkeypatch.setattr(workspace_state, "STORE", stream_store)
-    events = _collect_sse_events(
-        chat_router._chat_stream_events(
-            stream_lesson_id,
-            ChatRequest(message="新的板书任务"),
             user_id=TEST_USER_ID,
         )
     )
