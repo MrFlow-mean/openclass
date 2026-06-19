@@ -71,6 +71,10 @@ from app.services.chat.paths.interaction_handoff_fallback import (
     InteractionHandoffFallbackDependencies,
     handle_interaction_handoff_fallback,
 )
+from app.services.chat.paths.interaction_sequence_end import (
+    InteractionSequenceEndDependencies,
+    handle_interaction_sequence_end,
+)
 from app.services.chat.paths.interaction_start_focus import (
     InteractionStartFocusDependencies,
     handle_interaction_start_focus_clarification,
@@ -3243,66 +3247,25 @@ def _handle_section_explanation_sequence_turn(
         return None
     if _is_sequence_exit_message(request.message):
         record_workflow_step(NodeId.INTERACTION_SEQUENCE_CHECK, decision="exit_requested", reason=None)
-        session_after = None
-        lesson.active_interaction_session = None
-        chatbot_message, chatbot_message_source = _generate_sequence_end_message(
-            lesson=lesson,
-            requirements=requirements,
-            resources=resources,
-            conversation=request.conversation,
-            request=request,
-            session=session_before,
-        )
-        decision = InteractionTurnDecision(
-            route="exit_rule",
-            reason="用户结束当前顺序讲解。",
-            progress_note=session_before.progress_note,
-            user_intent="结束顺序讲解",
-        )
-        record_workflow_step(
-            NodeId.INTERACTION_EXIT,
-            decision="exit_rule",
-            reason=decision.reason,
-        )
-        commit_operations(
-            lesson,
-            [],
-            label="Section explanation session ended",
-            message="Ended a sequential section explanation session",
-            new_document=lesson.board_document,
-            metadata={
-                "kind": "interaction_flow",
-                "user_message": request.message,
-                "assistant_message": chatbot_message,
-                "assistant_message_source": chatbot_message_source,
-                **_task_metadata(
-                    requirements=requirements,
-                    learning_clarification=learning_clarification,
-                    requirement_cleared=False,
-                ),
-                **interaction_session_metadata(before=session_before, after=session_after, decision=decision),
-            },
-        )
-        workspace_state.normalize_package_state(package)
-        _save_workspace_for_user(user_id=user_id, workspace=workspace, requirement_history=requirement_history)
-        record_workflow_step(
-            NodeId.PERSIST_CHAT_COMMIT,
-            decision="committed",
-            commit_id=lesson.history_graph.commits[-1].id,
-        )
-        response = _response(
+        return handle_interaction_sequence_end(
+            outcome="exit_requested",
             workspace=workspace,
             package=package,
             lesson=lesson,
-            chatbot_message=chatbot_message,
-            learning_clarification=learning_clarification,
+            user_id=user_id,
+            request=request,
             requirements=requirements,
-            board_decision=BoardDecision(action="no_change", reason=decision.reason),
-            interaction_decision=decision,
+            learning_clarification=learning_clarification,
+            resources=resources,
+            session_before=session_before,
             requirement_history=requirement_history,
+            deps=InteractionSequenceEndDependencies(
+                generate_sequence_end_message=_generate_sequence_end_message,
+                task_metadata=_task_metadata,
+                save_workspace_for_user=_save_workspace_for_user,
+                build_response=_response,
+            ),
         )
-        record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
-        return response
     if not _is_sequence_continue_message(request.message):
         if not _is_current_sequence_followup(request.message):
             return None
@@ -3400,65 +3363,26 @@ def _handle_section_explanation_sequence_turn(
     if next_index >= len(session_before.sequence_items):
         record_workflow_step(NodeId.INTERACTION_SEQUENCE_CHECK, decision="completed", reason=None)
         unit_label = _sequence_unit_label(session_before.sequence_mode)
-        lesson.active_interaction_session = None
-        chatbot_message, chatbot_message_source = _generate_sequence_end_message(
-            lesson=lesson,
-            requirements=requirements,
-            resources=resources,
-            conversation=request.conversation,
-            request=request,
-            session=session_before,
-        )
-        decision = InteractionTurnDecision(
-            route="exit_rule",
-            reason="顺序讲解已经完成。",
-            progress_note="顺序讲解已经完成。",
-            user_intent=f"确认最后一个{unit_label}无问题",
-        )
-        record_workflow_step(
-            NodeId.INTERACTION_EXIT,
-            decision="exit_rule",
-            reason=decision.reason,
-        )
-        commit_operations(
-            lesson,
-            [],
-            label="Section explanation session completed",
-            message="Completed a sequential section explanation session",
-            new_document=lesson.board_document,
-            metadata={
-                "kind": "interaction_flow",
-                "user_message": request.message,
-                "assistant_message": chatbot_message,
-                "assistant_message_source": chatbot_message_source,
-                **_task_metadata(
-                    requirements=requirements,
-                    learning_clarification=learning_clarification,
-                    requirement_cleared=False,
-                ),
-                **interaction_session_metadata(before=session_before, after=None, decision=decision),
-            },
-        )
-        workspace_state.normalize_package_state(package)
-        _save_workspace_for_user(user_id=user_id, workspace=workspace, requirement_history=requirement_history)
-        record_workflow_step(
-            NodeId.PERSIST_CHAT_COMMIT,
-            decision="committed",
-            commit_id=lesson.history_graph.commits[-1].id,
-        )
-        response = _response(
+        return handle_interaction_sequence_end(
+            outcome="completed",
             workspace=workspace,
             package=package,
             lesson=lesson,
-            chatbot_message=chatbot_message,
-            learning_clarification=learning_clarification,
+            user_id=user_id,
+            request=request,
             requirements=requirements,
-            board_decision=BoardDecision(action="no_change", reason=decision.reason),
-            interaction_decision=decision,
+            learning_clarification=learning_clarification,
+            resources=resources,
+            session_before=session_before,
             requirement_history=requirement_history,
+            unit_label=unit_label,
+            deps=InteractionSequenceEndDependencies(
+                generate_sequence_end_message=_generate_sequence_end_message,
+                task_metadata=_task_metadata,
+                save_workspace_for_user=_save_workspace_for_user,
+                build_response=_response,
+            ),
         )
-        record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
-        return response
 
     record_workflow_step(NodeId.INTERACTION_SEQUENCE_CHECK, decision="advance", reason=None)
     focus = session_before.sequence_items[next_index]
