@@ -423,4 +423,3 @@ Full verification before final PR:
 5. Run focused sequence/end/interaction tests.
 6. Run `npm run verify`.
 7. Open or update the PR with explicit parity notes: behavior change is `false`.
-
