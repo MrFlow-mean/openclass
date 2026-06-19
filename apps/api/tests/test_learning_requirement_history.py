@@ -9,7 +9,7 @@ from app.models import (
     LearningRequirementKeyFact,
 )
 from app.routers.chat import _chat_stream_events
-from app.services import chat_service, workspace_state
+from app.services import chat_service, chatbot as chatbot_module, workspace_state
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
 from app.services.learning_requirement_history import LearningRequirementHistoryRecorder
 from app.services.lesson_factory import build_requirements, create_empty_lesson
@@ -111,6 +111,13 @@ def _history_kinds(store: SqliteCourseStore, lesson_id: str) -> tuple[list[str],
     return [row["change_kind"] for row in versions], [row["event_type"] for row in events]
 
 
+def _requirement_history_state(store: SqliteCourseStore, lesson_id: str) -> dict[str, object] | None:
+    return store.load_learning_requirement_history_state(
+        owner_user_id=TEST_USER_ID,
+        lesson_id=lesson_id,
+    )
+
+
 def _sse_event_name(block: str) -> str:
     for line in block.splitlines():
         if line.startswith("event:"):
@@ -208,6 +215,103 @@ def test_blank_board_chat_collects_requirement_version_without_generation(
     assert response.requirement_cleared is False
     assert response.course_package.lessons[0].board_document.content_text == ""
     assert _history_kinds(store, lesson.id) == (["created"], ["created"])
+
+
+def test_collecting_requirement_chat_updates_same_run_without_board_generation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    monkeypatch.setattr(openai_course_ai, "generate_initial_learning_work_mode", lambda **kwargs: None)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_chatbot_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="我先继续确认你的学习需求。"),
+    )
+    updates = [
+        _requirement_update(ready=False),
+        LearningRequirementUpdate(
+            progress=65,
+            summary="用户补充了当前背景，但学习目标仍需继续澄清。",
+            key_facts=[
+                LearningRequirementKeyFact(
+                    label="学习内容",
+                    value="一个通用主题",
+                    evidence="来自用户输入。",
+                    category="learning",
+                ),
+                LearningRequirementKeyFact(
+                    label="当前水平",
+                    value="已有一些基础",
+                    evidence="来自用户补充。",
+                    category="level",
+                ),
+            ],
+            checklist=[
+                LearningRequirementChecklistItem(
+                    title="明确学习内容",
+                    is_clear=True,
+                    evidence="来自用户输入。",
+                ),
+                LearningRequirementChecklistItem(
+                    title="确认当前基础",
+                    is_clear=True,
+                    evidence="来自用户补充。",
+                ),
+            ],
+            missing_items=["还需要确认学习目标"],
+            next_question="你希望这次学习最后能完成什么？",
+            ready_for_board=False,
+        ),
+    ]
+    monkeypatch.setattr(openai_course_ai, "generate_learning_requirement_update", lambda **kwargs: updates.pop(0))
+
+    def _unexpected_board_generation(**kwargs):
+        raise AssertionError("collecting requirement chat must not call BoardEditor generation")
+
+    monkeypatch.setattr(chatbot_module, "generate_from_requirements", _unexpected_board_generation)
+    _, lesson = _seed_workspace(store)
+
+    first_response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="我想学一个主题"),
+        user_id=TEST_USER_ID,
+    )
+    second_response = chat_service.process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="我有一些基础，但目标还没完全想清楚"),
+        user_id=TEST_USER_ID,
+    )
+
+    versions = store.list_learning_requirement_versions(owner_user_id=TEST_USER_ID, lesson_id=lesson.id)
+    events = store.list_learning_requirement_events(owner_user_id=TEST_USER_ID, lesson_id=lesson.id)
+    state = _requirement_history_state(store, lesson.id)
+    reloaded = store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
+    latest_commit = second_response.course_package.lessons[0].history_graph.commits[-1]
+
+    assert first_response.requirement_run_id == second_response.requirement_run_id
+    assert first_response.requirement_version_id != second_response.requirement_version_id
+    assert second_response.requirement_phase == "collecting"
+    assert second_response.requirement_cleared is False
+    assert second_response.active_requirement_sheet is not None
+    assert second_response.board_document_operation_status == "none"
+    assert reloaded.board_document.content_text == ""
+    assert state is not None
+    assert state["run_id"] == second_response.requirement_run_id
+    assert state["status"] == "collecting"
+    assert state["latest_version_id"] == second_response.requirement_version_id
+    assert state["frozen_version_id"] is None
+    assert [row["run_id"] for row in versions] == [second_response.requirement_run_id] * 2
+    assert [row["change_kind"] for row in versions] == ["created", "updated"]
+    assert [row["status"] for row in versions] == ["collecting", "collecting"]
+    assert [event["event_type"] for event in events] == ["created", "updated"]
+    assert latest_commit.metadata["kind"] == "chat_flow"
+    assert latest_commit.metadata["task_requirement_sheet"]["learning_goal"] == (
+        "用户补充了当前背景，但学习目标仍需继续澄清。"
+    )
+    assert latest_commit.metadata["requirement_cleared"] is False
+    assert latest_commit.metadata["active_requirement_sheet_after"] is not None
 
 
 def test_existing_board_content_does_not_enter_initial_requirement_history(
