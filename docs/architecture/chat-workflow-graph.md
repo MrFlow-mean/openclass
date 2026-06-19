@@ -343,7 +343,8 @@ flowchart TD
   INITIAL_CHECK -->|unknown| IUNKNOWN["INITIAL_UNKNOWN_GUIDANCE"]
   INITIAL_CHECK -->|practice or none| IREQ["INITIAL_REQUIREMENT_COLLECT"]
   IREQ --> IREADY["INITIAL_REQUIREMENT_READY"]
-  IREADY -->|not ready| REQUIREMENT_CHAT["REQUIREMENT_CHAT_UPDATE"]
+  IREADY -->|not ready| PCHAT_REQUIREMENT["PERSIST_CHAT_COMMIT"]
+  PCHAT_REQUIREMENT --> REQUIREMENT_CHAT["REQUIREMENT_CHAT_UPDATE"]
   IREADY -->|ready| IFREEZE
   IFREEZE --> IGENERATE["INITIAL_BOARD_GENERATE"]
   IGENERATE -->|success| ICOMMIT["INITIAL_BOARD_COMMIT"]
@@ -364,7 +365,7 @@ flowchart TD
   LDOC --> PBOARD
   LFALLBACK --> PCHAT
   ORDINARY --> PCHAT
-  REQUIREMENT_CHAT --> PCHAT
+  REQUIREMENT_CHAT --> RESPONSE
   IUNKNOWN --> PCHAT
   INARROW --> PCHAT
   ICOMMIT --> PBOARD
@@ -397,7 +398,8 @@ No requirement run or board task run may be created for pure ordinary chat.
 1. `INITIAL_MODE_DECIDE`
 2. `INITIAL_REQUIREMENT_COLLECT`
 3. `INITIAL_REQUIREMENT_READY`
-4. If not ready: `REQUIREMENT_CHAT_UPDATE -> PERSIST_CHAT_COMMIT`.
+4. If not ready: `PERSIST_CHAT_COMMIT -> REQUIREMENT_CHAT_UPDATE` after
+   durable workspace and requirement-history save.
 5. If ready: `INITIAL_REQUIREMENT_FREEZE -> INITIAL_BOARD_GENERATE`.
 
 This path applies only when `board_document` is empty.
@@ -551,7 +553,8 @@ This includes the current `side_learning_request` compatibility behavior.
 | `INITIAL_MODE_DECIDE` | `INITIAL_REQUIREMENT_FREEZE` | Work mode is ready `knowledge_board`. |
 | `INITIAL_MODE_DECIDE` | `INITIAL_REQUIREMENT_COLLECT` | Practice artifact or regular requirement path. |
 | `INITIAL_REQUIREMENT_COLLECT` | `INITIAL_REQUIREMENT_READY` | Requirement status computed. |
-| `INITIAL_REQUIREMENT_READY` | `REQUIREMENT_CHAT_UPDATE` | Not ready for board. |
+| `INITIAL_REQUIREMENT_READY` | `PERSIST_CHAT_COMMIT` | Not ready for board; persist chat and requirement history before terminal update trace. |
+| `PERSIST_CHAT_COMMIT` | `REQUIREMENT_CHAT_UPDATE` | Requirement update has been saved durably. |
 | `INITIAL_REQUIREMENT_READY` | `INITIAL_REQUIREMENT_FREEZE` | Ready or forced to generate. |
 | `INITIAL_REQUIREMENT_FREEZE` | `INITIAL_BOARD_GENERATE` | Frozen version persisted. |
 | `INITIAL_BOARD_GENERATE` | `INITIAL_BOARD_COMMIT` | Board generation changed document. |
