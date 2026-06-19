@@ -1139,6 +1139,32 @@ def _save_workspace_for_user(
     workspace_state.save_workspace_for_user(user_id, workspace)
 
 
+def _persist_edit_ready_checkpoint(
+    *,
+    user_id: str,
+    workspace,
+    package,
+    requirement_history: LearningRequirementHistoryRecorder,
+    board_task_history: BoardTaskHistoryRecorder,
+    stamp: BoardTaskHistoryStamp,
+) -> None:
+    workspace_state.normalize_package_state(package)
+    _save_workspace_for_user(
+        user_id=user_id,
+        workspace=workspace,
+        requirement_history=requirement_history,
+        board_task_history=board_task_history,
+    )
+    requirement_history.operations.clear()
+    board_task_history.operations.clear()
+    record_workflow_step(
+        NodeId.BOARD_TASK_READY_PERSIST,
+        decision="ready",
+        run_id=stamp.run_id,
+        version_id=stamp.version_id,
+    )
+
+
 def _persist_requirement_history_checkpoint(
     *,
     user_id: str,
@@ -2151,6 +2177,16 @@ def _handle_existing_board_task_flow(
             board_task_history=board_task_history,
         )
 
+    if board_task.requested_action == "edit":
+        _persist_edit_ready_checkpoint(
+            user_id=user_id,
+            workspace=workspace,
+            package=package,
+            requirement_history=requirement_history,
+            board_task_history=board_task_history,
+            stamp=stamp,
+        )
+
     board_action = _board_task_action_to_board_action(board_task)
     resolution = None
     original_location_status = board_task.location_status
@@ -2177,6 +2213,14 @@ def _handle_existing_board_task_flow(
         )
         _emit_board_task_update(lesson=lesson, sheet=resolved_task, stamp=stamp)
         board_task = resolved_task
+    if board_task.requested_action == "edit":
+        record_workflow_step(
+            NodeId.BOARD_TARGET_RESOLVE,
+            decision=resolution.status if resolution else "not_run",
+            reason=resolution.question if resolution else None,
+            run_id=stamp.run_id,
+            version_id=stamp.version_id,
+        )
     can_use_local_route_decision = (
         resolution is not None
         and resolution.resolved
@@ -2237,6 +2281,14 @@ def _handle_existing_board_task_flow(
             request_message=request.message,
             resolution=resolution,
         )
+    if board_task.requested_action == "edit":
+        record_workflow_step(
+            NodeId.BOARD_ROUTE_DECIDE,
+            decision=decision.route,
+            reason=decision.reason,
+            run_id=stamp.run_id,
+            version_id=stamp.version_id,
+        )
     sequence_plan = plan_explanation_sequence(
         lesson=lesson,
         board_task=board_task,
@@ -2270,11 +2322,11 @@ def _handle_existing_board_task_flow(
         next_task.location_status = "ambiguous" if decision.location_status == "ambiguous" else "missing"
         next_task.failure_count += 1 if board_task.requested_action == "edit" else 0
         if board_task.requested_action == "edit" and next_task.failure_count >= 2:
-            old_stamp = board_task_history.record_update(
+            board_task_history.record_update(
                 sheet=next_task,
                 change_summary="Edit target could not be located twice.",
             )
-            board_task_history.not_executed(reason="编辑目标连续两次未定位，旧任务未执行。")
+            not_executed_stamp = board_task_history.not_executed(reason="编辑目标连续两次未定位，旧任务未执行。")
             new_task = make_write_task_from_topic(board_task.question_or_topic)
             _activate_board_task_requirements(lesson, new_task)
             new_stamp = board_task_history.record_update(
@@ -2312,7 +2364,7 @@ def _handle_existing_board_task_flow(
                         document_changed=False,
                         reason="编辑目标未定位，已转为扩写确认。",
                     ),
-                    **_board_task_metadata(board_task=board_task, stamp=old_stamp, route="clarify_location", cleared=True),
+                    **_board_task_metadata(board_task=board_task, stamp=not_executed_stamp, route="clarify_location", cleared=True),
                     "new_board_task": new_task.model_dump(mode="json"),
                     "new_board_task_run_id": new_stamp.run_id,
                     "new_board_task_version_id": new_stamp.version_id,
@@ -2325,6 +2377,14 @@ def _handle_existing_board_task_flow(
                 requirement_history=requirement_history,
                 board_task_history=board_task_history,
             )
+            record_workflow_step(
+                NodeId.BOARD_TASK_FAILURE,
+                decision="not_executed",
+                reason="编辑目标连续两次未定位，旧任务未执行。",
+                run_id=not_executed_stamp.run_id,
+                version_id=not_executed_stamp.version_id,
+            )
+            record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
             return _response(
                 workspace=workspace,
                 package=package,
@@ -2403,6 +2463,8 @@ def _handle_existing_board_task_flow(
             requirement_history=requirement_history,
             board_task_history=board_task_history,
         )
+        if board_task.requested_action == "edit":
+            record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
         return _response(
             workspace=workspace,
             package=package,
@@ -2534,6 +2596,13 @@ def _handle_existing_board_task_flow(
             lesson.board_teaching_guide = build_board_teaching_guide(lesson)
             lesson.board_teaching_progress = None
         stamp = board_task_history.record_update(sheet=board_task, status="ready")
+        record_workflow_step(
+            NodeId.BOARD_EDIT_EXECUTE,
+            decision="succeeded" if edit_outcome.changed else "failed",
+            reason=edit_outcome.summary or decision.reason,
+            run_id=stamp.run_id,
+            version_id=stamp.version_id,
+        )
         if not edit_outcome.changed:
             failed_stamp = board_task_history.execution_failed(
                 reason=edit_outcome.summary or "Board task edit did not produce a safe document change.",
@@ -2556,6 +2625,14 @@ def _handle_existing_board_task_flow(
                 requirement_history=requirement_history,
                 board_task_history=board_task_history,
             )
+            record_workflow_step(
+                NodeId.BOARD_TASK_FAILURE,
+                decision="execution_failed",
+                reason=edit_outcome.summary or "Board task edit did not produce a safe document change.",
+                run_id=failed_stamp.run_id,
+                version_id=failed_stamp.version_id,
+            )
+            record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
             return _response(
                 workspace=workspace,
                 package=package,
@@ -2627,7 +2704,17 @@ def _handle_existing_board_task_flow(
                 ),
             },
         )
-        consumed_stamp = board_task_history.consume(commit_id=lesson.history_graph.commits[-1].id)
+        commit = lesson.history_graph.commits[-1]
+        consumed_stamp = board_task_history.consume(commit_id=commit.id)
+        commit.metadata.update(
+            _board_task_metadata(
+                board_task=board_task,
+                stamp=consumed_stamp,
+                route="edit",
+                decision=decision.model_dump(mode="json"),
+                cleared=True,
+            )
+        )
         lesson.board_task_requirements = None
         _clear_task_requirements(lesson)
         workspace_state.normalize_package_state(package)
@@ -2637,6 +2724,14 @@ def _handle_existing_board_task_flow(
             requirement_history=requirement_history,
             board_task_history=board_task_history,
         )
+        record_workflow_step(
+            NodeId.PERSIST_BOARD_COMMIT,
+            decision="committed",
+            run_id=consumed_stamp.run_id,
+            version_id=consumed_stamp.version_id,
+            commit_id=commit.id,
+        )
+        record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
         return _response(
             workspace=workspace,
             package=package,

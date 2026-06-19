@@ -11,10 +11,14 @@ import pytest
 from app.models import (
     BoardDecision,
     BoardFocusRef,
+    BoardPatchValidationResult,
+    BoardTaskRequirementSheet,
     ChatRequest,
+    DiffPreviewItem,
     InteractionSession,
     InteractionTurnDecision,
     LibraryChapter,
+    PatchOperation,
     ResourceLibraryItem,
 )
 from app.routers import chat as chat_router
@@ -28,6 +32,7 @@ from app.services.course_runtime import refresh_lesson_runtime
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
 from app.services.lesson_factory import create_empty_lesson
 from app.services.openai_course_ai import (
+    BoardTaskRouteDecision,
     ChatbotReply,
     InitialLearningWorkModeDecision,
     LearningRequirementUpdate,
@@ -144,6 +149,24 @@ def _requirement_run_rows(store: SqliteCourseStore, lesson_id: str) -> list[dict
             """
             SELECT *
             FROM learning_requirement_runs
+            WHERE owner_user_id = ? AND lesson_id = ?
+            ORDER BY created_at, id
+            """,
+            (TEST_USER_ID, lesson_id),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def _board_task_run_rows(store: SqliteCourseStore, lesson_id: str) -> list[dict[str, Any]]:
+    conn = sqlite3.connect(store.path)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM board_task_runs
             WHERE owner_user_id = ? AND lesson_id = ?
             ORDER BY created_at, id
             """,
@@ -313,6 +336,17 @@ def _interaction_trace_prefix() -> list[str]:
         NodeId.ACTIVE_INTERACTION_CHECK.value,
         NodeId.INTERACTION_SEQUENCE_CHECK.value,
         NodeId.INTERACTION_DECIDE.value,
+    ]
+
+
+def _existing_board_task_trace_prefix() -> list[str]:
+    return [
+        NodeId.CONTEXT_LOAD.value,
+        NodeId.TURN_CONTEXT_BUILD.value,
+        NodeId.BOARD_ACTION_DECIDE.value,
+        NodeId.CHAT_TURN_GATE.value,
+        NodeId.RESOURCE_PREFLIGHT.value,
+        NodeId.ACTIVE_INTERACTION_CHECK.value,
     ]
 
 
@@ -1106,6 +1140,374 @@ def test_resource_confirm_does_not_call_generation_resource_prompt_handler(
     assert confirmed_response.board_decision.action == "edit_board"
     assert confirmed_response.reference_prompt is None
     assert "生成后的内容" in confirmed_response.course_package.lessons[-1].board_document.content_text
+
+
+def test_existing_board_edit_success_trace_records_durable_commit_and_consumes_task(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace, lesson_id = _workspace_with_lesson(existing_board=True)
+    lesson = workspace.packages[0].lessons[-1]
+    refresh_lesson_runtime(
+        lesson,
+        document=build_document(
+            title="已有板书",
+            content_text="# 主线\n## 第一节\n第一节原文。\n## 第二节\n第二节原文。",
+        ),
+    )
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    store = _store_with_workspace(tmp_path, workspace, name="board_task_edit_success_durable")
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_board_task_requirement_sheet",
+        lambda **kwargs: BoardTaskRequirementSheet(
+            target_hint="第一节",
+            requested_action="edit",
+            question_or_topic="把第一节改短",
+            missing_items=[],
+            progress=100,
+        ),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_board_task_route_decision",
+        lambda **kwargs: _fail_if_called("generate_board_task_route_decision"),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_learning_requirement_update",
+        lambda **kwargs: _fail_if_called("generate_learning_requirement_update"),
+    )
+
+    def _edit_existing_document(**kwargs) -> BoardDocumentEditOutcome:
+        assert kwargs["focus"] is not None
+        assert kwargs["target_scope"] == "focus"
+        return BoardDocumentEditOutcome(
+            chatbot_message="AI生成：第一节已经改短。",
+            new_document=build_document(
+                title="已有板书",
+                content_text="# 主线\n## 第一节\n短版内容。\n## 第二节\n第二节原文。",
+            ),
+            board_decision=BoardDecision(action="edit_board", reason="已执行局部 edit。"),
+            assistant_message_source="board_document_editor_ai",
+            operation="replace_selection",
+            summary="已把第一节改短。",
+            section_titles=["第一节"],
+            changed=True,
+            operation_status="succeeded",
+            operations=[
+                PatchOperation(
+                    op="update_block_content",
+                    block_id="block_first_section",
+                    content="短版内容。",
+                )
+            ],
+            diff_preview=[
+                DiffPreviewItem(
+                    op="update_block_content",
+                    block_id="block_first_section",
+                    before_text="第一节原文。",
+                    after_text="短版内容。",
+                    summary="更新第一节内容。",
+                )
+            ],
+            patch_validation=BoardPatchValidationResult(
+                status="pass",
+                applied_operations=1,
+                source_commit_id="commit_before_edit",
+                source_document_hash="hash_before_edit",
+                current_document_hash="hash_before_edit",
+            ),
+            patch_risk_level="low",
+        )
+
+    monkeypatch.setattr(chatbot_module, "edit_existing_document", _edit_existing_document)
+
+    with bind_workflow_trace_collector() as collector:
+        response = chat_service.process_chat_on_lesson(
+            lesson_id,
+            ChatRequest(message="把第一节改短"),
+            user_id=TEST_USER_ID,
+        )
+
+    updated_lesson = response.course_package.lessons[-1]
+    commit = updated_lesson.history_graph.commits[-1]
+    runs = _board_task_run_rows(store, lesson_id)
+    events = store.list_board_task_events(owner_user_id=TEST_USER_ID, lesson_id=lesson_id)
+    assert "短版内容" in updated_lesson.board_document.content_text
+    assert response.active_board_task_sheet is None
+    assert response.board_task_phase == "consumed"
+    assert response.board_task_run_id == runs[-1]["id"]
+    assert runs[-1]["status"] == "consumed"
+    assert runs[-1]["consumed_commit_id"] == commit.id
+    assert events[-1]["event_type"] == "consumed"
+    assert json.loads(events[-1]["metadata_json"])["commit_id"] == commit.id
+    assert commit.label == "Board task edit"
+    assert commit.metadata["board_task_route"] == "edit"
+    assert commit.metadata["board_task_cleared"] is True
+    assert commit.metadata["board_task_phase"] == "consumed"
+    assert commit.metadata["board_task_run_id"] == response.board_task_run_id
+    assert commit.metadata["board_task_version_id"] == response.board_task_version_id
+    assert commit.metadata["board_patch_validation"]["status"] == "pass"
+    assert commit.metadata["board_patch_diff"][0]["op"] == "update_block_content"
+    assert commit.metadata["board_patch_risk_level"] == "low"
+    assert response.board_patch_diff[0].op == "update_block_content"
+    assert TRACE_KEYS.isdisjoint(_all_keys(response.model_dump(mode="json")))
+    assert TRACE_KEYS.isdisjoint(_all_keys(commit.metadata))
+    assert _node_values(collector) == [
+        *_existing_board_task_trace_prefix(),
+        NodeId.BOARD_TASK_READY_PERSIST.value,
+        NodeId.BOARD_TARGET_RESOLVE.value,
+        NodeId.BOARD_ROUTE_DECIDE.value,
+        NodeId.BOARD_EDIT_EXECUTE.value,
+        NodeId.PERSIST_BOARD_COMMIT.value,
+        NodeId.RESPONSE_ASSEMBLE.value,
+    ]
+    assert collector.steps[6].decision == "ready"
+    assert collector.steps[6].run_id == response.board_task_run_id
+    assert collector.steps[8].decision == "edit"
+    assert collector.steps[9].decision == "succeeded"
+    assert collector.steps[10].commit_id == commit.id
+    assert collector.steps[10].run_id == response.board_task_run_id
+    assert collector.steps[10].version_id == response.board_task_version_id
+
+
+def test_existing_board_edit_target_miss_trace_keeps_task_active(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace, lesson_id = _workspace_with_lesson(existing_board=True)
+    lesson = workspace.packages[0].lessons[-1]
+    original_document = lesson.board_document.model_dump(mode="json")
+    initial_commit_count = len(lesson.history_graph.commits)
+    store = _store_with_workspace(tmp_path, workspace, name="board_task_edit_target_miss_durable")
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    monkeypatch.setattr(openai_course_ai, "generate_board_task_requirement_sheet", lambda **kwargs: None)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_board_task_route_decision",
+        lambda **kwargs: BoardTaskRouteDecision(
+            route="clarify_location",
+            location_status="missing",
+            reason="没有定位到可编辑内容。",
+        ),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_chatbot_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="AI生成：没有定位到可编辑内容。"),
+    )
+    monkeypatch.setattr(
+        chatbot_module,
+        "edit_existing_document",
+        lambda **kwargs: _fail_if_called("edit_existing_document"),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_learning_requirement_update",
+        lambda **kwargs: _fail_if_called("generate_learning_requirement_update"),
+    )
+
+    with bind_workflow_trace_collector() as collector:
+        response = chat_service.process_chat_on_lesson(
+            lesson_id,
+            ChatRequest(message="把不存在的内容改短"),
+            user_id=TEST_USER_ID,
+        )
+
+    updated_lesson = response.course_package.lessons[-1]
+    commit = updated_lesson.history_graph.commits[-1]
+    events = store.list_board_task_events(owner_user_id=TEST_USER_ID, lesson_id=lesson_id)
+    assert updated_lesson.board_document.model_dump(mode="json") == original_document
+    assert len(updated_lesson.history_graph.commits) == initial_commit_count + 1
+    assert response.active_board_task_sheet is not None
+    assert response.active_board_task_sheet.requested_action == "edit"
+    assert response.active_board_task_sheet.failure_count == 1
+    assert response.board_task_phase == "ready"
+    assert events[-1]["event_type"] == "ready"
+    assert commit.label == "Board task location clarification"
+    assert commit.metadata["board_task_route"] == "clarify_location"
+    assert commit.metadata["board_task_cleared"] is False
+    assert commit.metadata["board_task_run_id"] == response.board_task_run_id
+    assert _node_values(collector) == [
+        *_existing_board_task_trace_prefix(),
+        NodeId.BOARD_TASK_READY_PERSIST.value,
+        NodeId.BOARD_TARGET_RESOLVE.value,
+        NodeId.BOARD_ROUTE_DECIDE.value,
+        NodeId.RESPONSE_ASSEMBLE.value,
+    ]
+    assert collector.steps[8].decision == "clarify_location"
+    assert NodeId.BOARD_TASK_FAILURE.value not in _node_values(collector)
+
+
+def test_existing_board_edit_execution_failed_trace_records_history_without_commit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace, lesson_id = _workspace_with_lesson(existing_board=True)
+    lesson = workspace.packages[0].lessons[-1]
+    refresh_lesson_runtime(
+        lesson,
+        document=build_document(
+            title="已有板书",
+            content_text="# 主线\n## 第一节\n第一节原文。\n## 第二节\n第二节原文。",
+        ),
+    )
+    lesson.history_graph.commits[-1].snapshot = lesson.board_document
+    original_document = lesson.board_document.model_dump(mode="json")
+    initial_commit_count = len(lesson.history_graph.commits)
+    store = _store_with_workspace(tmp_path, workspace, name="board_task_edit_failed_durable")
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_board_task_requirement_sheet",
+        lambda **kwargs: BoardTaskRequirementSheet(
+            target_hint="第一节",
+            requested_action="edit",
+            question_or_topic="把第一节改短",
+            missing_items=[],
+            progress=100,
+        ),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_board_task_route_decision",
+        lambda **kwargs: _fail_if_called("generate_board_task_route_decision"),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_learning_requirement_update",
+        lambda **kwargs: _fail_if_called("generate_learning_requirement_update"),
+    )
+
+    def _edit_existing_document(**kwargs) -> BoardDocumentEditOutcome:
+        return BoardDocumentEditOutcome(
+            chatbot_message="AI生成：这次没有写入板书。",
+            new_document=lesson.board_document,
+            board_decision=BoardDecision(action="no_change", reason="局部 edit 未通过安全门禁。"),
+            assistant_message_source="board_document_editor_ai",
+            operation="replace_selection",
+            summary="局部 edit 未通过安全门禁。",
+            section_titles=[],
+            changed=False,
+            operation_status="failed",
+            failure_reason="局部 edit 未通过安全门禁。",
+        )
+
+    monkeypatch.setattr(chatbot_module, "edit_existing_document", _edit_existing_document)
+
+    with bind_workflow_trace_collector() as collector:
+        response = chat_service.process_chat_on_lesson(
+            lesson_id,
+            ChatRequest(message="把第一节改短"),
+            user_id=TEST_USER_ID,
+        )
+
+    updated_lesson = response.course_package.lessons[-1]
+    events = store.list_board_task_events(owner_user_id=TEST_USER_ID, lesson_id=lesson_id)
+    metadata = json.loads(events[-1]["metadata_json"])
+    assert updated_lesson.board_document.model_dump(mode="json") == original_document
+    assert len(updated_lesson.history_graph.commits) == initial_commit_count
+    assert response.active_board_task_sheet is not None
+    assert response.board_task_phase == "ready"
+    assert response.board_document_operation_status == "failed"
+    assert events[-1]["event_type"] == "execution_failed"
+    assert metadata["board_task_route"] == "edit"
+    assert metadata["board_task_cleared"] is False
+    assert metadata["target_scope"] == "focus"
+    assert _node_values(collector) == [
+        *_existing_board_task_trace_prefix(),
+        NodeId.BOARD_TASK_READY_PERSIST.value,
+        NodeId.BOARD_TARGET_RESOLVE.value,
+        NodeId.BOARD_ROUTE_DECIDE.value,
+        NodeId.BOARD_EDIT_EXECUTE.value,
+        NodeId.BOARD_TASK_FAILURE.value,
+        NodeId.RESPONSE_ASSEMBLE.value,
+    ]
+    assert collector.steps[9].decision == "failed"
+    assert collector.steps[10].decision == "execution_failed"
+    assert NodeId.PERSIST_BOARD_COMMIT.value not in _node_values(collector)
+
+
+def test_existing_board_repeated_missing_edit_trace_converts_to_write_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace, lesson_id = _workspace_with_lesson(existing_board=True)
+    lesson = workspace.packages[0].lessons[-1]
+    original_document = lesson.board_document.model_dump(mode="json")
+    store = _store_with_workspace(tmp_path, workspace, name="board_task_edit_repeated_miss_durable")
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    monkeypatch.setattr(openai_course_ai, "generate_board_task_requirement_sheet", lambda **kwargs: None)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_board_task_route_decision",
+        lambda **kwargs: BoardTaskRouteDecision(
+            route="clarify_location",
+            location_status="missing",
+            reason="没有定位到可编辑内容。",
+        ),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_chatbot_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="AI生成：没有定位到可编辑内容。"),
+    )
+    monkeypatch.setattr(
+        chatbot_module,
+        "edit_existing_document",
+        lambda **kwargs: _fail_if_called("edit_existing_document"),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_learning_requirement_update",
+        lambda **kwargs: _fail_if_called("generate_learning_requirement_update"),
+    )
+
+    first_response = chat_service.process_chat_on_lesson(
+        lesson_id,
+        ChatRequest(message="把不存在的内容改短"),
+        user_id=TEST_USER_ID,
+    )
+    assert first_response.active_board_task_sheet is not None
+    assert first_response.active_board_task_sheet.requested_action == "edit"
+    assert first_response.active_board_task_sheet.failure_count == 1
+
+    with bind_workflow_trace_collector() as collector:
+        second_response = chat_service.process_chat_on_lesson(
+            lesson_id,
+            ChatRequest(message="还是把不存在的内容改短"),
+            user_id=TEST_USER_ID,
+        )
+
+    updated_lesson = second_response.course_package.lessons[-1]
+    commit = updated_lesson.history_graph.commits[-1]
+    runs = _board_task_run_rows(store, lesson_id)
+    events = store.list_board_task_events(owner_user_id=TEST_USER_ID, lesson_id=lesson_id)
+    assert updated_lesson.board_document.model_dump(mode="json") == original_document
+    assert second_response.active_board_task_sheet is not None
+    assert second_response.active_board_task_sheet.requested_action == "write"
+    assert second_response.active_board_task_sheet.confirmation_status == "awaiting"
+    assert second_response.board_task_phase == "awaiting_confirmation"
+    assert [run["status"] for run in runs][-2:] == ["not_executed", "awaiting_confirmation"]
+    assert "not_executed" in [event["event_type"] for event in events]
+    assert commit.label == "Board task converted to write confirmation"
+    assert commit.metadata["board_task_route"] == "clarify_location"
+    assert commit.metadata["board_task_cleared"] is True
+    assert commit.metadata["board_task_phase"] == "not_executed"
+    assert commit.metadata["new_board_task"]["requested_action"] == "write"
+    assert commit.metadata["new_board_task_run_id"] == second_response.board_task_run_id
+    assert _node_values(collector) == [
+        *_existing_board_task_trace_prefix(),
+        NodeId.BOARD_TASK_READY_PERSIST.value,
+        NodeId.BOARD_TARGET_RESOLVE.value,
+        NodeId.BOARD_ROUTE_DECIDE.value,
+        NodeId.BOARD_TASK_FAILURE.value,
+        NodeId.RESPONSE_ASSEMBLE.value,
+    ]
+    assert collector.steps[8].decision == "clarify_location"
+    assert collector.steps[9].decision == "not_executed"
 
 
 def test_non_ordinary_path_never_records_ordinary_chat_generate(
