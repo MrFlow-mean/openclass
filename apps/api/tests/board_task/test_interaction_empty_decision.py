@@ -15,6 +15,11 @@ from app.models import (
 )
 from app.routers import chat as chat_router
 from app.services import chat_service, chatbot as chatbot_module, workspace_state
+from app.services.chat.paths import active_interaction_empty as active_interaction_empty_module
+from app.services.chat.paths.active_interaction_empty import (
+    ActiveInteractionEmptyDependencies,
+    handle_active_interaction_empty_decision,
+)
 from app.services.course_runtime import refresh_lesson_runtime
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
 from app.services.lesson_factory import create_empty_lesson
@@ -243,6 +248,26 @@ def _patch_unexpected_empty_terminal_calls(monkeypatch: pytest.MonkeyPatch) -> N
     )
 
 
+def _count_empty_decision_handler_calls(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
+    calls = {"count": 0}
+    original_handler = chatbot_module.handle_active_interaction_empty_decision
+
+    def _counting_handler(**kwargs):
+        calls["count"] += 1
+        return original_handler(**kwargs)
+
+    monkeypatch.setattr(chatbot_module, "handle_active_interaction_empty_decision", _counting_handler)
+    return calls
+
+
+def _empty_decision_test_deps() -> ActiveInteractionEmptyDependencies:
+    return ActiveInteractionEmptyDependencies(
+        task_metadata=lambda **kwargs: {},
+        save_workspace_for_user=lambda **kwargs: None,
+        build_response=lambda **kwargs: _fail_if_called("build_response"),
+    )
+
+
 def _history_rows(store: SqliteCourseStore, lesson_id: str) -> list[dict[str, Any]]:
     return [
         *store.list_learning_requirement_versions(owner_user_id=TEST_USER_ID, lesson_id=lesson_id),
@@ -266,6 +291,7 @@ def test_empty_decision_records_exact_terminal_trace_and_preserves_state(
     monkeypatch.setattr(workspace_state, "STORE", store)
     _patch_empty_decision(monkeypatch)
     _patch_unexpected_empty_terminal_calls(monkeypatch)
+    calls = _count_empty_decision_handler_calls(monkeypatch)
 
     with bind_workflow_trace_collector() as collector:
         response = chat_service.process_chat_on_lesson(
@@ -277,6 +303,7 @@ def test_empty_decision_records_exact_terminal_trace_and_preserves_state(
     lesson = response.course_package.lessons[-1]
     commit = lesson.history_graph.commits[-1]
     metadata = commit.metadata
+    assert calls["count"] == 1
     assert _node_values(collector) == _empty_decision_trace()
     assert collector.steps[7].decision == "empty"
     assert collector.steps[7].reason is None
@@ -389,7 +416,7 @@ def test_empty_decision_commit_failure_does_not_record_persist_or_response(
     monkeypatch.setattr(workspace_state, "STORE", store)
     _patch_empty_decision(monkeypatch)
     monkeypatch.setattr(
-        chatbot_module,
+        active_interaction_empty_module,
         "commit_operations",
         lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("commit failed")),
     )
@@ -470,6 +497,61 @@ def test_empty_decision_response_failure_keeps_persist_but_not_response_node(
     assert NodeId.RESPONSE_ASSEMBLE.value not in _node_values(collector)
 
 
+def test_empty_decision_handler_requires_previous_session() -> None:
+    workspace, _lesson_id = _workspace_with_active_session()
+    package = workspace.packages[0]
+    lesson = package.lessons[-1]
+
+    with pytest.raises(ValueError, match="previous interaction session"):
+        handle_active_interaction_empty_decision(
+            workspace=workspace,
+            package=package,
+            lesson=lesson,
+            user_id=TEST_USER_ID,
+            request=_request(),
+            requirements=lesson.learning_requirements,
+            learning_clarification=chatbot_module._latest_learning_clarification(
+                lesson,
+                requirements=lesson.learning_requirements,
+            ),
+            session_before=None,
+            requirement_history=None,
+            deps=_empty_decision_test_deps(),
+        )
+
+
+@pytest.mark.parametrize("active_session_kind", ["missing", "different"])
+def test_empty_decision_handler_requires_current_active_session_to_match_previous(
+    active_session_kind: str,
+) -> None:
+    workspace, _lesson_id = _workspace_with_active_session()
+    package = workspace.packages[0]
+    lesson = package.lessons[-1]
+    session_before = lesson.active_interaction_session
+    assert session_before is not None
+    if active_session_kind == "missing":
+        lesson.active_interaction_session = None
+    else:
+        lesson.active_interaction_session = session_before.model_copy(update={"turn_count": session_before.turn_count + 1})
+
+    with pytest.raises(ValueError, match="current active session"):
+        handle_active_interaction_empty_decision(
+            workspace=workspace,
+            package=package,
+            lesson=lesson,
+            user_id=TEST_USER_ID,
+            request=_request(),
+            requirements=lesson.learning_requirements,
+            learning_clarification=chatbot_module._latest_learning_clarification(
+                lesson,
+                requirements=lesson.learning_requirements,
+            ),
+            session_before=session_before,
+            requirement_history=None,
+            deps=_empty_decision_test_deps(),
+        )
+
+
 @pytest.mark.parametrize(
     "route",
     [
@@ -517,6 +599,12 @@ def test_other_interaction_routes_do_not_record_empty_terminal_decision(
 
         monkeypatch.setattr(chatbot_module, "_handle_existing_board_task_flow", _board_task_response)
 
+    monkeypatch.setattr(
+        chatbot_module,
+        "handle_active_interaction_empty_decision",
+        lambda **kwargs: _fail_if_called("handle_active_interaction_empty_decision"),
+    )
+
     with bind_workflow_trace_collector() as collector:
         response = chat_service.process_chat_on_lesson(
             lesson_id,
@@ -547,6 +635,11 @@ def test_sequence_session_does_not_record_empty_terminal_decision(
         chatbot_module,
         "_generate_sequence_end_message",
         lambda **kwargs: ("顺序讲解结束。", "chatbot_interaction"),
+    )
+    monkeypatch.setattr(
+        chatbot_module,
+        "handle_active_interaction_empty_decision",
+        lambda **kwargs: _fail_if_called("handle_active_interaction_empty_decision"),
     )
 
     with bind_workflow_trace_collector() as collector:

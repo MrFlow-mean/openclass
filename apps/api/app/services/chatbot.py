@@ -51,6 +51,10 @@ from app.services.chat.paths.active_interaction_exit import (
     ActiveInteractionExitDependencies,
     handle_active_interaction_exit,
 )
+from app.services.chat.paths.active_interaction_empty import (
+    ActiveInteractionEmptyDependencies,
+    handle_active_interaction_empty_decision,
+)
 from app.services.chat.paths.active_interaction_turn import (
     ActiveInteractionTurnDependencies,
     handle_active_interaction_turn,
@@ -3536,53 +3540,22 @@ def _handle_existing_interaction_session(
         reason=decision.reason if decision is not None else None,
     )
     if decision is None:
-        chatbot_message = ""
-        lesson.active_interaction_session = session_before
-        record_workflow_step(NodeId.INTERACTION_TERMINAL, decision="empty", reason=None)
-        commit_operations(
-            lesson,
-            [],
-            label="Interaction turn",
-            message="Recorded an interaction-rule turn without a route decision",
-            new_document=lesson.board_document,
-            metadata={
-                "kind": "interaction_flow",
-                "user_message": request.message,
-                "assistant_message": chatbot_message,
-                "assistant_message_source": "interaction_decision_empty",
-                "interaction_mode": request.interaction_mode,
-                "selection": request.selection.model_dump(mode="json") if request.selection else None,
-                **_task_metadata(
-                    requirements=requirements,
-                    learning_clarification=learning_clarification,
-                    requirement_cleared=False,
-                ),
-                **interaction_session_metadata(before=session_before, after=session_before),
-            },
-        )
-        workspace_state.normalize_package_state(package)
-        _save_workspace_for_user(
-            user_id=user_id,
-            workspace=workspace,
-            requirement_history=requirement_history,
-        )
-        record_workflow_step(
-            NodeId.PERSIST_CHAT_COMMIT,
-            decision="committed",
-            commit_id=lesson.history_graph.commits[-1].id,
-        )
-        response = _response(
+        return handle_active_interaction_empty_decision(
             workspace=workspace,
             package=package,
             lesson=lesson,
-            chatbot_message=chatbot_message,
+            user_id=user_id,
+            request=request,
             learning_clarification=learning_clarification,
             requirements=requirements,
-            board_decision=BoardDecision(action="no_change", reason=""),
+            session_before=session_before,
             requirement_history=requirement_history,
+            deps=ActiveInteractionEmptyDependencies(
+                task_metadata=_task_metadata,
+                save_workspace_for_user=_save_workspace_for_user,
+                build_response=_response,
+            ),
         )
-        record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
-        return response
 
     if decision.route in {"exit_rule", "new_task", "side_learning_request"}:
         if decision.route in {"new_task", "side_learning_request"}:
