@@ -59,6 +59,10 @@ from app.services.chat.paths.generation_resource_prompt import (
     GenerationResourcePromptDependencies,
     handle_generation_resource_prompt,
 )
+from app.services.chat.paths.interaction_board_task_handoff import (
+    InteractionBoardTaskHandoffDependencies,
+    attempt_interaction_board_task_handoff,
+)
 from app.services.chat.paths.ordinary import OrdinaryChatHandlerDependencies, handle_ordinary_chat
 from app.services.chat.paths.resource_prompt import (
     ResourcePromptHandlerDependencies,
@@ -3569,9 +3573,37 @@ def _handle_existing_interaction_session(
         )
 
     if decision.route in {"exit_rule", "new_task", "side_learning_request"}:
-        lesson.active_interaction_session = None
-        interaction_exit_metadata = interaction_session_metadata(before=session_before, after=None, decision=decision)
-        should_attempt_board_task = decision.route in {"new_task", "side_learning_request"} or bool(
+        if decision.route in {"new_task", "side_learning_request"}:
+            handoff_result = attempt_interaction_board_task_handoff(
+                workspace=workspace,
+                package=package,
+                lesson=lesson,
+                user_id=user_id,
+                request=request,
+                requirements=requirements,
+                resources=resources,
+                selection_excerpt=selection_excerpt,
+                selection_text=selection_text,
+                requirement_history=requirement_history,
+                board_task_history=board_task_history,
+                session_before=session_before,
+                decision=decision,
+                deps=InteractionBoardTaskHandoffDependencies(
+                    handle_existing_board_task_flow=_handle_existing_board_task_flow,
+                    build_interaction_session_metadata=interaction_session_metadata,
+                ),
+            )
+            if handoff_result.response is not None:
+                return handoff_result.response
+            interaction_exit_metadata = handoff_result.source_interaction_metadata
+        else:
+            lesson.active_interaction_session = None
+            interaction_exit_metadata = interaction_session_metadata(
+                before=session_before,
+                after=None,
+                decision=decision,
+            )
+        should_attempt_board_task = decision.route == "exit_rule" and bool(
             _infer_board_task_action(
                 request,
                 has_selection=bool(selection_excerpt),
@@ -3580,12 +3612,6 @@ def _handle_existing_interaction_session(
             or _requests_explanation(request.message)
         )
         if should_attempt_board_task:
-            if decision.route in {"new_task", "side_learning_request"}:
-                record_workflow_step(
-                    NodeId.INTERACTION_NEW_TASK,
-                    decision=decision.route,
-                    reason=decision.reason,
-                )
             board_task_response = _handle_existing_board_task_flow(
                 workspace=workspace,
                 package=package,
@@ -3599,7 +3625,7 @@ def _handle_existing_interaction_session(
                 requirement_history=requirement_history,
                 board_task_history=board_task_history,
                 source_interaction_metadata=interaction_exit_metadata,
-                force_task_attempt=decision.route in {"new_task", "side_learning_request"},
+                force_task_attempt=False,
             )
             if board_task_response is not None:
                 board_task_response.interaction_decision = decision
