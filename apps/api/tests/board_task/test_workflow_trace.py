@@ -1151,7 +1151,7 @@ def test_non_ordinary_path_never_records_ordinary_chat_generate(
     ]
 
 
-def test_initial_unknown_guidance_current_terminal_behavior_before_trace(
+def test_initial_unknown_guidance_terminal_trace(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -1216,24 +1216,30 @@ def test_initial_unknown_guidance_current_terminal_behavior_before_trace(
     assert _requirement_run_rows(store, lesson_id) == []
     assert store.list_learning_requirement_versions(owner_user_id=TEST_USER_ID, lesson_id=lesson_id) == []
     assert store.list_learning_requirement_events(owner_user_id=TEST_USER_ID, lesson_id=lesson_id) == []
-    assert nodes[:6] == [
+    assert nodes == [
         NodeId.CONTEXT_LOAD.value,
         NodeId.TURN_CONTEXT_BUILD.value,
         NodeId.BOARD_ACTION_DECIDE.value,
         NodeId.CHAT_TURN_GATE.value,
         NodeId.RESOURCE_PREFLIGHT.value,
         NodeId.ACTIVE_INTERACTION_CHECK.value,
+        NodeId.INITIAL_MODE_DECIDE.value,
+        NodeId.INITIAL_UNKNOWN_GUIDANCE.value,
+        NodeId.PERSIST_CHAT_COMMIT.value,
+        NodeId.RESPONSE_ASSEMBLE.value,
     ]
-    assert NodeId.INITIAL_MODE_DECIDE.value not in nodes
-    assert NodeId.INITIAL_UNKNOWN_GUIDANCE.value not in nodes
+    assert collector.steps[6].decision == "unknown"
+    assert collector.steps[6].reason == "用户表达了学习意愿，但还没有说明学习工作模式。"
+    assert collector.steps[7].decision == "guided_discovery"
+    assert collector.steps[7].reason == "用户表达了学习意愿，但还没有说明学习工作模式。"
+    assert collector.steps[8].commit_id == commit.id
     assert NodeId.INITIAL_NARROW_TOPIC.value not in nodes
-    assert NodeId.RESPONSE_ASSEMBLE.value not in nodes
     assert NodeId.INITIAL_BOARD_GENERATE.value not in nodes
     assert NodeId.INITIAL_REQUIREMENT_FREEZE.value not in nodes
     assert NodeId.INITIAL_BOARD_COMMIT.value not in nodes
 
 
-def test_initial_narrow_topic_current_terminal_behavior_before_trace(
+def test_initial_narrow_topic_terminal_trace(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -1292,18 +1298,24 @@ def test_initial_narrow_topic_current_terminal_behavior_before_trace(
     assert _requirement_run_rows(store, lesson_id) == []
     assert store.list_learning_requirement_versions(owner_user_id=TEST_USER_ID, lesson_id=lesson_id) == []
     assert store.list_learning_requirement_events(owner_user_id=TEST_USER_ID, lesson_id=lesson_id) == []
-    assert nodes[:6] == [
+    assert nodes == [
         NodeId.CONTEXT_LOAD.value,
         NodeId.TURN_CONTEXT_BUILD.value,
         NodeId.BOARD_ACTION_DECIDE.value,
         NodeId.CHAT_TURN_GATE.value,
         NodeId.RESOURCE_PREFLIGHT.value,
         NodeId.ACTIVE_INTERACTION_CHECK.value,
+        NodeId.INITIAL_MODE_DECIDE.value,
+        NodeId.INITIAL_NARROW_TOPIC.value,
+        NodeId.PERSIST_CHAT_COMMIT.value,
+        NodeId.RESPONSE_ASSEMBLE.value,
     ]
-    assert NodeId.INITIAL_MODE_DECIDE.value not in nodes
+    assert collector.steps[6].decision == "narrow_topic"
+    assert collector.steps[6].reason == "用户提出的是宽泛新知识学习方向。"
+    assert collector.steps[7].decision == "clarify_topic"
+    assert collector.steps[7].reason == "用户提出的是宽泛新知识学习方向。"
+    assert collector.steps[8].commit_id == commit.id
     assert NodeId.INITIAL_UNKNOWN_GUIDANCE.value not in nodes
-    assert NodeId.INITIAL_NARROW_TOPIC.value not in nodes
-    assert NodeId.RESPONSE_ASSEMBLE.value not in nodes
     assert NodeId.INITIAL_BOARD_GENERATE.value not in nodes
     assert NodeId.INITIAL_REQUIREMENT_FREEZE.value not in nodes
     assert NodeId.INITIAL_BOARD_COMMIT.value not in nodes
