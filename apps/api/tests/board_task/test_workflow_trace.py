@@ -1151,6 +1151,164 @@ def test_non_ordinary_path_never_records_ordinary_chat_generate(
     ]
 
 
+def test_initial_unknown_guidance_current_terminal_behavior_before_trace(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace, lesson_id = _workspace_with_lesson()
+    store = _store_with_workspace(tmp_path, workspace, name="initial_unknown_guidance")
+    original_board = workspace.packages[0].lessons[-1].board_document.model_dump(mode="json")
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_initial_learning_work_mode",
+        lambda **kwargs: InitialLearningWorkModeDecision(
+            work_mode="unknown",
+            granularity="unclear",
+            topic="学习方向未定",
+            reason="用户表达了学习意愿，但还没有说明学习工作模式。",
+            next_question="你想先选一个具体主题学习，还是先做一份练习材料？",
+            guided_discovery_reply=(
+                "我可以先给两个通用方向：选一个具体主题做知识板书，"
+                "或者先做一份可练习材料。你想先走哪一种？"
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_chatbot_reply",
+        lambda **kwargs: _fail_if_called("generate_chatbot_reply"),
+    )
+    monkeypatch.setattr(
+        chatbot_module,
+        "generate_from_requirements",
+        lambda **kwargs: _fail_if_called("generate_from_requirements"),
+    )
+
+    with bind_workflow_trace_collector() as collector:
+        response = chat_service.process_chat_on_lesson(
+            lesson_id,
+            ChatRequest(message="我想开始学习，但还没想好怎么学"),
+            user_id=TEST_USER_ID,
+        )
+
+    lesson = response.course_package.lessons[-1]
+    commit = lesson.history_graph.commits[-1]
+    nodes = _node_values(collector)
+    assert response.chatbot_message == (
+        "我可以先给两个通用方向：选一个具体主题做知识板书，或者先做一份可练习材料。你想先走哪一种？"
+    )
+    assert response.board_decision.action == "no_change"
+    assert response.requirement_cleared is False
+    assert response.learning_clarification.work_mode == "unknown"
+    assert response.learning_clarification.ready_for_board is False
+    assert response.active_requirement_sheet is not None
+    assert response.active_requirement_sheet.work_mode == "unknown"
+    assert response.requirement_run_id is None
+    assert response.requirement_version_id is None
+    assert response.requirement_phase is None
+    assert response.reference_prompt is None
+    assert lesson.board_document.model_dump(mode="json") == original_board
+    assert commit.metadata["kind"] == "chat_flow"
+    assert commit.metadata["assistant_message_source"] == "initial_learning_guided_discovery"
+    assert commit.metadata["initial_learning_work_mode"]["work_mode"] == "unknown"
+    assert commit.metadata["requirement_cleared"] is False
+    assert _requirement_run_rows(store, lesson_id) == []
+    assert store.list_learning_requirement_versions(owner_user_id=TEST_USER_ID, lesson_id=lesson_id) == []
+    assert store.list_learning_requirement_events(owner_user_id=TEST_USER_ID, lesson_id=lesson_id) == []
+    assert nodes[:6] == [
+        NodeId.CONTEXT_LOAD.value,
+        NodeId.TURN_CONTEXT_BUILD.value,
+        NodeId.BOARD_ACTION_DECIDE.value,
+        NodeId.CHAT_TURN_GATE.value,
+        NodeId.RESOURCE_PREFLIGHT.value,
+        NodeId.ACTIVE_INTERACTION_CHECK.value,
+    ]
+    assert NodeId.INITIAL_MODE_DECIDE.value not in nodes
+    assert NodeId.INITIAL_UNKNOWN_GUIDANCE.value not in nodes
+    assert NodeId.INITIAL_NARROW_TOPIC.value not in nodes
+    assert NodeId.RESPONSE_ASSEMBLE.value not in nodes
+    assert NodeId.INITIAL_BOARD_GENERATE.value not in nodes
+    assert NodeId.INITIAL_REQUIREMENT_FREEZE.value not in nodes
+    assert NodeId.INITIAL_BOARD_COMMIT.value not in nodes
+
+
+def test_initial_narrow_topic_current_terminal_behavior_before_trace(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace, lesson_id = _workspace_with_lesson()
+    store = _store_with_workspace(tmp_path, workspace, name="initial_narrow_topic")
+    original_board = workspace.packages[0].lessons[-1].board_document.model_dump(mode="json")
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_initial_learning_work_mode",
+        lambda **kwargs: InitialLearningWorkModeDecision(
+            work_mode="narrow_topic",
+            granularity="broad_topic",
+            topic="一个宽泛主题",
+            reason="用户提出的是宽泛新知识学习方向。",
+            next_question="你想先从哪个具体问题开始？",
+        ),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_chatbot_reply",
+        lambda **kwargs: _fail_if_called("generate_chatbot_reply"),
+    )
+    monkeypatch.setattr(
+        chatbot_module,
+        "generate_from_requirements",
+        lambda **kwargs: _fail_if_called("generate_from_requirements"),
+    )
+
+    with bind_workflow_trace_collector() as collector:
+        response = chat_service.process_chat_on_lesson(
+            lesson_id,
+            ChatRequest(message="我想学一个宽泛主题"),
+            user_id=TEST_USER_ID,
+        )
+
+    lesson = response.course_package.lessons[-1]
+    commit = lesson.history_graph.commits[-1]
+    nodes = _node_values(collector)
+    assert response.chatbot_message == "你想先从哪个具体问题开始？"
+    assert response.board_decision.action == "no_change"
+    assert response.requirement_cleared is False
+    assert response.learning_clarification.work_mode == "narrow_topic"
+    assert response.learning_clarification.ready_for_board is False
+    assert response.active_requirement_sheet is not None
+    assert response.active_requirement_sheet.work_mode == "narrow_topic"
+    assert response.requirement_run_id is None
+    assert response.requirement_version_id is None
+    assert response.requirement_phase is None
+    assert response.reference_prompt is None
+    assert lesson.board_document.model_dump(mode="json") == original_board
+    assert commit.metadata["kind"] == "chat_flow"
+    assert commit.metadata["assistant_message_source"] == "initial_learning_work_mode"
+    assert commit.metadata["initial_learning_work_mode"]["work_mode"] == "narrow_topic"
+    assert commit.metadata["requirement_cleared"] is False
+    assert _requirement_run_rows(store, lesson_id) == []
+    assert store.list_learning_requirement_versions(owner_user_id=TEST_USER_ID, lesson_id=lesson_id) == []
+    assert store.list_learning_requirement_events(owner_user_id=TEST_USER_ID, lesson_id=lesson_id) == []
+    assert nodes[:6] == [
+        NodeId.CONTEXT_LOAD.value,
+        NodeId.TURN_CONTEXT_BUILD.value,
+        NodeId.BOARD_ACTION_DECIDE.value,
+        NodeId.CHAT_TURN_GATE.value,
+        NodeId.RESOURCE_PREFLIGHT.value,
+        NodeId.ACTIVE_INTERACTION_CHECK.value,
+    ]
+    assert NodeId.INITIAL_MODE_DECIDE.value not in nodes
+    assert NodeId.INITIAL_UNKNOWN_GUIDANCE.value not in nodes
+    assert NodeId.INITIAL_NARROW_TOPIC.value not in nodes
+    assert NodeId.RESPONSE_ASSEMBLE.value not in nodes
+    assert NodeId.INITIAL_BOARD_GENERATE.value not in nodes
+    assert NodeId.INITIAL_REQUIREMENT_FREEZE.value not in nodes
+    assert NodeId.INITIAL_BOARD_COMMIT.value not in nodes
+
+
 def test_traced_and_untraced_ordinary_chat_have_same_visible_response_and_metadata(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
