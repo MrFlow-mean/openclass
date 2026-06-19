@@ -1179,10 +1179,18 @@ def test_existing_board_missing_task_fields_current_terminal_behavior_golden(
     assert commit.label == "Board task clarification"
     assert commit.metadata["board_task_route"] == "clarify_location"
     assert commit.metadata["board_task_cleared"] is False
-    assert _node_values(collector) == _board_task_trace_prefix()
-    assert NodeId.BOARD_TASK_COLLECT.value not in _node_values(collector)
-    assert NodeId.BOARD_TASK_CLARIFY_FIELDS.value not in _node_values(collector)
-    assert NodeId.RESPONSE_ASSEMBLE.value not in _node_values(collector)
+    assert _node_values(collector) == [
+        *_board_task_trace_prefix(),
+        NodeId.BOARD_TASK_COLLECT.value,
+        NodeId.BOARD_TASK_CLARIFY_FIELDS.value,
+        NodeId.RESPONSE_ASSEMBLE.value,
+    ]
+    assert collector.steps[6].decision == "collecting"
+    assert collector.steps[6].run_id == response.board_task_run_id
+    assert collector.steps[6].version_id == response.board_task_version_id
+    assert collector.steps[7].decision == "missing_fields"
+    assert collector.steps[7].reason == response.active_board_task_sheet.clarification_question
+    assert collector.steps[7].commit_id == commit.id
 
 
 def test_existing_board_clarify_location_current_terminal_behavior_golden(
@@ -1250,10 +1258,21 @@ def test_existing_board_clarify_location_current_terminal_behavior_golden(
     assert commit.label == "Board task location clarification"
     assert commit.metadata["board_task_route"] == "clarify_location"
     assert commit.metadata["board_task_cleared"] is False
-    assert _node_values(collector) == _board_task_trace_prefix()
-    assert NodeId.BOARD_TARGET_RESOLVE.value not in _node_values(collector)
-    assert NodeId.BOARD_ROUTE_CLARIFY_LOCATION.value not in _node_values(collector)
-    assert NodeId.RESPONSE_ASSEMBLE.value not in _node_values(collector)
+    assert _node_values(collector) == [
+        *_board_task_trace_prefix(),
+        NodeId.BOARD_TASK_COLLECT.value,
+        NodeId.BOARD_TARGET_RESOLVE.value,
+        NodeId.BOARD_ROUTE_CLARIFY_LOCATION.value,
+        NodeId.RESPONSE_ASSEMBLE.value,
+    ]
+    assert collector.steps[6].decision == "ready"
+    assert collector.steps[6].run_id == response.board_task_run_id
+    assert collector.steps[6].version_id == versions[0]["id"]
+    assert collector.steps[7].decision == "ambiguous"
+    assert collector.steps[7].reason == resolution.question
+    assert collector.steps[8].decision == "ambiguous"
+    assert collector.steps[8].reason == "找到了多个候选位置，请确认其中一个。"
+    assert collector.steps[8].commit_id == commit.id
 
 
 def test_existing_board_await_write_confirmation_current_terminal_behavior_golden(
@@ -1318,9 +1337,19 @@ def test_existing_board_await_write_confirmation_current_terminal_behavior_golde
     assert commit.label == "Board write confirmation"
     assert commit.metadata["board_task_route"] == "await_write_confirmation"
     assert commit.metadata["board_task_cleared"] is False
-    assert _node_values(collector) == _board_task_trace_prefix()
-    assert NodeId.BOARD_AWAIT_WRITE_CONFIRMATION.value not in _node_values(collector)
-    assert NodeId.RESPONSE_ASSEMBLE.value not in _node_values(collector)
+    assert _node_values(collector) == [
+        *_board_task_trace_prefix(),
+        NodeId.BOARD_TASK_COLLECT.value,
+        NodeId.BOARD_AWAIT_WRITE_CONFIRMATION.value,
+        NodeId.RESPONSE_ASSEMBLE.value,
+    ]
+    assert collector.steps[6].decision == "ready"
+    assert collector.steps[6].run_id == response.board_task_run_id
+    assert collector.steps[6].version_id == versions[0]["id"]
+    assert collector.steps[7].decision == "awaiting_confirmation"
+    assert collector.steps[7].run_id == response.board_task_run_id
+    assert collector.steps[7].version_id == response.board_task_version_id
+    assert collector.steps[7].commit_id == commit.id
 
 
 def test_existing_board_write_confirmation_decline_current_terminal_behavior_golden(
@@ -1399,10 +1428,19 @@ def test_existing_board_write_confirmation_decline_current_terminal_behavior_gol
     assert commit.label == "Board task cancelled"
     assert commit.metadata["board_task_route"] == "await_write_confirmation"
     assert commit.metadata["board_task_cleared"] is True
-    assert _node_values(collector) == _board_task_trace_prefix()
-    assert NodeId.BOARD_WRITE_CONFIRMATION_HANDLE.value not in _node_values(collector)
+    assert _node_values(collector) == [
+        *_board_task_trace_prefix(),
+        NodeId.BOARD_TASK_COLLECT.value,
+        NodeId.BOARD_WRITE_CONFIRMATION_HANDLE.value,
+        NodeId.RESPONSE_ASSEMBLE.value,
+    ]
+    assert collector.steps[6].decision == "awaiting_confirmation"
+    assert collector.steps[7].decision == "declined"
+    assert collector.steps[7].reason == "用户取消了扩写确认。"
+    assert collector.steps[7].run_id == response.board_task_run_id
+    assert collector.steps[7].version_id == response.board_task_version_id
+    assert collector.steps[7].commit_id == commit.id
     assert NodeId.BOARD_TASK_FAILURE.value not in _node_values(collector)
-    assert NodeId.RESPONSE_ASSEMBLE.value not in _node_values(collector)
 
 
 def test_resource_confirm_does_not_call_generation_resource_prompt_handler(
