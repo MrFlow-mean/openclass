@@ -10,6 +10,7 @@ from app.models import BoardFocusRef, ChatRequest, InteractionSession, Interacti
 from app.routers import chat as chat_router
 from app.services import chat_service, chatbot as chatbot_module, workspace_state
 from app.services.chat.paths import active_interaction_empty as active_interaction_empty_module
+from app.services.chat.paths import interaction_sequence_end as interaction_sequence_end_module
 from app.services.course_runtime import refresh_lesson_runtime
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
 from app.services.lesson_factory import create_empty_lesson
@@ -427,6 +428,11 @@ def test_unrecognized_sequence_input_records_not_handled_before_generic_decision
     store = _store_with_workspace(tmp_path, workspace, name="sequence_unrecognized")
     monkeypatch.setattr(workspace_state, "STORE", store)
     monkeypatch.setattr(openai_course_ai, "generate_interaction_turn_decision", lambda **kwargs: None)
+    monkeypatch.setattr(
+        chatbot_module,
+        "handle_interaction_sequence_end",
+        lambda **kwargs: _fail_if_called("handle_interaction_sequence_end"),
+    )
 
     with bind_workflow_trace_collector() as collector:
         response = chat_service.process_chat_on_lesson(
@@ -453,6 +459,11 @@ def test_non_sequence_active_session_records_one_not_handled_sequence_check(
     store = _store_with_workspace(tmp_path, workspace, name="non_sequence_not_handled")
     monkeypatch.setattr(workspace_state, "STORE", store)
     monkeypatch.setattr(openai_course_ai, "generate_interaction_turn_decision", lambda **kwargs: None)
+    monkeypatch.setattr(
+        chatbot_module,
+        "handle_interaction_sequence_end",
+        lambda **kwargs: _fail_if_called("handle_interaction_sequence_end"),
+    )
 
     with bind_workflow_trace_collector() as collector:
         chat_service.process_chat_on_lesson(
@@ -468,6 +479,51 @@ def test_non_sequence_active_session_records_one_not_handled_sequence_check(
         NodeId.INTERACTION_DECIDE.value,
     ]
     assert collector.steps[6].decision == "not_handled"
+
+
+@pytest.mark.parametrize(
+    ("case", "message", "final_item", "sequence_decision", "outcome"),
+    [
+        ("explicit_exit", "结束", False, "exit_requested", "exit_requested"),
+        ("completion", "继续", True, "completed", "completed"),
+    ],
+)
+def test_sequence_exit_and_completion_call_end_handler_after_sequence_check(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    case: str,
+    message: str,
+    final_item: bool,
+    sequence_decision: str,
+    outcome: str,
+) -> None:
+    workspace, lesson_id, _first_focus, _second_focus = _workspace_with_sequence_session(final_item=final_item)
+    store = _store_with_workspace(tmp_path, workspace, name=f"{case}_handler_boundary")
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    _patch_sequence_reply_generators(monkeypatch)
+    calls: list[dict[str, Any]] = []
+
+    def _wrapped_end_handler(**kwargs):
+        calls.append(kwargs)
+        assert kwargs["outcome"] == outcome
+        assert _node_values(collector) == _sequence_trace_prefix()
+        assert collector.steps[-1].decision == sequence_decision
+        return interaction_sequence_end_module.handle_interaction_sequence_end(**kwargs)
+
+    monkeypatch.setattr(chatbot_module, "handle_interaction_sequence_end", _wrapped_end_handler)
+
+    with bind_workflow_trace_collector() as collector:
+        response = chat_service.process_chat_on_lesson(
+            lesson_id,
+            _request(message),
+            user_id=TEST_USER_ID,
+        )
+
+    assert len(calls) == 1
+    assert response.active_interaction_session is None
+    nodes = _node_values(collector)
+    assert nodes.count(NodeId.INTERACTION_SEQUENCE_CHECK.value) == 1
+    assert nodes == _sequence_exit_trace()
 
 
 @pytest.mark.parametrize(
@@ -512,6 +568,41 @@ def test_sequence_traced_and_untraced_responses_and_metadata_match(
     assert _normalize_visible_response(traced_response.model_dump(mode="json")) == _normalize_visible_response(
         untraced_response.model_dump(mode="json")
     )
+
+
+@pytest.mark.parametrize(
+    ("case", "message", "final_item"),
+    [
+        ("follow_up", "为什么这里这样？", False),
+        ("advance", "继续", False),
+    ],
+)
+def test_sequence_follow_up_and_advance_do_not_call_end_handler(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    case: str,
+    message: str,
+    final_item: bool,
+) -> None:
+    workspace, lesson_id, _first_focus, _second_focus = _workspace_with_sequence_session(final_item=final_item)
+    store = _store_with_workspace(tmp_path, workspace, name=f"{case}_no_end_handler")
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    _patch_sequence_reply_generators(monkeypatch)
+    monkeypatch.setattr(
+        chatbot_module,
+        "handle_interaction_sequence_end",
+        lambda **kwargs: _fail_if_called("handle_interaction_sequence_end"),
+    )
+
+    response = chat_service.process_chat_on_lesson(
+        lesson_id,
+        _request(message),
+        user_id=TEST_USER_ID,
+    )
+
+    assert response.active_interaction_session is not None
+    assert response.interaction_decision is not None
+    assert response.interaction_decision.route == "continue_rule"
 
 
 def test_sequence_trace_does_not_leak_to_response_sse_history_or_metadata(
@@ -588,8 +679,9 @@ def test_sequence_failure_ordering(
     else:
         _patch_sequence_reply_generators(monkeypatch)
         if failure_point == "commit":
+            target_module = interaction_sequence_end_module if outcome_node == NodeId.INTERACTION_EXIT else chatbot_module
             monkeypatch.setattr(
-                chatbot_module,
+                target_module,
                 "commit_operations",
                 lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("commit failed")),
             )
