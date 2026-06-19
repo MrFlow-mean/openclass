@@ -2006,6 +2006,14 @@ def _handle_existing_board_task_flow(
         and existing_task.requested_action == "write"
     ):
         if is_write_decline(request.message):
+            current_stamp = board_task_history.current_stamp()
+            record_workflow_step(
+                NodeId.BOARD_TASK_COLLECT,
+                decision="awaiting_confirmation",
+                reason=existing_task.question_or_topic or existing_task.target_hint,
+                run_id=current_stamp.run_id,
+                version_id=current_stamp.version_id,
+            )
             stamp = board_task_history.not_executed(reason="用户取消了扩写确认。")
             lesson.board_task_requirements = None
             commit_operations(
@@ -2030,7 +2038,16 @@ def _handle_existing_board_task_flow(
                 requirement_history=requirement_history,
                 board_task_history=board_task_history,
             )
-            return _response(
+            commit = lesson.history_graph.commits[-1]
+            record_workflow_step(
+                NodeId.BOARD_WRITE_CONFIRMATION_HANDLE,
+                decision="declined",
+                reason="用户取消了扩写确认。",
+                run_id=stamp.run_id,
+                version_id=stamp.version_id,
+                commit_id=commit.id,
+            )
+            response = _response(
                 workspace=workspace,
                 package=package,
                 lesson=lesson,
@@ -2040,6 +2057,8 @@ def _handle_existing_board_task_flow(
                 board_decision=BoardDecision(action="no_change", reason="用户取消了扩写。"),
                 board_task_stamp=stamp,
             )
+            record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
+            return response
         if is_write_confirmation(request.message):
             confirmed_task = BoardTaskRequirementSheet.model_validate(existing_task.model_dump(mode="json"))
             confirmed_task.confirmation_status = "confirmed"
@@ -2101,6 +2120,13 @@ def _handle_existing_board_task_flow(
     stamp = board_task_history.record_update(sheet=board_task)
     _emit_board_task_update(lesson=lesson, sheet=board_task, stamp=stamp)
     if board_task.progress < 100:
+        record_workflow_step(
+            NodeId.BOARD_TASK_COLLECT,
+            decision="collecting",
+            reason=board_task.clarification_question,
+            run_id=stamp.run_id,
+            version_id=stamp.version_id,
+        )
         chatbot_message, chatbot_message_source = _generate_board_task_clarification_message(
             lesson=lesson,
             resources=resources,
@@ -2140,7 +2166,16 @@ def _handle_existing_board_task_flow(
             requirement_history=requirement_history,
             board_task_history=board_task_history,
         )
-        return _response(
+        commit = lesson.history_graph.commits[-1]
+        record_workflow_step(
+            NodeId.BOARD_TASK_CLARIFY_FIELDS,
+            decision="missing_fields",
+            reason=board_task.clarification_question,
+            run_id=stamp.run_id,
+            version_id=stamp.version_id,
+            commit_id=commit.id,
+        )
+        response = _response(
             workspace=workspace,
             package=package,
             lesson=lesson,
@@ -2150,6 +2185,8 @@ def _handle_existing_board_task_flow(
             board_decision=BoardDecision(action="no_change", reason=board_task.clarification_question),
             board_task_history=board_task_history,
         )
+        record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
+        return response
 
     board_action = _board_task_action_to_board_action(board_task)
     resolution = None
@@ -2266,6 +2303,20 @@ def _handle_existing_board_task_flow(
         )
 
     if decision.route == "clarify_location":
+        record_workflow_step(
+            NodeId.BOARD_TASK_COLLECT,
+            decision="ready",
+            reason=board_task.question_or_topic or board_task.target_hint,
+            run_id=stamp.run_id,
+            version_id=stamp.version_id,
+        )
+        record_workflow_step(
+            NodeId.BOARD_TARGET_RESOLVE,
+            decision=resolution.status if resolution else decision.location_status,
+            reason=(resolution.question if resolution and resolution.question else decision.reason),
+            run_id=stamp.run_id,
+            version_id=stamp.version_id,
+        )
         next_task = BoardTaskRequirementSheet.model_validate(board_task.model_dump(mode="json"))
         next_task.location_status = "ambiguous" if decision.location_status == "ambiguous" else "missing"
         next_task.failure_count += 1 if board_task.requested_action == "edit" else 0
@@ -2325,7 +2376,16 @@ def _handle_existing_board_task_flow(
                 requirement_history=requirement_history,
                 board_task_history=board_task_history,
             )
-            return _response(
+            commit = lesson.history_graph.commits[-1]
+            record_workflow_step(
+                NodeId.BOARD_AWAIT_WRITE_CONFIRMATION,
+                decision="converted_from_unresolved_edit",
+                reason="编辑目标未定位，已转为扩写确认。",
+                run_id=new_stamp.run_id,
+                version_id=new_stamp.version_id,
+                commit_id=commit.id,
+            )
+            response = _response(
                 workspace=workspace,
                 package=package,
                 lesson=lesson,
@@ -2335,6 +2395,8 @@ def _handle_existing_board_task_flow(
                 board_decision=BoardDecision(action="no_change", reason="编辑目标未定位，已转为扩写确认。"),
                 board_task_stamp=new_stamp,
             )
+            record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
+            return response
         _activate_board_task_requirements(lesson, next_task)
         stamp = board_task_history.record_update(sheet=next_task, change_summary=decision.reason)
         _emit_board_task_update(lesson=lesson, sheet=next_task, stamp=stamp)
@@ -2403,7 +2465,16 @@ def _handle_existing_board_task_flow(
             requirement_history=requirement_history,
             board_task_history=board_task_history,
         )
-        return _response(
+        commit = lesson.history_graph.commits[-1]
+        record_workflow_step(
+            NodeId.BOARD_ROUTE_CLARIFY_LOCATION,
+            decision=decision.location_status,
+            reason=decision.reason,
+            run_id=stamp.run_id,
+            version_id=stamp.version_id,
+            commit_id=commit.id,
+        )
+        response = _response(
             workspace=workspace,
             package=package,
             lesson=lesson,
@@ -2414,8 +2485,17 @@ def _handle_existing_board_task_flow(
             focus_candidates=decision.candidate_focuses,
             board_task_history=board_task_history,
         )
+        record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
+        return response
 
     if decision.route == "await_write_confirmation":
+        record_workflow_step(
+            NodeId.BOARD_TASK_COLLECT,
+            decision="ready",
+            reason=board_task.question_or_topic or board_task.target_hint,
+            run_id=stamp.run_id,
+            version_id=stamp.version_id,
+        )
         next_task = BoardTaskRequirementSheet.model_validate(board_task.model_dump(mode="json"))
         next_task.requested_action = "write"
         next_task.location_status = "content_absent"
@@ -2475,7 +2555,16 @@ def _handle_existing_board_task_flow(
             requirement_history=requirement_history,
             board_task_history=board_task_history,
         )
-        return _response(
+        commit = lesson.history_graph.commits[-1]
+        record_workflow_step(
+            NodeId.BOARD_AWAIT_WRITE_CONFIRMATION,
+            decision="awaiting_confirmation",
+            reason=decision.reason,
+            run_id=stamp.run_id,
+            version_id=stamp.version_id,
+            commit_id=commit.id,
+        )
+        response = _response(
             workspace=workspace,
             package=package,
             lesson=lesson,
@@ -2485,6 +2574,8 @@ def _handle_existing_board_task_flow(
             board_decision=BoardDecision(action="no_change", reason=decision.reason),
             board_task_history=board_task_history,
         )
+        record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
+        return response
 
     if decision.route == "write":
         return _execute_board_task_write(
