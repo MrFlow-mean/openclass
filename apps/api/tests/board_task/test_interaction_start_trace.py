@@ -14,6 +14,10 @@ from app.models import (
 )
 from app.routers import chat as chat_router
 from app.services import chat_service, chatbot as chatbot_module, workspace_state
+from app.services.chat.paths import interaction_start_success as interaction_start_success_module
+from app.services.chat.paths.interaction_start_success import (
+    handle_interaction_start_success as real_handle_interaction_start_success,
+)
 from app.services.course_runtime import refresh_lesson_runtime
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
 from app.services.interaction_rules import InteractionStartResolution
@@ -243,6 +247,13 @@ def test_service_interaction_start_records_exact_trace_and_preserves_metadata(
         "handle_interaction_start_focus_clarification",
         lambda **kwargs: _fail_if_called("handle_interaction_start_focus_clarification"),
     )
+    handler_entries: list[list[str]] = []
+
+    def _spy_success_handler(**kwargs):
+        handler_entries.append(_node_values(collector))
+        return real_handle_interaction_start_success(**kwargs)
+
+    monkeypatch.setattr(chatbot_module, "handle_interaction_start_success", _spy_success_handler)
     monkeypatch.setattr(
         openai_course_ai,
         "generate_board_task_requirement_sheet",
@@ -273,6 +284,7 @@ def test_service_interaction_start_records_exact_trace_and_preserves_metadata(
 
     lesson = response.course_package.lessons[-1]
     commit = lesson.history_graph.commits[-1]
+    assert handler_entries == [[*_start_trace_prefix(), NodeId.INTERACTION_START_RESOLVE.value]]
     assert response.chatbot_message == "AI生成：已按你的规则开始互动。"
     assert response.active_interaction_session is not None
     assert response.active_interaction_session.status == "active"
@@ -321,6 +333,11 @@ def test_focus_clarification_records_start_resolve_without_start_persist(
         "build_interaction_start",
         lambda **kwargs: InteractionStartResolution(session=None, focus_resolution=resolution),
     )
+    monkeypatch.setattr(
+        chatbot_module,
+        "handle_interaction_start_success",
+        lambda **kwargs: _fail_if_called("handle_interaction_start_success"),
+    )
     _patch_reply(monkeypatch, message="AI生成：你想用哪一段开始互动？")
 
     with bind_workflow_trace_collector() as collector:
@@ -366,6 +383,11 @@ def test_focus_clarification_allows_empty_candidates_without_changing_trace(
         chatbot_module,
         "build_interaction_start",
         lambda **kwargs: InteractionStartResolution(session=None, focus_resolution=resolution),
+    )
+    monkeypatch.setattr(
+        chatbot_module,
+        "handle_interaction_start_success",
+        lambda **kwargs: _fail_if_called("handle_interaction_start_success"),
     )
     _patch_reply(monkeypatch, message="AI生成：我没有找到可用于互动的位置。")
 
@@ -423,6 +445,11 @@ def test_board_task_focus_clarification_preserves_active_task_without_consuming(
             focus_resolution=_focus_resolution(kwargs["lesson"]),
         ),
     )
+    monkeypatch.setattr(
+        chatbot_module,
+        "handle_interaction_start_success",
+        lambda **kwargs: _fail_if_called("handle_interaction_start_success"),
+    )
 
     with bind_workflow_trace_collector() as collector:
         response = chat_service.process_chat_on_lesson(
@@ -474,6 +501,11 @@ def test_start_resolution_no_session_no_focus_records_not_started_only(
         "build_interaction_start",
         lambda **kwargs: InteractionStartResolution(session=None, focus_resolution=None),
     )
+    monkeypatch.setattr(
+        chatbot_module,
+        "handle_interaction_start_success",
+        lambda **kwargs: _fail_if_called("handle_interaction_start_success"),
+    )
 
     with bind_workflow_trace_collector() as collector:
         response = chatbot_module._maybe_start_interaction_session(**inputs)
@@ -512,6 +544,11 @@ def test_start_early_guards_return_without_trace_or_building_session(
         "handle_interaction_start_focus_clarification",
         lambda **kwargs: _fail_if_called("handle_interaction_start_focus_clarification"),
     )
+    monkeypatch.setattr(
+        chatbot_module,
+        "handle_interaction_start_success",
+        lambda **kwargs: _fail_if_called("handle_interaction_start_success"),
+    )
 
     with bind_workflow_trace_collector() as collector:
         response = chatbot_module._maybe_start_interaction_session(**inputs)
@@ -549,7 +586,7 @@ def test_start_commit_failure_keeps_resolve_without_persist_or_response(
     inputs = _direct_start_inputs(workspace, lesson_id)
     _patch_reply(monkeypatch)
     monkeypatch.setattr(
-        chatbot_module,
+        interaction_start_success_module,
         "commit_operations",
         lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("commit failed")),
     )
