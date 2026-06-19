@@ -1142,7 +1142,7 @@ def test_resource_confirm_does_not_call_generation_resource_prompt_handler(
     assert "生成后的内容" in confirmed_response.course_package.lessons[-1].board_document.content_text
 
 
-def test_existing_board_edit_success_current_behavior_persists_commit_and_consumes_task(
+def test_existing_board_edit_success_trace_records_current_path_and_consumes_task(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -1254,12 +1254,23 @@ def test_existing_board_edit_success_current_behavior_persists_commit_and_consum
     assert response.board_patch_diff[0].op == "update_block_content"
     assert TRACE_KEYS.isdisjoint(_all_keys(response.model_dump(mode="json")))
     assert TRACE_KEYS.isdisjoint(_all_keys(commit.metadata))
-    assert _node_values(collector) == _existing_board_task_trace_prefix()
-    assert NodeId.BOARD_EDIT_EXECUTE.value not in _node_values(collector)
-    assert NodeId.PERSIST_BOARD_COMMIT.value not in _node_values(collector)
+    assert _node_values(collector) == [
+        *_existing_board_task_trace_prefix(),
+        NodeId.BOARD_TASK_READY_PERSIST.value,
+        NodeId.BOARD_TARGET_RESOLVE.value,
+        NodeId.BOARD_ROUTE_DECIDE.value,
+        NodeId.BOARD_EDIT_EXECUTE.value,
+        NodeId.PERSIST_BOARD_COMMIT.value,
+        NodeId.RESPONSE_ASSEMBLE.value,
+    ]
+    assert collector.steps[6].decision == "ready"
+    assert collector.steps[6].run_id == response.board_task_run_id
+    assert collector.steps[8].decision == "edit"
+    assert collector.steps[9].decision == "succeeded"
+    assert collector.steps[10].commit_id == commit.id
 
 
-def test_existing_board_edit_target_miss_current_behavior_keeps_task_active(
+def test_existing_board_edit_target_miss_trace_keeps_task_active(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -1316,11 +1327,18 @@ def test_existing_board_edit_target_miss_current_behavior_keeps_task_active(
     assert commit.metadata["board_task_route"] == "clarify_location"
     assert commit.metadata["board_task_cleared"] is False
     assert commit.metadata["board_task_run_id"] == response.board_task_run_id
-    assert _node_values(collector) == _existing_board_task_trace_prefix()
+    assert _node_values(collector) == [
+        *_existing_board_task_trace_prefix(),
+        NodeId.BOARD_TASK_READY_PERSIST.value,
+        NodeId.BOARD_TARGET_RESOLVE.value,
+        NodeId.BOARD_ROUTE_DECIDE.value,
+        NodeId.RESPONSE_ASSEMBLE.value,
+    ]
+    assert collector.steps[8].decision == "clarify_location"
     assert NodeId.BOARD_TASK_FAILURE.value not in _node_values(collector)
 
 
-def test_existing_board_edit_execution_failed_current_behavior_records_history_without_commit(
+def test_existing_board_edit_execution_failed_trace_records_history_without_commit(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -1395,12 +1413,21 @@ def test_existing_board_edit_execution_failed_current_behavior_records_history_w
     assert metadata["board_task_route"] == "edit"
     assert metadata["board_task_cleared"] is False
     assert metadata["target_scope"] == "focus"
-    assert _node_values(collector) == _existing_board_task_trace_prefix()
-    assert NodeId.BOARD_EDIT_EXECUTE.value not in _node_values(collector)
-    assert NodeId.BOARD_TASK_FAILURE.value not in _node_values(collector)
+    assert _node_values(collector) == [
+        *_existing_board_task_trace_prefix(),
+        NodeId.BOARD_TASK_READY_PERSIST.value,
+        NodeId.BOARD_TARGET_RESOLVE.value,
+        NodeId.BOARD_ROUTE_DECIDE.value,
+        NodeId.BOARD_EDIT_EXECUTE.value,
+        NodeId.BOARD_TASK_FAILURE.value,
+        NodeId.RESPONSE_ASSEMBLE.value,
+    ]
+    assert collector.steps[9].decision == "failed"
+    assert collector.steps[10].decision == "execution_failed"
+    assert NodeId.PERSIST_BOARD_COMMIT.value not in _node_values(collector)
 
 
-def test_existing_board_repeated_missing_edit_current_behavior_converts_to_write_confirmation(
+def test_existing_board_repeated_missing_edit_trace_converts_to_write_confirmation(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -1467,8 +1494,16 @@ def test_existing_board_repeated_missing_edit_current_behavior_converts_to_write
     assert commit.metadata["board_task_cleared"] is True
     assert commit.metadata["new_board_task"]["requested_action"] == "write"
     assert commit.metadata["new_board_task_run_id"] == second_response.board_task_run_id
-    assert _node_values(collector) == _existing_board_task_trace_prefix()
-    assert NodeId.BOARD_TASK_FAILURE.value not in _node_values(collector)
+    assert _node_values(collector) == [
+        *_existing_board_task_trace_prefix(),
+        NodeId.BOARD_TASK_READY_PERSIST.value,
+        NodeId.BOARD_TARGET_RESOLVE.value,
+        NodeId.BOARD_ROUTE_DECIDE.value,
+        NodeId.BOARD_TASK_FAILURE.value,
+        NodeId.RESPONSE_ASSEMBLE.value,
+    ]
+    assert collector.steps[8].decision == "clarify_location"
+    assert collector.steps[9].decision == "not_executed"
 
 
 def test_non_ordinary_path_never_records_ordinary_chat_generate(
