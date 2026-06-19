@@ -18,8 +18,14 @@ from app.models import (
 )
 from app.routers import chat as chat_router
 from app.services import chat_service, chatbot as chatbot_module, workspace_state
+from app.services.board_task_history import BoardTaskHistoryRecorder
+from app.services.chat.paths.interaction_handoff_fallback import (
+    InteractionHandoffFallbackDependencies,
+    handle_interaction_handoff_fallback,
+)
 from app.services.course_runtime import refresh_lesson_runtime
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
+from app.services.learning_requirement_history import LearningRequirementHistoryRecorder
 from app.services.lesson_factory import create_empty_lesson
 from app.services.openai_course_ai import ChatbotReply, openai_course_ai
 from app.services.rich_document import build_document
@@ -313,6 +319,145 @@ def _history_rows(store: SqliteCourseStore, lesson_id: str) -> list[dict[str, An
     ]
 
 
+def _requirement_history(lesson_id: str) -> LearningRequirementHistoryRecorder:
+    return LearningRequirementHistoryRecorder.from_store_state(
+        owner_user_id=TEST_USER_ID,
+        lesson_id=lesson_id,
+        state=None,
+    )
+
+
+def _board_task_history(lesson_id: str) -> BoardTaskHistoryRecorder:
+    return BoardTaskHistoryRecorder.from_store_state(
+        owner_user_id=TEST_USER_ID,
+        lesson_id=lesson_id,
+        state=None,
+    )
+
+
+def _fallback_deps() -> InteractionHandoffFallbackDependencies:
+    return InteractionHandoffFallbackDependencies(
+        generate_interaction_message=lambda **kwargs: (
+            "AI生成：暂时没有可执行的板书任务。",
+            "chatbot_interaction",
+            None,
+        ),
+        task_metadata=lambda **kwargs: {},
+        save_workspace_for_user=lambda **kwargs: None,
+        build_response=lambda **kwargs: _fail_if_called("build_response"),
+    )
+
+
+def _direct_handler_inputs(route: str = "new_task") -> dict[str, Any]:
+    workspace, lesson_id = _workspace_with_active_session()
+    package = workspace.packages[0]
+    lesson = package.lessons[-1]
+    session_before = lesson.active_interaction_session
+    lesson.active_interaction_session = None
+    decision = _interaction_decision(route, reason=f"{route} reason")
+    return {
+        "workspace": workspace,
+        "package": package,
+        "lesson": lesson,
+        "user_id": TEST_USER_ID,
+        "request": _request(f"{route} fallback"),
+        "requirements": lesson.learning_requirements,
+        "learning_clarification": chatbot_module._latest_learning_clarification(
+            lesson,
+            requirements=lesson.learning_requirements,
+        ),
+        "resources": package.resources,
+        "session_before": session_before,
+        "decision": decision,
+        "source_interaction_metadata": {"interaction_decision": decision.model_dump(mode="json")},
+        "requirement_history": _requirement_history(lesson_id),
+        "board_task_history": _board_task_history(lesson_id),
+    }
+
+
+def _count_fallback_handler_calls(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    calls: dict[str, Any] = {"count": 0}
+    original_handler = chatbot_module.handle_interaction_handoff_fallback
+
+    def _counting_handler(**kwargs):
+        calls["count"] += 1
+        calls["kwargs"] = kwargs
+        return original_handler(**kwargs)
+
+    monkeypatch.setattr(chatbot_module, "handle_interaction_handoff_fallback", _counting_handler)
+    return calls
+
+
+@pytest.mark.parametrize("route", ["new_task", "side_learning_request"])
+def test_handoff_fallback_handler_is_invoked_once_after_none_handoff(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    route: str,
+) -> None:
+    workspace, lesson_id = _workspace_with_active_session()
+    store = _store_with_workspace(tmp_path, workspace, name=f"handler_invoked_{route}")
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    _patch_interaction_turn(monkeypatch, route, reason=f"{route} fallback reason")
+    handoff_calls = _patch_board_task_none(monkeypatch)
+    fallback_calls = _count_fallback_handler_calls(monkeypatch)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson_id,
+        _request(f"{route} fallback"),
+        user_id=TEST_USER_ID,
+    )
+
+    assert handoff_calls["count"] == 1
+    assert fallback_calls["count"] == 1
+    kwargs = fallback_calls["kwargs"]
+    assert kwargs["decision"].route == route
+    assert kwargs["session_before"] is not None
+    assert kwargs["lesson"].active_interaction_session is None
+    assert kwargs["source_interaction_metadata"] == handoff_calls["source_interaction_metadata"]
+    assert response.interaction_decision is not None
+    assert response.interaction_decision.route == route
+
+
+@pytest.mark.parametrize("route", ["continue_rule", "resume_rule", "rule_violation", "exit_rule"])
+def test_fallback_handler_rejects_unsupported_routes_before_mutation(route: str) -> None:
+    inputs = _direct_handler_inputs(route=route)
+    lesson = inputs["lesson"]
+    original_commits = list(lesson.history_graph.commits)
+
+    with pytest.raises(ValueError, match="unsupported interaction handoff fallback route"):
+        handle_interaction_handoff_fallback(**inputs, deps=_fallback_deps())
+
+    assert lesson.active_interaction_session is None
+    assert lesson.history_graph.commits == original_commits
+
+
+def test_fallback_handler_rejects_missing_session_before() -> None:
+    inputs = _direct_handler_inputs()
+    inputs["session_before"] = None
+
+    with pytest.raises(ValueError, match="requires a previous interaction session"):
+        handle_interaction_handoff_fallback(**inputs, deps=_fallback_deps())
+
+
+def test_fallback_handler_rejects_uncleared_active_session() -> None:
+    inputs = _direct_handler_inputs()
+    lesson = inputs["lesson"]
+    lesson.active_interaction_session = inputs["session_before"]
+
+    with pytest.raises(ValueError, match="requires the active session to be cleared first"):
+        handle_interaction_handoff_fallback(**inputs, deps=_fallback_deps())
+
+    assert lesson.active_interaction_session == inputs["session_before"]
+
+
+def test_fallback_handler_requires_source_interaction_metadata() -> None:
+    inputs = _direct_handler_inputs()
+    inputs["source_interaction_metadata"] = None
+
+    with pytest.raises(ValueError, match="requires source interaction metadata"):
+        handle_interaction_handoff_fallback(**inputs, deps=_fallback_deps())
+
+
 @pytest.mark.parametrize("route", ["new_task", "side_learning_request"])
 def test_handoff_fallback_records_exact_terminal_trace(
     monkeypatch: pytest.MonkeyPatch,
@@ -399,6 +544,7 @@ def test_successful_handoff_does_not_record_fallback_terminal_nodes(
     monkeypatch.setattr(workspace_state, "STORE", store)
     _patch_interaction_turn(monkeypatch, "new_task", reason="successful handoff")
     handoff_calls = _patch_board_task_success(monkeypatch)
+    fallback_calls = _count_fallback_handler_calls(monkeypatch)
 
     with bind_workflow_trace_collector() as collector:
         response = chat_service.process_chat_on_lesson(
@@ -408,6 +554,7 @@ def test_successful_handoff_does_not_record_fallback_terminal_nodes(
         )
 
     assert handoff_calls["count"] == 1
+    assert fallback_calls["count"] == 0
     assert response.chatbot_message == "转入板书任务。"
     assert _node_values(collector) == [
         *_interaction_trace_prefix(),
@@ -426,6 +573,11 @@ def test_board_task_exception_keeps_attempt_trace_only(
     store = _store_with_workspace(tmp_path, workspace, name="handoff_exception")
     monkeypatch.setattr(workspace_state, "STORE", store)
     _patch_interaction_turn(monkeypatch, "new_task", reason="board task raises")
+    monkeypatch.setattr(
+        chatbot_module,
+        "handle_interaction_handoff_fallback",
+        lambda **kwargs: _fail_if_called("handle_interaction_handoff_fallback"),
+    )
 
     def _raise_board_task(**kwargs):
         assert kwargs["lesson"].active_interaction_session is None
@@ -553,6 +705,11 @@ def test_continue_resume_and_violation_do_not_record_handoff_fallback_terminal(
     store = _store_with_workspace(tmp_path, workspace, name=f"no_terminal_{route}")
     monkeypatch.setattr(workspace_state, "STORE", store)
     _patch_interaction_turn(monkeypatch, route, reason=f"{route} reason")
+    monkeypatch.setattr(
+        chatbot_module,
+        "handle_interaction_handoff_fallback",
+        lambda **kwargs: _fail_if_called("handle_interaction_handoff_fallback"),
+    )
 
     with bind_workflow_trace_collector() as collector:
         response = chat_service.process_chat_on_lesson(
@@ -579,6 +736,11 @@ def test_exit_rule_does_not_record_handoff_fallback_terminal(
         reason="exit reason",
         chatbot_message="AI生成：好的，我们先结束这个互动。",
     )
+    monkeypatch.setattr(
+        chatbot_module,
+        "handle_interaction_handoff_fallback",
+        lambda **kwargs: _fail_if_called("handle_interaction_handoff_fallback"),
+    )
 
     with bind_workflow_trace_collector() as collector:
         response = chat_service.process_chat_on_lesson(
@@ -600,6 +762,11 @@ def test_empty_decision_does_not_record_handoff_fallback_terminal(
     store = _store_with_workspace(tmp_path, workspace, name="no_terminal_empty")
     monkeypatch.setattr(workspace_state, "STORE", store)
     monkeypatch.setattr(openai_course_ai, "generate_interaction_turn_decision", lambda **kwargs: None)
+    monkeypatch.setattr(
+        chatbot_module,
+        "handle_interaction_handoff_fallback",
+        lambda **kwargs: _fail_if_called("handle_interaction_handoff_fallback"),
+    )
 
     with bind_workflow_trace_collector() as collector:
         response = chat_service.process_chat_on_lesson(
@@ -623,6 +790,11 @@ def test_sequence_session_does_not_record_handoff_fallback_terminal(
         chatbot_module,
         "_generate_sequence_end_message",
         lambda **kwargs: ("顺序讲解结束。", "chatbot_interaction"),
+    )
+    monkeypatch.setattr(
+        chatbot_module,
+        "handle_interaction_handoff_fallback",
+        lambda **kwargs: _fail_if_called("handle_interaction_handoff_fallback"),
     )
 
     with bind_workflow_trace_collector() as collector:
