@@ -75,6 +75,10 @@ from app.services.chat.paths.interaction_start_focus import (
     InteractionStartFocusDependencies,
     handle_interaction_start_focus_clarification,
 )
+from app.services.chat.paths.interaction_start_success import (
+    InteractionStartSuccessDependencies,
+    handle_interaction_start_success,
+)
 from app.services.chat.paths.ordinary import OrdinaryChatHandlerDependencies, handle_ordinary_chat
 from app.services.chat.paths.resource_prompt import (
     ResourcePromptHandlerDependencies,
@@ -3756,115 +3760,32 @@ def _maybe_start_interaction_session(
         decision="resolved",
         reason=start_resolution.session.interaction_goal,
     )
-    session_before = lesson.active_interaction_session
-    session_after = start_resolution.session
-    if board_task is not None and board_task_stamp is not None:
-        session_after = session_after.model_copy(
-            update={
-                "source_board_task_run_id": board_task_stamp.run_id,
-                "source_board_task_version_id": board_task_stamp.version_id,
-                "source_board_task_route": "chat",
-            }
-        )
-    lesson.active_interaction_session = session_after
-    chatbot_message, chatbot_message_source, board_explanation_directive = _generate_interaction_chatbot_message(
-        lesson=lesson,
-        requirements=requirements,
-        resources=resources,
-        conversation=request.conversation,
-        request=request,
-        session=session_after,
-        decision=None,
-    )
-    _clear_task_requirements(lesson)
-    if board_task is not None:
-        lesson.board_task_requirements = None
-    commit_operations(
-        lesson,
-        [],
-        label="Interaction session start",
-        message="Started a rule-based interaction session",
-        new_document=lesson.board_document,
-        metadata={
-            "kind": "interaction_flow",
-            "user_message": request.message,
-            "assistant_message": chatbot_message,
-            "assistant_message_source": chatbot_message_source,
-            "board_explanation_directive": board_explanation_directive,
-            "interaction_mode": request.interaction_mode,
-            "selection": request.selection.model_dump(mode="json") if request.selection else None,
-            **interaction_metadata,
-            **_task_metadata(
-                requirements=requirements,
-                learning_clarification=learning_clarification,
-                focus=session_after.target_focus,
-                focus_candidates=(
-                    start_resolution.focus_resolution.candidates
-                    if start_resolution.focus_resolution
-                    else []
-                ),
-                requirement_cleared=True,
-            ),
-            **(
-                _board_task_metadata(
-                    board_task=board_task,
-                    stamp=board_task_stamp,
-                    route="chat",
-                    decision=board_task_decision.model_dump(mode="json") if board_task_decision else None,
-                    cleared=board_task is not None,
-                )
-                if board_task is not None
-                else {}
-            ),
-            **interaction_session_metadata(
-                before=session_before,
-                after=session_after,
-            ),
-        },
-    )
-    consumed_board_task_stamp = (
-        board_task_history.consume(commit_id=lesson.history_graph.commits[-1].id)
-        if board_task is not None and board_task_history is not None
-        else board_task_stamp
-    )
-    workspace_state.normalize_package_state(package)
-    _save_workspace_for_user(
-        user_id=user_id,
-        workspace=workspace,
-        requirement_history=requirement_history,
-        board_task_history=board_task_history,
-    )
-    record_workflow_step(
-        NodeId.INTERACTION_START_PERSIST,
-        decision="started",
-        reason=session_after.interaction_goal,
-        run_id=consumed_board_task_stamp.run_id if consumed_board_task_stamp else None,
-        version_id=consumed_board_task_stamp.version_id if consumed_board_task_stamp else None,
-        commit_id=lesson.history_graph.commits[-1].id,
-    )
-    response = _response(
+    return handle_interaction_start_success(
         workspace=workspace,
         package=package,
         lesson=lesson,
-        chatbot_message=chatbot_message,
-        learning_clarification=learning_clarification,
+        user_id=user_id,
+        request=request,
         requirements=requirements,
-        board_decision=BoardDecision(
-            action="no_change",
-            reason=session_after.interaction_goal,
-        ),
-        resolved_focus=session_after.target_focus,
-        focus_candidates=(
-            start_resolution.focus_resolution.candidates
-            if start_resolution.focus_resolution
-            else []
-        ),
-        requirement_cleared=True,
+        learning_clarification=learning_clarification,
+        resources=resources,
+        resolved_session=start_resolution.session,
+        focus_resolution=start_resolution.focus_resolution,
         requirement_history=requirement_history,
-        board_task_stamp=consumed_board_task_stamp,
+        source_interaction_metadata=interaction_metadata,
+        board_task=board_task,
+        board_task_history=board_task_history,
+        board_task_stamp=board_task_stamp,
+        board_task_decision_metadata=board_task_decision.model_dump(mode="json") if board_task_decision else None,
+        deps=InteractionStartSuccessDependencies(
+            generate_interaction_message=_generate_interaction_chatbot_message,
+            clear_task_requirements=_clear_task_requirements,
+            task_metadata=_task_metadata,
+            board_task_metadata=_board_task_metadata,
+            save_workspace_for_user=_save_workspace_for_user,
+            build_response=_response,
+        ),
     )
-    record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
-    return response
 
 
 def _generate_board_from_confirmed_resource(
