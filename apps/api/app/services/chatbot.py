@@ -3713,6 +3713,11 @@ def _maybe_start_interaction_session(
         resolved_focus=resolved_focus,
     )
     if start_resolution.session is None and start_resolution.focus_resolution is not None:
+        record_workflow_step(
+            NodeId.INTERACTION_START_RESOLVE,
+            decision="clarify_focus",
+            reason=start_resolution.focus_resolution.question,
+        )
         chatbot_message, chatbot_message_source = _generate_focus_candidate_message(
             lesson=lesson,
             requirements=requirements,
@@ -3764,7 +3769,12 @@ def _maybe_start_interaction_session(
             requirement_history=requirement_history,
             board_task_history=board_task_history,
         )
-        return _response(
+        record_workflow_step(
+            NodeId.PERSIST_CHAT_COMMIT,
+            decision="committed",
+            commit_id=lesson.history_graph.commits[-1].id,
+        )
+        response = _response(
             workspace=workspace,
             package=package,
             lesson=lesson,
@@ -3778,10 +3788,18 @@ def _maybe_start_interaction_session(
             focus_candidates=start_resolution.focus_resolution.candidates,
             requirement_history=requirement_history,
         )
+        record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
+        return response
 
     if start_resolution.session is None:
+        record_workflow_step(NodeId.INTERACTION_START_RESOLVE, decision="not_started")
         return None
 
+    record_workflow_step(
+        NodeId.INTERACTION_START_RESOLVE,
+        decision="resolved",
+        reason=start_resolution.session.interaction_goal,
+    )
     session_before = lesson.active_interaction_session
     session_after = start_resolution.session
     if board_task is not None and board_task_stamp is not None:
@@ -3860,7 +3878,15 @@ def _maybe_start_interaction_session(
         requirement_history=requirement_history,
         board_task_history=board_task_history,
     )
-    return _response(
+    record_workflow_step(
+        NodeId.INTERACTION_START_PERSIST,
+        decision="started",
+        reason=session_after.interaction_goal,
+        run_id=consumed_board_task_stamp.run_id if consumed_board_task_stamp else None,
+        version_id=consumed_board_task_stamp.version_id if consumed_board_task_stamp else None,
+        commit_id=lesson.history_graph.commits[-1].id,
+    )
+    response = _response(
         workspace=workspace,
         package=package,
         lesson=lesson,
@@ -3881,6 +3907,8 @@ def _maybe_start_interaction_session(
         requirement_history=requirement_history,
         board_task_stamp=consumed_board_task_stamp,
     )
+    record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
+    return response
 
 
 def _generate_board_from_confirmed_resource(
