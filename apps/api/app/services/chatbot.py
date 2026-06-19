@@ -71,6 +71,10 @@ from app.services.chat.paths.interaction_handoff_fallback import (
     InteractionHandoffFallbackDependencies,
     handle_interaction_handoff_fallback,
 )
+from app.services.chat.paths.interaction_start_focus import (
+    InteractionStartFocusDependencies,
+    handle_interaction_start_focus_clarification,
+)
 from app.services.chat.paths.ordinary import OrdinaryChatHandlerDependencies, handle_ordinary_chat
 from app.services.chat.paths.resource_prompt import (
     ResourcePromptHandlerDependencies,
@@ -3718,78 +3722,30 @@ def _maybe_start_interaction_session(
             decision="clarify_focus",
             reason=start_resolution.focus_resolution.question,
         )
-        chatbot_message, chatbot_message_source = _generate_focus_candidate_message(
-            lesson=lesson,
-            requirements=requirements,
-            resources=resources,
-            conversation=request.conversation,
-            request=request,
-            resolution=start_resolution.focus_resolution,
-        )
-        lesson.learning_requirements = requirements
-        commit_operations(
-            lesson,
-            [],
-            label="Interaction focus clarification",
-            message="Asked the learner to confirm the source content for an interaction rule",
-            new_document=lesson.board_document,
-            metadata={
-                "kind": "interaction_flow",
-                "user_message": request.message,
-                "assistant_message": chatbot_message,
-                "assistant_message_source": chatbot_message_source,
-                "interaction_mode": request.interaction_mode,
-                "selection": request.selection.model_dump(mode="json") if request.selection else None,
-                **interaction_metadata,
-                **_task_metadata(
-                    requirements=requirements,
-                    learning_clarification=learning_clarification,
-                    focus=None,
-                    focus_candidates=start_resolution.focus_resolution.candidates,
-                    requirement_cleared=False,
-                ),
-                **(
-                    _board_task_metadata(
-                        board_task=board_task,
-                        stamp=board_task_stamp,
-                        route="chat",
-                        decision=board_task_decision.model_dump(mode="json") if board_task_decision else None,
-                        cleared=False,
-                    )
-                    if board_task is not None
-                    else {}
-                ),
-                **interaction_session_metadata(before=None, after=None),
-            },
-        )
-        workspace_state.normalize_package_state(package)
-        _save_workspace_for_user(
-            user_id=user_id,
-            workspace=workspace,
-            requirement_history=requirement_history,
-            board_task_history=board_task_history,
-        )
-        record_workflow_step(
-            NodeId.PERSIST_CHAT_COMMIT,
-            decision="committed",
-            commit_id=lesson.history_graph.commits[-1].id,
-        )
-        response = _response(
+        return handle_interaction_start_focus_clarification(
             workspace=workspace,
             package=package,
             lesson=lesson,
-            chatbot_message=chatbot_message,
-            learning_clarification=learning_clarification,
+            user_id=user_id,
+            request=request,
             requirements=requirements,
-            board_decision=BoardDecision(
-                action="await_focus_choice",
-                reason=start_resolution.focus_resolution.question,
-            ),
-            focus_candidates=start_resolution.focus_resolution.candidates,
+            learning_clarification=learning_clarification,
+            resources=resources,
+            focus_resolution=start_resolution.focus_resolution,
+            source_interaction_metadata=interaction_metadata,
             requirement_history=requirement_history,
+            board_task=board_task,
+            board_task_history=board_task_history,
+            board_task_stamp=board_task_stamp,
+            board_task_decision=board_task_decision.model_dump(mode="json") if board_task_decision else None,
+            deps=InteractionStartFocusDependencies(
+                generate_focus_candidate_message=_generate_focus_candidate_message,
+                task_metadata=_task_metadata,
+                board_task_metadata=_board_task_metadata,
+                save_workspace_for_user=_save_workspace_for_user,
+                build_response=_response,
+            ),
         )
-        record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
-        return response
 
     if start_resolution.session is None:
         record_workflow_step(NodeId.INTERACTION_START_RESOLVE, decision="not_started")

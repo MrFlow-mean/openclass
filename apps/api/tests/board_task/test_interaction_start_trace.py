@@ -58,6 +58,10 @@ def _store_with_workspace(tmp_path: Path, workspace, *, name: str) -> SqliteCour
     return store
 
 
+def _clone_workspace(workspace):
+    return workspace.__class__.model_validate(workspace.model_dump(mode="json"))
+
+
 def _node_values(collector: WorkflowTraceCollector) -> list[str]:
     return [step.node_id.value for step in collector.steps]
 
@@ -235,6 +239,11 @@ def test_service_interaction_start_records_exact_trace_and_preserves_metadata(
     _patch_start_guardrails(monkeypatch)
     _patch_reply(monkeypatch)
     monkeypatch.setattr(
+        chatbot_module,
+        "handle_interaction_start_focus_clarification",
+        lambda **kwargs: _fail_if_called("handle_interaction_start_focus_clarification"),
+    )
+    monkeypatch.setattr(
         openai_course_ai,
         "generate_board_task_requirement_sheet",
         lambda **kwargs: BoardTaskRequirementSheet(
@@ -339,6 +348,122 @@ def test_focus_clarification_records_start_resolve_without_start_persist(
     assert TRACE_KEYS.isdisjoint(_all_keys(commit.metadata))
 
 
+def test_focus_clarification_allows_empty_candidates_without_changing_trace(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace, lesson_id = _workspace_with_existing_board()
+    store = _store_with_workspace(tmp_path, workspace, name="focus_clarification_empty_candidates")
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    inputs = _direct_start_inputs(workspace, lesson_id, target_hint="不存在的位置")
+    resolution = FocusResolution(
+        focus=None,
+        candidates=[],
+        status="missing",
+        question="我没有找到可用于互动的板书位置，请你再指定一下。",
+    )
+    monkeypatch.setattr(
+        chatbot_module,
+        "build_interaction_start",
+        lambda **kwargs: InteractionStartResolution(session=None, focus_resolution=resolution),
+    )
+    _patch_reply(monkeypatch, message="AI生成：我没有找到可用于互动的位置。")
+
+    with bind_workflow_trace_collector() as collector:
+        response = chatbot_module._maybe_start_interaction_session(**inputs)
+
+    assert response is not None
+    commit = response.course_package.lessons[-1].history_graph.commits[-1]
+    assert response.board_decision.action == "await_focus_choice"
+    assert response.focus_candidates == []
+    assert response.active_interaction_session is None
+    assert commit.metadata["focus_candidates"] == []
+    assert commit.metadata["kind"] == "interaction_flow"
+    assert commit.metadata["assistant_message_source"] == "chatbot"
+    assert _node_values(collector) == [
+        NodeId.INTERACTION_START_RESOLVE.value,
+        NodeId.PERSIST_CHAT_COMMIT.value,
+        NodeId.RESPONSE_ASSEMBLE.value,
+    ]
+    assert collector.steps[0].decision == "clarify_focus"
+    assert collector.steps[0].reason == resolution.question
+    assert collector.steps[1].commit_id == commit.id
+    assert NodeId.INTERACTION_START_PERSIST.value not in _node_values(collector)
+    assert TRACE_KEYS.isdisjoint(_all_keys(response.model_dump(mode="json")))
+    assert TRACE_KEYS.isdisjoint(_all_keys(commit.metadata))
+
+
+def test_board_task_focus_clarification_preserves_active_task_without_consuming(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace, lesson_id = _workspace_with_existing_board()
+    store = _store_with_workspace(tmp_path, workspace, name="board_task_focus_clarification")
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    _patch_start_guardrails(monkeypatch)
+    _patch_reply(monkeypatch, message="AI生成：你想用哪一段开始互动？")
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_board_task_requirement_sheet",
+        lambda **kwargs: BoardTaskRequirementSheet(
+            target_hint="选中内容",
+            location_status="selected",
+            requested_action="chat",
+            question_or_topic="围绕选中内容进行规则互动。",
+            interaction_rule_draft=_interaction_draft(target_hint="选中内容"),
+            progress=100,
+            missing_items=[],
+        ),
+    )
+    monkeypatch.setattr(
+        chatbot_module,
+        "build_interaction_start",
+        lambda **kwargs: InteractionStartResolution(
+            session=None,
+            focus_resolution=_focus_resolution(kwargs["lesson"]),
+        ),
+    )
+
+    with bind_workflow_trace_collector() as collector:
+        response = chat_service.process_chat_on_lesson(
+            lesson_id,
+            ChatRequest(
+                message="按这个位置开始规则互动",
+                selection={
+                    "kind": "board",
+                    "excerpt": "目标原文内容",
+                    "lesson_id": lesson_id,
+                },
+            ),
+            user_id=TEST_USER_ID,
+        )
+
+    lesson = response.course_package.lessons[-1]
+    commit = lesson.history_graph.commits[-1]
+    board_task_events = store.list_board_task_events(owner_user_id=TEST_USER_ID, lesson_id=lesson_id)
+    assert response.board_decision.action == "await_focus_choice"
+    assert response.active_interaction_session is None
+    assert response.active_board_task_sheet is not None
+    assert response.active_board_task_sheet.requested_action == "chat"
+    assert commit.metadata["kind"] == "interaction_flow"
+    assert commit.metadata["assistant_message_source"] == "chatbot"
+    assert commit.metadata["board_task_route"] == "chat"
+    assert commit.metadata["board_task_cleared"] is False
+    assert commit.metadata["board_task_run_id"] is not None
+    assert commit.metadata["board_task_version_id"] is not None
+    assert not any(event["event_type"] == "consumed" for event in board_task_events)
+    assert _node_values(collector) == [
+        *_start_trace_prefix(),
+        NodeId.INTERACTION_START_RESOLVE.value,
+        NodeId.PERSIST_CHAT_COMMIT.value,
+        NodeId.RESPONSE_ASSEMBLE.value,
+    ]
+    assert collector.steps[6].decision == "clarify_focus"
+    assert NodeId.INTERACTION_START_PERSIST.value not in _node_values(collector)
+    assert TRACE_KEYS.isdisjoint(_all_keys(response.model_dump(mode="json")))
+    assert TRACE_KEYS.isdisjoint(_all_keys(commit.metadata))
+
+
 def test_start_resolution_no_session_no_focus_records_not_started_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -381,6 +506,11 @@ def test_start_early_guards_return_without_trace_or_building_session(
         chatbot_module,
         "build_interaction_start",
         lambda **kwargs: _fail_if_called("build_interaction_start"),
+    )
+    monkeypatch.setattr(
+        chatbot_module,
+        "handle_interaction_start_focus_clarification",
+        lambda **kwargs: _fail_if_called("handle_interaction_start_focus_clarification"),
     )
 
     with bind_workflow_trace_collector() as collector:
@@ -520,6 +650,46 @@ def test_traced_and_untraced_interaction_start_responses_match(
     with bind_workflow_trace_collector():
         traced_response = chat_service.process_chat_on_lesson(lesson_id, request, user_id=TEST_USER_ID)
 
+    untraced_commit = untraced_response.course_package.lessons[-1].history_graph.commits[-1]
+    traced_commit = traced_response.course_package.lessons[-1].history_graph.commits[-1]
+    assert _normalize_visible_response(traced_commit.metadata) == _normalize_visible_response(untraced_commit.metadata)
+    assert _normalize_visible_response(traced_response.model_dump(mode="json")) == _normalize_visible_response(
+        untraced_response.model_dump(mode="json")
+    )
+
+
+def test_traced_and_untraced_focus_clarification_responses_match(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    base_workspace, lesson_id = _workspace_with_existing_board()
+    untraced_workspace = _clone_workspace(base_workspace)
+    traced_workspace = _clone_workspace(base_workspace)
+    untraced_store = _store_with_workspace(tmp_path, untraced_workspace, name="focus_untraced")
+    traced_store = _store_with_workspace(tmp_path, traced_workspace, name="focus_traced")
+    monkeypatch.setattr(
+        chatbot_module,
+        "build_interaction_start",
+        lambda **kwargs: InteractionStartResolution(
+            session=None,
+            focus_resolution=_focus_resolution(kwargs["lesson"]),
+        ),
+    )
+    _patch_reply(monkeypatch, message="AI生成：你想用哪一段开始互动？")
+
+    monkeypatch.setattr(workspace_state, "STORE", untraced_store)
+    untraced_response = chatbot_module._maybe_start_interaction_session(
+        **_direct_start_inputs(untraced_workspace, lesson_id, target_hint="不明确的位置")
+    )
+
+    monkeypatch.setattr(workspace_state, "STORE", traced_store)
+    with bind_workflow_trace_collector():
+        traced_response = chatbot_module._maybe_start_interaction_session(
+            **_direct_start_inputs(traced_workspace, lesson_id, target_hint="不明确的位置")
+        )
+
+    assert traced_response is not None
+    assert untraced_response is not None
     untraced_commit = untraced_response.course_package.lessons[-1].history_graph.commits[-1]
     traced_commit = traced_response.course_package.lessons[-1].history_graph.commits[-1]
     assert _normalize_visible_response(traced_commit.metadata) == _normalize_visible_response(untraced_commit.metadata)
