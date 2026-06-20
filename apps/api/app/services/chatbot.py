@@ -80,6 +80,10 @@ from app.services.chat.paths.interaction_sequence_continue import (
     InteractionSequenceContinueDependencies,
     handle_interaction_sequence_continue,
 )
+from app.services.chat.paths.interaction_sequence_start import (
+    InteractionSequenceStartDependencies,
+    handle_interaction_sequence_start,
+)
 from app.services.chat.paths.interaction_start_focus import (
     InteractionStartFocusDependencies,
     handle_interaction_start_focus_clarification,
@@ -1786,34 +1790,6 @@ def _section_explanation_sequence(
     return plan.items if plan else []
 
 
-def _section_sequence_instruction(
-    *,
-    request_message: str,
-    focus: BoardFocusRef,
-    index: int,
-    total: int,
-    sequence_mode: str = ATOMIC_EXPLANATION_SEQUENCE_MODE,
-) -> str:
-    unit_label = _sequence_unit_label(sequence_mode)
-    next_note = (
-        f"讲完后请询问学习者是否可以继续下一个{unit_label}。"
-        if index + 1 < total
-        else "讲完后请确认学习者是否还有问题；如果没有问题，本组顺序讲解可以结束。"
-    )
-    atom_instruction = (
-        "如果当前目标是题目、练习或带参考答案的内容，必须讲题目要求、关键线索、"
-        "推理步骤、答案如何得到和易错点；不能只翻译、复述或直接报答案。"
-        if sequence_mode == ATOMIC_EXPLANATION_SEQUENCE_MODE
-        else ""
-    )
-    return (
-        f"{request_message}\n"
-        f"系统顺序讲解要求：本轮只讲第 {index + 1}/{total} 个{unit_label}："
-        f"{focus.display_label or ' / '.join(focus.heading_path)}。"
-        f"{next_note}不要越界讲解其它{unit_label}。{atom_instruction}"
-    )
-
-
 def _sequence_unit_label(sequence_mode: str) -> str:
     if sequence_mode == ATOMIC_EXPLANATION_SEQUENCE_MODE:
         return "讲解单元"
@@ -1840,149 +1816,36 @@ def _start_section_explanation_sequence(
     requirement_history: LearningRequirementHistoryRecorder,
     interaction_metadata: dict[str, object],
 ) -> ChatResponse:
-    sequence_items = sequence_plan.items
-    first_focus = sequence_items[0]
-    session_before = lesson.active_interaction_session
-    sequence_mode = ATOMIC_EXPLANATION_SEQUENCE_MODE
-    unit_label = _sequence_unit_label(sequence_mode)
-    session_after = InteractionSession(
-        status="active",
-        rule_text="按板书内容的最小可讲单元顺序逐个讲解。",
-        interaction_goal=(
-            f"按最小内容单元讲解 {first_focus.heading_path[-1]}"
-            if first_focus.heading_path
-            else board_task.question_or_topic or board_task.target_hint
-        ),
-        target_focus=first_focus,
-        reference_context=focus_context(first_focus),
-        compliant_input_rule=f"用户确认理解、提出当前{unit_label}问题，或要求继续下一个{unit_label}。",
-        expected_user_behavior=f"用户确认当前{unit_label}是否可以接受；没有问题时继续下一个{unit_label}。",
-        assistant_behavior=f"每轮只讲当前{unit_label}，结尾询问是否继续下一个{unit_label}。",
-        progress_note=f"准备讲解第 1/{len(sequence_items)} 个{unit_label}。",
-        turn_count=0,
-        source_board_task_run_id=board_task_stamp.run_id,
-        source_board_task_version_id=board_task_stamp.version_id,
-        source_board_task_route="explain",
-        sequence_items=sequence_items,
-        sequence_index=0,
-        sequence_mode=sequence_mode,
-    )
-    lesson.active_interaction_session = session_after
-    chatbot_message, chatbot_message_source, board_explanation_directive = _generate_board_directed_explanation_message(
-        lesson=lesson,
-        requirements=_requirements_from_board_task(
-            base=requirements,
-            board_task=board_task,
-            action_type="explain_target",
-            focus=first_focus,
-        ),
-        resources=resources,
-        conversation=request.conversation,
-        request=request.model_copy(
-            update={
-                "message": _section_sequence_instruction(
-                    request_message=request.message,
-                    focus=first_focus,
-                    index=0,
-                    total=len(sequence_items),
-                    sequence_mode=sequence_mode,
-                )
-            }
-        ),
-        learning_clarification=learning_clarification,
-        action_type="explain_target",
-        target_excerpt=focus_context(first_focus),
-        interaction_context=interaction_context_payload(session=session_after),
-    )
-    lesson.board_task_requirements = None
-    _clear_task_requirements(lesson)
-    commit_operations(
-        lesson,
-        [],
-        label="Section explanation session start",
-        message="Started a sequential section explanation session",
-        new_document=lesson.board_document,
-        metadata={
-            "kind": "interaction_flow",
-            "user_message": request.message,
-            "assistant_message": chatbot_message,
-            "assistant_message_source": chatbot_message_source,
-            "board_explanation_directive": board_explanation_directive,
-            **interaction_metadata,
-            **_board_search_evidence_metadata(resolution),
-            "section_explanation_sequence": [item.model_dump(mode="json") for item in sequence_items],
-            "explanation_sequence": [item.model_dump(mode="json") for item in sequence_items],
-            "explanation_sequence_mode": sequence_mode,
-            **decision_trace_metadata(
-                message=request.message,
-                board_action_decision=action_decision,
-                route_decision=decision,
-                sequence_plan=sequence_plan,
-                role_executed="chatbot_board_directed",
-                document_changed=False,
-                reason=sequence_plan.reason,
-            ),
-            **_task_metadata(
-                requirements=_requirements_from_board_task(
-                    base=requirements,
-                    board_task=board_task,
-                    action_type="explain_target",
-                    focus=first_focus,
-                ),
-                learning_clarification=learning_clarification,
-                focus=first_focus,
-                focus_candidates=sequence_items,
-                requirement_cleared=True,
-            ),
-            **_board_task_metadata(
-                board_task=board_task,
-                stamp=board_task_stamp,
-                route="explain",
-                decision=decision.model_dump(mode="json"),
-                cleared=True,
-            ),
-            **interaction_session_metadata(before=session_before, after=session_after),
-        },
-    )
-    record_workflow_step(
-        NodeId.BOARD_SEQUENCE_START,
-        decision="started",
-        reason=sequence_plan.reason,
-        run_id=board_task_stamp.run_id,
-        version_id=board_task_stamp.version_id,
-        commit_id=lesson.history_graph.commits[-1].id,
-    )
-    consumed_stamp = board_task_history.consume(commit_id=lesson.history_graph.commits[-1].id)
-    workspace_state.normalize_package_state(package)
-    _save_workspace_for_user(
-        user_id=user_id,
-        workspace=workspace,
-        requirement_history=requirement_history,
-        board_task_history=board_task_history,
-    )
-    record_workflow_step(
-        NodeId.PERSIST_CHAT_COMMIT,
-        decision="committed",
-        run_id=consumed_stamp.run_id,
-        version_id=consumed_stamp.version_id,
-        commit_id=lesson.history_graph.commits[-1].id,
-    )
-    response = _response(
+    return handle_interaction_sequence_start(
         workspace=workspace,
         package=package,
         lesson=lesson,
-        chatbot_message=chatbot_message,
+        user_id=user_id,
+        request=request,
         requirements=requirements,
         learning_clarification=learning_clarification,
-        board_decision=BoardDecision(action="no_change", reason=decision.reason),
-        resolved_focus=first_focus,
-        focus_candidates=sequence_items,
-        requirement_cleared=True,
-        board_task_stamp=consumed_stamp,
-        completed_board_task_sheet=board_task,
+        resources=resources,
+        board_task=board_task,
+        board_task_history=board_task_history,
+        board_task_stamp=board_task_stamp,
+        action_decision=action_decision,
+        decision=decision,
+        resolution=resolution,
+        sequence_plan=sequence_plan,
+        requirement_history=requirement_history,
+        interaction_metadata=interaction_metadata,
+        deps=InteractionSequenceStartDependencies(
+            generate_board_directed_explanation_message=_generate_board_directed_explanation_message,
+            requirements_from_board_task=_requirements_from_board_task,
+            clear_task_requirements=_clear_task_requirements,
+            board_search_evidence_metadata=_board_search_evidence_metadata,
+            task_metadata=_task_metadata,
+            board_task_metadata=_board_task_metadata,
+            commit_operations=commit_operations,
+            save_workspace_for_user=_save_workspace_for_user,
+            build_response=_response,
+        ),
     )
-    record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
-    return response
 
 
 def _handle_existing_board_task_flow(
