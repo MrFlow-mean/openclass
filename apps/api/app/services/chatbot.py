@@ -1791,35 +1791,6 @@ def _chatbot_visible_board_task(board_task: BoardTaskRequirementSheet) -> dict[s
     return payload
 
 
-def _board_task_explanation_target_excerpt(
-    *,
-    board_task: BoardTaskRequirementSheet,
-    focus: BoardFocusRef | None,
-    decision: BoardTaskRouteDecision,
-    resolution: FocusResolution | None,
-) -> str:
-    parts = [
-        "已有板书任务清单已进入 explain 路线。",
-        f"用户目标线索：{board_task.target_hint or '未单独提供'}",
-        f"用户问题/主题：{board_task.question_or_topic or '未单独提供'}",
-        f"定位裁决：{decision.reason or '已定位目标内容'}",
-    ]
-    if focus is not None:
-        parts.append(f"当前允许讲解的目标内容：\n{focus_context(focus)}")
-    other_candidates = [
-        candidate
-        for candidate in (decision.candidate_focuses or (resolution.candidates if resolution else []))
-        if focus is None or (candidate.segment_id, candidate.excerpt) != (focus.segment_id, focus.excerpt)
-    ]
-    if other_candidates:
-        candidate_lines = [
-            f"{index}. {candidate.display_label or ' / '.join(candidate.heading_path) or '板书片段'}（正文摘录仅供板书侧后续授权，不交给 Chatbot）"
-            for index, candidate in enumerate(other_candidates[:4], start=1)
-        ]
-        parts.append("同一任务中还存在的后续候选目标，仅作为顺序讲解上下文，不得越界讲解：\n" + "\n".join(candidate_lines))
-    return "\n\n".join(part for part in parts if part.strip())
-
-
 def _is_current_sequence_followup(text: str) -> bool:
     compact = _compact_text(text, limit=160)
     if not compact:
