@@ -1,89 +1,72 @@
 # Open PR Triage and Branch Drift Audit
 
-Audit date: 2026-06-17
+Audit date: 2026-06-20
 
-Main audited: `origin/main` at `4a7ab011c618c0e146d0aa9345816f7e0e418de9`.
+Main audited: `origin/main` and GitHub `commits/main` at `80e246ade787e0342a39d3ce603f1208663e5ab0`.
 
 Evidence commands used:
 
 ```bash
-curl -s 'https://api.github.com/repos/MrFlow-mean/openclass/pulls?state=open&per_page=100'
+curl -sS 'https://api.github.com/repos/MrFlow-mean/openclass/pulls?state=open&per_page=100'
 git fetch origin main --prune
+git ls-remote origin refs/heads/main
 git fetch origin pull/<PR>/head:refs/remotes/origin/pr/<PR>
-git rev-list --left-right --count origin/main...origin/pr/<PR>
-git cherry -v origin/main origin/pr/<PR>
-git diff --name-only origin/main...origin/pr/<PR>
+git rev-list --left-right --count 80e246ade787e0342a39d3ce603f1208663e5ab0...origin/pr/<PR>
+git cherry -v 80e246ade787e0342a39d3ce603f1208663e5ab0 origin/pr/<PR>
+git diff --name-only 80e246ade787e0342a39d3ce603f1208663e5ab0...origin/pr/<PR>
 ```
 
 Notes:
 
-- All open PRs found by the GitHub API are currently `open` and `draft=true`.
-- `git cherry -v origin/main origin/pr/<PR>` is used to detect patch-equivalent commits already present on `main`; `-` means patch-equivalent to `main`, `+` means still unique to the PR branch.
-- A non-empty `git diff origin/main...origin/pr/<PR>` does not always mean the feature is missing from `main`; stale branch bases can keep showing old file diffs even when every PR commit is patch-equivalent to `main`.
+- All open PRs found by the GitHub API（接口） are currently `open` and `draft=true`.
+- `gh`（GitHub CLI，GitHub 命令行工具） was not authenticated in this session, so the audit used the public GitHub API plus local `git` refs.
+- `git cherry -v <main> <pr>` detects patch-equivalent commits already present on `main`; `-` means patch-equivalent to `main`, `+` means still unique to the PR branch.
+- The older 2026-06-17 audit listed 34 open PRs. The current API result lists 5 open PRs.
 
 ## Summary Counts
 
 | Classification | Count |
 |---|---:|
-| Already merged or manually ported | 10 |
-| Still useful / product decision required | 1 |
-| Experimental / keep draft or redesign | 1 |
-| Obsolete stale handler-extraction stack | 22 |
-| Total open PRs audited | 34 |
-
-"Obsolete" here means obsolete as a stale PR branch, not necessarily obsolete as an engineering idea. Handler extraction should restart from current `main` in fresh PR-sized slices if still desired.
+| Current but behind-main draft | 1 |
+| Stale handler extraction | 1 |
+| UI preference draft requiring product decision | 2 |
+| Very stale architecture experiment | 1 |
+| Total open PRs audited | 5 |
 
 ## Maintainer Checklist
 
-1. Close PRs whose headline change is already on `main`: `#48`, `#45`, `#44`, `#43`, `#42`, `#40`, `#39`, `#38`, `#36`, `#4`.
-2. Decide whether the old book-logo preference in `#6` is still desired. If yes, rebase it onto current `main`; if no, close it.
-3. Do not merge the handler-extraction stack `#12` through `#33` as-is. The foundational abstractions are already on `main`, while the handler-source extraction code exists only on stale branches. Close the old stack after opening fresh PR-sized extractions from current `main`, if that work is still desired.
-4. Keep `#1` draft only if realtime PM voice intake is still a roadmap experiment; otherwise close it as obsolete and restart from current architecture.
-5. Going forward, after manually porting or cherry-picking a PR, immediately comment on and close the original PR so stale branches do not become fake sources of truth.
+1. Do not merge #77 as-is. Use it only as historical evidence for a future BoardTask write extraction from current `main`.
+2. Decide #53 and #6 as UI preference work. Rebase/recreate if still desired, otherwise close.
+3. Rebase or recreate #80 if workflow test-helper extraction is still useful after current Wave 6 trace work.
+4. Close #1 unless realtime PM voice intake is still an active roadmap experiment with a fresh design note.
+5. Leave old closed PR stacks closed. Do not treat #4, #12 through #33, #36, #38 through #48, #91, or #92 as current open work.
 
 ## PR Matrix
 
 | PR | Current state | Files touched | Likely overlap with `main` | Classification | Risk | Suggested next command or maintainer action |
 |---|---|---|---|---|---|---|
-| #48 `[codex] Restore home links and studio side resize` | Open draft, branch `codex/restore-home-studio-ui`; `main_only=21`, `pr_only=1`, `cherry -/+=1/0`. | 5 files: `apps/web/src/app/tech-docs/page.tsx`, `apps/web/src/components/course-studio.tsx`, `apps/web/src/components/course-studio/studio-side-panel.tsx`, `apps/web/src/components/learning-home.tsx`, `apps/web/src/hooks/use-resizable-panel-width.ts`. | Already on `main` as commit `7613e38 Restore home links and studio side resize`; PR commit is patch-equivalent to `main`. | 1. Already merged or manually ported. | Low. | Close with a note: `Already ported to main as 7613e38`; do not merge branch. |
-| #45 `[codex] Add structured board patch runtime` | Open draft, branch `codex/board-patch-runtime`; `main_only=23`, `pr_only=4`, `cherry -/+=4/0`. | 25 files across board patch runtime, resource visual evidence, `chat_turn_gate`, API models/store, web timeline/resource panel. | All four PR commits are patch-equivalent to `main`; main contains `7b011ae Add chat turn gate`, `9bcf006 Add structured board patch runtime`, and `9ffe0e6 Add resource visual evidence insertion`. | 1. Already merged or manually ported. | Low to medium because the branch still shows broad stale diffs. | Close with a note that all patches are already in `main`; do not rebase. |
-| #44 `[codex] Add chat turn gate` | Open draft, branch `codex/chat-turn-gate`; `main_only=23`, `pr_only=1`, `cherry -/+=1/0`. | 5 files: `apps/api/app/services/chat_turn_gate.py`, `apps/api/app/services/chatbot.py`, `apps/api/app/services/openai_course_ai.py`, `apps/api/tests/board_task/test_chat_turn_gate.py`, `apps/api/tests/fixtures/chat_turn_gate_cases.json`. | Already on `main` as `7b011ae Add chat turn gate`; PR commit is patch-equivalent. | 1. Already merged or manually ported. | Low. | Close as already ported. |
-| #43 `[codex] Fix Markdown math rendering` | Open draft, branch `codex/fix-math-markdown-rendering`; `main_only=23`, `pr_only=1`, `cherry -/+=1/0`. | 3 files: `apps/api/app/services/rich_document.py`, `apps/api/tests/test_history.py`, `apps/web/src/lib/math-content.ts`. | Already on `main` as `ef63e47 Fix Markdown math rendering`; PR commit is patch-equivalent. | 1. Already merged or manually ported. | Low. | Close as already ported. |
-| #42 `[codex] Add product cover image` | Open draft, branch `codex/product-cover-image`; `main_only=23`, `pr_only=1`, `cherry -/+=1/0`. | 2 files: `README.md`, `docs/assets/openclass-product-cover.png`. | Already on `main` as `35fe588 Add product cover image`; PR commit is patch-equivalent. | 1. Already merged or manually ported. | Low. | Close as already ported. |
-| #40 `[codex] Allow autonomous write location choice` | Open draft, branch `codex/board-task-autonomous-write-location`; `main_only=23`, `pr_only=23`, `cherry -/+=4/19`. | 61 files across backend routing, initial-learning intent, Codex provider, auth/model settings, docs, web profile/course studio. | Headline feature is already on `main` as `81da5ba Allow autonomous write location choice`, but the PR branch also contains many older unique commits that are not safe to merge as a batch. | 1. Already merged or manually ported for the headline change. | Medium. | Close after confirming no unique subfeature is still desired. If something remains useful, open a new PR from current `main` for that one thing. |
-| #39 `[codex] Add Codex provider and clean login options` | Open draft, branch `codex/initial-learning-intent-contract`; `main_only=23`, `pr_only=21`, `cherry -/+=3/18`. | 60 files across provider adapter, auth, initial-learning intent, docs, tests, web profile/course studio. | Codex provider files exist on `main`, and `4dd8cf3 add codex subscription provider` is on `main`; the PR branch also contains unrelated stale work. | 1. Already merged or manually ported for the headline provider work. | Medium. | Close after verifying current provider UX is acceptable; do not merge the stale branch. |
-| #38 `[codex] Highlight board focus during explanations` | Open draft, branch `codex/board-explanation-focus-highlight`; `main_only=31`, `pr_only=34`, `cherry -/+=1/33`. | 104 files across old workflow branches, chat handlers, resource flows, frontend panels, tests, and docs. | Headline focus-highlight feature is already on `main` as `0516f37 Highlight board focus during explanations`; most PR branch content is stale stacked work. | 1. Already merged or manually ported for the headline change. | High if merged directly. | Close as manually ported; preserve any remaining ideas in a new issue or fresh PR from `main`. |
-| #36 `[codex] Improve chat stream recovery tracing` | Open draft, branch `codex/chat-stream-recovery-trace-clean`; `main_only=23`, `pr_only=1`, `cherry -/+=1/0`. | 5 files: `apps/api/app/routers/chat.py`, `apps/api/app/services/route_context.py`, `apps/api/tests/test_chat_stream.py`, `apps/web/src/hooks/course-studio/use-lesson-chat-agent.ts`, `apps/web/src/lib/api.ts`. | Already on `main` as `bb78046 Improve chat stream recovery tracing`; PR commit is patch-equivalent. | 1. Already merged or manually ported. | Low. | Close as already ported. |
-| #33 `Extract focus clarification handler` | Open draft, branch `codex/extract-focus-clarification-handler`; `main_only=31`, `pr_only=28`, `cherry -/+=6/22`. | 27 files, mostly `apps/api/app/services/chat/*`, `chatbot.py`, `turn_intent.py`, `sequence_planner.py`, board-task tests and fixtures. | Base abstractions are already on `main` (`turn_intent`, board task decider, sequence planner), but handler source files are not on `main`. | 4. Obsolete / should be closed as a stale stacked PR. | High if merged directly. | Close after opening a fresh focus-handler extraction PR from current `main`, if still desired. |
-| #32 `Extract legacy target explanation handler` | Open draft, branch `codex/extract-legacy-target-explain-handler`; `main_only=31`, `pr_only=27`, `cherry -/+=6/21`. | 26 files, mostly `apps/api/app/services/chat/*`, `chatbot.py`, `turn_intent.py`, `sequence_planner.py`, tests and fixtures. | Same stale handler stack: base abstractions are in `main`; handler extraction code only exists on the PR branch. | 4. Obsolete / should be closed as a stale stacked PR. | High if merged directly. | Close and recreate from current `main` only if this exact extraction is still next in the plan. |
-| #31 `Extract legacy target edit handler` | Open draft, branch `codex/extract-legacy-target-edit-handler`; `main_only=31`, `pr_only=26`, `cherry -/+=6/20`. | 26 files, mostly `apps/api/app/services/chat/*`, `chatbot.py`, `turn_intent.py`, `sequence_planner.py`, tests and fixtures. | Same stale handler stack; handler implementation is not in `main`. | 4. Obsolete / should be closed as a stale stacked PR. | High if merged directly. | Close and re-open a fresh edit-handler extraction if still useful. |
-| #30 `Extract legacy append section handler` | Open draft, branch `codex/extract-legacy-append-handler`; `main_only=31`, `pr_only=25`, `cherry -/+=6/19`. | 26 files, mostly `apps/api/app/services/chat/*`, `chatbot.py`, `turn_intent.py`, `sequence_planner.py`, tests and fixtures. | Same stale handler stack; handler implementation is not in `main`. | 4. Obsolete / should be closed as a stale stacked PR. | High if merged directly. | Close and recreate from current `main` only after smaller context-routing tests land. |
-| #29 `Extract direct edit handler` | Open draft, branch `codex/extract-direct-edit-handler`; `main_only=31`, `pr_only=24`, `cherry -/+=6/18`. | 26 files, mostly `apps/api/app/services/chat/*`, `chatbot.py`, `turn_intent.py`, `sequence_planner.py`, tests and fixtures. | Same stale handler stack; direct-edit handler code only exists on stale branch. | 4. Obsolete / should be closed as a stale stacked PR. | High. | Close; if still desired, build a fresh PR from `main` after adding context-driven route tests. |
-| #28 `Extract board explanation fallback handler` | Open draft, branch `codex/extract-board-explanation-fallback`; `main_only=31`, `pr_only=23`, `cherry -/+=6/17`. | 26 files, mostly `apps/api/app/services/chat/*`, `chatbot.py`, `turn_intent.py`, `sequence_planner.py`, tests and fixtures. | Same stale handler stack; fallback handler code is not in `main`. | 4. Obsolete / should be closed as a stale stacked PR. | High. | Close; reopen as a focused PR only if this fallback path is still the selected refactor target. |
-| #27 `Extract board teaching turn handler` | Open draft, branch `codex/extract-board-teaching-handler`; `main_only=31`, `pr_only=22`, `cherry -/+=6/16`. | 26 files, mostly `apps/api/app/services/chat/*`, `chatbot.py`, `turn_intent.py`, `sequence_planner.py`, tests and fixtures. | Same stale handler stack; teaching handler code is not in `main`. | 4. Obsolete / should be closed as a stale stacked PR. | High. | Close; recreate later from current `main` if board-teaching extraction remains useful. |
-| #26 `Extract resource reference prompt handler` | Open draft, branch `codex/extract-resource-reference-prompt`; `main_only=31`, `pr_only=21`, `cherry -/+=6/15`. | 25 files, mostly `apps/api/app/services/chat/*`, `chatbot.py`, `turn_intent.py`, `sequence_planner.py`, tests and fixtures. | Same stale handler stack; resource-reference handler source is not in `main`. | 4. Obsolete / should be closed as a stale stacked PR. | High. | Close; re-open from `main` if resource reference extraction is still desired. |
-| #25 `Extract explicit initial board generation handler` | Open draft, branch `codex/extract-initial-board-explicit`; `main_only=31`, `pr_only=20`, `cherry -/+=6/14`. | 24 files, mostly `apps/api/app/services/chat/*`, `chatbot.py`, `turn_intent.py`, `sequence_planner.py`, tests and fixtures. | Same stale handler stack; initial-board handler source is not in `main`. | 4. Obsolete / should be closed as a stale stacked PR. | High. | Close; recreate from current `main` only when ready to extract initial-board code safely. |
-| #24 `Extract initial board ready generation handler` | Open draft, branch `codex/extract-initial-board-ready`; `main_only=31`, `pr_only=19`, `cherry -/+=6/13`. | 24 files, mostly `apps/api/app/services/chat/*`, `chatbot.py`, `turn_intent.py`, `sequence_planner.py`, tests and fixtures. | Same stale handler stack; initial-board ready handler code is not in `main`. | 4. Obsolete / should be closed as a stale stacked PR. | High. | Close; port only as a new PR from `main` if still needed. |
-| #23 `PR-B16: Extract resource-backed initial board handler` | Open draft, branch `codex/extract-initial-board-resource`; `main_only=31`, `pr_only=18`, `cherry -/+=6/12`. | 24 files, mostly `apps/api/app/services/chat/*`, `chatbot.py`, `turn_intent.py`, `sequence_planner.py`, tests and fixtures. | Same stale handler stack; resource-backed initial-board handler code is not in `main`. | 4. Obsolete / should be closed as a stale stacked PR. | High. | Close; create a new PR from `main` if this extraction remains useful. |
-| #22 `PR-B15: Extract initial board start handler` | Open draft, branch `codex/extract-initial-board-start`; `main_only=31`, `pr_only=17`, `cherry -/+=6/11`. | 24 files, mostly `apps/api/app/services/chat/*`, `chatbot.py`, `turn_intent.py`, `sequence_planner.py`, tests and fixtures. | Same stale handler stack; start handler code is not in `main`. | 4. Obsolete / should be closed as a stale stacked PR. | High. | Close; recreate from current `main` only as a fresh small PR. |
-| #21 `PR-B14: Extract initial board freeze helpers` | Open draft, branch `codex/extract-initial-board-freeze`; `main_only=31`, `pr_only=16`, `cherry -/+=6/10`. | 24 files, mostly `apps/api/app/services/chat/*`, `chatbot.py`, `turn_intent.py`, `sequence_planner.py`, tests and fixtures. | Same stale handler stack; freeze-helper code is not in `main`. | 4. Obsolete / should be closed as a stale stacked PR. | High. | Close; re-open a fresh helper extraction only if still useful. |
-| #20 `PR-B13: Extract chat response builder` | Open draft, branch `codex/extract-chat-response`; `main_only=31`, `pr_only=15`, `cherry -/+=6/9`. | 23 files, mostly `apps/api/app/services/chat/*`, `chatbot.py`, `turn_intent.py`, `sequence_planner.py`, tests and fixtures. | Same stale handler stack; `chat/response.py` source is not in `main`. | 4. Obsolete / should be closed as a stale stacked PR. | High. | Close; if response-builder extraction is still wanted, redo from current `main`. |
-| #19 `PR-B12: Extract chat metadata helpers` | Open draft, branch `codex/extract-chat-metadata`; `main_only=31`, `pr_only=14`, `cherry -/+=6/8`. | 22 files, mostly `apps/api/app/services/chat/*`, `chatbot.py`, `turn_intent.py`, `sequence_planner.py`, tests and fixtures. | Same stale handler stack; `chat/metadata.py` source is not in `main`. | 4. Obsolete / should be closed as a stale stacked PR. | High. | Close; recreate from `main` if metadata extraction remains the chosen first cut. |
-| #18 `PR-B11: Extract general chat handler` | Open draft, branch `codex/extract-general-chat-handler`; `main_only=31`, `pr_only=13`, `cherry -/+=6/7`. | 21 files, mostly `apps/api/app/services/chat/*`, `chatbot.py`, `turn_intent.py`, `sequence_planner.py`, tests and fixtures. | Same stale handler stack; general-chat handler source is not in `main`. | 4. Obsolete / should be closed as a stale stacked PR. | High. | Close; reimplement from current `main` if still valuable. |
-| #17 `PR-B10: Extract active interaction turn handler` | Open draft, branch `codex/extract-interaction-turn-handler`; `main_only=31`, `pr_only=12`, `cherry -/+=6/6`. | 20 files, mostly `apps/api/app/services/chat/*`, `chatbot.py`, `turn_intent.py`, `sequence_planner.py`, tests and fixtures. | Same stale handler stack; active interaction handler source is not in `main`. | 4. Obsolete / should be closed as a stale stacked PR. | High. | Close; fresh PR only after current interaction-session tests are in place. |
-| #16 `PR-B9: Extract board task chat interaction handler` | Open draft, branch `codex/extract-board-task-chat-handler`; `main_only=31`, `pr_only=11`, `cherry -/+=6/5`. | 20 files, mostly `apps/api/app/services/chat/*`, `chatbot.py`, `turn_intent.py`, `sequence_planner.py`, tests and fixtures. | Same stale handler stack; board-task chat handler source is not in `main`. | 4. Obsolete / should be closed as a stale stacked PR. | High. | Close; redo from current `main` if this route is still a priority. |
-| #15 `PR-B8: Reserve chat prompts package` | Open draft, branch `codex/reserve-chat-prompts-package`; `main_only=31`, `pr_only=10`, `cherry -/+=6/4`. | 19 files, mostly stale stack files plus `apps/api/app/services/chat/prompts/__init__.py`. | The placeholder package is bundled with stale stack context; source package does not exist on `main`. | 4. Obsolete / should be closed as a stale stacked PR. | Medium. | Close; if a prompt package placeholder is still needed, add it in a one-file PR from `main`. |
-| #14 `PR-B7: Extract board task edit handler` | Open draft, branch `codex/extract-board-task-edit-handler`; `main_only=31`, `pr_only=9`, `cherry -/+=6/3`. | 18 files, mostly stale stack files plus edit handler sources/tests. | Same stale handler stack; edit handler source is not in `main`. | 4. Obsolete / should be closed as a stale stacked PR. | High. | Close; redo from current `main` if needed. |
-| #13 `PR-B6: Extract board task explain handler` | Open draft, branch `codex/extract-board-task-explain-handler`; `main_only=31`, `pr_only=8`, `cherry -/+=6/2`. | 18 files, mostly stale stack files plus explain handler sources/tests. | Same stale handler stack; explain handler source is not in `main`. | 4. Obsolete / should be closed as a stale stacked PR. | High. | Close; redo from current `main` if needed. |
-| #12 `PR-B5: Extract board task write handler` | Open draft, branch `codex/extract-board-task-write-handler`; `main_only=31`, `pr_only=7`, `cherry -/+=6/1`. | 17 files, mostly stale stack files plus `apps/api/app/services/chat/handlers/edit_blackboard.py`, `chatbot.py`, `turn_intent.py`, tests and fixtures. | Base abstractions are already in `main`; write handler source is not in `main`. | 4. Obsolete / should be closed as a stale stacked PR. | Medium to high. | Close after creating a fresh write-handler extraction PR from current `main`, if that is still the next refactor. |
-| #6 `Restore book brand mark` | Open draft, branch `codex/restore-book-logo`; `main_only=30`, `pr_only=1`, `cherry -/+=0/1`. | 1 file: `apps/web/src/components/brand-mark.tsx`. | No patch-equivalent commit found on `main`; this code only exists on the PR branch. | 2. Still useful and should be rebased, if the book-logo preference is still desired. | Low. | Rebase/update branch and run `npm --prefix apps/web run typecheck && npm --prefix apps/web run lint`; otherwise close as product-choice obsolete. |
-| #4 `[codex] Improve board generation recovery UI` | Open draft, branch `codex/chat-board-generation-recovery`; `main_only=31`, `pr_only=18`, `cherry -/+=1/17`. | 69 files across old workflow/chat handler stack, board routing, tests, and web chat UI. | Headline recovery UI is already on `main` as `99e7629 Improve board generation recovery UI`; the PR branch still carries stale old architecture commits. | 1. Already merged or manually ported for the headline change. | High if merged directly. | Close as manually ported; do not merge the old stack. |
-| #1 `Implement realtime PM voice intake` | Open draft, branch `codex/reset-workflow-architecture`; `main_only=141`, `pr_only=27`, `cherry -/+=3/24`. | 40 files across realtime router/service, AI workflow, course store/runtime, resource services, deleted workflow role modules, tests, and web realtime UI. | Large old architecture branch. Some patches are equivalent to `main`, but most realtime PM voice intake code remains only on the stale PR branch. | 3. Experimental / should stay draft. | Very high. | Keep draft only if realtime PM voice intake is an active roadmap experiment; otherwise close and restart from current `main` with a design note first. |
+| #80 `test: extract workflow test helpers` | Open draft, branch `codex/extract-workflow-test-helpers`; `main_only=15`, `pr_only=1`, `cherry -/+=0/1`. | 7 files under `apps/api/tests/board_task`, including `workflow_test_helpers.py`. | Unique test-helper commit only; branch is behind the required `MAIN_SHA`. | Current but behind-main draft. | Medium. | Rebase/recreate from current `main` before review; do not merge stale base directly. |
+| #77 `Extract BoardTask write handler` | Open draft, branch `codex/extract-board-task-write-terminal`; `main_only=17`, `pr_only=1`, `cherry -/+=0/1`. | 3 files: `apps/api/app/services/chat/paths/board_task_write.py`, `apps/api/app/services/chatbot.py`, `apps/api/tests/test_ai_logging.py`. | Handler extraction idea remains useful, but the branch predates current trace ordering and should not be merged as-is. | Stale handler extraction. | High. | Close or keep only as reference; rebuild from current `main` after write trace coverage is stable. |
+| #53 `[codex] Make favicon circular` | Open draft, branch `codex/circular-favicon`; `main_only=39`, `pr_only=2`, `cherry -/+=0/2`. | 4 web asset/layout files: favicon, icon, apple icon, layout metadata. | No patch-equivalent commit found on current `main`. | UI preference draft. | Low to medium. | Product decision: rebase/recreate if the circular favicon is still wanted, otherwise close. |
+| #6 `Restore book brand mark` | Open draft, branch `codex/restore-book-logo`; `main_only=69`, `pr_only=1`, `cherry -/+=0/1`. | 1 file: `apps/web/src/components/brand-mark.tsx`. | No patch-equivalent commit found on current `main`. | UI preference draft. | Low. | Product decision: rebase/recreate if the book mark is still wanted, otherwise close. |
+| #1 `Implement realtime PM voice intake` | Open draft, branch `codex/reset-workflow-architecture`; `main_only=180`, `pr_only=27`, `cherry -/+=3/24`. | 40 files across realtime router/service, AI workflow, course store/runtime, resource services, tests, and web realtime UI. | Large old architecture branch. Some patches are equivalent to `main`, but most realtime PM voice intake code remains only on the stale branch. | Very stale architecture experiment. | Very high. | Close or keep only as roadmap evidence. Any realtime PM work needs a new design note and fresh branch. |
+
+## Recently No Longer Open
+
+The current API result no longer lists these older stale stacks as open:
+
+- #4
+- #12 through #33
+- #36
+- #38 through #48
+- #91
+- #92
+
+This does not prove every idea is obsolete. It only means they should not be used as current merge candidates. Recreate desired work from current `main` in fresh PR-sized slices.
 
 ## Suggested Cleanup Order
 
-1. Close the fully ported low-risk PRs first: `#48`, `#44`, `#43`, `#42`, `#36`.
-2. Close the manually ported but broad/stale PRs next, with explicit comments: `#45`, `#40`, `#39`, `#38`, `#4`.
-3. Decide `#6` as a product/UI preference; either rebase it or close it.
-4. Close the stale handler extraction train `#12` through `#33` after creating a short tracking issue for future handler decomposition.
-5. Leave or close `#1` based on realtime roadmap priority; do not rebase or merge it without a new design review.
+1. Close or refresh #80 and #77 after the Wave 6 coordinator decides whether test-helper extraction and BoardTask write extraction remain active.
+2. Decide #53 and #6 as UI preferences.
+3. Close #1 unless realtime PM voice intake has a current owner and design.
+4. Run a separate local cleanup pass for stale `origin/pr/*` refs only after no worker depends on them.

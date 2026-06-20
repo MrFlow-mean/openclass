@@ -156,7 +156,7 @@ Worker branches are preparation-only. Do not merge them directly.
 | S: sequence start extraction | `codex/integrate/sequence-start-extraction` | `1d5e409df752169c19464bf35acabdcbfa25fee9` | decided sequence session start terminal path | production merged via #92 as `ae82bf55075ba18cb6e9c27f38889f2051b37bea` | sequence lane complete | replayed and merged |
 | I: initial generation trace | `codex/prep/initial-generation-trace-wave5` | `80f36e63e6fbaec51c4e0a1f00e85ff6fe5396f7` | ready -> freeze -> BoardEditor -> commit -> consume; generation failure retryability contract | next generation trace candidate | replay manually from latest `main`; xfail contract tests are preparation evidence | preparation branch ready; not merged |
 | J: confirmed-resource generation audit | read-only audit | n/a | confirmed-resource generation trace surface | waiting behind I | depends on I's initial generation trace contract | no branch created |
-| K: compatibility cleanup inventory | `codex/prep/compatibility-cleanup-wave5` | `c389147d15b7fd1bdb2509fc16c201a0bafcf333` | teaching_action, direct_edit, old document actions, fallback explain, recent edit follow-up, autonomous location choice, stale PRs | preparation-only docs inventory | no production PR | docs-only prep branch ready; not merged |
+| K: compatibility inventory refresh | `codex/prep/compatibility-inventory-wave6` | pending docs branch | teaching_action, direct_edit, old document actions, fallback explain, recent edit follow-up, autonomous location choice, stale PRs | preparation-only docs inventory | no production PR | Wave 6 docs-only prep branch; do not merge as production |
 
 ## Review Findings
 
