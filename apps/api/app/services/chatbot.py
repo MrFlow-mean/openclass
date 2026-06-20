@@ -5414,6 +5414,26 @@ def _chat_response(
             learning_clarification=learning_clarification,
             stamp=frozen_requirement,
         )
+        if requirement_stamp is not None and requirement_stamp.phase == "ready":
+            record_workflow_step(
+                NodeId.INITIAL_REQUIREMENT_READY,
+                decision="ready",
+                run_id=requirement_stamp.run_id,
+                version_id=requirement_stamp.version_id,
+            )
+        if frozen_requirement is not None:
+            record_workflow_step(
+                NodeId.INITIAL_REQUIREMENT_FREEZE,
+                decision="frozen",
+                run_id=frozen_requirement.run_id,
+                version_id=frozen_requirement.version_id,
+            )
+        record_workflow_step(
+            NodeId.INITIAL_BOARD_GENERATE,
+            decision="board_editor",
+            run_id=frozen_requirement.run_id if frozen_requirement else None,
+            version_id=frozen_requirement.version_id if frozen_requirement else None,
+        )
         edit_outcome = generate_from_requirements(
             lesson=lesson,
             requirements=requirements,
@@ -5434,7 +5454,14 @@ def _chat_response(
                 workspace=workspace,
                 requirement_history=requirement_history,
             )
-            return _response(
+            record_workflow_step(
+                NodeId.INITIAL_GENERATION_FAILED,
+                decision="generation_failed",
+                reason=edit_outcome.failure_reason or edit_outcome.summary or edit_outcome.chatbot_message,
+                run_id=failed_stamp.run_id,
+                version_id=failed_stamp.version_id,
+            )
+            response = _response(
                 workspace=workspace,
                 package=package,
                 lesson=lesson,
@@ -5448,6 +5475,8 @@ def _chat_response(
                 board_document_operation_status=edit_outcome.operation_status,
                 board_document_operation_failure_reason=edit_outcome.failure_reason,
             )
+            record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
+            return response
         refresh_lesson_runtime(lesson, document=edit_outcome.new_document, requirements=requirements)
         lesson.board_teaching_guide = build_board_teaching_guide(lesson)
         lesson.board_teaching_progress = None
@@ -5499,7 +5528,14 @@ def _chat_response(
             workspace=workspace,
             requirement_history=requirement_history,
         )
-        return _response(
+        record_workflow_step(
+            NodeId.INITIAL_BOARD_COMMIT,
+            decision="committed",
+            run_id=consumed_stamp.run_id,
+            version_id=consumed_stamp.version_id,
+            commit_id=lesson.history_graph.commits[-1].id,
+        )
+        response = _response(
             workspace=workspace,
             package=package,
             lesson=lesson,
@@ -5514,6 +5550,8 @@ def _chat_response(
             board_document_operation_status=edit_outcome.operation_status,
             board_document_operation_failure_reason=edit_outcome.failure_reason,
         )
+        record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
+        return response
 
     should_trace_requirement_chat_update = (
         requirement_stamp is not None and track_initial_requirement_run and not learning_clarification.ready_for_board
