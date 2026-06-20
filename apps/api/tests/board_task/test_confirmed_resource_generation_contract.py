@@ -353,12 +353,7 @@ def test_confirmed_resource_generation_failure_preserves_retryable_frozen_order(
     assert TRACE_KEYS.isdisjoint(_all_keys(lesson.history_graph.commits[-1].metadata))
 
 
-@pytest.mark.xfail(
-    reason="Confirmed-resource generation does not yet emit ready-generation trace nodes.",
-    raises=AssertionError,
-    strict=True,
-)
-def test_confirmed_resource_generation_success_should_trace_ready_generation_contract(
+def test_confirmed_resource_generation_success_traces_ready_generation_contract(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -368,6 +363,8 @@ def test_confirmed_resource_generation_success_should_trace_ready_generation_con
         name="confirmed_resource_success_trace",
         outcome_factory=_success_outcome,
     )
+    response = result.confirmed_response
+    commit = response.course_package.lessons[-1].history_graph.commits[-1]
 
     assert _node_values(result.collector) == [
         *_trace_prefix(),
@@ -377,14 +374,26 @@ def test_confirmed_resource_generation_success_should_trace_ready_generation_con
         NodeId.INITIAL_BOARD_COMMIT.value,
         NodeId.RESPONSE_ASSEMBLE.value,
     ]
+    ready_step = result.collector.steps[6]
+    freeze_step = result.collector.steps[7]
+    generate_step = result.collector.steps[8]
+    commit_step = result.collector.steps[9]
+    assert ready_step.decision == "ready"
+    assert ready_step.run_id == response.requirement_run_id
+    assert ready_step.version_id == result.ready_versions[0]["id"]
+    assert freeze_step.decision == "frozen"
+    assert freeze_step.run_id == response.requirement_run_id
+    assert freeze_step.version_id == response.requirement_version_id
+    assert generate_step.decision == "board_editor"
+    assert generate_step.run_id == response.requirement_run_id
+    assert generate_step.version_id == response.requirement_version_id
+    assert commit_step.decision == "committed"
+    assert commit_step.run_id == response.requirement_run_id
+    assert commit_step.version_id == response.requirement_version_id
+    assert commit_step.commit_id == commit.id
 
 
-@pytest.mark.xfail(
-    reason="Confirmed-resource generation failure does not yet emit ready-generation trace nodes.",
-    raises=AssertionError,
-    strict=True,
-)
-def test_confirmed_resource_generation_failure_should_trace_retryable_frozen_contract(
+def test_confirmed_resource_generation_failure_traces_retryable_frozen_contract(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -394,6 +403,7 @@ def test_confirmed_resource_generation_failure_should_trace_retryable_frozen_con
         name="confirmed_resource_failure_trace",
         outcome_factory=_failed_outcome,
     )
+    response = result.confirmed_response
 
     assert _node_values(result.collector) == [
         *_trace_prefix(),
@@ -403,3 +413,20 @@ def test_confirmed_resource_generation_failure_should_trace_retryable_frozen_con
         NodeId.INITIAL_GENERATION_FAILED.value,
         NodeId.RESPONSE_ASSEMBLE.value,
     ]
+    ready_step = result.collector.steps[6]
+    freeze_step = result.collector.steps[7]
+    generate_step = result.collector.steps[8]
+    failure_step = result.collector.steps[9]
+    assert ready_step.decision == "ready"
+    assert ready_step.run_id == response.requirement_run_id
+    assert ready_step.version_id == result.ready_versions[0]["id"]
+    assert freeze_step.decision == "frozen"
+    assert freeze_step.run_id == response.requirement_run_id
+    assert freeze_step.version_id == response.requirement_version_id
+    assert generate_step.decision == "board_editor"
+    assert generate_step.run_id == response.requirement_run_id
+    assert generate_step.version_id == response.requirement_version_id
+    assert failure_step.decision == "generation_failed"
+    assert failure_step.reason == "The board editor did not return generated content."
+    assert failure_step.run_id == response.requirement_run_id
+    assert failure_step.version_id == response.requirement_version_id

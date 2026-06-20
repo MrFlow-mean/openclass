@@ -80,17 +80,19 @@ RESPONSE_ASSEMBLE
 - Workflow trace keys remain internal and must not leak into response JSON,
   SSE payloads, requirement history rows, or commit metadata.
 
-## Commit Plan
+## Commit Plan / Status
 
-Commit A should stay characterization-only:
+Commit A stayed characterization-only:
 
 - Add focused contract coverage in
   `apps/api/tests/board_task/test_confirmed_resource_generation_contract.py`.
-- Keep the trace activation tests strict `xfail`.
+- Keep the trace activation tests strict `xfail` until the candidate patch.
 
-Commit B may be the candidate activation patch:
+Commit B is the candidate activation patch:
 
 - Add trace records inside `_generate_board_from_confirmed_resource(...)`.
 - Convert the strict `xfail` tests into passing tests.
 - Update the older ready-generation confirmed-resource scope guard so it no
   longer expects those trace nodes to be absent.
+
+No handler extraction is included in this branch.

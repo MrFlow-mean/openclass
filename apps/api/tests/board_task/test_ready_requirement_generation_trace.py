@@ -373,7 +373,7 @@ def test_explicit_board_generation_start_keeps_existing_trace_scope(
     assert INITIAL_GENERATION_TRACE_NODES.isdisjoint(nodes)
 
 
-def test_confirmed_resource_generation_keeps_existing_trace_scope(
+def test_confirmed_resource_generation_uses_ready_generation_trace_nodes(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -418,4 +418,11 @@ def test_confirmed_resource_generation_keeps_existing_trace_scope(
     assert confirmed_response.board_decision.action == "edit_board"
     assert confirmed_response.selected_reference is not None
     assert commit.metadata["board_generation_action"] == "resource_reference_confirm"
-    assert INITIAL_GENERATION_TRACE_NODES.isdisjoint(nodes)
+    assert nodes == [
+        *_trace_prefix(),
+        NodeId.INITIAL_REQUIREMENT_READY.value,
+        NodeId.INITIAL_REQUIREMENT_FREEZE.value,
+        NodeId.INITIAL_BOARD_GENERATE.value,
+        NodeId.INITIAL_BOARD_COMMIT.value,
+        NodeId.RESPONSE_ASSEMBLE.value,
+    ]
