@@ -3047,6 +3047,13 @@ def _execute_board_task_write(
                 action_type="explain_target",
                 target_excerpt=appended_excerpt or edit_outcome.new_document.content_text,
             )
+        record_workflow_step(
+            NodeId.BOARD_WRITE_EXECUTE,
+            decision="changed",
+            reason=edit_outcome.summary,
+            run_id=stamp.run_id,
+            version_id=stamp.version_id,
+        )
     else:
         chatbot_message = edit_outcome.chatbot_message
         chatbot_message_source = edit_outcome.assistant_message_source
@@ -3080,7 +3087,14 @@ def _execute_board_task_write(
             requirement_history=requirement_history,
             board_task_history=board_task_history,
         )
-        return _response(
+        record_workflow_step(
+            NodeId.BOARD_TASK_FAILURE,
+            decision="execution_failed",
+            reason=edit_outcome.summary or "Board task write did not produce a safe document change.",
+            run_id=failed_stamp.run_id,
+            version_id=failed_stamp.version_id,
+        )
+        response = _response(
             workspace=workspace,
             package=package,
             lesson=lesson,
@@ -3094,6 +3108,8 @@ def _execute_board_task_write(
             board_document_operation_failure_reason=edit_outcome.failure_reason,
             board_patch_diff=edit_outcome.diff_preview,
         )
+        record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
+        return response
 
     commit_operations(
         lesson,
@@ -3156,7 +3172,15 @@ def _execute_board_task_write(
         requirement_history=requirement_history,
         board_task_history=board_task_history,
     )
-    return _response(
+    record_workflow_step(
+        NodeId.PERSIST_BOARD_COMMIT,
+        decision="committed",
+        reason=edit_outcome.summary,
+        run_id=consumed_stamp.run_id,
+        version_id=consumed_stamp.version_id,
+        commit_id=lesson.history_graph.commits[-1].id,
+    )
+    response = _response(
         workspace=workspace,
         package=package,
         lesson=lesson,
@@ -3171,6 +3195,8 @@ def _execute_board_task_write(
         completed_board_task_sheet=board_task if edit_outcome.changed else None,
         board_patch_diff=edit_outcome.diff_preview,
     )
+    record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
+    return response
 
 
 def _response_requirement_stamp(
