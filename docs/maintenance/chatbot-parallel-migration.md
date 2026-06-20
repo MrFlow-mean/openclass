@@ -7,9 +7,13 @@ maintainer-facing coordination record, not an executable workflow.
 ## Current Base
 
 - Integration base branch: `origin/main`
-- Integration base SHA: `100ff1e00e314e66c998e5258c476ebcd2654286`
-- Latest verified `MAIN_SHA`: `100ff1e00e314e66c998e5258c476ebcd2654286`
+- Integration base SHA: `6f9918e880d8cd451916cafe859726f667a1bef9`
+- Latest verified `MAIN_SHA`: `6f9918e880d8cd451916cafe859726f667a1bef9`
 - Parallel-wave base SHA: `cb004788511748a01dd8e76604425616b8f012f6`
+- PR #94 / Lane F: merged into `main` as
+  `b9361743e18e43fd7e9326cd0505dce4d9cb8442`.
+- PR #95 / Lane I: merged into `main` as
+  `6f9918e880d8cd451916cafe859726f667a1bef9`.
 - PR #86 / Lane H: merged into `main` as
   `73c0af289df3a49de1b4d7c6cb98d347f852bdbb`.
 - PR #87 / Initial guidance extraction: merged into `main` as
@@ -114,6 +118,62 @@ Wave 5 production PRs:
 - Do not open F/I/J/K production PRs until their lanes are promoted.
 - Do not merge old prep branches directly; replay manually from latest `main`.
 
+## Wave 6 Checkpoint
+
+Wave 6 started from `MAIN_SHA`
+`100ff1e00e314e66c998e5258c476ebcd2654286` and closed production at
+`6f9918e880d8cd451916cafe859726f667a1bef9`.
+
+Merged production status:
+
+- #94 `refactor: trace board task write execution paths`: merged as
+  `b9361743e18e43fd7e9326cd0505dce4d9cb8442`; main push Verify #27869563211
+  succeeded.
+- #95 `refactor: trace ready requirement board generation path`: rebased after
+  #94, merged as `6f9918e880d8cd451916cafe859726f667a1bef9`; main push Verify
+  #27869626745 succeeded.
+
+Coordinator verification before #95 merge:
+
+- Focused generation trace set: 63 passed.
+- Full backend pytest: 593 passed.
+- `npm run verify`: passed with the pre-existing
+  `word-board-editor.tsx` file-size warning.
+
+Wave 6 handoff queue:
+
+- BoardTask extraction lane: #96 is prep-only evidence for clarification
+  terminal extraction. It must be split before production replay.
+- BoardTask extraction lane: #97 is prep-only evidence for single-target
+  explain terminal extraction and is the preferred first BoardTask extraction
+  template after write extraction.
+- Confirmed-resource lane: #98 is prep-only audit evidence. Its xfailed trace
+  contract must be activated in a later production PR before extraction.
+- Historical PR #77 is superseded by #94 trace plus the future Wave 7 write
+  extraction; do not merge it.
+- Historical product/UI drafts #1, #6, and #53 are not chatbot migration
+  dependencies. They need explicit product decisions before any future merge.
+
+Next production queue:
+
+- Wave 7 slot A: BoardTask write extraction from fresh
+  `6f9918e880d8cd451916cafe859726f667a1bef9`.
+- Wave 7 slot B: ready requirement generation extraction from fresh
+  `6f9918e880d8cd451916cafe859726f667a1bef9`.
+- Only after those land: BoardTask explain extraction, confirmed-resource trace
+  activation, then confirmed-resource extraction.
+
+Wave 6 production PRs:
+
+- Opened and merged exactly two production PRs:
+  `refactor: trace board task write execution paths` and
+  `refactor: trace ready requirement board generation path`.
+- Keep #96, #97, and #98 draft and prep-only. They are replay evidence, not
+  production merge branches.
+- Continue using focused test files for new path contracts; do not grow
+  `apps/api/tests/board_task/test_workflow_trace.py` unless the path is truly
+  cross-cutting.
+
 ## Central Ownership
 
 Only the Coordinator / Integrator may apply final accepted changes to central
@@ -150,12 +210,14 @@ Worker branches are preparation-only. Do not merge them directly.
 | C: initial guidance trace | `codex/parallel/initial-guidance-trace` | `3fddbc2455a06f5469898a0513a7730c2e53faaf` | initial mode `unknown`, `narrow_topic` | production merged via #82 as `00d037ed5dd30c366ff9f96344cfc4006851acf2` | complete; trace-only with failure-order coverage | replayed and merged |
 | D: requirement chat trace | `codex/parallel/requirement-chat-trace` | `ccc0ad15a37caa54ad51e18601ac7bef061b5828` | requirement updated but not ready terminal | trace merged via #85; terminal extraction merged via #89 as `6b6480d20ad8f15a2a068a347eba786748bbca3a` | complete | replayed and merged |
 | E: BoardTask clarification trace | `codex/parallel/board-task-clarification-trace` | `c3b2b459f7b91b0d32e443867f41af7d77bfa7ba` | missing fields, `clarify_location`, `await_write_confirmation`, confirmation decline | production merged via #88 as `0cc1493e0ab532678b2026bb4e1115e6cd86ea3e` | complete; do not add more cases to `test_workflow_trace.py` | replayed and merged |
-| F: BoardTask write current-main audit | `codex/prep/board-task-write-trace-wave5` | `34b63eee5e1be03f75db7eb61f28cd0d375f7a6e` | current-main write trace/tests; #77 historical evidence only | next BoardTask trace candidate | replay manually from latest `main`; no extraction PR yet | preparation branch ready; not merged |
+| F: BoardTask write trace | `codex/integrate/board-task-write-trace` | `030561358476e9c40bbe7bfbe9fb8d65b4e7457b` | write success, execution failure, no-changed-document failure, BoardPatch metadata, write commit, BoardTask consume, response trace | production merged via #94 as `b9361743e18e43fd7e9326cd0505dce4d9cb8442` | complete; #77 remains historical evidence only | replayed and merged |
 | G: BoardTask edit trace | `codex/integrate/board-task-edit-trace` | `65e0ef4fe920970ba1083eda2d54dd2041fb1cb8` | edit success, execution failure, no-changed-document failure, BoardPatch metadata, consume/save/response ordering | production merged via #91 as `100ff1e00e314e66c998e5258c476ebcd2654286` | complete; commit metadata behavior preserved from current main | replayed and merged |
 | H: BoardTask explain trace | `codex/parallel/board-task-explain-trace` | `eb6d8cf01b81289775a0e9f1d00b78b80f3e9fe2` | single-target explanation, directive failure, sequence plan boundary, commit metadata, consume ordering | production merged via #86 as `73c0af289df3a49de1b4d7c6cb98d347f852bdbb` | complete | replayed and merged |
 | S: sequence start extraction | `codex/integrate/sequence-start-extraction` | `1d5e409df752169c19464bf35acabdcbfa25fee9` | decided sequence session start terminal path | production merged via #92 as `ae82bf55075ba18cb6e9c27f38889f2051b37bea` | sequence lane complete | replayed and merged |
-| I: initial generation trace | `codex/prep/initial-generation-trace-wave5` | `80f36e63e6fbaec51c4e0a1f00e85ff6fe5396f7` | ready -> freeze -> BoardEditor -> commit -> consume; generation failure retryability contract | next generation trace candidate | replay manually from latest `main`; xfail contract tests are preparation evidence | preparation branch ready; not merged |
-| J: confirmed-resource generation audit | read-only audit | n/a | confirmed-resource generation trace surface | waiting behind I | depends on I's initial generation trace contract | no branch created |
+| I: ready requirement generation trace | `codex/integrate/ready-requirement-generation-trace` | `e307f82532b0078a22f3c21107e002593598e22f` | ready -> freeze -> BoardEditor -> commit -> consume; generation failure retryability contract | production merged via #95 as `6f9918e880d8cd451916cafe859726f667a1bef9` | complete; ready generation extraction may start in Wave 7 | replayed and merged |
+| J: confirmed-resource generation audit | `codex/prep/confirmed-resource-generation-audit-wave6` | `5a1c6b963728014aacb56cd148782f146a5311f9` | confirmed-resource generation durable-order audit and xfailed trace contract | prep-only PR #98 open; do not merge as production | activate trace contract after ready generation extraction | prep-only; not merged |
+| L: BoardTask clarification handler prep | `codex/prep/board-task-clarification-handler-wave6-agent-a` | `eea84c40856621aee761c3ad53f700cd709e4e8e` | missing fields, clarify_location, unresolved edit conversion, await confirmation, decline terminal extraction candidate | prep-only PR #96 open; do not merge directly | split before production replay | prep-only; not merged |
+| M: BoardTask explain handler prep | `codex/prep/agent-b-board-task-explain` | `ca8afcfb9b90a24c692c2bc3e92946e9845b67e2` | single-target BoardTask explain terminal extraction candidate | prep-only PR #97 open; do not merge directly | replay after write extraction and before edit extraction | prep-only; not merged |
 | K: compatibility cleanup inventory | `codex/prep/compatibility-cleanup-wave5` | `c389147d15b7fd1bdb2509fc16c201a0bafcf333` | teaching_action, direct_edit, old document actions, fallback explain, recent edit follow-up, autonomous location choice, stale PRs | preparation-only docs inventory | no production PR | docs-only prep branch ready; not merged |
 
 ## Review Findings
@@ -185,55 +247,58 @@ Worker branches are preparation-only. Do not merge them directly.
 
 ## Integration Queue
 
-1. BoardTask lane: F write trace is the next production candidate, using #77
-   only as historical evidence.
-2. After BoardTask trace coverage is stable, begin BoardTask extraction PRs one
-   path at a time.
-3. Initial-learning / generation lane: initial generation trace is next; use I's
-   contract as preparation evidence, then replay manually into a production
-   branch.
-4. Confirmed-resource generation waits behind I's initial generation trace
-   contract before production replay.
-5. After initial generation trace lands, continue with initial generation
-   extraction and confirmed-resource generation.
-6. The sequence lane is complete after #92; no further main sequence migration
+1. Wave 7 slot A: BoardTask write extraction, using #94's trace contract and a
+   fresh branch from `6f9918e880d8cd451916cafe859726f667a1bef9`.
+2. Wave 7 slot B: ready requirement generation extraction, using #95's trace
+   contract and a fresh branch from `6f9918e880d8cd451916cafe859726f667a1bef9`.
+3. Keep #96/#97/#98 draft and prep-only; replay manually instead of merging
+   their branches directly.
+4. After Wave 7 lands, use #97 as the first explain extraction template.
+5. Split #96 before production replay; do not migrate all clarification
+   terminals in one PR.
+6. Confirmed-resource generation trace activation waits until ready generation
+   extraction lands; extraction waits until its trace contract passes.
+7. The sequence lane is complete after #92; no further main sequence migration
    PR is queued.
-7. K remains docs-only compatibility cleanup inventory.
-8. Do not start shared runtime/dependency cleanup yet.
+8. K remains docs-only compatibility cleanup inventory.
+9. Do not start shared runtime/dependency cleanup yet.
 
 ## Next Production PR Scope
 
-### Lane F: BoardTask Write Trace
+### Wave 7 Slot A: BoardTask Write Extraction
 
-Fresh branch should start from `100ff1e00e314e66c998e5258c476ebcd2654286`.
+Fresh branch should start from `6f9918e880d8cd451916cafe859726f667a1bef9`.
 
 Own only:
 
-- write success
-- write execution failure
-- no changed-document failure
-- BoardPatch metadata
-- write commit
-- BoardTask consume
-- response trace
+- `_execute_board_task_write(...)`
+- `apps/api/app/services/chat/paths/board_task_write.py`
+- existing BoardTask write trace tests
 
 Testing note:
 
-- Do not add more cases to `apps/api/tests/board_task/test_workflow_trace.py`.
-  Use a focused BoardTask write trace test file.
+- Preserve #94 trace node order and commit metadata exactly.
+- Do not touch collection, focus resolution, edit, explain, chat, API, SSE,
+  schema, prompt, or NodeId values.
 
-### Initial Generation Trace
+### Wave 7 Slot B: Ready Requirement Generation Extraction
 
-Fresh branch should start from `100ff1e00e314e66c998e5258c476ebcd2654286`.
+Fresh branch should start from `6f9918e880d8cd451916cafe859726f667a1bef9`.
 
-Own only the ready-to-freeze-to-BoardEditor generation path:
+Own only the ready-to-freeze-to-BoardEditor generation terminal:
 
-- ready requirement state
-- frozen snapshot
-- BoardEditor generation
-- commit
-- consume
-- failure boundary
+- `apps/api/app/services/chat/paths/initial_generation.py`
+- the ready `learning_clarification.ready_for_board` generation block in
+  `chatbot.py`
+- existing ready requirement generation trace tests
+
+Testing note:
+
+- Preserve #95 trace node order, failure retryability, requirement consume
+  behavior, and response shape exactly.
+- Do not touch explicit `board_generation_action=start`, confirmed-resource
+  generation, requirement chat terminal, API, SSE, schema, prompt, or NodeId
+  values.
 
 ## Repair Queue
 
@@ -241,10 +306,12 @@ Repair-only branches should not be merged directly:
 
 - G: production merged via #91; do not reopen consumed-phase commit metadata
   changes without a separate explicit fix PR.
-- F: current-main write trace/audit evidence; next BoardTask trace candidate.
+- F: production merged via #94; next step is write extraction from fresh main.
 - S: production merged via #92; sequence lane complete.
-- I: initial generation trace contract; next generation trace candidate.
-- J: confirmed-resource audit waits behind I.
+- I: production merged via #95; next step is ready generation extraction from
+  fresh main.
+- J: confirmed-resource audit is open as prep-only #98; activate trace later.
+- L/M: #96/#97 are prep-only handler evidence and must be manually replayed.
 - K: docs-only compatibility cleanup inventory.
 
 ## Notes
@@ -252,5 +319,5 @@ Repair-only branches should not be merged directly:
 - The old preparation branches are useful as specs, tests, and candidate
   patches, but they are not merge branches.
 - The next production work should start from
-  `100ff1e00e314e66c998e5258c476ebcd2654286`, not from the old parallel-wave
+  `6f9918e880d8cd451916cafe859726f667a1bef9`, not from the old parallel-wave
   base.
