@@ -89,6 +89,10 @@ from app.services.chat.paths.interaction_start_success import (
     handle_interaction_start_success,
 )
 from app.services.chat.paths.ordinary import OrdinaryChatHandlerDependencies, handle_ordinary_chat
+from app.services.chat.paths.requirement_chat import (
+    RequirementChatTerminalDependencies,
+    handle_requirement_chat_terminal,
+)
 from app.services.chat.paths.resource_prompt import (
     ResourcePromptHandlerDependencies,
     handle_resource_reference_prompt,
@@ -5559,6 +5563,32 @@ def _chat_response(
     should_trace_requirement_chat_update = (
         requirement_stamp is not None and track_initial_requirement_run and not learning_clarification.ready_for_board
     )
+    if should_trace_requirement_chat_update:
+        return handle_requirement_chat_terminal(
+            workspace=workspace,
+            package=package,
+            lesson=lesson,
+            user_id=user_id,
+            request=request,
+            requirements=requirements,
+            learning_clarification=learning_clarification,
+            chatbot_message=chatbot_message,
+            chatbot_message_source=chatbot_message_source,
+            resource_resolution=resource_resolution,
+            selected_reference=selected_reference,
+            requirement_history=requirement_history,
+            requirement_stamp=requirement_stamp,
+            chat_turn_gate_metadata=_chat_turn_gate_metadata(chat_turn_gate),
+            solver_metadata=solver_metadata,
+            deps=RequirementChatTerminalDependencies(
+                commit_operations=commit_operations,
+                task_metadata=_task_metadata,
+                reference_metadata=_reference_metadata,
+                save_workspace_for_user=_save_workspace_for_user,
+                build_response=_response,
+            ),
+        )
+
     board_decision = BoardDecision(action="no_change", reason="本轮是通用问答聊天，不自动修改讲义。")
     requirement_cleared = False
 
@@ -5593,19 +5623,6 @@ def _chat_response(
         workspace=workspace,
         requirement_history=requirement_history,
     )
-    if should_trace_requirement_chat_update:
-        record_workflow_step(
-            NodeId.REQUIREMENT_CHAT_UPDATE,
-            decision=requirement_stamp.phase,
-            reason="not_ready_for_board",
-            run_id=requirement_stamp.run_id,
-            version_id=requirement_stamp.version_id,
-        )
-        record_workflow_step(
-            NodeId.PERSIST_CHAT_COMMIT,
-            decision="committed",
-            commit_id=lesson.history_graph.commits[-1].id,
-        )
     response = _response(
         workspace=workspace,
         package=package,
@@ -5619,8 +5636,6 @@ def _chat_response(
         requirement_cleared=requirement_cleared,
         requirement_history=requirement_history if track_initial_requirement_run else None,
     )
-    if should_trace_requirement_chat_update:
-        record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
     return response
 
 
