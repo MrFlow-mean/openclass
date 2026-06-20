@@ -41,7 +41,6 @@ from app.services.board_task_history import BoardTaskHistoryRecorder, BoardTaskH
 from app.services.board_task_manager import (
     is_write_confirmation,
     is_write_decline,
-    make_write_task_from_topic,
     normalize_board_task_sheet,
     update_board_task_from_chat,
 )
@@ -58,6 +57,13 @@ from app.services.chat.paths.active_interaction_empty import (
 from app.services.chat.paths.active_interaction_turn import (
     ActiveInteractionTurnDependencies,
     handle_active_interaction_turn,
+)
+from app.services.chat.paths.board_task_clarification import (
+    BoardTaskClarificationDependencies,
+    handle_board_task_await_write_confirmation,
+    handle_board_task_clarify_location,
+    handle_board_task_missing_fields_clarification,
+    handle_board_task_write_confirmation_decline,
 )
 from app.services.chat.paths.generation_resource_prompt import (
     GenerationResourcePromptDependencies,
@@ -1874,6 +1880,22 @@ def _start_section_explanation_sequence(
     )
 
 
+def _board_task_clarification_deps() -> BoardTaskClarificationDependencies:
+    return BoardTaskClarificationDependencies(
+        activate_board_task_requirements=_activate_board_task_requirements,
+        emit_board_task_update=_emit_board_task_update,
+        generate_board_task_clarification_message=_generate_board_task_clarification_message,
+        generate_focus_candidate_message=_generate_focus_candidate_message,
+        requirements_from_board_task=_requirements_from_board_task,
+        board_search_evidence_metadata=_board_search_evidence_metadata,
+        task_metadata=_task_metadata,
+        board_task_metadata=_board_task_metadata,
+        commit_operations=commit_operations,
+        save_workspace_for_user=_save_workspace_for_user,
+        build_response=_response,
+    )
+
+
 def _handle_existing_board_task_flow(
     *,
     workspace,
@@ -1921,59 +1943,20 @@ def _handle_existing_board_task_flow(
         and existing_task.requested_action == "write"
     ):
         if is_write_decline(request.message):
-            current_stamp = board_task_history.current_stamp()
-            record_workflow_step(
-                NodeId.BOARD_TASK_COLLECT,
-                decision="awaiting_confirmation",
-                reason=existing_task.question_or_topic or existing_task.target_hint,
-                run_id=current_stamp.run_id,
-                version_id=current_stamp.version_id,
-            )
-            stamp = board_task_history.not_executed(reason="用户取消了扩写确认。")
-            lesson.board_task_requirements = None
-            commit_operations(
-                lesson,
-                [],
-                label="Board task cancelled",
-                message="Cancelled an awaiting board write task",
-                new_document=lesson.board_document,
-                metadata={
-                    "kind": "chat_flow",
-                    "user_message": request.message,
-                    "assistant_message": "",
-                    "assistant_message_source": "board_task_cancelled",
-                    **interaction_metadata,
-                    **_board_task_metadata(board_task=existing_task, stamp=stamp, route="await_write_confirmation", cleared=True),
-                },
-            )
-            workspace_state.normalize_package_state(package)
-            _save_workspace_for_user(
-                user_id=user_id,
-                workspace=workspace,
-                requirement_history=requirement_history,
-                board_task_history=board_task_history,
-            )
-            commit = lesson.history_graph.commits[-1]
-            record_workflow_step(
-                NodeId.BOARD_WRITE_CONFIRMATION_HANDLE,
-                decision="declined",
-                reason="用户取消了扩写确认。",
-                run_id=stamp.run_id,
-                version_id=stamp.version_id,
-                commit_id=commit.id,
-            )
-            response = _response(
+            return handle_board_task_write_confirmation_decline(
                 workspace=workspace,
                 package=package,
                 lesson=lesson,
-                chatbot_message="",
+                user_id=user_id,
+                request=request,
                 requirements=requirements,
                 learning_clarification=learning_clarification,
-                board_decision=BoardDecision(action="no_change", reason="用户取消了扩写。"),
-                board_task_stamp=stamp,
+                existing_task=existing_task,
+                requirement_history=requirement_history,
+                board_task_history=board_task_history,
+                source_interaction_metadata=interaction_metadata,
+                deps=_board_task_clarification_deps(),
             )
-            record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
-            return response
         if is_write_confirmation(request.message):
             confirmed_task = BoardTaskRequirementSheet.model_validate(existing_task.model_dump(mode="json"))
             confirmed_task.confirmation_status = "confirmed"
@@ -2035,73 +2018,23 @@ def _handle_existing_board_task_flow(
     stamp = board_task_history.record_update(sheet=board_task)
     _emit_board_task_update(lesson=lesson, sheet=board_task, stamp=stamp)
     if board_task.progress < 100:
-        record_workflow_step(
-            NodeId.BOARD_TASK_COLLECT,
-            decision="collecting",
-            reason=board_task.clarification_question,
-            run_id=stamp.run_id,
-            version_id=stamp.version_id,
-        )
-        chatbot_message, chatbot_message_source = _generate_board_task_clarification_message(
-            lesson=lesson,
-            resources=resources,
-            conversation=request.conversation,
-            request=request,
-            board_task=board_task,
-            context=board_task.clarification_question,
-        )
-        commit_operations(
-            lesson,
-            [],
-            label="Board task clarification",
-            message="Asked for a missing field in the existing-board task sheet",
-            new_document=lesson.board_document,
-            metadata={
-                "kind": "chat_flow",
-                "user_message": request.message,
-                "assistant_message": chatbot_message,
-                "assistant_message_source": chatbot_message_source,
-                "interaction_mode": request.interaction_mode,
-                "selection": request.selection.model_dump(mode="json") if request.selection else None,
-                **interaction_metadata,
-                **decision_trace_metadata(
-                    message=request.message,
-                    board_action_decision=action_decision,
-                    role_executed="board_task_manager",
-                    document_changed=False,
-                    reason=board_task.clarification_question,
-                ),
-                **_board_task_metadata(board_task=board_task, stamp=stamp, route="clarify_location", cleared=False),
-            },
-        )
-        workspace_state.normalize_package_state(package)
-        _save_workspace_for_user(
-            user_id=user_id,
-            workspace=workspace,
-            requirement_history=requirement_history,
-            board_task_history=board_task_history,
-        )
-        commit = lesson.history_graph.commits[-1]
-        record_workflow_step(
-            NodeId.BOARD_TASK_CLARIFY_FIELDS,
-            decision="missing_fields",
-            reason=board_task.clarification_question,
-            run_id=stamp.run_id,
-            version_id=stamp.version_id,
-            commit_id=commit.id,
-        )
-        response = _response(
+        return handle_board_task_missing_fields_clarification(
             workspace=workspace,
             package=package,
             lesson=lesson,
-            chatbot_message=chatbot_message,
+            user_id=user_id,
+            request=request,
             requirements=requirements,
             learning_clarification=learning_clarification,
-            board_decision=BoardDecision(action="no_change", reason=board_task.clarification_question),
+            resources=resources,
+            board_task=board_task,
+            board_task_stamp=stamp,
+            action_decision=action_decision,
+            requirement_history=requirement_history,
             board_task_history=board_task_history,
+            source_interaction_metadata=interaction_metadata,
+            deps=_board_task_clarification_deps(),
         )
-        record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
-        return response
 
     board_action = _board_task_action_to_board_action(board_task)
     resolution = None
@@ -2225,279 +2158,47 @@ def _handle_existing_board_task_flow(
         )
 
     if decision.route == "clarify_location":
-        record_workflow_step(
-            NodeId.BOARD_TASK_COLLECT,
-            decision="ready",
-            reason=board_task.question_or_topic or board_task.target_hint,
-            run_id=stamp.run_id,
-            version_id=stamp.version_id,
-        )
-        record_workflow_step(
-            NodeId.BOARD_TARGET_RESOLVE,
-            decision=resolution.status if resolution else decision.location_status,
-            reason=(resolution.question if resolution and resolution.question else decision.reason),
-            run_id=stamp.run_id,
-            version_id=stamp.version_id,
-        )
-        next_task = BoardTaskRequirementSheet.model_validate(board_task.model_dump(mode="json"))
-        next_task.location_status = "ambiguous" if decision.location_status == "ambiguous" else "missing"
-        next_task.failure_count += 1 if board_task.requested_action == "edit" else 0
-        if board_task.requested_action == "edit" and next_task.failure_count >= 2:
-            old_stamp = board_task_history.record_update(
-                sheet=next_task,
-                change_summary="Edit target could not be located twice.",
-            )
-            board_task_history.not_executed(reason="编辑目标连续两次未定位，旧任务未执行。")
-            new_task = make_write_task_from_topic(board_task.question_or_topic)
-            _activate_board_task_requirements(lesson, new_task)
-            new_stamp = board_task_history.record_update(
-                sheet=new_task,
-                status="awaiting_confirmation",
-                change_summary="Created a write task from an unresolved edit topic.",
-            )
-            _emit_board_task_update(lesson=lesson, sheet=new_task, stamp=new_stamp)
-            chatbot_message, chatbot_message_source = _generate_board_task_clarification_message(
-                lesson=lesson,
-                resources=resources,
-                conversation=request.conversation,
-                request=request,
-                board_task=new_task,
-                context="板书里没有定位到可编辑的原内容。请确认是否改为扩写相关内容。",
-            )
-            commit_operations(
-                lesson,
-                [],
-                label="Board task converted to write confirmation",
-                message="Archived an unresolved edit task and opened a write confirmation task",
-                new_document=lesson.board_document,
-                metadata={
-                    "kind": "chat_flow",
-                    "user_message": request.message,
-                    "assistant_message": chatbot_message,
-                    "assistant_message_source": chatbot_message_source,
-                    **interaction_metadata,
-                    **_board_search_evidence_metadata(resolution),
-                    **decision_trace_metadata(
-                        message=request.message,
-                        board_action_decision=action_decision,
-                        route_decision=decision,
-                        role_executed="focus_resolver",
-                        document_changed=False,
-                        reason="编辑目标未定位，已转为扩写确认。",
-                    ),
-                    **_board_task_metadata(board_task=board_task, stamp=old_stamp, route="clarify_location", cleared=True),
-                    "new_board_task": new_task.model_dump(mode="json"),
-                    "new_board_task_run_id": new_stamp.run_id,
-                    "new_board_task_version_id": new_stamp.version_id,
-                },
-            )
-            workspace_state.normalize_package_state(package)
-            _save_workspace_for_user(
-                user_id=user_id,
-                workspace=workspace,
-                requirement_history=requirement_history,
-                board_task_history=board_task_history,
-            )
-            commit = lesson.history_graph.commits[-1]
-            record_workflow_step(
-                NodeId.BOARD_AWAIT_WRITE_CONFIRMATION,
-                decision="converted_from_unresolved_edit",
-                reason="编辑目标未定位，已转为扩写确认。",
-                run_id=new_stamp.run_id,
-                version_id=new_stamp.version_id,
-                commit_id=commit.id,
-            )
-            response = _response(
-                workspace=workspace,
-                package=package,
-                lesson=lesson,
-                chatbot_message=chatbot_message,
-                requirements=requirements,
-                learning_clarification=learning_clarification,
-                board_decision=BoardDecision(action="no_change", reason="编辑目标未定位，已转为扩写确认。"),
-                board_task_stamp=new_stamp,
-            )
-            record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
-            return response
-        _activate_board_task_requirements(lesson, next_task)
-        stamp = board_task_history.record_update(sheet=next_task, change_summary=decision.reason)
-        _emit_board_task_update(lesson=lesson, sheet=next_task, stamp=stamp)
-        chatbot_message, chatbot_message_source = _generate_focus_candidate_message(
-            lesson=lesson,
-            requirements=_requirements_from_board_task(
-                base=requirements,
-                board_task=next_task,
-                action_type=board_action,
-            ),
-            resources=resources,
-            conversation=request.conversation,
-            request=request,
-            resolution=resolution or FocusResolution(
-                focus=None,
-                candidates=decision.candidate_focuses,
-                status="ambiguous" if decision.candidate_focuses else "missing",
-                question=decision.reason,
-            ),
-        )
-        commit_operations(
-            lesson,
-            [],
-            label="Board task location clarification",
-            message="Asked the learner to confirm the board task location",
-            new_document=lesson.board_document,
-            metadata={
-                "kind": "chat_flow",
-                "user_message": request.message,
-                "assistant_message": chatbot_message,
-                "assistant_message_source": chatbot_message_source,
-                **interaction_metadata,
-                **_board_search_evidence_metadata(resolution),
-                **decision_trace_metadata(
-                    message=request.message,
-                    board_action_decision=action_decision,
-                    route_decision=decision,
-                    role_executed="focus_resolver",
-                    document_changed=False,
-                    reason=decision.reason,
-                ),
-                **_task_metadata(
-                    requirements=_requirements_from_board_task(
-                        base=requirements,
-                        board_task=next_task,
-                        action_type=board_action,
-                    ),
-                    learning_clarification=learning_clarification,
-                    focus=None,
-                    focus_candidates=decision.candidate_focuses,
-                    requirement_cleared=False,
-                ),
-                **_board_task_metadata(
-                    board_task=next_task,
-                    stamp=stamp,
-                    route=decision.route,
-                    decision=decision.model_dump(mode="json"),
-                    cleared=False,
-                ),
-            },
-        )
-        workspace_state.normalize_package_state(package)
-        _save_workspace_for_user(
-            user_id=user_id,
-            workspace=workspace,
-            requirement_history=requirement_history,
-            board_task_history=board_task_history,
-        )
-        commit = lesson.history_graph.commits[-1]
-        record_workflow_step(
-            NodeId.BOARD_ROUTE_CLARIFY_LOCATION,
-            decision=decision.location_status,
-            reason=decision.reason,
-            run_id=stamp.run_id,
-            version_id=stamp.version_id,
-            commit_id=commit.id,
-        )
-        response = _response(
+        return handle_board_task_clarify_location(
             workspace=workspace,
             package=package,
             lesson=lesson,
-            chatbot_message=chatbot_message,
+            user_id=user_id,
+            request=request,
             requirements=requirements,
             learning_clarification=learning_clarification,
-            board_decision=BoardDecision(action="await_focus_choice", reason=decision.reason),
-            focus_candidates=decision.candidate_focuses,
+            resources=resources,
+            board_task=board_task,
+            board_task_stamp=stamp,
+            action_decision=action_decision,
+            board_action=board_action,
+            decision=decision,
+            resolution=resolution,
+            requirement_history=requirement_history,
             board_task_history=board_task_history,
+            source_interaction_metadata=interaction_metadata,
+            deps=_board_task_clarification_deps(),
         )
-        record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
-        return response
 
     if decision.route == "await_write_confirmation":
-        record_workflow_step(
-            NodeId.BOARD_TASK_COLLECT,
-            decision="ready",
-            reason=board_task.question_or_topic or board_task.target_hint,
-            run_id=stamp.run_id,
-            version_id=stamp.version_id,
-        )
-        next_task = BoardTaskRequirementSheet.model_validate(board_task.model_dump(mode="json"))
-        next_task.requested_action = "write"
-        next_task.location_status = "content_absent"
-        next_task.confirmation_status = "awaiting"
-        next_task.progress = 100
-        next_task.missing_items = []
-        next_task.clarification_question = ""
-        _activate_board_task_requirements(lesson, next_task)
-        stamp = board_task_history.record_update(
-            sheet=next_task,
-            status="awaiting_confirmation",
-            change_summary=decision.reason or "Awaiting learner confirmation before writing new board content.",
-        )
-        _emit_board_task_update(lesson=lesson, sheet=next_task, stamp=stamp)
-        chatbot_message, chatbot_message_source = _generate_board_task_clarification_message(
-            lesson=lesson,
-            resources=resources,
-            conversation=request.conversation,
-            request=request,
-            board_task=next_task,
-            context="板书里没有对应内容。请询问用户是否要先扩写板书，再继续学习。",
-        )
-        commit_operations(
-            lesson,
-            [],
-            label="Board write confirmation",
-            message="Asked the learner to confirm writing absent board content",
-            new_document=lesson.board_document,
-            metadata={
-                "kind": "chat_flow",
-                "user_message": request.message,
-                "assistant_message": chatbot_message,
-                "assistant_message_source": chatbot_message_source,
-                **interaction_metadata,
-                **_board_search_evidence_metadata(resolution),
-                **decision_trace_metadata(
-                    message=request.message,
-                    board_action_decision=action_decision,
-                    route_decision=decision,
-                    role_executed="board_task_route_decider",
-                    document_changed=False,
-                    reason=decision.reason,
-                ),
-                **_board_task_metadata(
-                    board_task=next_task,
-                    stamp=stamp,
-                    route=decision.route,
-                    decision=decision.model_dump(mode="json"),
-                    cleared=False,
-                ),
-            },
-        )
-        workspace_state.normalize_package_state(package)
-        _save_workspace_for_user(
-            user_id=user_id,
-            workspace=workspace,
-            requirement_history=requirement_history,
-            board_task_history=board_task_history,
-        )
-        commit = lesson.history_graph.commits[-1]
-        record_workflow_step(
-            NodeId.BOARD_AWAIT_WRITE_CONFIRMATION,
-            decision="awaiting_confirmation",
-            reason=decision.reason,
-            run_id=stamp.run_id,
-            version_id=stamp.version_id,
-            commit_id=commit.id,
-        )
-        response = _response(
+        return handle_board_task_await_write_confirmation(
             workspace=workspace,
             package=package,
             lesson=lesson,
-            chatbot_message=chatbot_message,
+            user_id=user_id,
+            request=request,
             requirements=requirements,
             learning_clarification=learning_clarification,
-            board_decision=BoardDecision(action="no_change", reason=decision.reason),
+            resources=resources,
+            board_task=board_task,
+            board_task_stamp=stamp,
+            action_decision=action_decision,
+            decision=decision,
+            resolution=resolution,
+            requirement_history=requirement_history,
             board_task_history=board_task_history,
+            source_interaction_metadata=interaction_metadata,
+            deps=_board_task_clarification_deps(),
         )
-        record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
-        return response
 
     if decision.route == "write":
         return _execute_board_task_write(
