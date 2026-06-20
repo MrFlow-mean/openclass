@@ -97,6 +97,10 @@ from app.services.chat.paths.requirement_chat import (
     RequirementChatTerminalDependencies,
     handle_requirement_chat_terminal,
 )
+from app.services.chat.paths.ready_requirement_generation import (
+    ReadyRequirementGenerationDependencies,
+    handle_ready_requirement_generation,
+)
 from app.services.chat.paths.resource_prompt import (
     ResourcePromptHandlerDependencies,
     handle_resource_reference_prompt,
@@ -5361,126 +5365,37 @@ def _chat_response(
         and learning_clarification.ready_for_board
         and requirements.action_type == "generate_board"
     ):
-        requirements = _with_task_details(
-            requirements,
-            action_type="generate_board",
-            instruction=requirements.action_instruction or request.message,
-        )
-        requirements, learning_clarification, frozen_requirement = _prepare_initial_requirement_for_board_generation(
-            requirement_history,
-            enabled=track_initial_requirement_run,
-            requirements=requirements,
-            learning_clarification=learning_clarification,
-        )
-        _checkpoint_initial_requirement_before_generation(
-            user_id=user_id,
+        # Candidate wiring for the prep branch only; keep this branch out of direct production merge.
+        return handle_ready_requirement_generation(
             workspace=workspace,
             package=package,
             lesson=lesson,
-            requirement_history=requirement_history,
-            requirements=requirements,
-            learning_clarification=learning_clarification,
-            stamp=frozen_requirement,
-        )
-        edit_outcome = generate_from_requirements(
-            lesson=lesson,
-            requirements=requirements,
-            clarification=learning_clarification,
-            resource_summary=resource_summary_for_turn,
-            reference_context=selected_reference,
-            requirement_run_id=frozen_requirement.run_id if frozen_requirement else None,
-            frozen_requirement_version_id=frozen_requirement.version_id if frozen_requirement else None,
-        )
-        if not edit_outcome.changed:
-            failed_stamp = requirement_history.generation_failed(
-                reason=edit_outcome.summary or edit_outcome.chatbot_message,
-                metadata=_board_document_failure_metadata(edit_outcome),
-            )
-            workspace_state.normalize_package_state(package)
-            _save_workspace_for_user(
-                user_id=user_id,
-                workspace=workspace,
-                requirement_history=requirement_history,
-            )
-            return _response(
-                workspace=workspace,
-                package=package,
-                lesson=lesson,
-                chatbot_message=edit_outcome.chatbot_message or chatbot_message,
-                learning_clarification=learning_clarification,
-                requirements=requirements,
-                board_decision=edit_outcome.board_decision,
-                resource_matches=resource_resolution.matches,
-                selected_reference=selected_reference,
-                requirement_stamp=failed_stamp,
-                board_document_operation_status=edit_outcome.operation_status,
-                board_document_operation_failure_reason=edit_outcome.failure_reason,
-            )
-        refresh_lesson_runtime(lesson, document=edit_outcome.new_document, requirements=requirements)
-        lesson.board_teaching_guide = build_board_teaching_guide(lesson)
-        lesson.board_teaching_progress = None
-        post_generation_message, post_generation_source = _post_initial_board_generation_message(
-            lesson=lesson,
-            requirements=requirements,
-            learning_clarification=learning_clarification,
-            resource_summary=resource_summary_for_turn,
-            edit_outcome=edit_outcome,
-        )
-        commit_operations(
-            lesson,
-            [],
-            label="Board document generation",
-            message="Generated board document from a frozen learning requirement sheet",
-            new_document=lesson.board_document,
-            metadata={
-                "kind": "board_document_generation",
-                "user_message": request.message,
-                "assistant_message": post_generation_message,
-                "assistant_message_source": post_generation_source,
-                "chatbot_requirement_reply": chatbot_message,
-                "board_editor_message": edit_outcome.chatbot_message,
-                "interaction_mode": request.interaction_mode,
-                "selection": request.selection.model_dump(mode="json") if request.selection else None,
-                "board_generation_action": "ready_requirement_sheet",
-                "board_edit_operation": edit_outcome.operation,
-                "board_edit_summary": edit_outcome.summary,
-                "board_section_titles": edit_outcome.section_titles,
-                **_board_document_quality_metadata(edit_outcome),
-                **_requirement_history_metadata(
-                    frozen_requirement,
-                    run_status_after_commit="consumed" if frozen_requirement is not None else None,
-                ),
-                **_task_metadata(
-                    requirements=requirements,
-                    learning_clarification=learning_clarification,
-                    requirement_cleared=True,
-                ),
-                **_reference_metadata(resolution=resource_resolution),
-                **solver_metadata,
-            },
-        )
-        consumed_stamp = requirement_history.consume(commit_id=lesson.history_graph.commits[-1].id)
-        _clear_task_requirements(lesson)
-        workspace_state.normalize_package_state(package)
-        _save_workspace_for_user(
             user_id=user_id,
-            workspace=workspace,
-            requirement_history=requirement_history,
-        )
-        return _response(
-            workspace=workspace,
-            package=package,
-            lesson=lesson,
-            chatbot_message=post_generation_message,
-            learning_clarification=learning_clarification,
+            request=request,
             requirements=requirements,
-            board_decision=edit_outcome.board_decision,
-            resource_matches=resource_resolution.matches,
+            learning_clarification=learning_clarification,
+            chatbot_message=chatbot_message,
+            resource_summary=resource_summary_for_turn,
+            resource_resolution=resource_resolution,
             selected_reference=selected_reference,
-            requirement_cleared=True,
-            requirement_stamp=consumed_stamp,
-            board_document_operation_status=edit_outcome.operation_status,
-            board_document_operation_failure_reason=edit_outcome.failure_reason,
+            requirement_history=requirement_history,
+            requirement_stamp=requirement_stamp,
+            solver_metadata=solver_metadata,
+            deps=ReadyRequirementGenerationDependencies(
+                with_task_details=_with_task_details,
+                prepare_requirement_for_board_generation=_prepare_initial_requirement_for_board_generation,
+                checkpoint_requirement_before_generation=_checkpoint_initial_requirement_before_generation,
+                generate_from_requirements=generate_from_requirements,
+                post_board_generation_message=_post_initial_board_generation_message,
+                requirement_history_metadata=_requirement_history_metadata,
+                task_metadata=_task_metadata,
+                reference_metadata=_reference_metadata,
+                board_document_quality_metadata=_board_document_quality_metadata,
+                board_document_failure_metadata=_board_document_failure_metadata,
+                clear_task_requirements=_clear_task_requirements,
+                save_workspace_for_user=_save_workspace_for_user,
+                build_response=_response,
+            ),
         )
 
     should_trace_requirement_chat_update = (
