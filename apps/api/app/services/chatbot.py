@@ -63,6 +63,10 @@ from app.services.chat.paths.board_task_write import (
     BoardTaskWriteDependencies,
     handle_board_task_write_terminal as _execute_board_task_write,
 )
+from app.services.chat.paths.board_task_explain import (
+    BoardTaskExplainDependencies,
+    handle_board_task_explain_terminal as _execute_board_task_explain,
+)
 from app.services.chat.paths.generation_resource_prompt import (
     GenerationResourcePromptDependencies,
     handle_generation_resource_prompt,
@@ -2735,155 +2739,36 @@ def _handle_existing_board_task_flow(
         return response
 
     if decision.route == "explain":
-        focus = decision.target_focus or (resolution.focus if resolution else None)
-        focus_excerpt = _board_task_explanation_target_excerpt(
-            board_task=board_task,
-            focus=focus,
-            decision=decision,
-            resolution=resolution,
-        )
-        chatbot_message, chatbot_message_source, board_explanation_directive = _generate_board_directed_explanation_message(
-            lesson=lesson,
-            requirements=_requirements_from_board_task(
-                base=requirements,
-                board_task=board_task,
-                action_type="explain_target",
-                focus=focus,
-            ),
-            resources=resources,
-            conversation=request.conversation,
-            request=request,
-            learning_clarification=learning_clarification,
-            action_type="explain_target",
-            target_excerpt=focus_excerpt,
-        )
-        stamp = board_task_history.record_update(sheet=board_task, status="ready")
-        record_workflow_step(
-            NodeId.BOARD_EXPLAIN_DIRECTIVE,
-            decision=chatbot_message_source,
-            reason=decision.reason,
-            run_id=stamp.run_id,
-            version_id=stamp.version_id,
-        )
-        cleared = chatbot_message_source == "chatbot_board_directed" and bool(chatbot_message)
-        if not chatbot_message:
-            failed_stamp = board_task_history.execution_failed(
-                reason="Board-directed explanation failed because Chatbot returned empty.",
-                metadata={
-                    "assistant_message_source": chatbot_message_source,
-                    "board_explanation_failed": True,
-                    "board_task_route": "explain",
-                    "board_task_cleared": False,
-                    "board_explanation_directive": board_explanation_directive,
-                    "board_task_decision": decision.model_dump(mode="json"),
-                    **_board_search_evidence_metadata(resolution),
-                },
-            )
-            workspace_state.normalize_package_state(package)
-            _save_workspace_for_user(
-                user_id=user_id,
-                workspace=workspace,
-                requirement_history=requirement_history,
-                board_task_history=board_task_history,
-            )
-            record_workflow_step(
-                NodeId.BOARD_TASK_FAILURE,
-                decision="execution_failed",
-                reason="Board-directed explanation failed because Chatbot returned empty.",
-                run_id=failed_stamp.run_id,
-                version_id=failed_stamp.version_id,
-            )
-            response = _response(
-                workspace=workspace,
-                package=package,
-                lesson=lesson,
-                chatbot_message="",
-                requirements=requirements,
-                learning_clarification=learning_clarification,
-                board_decision=BoardDecision(action="no_change", reason="Board-directed explanation failed because Chatbot returned empty."),
-                resolved_focus=focus,
-                requirement_cleared=False,
-                board_task_stamp=failed_stamp,
-            )
-            record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
-            return response
-        commit_operations(
-            lesson,
-            [],
-            label="Board task explanation",
-            message="Executed an existing-board explanation task",
-            new_document=lesson.board_document,
-            metadata={
-                "kind": "chat_flow",
-                "user_message": request.message,
-                "assistant_message": chatbot_message,
-                "assistant_message_source": chatbot_message_source,
-                "board_explanation_directive": board_explanation_directive,
-                **interaction_metadata,
-                **_board_search_evidence_metadata(resolution),
-                **decision_trace_metadata(
-                    message=request.message,
-                    board_action_decision=action_decision,
-                    route_decision=decision,
-                    role_executed="chatbot_board_directed",
-                    document_changed=False,
-                    reason=decision.reason,
-                ),
-                **_task_metadata(
-                    requirements=_requirements_from_board_task(
-                        base=requirements,
-                        board_task=board_task,
-                        action_type="explain_target",
-                        focus=focus,
-                    ),
-                    learning_clarification=learning_clarification,
-                    focus=focus,
-                    focus_candidates=resolution.candidates if resolution else [],
-                    requirement_cleared=cleared,
-                ),
-                **_board_task_metadata(
-                    board_task=board_task,
-                    stamp=stamp,
-                    route="explain",
-                    decision=decision.model_dump(mode="json"),
-                    cleared=cleared,
-                ),
-            },
-        )
-        consumed_stamp = board_task_history.consume(commit_id=lesson.history_graph.commits[-1].id) if cleared else stamp
-        if cleared:
-            lesson.board_task_requirements = None
-            _clear_task_requirements(lesson)
-        workspace_state.normalize_package_state(package)
-        _save_workspace_for_user(
-            user_id=user_id,
-            workspace=workspace,
-            requirement_history=requirement_history,
-            board_task_history=board_task_history,
-        )
-        record_workflow_step(
-            NodeId.BOARD_EXPLAIN_COMMIT,
-            decision="committed",
-            reason=decision.reason,
-            run_id=consumed_stamp.run_id,
-            version_id=consumed_stamp.version_id,
-            commit_id=lesson.history_graph.commits[-1].id,
-        )
-        response = _response(
+        return _execute_board_task_explain(
             workspace=workspace,
             package=package,
             lesson=lesson,
-            chatbot_message=chatbot_message,
+            user_id=user_id,
+            request=request,
             requirements=requirements,
             learning_clarification=learning_clarification,
-            board_decision=BoardDecision(action="no_change", reason=decision.reason),
-            resolved_focus=focus,
-            requirement_cleared=cleared,
-            board_task_stamp=consumed_stamp,
-            completed_board_task_sheet=board_task if cleared else None,
+            resources=resources,
+            board_task=board_task,
+            requirement_history=requirement_history,
+            board_task_history=board_task_history,
+            route_decision=decision,
+            action_decision=action_decision,
+            resolution=resolution,
+            source_interaction_metadata=interaction_metadata,
+            deps=BoardTaskExplainDependencies(
+                generate_board_directed_explanation_message=_generate_board_directed_explanation_message,
+                requirements_from_board_task=_requirements_from_board_task,
+                board_search_evidence_metadata=_board_search_evidence_metadata,
+                decision_trace_metadata=decision_trace_metadata,
+                task_metadata=_task_metadata,
+                board_task_metadata=_board_task_metadata,
+                clear_task_requirements=_clear_task_requirements,
+                normalize_package_state=workspace_state.normalize_package_state,
+                save_workspace_for_user=_save_workspace_for_user,
+                commit_operations=commit_operations,
+                build_response=_response,
+            ),
         )
-        record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
-        return response
 
     if decision.route == "chat":
         focus = _decision_focus(decision, resolution)
