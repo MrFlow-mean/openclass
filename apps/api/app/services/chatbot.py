@@ -63,6 +63,10 @@ from app.services.chat.paths.board_task_write import (
     BoardTaskWriteDependencies,
     handle_board_task_write_terminal as _execute_board_task_write,
 )
+from app.services.chat.paths.board_task_chat import (
+    BoardTaskChatHandoffDependencies,
+    handle_board_task_chat_handoff,
+)
 from app.services.chat.paths.generation_resource_prompt import (
     GenerationResourcePromptDependencies,
     handle_generation_resource_prompt,
@@ -1180,6 +1184,15 @@ def _board_task_write_deps() -> BoardTaskWriteDependencies:
         save_workspace_for_user=_save_workspace_for_user,
         commit_operations=commit_operations,
         build_response=_response,
+    )
+
+
+def _board_task_chat_handoff_deps() -> BoardTaskChatHandoffDependencies:
+    return BoardTaskChatHandoffDependencies(
+        requirements_from_board_task=_requirements_from_board_task,
+        board_search_evidence_metadata=_board_search_evidence_metadata,
+        decision_trace_metadata=decision_trace_metadata,
+        start_interaction_session=_maybe_start_interaction_session,
     )
 
 
@@ -2886,43 +2899,25 @@ def _handle_existing_board_task_flow(
         return response
 
     if decision.route == "chat":
-        focus = _decision_focus(decision, resolution)
-        task_requirements = _requirements_from_board_task(
-            base=requirements,
-            board_task=board_task,
-            action_type="explain_target",
-            focus=focus,
-        )
-        lesson.learning_requirements = task_requirements
-        return _maybe_start_interaction_session(
+        return handle_board_task_chat_handoff(
             workspace=workspace,
             package=package,
             lesson=lesson,
             user_id=user_id,
             request=request,
-            requirements=task_requirements,
+            requirements=requirements,
             learning_clarification=learning_clarification,
             resources=resources,
             selection_text=selection_text,
-            action_type="explain_target",
-            requirement_history=requirement_history,
             board_task=board_task,
+            resolution=resolution,
+            requirement_history=requirement_history,
             board_task_history=board_task_history,
             board_task_stamp=stamp,
-            board_task_decision=decision,
-            resolved_focus=focus,
-            source_interaction_metadata={
-                **interaction_metadata,
-                **_board_search_evidence_metadata(resolution),
-                **decision_trace_metadata(
-                    message=request.message,
-                    board_action_decision=action_decision,
-                    route_decision=decision,
-                    role_executed="interaction_session",
-                    document_changed=False,
-                    reason=decision.reason,
-                ),
-            },
+            action_decision=action_decision,
+            decision=decision,
+            source_interaction_metadata=interaction_metadata,
+            deps=_board_task_chat_handoff_deps(),
         )
 
     return None
