@@ -490,6 +490,38 @@ def _generic_focus(lesson_id: str, document_id: str, *, label: str, excerpt: str
     )
 
 
+def _patch_await_write_confirmation_board_task(monkeypatch: pytest.MonkeyPatch) -> FocusResolution:
+    resolution = FocusResolution(
+        focus=None,
+        candidates=[],
+        status="missing",
+        question="没有定位到相关内容。",
+    )
+    monkeypatch.setattr(chatbot_module, "resolve_board_focus", lambda **kwargs: resolution)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_board_task_requirement_sheet",
+        lambda **kwargs: BoardTaskRequirementSheet(
+            target_hint="缺失主题",
+            requested_action="explain",
+            question_or_topic="讲解缺失主题",
+            progress=100,
+            missing_items=[],
+        ),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_board_task_route_decision",
+        lambda **kwargs: BoardTaskRouteDecision(
+            route="await_write_confirmation",
+            location_status="content_absent",
+            reason="当前板书没有对应内容，需要确认是否扩写。",
+            write_proposal="讲解缺失主题",
+        ),
+    )
+    return resolution
+
+
 def test_node_ids_match_latest_workflow_graph_document() -> None:
     doc = Path("docs/architecture/chat-workflow-graph.md").read_text(encoding="utf-8")
     table = doc.split("| NodeId | Type | Current source |", 1)[1].split("Current documented NodeId count", 1)[0]
@@ -1459,6 +1491,39 @@ def test_existing_board_await_write_confirmation_trace_records_response_after_su
     assert collector.steps[7].commit_id == commit.id
 
 
+def test_existing_board_await_write_confirmation_save_failure_skips_terminal_trace(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace, lesson_id = _workspace_with_lesson(existing_board=True)
+    store = _store_with_workspace(tmp_path, workspace, name="board_task_await_write_save_failure")
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    _patch_board_task_terminal_guards(monkeypatch, chatbot_message="AI生成：当前板书没有这部分内容。")
+    _patch_await_write_confirmation_board_task(monkeypatch)
+
+    def _raise_save(**kwargs):
+        raise RuntimeError("save failed")
+
+    monkeypatch.setattr(chatbot_module, "_save_workspace_for_user", _raise_save)
+
+    with bind_workflow_trace_collector() as collector:
+        with pytest.raises(RuntimeError, match="save failed"):
+            chat_service.process_chat_on_lesson(
+                lesson_id,
+                ChatRequest(message="讲解缺失主题"),
+                user_id=TEST_USER_ID,
+            )
+
+    nodes = _node_values(collector)
+    assert nodes == [
+        *_board_task_trace_prefix(),
+        NodeId.BOARD_TASK_COLLECT.value,
+    ]
+    assert NodeId.BOARD_AWAIT_WRITE_CONFIRMATION.value not in nodes
+    assert NodeId.RESPONSE_ASSEMBLE.value not in nodes
+    assert store.list_board_task_events(owner_user_id=TEST_USER_ID, lesson_id=lesson_id) == []
+
+
 def test_existing_board_write_confirmation_decline_trace_records_not_executed_terminal(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1548,6 +1613,58 @@ def test_existing_board_write_confirmation_decline_trace_records_not_executed_te
     assert collector.steps[7].version_id == response.board_task_version_id
     assert collector.steps[7].commit_id == commit.id
     assert NodeId.BOARD_TASK_FAILURE.value not in _node_values(collector)
+
+
+def test_existing_board_write_confirmation_decline_save_failure_skips_not_executed_trace(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace, lesson_id = _workspace_with_lesson(existing_board=True)
+    store = _store_with_workspace(tmp_path, workspace, name="board_task_decline_save_failure")
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    _patch_board_task_terminal_guards(monkeypatch, chatbot_message="AI生成：当前板书没有这部分内容。")
+    _patch_await_write_confirmation_board_task(monkeypatch)
+    first = chat_service.process_chat_on_lesson(
+        lesson_id,
+        ChatRequest(message="讲解缺失主题"),
+        user_id=TEST_USER_ID,
+    )
+    assert first.active_board_task_sheet is not None
+    assert first.active_board_task_sheet.confirmation_status == "awaiting"
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_board_task_requirement_sheet",
+        lambda **kwargs: _fail_if_called("generate_board_task_requirement_sheet"),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_board_task_route_decision",
+        lambda **kwargs: _fail_if_called("generate_board_task_route_decision"),
+    )
+
+    def _raise_save(**kwargs):
+        raise RuntimeError("save failed")
+
+    monkeypatch.setattr(chatbot_module, "_save_workspace_for_user", _raise_save)
+
+    with bind_workflow_trace_collector() as collector:
+        with pytest.raises(RuntimeError, match="save failed"):
+            chat_service.process_chat_on_lesson(
+                lesson_id,
+                ChatRequest(message="不用"),
+                user_id=TEST_USER_ID,
+            )
+
+    nodes = _node_values(collector)
+    events = store.list_board_task_events(owner_user_id=TEST_USER_ID, lesson_id=lesson_id)
+    assert nodes == [
+        *_board_task_trace_prefix(),
+        NodeId.BOARD_TASK_COLLECT.value,
+    ]
+    assert NodeId.BOARD_WRITE_CONFIRMATION_HANDLE.value not in nodes
+    assert NodeId.RESPONSE_ASSEMBLE.value not in nodes
+    assert events[-1]["event_type"] == "awaiting_confirmation"
+    assert all(event["event_type"] != "not_executed" for event in events)
 
 
 def test_resource_confirm_does_not_call_generation_resource_prompt_handler(
