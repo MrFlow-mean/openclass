@@ -63,6 +63,7 @@ from app.services.chat.paths.generation_resource_prompt import (
     GenerationResourcePromptDependencies,
     handle_generation_resource_prompt,
 )
+from app.services.chat.paths.initial_guidance import InitialGuidanceDependencies, handle_initial_guidance
 from app.services.chat.paths.interaction_board_task_handoff import (
     InteractionBoardTaskHandoffDependencies,
     attempt_interaction_board_task_handoff,
@@ -3864,8 +3865,7 @@ def _handle_initial_learning_work_mode(
         return None
 
     if decision.work_mode == "unknown":
-        chatbot_message = decision.guided_discovery_reply.strip()
-        if not chatbot_message:
+        if not decision.guided_discovery_reply.strip():
             return None
         record_workflow_step(
             NodeId.INITIAL_MODE_DECIDE,
@@ -3877,58 +3877,30 @@ def _handle_initial_learning_work_mode(
             decision="guided_discovery",
             reason=decision.reason,
         )
-        requirements, learning_clarification = _minimal_initial_learning_state(
-            requirements,
-            decision=decision,
-            user_message=request.message,
-            generate_board=False,
-        )
-        lesson.learning_requirements = requirements
-        commit_operations(
-            lesson,
-            [],
-            label="Initial learning guided discovery",
-            message="Suggested learning directions when the initial learning purpose was unclear",
-            new_document=lesson.board_document,
-            metadata={
-                "kind": "chat_flow",
-                "user_message": request.message,
-                "assistant_message": chatbot_message,
-                "assistant_message_source": "initial_learning_guided_discovery",
-                "interaction_mode": request.interaction_mode,
-                **_task_metadata(
-                    requirements=requirements,
-                    learning_clarification=learning_clarification,
-                    requirement_cleared=False,
-                ),
-                **_initial_learning_work_mode_metadata(decision),
-                **_reference_metadata(resolution=resource_resolution),
-            },
-        )
-        workspace_state.normalize_package_state(package)
-        _save_workspace_for_user(user_id=user_id, workspace=workspace, requirement_history=requirement_history)
-        record_workflow_step(
-            NodeId.PERSIST_CHAT_COMMIT,
-            decision="committed",
-            commit_id=lesson.history_graph.commits[-1].id,
-        )
-        response = _response(
+        return handle_initial_guidance(
             workspace=workspace,
             package=package,
             lesson=lesson,
-            chatbot_message=chatbot_message,
+            user_id=user_id,
+            request=request,
             requirements=requirements,
-            learning_clarification=learning_clarification,
-            board_decision=BoardDecision(action="no_change", reason="本轮学习目的不明确，只建议学习方向，不生成板书。"),
-            resource_matches=resource_resolution.matches,
+            decision=decision,
+            outcome="unknown",
+            resource_resolution=resource_resolution,
             selected_reference=selected_reference,
+            requirement_history=requirement_history,
+            deps=InitialGuidanceDependencies(
+                minimal_initial_learning_state=_minimal_initial_learning_state,
+                task_metadata=_task_metadata,
+                initial_learning_work_mode_metadata=_initial_learning_work_mode_metadata,
+                reference_metadata=_reference_metadata,
+                save_workspace_for_user=_save_workspace_for_user,
+                build_response=_response,
+            ),
         )
-        record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
-        return response
 
     if decision.work_mode == "narrow_topic":
-        question = decision.next_question.strip()
-        if not question:
+        if not decision.next_question.strip():
             return None
         record_workflow_step(
             NodeId.INITIAL_MODE_DECIDE,
@@ -3940,54 +3912,27 @@ def _handle_initial_learning_work_mode(
             decision="clarify_topic",
             reason=decision.reason,
         )
-        requirements, learning_clarification = _minimal_initial_learning_state(
-            requirements,
-            decision=decision,
-            user_message=request.message,
-            generate_board=False,
-        )
-        lesson.learning_requirements = requirements
-        commit_operations(
-            lesson,
-            [],
-            label="Initial learning topic clarification",
-            message="Asked the learner to narrow a broad new-knowledge request",
-            new_document=lesson.board_document,
-            metadata={
-                "kind": "chat_flow",
-                "user_message": request.message,
-                "assistant_message": question,
-                "assistant_message_source": "initial_learning_work_mode",
-                "interaction_mode": request.interaction_mode,
-                **_task_metadata(
-                    requirements=requirements,
-                    learning_clarification=learning_clarification,
-                    requirement_cleared=False,
-                ),
-                **_initial_learning_work_mode_metadata(decision),
-                **_reference_metadata(resolution=resource_resolution),
-            },
-        )
-        workspace_state.normalize_package_state(package)
-        _save_workspace_for_user(user_id=user_id, workspace=workspace, requirement_history=requirement_history)
-        record_workflow_step(
-            NodeId.PERSIST_CHAT_COMMIT,
-            decision="committed",
-            commit_id=lesson.history_graph.commits[-1].id,
-        )
-        response = _response(
+        return handle_initial_guidance(
             workspace=workspace,
             package=package,
             lesson=lesson,
-            chatbot_message=question,
+            user_id=user_id,
+            request=request,
             requirements=requirements,
-            learning_clarification=learning_clarification,
-            board_decision=BoardDecision(action="no_change", reason="本轮只缩小新知识学习主题，不生成板书。"),
-            resource_matches=resource_resolution.matches,
+            decision=decision,
+            outcome="narrow_topic",
+            resource_resolution=resource_resolution,
             selected_reference=selected_reference,
+            requirement_history=requirement_history,
+            deps=InitialGuidanceDependencies(
+                minimal_initial_learning_state=_minimal_initial_learning_state,
+                task_metadata=_task_metadata,
+                initial_learning_work_mode_metadata=_initial_learning_work_mode_metadata,
+                reference_metadata=_reference_metadata,
+                save_workspace_for_user=_save_workspace_for_user,
+                build_response=_response,
+            ),
         )
-        record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
-        return response
 
     if decision.work_mode != "knowledge_board":
         return None
