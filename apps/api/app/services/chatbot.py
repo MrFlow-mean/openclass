@@ -2266,6 +2266,13 @@ def _handle_existing_board_task_flow(
         request_message=request.message,
     )
     if sequence_plan:
+        record_workflow_step(
+            NodeId.BOARD_SEQUENCE_PLAN,
+            decision=sequence_plan.mode,
+            reason=sequence_plan.reason,
+            run_id=stamp.run_id,
+            version_id=stamp.version_id,
+        )
         return _start_section_explanation_sequence(
             workspace=workspace,
             package=package,
@@ -2699,6 +2706,13 @@ def _handle_existing_board_task_flow(
             target_excerpt=focus_excerpt,
         )
         stamp = board_task_history.record_update(sheet=board_task, status="ready")
+        record_workflow_step(
+            NodeId.BOARD_EXPLAIN_DIRECTIVE,
+            decision=chatbot_message_source,
+            reason=decision.reason,
+            run_id=stamp.run_id,
+            version_id=stamp.version_id,
+        )
         cleared = chatbot_message_source == "chatbot_board_directed" and bool(chatbot_message)
         if not chatbot_message:
             failed_stamp = board_task_history.execution_failed(
@@ -2720,7 +2734,14 @@ def _handle_existing_board_task_flow(
                 requirement_history=requirement_history,
                 board_task_history=board_task_history,
             )
-            return _response(
+            record_workflow_step(
+                NodeId.BOARD_TASK_FAILURE,
+                decision="execution_failed",
+                reason="Board-directed explanation failed because Chatbot returned empty.",
+                run_id=failed_stamp.run_id,
+                version_id=failed_stamp.version_id,
+            )
+            response = _response(
                 workspace=workspace,
                 package=package,
                 lesson=lesson,
@@ -2732,6 +2753,8 @@ def _handle_existing_board_task_flow(
                 requirement_cleared=False,
                 board_task_stamp=failed_stamp,
             )
+            record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
+            return response
         commit_operations(
             lesson,
             [],
@@ -2786,7 +2809,15 @@ def _handle_existing_board_task_flow(
             requirement_history=requirement_history,
             board_task_history=board_task_history,
         )
-        return _response(
+        record_workflow_step(
+            NodeId.BOARD_EXPLAIN_COMMIT,
+            decision="committed",
+            reason=decision.reason,
+            run_id=consumed_stamp.run_id,
+            version_id=consumed_stamp.version_id,
+            commit_id=lesson.history_graph.commits[-1].id,
+        )
+        response = _response(
             workspace=workspace,
             package=package,
             lesson=lesson,
@@ -2799,6 +2830,8 @@ def _handle_existing_board_task_flow(
             board_task_stamp=consumed_stamp,
             completed_board_task_sheet=board_task if cleared else None,
         )
+        record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
+        return response
 
     if decision.route == "chat":
         focus = _decision_focus(decision, resolution)
