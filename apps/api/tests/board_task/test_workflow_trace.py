@@ -11,6 +11,7 @@ import pytest
 from app.models import (
     BoardDecision,
     BoardFocusRef,
+    BoardTaskRequirementSheet,
     ChatRequest,
     InteractionSession,
     InteractionTurnDecision,
@@ -30,12 +31,14 @@ from app.services.course_runtime import refresh_lesson_runtime
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
 from app.services.lesson_factory import create_empty_lesson
 from app.services.openai_course_ai import (
+    BoardTaskRouteDecision,
     ChatbotReply,
     InitialLearningWorkModeDecision,
     LearningRequirementUpdate,
     openai_course_ai,
 )
 from app.services.rich_document import build_document
+from app.services.segment_resolver import FocusResolution
 from app.services.workflow_trace import (
     NodeId,
     WorkflowTraceCollector,
@@ -157,6 +160,24 @@ def _requirement_run_rows(store: SqliteCourseStore, lesson_id: str) -> list[dict
         conn.close()
 
 
+def _board_task_run_rows(store: SqliteCourseStore, lesson_id: str) -> list[dict[str, Any]]:
+    conn = sqlite3.connect(store.path)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM board_task_runs
+            WHERE owner_user_id = ? AND lesson_id = ?
+            ORDER BY created_at, id
+            """,
+            (TEST_USER_ID, lesson_id),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
 def _node_values(collector: WorkflowTraceCollector) -> list[str]:
     return [step.node_id.value for step in collector.steps]
 
@@ -184,6 +205,13 @@ def _normalize_visible_response(value: Any) -> Any:
                 normalized[key] = "<timestamp>"
             elif key in {"requirement_run_id", "requirement_version_id"}:
                 normalized[key] = "<requirement_id>"
+            elif key in {
+                "board_task_run_id",
+                "board_task_version_id",
+                "new_board_task_run_id",
+                "new_board_task_version_id",
+            }:
+                normalized[key] = "<board_task_id>"
             elif is_commit and key == "id":
                 normalized[key] = "<commit_id>"
             elif key == "head_commit_id":
@@ -371,6 +399,17 @@ def _interaction_trace_prefix() -> list[str]:
     ]
 
 
+def _board_task_trace_prefix() -> list[str]:
+    return [
+        NodeId.CONTEXT_LOAD.value,
+        NodeId.TURN_CONTEXT_BUILD.value,
+        NodeId.BOARD_ACTION_DECIDE.value,
+        NodeId.CHAT_TURN_GATE.value,
+        NodeId.RESOURCE_PREFLIGHT.value,
+        NodeId.ACTIVE_INTERACTION_CHECK.value,
+    ]
+
+
 def _count_active_interaction_handler_calls(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
     calls = {"count": 0}
     original_handler = chatbot_module.handle_active_interaction_turn
@@ -401,6 +440,53 @@ def _active_interaction_exit_test_deps() -> ActiveInteractionExitDependencies:
         task_metadata=lambda **kwargs: {},
         save_workspace_for_user=lambda **kwargs: None,
         build_response=lambda **kwargs: _fail_if_called("build_response"),
+    )
+
+
+def _patch_board_task_terminal_guards(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    chatbot_message: str = "AI生成：请先补充板书任务信息。",
+) -> None:
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_chatbot_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message=chatbot_message),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_learning_requirement_update",
+        lambda **kwargs: _fail_if_called("generate_learning_requirement_update"),
+    )
+    monkeypatch.setattr(
+        chatbot_module,
+        "generate_from_requirements",
+        lambda **kwargs: _fail_if_called("generate_from_requirements"),
+    )
+    monkeypatch.setattr(
+        chatbot_module,
+        "_execute_board_task_write",
+        lambda **kwargs: _fail_if_called("_execute_board_task_write"),
+    )
+    monkeypatch.setattr(
+        chatbot_module,
+        "_maybe_start_interaction_session",
+        lambda **kwargs: _fail_if_called("_maybe_start_interaction_session"),
+    )
+
+
+def _generic_focus(lesson_id: str, document_id: str, *, label: str, excerpt: str, segment_id: str) -> BoardFocusRef:
+    return BoardFocusRef(
+        source="board",
+        lesson_id=lesson_id,
+        document_id=document_id,
+        segment_id=segment_id,
+        kind="paragraph",
+        heading_path=["已有板书", label],
+        excerpt=excerpt,
+        confidence=0.8,
+        reason=f"{label} 是候选位置。",
+        display_label=label,
     )
 
 
@@ -1103,6 +1189,365 @@ def test_generation_resource_prompt_repeated_turn_does_not_duplicate_requirement
     assert first_response.requirement_run_id == second_response.requirement_run_id == runs[0]["id"]
     assert first_response.requirement_version_id == second_response.requirement_version_id == first_versions[0]["id"]
     assert second_response.requirement_phase == "ready"
+
+
+def test_existing_board_missing_task_fields_trace_records_response_after_success(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace, lesson_id = _workspace_with_lesson(existing_board=True)
+    store = _store_with_workspace(tmp_path, workspace, name="board_task_missing_fields")
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    _patch_board_task_terminal_guards(monkeypatch, chatbot_message="AI生成：请告诉我要处理板书里的哪里。")
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_board_task_requirement_sheet",
+        lambda **kwargs: BoardTaskRequirementSheet(requested_action="explain"),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_board_task_route_decision",
+        lambda **kwargs: _fail_if_called("generate_board_task_route_decision"),
+    )
+
+    with bind_workflow_trace_collector() as collector:
+        response = chat_service.process_chat_on_lesson(
+            lesson_id,
+            ChatRequest(message="解释一下"),
+            user_id=TEST_USER_ID,
+        )
+
+    commit = response.course_package.lessons[-1].history_graph.commits[-1]
+    runs = _board_task_run_rows(store, lesson_id)
+    versions = store.list_board_task_versions(owner_user_id=TEST_USER_ID, lesson_id=lesson_id)
+    events = store.list_board_task_events(owner_user_id=TEST_USER_ID, lesson_id=lesson_id)
+    assert response.chatbot_message == "AI生成：请告诉我要处理板书里的哪里。"
+    assert response.active_board_task_sheet is not None
+    assert response.active_board_task_sheet.progress < 100
+    assert response.active_board_task_sheet.missing_items == ["目标位置", "问题内容"]
+    assert response.board_task_phase == "collecting"
+    assert len(runs) == 1
+    assert runs[0]["status"] == "collecting"
+    assert len(versions) == 1
+    assert versions[0]["status"] == "collecting"
+    assert [event["event_type"] for event in events] == ["created"]
+    assert commit.label == "Board task clarification"
+    assert commit.metadata["board_task_route"] == "clarify_location"
+    assert commit.metadata["board_task_cleared"] is False
+    assert _node_values(collector) == [
+        *_board_task_trace_prefix(),
+        NodeId.BOARD_TASK_COLLECT.value,
+        NodeId.BOARD_TASK_CLARIFY_FIELDS.value,
+        NodeId.RESPONSE_ASSEMBLE.value,
+    ]
+    assert collector.steps[6].decision == "collecting"
+    assert collector.steps[6].run_id == response.board_task_run_id
+    assert collector.steps[6].version_id == response.board_task_version_id
+    assert collector.steps[7].decision == "missing_fields"
+    assert collector.steps[7].reason == response.active_board_task_sheet.clarification_question
+    assert collector.steps[7].commit_id == commit.id
+
+
+def test_existing_board_missing_task_fields_does_not_record_response_when_response_build_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace, lesson_id = _workspace_with_lesson(existing_board=True)
+    store = _store_with_workspace(tmp_path, workspace, name="board_task_missing_fields_response_failure")
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    _patch_board_task_terminal_guards(monkeypatch, chatbot_message="AI生成：请告诉我要处理板书里的哪里。")
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_board_task_requirement_sheet",
+        lambda **kwargs: BoardTaskRequirementSheet(requested_action="explain"),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_board_task_route_decision",
+        lambda **kwargs: _fail_if_called("generate_board_task_route_decision"),
+    )
+
+    def _raise_response(**kwargs):
+        raise RuntimeError("response build failed")
+
+    monkeypatch.setattr(chatbot_module, "_response", _raise_response)
+
+    with bind_workflow_trace_collector() as collector:
+        with pytest.raises(RuntimeError, match="response build failed"):
+            chat_service.process_chat_on_lesson(
+                lesson_id,
+                ChatRequest(message="解释一下"),
+                user_id=TEST_USER_ID,
+            )
+
+    assert _node_values(collector) == [
+        *_board_task_trace_prefix(),
+        NodeId.BOARD_TASK_COLLECT.value,
+        NodeId.BOARD_TASK_CLARIFY_FIELDS.value,
+    ]
+    assert NodeId.RESPONSE_ASSEMBLE.value not in _node_values(collector)
+
+
+def test_existing_board_clarify_location_trace_records_response_after_success(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace, lesson_id = _workspace_with_lesson(existing_board=True)
+    lesson = workspace.packages[0].lessons[-1]
+    store = _store_with_workspace(tmp_path, workspace, name="board_task_clarify_location")
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    _patch_board_task_terminal_guards(monkeypatch, chatbot_message="AI生成：你想让我处理哪一段？")
+    first_focus = _generic_focus(
+        lesson.id,
+        lesson.board_document.id,
+        label="第一处",
+        excerpt="第一处内容。",
+        segment_id="seg_one",
+    )
+    second_focus = _generic_focus(
+        lesson.id,
+        lesson.board_document.id,
+        label="第二处",
+        excerpt="第二处内容。",
+        segment_id="seg_two",
+    )
+    resolution = FocusResolution(
+        focus=None,
+        candidates=[first_focus, second_focus],
+        status="ambiguous",
+        question="找到了多个候选位置，请确认其中一个。",
+    )
+    monkeypatch.setattr(chatbot_module, "resolve_board_focus", lambda **kwargs: resolution)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_board_task_requirement_sheet",
+        lambda **kwargs: BoardTaskRequirementSheet(
+            target_hint="多个候选位置",
+            requested_action="explain",
+            question_or_topic="解释多个候选位置",
+            progress=100,
+            missing_items=[],
+        ),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_board_task_route_decision",
+        lambda **kwargs: BoardTaskRouteDecision(
+            route="clarify_location",
+            location_status="ambiguous",
+            candidate_focuses=[first_focus, second_focus],
+            reason="找到了多个候选位置，请确认其中一个。",
+        ),
+    )
+
+    with bind_workflow_trace_collector() as collector:
+        response = chat_service.process_chat_on_lesson(
+            lesson_id,
+            ChatRequest(message="解释多个候选位置"),
+            user_id=TEST_USER_ID,
+        )
+
+    commit = response.course_package.lessons[-1].history_graph.commits[-1]
+    runs = _board_task_run_rows(store, lesson_id)
+    versions = store.list_board_task_versions(owner_user_id=TEST_USER_ID, lesson_id=lesson_id)
+    events = store.list_board_task_events(owner_user_id=TEST_USER_ID, lesson_id=lesson_id)
+    assert response.chatbot_message == "AI生成：你想让我处理哪一段？"
+    assert response.board_decision.action == "await_focus_choice"
+    assert response.active_board_task_sheet is not None
+    assert response.active_board_task_sheet.location_status == "ambiguous"
+    assert response.board_task_phase == "ready"
+    assert len(response.focus_candidates) == 2
+    assert len(runs) == 1
+    assert runs[0]["status"] == "ready"
+    assert len(versions) == 2
+    assert [version["status"] for version in versions] == ["ready", "ready"]
+    assert [event["event_type"] for event in events] == ["created", "ready", "ready"]
+    assert commit.label == "Board task location clarification"
+    assert commit.metadata["board_task_route"] == "clarify_location"
+    assert commit.metadata["board_task_cleared"] is False
+    assert _node_values(collector) == [
+        *_board_task_trace_prefix(),
+        NodeId.BOARD_TASK_COLLECT.value,
+        NodeId.BOARD_TARGET_RESOLVE.value,
+        NodeId.BOARD_ROUTE_CLARIFY_LOCATION.value,
+        NodeId.RESPONSE_ASSEMBLE.value,
+    ]
+    assert collector.steps[6].decision == "ready"
+    assert collector.steps[6].run_id == response.board_task_run_id
+    assert collector.steps[6].version_id == versions[0]["id"]
+    assert collector.steps[7].decision == "ambiguous"
+    assert collector.steps[7].reason == resolution.question
+    assert collector.steps[8].decision == "ambiguous"
+    assert collector.steps[8].reason == "找到了多个候选位置，请确认其中一个。"
+    assert collector.steps[8].commit_id == commit.id
+
+
+def test_existing_board_await_write_confirmation_trace_records_response_after_success(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace, lesson_id = _workspace_with_lesson(existing_board=True)
+    store = _store_with_workspace(tmp_path, workspace, name="board_task_await_write")
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    _patch_board_task_terminal_guards(monkeypatch, chatbot_message="AI生成：当前板书没有这部分内容。")
+    resolution = FocusResolution(
+        focus=None,
+        candidates=[],
+        status="missing",
+        question="没有定位到相关内容。",
+    )
+    monkeypatch.setattr(chatbot_module, "resolve_board_focus", lambda **kwargs: resolution)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_board_task_requirement_sheet",
+        lambda **kwargs: BoardTaskRequirementSheet(
+            target_hint="缺失主题",
+            requested_action="explain",
+            question_or_topic="讲解缺失主题",
+            progress=100,
+            missing_items=[],
+        ),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_board_task_route_decision",
+        lambda **kwargs: BoardTaskRouteDecision(
+            route="await_write_confirmation",
+            location_status="content_absent",
+            reason="当前板书没有对应内容，需要确认是否扩写。",
+            write_proposal="讲解缺失主题",
+        ),
+    )
+
+    with bind_workflow_trace_collector() as collector:
+        response = chat_service.process_chat_on_lesson(
+            lesson_id,
+            ChatRequest(message="讲解缺失主题"),
+            user_id=TEST_USER_ID,
+        )
+
+    commit = response.course_package.lessons[-1].history_graph.commits[-1]
+    runs = _board_task_run_rows(store, lesson_id)
+    versions = store.list_board_task_versions(owner_user_id=TEST_USER_ID, lesson_id=lesson_id)
+    events = store.list_board_task_events(owner_user_id=TEST_USER_ID, lesson_id=lesson_id)
+    assert response.chatbot_message == "AI生成：当前板书没有这部分内容。"
+    assert response.active_board_task_sheet is not None
+    assert response.active_board_task_sheet.requested_action == "write"
+    assert response.active_board_task_sheet.confirmation_status == "awaiting"
+    assert response.active_board_task_sheet.location_status == "content_absent"
+    assert response.board_task_phase == "awaiting_confirmation"
+    assert len(runs) == 1
+    assert runs[0]["status"] == "awaiting_confirmation"
+    assert len(versions) == 2
+    assert [version["status"] for version in versions] == ["ready", "awaiting_confirmation"]
+    assert [event["event_type"] for event in events] == ["created", "ready", "awaiting_confirmation"]
+    assert commit.label == "Board write confirmation"
+    assert commit.metadata["board_task_route"] == "await_write_confirmation"
+    assert commit.metadata["board_task_cleared"] is False
+    assert _node_values(collector) == [
+        *_board_task_trace_prefix(),
+        NodeId.BOARD_TASK_COLLECT.value,
+        NodeId.BOARD_AWAIT_WRITE_CONFIRMATION.value,
+        NodeId.RESPONSE_ASSEMBLE.value,
+    ]
+    assert collector.steps[6].decision == "ready"
+    assert collector.steps[6].run_id == response.board_task_run_id
+    assert collector.steps[6].version_id == versions[0]["id"]
+    assert collector.steps[7].decision == "awaiting_confirmation"
+    assert collector.steps[7].run_id == response.board_task_run_id
+    assert collector.steps[7].version_id == response.board_task_version_id
+    assert collector.steps[7].commit_id == commit.id
+
+
+def test_existing_board_write_confirmation_decline_trace_records_not_executed_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace, lesson_id = _workspace_with_lesson(existing_board=True)
+    store = _store_with_workspace(tmp_path, workspace, name="board_task_decline")
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    _patch_board_task_terminal_guards(monkeypatch, chatbot_message="AI生成：当前板书没有这部分内容。")
+    resolution = FocusResolution(
+        focus=None,
+        candidates=[],
+        status="missing",
+        question="没有定位到相关内容。",
+    )
+    monkeypatch.setattr(chatbot_module, "resolve_board_focus", lambda **kwargs: resolution)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_board_task_requirement_sheet",
+        lambda **kwargs: BoardTaskRequirementSheet(
+            target_hint="缺失主题",
+            requested_action="explain",
+            question_or_topic="讲解缺失主题",
+            progress=100,
+            missing_items=[],
+        ),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_board_task_route_decision",
+        lambda **kwargs: BoardTaskRouteDecision(
+            route="await_write_confirmation",
+            location_status="content_absent",
+            reason="当前板书没有对应内容，需要确认是否扩写。",
+            write_proposal="讲解缺失主题",
+        ),
+    )
+    first = chat_service.process_chat_on_lesson(
+        lesson_id,
+        ChatRequest(message="讲解缺失主题"),
+        user_id=TEST_USER_ID,
+    )
+    assert first.active_board_task_sheet is not None
+    assert first.active_board_task_sheet.confirmation_status == "awaiting"
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_board_task_requirement_sheet",
+        lambda **kwargs: _fail_if_called("generate_board_task_requirement_sheet"),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_board_task_route_decision",
+        lambda **kwargs: _fail_if_called("generate_board_task_route_decision"),
+    )
+
+    with bind_workflow_trace_collector() as collector:
+        response = chat_service.process_chat_on_lesson(
+            lesson_id,
+            ChatRequest(message="不用"),
+            user_id=TEST_USER_ID,
+        )
+
+    commit = response.course_package.lessons[-1].history_graph.commits[-1]
+    runs = _board_task_run_rows(store, lesson_id)
+    events = store.list_board_task_events(owner_user_id=TEST_USER_ID, lesson_id=lesson_id)
+    assert response.chatbot_message == ""
+    assert response.active_board_task_sheet is None
+    assert response.board_task_sheet is None
+    assert response.board_task_phase == "not_executed"
+    assert len(runs) == 1
+    assert runs[0]["status"] == "not_executed"
+    assert runs[0]["archived_at"] is not None
+    assert events[-1]["event_type"] == "not_executed"
+    assert json.loads(events[-1]["metadata_json"]) == {"reason": "用户取消了扩写确认。"}
+    assert commit.label == "Board task cancelled"
+    assert commit.metadata["board_task_route"] == "await_write_confirmation"
+    assert commit.metadata["board_task_cleared"] is True
+    assert _node_values(collector) == [
+        *_board_task_trace_prefix(),
+        NodeId.BOARD_TASK_COLLECT.value,
+        NodeId.BOARD_WRITE_CONFIRMATION_HANDLE.value,
+        NodeId.RESPONSE_ASSEMBLE.value,
+    ]
+    assert collector.steps[6].decision == "awaiting_confirmation"
+    assert collector.steps[7].decision == "declined"
+    assert collector.steps[7].reason == "用户取消了扩写确认。"
+    assert collector.steps[7].run_id == response.board_task_run_id
+    assert collector.steps[7].version_id == response.board_task_version_id
+    assert collector.steps[7].commit_id == commit.id
+    assert NodeId.BOARD_TASK_FAILURE.value not in _node_values(collector)
 
 
 def test_resource_confirm_does_not_call_generation_resource_prompt_handler(
