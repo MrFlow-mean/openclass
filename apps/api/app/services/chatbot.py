@@ -1171,6 +1171,32 @@ def _persist_requirement_history_checkpoint(
         workspace_state.save_workspace_for_user(user_id, workspace)
 
 
+def _persist_board_task_ready_checkpoint(
+    *,
+    user_id: str,
+    workspace,
+    package,
+    requirement_history: LearningRequirementHistoryRecorder,
+    board_task_history: BoardTaskHistoryRecorder,
+    stamp: BoardTaskHistoryStamp,
+) -> None:
+    workspace_state.normalize_package_state(package)
+    _save_workspace_for_user(
+        user_id=user_id,
+        workspace=workspace,
+        requirement_history=requirement_history,
+        board_task_history=board_task_history,
+    )
+    requirement_history.operations.clear()
+    board_task_history.operations.clear()
+    record_workflow_step(
+        NodeId.BOARD_TASK_READY_PERSIST,
+        decision="ready",
+        run_id=stamp.run_id,
+        version_id=stamp.version_id,
+    )
+
+
 def _clarification_questions(learning_clarification: LearningClarificationStatus) -> list[str]:
     question = learning_clarification.next_question.strip()
     return [question] if question else []
@@ -2504,6 +2530,15 @@ def _handle_existing_board_task_flow(
             action_type=edit_action,
             focus=focus,
         )
+        stamp = board_task_history.record_update(sheet=board_task, status="ready")
+        _persist_board_task_ready_checkpoint(
+            user_id=user_id,
+            workspace=workspace,
+            package=package,
+            requirement_history=requirement_history,
+            board_task_history=board_task_history,
+            stamp=stamp,
+        )
         edit_outcome = edit_existing_document(
             lesson=lesson,
             requirements=task_requirements,
@@ -2520,7 +2555,13 @@ def _handle_existing_board_task_flow(
             refresh_lesson_runtime(lesson, document=edit_outcome.new_document, requirements=task_requirements)
             lesson.board_teaching_guide = build_board_teaching_guide(lesson)
             lesson.board_teaching_progress = None
-        stamp = board_task_history.record_update(sheet=board_task, status="ready")
+            record_workflow_step(
+                NodeId.BOARD_EDIT_EXECUTE,
+                decision=edit_outcome.operation_status,
+                reason=edit_outcome.summary or decision.reason,
+                run_id=stamp.run_id,
+                version_id=stamp.version_id,
+            )
         if not edit_outcome.changed:
             failed_stamp = board_task_history.execution_failed(
                 reason=edit_outcome.summary or "Board task edit did not produce a safe document change.",
@@ -2543,7 +2584,14 @@ def _handle_existing_board_task_flow(
                 requirement_history=requirement_history,
                 board_task_history=board_task_history,
             )
-            return _response(
+            record_workflow_step(
+                NodeId.BOARD_TASK_FAILURE,
+                decision="execution_failed",
+                reason=edit_outcome.summary or "Board task edit did not produce a safe document change.",
+                run_id=failed_stamp.run_id,
+                version_id=failed_stamp.version_id,
+            )
+            response = _response(
                 workspace=workspace,
                 package=package,
                 lesson=lesson,
@@ -2558,6 +2606,8 @@ def _handle_existing_board_task_flow(
                 board_document_operation_failure_reason=edit_outcome.failure_reason,
                 board_patch_diff=edit_outcome.diff_preview,
             )
+            record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
+            return response
         recent_focus = _recent_board_edit_focus_for_commit(
             lesson=lesson,
             fallback_focus=None if target_scope == "whole_document" else focus,
@@ -2614,7 +2664,8 @@ def _handle_existing_board_task_flow(
                 ),
             },
         )
-        consumed_stamp = board_task_history.consume(commit_id=lesson.history_graph.commits[-1].id)
+        commit = lesson.history_graph.commits[-1]
+        consumed_stamp = board_task_history.consume(commit_id=commit.id)
         lesson.board_task_requirements = None
         _clear_task_requirements(lesson)
         workspace_state.normalize_package_state(package)
@@ -2624,7 +2675,14 @@ def _handle_existing_board_task_flow(
             requirement_history=requirement_history,
             board_task_history=board_task_history,
         )
-        return _response(
+        record_workflow_step(
+            NodeId.PERSIST_BOARD_COMMIT,
+            decision="committed",
+            run_id=consumed_stamp.run_id,
+            version_id=consumed_stamp.version_id,
+            commit_id=commit.id,
+        )
+        response = _response(
             workspace=workspace,
             package=package,
             lesson=lesson,
@@ -2640,6 +2698,8 @@ def _handle_existing_board_task_flow(
             completed_board_task_sheet=board_task,
             board_patch_diff=edit_outcome.diff_preview,
         )
+        record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
+        return response
 
     if decision.route == "explain":
         focus = decision.target_focus or (resolution.focus if resolution else None)
