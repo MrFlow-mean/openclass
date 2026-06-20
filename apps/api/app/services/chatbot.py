@@ -3418,6 +3418,13 @@ def _generate_board_from_confirmed_resource(
         if track_initial_requirement_run and requirement_history.snapshot.status == "ready"
         else None
     )
+    record_workflow_step(
+        NodeId.RESOURCE_CONFIRMED_GENERATE,
+        decision="confirmed",
+        reason="Confirmed resource reference will generate the first board.",
+        run_id=ready_requirement.run_id if ready_requirement else None,
+        version_id=ready_requirement.version_id if ready_requirement else None,
+    )
     requirements, learning_clarification, frozen_requirement = _prepare_initial_requirement_for_board_generation(
         requirement_history,
         enabled=track_initial_requirement_run,

@@ -368,16 +368,21 @@ def test_confirmed_resource_generation_success_traces_ready_generation_contract(
 
     assert _node_values(result.collector) == [
         *_trace_prefix(),
+        NodeId.RESOURCE_CONFIRMED_GENERATE.value,
         NodeId.INITIAL_REQUIREMENT_READY.value,
         NodeId.INITIAL_REQUIREMENT_FREEZE.value,
         NodeId.INITIAL_BOARD_GENERATE.value,
         NodeId.INITIAL_BOARD_COMMIT.value,
         NodeId.RESPONSE_ASSEMBLE.value,
     ]
-    ready_step = result.collector.steps[6]
-    freeze_step = result.collector.steps[7]
-    generate_step = result.collector.steps[8]
-    commit_step = result.collector.steps[9]
+    resource_step = result.collector.steps[6]
+    ready_step = result.collector.steps[7]
+    freeze_step = result.collector.steps[8]
+    generate_step = result.collector.steps[9]
+    commit_step = result.collector.steps[10]
+    assert resource_step.decision == "confirmed"
+    assert resource_step.run_id == response.requirement_run_id
+    assert resource_step.version_id == result.ready_versions[0]["id"]
     assert ready_step.decision == "ready"
     assert ready_step.run_id == response.requirement_run_id
     assert ready_step.version_id == result.ready_versions[0]["id"]
@@ -407,16 +412,21 @@ def test_confirmed_resource_generation_failure_traces_retryable_frozen_contract(
 
     assert _node_values(result.collector) == [
         *_trace_prefix(),
+        NodeId.RESOURCE_CONFIRMED_GENERATE.value,
         NodeId.INITIAL_REQUIREMENT_READY.value,
         NodeId.INITIAL_REQUIREMENT_FREEZE.value,
         NodeId.INITIAL_BOARD_GENERATE.value,
         NodeId.INITIAL_GENERATION_FAILED.value,
         NodeId.RESPONSE_ASSEMBLE.value,
     ]
-    ready_step = result.collector.steps[6]
-    freeze_step = result.collector.steps[7]
-    generate_step = result.collector.steps[8]
-    failure_step = result.collector.steps[9]
+    resource_step = result.collector.steps[6]
+    ready_step = result.collector.steps[7]
+    freeze_step = result.collector.steps[8]
+    generate_step = result.collector.steps[9]
+    failure_step = result.collector.steps[10]
+    assert resource_step.decision == "confirmed"
+    assert resource_step.run_id == response.requirement_run_id
+    assert resource_step.version_id == result.ready_versions[0]["id"]
     assert ready_step.decision == "ready"
     assert ready_step.run_id == response.requirement_run_id
     assert ready_step.version_id == result.ready_versions[0]["id"]

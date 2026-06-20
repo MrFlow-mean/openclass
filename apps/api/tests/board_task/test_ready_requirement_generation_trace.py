@@ -420,6 +420,7 @@ def test_confirmed_resource_generation_uses_ready_generation_trace_nodes(
     assert commit.metadata["board_generation_action"] == "resource_reference_confirm"
     assert nodes == [
         *_trace_prefix(),
+        NodeId.RESOURCE_CONFIRMED_GENERATE.value,
         NodeId.INITIAL_REQUIREMENT_READY.value,
         NodeId.INITIAL_REQUIREMENT_FREEZE.value,
         NodeId.INITIAL_BOARD_GENERATE.value,

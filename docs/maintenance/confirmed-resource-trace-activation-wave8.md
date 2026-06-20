@@ -1,11 +1,12 @@
 # Confirmed Resource Trace Activation - Wave 8
 
-Base SHA: `c413a192e7805df95b14b86809afe661d5721dd1`
+Base SHA: `c2bef6be6a6da387025116a3ff8f8ec740b12b15`
 
-Branch: `codex/prep/confirmed-resource-trace-activation-wave8-c413`
+Branch: `codex/integrate/confirmed-resource-trace-activation-wave8`
 
-Evidence source: prep PR #98 / `origin/pr/98`, used only for audit evidence and
-contract shape. Do not merge that old branch.
+Evidence source: prep PR #98 / `origin/pr/98` and
+`codex/prep/confirmed-resource-trace-activation-wave8-c413`, used only for
+audit evidence and contract shape. Do not merge those old branches.
 
 ## Scope
 
@@ -38,6 +39,7 @@ BOARD_ACTION_DECIDE
 CHAT_TURN_GATE
 RESOURCE_PREFLIGHT
 ACTIVE_INTERACTION_CHECK
+RESOURCE_CONFIRMED_GENERATE
 INITIAL_REQUIREMENT_READY
 INITIAL_REQUIREMENT_FREEZE
 INITIAL_BOARD_GENERATE
@@ -54,6 +56,7 @@ BOARD_ACTION_DECIDE
 CHAT_TURN_GATE
 RESOURCE_PREFLIGHT
 ACTIVE_INTERACTION_CHECK
+RESOURCE_CONFIRMED_GENERATE
 INITIAL_REQUIREMENT_READY
 INITIAL_REQUIREMENT_FREEZE
 INITIAL_BOARD_GENERATE
