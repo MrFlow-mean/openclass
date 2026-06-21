@@ -91,10 +91,15 @@ from app.services.chat.paths.generation_api_start import (
     GenerationApiStartDependencies,
     handle_generation_api_start,
 )
+from app.services.chat.paths.generation_text_trigger import classify_text_triggered_generation_request
 from app.services.chat.paths.initial_guidance import InitialGuidanceDependencies, handle_initial_guidance
 from app.services.chat.paths.ready_requirement_generation import (
     ReadyRequirementGenerationDependencies,
     handle_ready_requirement_generation,
+)
+from app.services.chat.paths.text_triggered_generation import (
+    TextTriggeredGenerationDependencies,
+    handle_text_triggered_generation,
 )
 from app.services.chat.paths.interaction_board_task_handoff import (
     InteractionBoardTaskHandoffDependencies,
@@ -146,7 +151,6 @@ from app.services.interaction_rules import (
     should_start_interaction,
 )
 from app.services.learning_requirement_manager import (
-    is_explicit_board_generation_request,
     is_generation_control_request,
     update_learning_requirements_from_chat,
 )
@@ -391,18 +395,6 @@ def _prefer_requirement_action(
 
 def _requests_document_artifact_generation(text: str) -> bool:
     return turn_intent.wants_document_artifact_generation(text)
-
-
-def _has_actionable_generation_context(
-    requirements: LearningRequirementSheet,
-    learning_clarification: LearningClarificationStatus,
-) -> bool:
-    if requirements.action_type == "generate_board" and requirements.action_instruction.strip():
-        return True
-    return any(
-        fact.value.strip() and fact.category in {"learning", "level", "vocabulary", "scenario", "output"}
-        for fact in learning_clarification.key_facts
-    )
 
 
 def _with_task_details(
@@ -944,23 +936,6 @@ def _reference_metadata(
     }
 
 
-def _should_generate_board_from_explicit_request(
-    *,
-    lesson: Lesson,
-    request: ChatRequest,
-    requirements: LearningRequirementSheet,
-    learning_clarification: LearningClarificationStatus,
-) -> bool:
-    if not is_document_empty(lesson.board_document):
-        return False
-    if is_explicit_board_generation_request(request.message) or _requests_document_artifact_generation(request.message):
-        return True
-    return is_generation_control_request(request.message) and _has_actionable_generation_context(
-        requirements,
-        learning_clarification,
-    )
-
-
 def _initial_learning_work_mode_metadata(
     decision: InitialLearningWorkModeDecision | None,
 ) -> dict[str, object]:
@@ -1257,6 +1232,27 @@ def _generation_api_start_deps() -> GenerationApiStartDependencies:
         board_document_quality_metadata=_board_document_quality_metadata,
         requirement_history_metadata=_requirement_history_metadata,
         task_metadata=_task_metadata,
+        save_workspace_for_user=_save_workspace_for_user,
+        build_response=_response,
+    )
+
+
+def _text_triggered_generation_deps() -> TextTriggeredGenerationDependencies:
+    return TextTriggeredGenerationDependencies(
+        with_task_details=_with_task_details,
+        prepare_initial_requirement_for_board_generation=_prepare_initial_requirement_for_board_generation,
+        checkpoint_initial_requirement_before_generation=_checkpoint_initial_requirement_before_generation,
+        generate_from_requirements=generate_from_requirements,
+        refresh_lesson_runtime=refresh_lesson_runtime,
+        build_board_teaching_guide=build_board_teaching_guide,
+        post_initial_board_generation_message=_post_initial_board_generation_message,
+        commit_operations=commit_operations,
+        clear_task_requirements=_clear_task_requirements,
+        board_document_failure_metadata=_board_document_failure_metadata,
+        board_document_quality_metadata=_board_document_quality_metadata,
+        requirement_history_metadata=_requirement_history_metadata,
+        task_metadata=_task_metadata,
+        reference_metadata=_reference_metadata,
         save_workspace_for_user=_save_workspace_for_user,
         build_response=_response,
     )
@@ -3716,6 +3712,23 @@ def _chat_response(
         if board_task_response is not None:
             return board_task_response
 
+    if document_empty and request.resource_reference_action == "confirm" and resource_resolution.matches:
+        learning_clarification = _latest_learning_clarification(lesson, requirements=requirements)
+        return handle_confirmed_resource_generation(
+            workspace=workspace,
+            package=package,
+            lesson=lesson,
+            user_id=user_id,
+            request=request,
+            requirements=requirements,
+            learning_clarification=learning_clarification,
+            resource_resolution=resource_resolution,
+            resource_summary_for_turn=resource_summary_for_turn,
+            requirement_history=requirement_history,
+            track_initial_requirement_run=track_initial_requirement_run,
+            deps=_confirmed_resource_generation_deps(),
+        )
+
     initial_learning_work_mode_response = _handle_initial_learning_work_mode(
         workspace=workspace,
         package=package,
@@ -4382,8 +4395,15 @@ def _chat_response(
                     build_response=_response,
                 ),
             )
-        if request.resource_reference_action == "confirm" and selected_reference is not None:
-            return handle_confirmed_resource_generation(
+        text_generation_trigger = classify_text_triggered_generation_request(
+            lesson=lesson,
+            request=request,
+            requirements=requirements,
+            learning_clarification=learning_clarification,
+            resource_resolution=resource_resolution,
+        )
+        if text_generation_trigger is not None:
+            return handle_text_triggered_generation(
                 workspace=workspace,
                 package=package,
                 lesson=lesson,
@@ -4391,147 +4411,13 @@ def _chat_response(
                 request=request,
                 requirements=requirements,
                 learning_clarification=learning_clarification,
-                resource_resolution=resource_resolution,
+                trigger=text_generation_trigger,
                 resource_summary_for_turn=resource_summary_for_turn,
+                resource_resolution=resource_resolution,
+                selected_reference=selected_reference,
                 requirement_history=requirement_history,
                 track_initial_requirement_run=track_initial_requirement_run,
-                deps=_confirmed_resource_generation_deps(),
-            )
-        if _should_generate_board_from_explicit_request(
-            lesson=lesson,
-            request=request,
-            requirements=requirements,
-            learning_clarification=learning_clarification,
-        ):
-            requirements = _with_task_details(
-                requirements,
-                action_type="generate_board",
-                instruction=request.message,
-            )
-            requirements, learning_clarification, frozen_requirement = _prepare_initial_requirement_for_board_generation(
-                requirement_history,
-                enabled=track_initial_requirement_run,
-                requirements=requirements,
-                learning_clarification=learning_clarification,
-            )
-            _checkpoint_initial_requirement_before_generation(
-                user_id=user_id,
-                workspace=workspace,
-                package=package,
-                lesson=lesson,
-                requirement_history=requirement_history,
-                requirements=requirements,
-                learning_clarification=learning_clarification,
-                stamp=frozen_requirement,
-            )
-            edit_outcome = generate_from_requirements(
-                lesson=lesson,
-                requirements=requirements,
-                clarification=learning_clarification,
-                resource_summary=resource_summary_for_turn,
-                reference_context=selected_reference,
-                requirement_run_id=frozen_requirement.run_id if frozen_requirement else None,
-                frozen_requirement_version_id=frozen_requirement.version_id if frozen_requirement else None,
-            )
-            if not edit_outcome.changed:
-                failed_stamp = (
-                    requirement_history.generation_failed(
-                        reason=edit_outcome.summary or edit_outcome.chatbot_message,
-                        metadata=_board_document_failure_metadata(edit_outcome),
-                    )
-                    if frozen_requirement is not None
-                    else None
-                )
-                workspace_state.normalize_package_state(package)
-                _save_workspace_for_user(
-                    user_id=user_id,
-                    workspace=workspace,
-                    requirement_history=requirement_history,
-                )
-                return _response(
-                    workspace=workspace,
-                    package=package,
-                    lesson=lesson,
-                    chatbot_message=edit_outcome.chatbot_message,
-                    learning_clarification=learning_clarification,
-                    requirements=requirements,
-                    board_decision=edit_outcome.board_decision,
-                    resource_matches=resource_resolution.matches,
-                    selected_reference=selected_reference,
-                    requirement_stamp=failed_stamp,
-                    board_document_operation_status=edit_outcome.operation_status,
-                    board_document_operation_failure_reason=edit_outcome.failure_reason,
-                )
-            if edit_outcome.changed:
-                refresh_lesson_runtime(lesson, document=edit_outcome.new_document, requirements=requirements)
-                lesson.board_teaching_guide = build_board_teaching_guide(lesson)
-                lesson.board_teaching_progress = None
-                chatbot_message, chatbot_message_source = _post_initial_board_generation_message(
-                    lesson=lesson,
-                    requirements=requirements,
-                    learning_clarification=learning_clarification,
-                    resource_summary=resource_summary_for_turn,
-                    edit_outcome=edit_outcome,
-                )
-            requirement_cleared = edit_outcome.changed
-            commit_operations(
-                lesson,
-                [],
-                label="Board document generation",
-                message="Generated board document from an explicit learner request",
-                new_document=lesson.board_document,
-                metadata={
-                    "kind": "board_document_generation",
-                    "user_message": request.message,
-                    "assistant_message": chatbot_message,
-                    "assistant_message_source": chatbot_message_source,
-                    "board_editor_message": edit_outcome.chatbot_message,
-                    "interaction_mode": request.interaction_mode,
-                    "selection": request.selection.model_dump(mode="json") if request.selection else None,
-                    "board_generation_action": "explicit_board_request",
-                    "board_edit_operation": edit_outcome.operation,
-                    "board_edit_summary": edit_outcome.summary,
-                    "board_section_titles": edit_outcome.section_titles,
-                    **_board_document_quality_metadata(edit_outcome),
-                    **_requirement_history_metadata(
-                        frozen_requirement,
-                        run_status_after_commit="consumed" if frozen_requirement is not None else None,
-                    ),
-                    **_task_metadata(
-                        requirements=requirements,
-                        learning_clarification=learning_clarification,
-                        requirement_cleared=requirement_cleared,
-                    ),
-                    **_reference_metadata(resolution=resource_resolution),
-                },
-            )
-            consumed_stamp = (
-                requirement_history.consume(commit_id=lesson.history_graph.commits[-1].id)
-                if frozen_requirement is not None
-                else None
-            )
-            if requirement_cleared:
-                _clear_task_requirements(lesson)
-            workspace_state.normalize_package_state(package)
-            _save_workspace_for_user(
-                user_id=user_id,
-                workspace=workspace,
-                requirement_history=requirement_history,
-            )
-            return _response(
-                workspace=workspace,
-                package=package,
-                lesson=lesson,
-                chatbot_message=chatbot_message,
-                learning_clarification=learning_clarification,
-                requirements=requirements,
-                board_decision=edit_outcome.board_decision,
-                resource_matches=resource_resolution.matches,
-                selected_reference=selected_reference,
-                requirement_cleared=requirement_cleared,
-                requirement_stamp=consumed_stamp,
-                board_document_operation_status=edit_outcome.operation_status,
-                board_document_operation_failure_reason=edit_outcome.failure_reason,
+                deps=_text_triggered_generation_deps(),
             )
         lesson.learning_requirements = requirements
         chatbot_user_message = (
