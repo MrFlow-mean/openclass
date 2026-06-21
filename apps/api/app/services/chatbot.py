@@ -71,6 +71,10 @@ from app.services.chat.paths.board_task_confirmation_decline import (
     BoardTaskConfirmationDeclineDependencies,
     handle_board_task_confirmation_decline,
 )
+from app.services.chat.paths.board_task_missing_fields import (
+    BoardTaskMissingFieldsDependencies,
+    handle_board_task_missing_fields,
+)
 from app.services.chat.paths.confirmed_resource_generation import (
     ConfirmedResourceGenerationDependencies,
     handle_confirmed_resource_generation,
@@ -1205,6 +1209,17 @@ def _board_task_confirmation_decline_deps() -> BoardTaskConfirmationDeclineDepen
     )
 
 
+def _board_task_missing_fields_deps() -> BoardTaskMissingFieldsDependencies:
+    return BoardTaskMissingFieldsDependencies(
+        commit_operations=commit_operations,
+        board_task_metadata=_board_task_metadata,
+        build_clarification_message=_generate_board_task_clarification_message,
+        normalize_package_state=workspace_state.normalize_package_state,
+        save_workspace_for_user=_save_workspace_for_user,
+        build_response=_response,
+    )
+
+
 def _persist_requirement_history_checkpoint(
     *,
     user_id: str,
@@ -2028,66 +2043,29 @@ def _handle_existing_board_task_flow(
             run_id=stamp.run_id,
             version_id=stamp.version_id,
         )
-        chatbot_message, chatbot_message_source = _generate_board_task_clarification_message(
-            lesson=lesson,
-            resources=resources,
-            conversation=request.conversation,
-            request=request,
-            board_task=board_task,
-            context=board_task.clarification_question,
-        )
-        commit_operations(
-            lesson,
-            [],
-            label="Board task clarification",
-            message="Asked for a missing field in the existing-board task sheet",
-            new_document=lesson.board_document,
-            metadata={
-                "kind": "chat_flow",
-                "user_message": request.message,
-                "assistant_message": chatbot_message,
-                "assistant_message_source": chatbot_message_source,
-                "interaction_mode": request.interaction_mode,
-                "selection": request.selection.model_dump(mode="json") if request.selection else None,
-                **interaction_metadata,
-                **decision_trace_metadata(
-                    message=request.message,
-                    board_action_decision=action_decision,
-                    role_executed="board_task_manager",
-                    document_changed=False,
-                    reason=board_task.clarification_question,
-                ),
-                **_board_task_metadata(board_task=board_task, stamp=stamp, route="clarify_location", cleared=False),
-            },
-        )
-        workspace_state.normalize_package_state(package)
-        _save_workspace_for_user(
-            user_id=user_id,
-            workspace=workspace,
-            requirement_history=requirement_history,
-            board_task_history=board_task_history,
-        )
-        commit = lesson.history_graph.commits[-1]
-        record_workflow_step(
-            NodeId.BOARD_TASK_CLARIFY_FIELDS,
-            decision="missing_fields",
-            reason=board_task.clarification_question,
-            run_id=stamp.run_id,
-            version_id=stamp.version_id,
-            commit_id=commit.id,
-        )
-        response = _response(
+        return handle_board_task_missing_fields(
             workspace=workspace,
             package=package,
             lesson=lesson,
-            chatbot_message=chatbot_message,
+            user_id=user_id,
+            request=request,
             requirements=requirements,
             learning_clarification=learning_clarification,
-            board_decision=BoardDecision(action="no_change", reason=board_task.clarification_question),
+            resources=resources,
+            board_task=board_task,
             board_task_history=board_task_history,
+            board_task_stamp=stamp,
+            requirement_history=requirement_history,
+            interaction_metadata=interaction_metadata,
+            decision_trace_metadata=decision_trace_metadata(
+                message=request.message,
+                board_action_decision=action_decision,
+                role_executed="board_task_manager",
+                document_changed=False,
+                reason=board_task.clarification_question,
+            ),
+            deps=_board_task_missing_fields_deps(),
         )
-        record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
-        return response
 
     board_action = _board_task_action_to_board_action(board_task)
     resolution = None
