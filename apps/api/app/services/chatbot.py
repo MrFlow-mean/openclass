@@ -67,6 +67,10 @@ from app.services.chat.paths.board_task_explain import (
     BoardTaskExplainDependencies,
     handle_board_task_explain_terminal as _execute_board_task_explain,
 )
+from app.services.chat.paths.board_task_confirmation_decline import (
+    BoardTaskConfirmationDeclineDependencies,
+    handle_board_task_confirmation_decline,
+)
 from app.services.chat.paths.confirmed_resource_generation import (
     ConfirmedResourceGenerationDependencies,
     handle_confirmed_resource_generation,
@@ -1191,6 +1195,16 @@ def _board_task_write_deps() -> BoardTaskWriteDependencies:
     )
 
 
+def _board_task_confirmation_decline_deps() -> BoardTaskConfirmationDeclineDependencies:
+    return BoardTaskConfirmationDeclineDependencies(
+        board_task_metadata=_board_task_metadata,
+        commit_operations=commit_operations,
+        normalize_package_state=workspace_state.normalize_package_state,
+        save_workspace_for_user=_save_workspace_for_user,
+        build_response=_response,
+    )
+
+
 def _persist_requirement_history_checkpoint(
     *,
     user_id: str,
@@ -1931,59 +1945,20 @@ def _handle_existing_board_task_flow(
         and existing_task.requested_action == "write"
     ):
         if is_write_decline(request.message):
-            current_stamp = board_task_history.current_stamp()
-            record_workflow_step(
-                NodeId.BOARD_TASK_COLLECT,
-                decision="awaiting_confirmation",
-                reason=existing_task.question_or_topic or existing_task.target_hint,
-                run_id=current_stamp.run_id,
-                version_id=current_stamp.version_id,
-            )
-            stamp = board_task_history.not_executed(reason="用户取消了扩写确认。")
-            lesson.board_task_requirements = None
-            commit_operations(
-                lesson,
-                [],
-                label="Board task cancelled",
-                message="Cancelled an awaiting board write task",
-                new_document=lesson.board_document,
-                metadata={
-                    "kind": "chat_flow",
-                    "user_message": request.message,
-                    "assistant_message": "",
-                    "assistant_message_source": "board_task_cancelled",
-                    **interaction_metadata,
-                    **_board_task_metadata(board_task=existing_task, stamp=stamp, route="await_write_confirmation", cleared=True),
-                },
-            )
-            workspace_state.normalize_package_state(package)
-            _save_workspace_for_user(
-                user_id=user_id,
-                workspace=workspace,
-                requirement_history=requirement_history,
-                board_task_history=board_task_history,
-            )
-            commit = lesson.history_graph.commits[-1]
-            record_workflow_step(
-                NodeId.BOARD_WRITE_CONFIRMATION_HANDLE,
-                decision="declined",
-                reason="用户取消了扩写确认。",
-                run_id=stamp.run_id,
-                version_id=stamp.version_id,
-                commit_id=commit.id,
-            )
-            response = _response(
+            return handle_board_task_confirmation_decline(
                 workspace=workspace,
                 package=package,
                 lesson=lesson,
-                chatbot_message="",
+                user_id=user_id,
+                request=request,
                 requirements=requirements,
                 learning_clarification=learning_clarification,
-                board_decision=BoardDecision(action="no_change", reason="用户取消了扩写。"),
-                board_task_stamp=stamp,
+                existing_task=existing_task,
+                requirement_history=requirement_history,
+                board_task_history=board_task_history,
+                source_interaction_metadata=interaction_metadata,
+                deps=_board_task_confirmation_decline_deps(),
             )
-            record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
-            return response
         if is_write_confirmation(request.message):
             confirmed_task = BoardTaskRequirementSheet.model_validate(existing_task.model_dump(mode="json"))
             confirmed_task.confirmation_status = "confirmed"
