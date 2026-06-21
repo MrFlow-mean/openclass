@@ -7,11 +7,19 @@ maintainer-facing coordination record, not an executable workflow.
 ## Current Base
 
 - Integration base branch: `origin/main`
-- Integration base SHA: `f005b8d1a3912a96c09cf5d499e665338ec8e9f0`
-- Latest verified `MAIN_SHA`: `f005b8d1a3912a96c09cf5d499e665338ec8e9f0`
-- Wave 10 production base SHA: `e71a5c9168db37ef126ccbb8f574359f840e258f`
+- Integration base SHA: `991d709ed33f37d62f9547d75121ce136e63d6c6`
+- Latest verified `MAIN_SHA`: `991d709ed33f37d62f9547d75121ce136e63d6c6`
+- Wave 11 production base SHA: `060006803865c3b05803e75ae10564f754cac62e`
 - Parallel-wave evidence branches remain evidence only unless replayed manually
   from the latest verified `main`.
+- PR #114 / Text-triggered generation extraction: rebased after #113 and
+  merged into `main` as `991d709ed33f37d62f9547d75121ce136e63d6c6`.
+- PR #113 / Legacy append fallback parity: tests-only, rebased after #112 and
+  merged into `main` as `5d31082a619b0ba7b3d815e01f25b2f21bdc824e`.
+- PR #112 / BoardTask await-write-confirmation terminal extraction: merged into
+  `main` as `63e34b76abdf36b2ff0b639dc0ee607b060f92f8`.
+- PR #111 / Wave 10 checkpoint docs: merged into `main` as
+  `060006803865c3b05803e75ae10564f754cac62e`.
 - PR #110 / Explicit API start generation extraction: rebased after #109 and
   merged into `main` as `f005b8d1a3912a96c09cf5d499e665338ec8e9f0`.
 - PR #109 / BoardTask missing-fields terminal extraction: merged into `main` as
@@ -523,12 +531,12 @@ Prep handoff status:
   `codex/prep/legacy-compatibility-matrix-wave10-e71a` at
   `43f26b2ad435914a1760714ca5c4336acab662f0`; docs-only matrix.
 
-Next production queue:
+Wave 10 handoff resolution:
 
-- Wave 11 slot A: BoardTask await-write-confirmation terminal extraction from
-  fresh `f005b8d1a3912a96c09cf5d499e665338ec8e9f0`, using C2 as evidence.
-- Wave 11 slot B: text-triggered generation classifier plus terminal extraction
-  from fresh `f005b8d1a3912a96c09cf5d499e665338ec8e9f0`, using G2 as evidence.
+- BoardTask await-write-confirmation terminal extraction was completed in Wave
+  11 via #112.
+- Text-triggered generation classifier plus terminal extraction was completed
+  in Wave 11 via #114.
 - Keep unresolved-edit conversion, normal location clarification,
   knowledge-board minimal generation, BoardTask edit extraction, BoardTask chat
   handoff, and legacy compatibility cleanup preparation-only until promoted.
@@ -540,6 +548,75 @@ Wave 10 production PRs:
   `refactor: extract generation api start path`.
 - C1/P9/G1 were used only as evidence. They were not merged or cherry-picked.
 - No shared runtime/dependency cleanup was started.
+
+## Wave 11 Checkpoint
+
+Wave 11 started from `MAIN_SHA`
+`060006803865c3b05803e75ae10564f754cac62e` and closed production at
+`991d709ed33f37d62f9547d75121ce136e63d6c6`.
+
+Merged production and checkpoint status:
+
+- #112 `refactor: extract board task await-write-confirmation terminal`:
+  merged as `63e34b76abdf36b2ff0b639dc0ee607b060f92f8`; PR Verify #153 and
+  main push Verify #155 succeeded.
+- #113 `test: cover legacy append fallback parity`: tests-only parity coverage,
+  rebased after #112 and merged as
+  `5d31082a619b0ba7b3d815e01f25b2f21bdc824e`; PR Verify #156 and main push
+  Verify #157 succeeded. This did not consume a production generation slot.
+- #114 `refactor: extract text-triggered generation path`: rebased after #113
+  and merged as `991d709ed33f37d62f9547d75121ce136e63d6c6`; PR Verify #158
+  and main push Verify #159 succeeded.
+
+Coordinator verification:
+
+- #112 focused await-write-confirmation handler/trace set, BoardTask suite, AI
+  logging regression suite, full backend pytest, and `npm run verify` passed.
+- #113 focused legacy append parity set: 4 passed before merge; BoardTask suite,
+  full backend pytest, and `npm run verify` passed after rebase.
+- #114 focused text-trigger classifier/handler set: 6 passed.
+- #114 neighboring generation handler set: 15 passed.
+- #114 selected historical explicit-generation regression set: 3 passed.
+- #114 BoardTask suite: 388 passed.
+- #114 AI logging regression suite: 127 passed.
+- #114 full backend pytest: 647 passed.
+- #114 `npm run verify`: passed with the pre-existing
+  `word-board-editor.tsx` file-size warning.
+
+Review status:
+
+- #112 behavior parity, state/history safety, and integration/drift safety all
+  returned PASS.
+- #113 behavior parity, persistence/state safety, and integration/drift safety
+  all returned PASS; it added tests only and did not delete or reroute legacy
+  runtime behavior.
+- #114 behavior parity, state/history safety, and integration/drift safety all
+  returned PASS. It preserved API-start, resource prompt, confirmed-resource,
+  ready requirement, knowledge-board, existing-board, and ordinary chat
+  precedence; it introduced no shared generation engine and no new `NodeId`.
+
+Wave 11 handoff queue:
+
+- BoardTask lane: unresolved edit conversion is the next production candidate,
+  using `codex/prep/unresolved-edit-conversion-refresh-wave10-e71a` as
+  evidence and replaying manually from fresh `main`.
+- Generation lane: knowledge-board minimal generation is the next production
+  candidate, using `codex/prep/knowledge-board-minimal-refresh-wave10-e71a` as
+  evidence and replaying manually from fresh `main`.
+- Remaining preparation-only lanes: normal location clarification, BoardTask
+  edit extraction, BoardTask chat handoff, and legacy compatibility cleanup.
+- Legacy append fallback parity is complete as tests-only coverage. It is not a
+  replacement for text-triggered generation extraction.
+
+Wave 11 production PRs:
+
+- Opened and merged exactly two production runtime PRs:
+  `refactor: extract board task await-write-confirmation terminal` and
+  `refactor: extract text-triggered generation path`.
+- #113 was intentionally tests-only and did not count as a production runtime
+  slot.
+- C2/G2 were used only as evidence. They were not merged or cherry-picked.
+- Do not start shared runtime/dependency cleanup yet.
 
 ## Central Ownership
 
@@ -590,13 +667,13 @@ Worker branches are preparation-only. Do not merge them directly.
 | J2: confirmed-resource trace activation | `codex/integrate/confirmed-resource-trace-activation-wave8` | `daea41763d07ba92f907a51e203d92e2b2cc7155` | confirmed-resource generation trace contract, including existing `RESOURCE_CONFIRMED_GENERATE` and initial generation nodes | production merged via #104 as `738b378aff760d27e38a6130254f2a6a0e73b99b` | complete; handler extraction completed via #106 | replayed and merged |
 | J3: confirmed-resource extraction | `codex/integrate/confirmed-resource-generation-extraction-wave9` | `a0d1e371988488a3ec2b67e3e73fcc0326060886` | confirmed-resource generation terminal moved to `chat/paths/confirmed_resource_generation.py` | production merged via #106 as `72387db3c42214e7a1394890f6a1bcba2f3c39b8` | complete; #104 trace contract preserved; no shared generation engine | replayed and merged |
 | J4: explicit API start generation extraction | `codex/integrate/generation-api-start-wave10` | `86bdbe091507a304051c2da535f2c843ad8a6a6b` | explicit `board_generation_action == "start"` generation terminal moved to `chat/paths/generation_api_start.py` | production merged via #110 as `f005b8d1a3912a96c09cf5d499e665338ec8e9f0` | complete; existing-board API start remains outside handler | replayed and merged |
-| J5: text-triggered generation split prep | `codex/prep/text-trigger-generation-refresh-wave10-e71a` | `e5d90da9b86393a4cc8a1ea202e7e6da423d3259` | pure text-trigger classifier plus terminal handler proposal | prep-only; no `chatbot.py` wiring | Wave 11 slot B candidate | prep-only |
-| J6: knowledge-board minimal generation prep | `codex/prep/knowledge-board-minimal-refresh-wave10-e71a` | `71a2b95a1ef71cbbcf952b95ad3740fc80314a1a` | minimal `knowledge_board` generation handler proposal | prep-only; G3 refresh complete | avoid duplicate `INITIAL_MODE_DECIDE`; waits behind text-triggered generation | prep-only |
+| J5: text-triggered generation extraction | `codex/integrate/text-triggered-generation-wave11` | `05ea0d507c1de6db0f2169c0a41f2e8f96e8d217` | pure text-trigger classifier plus terminal handler for text-triggered blank-board generation | production merged via #114 as `991d709ed33f37d62f9547d75121ce136e63d6c6` | complete; API-start, resource, ready, knowledge-board, existing-board, and ordinary-chat precedence preserved | replayed and merged |
+| J6: knowledge-board minimal generation prep | `codex/prep/knowledge-board-minimal-refresh-wave10-e71a` | `71a2b95a1ef71cbbcf952b95ad3740fc80314a1a` | minimal `knowledge_board` generation handler proposal | prep-only; G3 refresh complete | Wave 12 generation candidate; avoid duplicate `INITIAL_MODE_DECIDE` | prep-only |
 | L: BoardTask clarification handler prep | `codex/prep/board-task-clarification-handler-wave6-agent-a` | `eea84c40856621aee761c3ad53f700cd709e4e8e` | missing fields, clarify_location, unresolved edit conversion, await confirmation, decline terminal extraction candidate | prep-only PR #96 open; do not merge directly | split before production replay | prep-only; not merged |
 | L2: confirmation decline extraction | `codex/integrate/board-task-confirmation-decline-wave9` | `d88785f267a73f9a8ea3adc674d53b8e114a9d2d` | awaiting write confirmation decline terminal moved to `chat/paths/board_task_confirmation_decline.py` | production merged via #107 as `3981149ca251d691ab43fe95a6b7723199f8951a` | complete; post-rebase R3 PASS | replayed and merged |
 | L3: missing fields extraction | `codex/integrate/board-task-missing-fields-wave10` | `27e9c21907947a738d2c4c642496f05c9e02766e` | missing BoardTask fields terminal moved to `chat/paths/board_task_missing_fields.py` | production merged via #109 as `51f6de1e13caa2e6152b8c280c858862debe30df` | complete; `BOARD_TASK_COLLECT` remains caller-owned | replayed and merged |
-| L4: await write confirmation prep | `codex/prep/await-write-confirmation-refresh-wave10-e71a` | `711a8715ab34b2cf35642d6ecff8f241f9cf63fb` | await-write-confirmation terminal | prep-only; C2 refresh complete | Wave 11 slot A candidate | prep-only |
-| L5: unresolved edit conversion prep | `codex/prep/unresolved-edit-conversion-refresh-wave10-e71a` | `372ffc0cd34c65c4fb9928dd0cc43f3306e2cc91` | unresolved edit to write confirmation conversion | prep-only; C3 refresh complete | must land before normal location clarification | prep-only |
+| L4: await write confirmation extraction | `codex/integrate/board-task-await-write-confirmation-wave11` | `91b20e5f9396d09e44618c12c637135ba0dd6187` | await-write-confirmation terminal moved to `chat/paths/board_task_await_write_confirmation.py` | production merged via #112 as `63e34b76abdf36b2ff0b639dc0ee607b060f92f8` | complete; current commit metadata, BoardTask history, SSE, save ordering, terminal trace, and response assembly preserved | replayed and merged |
+| L5: unresolved edit conversion prep | `codex/prep/unresolved-edit-conversion-refresh-wave10-e71a` | `372ffc0cd34c65c4fb9928dd0cc43f3306e2cc91` | unresolved edit to write confirmation conversion | prep-only; C3 refresh complete | Wave 12 BoardTask candidate; must land before normal location clarification | prep-only |
 | L6: normal location clarification prep | `codex/prep/normal-location-clarification-refresh-wave10-e71a` | `a6c25920a08222f29a036c6cd80aba5cd539c3c9` | normal missing/ambiguous BoardTask location clarification | prep-only; C4 refresh complete | waits behind unresolved edit conversion boundary | prep-only |
 | L7: BoardTask chat handoff prep | `codex/prep/board-task-chat-handoff-refresh-wave10-e71a` | `67f849f93e0e05d12f7d0e7d92f3c7afdb8b9df6` | thin BoardTask chat handoff adapter | prep-only; H refresh complete | keep InteractionSession start ownership outside adapter | prep-only |
 | M: BoardTask explain handler prep | `codex/prep/agent-b-board-task-explain` | `ca8afcfb9b90a24c692c2bc3e92946e9845b67e2` | single-target BoardTask explain terminal extraction candidate | prep-only PR #97 open; do not merge directly | replay after write extraction and before edit extraction | prep-only; not merged |
@@ -650,67 +727,65 @@ Worker branches are preparation-only. Do not merge them directly.
 
 ## Integration Queue
 
-1. Wave 11 slot A: BoardTask await-write-confirmation terminal extraction,
-   using C2 Wave 10 prep as evidence and a fresh branch from
-   `f005b8d1a3912a96c09cf5d499e665338ec8e9f0`.
-2. Wave 11 slot B: text-triggered generation classifier plus terminal
-   extraction, using G2 Wave 10 prep as evidence and a fresh branch from
-   `f005b8d1a3912a96c09cf5d499e665338ec8e9f0`.
-3. Continue the split clarification queue after await-write-confirmation:
-   unresolved edit conversion, then normal location clarification.
-4. Continue the generation queue after text-triggered generation:
-   knowledge-board minimal generation, then confirmed-resource follow-up cleanup
-   if needed.
-5. Keep #96/#97/#98 draft and prep-only; replay manually instead of merging
+1. Wave 12 slot A: BoardTask unresolved edit conversion, using C3 Wave 10 prep
+   as evidence and a fresh branch from
+   `991d709ed33f37d62f9547d75121ce136e63d6c6`.
+2. Wave 12 slot B: knowledge-board minimal generation, using G3 Wave 10 prep as
+   evidence and a fresh branch from
+   `991d709ed33f37d62f9547d75121ce136e63d6c6`.
+3. Continue the split clarification queue after unresolved edit conversion:
+   normal location clarification.
+4. Continue the BoardTask extraction queue after the clarification split:
+   BoardTask edit extraction, then BoardTask chat handoff.
+5. Continue the generation queue after knowledge-board minimal generation:
+   confirmed-resource follow-up cleanup if needed.
+6. Keep #96/#97/#98 draft and prep-only; replay manually instead of merging
    their branches directly.
-6. K/P12 and the Wave 10 K refresh remain docs-only compatibility cleanup
+7. K/P12 and the Wave 10 K refresh remain docs-only compatibility cleanup
    inventory.
-7. Do not start shared runtime/dependency cleanup yet.
+8. Do not start shared runtime/dependency cleanup yet.
 
 ## Next Production PR Scope
 
-### Wave 11 Slot A: BoardTask Await-Write-Confirmation Terminal Extraction
+### Wave 12 Slot A: BoardTask Unresolved Edit Conversion
 
-Fresh branch should start from `f005b8d1a3912a96c09cf5d499e665338ec8e9f0`.
-
-Own only:
-
-- BoardTask await-write-confirmation terminal
-- `apps/api/app/services/chat/paths/board_task_await_write_confirmation.py`
-- focused await-write-confirmation handler and direct/integration parity tests
-
-Testing note:
-
-- Caller must still own route decision and content-absent confirmation
-  precedence.
-- Handler must not execute the confirmed write or the confirmation-decline path.
-- Confirmation decline extracted in #107 must keep its precedence and behavior.
-- Save or response-build failure must not record false terminal or response
-  trace nodes.
-- Do not touch unresolved edit conversion, normal location clarification, write,
-  edit, explain, chat, API, SSE, schema, prompt, or NodeId values.
-
-### Wave 11 Slot B: Text-Triggered Generation Extraction
-
-Fresh branch should start from `f005b8d1a3912a96c09cf5d499e665338ec8e9f0`.
+Fresh branch should start from `991d709ed33f37d62f9547d75121ce136e63d6c6`.
 
 Own only:
 
-- text-triggered generation classifier
-- text-triggered generation terminal
-- `apps/api/app/services/chat/paths/generation_text_trigger.py`
-- `apps/api/app/services/chat/paths/text_triggered_generation.py`
-- focused classifier, handler, and precedence tests
+- unresolved edit to write-confirmation conversion
+- focused direct and integration tests for the unresolved edit boundary
+- any small handler needed to isolate this terminal without taking over normal
+  location clarification
 
 Testing note:
 
-- Classifier must reject `board_generation_action == "start"`,
-  resource-reference actions, resource prompts, non-empty board documents, and
-  unactionable continue-like messages.
-- Do not swallow confirmed-resource generation, ready requirement generation,
-  explicit API start, knowledge-board generation, or resource-confirmed paths.
+- Preserve await-write-confirmation and confirmation-decline behavior already
+  extracted in #112 and #107.
+- Do not merge the normal location clarification path into this PR.
+- Do not touch write, edit, explain, chat, API, SSE, schema, prompt, or NodeId
+  values.
+
+### Wave 12 Slot B: Knowledge-Board Minimal Generation
+
+Fresh branch should start from `991d709ed33f37d62f9547d75121ce136e63d6c6`.
+
+Own only:
+
+- the `knowledge_board` minimal generation terminal after initial mode
+  decision
+- a focused handler module and direct/integration tests for the
+  ready-to-generate minimal requirement path
+- preservation of caller-owned `INITIAL_MODE_DECIDE`, branch selection, and
+  resource/API/ready/text-trigger precedence
+
+Testing note:
+
+- Do not duplicate `INITIAL_MODE_DECIDE`.
+- Reject resource prompt, resource-confirmed, explicit API start, ready
+  requirement generation, and text-triggered generation paths.
 - Preserve freeze/generate/failure/commit/consume/response ordering and current
-  metadata semantics for text-triggered generation.
+  metadata semantics for knowledge-board minimal generation.
 - Do not introduce a shared generation engine or new NodeId values.
 
 ## Repair Queue
@@ -724,11 +799,13 @@ Repair-only branches should not be merged directly:
 - I: production merged via #95; ready generation extraction merged via #101.
 - J: confirmed-resource trace is production merged via #104; confirmed-resource
   extraction is production merged via #106. API start extraction is production
-  merged via #110. Text-triggered generation is the next generation production
+  merged via #110. Text-triggered generation extraction is production merged via
+  #114. Knowledge-board minimal generation is the next generation production
   candidate.
 - L: #96 is split into P2-P6 prep branches. P2 is consumed by #107; C1 missing
-  fields is consumed by #109. C2 await-write-confirmation is the next BoardTask
-  clarification production candidate.
+  fields is consumed by #109. C2 await-write-confirmation is consumed by #112.
+  C3 unresolved edit conversion is the next BoardTask clarification production
+  candidate.
 - M: #97 has been consumed by #103. Keep it as historical evidence only.
 - K/P12: docs-only compatibility cleanup inventory and guard design; do not
   merge broad guard until canonical explain/edit/chat/generation paths land.
@@ -738,5 +815,5 @@ Repair-only branches should not be merged directly:
 - The old preparation branches are useful as specs, tests, and candidate
   patches, but they are not merge branches.
 - The next production work should start from
-  `f005b8d1a3912a96c09cf5d499e665338ec8e9f0`, not from old Wave 8, Wave 9, or Wave 10
+  `991d709ed33f37d62f9547d75121ce136e63d6c6`, not from old Wave 8, Wave 9, Wave 10, or Wave 11
   prep branches.
