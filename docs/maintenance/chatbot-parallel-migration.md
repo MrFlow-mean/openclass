@@ -7,11 +7,15 @@ maintainer-facing coordination record, not an executable workflow.
 ## Current Base
 
 - Integration base branch: `origin/main`
-- Integration base SHA: `3981149ca251d691ab43fe95a6b7723199f8951a`
-- Latest verified `MAIN_SHA`: `3981149ca251d691ab43fe95a6b7723199f8951a`
+- Integration base SHA: `e71a5c9168db37ef126ccbb8f574359f840e258f`
+- Latest verified `MAIN_SHA`: `e71a5c9168db37ef126ccbb8f574359f840e258f`
+- Wave 10 prep refresh base SHA: `e71a5c9168db37ef126ccbb8f574359f840e258f`
 - Wave 9 production base SHA: `555e4ca8214c84f878d5488be01ebd4969db6aa7`
+- Wave 9 production close SHA: `3981149ca251d691ab43fe95a6b7723199f8951a`
 - Parallel-wave evidence branches remain evidence only unless replayed manually
   from the latest verified `main`.
+- Wave 9 checkpoint docs were refreshed on `main` as
+  `e71a5c9168db37ef126ccbb8f574359f840e258f`.
 - PR #107 / Confirmation decline terminal extraction: rebased after #106 and
   merged into `main` as `3981149ca251d691ab43fe95a6b7723199f8951a`.
 - PR #106 / Confirmed-resource generation extraction: merged into `main` as
@@ -419,7 +423,10 @@ Prep and audit handoff status:
 - P10 generation-control prep remains at
   `b0bbde3be9555062a7df2519562fce90b737899f`.
 - P11 knowledge-board minimal generation prep remains at
-  `5d7b6ee672de16a0338b6945224ffe9b8ff9bfee`.
+  `5d7b6ee672de16a0338b6945224ffe9b8ff9bfee`; Wave 10 G3 refreshed it from
+  `e71a5c9168db37ef126ccbb8f574359f840e258f` on
+  `codex/prep/knowledge-board-minimal-refresh-wave10-e71a` and removed handler
+  ownership of `INITIAL_MODE_DECIDE`.
 - P12 compatibility audit remains at
   `99e2f37ce12324faf4883bfffe7a5330c73e4506`.
 
@@ -495,6 +502,7 @@ Worker branches are preparation-only. Do not merge them directly.
 | J4: explicit API start generation prep | `codex/prep/generation-api-start-wave9-738b` | `097f128566cbb40996e6e13d5da2dd5ab4255246` | explicit `board_generation_action == "start"` generation terminal proposal | prep-only; G1 audit PASS | Wave 10 slot B candidate; replace only the existing API-start call site | prep-only |
 | J5: text-triggered generation split prep | `codex/prep/text-triggered-generation-split-wave9-555e` | `53212d0c74e89fa34c536870582b7fdeda9a35e5` | pure text-trigger classifier plus terminal handler proposal | prep-only; no `chatbot.py` wiring | waits behind explicit API start generation | prep-only |
 | J6: knowledge-board minimal generation prep | `codex/prep/knowledge-board-minimal-generation-wave9-738b` | `5d7b6ee672de16a0338b6945224ffe9b8ff9bfee` | minimal `knowledge_board` generation handler proposal | prep-only; G3 audit PASS | avoid duplicate `INITIAL_MODE_DECIDE`; waits behind text-triggered generation | prep-only |
+| J7: knowledge-board minimal refresh | `codex/prep/knowledge-board-minimal-refresh-wave10-e71a` | branch head | refreshes J6 onto `e71a5c9168db37ef126ccbb8f574359f840e258f` with handler-owned freeze/generate/commit traces only | prep-only; no `chatbot.py` wiring | preserves caller ownership of `INITIAL_MODE_DECIDE`; still waits behind text-triggered generation | prep-only |
 | L: BoardTask clarification handler prep | `codex/prep/board-task-clarification-handler-wave6-agent-a` | `eea84c40856621aee761c3ad53f700cd709e4e8e` | missing fields, clarify_location, unresolved edit conversion, await confirmation, decline terminal extraction candidate | prep-only PR #96 open; do not merge directly | split before production replay | prep-only; not merged |
 | L2: confirmation decline extraction | `codex/integrate/board-task-confirmation-decline-wave9` | `d88785f267a73f9a8ea3adc674d53b8e114a9d2d` | awaiting write confirmation decline terminal moved to `chat/paths/board_task_confirmation_decline.py` | production merged via #107 as `3981149ca251d691ab43fe95a6b7723199f8951a` | complete; post-rebase R3 PASS | replayed and merged |
 | L3: missing fields prep | `codex/prep/board-task-missing-fields-refresh-wave9-555e` | `34334cc6176a73f3f1fa158a1ad6ea0c4d0c39f` | missing BoardTask fields terminal | prep-only; C1 refresh complete | Wave 10 slot A candidate | prep-only |
@@ -614,6 +622,179 @@ Testing note:
   metadata semantics for `board_generation_action="start"`.
 - Do not introduce a shared generation engine or new NodeId values.
 
+### Wave 10 Prep G3: KnowledgeBoard Minimal Generation Handler Refresh
+
+Fresh branch starts exactly from
+`e71a5c9168db37ef126ccbb8f574359f840e258f`.
+
+This refresh replays Wave 9 P11 onto current `main` and fixes trace ownership:
+the standalone handler no longer records `INITIAL_MODE_DECIDE`. The caller that
+classified the initial work mode owns that node, so future production wiring can
+add or preserve the caller-owned mode trace without double-recording it inside
+the terminal handler.
+
+Owned files in this prep lane:
+
+- `apps/api/app/services/chat/paths/knowledge_board_generation.py`
+- `apps/api/tests/board_task/test_knowledge_board_generation_handler.py`
+- this maintenance handoff section
+
+Non-goals:
+
+- no `chatbot.py` production call-site commit in the prep lane
+- no `workflow_trace.py`, `models.py`, router, service facade, or shared test
+  helper changes
+- no explicit `board_generation_action=start` handling
+- no generation-control route handling
+- no confirmed-resource or resource-prompt handling
+- no shared/common generation engine extraction
+- no API, SSE, schema, prompt, or `NodeId` changes
+
+Trigger / precedence contract:
+
+- The handler owns only an already-classified
+  `InitialLearningWorkModeDecision(work_mode="knowledge_board")`.
+- The handler must not call `generate_initial_learning_work_mode(...)` and must
+  not record `INITIAL_MODE_DECIDE`.
+- The caller still owns the outer precedence order: blank-board check,
+  initial-learning signal check, resource prompt / confirmed-resource exclusion,
+  and separate explicit start / generation-control lanes.
+- `unknown` and `narrow_topic` remain delegated to
+  `handle_initial_guidance(...)`.
+- `practice_artifact` still falls through to the regular requirement collection
+  path.
+- Confirmed resource context and resource prompt context are rejected before any
+  dependency is called, so this lane cannot consume confirmed-resource evidence
+  by accident.
+
+Freeze checkpoint contract:
+
+- Minimal requirements are constructed with `generate_board=True`, then stamped
+  with `action_type="generate_board"`.
+- `_prepare_initial_requirement_for_board_generation(...)` must produce the
+  frozen requirement before BoardEditor is called.
+- `_checkpoint_initial_requirement_before_generation(...)` must persist the
+  frozen run/version to SQLite before `generate_from_requirements(...)`.
+- This minimal lane does not require a prior `completed` requirement version;
+  a fresh run can have `created -> frozen -> consumed` events on success.
+
+Failure retryability contract:
+
+- If BoardEditor returns `changed=False`, no lesson commit is written.
+- A `generation_failed` event is appended against the frozen version.
+- The active run stays `frozen` with no `consumed_commit_id`, so the same frozen
+  version remains retryable.
+- The response carries the failed operation status and failure reason.
+
+Metadata contract on success:
+
+- `kind="board_document_generation"`
+- `board_generation_action="knowledge_board_minimal_requirement"`
+- `initial_learning_work_mode.work_mode="knowledge_board"`
+- `task_requirement_sheet.work_mode="knowledge_board"`
+- `requirement_run_id`, `frozen_requirement_version_id`,
+  `requirement_phase="frozen"`, and
+  `requirement_run_status_after_commit="consumed"`
+- board quality metadata, board edit operation/summary/section titles, and
+  `resource_resolution_status`
+
+Trace ownership / gap in current inline path:
+
+- Current main already freezes, generates, commits, consumes, saves, and
+  responds, but the `knowledge_board` inline body does not record the target
+  trace sequence.
+- `INITIAL_MODE_DECIDE` belongs to the caller that produced
+  `InitialLearningWorkModeDecision`; this handler deliberately omits it.
+- The prep handler records success as:
+  `INITIAL_REQUIREMENT_FREEZE -> INITIAL_BOARD_GENERATE ->
+  INITIAL_BOARD_COMMIT -> RESPONSE_ASSEMBLE`.
+- On failure it records:
+  `INITIAL_REQUIREMENT_FREEZE -> INITIAL_BOARD_GENERATE ->
+  INITIAL_GENERATION_FAILED -> RESPONSE_ASSEMBLE`.
+
+Standalone handler proposal:
+
+- `handle_knowledge_board_minimal_generation(...)` mirrors the current inline
+  terminal behavior, but keeps all dependencies injected for focused tests.
+- It deliberately does not import or call the initial work-mode classifier; the
+  central caller passes in the already-produced decision.
+- It deliberately does not record `INITIAL_MODE_DECIDE`, avoiding duplicate
+  trace if the caller records the mode decision before delegation.
+- It deliberately does not accept `reference_context`; confirmed-resource
+  generation remains a separate lane.
+
+Focused tests:
+
+- success: freezes before BoardEditor, commits, consumes, saves, assembles the
+  response, preserves commit metadata, and omits `INITIAL_MODE_DECIDE`
+- failure: persists a retryable frozen run, writes `generation_failed`, avoids a
+  lesson commit, saves, assembles the response, and omits `INITIAL_MODE_DECIDE`
+- trigger rejection: non-`knowledge_board`, resource prompt, and confirmed
+  resource context stop before side effects or trace records
+
+Exact central call-site replacement for the integrator:
+
+```python
+from app.services.chat.paths.knowledge_board_generation import (
+    KnowledgeBoardMinimalGenerationDependencies,
+    handle_knowledge_board_minimal_generation,
+)
+```
+
+Replace only the current inline `knowledge_board` body inside
+`_handle_initial_learning_work_mode(...)`, starting after:
+
+```python
+if decision.work_mode != "knowledge_board":
+    return None
+```
+
+with the delegation below. If production also activates the missing mode trace
+for `knowledge_board`, record `INITIAL_MODE_DECIDE` in
+`_handle_initial_learning_work_mode(...)` immediately before this delegation,
+not inside the handler.
+
+```python
+return handle_knowledge_board_minimal_generation(
+    workspace=workspace,
+    package=package,
+    lesson=lesson,
+    user_id=user_id,
+    request=request,
+    requirements=requirements,
+    decision=decision,
+    resource_summary_for_turn=resource_summary_for_turn,
+    resource_resolution=resource_resolution,
+    selected_reference=selected_reference,
+    requirement_history=requirement_history,
+    track_initial_requirement_run=track_initial_requirement_run,
+    deps=KnowledgeBoardMinimalGenerationDependencies(
+        minimal_initial_learning_state=_minimal_initial_learning_state,
+        with_task_details=_with_task_details,
+        prepare_initial_requirement_for_board_generation=(
+            _prepare_initial_requirement_for_board_generation
+        ),
+        checkpoint_initial_requirement_before_generation=(
+            _checkpoint_initial_requirement_before_generation
+        ),
+        generate_from_requirements=generate_from_requirements,
+        refresh_lesson_runtime=refresh_lesson_runtime,
+        build_board_teaching_guide=build_board_teaching_guide,
+        post_initial_board_generation_message=_post_initial_board_generation_message,
+        commit_operations=commit_operations,
+        clear_task_requirements=_clear_task_requirements,
+        board_document_failure_metadata=_board_document_failure_metadata,
+        board_document_quality_metadata=_board_document_quality_metadata,
+        requirement_history_metadata=_requirement_history_metadata,
+        task_metadata=_task_metadata,
+        initial_learning_work_mode_metadata=_initial_learning_work_mode_metadata,
+        reference_metadata=_reference_metadata,
+        save_workspace_for_user=_save_workspace_for_user,
+        build_response=_response,
+    ),
+)
+```
+
 ## Repair Queue
 
 Repair-only branches should not be merged directly:
@@ -637,5 +818,5 @@ Repair-only branches should not be merged directly:
 - The old preparation branches are useful as specs, tests, and candidate
   patches, but they are not merge branches.
 - The next production work should start from
-  `3981149ca251d691ab43fe95a6b7723199f8951a`, not from old Wave 8 or Wave 9
+  `e71a5c9168db37ef126ccbb8f574359f840e258f`, not from old Wave 8 or Wave 9
   prep branches.
