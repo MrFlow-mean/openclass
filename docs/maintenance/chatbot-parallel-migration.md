@@ -632,6 +632,70 @@ Repair-only branches should not be merged directly:
 - K/P12: docs-only compatibility cleanup inventory and guard design; do not
   merge broad guard until canonical explain/edit/chat/generation paths land.
 
+## Wave 10 K Legacy Compatibility Dependency Matrix
+
+Base verification for this preparation branch:
+
+- `origin/main` was verified at
+  `e71a5c9168db37ef126ccbb8f574359f840e258f`.
+- `e71a5c9168db37ef126ccbb8f574359f840e258f` is a docs checkpoint commit on
+  top of the Wave 9 production close at
+  `3981149ca251d691ab43fe95a6b7723199f8951a`.
+- Branch:
+  `codex/prep/legacy-compatibility-matrix-wave10-e71a`.
+- Scope: docs-only inventory. No production routing changes, no production PR,
+  and no edits to `chatbot.py`, `workflow_trace.py`, `models.py`,
+  `routers/chat.py`, `chat_service.py`, or shared test helpers.
+
+Read-only inventory sources:
+
+- `apps/api/app/models.py`: compatibility request fields and old document action
+  literals.
+- `apps/api/app/services/chat_turn_gate.py`: top-level route precedence for
+  generation, teaching, resource, ordinary, and existing-board task turns.
+- `apps/api/app/services/board_task_decider.py`: old action names mapped from
+  `direct_edit` and existing-board intent signals.
+- `apps/api/app/services/chatbot.py`: remaining compatibility owners for
+  teaching action, direct document edit, old document actions, fallback explain,
+  recent edit follow-up, autonomous write location choice, and fallback route
+  decision.
+- `apps/api/app/services/chat/paths/board_task_explain.py` and
+  `apps/api/app/services/chat/paths/board_task_write.py`: extracted canonical
+  explain/write terminals that already carry part of the compatibility surface.
+- `apps/api/app/services/board_document_locator.py`: generic semantic alias
+  matching used by focus resolution.
+- `apps/api/app/services/chat_service.py` and
+  `apps/api/app/routers/documents.py`: document edit compatibility entry points
+  and edited-chat metadata.
+
+| Compatibility surface | Current owner on `e71a5c9` | Dependency before cleanup | Risk if changed early | Safe next action |
+|---|---|---|---|---|
+| `teaching_action` (`continue` / `restart`) | `ChatRequest` still exposes `teaching_action`; `chat_turn_gate` routes it to `existing_board_task`, but `_handle_existing_board_task_flow(...)` returns `None` for it so the later legacy teaching block in `chatbot.py` runs `teach_first_section(...)` / `teach_next_section(...)`. | Needs a canonical replacement for section-by-section teaching that preserves `board_teaching_progress`, `board_explanation_directive`, commit metadata, and response `teaching_progress`. | Removing the legacy block before a replacement exists would make the UI continue/restart buttons route into BoardTask collection without preserving section progress. | Keep as compatibility owner. When promoted, extract only after sequence explain and BoardTask explain ownership are settled, with focused parity tests for continue, restart, empty progress, and directive metadata. |
+| `direct_edit` interaction mode | `ChatInteractionMode` keeps `direct_edit`; `board_task_decider` maps it to `append_section`, `rewrite_target`, `expand_target`, or `simplify_target`; `document_ai_edit_request(...)` still constructs `ChatRequest(interaction_mode="direct_edit")`. | Depends on BoardTask edit extraction, whole-document edit coverage, and the document AI edit endpoint contract. The direct endpoint must still support selected text and edited-chat metadata. | Moving it too early can silently change `/document/ai-edit` behavior, lose focus clarification, or route append requests through the wrong task lifecycle. | Keep until BoardTask edit has direct endpoint parity tests. Future extraction should isolate `direct_edit` as an adapter, not add new routing inside `chatbot.py`. |
+| Old document actions: `append_section`, `rewrite_target`, `expand_target`, `simplify_target` | Old action literals remain in `BoardTaskAction`; `append_section` and edit actions still have legacy document-edit branches in `chatbot.py`, while BoardTask write/explain already have extracted terminals. | Depends on missing-fields, await-write-confirmation, unresolved-edit conversion, normal location clarification, BoardTask edit extraction, and direct-edit adapter decisions. | A broad cleanup would conflate old first-layer requirement actions with second-layer BoardTask routes and may drop commit metadata or focus clarification behavior. | Do not remove as a group. Retire one action only after its canonical BoardTask or direct-edit path owns the same tests and metadata. |
+| Stale request/schema fields: `scope_action`, `board_edit_action`, `board_edit_topic` | Fields still exist on `ChatRequest`, but current production search shows no active service consumer for `scope_action`, `board_edit_action`, or `board_edit_topic`. `chat_edit_*` fields are still consumed by `chat_service.py` for edited-chat commit metadata. | Requires frontend/API audit before schema removal; `chat_edit_*` is a live metadata path and is not stale. | Removing nullable fields without client audit can break older UI payloads or saved request replays even if the backend no longer consumes them. | Mark `scope_action`, `board_edit_action`, and `board_edit_topic` as schema-compatibility candidates only. Do not remove in a routing PR. Preserve `chat_edit_*`. |
+| Fallback BoardTask route decision | `_fallback_board_task_decision(...)` still maps resolved write/edit/explain/chat tasks, absent content, ambiguous location, and confirmation states when Board AI does not return a decision. | Depends on Wave 10 missing-fields extraction, later await-write-confirmation extraction, unresolved-edit conversion, and normal location clarification. | Extracting terminals while leaving this hidden owner undocumented can create split-brain route decisions between handler modules and `chatbot.py`. | Keep fallback local until clarification terminals are split. Later move it behind a small route-decision helper with direct tests, not into a broad runtime container. |
+| Fallback explain outside BoardTask | A later legacy explain branch still handles `_requests_explanation(...)` with `selection_or_reference_excerpt` or `_board_summary(lesson)`, then calls board-directed explanation generation and commits `board_explanation_directive`, but it does not write BoardTask history. | Depends on proving reachability after `chat_turn_gate`, BoardTask explain, resource-reference, and ordinary chat precedence. Resource-backed explanations may still need a non-BoardTask path. | Deleting or rerouting it blindly could break resource/selection explanation compatibility; keeping it forever risks an untracked explain path that bypasses BoardTask metadata. | Add a reachability audit before cleanup. If still reachable for resource-backed explanation, document it as a separate resource explain path; otherwise route to BoardTask explain and add regression tests. |
+| Private aliases and excerpt isolation | `_chatbot_visible_board_task(...)` replaces `target_hint` / `target_location` with private status text before Chatbot clarification; `_focus_candidate_context(...)` hides candidate excerpts; `board_task_explain.py` hides non-current candidate excerpts in sequence context. | Any extracted clarification/explain/chat handler must preserve the boundary that Chatbot receives only board-side directives or explicitly sanitized labels. | Passing raw target excerpts or candidate snippets into Chatbot during cleanup would violate the no-direct-board-read boundary even if behavior looks better. | Treat sanitized labels as compatibility contract. If centralized later, add tests that candidate excerpts are not exposed in clarification prompts. |
+| Generic semantic aliases | `board_document_locator.py` uses `GENERIC_CONCEPT_GROUPS` through `_generic_semantic_alias_hits(...)` and `_query_terms(...)` as generic focus-resolution support. | Depends on locator ownership, not chatbot extraction. Any alias expansion must remain content-shape based and domain neutral. | Adding subject/textbook aliases to improve one case would violate the generic-product rule and bias target resolution. | Leave in locator. Future changes need generic fixture coverage and no subject/textbook/demo keywords. |
+| Recent edit follow-up focus | `_maybe_inherit_recent_board_edit_focus(...)` reuses `recent_board_edit_focus` metadata for follow-up write/edit requests; BoardTask write already writes this metadata through its extracted path. | Depends on BoardTask edit extraction and direct-edit adapter parity, because both can create or consume the recent focus. | Moving edit/write code without the metadata contract will break "continue editing that area" follow-ups or attach them to the wrong segment. | Keep metadata behavior intact. Before extraction, add focused tests for recent edit follow-up after write, edit, whole-document edit, and failed edit. |
+| Autonomous write location choice | `_maybe_apply_autonomous_write_location_choice(...)` upgrades ambiguous write location to `write` only when the user grants autonomous placement and candidates are in the same heading scope. | Depends on missing-fields, unresolved-edit conversion, and normal location clarification split order. | Moving normal clarification first can swallow the user's autonomous-location grant and cause unnecessary clarification loops. | Keep as a thin write-route compatibility rule until clarification queue lands. Future module should preserve same-heading and confidence guards. |
+| Stale PR and dependency risks | Old prep branches remain evidence only. Wave 10 production work is already separated into missing-fields and explicit API-start branches; this K branch must not become a production dependency. | Production replay must start from fresh `main`; do not cherry-pick broad old prep branches. K/P12 remains docs-only until canonical explain/edit/chat/generation paths land. | Treating this matrix as implementation authority can reopen stale handler stacks or cause broad conflicts in `chatbot.py`. | Use this matrix for sequencing and guard design only. No production PR from K; no shared cleanup until duplicated leaf handlers are visible on `main`. |
+
+Promotion guardrails from the matrix:
+
+1. Do not start broad compatibility cleanup while `teaching_action`,
+   `direct_edit`, fallback explain, and old document actions still have unique
+   live behavior in `chatbot.py`.
+2. Any future cleanup must retire one compatibility surface at a time and must
+   name the canonical owner, required parity tests, and preserved metadata.
+3. The safest near-term production queue remains unchanged: missing fields,
+   explicit API start generation, await-write-confirmation, unresolved edit
+   conversion, normal location clarification, BoardTask edit, BoardTask chat,
+   then remaining generation paths.
+4. No compatibility cleanup may add domain-specific keywords, subject branches,
+   fixed content, or demo logic.
+
 ## Notes
 
 - The old preparation branches are useful as specs, tests, and candidate
