@@ -67,6 +67,10 @@ from app.services.chat.paths.board_task_explain import (
     BoardTaskExplainDependencies,
     handle_board_task_explain_terminal as _execute_board_task_explain,
 )
+from app.services.chat.paths.confirmed_resource_generation import (
+    ConfirmedResourceGenerationDependencies,
+    handle_confirmed_resource_generation,
+)
 from app.services.chat.paths.generation_resource_prompt import (
     GenerationResourcePromptDependencies,
     handle_generation_resource_prompt,
@@ -3394,204 +3398,25 @@ def _maybe_start_interaction_session(
     )
 
 
-def _generate_board_from_confirmed_resource(
-    *,
-    workspace,
-    package,
-    lesson: Lesson,
-    user_id: str,
-    request: ChatRequest,
-    requirements: LearningRequirementSheet,
-    learning_clarification: LearningClarificationStatus,
-    resource_resolution: ResourceResolution,
-    resource_summary_for_turn: str,
-    requirement_history: LearningRequirementHistoryRecorder,
-    track_initial_requirement_run: bool,
-) -> ChatResponse:
-    requirements = _with_task_details(
-        requirements,
-        action_type="generate_board",
-        instruction=request.message,
+def _confirmed_resource_generation_deps() -> ConfirmedResourceGenerationDependencies:
+    return ConfirmedResourceGenerationDependencies(
+        with_task_details=_with_task_details,
+        prepare_initial_requirement_for_board_generation=_prepare_initial_requirement_for_board_generation,
+        checkpoint_initial_requirement_before_generation=_checkpoint_initial_requirement_before_generation,
+        generate_from_requirements=generate_from_requirements,
+        refresh_lesson_runtime=refresh_lesson_runtime,
+        build_board_teaching_guide=build_board_teaching_guide,
+        post_initial_board_generation_message=_post_initial_board_generation_message,
+        commit_operations=commit_operations,
+        clear_task_requirements=_clear_task_requirements,
+        board_document_failure_metadata=_board_document_failure_metadata,
+        board_document_quality_metadata=_board_document_quality_metadata,
+        requirement_history_metadata=_requirement_history_metadata,
+        task_metadata=_task_metadata,
+        reference_metadata=_reference_metadata,
+        save_workspace_for_user=_save_workspace_for_user,
+        build_response=_response,
     )
-    ready_requirement = (
-        requirement_history.current_stamp()
-        if track_initial_requirement_run and requirement_history.snapshot.status == "ready"
-        else None
-    )
-    record_workflow_step(
-        NodeId.RESOURCE_CONFIRMED_GENERATE,
-        decision="confirmed",
-        reason="Confirmed resource reference will generate the first board.",
-        run_id=ready_requirement.run_id if ready_requirement else None,
-        version_id=ready_requirement.version_id if ready_requirement else None,
-    )
-    requirements, learning_clarification, frozen_requirement = _prepare_initial_requirement_for_board_generation(
-        requirement_history,
-        enabled=track_initial_requirement_run,
-        requirements=requirements,
-        learning_clarification=learning_clarification,
-    )
-    _checkpoint_initial_requirement_before_generation(
-        user_id=user_id,
-        workspace=workspace,
-        package=package,
-        lesson=lesson,
-        requirement_history=requirement_history,
-        requirements=requirements,
-        learning_clarification=learning_clarification,
-        stamp=frozen_requirement,
-    )
-    if ready_requirement is not None:
-        record_workflow_step(
-            NodeId.INITIAL_REQUIREMENT_READY,
-            decision="ready",
-            run_id=ready_requirement.run_id,
-            version_id=ready_requirement.version_id,
-        )
-    if frozen_requirement is not None:
-        record_workflow_step(
-            NodeId.INITIAL_REQUIREMENT_FREEZE,
-            decision="frozen",
-            run_id=frozen_requirement.run_id,
-            version_id=frozen_requirement.version_id,
-        )
-    record_workflow_step(
-        NodeId.INITIAL_BOARD_GENERATE,
-        decision="board_editor",
-        run_id=frozen_requirement.run_id if frozen_requirement else None,
-        version_id=frozen_requirement.version_id if frozen_requirement else None,
-    )
-    edit_outcome = generate_from_requirements(
-        lesson=lesson,
-        requirements=requirements,
-        clarification=learning_clarification,
-        resource_summary=resource_summary_for_turn,
-        reference_context=resource_resolution.selected_reference,
-        requirement_run_id=frozen_requirement.run_id if frozen_requirement else None,
-        frozen_requirement_version_id=frozen_requirement.version_id if frozen_requirement else None,
-    )
-    chatbot_message = edit_outcome.chatbot_message
-    if not edit_outcome.changed:
-        failed_stamp = (
-            requirement_history.generation_failed(
-                reason=edit_outcome.summary or chatbot_message,
-                metadata=_board_document_failure_metadata(edit_outcome),
-            )
-            if frozen_requirement is not None
-            else None
-        )
-        workspace_state.normalize_package_state(package)
-        _save_workspace_for_user(
-            user_id=user_id,
-            workspace=workspace,
-            requirement_history=requirement_history,
-        )
-        if failed_stamp is not None:
-            record_workflow_step(
-                NodeId.INITIAL_GENERATION_FAILED,
-                decision="generation_failed",
-                reason=edit_outcome.failure_reason or edit_outcome.summary or chatbot_message,
-                run_id=failed_stamp.run_id,
-                version_id=failed_stamp.version_id,
-            )
-        response = _response(
-            workspace=workspace,
-            package=package,
-            lesson=lesson,
-            chatbot_message=chatbot_message,
-            learning_clarification=learning_clarification,
-            requirements=requirements,
-            board_decision=edit_outcome.board_decision,
-            resource_matches=resource_resolution.matches,
-            selected_reference=resource_resolution.selected_reference,
-            requirement_stamp=failed_stamp,
-            board_document_operation_status=edit_outcome.operation_status,
-            board_document_operation_failure_reason=edit_outcome.failure_reason,
-        )
-        record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
-        return response
-    if edit_outcome.changed:
-        refresh_lesson_runtime(lesson, document=edit_outcome.new_document, requirements=requirements)
-        lesson.board_teaching_guide = build_board_teaching_guide(lesson)
-        lesson.board_teaching_progress = None
-        chatbot_message, chatbot_message_source = _post_initial_board_generation_message(
-            lesson=lesson,
-            requirements=requirements,
-            learning_clarification=learning_clarification,
-            resource_summary=resource_summary_for_turn,
-            edit_outcome=edit_outcome,
-        )
-    requirement_cleared = edit_outcome.changed
-    commit_operations(
-        lesson,
-        [],
-        label="Resource-backed board generation",
-        message="Generated board document from a confirmed uploaded resource chapter",
-        new_document=lesson.board_document,
-        metadata={
-            "kind": "board_document_generation",
-            "resource_backed_generation": True,
-            "user_message": request.message,
-            "assistant_message": chatbot_message,
-            "assistant_message_source": chatbot_message_source,
-            "board_editor_message": edit_outcome.chatbot_message,
-            "interaction_mode": request.interaction_mode,
-            "resource_reference_action": request.resource_reference_action,
-            "board_generation_action": "resource_reference_confirm",
-            "board_edit_operation": edit_outcome.operation,
-            "board_edit_summary": edit_outcome.summary,
-            "board_section_titles": edit_outcome.section_titles,
-            **_board_document_quality_metadata(edit_outcome),
-            **_requirement_history_metadata(
-                frozen_requirement,
-                run_status_after_commit="consumed" if frozen_requirement is not None else None,
-            ),
-            **_task_metadata(
-                requirements=requirements,
-                learning_clarification=learning_clarification,
-                requirement_cleared=requirement_cleared,
-            ),
-            **_reference_metadata(resolution=resource_resolution),
-        },
-    )
-    consumed_stamp = (
-        requirement_history.consume(commit_id=lesson.history_graph.commits[-1].id)
-        if frozen_requirement is not None
-        else None
-    )
-    if requirement_cleared:
-        _clear_task_requirements(lesson)
-    workspace_state.normalize_package_state(package)
-    _save_workspace_for_user(
-        user_id=user_id,
-        workspace=workspace,
-        requirement_history=requirement_history,
-    )
-    if consumed_stamp is not None:
-        record_workflow_step(
-            NodeId.INITIAL_BOARD_COMMIT,
-            decision="committed",
-            run_id=consumed_stamp.run_id,
-            version_id=consumed_stamp.version_id,
-            commit_id=lesson.history_graph.commits[-1].id,
-        )
-    response = _response(
-        workspace=workspace,
-        package=package,
-        lesson=lesson,
-        chatbot_message=chatbot_message,
-        learning_clarification=learning_clarification,
-        requirements=requirements,
-        board_decision=edit_outcome.board_decision,
-        resource_matches=resource_resolution.matches,
-        selected_reference=resource_resolution.selected_reference,
-        requirement_cleared=requirement_cleared,
-        requirement_stamp=consumed_stamp,
-        board_document_operation_status=edit_outcome.operation_status,
-        board_document_operation_failure_reason=edit_outcome.failure_reason,
-    )
-    record_workflow_step(NodeId.RESPONSE_ASSEMBLE, decision="assembled")
-    return response
 
 
 def _handle_initial_learning_work_mode(
@@ -4668,7 +4493,7 @@ def _chat_response(
                 ),
             )
         if request.resource_reference_action == "confirm" and selected_reference is not None:
-            return _generate_board_from_confirmed_resource(
+            return handle_confirmed_resource_generation(
                 workspace=workspace,
                 package=package,
                 lesson=lesson,
@@ -4680,6 +4505,7 @@ def _chat_response(
                 resource_summary_for_turn=resource_summary_for_turn,
                 requirement_history=requirement_history,
                 track_initial_requirement_run=track_initial_requirement_run,
+                deps=_confirmed_resource_generation_deps(),
             )
         if _should_generate_board_from_explicit_request(
             lesson=lesson,
@@ -4924,7 +4750,7 @@ def _chat_response(
             requirements=requirements,
             learning_clarification=learning_clarification,
         )
-        return _generate_board_from_confirmed_resource(
+        return handle_confirmed_resource_generation(
             workspace=workspace,
             package=package,
             lesson=lesson,
@@ -4936,6 +4762,7 @@ def _chat_response(
             resource_summary_for_turn=resource_summary_for_turn,
             requirement_history=requirement_history,
             track_initial_requirement_run=track_initial_requirement_run,
+            deps=_confirmed_resource_generation_deps(),
         )
 
     learning_clarification = _latest_learning_clarification(lesson, requirements=requirements)
