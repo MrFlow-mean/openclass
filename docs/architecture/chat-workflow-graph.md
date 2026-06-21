@@ -586,17 +586,29 @@ outcomes that must be visible and retry-aware.
 
 ## Compatibility Inventory
 
-| Current behavior | Classification | Future decision |
-|---|---|---|
-| `teaching_action` | Compatibility fallback | Keep until equivalent board-task or interaction path is fully covered by tests. Then route through `BOARD_TASK_COLLECT` or `INTERACTION_CONTINUE`. |
-| `direct_edit` | Compatibility fallback | Migrate after board edit/write path has dedicated tests for selection, focus failure, and operation metadata. |
-| `board_generation_action=start` | Canonical path with compatibility controls | Keep as explicit user control. On blank board it maps to initial generation; on existing board it maps to existing board task flow. |
-| Sequential explanation | Canonical path | Keep as `BOARD_SEQUENCE_PLAN -> BOARD_SEQUENCE_START -> INTERACTION_SEQUENCE_CHECK`; add explicit node tests before extraction. |
-| Recent edit follow-up | Compatibility fallback | Preserve for now. Later model as a target-resolution hint attached to `BOARD_TARGET_RESOLVE`, not as a top-level route. |
-| Autonomous location choice | Compatibility fallback | Preserve guarded behavior. Later model as a deterministic `BOARD_TARGET_RESOLVE` policy with tests for genuinely ambiguous cases. |
-| Old `DOCUMENT_WRITE_ACTIONS` / `explain_target` branch | Legacy path requiring later decision | Do not expand. Migrate one action at a time into canonical board task nodes, keeping old branch as fallback until tests cover parity. |
-| Resource-confirmed board generation | Canonical path | Keep as resource preflight plus frozen requirement generation. It must not bypass freeze/history. |
-| Fallback board-directed explanation | Legacy path requiring later decision | Keep until existing-board explain path handles all current cases through `BOARD_TASK_COLLECT`. |
+Post-Wave8 audit refresh base: `main` at
+`738b378aff760d27e38a6130254f2a6a0e73b99b`.
+Evidence-only prep branch:
+`codex/prep/compatibility-drift-guard-wave8-c413` at
+`9efc4110182c6976e14e9e2617356d009372d894`.
+
+| Current behavior | Decision | Evidence boundary | Future decision |
+|---|---|---|---|
+| `teaching_action` | Keep. | Public `ChatRequest` compatibility control still has frontend callers and preserves section teaching progress through board-side directive gating. | Remove only after equivalent section teaching is modeled through canonical board-task or interaction paths with parity tests. |
+| `direct_edit` | Keep. | The composer, selection popover, API compatibility mode, document edit facade, and board-task decider still use `interaction_mode == "direct_edit"`. | Migrate through `BoardTaskRequirementSheet` plus target resolution after write/edit tests cover selection, focus failure, and operation metadata. |
+| `board_generation_action=start` | Keep. | Explicit user control already maps to initial generation on blank boards and existing-board task flow on non-empty boards. | Keep as a canonical control; it is not part of legacy cleanup. |
+| Sequential explanation | Keep. | Sequence planning is already represented as `BOARD_SEQUENCE_PLAN -> BOARD_SEQUENCE_START -> INTERACTION_SEQUENCE_CHECK`. | Preserve current node order and tests during later handler work. |
+| Recent focus inheritance | Keep. | Recent edit/write focus helpers reuse generic commit metadata as a target-location hint. | Move the policy under `BOARD_TARGET_RESOLVE` later; do not keep it as a top-level route forever. |
+| Autonomous location choice | Keep guarded. | Current behavior is generic target-resolution policy, not a subject-specific rule. | Model as deterministic `BOARD_TARGET_RESOLVE` behavior with ambiguity tests before cleanup. |
+| Legacy append/edit/explain fallback (`DOCUMENT_WRITE_ACTIONS` / `EDIT_ACTIONS` / `explain_target`) | Deprecate; keep guarded. | The old direct action handler still covers append/edit/explain fallbacks outside the canonical board-task terminal modules. | Do not expand. Remove one action at a time only after canonical write/edit/explain/chat paths and commit metadata tests cover parity. |
+| Resource-confirmed board generation | Keep. | Wave8 activated the trace contract around resource preflight, frozen requirement generation, success commit, consume, save, and failure retryability. | Keep as resource preflight plus frozen requirement generation; extraction remains separate from compatibility cleanup. |
+| Fallback board-directed explanation | Deprecate; keep guarded. | The late explanation fallback still routes through `BoardExplanationDirective`, but it is not the preferred second-layer board-task path. | Remove after existing-board explain fallback cases route through `BOARD_TASK_COLLECT` and the canonical explain path. |
+| Private compatibility aliases | Keep; no new usage. | Private aliases keep extracted handlers, service facades, and focused tests compatible while migration continues. | Replace with public dependency builders or module-local helpers as handlers graduate; new code should not add alias usage. |
+
+The broad AST drift guard from `9efc411` is intentionally not promoted here.
+It freezes too many pending surfaces while canonical explain, edit, chat, and
+generation paths are still landing. A later guard should be narrower and should
+arrive in the same cleanup PR that supplies replacement parity tests.
 
 ## Persistence Invariants
 
