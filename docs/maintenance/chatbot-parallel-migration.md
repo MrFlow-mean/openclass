@@ -7,9 +7,13 @@ maintainer-facing coordination record, not an executable workflow.
 ## Current Base
 
 - Integration base branch: `origin/main`
-- Integration base SHA: `c413a192e7805df95b14b86809afe661d5721dd1`
-- Latest verified `MAIN_SHA`: `c413a192e7805df95b14b86809afe661d5721dd1`
+- Integration base SHA: `738b378aff760d27e38a6130254f2a6a0e73b99b`
+- Latest verified `MAIN_SHA`: `738b378aff760d27e38a6130254f2a6a0e73b99b`
 - Parallel-wave base SHA: `cb004788511748a01dd8e76604425616b8f012f6`
+- Wave 8 Slot B / confirmed-resource generation trace activation: merged into
+  `main` as `738b378aff760d27e38a6130254f2a6a0e73b99b`.
+- Wave 8 Slot A / BoardTask single-target explain extraction: merged into
+  `main` as `79c7839648703931028bdbf617ba97944315e7b9`.
 - PR #100 / BoardTask write extraction: merged into `main` as
   `9bae84d92a219f35b81d53a4cd3121c96306ff9b`.
 - PR #101 / Ready requirement generation extraction: rebased after #100 and
@@ -367,6 +371,162 @@ Testing note:
 - Do not extract the confirmed-resource handler in the same PR.
 - Do not touch regular ready generation, explicit `board_generation_action=start`,
   knowledge-board generation, API, SSE, schema, prompt, or NodeId values.
+
+### Wave 9 Prep P11: KnowledgeBoard Minimal Generation Handler Proposal
+
+Fresh branch starts exactly from
+`738b378aff760d27e38a6130254f2a6a0e73b99b`.
+
+Owned files in this prep lane:
+
+- `apps/api/app/services/chat/paths/knowledge_board_generation.py`
+- `apps/api/tests/board_task/test_knowledge_board_generation_handler.py`
+- this maintenance handoff section
+
+Non-goals:
+
+- no `chatbot.py` production call-site commit in the prep lane
+- no explicit `board_generation_action=start` handling
+- no generation-control route handling
+- no confirmed-resource or resource-prompt handling
+- no shared/common generation engine extraction
+- no API, SSE, schema, prompt, or `NodeId` changes
+
+Trigger / precedence contract:
+
+- The handler owns only an already-classified
+  `InitialLearningWorkModeDecision(work_mode="knowledge_board")`.
+- The caller still owns the outer precedence order: blank-board check,
+  initial-learning signal check, resource prompt / confirmed-resource exclusion,
+  and separate explicit start / generation-control lanes.
+- `unknown` and `narrow_topic` remain delegated to
+  `handle_initial_guidance(...)`.
+- `practice_artifact` still falls through to the regular requirement collection
+  path.
+- Confirmed resource context and resource prompt context are rejected before any
+  dependency is called, so this lane cannot consume confirmed-resource evidence
+  by accident.
+
+Freeze checkpoint contract:
+
+- Minimal requirements are constructed with `generate_board=True`, then stamped
+  with `action_type="generate_board"`.
+- `_prepare_initial_requirement_for_board_generation(...)` must produce the
+  frozen requirement before BoardEditor is called.
+- `_checkpoint_initial_requirement_before_generation(...)` must persist the
+  frozen run/version to SQLite before `generate_from_requirements(...)`.
+- This minimal lane does not require a prior `completed` requirement version;
+  a fresh run can have `created -> frozen -> consumed` events on success.
+
+Failure retryability contract:
+
+- If BoardEditor returns `changed=False`, no lesson commit is written.
+- A `generation_failed` event is appended against the frozen version.
+- The active run stays `frozen` with no `consumed_commit_id`, so the same frozen
+  version remains retryable.
+- The response carries the failed operation status and failure reason.
+
+Metadata contract on success:
+
+- `kind="board_document_generation"`
+- `board_generation_action="knowledge_board_minimal_requirement"`
+- `initial_learning_work_mode.work_mode="knowledge_board"`
+- `task_requirement_sheet.work_mode="knowledge_board"`
+- `requirement_run_id`, `frozen_requirement_version_id`,
+  `requirement_phase="frozen"`, and
+  `requirement_run_status_after_commit="consumed"`
+- board quality metadata, board edit operation/summary/section titles, and
+  `resource_resolution_status`
+
+Trace gap in current inline path:
+
+- Current main already freezes, generates, commits, consumes, saves, and
+  responds, but the `knowledge_board` inline body does not record the target
+  trace sequence.
+- The prep handler records:
+  `INITIAL_MODE_DECIDE -> INITIAL_REQUIREMENT_FREEZE ->
+  INITIAL_BOARD_GENERATE -> INITIAL_BOARD_COMMIT -> RESPONSE_ASSEMBLE`.
+- On failure it records:
+  `INITIAL_MODE_DECIDE -> INITIAL_REQUIREMENT_FREEZE ->
+  INITIAL_BOARD_GENERATE -> INITIAL_GENERATION_FAILED -> RESPONSE_ASSEMBLE`.
+
+Standalone handler proposal:
+
+- `handle_knowledge_board_minimal_generation(...)` mirrors the current inline
+  terminal behavior, but keeps all dependencies injected for focused tests.
+- It deliberately does not import or call the initial work-mode classifier; the
+  central caller passes in the already-produced decision.
+- It deliberately does not accept `reference_context`; confirmed-resource
+  generation remains a separate lane.
+
+Focused tests:
+
+- success: freezes before BoardEditor, commits, consumes, saves, assembles the
+  response, and preserves commit metadata
+- failure: persists a retryable frozen run, writes `generation_failed`, avoids a
+  lesson commit, saves, and assembles the response
+- trigger rejection: non-`knowledge_board`, resource prompt, and confirmed
+  resource context stop before side effects or trace records
+
+Exact central call-site replacement for the integrator:
+
+```python
+from app.services.chat.paths.knowledge_board_generation import (
+    KnowledgeBoardMinimalGenerationDependencies,
+    handle_knowledge_board_minimal_generation,
+)
+```
+
+Replace only the current inline `knowledge_board` body inside
+`_handle_initial_learning_work_mode(...)`, starting after:
+
+```python
+if decision.work_mode != "knowledge_board":
+    return None
+```
+
+with:
+
+```python
+return handle_knowledge_board_minimal_generation(
+    workspace=workspace,
+    package=package,
+    lesson=lesson,
+    user_id=user_id,
+    request=request,
+    requirements=requirements,
+    decision=decision,
+    resource_summary_for_turn=resource_summary_for_turn,
+    resource_resolution=resource_resolution,
+    selected_reference=selected_reference,
+    requirement_history=requirement_history,
+    track_initial_requirement_run=track_initial_requirement_run,
+    deps=KnowledgeBoardMinimalGenerationDependencies(
+        minimal_initial_learning_state=_minimal_initial_learning_state,
+        with_task_details=_with_task_details,
+        prepare_initial_requirement_for_board_generation=(
+            _prepare_initial_requirement_for_board_generation
+        ),
+        checkpoint_initial_requirement_before_generation=(
+            _checkpoint_initial_requirement_before_generation
+        ),
+        generate_from_requirements=generate_from_requirements,
+        refresh_lesson_runtime=refresh_lesson_runtime,
+        build_board_teaching_guide=build_board_teaching_guide,
+        post_initial_board_generation_message=_post_initial_board_generation_message,
+        commit_operations=commit_operations,
+        clear_task_requirements=_clear_task_requirements,
+        board_document_failure_metadata=_board_document_failure_metadata,
+        board_document_quality_metadata=_board_document_quality_metadata,
+        requirement_history_metadata=_requirement_history_metadata,
+        task_metadata=_task_metadata,
+        initial_learning_work_mode_metadata=_initial_learning_work_mode_metadata,
+        reference_metadata=_reference_metadata,
+        save_workspace_for_user=_save_workspace_for_user,
+        build_response=_response,
+    ),
+)
+```
 
 ## Repair Queue
 
