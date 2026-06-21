@@ -135,6 +135,31 @@ def _patch_edit_route(monkeypatch: pytest.MonkeyPatch, *, focus: BoardFocusRef) 
     )
 
 
+def _patch_whole_document_edit_route(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_board_task_requirement_sheet",
+        lambda **kwargs: BoardTaskRequirementSheet(
+            target_hint="全文",
+            location_status="resolved",
+            requested_action="edit",
+            question_or_topic="整体改写当前板书",
+            progress=100,
+            missing_items=[],
+        ),
+    )
+    monkeypatch.setattr(
+        chatbot_module,
+        "resolve_board_focus",
+        lambda **kwargs: pytest.fail("whole-document edit should use the synthetic whole-document focus"),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_board_task_route_decision",
+        lambda **kwargs: pytest.fail("local whole-document edit route decision should be used"),
+    )
+
+
 def _success_outcome(lesson, *, changed_text: str = "改写后的内容。") -> BoardDocumentEditOutcome:
     return BoardDocumentEditOutcome(
         chatbot_message="AI生成：已改写目标段落。",
@@ -161,6 +186,39 @@ def _success_outcome(lesson, *, changed_text: str = "改写后的内容。") -> 
             )
         ],
         patch_risk_level="low",
+    )
+
+
+def _whole_document_success_outcome(
+    lesson,
+    *,
+    changed_text: str = "全文改写后的目标段落。",
+) -> BoardDocumentEditOutcome:
+    return BoardDocumentEditOutcome(
+        chatbot_message="AI生成：已整体改写当前板书。",
+        new_document=build_document(
+            title=lesson.board_document.title,
+            content_text=f"# 已有板书\n\n## 目标范围\n{changed_text}\n",
+            document_id=lesson.board_document.id,
+        ),
+        board_decision=BoardDecision(action="edit_board", reason="已整体改写当前板书。"),
+        assistant_message_source="board_document_editor_ai",
+        operation="replace_document",
+        summary="已整体改写当前板书。",
+        section_titles=["目标范围"],
+        changed=True,
+        operation_status="succeeded",
+        patch_validation=BoardPatchValidationResult(status="pass", applied_operations=1),
+        diff_preview=[
+            DiffPreviewItem(
+                op="update_block_content",
+                heading_path=["已有板书", "目标范围"],
+                before_text="原始内容需要被改写。",
+                after_text=changed_text,
+                summary="整体改写后保留目标范围结构。",
+            )
+        ],
+        patch_risk_level="medium",
     )
 
 
@@ -243,6 +301,83 @@ def test_board_task_edit_success_trace_persists_commit_consume_and_response(
     assert commit.metadata["board_patch_validation"]["status"] == "pass"
     assert commit.metadata["board_patch_diff"][0]["op"] == "update_block_content"
     assert response.board_patch_diff[0].op == "update_block_content"
+
+
+def test_board_task_edit_whole_document_authorizes_replace_document(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace, lesson_id = _workspace_with_existing_board()
+    lesson = workspace.packages[0].lessons[-1]
+    store = _store_with_workspace(tmp_path, workspace, name="edit_whole_document_authorized")
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    _patch_whole_document_edit_route(monkeypatch)
+    edit_calls: list[dict[str, Any]] = []
+
+    def _edit(**kwargs):
+        edit_calls.append(kwargs)
+        return _whole_document_success_outcome(lesson)
+
+    monkeypatch.setattr(chatbot_module, "edit_existing_document", _edit)
+
+    response = chat_service.process_chat_on_lesson(
+        lesson_id,
+        ChatRequest(message="请把全文整体改写得更清晰"),
+        user_id=TEST_USER_ID,
+    )
+
+    updated_lesson = response.course_package.lessons[-1]
+    commit = updated_lesson.history_graph.commits[-1]
+
+    assert len(edit_calls) == 1
+    edit_call = edit_calls[0]
+    assert edit_call["target_scope"] == "whole_document"
+    assert edit_call["allow_replace_document"] is True
+    assert edit_call["selection_excerpt"] == ""
+    assert edit_call["focus"].match_id == f"whole_document:{lesson.board_document.id}"
+    assert response.board_task_phase == "consumed"
+    assert commit.metadata["board_edit_operation"] == "replace_document"
+    assert commit.metadata["target_scope"] == "whole_document"
+    assert commit.metadata["board_task_route"] == "edit"
+    assert commit.metadata["board_task_cleared"] is True
+    assert commit.metadata["board_task_decision"]["target_scope"] == "whole_document"
+    assert commit.metadata["resolved_focus"]["match_id"] == f"whole_document:{lesson.board_document.id}"
+    assert "全文改写后的目标段落" in updated_lesson.board_document.content_text
+
+
+def test_board_task_edit_whole_document_recent_focus_metadata_uses_changed_section(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace, lesson_id = _workspace_with_existing_board()
+    lesson = workspace.packages[0].lessons[-1]
+    store = _store_with_workspace(tmp_path, workspace, name="edit_whole_document_recent_focus")
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    _patch_whole_document_edit_route(monkeypatch)
+    monkeypatch.setattr(
+        chatbot_module,
+        "edit_existing_document",
+        lambda **kwargs: _whole_document_success_outcome(lesson, changed_text="精确改写后的目标段落。"),
+    )
+
+    response = chat_service.process_chat_on_lesson(
+        lesson_id,
+        ChatRequest(message="请把整个板书整体改写"),
+        user_id=TEST_USER_ID,
+    )
+
+    commit = response.course_package.lessons[-1].history_graph.commits[-1]
+    resolved_focus = commit.metadata["resolved_focus"]
+    recent_focus = commit.metadata["recent_board_edit_focus"]
+
+    assert resolved_focus["match_id"] == f"whole_document:{lesson.board_document.id}"
+    assert recent_focus is not None
+    assert recent_focus["match_id"].startswith("recent:")
+    assert not recent_focus["match_id"].startswith("whole_document:")
+    assert recent_focus["heading_path"] == ["已有板书", "目标范围"]
+    assert recent_focus["excerpt"] == "精确改写后的目标段落。"
+    assert recent_focus["display_label"] == "已有板书 / 目标范围"
+    assert recent_focus["score_breakdown"] == {"recent_board_edit_focus": 0.95}
 
 
 def test_board_task_edit_failure_trace_records_failure_after_durable_event(
