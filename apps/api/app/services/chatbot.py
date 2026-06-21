@@ -83,6 +83,10 @@ from app.services.chat.paths.generation_resource_prompt import (
     GenerationResourcePromptDependencies,
     handle_generation_resource_prompt,
 )
+from app.services.chat.paths.generation_api_start import (
+    GenerationApiStartDependencies,
+    handle_generation_api_start,
+)
 from app.services.chat.paths.initial_guidance import InitialGuidanceDependencies, handle_initial_guidance
 from app.services.chat.paths.ready_requirement_generation import (
     ReadyRequirementGenerationDependencies,
@@ -1215,6 +1219,27 @@ def _board_task_missing_fields_deps() -> BoardTaskMissingFieldsDependencies:
         board_task_metadata=_board_task_metadata,
         build_clarification_message=_generate_board_task_clarification_message,
         normalize_package_state=workspace_state.normalize_package_state,
+        save_workspace_for_user=_save_workspace_for_user,
+        build_response=_response,
+    )
+
+
+def _generation_api_start_deps() -> GenerationApiStartDependencies:
+    return GenerationApiStartDependencies(
+        latest_learning_clarification=_latest_learning_clarification,
+        with_task_details=_with_task_details,
+        prepare_initial_requirement_for_board_generation=_prepare_initial_requirement_for_board_generation,
+        checkpoint_initial_requirement_before_generation=_checkpoint_initial_requirement_before_generation,
+        generate_from_requirements=generate_from_requirements,
+        refresh_lesson_runtime=refresh_lesson_runtime,
+        build_board_teaching_guide=build_board_teaching_guide,
+        post_initial_board_generation_message=_post_initial_board_generation_message,
+        commit_operations=commit_operations,
+        clear_task_requirements=_clear_task_requirements,
+        board_document_failure_metadata=_board_document_failure_metadata,
+        board_document_quality_metadata=_board_document_quality_metadata,
+        requirement_history_metadata=_requirement_history_metadata,
+        task_metadata=_task_metadata,
         save_workspace_for_user=_save_workspace_for_user,
         build_response=_response,
     )
@@ -3745,7 +3770,27 @@ def _chat_response(
     if initial_learning_work_mode_response is not None:
         return initial_learning_work_mode_response
 
-    if request.board_generation_action == "start":
+    if (
+        document_empty
+        and request.board_generation_action == "start"
+        and request.resource_reference_action is None
+        and resource_resolution.reference_prompt is None
+    ):
+        return handle_generation_api_start(
+            workspace=workspace,
+            package=package,
+            lesson=lesson,
+            user_id=user_id,
+            request=request,
+            requirements=requirements,
+            resource_summary=_resource_summary(visible_package.resources),
+            selected_reference=selected_reference,
+            requirement_history=requirement_history,
+            track_initial_requirement_run=track_initial_requirement_run,
+            deps=_generation_api_start_deps(),
+        )
+
+    if request.board_generation_action == "start" and not document_empty:
         learning_clarification = _latest_learning_clarification(lesson, requirements=requirements)
         requirements = _with_task_details(
             requirements,
@@ -3777,83 +3822,14 @@ def _chat_response(
             requirement_run_id=frozen_requirement.run_id if frozen_requirement else None,
             frozen_requirement_version_id=frozen_requirement.version_id if frozen_requirement else None,
         )
-        chatbot_message = edit_outcome.chatbot_message
-        if not edit_outcome.changed:
-            failed_stamp = (
-                requirement_history.generation_failed(
-                    reason=edit_outcome.summary or chatbot_message,
-                    metadata=_board_document_failure_metadata(edit_outcome),
-                )
-                if frozen_requirement is not None
-                else None
+        failed_stamp = (
+            requirement_history.generation_failed(
+                reason=edit_outcome.summary or edit_outcome.chatbot_message,
+                metadata=_board_document_failure_metadata(edit_outcome),
             )
-            workspace_state.normalize_package_state(package)
-            _save_workspace_for_user(
-                user_id=user_id,
-                workspace=workspace,
-                requirement_history=requirement_history,
-            )
-            return _response(
-                workspace=workspace,
-                package=package,
-                lesson=lesson,
-                chatbot_message=chatbot_message,
-                requirements=requirements,
-                learning_clarification=learning_clarification,
-                board_decision=edit_outcome.board_decision,
-                requirement_stamp=failed_stamp,
-                board_document_operation_status=edit_outcome.operation_status,
-                board_document_operation_failure_reason=edit_outcome.failure_reason,
-            )
-        if edit_outcome.changed:
-            refresh_lesson_runtime(lesson, document=edit_outcome.new_document, requirements=requirements)
-            lesson.board_teaching_guide = build_board_teaching_guide(lesson)
-            lesson.board_teaching_progress = None
-            chatbot_message, chatbot_message_source = _post_initial_board_generation_message(
-                lesson=lesson,
-                requirements=requirements,
-                learning_clarification=learning_clarification,
-                resource_summary=_resource_summary(visible_package.resources),
-                edit_outcome=edit_outcome,
-            )
-        requirement_cleared = edit_outcome.changed
-        metadata = {
-            "kind": "board_document_generation",
-            "user_message": request.message,
-            "assistant_message": chatbot_message,
-            "assistant_message_source": chatbot_message_source,
-            "board_editor_message": edit_outcome.chatbot_message,
-            "board_generation_action": request.board_generation_action,
-            "board_edit_operation": edit_outcome.operation,
-            "board_edit_summary": edit_outcome.summary,
-            "board_section_titles": edit_outcome.section_titles,
-            **_board_document_quality_metadata(edit_outcome),
-            **_requirement_history_metadata(
-                frozen_requirement,
-                run_status_after_commit="consumed" if frozen_requirement is not None else None,
-            ),
-            **_task_metadata(
-                requirements=requirements,
-                learning_clarification=learning_clarification,
-                requirement_cleared=requirement_cleared,
-            ),
-        }
-
-        commit_operations(
-            lesson,
-            [],
-            label="Board document generation",
-            message="Generated board document from the learning requirement sheet",
-            new_document=lesson.board_document,
-            metadata=metadata,
-        )
-        consumed_stamp = (
-            requirement_history.consume(commit_id=lesson.history_graph.commits[-1].id)
             if frozen_requirement is not None
             else None
         )
-        if requirement_cleared:
-            _clear_task_requirements(lesson)
         workspace_state.normalize_package_state(package)
         _save_workspace_for_user(
             user_id=user_id,
@@ -3864,12 +3840,11 @@ def _chat_response(
             workspace=workspace,
             package=package,
             lesson=lesson,
-            chatbot_message=chatbot_message,
+            chatbot_message=edit_outcome.chatbot_message,
             requirements=requirements,
             learning_clarification=learning_clarification,
             board_decision=edit_outcome.board_decision,
-            requirement_cleared=requirement_cleared,
-            requirement_stamp=consumed_stamp,
+            requirement_stamp=failed_stamp,
             board_document_operation_status=edit_outcome.operation_status,
             board_document_operation_failure_reason=edit_outcome.failure_reason,
         )
