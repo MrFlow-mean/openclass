@@ -6,7 +6,7 @@
 
 本文不是工程架构文档，也不是 README（项目说明文档）。README 面向安装、运行和公开介绍；AGENTS.md 面向工程协作规则；本文面向产品决策。
 
-## 2. 产品一句话
+## 2. 产品概述
 
 OpenClass 是面向严肃工作者的 AI document workspace（AI 文档工作台）：用 AI conversation（AI 对话）理解工作需求，用 AI document writing（AI 文档编写）沉淀成果，并支持用户围绕文档继续讲解、编辑、扩写、改写和复盘。
 
