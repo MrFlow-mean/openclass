@@ -35,10 +35,8 @@ from app.services.openai_course_ai import (
     openai_course_ai,
 )
 from app.services.resource_library import _epub_section_body_score, build_resource_item, extract_reference_context
-from app.services.resource_resolver import resolve_resource_reference
 from app.services.resource_visual_evidence import augment_document_with_resource_visual_evidence
 from app.services.board_segment_index import build_board_segment_index
-from app.services.board_task_manager import normalize_board_task_sheet
 from app.services.rich_document import (
     build_document,
     document_to_markdown,
@@ -776,44 +774,6 @@ def test_segment_resolver_maps_unverified_task_excerpt_to_real_segment() -> None
     assert resolution.evidence.candidates[0].source == "task_location_exact"
 
 
-def test_board_task_normalization_downgrades_unverified_target_location() -> None:
-    sheet = BoardTaskRequirementSheet(
-        target_hint="Sophie 第二句",
-        target_location=BoardFocusRef(excerpt="Sophie: Moi, je savais que je voudrais commander un café crème."),
-        location_status="resolved",
-        requested_action="explain",
-        question_or_topic="这句话是什么意思",
-        progress=100,
-        missing_items=[],
-    )
-
-    normalized = normalize_board_task_sheet(sheet)
-
-    assert normalized.target_location is not None
-    assert normalized.target_location.excerpt.startswith("Sophie:")
-    assert normalized.location_status == "missing"
-    assert normalized.progress == 100
-    assert normalized.missing_items == []
-
-
-def test_board_task_normalization_keeps_ambiguous_write_location_incomplete() -> None:
-    sheet = BoardTaskRequirementSheet(
-        target_hint="",
-        target_location=None,
-        location_status="ambiguous",
-        requested_action="write",
-        question_or_topic="扩写某个已有内容主题的更多说明",
-        progress=100,
-        missing_items=[],
-    )
-
-    normalized = normalize_board_task_sheet(sheet)
-
-    assert normalized.progress == 75
-    assert "目标位置" in normalized.missing_items
-    assert normalized.clarification_question
-
-
 def _collect_node_types(node: dict) -> list[str]:
     node_type = node.get("type")
     result = [node_type] if isinstance(node_type, str) else []
@@ -1304,26 +1264,6 @@ def test_resource_source_unit_model_keeps_source_location_metadata() -> None:
 
     assert unit.page_no == 3
     assert unit.metadata["origin"] == "content_list"
-
-
-def test_resource_resolver_selects_relevant_uploaded_chapter(tmp_path) -> None:
-    resource_path = tmp_path / "resource.md"
-    resource_path.write_text(
-        "# 第一章\n这是第一章正文，解释资料里的核心概念。\n\n## 第二节\n这里是其他材料。",
-        encoding="utf-8",
-    )
-    resource = build_resource_item(resource_path, "resource.md")
-
-    resolution = resolve_resource_reference(
-        resources=[resource],
-        user_message="根据上传资料讲一下第一章",
-        allow_direct_reference=True,
-    )
-
-    assert resolution.selected_reference is not None
-    assert resolution.selected_reference.chapter_title == "第一章"
-    assert "第一章正文" in resolution.selected_reference.full_text
-    assert resolution.matches
 
 
 def test_resource_reference_context_selects_visual_evidence_from_chapter_assets(tmp_path) -> None:

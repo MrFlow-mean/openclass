@@ -72,55 +72,6 @@ def save_workspace_for_user(user_id: str, workspace: WorkspaceState) -> None:
     get_store().save_for_user(user_id, workspace)
 
 
-def save_workspace_for_user_with_requirement_history(
-    user_id: str,
-    workspace: WorkspaceState,
-    requirement_history_operations: list[dict[str, object]],
-    board_task_history_operations: list[dict[str, object]] | None = None,
-) -> None:
-    get_store().save_for_user_with_requirement_history(
-        user_id,
-        workspace,
-        requirement_history_operations,
-        board_task_history_operations,
-    )
-
-
-def save_workspace_for_user_with_histories(
-    user_id: str,
-    workspace: WorkspaceState,
-    *,
-    requirement_history_operations: list[dict[str, object]] | None = None,
-    board_task_history_operations: list[dict[str, object]] | None = None,
-) -> None:
-    get_store().save_for_user_with_histories(
-        user_id,
-        workspace,
-        requirement_history_operations=requirement_history_operations,
-        board_task_history_operations=board_task_history_operations,
-    )
-
-
-def load_learning_requirement_history_state_for_user(
-    user_id: str,
-    lesson_id: str,
-) -> dict[str, object] | None:
-    return get_store().load_learning_requirement_history_state(
-        owner_user_id=user_id,
-        lesson_id=lesson_id,
-    )
-
-
-def load_board_task_history_state_for_user(
-    user_id: str,
-    lesson_id: str,
-) -> dict[str, object] | None:
-    return get_store().load_board_task_history_state(
-        owner_user_id=user_id,
-        lesson_id=lesson_id,
-    )
-
-
 def search_document_segments_for_user(
     user_id: str,
     query: str = "",

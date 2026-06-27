@@ -1,38 +1,31 @@
 ## Service-layer architecture rules
 
-The service layer must not keep growing `chatbot.py`.
+The previous Chatbot/product workflow runtime has been removed on purpose.
+Do not reintroduce it by restoring old route gates, board-task managers,
+requirement-history runners, interaction-session handlers, or workflow traces.
 
 ### chatbot.py rules
 
-`chatbot.py` is an orchestrator. It may:
-- create turn context
-- call intent/decision/resolver/planner/executor modules
-- persist history
-- build responses
+`chatbot.py` is the temporary reset entrypoint. It may:
+- load the lesson workspace context
+- ask the text model for a short learner-facing reply
+- record a chat commit
+- clear legacy active workflow state
+- build a backward-compatible `ChatResponse`
 
 `chatbot.py` must not:
-- add new intent regexes
-- add new sequence-planning rules
-- add new target-location heuristics
-- add new document quality heuristics
-- directly modify rich document structure except through BoardEditor/document services
+- write or edit the right-side document
+- infer product workflow routes
+- create new requirement or board-task state machines
+- add subject, textbook, exam, or demo branches
+- become the place where the next workflow architecture grows
 
 ### Where new logic belongs
 
-- User phrase recognition -> `turn_intent.py`
-- Board task action selection -> `board_task_decider.py`
-- BoardTaskRequirementSheet normalization -> `board_task_manager.py`
-- Board target location -> `segment_resolver.py` or target resolver modules
-- Sequential explanation planning -> `sequence_planner.py`
-- Exercise/paragraph atom splitting -> `explanation_atoms.py` or atom extractors
-- Document edit safety -> board document quality gate/editor service
+The next product workflow needs a new design before code is added. Add new
+modules only after naming the state object, role boundary, write authority, and
+history/audit contract for that module.
 
-### Refactor rule
-
-When touching `chatbot.py`, Codex must answer:
-
-1. Is this new logic better placed in a smaller module?
-2. Is there a fixture covering the old and new behavior?
-3. Does this change reduce or increase `chatbot.py` responsibility?
-
-If responsibility increases, stop and propose a smaller design.
+Until that design lands, the default service behavior is intentionally narrow:
+chat turns are recorded, documents are not mutated, and no old workflow state is
+created.
