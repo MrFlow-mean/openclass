@@ -7,7 +7,6 @@ from app.services import workspace_state
 from app.services.board_document_sensor import detect_board_document_state
 from app.services.chat_service import process_chat_on_lesson
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
-from app.services.learning_purpose_detector import LearningPurposeDetection
 from app.services.lesson_factory import create_empty_lesson
 from app.services.rich_document import build_document
 from app.services.openai_course_ai import ChatbotReply, OpenAICourseAI, openai_course_ai
@@ -50,14 +49,6 @@ def test_basic_chat_prompt_gets_board_sensor_without_board_workflow(monkeypatch:
             "chatbot_context": "当前右侧板书/文档框为空。",
             "content_visibility": "status_only",
         },
-        learning_purpose_detection={
-            "has_learning_purpose": False,
-            "needs_guidance": False,
-            "guidance_direction": "none",
-            "known_purpose": "",
-            "missing_piece": "",
-            "reason": "用户只是寒暄。",
-        },
         user_message="帮我解释一下这个概念",
     )
 
@@ -72,14 +63,6 @@ def test_basic_chat_prompt_gets_board_sensor_without_board_workflow(monkeypatch:
         "is_empty": True,
         "chatbot_context": "当前右侧板书/文档框为空。",
         "content_visibility": "status_only",
-    }
-    assert payload["learning_purpose_detection"] == {
-        "has_learning_purpose": False,
-        "needs_guidance": False,
-        "guidance_direction": "none",
-        "known_purpose": "",
-        "missing_piece": "",
-        "reason": "用户只是寒暄。",
     }
     assert payload["user_message"] == "帮我解释一下这个概念"
     assert "lesson_title" not in payload
@@ -121,15 +104,6 @@ def test_process_chat_on_lesson_records_basic_chat_without_document_change(
     lesson = _seed_workspace(store)
     captured: dict[str, object] = {}
 
-    monkeypatch.setattr(
-        openai_course_ai,
-        "generate_learning_purpose_detection",
-        lambda **kwargs: LearningPurposeDetection(
-            has_learning_purpose=False,
-            reason="用户没有表达学习目的。",
-        ),
-    )
-
     def _fake_basic_reply(**kwargs):
         captured.update(kwargs)
         return ChatbotReply(chatbot_message="这是一个普通聊天回答。")
@@ -157,14 +131,6 @@ def test_process_chat_on_lesson_records_basic_chat_without_document_change(
             "chatbot_context": "当前右侧板书/文档框不是空的，里面已有内容。",
             "content_visibility": "status_only",
         },
-        "learning_purpose_detection": {
-            "has_learning_purpose": False,
-            "needs_guidance": False,
-            "guidance_direction": "none",
-            "known_purpose": "",
-            "missing_piece": "",
-            "reason": "用户没有表达学习目的。",
-        },
         "user_message": "你现在能正常问答吗？",
     }
     saved = store.load_for_user(TEST_USER_ID)
@@ -180,14 +146,6 @@ def test_process_chat_on_lesson_records_basic_chat_without_document_change(
         "chatbot_context": "当前右侧板书/文档框不是空的，里面已有内容。",
         "content_visibility": "status_only",
     }
-    assert commit.metadata["learning_purpose_detection"] == {
-        "has_learning_purpose": False,
-        "needs_guidance": False,
-        "guidance_direction": "none",
-        "known_purpose": "",
-        "missing_piece": "",
-        "reason": "用户没有表达学习目的。",
-    }
     assert commit.metadata["basic_chat_only"] is True
     assert commit.metadata["document_changed"] is False
 
@@ -200,12 +158,6 @@ def test_basic_chat_detects_latest_board_document_state_each_turn(
     monkeypatch.setattr(workspace_state, "STORE", store)
     lesson = _seed_workspace(store, content_text="")
     captured_states: list[dict[str, object]] = []
-
-    monkeypatch.setattr(
-        openai_course_ai,
-        "generate_learning_purpose_detection",
-        lambda **kwargs: LearningPurposeDetection(has_learning_purpose=False),
-    )
 
     def _fake_basic_reply(**kwargs):
         captured_states.append(kwargs["board_document_state"])
@@ -229,52 +181,3 @@ def test_basic_chat_detects_latest_board_document_state_each_turn(
     )
 
     assert [state["status"] for state in captured_states] == ["empty", "non_empty"]
-
-
-def test_basic_chat_receives_skill_practice_guidance_detection(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path,
-) -> None:
-    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
-    monkeypatch.setattr(workspace_state, "STORE", store)
-    lesson = _seed_workspace(store, content_text="")
-    captured: dict[str, object] = {}
-
-    monkeypatch.setattr(
-        openai_course_ai,
-        "generate_learning_purpose_detection",
-        lambda **kwargs: LearningPurposeDetection(
-            has_learning_purpose=True,
-            needs_guidance=True,
-            guidance_direction="skill_practice",
-            known_purpose="想基于已有基础练习一项技能",
-            missing_piece="还不清楚当前水平、练习方式和目标标准",
-            reason="用户表达了练习意图，但目标仍需收束。",
-        ),
-    )
-
-    def _fake_basic_reply(**kwargs):
-        captured.update(kwargs)
-        return ChatbotReply(chatbot_message="可以，我们先把你想练的具体技能和练习方式定下来。")
-
-    monkeypatch.setattr(openai_course_ai, "generate_basic_chat_reply", _fake_basic_reply)
-
-    response = process_chat_on_lesson(
-        lesson.id,
-        ChatRequest(message="我有一点基础，想练一下，但不知道怎么练"),
-        user_id=TEST_USER_ID,
-    )
-
-    assert response.chatbot_message == "可以，我们先把你想练的具体技能和练习方式定下来。"
-    assert captured["learning_purpose_detection"] == {
-        "has_learning_purpose": True,
-        "needs_guidance": True,
-        "guidance_direction": "skill_practice",
-        "known_purpose": "想基于已有基础练习一项技能",
-        "missing_piece": "还不清楚当前水平、练习方式和目标标准",
-        "reason": "用户表达了练习意图，但目标仍需收束。",
-    }
-    saved = store.load_for_user(TEST_USER_ID)
-    commit = saved.packages[0].lessons[0].history_graph.commits[-1]
-    assert commit.metadata["learning_purpose_detection"]["guidance_direction"] == "skill_practice"
-    assert commit.metadata["document_changed"] is False
