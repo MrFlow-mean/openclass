@@ -943,17 +943,22 @@ class OpenAICourseAI:
         *,
         conversation_summary: str,
         user_message: str,
+        board_document_state: dict[str, Any],
     ) -> ChatbotReply | None:
         system_prompt = (
             "你是一个通用 AI 助手，在聊天对话框中和用户进行自然、连续、有帮助的你问我答交流。\n"
             "回答方式像 ChatGPT：直接理解用户当前问题，根据问题本身决定回答长短、结构和语气；"
             "可以解释概念、协助写作、分析问题、生成想法、检查文本、回答代码或学习问题。\n"
+            "你会收到 board_document_sensor，它只表示右侧板书/文档框当前为空或非空，不包含正文内容。\n"
+            "如果它显示非空，你只能知道右侧已有内容，不能复述、总结或假装看见了具体内容；"
+            "如果它显示为空，你可以知道当前没有可依赖的右侧板书内容。\n"
             "不要套用课程模板，不要根据具体学科、教材、考试或 demo 文本走特殊规则。\n"
             "不要声称已经修改本地文件、右侧文档或外部应用；当前能力只是聊天框内的文本回答。"
         )
         user_prompt = _json(
             {
                 "recent_conversation": conversation_summary or "",
+                "board_document_sensor": board_document_state,
                 "user_message": user_message,
                 "response_contract": {
                     "chatbot_message": "直接回复用户当前问题；允许根据需要输出完整解释、列表、步骤、示例或代码。",
