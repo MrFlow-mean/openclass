@@ -49,6 +49,27 @@ def test_new_learning_recommends_entry_points_without_using_domain_as_target() -
     assert all(candidate.reason for candidate in candidates)
 
 
+def test_broad_new_learning_builds_domain_map_and_learning_plan_options() -> None:
+    requirement = build_learning_requirement_from_detection(
+        "我想学一个新领域，从零开始，为了解决工作项目里的问题",
+        LearningPurposeDetection(
+            has_learning_purpose=True,
+            needs_guidance=True,
+            need_kind="new_knowledge",
+            known_purpose="为了解决工作项目里的问题",
+        ),
+    )
+
+    assert requirement.learning_mode == "new_learning"
+    assert requirement.new_learning.current_level == "零基础"
+    assert requirement.new_learning.application_scenario == "解决工作项目里的问题"
+    assert requirement.new_learning.problem_to_solve == "工作项目里的问题"
+    assert len(requirement.new_learning.domain_map) >= 3
+    assert len(requirement.new_learning.learning_plan_options) >= 3
+    assert requirement.new_learning.guidance_prompts
+    assert should_start_teaching(requirement) is False
+
+
 def test_refiner_advances_previous_requirement_without_losing_domain() -> None:
     previous = build_learning_requirement_from_detection(
         "我想学高等数学",

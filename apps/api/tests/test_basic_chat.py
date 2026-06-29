@@ -82,8 +82,14 @@ def test_basic_chat_prompt_gets_board_sensor_without_board_workflow(monkeypatch:
                 "motivation_trigger": "",
                 "desired_output": "",
                 "current_background": "",
+                "current_level": "",
+                "application_scenario": "",
+                "problem_to_solve": "",
                 "target_knowledge_point": "",
                 "candidate_entry_points": [],
+                "domain_map": [],
+                "learning_plan_options": [],
+                "guidance_prompts": [],
                 "selected_entry_point": "",
                 "reason_for_recommendation": "",
             },
@@ -112,6 +118,8 @@ def test_basic_chat_prompt_gets_board_sensor_without_board_workflow(monkeypatch:
     assert result == ChatbotReply(chatbot_message="可以，我们就正常聊天。")
     assert captured["role"] == "chatbot"
     assert "像 ChatGPT" in captured["system_prompt"]
+    assert "domain_map" in captured["system_prompt"]
+    assert "learning_plan_options" in captured["system_prompt"]
     assert "directive" not in captured["system_prompt"]
     payload = json.loads(captured["user_prompt"])
     assert payload["recent_conversation"] == "user: 你好"
@@ -232,8 +240,14 @@ def test_process_chat_on_lesson_records_basic_chat_without_document_change(
                 "motivation_trigger": "",
                 "desired_output": "",
                 "current_background": "",
+                "current_level": "",
+                "application_scenario": "",
+                "problem_to_solve": "",
                 "target_knowledge_point": "",
                 "candidate_entry_points": [],
+                "domain_map": [],
+                "learning_plan_options": [],
+                "guidance_prompts": [],
                 "selected_entry_point": "",
                 "reason_for_recommendation": "",
             },
