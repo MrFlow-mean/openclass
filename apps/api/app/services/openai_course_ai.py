@@ -56,6 +56,7 @@ from app.services.ai_model_catalog import (
 )
 from app.services.codex_app_server import CodexAppServerTextClient, codex_provider_status
 from app.services.config import load_root_dotenv
+from app.services.learning_purpose_detector import LearningPurposeDetection
 
 logger = logging.getLogger(__name__)
 _URLLIB_SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
@@ -944,6 +945,7 @@ class OpenAICourseAI:
         conversation_summary: str,
         user_message: str,
         board_document_state: dict[str, Any],
+        learning_purpose_detection: dict[str, Any],
     ) -> ChatbotReply | None:
         system_prompt = (
             "你是一个通用 AI 助手，在聊天对话框中和用户进行自然、连续、有帮助的你问我答交流。\n"
@@ -952,6 +954,15 @@ class OpenAICourseAI:
             "你会收到 board_document_sensor，它只表示右侧板书/文档框当前为空或非空，不包含正文内容。\n"
             "如果它显示非空，你只能知道右侧已有内容，不能复述、总结或假装看见了具体内容；"
             "如果它显示为空，你可以知道当前没有可依赖的右侧板书内容。\n"
+            "你还会收到 learning_purpose_detection，它只控制本轮聊天框回复方式：\n"
+            "1. has_learning_purpose=false 时，像 ChatGPT 一样正常聊天，不启动学习工作链路。\n"
+            "2. needs_guidance=true 且 guidance_direction=knowledge_point 时，说明用户从笼统模糊的目的、领域或方向出发，"
+            "你要逐渐帮助用户把范围收束到一个明确知识点；本轮只问一个关键问题，并可给 2-3 个可选聚焦方向。\n"
+            "3. needs_guidance=true 且 guidance_direction=skill_practice 时，说明用户想基于已有知识基础或当前水平练习某项能力，"
+            "你要逐渐了解用户当前水平，并帮助用户说清楚要练的具体技能、练习方式和目标标准；"
+            "本轮只问一个关键问题，并可给 2-3 个练习方向。\n"
+            "4. has_learning_purpose=true 但 needs_guidance=false 时，只自然确认你理解了用户目的；"
+            "具体生成、写入、讲解和练习执行链路现在都不要启动。\n"
             "不要套用课程模板，不要根据具体学科、教材、考试或 demo 文本走特殊规则。\n"
             "不要声称已经修改本地文件、右侧文档或外部应用；当前能力只是聊天框内的文本回答。"
         )
@@ -959,6 +970,7 @@ class OpenAICourseAI:
             {
                 "recent_conversation": conversation_summary or "",
                 "board_document_sensor": board_document_state,
+                "learning_purpose_detection": learning_purpose_detection,
                 "user_message": user_message,
                 "response_contract": {
                     "chatbot_message": "直接回复用户当前问题；允许根据需要输出完整解释、列表、步骤、示例或代码。",
@@ -972,6 +984,53 @@ class OpenAICourseAI:
             schema=ChatbotReply,
         )
         return result if isinstance(result, ChatbotReply) else None
+
+    def generate_learning_purpose_detection(
+        self,
+        *,
+        conversation_summary: str,
+        user_message: str,
+        board_document_state: dict[str, Any],
+    ) -> LearningPurposeDetection | None:
+        system_prompt = (
+            "你是 OpenClass 聊天框的学习目的检测器，只判断用户当前是否表达了学习工作目的，"
+            "以及是否需要先引导用户把目的说具体。\n"
+            "你不执行学习任务，不生成板书，不改写文档，不调用资料，不给完整课程内容。\n"
+            "判断依据必须是通用表达结构，而不是具体学科、教材、考试、语言、demo 文本或关键词。\n"
+            "输出规则：\n"
+            "1. 如果用户只是寒暄、闲聊、情绪表达、普通问答、写作/代码/生活类求助，且没有表达学习工作目的，"
+            "has_learning_purpose=false，needs_guidance=false，guidance_direction=none。\n"
+            "2. 如果用户表达想学某个笼统模糊的目的、领域、方向、主题或知识范围，但还没有具体到可学习的知识点，"
+            "has_learning_purpose=true，needs_guidance=true，guidance_direction=knowledge_point。\n"
+            "3. 如果用户表达自己已有一定基础，或想在现有基础上练习、提升、应用、巩固某项能力，"
+            "但当前水平、练什么、怎么练、目标标准还不清楚，"
+            "has_learning_purpose=true，needs_guidance=true，guidance_direction=skill_practice。\n"
+            "4. 如果用户已经表达了足够明确的学习目的，has_learning_purpose=true，needs_guidance=false，"
+            "guidance_direction=none；具体执行后续再说，不在这里处理。\n"
+            "不要因为出现某个领域词就直接判定；要看用户是否在表达学习目的和目的是否足够具体。"
+        )
+        user_prompt = _json(
+            {
+                "recent_conversation": conversation_summary or "",
+                "board_document_sensor": board_document_state,
+                "user_message": user_message,
+                "response_contract": {
+                    "has_learning_purpose": "用户是否表达了学习工作目的。",
+                    "needs_guidance": "是否需要先引导用户把学习目的说具体。",
+                    "guidance_direction": "none、knowledge_point 或 skill_practice。",
+                    "known_purpose": "已经能确定的用户学习目的；没有则为空。",
+                    "missing_piece": "最关键缺失信息；不需要引导则为空。",
+                    "reason": "简短说明判断依据。",
+                },
+            }
+        )
+        result = self._parse(
+            "chatbot",
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            schema=LearningPurposeDetection,
+        )
+        return result if isinstance(result, LearningPurposeDetection) else None
 
     def generate_chatbot_reply(
         self,
