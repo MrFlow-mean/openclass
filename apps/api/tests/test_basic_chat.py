@@ -89,7 +89,6 @@ def test_basic_chat_prompt_gets_board_sensor_without_board_workflow(monkeypatch:
             },
             "practice_old_skill": {
                 "practice_content": "",
-                "practice_scenario": "",
                 "current_level": "",
                 "weak_points": [],
                 "practice_goal": "",
@@ -239,7 +238,6 @@ def test_process_chat_on_lesson_records_basic_chat_without_document_change(
             },
             "practice_old_skill": {
                 "practice_content": "",
-                "practice_scenario": "",
                 "current_level": "",
                 "weak_points": [],
                 "practice_goal": "",

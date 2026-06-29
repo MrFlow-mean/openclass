@@ -15,7 +15,6 @@ RefinementStatus = Literal[
     "resolving_target_knowledge_point",
     "recommending_entry_points",
     "collecting_practice_content",
-    "collecting_practice_scenario",
     "diagnosing_current_level",
     "ready_to_teach",
 ]
@@ -73,7 +72,6 @@ class NewLearningRequirement(BaseModel):
 
 class PracticeOldSkillRequirement(BaseModel):
     practice_content: str = ""
-    practice_scenario: str = ""
     current_level: str = ""
     weak_points: list[str] = Field(default_factory=list)
     practice_goal: str = ""
@@ -143,11 +141,8 @@ def update_learning_requirement(
         updated.learning_mode = infer_learning_mode(user_message, updated)
     if not updated.domain:
         updated.domain = extract_domain(user_message)
-    if updated.learning_mode == "practice_old_skill":
-        if not updated.practice_old_skill.practice_content:
-            updated.practice_old_skill.practice_content = extract_practice_content(user_message)
-        if not updated.practice_old_skill.practice_scenario:
-            updated.practice_old_skill.practice_scenario = extract_practice_scenario(user_message)
+    if updated.learning_mode == "practice_old_skill" and not updated.practice_old_skill.practice_content:
+        updated.practice_old_skill.practice_content = extract_practice_content(user_message)
 
     updated.status = determine_status(updated)
     if updated.status == "recommending_entry_points" and not updated.new_learning.candidate_entry_points:
@@ -192,25 +187,10 @@ def extract_domain(user_message: str) -> str:
 
 def extract_practice_content(user_message: str) -> str:
     text = _compact(user_message)
-    text = re.split(r"[，,。；;]|为了|以便|因为|但是|但|用于|用来|面向|应对|准备", text, maxsplit=1)[0]
+    text = re.split(r"[，,。；;]|为了|因为|但是|但", text, maxsplit=1)[0]
     text = re.sub(r"^(我|俺|本人)?(现在|最近)?(想|想要|希望|打算|准备)?", "", text)
     text = re.sub(r"^(练习|练|复习|巩固|刷|做)", "", text)
     return text[:50]
-
-
-def extract_practice_scenario(user_message: str) -> str:
-    text = _compact(user_message)
-    patterns = (
-        r"(?:为了|以便|用于|用来|面向|应对|准备)(.+)$",
-        r"(?:在|到)(.+?)(?:场景|时候|时)(?:用|使用|练|练习|表达|应用)?.*$",
-    )
-    for pattern in patterns:
-        match = re.search(pattern, text)
-        if match:
-            scenario = re.split(r"[，,。；;]", match.group(1), maxsplit=1)[0].strip()
-            scenario = re.sub(r"^(练习|练|复习|巩固|刷|做|用|使用|应用)", "", scenario).strip()
-            return scenario[:50]
-    return ""
 
 
 def get_missing_required_slots(requirement: LearningRequirement) -> list[str]:
@@ -226,8 +206,6 @@ def get_missing_required_slots(requirement: LearningRequirement) -> list[str]:
     missing = []
     if not requirement.practice_old_skill.practice_content:
         missing.append("practice_content")
-    if not requirement.practice_old_skill.practice_scenario:
-        missing.append("practice_scenario")
     if not (requirement.practice_old_skill.current_level or requirement.practice_old_skill.diagnostic_results):
         missing.append("current_level")
     return missing
@@ -246,8 +224,6 @@ def generate_next_refinement_question(requirement: LearningRequirement) -> str:
     if requirement.learning_mode == "practice_old_skill":
         if not requirement.practice_old_skill.practice_content:
             return "你想具体练哪一块？比如基础概念、规则题、应用题、综合题、代码实现、表达讲解。"
-        if not requirement.practice_old_skill.practice_scenario:
-            return "你练这个主要面向什么场景？比如考试、工作项目、面试、旅行沟通、日常表达，还是解决某个具体任务？"
         if not (requirement.practice_old_skill.current_level or requirement.practice_old_skill.diagnostic_results):
             return "你现在大概是什么水平？完全没学过、学过一点、能做基础题，还是想提高速度和熟练度？"
     return ""
@@ -318,7 +294,6 @@ def should_start_teaching(requirement: LearningRequirement) -> bool:
     if requirement.learning_mode == "practice_old_skill":
         return bool(
             requirement.practice_old_skill.practice_content
-            and requirement.practice_old_skill.practice_scenario
             and (requirement.practice_old_skill.current_level or requirement.practice_old_skill.diagnostic_results)
         )
     return False
@@ -336,12 +311,10 @@ def build_teaching_contract(requirement: LearningRequirement) -> str:
             "接下来我会用：解释 → 示例 → 你尝试 → 反馈 → 小测 的方式带你完成。"
         )
     target = requirement.practice_old_skill.practice_content
-    scenario = requirement.practice_old_skill.practice_scenario
-    reason = f"你已经明确了练习内容、面向场景和当前水平，适合进入面向“{scenario}”的针对性练习。"
-    desired = requirement.practice_old_skill.practice_goal or f"更稳定地在“{scenario}”中完成“{target}”相关任务，并知道自己的薄弱点。"
+    reason = "你已经明确了练习内容和当前水平，适合进入针对性练习。"
+    desired = requirement.practice_old_skill.practice_goal or f"更稳定地完成“{target}”相关任务，并知道自己的薄弱点。"
     return (
         f"我们这次先练：{target}\n"
-        f"面向场景：{scenario}\n"
         f"选择这个入口的原因：{reason}\n"
         f"你练完应该能做到：{desired}\n"
         "接下来我会用：解释 → 示例 → 你尝试 → 反馈 → 小测 的方式带你完成。"
@@ -363,8 +336,6 @@ def determine_status(requirement: LearningRequirement) -> RefinementStatus:
         return "ready_to_teach"
     if not requirement.practice_old_skill.practice_content:
         return "collecting_practice_content"
-    if not requirement.practice_old_skill.practice_scenario:
-        return "collecting_practice_scenario"
     return "diagnosing_current_level"
 
 
@@ -395,18 +366,14 @@ def _merge_detection(requirement: LearningRequirement, detection: LearningPurpos
     detected_domain = extract_domain(requirement.raw_user_input)
     if detected_domain and not requirement.domain:
         requirement.domain = detected_domain
+    if detection.known_purpose:
+        requirement.new_learning.learning_purpose = detection.known_purpose
     if requirement.learning_mode == "new_learning":
-        if detection.known_purpose:
-            requirement.new_learning.learning_purpose = detection.known_purpose
         requirement.new_learning.target_knowledge_point = detection.specific_knowledge_point
     if requirement.learning_mode == "practice_old_skill":
         requirement.practice_old_skill.practice_content = detection.specific_practice_content or extract_practice_content(
             requirement.raw_user_input
         )
-        if not requirement.practice_old_skill.practice_scenario:
-            requirement.practice_old_skill.practice_scenario = extract_practice_scenario(
-                requirement.raw_user_input
-            ) or _scenario_from_known_purpose(detection.known_purpose)
         requirement.practice_old_skill.current_level = detection.current_level
 
 
@@ -423,9 +390,6 @@ def _merge_mapping(requirement: LearningRequirement, raw: dict[str, object]) -> 
     practice = raw.get("practiceContent") or raw.get("practice_content")
     if isinstance(practice, str):
         requirement.practice_old_skill.practice_content = practice
-    scenario = raw.get("practiceScenario") or raw.get("practice_scenario")
-    if isinstance(scenario, str):
-        requirement.practice_old_skill.practice_scenario = scenario
     current_level = raw.get("currentLevel") or raw.get("current_level")
     if isinstance(current_level, str):
         requirement.practice_old_skill.current_level = current_level
@@ -441,19 +405,6 @@ def _mode_from_detection(detection: LearningPurposeDetection) -> LearningMode:
 
 def _user_delegates_choice(message: str) -> bool:
     return any(token in message for token in ("你帮我定", "你帮我决定", "你推荐", "你来定", "帮我选"))
-
-
-def _scenario_from_known_purpose(value: str) -> str:
-    text = _compact(value)
-    if not text:
-        return ""
-    extracted = extract_practice_scenario(text)
-    if extracted:
-        return extracted
-    generic_goal_markers = ("练习", "练", "复习", "巩固", "旧知识", "技能", "内容")
-    if any(marker in text for marker in generic_goal_markers):
-        return ""
-    return text[:50]
 
 
 def _compact(value: str) -> str:

@@ -8,7 +8,6 @@ from app.services.learning_requirement_refiner import (
     build_teaching_contract,
     evaluate_diagnostic_answer,
     generate_diagnostic_questions,
-    get_missing_required_slots,
     recommend_entry_points,
     should_start_teaching,
     update_learning_requirement,
@@ -94,7 +93,7 @@ def test_specific_new_knowledge_is_ready_to_teach() -> None:
     assert "我们这次先学：欧姆定律" in requirement.teaching_contract
 
 
-def test_practice_old_skill_asks_scenario_before_diagnostics() -> None:
+def test_practice_old_skill_generates_short_diagnostic_questions() -> None:
     requirement = build_learning_requirement_from_detection(
         "我想练习导数题",
         LearningPurposeDetection(
@@ -109,51 +108,8 @@ def test_practice_old_skill_asks_scenario_before_diagnostics() -> None:
 
     assert requirement.learning_mode == "practice_old_skill"
     assert requirement.practice_old_skill.practice_content == "导数题"
-    assert requirement.practice_old_skill.practice_scenario == ""
-    assert requirement.status == "collecting_practice_scenario"
-    assert "practice_scenario" in get_missing_required_slots(requirement)
-    assert "场景" in requirement.next_question
-    assert requirement.practice_old_skill.diagnostic_questions == []
-
-
-def test_practice_old_skill_records_scenario_before_ready_to_teach() -> None:
-    requirement = build_learning_requirement_from_detection(
-        "我想练习口语，为了出国旅游",
-        LearningPurposeDetection(
-            has_learning_purpose=True,
-            needs_guidance=False,
-            need_kind="skill_practice",
-            guidance_direction="skill_practice",
-            known_purpose="为了出国旅游",
-            specific_practice_content="口语",
-            current_level="能说简单句",
-        ),
-    )
-
-    assert requirement.learning_mode == "practice_old_skill"
-    assert requirement.practice_old_skill.practice_content == "口语"
-    assert requirement.practice_old_skill.practice_scenario == "出国旅游"
-    assert requirement.practice_old_skill.current_level == "能说简单句"
-    assert requirement.new_learning.learning_purpose == ""
-    assert should_start_teaching(requirement) is True
-    assert "面向场景：出国旅游" in requirement.teaching_contract
-
-
-def test_practice_old_skill_can_take_scenario_from_known_purpose() -> None:
-    requirement = build_learning_requirement_from_detection(
-        "我想练习口语",
-        LearningPurposeDetection(
-            has_learning_purpose=True,
-            needs_guidance=False,
-            need_kind="skill_practice",
-            known_purpose="出国旅游",
-            specific_practice_content="口语",
-            current_level="能说简单句",
-        ),
-    )
-
-    assert requirement.practice_old_skill.practice_scenario == "出国旅游"
-    assert should_start_teaching(requirement) is True
+    assert requirement.status == "diagnosing_current_level"
+    assert 1 <= len(requirement.practice_old_skill.diagnostic_questions) <= 3
 
 
 def test_diagnostic_answer_updates_level_and_weak_points() -> None:
@@ -161,7 +117,6 @@ def test_diagnostic_answer_updates_level_and_weak_points() -> None:
     result = evaluate_diagnostic_answer(question, "不清楚")
     requirement = LearningRequirement(learning_mode="practice_old_skill")
     requirement.practice_old_skill.practice_content = "导数题"
-    requirement.practice_old_skill.practice_scenario = "阶段性复习"
     requirement.practice_old_skill.diagnostic_results.append(result)
     requirement.practice_old_skill.weak_points.append(result.inferred_weak_point)
     requirement.practice_old_skill.current_level = "诊断显示概念理解还不稳定"
