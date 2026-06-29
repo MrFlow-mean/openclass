@@ -969,8 +969,8 @@ class OpenAICourseAI:
             "1. need_kind=unknown 时，优先探寻用户是想学习新的没学过的知识，还是练习已经学过的旧知识技能。\n"
             "2. need_kind=new_knowledge 时，核心目标是把用户的笼统目的细化到 specific_knowledge_point；"
             "如果用户不知道具体学什么，你要给 2-3 个通用聚焦方向，帮助用户选择或缩小到一个知识点。\n"
-            "3. need_kind=skill_practice 时，核心目标是记录 current_level 和 specific_practice_content；"
-            "优先了解当前水平，再明确具体想练习或巩固的内容/技能。\n"
+            "3. need_kind=skill_practice 时，核心目标是记录 specific_practice_content、practice_scenario 和 current_level；"
+            "先明确具体想练习或巩固的内容/技能，再确认练习面向的场景，最后了解当前水平。\n"
             "4. core_factors_recorded=false 或 board_work_allowed=false 时，板书 AI 不继续任何工作；"
             "本轮只在聊天框里探询、引导或确认。\n"
             "每轮只问一个关键问题，可以给少量选项帮助用户回答。\n"
@@ -1022,13 +1022,14 @@ class OpenAICourseAI:
             "如果还没有具体到可学习的知识点，has_learning_purpose=true，needs_guidance=true，"
             "guidance_direction=knowledge_point，specific_knowledge_point 留空。\n"
             "4. 如果用户想练习已经学过的旧知识内容或技能，need_kind=skill_practice；"
-            "如果 current_level 或 specific_practice_content 不清楚，has_learning_purpose=true，needs_guidance=true，"
+            "如果 current_level、specific_practice_content 或面向场景不清楚，has_learning_purpose=true，needs_guidance=true，"
             "guidance_direction=skill_practice。\n"
             "5. 如果对应核心因素已经足够明确，has_learning_purpose=true，needs_guidance=false，"
             "guidance_direction=none；具体执行后续再说，不在这里处理。\n"
             "specific_knowledge_point 只记录新知识分支里具体想学的知识点；没有就留空。\n"
             "specific_practice_content 只记录旧知识技能练习分支里具体想练习或巩固的内容/技能；没有就留空。\n"
             "current_level 只记录用户当前水平、已有基础或自评状态；没有就留空。\n"
+            "旧知识技能练习分支里，如果用户说明了练习面向的应用场景、用途或目标情境，把它写入 known_purpose。\n"
             "不要因为出现某个领域词就直接判定；要看用户是否在表达学习目的和目的是否足够具体。"
         )
         user_prompt = _json(
@@ -1041,7 +1042,7 @@ class OpenAICourseAI:
                     "needs_guidance": "是否需要先引导用户把学习目的说具体。",
                     "need_kind": "none、unknown、new_knowledge 或 skill_practice。",
                     "guidance_direction": "none、knowledge_point 或 skill_practice。",
-                    "known_purpose": "已经能确定的用户学习目的；没有则为空。",
+                    "known_purpose": "已经能确定的用户学习目的；旧技能练习分支可记录练习面向场景；没有则为空。",
                     "specific_knowledge_point": "新知识分支中具体想学的知识点；没有则为空。",
                     "specific_practice_content": "旧知识技能练习分支中具体想练习或巩固的内容/技能；没有则为空。",
                     "current_level": "用户当前水平、已有基础或自评状态；没有则为空。",
