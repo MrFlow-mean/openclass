@@ -17,11 +17,8 @@ def test_learning_purpose_detection_normalizes_non_guidance_direction() -> None:
     assert detection.to_prompt_payload() == {
         "has_learning_purpose": False,
         "needs_guidance": False,
-        "need_kind": "none",
         "guidance_direction": "none",
         "known_purpose": "",
-        "specific_learning_content": "",
-        "current_level": "",
         "missing_piece": "",
         "reason": "没有学习目的时不应该保留引导方向。",
     }
@@ -41,11 +38,8 @@ def test_learning_purpose_detector_prompt_has_two_gradual_guidance_directions(
         return LearningPurposeDetection(
             has_learning_purpose=True,
             needs_guidance=True,
-            need_kind="new_knowledge",
             guidance_direction="knowledge_point",
             known_purpose="想学习一个笼统领域",
-            specific_learning_content="",
-            current_level="",
             missing_piece="还没有具体知识点",
             reason="用户表达了学习目的，但范围仍然模糊。",
         )
@@ -66,11 +60,8 @@ def test_learning_purpose_detector_prompt_has_two_gradual_guidance_directions(
     assert result == LearningPurposeDetection(
         has_learning_purpose=True,
         needs_guidance=True,
-        need_kind="new_knowledge",
         guidance_direction="knowledge_point",
         known_purpose="想学习一个笼统领域",
-        specific_learning_content="",
-        current_level="",
         missing_piece="还没有具体知识点",
         reason="用户表达了学习目的，但范围仍然模糊。",
     )
@@ -80,9 +71,7 @@ def test_learning_purpose_detector_prompt_has_two_gradual_guidance_directions(
     assert "guidance_direction=skill_practice" in captured["system_prompt"]
     assert "笼统模糊" in captured["system_prompt"]
     assert "当前水平" in captured["system_prompt"]
-    assert "need_kind=unknown" in captured["system_prompt"]
     assert "不生成板书" in captured["system_prompt"]
     payload = json.loads(captured["user_prompt"])
     assert payload["user_message"] == "我想学一个方向，但不知道从哪开始"
-    assert payload["response_contract"]["need_kind"] == "none、unknown、new_knowledge 或 skill_practice。"
     assert payload["response_contract"]["guidance_direction"] == "none、knowledge_point 或 skill_practice。"

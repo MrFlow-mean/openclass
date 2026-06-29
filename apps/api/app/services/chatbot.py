@@ -12,7 +12,6 @@ from app.services.board_document_sensor import detect_board_document_state
 from app.services.course_runtime import effective_requirements
 from app.services.history import commit_operations
 from app.services.learning_purpose_detector import no_learning_purpose_detection
-from app.services.minimal_learning_requirement import build_minimal_learning_requirement
 from app.services.openai_course_ai import (
     bind_board_model_selection,
     bind_text_model_selection,
@@ -91,12 +90,10 @@ def _run_basic_chat_turn(lesson_id: str, request: ChatRequest, *, user_id: str) 
         board_document_state=board_document_state.to_prompt_payload(),
         user_message=request.message,
     ) or no_learning_purpose_detection("学习目的检测不可用，本轮保持基础聊天。")
-    minimal_learning_requirement = build_minimal_learning_requirement(learning_purpose_detection)
     ai_reply = openai_course_ai.generate_basic_chat_reply(
         conversation_summary=conversation_summary,
         board_document_state=board_document_state.to_prompt_payload(),
         learning_purpose_detection=learning_purpose_detection.to_prompt_payload(),
-        minimal_learning_requirement=minimal_learning_requirement.to_prompt_payload(),
         user_message=request.message,
     )
     chatbot_message = (ai_reply.chatbot_message if ai_reply else "").strip()
@@ -118,7 +115,6 @@ def _run_basic_chat_turn(lesson_id: str, request: ChatRequest, *, user_id: str) 
             "assistant_message_source": "chatbot" if chatbot_message else "chatbot_empty",
             "board_document_sensor": board_document_state.to_prompt_payload(),
             "learning_purpose_detection": learning_purpose_detection.to_prompt_payload(),
-            "minimal_learning_requirement": minimal_learning_requirement.to_prompt_payload(),
             "interaction_mode": request.interaction_mode,
             "selection": request.selection.model_dump(mode="json") if request.selection else None,
             "basic_chat_only": True,
