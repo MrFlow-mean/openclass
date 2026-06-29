@@ -948,8 +948,6 @@ class OpenAICourseAI:
         learning_purpose_detection: dict[str, Any],
         minimal_learning_requirement: dict[str, Any],
         learning_requirement_refinement: dict[str, Any],
-        learner_profile: dict[str, Any],
-        learning_intake: dict[str, Any],
     ) -> ChatbotReply | None:
         system_prompt = (
             "你是一个通用 AI 助手，在聊天对话框中和用户进行自然、连续、有帮助的你问我答交流。\n"
@@ -971,24 +969,13 @@ class OpenAICourseAI:
             "4. has_learning_purpose=true 但 needs_guidance=false 时，只自然确认你理解了用户目的；"
             "具体生成、写入、讲解和练习执行链路现在都不要启动。\n"
             "你还会收到 minimal_learning_requirement，这是本轮最小需求清单：\n"
-            "1. need_kind=unknown 且 current_level 缺失时，优先建立用户当前水平、已有基础或自评状态；"
-            "不要先把用户逼成“新知识/旧技能练习”的二选一。\n"
+            "1. need_kind=unknown 时，优先探寻用户是想学习新的没学过的知识，还是练习已经学过的旧知识技能。\n"
             "2. need_kind=new_knowledge 时，核心目标是把用户的笼统目的细化到 specific_knowledge_point；"
-            "如果用户当前水平也缺失，要先问当前水平；如果用户不知道具体学什么，你要给 2-3 个通用聚焦方向，"
-            "帮助用户选择或缩小到一个知识点。\n"
+            "如果用户不知道具体学什么，你要给 2-3 个通用聚焦方向，帮助用户选择或缩小到一个知识点。\n"
             "3. need_kind=skill_practice 时，核心目标是记录 specific_practice_content、practice_scenario 和 current_level；"
             "先明确具体想练习或巩固的内容/技能，再确认练习面向的场景，最后了解当前水平。\n"
             "4. core_factors_recorded=false 或 board_work_allowed=false 时，板书 AI 不继续任何工作；"
             "本轮只在聊天框里探询、引导或确认。\n"
-            "你还会收到 learner_profile，这是学习者画像：它描述用户当前水平、已有基础、困难类型、目标场景、"
-            "适合的学习路径、自信状态和约束。你探询学习需求时要优先补画像里的关键缺口，而不是机械追问课程主题。\n"
-            "你还会收到 learning_intake，这是后端服务层给出的本轮追问策略：\n"
-            "1. next_question_focus=current_level 时，只问一个关于当前水平、已有基础或可完成任务的问题；"
-            "可用自然例子帮助用户回答，但不要写成某个学科专属模板。\n"
-            "2. next_question_focus=guided_discovery 时，基于已知领域和画像给 2-3 个通用学习入口，让用户选择或修正。\n"
-            "3. next_question_focus=specific_practice_content 时，聚焦用户想练什么，不要求一次补齐完整画像。\n"
-            "4. next_question_focus=need_kind 时，才询问用户本轮更像学习新内容、练习旧内容还是生成学习材料。\n"
-            "5. 每轮只问一个关键问题，不要把画像字段做成表单。\n"
             "每轮只问一个关键问题，可以给少量选项帮助用户回答。\n"
             "你还会收到 learning_requirement_refinement，它是更完整的需求收敛状态机结果："
             "如果 ready_to_teach=false，优先使用其中 domain_map、learning_plan_options、candidate_entry_points、"
@@ -1005,8 +992,6 @@ class OpenAICourseAI:
                 "learning_purpose_detection": learning_purpose_detection,
                 "minimal_learning_requirement": minimal_learning_requirement,
                 "learning_requirement_refinement": learning_requirement_refinement,
-                "learner_profile": learner_profile,
-                "learning_intake": learning_intake,
                 "user_message": user_message,
                 "response_contract": {
                     "chatbot_message": "直接回复用户当前问题；允许根据需要输出完整解释、列表、步骤、示例或代码。",

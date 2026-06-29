@@ -2,7 +2,7 @@ from app.services.learning_purpose_detector import LearningPurposeDetection
 from app.services.minimal_learning_requirement import build_minimal_learning_requirement
 
 
-def test_minimal_requirement_prioritizes_current_level_for_unknown_learning_intent() -> None:
+def test_minimal_requirement_prioritizes_binary_need_kind_first() -> None:
     requirement = build_minimal_learning_requirement(
         LearningPurposeDetection(
             has_learning_purpose=True,
@@ -19,8 +19,8 @@ def test_minimal_requirement_prioritizes_current_level_for_unknown_learning_inte
         "specific_knowledge_point": "",
         "specific_practice_content": "",
         "current_level": "",
-        "missing_items": ["current_level", "need_kind"],
-        "next_question_focus": "current_level",
+        "missing_items": ["need_kind"],
+        "next_question_focus": "need_kind",
         "core_factors_recorded": False,
         "board_work_allowed": False,
     }
@@ -68,8 +68,8 @@ def test_minimal_requirement_guides_new_knowledge_toward_specific_point() -> Non
         "specific_knowledge_point": "",
         "specific_practice_content": "",
         "current_level": "",
-        "missing_items": ["current_level", "specific_knowledge_point"],
-        "next_question_focus": "current_level",
+        "missing_items": ["specific_knowledge_point"],
+        "next_question_focus": "specific_knowledge_point",
         "core_factors_recorded": False,
         "board_work_allowed": False,
     }
