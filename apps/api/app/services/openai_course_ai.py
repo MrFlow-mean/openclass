@@ -2639,6 +2639,21 @@ class OpenAICourseAI:
         except Exception as exc:  # pragma: no cover - network/runtime dependent
             primary_duration_ms = _elapsed_ms(primary_started_at)
             if schema is ChatbotReply and isinstance(exc, AIOutputParseError):
+                recovered_chatbot_reply = _chatbot_reply_from_unstructured_output(exc)
+                if recovered_chatbot_reply is not None:
+                    ai_usage_logger.log_event(
+                        self._log_event_name(provider, "_recovered"),
+                        **call_details,
+                        duration_ms=primary_duration_ms,
+                        error=str(exc),
+                        output_text=getattr(exc, "output_text", None),
+                        repair_output_text=getattr(exc, "repair_output_text", None),
+                        parsed_output=recovered_chatbot_reply,
+                        recovered_before_retry=True,
+                        retry_skipped=True,
+                        retry_reason="chatbot_reply_parse",
+                    )
+                    return recovered_chatbot_reply
                 ai_usage_logger.log_event(
                     self._log_event_name(provider, "_retry"),
                     **call_details,

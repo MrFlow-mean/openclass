@@ -1,17 +1,29 @@
 import json
 
 import pytest
+from pydantic import BaseModel
 
 from app.models import ChatRequest, ConversationTurn
+from app.services import openai_course_ai as openai_course_ai_module
 from app.services import workspace_state
 from app.services.chat_service import process_chat_on_lesson
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
 from app.services.learning_purpose_detector import LearningPurposeDetection
 from app.services.lesson_factory import create_empty_lesson
-from app.services.openai_course_ai import ChatbotReply, OpenAICourseAI, openai_course_ai
+from app.services.openai_course_ai import (
+    AIOutputParseError,
+    ChatbotReply,
+    OpenAICourseAI,
+    ParsedAIResponse,
+    openai_course_ai,
+)
 
 
 TEST_USER_ID = "user_basic_chat"
+
+
+class GenericStructuredReply(BaseModel):
+    message: str
 
 
 def _seed_workspace(store: SqliteCourseStore, *, content_text: str = "这段右侧文档不应该被聊天修改。"):
@@ -25,6 +37,94 @@ def _seed_workspace(store: SqliteCourseStore, *, content_text: str = "这段右�
     package.active_lesson_id = lesson.id
     store.save_for_user(TEST_USER_ID, workspace)
     return lesson
+
+
+def _enable_parse_test_provider(monkeypatch: pytest.MonkeyPatch, ai: OpenAICourseAI, logged_events: list[dict]) -> None:
+    monkeypatch.setattr(ai, "_model_for", lambda role: ("openai", "test-model"))
+    monkeypatch.setattr(ai, "_provider_available", lambda provider: True)
+    monkeypatch.setattr(ai, "_fallback_model_for", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ai, "_should_retry_provider_fallback", lambda exc: False)
+    monkeypatch.setattr(
+        openai_course_ai_module.ai_usage_logger,
+        "log_event",
+        lambda event_type, **payload: logged_events.append({"event_type": event_type, **payload}) or payload,
+    )
+
+
+def test_chatbot_parse_recovers_streamed_reply_before_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    ai = OpenAICourseAI()
+    logged_events: list[dict] = []
+    calls: list[dict] = []
+    _enable_parse_test_provider(monkeypatch, ai, logged_events)
+
+    def _fake_call_parse(**kwargs):
+        calls.append(kwargs)
+        raise AIOutputParseError(
+            "Model response did not contain a JSON object",
+            output_text='{"chatbot_message":"长内容先流出来了，但 JSON 外壳还没有闭合',
+        )
+
+    monkeypatch.setattr(ai, "_call_parse", _fake_call_parse)
+
+    result = ai._parse("chatbot", "system", "user", ChatbotReply)
+
+    assert result == ChatbotReply(chatbot_message="长内容先流出来了，但 JSON 外壳还没有闭合")
+    assert len(calls) == 1
+    assert logged_events[-1]["event_type"] == "openai_text_call_recovered"
+    assert logged_events[-1]["recovered_before_retry"] is True
+    assert logged_events[-1]["retry_skipped"] is True
+    assert logged_events[-1]["retry_reason"] == "chatbot_reply_parse"
+
+
+def test_chatbot_parse_still_retries_when_streamed_reply_is_not_recoverable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ai = OpenAICourseAI()
+    logged_events: list[dict] = []
+    calls: list[dict] = []
+    _enable_parse_test_provider(monkeypatch, ai, logged_events)
+
+    def _fake_call_parse(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            raise AIOutputParseError(
+                "Model response did not contain a JSON object",
+                output_text='{"other_field":"没有可恢复的聊天正文',
+            )
+        return ParsedAIResponse(
+            output_parsed=ChatbotReply(chatbot_message="重试后的正式回复。"),
+            output_text='{"chatbot_message":"重试后的正式回复。"}',
+        )
+
+    monkeypatch.setattr(ai, "_call_parse", _fake_call_parse)
+
+    result = ai._parse("chatbot", "system", "user", ChatbotReply)
+
+    assert result == ChatbotReply(chatbot_message="重试后的正式回复。")
+    assert len(calls) == 2
+    assert any(event["event_type"] == "openai_text_call_retry" for event in logged_events)
+
+
+def test_parse_does_not_recover_non_chatbot_schema(monkeypatch: pytest.MonkeyPatch) -> None:
+    ai = OpenAICourseAI()
+    logged_events: list[dict] = []
+    calls: list[dict] = []
+    _enable_parse_test_provider(monkeypatch, ai, logged_events)
+
+    def _fake_call_parse(**kwargs):
+        calls.append(kwargs)
+        raise AIOutputParseError(
+            "Model response did not contain a JSON object",
+            output_text='{"chatbot_message":"这个字段不应该放松其他 schema"',
+        )
+
+    monkeypatch.setattr(ai, "_call_parse", _fake_call_parse)
+
+    result = ai._parse("board", "system", "user", GenericStructuredReply)
+
+    assert result is None
+    assert len(calls) == 1
+    assert not any(event["event_type"].endswith("_recovered") for event in logged_events)
 
 
 def test_basic_chat_prompt_gets_board_sensor_without_board_workflow(monkeypatch: pytest.MonkeyPatch) -> None:
