@@ -1,5 +1,5 @@
 const PRODUCT_HOME_PATH = "/";
-const PRODUCT_LANDING_REDIRECTS = ["/admin", "/following", "/profile", "/studio"];
+const PRODUCT_LANDING_REDIRECTS = ["/admin", "/following", "/profile"];
 
 function matchesPath(path: string, target: string) {
   return path === target || path.startsWith(`${target}?`) || path.startsWith(`${target}/`);

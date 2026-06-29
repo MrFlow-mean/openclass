@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.models import AIModelCatalog
-from app.routers import auth, chat, codex_provider, documents, realtime, workspace
+from app.routers import auth, chat, codex_provider, realtime
 from app.services.ai_model_catalog import build_model_catalog, realtime_runtime_enabled
 from app.services.openai_course_ai import openai_course_ai
 from app.services.workspace_state import ensure_data_dirs
@@ -28,9 +28,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(workspace.router)
 app.include_router(auth.router)
-app.include_router(documents.router)
 app.include_router(chat.router)
 app.include_router(codex_provider.router)
 app.include_router(realtime.router)
@@ -41,7 +39,7 @@ def health() -> dict[str, object]:
     return {
         "status": "ok",
         "openai": openai_course_ai.status(),
-        "workflow": {"status": "chat_active"},
+        "workflow": {"status": "reset_chat_only"},
         "realtime": {"status": "enabled" if realtime_runtime_enabled() else "disabled"},
     }
 

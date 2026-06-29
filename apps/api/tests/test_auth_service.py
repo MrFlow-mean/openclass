@@ -173,7 +173,7 @@ def test_x_oauth_authorization_url_uses_pkce(tmp_path, monkeypatch) -> None:
         }
     )
 
-    target = auth.oauth_authorization_url("x", "/studio", request)
+    target = auth.oauth_authorization_url("x", "/", request)
 
     assert target.startswith("https://x.com/i/oauth2/authorize?")
     assert "code_challenge=" in target

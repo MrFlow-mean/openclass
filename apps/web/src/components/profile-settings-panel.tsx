@@ -898,7 +898,7 @@ export function ProfileSettingsPanel({
           <h3 className="text-sm font-semibold text-stone-950">{a.shortcutsTitle}</h3>
           <div className="flex flex-wrap gap-2">
             <Link
-              href="/studio"
+              href="/"
               className="inline-flex h-10 items-center rounded-md border border-stone-200 bg-white px-4 text-sm font-semibold text-stone-700 transition hover:border-stone-300 hover:text-stone-950"
             >
               {a.openStudio}
@@ -1013,7 +1013,6 @@ export function ProfileSettingsPanel({
             value={settings.startPage}
             options={[
               { value: "home", label: txt.appearance.startHome },
-              { value: "studio", label: txt.appearance.startStudio },
               { value: "profile", label: txt.appearance.startProfile },
             ]}
             onChange={(value) => updateSetting("startPage", value as ProfileSettings["startPage"])}

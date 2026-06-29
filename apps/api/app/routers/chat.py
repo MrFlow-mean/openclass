@@ -82,24 +82,12 @@ def _chat_stream_events(lesson_id: str, request: ChatRequest, *, user_id: str) -
     )
     phase_labels = {
         "chatbot": "正在回复",
-        "pm": "正在整理学习需求",
-        "board": "正在生成右侧文档",
     }
 
     def emit(event: str, data: object) -> None:
         events.put((event, data))
 
     def observer(payload: dict[str, object]) -> None:
-        if payload.get("type") == "board_task_update":
-            data = payload.get("payload")
-            if isinstance(data, dict):
-                emit("board_task_update", data)
-            return
-        if payload.get("type") == "requirement_update":
-            data = payload.get("payload")
-            if isinstance(data, dict):
-                emit("requirement_update", data)
-            return
         if payload.get("type") == "role_start":
             role = str(payload.get("role") or "")
             if role:
@@ -118,9 +106,6 @@ def _chat_stream_events(lesson_id: str, request: ChatRequest, *, user_id: str) -
         if role == "chatbot" and field == "chatbot_message":
             for char in delta:
                 emit("chat_delta", {"delta": char})
-        elif role == "board" and field == "content_text":
-            for char in delta:
-                emit("document_delta", {"delta": char})
 
     def run() -> None:
         with ai_log_context(

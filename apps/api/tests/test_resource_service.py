@@ -1,7 +1,7 @@
 from app.models import CoursePackage, ResourceLibraryItem, WorkspaceState
-from app.services.lesson_factory import create_empty_lesson
 from app.services.resource_service import delete_uploaded_resource_file, remove_resource_from_package
 from app.services.workspace_state import package_context_for_lesson, package_view_for_lesson
+from support import create_test_lesson
 
 
 def test_remove_resource_from_package_returns_removed_resource() -> None:
@@ -50,8 +50,8 @@ def test_delete_uploaded_resource_file_only_removes_upload_dir_files(tmp_path) -
 
 
 def test_standalone_package_resources_are_visible_only_to_their_lesson() -> None:
-    lesson_a = create_empty_lesson("单独课程 A")
-    lesson_b = create_empty_lesson("单独课程 B")
+    lesson_a = create_test_lesson("单独课程 A")
+    lesson_b = create_test_lesson("单独课程 B")
     standalone_package = CoursePackage(
         title="单独课程",
         summary="",
@@ -93,9 +93,9 @@ def test_standalone_package_resources_are_visible_only_to_their_lesson() -> None
 
 
 def test_course_package_resources_are_shared_across_lessons() -> None:
-    standalone_lesson = create_empty_lesson("单独课程")
-    package_lesson_a = create_empty_lesson("包内课程 A")
-    package_lesson_b = create_empty_lesson("包内课程 B")
+    standalone_lesson = create_test_lesson("单独课程")
+    package_lesson_a = create_test_lesson("包内课程 A")
+    package_lesson_b = create_test_lesson("包内课程 B")
     standalone_package = CoursePackage(title="单独课程", summary="", lessons=[standalone_lesson])
     course_package = CoursePackage(
         title="课程包",

@@ -1,30 +1,5 @@
-export type ScopeAction =
-  | "patch_current_lesson"
-  | "append_section"
-  | "create_branch"
-  | "create_child_lesson"
-  | "create_new_lesson";
-
-export type BoardAction =
-  | "clarify_request"
-  | "no_change"
-  | "edit_board"
-  | "append_section"
-  | "create_new_lesson"
-  | "await_scope_choice"
-  | "await_reference_choice"
-  | "await_focus_choice";
-
-export type ResourceReferenceAction = "confirm" | "skip";
-export type BoardEditConfirmationAction = "confirm" | "skip";
+export type BoardAction = "no_change";
 export type ChatInteractionMode = "ask" | "direct_edit";
-export type BoardTaskAction =
-  | "generate_board"
-  | "append_section"
-  | "explain_target"
-  | "rewrite_target"
-  | "expand_target"
-  | "simplify_target";
 export type AIProvider =
   | "openai"
   | "openai_codex"
@@ -65,25 +40,6 @@ export interface BoardDocument {
   page_settings: DocumentPageSettings;
 }
 
-export type PatchOperationType =
-  | "insert_block"
-  | "delete_block"
-  | "update_block_content"
-  | "replace_range_in_block"
-  | "move_block"
-  | "update_block_style"
-  | "attach_asset";
-
-export interface DiffPreviewItem {
-  op: PatchOperationType;
-  block_id?: string | null;
-  node_path?: number[];
-  heading_path?: string[];
-  before_text?: string;
-  after_text?: string;
-  summary: string;
-}
-
 export interface LearningRequirementSheet {
   theme: string;
   learning_goal: string;
@@ -97,47 +53,12 @@ export interface LearningRequirementSheet {
   board_scope: string[];
   success_criteria: string;
   risk_notes: string[];
-  target_location?: BoardFocusRef | null;
-  location_status?: "missing" | "selected" | "resolved" | "ambiguous";
-  action_type?: BoardTaskAction | null;
-  action_instruction?: string;
-  location_clarification_question?: string;
-  interaction_rule_draft?: InteractionRuleDraft | null;
   work_mode?: InitialLearningWorkMode | null;
   granularity?: InitialLearningGranularity | null;
 }
 
 export type InitialLearningWorkMode = "knowledge_board" | "narrow_topic" | "practice_artifact" | "unknown";
 export type InitialLearningGranularity = "single_knowledge_point" | "broad_topic" | "practice_artifact" | "unclear";
-export type BoardTaskRunStatus = "collecting" | "ready" | "awaiting_confirmation" | "consumed" | "not_executed" | "archived";
-export type BoardDocumentOperationStatus = "none" | "succeeded" | "failed";
-export type BoardTaskRequestedAction = "write" | "edit" | "explain" | "chat";
-export type BoardTaskConfirmationStatus = "none" | "awaiting" | "confirmed" | "declined";
-export type BoardTaskLocationStatus = "missing" | "selected" | "resolved" | "ambiguous" | "content_absent";
-
-export interface BoardTaskRequirementSheet {
-  target_hint: string;
-  target_location?: BoardFocusRef | null;
-  location_status: BoardTaskLocationStatus;
-  requested_action?: BoardTaskRequestedAction | null;
-  question_or_topic: string;
-  interaction_rule_draft?: InteractionRuleDraft | null;
-  missing_items: string[];
-  progress: number;
-  confirmation_status: BoardTaskConfirmationStatus;
-  clarification_question: string;
-  failure_count: number;
-}
-
-export interface InteractionRuleDraft {
-  should_start: boolean;
-  rule_text: string;
-  interaction_goal: string;
-  target_hint: string;
-  expected_user_behavior: string;
-  assistant_behavior: string;
-  reference_instruction: string;
-}
 
 export interface LearningRequirementChecklistItem {
   title: string;
@@ -198,10 +119,7 @@ export interface CommitRecord {
   parent_ids: string[];
   operations: Array<Record<string, unknown>>;
   snapshot: BoardDocument;
-  metadata?: Record<string, unknown> & {
-    board_patch_diff?: DiffPreviewItem[];
-    board_patch_risk_level?: "low" | "medium" | "high";
-  };
+  metadata?: Record<string, unknown>;
 }
 
 export interface BranchRef {
@@ -224,9 +142,6 @@ export interface Lesson {
   summary: string;
   tags: string[];
   board_document: BoardDocument;
-  learning_requirements?: LearningRequirementSheet | null;
-  board_task_requirements?: BoardTaskRequirementSheet | null;
-  active_interaction_session?: InteractionSession | null;
   history_graph: LessonHistoryGraph;
   created_at: string;
   updated_at: string;
@@ -438,80 +353,9 @@ export interface BoardFocusRef {
   display_label?: string;
 }
 
-export interface InteractionSession {
-  id: string;
-  status: "active" | "paused";
-  rule_text: string;
-  interaction_goal: string;
-  target_focus?: BoardFocusRef | null;
-  reference_context: string;
-  compliant_input_rule?: string;
-  expected_user_behavior: string;
-  assistant_behavior: string;
-  progress_note: string;
-  pause_reason: string;
-  turn_count: number;
-  source_board_task_run_id?: string | null;
-  source_board_task_version_id?: string | null;
-  source_board_task_route?: string | null;
-  sequence_items?: BoardFocusRef[];
-  sequence_index?: number;
-  sequence_mode?: string;
-}
-
-export interface InteractionTurnDecision {
-  route:
-    | "continue_rule"
-    | "rule_violation"
-    | "side_learning_request"
-    | "resume_rule"
-    | "exit_rule"
-    | "new_task";
-  reason: string;
-  progress_note: string;
-  user_intent: string;
-}
-
 export interface ConversationTurn {
   role: "user" | "assistant";
   content: string;
-}
-
-export interface ScopeOption {
-  action: ScopeAction;
-  label: string;
-  description: string;
-  resource_chapter_id?: string | null;
-}
-
-export interface ResourceMatch {
-  resource_id: string;
-  chapter_id: string;
-  resource_name: string;
-  chapter_title: string;
-  reason: string;
-  score: number;
-  is_high_overlap: boolean;
-}
-
-export interface ResourceReferencePrompt {
-  resource_id: string;
-  chapter_id: string;
-  resource_name: string;
-  chapter_title: string;
-  question: string;
-  reason: string;
-  confirm_label: string;
-  skip_label: string;
-  score: number;
-}
-
-export interface BoardEditPrompt {
-  topic: string;
-  question: string;
-  reason: string;
-  confirm_label: string;
-  skip_label: string;
 }
 
 export interface ResourceContextChunk {
@@ -548,98 +392,25 @@ export interface BoardDecision {
   reason: string;
 }
 
-export interface PatchProposal {
-  id: string;
-  rationale: string;
-  commit_label: string;
-  operations: Array<Record<string, unknown>>;
-  diff_preview: Array<Record<string, unknown>>;
-  target_action: ScopeAction;
-  suggested_title?: string | null;
-}
-
 export interface ChatRequestPayload {
   message: string;
   text_model?: AIModelSelection | null;
   board_model?: AIModelSelection | null;
   selection?: SelectionRef | null;
   interaction_mode?: ChatInteractionMode;
-  scope_action?: ScopeAction | null;
-  resource_chapter_id?: string | null;
-  resource_reference_action?: ResourceReferenceAction | null;
-  resource_reference_resource_id?: string | null;
-  resource_reference_chapter_id?: string | null;
-  board_edit_action?: BoardEditConfirmationAction | null;
-  board_edit_topic?: string | null;
-  board_generation_action?: "start" | null;
-  teaching_action?: "continue" | "restart" | null;
-  chat_edit_source_commit_id?: string | null;
-  chat_edit_base_commit_id?: string | null;
-  chat_edit_original_message?: string | null;
   conversation?: ConversationTurn[];
-}
-
-export interface SectionTeachingProgress {
-  section_index: number;
-  section_count: number;
-  current_section_title: string;
-  has_next_section: boolean;
-  waiting_for_continue: boolean;
 }
 
 export interface ChatResponse {
   chatbot_message: string;
   learning_requirement_sheet: LearningRequirementSheet;
-  active_requirement_sheet?: LearningRequirementSheet | null;
-  active_interaction_session?: InteractionSession | null;
-  interaction_decision?: InteractionTurnDecision | null;
   learning_clarification: LearningClarificationStatus;
-  requirement_run_id?: string | null;
-  requirement_version_id?: string | null;
-  requirement_phase?: LearningRequirementRunStatus | null;
-  board_task_sheet?: BoardTaskRequirementSheet | null;
-  active_board_task_sheet?: BoardTaskRequirementSheet | null;
-  board_task_run_id?: string | null;
-  board_task_version_id?: string | null;
-  board_task_phase?: BoardTaskRunStatus | null;
-  board_task_questions?: string[];
   board_decision: BoardDecision;
   needs_clarification: boolean;
   clarification_questions: string[];
-  patch_proposal?: PatchProposal | null;
-  scope_options: ScopeOption[];
-  resource_matches: ResourceMatch[];
-  reference_prompt?: ResourceReferencePrompt | null;
-  board_edit_prompt?: BoardEditPrompt | null;
-  selected_reference?: ResourceReferenceContext | null;
   resolved_focus?: BoardFocusRef | null;
-  focus_candidates?: BoardFocusRef[];
   requirement_cleared?: boolean;
-  board_document_operation_status?: BoardDocumentOperationStatus;
-  board_document_operation_failure_reason?: string | null;
-  board_patch_diff?: DiffPreviewItem[];
-  created_lesson?: Lesson | null;
-  teaching_progress?: SectionTeachingProgress | null;
   course_package: CoursePackage;
-}
-
-export interface RequirementUpdateStreamPayload {
-  learning_requirement_sheet: LearningRequirementSheet;
-  active_requirement_sheet?: LearningRequirementSheet | null;
-  learning_clarification: LearningClarificationStatus;
-  requirement_run_id?: string | null;
-  requirement_version_id?: string | null;
-  requirement_phase?: LearningRequirementRunStatus | null;
-  clarification_questions: string[];
-}
-
-export interface BoardTaskUpdateStreamPayload {
-  board_task_sheet: BoardTaskRequirementSheet;
-  active_board_task_sheet?: BoardTaskRequirementSheet | null;
-  board_task_run_id?: string | null;
-  board_task_version_id?: string | null;
-  board_task_phase?: BoardTaskRunStatus | null;
-  board_task_questions: string[];
 }
 
 export interface RealtimeConnectPayload {
@@ -682,19 +453,4 @@ export interface RealtimeEventLogPayload {
   tool_name?: string | null;
   tool_call_id?: string | null;
   tool_status?: string | null;
-}
-
-export interface DocumentSavePayload {
-  document: BoardDocument;
-  label?: string;
-  message?: string;
-  metadata?: Record<string, unknown>;
-  base_commit_id?: string | null;
-}
-
-export interface DocumentAIEditPayload {
-  instruction: string;
-  selection_text?: string | null;
-  replace_whole?: boolean;
-  conversation?: ConversationTurn[];
 }
