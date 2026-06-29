@@ -964,15 +964,12 @@ class OpenAICourseAI:
             "本轮只问一个关键问题，并可给 2-3 个练习方向。\n"
             "4. has_learning_purpose=true 但 needs_guidance=false 时，只自然确认你理解了用户目的；"
             "具体生成、写入、讲解和练习执行链路现在都不要启动。\n"
-            "你还会收到 minimal_learning_requirement，这是本轮最小需求清单：\n"
-            "1. need_kind=unknown 时，优先探寻用户是想学习新的没学过的知识，还是练习已经学过的旧知识技能。\n"
-            "2. need_kind=new_knowledge 时，核心目标是把用户的笼统目的细化到 specific_knowledge_point；"
-            "如果用户不知道具体学什么，你要给 2-3 个通用聚焦方向，帮助用户选择或缩小到一个知识点。\n"
-            "3. need_kind=skill_practice 时，核心目标是记录 current_level 和 specific_practice_content；"
-            "优先了解当前水平，再明确具体想练习或巩固的内容/技能。\n"
-            "4. core_factors_recorded=false 或 board_work_allowed=false 时，板书 AI 不继续任何工作；"
-            "本轮只在聊天框里探询、引导或确认。\n"
-            "每轮只问一个关键问题，可以给少量选项帮助用户回答。\n"
+            "你还会收到 minimal_learning_requirement，这是本轮最小需求清单，只记录三件事："
+            "用户是想学习没学过的新知识还是练习已有知识技能、具体想学习或练习的内容、当前水平。\n"
+            "如果 next_question_focus=need_kind，优先询问用户是在学新知识，还是在已有基础上练习技能；"
+            "如果 next_question_focus=specific_learning_content，询问用户具体想学或练哪一项内容；"
+            "如果 next_question_focus=current_level，询问用户当前水平或已有基础。"
+            "每轮只问一个关键问题，可以给 2-3 个选项帮助用户回答。\n"
             "不要套用课程模板，不要根据具体学科、教材、考试或 demo 文本走特殊规则。\n"
             "不要声称已经修改本地文件、右侧文档或外部应用；当前能力只是聊天框内的文本回答。"
         )
@@ -1011,19 +1008,18 @@ class OpenAICourseAI:
             "输出规则：\n"
             "1. 如果用户只是寒暄、闲聊、情绪表达、普通问答、写作/代码/生活类求助，且没有表达学习工作目的，"
             "has_learning_purpose=false，needs_guidance=false，guidance_direction=none。\n"
-            "2. 如果用户表达学习目的，但还看不出是学新知识还是练旧知识技能，"
+            "2. 如果用户表达想学某个笼统模糊的目的、领域、方向、主题或知识范围，"
+            "need_kind=new_knowledge；如果还没有具体到可学习的知识点，"
+            "has_learning_purpose=true，needs_guidance=true，guidance_direction=knowledge_point。\n"
+            "3. 如果用户表达自己已有一定基础，或想在现有基础上练习、提升、应用、巩固某项能力，"
+            "need_kind=skill_practice；如果当前水平、练什么、怎么练、目标标准还不清楚，"
+            "has_learning_purpose=true，needs_guidance=true，guidance_direction=skill_practice。\n"
+            "4. 如果用户表达了学习目的，但还看不出是学新知识还是练已有技能，"
             "has_learning_purpose=true，needs_guidance=true，need_kind=unknown，guidance_direction=none。\n"
-            "3. 如果用户想学习新的、没学过的知识，或从笼统模糊的目的、领域、方向出发，need_kind=new_knowledge；"
-            "如果还没有具体到可学习的知识点，has_learning_purpose=true，needs_guidance=true，"
-            "guidance_direction=knowledge_point，specific_knowledge_point 留空。\n"
-            "4. 如果用户想练习已经学过的旧知识内容或技能，need_kind=skill_practice；"
-            "如果 current_level 或 specific_practice_content 不清楚，has_learning_purpose=true，needs_guidance=true，"
-            "guidance_direction=skill_practice。\n"
-            "5. 如果对应核心因素已经足够明确，has_learning_purpose=true，needs_guidance=false，"
+            "5. 如果用户已经表达了足够明确的学习目的，has_learning_purpose=true，needs_guidance=false，"
             "guidance_direction=none；具体执行后续再说，不在这里处理。\n"
-            "specific_knowledge_point 只记录新知识分支里具体想学的知识点；没有就留空。\n"
-            "specific_practice_content 只记录旧知识技能练习分支里具体想练习或巩固的内容/技能；没有就留空。\n"
-            "current_level 只记录用户当前水平、已有基础或自评状态；没有就留空。\n"
+            "specific_learning_content 只记录用户具体说出的学习内容或练习技能；没有就留空。\n"
+            "current_level 只记录用户具体说出的当前水平或已有基础；没有就留空。\n"
             "不要因为出现某个领域词就直接判定；要看用户是否在表达学习目的和目的是否足够具体。"
         )
         user_prompt = _json(
@@ -1037,8 +1033,7 @@ class OpenAICourseAI:
                     "need_kind": "none、unknown、new_knowledge 或 skill_practice。",
                     "guidance_direction": "none、knowledge_point 或 skill_practice。",
                     "known_purpose": "已经能确定的用户学习目的；没有则为空。",
-                    "specific_knowledge_point": "新知识分支中具体想学的知识点；没有则为空。",
-                    "specific_practice_content": "旧知识技能练习分支中具体想练习或巩固的内容/技能；没有则为空。",
+                    "specific_learning_content": "用户具体想学习的知识点、主题、内容或想练习的技能；没有则为空。",
                     "current_level": "用户当前水平、已有基础或自评状态；没有则为空。",
                     "missing_piece": "最关键缺失信息；不需要引导则为空。",
                     "reason": "简短说明判断依据。",
