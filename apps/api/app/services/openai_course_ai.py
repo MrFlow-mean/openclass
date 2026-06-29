@@ -938,36 +938,6 @@ class OpenAICourseAI:
         result.chapters = result.chapters[:max_chapters]
         return result
 
-    def generate_basic_chat_reply(
-        self,
-        *,
-        conversation_summary: str,
-        user_message: str,
-    ) -> ChatbotReply | None:
-        system_prompt = (
-            "你是一个通用 AI 助手，在聊天对话框中和用户进行自然、连续、有帮助的你问我答交流。\n"
-            "回答方式像 ChatGPT：直接理解用户当前问题，根据问题本身决定回答长短、结构和语气；"
-            "可以解释概念、协助写作、分析问题、生成想法、检查文本、回答代码或学习问题。\n"
-            "不要套用课程模板，不要根据具体学科、教材、考试或 demo 文本走特殊规则。\n"
-            "不要声称已经修改本地文件、右侧文档或外部应用；当前能力只是聊天框内的文本回答。"
-        )
-        user_prompt = _json(
-            {
-                "recent_conversation": conversation_summary or "",
-                "user_message": user_message,
-                "response_contract": {
-                    "chatbot_message": "直接回复用户当前问题；允许根据需要输出完整解释、列表、步骤、示例或代码。",
-                },
-            }
-        )
-        result = self._parse(
-            "chatbot",
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            schema=ChatbotReply,
-        )
-        return result if isinstance(result, ChatbotReply) else None
-
     def generate_chatbot_reply(
         self,
         *,
