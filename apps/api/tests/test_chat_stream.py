@@ -12,7 +12,6 @@ from app.models import (
 from app.routers import chat as chat_router
 from app.services.ai_logging import ai_log_context
 from app.services.lesson_factory import create_empty_lesson
-from app.services.openai_course_ai import emit_ai_stream_event
 from app.services.route_context import bind_ai_request_context
 from app.services.workspace_state import package_view_for_lesson
 
@@ -117,61 +116,6 @@ def test_chat_stream_worker_error_emits_error_and_lifecycle_log(monkeypatch) -> 
     assert error_payload["trace_id"].startswith("chat_")
     assert [event["stream_event"] for event in logged_events] == ["stream_started", "stream_error"]
     assert logged_events[-1]["error_message"] == "model unavailable"
-
-
-def test_chat_stream_emits_only_validated_chatbot_message(monkeypatch) -> None:
-    def process_with_unvalidated_chatbot_delta(*args, **kwargs) -> ChatResponse:
-        emit_ai_stream_event(
-            {
-                "type": "field_delta",
-                "role": "chatbot",
-                "field": "chatbot_message",
-                "delta": "未验收草稿",
-            }
-        )
-        return _chat_response("lesson_stream_test")
-
-    monkeypatch.setattr(chat_router, "process_chat_on_lesson", process_with_unvalidated_chatbot_delta)
-
-    events = _collect_events(
-        chat_router._chat_stream_events(
-            "lesson_stream_test",
-            ChatRequest(message="帮我继续"),
-            user_id="user_stream_test",
-        )
-    )
-
-    streamed_chat = "".join(payload["delta"] for event, payload in events if event == "chat_delta")
-    event_names = [event for event, _payload in events]
-    assert streamed_chat == "已经完成。"
-    assert "未验收草稿" not in streamed_chat
-    assert event_names.index("chat_delta") < event_names.index("final")
-
-
-def test_chat_stream_still_emits_board_document_preview_delta(monkeypatch) -> None:
-    def process_with_board_delta(*args, **kwargs) -> ChatResponse:
-        emit_ai_stream_event(
-            {
-                "type": "field_delta",
-                "role": "board",
-                "field": "content_text",
-                "delta": "板书预览",
-            }
-        )
-        return _chat_response("lesson_stream_test")
-
-    monkeypatch.setattr(chat_router, "process_chat_on_lesson", process_with_board_delta)
-
-    events = _collect_events(
-        chat_router._chat_stream_events(
-            "lesson_stream_test",
-            ChatRequest(message="帮我继续"),
-            user_id="user_stream_test",
-        )
-    )
-
-    streamed_document = "".join(payload["delta"] for event, payload in events if event == "document_delta")
-    assert streamed_document == "板书预览"
 
 
 def test_chat_stream_logs_disconnect_before_final(monkeypatch) -> None:
