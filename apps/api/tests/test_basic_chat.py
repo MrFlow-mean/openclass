@@ -72,39 +72,6 @@ def test_basic_chat_prompt_gets_board_sensor_without_board_workflow(monkeypatch:
             "core_factors_recorded": False,
             "board_work_allowed": False,
         },
-        learning_requirement_refinement={
-            "learning_mode": "unknown",
-            "raw_user_input": "",
-            "domain": "",
-            "new_learning": {
-                "learning_purpose": "",
-                "learning_context": "",
-                "motivation_trigger": "",
-                "desired_output": "",
-                "current_background": "",
-                "target_knowledge_point": "",
-                "candidate_entry_points": [],
-                "selected_entry_point": "",
-                "reason_for_recommendation": "",
-            },
-            "practice_old_skill": {
-                "practice_content": "",
-                "current_level": "",
-                "weak_points": [],
-                "practice_goal": "",
-                "diagnostic_results": [],
-                "diagnostic_questions": [],
-            },
-            "teaching_preferences": {
-                "difficulty_level": "",
-                "teaching_style": "",
-                "session_time": "",
-            },
-            "status": "collecting_mode",
-            "next_question": "",
-            "ready_to_teach": False,
-            "teaching_contract": "",
-        },
         user_message="帮我解释一下这个概念",
     )
 
@@ -144,8 +111,6 @@ def test_basic_chat_prompt_gets_board_sensor_without_board_workflow(monkeypatch:
         "core_factors_recorded": False,
         "board_work_allowed": False,
     }
-    assert payload["learning_requirement_refinement"]["learning_mode"] == "unknown"
-    assert payload["learning_requirement_refinement"]["ready_to_teach"] is False
     assert payload["user_message"] == "帮我解释一下这个概念"
     assert "lesson_title" not in payload
     assert "resource_summary" not in payload
@@ -221,39 +186,6 @@ def test_process_chat_on_lesson_records_basic_chat_without_document_change(
             "core_factors_recorded": False,
             "board_work_allowed": False,
         },
-        "learning_requirement_refinement": {
-            "learning_mode": "unknown",
-            "raw_user_input": "你现在能正常问答吗？",
-            "domain": "",
-            "new_learning": {
-                "learning_purpose": "",
-                "learning_context": "",
-                "motivation_trigger": "",
-                "desired_output": "",
-                "current_background": "",
-                "target_knowledge_point": "",
-                "candidate_entry_points": [],
-                "selected_entry_point": "",
-                "reason_for_recommendation": "",
-            },
-            "practice_old_skill": {
-                "practice_content": "",
-                "current_level": "",
-                "weak_points": [],
-                "practice_goal": "",
-                "diagnostic_results": [],
-                "diagnostic_questions": [],
-            },
-            "teaching_preferences": {
-                "difficulty_level": "",
-                "teaching_style": "",
-                "session_time": "",
-            },
-            "status": "collecting_mode",
-            "next_question": "",
-            "ready_to_teach": False,
-            "teaching_contract": "",
-        },
         "user_message": "你现在能正常问答吗？",
     }
     saved = store.load_for_user(TEST_USER_ID)
@@ -293,69 +225,8 @@ def test_process_chat_on_lesson_records_basic_chat_without_document_change(
         "core_factors_recorded": False,
         "board_work_allowed": False,
     }
-    assert commit.metadata["learning_requirement_refinement"]["ready_to_teach"] is False
     assert commit.metadata["basic_chat_only"] is True
     assert commit.metadata["document_changed"] is False
-
-
-def test_process_chat_reuses_previous_learning_requirement_refinement(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path,
-) -> None:
-    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
-    monkeypatch.setattr(workspace_state, "STORE", store)
-    lesson = _seed_workspace(store)
-    detections = iter(
-        [
-            LearningPurposeDetection(
-                has_learning_purpose=True,
-                needs_guidance=True,
-                need_kind="new_knowledge",
-                known_purpose="想学习一个笼统领域",
-            ),
-            LearningPurposeDetection(
-                has_learning_purpose=True,
-                needs_guidance=True,
-                need_kind="new_knowledge",
-                known_purpose="为了以后学机器学习",
-            ),
-        ]
-    )
-    captured_refinements: list[dict[str, object]] = []
-
-    monkeypatch.setattr(
-        openai_course_ai,
-        "generate_learning_purpose_detection",
-        lambda **kwargs: next(detections),
-    )
-
-    def _fake_basic_reply(**kwargs):
-        captured_refinements.append(kwargs["learning_requirement_refinement"])
-        return ChatbotReply(chatbot_message="继续收敛。")
-
-    monkeypatch.setattr(openai_course_ai, "generate_basic_chat_reply", _fake_basic_reply)
-
-    process_chat_on_lesson(
-        lesson.id,
-        ChatRequest(message="我想学高等数学"),
-        user_id=TEST_USER_ID,
-    )
-    process_chat_on_lesson(
-        lesson.id,
-        ChatRequest(message="为了以后学机器学习"),
-        user_id=TEST_USER_ID,
-    )
-
-    assert captured_refinements[0]["domain"] == "高等数学"
-    assert captured_refinements[1]["domain"] == "高等数学"
-    assert captured_refinements[1]["new_learning"]["learning_purpose"] == "为了以后学机器学习"
-    assert captured_refinements[1]["ready_to_teach"] is False
-
-    saved = store.load_for_user(TEST_USER_ID)
-    saved_lesson = saved.packages[0].lessons[0]
-    latest_metadata = saved_lesson.history_graph.commits[-1].metadata
-    assert latest_metadata["learning_requirement_refinement"]["domain"] == "高等数学"
-    assert latest_metadata["document_changed"] is False
 
 
 def test_basic_chat_detects_latest_board_document_state_each_turn(

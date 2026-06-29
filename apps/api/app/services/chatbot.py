@@ -10,11 +10,7 @@ from app.models import (
 from app.services import workspace_state
 from app.services.board_document_sensor import detect_board_document_state
 from app.services.course_runtime import effective_requirements
-from app.services.history import commit_operations, current_head_commit
-from app.services.learning_requirement_refiner import (
-    LearningRequirement,
-    build_learning_requirement_from_detection,
-)
+from app.services.history import commit_operations
 from app.services.learning_purpose_detector import no_learning_purpose_detection
 from app.services.minimal_learning_requirement import build_minimal_learning_requirement
 from app.services.openai_course_ai import (
@@ -54,18 +50,6 @@ def _clear_legacy_runtime_state(lesson) -> None:
     lesson.learning_requirements = None
     lesson.board_task_requirements = None
     lesson.active_interaction_session = None
-
-
-def _latest_learning_requirement_refinement(lesson) -> LearningRequirement | None:
-    commit = current_head_commit(lesson)
-    metadata = commit.metadata if isinstance(commit.metadata, dict) else {}
-    raw_refinement = metadata.get("learning_requirement_refinement")
-    if not isinstance(raw_refinement, dict):
-        return None
-    try:
-        return LearningRequirement.model_validate(raw_refinement)
-    except ValueError:
-        return None
 
 
 def _build_response(
@@ -108,17 +92,11 @@ def _run_basic_chat_turn(lesson_id: str, request: ChatRequest, *, user_id: str) 
         user_message=request.message,
     ) or no_learning_purpose_detection("学习目的检测不可用，本轮保持基础聊天。")
     minimal_learning_requirement = build_minimal_learning_requirement(learning_purpose_detection)
-    learning_requirement_refinement = build_learning_requirement_from_detection(
-        request.message,
-        learning_purpose_detection,
-        previous_requirement=_latest_learning_requirement_refinement(lesson),
-    )
     ai_reply = openai_course_ai.generate_basic_chat_reply(
         conversation_summary=conversation_summary,
         board_document_state=board_document_state.to_prompt_payload(),
         learning_purpose_detection=learning_purpose_detection.to_prompt_payload(),
         minimal_learning_requirement=minimal_learning_requirement.to_prompt_payload(),
-        learning_requirement_refinement=learning_requirement_refinement.to_prompt_payload(),
         user_message=request.message,
     )
     chatbot_message = (ai_reply.chatbot_message if ai_reply else "").strip()
@@ -141,7 +119,6 @@ def _run_basic_chat_turn(lesson_id: str, request: ChatRequest, *, user_id: str) 
             "board_document_sensor": board_document_state.to_prompt_payload(),
             "learning_purpose_detection": learning_purpose_detection.to_prompt_payload(),
             "minimal_learning_requirement": minimal_learning_requirement.to_prompt_payload(),
-            "learning_requirement_refinement": learning_requirement_refinement.to_prompt_payload(),
             "interaction_mode": request.interaction_mode,
             "selection": request.selection.model_dump(mode="json") if request.selection else None,
             "basic_chat_only": True,
