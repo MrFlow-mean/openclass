@@ -116,9 +116,8 @@ def _chat_stream_events(lesson_id: str, request: ChatRequest, *, user_id: str) -
         if not delta:
             return
         if role == "chatbot" and field == "chatbot_message":
-            for char in delta:
-                emit("chat_delta", {"delta": char})
-        elif role == "board" and field == "content_text":
+            return
+        if role == "board" and field == "content_text":
             for char in delta:
                 emit("document_delta", {"delta": char})
 
@@ -135,6 +134,8 @@ def _chat_stream_events(lesson_id: str, request: ChatRequest, *, user_id: str) -
                 with bind_ai_output_stream(observer):
                     response = process_chat_on_lesson(lesson_id, request, user_id=user_id)
                 state.produced_commit_id = _head_commit_id(response, lesson_id)
+                for char in response.chatbot_message:
+                    emit("chat_delta", {"delta": char})
                 state.final_enqueued = True
                 emit("final", response.model_dump(mode="json"))
                 _log_stream_lifecycle(state, "stream_final_sent")
