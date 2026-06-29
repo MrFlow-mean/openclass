@@ -89,8 +89,12 @@ def build_minimal_learning_requirement(detection: LearningPurposeDetection) -> M
 
     missing_items: list[MinimalRequirementMissingItem] = []
     if detection.need_kind in {"none", "unknown"}:
+        if not detection.current_level.strip():
+            missing_items.append("current_level")
         missing_items.append("need_kind")
     elif detection.need_kind == "new_knowledge":
+        if not detection.current_level.strip() and not detection.specific_knowledge_point.strip():
+            missing_items.append("current_level")
         if not detection.specific_knowledge_point.strip():
             missing_items.append("specific_knowledge_point")
     elif detection.need_kind == "skill_practice":

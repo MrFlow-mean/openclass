@@ -212,6 +212,31 @@ def test_basic_chat_prompt_gets_board_sensor_without_board_workflow(monkeypatch:
             "ready_to_teach": False,
             "teaching_contract": "",
         },
+        learner_profile={
+            "current_level": "",
+            "prior_knowledge": "",
+            "difficulty_pattern": "",
+            "goal_scenario": "",
+            "preferred_learning_path": "",
+            "confidence_state": "",
+            "constraints": [],
+            "evidence": [],
+        },
+        learning_intake={
+            "learner_profile": {
+                "current_level": "",
+                "prior_knowledge": "",
+                "difficulty_pattern": "",
+                "goal_scenario": "",
+                "preferred_learning_path": "",
+                "confidence_state": "",
+                "constraints": [],
+                "evidence": [],
+            },
+            "next_question_focus": "none",
+            "question_policy_reason": "用户没有表达学习工作目的，本轮保持普通聊天。",
+            "guided_discovery": False,
+        },
         user_message="帮我解释一下这个概念",
     )
 
@@ -220,6 +245,8 @@ def test_basic_chat_prompt_gets_board_sensor_without_board_workflow(monkeypatch:
     assert "像 ChatGPT" in captured["system_prompt"]
     assert "domain_map" in captured["system_prompt"]
     assert "learning_plan_options" in captured["system_prompt"]
+    assert "learner_profile" in captured["system_prompt"]
+    assert "learning_intake" in captured["system_prompt"]
     assert "directive" not in captured["system_prompt"]
     payload = json.loads(captured["user_prompt"])
     assert payload["recent_conversation"] == "user: 你好"
@@ -255,6 +282,17 @@ def test_basic_chat_prompt_gets_board_sensor_without_board_workflow(monkeypatch:
     }
     assert payload["learning_requirement_refinement"]["learning_mode"] == "unknown"
     assert payload["learning_requirement_refinement"]["ready_to_teach"] is False
+    assert payload["learner_profile"] == {
+        "current_level": "",
+        "prior_knowledge": "",
+        "difficulty_pattern": "",
+        "goal_scenario": "",
+        "preferred_learning_path": "",
+        "confidence_state": "",
+        "constraints": [],
+        "evidence": [],
+    }
+    assert payload["learning_intake"]["next_question_focus"] == "none"
     assert payload["user_message"] == "帮我解释一下这个概念"
     assert "lesson_title" not in payload
     assert "resource_summary" not in payload
@@ -370,6 +408,31 @@ def test_process_chat_on_lesson_records_basic_chat_without_document_change(
             "ready_to_teach": False,
             "teaching_contract": "",
         },
+        "learner_profile": {
+            "current_level": "",
+            "prior_knowledge": "",
+            "difficulty_pattern": "",
+            "goal_scenario": "",
+            "preferred_learning_path": "",
+            "confidence_state": "",
+            "constraints": [],
+            "evidence": [],
+        },
+        "learning_intake": {
+            "learner_profile": {
+                "current_level": "",
+                "prior_knowledge": "",
+                "difficulty_pattern": "",
+                "goal_scenario": "",
+                "preferred_learning_path": "",
+                "confidence_state": "",
+                "constraints": [],
+                "evidence": [],
+            },
+            "next_question_focus": "none",
+            "question_policy_reason": "用户没有表达学习工作目的，本轮保持普通聊天。",
+            "guided_discovery": False,
+        },
         "user_message": "你现在能正常问答吗？",
     }
     saved = store.load_for_user(TEST_USER_ID)
@@ -410,6 +473,17 @@ def test_process_chat_on_lesson_records_basic_chat_without_document_change(
         "board_work_allowed": False,
     }
     assert commit.metadata["learning_requirement_refinement"]["ready_to_teach"] is False
+    assert commit.metadata["learner_profile"] == {
+        "current_level": "",
+        "prior_knowledge": "",
+        "difficulty_pattern": "",
+        "goal_scenario": "",
+        "preferred_learning_path": "",
+        "confidence_state": "",
+        "constraints": [],
+        "evidence": [],
+    }
+    assert commit.metadata["learning_intake"]["next_question_focus"] == "none"
     assert commit.metadata["basic_chat_only"] is True
     assert commit.metadata["document_changed"] is False
 
