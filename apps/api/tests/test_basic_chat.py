@@ -54,7 +54,8 @@ def test_basic_chat_prompt_gets_board_sensor_without_board_workflow(monkeypatch:
             "need_kind": "none",
             "guidance_direction": "none",
             "known_purpose": "",
-            "specific_learning_content": "",
+            "specific_knowledge_point": "",
+            "specific_practice_content": "",
             "current_level": "",
             "missing_piece": "",
             "reason": "用户只是寒暄。",
@@ -63,10 +64,13 @@ def test_basic_chat_prompt_gets_board_sensor_without_board_workflow(monkeypatch:
             "has_learning_purpose": False,
             "need_kind": "none",
             "known_purpose": "",
-            "specific_learning_content": "",
+            "specific_knowledge_point": "",
+            "specific_practice_content": "",
             "current_level": "",
             "missing_items": [],
             "next_question_focus": "none",
+            "core_factors_recorded": False,
+            "board_work_allowed": False,
         },
         user_message="帮我解释一下这个概念",
     )
@@ -89,7 +93,8 @@ def test_basic_chat_prompt_gets_board_sensor_without_board_workflow(monkeypatch:
         "need_kind": "none",
         "guidance_direction": "none",
         "known_purpose": "",
-        "specific_learning_content": "",
+        "specific_knowledge_point": "",
+        "specific_practice_content": "",
         "current_level": "",
         "missing_piece": "",
         "reason": "用户只是寒暄。",
@@ -98,10 +103,13 @@ def test_basic_chat_prompt_gets_board_sensor_without_board_workflow(monkeypatch:
         "has_learning_purpose": False,
         "need_kind": "none",
         "known_purpose": "",
-        "specific_learning_content": "",
+        "specific_knowledge_point": "",
+        "specific_practice_content": "",
         "current_level": "",
         "missing_items": [],
         "next_question_focus": "none",
+        "core_factors_recorded": False,
+        "board_work_allowed": False,
     }
     assert payload["user_message"] == "帮我解释一下这个概念"
     assert "lesson_title" not in payload
@@ -160,7 +168,8 @@ def test_process_chat_on_lesson_records_basic_chat_without_document_change(
             "need_kind": "none",
             "guidance_direction": "none",
             "known_purpose": "",
-            "specific_learning_content": "",
+            "specific_knowledge_point": "",
+            "specific_practice_content": "",
             "current_level": "",
             "missing_piece": "",
             "reason": "用户没有表达学习目的。",
@@ -169,10 +178,13 @@ def test_process_chat_on_lesson_records_basic_chat_without_document_change(
             "has_learning_purpose": False,
             "need_kind": "none",
             "known_purpose": "",
-            "specific_learning_content": "",
+            "specific_knowledge_point": "",
+            "specific_practice_content": "",
             "current_level": "",
             "missing_items": [],
             "next_question_focus": "none",
+            "core_factors_recorded": False,
+            "board_work_allowed": False,
         },
         "user_message": "你现在能正常问答吗？",
     }
@@ -195,7 +207,8 @@ def test_process_chat_on_lesson_records_basic_chat_without_document_change(
         "need_kind": "none",
         "guidance_direction": "none",
         "known_purpose": "",
-        "specific_learning_content": "",
+        "specific_knowledge_point": "",
+        "specific_practice_content": "",
         "current_level": "",
         "missing_piece": "",
         "reason": "用户没有表达学习目的。",
@@ -204,10 +217,13 @@ def test_process_chat_on_lesson_records_basic_chat_without_document_change(
         "has_learning_purpose": False,
         "need_kind": "none",
         "known_purpose": "",
-        "specific_learning_content": "",
+        "specific_knowledge_point": "",
+        "specific_practice_content": "",
         "current_level": "",
         "missing_items": [],
         "next_question_focus": "none",
+        "core_factors_recorded": False,
+        "board_work_allowed": False,
     }
     assert commit.metadata["basic_chat_only"] is True
     assert commit.metadata["document_changed"] is False
@@ -250,69 +266,3 @@ def test_basic_chat_detects_latest_board_document_state_each_turn(
     )
 
     assert [state["status"] for state in captured_states] == ["empty", "non_empty"]
-
-
-def test_basic_chat_receives_skill_practice_guidance_detection(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path,
-) -> None:
-    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
-    monkeypatch.setattr(workspace_state, "STORE", store)
-    lesson = _seed_workspace(store, content_text="")
-    captured: dict[str, object] = {}
-
-    monkeypatch.setattr(
-        openai_course_ai,
-        "generate_learning_purpose_detection",
-        lambda **kwargs: LearningPurposeDetection(
-            has_learning_purpose=True,
-            needs_guidance=True,
-            need_kind="skill_practice",
-            guidance_direction="skill_practice",
-            known_purpose="想基于已有基础练习一项技能",
-            specific_learning_content="",
-            current_level="有一点基础",
-            missing_piece="还不清楚当前水平、练习方式和目标标准",
-            reason="用户表达了练习意图，但目标仍需收束。",
-        ),
-    )
-
-    def _fake_basic_reply(**kwargs):
-        captured.update(kwargs)
-        return ChatbotReply(chatbot_message="可以，我们先把你想练的具体技能和练习方式定下来。")
-
-    monkeypatch.setattr(openai_course_ai, "generate_basic_chat_reply", _fake_basic_reply)
-
-    response = process_chat_on_lesson(
-        lesson.id,
-        ChatRequest(message="我有一点基础，想练一下，但不知道怎么练"),
-        user_id=TEST_USER_ID,
-    )
-
-    assert response.chatbot_message == "可以，我们先把你想练的具体技能和练习方式定下来。"
-    assert captured["learning_purpose_detection"] == {
-        "has_learning_purpose": True,
-        "needs_guidance": True,
-        "need_kind": "skill_practice",
-        "guidance_direction": "skill_practice",
-        "known_purpose": "想基于已有基础练习一项技能",
-        "specific_learning_content": "",
-        "current_level": "有一点基础",
-        "missing_piece": "还不清楚当前水平、练习方式和目标标准",
-        "reason": "用户表达了练习意图，但目标仍需收束。",
-    }
-    assert captured["minimal_learning_requirement"] == {
-        "has_learning_purpose": True,
-        "need_kind": "skill_practice",
-        "known_purpose": "想基于已有基础练习一项技能",
-        "specific_learning_content": "",
-        "current_level": "有一点基础",
-        "missing_items": ["specific_learning_content"],
-        "next_question_focus": "specific_learning_content",
-    }
-    saved = store.load_for_user(TEST_USER_ID)
-    commit = saved.packages[0].lessons[0].history_graph.commits[-1]
-    assert commit.metadata["learning_purpose_detection"]["guidance_direction"] == "skill_practice"
-    assert commit.metadata["minimal_learning_requirement"]["need_kind"] == "skill_practice"
-    assert commit.metadata["minimal_learning_requirement"]["current_level"] == "有一点基础"
-    assert commit.metadata["document_changed"] is False

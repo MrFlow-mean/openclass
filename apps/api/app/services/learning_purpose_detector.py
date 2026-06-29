@@ -15,12 +15,21 @@ class LearningPurposeDetection(BaseModel):
     need_kind: LearningNeedKind = "none"
     guidance_direction: LearningGuidanceDirection = "none"
     known_purpose: str = ""
-    specific_learning_content: str = ""
+    specific_knowledge_point: str = ""
+    specific_practice_content: str = ""
     current_level: str = ""
     missing_piece: str = ""
     reason: str = ""
 
-    @field_validator("known_purpose", "specific_learning_content", "current_level", "missing_piece", "reason", mode="before")
+    @field_validator(
+        "known_purpose",
+        "specific_knowledge_point",
+        "specific_practice_content",
+        "current_level",
+        "missing_piece",
+        "reason",
+        mode="before",
+    )
     @classmethod
     def _coerce_text(cls, value: object) -> str:
         if value is None:
@@ -33,6 +42,10 @@ class LearningPurposeDetection(BaseModel):
             self.needs_guidance = False
             self.need_kind = "none"
             self.guidance_direction = "none"
+            self.known_purpose = ""
+            self.specific_knowledge_point = ""
+            self.specific_practice_content = ""
+            self.current_level = ""
             return self
         if self.need_kind == "none":
             if self.guidance_direction == "knowledge_point":
@@ -56,7 +69,8 @@ class LearningPurposeDetection(BaseModel):
             "need_kind": self.need_kind,
             "guidance_direction": self.guidance_direction,
             "known_purpose": self.known_purpose,
-            "specific_learning_content": self.specific_learning_content,
+            "specific_knowledge_point": self.specific_knowledge_point,
+            "specific_practice_content": self.specific_practice_content,
             "current_level": self.current_level,
             "missing_piece": self.missing_piece,
             "reason": self.reason,
