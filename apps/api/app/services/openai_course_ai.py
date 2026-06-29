@@ -946,6 +946,7 @@ class OpenAICourseAI:
         user_message: str,
         board_document_state: dict[str, Any],
         learning_purpose_detection: dict[str, Any],
+        minimal_learning_requirement: dict[str, Any],
     ) -> ChatbotReply | None:
         system_prompt = (
             "你是一个通用 AI 助手，在聊天对话框中和用户进行自然、连续、有帮助的你问我答交流。\n"
@@ -963,6 +964,12 @@ class OpenAICourseAI:
             "本轮只问一个关键问题，并可给 2-3 个练习方向。\n"
             "4. has_learning_purpose=true 但 needs_guidance=false 时，只自然确认你理解了用户目的；"
             "具体生成、写入、讲解和练习执行链路现在都不要启动。\n"
+            "你还会收到 minimal_learning_requirement，这是本轮最小需求清单，只记录三件事："
+            "用户是想学习没学过的新知识还是练习已有知识技能、具体想学习或练习的内容、当前水平。\n"
+            "如果 next_question_focus=need_kind，优先询问用户是在学新知识，还是在已有基础上练习技能；"
+            "如果 next_question_focus=specific_learning_content，询问用户具体想学或练哪一项内容；"
+            "如果 next_question_focus=current_level，询问用户当前水平或已有基础。"
+            "每轮只问一个关键问题，可以给 2-3 个选项帮助用户回答。\n"
             "不要套用课程模板，不要根据具体学科、教材、考试或 demo 文本走特殊规则。\n"
             "不要声称已经修改本地文件、右侧文档或外部应用；当前能力只是聊天框内的文本回答。"
         )
@@ -971,6 +978,7 @@ class OpenAICourseAI:
                 "recent_conversation": conversation_summary or "",
                 "board_document_sensor": board_document_state,
                 "learning_purpose_detection": learning_purpose_detection,
+                "minimal_learning_requirement": minimal_learning_requirement,
                 "user_message": user_message,
                 "response_contract": {
                     "chatbot_message": "直接回复用户当前问题；允许根据需要输出完整解释、列表、步骤、示例或代码。",
@@ -1000,13 +1008,18 @@ class OpenAICourseAI:
             "输出规则：\n"
             "1. 如果用户只是寒暄、闲聊、情绪表达、普通问答、写作/代码/生活类求助，且没有表达学习工作目的，"
             "has_learning_purpose=false，needs_guidance=false，guidance_direction=none。\n"
-            "2. 如果用户表达想学某个笼统模糊的目的、领域、方向、主题或知识范围，但还没有具体到可学习的知识点，"
+            "2. 如果用户表达想学某个笼统模糊的目的、领域、方向、主题或知识范围，"
+            "need_kind=new_knowledge；如果还没有具体到可学习的知识点，"
             "has_learning_purpose=true，needs_guidance=true，guidance_direction=knowledge_point。\n"
             "3. 如果用户表达自己已有一定基础，或想在现有基础上练习、提升、应用、巩固某项能力，"
-            "但当前水平、练什么、怎么练、目标标准还不清楚，"
+            "need_kind=skill_practice；如果当前水平、练什么、怎么练、目标标准还不清楚，"
             "has_learning_purpose=true，needs_guidance=true，guidance_direction=skill_practice。\n"
-            "4. 如果用户已经表达了足够明确的学习目的，has_learning_purpose=true，needs_guidance=false，"
+            "4. 如果用户表达了学习目的，但还看不出是学新知识还是练已有技能，"
+            "has_learning_purpose=true，needs_guidance=true，need_kind=unknown，guidance_direction=none。\n"
+            "5. 如果用户已经表达了足够明确的学习目的，has_learning_purpose=true，needs_guidance=false，"
             "guidance_direction=none；具体执行后续再说，不在这里处理。\n"
+            "specific_learning_content 只记录用户具体说出的学习内容或练习技能；没有就留空。\n"
+            "current_level 只记录用户具体说出的当前水平或已有基础；没有就留空。\n"
             "不要因为出现某个领域词就直接判定；要看用户是否在表达学习目的和目的是否足够具体。"
         )
         user_prompt = _json(
@@ -1017,8 +1030,11 @@ class OpenAICourseAI:
                 "response_contract": {
                     "has_learning_purpose": "用户是否表达了学习工作目的。",
                     "needs_guidance": "是否需要先引导用户把学习目的说具体。",
+                    "need_kind": "none、unknown、new_knowledge 或 skill_practice。",
                     "guidance_direction": "none、knowledge_point 或 skill_practice。",
                     "known_purpose": "已经能确定的用户学习目的；没有则为空。",
+                    "specific_learning_content": "用户具体想学习的知识点、主题、内容或想练习的技能；没有则为空。",
+                    "current_level": "用户当前水平、已有基础或自评状态；没有则为空。",
                     "missing_piece": "最关键缺失信息；不需要引导则为空。",
                     "reason": "简短说明判断依据。",
                 },

@@ -4,12 +4,10 @@ import pytest
 
 from app.models import ChatRequest, ConversationTurn
 from app.services import workspace_state
-from app.services.board_document_sensor import detect_board_document_state
 from app.services.chat_service import process_chat_on_lesson
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
 from app.services.learning_purpose_detector import LearningPurposeDetection
 from app.services.lesson_factory import create_empty_lesson
-from app.services.rich_document import build_document
 from app.services.openai_course_ai import ChatbotReply, OpenAICourseAI, openai_course_ai
 
 
@@ -53,10 +51,22 @@ def test_basic_chat_prompt_gets_board_sensor_without_board_workflow(monkeypatch:
         learning_purpose_detection={
             "has_learning_purpose": False,
             "needs_guidance": False,
+            "need_kind": "none",
             "guidance_direction": "none",
             "known_purpose": "",
+            "specific_learning_content": "",
+            "current_level": "",
             "missing_piece": "",
             "reason": "用户只是寒暄。",
+        },
+        minimal_learning_requirement={
+            "has_learning_purpose": False,
+            "need_kind": "none",
+            "known_purpose": "",
+            "specific_learning_content": "",
+            "current_level": "",
+            "missing_items": [],
+            "next_question_focus": "none",
         },
         user_message="帮我解释一下这个概念",
     )
@@ -76,40 +86,27 @@ def test_basic_chat_prompt_gets_board_sensor_without_board_workflow(monkeypatch:
     assert payload["learning_purpose_detection"] == {
         "has_learning_purpose": False,
         "needs_guidance": False,
+        "need_kind": "none",
         "guidance_direction": "none",
         "known_purpose": "",
+        "specific_learning_content": "",
+        "current_level": "",
         "missing_piece": "",
         "reason": "用户只是寒暄。",
+    }
+    assert payload["minimal_learning_requirement"] == {
+        "has_learning_purpose": False,
+        "need_kind": "none",
+        "known_purpose": "",
+        "specific_learning_content": "",
+        "current_level": "",
+        "missing_items": [],
+        "next_question_focus": "none",
     }
     assert payload["user_message"] == "帮我解释一下这个概念"
     assert "lesson_title" not in payload
     assert "resource_summary" not in payload
     assert "board_summary" not in payload
-
-
-def test_board_document_sensor_reports_empty_and_non_empty_documents() -> None:
-    empty_document = build_document(title="空白页")
-    html_only_document = build_document(title="HTML 文档", content_html="<p>已有内容</p>")
-    text_document = build_document(title="文本板书", content_text="已有板书内容")
-
-    empty_state = detect_board_document_state(empty_document)
-    html_state = detect_board_document_state(html_only_document)
-    text_state = detect_board_document_state(text_document)
-
-    assert empty_state.to_prompt_payload() == {
-        "status": "empty",
-        "is_empty": True,
-        "chatbot_context": "当前右侧板书/文档框为空。",
-        "content_visibility": "status_only",
-    }
-    assert html_state.status == "non_empty"
-    assert html_state.is_empty is False
-    assert text_state.to_prompt_payload() == {
-        "status": "non_empty",
-        "is_empty": False,
-        "chatbot_context": "当前右侧板书/文档框不是空的，里面已有内容。",
-        "content_visibility": "status_only",
-    }
 
 
 def test_process_chat_on_lesson_records_basic_chat_without_document_change(
@@ -160,10 +157,22 @@ def test_process_chat_on_lesson_records_basic_chat_without_document_change(
         "learning_purpose_detection": {
             "has_learning_purpose": False,
             "needs_guidance": False,
+            "need_kind": "none",
             "guidance_direction": "none",
             "known_purpose": "",
+            "specific_learning_content": "",
+            "current_level": "",
             "missing_piece": "",
             "reason": "用户没有表达学习目的。",
+        },
+        "minimal_learning_requirement": {
+            "has_learning_purpose": False,
+            "need_kind": "none",
+            "known_purpose": "",
+            "specific_learning_content": "",
+            "current_level": "",
+            "missing_items": [],
+            "next_question_focus": "none",
         },
         "user_message": "你现在能正常问答吗？",
     }
@@ -183,10 +192,22 @@ def test_process_chat_on_lesson_records_basic_chat_without_document_change(
     assert commit.metadata["learning_purpose_detection"] == {
         "has_learning_purpose": False,
         "needs_guidance": False,
+        "need_kind": "none",
         "guidance_direction": "none",
         "known_purpose": "",
+        "specific_learning_content": "",
+        "current_level": "",
         "missing_piece": "",
         "reason": "用户没有表达学习目的。",
+    }
+    assert commit.metadata["minimal_learning_requirement"] == {
+        "has_learning_purpose": False,
+        "need_kind": "none",
+        "known_purpose": "",
+        "specific_learning_content": "",
+        "current_level": "",
+        "missing_items": [],
+        "next_question_focus": "none",
     }
     assert commit.metadata["basic_chat_only"] is True
     assert commit.metadata["document_changed"] is False
@@ -246,8 +267,11 @@ def test_basic_chat_receives_skill_practice_guidance_detection(
         lambda **kwargs: LearningPurposeDetection(
             has_learning_purpose=True,
             needs_guidance=True,
+            need_kind="skill_practice",
             guidance_direction="skill_practice",
             known_purpose="想基于已有基础练习一项技能",
+            specific_learning_content="",
+            current_level="有一点基础",
             missing_piece="还不清楚当前水平、练习方式和目标标准",
             reason="用户表达了练习意图，但目标仍需收束。",
         ),
@@ -269,12 +293,26 @@ def test_basic_chat_receives_skill_practice_guidance_detection(
     assert captured["learning_purpose_detection"] == {
         "has_learning_purpose": True,
         "needs_guidance": True,
+        "need_kind": "skill_practice",
         "guidance_direction": "skill_practice",
         "known_purpose": "想基于已有基础练习一项技能",
+        "specific_learning_content": "",
+        "current_level": "有一点基础",
         "missing_piece": "还不清楚当前水平、练习方式和目标标准",
         "reason": "用户表达了练习意图，但目标仍需收束。",
+    }
+    assert captured["minimal_learning_requirement"] == {
+        "has_learning_purpose": True,
+        "need_kind": "skill_practice",
+        "known_purpose": "想基于已有基础练习一项技能",
+        "specific_learning_content": "",
+        "current_level": "有一点基础",
+        "missing_items": ["specific_learning_content"],
+        "next_question_focus": "specific_learning_content",
     }
     saved = store.load_for_user(TEST_USER_ID)
     commit = saved.packages[0].lessons[0].history_graph.commits[-1]
     assert commit.metadata["learning_purpose_detection"]["guidance_direction"] == "skill_practice"
+    assert commit.metadata["minimal_learning_requirement"]["need_kind"] == "skill_practice"
+    assert commit.metadata["minimal_learning_requirement"]["current_level"] == "有一点基础"
     assert commit.metadata["document_changed"] is False
