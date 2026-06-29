@@ -947,6 +947,7 @@ class OpenAICourseAI:
         board_document_state: dict[str, Any],
         learning_purpose_detection: dict[str, Any],
         minimal_learning_requirement: dict[str, Any],
+        learning_requirement_refinement: dict[str, Any],
     ) -> ChatbotReply | None:
         system_prompt = (
             "你是一个通用 AI 助手，在聊天对话框中和用户进行自然、连续、有帮助的你问我答交流。\n"
@@ -973,6 +974,9 @@ class OpenAICourseAI:
             "4. core_factors_recorded=false 或 board_work_allowed=false 时，板书 AI 不继续任何工作；"
             "本轮只在聊天框里探询、引导或确认。\n"
             "每轮只问一个关键问题，可以给少量选项帮助用户回答。\n"
+            "你还会收到 learning_requirement_refinement，它是更完整的需求收敛状态机结果："
+            "如果 ready_to_teach=false，优先使用其中 next_question 或 candidate_entry_points 引导用户；"
+            "如果 ready_to_teach=true，可以自然给出 teaching_contract，但仍不要修改右侧板书或声称已经开始板书工作。\n"
             "不要套用课程模板，不要根据具体学科、教材、考试或 demo 文本走特殊规则。\n"
             "不要声称已经修改本地文件、右侧文档或外部应用；当前能力只是聊天框内的文本回答。"
         )
@@ -982,6 +986,7 @@ class OpenAICourseAI:
                 "board_document_sensor": board_document_state,
                 "learning_purpose_detection": learning_purpose_detection,
                 "minimal_learning_requirement": minimal_learning_requirement,
+                "learning_requirement_refinement": learning_requirement_refinement,
                 "user_message": user_message,
                 "response_contract": {
                     "chatbot_message": "直接回复用户当前问题；允许根据需要输出完整解释、列表、步骤、示例或代码。",
