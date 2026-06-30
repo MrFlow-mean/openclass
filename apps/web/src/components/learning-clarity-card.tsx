@@ -122,6 +122,9 @@ function FactorRows({ factors }: { factors: LearningRequirementDisplayFactor[] }
 }
 
 function DisplaySections({ display }: { display: LearningRequirementDisplay }) {
+  const visibleAuxiliaryFactors = display.auxiliaryFactors.slice(0, 2);
+  const hiddenAuxiliaryCount = Math.max(0, display.auxiliaryFactors.length - visibleAuxiliaryFactors.length);
+
   return (
     <div className="mt-4 space-y-4">
       <section>
@@ -134,10 +137,15 @@ function DisplaySections({ display }: { display: LearningRequirementDisplay }) {
         <FactorRows factors={display.coreFactors} />
       </section>
 
-      {display.auxiliaryFactors.length ? (
+      {visibleAuxiliaryFactors.length ? (
         <section>
-          <p className="text-[11px] font-bold uppercase tracking-widest text-blue-500">辅助因素</p>
-          <FactorRows factors={display.auxiliaryFactors} />
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-[11px] font-bold uppercase tracking-widest text-blue-500">辅助因素</p>
+            {hiddenAuxiliaryCount ? (
+              <span className="text-[10px] font-medium text-blue-500">另有 {hiddenAuxiliaryCount} 条在右侧详情</span>
+            ) : null}
+          </div>
+          <FactorRows factors={visibleAuxiliaryFactors} />
         </section>
       ) : null}
     </div>
