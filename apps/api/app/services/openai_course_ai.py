@@ -1065,6 +1065,9 @@ class OpenAICourseAI:
             "entry_point_options 只记录通用入口建议，由模型根据当前领域自主生成；不要写固定讲义正文或固定课程模板。"
             "recommended_entry_point 必须从 entry_point_options 或用户已明确内容中选择一个最适合的入口。"
             "learner_profile_inference 只记录可由用户自述、最近经历、已会/未会或卡点直接推出的起点信息。\n"
+            "如果你已经给出 recommended_entry_point，但 current_level、known_background 和 learner_profile_inference "
+            "都没有可靠依据，那么 chatbot_message 结尾的唯一主问题必须优先询问用户当前水平、已会/未会或最近学到哪里；"
+            "不要继续只问用户要不要选择推荐入口。\n"
             "如果用户明确表达“想学某个领域/方向/主题”，即使主题很宽，也应归为 knowledge_board + broad_topic；"
             "只有连学习还是练习、或主题对象都无法判断时，work_mode 才保持 unknown。\n"
             "规则：\n"
@@ -1126,7 +1129,10 @@ class OpenAICourseAI:
                     "reason_for_recommendation": "推荐理由，必须基于用户已说信息或通用入门原则。",
                     "learner_profile_inference": "从用户自述、最近经历、已会/未会或卡点推断出的起点信息。",
                     "missing_items": "仍缺少的核心因素或重要辅助因素；核心因素不全必须列出。",
-                    "next_question": "清单未完整时下一轮最有价值的一个问题；ready_for_board=true 时可为空。",
+                    "next_question": (
+                        "清单未完整时下一轮最有价值的一个问题；如果已推荐入口但不了解用户水平，"
+                        "优先询问当前水平、已会/未会或最近学到哪里；ready_for_board=true 时可为空。"
+                    ),
                     "recommended_teaching_plan_summary": "可选：给用户看的教学方案摘要，不是板书正文。",
                     "ready_for_board": "只表示清单核心因素齐全，可以进入未来板书生成；本阶段不会实际生成。",
                 },

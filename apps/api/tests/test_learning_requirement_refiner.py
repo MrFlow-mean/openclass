@@ -53,6 +53,8 @@ def test_blank_board_refinement_prompt_requires_rich_broad_topic_guidance(
     payload = json.loads(str(captured["user_prompt"]))
     assert "开场承接" in payload["response_contract"]["chatbot_message"]
     assert "推荐理由" in payload["response_contract"]["chatbot_message"]
+    assert "当前水平" in payload["response_contract"]["next_question"]
+    assert "已会/未会" in system_prompt
 
 
 def test_empty_board_ordinary_chat_does_not_create_requirement(
@@ -190,6 +192,118 @@ def test_empty_board_broad_learning_need_repairs_short_guidance_reply(
     discovery = commit.metadata["guided_requirement_discovery"]
     assert discovery["quality_repaired"] is True
     assert discovery["recommended_entry_point"] == "基础对象层"
+
+
+def test_recommended_entry_without_level_question_is_repaired(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    user_id = "user_blank_entry_then_level"
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    lesson = _seed_empty_workspace(store, user_id)
+    calls: list[dict[str, object]] = []
+
+    def _fake_refinement(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return BlankBoardRequirementRefinement(
+                route="requirement_refining",
+                chatbot_message=(
+                    "这个领域可以先打开一张地图："
+                    "\n1. **基础对象层**：先理解最基本的对象。"
+                    "\n2. **规则方法层**：再学习通用规则和方法。"
+                    "\n3. **应用迁移层**：最后放到任务里使用。"
+                    "\n\n我推荐你先从**基础对象层**开始，因为它最容易落到第一个知识点。"
+                    "我们就从这里开始，可以吗？"
+                ),
+                progress=45,
+                summary="用户想学一个宽泛领域。",
+                work_mode="knowledge_board",
+                granularity="broad_topic",
+                learning_goal="一个宽泛领域",
+                guidance_strategy="domain_map",
+                learning_map_summary="可以先看基础对象、规则方法和应用迁移。",
+                entry_point_options=[
+                    {
+                        "label": "基础对象层",
+                        "why_it_matters": "最容易形成第一个知识点。",
+                        "best_for": "新手。",
+                    },
+                    {
+                        "label": "规则方法层",
+                        "why_it_matters": "帮助理解通用方法。",
+                        "best_for": "有一点基础的人。",
+                    },
+                    {
+                        "label": "应用迁移层",
+                        "why_it_matters": "帮助连接任务。",
+                        "best_for": "有明确目标的人。",
+                    },
+                ],
+                recommended_entry_point="基础对象层",
+                reason_for_recommendation="它最基础，最容易落到第一个知识点。",
+                next_question="我们就从这里开始，可以吗？",
+                ready_for_board=False,
+            )
+        return BlankBoardRequirementRefinement(
+            route="requirement_refining",
+            chatbot_message=(
+                "这个领域可以先打开一张地图："
+                "\n1. **基础对象层**：先理解最基本的对象。"
+                "\n2. **规则方法层**：再学习通用规则和方法。"
+                "\n3. **应用迁移层**：最后放到任务里使用。"
+                "\n\n我推荐你先从**基础对象层**开始，因为它最容易落到第一个知识点。"
+                "不过在真正开始前，我想先确认你的当前水平：你之前接触过这个领域吗？已经会哪些，哪些还没学过？"
+            ),
+            progress=45,
+            summary="用户想学一个宽泛领域。",
+            work_mode="knowledge_board",
+            granularity="broad_topic",
+            learning_goal="一个宽泛领域",
+            guidance_strategy="domain_map",
+            learning_map_summary="可以先看基础对象、规则方法和应用迁移。",
+            entry_point_options=[
+                {
+                    "label": "基础对象层",
+                    "why_it_matters": "最容易形成第一个知识点。",
+                    "best_for": "新手。",
+                },
+                {
+                    "label": "规则方法层",
+                    "why_it_matters": "帮助理解通用方法。",
+                    "best_for": "有一点基础的人。",
+                },
+                {
+                    "label": "应用迁移层",
+                    "why_it_matters": "帮助连接任务。",
+                    "best_for": "有明确目标的人。",
+                },
+            ],
+            recommended_entry_point="基础对象层",
+            reason_for_recommendation="它最基础，最容易落到第一个知识点。",
+            next_question="你之前接触过这个领域吗？已经会哪些，哪些还没学过？",
+            ready_for_board=False,
+        )
+
+    monkeypatch.setattr(openai_course_ai, "generate_blank_board_requirement_refinement", _fake_refinement)
+
+    response = process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="我想入门一个领域"),
+        user_id=user_id,
+    )
+
+    assert len(calls) == 2
+    assert calls[1]["quality_repair_context"] is not None
+    assert "当前水平" in response.chatbot_message
+    assert "已经会哪些" in response.chatbot_message
+    assert response.active_requirement_sheet is not None
+    assert response.active_requirement_sheet.current_questions == [
+        "你之前接触过这个领域吗？已经会哪些，哪些还没学过？"
+    ]
+    commit = store.load_for_user(user_id).packages[0].lessons[0].history_graph.commits[-1]
+    assert commit.metadata["guided_requirement_discovery"]["quality_repaired"] is True
 
 
 def test_empty_board_broad_learning_need_collects_requirement(

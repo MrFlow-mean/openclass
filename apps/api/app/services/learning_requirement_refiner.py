@@ -460,6 +460,7 @@ def _repair_guided_reply_if_needed(
                 "reason_for_recommendation",
                 "learner_profile_inference",
                 "next_question",
+                "current_level_or_known_background_question",
             ],
         },
     )
@@ -489,6 +490,12 @@ def _guided_reply_repair_reason(result: BlankBoardRequirementRefinement) -> str:
         reasons.append("chatbot_message 没有呈现足够入口选项。")
     if _has_text(result.recommended_entry_point) and result.recommended_entry_point.strip() not in message:
         reasons.append("chatbot_message 没有呈现推荐入口。")
+    if (
+        _has_text(result.recommended_entry_point)
+        and not _has_starting_level_context(result)
+        and not _asks_about_starting_level(_first_text(result.next_question, result.chatbot_message))
+    ):
+        reasons.append("已经推荐入口，但没有追问用户当前水平、已会/未会或最近学到哪里。")
     if "？" not in message and "?" not in message:
         reasons.append("chatbot_message 没有一个关键问题。")
     return " ".join(reasons)
@@ -531,6 +538,42 @@ def _merge_guidance_repair(
         if value:
             data[field_name] = value
     return BlankBoardRequirementRefinement.model_validate(data)
+
+
+def _has_starting_level_context(result: BlankBoardRequirementRefinement) -> bool:
+    return any(
+        _has_text(value)
+        for value in [
+            result.current_level,
+            result.known_background,
+            result.learner_profile_inference,
+        ]
+    )
+
+
+def _asks_about_starting_level(text: str) -> bool:
+    compact = (text or "").strip()
+    if not compact:
+        return False
+    return any(
+        keyword in compact
+        for keyword in [
+            "当前水平",
+            "现在水平",
+            "目前水平",
+            "什么水平",
+            "学到哪里",
+            "最近学",
+            "已经会",
+            "已会",
+            "还没学",
+            "没学过",
+            "基础",
+            "掌握",
+            "接触过",
+            "了解过",
+        ]
+    )
 
 
 def _guidance_metadata(
