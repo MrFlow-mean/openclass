@@ -72,6 +72,26 @@ def save_workspace_for_user(user_id: str, workspace: WorkspaceState) -> None:
     get_store().save_for_user(user_id, workspace)
 
 
+def save_workspace_and_learning_requirement_history_for_user(
+    user_id: str,
+    workspace: WorkspaceState,
+    *,
+    learning_requirement_history_operations: list[dict[str, object]] | None = None,
+) -> None:
+    get_store().save_for_user_with_learning_requirement_history(
+        user_id,
+        workspace,
+        learning_requirement_history_operations=learning_requirement_history_operations or [],
+    )
+
+
+def load_learning_requirement_history_state_for_user(
+    user_id: str,
+    lesson_id: str,
+) -> dict[str, object] | None:
+    return get_store().load_learning_requirement_history_state(user_id, lesson_id)
+
+
 def search_document_segments_for_user(
     user_id: str,
     query: str = "",

@@ -356,6 +356,31 @@ class LearningRequirementUpdate(BaseModel):
     interaction_rule_draft: InteractionRuleDraft | None = None
 
 
+class BlankBoardRequirementRefinement(BaseModel):
+    route: Literal["ordinary_chat", "requirement_refining"] = "ordinary_chat"
+    chatbot_message: str = ""
+    progress: int = Field(default=0, ge=0, le=100)
+    summary: str = ""
+    work_mode: InitialLearningWorkMode = "unknown"
+    granularity: InitialLearningGranularity = "unclear"
+    learning_goal: str = ""
+    current_level: str = ""
+    target_scenario: str = ""
+    known_background: str = ""
+    target_depth: str = ""
+    output_preference: str = ""
+    boundary: str = ""
+    board_scope: list[str] = Field(default_factory=list)
+    success_criteria: str = ""
+    learning_need_checklist: list[str] = Field(default_factory=list)
+    key_facts: list[LearningRequirementKeyFact] = Field(default_factory=list)
+    checklist: list[LearningRequirementChecklistItem] = Field(default_factory=list)
+    missing_items: list[str] = Field(default_factory=list)
+    next_question: str = ""
+    recommended_teaching_plan_summary: str = ""
+    ready_for_board: bool = False
+
+
 class InitialLearningWorkModeDecision(BaseModel):
     work_mode: InitialLearningWorkMode = "unknown"
     granularity: InitialLearningGranularity = "unclear"
@@ -972,6 +997,85 @@ class OpenAICourseAI:
             schema=ChatbotReply,
         )
         return result if isinstance(result, ChatbotReply) else None
+
+    def generate_blank_board_requirement_refinement(
+        self,
+        *,
+        board_document_state: dict[str, Any] | None = None,
+        conversation_summary: str,
+        user_message: str,
+        existing_requirement_sheet: dict[str, Any] | None = None,
+        existing_clarification: dict[str, Any] | None = None,
+    ) -> BlankBoardRequirementRefinement | None:
+        system_prompt = (
+            "你是 OpenClass 的空白板书学习需求收敛器，也是左侧聊天框里的自然对话 AI。\n"
+            "运行前提：board_document_state.status 必须是 empty；本阶段只维护 LearningRequirementSheet，"
+            "不生成板书、不冻结清单、不调用 Board AI。\n"
+            "任务：先判断用户当前轮是 ordinary_chat 还是 requirement_refining。\n"
+            "ordinary_chat：用户没有表达学习、练习、资料、板书或教学目的时，像 ChatGPT 一样自然回复；"
+            "不要新建或更新清单，不要追问学习需求。\n"
+            "requirement_refining：用户表达了学习或练习目的，但还需要收敛到可生成板书的教学目标。"
+            "你要自然回复用户，同时输出结构化清单变化。\n"
+            "两类终点：\n"
+            "1. knowledge_board：用户想学新知识。只有 learning_goal 已经明确到一个具体知识点、概念、方法、步骤或单一问题，"
+            "且 granularity=single_knowledge_point 时，ready_for_board 才能为 true；其他场景、考试、工作用途只作为辅助因素。\n"
+            "2. practice_artifact：用户想练习已有知识或技能。ready_for_board=true 必须同时具备 learning_goal、"
+            "current_level、target_scenario 三个核心因素；如果用户明确没有场景或让系统不按场景定制，target_scenario 可写"
+            "“无明确应用场景”。\n"
+            "收敛方法：你可以根据上下文灵活使用起点定位法、轻量自述法、最近经历法、已会/未会法、"
+            "学习模式分流法、场景定位法、目标产出法、卡点定位法、选择卡片法、领域地图法、推荐入口法。"
+            "这些方法只用于自然语言引导，不要变成固定问卷。\n"
+            "如果用户是纯新手且想入门某领域，可以用领域地图介绍该领域由哪些通用部分构成、推荐一个入门入口，"
+            "并继续把需求收敛到一个可开始的知识点或练习产物。\n"
+            "规则：\n"
+            "1. 不写任何学科、教材、考试、语言名、旅游场景或 demo 专属规则；只根据用户意图形态和内容产物形态判断。\n"
+            "2. 不脑补核心因素；核心因素不全时 ready_for_board=false，只追问一个最关键缺项，必要时给 2-3 个可选入口。\n"
+            "3. 辅助因素可以记录 known_background、target_depth、output_preference、board_scope、"
+            "learning_need_checklist、success_criteria，但不能替代核心因素。\n"
+            "4. key_facts 只记录用户已经透露或你从当前对话可直接归纳的事实，优先使用标签："
+            "用户想学的内容、当前水平、面向场景。\n"
+            "5. chatbot_message 面向用户自然表达；不要输出 JSON、字段名、内部状态名或右侧板书正文。"
+        )
+        user_prompt = _json(
+            {
+                "board_document_state": board_document_state or {},
+                "recent_conversation": conversation_summary or "",
+                "current_user_message": user_message,
+                "existing_requirement_sheet": existing_requirement_sheet or None,
+                "existing_clarification": existing_clarification or None,
+                "response_contract": {
+                    "route": "ordinary_chat 或 requirement_refining。",
+                    "chatbot_message": "直接给用户看的自然回复；如果在收敛需求，每次最多追问一个主问题。",
+                    "progress": "0-100 的清单完整度；ready_for_board=true 时必须为 100。",
+                    "summary": "当前学习需求的一句话摘要；普通聊天可为空。",
+                    "work_mode": "knowledge_board、practice_artifact 或 unknown；本阶段不使用其他新值。",
+                    "granularity": "single_knowledge_point、practice_artifact、broad_topic 或 unclear。",
+                    "learning_goal": "核心因素。新知识点教学写用户具体想学的知识点；练习型写用户具体想练的内容。",
+                    "current_level": "练习型核心因素。用户当前水平、已有基础或最近状态；新知识点教学可作为辅助。",
+                    "target_scenario": "练习型核心因素。用户面向的任务、应用、输出或“无明确应用场景”。",
+                    "known_background": "可选辅助因素：已会、未会、最近经历、卡点或背景。",
+                    "target_depth": "可选辅助因素：希望理解、会做、能应用、能讲给别人等深度。",
+                    "output_preference": "可选辅助因素：希望板书或教学呈现的形态偏好。",
+                    "boundary": "可选辅助因素：范围边界或不要展开的部分。",
+                    "board_scope": "可选辅助因素：未来板书可覆盖的通用模块清单，不写固定讲义正文。",
+                    "success_criteria": "可选辅助因素：用户希望学完能做到什么，练习场景可写在这里。",
+                    "learning_need_checklist": "当前清单的简短条目，用用户已表达事实和缺项组织。",
+                    "key_facts": "0-5 条事实，每项包含 label、value、evidence、category。",
+                    "checklist": "2-5 个动态检查项，每项包含 title、is_clear、evidence。",
+                    "missing_items": "仍缺少的核心因素或重要辅助因素；核心因素不全必须列出。",
+                    "next_question": "清单未完整时下一轮最有价值的一个问题；ready_for_board=true 时可为空。",
+                    "recommended_teaching_plan_summary": "可选：给用户看的教学方案摘要，不是板书正文。",
+                    "ready_for_board": "只表示清单核心因素齐全，可以进入未来板书生成；本阶段不会实际生成。",
+                },
+            }
+        )
+        result = self._parse(
+            "pm",
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            schema=BlankBoardRequirementRefinement,
+        )
+        return result if isinstance(result, BlankBoardRequirementRefinement) else None
 
     def generate_chatbot_reply(
         self,
