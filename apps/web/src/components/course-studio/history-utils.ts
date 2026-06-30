@@ -93,6 +93,14 @@ const LEGACY_NON_AI_ASSISTANT_PATTERNS = [
   "请求已发出，生成讲义可能需要",
 ] as const;
 
+const DISPLAYABLE_CHAT_COMMIT_KINDS = new Set([
+  "chat_flow",
+  "board_document_generation",
+  "board_document_edit",
+  "basic_chat",
+  "learning_requirement_refinement",
+]);
+
 function isDisplayableAssistantContent(content: string | null, source?: string | null): content is string {
   const text = content?.trim();
   if (!text) {
@@ -242,10 +250,7 @@ export function buildLessonMessagesFromHistory(lesson: Lesson, commitId?: string
   const messages: ChatMessage[] = [];
 
   lesson.history_graph.commits.forEach((commit) => {
-    if (
-      !lineageIds.has(commit.id) ||
-      !["chat_flow", "board_document_generation", "board_document_edit"].includes(String(commit.metadata?.kind ?? ""))
-    ) {
+    if (!lineageIds.has(commit.id) || !DISPLAYABLE_CHAT_COMMIT_KINDS.has(String(commit.metadata?.kind ?? ""))) {
       return;
     }
 
