@@ -7,7 +7,7 @@ from app.services import workspace_state
 from app.services.chat_service import process_chat_on_lesson
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
 from app.services.lesson_factory import create_empty_lesson
-from app.services.openai_course_ai import BlankBoardRequirementRefinement, openai_course_ai
+from app.services.openai_course_ai import BlankBoardRequirementRefinement, OpenAICourseAI, openai_course_ai
 
 
 def _seed_empty_workspace(store: SqliteCourseStore, user_id: str, title: str = "空白学习页"):
@@ -23,6 +23,38 @@ def _seed_empty_workspace(store: SqliteCourseStore, user_id: str, title: str = "
     return lesson
 
 
+def test_blank_board_refinement_prompt_requires_rich_broad_topic_guidance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ai = OpenAICourseAI()
+    captured: dict[str, object] = {}
+
+    def _fake_parse(role, system_prompt, user_prompt, schema, **kwargs):
+        captured["role"] = role
+        captured["system_prompt"] = system_prompt
+        captured["user_prompt"] = user_prompt
+        captured["schema"] = schema
+        return BlankBoardRequirementRefinement(route="ordinary_chat", chatbot_message="收到。")
+
+    monkeypatch.setattr(ai, "_parse", _fake_parse)
+
+    ai.generate_blank_board_requirement_refinement(
+        board_document_state={"status": "empty"},
+        conversation_summary="",
+        user_message="我想学一个领域",
+    )
+
+    assert captured["role"] == "pm"
+    assert captured["schema"] is BlankBoardRequirementRefinement
+    system_prompt = str(captured["system_prompt"])
+    assert "开场承接 + 简短学习地图 + 2-5 个入口选项 + 一个推荐入口 + 推荐理由 + 一个绑定推荐入口的主问题" in system_prompt
+    assert "学习地图和入口选项必须真的写进 chatbot_message" in system_prompt
+    assert "knowledge_board + broad_topic" in system_prompt
+    payload = json.loads(str(captured["user_prompt"]))
+    assert "开场承接" in payload["response_contract"]["chatbot_message"]
+    assert "推荐理由" in payload["response_contract"]["chatbot_message"]
+
+
 def test_empty_board_ordinary_chat_does_not_create_requirement(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
@@ -31,8 +63,11 @@ def test_empty_board_ordinary_chat_does_not_create_requirement(
     store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
     monkeypatch.setattr(workspace_state, "STORE", store)
     lesson = _seed_empty_workspace(store, user_id)
+    call_count = 0
 
     def _fake_refinement(**kwargs):
+        nonlocal call_count
+        call_count += 1
         return BlankBoardRequirementRefinement(
             route="ordinary_chat",
             chatbot_message="可以，我们就正常聊这个。",
@@ -55,6 +90,7 @@ def test_empty_board_ordinary_chat_does_not_create_requirement(
     )
 
     assert response.chatbot_message == "可以，我们就正常聊这个。"
+    assert call_count == 1
     assert response.active_requirement_sheet is None
     assert response.requirement_run_id is None
     assert store.list_learning_requirement_versions(user_id, lesson.id) == []
@@ -66,6 +102,94 @@ def test_empty_board_ordinary_chat_does_not_create_requirement(
     assert commit.metadata["kind"] == "basic_chat"
     assert commit.metadata["refinement_route"] == "ordinary_chat"
     assert commit.metadata["board_document_state"]["status"] == "empty"
+
+
+def test_empty_board_broad_learning_need_repairs_short_guidance_reply(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    user_id = "user_blank_broad_repair"
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    lesson = _seed_empty_workspace(store, user_id)
+    calls: list[dict[str, object]] = []
+
+    def _fake_refinement(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return BlankBoardRequirementRefinement(
+                route="requirement_refining",
+                chatbot_message="数学很广，你想学哪部分？",
+                progress=10,
+                summary="用户想学一个宽泛领域。",
+                work_mode="unknown",
+                granularity="broad_topic",
+                learning_goal="数学",
+                missing_items=["current_level", "target_scenario"],
+                next_question="你想学哪部分？",
+                ready_for_board=False,
+            )
+        return BlankBoardRequirementRefinement(
+            route="requirement_refining",
+            chatbot_message=(
+                "好，数学是个很大的世界，我们先把地图打开看一眼。"
+                "\n\n数学可以先从几个入口切入："
+                "\n1. **基础对象层**：先弄清数字、式子、函数这些对象在讨论什么。"
+                "\n2. **规则方法层**：学习变形、证明、计算和建模这些通用方法。"
+                "\n3. **典型应用层**：把知识放到题目、项目或真实问题里使用。"
+                "\n\n如果你现在只是想入门，我建议先从**基础对象层**开始，因为它最容易收敛到第一个可学习的知识点。"
+                "你现在更想先了解整体地图，还是直接从一个最基础的概念开始？"
+            ),
+            progress=45,
+            summary="用户想学数学，需要收敛到具体知识点。",
+            work_mode="knowledge_board",
+            granularity="broad_topic",
+            learning_goal="数学",
+            guidance_strategy="domain_map",
+            learning_map_summary="数学可以先看基础对象、规则方法和典型应用。",
+            entry_point_options=[
+                {
+                    "label": "基础对象层",
+                    "why_it_matters": "先知道数学讨论的对象。",
+                    "best_for": "刚开始入门的人。",
+                },
+                {
+                    "label": "规则方法层",
+                    "why_it_matters": "掌握计算和推理的方法。",
+                    "best_for": "想开始做题的人。",
+                },
+                {
+                    "label": "典型应用层",
+                    "why_it_matters": "理解知识能解决什么问题。",
+                    "best_for": "有明确应用目标的人。",
+                },
+            ],
+            recommended_entry_point="基础对象层",
+            reason_for_recommendation="它最基础，最容易落到第一个知识点。",
+            next_question="你现在更想先了解整体地图，还是直接从一个最基础的概念开始？",
+            ready_for_board=False,
+        )
+
+    monkeypatch.setattr(openai_course_ai, "generate_blank_board_requirement_refinement", _fake_refinement)
+
+    response = process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="我想学数学"),
+        user_id=user_id,
+    )
+
+    assert len(calls) == 2
+    assert calls[1]["quality_repair_context"] is not None
+    assert "基础对象层" in response.chatbot_message
+    assert "规则方法层" in response.chatbot_message
+    assert response.active_requirement_sheet is not None
+    assert response.active_requirement_sheet.work_mode == "knowledge_board"
+    assert response.active_requirement_sheet.granularity == "broad_topic"
+    assert response.learning_clarification.missing_items == ["用户想学的内容需要收敛到具体知识点"]
+    commit = store.load_for_user(user_id).packages[0].lessons[0].history_graph.commits[-1]
+    discovery = commit.metadata["guided_requirement_discovery"]
+    assert discovery["quality_repaired"] is True
+    assert discovery["recommended_entry_point"] == "基础对象层"
 
 
 def test_empty_board_broad_learning_need_collects_requirement(
@@ -279,8 +403,11 @@ def test_empty_board_specific_knowledge_point_is_ready(
     store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
     monkeypatch.setattr(workspace_state, "STORE", store)
     lesson = _seed_empty_workspace(store, user_id)
+    call_count = 0
 
     def _fake_refinement(**kwargs):
+        nonlocal call_count
+        call_count += 1
         return BlankBoardRequirementRefinement(
             route="requirement_refining",
             chatbot_message="这个目标已经足够聚焦，下一步可以为它准备板书。",
@@ -301,6 +428,7 @@ def test_empty_board_specific_knowledge_point_is_ready(
     )
 
     assert response.active_requirement_sheet is not None
+    assert call_count == 1
     assert response.active_requirement_sheet.learning_goal == "一个明确知识点"
     assert response.learning_clarification.ready_for_board is True
     assert response.learning_clarification.missing_items == []
@@ -357,8 +485,11 @@ def test_empty_board_practice_need_with_three_core_factors_is_ready(
     store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
     monkeypatch.setattr(workspace_state, "STORE", store)
     lesson = _seed_empty_workspace(store, user_id)
+    call_count = 0
 
     def _fake_refinement(**kwargs):
+        nonlocal call_count
+        call_count += 1
         return BlankBoardRequirementRefinement(
             route="requirement_refining",
             chatbot_message="这三个核心因素已经齐了，下一步可以准备练习型板书。",
@@ -381,6 +512,7 @@ def test_empty_board_practice_need_with_three_core_factors_is_ready(
     )
 
     assert response.learning_clarification.ready_for_board is True
+    assert call_count == 1
     assert response.requirement_phase == "ready"
     assert response.active_requirement_sheet is not None
     assert response.active_requirement_sheet.learning_goal == "一项旧知识或技能"

@@ -1035,6 +1035,7 @@ class OpenAICourseAI:
         user_message: str,
         existing_requirement_sheet: dict[str, Any] | None = None,
         existing_clarification: dict[str, Any] | None = None,
+        quality_repair_context: dict[str, Any] | None = None,
     ) -> BlankBoardRequirementRefinement | None:
         system_prompt = (
             "你是 OpenClass 的空白板书学习需求收敛器，也是左侧聊天框里的自然对话 AI。\n"
@@ -1057,11 +1058,15 @@ class OpenAICourseAI:
             "如果用户是纯新手且想入门某领域，可以用领域地图介绍该领域由哪些通用部分构成、推荐一个入门入口，"
             "并继续把需求收敛到一个可开始的知识点或练习产物。\n"
             "当 learning_goal 仍是宽泛主题、granularity=broad_topic 或用户说不知道从哪开始时，"
-            "chatbot_message 必须优先呈现“简短学习地图 + 2-5 个入口选项 + 一个推荐入口 + 一个绑定推荐入口的主问题”，"
-            "而不是只追问“具体想学什么”。\n"
+            "chatbot_message 必须优先呈现“开场承接 + 简短学习地图 + 2-5 个入口选项 + 一个推荐入口 + 推荐理由 + 一个绑定推荐入口的主问题”，"
+            "而不是只追问“具体想学什么”；学习地图和入口选项必须真的写进 chatbot_message，不能只写在结构化字段里。\n"
+            "宽泛主题下，chatbot_message 不能是一两句话，也不能只是列分支名；它要像老师在聊天框里给用户打开地图，"
+            "先降低表达成本，再把用户带向一个可开始的知识点。\n"
             "entry_point_options 只记录通用入口建议，由模型根据当前领域自主生成；不要写固定讲义正文或固定课程模板。"
             "recommended_entry_point 必须从 entry_point_options 或用户已明确内容中选择一个最适合的入口。"
             "learner_profile_inference 只记录可由用户自述、最近经历、已会/未会或卡点直接推出的起点信息。\n"
+            "如果用户明确表达“想学某个领域/方向/主题”，即使主题很宽，也应归为 knowledge_board + broad_topic；"
+            "只有连学习还是练习、或主题对象都无法判断时，work_mode 才保持 unknown。\n"
             "规则：\n"
             "1. 不写任何学科、教材、考试、语言名、旅游场景或 demo 专属规则；只根据用户意图形态和内容产物形态判断。\n"
             "2. 不脑补核心因素；核心因素不全时 ready_for_board=false，但要通过引导、推荐和选择卡片降低表达成本，"
@@ -1073,6 +1078,13 @@ class OpenAICourseAI:
             "5. chatbot_message 面向用户自然表达；必须综合使用 learning_map_summary、entry_point_options、"
             "recommended_entry_point 和 reason_for_recommendation 中的有用信息，但不要输出 JSON、字段名、内部状态名或右侧板书正文。"
         )
+        if quality_repair_context:
+            system_prompt += (
+                "\n质量修复模式：上一轮结构化结果已经被后端判定为宽泛主题引导不够丰富。"
+                "你只能修复 chatbot_message、guidance_strategy、learning_map_summary、entry_point_options、"
+                "recommended_entry_point、reason_for_recommendation、learner_profile_inference 和 next_question；"
+                "不得改变用户核心学习事实，不得生成板书，不得把固定模板或学科硬编码写进核心逻辑。"
+            )
         user_prompt = _json(
             {
                 "board_document_state": board_document_state or {},
@@ -1080,9 +1092,13 @@ class OpenAICourseAI:
                 "current_user_message": user_message,
                 "existing_requirement_sheet": existing_requirement_sheet or None,
                 "existing_clarification": existing_clarification or None,
+                "quality_repair_context": quality_repair_context or None,
                 "response_contract": {
                     "route": "ordinary_chat 或 requirement_refining。",
-                    "chatbot_message": "直接给用户看的自然回复；如果在收敛需求，每次最多追问一个主问题。",
+                    "chatbot_message": (
+                        "直接给用户看的自然回复；如果是宽泛主题，必须包含开场承接、学习地图、"
+                        "2-5 个入口选项、一个推荐入口、推荐理由和一个关键问题；每次最多追问一个主问题。"
+                    ),
                     "progress": "0-100 的清单完整度；ready_for_board=true 时必须为 100。",
                     "summary": "当前学习需求的一句话摘要；普通聊天可为空。",
                     "work_mode": "knowledge_board、practice_artifact 或 unknown；本阶段不使用其他新值。",

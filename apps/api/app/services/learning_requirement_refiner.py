@@ -58,6 +58,14 @@ def refine_blank_board_requirement(
     )
     if not isinstance(result, BlankBoardRequirementRefinement):
         return None
+    result, quality_repaired = _repair_guided_reply_if_needed(
+        result=result,
+        board_document_state=board_document_state,
+        conversation_summary=conversation_summary,
+        user_message=user_message,
+        base_requirement=base_requirement,
+        active_clarification=active_clarification,
+    )
 
     recorder = LearningRequirementHistoryRecorder.from_store_state(
         owner_user_id=owner_user_id,
@@ -76,8 +84,8 @@ def refine_blank_board_requirement(
             changed=False,
         )
 
-    normalized_work_mode = _normalize_work_mode(result.work_mode)
-    normalized_granularity = _normalize_granularity(result.granularity, normalized_work_mode)
+    normalized_work_mode = _normalize_work_mode(result)
+    normalized_granularity = _normalize_granularity(result, normalized_work_mode)
     ready_for_board = _is_core_ready(result, normalized_work_mode, normalized_granularity)
     missing_items = _merged_missing_items(result, normalized_work_mode, normalized_granularity)
     if ready_for_board:
@@ -103,7 +111,7 @@ def refine_blank_board_requirement(
         requirements=requirement,
         clarification=clarification,
         change_summary=clarification.summary or "更新空白板书学习需求清单。",
-        metadata=_guidance_metadata(result),
+        metadata=_guidance_metadata(result, quality_repaired=quality_repaired),
     )
     return LearningRequirementRefinementOutcome(
         route="requirement_refining",
@@ -112,7 +120,7 @@ def refine_blank_board_requirement(
         learning_clarification=clarification,
         history_stamp=stamp,
         history_operations=list(recorder.operations),
-        guidance_metadata=_guidance_metadata(result),
+        guidance_metadata=_guidance_metadata(result, quality_repaired=quality_repaired),
         changed=bool(recorder.operations),
     )
 
@@ -167,22 +175,26 @@ def _basic_chat_clarification() -> LearningClarificationStatus:
     )
 
 
-def _normalize_work_mode(work_mode: InitialLearningWorkMode) -> InitialLearningWorkMode:
-    if work_mode in {"knowledge_board", "narrow_topic"}:
+def _normalize_work_mode(result: BlankBoardRequirementRefinement) -> InitialLearningWorkMode:
+    if result.work_mode in {"knowledge_board", "narrow_topic"}:
         return "knowledge_board"
-    if work_mode == "practice_artifact":
+    if result.work_mode == "practice_artifact":
         return "practice_artifact"
+    if _has_text(result.learning_goal) or result.granularity == "broad_topic":
+        return "knowledge_board"
     return "unknown"
 
 
 def _normalize_granularity(
-    granularity: InitialLearningGranularity,
+    result: BlankBoardRequirementRefinement,
     work_mode: InitialLearningWorkMode,
 ) -> InitialLearningGranularity:
     if work_mode == "practice_artifact":
         return "practice_artifact"
-    if granularity in {"single_knowledge_point", "broad_topic"}:
-        return granularity
+    if result.granularity in {"single_knowledge_point", "broad_topic"}:
+        return result.granularity
+    if work_mode == "knowledge_board" and _has_text(result.learning_goal):
+        return "broad_topic"
     return "unclear"
 
 
@@ -209,13 +221,14 @@ def _merged_missing_items(
     work_mode: InitialLearningWorkMode,
     granularity: InitialLearningGranularity,
 ) -> list[str]:
-    missing = list(result.missing_items)
     if work_mode == "knowledge_board":
+        missing: list[str] = []
         if not _has_text(result.learning_goal):
             missing.append("用户想学的内容")
         if granularity != "single_knowledge_point":
             missing.append("用户想学的内容需要收敛到具体知识点")
     elif work_mode == "practice_artifact":
+        missing = []
         if not _has_text(result.learning_goal):
             missing.append("用户想练的内容")
         if not _has_text(result.current_level):
@@ -223,7 +236,7 @@ def _merged_missing_items(
         if not _has_text(result.target_scenario):
             missing.append("面向场景")
     else:
-        missing.append("学习类型")
+        missing = ["学习类型"]
     return _dedupe_text(missing)
 
 
@@ -406,7 +419,125 @@ def _core_checklist(
     ]
 
 
-def _guidance_metadata(result: BlankBoardRequirementRefinement) -> dict[str, Any]:
+def _repair_guided_reply_if_needed(
+    *,
+    result: BlankBoardRequirementRefinement,
+    board_document_state: BoardDocumentSensorReading,
+    conversation_summary: str,
+    user_message: str,
+    base_requirement: LearningRequirementSheet,
+    active_clarification: LearningClarificationStatus | None,
+) -> tuple[BlankBoardRequirementRefinement, bool]:
+    repair_reason = _guided_reply_repair_reason(result)
+    if not repair_reason:
+        return result, False
+    repaired = openai_course_ai.generate_blank_board_requirement_refinement(
+        board_document_state=board_document_state.model_context(),
+        conversation_summary=conversation_summary,
+        user_message=user_message,
+        existing_requirement_sheet=base_requirement.model_dump(mode="json"),
+        existing_clarification=active_clarification.model_dump(mode="json") if active_clarification else None,
+        quality_repair_context={
+            "repair_reason": repair_reason,
+            "previous_output": result.model_dump(mode="json"),
+            "must_preserve": [
+                "route",
+                "work_mode",
+                "granularity",
+                "learning_goal",
+                "current_level",
+                "target_scenario",
+                "known_background",
+                "summary",
+                "ready_for_board",
+            ],
+            "must_improve": [
+                "chatbot_message",
+                "guidance_strategy",
+                "learning_map_summary",
+                "entry_point_options",
+                "recommended_entry_point",
+                "reason_for_recommendation",
+                "learner_profile_inference",
+                "next_question",
+            ],
+        },
+    )
+    if not isinstance(repaired, BlankBoardRequirementRefinement):
+        return result, False
+    return _merge_guidance_repair(result, repaired), True
+
+
+def _guided_reply_repair_reason(result: BlankBoardRequirementRefinement) -> str:
+    if not _is_broad_knowledge_refinement(result):
+        return ""
+    reasons: list[str] = []
+    options = [option for option in result.entry_point_options if _has_text(option.label)]
+    message = result.chatbot_message.strip()
+    if len(message) < 160:
+        reasons.append("chatbot_message 太短，像追问而不是学习地图引导。")
+    if not _has_text(result.learning_map_summary):
+        reasons.append("缺少 learning_map_summary。")
+    if len(options) < 2:
+        reasons.append("entry_point_options 少于 2 个。")
+    if not _has_text(result.recommended_entry_point):
+        reasons.append("缺少 recommended_entry_point。")
+    if not _has_text(result.reason_for_recommendation):
+        reasons.append("缺少 reason_for_recommendation。")
+    visible_option_count = sum(1 for option in options if option.label.strip() in message)
+    if options and visible_option_count < min(2, len(options)):
+        reasons.append("chatbot_message 没有呈现足够入口选项。")
+    if _has_text(result.recommended_entry_point) and result.recommended_entry_point.strip() not in message:
+        reasons.append("chatbot_message 没有呈现推荐入口。")
+    if "？" not in message and "?" not in message:
+        reasons.append("chatbot_message 没有一个关键问题。")
+    return " ".join(reasons)
+
+
+def _is_broad_knowledge_refinement(result: BlankBoardRequirementRefinement) -> bool:
+    if result.route != "requirement_refining" or result.ready_for_board:
+        return False
+    if result.work_mode == "practice_artifact" or result.granularity == "practice_artifact":
+        return False
+    return (
+        result.granularity == "broad_topic"
+        or result.work_mode in {"knowledge_board", "narrow_topic"}
+        or _has_text(result.learning_goal)
+    )
+
+
+def _merge_guidance_repair(
+    original: BlankBoardRequirementRefinement,
+    repaired: BlankBoardRequirementRefinement,
+) -> BlankBoardRequirementRefinement:
+    data = original.model_dump(mode="json")
+    for field_name in [
+        "chatbot_message",
+        "guidance_strategy",
+        "learning_map_summary",
+        "entry_point_options",
+        "recommended_entry_point",
+        "reason_for_recommendation",
+        "learner_profile_inference",
+        "next_question",
+        "learning_need_checklist",
+        "board_scope",
+    ]:
+        value = getattr(repaired, field_name)
+        if isinstance(value, str):
+            if _has_text(value):
+                data[field_name] = value
+            continue
+        if value:
+            data[field_name] = value
+    return BlankBoardRequirementRefinement.model_validate(data)
+
+
+def _guidance_metadata(
+    result: BlankBoardRequirementRefinement,
+    *,
+    quality_repaired: bool = False,
+) -> dict[str, Any]:
     return {
         "guidance_strategy": result.guidance_strategy,
         "learning_map_summary": result.learning_map_summary,
@@ -418,6 +549,7 @@ def _guidance_metadata(result: BlankBoardRequirementRefinement) -> dict[str, Any
         "recommended_entry_point": result.recommended_entry_point,
         "reason_for_recommendation": result.reason_for_recommendation,
         "learner_profile_inference": result.learner_profile_inference,
+        "quality_repaired": quality_repaired,
     }
 
 
