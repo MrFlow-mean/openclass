@@ -171,7 +171,7 @@ def test_non_empty_board_keeps_basic_chat_path(
     assert commit.metadata["board_document_state"]["status"] == "non_empty"
 
 
-def test_empty_board_broad_learning_need_repairs_short_guidance_reply(
+def test_empty_board_broad_learning_need_records_short_guidance_quality_issue_without_second_call(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
@@ -245,21 +245,22 @@ def test_empty_board_broad_learning_need_repairs_short_guidance_reply(
         user_id=user_id,
     )
 
-    assert len(calls) == 2
-    assert calls[1]["quality_repair_context"] is not None
-    assert "基础对象层" in response.chatbot_message
-    assert "规则方法层" in response.chatbot_message
+    assert len(calls) == 1
+    assert "quality_repair_context" not in calls[0]
+    assert response.chatbot_message == "数学很广，你想学哪部分？"
     assert response.active_requirement_sheet is not None
     assert response.active_requirement_sheet.work_mode == "knowledge_board"
     assert response.active_requirement_sheet.granularity == "broad_topic"
     assert response.learning_clarification.missing_items == ["用户想学的内容需要收敛到具体知识点"]
     commit = store.load_for_user(user_id).packages[0].lessons[0].history_graph.commits[-1]
     discovery = commit.metadata["guided_requirement_discovery"]
-    assert discovery["quality_repaired"] is True
-    assert discovery["recommended_entry_point"] == "基础对象层"
+    assert discovery["quality_repaired"] is False
+    assert discovery["quality_repair_skipped"] is True
+    assert discovery["recommended_entry_point"] == ""
+    assert any("学习地图" in issue for issue in discovery["quality_issues"])
 
 
-def test_recommended_entry_without_level_question_is_repaired(
+def test_recommended_entry_without_level_question_records_quality_issue_without_second_call(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
@@ -359,19 +360,21 @@ def test_recommended_entry_without_level_question_is_repaired(
         user_id=user_id,
     )
 
-    assert len(calls) == 2
-    assert calls[1]["quality_repair_context"] is not None
-    assert "当前水平" in response.chatbot_message
-    assert "已经会哪些" in response.chatbot_message
+    assert len(calls) == 1
+    assert "quality_repair_context" not in calls[0]
+    assert "可以吗" in response.chatbot_message
     assert response.active_requirement_sheet is not None
     assert response.active_requirement_sheet.current_questions == [
-        "你之前接触过这个领域吗？已经会哪些，哪些还没学过？"
+        "我们就从这里开始，可以吗？"
     ]
     commit = store.load_for_user(user_id).packages[0].lessons[0].history_graph.commits[-1]
-    assert commit.metadata["guided_requirement_discovery"]["quality_repaired"] is True
+    discovery = commit.metadata["guided_requirement_discovery"]
+    assert discovery["quality_repaired"] is False
+    assert discovery["quality_repair_skipped"] is True
+    assert any("当前水平" in issue for issue in discovery["quality_issues"])
 
 
-def test_form_like_internal_field_guidance_is_repaired(
+def test_form_like_internal_field_guidance_records_quality_issue_without_second_call(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
@@ -463,12 +466,10 @@ def test_form_like_internal_field_guidance_is_repaired(
             user_id=user_id,
         )
 
-    assert len(calls) == 2
-    repair_context = calls[1]["quality_repair_context"]
-    assert repair_context is not None
-    assert "字段" in repair_context["repair_reason"]
-    assert "请填写" not in response.chatbot_message
-    assert "learning_goal" not in response.chatbot_message
+    assert len(calls) == 1
+    assert "quality_repair_context" not in calls[0]
+    assert "请填写" in response.chatbot_message
+    assert "learning_goal" in response.chatbot_message
     streamed_message = "".join(
         str(event.get("delta") or "")
         for event in stream_events
@@ -477,16 +478,17 @@ def test_form_like_internal_field_guidance_is_repaired(
         and event.get("field") == "chatbot_message"
     )
     assert streamed_message == response.chatbot_message
-    assert "请填写" not in streamed_message
-    assert "learning_goal" not in streamed_message
+    assert "请填写" in streamed_message
+    assert "learning_goal" in streamed_message
     commit = store.load_for_user(user_id).packages[0].lessons[0].history_graph.commits[-1]
     discovery = commit.metadata["guided_requirement_discovery"]
-    assert discovery["quality_repaired"] is True
+    assert discovery["quality_repaired"] is False
+    assert discovery["quality_repair_skipped"] is True
     assert any("泄露内部字段" in issue for issue in discovery["quality_issues"])
     assert any("填表" in issue for issue in discovery["quality_issues"])
 
 
-def test_multi_question_guidance_is_repaired_to_one_main_question(
+def test_multi_question_guidance_records_quality_issue_without_second_call(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
@@ -576,14 +578,13 @@ def test_multi_question_guidance_is_repaired_to_one_main_question(
         user_id=user_id,
     )
 
-    assert len(calls) == 2
-    assert response.chatbot_message.count("？") == 1
-    repair_context = calls[1]["quality_repair_context"]
-    assert repair_context is not None
-    assert "多个独立问题" in repair_context["repair_reason"]
+    assert len(calls) == 1
+    assert "quality_repair_context" not in calls[0]
+    assert response.chatbot_message.count("？") > 1
     commit = store.load_for_user(user_id).packages[0].lessons[0].history_graph.commits[-1]
     discovery = commit.metadata["guided_requirement_discovery"]
-    assert discovery["quality_repaired"] is True
+    assert discovery["quality_repaired"] is False
+    assert discovery["quality_repair_skipped"] is True
     assert any("多个独立问题" in issue for issue in discovery["quality_issues"])
 
 
@@ -921,7 +922,7 @@ def test_delegated_pure_novice_intro_lands_first_lesson_ready(
     assert [version["status"] for version in versions] == ["collecting", "ready"]
 
 
-def test_delegated_pure_novice_intro_repairs_confirmation_loop_to_ready(
+def test_delegated_pure_novice_intro_records_confirmation_loop_quality_issue_without_second_call(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
@@ -1010,26 +1011,24 @@ def test_delegated_pure_novice_intro_repairs_confirmation_loop_to_ready(
         user_id=user_id,
     )
 
-    assert len(calls) == 2
-    repair_context = calls[1]["quality_repair_context"]
-    assert repair_context is not None
-    assert "委托式入门" in repair_context["repair_reason"]
+    assert len(calls) == 1
+    assert "quality_repair_context" not in calls[0]
     assert response.active_requirement_sheet is not None
-    assert response.active_requirement_sheet.granularity == "single_knowledge_point"
-    assert response.active_requirement_sheet.learning_goal == "这个领域由哪几部分组成"
-    assert response.active_requirement_sheet.current_questions == []
-    assert response.learning_clarification.ready_for_board is True
-    assert response.learning_clarification.missing_items == []
-    assert response.requirement_phase == "ready"
-    assert "愿意从" not in response.chatbot_message
-    assert "准备好了吗" not in response.chatbot_message
+    assert response.active_requirement_sheet.granularity == "broad_topic"
+    assert response.active_requirement_sheet.learning_goal == "一个复合领域"
+    assert response.active_requirement_sheet.current_questions == ["准备好了吗？"]
+    assert response.learning_clarification.ready_for_board is False
+    assert response.learning_clarification.missing_items == ["用户想学的内容需要收敛到具体知识点"]
+    assert response.requirement_phase == "collecting"
+    assert "准备好了吗" in response.chatbot_message
     commit = store.load_for_user(user_id).packages[0].lessons[0].history_graph.commits[-1]
     discovery = commit.metadata["guided_requirement_discovery"]
-    assert discovery["quality_repaired"] is True
+    assert discovery["quality_repaired"] is False
+    assert discovery["quality_repair_skipped"] is True
     assert any("委托式入门" in issue for issue in discovery["quality_issues"])
 
 
-def test_pure_novice_intro_external_goal_question_is_repaired(
+def test_pure_novice_intro_external_goal_question_records_quality_issue_without_second_call(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
@@ -1115,17 +1114,17 @@ def test_pure_novice_intro_external_goal_question_is_repaired(
         user_id=user_id,
     )
 
-    assert len(calls) == 2
-    assert calls[1]["quality_repair_context"] is not None
-    assert "纯新手入门场景" in calls[1]["quality_repair_context"]["repair_reason"]
-    assert "考试" not in response.chatbot_message
-    assert "工作" not in response.chatbot_message
-    assert "赚钱" not in response.chatbot_message
+    assert len(calls) == 1
+    assert "quality_repair_context" not in calls[0]
+    assert "考试" in response.chatbot_message
+    assert "工作" in response.chatbot_message
+    assert "赚钱" in response.chatbot_message
     assert response.active_requirement_sheet is not None
     assert response.active_requirement_sheet.level == "零基础纯新手"
     commit = store.load_for_user(user_id).packages[0].lessons[0].history_graph.commits[-1]
     discovery = commit.metadata["guided_requirement_discovery"]
-    assert discovery["quality_repaired"] is True
+    assert discovery["quality_repaired"] is False
+    assert discovery["quality_repair_skipped"] is True
     assert any("纯新手入门场景" in issue for issue in discovery["quality_issues"])
 
 

@@ -282,7 +282,9 @@ def build_guidance_metadata(
     *,
     quality_repaired: bool = False,
     quality_issues: list[str] | None = None,
+    quality_repair_skipped: bool = False,
 ) -> dict[str, object]:
+    issues = quality_issues or []
     return {
         "guidance_strategy": result.guidance_strategy,
         "learning_map_summary": result.learning_map_summary,
@@ -295,7 +297,8 @@ def build_guidance_metadata(
         "reason_for_recommendation": result.reason_for_recommendation,
         "learner_profile_inference": result.learner_profile_inference,
         "quality_repaired": quality_repaired,
-        "quality_issues": quality_issues or [],
+        "quality_repair_skipped": quality_repair_skipped or (bool(issues) and not quality_repaired),
+        "quality_issues": issues,
     }
 
 

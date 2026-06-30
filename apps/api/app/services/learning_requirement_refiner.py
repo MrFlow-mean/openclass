@@ -12,9 +12,7 @@ from app.services.board_document_sensor import BoardDocumentSensorReading
 from app.services.blank_board_requirement_mapping import build_blank_board_requirement_state
 from app.services.blank_board_requirement_quality import (
     assess_blank_board_requirement_reply,
-    allows_core_quality_repair,
     build_guidance_metadata,
-    merge_guidance_repair,
 )
 from app.services.course_runtime import active_task_requirements
 from app.services.learning_requirement_history import (
@@ -61,13 +59,9 @@ def refine_blank_board_requirement(
     )
     if not isinstance(result, BlankBoardRequirementRefinement):
         return None
-    result, quality_repaired, quality_issues = _repair_guided_reply_if_needed(
+    quality_repaired, quality_issues = _assess_guided_reply_quality(
         result=result,
-        board_document_state=board_document_state,
-        conversation_summary=conversation_summary,
         user_message=user_message,
-        base_requirement=base_requirement,
-        active_clarification=active_clarification,
     )
     _emit_validated_chatbot_message(result)
 
@@ -97,6 +91,7 @@ def refine_blank_board_requirement(
         result,
         quality_repaired=quality_repaired,
         quality_issues=quality_issues,
+        quality_repair_skipped=bool(quality_issues),
     )
     stamp = recorder.record_update(
         requirements=requirement_state.requirement,
@@ -166,70 +161,15 @@ def _basic_chat_clarification() -> LearningClarificationStatus:
     )
 
 
-def _repair_guided_reply_if_needed(
+def _assess_guided_reply_quality(
     *,
     result: BlankBoardRequirementRefinement,
-    board_document_state: BoardDocumentSensorReading,
-    conversation_summary: str,
     user_message: str,
-    base_requirement: LearningRequirementSheet,
-    active_clarification: LearningClarificationStatus | None,
-) -> tuple[BlankBoardRequirementRefinement, bool, list[str]]:
+) -> tuple[bool, list[str]]:
     reply_quality = assess_blank_board_requirement_reply(result, user_message=user_message)
     if not reply_quality.needs_repair:
-        return result, False, []
-    allow_core_updates = allows_core_quality_repair(reply_quality.issues)
-    repaired = openai_course_ai.generate_blank_board_requirement_refinement(
-        board_document_state=board_document_state.model_context(),
-        conversation_summary=conversation_summary,
-        user_message=user_message,
-        existing_requirement_sheet=base_requirement.model_dump(mode="json"),
-        existing_clarification=active_clarification.model_dump(mode="json") if active_clarification else None,
-        quality_repair_context={
-            "repair_reason": reply_quality.repair_reason,
-            "previous_output": result.model_dump(mode="json"),
-            "must_preserve": (
-                [
-                    "route",
-                    "do_not_invent_user_facts",
-                ]
-                if allow_core_updates
-                else [
-                    "route",
-                    "work_mode",
-                    "granularity",
-                    "learning_goal",
-                    "current_level",
-                    "target_scenario",
-                    "known_background",
-                    "summary",
-                    "ready_for_board",
-                ]
-            ),
-            "must_improve": [
-                "chatbot_message",
-                "guidance_strategy",
-                "learning_map_summary",
-                "entry_point_options",
-                "recommended_entry_point",
-                "reason_for_recommendation",
-                "learner_profile_inference",
-                "next_question",
-                "current_level_or_known_background_question",
-                "natural_conversation_no_internal_fields",
-                "single_main_question",
-                "novice_intro_no_external_goal_question",
-                "delegated_intro_entry_ready",
-                "novice_foundation_entry_ready",
-                "practice_level_choice_cards",
-                "matched_guidance_method_for_current_user_signal",
-                "record_observed_facts_to_requirement_sheet",
-            ],
-        },
-    )
-    if not isinstance(repaired, BlankBoardRequirementRefinement):
-        return result, False, reply_quality.issues
-    return merge_guidance_repair(result, repaired, allow_core_updates=allow_core_updates), True, reply_quality.issues
+        return False, []
+    return False, reply_quality.issues
 
 
 def _first_text(*values: str) -> str:
