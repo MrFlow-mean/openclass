@@ -6,7 +6,7 @@ from app.models import ChatRequest, ConversationTurn
 from app.services import workspace_state
 from app.services.chat_service import process_chat_on_lesson
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
-from app.services.lesson_factory import create_empty_lesson
+from app.services.lesson_factory import build_requirements, create_empty_lesson
 from app.services.openai_course_ai import ChatbotReply, OpenAICourseAI, openai_course_ai
 
 
@@ -109,3 +109,43 @@ def test_process_chat_on_lesson_records_basic_chat_without_document_change(
         "reason": "当前右侧板书文档已有可见内容。",
     }
     assert commit.metadata["document_changed"] is False
+
+
+def test_non_empty_basic_chat_preserves_existing_learning_requirement_sheet(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    lesson = _seed_workspace(store)
+    workspace = store.load_for_user(TEST_USER_ID)
+    saved_lesson = workspace.packages[0].lessons[0]
+    requirements = build_requirements(saved_lesson.title)
+    requirements.learning_goal = "以太坊开发由哪几部分组成"
+    requirements.work_mode = "knowledge_board"
+    requirements.granularity = "single_knowledge_point"
+    saved_lesson.learning_requirements = requirements
+    store.save_for_user(TEST_USER_ID, workspace)
+
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_basic_chat_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="继续正常聊天。"),
+    )
+
+    response = process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="这页先聊一下。"),
+        user_id=TEST_USER_ID,
+    )
+
+    assert response.chatbot_message == "继续正常聊天。"
+    assert response.active_requirement_sheet is not None
+    assert response.active_requirement_sheet.learning_goal == "以太坊开发由哪几部分组成"
+    assert response.requirement_cleared is False
+    saved_lesson = store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
+    assert saved_lesson.learning_requirements is not None
+    assert saved_lesson.learning_requirements.learning_goal == "以太坊开发由哪几部分组成"
+    commit = saved_lesson.history_graph.commits[-1]
+    assert commit.metadata["kind"] == "basic_chat"
+    assert commit.metadata["active_requirement_sheet_after"]["learning_goal"] == "以太坊开发由哪几部分组成"

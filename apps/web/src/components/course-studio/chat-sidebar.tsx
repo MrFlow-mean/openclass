@@ -34,6 +34,7 @@ import type {
   ChatRequestPayload,
   CommitRecord,
   LearningClarificationStatus,
+  LearningRequirementSheet,
   Lesson,
   ResourceReferenceContext,
   ResourceReferencePrompt,
@@ -74,8 +75,23 @@ function sequenceFocusLabel(lesson: Lesson) {
   };
 }
 
+function hasVisibleLearningClarity(
+  clarityStatus: LearningClarificationStatus,
+  activeRequirementSheet: LearningRequirementSheet | null
+) {
+  return (
+    clarityStatus.progress > 0 ||
+    clarityStatus.ready_for_board ||
+    Boolean(clarityStatus.summary.trim()) ||
+    clarityStatus.key_facts.length > 0 ||
+    clarityStatus.checklist.length > 0 ||
+    Boolean(activeRequirementSheet?.work_mode && activeRequirementSheet.work_mode !== "unknown")
+  );
+}
+
 function CurrentNeedCard({
   activeBoardTask,
+  activeRequirementSheet,
   barTone,
   clarityStatus,
   currentNeedPending,
@@ -84,6 +100,7 @@ function CurrentNeedCard({
   targetCommitId,
 }: {
   activeBoardTask: BoardTaskRequirementSheet | null;
+  activeRequirementSheet: LearningRequirementSheet | null;
   barTone: string;
   clarityStatus: LearningClarificationStatus;
   currentNeedPending: boolean;
@@ -165,6 +182,18 @@ function CurrentNeedCard({
     );
   }
 
+  if (hasVisibleLearningClarity(clarityStatus, activeRequirementSheet)) {
+    return (
+      <LearningClarityCard
+        activeRequirementSheet={activeRequirementSheet}
+        barTone={barTone}
+        clarityStatus={clarityStatus}
+        lesson={lesson}
+        targetCommitId={targetCommitId}
+      />
+    );
+  }
+
   if (lesson.board_document.content_text.trim()) {
     return (
       <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
@@ -182,6 +211,7 @@ function CurrentNeedCard({
 
   return (
     <LearningClarityCard
+      activeRequirementSheet={activeRequirementSheet}
       barTone={barTone}
       clarityStatus={clarityStatus}
       lesson={lesson}
@@ -207,6 +237,7 @@ type CourseStudioChatSidebarProps = {
   boardEditPrompt: BoardEditPrompt | null;
   clarificationQuestions: string[];
   activeBoardTask: BoardTaskRequirementSheet | null;
+  activeRequirementSheet: LearningRequirementSheet | null;
   currentNeedPending: boolean;
   latestBoardDecision: BoardDecision | null;
   selectedReference: ResourceReferenceContext | null;
@@ -259,6 +290,7 @@ export function CourseStudioChatSidebar({
   boardEditPrompt,
   clarificationQuestions,
   activeBoardTask,
+  activeRequirementSheet,
   currentNeedPending,
   latestBoardDecision,
   selectedReference,
@@ -331,6 +363,7 @@ export function CourseStudioChatSidebar({
         <div className="space-y-6">
           <CurrentNeedCard
             activeBoardTask={!isPreviewMode ? activeBoardTask : null}
+            activeRequirementSheet={!isPreviewMode ? activeRequirementSheet : null}
             barTone={clarityBarTone}
             clarityStatus={clarityStatus}
             currentNeedPending={!isPreviewMode && currentNeedPending}

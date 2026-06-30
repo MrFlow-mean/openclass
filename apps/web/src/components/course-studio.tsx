@@ -555,6 +555,7 @@ export function CourseStudio() {
           boardEditPrompt={boardEditPrompt}
           clarificationQuestions={clarificationQuestions}
           activeBoardTask={activeBoardTask}
+          activeRequirementSheet={activeRequirements}
           currentNeedPending={currentNeedPending}
           latestBoardDecision={latestBoardDecision}
           selectedReference={selectedReference}

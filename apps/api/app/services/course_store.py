@@ -15,6 +15,7 @@ from app.models import (
     CourseGraphEdge,
     CoursePackage,
     DocumentSegmentSearchResult,
+    LearningRequirementSheet,
     Lesson,
     LessonHistoryGraph,
     LibraryChapter,
@@ -457,7 +458,7 @@ class SqliteCourseStore:
             where_clause = "WHERE owner_user_id = ?"
             params = (owner_user_id,)
         packages = [
-            self._read_package(conn, package_row)
+            self._read_package(conn, package_row, owner_user_id=owner_user_id)
             for package_row in conn.execute(
                 f"""
                 SELECT * FROM course_packages
@@ -469,10 +470,16 @@ class SqliteCourseStore:
         ]
         return WorkspaceState(packages=packages, active_package_id=active_package_id)
 
-    def _read_package(self, conn: sqlite3.Connection, row: sqlite3.Row) -> CoursePackage:
+    def _read_package(
+        self,
+        conn: sqlite3.Connection,
+        row: sqlite3.Row,
+        *,
+        owner_user_id: str | None = None,
+    ) -> CoursePackage:
         package_id = row["id"]
         lessons = [
-            self._read_lesson(conn, lesson_row)
+            self._read_lesson(conn, lesson_row, owner_user_id=owner_user_id)
             for lesson_row in conn.execute(
                 """
                 SELECT * FROM lessons
@@ -523,7 +530,13 @@ class SqliteCourseStore:
             workspace_tab_order=workspace_tab_order,
         )
 
-    def _read_lesson(self, conn: sqlite3.Connection, row: sqlite3.Row) -> Lesson:
+    def _read_lesson(
+        self,
+        conn: sqlite3.Connection,
+        row: sqlite3.Row,
+        *,
+        owner_user_id: str | None = None,
+    ) -> Lesson:
         lesson_id = row["id"]
         commits = [
             self._read_commit(conn, commit_row)
@@ -552,6 +565,13 @@ class SqliteCourseStore:
                 (lesson_id,),
             ).fetchall()
         }
+        learning_requirements = _loads_optional(row["learning_requirements_json"])
+        if learning_requirements is None and owner_user_id is not None:
+            learning_requirements = self._active_learning_requirement_from_history(
+                conn,
+                owner_user_id=owner_user_id,
+                lesson_id=lesson_id,
+            )
         history_graph = LessonHistoryGraph(
             branches=branches,
             commits=commits,
@@ -566,7 +586,7 @@ class SqliteCourseStore:
             board_document=_document_from_row(row, "board"),
             board_teaching_guide=_loads_optional(row["board_teaching_guide_json"]),
             board_teaching_progress=_loads_optional(row["board_teaching_progress_json"]),
-            learning_requirements=_loads_optional(row["learning_requirements_json"]),
+            learning_requirements=learning_requirements,
             board_task_requirements=_loads_optional(row["board_task_requirements_json"]),
             active_interaction_session=_loads_optional(row["interaction_session_json"]),
             teaching_guide=_loads(row["teaching_guide_json"], {}),
@@ -574,6 +594,26 @@ class SqliteCourseStore:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
+
+    def _active_learning_requirement_from_history(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        owner_user_id: str,
+        lesson_id: str,
+    ) -> dict[str, Any] | None:
+        state = self._learning_requirement_history.load_state(
+            conn,
+            owner_user_id=owner_user_id,
+            lesson_id=lesson_id,
+        )
+        raw_sheet = state.get("latest_sheet_json") if state else None
+        if not isinstance(raw_sheet, str) or not raw_sheet.strip():
+            return None
+        try:
+            return LearningRequirementSheet.model_validate_json(raw_sheet).model_dump(mode="json")
+        except Exception:
+            return None
 
     def _read_commit(self, conn: sqlite3.Connection, row: sqlite3.Row) -> CommitRecord:
         parent_ids = [

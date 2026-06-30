@@ -2,170 +2,26 @@
 
 import clsx from "clsx";
 
-import type { CommitRecord, LearningClarificationStatus, LearningRequirementKeyFact, Lesson } from "@/types";
-
-type SummaryRow = {
-  key: string;
-  label: string;
-  value: string;
-};
-
-type SpecificNeedParts = {
-  scenario?: string;
-  deliverable?: string;
-  output?: string;
-  learningTarget?: string;
-};
-
-const SUMMARY_LABELS: Record<string, string> = {
-  learning: "用户要学什么",
-  level: "自己的水平",
-  vocabulary: "词汇量",
-  scenario: "面向场景",
-  output: "输出需求",
-};
-const SUMMARY_CATEGORIES = ["learning", "level", "vocabulary", "scenario", "output"] as const;
-
-type SummaryCategory = (typeof SUMMARY_CATEGORIES)[number];
+import {
+  buildLearningRequirementDisplay,
+  learningRequirementStatusLabel,
+  type LearningRequirementDisplay,
+  type LearningRequirementDisplayFactor,
+} from "@/lib/learning-requirement-display";
+import type {
+  CommitRecord,
+  LearningClarificationStatus,
+  LearningRequirementKeyFact,
+  LearningRequirementSheet,
+  Lesson,
+} from "@/types";
 
 function compactText(value: string) {
   return value.replace(/\s+/g, " ").trim();
 }
 
-function normalizeText(value: string) {
-  return compactText(value).replace(/[：:，,。.；;\s/_-]+/g, "").toLowerCase();
-}
-
-function isMeaningfulFact(fact: LearningRequirementKeyFact) {
-  return compactText(fact.label).length > 0 && compactText(fact.value).length > 0;
-}
-
-function factMatches(fact: LearningRequirementKeyFact, needles: string[]) {
-  const label = normalizeText(fact.label);
-  return needles.some((needle) => label.includes(needle));
-}
-
-function isSummaryCategory(value: unknown): value is SummaryCategory {
-  return typeof value === "string" && SUMMARY_CATEGORIES.includes(value as SummaryCategory);
-}
-
-function legacyCategoryFromLabel(fact: LearningRequirementKeyFact): SummaryCategory | "other" {
-  const label = normalizeText(fact.label);
-  if (label.includes("需求") || label.includes("输出") || label.includes("产出")) {
-    return "output";
-  }
-  if (
-    [
-      "学习内容",
-      "学习主题",
-      "学习目标",
-      "学习意愿",
-      "目标语言",
-      "学习语言",
-      "具体领域",
-      "学习方向",
-      "主题",
-      "想学",
-      "具体内容",
-    ].some((needle) => label.includes(needle))
-  ) {
-    return "learning";
-  }
-  if (["当前水平", "自己水平", "已有基础", "基础", "水平"].some((needle) => label.includes(needle))) {
-    return "level";
-  }
-  if (["词汇量", "词汇"].some((needle) => label.includes(needle))) {
-    return "vocabulary";
-  }
-  if (["面向场景", "使用场景", "应用场景", "任务场景", "场景"].some((needle) => label.includes(needle))) {
-    return "scenario";
-  }
-  return "other";
-}
-
-function factCategory(fact: LearningRequirementKeyFact): SummaryCategory | "other" {
-  return isSummaryCategory(fact.category) ? fact.category : legacyCategoryFromLabel(fact);
-}
-
-function latestFactWhere(
-  facts: LearningRequirementKeyFact[],
-  predicate: (fact: LearningRequirementKeyFact) => boolean
-) {
-  for (let index = facts.length - 1; index >= 0; index -= 1) {
-    const fact = facts[index];
-    if (predicate(fact)) {
-      return fact;
-    }
-  }
-  return null;
-}
-
-function latestFact(facts: LearningRequirementKeyFact[], needles: string[]) {
-  return latestFactWhere(facts, (fact) => factMatches(fact, needles));
-}
-
-function latestFactByCategory(facts: LearningRequirementKeyFact[], category: SummaryCategory) {
-  return latestFactWhere(facts, (fact) => factCategory(fact) === category);
-}
-
-function isLearningObjectFact(fact: LearningRequirementKeyFact) {
-  return factCategory(fact) === "learning";
-}
-
-function isSpecificNeedFact(fact: LearningRequirementKeyFact) {
-  return factCategory(fact) === "output" || factMatches(fact, ["具体学习需求", "学习内容需求", "生成需求", "输出需求", "产出需求"]);
-}
-
-function cleanLearningValue(value: string) {
-  return compactText(value)
-    .replace(/^(?:我|用户)?(?:想要|想|希望|打算|准备)?/, "")
-    .replace(/^(?:学|学习|复习|练习|了解|理解|掌握|研究)(?:一下|下)?/, "")
-    .replace(/^(?:关于|有关|围绕)/, "")
-    .trim();
-}
-
-function parseSpecificNeed(value: string): SpecificNeedParts {
-  const text = compactText(value);
-  const aboutMatch = text.match(/^(.*?)(?:关于|围绕|面向|基于)(.+?)的(.+)$/u);
-  if (!aboutMatch) {
-    return {};
-  }
-
-  const action = compactText(aboutMatch[1] ?? "");
-  const scenario = compactText(aboutMatch[2] ?? "");
-  const deliverable = compactText(aboutMatch[3] ?? "");
-  if (!scenario || !deliverable) {
-    return {};
-  }
-
-  return {
-    scenario,
-    deliverable,
-    learningTarget: `${scenario}${deliverable}`,
-    output: action ? `${action}${deliverable}` : deliverable,
-  };
-}
-
-function joinUnique(parts: Array<string | undefined>) {
-  const seen = new Set<string>();
-  return parts
-    .map((part) => compactText(part ?? ""))
-    .filter((part) => {
-      if (!part) {
-        return false;
-      }
-      const key = normalizeText(part);
-      if (seen.has(key)) {
-        return false;
-      }
-      seen.add(key);
-      return true;
-    })
-    .join(" / ");
-}
-
 function clarityFromCommit(commit: CommitRecord): LearningClarificationStatus | null {
-  const value = commit.metadata?.learning_clarification;
+  const value = commit.metadata?.learning_clarification_after ?? commit.metadata?.learning_clarification;
   if (!value || typeof value !== "object") {
     return null;
   }
@@ -178,7 +34,9 @@ function clarityFromCommit(commit: CommitRecord): LearningClarificationStatus | 
     progress: typeof record.progress === "number" ? record.progress : 0,
     label: typeof record.label === "string" ? record.label : "",
     reason: typeof record.reason === "string" ? record.reason : "",
-    missing_items: [],
+    missing_items: Array.isArray(record.missing_items)
+      ? record.missing_items.filter((item): item is string => typeof item === "string")
+      : [],
     can_start: record.can_start === true,
     forced_start: record.forced_start === true,
     summary: typeof record.summary === "string" ? record.summary : "",
@@ -190,18 +48,20 @@ function clarityFromCommit(commit: CommitRecord): LearningClarificationStatus | 
       if (typeof raw.label !== "string" || typeof raw.value !== "string") {
         return [];
       }
-          return [
-            {
-              label: raw.label,
-              value: raw.value,
-              evidence: typeof raw.evidence === "string" ? raw.evidence : "",
-              category: typeof raw.category === "string" ? (raw.category as LearningRequirementKeyFact["category"]) : null,
-            },
-          ];
-        }),
+      return [
+        {
+          label: raw.label,
+          value: raw.value,
+          evidence: typeof raw.evidence === "string" ? raw.evidence : "",
+          category: typeof raw.category === "string" ? (raw.category as LearningRequirementKeyFact["category"]) : null,
+        },
+      ];
+    }),
     checklist: [],
-    next_question: "",
+    next_question: typeof record.next_question === "string" ? record.next_question : "",
     ready_for_board: record.ready_for_board === true,
+    work_mode: record.work_mode ?? null,
+    granularity: record.granularity ?? null,
   };
 }
 
@@ -241,62 +101,70 @@ function collectFacts(
     });
   }
   facts.push(...clarityStatus.key_facts);
-  return facts.filter(isMeaningfulFact);
+  return facts;
 }
 
-function buildSummaryRows(
-  clarityStatus: LearningClarificationStatus,
-  lesson: Lesson | null | undefined,
-  targetCommitId: string | null | undefined
-): SummaryRow[] {
-  const facts = collectFacts(clarityStatus, lesson, targetCommitId);
-  const learningFact = latestFactWhere(facts, isLearningObjectFact);
-  const levelFact = latestFactByCategory(facts, "level") ?? latestFact(facts, ["当前水平", "自己水平", "已有基础", "基础", "水平"]);
-  const vocabularyFact = latestFactByCategory(facts, "vocabulary") ?? latestFact(facts, ["词汇量", "词汇"]);
-  const scenarioFact = latestFactByCategory(facts, "scenario") ?? latestFact(facts, ["面向场景", "使用场景", "应用场景", "任务场景", "场景"]);
-  const outputFact = latestFactByCategory(facts, "output") ?? latestFact(facts, ["输出需求", "输出偏好", "产出需求", "生成需求", "学习需求", "需求类型", "输出"]);
-  const specificNeedFact = latestFactWhere(facts, isSpecificNeedFact);
-  const specificNeedParts = specificNeedFact ? parseSpecificNeed(specificNeedFact.value) : {};
+function FactorRows({ factors }: { factors: LearningRequirementDisplayFactor[] }) {
+  return (
+    <dl className="mt-2 space-y-2 text-xs leading-6">
+      {factors.map((factor) => (
+        <div key={factor.key} className="grid grid-cols-[74px_minmax(0,1fr)] gap-3">
+          <dt className={clsx("font-semibold", factor.required ? "text-blue-700" : "text-blue-600/80")}>
+            {factor.label}
+          </dt>
+          <dd className={clsx("min-w-0 break-words", factor.filled ? "text-blue-950" : "text-blue-700/70")}>
+            {factor.value}
+          </dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
 
-  const rows: SummaryRow[] = [];
-  const learningValue = joinUnique([
-    learningFact ? cleanLearningValue(learningFact.value) : undefined,
-    scenarioFact?.value && specificNeedParts.deliverable
-      ? `${scenarioFact.value}${specificNeedParts.deliverable}`
-      : specificNeedParts.learningTarget,
-  ]);
-  if (learningValue) {
-    rows.push({ key: "learning", label: SUMMARY_LABELS.learning, value: learningValue });
-  }
-  if (levelFact?.value) {
-    rows.push({ key: "level", label: SUMMARY_LABELS.level, value: compactText(levelFact.value) });
-  }
-  if (vocabularyFact?.value) {
-    rows.push({ key: "vocabulary", label: SUMMARY_LABELS.vocabulary, value: compactText(vocabularyFact.value) });
-  }
+function DisplaySections({ display }: { display: LearningRequirementDisplay }) {
+  return (
+    <div className="mt-4 space-y-4">
+      <section>
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-[11px] font-bold uppercase tracking-widest text-blue-700">核心因素</p>
+          <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-semibold text-blue-700">
+            {display.coreFactors.every((factor) => factor.filled) ? "齐全" : "待完善"}
+          </span>
+        </div>
+        <FactorRows factors={display.coreFactors} />
+      </section>
 
-  const scenarioValue = compactText(scenarioFact?.value ?? specificNeedParts.scenario ?? "");
-  if (scenarioValue) {
-    rows.push({ key: "scenario", label: SUMMARY_LABELS.scenario, value: scenarioValue });
-  }
-
-  const outputValue = compactText(outputFact?.value ?? specificNeedParts.output ?? specificNeedFact?.value ?? "");
-  if (outputValue) {
-    rows.push({ key: "output", label: SUMMARY_LABELS.output, value: outputValue });
-  }
-
-  return rows;
+      {display.auxiliaryFactors.length ? (
+        <section>
+          <p className="text-[11px] font-bold uppercase tracking-widest text-blue-500">辅助因素</p>
+          <FactorRows factors={display.auxiliaryFactors} />
+        </section>
+      ) : null}
+    </div>
+  );
 }
 
 interface LearningClarityCardProps {
   barTone: string;
   clarityStatus: LearningClarificationStatus;
+  activeRequirementSheet?: LearningRequirementSheet | null;
   lesson?: Lesson | null;
   targetCommitId?: string | null;
 }
 
-export function LearningClarityCard({ barTone, clarityStatus, lesson, targetCommitId }: LearningClarityCardProps) {
-  const rows = buildSummaryRows(clarityStatus, lesson, targetCommitId);
+export function LearningClarityCard({
+  barTone,
+  clarityStatus,
+  activeRequirementSheet,
+  lesson,
+  targetCommitId,
+}: LearningClarityCardProps) {
+  const display = buildLearningRequirementDisplay({
+    requirementSheet: activeRequirementSheet,
+    clarification: clarityStatus,
+    keyFacts: collectFacts(clarityStatus, lesson, targetCommitId),
+  });
+  const statusLabel = learningRequirementStatusLabel(display.status);
 
   return (
     <div className="rounded-xl border border-blue-100/50 bg-[#f4f6ff] p-4">
@@ -304,23 +172,31 @@ export function LearningClarityCard({ barTone, clarityStatus, lesson, targetComm
         <div className="h-2 flex-1 overflow-hidden rounded-full bg-white shadow-inner">
           <div
             className={clsx("h-full rounded-full transition-all duration-500", barTone)}
-            style={{ width: `${clarityStatus.progress}%` }}
+            style={{ width: `${display.progress}%` }}
           />
         </div>
         <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-bold text-blue-800 shadow-sm">
-          {clarityStatus.progress}%
+          {display.progress}%
         </span>
       </div>
-      {rows.length ? (
-        <dl className="mt-4 space-y-3 text-xs leading-6 text-blue-950">
-          {rows.map((row) => (
-            <div key={row.key} className="grid grid-cols-[86px_minmax(0,1fr)] gap-3">
-              <dt className="font-semibold text-blue-700">{row.label}</dt>
-              <dd className="min-w-0 break-words text-blue-950">{row.value}</dd>
-            </div>
-          ))}
-        </dl>
-      ) : null}
+
+      <div className="mt-4 flex items-start justify-between gap-3">
+        <div>
+          <p className="text-[10px] font-bold uppercase tracking-widest text-blue-500">教学类型</p>
+          <p className="mt-1 text-sm font-semibold text-blue-950">{display.teachingType}</p>
+        </div>
+        <span
+          className={clsx(
+            "rounded-full px-2.5 py-1 text-[11px] font-semibold",
+            display.status === "ready" ? "bg-emerald-50 text-emerald-700" : "bg-white text-blue-700"
+          )}
+        >
+          {statusLabel}
+        </span>
+      </div>
+
+      {display.summary ? <p className="mt-3 text-xs leading-6 text-blue-900/80">{compactText(display.summary)}</p> : null}
+      <DisplaySections display={display} />
     </div>
   );
 }

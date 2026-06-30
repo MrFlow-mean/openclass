@@ -297,7 +297,7 @@ export function buildLessonMessagesFromHistory(lesson: Lesson, commitId?: string
 }
 
 export function learningClarityFromCommit(commit: CommitRecord | null): LearningClarificationStatus | null {
-  const value = commit?.metadata?.learning_clarification;
+  const value = commit?.metadata?.learning_clarification_after ?? commit?.metadata?.learning_clarification;
   if (!value || typeof value !== "object") {
     return null;
   }

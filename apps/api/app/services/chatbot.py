@@ -13,6 +13,7 @@ from app.services.course_runtime import effective_requirements
 from app.services.history import commit_operations
 from app.services.learning_requirement_history import RequirementHistoryStamp
 from app.services.learning_requirement_refiner import refine_blank_board_requirement
+from app.services.lesson_factory import build_requirements
 from app.services.openai_course_ai import (
     bind_board_model_selection,
     bind_text_model_selection,
@@ -56,6 +57,16 @@ def _clear_legacy_runtime_state(lesson) -> None:
 def _clear_board_task_runtime_state(lesson) -> None:
     lesson.board_task_requirements = None
     lesson.active_interaction_session = None
+
+
+def _is_default_learning_requirement_sheet(lesson) -> bool:
+    if lesson.learning_requirements is None:
+        return False
+    default_requirements = build_requirements(lesson.title)
+    return (
+        lesson.learning_requirements.model_dump(mode="json")
+        == default_requirements.model_dump(mode="json")
+    )
 
 
 def _build_response(
@@ -114,6 +125,8 @@ def _run_basic_chat_turn(
         _clear_legacy_runtime_state(lesson)
         active_requirement_sheet = None
     else:
+        if _is_default_learning_requirement_sheet(lesson):
+            lesson.learning_requirements = None
         _clear_board_task_runtime_state(lesson)
         active_requirement_sheet = lesson.learning_requirements
     board_decision = BoardDecision(
@@ -272,7 +285,7 @@ def _run_chat_turn(lesson_id: str, request: ChatRequest, *, user_id: str) -> Cha
         request=request,
         user_id=user_id,
         board_document_state=board_document_state,
-        clear_learning_requirements=True,
+        clear_learning_requirements=False,
     )
 
 

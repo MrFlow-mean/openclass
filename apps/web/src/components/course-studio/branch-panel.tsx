@@ -1,6 +1,11 @@
 import clsx from "clsx";
 import { BrainCircuit, GitBranch } from "lucide-react";
 
+import {
+  buildLearningRequirementDisplay,
+  learningRequirementStatusLabel,
+  type LearningRequirementDisplayFactor,
+} from "@/lib/learning-requirement-display";
 import type { BoardDecision, CommitRecord, Lesson } from "@/types";
 
 type BranchPanelProps = {
@@ -15,6 +20,29 @@ type BranchPanelProps = {
   onSwitchBranch: (branchName: string) => void | Promise<void>;
 };
 
+function FactorList({ title, factors }: { title: string; factors: LearningRequirementDisplayFactor[] }) {
+  if (!factors.length) {
+    return null;
+  }
+  return (
+    <div className="mt-4 rounded-xl border border-gray-200 bg-white p-4">
+      <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">{title}</p>
+      <dl className="mt-3 space-y-2 text-[11px] leading-6">
+        {factors.map((factor) => (
+          <div key={factor.key} className="grid grid-cols-[72px_minmax(0,1fr)] gap-3">
+            <dt className={clsx("font-semibold", factor.required ? "text-gray-700" : "text-gray-500")}>
+              {factor.label}
+            </dt>
+            <dd className={clsx("min-w-0 break-words", factor.filled ? "text-gray-900" : "text-gray-400")}>
+              {factor.value}
+            </dd>
+          </div>
+        ))}
+      </dl>
+    </div>
+  );
+}
+
 export function BranchPanel({
   activeLesson,
   previewCommit,
@@ -26,6 +54,10 @@ export function BranchPanel({
   onCreateBranch,
   onSwitchBranch,
 }: BranchPanelProps) {
+  const learningRequirementDisplay = activeRequirements
+    ? buildLearningRequirementDisplay({ requirementSheet: activeRequirements })
+    : null;
+
   return (
     <div className="space-y-8">
       <div>
@@ -75,17 +107,40 @@ export function BranchPanel({
           <BrainCircuit className="h-4 w-4 text-gray-400" />
           <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">需求清单</p>
         </div>
-        <p className="mt-4 text-sm leading-7 text-gray-700">
-          {activeBoardTask?.question_or_topic ?? activeRequirements?.learning_goal ?? "等待下一次任务需求：说明要操作的位置、动作类型，以及希望怎么讲解或怎么编写。"}
-        </p>
-        <div className="mt-4 rounded-xl border border-gray-200 bg-white p-4">
-          <p className="text-xs font-semibold text-gray-900">
-            {activeBoardTask?.requested_action ?? activeRequirements?.action_type ?? activeRequirements?.target_depth ?? "暂无待执行任务"}
+        {activeBoardTask ? (
+          <>
+            <p className="mt-4 text-sm leading-7 text-gray-700">{activeBoardTask.question_or_topic}</p>
+            <div className="mt-4 rounded-xl border border-gray-200 bg-white p-4">
+              <p className="text-xs font-semibold text-gray-900">{activeBoardTask.requested_action ?? "暂无待执行任务"}</p>
+              <p className="mt-2 text-[11px] leading-6 text-gray-500">
+                {activeBoardTask.target_hint || "执行完成后，当前清单会归档到历史并清空。"}
+              </p>
+            </div>
+          </>
+        ) : learningRequirementDisplay ? (
+          <>
+            <div className="mt-4 rounded-xl border border-gray-200 bg-white p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">教学类型</p>
+                  <p className="mt-1 text-sm font-semibold text-gray-900">{learningRequirementDisplay.teachingType}</p>
+                </div>
+                <span className="rounded-full bg-gray-100 px-2.5 py-1 text-[11px] font-semibold text-gray-600">
+                  {learningRequirementStatusLabel(learningRequirementDisplay.status)}
+                </span>
+              </div>
+              {learningRequirementDisplay.summary ? (
+                <p className="mt-3 text-[11px] leading-6 text-gray-500">{learningRequirementDisplay.summary}</p>
+              ) : null}
+            </div>
+            <FactorList title="核心因素" factors={learningRequirementDisplay.coreFactors} />
+            <FactorList title="辅助因素" factors={learningRequirementDisplay.auxiliaryFactors} />
+          </>
+        ) : (
+          <p className="mt-4 text-sm leading-7 text-gray-700">
+            等待下一次任务需求：说明要操作的位置、动作类型，以及希望怎么讲解或怎么编写。
           </p>
-          <p className="mt-2 text-[11px] leading-6 text-gray-500">
-            {activeBoardTask?.target_hint || activeRequirements?.action_instruction || activeRequirements?.success_criteria || "执行完成后，当前清单会归档到历史并清空。"}
-          </p>
-        </div>
+        )}
         {latestBoardDecision ? (
           <div className="mt-4 rounded-xl border border-gray-200 bg-white p-4">
             <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">当前讲义决策</p>
