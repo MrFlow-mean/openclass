@@ -33,6 +33,7 @@ class LearningRequirementRefinementOutcome:
     learning_clarification: LearningClarificationStatus
     history_stamp: RequirementHistoryStamp
     history_operations: list[dict[str, Any]]
+    guidance_metadata: dict[str, Any]
     changed: bool
 
 
@@ -71,6 +72,7 @@ def refine_blank_board_requirement(
             learning_clarification=active_clarification or _basic_chat_clarification(),
             history_stamp=recorder.current_stamp(),
             history_operations=[],
+            guidance_metadata={},
             changed=False,
         )
 
@@ -101,6 +103,7 @@ def refine_blank_board_requirement(
         requirements=requirement,
         clarification=clarification,
         change_summary=clarification.summary or "更新空白板书学习需求清单。",
+        metadata=_guidance_metadata(result),
     )
     return LearningRequirementRefinementOutcome(
         route="requirement_refining",
@@ -109,6 +112,7 @@ def refine_blank_board_requirement(
         learning_clarification=clarification,
         history_stamp=stamp,
         history_operations=list(recorder.operations),
+        guidance_metadata=_guidance_metadata(result),
         changed=bool(recorder.operations),
     )
 
@@ -235,7 +239,7 @@ def _build_requirement_sheet(
 ) -> LearningRequirementSheet:
     requirement = base_requirement.model_copy(deep=True)
     learning_goal = _first_text(result.learning_goal, requirement.learning_goal, lesson.title)
-    current_questions = [] if ready_for_board else _dedupe_text([result.next_question, *missing_items])
+    current_questions = [] if ready_for_board else _dedupe_text([_first_text(result.next_question, *missing_items)])
     requirement.theme = learning_goal
     requirement.learning_goal = learning_goal
     requirement.level = _first_text(result.current_level, requirement.level)
@@ -400,6 +404,21 @@ def _core_checklist(
             evidence="",
         )
     ]
+
+
+def _guidance_metadata(result: BlankBoardRequirementRefinement) -> dict[str, Any]:
+    return {
+        "guidance_strategy": result.guidance_strategy,
+        "learning_map_summary": result.learning_map_summary,
+        "entry_point_options": [
+            option.model_dump(mode="json")
+            for option in result.entry_point_options
+            if _has_text(option.label)
+        ],
+        "recommended_entry_point": result.recommended_entry_point,
+        "reason_for_recommendation": result.reason_for_recommendation,
+        "learner_profile_inference": result.learner_profile_inference,
+    }
 
 
 def _first_text(*values: str) -> str:

@@ -226,6 +226,7 @@ def _run_requirement_refinement_turn(
                 else None
             ),
             "learning_clarification_after": outcome.learning_clarification.model_dump(mode="json"),
+            "guided_requirement_discovery": outcome.guidance_metadata,
             "requirement_run_id": outcome.history_stamp.run_id,
             "requirement_version_id": outcome.history_stamp.version_id,
             "requirement_phase": outcome.history_stamp.phase,

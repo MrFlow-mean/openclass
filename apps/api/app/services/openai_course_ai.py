@@ -356,6 +356,29 @@ class LearningRequirementUpdate(BaseModel):
     interaction_rule_draft: InteractionRuleDraft | None = None
 
 
+GuidedRequirementStrategy = Literal[
+    "none",
+    "starting_point",
+    "light_self_report",
+    "recent_experience",
+    "known_unknown",
+    "mode_split",
+    "scenario",
+    "goal_output",
+    "stuck_point",
+    "choice_cards",
+    "domain_map",
+    "recommended_entry",
+    "implicit_observation",
+]
+
+
+class GuidedRequirementEntryPoint(BaseModel):
+    label: str
+    why_it_matters: str = ""
+    best_for: str = ""
+
+
 class BlankBoardRequirementRefinement(BaseModel):
     route: Literal["ordinary_chat", "requirement_refining"] = "ordinary_chat"
     chatbot_message: str = ""
@@ -375,6 +398,12 @@ class BlankBoardRequirementRefinement(BaseModel):
     learning_need_checklist: list[str] = Field(default_factory=list)
     key_facts: list[LearningRequirementKeyFact] = Field(default_factory=list)
     checklist: list[LearningRequirementChecklistItem] = Field(default_factory=list)
+    guidance_strategy: GuidedRequirementStrategy = "none"
+    learning_map_summary: str = ""
+    entry_point_options: list[GuidedRequirementEntryPoint] = Field(default_factory=list)
+    recommended_entry_point: str = ""
+    reason_for_recommendation: str = ""
+    learner_profile_inference: str = ""
     missing_items: list[str] = Field(default_factory=list)
     next_question: str = ""
     recommended_teaching_plan_summary: str = ""
@@ -1022,19 +1051,27 @@ class OpenAICourseAI:
             "2. practice_artifact：用户想练习已有知识或技能。ready_for_board=true 必须同时具备 learning_goal、"
             "current_level、target_scenario 三个核心因素；如果用户明确没有场景或让系统不按场景定制，target_scenario 可写"
             "“无明确应用场景”。\n"
-            "收敛方法：你可以根据上下文灵活使用起点定位法、轻量自述法、最近经历法、已会/未会法、"
-            "学习模式分流法、场景定位法、目标产出法、卡点定位法、选择卡片法、领域地图法、推荐入口法。"
-            "这些方法只用于自然语言引导，不要变成固定问卷。\n"
+            "收敛方法：你必须根据上下文灵活选择起点定位法、轻量自述法、最近经历法、已会/未会法、"
+            "学习模式分流法、场景定位法、目标产出法、卡点定位法、选择卡片法、领域地图法、推荐入口法或隐性观察法。"
+            "这些方法只用于自然语言引导，不要变成固定问卷，也不要要求用户填字段。\n"
             "如果用户是纯新手且想入门某领域，可以用领域地图介绍该领域由哪些通用部分构成、推荐一个入门入口，"
             "并继续把需求收敛到一个可开始的知识点或练习产物。\n"
+            "当 learning_goal 仍是宽泛主题、granularity=broad_topic 或用户说不知道从哪开始时，"
+            "chatbot_message 必须优先呈现“简短学习地图 + 2-5 个入口选项 + 一个推荐入口 + 一个绑定推荐入口的主问题”，"
+            "而不是只追问“具体想学什么”。\n"
+            "entry_point_options 只记录通用入口建议，由模型根据当前领域自主生成；不要写固定讲义正文或固定课程模板。"
+            "recommended_entry_point 必须从 entry_point_options 或用户已明确内容中选择一个最适合的入口。"
+            "learner_profile_inference 只记录可由用户自述、最近经历、已会/未会或卡点直接推出的起点信息。\n"
             "规则：\n"
             "1. 不写任何学科、教材、考试、语言名、旅游场景或 demo 专属规则；只根据用户意图形态和内容产物形态判断。\n"
-            "2. 不脑补核心因素；核心因素不全时 ready_for_board=false，只追问一个最关键缺项，必要时给 2-3 个可选入口。\n"
+            "2. 不脑补核心因素；核心因素不全时 ready_for_board=false，但要通过引导、推荐和选择卡片降低表达成本，"
+            "最后只问一个最关键问题。\n"
             "3. 辅助因素可以记录 known_background、target_depth、output_preference、board_scope、"
             "learning_need_checklist、success_criteria，但不能替代核心因素。\n"
             "4. key_facts 只记录用户已经透露或你从当前对话可直接归纳的事实，优先使用标签："
             "用户想学的内容、当前水平、面向场景。\n"
-            "5. chatbot_message 面向用户自然表达；不要输出 JSON、字段名、内部状态名或右侧板书正文。"
+            "5. chatbot_message 面向用户自然表达；必须综合使用 learning_map_summary、entry_point_options、"
+            "recommended_entry_point 和 reason_for_recommendation 中的有用信息，但不要输出 JSON、字段名、内部状态名或右侧板书正文。"
         )
         user_prompt = _json(
             {
@@ -1062,6 +1099,16 @@ class OpenAICourseAI:
                     "learning_need_checklist": "当前清单的简短条目，用用户已表达事实和缺项组织。",
                     "key_facts": "0-5 条事实，每项包含 label、value、evidence、category。",
                     "checklist": "2-5 个动态检查项，每项包含 title、is_clear、evidence。",
+                    "guidance_strategy": (
+                        "本轮采用的通用引导策略。只能使用 none、starting_point、light_self_report、"
+                        "recent_experience、known_unknown、mode_split、scenario、goal_output、stuck_point、"
+                        "choice_cards、domain_map、recommended_entry、implicit_observation。"
+                    ),
+                    "learning_map_summary": "给用户看的简短学习地图摘要；宽泛主题时应填写，不写固定讲义正文。",
+                    "entry_point_options": "2-5 个候选入口，每项包含 label、why_it_matters、best_for；没有必要时可为空。",
+                    "recommended_entry_point": "AI 推荐的一个入口，优先来自 entry_point_options。",
+                    "reason_for_recommendation": "推荐理由，必须基于用户已说信息或通用入门原则。",
+                    "learner_profile_inference": "从用户自述、最近经历、已会/未会或卡点推断出的起点信息。",
                     "missing_items": "仍缺少的核心因素或重要辅助因素；核心因素不全必须列出。",
                     "next_question": "清单未完整时下一轮最有价值的一个问题；ready_for_board=true 时可为空。",
                     "recommended_teaching_plan_summary": "可选：给用户看的教学方案摘要，不是板书正文。",

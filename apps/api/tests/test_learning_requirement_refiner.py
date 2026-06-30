@@ -87,6 +87,22 @@ def test_empty_board_broad_learning_need_collects_requirement(
             granularity="broad_topic",
             learning_goal="某个领域入门",
             board_scope=["领域是什么", "常见组成部分", "推荐入门入口"],
+            guidance_strategy="domain_map",
+            learning_map_summary="这个领域可以先看整体对象、核心规则和典型应用。",
+            entry_point_options=[
+                {
+                    "label": "整体组成",
+                    "why_it_matters": "先知道领域由哪些部分构成。",
+                    "best_for": "完全不知道从哪开始的学习者。",
+                },
+                {
+                    "label": "基础概念",
+                    "why_it_matters": "最容易形成第一个可讲解知识点。",
+                    "best_for": "想马上开始学习的人。",
+                },
+            ],
+            recommended_entry_point="基础概念",
+            reason_for_recommendation="它最基础，也最容易从宽泛方向收敛到单一知识点。",
             missing_items=["用户想学的内容需要收敛到具体知识点"],
             next_question="你更想先理解整体组成，还是先挑一个最基础的概念开始？",
             ready_for_board=False,
@@ -113,6 +129,15 @@ def test_empty_board_broad_learning_need_collects_requirement(
     sheet_json = json.loads(versions[0]["sheet_json"])
     assert sheet_json["work_mode"] == "knowledge_board"
     assert sheet_json["granularity"] == "broad_topic"
+    assert sheet_json["current_questions"] == ["你更想先理解整体组成，还是先挑一个最基础的概念开始？"]
+    event_metadata = json.loads(events[0]["metadata_json"])
+    assert event_metadata["guidance_strategy"] == "domain_map"
+    assert event_metadata["recommended_entry_point"] == "基础概念"
+    assert event_metadata["entry_point_options"][0]["label"] == "整体组成"
+    saved = store.load_for_user(user_id)
+    commit_metadata = saved.packages[0].lessons[0].history_graph.commits[-1].metadata
+    assert commit_metadata["guided_requirement_discovery"]["guidance_strategy"] == "domain_map"
+    assert commit_metadata["guided_requirement_discovery"]["recommended_entry_point"] == "基础概念"
 
     second_response = process_chat_on_lesson(
         lesson.id,
@@ -137,6 +162,113 @@ def test_empty_board_broad_learning_need_collects_requirement(
     assert ordinary_response.active_requirement_sheet is not None
     assert ordinary_response.requirement_run_id == response.requirement_run_id
     assert len(store.list_learning_requirement_versions(user_id, lesson.id)) == 1
+
+
+def test_empty_board_unknown_start_uses_recommended_entry(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    user_id = "user_blank_recommended_entry"
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    lesson = _seed_empty_workspace(store, user_id)
+
+    def _fake_refinement(**kwargs):
+        return BlankBoardRequirementRefinement(
+            route="requirement_refining",
+            chatbot_message=(
+                "我先给你安排一个最容易进入的起点：从整体组成看一眼，再落到一个基础概念。"
+                "如果你没有特别偏好，我们就从这个基础概念开始。"
+            ),
+            progress=35,
+            summary="用户希望系统安排学习入口。",
+            work_mode="knowledge_board",
+            granularity="broad_topic",
+            learning_goal="待推荐入口的宽泛主题",
+            guidance_strategy="recommended_entry",
+            learning_map_summary="可以先看整体组成、基础概念和典型应用。",
+            entry_point_options=[
+                {
+                    "label": "整体组成",
+                    "why_it_matters": "降低完全不知道从哪开始的压力。",
+                    "best_for": "希望系统安排路线的人。",
+                },
+                {
+                    "label": "基础概念",
+                    "why_it_matters": "更容易变成第一块可生成板书的内容。",
+                    "best_for": "想直接开始的人。",
+                },
+            ],
+            recommended_entry_point="基础概念",
+            reason_for_recommendation="它最基础，适合作为第一块板书入口。",
+            missing_items=["用户想学的内容需要收敛到具体知识点"],
+            next_question="如果你没有特别偏好，我们就从这个基础概念开始，可以吗？",
+            ready_for_board=False,
+        )
+
+    monkeypatch.setattr(openai_course_ai, "generate_blank_board_requirement_refinement", _fake_refinement)
+
+    response = process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="不知道，你安排。"),
+        user_id=user_id,
+    )
+
+    assert response.learning_clarification.ready_for_board is False
+    assert "基础概念" in response.chatbot_message
+    assert response.active_requirement_sheet is not None
+    assert response.active_requirement_sheet.current_questions == [
+        "如果你没有特别偏好，我们就从这个基础概念开始，可以吗？"
+    ]
+    commit = store.load_for_user(user_id).packages[0].lessons[0].history_graph.commits[-1]
+    assert commit.metadata["guided_requirement_discovery"]["guidance_strategy"] == "recommended_entry"
+    assert commit.metadata["guided_requirement_discovery"]["recommended_entry_point"] == "基础概念"
+
+
+def test_empty_board_known_unknown_self_report_updates_background(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    user_id = "user_blank_known_unknown"
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    lesson = _seed_empty_workspace(store, user_id)
+
+    def _fake_refinement(**kwargs):
+        return BlankBoardRequirementRefinement(
+            route="requirement_refining",
+            chatbot_message="你已经有一部分基础了，我会避开重复内容，优先从还没学过的部分切入。",
+            progress=70,
+            summary="用户说明了已会和未会内容。",
+            work_mode="knowledge_board",
+            granularity="broad_topic",
+            learning_goal="未会部分的入门",
+            current_level="已经学过一部分基础内容",
+            known_background="已会：前置概念；未会：后续概念。",
+            guidance_strategy="known_unknown",
+            learner_profile_inference="用户已学过前置概念，还没学后续概念，适合从后续概念的直观含义开始。",
+            recommended_entry_point="后续概念的直观含义",
+            reason_for_recommendation="它连接用户已会内容，同时避开重复讲解。",
+            missing_items=["用户想学的内容需要收敛到具体知识点"],
+            next_question="我们就从后续概念的直观含义开始，可以吗？",
+            ready_for_board=False,
+        )
+
+    monkeypatch.setattr(openai_course_ai, "generate_blank_board_requirement_refinement", _fake_refinement)
+
+    response = process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="前面的基础学过，后面的还没学。"),
+        user_id=user_id,
+    )
+
+    assert response.active_requirement_sheet is not None
+    assert response.active_requirement_sheet.level == "已经学过一部分基础内容"
+    assert response.active_requirement_sheet.known_background == "已会：前置概念；未会：后续概念。"
+    commit = store.load_for_user(user_id).packages[0].lessons[0].history_graph.commits[-1]
+    discovery = commit.metadata["guided_requirement_discovery"]
+    assert discovery["guidance_strategy"] == "known_unknown"
+    assert "前置概念" in discovery["learner_profile_inference"]
 
 
 def test_empty_board_specific_knowledge_point_is_ready(

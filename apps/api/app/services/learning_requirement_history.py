@@ -350,6 +350,7 @@ class LearningRequirementHistoryRecorder:
         requirements: LearningRequirementSheet,
         clarification: LearningClarificationStatus,
         change_summary: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> RequirementHistoryStamp:
         sheet_json = _canonical_json(requirements)
         clarification_json = _canonical_json(clarification)
@@ -412,6 +413,7 @@ class LearningRequirementHistoryRecorder:
             from_version_id=self.snapshot.latest_version_id,
             to_version_id=version_id,
             change_summary=summary,
+            metadata=metadata,
             created_at=created_at,
         )
         self.snapshot.status = phase
