@@ -174,9 +174,10 @@ def _repair_guided_reply_if_needed(
     base_requirement: LearningRequirementSheet,
     active_clarification: LearningClarificationStatus | None,
 ) -> tuple[BlankBoardRequirementRefinement, bool, list[str]]:
-    reply_quality = assess_blank_board_requirement_reply(result)
+    reply_quality = assess_blank_board_requirement_reply(result, user_message=user_message)
     if not reply_quality.needs_repair:
         return result, False, []
+    allow_core_updates = any("委托式入门" in issue for issue in reply_quality.issues)
     repaired = openai_course_ai.generate_blank_board_requirement_refinement(
         board_document_state=board_document_state.model_context(),
         conversation_summary=conversation_summary,
@@ -186,17 +187,27 @@ def _repair_guided_reply_if_needed(
         quality_repair_context={
             "repair_reason": reply_quality.repair_reason,
             "previous_output": result.model_dump(mode="json"),
-            "must_preserve": [
-                "route",
-                "work_mode",
-                "granularity",
-                "learning_goal",
-                "current_level",
-                "target_scenario",
-                "known_background",
-                "summary",
-                "ready_for_board",
-            ],
+            "must_preserve": (
+                [
+                    "route",
+                    "work_mode",
+                    "target_scenario",
+                    "known_background",
+                    "summary",
+                ]
+                if allow_core_updates
+                else [
+                    "route",
+                    "work_mode",
+                    "granularity",
+                    "learning_goal",
+                    "current_level",
+                    "target_scenario",
+                    "known_background",
+                    "summary",
+                    "ready_for_board",
+                ]
+            ),
             "must_improve": [
                 "chatbot_message",
                 "guidance_strategy",
@@ -210,12 +221,13 @@ def _repair_guided_reply_if_needed(
                 "natural_conversation_no_internal_fields",
                 "single_main_question",
                 "novice_intro_no_external_goal_question",
+                "delegated_intro_entry_ready",
             ],
         },
     )
     if not isinstance(repaired, BlankBoardRequirementRefinement):
         return result, False, reply_quality.issues
-    return merge_guidance_repair(result, repaired), True, reply_quality.issues
+    return merge_guidance_repair(result, repaired, allow_core_updates=allow_core_updates), True, reply_quality.issues
 
 
 def _first_text(*values: str) -> str:

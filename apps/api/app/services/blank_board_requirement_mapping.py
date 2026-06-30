@@ -137,7 +137,8 @@ def build_requirement_sheet(
     missing_items: list[str],
 ) -> LearningRequirementSheet:
     requirement = base_requirement.model_copy(deep=True)
-    novice_intro = is_novice_intro_broad_topic(result, work_mode, granularity)
+    novice_intro = is_novice_intro_knowledge_request(result, work_mode)
+    novice_intro_ready = novice_intro and granularity == "single_knowledge_point" and ready_for_board
     learning_goal = _first_text(result.learning_goal, requirement.learning_goal, lesson.title)
     current_questions = [] if ready_for_board else _dedupe_text([_first_text(result.next_question, *missing_items)])
     requirement.theme = learning_goal
@@ -166,6 +167,7 @@ def build_requirement_sheet(
     requirement.success_criteria = _first_text(
         result.success_criteria,
         result.target_scenario if work_mode == "practice_artifact" else "",
+        "理解领域组成，并确定后续学习入口" if novice_intro_ready else "",
         "理解领域组成，并确定第一个可学习入口" if novice_intro else "",
         requirement.success_criteria,
     )
@@ -240,7 +242,7 @@ def merge_checklist(
     work_mode: InitialLearningWorkMode,
     granularity: InitialLearningGranularity,
 ) -> list[LearningRequirementChecklistItem]:
-    novice_intro = is_novice_intro_broad_topic(result, work_mode, granularity)
+    novice_intro = is_novice_intro_knowledge_request(result, work_mode)
     checklist = [
         item
         for item in result.checklist
@@ -294,12 +296,11 @@ def core_checklist(
     ]
 
 
-def is_novice_intro_broad_topic(
+def is_novice_intro_knowledge_request(
     result: BlankBoardRequirementRefinement,
     work_mode: InitialLearningWorkMode,
-    granularity: InitialLearningGranularity,
 ) -> bool:
-    if work_mode != "knowledge_board" or granularity != "broad_topic":
+    if work_mode != "knowledge_board":
         return False
     text = " ".join(
         [
@@ -311,6 +312,14 @@ def is_novice_intro_broad_topic(
         ]
     )
     return _has_novice_intro_signal(text)
+
+
+def is_novice_intro_broad_topic(
+    result: BlankBoardRequirementRefinement,
+    work_mode: InitialLearningWorkMode,
+    granularity: InitialLearningGranularity,
+) -> bool:
+    return granularity == "broad_topic" and is_novice_intro_knowledge_request(result, work_mode)
 
 
 def _append_fact(

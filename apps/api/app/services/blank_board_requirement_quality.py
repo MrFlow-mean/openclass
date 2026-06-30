@@ -85,6 +85,33 @@ NOVICE_INTRO_TERMS = [
     "感兴趣想学",
 ]
 
+DELEGATED_INTRO_TERMS = [
+    "为我指导",
+    "你安排",
+    "你来安排",
+    "你帮我安排",
+    "帮我安排",
+    "帮我规划",
+    "帮我定",
+    "帮我推荐",
+    "按你推荐",
+    "听你的",
+    "直接安排",
+    "不知道，你安排",
+    "不知道你安排",
+]
+
+ENTRY_CONFIRMATION_TERMS = [
+    "愿意从",
+    "愿意先从",
+    "你愿意",
+    "要不要从",
+    "是否从",
+    "想从",
+    "更想",
+    "可以吗",
+]
+
 EXTERNAL_GOAL_QUESTION_TERMS = [
     "考试",
     "面试",
@@ -102,14 +129,22 @@ EXTERNAL_GOAL_QUESTION_TERMS = [
 
 def assess_blank_board_requirement_reply(
     result: BlankBoardRequirementRefinement,
+    *,
+    user_message: str = "",
 ) -> BlankBoardRequirementReplyQuality:
-    if result.route != "requirement_refining" or result.ready_for_board:
+    if result.route != "requirement_refining":
         return BlankBoardRequirementReplyQuality(issues=[])
 
     issues: list[str] = []
     message = result.chatbot_message.strip()
+    if result.ready_for_board:
+        if not _is_delegated_intro_refinement(result, user_message=user_message):
+            return BlankBoardRequirementReplyQuality(issues=[])
+        if _asks_entry_confirmation("\n".join([result.next_question, message])):
+            issues.append("纯新手委托式入门不应把入口确认压力交回用户。")
+        return BlankBoardRequirementReplyQuality(issues=_dedupe_text(issues))
     if _is_broad_knowledge_refinement(result):
-        issues.extend(_broad_guidance_issues(result, message))
+        issues.extend(_broad_guidance_issues(result, message, user_message=user_message))
     issues.extend(_natural_conversation_issues(message))
     return BlankBoardRequirementReplyQuality(issues=_dedupe_text(issues))
 
@@ -117,9 +152,11 @@ def assess_blank_board_requirement_reply(
 def merge_guidance_repair(
     original: BlankBoardRequirementRefinement,
     repaired: BlankBoardRequirementRefinement,
+    *,
+    allow_core_updates: bool = False,
 ) -> BlankBoardRequirementRefinement:
     data = original.model_dump(mode="json")
-    for field_name in [
+    field_names = [
         "chatbot_message",
         "guidance_strategy",
         "learning_map_summary",
@@ -130,8 +167,31 @@ def merge_guidance_repair(
         "next_question",
         "learning_need_checklist",
         "board_scope",
-    ]:
+    ]
+    if allow_core_updates:
+        field_names.extend(
+            [
+                "progress",
+                "summary",
+                "work_mode",
+                "granularity",
+                "learning_goal",
+                "current_level",
+                "known_background",
+                "target_depth",
+                "success_criteria",
+                "key_facts",
+                "checklist",
+                "missing_items",
+                "recommended_teaching_plan_summary",
+                "ready_for_board",
+            ]
+        )
+    for field_name in field_names:
         value = getattr(repaired, field_name)
+        if allow_core_updates and field_name in {"next_question", "missing_items"}:
+            data[field_name] = value
+            continue
         if isinstance(value, str):
             if _has_text(value):
                 data[field_name] = value
@@ -163,10 +223,16 @@ def build_guidance_metadata(
     }
 
 
-def _broad_guidance_issues(result: BlankBoardRequirementRefinement, message: str) -> list[str]:
+def _broad_guidance_issues(
+    result: BlankBoardRequirementRefinement,
+    message: str,
+    *,
+    user_message: str,
+) -> list[str]:
     issues: list[str] = []
     options = [option for option in result.entry_point_options if _has_text(option.label)]
     novice_intro = _is_novice_intro_refinement(result)
+    delegated_intro = _is_delegated_intro_refinement(result, user_message=user_message)
     if len(message) < 160:
         issues.append("chatbot_message 太短，像追问而不是学习地图引导。")
     if not _has_text(result.learning_map_summary):
@@ -192,6 +258,12 @@ def _broad_guidance_issues(result: BlankBoardRequirementRefinement, message: str
         issues.append("chatbot_message 没有一个关键问题。")
     if novice_intro and _asks_external_goal_question("\n".join([result.next_question, message])):
         issues.append("纯新手入门场景不应继续追问考试、工作、赚钱或应用场景。")
+    if delegated_intro and (
+        result.granularity != "single_knowledge_point" or not result.ready_for_board
+    ):
+        issues.append("纯新手委托式入门应主动落定领域总览型第一课并进入 ready。")
+    if delegated_intro and _asks_entry_confirmation("\n".join([result.next_question, message])):
+        issues.append("纯新手委托式入门不应把入口确认压力交回用户。")
     return issues
 
 
@@ -255,12 +327,42 @@ def _is_novice_intro_refinement(result: BlankBoardRequirementRefinement) -> bool
     return any(keyword in text for keyword in NOVICE_INTRO_TERMS)
 
 
+def _is_delegated_intro_refinement(
+    result: BlankBoardRequirementRefinement,
+    *,
+    user_message: str,
+) -> bool:
+    if not _is_novice_intro_refinement(result):
+        return False
+    text = " ".join(
+        [
+            user_message,
+            result.summary,
+            result.known_background,
+            result.learner_profile_inference,
+            result.chatbot_message,
+            result.next_question,
+        ]
+    )
+    return any(keyword in text for keyword in DELEGATED_INTRO_TERMS)
+
+
 def _asks_external_goal_question(text: str) -> bool:
     compact = (text or "").strip()
     if not compact or ("？" not in compact and "?" not in compact):
         return False
     return any(
         any(keyword in fragment for keyword in EXTERNAL_GOAL_QUESTION_TERMS)
+        for fragment in _question_fragments(compact)
+    )
+
+
+def _asks_entry_confirmation(text: str) -> bool:
+    compact = (text or "").strip()
+    if not compact or ("？" not in compact and "?" not in compact):
+        return False
+    return any(
+        any(keyword in fragment for keyword in ENTRY_CONFIRMATION_TERMS)
         for fragment in _question_fragments(compact)
     )
 
