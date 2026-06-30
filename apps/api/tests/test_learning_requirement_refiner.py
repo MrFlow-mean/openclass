@@ -9,9 +9,11 @@ from app.services.course_store import SqliteCourseStore, build_initial_workspace
 from app.services.lesson_factory import create_empty_lesson
 from app.services.openai_course_ai import (
     BlankBoardRequirementRefinement,
+    BlankBoardRequirementRefinementResult,
     ChatbotReply,
     OpenAICourseAI,
     bind_ai_output_stream,
+    emit_ai_stream_event,
     openai_course_ai,
 )
 
@@ -84,6 +86,49 @@ def test_blank_board_refinement_prompt_requires_rich_broad_topic_guidance(
     assert "已会/未会" in system_prompt
 
 
+def test_blank_board_stream_parser_emits_chatbot_message_before_json_is_complete() -> None:
+    class _FakeCompletions:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def create(self, **kwargs):
+            self.calls.append(kwargs)
+            return iter(
+                [
+                    {"choices": [{"delta": {"content": '{"chatbot_message":"你好'}}]},
+                    {"choices": [{"delta": {"content": '世界","route":"ordinary_chat"}'}}]},
+                ]
+            )
+
+    class _FakeClient:
+        def __init__(self) -> None:
+            self.chat = type("Chat", (), {"completions": _FakeCompletions()})()
+
+    ai = OpenAICourseAI()
+    client = _FakeClient()
+    stream_events: list[dict[str, object]] = []
+    with bind_ai_output_stream(lambda payload: stream_events.append(payload)):
+        result = ai._stream_openai_chat_completion(
+            client=client,
+            model="test-model",
+            messages=[],
+            schema=BlankBoardRequirementRefinement,
+            schema_payload=BlankBoardRequirementRefinement.model_json_schema(),
+            role="pm",
+            field_name="chatbot_message",
+            use_response_format=True,
+        )
+
+    assert result.output_text == '{"chatbot_message":"你好世界","route":"ordinary_chat"}'
+    assert result.visible_field_value == "你好世界"
+    assert result.visible_field_was_streamed is True
+    assert [
+        event["delta"]
+        for event in stream_events
+        if event.get("type") == "field_delta" and event.get("field") == "chatbot_message"
+    ] == ["你好", "世界"]
+
+
 def test_empty_board_ordinary_chat_does_not_create_requirement(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
@@ -131,6 +176,115 @@ def test_empty_board_ordinary_chat_does_not_create_requirement(
     assert commit.metadata["kind"] == "basic_chat"
     assert commit.metadata["refinement_route"] == "ordinary_chat"
     assert commit.metadata["board_document_state"]["status"] == "empty"
+
+
+def test_empty_board_refinement_uses_streamed_visible_reply_as_history_source(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    user_id = "user_blank_streamed_visible_reply"
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    lesson = _seed_empty_workspace(store, user_id)
+    visible_reply = "这段是用户实际看到的流式回复。"
+
+    def _fake_refinement(**kwargs):
+        assert kwargs["include_stream_result"] is True
+        emit_ai_stream_event(
+            {
+                "type": "field_delta",
+                "role": "pm",
+                "field": "chatbot_message",
+                "delta": visible_reply,
+                "value": visible_reply,
+            }
+        )
+        return BlankBoardRequirementRefinementResult(
+            result=BlankBoardRequirementRefinement(
+                route="requirement_refining",
+                chatbot_message="这是最终 JSON 里的不同回复，不应该入库。",
+                progress=50,
+                summary="用户想学一个宽泛主题。",
+                work_mode="knowledge_board",
+                granularity="broad_topic",
+                learning_goal="一个宽泛主题",
+                ready_for_board=False,
+            ),
+            visible_chat_buffer=visible_reply,
+            visible_chat_was_streamed=True,
+        )
+
+    monkeypatch.setattr(openai_course_ai, "generate_blank_board_requirement_refinement", _fake_refinement)
+
+    stream_events: list[dict[str, object]] = []
+    with bind_ai_output_stream(lambda payload: stream_events.append(payload)):
+        response = process_chat_on_lesson(
+            lesson.id,
+            ChatRequest(message="我想学一个宽泛主题"),
+            user_id=user_id,
+        )
+
+    streamed_message = "".join(
+        str(event.get("delta") or "")
+        for event in stream_events
+        if event.get("type") == "field_delta"
+        and event.get("role") == "pm"
+        and event.get("field") == "chatbot_message"
+    )
+    assert streamed_message == visible_reply
+    assert response.chatbot_message == visible_reply
+    commit = store.load_for_user(user_id).packages[0].lessons[0].history_graph.commits[-1]
+    assert commit.metadata["assistant_message"] == visible_reply
+    discovery = commit.metadata["guided_requirement_discovery"]
+    assert discovery["visible_chat_source"] == "streamed_buffer"
+    assert discovery["visible_chat_was_streamed"] is True
+
+
+def test_empty_board_refinement_parse_failure_keeps_visible_reply_without_requirement_update(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    user_id = "user_blank_streamed_parse_failed"
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    lesson = _seed_empty_workspace(store, user_id)
+    visible_reply = "我已经先把可见回复发给你，但结构化清单这轮没有更新。"
+
+    def _fake_refinement(**kwargs):
+        assert kwargs["include_stream_result"] is True
+        emit_ai_stream_event(
+            {
+                "type": "field_delta",
+                "role": "pm",
+                "field": "chatbot_message",
+                "delta": visible_reply,
+                "value": visible_reply,
+            }
+        )
+        return BlankBoardRequirementRefinementResult(
+            result=None,
+            visible_chat_buffer=visible_reply,
+            visible_chat_was_streamed=True,
+            structured_parse_failed=True,
+        )
+
+    monkeypatch.setattr(openai_course_ai, "generate_blank_board_requirement_refinement", _fake_refinement)
+
+    response = process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="我想学一个宽泛主题"),
+        user_id=user_id,
+    )
+
+    assert response.chatbot_message == visible_reply
+    assert response.active_requirement_sheet is None
+    assert store.list_learning_requirement_versions(user_id, lesson.id) == []
+    commit = store.load_for_user(user_id).packages[0].lessons[0].history_graph.commits[-1]
+    assert commit.metadata["assistant_message"] == visible_reply
+    discovery = commit.metadata["guided_requirement_discovery"]
+    assert discovery["visible_chat_source"] == "streamed_buffer"
+    assert discovery["structured_parse_failed"] is True
+    assert discovery["requirement_update_skipped"] is True
 
 
 def test_non_empty_board_keeps_basic_chat_path(

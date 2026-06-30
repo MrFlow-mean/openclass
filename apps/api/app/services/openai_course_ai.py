@@ -259,10 +259,43 @@ class AIOutputParseError(ValueError):
 
 @dataclass
 class ParsedAIResponse:
-    output_parsed: BaseModel
+    output_parsed: BaseModel | None
     id: str | None = None
     output_text: str | None = None
     usage: Any = None
+    visible_field_value: str = ""
+    visible_field_was_streamed: bool = False
+    structured_parse_failed: bool = False
+
+
+@dataclass(frozen=True)
+class StreamedChatCompletionResult:
+    output_text: str
+    visible_field_value: str = ""
+    visible_field_was_streamed: bool = False
+
+
+@dataclass(frozen=True)
+class BlankBoardRequirementRefinementResult:
+    result: "BlankBoardRequirementRefinement | None"
+    visible_chat_buffer: str = ""
+    visible_chat_was_streamed: bool = False
+    structured_parse_failed: bool = False
+
+
+class AIStreamOutputError(RuntimeError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        output_text: str = "",
+        visible_field_value: str = "",
+        visible_field_was_streamed: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.output_text = output_text
+        self.visible_field_value = visible_field_value
+        self.visible_field_was_streamed = visible_field_was_streamed
 
 
 class ChatbotReply(BaseModel):
@@ -1036,7 +1069,8 @@ class OpenAICourseAI:
         existing_requirement_sheet: dict[str, Any] | None = None,
         existing_clarification: dict[str, Any] | None = None,
         quality_repair_context: dict[str, Any] | None = None,
-    ) -> BlankBoardRequirementRefinement | None:
+        include_stream_result: bool = False,
+    ) -> BlankBoardRequirementRefinement | BlankBoardRequirementRefinementResult | None:
         system_prompt = (
             "你是 OpenClass 的空白板书学习需求收敛器，也是左侧聊天框里的自然对话 AI。\n"
             "运行前提：board_document_state.status 必须是 empty；本阶段只维护 LearningRequirementSheet，"
@@ -1203,6 +1237,29 @@ class OpenAICourseAI:
                 },
             }
         )
+        if include_stream_result:
+            response = self._parse_response(
+                "pm",
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                schema=BlankBoardRequirementRefinement,
+                visible_stream_field="chatbot_message",
+                disable_stream_repair=True,
+            )
+            if response is None:
+                return BlankBoardRequirementRefinementResult(result=None)
+            parsed = response.output_parsed
+            result = parsed if isinstance(parsed, BlankBoardRequirementRefinement) else None
+            visible_chat_buffer = (response.visible_field_value or "").strip()
+            if result is not None and visible_chat_buffer:
+                result = result.model_copy(update={"chatbot_message": visible_chat_buffer})
+            return BlankBoardRequirementRefinementResult(
+                result=result,
+                visible_chat_buffer=visible_chat_buffer,
+                visible_chat_was_streamed=response.visible_field_was_streamed,
+                structured_parse_failed=response.structured_parse_failed or result is None,
+            )
+
         result = self._parse(
             "pm",
             system_prompt=system_prompt,
@@ -2036,6 +2093,8 @@ class OpenAICourseAI:
         system_prompt: str,
         user_prompt: str,
         schema: type[BaseModel],
+        visible_stream_field: str | None = None,
+        disable_stream_repair: bool = False,
     ):
         if provider == "anthropic":
             if not self.anthropic_client:
@@ -2083,6 +2142,8 @@ class OpenAICourseAI:
                 schema=schema,
                 client=self.deepseek_client,
                 config=self.deepseek_config,
+                visible_stream_field=visible_stream_field,
+                disable_stream_repair=disable_stream_repair,
             )
         if provider == "kimi":
             return self._call_openai_parse(
@@ -2093,6 +2154,8 @@ class OpenAICourseAI:
                 schema=schema,
                 client=self.kimi_client,
                 config=self.kimi_config,
+                visible_stream_field=visible_stream_field,
+                disable_stream_repair=disable_stream_repair,
             )
         if provider == "minimax":
             return self._call_openai_parse(
@@ -2103,6 +2166,8 @@ class OpenAICourseAI:
                 schema=schema,
                 client=self.minimax_client,
                 config=self.minimax_config,
+                visible_stream_field=visible_stream_field,
+                disable_stream_repair=disable_stream_repair,
             )
         if provider == "openai_compatible":
             return self._call_openai_parse(
@@ -2113,6 +2178,8 @@ class OpenAICourseAI:
                 schema=schema,
                 client=self.openai_compatible_client,
                 config=self.openai_compatible_config,
+                visible_stream_field=visible_stream_field,
+                disable_stream_repair=disable_stream_repair,
             )
         return self._call_openai_parse(
             role=role,
@@ -2122,6 +2189,8 @@ class OpenAICourseAI:
             schema=schema,
             client=self.client,
             config=self.config,
+            visible_stream_field=visible_stream_field,
+            disable_stream_repair=disable_stream_repair,
         )
 
     def _call_openai_parse(
@@ -2134,13 +2203,17 @@ class OpenAICourseAI:
         schema: type[BaseModel],
         client: Any | None = None,
         config: Any | None = None,
+        visible_stream_field: str | None = None,
+        disable_stream_repair: bool = False,
     ) -> ParsedAIResponse | Any:
         client = client or self.client
         config = config or self.config
         assert client is not None
         compat_mode = config.compat_api.strip().lower()
         observer = _ai_stream_observer.get()
-        stream_field = "chatbot_message" if role == "chatbot" else "content_text" if role == "board" else None
+        stream_field = visible_stream_field or (
+            "chatbot_message" if role == "chatbot" else "content_text" if role == "board" else None
+        )
         if observer and stream_field and compat_mode not in {"chat", "chat_completions", "chat-completions"}:
             try:
                 return self._call_openai_chat_parse(
@@ -2150,6 +2223,8 @@ class OpenAICourseAI:
                     user_prompt=user_prompt,
                     schema=schema,
                     client=client,
+                    visible_stream_field=stream_field,
+                    disable_stream_repair=disable_stream_repair,
                 )
             except Exception:
                 pass
@@ -2161,6 +2236,8 @@ class OpenAICourseAI:
                 user_prompt=user_prompt,
                 schema=schema,
                 client=client,
+                visible_stream_field=stream_field,
+                disable_stream_repair=disable_stream_repair,
             )
         try:
             return client.responses.parse(
@@ -2181,6 +2258,8 @@ class OpenAICourseAI:
                 user_prompt=user_prompt,
                 schema=schema,
                 client=client,
+                visible_stream_field=stream_field,
+                disable_stream_repair=disable_stream_repair,
             )
 
     def _should_retry_openai_chat_parse(self, exc: Exception) -> bool:
@@ -2208,6 +2287,8 @@ class OpenAICourseAI:
         user_prompt: str,
         schema: type[BaseModel],
         client: Any | None = None,
+        visible_stream_field: str | None = None,
+        disable_stream_repair: bool = False,
     ) -> ParsedAIResponse:
         client = client or self.client
         assert client is not None
@@ -2224,10 +2305,12 @@ class OpenAICourseAI:
             {"role": "user", "content": user_prompt},
         ]
         observer = _ai_stream_observer.get()
-        stream_field = "chatbot_message" if role == "chatbot" else "content_text" if role == "board" else None
+        stream_field = visible_stream_field or (
+            "chatbot_message" if role == "chatbot" else "content_text" if role == "board" else None
+        )
         if observer and stream_field:
             try:
-                output_text = self._stream_openai_chat_completion(
+                streamed = self._stream_openai_chat_completion(
                     client=client,
                     model=model,
                     messages=messages,
@@ -2237,10 +2320,18 @@ class OpenAICourseAI:
                     field_name=stream_field,
                     use_response_format=True,
                 )
-            except Exception as exc:
+            except AIStreamOutputError as exc:
+                if disable_stream_repair and exc.visible_field_value:
+                    return ParsedAIResponse(
+                        output_parsed=None,
+                        output_text=exc.output_text,
+                        visible_field_value=exc.visible_field_value,
+                        visible_field_was_streamed=exc.visible_field_was_streamed,
+                        structured_parse_failed=True,
+                    )
                 if not self._should_retry_openai_chat_without_schema(exc):
                     raise
-                output_text = self._stream_openai_chat_completion(
+                streamed = self._stream_openai_chat_completion(
                     client=client,
                     model=model,
                     messages=messages,
@@ -2250,9 +2341,31 @@ class OpenAICourseAI:
                     field_name=stream_field,
                     use_response_format=False,
                 )
+            except Exception as exc:
+                if not self._should_retry_openai_chat_without_schema(exc):
+                    raise
+                streamed = self._stream_openai_chat_completion(
+                    client=client,
+                    model=model,
+                    messages=messages,
+                    schema=schema,
+                    schema_payload=schema_payload,
+                    role=role,
+                    field_name=stream_field,
+                    use_response_format=False,
+                )
+            output_text = streamed.output_text
             try:
                 output_parsed = schema.model_validate(_extract_json_object(output_text))
             except Exception as exc:
+                if disable_stream_repair and streamed.visible_field_value:
+                    return ParsedAIResponse(
+                        output_parsed=None,
+                        output_text=output_text,
+                        visible_field_value=streamed.visible_field_value,
+                        visible_field_was_streamed=streamed.visible_field_was_streamed,
+                        structured_parse_failed=True,
+                    )
                 repair_prompt = (
                     "The previous streamed response could not be parsed as valid JSON. "
                     "Reformat the same answer as valid JSON that matches this JSON schema. "
@@ -2292,8 +2405,15 @@ class OpenAICourseAI:
                     id=getattr(repair_response, "id", None),
                     output_text=repair_output_text,
                     usage=getattr(repair_response, "usage", None),
+                    visible_field_value=streamed.visible_field_value,
+                    visible_field_was_streamed=streamed.visible_field_was_streamed,
                 )
-            return ParsedAIResponse(output_parsed=output_parsed, output_text=output_text)
+            return ParsedAIResponse(
+                output_parsed=output_parsed,
+                output_text=output_text,
+                visible_field_value=streamed.visible_field_value,
+                visible_field_was_streamed=streamed.visible_field_was_streamed,
+            )
         try:
             response = client.chat.completions.create(
                 model=model,
@@ -2376,7 +2496,7 @@ class OpenAICourseAI:
         role: str,
         field_name: str,
         use_response_format: bool,
-    ) -> str:
+    ) -> StreamedChatCompletionResult:
         observer = _ai_stream_observer.get()
         kwargs: dict[str, Any] = {
             "model": model,
@@ -2392,30 +2512,42 @@ class OpenAICourseAI:
                     "strict": True,
                 },
             }
-        stream = client.chat.completions.create(**kwargs)
         output_parts: list[str] = []
         last_visible_value = ""
-        for chunk in stream:
-            delta_text = self._chat_completion_stream_delta(chunk)
-            if not delta_text:
-                continue
-            output_parts.append(delta_text)
-            output_text = "".join(output_parts)
-            visible_value = _partial_json_string_field_value(output_text, field_name)
-            if observer and visible_value.startswith(last_visible_value):
-                visible_delta = visible_value[len(last_visible_value) :]
-                if visible_delta:
-                    observer(
-                        {
-                            "type": "field_delta",
-                            "role": role,
-                            "field": field_name,
-                            "delta": visible_delta,
-                            "value": visible_value,
-                        }
-                    )
-                    last_visible_value = visible_value
-        return "".join(output_parts)
+        try:
+            stream = client.chat.completions.create(**kwargs)
+            for chunk in stream:
+                delta_text = self._chat_completion_stream_delta(chunk)
+                if not delta_text:
+                    continue
+                output_parts.append(delta_text)
+                output_text = "".join(output_parts)
+                visible_value = _partial_json_string_field_value(output_text, field_name)
+                if observer and visible_value.startswith(last_visible_value):
+                    visible_delta = visible_value[len(last_visible_value) :]
+                    if visible_delta:
+                        observer(
+                            {
+                                "type": "field_delta",
+                                "role": role,
+                                "field": field_name,
+                                "delta": visible_delta,
+                                "value": visible_value,
+                            }
+                        )
+                        last_visible_value = visible_value
+        except Exception as exc:
+            raise AIStreamOutputError(
+                str(exc),
+                output_text="".join(output_parts),
+                visible_field_value=last_visible_value,
+                visible_field_was_streamed=bool(last_visible_value),
+            ) from exc
+        return StreamedChatCompletionResult(
+            output_text="".join(output_parts),
+            visible_field_value=last_visible_value,
+            visible_field_was_streamed=bool(last_visible_value),
+        )
 
     def _should_retry_openai_chat_without_schema(self, exc: Exception) -> bool:
         message = str(exc).lower()
@@ -2713,6 +2845,184 @@ class OpenAICourseAI:
                     fallback_exc,
                 )
         return None
+
+    def _parse_response(
+        self,
+        role: str,
+        system_prompt: str,
+        user_prompt: str,
+        schema: type[BaseModel],
+        *,
+        log_user_prompt: str | None = None,
+        visible_stream_field: str | None = None,
+        disable_stream_repair: bool = False,
+    ) -> ParsedAIResponse | None:
+        provider, requested_model = self._model_for(role)
+        call_details = {
+            "provider": provider,
+            "role": role,
+            "model": requested_model,
+            "schema": schema.__name__,
+            "system_prompt": system_prompt,
+            "user_prompt": log_user_prompt or user_prompt,
+        }
+        observer = _ai_stream_observer.get()
+        if observer:
+            observer(
+                {
+                    "type": "role_start",
+                    "role": role,
+                    "provider": provider,
+                    "model": requested_model,
+                }
+            )
+        if not self._provider_available(provider):
+            ai_usage_logger.log_event(
+                self._log_event_name(provider, "_skipped"),
+                **call_details,
+                duration_ms=0,
+                reason="client_disabled",
+            )
+            fallback = self._try_provider_fallback(
+                role=role,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                schema=schema,
+                call_details=call_details,
+                failed_provider=provider,
+                failed_model=requested_model,
+                error=RuntimeError("client_disabled"),
+            )
+            return ParsedAIResponse(output_parsed=fallback) if fallback is not None else None
+
+        started_at = time.perf_counter()
+        try:
+            response = self._call_parse(
+                role=role,
+                provider=provider,
+                model=requested_model,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                schema=schema,
+                visible_stream_field=visible_stream_field,
+                disable_stream_repair=disable_stream_repair,
+            )
+            ai_usage_logger.log_event(
+                self._log_event_name(provider, ""),
+                **call_details,
+                duration_ms=_elapsed_ms(started_at),
+                response_id=getattr(response, "id", None),
+                output_text=getattr(response, "output_text", None),
+                usage=getattr(response, "usage", None),
+                parsed_output=response.output_parsed,
+                visible_field_value=getattr(response, "visible_field_value", ""),
+                visible_field_was_streamed=getattr(response, "visible_field_was_streamed", False),
+                structured_parse_failed=getattr(response, "structured_parse_failed", False),
+            )
+            return response
+        except Exception as exc:  # pragma: no cover - network/runtime dependent
+            duration_ms = _elapsed_ms(started_at)
+            if disable_stream_repair and isinstance(exc, AIStreamOutputError) and exc.visible_field_value:
+                response = ParsedAIResponse(
+                    output_parsed=None,
+                    output_text=exc.output_text,
+                    visible_field_value=exc.visible_field_value,
+                    visible_field_was_streamed=exc.visible_field_was_streamed,
+                    structured_parse_failed=True,
+                )
+                ai_usage_logger.log_event(
+                    self._log_event_name(provider, "_structured_parse_failed"),
+                    **call_details,
+                    duration_ms=duration_ms,
+                    error=str(exc),
+                    output_text=response.output_text,
+                    visible_field_value=response.visible_field_value,
+                    visible_field_was_streamed=response.visible_field_was_streamed,
+                    structured_parse_failed=True,
+                )
+                return response
+
+            fallback_model = self._fallback_model_for(provider, exc, requested_model)
+            if fallback_model:
+                ai_usage_logger.log_event(
+                    self._log_event_name(provider, "_retry"),
+                    **call_details,
+                    duration_ms=duration_ms,
+                    retry_model=fallback_model,
+                    error=str(exc),
+                )
+                retry_started_at = time.perf_counter()
+                try:
+                    response = self._call_parse(
+                        role=role,
+                        provider=provider,
+                        model=fallback_model,
+                        system_prompt=system_prompt,
+                        user_prompt=user_prompt,
+                        schema=schema,
+                        visible_stream_field=visible_stream_field,
+                        disable_stream_repair=disable_stream_repair,
+                    )
+                    ai_usage_logger.log_event(
+                        self._log_event_name(provider, ""),
+                        **{**call_details, "model": fallback_model},
+                        fallback_from_model=requested_model,
+                        duration_ms=_elapsed_ms(retry_started_at),
+                        response_id=getattr(response, "id", None),
+                        output_text=getattr(response, "output_text", None),
+                        usage=getattr(response, "usage", None),
+                        parsed_output=response.output_parsed,
+                        visible_field_value=getattr(response, "visible_field_value", ""),
+                        visible_field_was_streamed=getattr(response, "visible_field_was_streamed", False),
+                        structured_parse_failed=getattr(response, "structured_parse_failed", False),
+                    )
+                    return response
+                except Exception as retry_exc:  # pragma: no cover - network/runtime dependent
+                    if disable_stream_repair and isinstance(retry_exc, AIStreamOutputError) and retry_exc.visible_field_value:
+                        response = ParsedAIResponse(
+                            output_parsed=None,
+                            output_text=retry_exc.output_text,
+                            visible_field_value=retry_exc.visible_field_value,
+                            visible_field_was_streamed=retry_exc.visible_field_was_streamed,
+                            structured_parse_failed=True,
+                        )
+                        ai_usage_logger.log_event(
+                            self._log_event_name(provider, "_structured_parse_failed"),
+                            **{**call_details, "model": fallback_model},
+                            fallback_from_model=requested_model,
+                            duration_ms=_elapsed_ms(retry_started_at),
+                            error=str(retry_exc),
+                            output_text=response.output_text,
+                            visible_field_value=response.visible_field_value,
+                            visible_field_was_streamed=response.visible_field_was_streamed,
+                            structured_parse_failed=True,
+                        )
+                        return response
+                    exc = retry_exc
+
+            if self._should_retry_provider_fallback(exc):
+                fallback = self._try_provider_fallback(
+                    role=role,
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    schema=schema,
+                    call_details=call_details,
+                    failed_provider=provider,
+                    failed_model=requested_model,
+                    error=exc,
+                )
+                if fallback is not None:
+                    return ParsedAIResponse(output_parsed=fallback)
+            ai_usage_logger.log_event(
+                self._log_event_name(provider, "_error"),
+                **call_details,
+                duration_ms=duration_ms,
+                error=str(exc),
+                output_text=getattr(exc, "output_text", None),
+                repair_output_text=getattr(exc, "repair_output_text", None),
+            )
+            logger.warning("%s %s call failed, falling back to heuristic flow: %s", provider, role, exc)
+            return None
 
     def _parse(
         self,

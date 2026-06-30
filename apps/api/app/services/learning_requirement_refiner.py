@@ -20,7 +20,12 @@ from app.services.learning_requirement_history import (
     RequirementHistoryStamp,
 )
 from app.services.lesson_factory import build_requirements
-from app.services.openai_course_ai import BlankBoardRequirementRefinement, emit_ai_stream_event, openai_course_ai
+from app.services.openai_course_ai import (
+    BlankBoardRequirementRefinement,
+    BlankBoardRequirementRefinementResult,
+    emit_ai_stream_event,
+    openai_course_ai,
+)
 
 
 LearningRequirementRefinementRoute = Literal["ordinary_chat", "requirement_refining"]
@@ -50,35 +55,67 @@ def refine_blank_board_requirement(
     active_requirement = _active_requirement_from_state(lesson, history_state)
     active_clarification = _active_clarification_from_state(history_state)
     base_requirement = active_requirement or build_requirements(lesson.title)
-    result = openai_course_ai.generate_blank_board_requirement_refinement(
+    refinement = openai_course_ai.generate_blank_board_requirement_refinement(
         board_document_state=board_document_state.model_context(),
         conversation_summary=conversation_summary,
         user_message=user_message,
         existing_requirement_sheet=base_requirement.model_dump(mode="json"),
         existing_clarification=active_clarification.model_dump(mode="json") if active_clarification else None,
+        include_stream_result=True,
     )
-    if not isinstance(result, BlankBoardRequirementRefinement):
-        return None
-    quality_repaired, quality_issues = _assess_guided_reply_quality(
-        result=result,
-        user_message=user_message,
-    )
-    _emit_validated_chatbot_message(result)
-
+    visible_chat_buffer = ""
+    visible_chat_was_streamed = False
+    structured_parse_failed = False
+    if isinstance(refinement, BlankBoardRequirementRefinementResult):
+        result = refinement.result
+        visible_chat_buffer = refinement.visible_chat_buffer.strip()
+        visible_chat_was_streamed = refinement.visible_chat_was_streamed
+        structured_parse_failed = refinement.structured_parse_failed
+    else:
+        result = refinement
     recorder = LearningRequirementHistoryRecorder.from_store_state(
         owner_user_id=owner_user_id,
         lesson_id=lesson.id,
         state=history_state,
     )
-    if result.route == "ordinary_chat":
+    if result is None and visible_chat_buffer:
         return LearningRequirementRefinementOutcome(
-            route="ordinary_chat",
-            chatbot_message=_first_text(result.chatbot_message),
+            route="requirement_refining",
+            chatbot_message=visible_chat_buffer,
             active_requirement_sheet=active_requirement,
             learning_clarification=active_clarification or _basic_chat_clarification(),
             history_stamp=recorder.current_stamp(),
             history_operations=[],
-            guidance_metadata={},
+            guidance_metadata=_stream_metadata(
+                visible_chat_was_streamed=visible_chat_was_streamed,
+                structured_parse_failed=structured_parse_failed,
+                requirement_update_skipped=True,
+            ),
+            changed=False,
+        )
+    if not isinstance(result, BlankBoardRequirementRefinement):
+        return None
+    if visible_chat_buffer:
+        result = result.model_copy(update={"chatbot_message": visible_chat_buffer})
+    quality_repaired, quality_issues = _assess_guided_reply_quality(
+        result=result,
+        user_message=user_message,
+    )
+    if not visible_chat_was_streamed:
+        _emit_validated_chatbot_message(result)
+    if result.route == "ordinary_chat":
+        return LearningRequirementRefinementOutcome(
+            route="ordinary_chat",
+            chatbot_message=_first_text(visible_chat_buffer, result.chatbot_message),
+            active_requirement_sheet=active_requirement,
+            learning_clarification=active_clarification or _basic_chat_clarification(),
+            history_stamp=recorder.current_stamp(),
+            history_operations=[],
+            guidance_metadata=_stream_metadata(
+                visible_chat_was_streamed=visible_chat_was_streamed,
+                structured_parse_failed=structured_parse_failed,
+                requirement_update_skipped=False,
+            ),
             changed=False,
         )
 
@@ -93,6 +130,13 @@ def refine_blank_board_requirement(
         quality_issues=quality_issues,
         quality_repair_skipped=bool(quality_issues),
     )
+    metadata.update(
+        _stream_metadata(
+            visible_chat_was_streamed=visible_chat_was_streamed,
+            structured_parse_failed=structured_parse_failed,
+            requirement_update_skipped=False,
+        )
+    )
     stamp = recorder.record_update(
         requirements=requirement_state.requirement,
         clarification=requirement_state.clarification,
@@ -101,7 +145,7 @@ def refine_blank_board_requirement(
     )
     return LearningRequirementRefinementOutcome(
         route="requirement_refining",
-        chatbot_message=_first_text(result.chatbot_message, result.next_question, result.summary),
+        chatbot_message=_first_text(visible_chat_buffer, result.chatbot_message, result.next_question, result.summary),
         active_requirement_sheet=requirement_state.requirement,
         learning_clarification=requirement_state.clarification,
         history_stamp=stamp,
@@ -178,6 +222,20 @@ def _first_text(*values: str) -> str:
         if text:
             return text
     return ""
+
+
+def _stream_metadata(
+    *,
+    visible_chat_was_streamed: bool,
+    structured_parse_failed: bool,
+    requirement_update_skipped: bool,
+) -> dict[str, Any]:
+    return {
+        "visible_chat_source": "streamed_buffer" if visible_chat_was_streamed else "validated_result",
+        "visible_chat_was_streamed": visible_chat_was_streamed,
+        "structured_parse_failed": structured_parse_failed,
+        "requirement_update_skipped": requirement_update_skipped,
+    }
 
 
 def _emit_validated_chatbot_message(result: BlankBoardRequirementRefinement) -> None:
