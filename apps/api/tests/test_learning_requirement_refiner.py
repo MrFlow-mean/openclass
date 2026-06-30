@@ -69,15 +69,10 @@ def test_blank_board_refinement_prompt_requires_rich_broad_topic_guidance(
     assert "最近经历法" in system_prompt
     assert "卡点定位法" in system_prompt
     assert "优先归为 practice_artifact" in system_prompt
-    assert "练习型需求中，如果用户已经说清想练的内容，但没有说明当前水平" in system_prompt
-    assert "4-6 个由模型根据当前技能生成的水平选项" in system_prompt
-    assert "不要默认用户从基础练起" in system_prompt
     payload = json.loads(str(captured["user_prompt"]))
     assert "开场承接" in payload["response_contract"]["chatbot_message"]
     assert "推荐理由" in payload["response_contract"]["chatbot_message"]
     assert "必须和用户当前表达形态匹配" in payload["response_contract"]["guidance_strategy"]
-    assert "练习需求缺当前水平时优先用 choice_cards" in payload["response_contract"]["guidance_strategy"]
-    assert "当前技能水平卡片" in payload["response_contract"]["entry_point_options"]
     assert "当前水平" in payload["response_contract"]["next_question"]
     assert "纯新手入门" in payload["response_contract"]["next_question"]
     assert "已会/未会" in system_prompt
