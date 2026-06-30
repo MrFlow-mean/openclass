@@ -21,7 +21,7 @@ from app.services.learning_requirement_history import (
     RequirementHistoryStamp,
 )
 from app.services.lesson_factory import build_requirements
-from app.services.openai_course_ai import BlankBoardRequirementRefinement, openai_course_ai
+from app.services.openai_course_ai import BlankBoardRequirementRefinement, emit_ai_stream_event, openai_course_ai
 
 
 LearningRequirementRefinementRoute = Literal["ordinary_chat", "requirement_refining"]
@@ -68,6 +68,7 @@ def refine_blank_board_requirement(
         base_requirement=base_requirement,
         active_clarification=active_clarification,
     )
+    _emit_validated_chatbot_message(result)
 
     recorder = LearningRequirementHistoryRecorder.from_store_state(
         owner_user_id=owner_user_id,
@@ -222,3 +223,18 @@ def _first_text(*values: str) -> str:
         if text:
             return text
     return ""
+
+
+def _emit_validated_chatbot_message(result: BlankBoardRequirementRefinement) -> None:
+    message = _first_text(result.chatbot_message, result.next_question, result.summary)
+    if not message:
+        return
+    emit_ai_stream_event(
+        {
+            "type": "field_delta",
+            "role": "pm",
+            "field": "chatbot_message",
+            "delta": message,
+            "value": message,
+        }
+    )

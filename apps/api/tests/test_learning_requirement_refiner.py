@@ -11,6 +11,7 @@ from app.services.openai_course_ai import (
     BlankBoardRequirementRefinement,
     ChatbotReply,
     OpenAICourseAI,
+    bind_ai_output_stream,
     openai_course_ai,
 )
 
@@ -433,11 +434,13 @@ def test_form_like_internal_field_guidance_is_repaired(
 
     monkeypatch.setattr(openai_course_ai, "generate_blank_board_requirement_refinement", _fake_refinement)
 
-    response = process_chat_on_lesson(
-        lesson.id,
-        ChatRequest(message="我想学一个方向"),
-        user_id=user_id,
-    )
+    stream_events: list[dict[str, object]] = []
+    with bind_ai_output_stream(lambda payload: stream_events.append(payload)):
+        response = process_chat_on_lesson(
+            lesson.id,
+            ChatRequest(message="我想学一个方向"),
+            user_id=user_id,
+        )
 
     assert len(calls) == 2
     repair_context = calls[1]["quality_repair_context"]
@@ -445,6 +448,16 @@ def test_form_like_internal_field_guidance_is_repaired(
     assert "字段" in repair_context["repair_reason"]
     assert "请填写" not in response.chatbot_message
     assert "learning_goal" not in response.chatbot_message
+    streamed_message = "".join(
+        str(event.get("delta") or "")
+        for event in stream_events
+        if event.get("type") == "field_delta"
+        and event.get("role") == "pm"
+        and event.get("field") == "chatbot_message"
+    )
+    assert streamed_message == response.chatbot_message
+    assert "请填写" not in streamed_message
+    assert "learning_goal" not in streamed_message
     commit = store.load_for_user(user_id).packages[0].lessons[0].history_graph.commits[-1]
     discovery = commit.metadata["guided_requirement_discovery"]
     assert discovery["quality_repaired"] is True

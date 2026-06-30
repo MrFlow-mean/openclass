@@ -51,6 +51,13 @@ def _head_commit_id(response: ChatResponse, lesson_id: str) -> str | None:
     return None
 
 
+def _lesson_document_text(response: ChatResponse, lesson_id: str) -> str:
+    lesson = next((item for item in response.course_package.lessons if item.id == lesson_id), None)
+    if lesson is None:
+        return ""
+    return lesson.board_document.content_text or ""
+
+
 def _log_stream_lifecycle(state: ChatStreamState, event: str, **payload: object) -> None:
     ai_usage_logger.log_event(
         "chat_stream_lifecycle",
@@ -85,11 +92,14 @@ def _chat_stream_events(lesson_id: str, request: ChatRequest, *, user_id: str) -
         "pm": "正在整理学习需求",
         "board": "正在生成右侧文档",
     }
+    chat_delta_emitted = False
+    document_delta_emitted = False
 
     def emit(event: str, data: object) -> None:
         events.put((event, data))
 
     def observer(payload: dict[str, object]) -> None:
+        nonlocal chat_delta_emitted, document_delta_emitted
         if payload.get("type") == "board_task_update":
             data = payload.get("payload")
             if isinstance(data, dict):
@@ -115,12 +125,30 @@ def _chat_stream_events(lesson_id: str, request: ChatRequest, *, user_id: str) -
         delta = str(payload.get("delta") or "")
         if not delta:
             return
-        if role == "chatbot" and field == "chatbot_message":
+        if role in {"chatbot", "pm"} and field == "chatbot_message":
             for char in delta:
                 emit("chat_delta", {"delta": char})
+            chat_delta_emitted = True
         elif role == "board" and field == "content_text":
             for char in delta:
                 emit("document_delta", {"delta": char})
+            document_delta_emitted = True
+
+    def emit_missing_visible_deltas(response: ChatResponse) -> None:
+        nonlocal chat_delta_emitted, document_delta_emitted
+        if not chat_delta_emitted and response.chatbot_message:
+            for char in response.chatbot_message:
+                emit("chat_delta", {"delta": char})
+            chat_delta_emitted = True
+        if (
+            not document_delta_emitted
+            and response.board_document_operation_status == "succeeded"
+        ):
+            document_text = _lesson_document_text(response, lesson_id)
+            if document_text:
+                for char in document_text:
+                    emit("document_delta", {"delta": char})
+                document_delta_emitted = True
 
     def run() -> None:
         with ai_log_context(
@@ -135,6 +163,7 @@ def _chat_stream_events(lesson_id: str, request: ChatRequest, *, user_id: str) -
                 with bind_ai_output_stream(observer):
                     response = process_chat_on_lesson(lesson_id, request, user_id=user_id)
                 state.produced_commit_id = _head_commit_id(response, lesson_id)
+                emit_missing_visible_deltas(response)
                 state.final_enqueued = True
                 emit("final", response.model_dump(mode="json"))
                 _log_stream_lifecycle(state, "stream_final_sent")

@@ -12,13 +12,21 @@ from app.models import (
 from app.routers import chat as chat_router
 from app.services.ai_logging import ai_log_context
 from app.services.lesson_factory import create_empty_lesson
+from app.services.openai_course_ai import emit_ai_stream_event
 from app.services.route_context import bind_ai_request_context
 from app.services.workspace_state import package_view_for_lesson
 
 
-def _chat_response(lesson_id: str = "lesson_stream_test") -> ChatResponse:
+def _chat_response(
+    lesson_id: str = "lesson_stream_test",
+    *,
+    chatbot_message: str = "已经完成。",
+    document_text: str = "",
+    board_document_operation_status: str = "none",
+) -> ChatResponse:
     lesson = create_empty_lesson("流式回合")
     lesson.id = lesson_id
+    lesson.board_document.content_text = document_text
     assert lesson.learning_requirements is not None
     package = CoursePackage(
         id="course_stream_test",
@@ -31,7 +39,7 @@ def _chat_response(lesson_id: str = "lesson_stream_test") -> ChatResponse:
     )
     workspace = WorkspaceState(packages=[package], active_package_id=package.id)
     return ChatResponse(
-        chatbot_message="已经完成。",
+        chatbot_message=chatbot_message,
         learning_requirement_sheet=lesson.learning_requirements,
         learning_clarification=LearningClarificationStatus(
             progress=100,
@@ -39,6 +47,7 @@ def _chat_response(lesson_id: str = "lesson_stream_test") -> ChatResponse:
             reason="测试回合已完成。",
         ),
         board_decision=BoardDecision(action="no_change", reason="测试不修改板书。"),
+        board_document_operation_status=board_document_operation_status,
         course_package=package_view_for_lesson(workspace, package, lesson.id),
     )
 
@@ -56,6 +65,10 @@ def _parse_sse(block: str) -> tuple[str, dict]:
 
 def _collect_events(stream) -> list[tuple[str, dict]]:
     return [_parse_sse(block) for block in stream]
+
+
+def _joined_delta(events: list[tuple[str, dict]], event_name: str) -> str:
+    return "".join(str(payload.get("delta") or "") for event, payload in events if event == event_name)
 
 
 def test_chat_stream_emits_heartbeat_before_final(monkeypatch) -> None:
@@ -86,6 +99,78 @@ def test_chat_stream_emits_heartbeat_before_final(monkeypatch) -> None:
     assert event_names[-1] == "final"
     assert [event["stream_event"] for event in logged_events] == ["stream_started", "stream_final_sent"]
     assert logged_events[-1]["produced_commit_id"] is not None
+
+
+def test_chat_stream_routes_pm_chatbot_message_as_chat_delta(monkeypatch) -> None:
+    def process_with_pm_stream(*args, **kwargs) -> ChatResponse:
+        emit_ai_stream_event(
+            {
+                "type": "field_delta",
+                "role": "pm",
+                "field": "chatbot_message",
+                "delta": "正在自然收敛需求。",
+                "value": "正在自然收敛需求。",
+            }
+        )
+        return _chat_response("lesson_stream_test", chatbot_message="正在自然收敛需求。")
+
+    monkeypatch.setattr(chat_router, "process_chat_on_lesson", process_with_pm_stream)
+
+    events = _collect_events(
+        chat_router._chat_stream_events(
+            "lesson_stream_test",
+            ChatRequest(message="我想学一个宽泛主题"),
+            user_id="user_stream_test",
+        )
+    )
+
+    assert _joined_delta(events, "chat_delta") == "正在自然收敛需求。"
+    assert [event for event, _payload in events].count("final") == 1
+
+
+def test_chat_stream_synthesizes_final_chatbot_message_as_delta(monkeypatch) -> None:
+    monkeypatch.setattr(
+        chat_router,
+        "process_chat_on_lesson",
+        lambda *args, **kwargs: _chat_response("lesson_stream_test", chatbot_message="最终回复也要流式出现。"),
+    )
+
+    events = _collect_events(
+        chat_router._chat_stream_events(
+            "lesson_stream_test",
+            ChatRequest(message="随便聊聊"),
+            user_id="user_stream_test",
+        )
+    )
+
+    event_names = [event for event, _payload in events]
+    assert _joined_delta(events, "chat_delta") == "最终回复也要流式出现。"
+    assert event_names.index("chat_delta") < event_names.index("final")
+
+
+def test_chat_stream_synthesizes_document_delta_for_succeeded_board_operation(monkeypatch) -> None:
+    monkeypatch.setattr(
+        chat_router,
+        "process_chat_on_lesson",
+        lambda *args, **kwargs: _chat_response(
+            "lesson_stream_test",
+            chatbot_message="板书已生成。",
+            document_text="# 新板书\n\n这里是生成后的板书内容。",
+            board_document_operation_status="succeeded",
+        ),
+    )
+
+    events = _collect_events(
+        chat_router._chat_stream_events(
+            "lesson_stream_test",
+            ChatRequest(message="生成板书"),
+            user_id="user_stream_test",
+        )
+    )
+
+    event_names = [event for event, _payload in events]
+    assert _joined_delta(events, "document_delta") == "# 新板书\n\n这里是生成后的板书内容。"
+    assert event_names.index("document_delta") < event_names.index("final")
 
 
 def test_chat_stream_worker_error_emits_error_and_lifecycle_log(monkeypatch) -> None:
