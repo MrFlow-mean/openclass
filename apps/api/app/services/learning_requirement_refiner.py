@@ -12,6 +12,7 @@ from app.services.board_document_sensor import BoardDocumentSensorReading
 from app.services.blank_board_requirement_mapping import build_blank_board_requirement_state
 from app.services.blank_board_requirement_quality import (
     assess_blank_board_requirement_reply,
+    allows_core_quality_repair,
     build_guidance_metadata,
     merge_guidance_repair,
 )
@@ -177,7 +178,7 @@ def _repair_guided_reply_if_needed(
     reply_quality = assess_blank_board_requirement_reply(result, user_message=user_message)
     if not reply_quality.needs_repair:
         return result, False, []
-    allow_core_updates = any("委托式入门" in issue for issue in reply_quality.issues)
+    allow_core_updates = allows_core_quality_repair(reply_quality.issues)
     repaired = openai_course_ai.generate_blank_board_requirement_refinement(
         board_document_state=board_document_state.model_context(),
         conversation_summary=conversation_summary,
@@ -190,10 +191,7 @@ def _repair_guided_reply_if_needed(
             "must_preserve": (
                 [
                     "route",
-                    "work_mode",
-                    "target_scenario",
-                    "known_background",
-                    "summary",
+                    "do_not_invent_user_facts",
                 ]
                 if allow_core_updates
                 else [
@@ -222,6 +220,8 @@ def _repair_guided_reply_if_needed(
                 "single_main_question",
                 "novice_intro_no_external_goal_question",
                 "delegated_intro_entry_ready",
+                "matched_guidance_method_for_current_user_signal",
+                "record_observed_facts_to_requirement_sheet",
             ],
         },
     )

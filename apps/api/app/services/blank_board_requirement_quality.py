@@ -110,6 +110,8 @@ ENTRY_CONFIRMATION_TERMS = [
     "想从",
     "更想",
     "可以吗",
+    "准备好了吗",
+    "准备好",
 ]
 
 EXTERNAL_GOAL_QUESTION_TERMS = [
@@ -124,6 +126,62 @@ EXTERNAL_GOAL_QUESTION_TERMS = [
     "现实产出",
     "为了什么",
     "用来做什么",
+]
+
+PRACTICE_NEED_TERMS = [
+    "练习",
+    "训练",
+    "提高",
+    "提升",
+    "巩固",
+    "复习",
+    "做题",
+    "刷题",
+    "测验",
+    "模拟",
+    "实战",
+    "角色扮演",
+]
+
+RECENT_EXPERIENCE_CONTEXT_TERMS = [
+    "最近",
+    "刚学",
+    "刚做",
+    "刚写",
+    "刚看",
+    "刚遇到",
+]
+
+STUCK_POINT_USER_TERMS = [
+    "卡",
+    "看不懂",
+    "听不懂",
+    "做不出来",
+    "不会做",
+    "不理解",
+    "不懂",
+    "困惑",
+    "不知道从哪开始",
+]
+
+SCENARIO_USER_TERMS = [
+    "为了",
+    "用来",
+    "面向",
+    "场景",
+    "应对",
+    "解决",
+]
+
+GOAL_OUTPUT_USER_TERMS = [
+    "学完",
+    "做到",
+    "能写",
+    "会做",
+    "能讲",
+    "看懂",
+    "听懂",
+    "用于",
 ]
 
 
@@ -143,8 +201,11 @@ def assess_blank_board_requirement_reply(
         if _asks_entry_confirmation("\n".join([result.next_question, message])):
             issues.append("纯新手委托式入门不应把入口确认压力交回用户。")
         return BlankBoardRequirementReplyQuality(issues=_dedupe_text(issues))
+    issues.extend(_strategy_alignment_issues(result, user_message=user_message))
     if _is_broad_knowledge_refinement(result):
         issues.extend(_broad_guidance_issues(result, message, user_message=user_message))
+    if _is_practice_signal(user_message) or result.work_mode == "practice_artifact":
+        issues.extend(_practice_guidance_issues(result))
     issues.extend(_natural_conversation_issues(message))
     return BlankBoardRequirementReplyQuality(issues=_dedupe_text(issues))
 
@@ -177,6 +238,7 @@ def merge_guidance_repair(
                 "granularity",
                 "learning_goal",
                 "current_level",
+                "target_scenario",
                 "known_background",
                 "target_depth",
                 "success_criteria",
@@ -221,6 +283,64 @@ def build_guidance_metadata(
         "quality_repaired": quality_repaired,
         "quality_issues": quality_issues or [],
     }
+
+
+def allows_core_quality_repair(issues: list[str]) -> bool:
+    return any(
+        any(keyword in issue for keyword in ["委托式入门", "练习型", "已会/未会", "最近经历", "卡点", "目标产出", "场景定位"])
+        for issue in issues
+    )
+
+
+def _strategy_alignment_issues(
+    result: BlankBoardRequirementRefinement,
+    *,
+    user_message: str,
+) -> list[str]:
+    issues: list[str] = []
+    if not user_message.strip():
+        return issues
+
+    if _is_practice_signal(user_message) and result.work_mode != "practice_artifact":
+        issues.append("练习型需求不应被领域地图或新知识收敛替代。")
+    if _is_known_unknown_signal(user_message):
+        if result.guidance_strategy not in {"known_unknown", "light_self_report", "implicit_observation"}:
+            issues.append("用户已会/未会自述应优先使用已会/未会法或轻量自述法。")
+        if not _has_text(result.known_background) and not result.key_facts:
+            issues.append("用户已会/未会自述没有记录到 known_background 或 key_facts。")
+    if _is_stuck_point_signal(user_message):
+        if result.guidance_strategy not in {"stuck_point", "recent_experience", "implicit_observation"}:
+            issues.append("用户卡点表达应优先使用卡点定位法。")
+        if not _has_text(result.known_background) and not _has_text(result.learner_profile_inference):
+            issues.append("用户卡点没有记录到背景或起点推断。")
+    elif _is_recent_experience_signal(user_message):
+        if result.guidance_strategy not in {"recent_experience", "stuck_point", "implicit_observation"}:
+            issues.append("用户最近经历应优先使用最近经历法。")
+        if not _has_text(result.known_background) and not _has_text(result.learner_profile_inference):
+            issues.append("用户最近经历没有记录到背景或起点推断。")
+    if _is_scenario_signal(user_message) and result.guidance_strategy in {"domain_map", "recommended_entry"}:
+        if not _has_text(result.target_scenario) and not _has_text(result.success_criteria):
+            issues.append("用户场景定位信息没有记录到面向场景或成功标准。")
+    if _is_goal_output_signal(user_message) and result.guidance_strategy in {"domain_map", "recommended_entry"}:
+        if not _has_text(result.target_depth) and not _has_text(result.success_criteria):
+            issues.append("用户目标产出信息没有记录到目标深度或成功标准。")
+    return issues
+
+
+def _practice_guidance_issues(result: BlankBoardRequirementRefinement) -> list[str]:
+    issues: list[str] = []
+    if result.work_mode != "practice_artifact" or result.granularity != "practice_artifact":
+        issues.append("练习型需求必须归入 practice_artifact。")
+        return issues
+    if result.guidance_strategy in {"domain_map", "recommended_entry"}:
+        issues.append("练习型需求应优先收敛内容、当前水平和面向场景，而不是只给领域地图。")
+    if not _has_text(result.learning_goal):
+        issues.append("练习型需求缺少想练的内容。")
+    if not _has_text(result.current_level) and not asks_about_starting_level(_first_text(result.next_question, result.chatbot_message)):
+        issues.append("练习型需求缺少当前水平，也没有自然追问当前水平。")
+    if not _has_text(result.target_scenario) and not _asks_scenario_question(_first_text(result.next_question, result.chatbot_message)):
+        issues.append("练习型需求缺少面向场景，也没有自然追问面向场景。")
+    return issues
 
 
 def _broad_guidance_issues(
@@ -365,6 +485,60 @@ def _asks_entry_confirmation(text: str) -> bool:
         any(keyword in fragment for keyword in ENTRY_CONFIRMATION_TERMS)
         for fragment in _question_fragments(compact)
     )
+
+
+def _asks_scenario_question(text: str) -> bool:
+    compact = (text or "").strip()
+    if not compact or ("？" not in compact and "?" not in compact):
+        return False
+    return any(
+        any(keyword in fragment for keyword in ["场景", "为了", "用来", "应对", "解决", "不限定具体场景"])
+        for fragment in _question_fragments(compact)
+    )
+
+
+def _is_practice_signal(text: str) -> bool:
+    compact = (text or "").strip()
+    if not compact:
+        return False
+    return any(keyword in compact for keyword in PRACTICE_NEED_TERMS)
+
+
+def _is_known_unknown_signal(text: str) -> bool:
+    compact = (text or "").strip()
+    if not compact:
+        return False
+    has_known = any(keyword in compact for keyword in ["已经会", "已会", "学过", "会一些", "基础"])
+    has_unknown = any(keyword in compact for keyword in ["还没学", "没学过", "不会", "未会", "忘得", "忘了"])
+    return has_known and has_unknown
+
+
+def _is_recent_experience_signal(text: str) -> bool:
+    compact = (text or "").strip()
+    if not compact:
+        return False
+    return any(keyword in compact for keyword in RECENT_EXPERIENCE_CONTEXT_TERMS)
+
+
+def _is_stuck_point_signal(text: str) -> bool:
+    compact = (text or "").strip()
+    if not compact:
+        return False
+    return any(keyword in compact for keyword in STUCK_POINT_USER_TERMS)
+
+
+def _is_scenario_signal(text: str) -> bool:
+    compact = (text or "").strip()
+    if not compact:
+        return False
+    return any(keyword in compact for keyword in SCENARIO_USER_TERMS)
+
+
+def _is_goal_output_signal(text: str) -> bool:
+    compact = (text or "").strip()
+    if not compact:
+        return False
+    return any(keyword in compact for keyword in GOAL_OUTPUT_USER_TERMS)
 
 
 def _question_fragments(text: str) -> list[str]:

@@ -62,9 +62,14 @@ def test_blank_board_refinement_prompt_requires_rich_broad_topic_guidance(
     assert "为我指导、你安排、帮我安排" in system_prompt
     assert "granularity=single_knowledge_point" in system_prompt
     assert "ready_for_board=true" in system_prompt
+    assert "引导策略选择优先级" in system_prompt
+    assert "最近经历法" in system_prompt
+    assert "卡点定位法" in system_prompt
+    assert "优先归为 practice_artifact" in system_prompt
     payload = json.loads(str(captured["user_prompt"]))
     assert "开场承接" in payload["response_contract"]["chatbot_message"]
     assert "推荐理由" in payload["response_contract"]["chatbot_message"]
+    assert "必须和用户当前表达形态匹配" in payload["response_contract"]["guidance_strategy"]
     assert "当前水平" in payload["response_contract"]["next_question"]
     assert "纯新手入门" in payload["response_contract"]["next_question"]
     assert "已会/未会" in system_prompt
@@ -922,7 +927,7 @@ def test_delegated_pure_novice_intro_repairs_confirmation_loop_to_ready(
                 chatbot_message=(
                     "你是纯入门新手，我建议先从**基础语法**开始。"
                     "它是后续所有实践的入口，也比较容易获得反馈。"
-                    "你愿意从基础语法开始学起吗？"
+                    "准备好了吗？"
                 ),
                 progress=50,
                 summary="用户是纯入门新手，并委托 AI 安排入口。",
@@ -949,7 +954,7 @@ def test_delegated_pure_novice_intro_repairs_confirmation_loop_to_ready(
                 reason_for_recommendation="它容易获得反馈。",
                 learner_profile_inference="用户是纯入门新手，且委托系统安排入口。",
                 missing_items=["用户是否接受推荐的具体入口"],
-                next_question="你愿意从基础语法开始学起吗？",
+                next_question="准备好了吗？",
                 ready_for_board=False,
             )
         return BlankBoardRequirementRefinement(
@@ -1005,6 +1010,7 @@ def test_delegated_pure_novice_intro_repairs_confirmation_loop_to_ready(
     assert response.learning_clarification.missing_items == []
     assert response.requirement_phase == "ready"
     assert "愿意从" not in response.chatbot_message
+    assert "准备好了吗" not in response.chatbot_message
     commit = store.load_for_user(user_id).packages[0].lessons[0].history_graph.commits[-1]
     discovery = commit.metadata["guided_requirement_discovery"]
     assert discovery["quality_repaired"] is True
@@ -1296,7 +1302,6 @@ def test_recent_experience_and_stuck_point_records_background_without_repair(
     assert discovery["guidance_strategy"] == "stuck_point"
     assert discovery["quality_repaired"] is False
     assert discovery["quality_issues"] == []
-
 
 def test_empty_board_specific_knowledge_point_is_ready(
     monkeypatch: pytest.MonkeyPatch,
