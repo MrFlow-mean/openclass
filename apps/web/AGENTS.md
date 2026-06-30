@@ -11,18 +11,20 @@
 ## 目录约定
 
 - `src/app/`：App Router 页面入口。
-- `src/components/`：重建区首页、个人主页、账户设置、基础 Chatbot 等顶层组件。
+- `src/components/`：课程工作台、学习首页、个人主页等顶层组件。
+- `src/components/course-studio/`：课程工作台视图组件。`course-studio.tsx` 只负责组合；右侧栏、编辑器、聊天、历史、资源、图谱分别放在独立组件里。
 - `src/hooks/`：可复用交互状态与副作用，例如实时转写日志队列。
+- `src/hooks/course-studio/`：课程工作台的状态和副作用边界，包括 workspace、document draft、history、resource/action、AI chat、model catalog、realtime voice。
 - `src/lib/`：API client、数学内容规范化、实时音频编解码等纯工具。
 - `src/types/`：与后端 API 视图一一对应的 TypeScript 类型。
 
 ## 编码原则
 
-- 旧 `course-studio` 工作台和对应 hooks 已下线。新产品工作链路要先明确 UI、API、service、schema、prompt、storage、test 的边界，再创建新的小模块。
+- `course-studio.tsx` 已是最大的容器。新功能优先抽到 `hooks/` / `lib/` / 子组件再由它组合，**不要继续在这个文件里堆状态和 effect**。
 - API 调用走 `src/lib/` 里的 client，组件层不直接 `fetch`。
 - 视图类型放 `src/types/`，与后端返回字段一一对应；后端剥离了资料原文与本地路径，前端类型也不应包含。
 - 实时音频 / PCM 编解码等底层逻辑放 `src/lib/`，组件只调用。
-- 新模块接近 800-1200 行时优先拆边界，不要重新制造单文件总控制器。
+- `course-studio.tsx` 超过 1000 行要先拆分；拆出的单个组件或 hook 接近 800-1200 行时，优先继续拆边界。
 
 ## 命令
 

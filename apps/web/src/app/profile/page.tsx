@@ -8,10 +8,21 @@ export const metadata: Metadata = {
   description: "开放课堂的个人项目与收藏项目主页。",
 };
 
-export default async function ProfilePage() {
+type ProfilePageProps = {
+  searchParams?: Promise<{
+    tab?: string | string[];
+  }>;
+};
+
+export default async function ProfilePage({ searchParams }: ProfilePageProps) {
+  const params = await searchParams;
+  const tabParam = Array.isArray(params?.tab) ? params?.tab[0] : params?.tab;
+
   return (
     <AuthGate>
-      <ProfileHome />
+      <ProfileHome
+        initialTab={tabParam === "repositories" ? "repositories" : tabParam === "stars" ? "stars" : "settings"}
+      />
     </AuthGate>
   );
 }

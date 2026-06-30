@@ -4,7 +4,7 @@ const AUTH_COOKIE_NAME = "openclass.auth.token";
 const GUEST_AUTH_COOKIE_NAME = "openclass.guest.auth.token";
 const publicRoutes = ["/login", "/register", "/auth/callback", "/trending"];
 const publicRoutePrefixes = ["/courses"];
-const productLandingRedirects = ["/admin", "/following", "/profile"];
+const productLandingRedirects = ["/admin", "/following", "/profile", "/studio"];
 
 function isPublicRoute(pathname: string) {
   return (

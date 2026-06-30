@@ -33,10 +33,10 @@ def realtime_tool_schemas() -> list[dict[str, Any]]:
     return [
         {
             "type": "function",
-            "name": "run_chatbot_reply",
+            "name": "run_chatbot_workflow",
             "description": (
-                "Send the learner's final utterance into the same reset Chatbot used by text chat. "
-                "Use this only for basic lesson-scoped replies; it does not edit documents or start product workflows."
+                "Send the learner's final utterance into the same OpenClass Chatbot workflow used by text chat. "
+                "Use this for lesson-scoped learning, board targeting, document operations, and normal Chatbot replies."
             ),
             "parameters": {
                 "type": "object",
@@ -135,7 +135,7 @@ def execute_realtime_tool(
 ) -> dict[str, Any]:
     try:
         _validate_tool_scope(session, arguments)
-        if tool_name == "run_chatbot_reply":
+        if tool_name == "run_chatbot_workflow":
             message = _compact_text(str(arguments.get("message") or ""), limit=4000)
             if not message:
                 raise ValueError("message is required")

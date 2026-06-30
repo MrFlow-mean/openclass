@@ -1,16 +1,24 @@
 from __future__ import annotations
 
-from app.models import BoardDecision, ChatRequest, ChatResponse, ConversationTurn, LearningClarificationStatus, LearningRequirementSheet
+from app.models import (
+    BoardDecision,
+    ChatRequest,
+    ChatResponse,
+    ConversationTurn,
+    LearningClarificationStatus,
+)
 from app.services import workspace_state
+from app.services.course_runtime import effective_requirements
 from app.services.history import commit_operations
 from app.services.openai_course_ai import (
     bind_board_model_selection,
     bind_text_model_selection,
     openai_course_ai,
 )
+from app.services.route_context import bind_ai_request_context
 
 
-RESET_METADATA_KIND = "product_workflow_reset_chat"
+BASIC_CHAT_METADATA_KIND = "basic_chat"
 
 
 def _conversation_summary(conversation: list[ConversationTurn], *, limit: int = 1600) -> str:
@@ -22,8 +30,8 @@ def _conversation_summary(conversation: list[ConversationTurn], *, limit: int = 
 def _reset_clarification() -> LearningClarificationStatus:
     return LearningClarificationStatus(
         progress=0,
-        label="workflow_reset",
-        reason="旧产品工作链路运行时已移除，等待新的工作链路接入。",
+        label="basic_chat",
+        reason="当前聊天框只执行基础你问我答，不进入文档工作流。",
         missing_items=[],
         can_start=False,
         forced_start=False,
@@ -35,32 +43,10 @@ def _reset_clarification() -> LearningClarificationStatus:
     )
 
 
-def _compat_requirement_sheet(lesson) -> LearningRequirementSheet:
-    return LearningRequirementSheet(
-        theme=lesson.title,
-        learning_goal="旧学习需求链路已清空；当前聊天框只记录基础对话。",
-        level="",
-        known_background="",
-        current_questions=[],
-        learning_need_checklist=[],
-        target_depth="",
-        output_preference="",
-        boundary="",
-        board_scope=[],
-        success_criteria="",
-    )
-
-
-def _board_document_state(lesson) -> dict[str, object]:
-    has_content = bool(
-        (lesson.board_document.content_text or "").strip()
-        or (lesson.board_document.content_html or "").strip()
-    )
-    return {
-        "status": "non_empty" if has_content else "empty",
-        "is_empty": not has_content,
-        "content_visibility": "status_only",
-    }
+def _clear_legacy_runtime_state(lesson) -> None:
+    lesson.learning_requirements = None
+    lesson.board_task_requirements = None
+    lesson.active_interaction_session = None
 
 
 def _build_response(
@@ -71,56 +57,54 @@ def _build_response(
     chatbot_message: str,
     board_decision: BoardDecision,
 ) -> ChatResponse:
+    requirements = effective_requirements(lesson)
     return ChatResponse(
         chatbot_message=chatbot_message,
-        learning_requirement_sheet=_compat_requirement_sheet(lesson),
+        learning_requirement_sheet=requirements,
+        active_requirement_sheet=None,
+        active_interaction_session=None,
+        interaction_decision=None,
         learning_clarification=_reset_clarification(),
+        board_task_sheet=None,
+        active_board_task_sheet=None,
+        board_task_questions=[],
         board_decision=board_decision,
         needs_clarification=False,
         clarification_questions=[],
+        resource_matches=[],
+        focus_candidates=[],
         requirement_cleared=True,
         course_package=workspace_state.package_view_for_lesson(workspace, package, lesson.id),
     )
 
 
-def _run_reset_chat_turn(lesson_id: str, request: ChatRequest, *, user_id: str) -> ChatResponse:
+def _run_basic_chat_turn(lesson_id: str, request: ChatRequest, *, user_id: str) -> ChatResponse:
     workspace = workspace_state.load_workspace_for_user(user_id)
     package, lesson = workspace_state.find_lesson_package(workspace, lesson_id)
-    ai_reply = openai_course_ai.generate_chatbot_reply(
-        lesson_title=lesson.title,
-        learning_goal="",
-        board_summary="",
-        resource_summary="",
+    ai_reply = openai_course_ai.generate_basic_chat_reply(
         conversation_summary=_conversation_summary(request.conversation),
         user_message=request.message,
-        selection_excerpt=request.selection.excerpt if request.selection else None,
-        interaction_mode=request.interaction_mode,
-        interaction_context={
-            "turn_mode": "product_workflow_reset",
-            "document_write_enabled": False,
-            "board_workflow_enabled": False,
-        },
     )
-    chatbot_message = (ai_reply.chatbot_message if ai_reply else "").strip() or "我现在可以先做基础对话；旧产品工作链路已经清空，新的链路还没有接入。"
+    chatbot_message = (ai_reply.chatbot_message if ai_reply else "").strip()
+    _clear_legacy_runtime_state(lesson)
     board_decision = BoardDecision(
         action="no_change",
-        reason="旧产品工作链路运行时已移除；本轮只记录聊天，不修改右侧文档。",
+        reason="基础聊天回合不修改右侧文档。",
     )
     commit_operations(
         lesson,
         [],
-        label="Workflow reset chat",
-        message="Recorded a chat turn after removing the previous product workflow runtime",
+        label="Basic chat",
+        message="Recorded a basic chatbot conversation turn",
         new_document=lesson.board_document,
         metadata={
-            "kind": RESET_METADATA_KIND,
+            "kind": BASIC_CHAT_METADATA_KIND,
             "user_message": request.message,
             "assistant_message": chatbot_message,
-            "assistant_message_source": "chatbot",
-            "board_document_state": _board_document_state(lesson),
+            "assistant_message_source": "chatbot" if chatbot_message else "chatbot_empty",
             "interaction_mode": request.interaction_mode,
             "selection": request.selection.model_dump(mode="json") if request.selection else None,
-            "legacy_workflow_state_cleared": True,
+            "basic_chat_only": True,
             "document_changed": False,
         },
     )
@@ -136,6 +120,28 @@ def _run_reset_chat_turn(lesson_id: str, request: ChatRequest, *, user_id: str) 
 
 
 def process_chat_on_lesson(lesson_id: str, request: ChatRequest, *, user_id: str) -> ChatResponse:
-    with bind_text_model_selection(request.text_model):
-        with bind_board_model_selection(request.board_model):
-            return _run_reset_chat_turn(lesson_id, request, user_id=user_id)
+    with bind_ai_request_context(
+        "/api/lessons/{lesson_id}/chat",
+        trace_prefix="chat",
+        lesson_id=lesson_id,
+        user_id=user_id,
+    ):
+        with bind_text_model_selection(request.text_model):
+            with bind_board_model_selection(request.board_model):
+                return _run_basic_chat_turn(lesson_id, request, user_id=user_id)
+
+
+def document_ai_edit_request(
+    lesson_id: str,
+    instruction: str,
+    selection_text: str | None,
+    conversation: list[ConversationTurn],
+    *,
+    user_id: str,
+) -> ChatResponse:
+    request = ChatRequest(
+        message=instruction,
+        interaction_mode="direct_edit",
+        conversation=conversation,
+    )
+    return process_chat_on_lesson(lesson_id, request, user_id=user_id)

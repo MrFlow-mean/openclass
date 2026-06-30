@@ -22,7 +22,7 @@ export type ProfileSettings = {
   socialLinks: string[];
   theme: "system" | "light" | "warm";
   density: "comfortable" | "compact";
-  startPage: "home" | "profile";
+  startPage: "home" | "studio" | "profile";
   /** UI locale; changing it updates `<html lang>` via InterfaceLanguageProvider. */
   interfaceLanguage: InterfaceLanguage;
   reduceMotion: boolean;
@@ -97,10 +97,6 @@ function parseInterfaceLanguage(value: unknown): InterfaceLanguage {
   return value === "en" ? "en" : "zh-CN";
 }
 
-function parseStartPage(value: unknown): ProfileSettings["startPage"] {
-  return value === "profile" ? "profile" : "home";
-}
-
 export function normalizeProfileSettings(raw: Partial<ProfileSettings> | null): ProfileSettings {
   const next = {
     ...DEFAULT_PROFILE_SETTINGS,
@@ -109,7 +105,6 @@ export function normalizeProfileSettings(raw: Partial<ProfileSettings> | null): 
 
   return {
     ...next,
-    startPage: parseStartPage(raw?.startPage),
     interfaceLanguage: parseInterfaceLanguage(raw?.interfaceLanguage),
     socialLinks: Array.from({ length: 4 }, (_, index) =>
       typeof raw?.socialLinks?.[index] === "string"

@@ -7,9 +7,9 @@ from app.models import RealtimeConnectRequest
 from app.services import chat_service, openai_realtime, workspace_state
 from app.services.ai_logging import ai_usage_logger
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
+from app.services.lesson_factory import create_empty_lesson
 from app.services.openai_course_ai import ComplexProblemSolution, OpenAICourseAI
 from app.services.realtime_tool_bridge import RealtimeToolSession, _tool_call_from_event, execute_realtime_tool
-from support import create_test_lesson
 
 
 TEST_USER_ID = "user_realtime_test"
@@ -17,7 +17,7 @@ TEST_USER_ID = "user_realtime_test"
 
 def _seed_workspace(store: SqliteCourseStore):
     workspace = build_initial_workspace_state()
-    lesson = create_test_lesson("Realtime 测试页")
+    lesson = create_empty_lesson("Realtime 测试页")
     lesson.board_document.content_text = "当前板书有一个待讲解片段。"
     package = workspace.packages[0]
     package.lessons.append(lesson)
@@ -111,7 +111,7 @@ def test_realtime_connect_posts_sdp_with_chatbot_tools(monkeypatch, isolated_sto
     assert session_payload["model"] == "gpt-realtime-2"
     assert session_payload["audio"]["output"]["voice"] == "verse"
     tool_names = {tool["name"] for tool in session_payload["tools"]}
-    assert {"run_chatbot_reply", "solve_complex_problem"} <= tool_names
+    assert {"run_chatbot_workflow", "solve_complex_problem"} <= tool_names
     assert "同一个角色" in session_payload["instructions"]
     assert "当前板书有一个待讲解片段" not in session_payload["instructions"]
     assert "实时 Chatbot 不能直接读取" in session_payload["instructions"]
@@ -119,7 +119,7 @@ def test_realtime_connect_posts_sdp_with_chatbot_tools(monkeypatch, isolated_sto
     assert sideband_sessions[0][1] == "test-openai-key"
 
 
-def test_realtime_tool_run_chatbot_reply_reuses_chat_service(monkeypatch, isolated_store, isolated_ai_log) -> None:
+def test_realtime_tool_run_chatbot_workflow_reuses_chat_service(monkeypatch, isolated_store, isolated_ai_log) -> None:
     lesson = _seed_workspace(isolated_store)
     captured: dict[str, object] = {}
 
@@ -145,7 +145,7 @@ def test_realtime_tool_run_chatbot_reply_reuses_chat_service(monkeypatch, isolat
 
     payload = execute_realtime_tool(
         session,
-        "run_chatbot_reply",
+        "run_chatbot_workflow",
         {
             "lesson_id": lesson.id,
             "client_session_id": "realtime_tool_session",
@@ -170,7 +170,7 @@ def test_realtime_tool_call_can_be_detected_from_response_done() -> None:
                 {
                     "type": "function_call",
                     "status": "completed",
-                    "name": "run_chatbot_reply",
+                    "name": "run_chatbot_workflow",
                     "call_id": "call_realtime",
                     "arguments": json.dumps(
                         {
@@ -186,7 +186,7 @@ def test_realtime_tool_call_can_be_detected_from_response_done() -> None:
 
     assert _tool_call_from_event(event) == (
         "call_realtime",
-        "run_chatbot_reply",
+        "run_chatbot_workflow",
         {
             "lesson_id": "lesson_1",
             "client_session_id": "session_1",

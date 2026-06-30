@@ -10,12 +10,16 @@ from app.models import (
     WorkspaceState,
 )
 from app.routers import chat as chat_router
+from app.services.ai_logging import ai_log_context
+from app.services.lesson_factory import create_empty_lesson
+from app.services.route_context import bind_ai_request_context
 from app.services.workspace_state import package_view_for_lesson
-from support import create_test_lesson, create_test_requirement_sheet
 
 
 def _chat_response(lesson_id: str = "lesson_stream_test") -> ChatResponse:
-    lesson = create_test_lesson("流式回合", lesson_id=lesson_id)
+    lesson = create_empty_lesson("流式回合")
+    lesson.id = lesson_id
+    assert lesson.learning_requirements is not None
     package = CoursePackage(
         id="course_stream_test",
         title="课程包",
@@ -28,7 +32,7 @@ def _chat_response(lesson_id: str = "lesson_stream_test") -> ChatResponse:
     workspace = WorkspaceState(packages=[package], active_package_id=package.id)
     return ChatResponse(
         chatbot_message="已经完成。",
-        learning_requirement_sheet=create_test_requirement_sheet(lesson.title),
+        learning_requirement_sheet=lesson.learning_requirements,
         learning_clarification=LearningClarificationStatus(
             progress=100,
             label="已完成",
@@ -137,3 +141,9 @@ def test_chat_stream_logs_disconnect_before_final(monkeypatch) -> None:
     stream.close()
 
     assert "stream_disconnected_or_no_final" in [event["stream_event"] for event in logged_events]
+
+
+def test_route_context_reuses_outer_stream_trace() -> None:
+    with ai_log_context(trace_id="chat_outer_trace"):
+        with bind_ai_request_context("/api/example", trace_prefix="chat") as context:
+            assert context["trace_id"] == "chat_outer_trace"

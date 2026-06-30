@@ -45,16 +45,50 @@ CourseEdgeType = Literal[
 ]
 
 TeachingMode = Literal["definition", "intuition", "analogy", "example", "dialogue"]
-BoardAction = Literal["no_change"]
+ScopeAction = Literal[
+    "patch_current_lesson",
+    "append_section",
+    "create_branch",
+    "create_child_lesson",
+    "create_new_lesson",
+]
+BoardAction = Literal[
+    "clarify_request",
+    "no_change",
+    "edit_board",
+    "append_section",
+    "create_new_lesson",
+    "await_scope_choice",
+    "await_reference_choice",
+    "await_focus_choice",
+]
 SelectionKind = Literal["chat", "board"]
 BoardFocusSource = Literal["board", "resource", "chat"]
+BoardFocusLocationStatus = Literal["missing", "selected", "resolved", "ambiguous"]
 BoardSegmentKind = Literal["heading", "paragraph", "list", "table", "code", "image", "formula", "other"]
+BoardTaskAction = Literal[
+    "generate_board",
+    "append_section",
+    "explain_target",
+    "rewrite_target",
+    "expand_target",
+    "simplify_target",
+]
 InitialLearningWorkMode = Literal["knowledge_board", "narrow_topic", "practice_artifact", "unknown"]
 InitialLearningGranularity = Literal[
     "single_knowledge_point",
     "broad_topic",
     "practice_artifact",
     "unclear",
+]
+InteractionSessionStatus = Literal["active", "paused"]
+InteractionTurnRoute = Literal[
+    "continue_rule",
+    "rule_violation",
+    "side_learning_request",
+    "resume_rule",
+    "exit_rule",
+    "new_task",
 ]
 ConversationRole = Literal["user", "assistant"]
 RealtimeTranscriptRole = Literal["user", "assistant", "tool"]
@@ -71,9 +105,42 @@ AIProvider = Literal[
 ]
 AIModelCapability = Literal["text", "realtime"]
 AIRealtimeTransport = Literal["openai_webrtc", "gemini_live_websocket"]
+ResourceReferenceAction = Literal["confirm", "skip"]
+BoardEditConfirmationAction = Literal["confirm", "skip"]
 ResourceScanStrategy = Literal["outline_only", "heading_section", "page_window", "fulltext_match"]
 ChatInteractionMode = Literal["ask", "direct_edit"]
+TeachingAction = Literal["continue", "restart"]
+BoardGenerationAction = Literal["start"]
 LearningRequirementFactCategory = Literal["learning", "level", "vocabulary", "scenario", "output", "other"]
+LearningRequirementRunStatus = Literal["collecting", "ready", "frozen", "consumed", "archived"]
+LearningRequirementChangeKind = Literal[
+    "created",
+    "updated",
+    "completed",
+    "frozen",
+    "forced_frozen",
+    "consumed",
+    "archived",
+    "generation_failed",
+]
+BoardTaskRunStatus = Literal["collecting", "ready", "awaiting_confirmation", "consumed", "not_executed", "archived"]
+BoardTaskChangeKind = Literal[
+    "created",
+    "updated",
+    "ready",
+    "awaiting_confirmation",
+    "consumed",
+    "not_executed",
+    "archived",
+    "execution_failed",
+]
+BoardTaskRequestedAction = Literal["write", "edit", "explain", "chat"]
+BoardTaskConfirmationStatus = Literal["none", "awaiting", "confirmed", "declined"]
+BoardTaskRoute = Literal["write", "edit", "explain", "chat", "clarify_location", "await_write_confirmation"]
+BoardTaskLocationStatus = Literal["missing", "selected", "resolved", "ambiguous", "content_absent"]
+BoardDocumentOperationStatus = Literal["none", "succeeded", "failed"]
+BoardPatchRiskLevel = Literal["low", "medium", "high"]
+BoardPatchTargetScope = Literal["focus", "section", "whole_document", "append"]
 BoardPatchContentFormat = Literal["markdown", "plain_text"]
 DocumentMarginPreset = Literal["narrow", "normal", "wide"]
 DocumentOrientation = Literal["portrait", "landscape"]
@@ -186,6 +253,46 @@ class PatchOperation(BaseModel):
     note: str | None = None
 
 
+class DiffPreviewItem(BaseModel):
+    op: PatchOperationType
+    block_id: str | None = None
+    node_path: list[int] = Field(default_factory=list)
+    heading_path: list[str] = Field(default_factory=list)
+    before: BoardBlock | None = None
+    after: BoardBlock | None = None
+    before_text: str = ""
+    after_text: str = ""
+    summary: str
+
+
+class BoardPatchRequest(BaseModel):
+    source_commit_id: str | None = None
+    source_document_hash: str = ""
+    target_scope: BoardPatchTargetScope | None = None
+    operations: list[PatchOperation] = Field(default_factory=list)
+    summary: str = ""
+    risk_level: BoardPatchRiskLevel = "medium"
+
+
+class BoardPatchValidationResult(BaseModel):
+    status: Literal["pass", "failed"] = "pass"
+    issues: list[str] = Field(default_factory=list)
+    applied_operations: int = 0
+    source_commit_id: str | None = None
+    source_document_hash: str = ""
+    current_document_hash: str = ""
+
+
+class PatchProposal(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("proposal"))
+    rationale: str
+    commit_label: str
+    operations: list[PatchOperation]
+    diff_preview: list[DiffPreviewItem]
+    target_action: ScopeAction = "patch_current_lesson"
+    suggested_title: str | None = None
+
+
 class BoardSegment(BaseModel):
     segment_id: str
     document_id: str
@@ -261,6 +368,82 @@ class BoardFocusRef(BaseModel):
     score_breakdown: dict[str, float] = Field(default_factory=dict)
 
 
+class BoardSearchQueryPlan(BaseModel):
+    query_text: str = ""
+    search_terms: list[str] = Field(default_factory=list)
+    structured_target: str = ""
+    scope_hint: str = ""
+    action_type: BoardTaskAction | None = None
+
+
+class BoardSearchCandidate(BaseModel):
+    match_id: str
+    source: str
+    chunk_id: str | None = None
+    source_segment_ids: list[str] = Field(default_factory=list)
+    focus: BoardFocusRef
+    score: float = Field(default=0.0, ge=0.0, le=1.0)
+    score_breakdown: dict[str, float] = Field(default_factory=dict)
+    reason: str = ""
+
+
+class BoardSearchEvidence(BaseModel):
+    status: Literal["selected", "found", "ambiguous", "missing", "content_absent"] = "missing"
+    query_plan: BoardSearchQueryPlan = Field(default_factory=BoardSearchQueryPlan)
+    candidates: list[BoardSearchCandidate] = Field(default_factory=list)
+    selected_match_id: str | None = None
+    reason: str = ""
+
+
+class BoardSearchRerankItem(BaseModel):
+    match_id: str
+    score: float = Field(default=0.0, ge=0.0, le=1.0)
+    reason: str = ""
+
+
+class BoardSearchRerankResult(BaseModel):
+    ranked: list[BoardSearchRerankItem] = Field(default_factory=list)
+    reason: str = ""
+
+
+class InteractionRuleDraft(BaseModel):
+    should_start: bool = False
+    rule_text: str = ""
+    interaction_goal: str = ""
+    target_hint: str = ""
+    expected_user_behavior: str = ""
+    assistant_behavior: str = ""
+    reference_instruction: str = ""
+
+
+class InteractionSession(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("interaction"))
+    status: InteractionSessionStatus = "active"
+    rule_text: str = ""
+    interaction_goal: str = ""
+    target_focus: BoardFocusRef | None = None
+    reference_context: str = ""
+    compliant_input_rule: str = ""
+    expected_user_behavior: str = ""
+    assistant_behavior: str = ""
+    progress_note: str = ""
+    pause_reason: str = ""
+    turn_count: int = Field(default=0, ge=0)
+    source_board_task_run_id: str | None = None
+    source_board_task_version_id: str | None = None
+    source_board_task_route: str | None = None
+    sequence_items: list[BoardFocusRef] = Field(default_factory=list)
+    sequence_index: int = Field(default=0, ge=0)
+    sequence_mode: str = ""
+
+
+class InteractionTurnDecision(BaseModel):
+    route: InteractionTurnRoute
+    reason: str = ""
+    progress_note: str = ""
+    user_intent: str = ""
+
+
 class LearningRequirementSheet(BaseModel):
     theme: str
     learning_goal: str
@@ -274,8 +457,28 @@ class LearningRequirementSheet(BaseModel):
     board_scope: list[str]
     success_criteria: str
     risk_notes: list[str] = Field(default_factory=list)
+    target_location: BoardFocusRef | None = None
+    location_status: BoardFocusLocationStatus = "missing"
+    action_type: BoardTaskAction | None = None
+    action_instruction: str = ""
+    location_clarification_question: str = ""
+    interaction_rule_draft: InteractionRuleDraft | None = None
     work_mode: InitialLearningWorkMode | None = None
     granularity: InitialLearningGranularity | None = None
+
+
+class BoardTaskRequirementSheet(BaseModel):
+    target_hint: str = ""
+    target_location: BoardFocusRef | None = None
+    location_status: BoardTaskLocationStatus = "missing"
+    requested_action: BoardTaskRequestedAction | None = None
+    question_or_topic: str = ""
+    interaction_rule_draft: InteractionRuleDraft | None = None
+    missing_items: list[str] = Field(default_factory=list)
+    progress: int = Field(default=0, ge=0, le=100)
+    confirmation_status: BoardTaskConfirmationStatus = "none"
+    clarification_question: str = ""
+    failure_count: int = Field(default=0, ge=0)
 
 
 class LearningRequirementChecklistItem(BaseModel):
@@ -358,6 +561,11 @@ class Lesson(BaseModel):
     summary: str
     tags: list[str] = Field(default_factory=list)
     board_document: BoardDocument
+    board_teaching_guide: BoardTeachingGuide | None = None
+    board_teaching_progress: BoardTeachingProgress | None = None
+    learning_requirements: LearningRequirementSheet | None = None
+    board_task_requirements: BoardTaskRequirementSheet | None = None
+    active_interaction_session: InteractionSession | None = None
     teaching_guide: TeachingGuide
     history_graph: LessonHistoryGraph
     created_at: str = Field(default_factory=now_iso)
@@ -533,6 +741,35 @@ class CodexLoginStatusResponse(BaseModel):
     account: CodexAccountView | None = None
 
 
+class ScopeOption(BaseModel):
+    action: ScopeAction
+    label: str
+    description: str
+    resource_chapter_id: str | None = None
+
+
+class ResourceMatch(BaseModel):
+    resource_id: str
+    chapter_id: str
+    resource_name: str
+    chapter_title: str
+    reason: str
+    score: float = 0.0
+    is_high_overlap: bool = False
+
+
+class ResourceReferencePrompt(BaseModel):
+    resource_id: str
+    chapter_id: str
+    resource_name: str
+    chapter_title: str
+    question: str
+    reason: str
+    confirm_label: str = "参考这一章节"
+    skip_label: str = "先不参考"
+    score: float = 0.0
+
+
 class ResourceContextChunk(BaseModel):
     title: str
     excerpt: str
@@ -569,12 +806,94 @@ class BoardDecision(BaseModel):
     reason: str
 
 
+class BoardEditPrompt(BaseModel):
+    topic: str
+    question: str
+    reason: str
+    confirm_label: str = "是"
+    skip_label: str = "否"
+
+
+# Reserved AI teaching workflow schema.
+# Current public routes preserve these fields for stored lesson compatibility,
+# but realtime teaching execution is disabled and the next orchestration layer
+# should decide whether these models still match the product workflow.
+class BoardTeachingSelectedItem(BaseModel):
+    excerpt: str
+    source_heading: str | None = None
+    reason: str
+    mapped_needs: list[str] = Field(default_factory=list)
+    teaching_role: str = "main_idea"
+    order_index: int = 0
+
+
+class BoardNeedMapping(BaseModel):
+    need: str
+    matched_excerpt: str
+    source_heading: str | None = None
+    rationale: str
+
+
+class BoardSectionTeachingPlan(BaseModel):
+    order_index: int = 0
+    heading: str
+    board_excerpt: str = ""
+    core_points: list[str] = Field(default_factory=list)
+    teaching_steps: list[str] = Field(default_factory=list)
+    teaching_method: str = ""
+    example_or_analogy: str = ""
+    common_pitfalls: list[str] = Field(default_factory=list)
+    check_question: str = ""
+    transition_to_next: str = ""
+
+
+class BoardTeachingGuide(BaseModel):
+    board_document_id: str = ""
+    board_snapshot_hash: str = ""
+    board_title: str = ""
+    selected_items: list[BoardTeachingSelectedItem] = Field(default_factory=list)
+    need_mappings: list[BoardNeedMapping] = Field(default_factory=list)
+    teaching_flow: list[str] = Field(default_factory=list)
+    generation_rationale: str = ""
+    chatbot_brief: str = ""
+    lecture_handout: str = ""
+    section_plans: list[BoardSectionTeachingPlan] = Field(default_factory=list)
+
+
+class BoardTeachingProgress(BaseModel):
+    board_document_id: str = ""
+    board_snapshot_hash: str = ""
+    current_section_index: int = 0
+    completed_section_indexes: list[int] = Field(default_factory=list)
+    waiting_for_continue: bool = False
+
+
+class SectionTeachingProgressView(BaseModel):
+    section_index: int = 0
+    section_count: int = 0
+    current_section_title: str = ""
+    has_next_section: bool = False
+    waiting_for_continue: bool = False
+
+
 class ChatRequest(BaseModel):
     message: str
     text_model: AIModelSelection | None = None
     board_model: AIModelSelection | None = None
     selection: SelectionRef | None = None
     interaction_mode: ChatInteractionMode = "ask"
+    scope_action: ScopeAction | None = None
+    resource_chapter_id: str | None = None
+    resource_reference_action: ResourceReferenceAction | None = None
+    resource_reference_resource_id: str | None = None
+    resource_reference_chapter_id: str | None = None
+    board_edit_action: BoardEditConfirmationAction | None = None
+    board_edit_topic: str | None = None
+    board_generation_action: BoardGenerationAction | None = None
+    teaching_action: TeachingAction | None = None
+    chat_edit_source_commit_id: str | None = None
+    chat_edit_base_commit_id: str | None = None
+    chat_edit_original_message: str | None = None
     conversation: list[ConversationTurn] = Field(default_factory=list)
 
 
@@ -585,6 +904,9 @@ class LessonView(BaseModel):
     summary: str
     tags: list[str] = Field(default_factory=list)
     board_document: BoardDocument
+    learning_requirements: LearningRequirementSheet | None = None
+    board_task_requirements: BoardTaskRequirementSheet | None = None
+    active_interaction_session: InteractionSession | None = None
     history_graph: LessonHistoryGraph
     created_at: str
     updated_at: str
@@ -670,13 +992,56 @@ class AdminOverview(BaseModel):
 class ChatResponse(BaseModel):
     chatbot_message: str
     learning_requirement_sheet: LearningRequirementSheet
+    active_requirement_sheet: LearningRequirementSheet | None = None
+    active_interaction_session: InteractionSession | None = None
+    interaction_decision: InteractionTurnDecision | None = None
     learning_clarification: LearningClarificationStatus
+    requirement_run_id: str | None = None
+    requirement_version_id: str | None = None
+    requirement_phase: LearningRequirementRunStatus | None = None
+    board_task_sheet: BoardTaskRequirementSheet | None = None
+    active_board_task_sheet: BoardTaskRequirementSheet | None = None
+    board_task_run_id: str | None = None
+    board_task_version_id: str | None = None
+    board_task_phase: BoardTaskRunStatus | None = None
+    board_task_questions: list[str] = Field(default_factory=list)
     board_decision: BoardDecision
     needs_clarification: bool = False
     clarification_questions: list[str] = Field(default_factory=list)
+    patch_proposal: PatchProposal | None = None
+    scope_options: list[ScopeOption] = Field(default_factory=list)
+    resource_matches: list[ResourceMatch] = Field(default_factory=list)
+    reference_prompt: ResourceReferencePrompt | None = None
+    board_edit_prompt: BoardEditPrompt | None = None
+    selected_reference: ResourceReferenceContext | None = None
     resolved_focus: BoardFocusRef | None = None
+    focus_candidates: list[BoardFocusRef] = Field(default_factory=list)
     requirement_cleared: bool = False
+    board_document_operation_status: BoardDocumentOperationStatus = "none"
+    board_document_operation_failure_reason: str | None = None
+    board_patch_diff: list[DiffPreviewItem] = Field(default_factory=list)
+    created_lesson: LessonView | None = None
+    teaching_progress: SectionTeachingProgressView | None = None
     course_package: CoursePackageView
+
+
+class RequirementUpdateStreamPayload(BaseModel):
+    learning_requirement_sheet: LearningRequirementSheet
+    active_requirement_sheet: LearningRequirementSheet | None = None
+    learning_clarification: LearningClarificationStatus
+    requirement_run_id: str | None = None
+    requirement_version_id: str | None = None
+    requirement_phase: LearningRequirementRunStatus | None = None
+    clarification_questions: list[str] = Field(default_factory=list)
+
+
+class BoardTaskUpdateStreamPayload(BaseModel):
+    board_task_sheet: BoardTaskRequirementSheet
+    active_board_task_sheet: BoardTaskRequirementSheet | None = None
+    board_task_run_id: str | None = None
+    board_task_version_id: str | None = None
+    board_task_phase: BoardTaskRunStatus | None = None
+    board_task_questions: list[str] = Field(default_factory=list)
 
 
 class CreatePackageRequest(BaseModel):

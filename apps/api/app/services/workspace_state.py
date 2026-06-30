@@ -18,6 +18,7 @@ from app.models import (
 )
 from app.services.course_store import SqliteCourseStore
 from app.services.config import API_BASE_DIR as BASE_DIR, DATA_DIR, ROOT_DIR, load_root_dotenv
+from app.services.course_runtime import active_task_requirements
 from app.services.history import commit_operations
 
 
@@ -197,7 +198,7 @@ def normalize_package_state(package: CoursePackage) -> None:
 
 def lesson_view(lesson: Lesson) -> LessonView:
     return LessonView.model_validate(
-        lesson.model_dump(mode="json", exclude={"teaching_guide"})
+        lesson.model_dump(mode="json", exclude={"teaching_guide", "board_teaching_guide"})
     )
 
 
@@ -208,8 +209,13 @@ def package_view(
     resource_lesson_id: str | None = None,
     isolate_lesson_resources: bool = False,
 ) -> CoursePackageView:
+    lessons_for_view = [
+        lesson.model_copy(update={"learning_requirements": active_task_requirements(lesson)})
+        for lesson in package.lessons
+    ]
     visible_package = package.model_copy(
         update={
+            "lessons": lessons_for_view,
             "resources": resources_visible_to_lesson(
                 package,
                 lesson_id=resource_lesson_id,
@@ -219,7 +225,7 @@ def package_view(
     )
     package_data = visible_package.model_dump(
         mode="json",
-        exclude={"lessons": {"__all__": {"teaching_guide"}}},
+        exclude={"lessons": {"__all__": {"teaching_guide", "board_teaching_guide"}}},
     )
     package_data["is_standalone"] = is_standalone
     return CoursePackageView.model_validate(package_data)
