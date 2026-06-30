@@ -307,6 +307,7 @@ def allows_core_quality_repair(issues: list[str]) -> bool:
                 "委托式入门",
                 "新手基础入口",
                 "纯新手入门应直接落定",
+                "练习型水平选择卡片",
                 "练习型",
                 "已会/未会",
                 "最近经历",
@@ -365,6 +366,10 @@ def _practice_guidance_issues(result: BlankBoardRequirementRefinement) -> list[s
         issues.append("练习型需求缺少想练的内容。")
     if not _has_text(result.current_level) and not asks_about_starting_level(_first_text(result.next_question, result.chatbot_message)):
         issues.append("练习型需求缺少当前水平，也没有自然追问当前水平。")
+    if not _has_text(result.current_level):
+        if not _has_practice_level_choice_cards(result, _first_text(result.next_question, result.chatbot_message)):
+            issues.append("练习型水平选择卡片缺失：水平未知时应使用选择卡片探寻当前水平。")
+        return issues
     if not _has_text(result.target_scenario) and not _asks_scenario_question(_first_text(result.next_question, result.chatbot_message)):
         issues.append("练习型需求缺少面向场景，也没有自然追问面向场景。")
     return issues
@@ -440,6 +445,16 @@ def asks_about_starting_level(text: str) -> bool:
     if not compact:
         return False
     return any(keyword in compact for keyword in STARTING_LEVEL_TERMS)
+
+
+def _has_practice_level_choice_cards(result: BlankBoardRequirementRefinement, text: str) -> bool:
+    options = [option for option in result.entry_point_options if _has_text(option.label)]
+    if result.guidance_strategy != "choice_cards" or len(options) < 4:
+        return False
+    if not asks_about_starting_level(text):
+        return False
+    visible_option_count = sum(1 for option in options if option.label.strip() in text)
+    return visible_option_count >= min(3, len(options))
 
 
 def _is_broad_knowledge_refinement(result: BlankBoardRequirementRefinement) -> bool:

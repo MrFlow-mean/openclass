@@ -1068,6 +1068,10 @@ class OpenAICourseAI:
             "先判断卡在概念、步骤、公式/规则、应用迁移、表达或不知道从哪开始。\n"
             "- 用户说“练习、训练、提高、复习、测验、实战、角色扮演”等：优先归为 practice_artifact，"
             "自然收敛想练的内容、当前水平、面向场景；不要只给领域地图，也不要把练习需求当成新知识点教学。\n"
+            "- 练习型需求中，如果用户已经说清想练的内容，但没有说明当前水平，必须优先用选择卡片法探寻水平；"
+            "chatbot_message 应包含一个自然标题、简短说明和 4-6 个由模型根据当前技能生成的水平选项，"
+            "entry_point_options 也要记录这些水平选项。不要默认用户从基础练起，不要先推荐具体练习难度，"
+            "也不要在同一轮同时追问面向场景；等当前水平明确后再继续收敛场景。\n"
             "- 用户表达“为了、用来、应对、解决、学完能做到/会做/看懂/写出”：使用场景定位法或目标产出法，"
             "把这些信息作为 target_scenario、target_depth 或 success_criteria 的辅助因素。\n"
             "- 用户表达不清时，可以给 3-6 个 A/B/C 选择卡片，但卡片必须是通用学习状态或内容形态，"
@@ -1130,6 +1134,8 @@ class OpenAICourseAI:
                 "可以修复 work_mode、granularity、learning_goal、current_level、target_scenario、known_background、"
                 "target_depth、success_criteria、key_facts、checklist、missing_items 和 ready_for_board，但只能基于用户已说内容，不能脑补。"
                 "如果 repair_reason 提到字段泄露、填表感或一次问多个问题，必须改成自然对话表达，并只保留一个主问题。"
+                "如果 repair_reason 提到练习型水平选择卡片，必须把开放式水平追问改成 choice_cards，"
+                "用 entry_point_options 记录 4-6 个当前技能水平选项，并且本轮只问水平，不默认练习难度。"
                 "如果 repair_reason 提到委托式入门，你可以并且应该同时修复 granularity、learning_goal、ready_for_board、"
                 "progress、success_criteria 和 missing_items：把宽泛主题落定为领域总览型第一课，"
                 "ready_for_board=true，next_question 为空。"
@@ -1173,10 +1179,14 @@ class OpenAICourseAI:
                         "choice_cards、domain_map、recommended_entry、implicit_observation。必须和用户当前表达形态匹配："
                         "宽泛领域用 domain_map/starting_point/choice_cards；自述已会未会用 known_unknown/light_self_report；"
                         "最近经历用 recent_experience；卡点用 stuck_point；练习需求用 mode_split/starting_point/scenario/goal_output；"
+                        "练习需求缺当前水平时优先用 choice_cards；"
                         "不知道你安排用 choice_cards/recommended_entry。"
                     ),
                     "learning_map_summary": "给用户看的简短学习地图摘要；宽泛主题时应填写，不写固定讲义正文。",
-                    "entry_point_options": "2-5 个候选入口，每项包含 label、why_it_matters、best_for；没有必要时可为空。",
+                    "entry_point_options": (
+                        "2-5 个候选入口或水平卡片，每项包含 label、why_it_matters、best_for；"
+                        "练习型缺当前水平时这里必须是当前技能水平卡片，而不是练习任务清单。没有必要时可为空。"
+                    ),
                     "recommended_entry_point": "AI 推荐的一个入口，优先来自 entry_point_options。",
                     "reason_for_recommendation": "推荐理由，必须基于用户已说信息或通用入门原则。",
                     "learner_profile_inference": "从用户自述、最近经历、已会/未会或卡点推断出的起点信息。",
