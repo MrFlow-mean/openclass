@@ -33,9 +33,18 @@ type AutoSavedPackageResult = {
 function createMessageMap(nextPackage: CoursePackage, current: LessonMessageMap): LessonMessageMap {
   const next: LessonMessageMap = {};
   nextPackage.lessons.forEach((lesson) => {
-    next[lesson.id] = current[lesson.id] ?? buildLessonMessagesFromHistory(lesson);
+    next[lesson.id] = lessonMessagesFromCacheOrHistory(lesson, current);
   });
   return next;
+}
+
+function lessonMessagesFromCacheOrHistory(lesson: Lesson, current: LessonMessageMap): ChatMessage[] {
+  const cachedMessages = current[lesson.id];
+  const historyMessages = buildLessonMessagesFromHistory(lesson);
+  if (!cachedMessages || (cachedMessages.length === 0 && historyMessages.length > 0)) {
+    return historyMessages;
+  }
+  return cachedMessages;
 }
 
 function createComposerStateMap(nextPackage: CoursePackage, current: LessonComposerStateMap): LessonComposerStateMap {
@@ -94,7 +103,7 @@ export function useCourseWorkspace() {
   );
 
   const activeMessages = activeLesson
-    ? lessonMessages[activeLesson.id] ?? buildLessonMessagesFromHistory(activeLesson)
+    ? lessonMessagesFromCacheOrHistory(activeLesson, lessonMessages)
     : [];
 
   const activeComposerState = activeLesson
@@ -112,7 +121,7 @@ export function useCourseWorkspace() {
             ? []
             : rebuildLessonIds.has(lesson.id)
               ? buildLessonMessagesFromHistory(lesson)
-              : current[lesson.id] ?? buildLessonMessagesFromHistory(lesson);
+              : lessonMessagesFromCacheOrHistory(lesson, current);
         });
         return next;
       });
