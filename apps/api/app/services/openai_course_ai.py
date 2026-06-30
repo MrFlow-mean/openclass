@@ -1078,9 +1078,16 @@ class OpenAICourseAI:
             "这时不要强制追问考试、面试、工作、赚钱、项目或现实产出场景；如果用户没有主动说场景，"
             "不要把应用场景当作缺失核心因素。\n"
             "宽泛复合领域且用户起点未知时，可以给学习地图和暂定入口，但不要把具体工具、语法、框架或项目实操入口直接判定为最终第一课；"
+            "entry_point_options 应优先作为学习者起点/背景的选择卡片，而不是让用户在高级内容路线里做选择；"
             "唯一主问题必须优先询问用户起点、已有背景、已会/未会或最近接触情况。\n"
+            "如果用户已经说明自己是纯新手/零基础/纯入门/先了解一下/感兴趣想入门，"
+            "即使没有明确说“你安排”，也表示系统应选择最安全的基础入口；"
+            "不要再让用户在工具、语法、框架、测试或项目实操等后续模块里选择。"
+            "这时要主动落定一个基础总览型第一课，例如“这个领域的基础概念与整体组成 / 核心对象、基本流程和关键术语 / 整体结构是什么”。"
+            "此时必须输出 work_mode=knowledge_board、granularity=single_knowledge_point、ready_for_board=true，"
+            "learning_goal 写成这个具体基础入口，next_question 为空。\n"
             "如果用户已经说明自己是纯新手/零基础/纯入门，并表达“为我指导、你安排、帮我安排、帮我规划、按你推荐、听你的、直接安排”等委托意图，"
-            "表示用户授权你主动选择入口；这时不要再问“你愿意从 X 开始吗”，而要主动落定一个领域总览型第一课，"
+            "表示用户进一步授权你主动选择入口；这时更不要再问“你愿意从 X 开始吗”，而要主动落定一个领域总览型第一课，"
             "例如“这个领域由哪几部分组成 / 整体结构是什么 / 基本工作方式是什么 / 它和普通系统有什么区别”这一类可教学入口。"
             "此时必须输出 work_mode=knowledge_board、granularity=single_knowledge_point、ready_for_board=true，"
             "learning_goal 写成这个具体第一课入口，next_question 为空。\n"
@@ -1126,6 +1133,8 @@ class OpenAICourseAI:
                 "如果 repair_reason 提到委托式入门，你可以并且应该同时修复 granularity、learning_goal、ready_for_board、"
                 "progress、success_criteria 和 missing_items：把宽泛主题落定为领域总览型第一课，"
                 "ready_for_board=true，next_question 为空。"
+                "如果 repair_reason 提到新手基础入口，你也必须按同样方式修复："
+                "不要让入门新手选择高级路线，直接落定基础总览型第一课。"
             )
         user_prompt = _json(
             {
@@ -1175,8 +1184,7 @@ class OpenAICourseAI:
                     "next_question": (
                         "清单未完整时下一轮最有价值的一个问题；如果已推荐入口但不了解用户水平，"
                         "优先询问当前水平、已会/未会或最近学到哪里；如果用户已说明纯新手入门，"
-                        "且还没有委托你安排，可以自然确认是否从推荐入口开始或是否先看整体地图；"
-                        "如果用户已说明纯新手入门并委托你安排，next_question 必须为空；ready_for_board=true 时可为空。"
+                        "必须直接落定基础总览型第一课，next_question 为空；ready_for_board=true 时可为空。"
                     ),
                     "recommended_teaching_plan_summary": "可选：给用户看的教学方案摘要，不是板书正文。",
                     "ready_for_board": "只表示清单核心因素齐全，可以进入未来板书生成；本阶段不会实际生成。",

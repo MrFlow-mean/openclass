@@ -102,6 +102,14 @@ DELEGATED_INTRO_TERMS = [
 ]
 
 ENTRY_CONFIRMATION_TERMS = [
+    "哪个最吸引你",
+    "哪个入口",
+    "哪个方向",
+    "哪条路线",
+    "哪一条",
+    "哪部分",
+    "选哪个",
+    "选择哪个",
     "愿意从",
     "愿意先从",
     "你愿意",
@@ -196,10 +204,10 @@ def assess_blank_board_requirement_reply(
     issues: list[str] = []
     message = result.chatbot_message.strip()
     if result.ready_for_board:
-        if not _is_delegated_intro_refinement(result, user_message=user_message):
+        if not _has_confirmed_novice_context(result, user_message=user_message):
             return BlankBoardRequirementReplyQuality(issues=[])
         if _asks_entry_confirmation("\n".join([result.next_question, message])):
-            issues.append("纯新手委托式入门不应把入口确认压力交回用户。")
+            issues.append("纯新手基础入口已 ready 时不应把入口确认压力交回用户。")
         return BlankBoardRequirementReplyQuality(issues=_dedupe_text(issues))
     issues.extend(_strategy_alignment_issues(result, user_message=user_message))
     if _is_broad_knowledge_refinement(result):
@@ -255,6 +263,12 @@ def merge_guidance_repair(
             data[field_name] = value
             continue
         if isinstance(value, str):
+            if field_name == "work_mode" and value == "unknown":
+                continue
+            if field_name == "granularity" and value == "unclear":
+                continue
+            if field_name == "guidance_strategy" and value == "none":
+                continue
             if _has_text(value):
                 data[field_name] = value
             continue
@@ -287,7 +301,20 @@ def build_guidance_metadata(
 
 def allows_core_quality_repair(issues: list[str]) -> bool:
     return any(
-        any(keyword in issue for keyword in ["委托式入门", "练习型", "已会/未会", "最近经历", "卡点", "目标产出", "场景定位"])
+        any(
+            keyword in issue
+            for keyword in [
+                "委托式入门",
+                "新手基础入口",
+                "纯新手入门应直接落定",
+                "练习型",
+                "已会/未会",
+                "最近经历",
+                "卡点",
+                "目标产出",
+                "场景定位",
+            ]
+        )
         for issue in issues
     )
 
@@ -351,7 +378,7 @@ def _broad_guidance_issues(
 ) -> list[str]:
     issues: list[str] = []
     options = [option for option in result.entry_point_options if _has_text(option.label)]
-    novice_intro = _is_novice_intro_refinement(result)
+    confirmed_novice_intro = _has_confirmed_novice_context(result, user_message=user_message)
     delegated_intro = _is_delegated_intro_refinement(result, user_message=user_message)
     if len(message) < 160:
         issues.append("chatbot_message 太短，像追问而不是学习地图引导。")
@@ -376,8 +403,14 @@ def _broad_guidance_issues(
         issues.append("已经推荐入口，但没有追问用户当前水平、已会/未会或最近学到哪里。")
     if "？" not in message and "?" not in message:
         issues.append("chatbot_message 没有一个关键问题。")
-    if novice_intro and _asks_external_goal_question("\n".join([result.next_question, message])):
+    if confirmed_novice_intro and _asks_external_goal_question("\n".join([result.next_question, message])):
         issues.append("纯新手入门场景不应继续追问考试、工作、赚钱或应用场景。")
+    if confirmed_novice_intro and (
+        result.granularity != "single_knowledge_point" or not result.ready_for_board
+    ):
+        issues.append("纯新手入门应直接落定新手基础入口并进入 ready。")
+    if confirmed_novice_intro and _asks_entry_confirmation("\n".join([result.next_question, message])):
+        issues.append("纯新手入门不应让用户在入口路线里继续选择。")
     if delegated_intro and (
         result.granularity != "single_knowledge_point" or not result.ready_for_board
     ):
@@ -465,6 +498,25 @@ def _is_delegated_intro_refinement(
         ]
     )
     return any(keyword in text for keyword in DELEGATED_INTRO_TERMS)
+
+
+def _has_confirmed_novice_context(
+    result: BlankBoardRequirementRefinement,
+    *,
+    user_message: str,
+) -> bool:
+    if result.work_mode == "practice_artifact" or result.granularity == "practice_artifact":
+        return False
+    text = " ".join(
+        [
+            user_message,
+            result.current_level,
+            result.known_background,
+            result.learner_profile_inference,
+            result.summary,
+        ]
+    )
+    return any(keyword in text for keyword in NOVICE_INTRO_TERMS)
 
 
 def _asks_external_goal_question(text: str) -> bool:

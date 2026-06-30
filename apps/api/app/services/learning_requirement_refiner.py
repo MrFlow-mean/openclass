@@ -220,6 +220,7 @@ def _repair_guided_reply_if_needed(
                 "single_main_question",
                 "novice_intro_no_external_goal_question",
                 "delegated_intro_entry_ready",
+                "novice_foundation_entry_ready",
                 "matched_guidance_method_for_current_user_signal",
                 "record_observed_facts_to_requirement_sheet",
             ],

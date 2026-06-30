@@ -59,6 +59,9 @@ def test_blank_board_refinement_prompt_requires_rich_broad_topic_guidance(
     assert "纯新手、零基础、入门、先了解一下" in system_prompt
     assert "不要强制追问考试、面试、工作、赚钱、项目或现实产出场景" in system_prompt
     assert "宽泛复合领域且用户起点未知" in system_prompt
+    assert "学习者起点/背景的选择卡片" in system_prompt
+    assert "即使没有明确说“你安排”" in system_prompt
+    assert "不要再让用户在工具、语法、框架、测试或项目实操等后续模块里选择" in system_prompt
     assert "为我指导、你安排、帮我安排" in system_prompt
     assert "granularity=single_knowledge_point" in system_prompt
     assert "ready_for_board=true" in system_prompt
@@ -674,7 +677,7 @@ def test_empty_board_broad_learning_need_collects_requirement(
     assert len(store.list_learning_requirement_versions(user_id, lesson.id)) == 1
 
 
-def test_pure_novice_intro_keeps_intro_goal_without_requiring_external_scenario(
+def test_pure_novice_intro_lands_foundation_entry_without_requiring_external_scenario(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
@@ -695,6 +698,8 @@ def test_pure_novice_intro_keeps_intro_goal_without_requiring_external_scenario(
                     "\n2. **基础概念**：挑一个最小、最容易讲清楚的入口。"
                     "\n3. **应用迁移**：等基础站稳后再看它怎么解决真实任务。"
                     "\n\n我推荐先从**基础概念**开始，因为它最容易形成第一块可学习内容。"
+                    "如果你已经有一点基础，我会把入口往更具体的概念收；如果你完全没接触过，"
+                    "我会先用整体地图帮你建立方向感，再落到第一课。"
                     "你之前接触过这个领域吗，还是更接近完全新手？"
                 ),
                 progress=45,
@@ -724,39 +729,29 @@ def test_pure_novice_intro_keeps_intro_goal_without_requiring_external_scenario(
         return BlankBoardRequirementRefinement(
             route="requirement_refining",
             chatbot_message=(
-                "明白，你是纯新手入门，我先用外行人能看懂的方式把地图打开："
-                "\n1. **这个领域是什么**：先知道它研究什么、解决什么类型的问题。"
-                "\n2. **核心组成**：看它通常由哪些部分拼起来。"
-                "\n3. **第一个入口**：选一个最基础、最容易获得正反馈的概念开始。"
-                "\n\n我推荐先从**基础概念**开始，因为它最适合零基础建立第一块理解。"
-                "我们先从这个入口开始，可以吗？"
+                "明白，你是纯新手入门。那第一课我直接定为**这个领域的基础概念与整体组成**。"
+                "选它的原因是：零基础先看清这个领域研究什么、由哪些部分组成、核心对象如何协作，"
+                "后面再进入规则、工具或实操会更稳。学完这一课，你应该能说清这个领域的基本组成和第一个后续入口。"
             ),
-            progress=70,
-            summary="用户零基础纯新手，想先入门了解一个领域。",
+            progress=100,
+            summary="用户零基础纯新手，适合先学领域基础概念与整体组成。",
             work_mode="knowledge_board",
-            granularity="broad_topic",
-            learning_goal="一个领域入门",
+            granularity="single_knowledge_point",
+            learning_goal="这个领域的基础概念与整体组成",
             current_level="零基础纯新手",
             known_background="用户明确表示纯新手入门。",
             guidance_strategy="recommended_entry",
-            learning_map_summary="纯新手先看领域是什么、核心组成和第一个入口。",
+            learning_map_summary="纯新手先理解领域基础概念与整体组成。",
             entry_point_options=[
                 {
-                    "label": "这个领域是什么",
-                    "why_it_matters": "帮助外行先建立方向感。",
+                    "label": "这个领域的基础概念与整体组成",
+                    "why_it_matters": "帮助零基础先建立整体结构感。",
                     "best_for": "完全不了解的人。",
                 },
-                {
-                    "label": "基础概念",
-                    "why_it_matters": "最容易形成第一块可学习内容。",
-                    "best_for": "零基础纯新手。",
-                },
             ],
-            recommended_entry_point="基础概念",
-            reason_for_recommendation="它最基础，最适合零基础建立第一块理解。",
+            recommended_entry_point="这个领域的基础概念与整体组成",
+            reason_for_recommendation="它最基础，能避免新手过早进入后续工具或实操路线。",
             learning_need_checklist=[
-                "需要选择具体子方向",
-                "需要了解学习目的或应用场景",
                 "用户想学的内容",
             ],
             checklist=[
@@ -766,13 +761,15 @@ def test_pure_novice_intro_keeps_intro_goal_without_requiring_external_scenario(
                     "evidence": "用户说纯新手入门。",
                 },
                 {
-                    "title": "学习目的或场景已知",
-                    "is_clear": False,
-                    "evidence": "",
+                    "title": "用户想学的内容",
+                    "is_clear": True,
+                    "evidence": "这个领域的基础概念与整体组成。",
                 },
             ],
-            next_question="我们先从这个入口开始，可以吗？",
-            ready_for_board=False,
+            target_depth="入门了解 / 建立领域地图",
+            success_criteria="理解领域组成，并确定后续学习入口",
+            next_question="",
+            ready_for_board=True,
         )
 
     monkeypatch.setattr(openai_course_ai, "generate_blank_board_requirement_refinement", _fake_refinement)
@@ -788,18 +785,27 @@ def test_pure_novice_intro_keeps_intro_goal_without_requiring_external_scenario(
         user_id=user_id,
     )
 
+    assert len(calls) == 2
     assert second_response.requirement_run_id == first_response.requirement_run_id
     assert second_response.active_requirement_sheet is not None
+    assert second_response.active_requirement_sheet.granularity == "single_knowledge_point"
+    assert second_response.active_requirement_sheet.learning_goal == "这个领域的基础概念与整体组成"
     assert second_response.active_requirement_sheet.level == "零基础纯新手"
     assert second_response.active_requirement_sheet.target_depth == "入门了解 / 建立领域地图"
-    assert second_response.active_requirement_sheet.success_criteria == "理解领域组成，并确定第一个可学习入口"
+    assert second_response.active_requirement_sheet.success_criteria == "理解领域组成，并确定后续学习入口"
     assert "需要了解学习目的或应用场景" not in second_response.active_requirement_sheet.learning_need_checklist
     assert "应用场景" not in second_response.learning_clarification.missing_items
     assert all("场景" not in item.title for item in second_response.learning_clarification.checklist)
-    assert second_response.active_requirement_sheet.current_questions == ["我们先从这个入口开始，可以吗？"]
+    assert second_response.active_requirement_sheet.current_questions == []
+    assert second_response.learning_clarification.ready_for_board is True
+    assert second_response.requirement_phase == "ready"
     assert "为了什么" not in second_response.chatbot_message
     assert "应用场景" not in second_response.chatbot_message
-    assert "我们先从这个入口开始，可以吗？" in second_response.chatbot_message
+    assert "可以吗" not in second_response.chatbot_message
+    assert "这个领域的基础概念与整体组成" in second_response.chatbot_message
+    commit = store.load_for_user(user_id).packages[0].lessons[0].history_graph.commits[-1]
+    discovery = commit.metadata["guided_requirement_discovery"]
+    assert discovery["quality_repaired"] is False
     assert len(store.list_learning_requirement_versions(user_id, lesson.id)) == 2
 
 
