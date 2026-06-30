@@ -7,7 +7,12 @@ from app.services import workspace_state
 from app.services.chat_service import process_chat_on_lesson
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
 from app.services.lesson_factory import create_empty_lesson
-from app.services.openai_course_ai import BlankBoardRequirementRefinement, OpenAICourseAI, openai_course_ai
+from app.services.openai_course_ai import (
+    BlankBoardRequirementRefinement,
+    ChatbotReply,
+    OpenAICourseAI,
+    openai_course_ai,
+)
 
 
 def _seed_empty_workspace(store: SqliteCourseStore, user_id: str, title: str = "空白学习页"):
@@ -104,6 +109,44 @@ def test_empty_board_ordinary_chat_does_not_create_requirement(
     assert commit.metadata["kind"] == "basic_chat"
     assert commit.metadata["refinement_route"] == "ordinary_chat"
     assert commit.metadata["board_document_state"]["status"] == "empty"
+
+
+def test_non_empty_board_keeps_basic_chat_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    user_id = "user_non_empty_basic"
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    lesson = _seed_empty_workspace(store, user_id)
+    workspace = store.load_for_user(user_id)
+    saved_lesson = workspace.packages[0].lessons[0]
+    saved_lesson.board_document.content_text = "# 已有板书\n\n这里已经有一段学习内容。"
+    store.save_for_user(user_id, workspace)
+
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_blank_board_requirement_refinement",
+        lambda **kwargs: pytest.fail("non-empty board should not enter blank-board requirement refinement"),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_basic_chat_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="我会按已有板书继续正常聊天。"),
+    )
+
+    response = process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="先聊一下这个页面。"),
+        user_id=user_id,
+    )
+
+    assert response.chatbot_message == "我会按已有板书继续正常聊天。"
+    assert response.requirement_run_id is None
+    saved_lesson = store.load_for_user(user_id).packages[0].lessons[0]
+    commit = saved_lesson.history_graph.commits[-1]
+    assert commit.metadata["kind"] == "basic_chat"
+    assert commit.metadata["board_document_state"]["status"] == "non_empty"
 
 
 def test_empty_board_broad_learning_need_repairs_short_guidance_reply(
@@ -304,6 +347,210 @@ def test_recommended_entry_without_level_question_is_repaired(
     ]
     commit = store.load_for_user(user_id).packages[0].lessons[0].history_graph.commits[-1]
     assert commit.metadata["guided_requirement_discovery"]["quality_repaired"] is True
+
+
+def test_form_like_internal_field_guidance_is_repaired(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    user_id = "user_blank_form_like_repair"
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    lesson = _seed_empty_workspace(store, user_id)
+    calls: list[dict[str, object]] = []
+
+    def _fake_refinement(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return BlankBoardRequirementRefinement(
+                route="requirement_refining",
+                chatbot_message=(
+                    "这个方向可以先看一张地图："
+                    "\n1. **整体组成**：先知道这个方向由哪些部分构成。"
+                    "\n2. **基础概念**：挑一个最小概念开始理解。"
+                    "\n3. **应用迁移**：把理解放到任务里使用。"
+                    "\n\n我推荐先从**基础概念**开始，因为它最容易落到第一块可学习内容。"
+                    "请填写 learning_goal、current_level、target_scenario。学习内容：当前水平：面向场景："
+                ),
+                progress=45,
+                summary="用户想学一个宽泛主题。",
+                work_mode="knowledge_board",
+                granularity="broad_topic",
+                learning_goal="一个宽泛主题",
+                guidance_strategy="domain_map",
+                learning_map_summary="可以先看整体组成、基础概念和应用迁移。",
+                entry_point_options=[
+                    {
+                        "label": "整体组成",
+                        "why_it_matters": "帮助用户建立方向感。",
+                        "best_for": "完全不了解的人。",
+                    },
+                    {
+                        "label": "基础概念",
+                        "why_it_matters": "最容易落到第一块知识点。",
+                        "best_for": "想开始学习的人。",
+                    },
+                ],
+                recommended_entry_point="基础概念",
+                reason_for_recommendation="它最容易变成第一块可生成板书的内容。",
+                next_question="请填写学习内容、当前水平、面向场景。",
+                ready_for_board=False,
+            )
+        return BlankBoardRequirementRefinement(
+            route="requirement_refining",
+            chatbot_message=(
+                "好，我们先把这个方向打开成一张小地图。"
+                "\n1. **整体组成**：先看它大概由哪些部分构成，避免一上来迷路。"
+                "\n2. **基础概念**：挑一个最小、最容易讲清楚的概念作为第一步。"
+                "\n3. **应用迁移**：等概念站稳后，再看它能放到哪些任务里使用。"
+                "\n\n我建议先从**基础概念**开始，因为它最容易收敛成第一块板书。"
+                "你之前接触过这个方向吗，还是更接近完全新手？"
+            ),
+            progress=45,
+            summary="用户想学一个宽泛主题。",
+            work_mode="knowledge_board",
+            granularity="broad_topic",
+            learning_goal="一个宽泛主题",
+            guidance_strategy="domain_map",
+            learning_map_summary="可以先看整体组成、基础概念和应用迁移。",
+            entry_point_options=[
+                {
+                    "label": "整体组成",
+                    "why_it_matters": "帮助用户建立方向感。",
+                    "best_for": "完全不了解的人。",
+                },
+                {
+                    "label": "基础概念",
+                    "why_it_matters": "最容易落到第一块知识点。",
+                    "best_for": "想开始学习的人。",
+                },
+            ],
+            recommended_entry_point="基础概念",
+            reason_for_recommendation="它最容易变成第一块可生成板书的内容。",
+            next_question="你之前接触过这个方向吗，还是更接近完全新手？",
+            ready_for_board=False,
+        )
+
+    monkeypatch.setattr(openai_course_ai, "generate_blank_board_requirement_refinement", _fake_refinement)
+
+    response = process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="我想学一个方向"),
+        user_id=user_id,
+    )
+
+    assert len(calls) == 2
+    repair_context = calls[1]["quality_repair_context"]
+    assert repair_context is not None
+    assert "字段" in repair_context["repair_reason"]
+    assert "请填写" not in response.chatbot_message
+    assert "learning_goal" not in response.chatbot_message
+    commit = store.load_for_user(user_id).packages[0].lessons[0].history_graph.commits[-1]
+    discovery = commit.metadata["guided_requirement_discovery"]
+    assert discovery["quality_repaired"] is True
+    assert any("泄露内部字段" in issue for issue in discovery["quality_issues"])
+    assert any("填表" in issue for issue in discovery["quality_issues"])
+
+
+def test_multi_question_guidance_is_repaired_to_one_main_question(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    user_id = "user_blank_multi_question_repair"
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    lesson = _seed_empty_workspace(store, user_id)
+    calls: list[dict[str, object]] = []
+
+    def _fake_refinement(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return BlankBoardRequirementRefinement(
+                route="requirement_refining",
+                chatbot_message=(
+                    "这个方向可以先看三层："
+                    "\n1. **整体组成**：知道它有哪些部分。"
+                    "\n2. **基础概念**：挑一个最小概念开始。"
+                    "\n3. **应用迁移**：看它怎么进入真实任务。"
+                    "\n\n我推荐先从**基础概念**开始，因为它最容易变成第一块板书。"
+                    "你目前接触到什么程度？你学完更想做到什么？"
+                ),
+                progress=50,
+                summary="用户想学一个宽泛主题。",
+                work_mode="knowledge_board",
+                granularity="broad_topic",
+                learning_goal="一个宽泛主题",
+                guidance_strategy="domain_map",
+                learning_map_summary="可以先看整体组成、基础概念和应用迁移。",
+                entry_point_options=[
+                    {
+                        "label": "整体组成",
+                        "why_it_matters": "帮助建立整体视野。",
+                        "best_for": "不知道从哪开始的人。",
+                    },
+                    {
+                        "label": "基础概念",
+                        "why_it_matters": "帮助落到第一块知识点。",
+                        "best_for": "想直接开始的人。",
+                    },
+                ],
+                recommended_entry_point="基础概念",
+                reason_for_recommendation="它最容易变成第一块板书。",
+                next_question="你目前接触到什么程度？你学完更想做到什么？",
+                ready_for_board=False,
+            )
+        return BlankBoardRequirementRefinement(
+            route="requirement_refining",
+            chatbot_message=(
+                "这个方向可以先看三层："
+                "\n1. **整体组成**：知道它有哪些部分。"
+                "\n2. **基础概念**：挑一个最小概念开始。"
+                "\n3. **应用迁移**：看它怎么进入真实任务。"
+                "\n\n我推荐先从**基础概念**开始，因为它最容易变成第一块板书。"
+                "你目前大概接触到什么程度？"
+            ),
+            progress=50,
+            summary="用户想学一个宽泛主题。",
+            work_mode="knowledge_board",
+            granularity="broad_topic",
+            learning_goal="一个宽泛主题",
+            guidance_strategy="domain_map",
+            learning_map_summary="可以先看整体组成、基础概念和应用迁移。",
+            entry_point_options=[
+                {
+                    "label": "整体组成",
+                    "why_it_matters": "帮助建立整体视野。",
+                    "best_for": "不知道从哪开始的人。",
+                },
+                {
+                    "label": "基础概念",
+                    "why_it_matters": "帮助落到第一块知识点。",
+                    "best_for": "想直接开始的人。",
+                },
+            ],
+            recommended_entry_point="基础概念",
+            reason_for_recommendation="它最容易变成第一块板书。",
+            next_question="你目前大概接触到什么程度？",
+            ready_for_board=False,
+        )
+
+    monkeypatch.setattr(openai_course_ai, "generate_blank_board_requirement_refinement", _fake_refinement)
+
+    response = process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="我想学一个宽泛主题"),
+        user_id=user_id,
+    )
+
+    assert len(calls) == 2
+    assert response.chatbot_message.count("？") == 1
+    repair_context = calls[1]["quality_repair_context"]
+    assert repair_context is not None
+    assert "多个独立问题" in repair_context["repair_reason"]
+    commit = store.load_for_user(user_id).packages[0].lessons[0].history_graph.commits[-1]
+    discovery = commit.metadata["guided_requirement_discovery"]
+    assert discovery["quality_repaired"] is True
+    assert any("多个独立问题" in issue for issue in discovery["quality_issues"])
 
 
 def test_empty_board_broad_learning_need_collects_requirement(
@@ -507,6 +754,86 @@ def test_empty_board_known_unknown_self_report_updates_background(
     discovery = commit.metadata["guided_requirement_discovery"]
     assert discovery["guidance_strategy"] == "known_unknown"
     assert "前置概念" in discovery["learner_profile_inference"]
+
+
+def test_recent_experience_and_stuck_point_records_background_without_repair(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    user_id = "user_blank_recent_stuck"
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    lesson = _seed_empty_workspace(store, user_id)
+    call_count = 0
+
+    def _fake_refinement(**kwargs):
+        nonlocal call_count
+        call_count += 1
+        return BlankBoardRequirementRefinement(
+            route="requirement_refining",
+            chatbot_message=(
+                "你已经给了一个很有用的起点：最近做过一个任务，但卡在把知识迁移到新问题上。"
+                "我先按这个线索把地图缩小："
+                "\n1. **卡点复盘**：先找出是概念没站稳，还是方法不会迁移。"
+                "\n2. **基础概念**：如果概念不稳，就回到最小概念补齐。"
+                "\n3. **应用迁移**：如果概念能听懂但不会用，就用小任务练迁移。"
+                "\n\n我建议先从**卡点复盘**开始，因为它最贴近你刚才说的最近经历。"
+                "你最近卡住的那一步，更像概念没懂，还是会看例子但自己做不出来？"
+            ),
+            progress=65,
+            summary="用户最近做过任务，但卡在知识迁移。",
+            work_mode="knowledge_board",
+            granularity="broad_topic",
+            learning_goal="最近卡住的学习内容",
+            current_level="最近做过相关任务，但迁移应用不稳定",
+            known_background="最近经历：做过相关任务；卡点：迁移到新问题时不稳定。",
+            guidance_strategy="stuck_point",
+            learning_map_summary="可从卡点复盘、基础概念和应用迁移三个入口缩小。",
+            entry_point_options=[
+                {
+                    "label": "卡点复盘",
+                    "why_it_matters": "直接对应用户最近卡住的位置。",
+                    "best_for": "已经尝试过但不稳定的人。",
+                },
+                {
+                    "label": "基础概念",
+                    "why_it_matters": "帮助补齐不稳的底层理解。",
+                    "best_for": "概念还没听懂的人。",
+                },
+                {
+                    "label": "应用迁移",
+                    "why_it_matters": "帮助把会看的内容变成会用的能力。",
+                    "best_for": "能看例子但不会独立做的人。",
+                },
+            ],
+            recommended_entry_point="卡点复盘",
+            reason_for_recommendation="它最贴近用户刚透露的最近经历。",
+            learner_profile_inference="用户有近期尝试经历，主要卡在迁移应用。",
+            missing_items=["用户想学的内容需要收敛到具体知识点"],
+            next_question="你最近卡住的那一步，更像概念没懂，还是会看例子但自己做不出来？",
+            ready_for_board=False,
+        )
+
+    monkeypatch.setattr(openai_course_ai, "generate_blank_board_requirement_refinement", _fake_refinement)
+
+    response = process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="我最近做过一个任务，但换个问题就不会了。"),
+        user_id=user_id,
+    )
+
+    assert call_count == 1
+    assert response.active_requirement_sheet is not None
+    assert response.active_requirement_sheet.level == "最近做过相关任务，但迁移应用不稳定"
+    assert "最近经历" in response.active_requirement_sheet.known_background
+    assert response.active_requirement_sheet.current_questions == [
+        "你最近卡住的那一步，更像概念没懂，还是会看例子但自己做不出来？"
+    ]
+    commit = store.load_for_user(user_id).packages[0].lessons[0].history_graph.commits[-1]
+    discovery = commit.metadata["guided_requirement_discovery"]
+    assert discovery["guidance_strategy"] == "stuck_point"
+    assert discovery["quality_repaired"] is False
+    assert discovery["quality_issues"] == []
 
 
 def test_empty_board_specific_knowledge_point_is_ready(

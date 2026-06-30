@@ -1054,7 +1054,9 @@ class OpenAICourseAI:
             "“无明确应用场景”。\n"
             "收敛方法：你必须根据上下文灵活选择起点定位法、轻量自述法、最近经历法、已会/未会法、"
             "学习模式分流法、场景定位法、目标产出法、卡点定位法、选择卡片法、领域地图法、推荐入口法或隐性观察法。"
-            "这些方法只用于自然语言引导，不要变成固定问卷，也不要要求用户填字段。\n"
+            "这些方法只用于自然语言引导，不要变成固定问卷，也不要要求用户填字段。"
+            "你要在聊天中观察、承接、推荐和追问，同时把用户自然透露的信息记录到结构化字段；"
+            "不要让用户感觉自己在填写 LearningRequirementSheet。\n"
             "如果用户是纯新手且想入门某领域，可以用领域地图介绍该领域由哪些通用部分构成、推荐一个入门入口，"
             "并继续把需求收敛到一个可开始的知识点或练习产物。\n"
             "当 learning_goal 仍是宽泛主题、granularity=broad_topic 或用户说不知道从哪开始时，"
@@ -1080,6 +1082,8 @@ class OpenAICourseAI:
             "用户想学的内容、当前水平、面向场景。\n"
             "5. chatbot_message 面向用户自然表达；必须综合使用 learning_map_summary、entry_point_options、"
             "recommended_entry_point 和 reason_for_recommendation 中的有用信息，但不要输出 JSON、字段名、内部状态名或右侧板书正文。"
+            "不要说“请填写学习内容/当前水平/面向场景”，不要暴露 learning_goal、current_level、target_scenario、"
+            "missing_items、ready_for_board 等内部字段名；如果需要信息，用自然聊天的一句话询问。"
         )
         if quality_repair_context:
             system_prompt += (
@@ -1087,6 +1091,7 @@ class OpenAICourseAI:
                 "你只能修复 chatbot_message、guidance_strategy、learning_map_summary、entry_point_options、"
                 "recommended_entry_point、reason_for_recommendation、learner_profile_inference 和 next_question；"
                 "不得改变用户核心学习事实，不得生成板书，不得把固定模板或学科硬编码写进核心逻辑。"
+                "如果 repair_reason 提到字段泄露、填表感或一次问多个问题，必须改成自然对话表达，并只保留一个主问题。"
             )
         user_prompt = _json(
             {
@@ -1100,7 +1105,8 @@ class OpenAICourseAI:
                     "route": "ordinary_chat 或 requirement_refining。",
                     "chatbot_message": (
                         "直接给用户看的自然回复；如果是宽泛主题，必须包含开场承接、学习地图、"
-                        "2-5 个入口选项、一个推荐入口、推荐理由和一个关键问题；每次最多追问一个主问题。"
+                        "2-5 个入口选项、一个推荐入口、推荐理由和一个关键问题；每次最多追问一个主问题；"
+                        "不得输出内部字段名、JSON、表单格式或让用户填写清单。"
                     ),
                     "progress": "0-100 的清单完整度；ready_for_board=true 时必须为 100。",
                     "summary": "当前学习需求的一句话摘要；普通聊天可为空。",
