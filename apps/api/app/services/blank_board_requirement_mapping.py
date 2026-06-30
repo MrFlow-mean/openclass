@@ -137,26 +137,36 @@ def build_requirement_sheet(
     missing_items: list[str],
 ) -> LearningRequirementSheet:
     requirement = base_requirement.model_copy(deep=True)
+    novice_intro = is_novice_intro_broad_topic(result, work_mode, granularity)
     learning_goal = _first_text(result.learning_goal, requirement.learning_goal, lesson.title)
     current_questions = [] if ready_for_board else _dedupe_text([_first_text(result.next_question, *missing_items)])
     requirement.theme = learning_goal
     requirement.learning_goal = learning_goal
-    requirement.level = _first_text(result.current_level, requirement.level)
+    requirement.level = _first_text(
+        result.current_level,
+        "零基础纯新手" if novice_intro else "",
+        requirement.level,
+    )
     requirement.known_background = _first_text(result.known_background, requirement.known_background)
     requirement.current_questions = current_questions
     requirement.learning_need_checklist = _dedupe_text(
         [
-            *result.learning_need_checklist,
+            *_learning_need_checklist(result, novice_intro=novice_intro),
             *[item.title for item in core_checklist(result, work_mode, granularity)],
         ]
     )
-    requirement.target_depth = _first_text(result.target_depth, requirement.target_depth)
+    requirement.target_depth = _first_text(
+        result.target_depth,
+        "入门了解 / 建立领域地图" if novice_intro else "",
+        requirement.target_depth,
+    )
     requirement.output_preference = _first_text(result.output_preference, requirement.output_preference)
     requirement.boundary = _first_text(result.boundary, requirement.boundary)
     requirement.board_scope = _dedupe_text(result.board_scope) or list(requirement.board_scope)
     requirement.success_criteria = _first_text(
         result.success_criteria,
         result.target_scenario if work_mode == "practice_artifact" else "",
+        "理解领域组成，并确定第一个可学习入口" if novice_intro else "",
         requirement.success_criteria,
     )
     requirement.risk_notes = missing_items
@@ -230,10 +240,11 @@ def merge_checklist(
     work_mode: InitialLearningWorkMode,
     granularity: InitialLearningGranularity,
 ) -> list[LearningRequirementChecklistItem]:
+    novice_intro = is_novice_intro_broad_topic(result, work_mode, granularity)
     checklist = [
         item
         for item in result.checklist
-        if _has_text(item.title)
+        if _has_text(item.title) and not (novice_intro and _is_scenario_or_external_goal_text(item.title))
     ]
     existing_titles = {item.title for item in checklist}
     for item in core_checklist(result, work_mode, granularity):
@@ -283,6 +294,25 @@ def core_checklist(
     ]
 
 
+def is_novice_intro_broad_topic(
+    result: BlankBoardRequirementRefinement,
+    work_mode: InitialLearningWorkMode,
+    granularity: InitialLearningGranularity,
+) -> bool:
+    if work_mode != "knowledge_board" or granularity != "broad_topic":
+        return False
+    text = " ".join(
+        [
+            result.current_level,
+            result.known_background,
+            result.learner_profile_inference,
+            result.summary,
+            result.learning_goal,
+        ]
+    )
+    return _has_novice_intro_signal(text)
+
+
 def _append_fact(
     facts: list[LearningRequirementKeyFact],
     *,
@@ -303,6 +333,67 @@ def _append_fact(
             category=category,
         ),
     ]
+
+
+def _learning_need_checklist(
+    result: BlankBoardRequirementRefinement,
+    *,
+    novice_intro: bool,
+) -> list[str]:
+    if not novice_intro:
+        return result.learning_need_checklist
+    return [
+        item
+        for item in result.learning_need_checklist
+        if not _is_scenario_or_external_goal_text(item)
+    ]
+
+
+def _has_novice_intro_signal(text: str) -> bool:
+    compact = (text or "").strip()
+    if not compact:
+        return False
+    return any(
+        keyword in compact
+        for keyword in [
+            "纯新手",
+            "零基础",
+            "完全新手",
+            "完全零基础",
+            "纯外行",
+            "完全外行",
+            "入门了解",
+            "新手入门",
+            "从零开始",
+            "刚开始入门",
+            "先了解",
+            "感兴趣想学",
+        ]
+    )
+
+
+def _is_scenario_or_external_goal_text(text: str) -> bool:
+    compact = (text or "").strip()
+    if not compact:
+        return False
+    if "无明确应用场景" in compact or "入门了解" in compact:
+        return False
+    return any(
+        keyword in compact
+        for keyword in [
+            "应用场景",
+            "使用场景",
+            "学习目的",
+            "目的或场景",
+            "目标场景",
+            "考试",
+            "面试",
+            "工作",
+            "赚钱",
+            "项目",
+            "现实产出",
+        ]
+    )
 
 
 def _first_text(*values: str) -> str:

@@ -70,6 +70,35 @@ STARTING_LEVEL_TERMS = [
     "了解过",
 ]
 
+NOVICE_INTRO_TERMS = [
+    "纯新手",
+    "零基础",
+    "完全新手",
+    "完全零基础",
+    "纯外行",
+    "完全外行",
+    "入门了解",
+    "新手入门",
+    "从零开始",
+    "刚开始入门",
+    "先了解",
+    "感兴趣想学",
+]
+
+EXTERNAL_GOAL_QUESTION_TERMS = [
+    "考试",
+    "面试",
+    "工作",
+    "赚钱",
+    "项目",
+    "应用场景",
+    "使用场景",
+    "学习目的",
+    "现实产出",
+    "为了什么",
+    "用来做什么",
+]
+
 
 def assess_blank_board_requirement_reply(
     result: BlankBoardRequirementRefinement,
@@ -137,6 +166,7 @@ def build_guidance_metadata(
 def _broad_guidance_issues(result: BlankBoardRequirementRefinement, message: str) -> list[str]:
     issues: list[str] = []
     options = [option for option in result.entry_point_options if _has_text(option.label)]
+    novice_intro = _is_novice_intro_refinement(result)
     if len(message) < 160:
         issues.append("chatbot_message 太短，像追问而不是学习地图引导。")
     if not _has_text(result.learning_map_summary):
@@ -160,6 +190,8 @@ def _broad_guidance_issues(result: BlankBoardRequirementRefinement, message: str
         issues.append("已经推荐入口，但没有追问用户当前水平、已会/未会或最近学到哪里。")
     if "？" not in message and "?" not in message:
         issues.append("chatbot_message 没有一个关键问题。")
+    if novice_intro and _asks_external_goal_question("\n".join([result.next_question, message])):
+        issues.append("纯新手入门场景不应继续追问考试、工作、赚钱或应用场景。")
     return issues
 
 
@@ -204,6 +236,49 @@ def _has_starting_level_context(result: BlankBoardRequirementRefinement) -> bool
             result.learner_profile_inference,
         ]
     )
+
+
+def _is_novice_intro_refinement(result: BlankBoardRequirementRefinement) -> bool:
+    if result.work_mode == "practice_artifact" or result.granularity == "practice_artifact":
+        return False
+    text = " ".join(
+        [
+            result.current_level,
+            result.known_background,
+            result.learner_profile_inference,
+            result.summary,
+            result.learning_goal,
+            result.chatbot_message,
+            result.next_question,
+        ]
+    )
+    return any(keyword in text for keyword in NOVICE_INTRO_TERMS)
+
+
+def _asks_external_goal_question(text: str) -> bool:
+    compact = (text or "").strip()
+    if not compact or ("？" not in compact and "?" not in compact):
+        return False
+    return any(
+        any(keyword in fragment for keyword in EXTERNAL_GOAL_QUESTION_TERMS)
+        for fragment in _question_fragments(compact)
+    )
+
+
+def _question_fragments(text: str) -> list[str]:
+    fragments: list[str] = []
+    start = 0
+    for index, char in enumerate(text):
+        if char in "。.!！\n；;":
+            start = index + 1
+            continue
+        if char not in "？?":
+            continue
+        fragment = text[start : index + 1].strip()
+        if fragment:
+            fragments.append(fragment)
+        start = index + 1
+    return fragments
 
 
 def _question_count(text: str) -> int:

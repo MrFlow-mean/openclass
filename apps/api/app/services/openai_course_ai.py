@@ -1058,7 +1058,10 @@ class OpenAICourseAI:
             "你要在聊天中观察、承接、推荐和追问，同时把用户自然透露的信息记录到结构化字段；"
             "不要让用户感觉自己在填写 LearningRequirementSheet。\n"
             "如果用户是纯新手且想入门某领域，可以用领域地图介绍该领域由哪些通用部分构成、推荐一个入门入口，"
-            "并继续把需求收敛到一个可开始的知识点或练习产物。\n"
+            "并继续把需求收敛到一个可开始的知识点或练习产物。纯新手、零基础、入门、先了解一下、"
+            "感兴趣想学，都表示一种明确的入门型学习状态；默认目的可以记录为“入门了解 / 建立领域地图 / 找到第一个学习入口”。"
+            "这时不要强制追问考试、面试、工作、赚钱、项目或现实产出场景；如果用户没有主动说场景，"
+            "不要把应用场景当作缺失核心因素。\n"
             "当 learning_goal 仍是宽泛主题、granularity=broad_topic 或用户说不知道从哪开始时，"
             "chatbot_message 必须优先呈现“开场承接 + 简短学习地图 + 2-5 个入口选项 + 一个推荐入口 + 推荐理由 + 一个绑定推荐入口的主问题”，"
             "而不是只追问“具体想学什么”；学习地图和入口选项必须真的写进 chatbot_message，不能只写在结构化字段里。\n"
@@ -1078,6 +1081,8 @@ class OpenAICourseAI:
             "最后只问一个最关键问题。\n"
             "3. 辅助因素可以记录 known_background、target_depth、output_preference、board_scope、"
             "learning_need_checklist、success_criteria，但不能替代核心因素。\n"
+            "如果是纯新手入门型宽泛主题，target_depth 可写“入门了解 / 建立领域地图”，"
+            "success_criteria 可写“理解领域组成，并确定第一个可学习入口”。\n"
             "4. key_facts 只记录用户已经透露或你从当前对话可直接归纳的事实，优先使用标签："
             "用户想学的内容、当前水平、面向场景。\n"
             "5. chatbot_message 面向用户自然表达；必须综合使用 learning_map_summary、entry_point_options、"
@@ -1137,7 +1142,8 @@ class OpenAICourseAI:
                     "missing_items": "仍缺少的核心因素或重要辅助因素；核心因素不全必须列出。",
                     "next_question": (
                         "清单未完整时下一轮最有价值的一个问题；如果已推荐入口但不了解用户水平，"
-                        "优先询问当前水平、已会/未会或最近学到哪里；ready_for_board=true 时可为空。"
+                        "优先询问当前水平、已会/未会或最近学到哪里；如果用户已说明纯新手入门，"
+                        "优先自然确认是否从推荐入口开始，或是否先看整体地图；ready_for_board=true 时可为空。"
                     ),
                     "recommended_teaching_plan_summary": "可选：给用户看的教学方案摘要，不是板书正文。",
                     "ready_for_board": "只表示清单核心因素齐全，可以进入未来板书生成；本阶段不会实际生成。",

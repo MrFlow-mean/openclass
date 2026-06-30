@@ -209,6 +209,7 @@ def _repair_guided_reply_if_needed(
                 "current_level_or_known_background_question",
                 "natural_conversation_no_internal_fields",
                 "single_main_question",
+                "novice_intro_no_external_goal_question",
             ],
         },
     )

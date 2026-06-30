@@ -56,10 +56,13 @@ def test_blank_board_refinement_prompt_requires_rich_broad_topic_guidance(
     assert "开场承接 + 简短学习地图 + 2-5 个入口选项 + 一个推荐入口 + 推荐理由 + 一个绑定推荐入口的主问题" in system_prompt
     assert "学习地图和入口选项必须真的写进 chatbot_message" in system_prompt
     assert "knowledge_board + broad_topic" in system_prompt
+    assert "纯新手、零基础、入门、先了解一下" in system_prompt
+    assert "不要强制追问考试、面试、工作、赚钱、项目或现实产出场景" in system_prompt
     payload = json.loads(str(captured["user_prompt"]))
     assert "开场承接" in payload["response_contract"]["chatbot_message"]
     assert "推荐理由" in payload["response_contract"]["chatbot_message"]
     assert "当前水平" in payload["response_contract"]["next_question"]
+    assert "纯新手入门" in payload["response_contract"]["next_question"]
     assert "已会/未会" in system_prompt
 
 
@@ -660,6 +663,235 @@ def test_empty_board_broad_learning_need_collects_requirement(
     assert ordinary_response.active_requirement_sheet is not None
     assert ordinary_response.requirement_run_id == response.requirement_run_id
     assert len(store.list_learning_requirement_versions(user_id, lesson.id)) == 1
+
+
+def test_pure_novice_intro_keeps_intro_goal_without_requiring_external_scenario(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    user_id = "user_blank_pure_novice_intro"
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    lesson = _seed_empty_workspace(store, user_id)
+    calls: list[dict[str, object]] = []
+
+    def _fake_refinement(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return BlankBoardRequirementRefinement(
+                route="requirement_refining",
+                chatbot_message=(
+                    "这个领域可以先看一张地图："
+                    "\n1. **整体组成**：先知道它大概由哪些部分构成。"
+                    "\n2. **基础概念**：挑一个最小、最容易讲清楚的入口。"
+                    "\n3. **应用迁移**：等基础站稳后再看它怎么解决真实任务。"
+                    "\n\n我推荐先从**基础概念**开始，因为它最容易形成第一块可学习内容。"
+                    "你之前接触过这个领域吗，还是更接近完全新手？"
+                ),
+                progress=45,
+                summary="用户想学一个宽泛领域。",
+                work_mode="knowledge_board",
+                granularity="broad_topic",
+                learning_goal="一个宽泛领域",
+                guidance_strategy="domain_map",
+                learning_map_summary="可以先看整体组成、基础概念和应用迁移。",
+                entry_point_options=[
+                    {
+                        "label": "整体组成",
+                        "why_it_matters": "帮助用户建立方向感。",
+                        "best_for": "不知道从哪开始的人。",
+                    },
+                    {
+                        "label": "基础概念",
+                        "why_it_matters": "最容易落到第一块知识点。",
+                        "best_for": "想马上开始的人。",
+                    },
+                ],
+                recommended_entry_point="基础概念",
+                reason_for_recommendation="它最容易形成第一块可学习内容。",
+                next_question="你之前接触过这个领域吗，还是更接近完全新手？",
+                ready_for_board=False,
+            )
+        return BlankBoardRequirementRefinement(
+            route="requirement_refining",
+            chatbot_message=(
+                "明白，你是纯新手入门，我先用外行人能看懂的方式把地图打开："
+                "\n1. **这个领域是什么**：先知道它研究什么、解决什么类型的问题。"
+                "\n2. **核心组成**：看它通常由哪些部分拼起来。"
+                "\n3. **第一个入口**：选一个最基础、最容易获得正反馈的概念开始。"
+                "\n\n我推荐先从**基础概念**开始，因为它最适合零基础建立第一块理解。"
+                "我们先从这个入口开始，可以吗？"
+            ),
+            progress=70,
+            summary="用户零基础纯新手，想先入门了解一个领域。",
+            work_mode="knowledge_board",
+            granularity="broad_topic",
+            learning_goal="一个领域入门",
+            current_level="零基础纯新手",
+            known_background="用户明确表示纯新手入门。",
+            guidance_strategy="recommended_entry",
+            learning_map_summary="纯新手先看领域是什么、核心组成和第一个入口。",
+            entry_point_options=[
+                {
+                    "label": "这个领域是什么",
+                    "why_it_matters": "帮助外行先建立方向感。",
+                    "best_for": "完全不了解的人。",
+                },
+                {
+                    "label": "基础概念",
+                    "why_it_matters": "最容易形成第一块可学习内容。",
+                    "best_for": "零基础纯新手。",
+                },
+            ],
+            recommended_entry_point="基础概念",
+            reason_for_recommendation="它最基础，最适合零基础建立第一块理解。",
+            learning_need_checklist=[
+                "需要选择具体子方向",
+                "需要了解学习目的或应用场景",
+                "用户想学的内容",
+            ],
+            checklist=[
+                {
+                    "title": "当前水平已知",
+                    "is_clear": True,
+                    "evidence": "用户说纯新手入门。",
+                },
+                {
+                    "title": "学习目的或场景已知",
+                    "is_clear": False,
+                    "evidence": "",
+                },
+            ],
+            next_question="我们先从这个入口开始，可以吗？",
+            ready_for_board=False,
+        )
+
+    monkeypatch.setattr(openai_course_ai, "generate_blank_board_requirement_refinement", _fake_refinement)
+
+    first_response = process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="我想学一个领域"),
+        user_id=user_id,
+    )
+    second_response = process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="我纯新手入门"),
+        user_id=user_id,
+    )
+
+    assert second_response.requirement_run_id == first_response.requirement_run_id
+    assert second_response.active_requirement_sheet is not None
+    assert second_response.active_requirement_sheet.level == "零基础纯新手"
+    assert second_response.active_requirement_sheet.target_depth == "入门了解 / 建立领域地图"
+    assert second_response.active_requirement_sheet.success_criteria == "理解领域组成，并确定第一个可学习入口"
+    assert "需要了解学习目的或应用场景" not in second_response.active_requirement_sheet.learning_need_checklist
+    assert "应用场景" not in second_response.learning_clarification.missing_items
+    assert all("场景" not in item.title for item in second_response.learning_clarification.checklist)
+    assert second_response.active_requirement_sheet.current_questions == ["我们先从这个入口开始，可以吗？"]
+    assert "为了什么" not in second_response.chatbot_message
+    assert "应用场景" not in second_response.chatbot_message
+    assert "我们先从这个入口开始，可以吗？" in second_response.chatbot_message
+    assert len(store.list_learning_requirement_versions(user_id, lesson.id)) == 2
+
+
+def test_pure_novice_intro_external_goal_question_is_repaired(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    user_id = "user_blank_pure_novice_intro_repair"
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    lesson = _seed_empty_workspace(store, user_id)
+    calls: list[dict[str, object]] = []
+
+    def _fake_refinement(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return BlankBoardRequirementRefinement(
+                route="requirement_refining",
+                chatbot_message=(
+                    "你是纯新手入门，我们先把地图铺开："
+                    "\n1. **整体认识**：先知道这个领域大概在研究什么。"
+                    "\n2. **核心组成**：再看它通常由哪些部分组成。"
+                    "\n3. **基础入口**：最后选一个最小入口开始。"
+                    "\n\n我推荐先从**基础入口**开始，因为它最适合零基础建立第一块理解。"
+                    "你学这个是为了考试、工作还是赚钱？"
+                ),
+                progress=65,
+                summary="用户零基础纯新手，想入门一个领域。",
+                work_mode="knowledge_board",
+                granularity="broad_topic",
+                learning_goal="一个领域入门",
+                current_level="零基础纯新手",
+                known_background="用户明确表示纯新手入门。",
+                guidance_strategy="domain_map",
+                learning_map_summary="纯新手先看整体认识、核心组成和基础入口。",
+                entry_point_options=[
+                    {
+                        "label": "整体认识",
+                        "why_it_matters": "帮助用户建立方向感。",
+                        "best_for": "完全不了解的人。",
+                    },
+                    {
+                        "label": "基础入口",
+                        "why_it_matters": "最容易形成第一块理解。",
+                        "best_for": "零基础纯新手。",
+                    },
+                ],
+                recommended_entry_point="基础入口",
+                reason_for_recommendation="它最适合零基础建立第一块理解。",
+                next_question="你学这个是为了考试、工作还是赚钱？",
+                ready_for_board=False,
+            )
+        return BlankBoardRequirementRefinement(
+            route="requirement_refining",
+            chatbot_message=(
+                "你是纯新手入门，我们先把地图铺开："
+                "\n1. **整体认识**：先知道这个领域大概在研究什么。"
+                "\n2. **核心组成**：再看它通常由哪些部分组成。"
+                "\n3. **基础入口**：最后选一个最小入口开始。"
+                "\n\n我推荐先从**基础入口**开始，因为它最适合零基础建立第一块理解。"
+                "我们先从这个入口开始，可以吗？"
+            ),
+            guidance_strategy="domain_map",
+            learning_map_summary="纯新手先看整体认识、核心组成和基础入口。",
+            entry_point_options=[
+                {
+                    "label": "整体认识",
+                    "why_it_matters": "帮助用户建立方向感。",
+                    "best_for": "完全不了解的人。",
+                },
+                {
+                    "label": "基础入口",
+                    "why_it_matters": "最容易形成第一块理解。",
+                    "best_for": "零基础纯新手。",
+                },
+            ],
+            recommended_entry_point="基础入口",
+            reason_for_recommendation="它最适合零基础建立第一块理解。",
+            next_question="我们先从这个入口开始，可以吗？",
+        )
+
+    monkeypatch.setattr(openai_course_ai, "generate_blank_board_requirement_refinement", _fake_refinement)
+
+    response = process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="我纯新手入门，先了解一下。"),
+        user_id=user_id,
+    )
+
+    assert len(calls) == 2
+    assert calls[1]["quality_repair_context"] is not None
+    assert "纯新手入门场景" in calls[1]["quality_repair_context"]["repair_reason"]
+    assert "考试" not in response.chatbot_message
+    assert "工作" not in response.chatbot_message
+    assert "赚钱" not in response.chatbot_message
+    assert response.active_requirement_sheet is not None
+    assert response.active_requirement_sheet.level == "零基础纯新手"
+    commit = store.load_for_user(user_id).packages[0].lessons[0].history_graph.commits[-1]
+    discovery = commit.metadata["guided_requirement_discovery"]
+    assert discovery["quality_repaired"] is True
+    assert any("纯新手入门场景" in issue for issue in discovery["quality_issues"])
 
 
 def test_empty_board_unknown_start_uses_recommended_entry(
