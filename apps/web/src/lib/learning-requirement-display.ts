@@ -219,8 +219,6 @@ function buildAuxiliaryFactors({
   pushAuxiliary(factors, used, "target_depth", "目标深度", requirementSheet?.target_depth);
   pushAuxiliary(factors, used, "output_preference", "输出偏好", requirementSheet?.output_preference);
   pushAuxiliary(factors, used, "success_criteria", "成功标准", requirementSheet?.success_criteria);
-  pushAuxiliary(factors, used, "board_scope", "板书范围", requirementSheet?.board_scope?.join(" / "));
-  pushAuxiliary(factors, used, "learning_need_checklist", "已记录信息", requirementSheet?.learning_need_checklist?.join(" / "));
 
   for (const factItem of facts) {
     const label = auxiliaryLabelForFact(factItem);
