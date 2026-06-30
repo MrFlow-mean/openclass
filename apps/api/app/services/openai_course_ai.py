@@ -941,6 +941,7 @@ class OpenAICourseAI:
     def generate_basic_chat_reply(
         self,
         *,
+        board_document_state: dict[str, Any] | None = None,
         conversation_summary: str,
         user_message: str,
     ) -> ChatbotReply | None:
@@ -949,10 +950,14 @@ class OpenAICourseAI:
             "回答方式像 ChatGPT：直接理解用户当前问题，根据问题本身决定回答长短、结构和语气；"
             "可以解释概念、协助写作、分析问题、生成想法、检查文本、回答代码或学习问题。\n"
             "不要套用课程模板，不要根据具体学科、教材、考试或 demo 文本走特殊规则。\n"
+            "你会收到 board_document_state，它只说明右侧板书文档是否为空，不包含板书正文。\n"
+            "可以在用户问到当前板书/文档状态时自然说明 empty 或 non_empty 的含义；"
+            "不要推测、引用或讲解任何未提供的板书正文。\n"
             "不要声称已经修改本地文件、右侧文档或外部应用；当前能力只是聊天框内的文本回答。"
         )
         user_prompt = _json(
             {
+                "board_document_state": board_document_state or {},
                 "recent_conversation": conversation_summary or "",
                 "user_message": user_message,
                 "response_contract": {

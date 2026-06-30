@@ -40,6 +40,7 @@ def test_basic_chat_prompt_is_chatgpt_like_without_board_workflow(monkeypatch: p
     monkeypatch.setattr(ai, "_parse", _fake_parse)
 
     result = ai.generate_basic_chat_reply(
+        board_document_state={"status": "empty", "has_content": False},
         conversation_summary="user: 你好",
         user_message="帮我解释一下这个概念",
     )
@@ -47,9 +48,10 @@ def test_basic_chat_prompt_is_chatgpt_like_without_board_workflow(monkeypatch: p
     assert result == ChatbotReply(chatbot_message="可以，我们就正常聊天。")
     assert captured["role"] == "chatbot"
     assert "像 ChatGPT" in captured["system_prompt"]
-    assert "板书" not in captured["system_prompt"]
+    assert "板书正文" in captured["system_prompt"]
     assert "directive" not in captured["system_prompt"]
     payload = json.loads(captured["user_prompt"])
+    assert payload["board_document_state"] == {"status": "empty", "has_content": False}
     assert payload["recent_conversation"] == "user: 你好"
     assert payload["user_message"] == "帮我解释一下这个概念"
     assert "lesson_title" not in payload
@@ -85,6 +87,11 @@ def test_process_chat_on_lesson_records_basic_chat_without_document_change(
     assert response.active_requirement_sheet is None
     assert response.active_board_task_sheet is None
     assert captured == {
+        "board_document_state": {
+            "status": "non_empty",
+            "has_content": True,
+            "reason": "当前右侧板书文档已有可见内容。",
+        },
         "conversation_summary": "user: 你好",
         "user_message": "你现在能正常问答吗？",
     }
@@ -96,4 +103,9 @@ def test_process_chat_on_lesson_records_basic_chat_without_document_change(
     assert commit.label == "Basic chat"
     assert commit.metadata["kind"] == "basic_chat"
     assert commit.metadata["basic_chat_only"] is True
+    assert commit.metadata["board_document_state"] == {
+        "status": "non_empty",
+        "has_content": True,
+        "reason": "当前右侧板书文档已有可见内容。",
+    }
     assert commit.metadata["document_changed"] is False

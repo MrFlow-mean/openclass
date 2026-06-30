@@ -8,6 +8,7 @@ from app.models import (
     LearningClarificationStatus,
 )
 from app.services import workspace_state
+from app.services.board_document_sensor import read_board_document_sensor
 from app.services.course_runtime import effective_requirements
 from app.services.history import commit_operations
 from app.services.openai_course_ai import (
@@ -81,7 +82,9 @@ def _build_response(
 def _run_basic_chat_turn(lesson_id: str, request: ChatRequest, *, user_id: str) -> ChatResponse:
     workspace = workspace_state.load_workspace_for_user(user_id)
     package, lesson = workspace_state.find_lesson_package(workspace, lesson_id)
+    board_document_state = read_board_document_sensor(lesson.board_document)
     ai_reply = openai_course_ai.generate_basic_chat_reply(
+        board_document_state=board_document_state.model_context(),
         conversation_summary=_conversation_summary(request.conversation),
         user_message=request.message,
     )
@@ -102,6 +105,7 @@ def _run_basic_chat_turn(lesson_id: str, request: ChatRequest, *, user_id: str) 
             "user_message": request.message,
             "assistant_message": chatbot_message,
             "assistant_message_source": "chatbot" if chatbot_message else "chatbot_empty",
+            "board_document_state": board_document_state.model_context(),
             "interaction_mode": request.interaction_mode,
             "selection": request.selection.model_dump(mode="json") if request.selection else None,
             "basic_chat_only": True,
