@@ -1068,7 +1068,6 @@ class OpenAICourseAI:
         user_message: str,
         existing_requirement_sheet: dict[str, Any] | None = None,
         existing_clarification: dict[str, Any] | None = None,
-        quality_repair_context: dict[str, Any] | None = None,
         include_stream_result: bool = False,
     ) -> BlankBoardRequirementRefinement | BlankBoardRequirementRefinementResult | None:
         system_prompt = (
@@ -1159,25 +1158,6 @@ class OpenAICourseAI:
             "不要说“请填写学习内容/当前水平/面向场景”，不要暴露 learning_goal、current_level、target_scenario、"
             "missing_items、ready_for_board 等内部字段名；如果需要信息，用自然聊天的一句话询问。"
         )
-        if quality_repair_context:
-            system_prompt += (
-                "\n质量修复模式：上一轮结构化结果已经被后端判定为宽泛主题引导不够丰富。"
-                "通常只能修复 chatbot_message、guidance_strategy、learning_map_summary、entry_point_options、"
-                "recommended_entry_point、reason_for_recommendation、learner_profile_inference 和 next_question；"
-                "不得改变用户核心学习事实，不得生成板书，不得把固定模板或学科硬编码写进核心逻辑。"
-                "如果 repair_reason 提到练习型、已会/未会、最近经历、卡点、场景定位或目标产出，"
-                "可以修复 work_mode、granularity、learning_goal、current_level、target_scenario、known_background、"
-                "target_depth、success_criteria、key_facts、checklist、missing_items 和 ready_for_board，但只能基于用户已说内容，不能脑补。"
-                "如果 repair_reason 提到字段泄露、填表感或一次问多个问题，必须改成自然对话表达，并只保留一个主问题。"
-                "如果 repair_reason 提到练习型水平选择卡片，必须把开放式水平追问改成 choice_cards："
-                "chatbot_message 写成标题、副标题和 4-6 个 A/B/C 水平卡片，entry_point_options 记录这些水平选项，"
-                "本轮只问水平，不默认练习难度。"
-                "如果 repair_reason 提到委托式入门，你可以并且应该同时修复 granularity、learning_goal、ready_for_board、"
-                "progress、success_criteria 和 missing_items：把宽泛主题落定为领域总览型第一课，"
-                "ready_for_board=true，next_question 为空。"
-                "如果 repair_reason 提到新手基础入口，你也必须按同样方式修复："
-                "不要让入门新手选择高级路线，直接落定基础总览型第一课。"
-            )
         user_prompt = _json(
             {
                 "board_document_state": board_document_state or {},
@@ -1185,7 +1165,6 @@ class OpenAICourseAI:
                 "current_user_message": user_message,
                 "existing_requirement_sheet": existing_requirement_sheet or None,
                 "existing_clarification": existing_clarification or None,
-                "quality_repair_context": quality_repair_context or None,
                 "response_contract": {
                     "route": "ordinary_chat 或 requirement_refining。",
                     "chatbot_message": (

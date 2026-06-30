@@ -10,10 +10,6 @@ from app.models import (
 )
 from app.services.board_document_sensor import BoardDocumentSensorReading
 from app.services.blank_board_requirement_mapping import build_blank_board_requirement_state
-from app.services.blank_board_requirement_quality import (
-    assess_blank_board_requirement_reply,
-    build_guidance_metadata,
-)
 from app.services.course_runtime import active_task_requirements
 from app.services.learning_requirement_history import (
     LearningRequirementHistoryRecorder,
@@ -97,10 +93,6 @@ def refine_blank_board_requirement(
         return None
     if visible_chat_buffer:
         result = result.model_copy(update={"chatbot_message": visible_chat_buffer})
-    quality_repaired, quality_issues = _assess_guided_reply_quality(
-        result=result,
-        user_message=user_message,
-    )
     if not visible_chat_was_streamed:
         _emit_validated_chatbot_message(result)
     if result.route == "ordinary_chat":
@@ -124,12 +116,7 @@ def refine_blank_board_requirement(
         base_requirement=base_requirement,
         result=result,
     )
-    metadata = build_guidance_metadata(
-        result,
-        quality_repaired=quality_repaired,
-        quality_issues=quality_issues,
-        quality_repair_skipped=bool(quality_issues),
-    )
+    metadata = _build_guidance_metadata(result)
     metadata.update(
         _stream_metadata(
             visible_chat_was_streamed=visible_chat_was_streamed,
@@ -205,17 +192,6 @@ def _basic_chat_clarification() -> LearningClarificationStatus:
     )
 
 
-def _assess_guided_reply_quality(
-    *,
-    result: BlankBoardRequirementRefinement,
-    user_message: str,
-) -> tuple[bool, list[str]]:
-    reply_quality = assess_blank_board_requirement_reply(result, user_message=user_message)
-    if not reply_quality.needs_repair:
-        return False, []
-    return False, reply_quality.issues
-
-
 def _first_text(*values: str) -> str:
     for value in values:
         text = (value or "").strip()
@@ -235,6 +211,21 @@ def _stream_metadata(
         "visible_chat_was_streamed": visible_chat_was_streamed,
         "structured_parse_failed": structured_parse_failed,
         "requirement_update_skipped": requirement_update_skipped,
+    }
+
+
+def _build_guidance_metadata(result: BlankBoardRequirementRefinement) -> dict[str, Any]:
+    return {
+        "guidance_strategy": result.guidance_strategy,
+        "learning_map_summary": result.learning_map_summary,
+        "entry_point_options": [
+            option.model_dump(mode="json")
+            for option in result.entry_point_options
+            if (option.label or "").strip()
+        ],
+        "recommended_entry_point": result.recommended_entry_point,
+        "reason_for_recommendation": result.reason_for_recommendation,
+        "learner_profile_inference": result.learner_profile_inference,
     }
 
 
