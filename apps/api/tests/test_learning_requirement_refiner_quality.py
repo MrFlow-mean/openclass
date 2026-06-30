@@ -109,6 +109,134 @@ def test_practice_need_misrouted_as_domain_map_is_repaired(
     assert any("练习型需求" in issue for issue in discovery["quality_issues"])
 
 
+def test_practice_missing_level_uses_choice_cards_before_difficulty(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    user_id = "user_blank_practice_level_cards_repair"
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    lesson = _seed_empty_workspace(store, user_id)
+    calls: list[dict[str, object]] = []
+
+    def _fake_refinement(**kwargs):
+        calls.append(kwargs)
+        if kwargs.get("quality_repair_context"):
+            return BlankBoardRequirementRefinement(
+                route="requirement_refining",
+                chatbot_message=(
+                    "好的，练习代码能力最适合用阶梯任务来推进。"
+                    "我先了解一下：你现在的代码练习水平更接近哪一种？\n\n"
+                    "选一个最接近的就行，我会根据你的水平安排练习难度。\n\n"
+                    "A. **纯入门**\n只了解大概概念，还没真正写过完整练习。\n\n"
+                    "B. **语法入门**\n学过基础语法，但写完整小项目还不熟。\n\n"
+                    "C. **写过基础项目**\n写过简单功能，但测试、拆分和边界处理不熟。\n\n"
+                    "D. **能写标准组件**\n能完成常见组件，想提高结构和代码质量。\n\n"
+                    "E. **想练复杂项目**\n想练综合交互、测试、性能或安全问题。\n\n"
+                    "F. **不确定**\n你按从简单到进阶的路线帮我安排。"
+                ),
+                progress=45,
+                summary="用户想练习代码能力，需要先确认当前水平。",
+                work_mode="practice_artifact",
+                granularity="practice_artifact",
+                learning_goal="练习代码能力",
+                guidance_strategy="choice_cards",
+                entry_point_options=[
+                    {
+                        "label": "纯入门",
+                        "why_it_matters": "确认是否需要从最小完整练习开始。",
+                        "best_for": "只了解概念、没写过完整练习的人。",
+                    },
+                    {
+                        "label": "语法入门",
+                        "why_it_matters": "确认是否需要把语法转成完整产物。",
+                        "best_for": "学过基础语法但不熟练的人。",
+                    },
+                    {
+                        "label": "写过基础项目",
+                        "why_it_matters": "确认是否可以进入更完整的任务。",
+                        "best_for": "写过简单功能的人。",
+                    },
+                    {
+                        "label": "能写标准组件",
+                        "why_it_matters": "确认是否该提高结构和质量。",
+                        "best_for": "能完成常见组件的人。",
+                    },
+                    {
+                        "label": "想练复杂项目",
+                        "why_it_matters": "确认是否进入综合任务。",
+                        "best_for": "想练复杂交互或质量问题的人。",
+                    },
+                    {
+                        "label": "不确定",
+                        "why_it_matters": "降低用户判断成本。",
+                        "best_for": "不知道自己水平的人。",
+                    },
+                ],
+                missing_items=["当前水平", "面向场景"],
+                next_question="你现在的代码练习水平更接近哪一种？",
+                ready_for_board=False,
+            )
+        return BlankBoardRequirementRefinement(
+            route="requirement_refining",
+            chatbot_message=(
+                "好的，练习代码能力可以从简单项目开始，再逐步挑战更复杂的组件。"
+                "我想先了解一下：你目前掌握到什么程度，比如有没有写过简单项目？"
+            ),
+            progress=35,
+            summary="用户想练习代码能力。",
+            work_mode="practice_artifact",
+            granularity="practice_artifact",
+            learning_goal="练习代码能力",
+            guidance_strategy="starting_point",
+            learning_map_summary="可以从简单项目逐步练到复杂组件。",
+            entry_point_options=[
+                {
+                    "label": "简单项目",
+                    "why_it_matters": "覆盖基础写法。",
+                    "best_for": "基础较弱的人。",
+                },
+                {
+                    "label": "复杂组件",
+                    "why_it_matters": "提升结构能力。",
+                    "best_for": "已有基础的人。",
+                },
+            ],
+            recommended_entry_point="简单项目",
+            reason_for_recommendation="当前水平未知，从基础开始更稳。",
+            missing_items=["当前水平", "面向场景"],
+            next_question="你目前掌握到什么程度，比如有没有写过简单项目？",
+            ready_for_board=False,
+        )
+
+    monkeypatch.setattr(openai_course_ai, "generate_blank_board_requirement_refinement", _fake_refinement)
+
+    response = process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="我想练习写几个小项目提高代码能力。"),
+        user_id=user_id,
+    )
+
+    assert len(calls) == 2
+    repair_context = calls[1]["quality_repair_context"]
+    assert repair_context is not None
+    assert "练习型水平选择卡片" in repair_context["repair_reason"]
+    assert response.active_requirement_sheet is not None
+    assert response.active_requirement_sheet.work_mode == "practice_artifact"
+    assert response.active_requirement_sheet.granularity == "practice_artifact"
+    assert response.learning_clarification.ready_for_board is False
+    assert "当前水平" in response.learning_clarification.missing_items
+    assert "你现在的代码练习水平更接近哪一种" in response.chatbot_message
+    assert "A. **纯入门**" in response.chatbot_message
+    assert "F. **不确定**" in response.chatbot_message
+    commit = store.load_for_user(user_id).packages[0].lessons[0].history_graph.commits[-1]
+    discovery = commit.metadata["guided_requirement_discovery"]
+    assert discovery["quality_repaired"] is True
+    assert discovery["guidance_strategy"] == "choice_cards"
+    assert len(discovery["entry_point_options"]) == 6
+    assert any("练习型水平选择卡片" in issue for issue in discovery["quality_issues"])
+
+
 def test_known_unknown_self_report_missing_background_is_repaired(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
