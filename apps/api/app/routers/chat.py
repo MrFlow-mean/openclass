@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import queue
 import threading
+import time
 from collections.abc import Iterator
 from dataclasses import dataclass
 
@@ -17,6 +18,8 @@ from app.services.openai_course_ai import bind_ai_output_stream
 
 router = APIRouter()
 CHAT_STREAM_HEARTBEAT_SECONDS = 10.0
+CHAT_STREAM_CHAT_DELTA_DELAY_SECONDS = 0.004
+CHAT_STREAM_DOCUMENT_DELTA_DELAY_SECONDS = 0.0015
 
 
 @dataclass
@@ -77,6 +80,14 @@ def _log_stream_lifecycle(state: ChatStreamState, event: str, **payload: object)
 
 def _sse_event(event: str, data: object) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def _visible_delta_delay_seconds(event: str) -> float:
+    if event == "chat_delta":
+        return CHAT_STREAM_CHAT_DELTA_DELAY_SECONDS
+    if event == "document_delta":
+        return CHAT_STREAM_DOCUMENT_DELTA_DELAY_SECONDS
+    return 0.0
 
 
 def _chat_stream_events(lesson_id: str, request: ChatRequest, *, user_id: str) -> Iterator[str]:
@@ -189,6 +200,9 @@ def _chat_stream_events(lesson_id: str, request: ChatRequest, *, user_id: str) -
             if event == "final":
                 state.final_yielded = True
             yield _sse_event(event, data)
+            delay = _visible_delta_delay_seconds(event)
+            if delay > 0:
+                time.sleep(delay)
     finally:
         if not state.final_yielded and not state.error_enqueued:
             _log_stream_lifecycle(state, "stream_disconnected_or_no_final")

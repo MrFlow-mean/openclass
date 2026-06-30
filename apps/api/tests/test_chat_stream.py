@@ -148,6 +148,28 @@ def test_chat_stream_synthesizes_final_chatbot_message_as_delta(monkeypatch) -> 
     assert event_names.index("chat_delta") < event_names.index("final")
 
 
+def test_chat_stream_paces_visible_chat_deltas(monkeypatch) -> None:
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(chat_router, "CHAT_STREAM_CHAT_DELTA_DELAY_SECONDS", 0.02)
+    monkeypatch.setattr(chat_router, "time", type("FakeTime", (), {"sleep": staticmethod(sleep_calls.append)}))
+    monkeypatch.setattr(
+        chat_router,
+        "process_chat_on_lesson",
+        lambda *args, **kwargs: _chat_response("lesson_stream_test", chatbot_message="流式"),
+    )
+
+    events = _collect_events(
+        chat_router._chat_stream_events(
+            "lesson_stream_test",
+            ChatRequest(message="随便聊聊"),
+            user_id="user_stream_test",
+        )
+    )
+
+    assert _joined_delta(events, "chat_delta") == "流式"
+    assert sleep_calls == [0.02, 0.02]
+
+
 def test_chat_stream_synthesizes_document_delta_for_succeeded_board_operation(monkeypatch) -> None:
     monkeypatch.setattr(
         chat_router,
