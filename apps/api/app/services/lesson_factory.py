@@ -46,7 +46,7 @@ def build_requirements(topic: str) -> LearningRequirementSheet:
         output_preference="根据用户目标、资料结构和交互意图动态决定输出形态",
         boundary="优先围绕当前主题展开，不自动跳到无关领域",
         board_scope=[],
-        success_criteria="用户能说明具体内容、已有基础、学习目的或应用场景后，再生成匹配的讲义与练习。",
+        success_criteria="",
     )
 
 

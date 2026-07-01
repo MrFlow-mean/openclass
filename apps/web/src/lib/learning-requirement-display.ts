@@ -81,9 +81,7 @@ export function buildLearningRequirementDisplay({
 
   if (workMode === "practice_artifact") {
     const currentLevel = meaningfulText(latestFactByCategory(facts, "level")?.value) || meaningfulText(requirementSheet?.level);
-    const targetScenario =
-      meaningfulText(latestFactByCategory(facts, "scenario")?.value, { allowNoScenario: true }) ||
-      meaningfulText(requirementSheet?.success_criteria, { allowNoScenario: true });
+    const targetScenario = meaningfulText(latestFactByCategory(facts, "scenario")?.value, { allowNoScenario: true });
     const coreFactors = [
       factor({
         key: "practice_content",
@@ -218,7 +216,6 @@ function buildAuxiliaryFactors({
   pushAuxiliary(factors, used, "known_background", "已有背景", requirementSheet?.known_background);
   pushAuxiliary(factors, used, "target_depth", "目标深度", requirementSheet?.target_depth);
   pushAuxiliary(factors, used, "output_preference", "输出偏好", requirementSheet?.output_preference);
-  pushAuxiliary(factors, used, "success_criteria", "成功标准", requirementSheet?.success_criteria);
 
   for (const factItem of facts) {
     const label = auxiliaryLabelForFact(factItem);

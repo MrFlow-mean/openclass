@@ -376,6 +376,7 @@ def test_empty_board_broad_learning_need_collects_requirement(
     assert response.active_requirement_sheet is not None
     assert response.active_requirement_sheet.work_mode == "knowledge_board"
     assert response.active_requirement_sheet.granularity == "broad_topic"
+    assert response.active_requirement_sheet.board_scope == []
     assert response.learning_clarification.ready_for_board is False
     assert response.requirement_phase == "collecting"
     versions = store.list_learning_requirement_versions(user_id, lesson.id)
@@ -536,8 +537,8 @@ def test_pure_novice_intro_lands_foundation_entry_without_requiring_external_sce
     assert second_response.active_requirement_sheet.learning_goal == "这个领域的基础概念与整体组成"
     assert second_response.active_requirement_sheet.level == "零基础纯新手"
     assert second_response.active_requirement_sheet.target_depth == "入门了解 / 建立领域地图"
-    assert second_response.active_requirement_sheet.success_criteria == "理解领域组成，并确定后续学习入口"
-    assert "需要了解学习目的或应用场景" not in second_response.active_requirement_sheet.learning_need_checklist
+    assert second_response.active_requirement_sheet.success_criteria == ""
+    assert second_response.active_requirement_sheet.learning_need_checklist == []
     assert "应用场景" not in second_response.learning_clarification.missing_items
     assert all("场景" not in item.title for item in second_response.learning_clarification.checklist)
     assert second_response.active_requirement_sheet.current_questions == []
@@ -648,7 +649,7 @@ def test_delegated_pure_novice_intro_lands_first_lesson_ready(
     assert second_response.active_requirement_sheet.learning_goal == "这个领域由哪几部分组成"
     assert second_response.active_requirement_sheet.level == "零基础纯新手"
     assert second_response.active_requirement_sheet.target_depth == "入门了解 / 建立领域地图"
-    assert second_response.active_requirement_sheet.success_criteria == "理解领域组成，并确定后续学习入口"
+    assert second_response.active_requirement_sheet.success_criteria == ""
     assert second_response.active_requirement_sheet.current_questions == []
     assert second_response.learning_clarification.ready_for_board is True
     assert second_response.learning_clarification.missing_items == []

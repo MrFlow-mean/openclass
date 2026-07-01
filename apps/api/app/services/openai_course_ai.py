@@ -1107,7 +1107,7 @@ class OpenAICourseAI:
             "entry_point_options 也要记录这些水平卡片。不要默认用户从基础练起，不要先推荐具体练习难度，"
             "也不要在同一轮同时追问面向场景；等当前水平明确后再继续收敛场景。\n"
             "- 用户表达“为了、用来、应对、解决、学完能做到/会做/看懂/写出”：使用场景定位法或目标产出法，"
-            "把这些信息作为 target_scenario、target_depth 或 success_criteria 的辅助因素。\n"
+            "练习型面向场景写入 target_scenario，新知识点教学的深度倾向写入 target_depth；不要生成泛化 success_criteria。\n"
             "- 用户表达不清时，可以给 3-6 个 A/B/C 选择卡片，但卡片必须是通用学习状态或内容形态，"
             "不是学科模板；选择卡片后仍只问一个主问题。\n"
             "如果用户是纯新手且想入门某领域，可以用领域地图介绍该领域由哪些通用部分构成、推荐一个入门入口，"
@@ -1146,11 +1146,11 @@ class OpenAICourseAI:
             "1. 不写任何学科、教材、考试、语言名、旅游场景或 demo 专属规则；只根据用户意图形态和内容产物形态判断。\n"
             "2. 不脑补核心因素；核心因素不全时 ready_for_board=false，但要通过引导、推荐和选择卡片降低表达成本，"
             "最后只问一个最关键问题。\n"
-            "3. 辅助因素可以记录 known_background、target_depth、output_preference、board_scope、"
-            "learning_need_checklist、success_criteria，但不能替代核心因素。\n"
+            "3. 辅助因素只记录会改变教学入口或讲解深度的用户事实，例如 known_background、target_depth、output_preference。"
+            "不要把页面标题、课程标题、系统流程检查项或泛化学习结果写入 board_scope、learning_need_checklist 或 success_criteria；"
+            "这些字段在本链路会被后端忽略。\n"
             "如果是纯新手入门型宽泛主题，target_depth 可写“入门了解 / 建立领域地图”，"
-            "success_criteria 可写“理解领域组成，并确定第一个可学习入口”；如果纯新手委托你安排入口并已落定第一课，"
-            "success_criteria 可写“理解领域组成，并确定后续学习入口”。\n"
+            "不要额外补一个成功标准字段。\n"
             "4. key_facts 只记录用户已经透露或你从当前对话可直接归纳的事实，优先使用标签："
             "用户想学的内容、当前水平、面向场景。\n"
             "5. chatbot_message 面向用户自然表达；必须综合使用 learning_map_summary、entry_point_options、"
@@ -1183,9 +1183,9 @@ class OpenAICourseAI:
                     "target_depth": "可选辅助因素：希望理解、会做、能应用、能讲给别人等深度。",
                     "output_preference": "可选辅助因素：希望板书或教学呈现的形态偏好。",
                     "boundary": "可选辅助因素：范围边界或不要展开的部分。",
-                    "board_scope": "可选辅助因素：未来板书可覆盖的通用模块清单，不写固定讲义正文。",
-                    "success_criteria": "可选辅助因素：用户希望学完能做到什么，练习场景可写在这里。",
-                    "learning_need_checklist": "当前清单的简短条目，用用户已表达事实和缺项组织。",
+                    "board_scope": "兼容字段：本链路不要填写，不能写页面标题、课程标题或未来板书目录。",
+                    "success_criteria": "兼容字段：本链路不要填写泛化成功标准；练习型面向场景请写 target_scenario。",
+                    "learning_need_checklist": "兼容字段：本链路不要填写系统流程检查项。",
                     "key_facts": "0-5 条事实，每项包含 label、value、evidence、category。",
                     "checklist": "2-5 个动态检查项，每项包含 title、is_clear、evidence。",
                     "guidance_strategy": (

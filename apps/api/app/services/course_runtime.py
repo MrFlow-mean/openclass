@@ -9,11 +9,6 @@ from app.services.lesson_factory import (
 )
 
 
-def _document_outline(document: BoardDocument) -> list[str]:
-    lines = [line.strip() for line in document.content_text.splitlines() if line.strip()]
-    return [line for line in lines if len(line) <= 44][:8] or [document.title]
-
-
 def normalize_requirements(
     requirements: LearningRequirementSheet,
     *,
@@ -41,7 +36,7 @@ def normalize_requirements(
             setattr(normalized, field_name, getattr(default_requirements, field_name))
     if normalized.current_questions == legacy_questions:
         normalized.current_questions = list(default_requirements.current_questions)
-    normalized.board_scope = _document_outline(document)
+    normalized.board_scope = []
     if not normalized.current_questions and normalized.action_type is None:
         normalized.current_questions = [f"如何理解 {normalized.theme or lesson_title}"]
     return normalized

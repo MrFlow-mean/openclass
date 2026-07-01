@@ -76,7 +76,7 @@ def test_refresh_lesson_runtime_uses_local_lesson_factory_only() -> None:
     assert lesson.board_document.content_text == "第一段\n第二段"
     assert lesson.learning_requirements.theme == "本地文档"
     assert lesson.teaching_guide.lesson_id == lesson.id
-    assert effective_requirements(lesson).board_scope == ["第一段", "第二段"]
+    assert effective_requirements(lesson).board_scope == []
 
 
 def test_normalize_requirements_migrates_legacy_default_clarification() -> None:
@@ -109,7 +109,7 @@ def test_normalize_requirements_migrates_legacy_default_clarification() -> None:
         "你为什么学，之后要面对什么任务、场景或输出要求？",
     ]
     assert "具体想学什么" in normalized.learning_goal
-    assert "应用场景" in normalized.success_criteria
+    assert normalized.success_criteria == ""
 
 
 def test_apply_patch_updates_target_block_with_snapshot_anchors() -> None:

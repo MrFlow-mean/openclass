@@ -138,7 +138,6 @@ def build_requirement_sheet(
 ) -> LearningRequirementSheet:
     requirement = base_requirement.model_copy(deep=True)
     novice_intro = is_novice_intro_knowledge_request(result, work_mode)
-    novice_intro_ready = novice_intro and granularity == "single_knowledge_point" and ready_for_board
     learning_goal = _first_text(result.learning_goal, requirement.learning_goal, lesson.title)
     current_questions = [] if ready_for_board else _dedupe_text([_first_text(result.next_question, *missing_items)])
     requirement.theme = learning_goal
@@ -150,12 +149,7 @@ def build_requirement_sheet(
     )
     requirement.known_background = _first_text(result.known_background, requirement.known_background)
     requirement.current_questions = current_questions
-    requirement.learning_need_checklist = _dedupe_text(
-        [
-            *_learning_need_checklist(result, novice_intro=novice_intro),
-            *[item.title for item in core_checklist(result, work_mode, granularity)],
-        ]
-    )
+    requirement.learning_need_checklist = []
     requirement.target_depth = _first_text(
         result.target_depth,
         "入门了解 / 建立领域地图" if novice_intro else "",
@@ -163,14 +157,8 @@ def build_requirement_sheet(
     )
     requirement.output_preference = _first_text(result.output_preference, requirement.output_preference)
     requirement.boundary = _first_text(result.boundary, requirement.boundary)
-    requirement.board_scope = _dedupe_text(result.board_scope) or list(requirement.board_scope)
-    requirement.success_criteria = _first_text(
-        result.success_criteria,
-        result.target_scenario if work_mode == "practice_artifact" else "",
-        "理解领域组成，并确定后续学习入口" if novice_intro_ready else "",
-        "理解领域组成，并确定第一个可学习入口" if novice_intro else "",
-        requirement.success_criteria,
-    )
+    requirement.board_scope = []
+    requirement.success_criteria = _first_text(result.target_scenario if work_mode == "practice_artifact" else "")
     requirement.risk_notes = missing_items
     requirement.target_location = None
     requirement.location_status = "missing"
@@ -341,20 +329,6 @@ def _append_fact(
             evidence=value.strip(),
             category=category,
         ),
-    ]
-
-
-def _learning_need_checklist(
-    result: BlankBoardRequirementRefinement,
-    *,
-    novice_intro: bool,
-) -> list[str]:
-    if not novice_intro:
-        return result.learning_need_checklist
-    return [
-        item
-        for item in result.learning_need_checklist
-        if not _is_scenario_or_external_goal_text(item)
     ]
 
 
