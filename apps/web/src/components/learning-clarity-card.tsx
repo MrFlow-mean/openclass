@@ -158,6 +158,7 @@ interface LearningClarityCardProps {
   activeRequirementSheet?: LearningRequirementSheet | null;
   lesson?: Lesson | null;
   targetCommitId?: string | null;
+  statusLabelOverride?: string;
 }
 
 export function LearningClarityCard({
@@ -166,13 +167,14 @@ export function LearningClarityCard({
   activeRequirementSheet,
   lesson,
   targetCommitId,
+  statusLabelOverride,
 }: LearningClarityCardProps) {
   const display = buildLearningRequirementDisplay({
     requirementSheet: activeRequirementSheet,
     clarification: clarityStatus,
     keyFacts: collectFacts(clarityStatus, lesson, targetCommitId),
   });
-  const statusLabel = learningRequirementStatusLabel(display.status);
+  const statusLabel = statusLabelOverride ?? learningRequirementStatusLabel(display.status);
 
   return (
     <div className="rounded-xl border border-blue-100/50 bg-[#f4f6ff] p-4">
@@ -196,7 +198,7 @@ export function LearningClarityCard({
         <span
           className={clsx(
             "rounded-full px-2.5 py-1 text-[11px] font-semibold",
-            display.status === "ready" ? "bg-emerald-50 text-emerald-700" : "bg-white text-blue-700"
+            statusLabelOverride || display.status === "ready" ? "bg-emerald-50 text-emerald-700" : "bg-white text-blue-700"
           )}
         >
           {statusLabel}

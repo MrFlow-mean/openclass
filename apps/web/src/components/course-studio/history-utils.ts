@@ -359,6 +359,20 @@ export function learningClarityFromCommit(commit: CommitRecord | null): Learning
       : [],
     next_question: typeof record.next_question === "string" ? record.next_question : "",
     ready_for_board: record.ready_for_board === true,
+    work_mode:
+      record.work_mode === "knowledge_board" ||
+      record.work_mode === "narrow_topic" ||
+      record.work_mode === "practice_artifact" ||
+      record.work_mode === "unknown"
+        ? record.work_mode
+        : null,
+    granularity:
+      record.granularity === "single_knowledge_point" ||
+      record.granularity === "broad_topic" ||
+      record.granularity === "practice_artifact" ||
+      record.granularity === "unclear"
+        ? record.granularity
+        : null,
   };
 }
 

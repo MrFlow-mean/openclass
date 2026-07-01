@@ -22,6 +22,7 @@ import {
   modelSelectionKey,
   PROVIDER_LABELS,
 } from "@/components/course-studio/model-catalog";
+import { latestExecutedNeedSnapshot } from "@/components/course-studio/current-need-snapshot";
 import { popoverPositionFromDomSelection } from "@/components/course-studio/selection-utils";
 import { LearningClarityCard } from "@/components/learning-clarity-card";
 import { boardWorkflowLabel } from "@/lib/learning-requirement-display";
@@ -128,6 +129,11 @@ function CurrentNeedCard({
     );
   }
 
+  const executedNeed =
+    !activeBoardTask && !activeRequirementSheet && !currentNeedPending
+      ? latestExecutedNeedSnapshot(lesson, targetCommitId)
+      : null;
+
   const sequence = sequenceFocusLabel(lesson);
   if (sequence) {
     return (
@@ -147,6 +153,46 @@ function CurrentNeedCard({
           <p>状态：{isChatBusy ? "讲解中" : "等待确认是否继续"}</p>
         </div>
       </div>
+    );
+  }
+
+  if (executedNeed?.kind === "board_task") {
+    const task = executedNeed.boardTask;
+    return (
+      <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-[11px] font-bold uppercase tracking-widest text-emerald-700">当前任务</p>
+          <span className="rounded-full bg-white px-2 py-1 text-[11px] font-semibold text-emerald-700">
+            已被执行
+          </span>
+        </div>
+        <div className="mt-3 h-2 rounded-full bg-white">
+          <div className="h-full w-full rounded-full bg-emerald-500 transition-all" />
+        </div>
+        <div className="mt-3 grid gap-2 text-xs leading-5 text-emerald-950">
+          <p>链路：{boardWorkflowLabel(task.board_workflow ?? "act_on_existing_board")}</p>
+          <p>位置：{task.target_hint || task.target_location?.display_label || task.location_status}</p>
+          <p>动作：{boardTaskActionLabel(task.requested_action)}</p>
+          <p>内容：{task.question_or_topic || "已执行的板书任务"}</p>
+          <p>
+            互动：
+            {task.interaction_rule_draft?.rule_text || (task.requested_action === "chat" ? "按已启动规则" : "无特殊规则")}
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (executedNeed?.kind === "learning_requirement") {
+    return (
+      <LearningClarityCard
+        activeRequirementSheet={executedNeed.requirementSheet}
+        barTone="bg-emerald-500"
+        clarityStatus={executedNeed.clarityStatus}
+        lesson={lesson}
+        statusLabelOverride="已被执行"
+        targetCommitId={executedNeed.commit.id}
+      />
     );
   }
 
