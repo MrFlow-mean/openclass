@@ -1862,7 +1862,9 @@ class OpenAICourseAI:
             "2. intent=generate_from_requirements 时，输出一份完整板书，operation 使用 replace_document，"
             "content_text 必须包含清晰章节标题；默认按一节可直接教学的完整文档篇幅生成，"
             "优先组织多个相互衔接的 H2 小节，篇幅要足以支撑一节课直接教学，"
-            "除非用户明确要求短版、速览或只要大纲。\n"
+            "除非用户明确要求短版、速览或只要大纲。生成结果必须方便后续定位："
+            "使用一个 H1 标题、多个编号化 H2 主分段，并在必要时使用 H3 子分段；"
+            "每个分段标题都要表达清楚该段解决的学习问题，不要只写“第一部分”“内容”等空泛标题。\n"
             "3. intent=edit_existing_document 时，有选区就优先 replace_selection；需要新增内容时用 append_section；"
             "只有 target_scope=whole_document 且 allow_replace_document=true 时才允许 replace_document，"
             "否则不要整体覆盖已有文档。\n"
@@ -1893,6 +1895,7 @@ class OpenAICourseAI:
                     "局部替换时是替换片段；追加时是追加片段。必须像 ChatGPT 正常回答一样使用 Markdown/普通文本，"
                     "用 Markdown 保留标题、列表、加粗、表格等文档结构；不得输出 HTML 标签；"
                     "普通语言文本不得包进公式定界符，只有真正公式才使用 LaTeX 定界符。"
+                    "完整生成时必须有一个 H1 标题、多个 H2 主分段和必要 H3 子分段，便于后续按标题、段落和小节定位。"
                 ),
                 "content_html": "必须为空字符串；不要输出 HTML。后端内部会从 content_text 生成编辑器 HTML。",
                 "summary": "一句话说明本次生成或编辑了什么。",

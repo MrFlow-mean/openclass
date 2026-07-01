@@ -236,6 +236,32 @@ def test_chat_stream_synthesizes_document_delta_for_succeeded_board_operation(mo
     assert first_document_delta_events[0]["field"] == "content_text"
 
 
+def test_chat_stream_does_not_synthesize_chat_delta_for_silent_board_generation(monkeypatch) -> None:
+    monkeypatch.setattr(
+        chat_router,
+        "process_chat_on_lesson",
+        lambda *args, **kwargs: _chat_response(
+            "lesson_stream_test",
+            chatbot_message="",
+            document_text="# 新板书\n\n## 1. 可定位小节\n\n这里是生成后的板书内容。",
+            board_document_operation_status="succeeded",
+        ),
+    )
+
+    events = _collect_events(
+        chat_router._chat_stream_events(
+            "lesson_stream_test",
+            ChatRequest(message="开始生成板书", board_generation_action="start"),
+            user_id="user_stream_test",
+        )
+    )
+
+    event_names = [event for event, _payload in events]
+    assert "chat_delta" not in event_names
+    assert _joined_delta(events, "document_delta") == "# 新板书\n\n## 1. 可定位小节\n\n这里是生成后的板书内容。"
+    assert event_names.index("document_delta") < event_names.index("final")
+
+
 def test_chat_stream_worker_error_emits_error_and_lifecycle_log(monkeypatch) -> None:
     logged_events: list[dict] = []
 

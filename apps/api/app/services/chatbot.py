@@ -8,6 +8,7 @@ from app.models import (
     LearningClarificationStatus,
 )
 from app.services import workspace_state
+from app.services.blank_board_generation import run_blank_board_generation
 from app.services.board_document_sensor import read_board_document_sensor
 from app.services.course_runtime import effective_requirements
 from app.services.history import commit_operations
@@ -269,6 +270,13 @@ def _run_chat_turn(lesson_id: str, request: ChatRequest, *, user_id: str) -> Cha
     workspace = workspace_state.load_workspace_for_user(user_id)
     package, lesson = workspace_state.find_lesson_package(workspace, lesson_id)
     board_document_state = read_board_document_sensor(lesson.board_document)
+    if request.board_generation_action == "start":
+        return run_blank_board_generation(
+            workspace=workspace,
+            package=package,
+            lesson=lesson,
+            user_id=user_id,
+        )
     if board_document_state.status == "empty":
         return _run_requirement_refinement_turn(
             workspace=workspace,
