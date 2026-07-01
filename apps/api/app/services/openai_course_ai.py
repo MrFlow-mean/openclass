@@ -412,20 +412,6 @@ class GuidedRequirementEntryPoint(BaseModel):
     best_for: str = ""
 
 
-class BlankBoardRequirementTurn(BaseModel):
-    route: Literal["ordinary_chat", "requirement_refining"] = "ordinary_chat"
-    chatbot_message: str = ""
-    work_mode: InitialLearningWorkMode = "unknown"
-    granularity: InitialLearningGranularity = "unclear"
-    learning_goal: str = ""
-    current_level: str = ""
-    target_scenario: str = ""
-    ready_for_board: bool = False
-    missing_items: list[str] = Field(default_factory=list)
-    next_question: str = ""
-    recommended_entry_point: str = ""
-
-
 class BlankBoardRequirementRefinement(BaseModel):
     route: Literal["ordinary_chat", "requirement_refining"] = "ordinary_chat"
     chatbot_message: str = ""
@@ -455,147 +441,6 @@ class BlankBoardRequirementRefinement(BaseModel):
     next_question: str = ""
     recommended_teaching_plan_summary: str = ""
     ready_for_board: bool = False
-
-
-def _blank_board_turn_progress(turn: BlankBoardRequirementTurn) -> int:
-    if turn.route == "ordinary_chat":
-        return 0
-    if turn.ready_for_board:
-        return 100
-    if turn.work_mode == "practice_artifact":
-        clear_count = sum(
-            1
-            for value in (turn.learning_goal, turn.current_level, turn.target_scenario)
-            if (value or "").strip()
-        )
-        return min(90, 25 + clear_count * 20)
-    if turn.work_mode == "knowledge_board":
-        if turn.granularity == "single_knowledge_point" and (turn.learning_goal or "").strip():
-            return 90
-        if (turn.learning_goal or "").strip():
-            return 45
-        return 25
-    return 10
-
-
-def _blank_board_turn_summary(turn: BlankBoardRequirementTurn) -> str:
-    if turn.route == "ordinary_chat":
-        return ""
-    if (turn.learning_goal or "").strip():
-        return f"用户想围绕“{turn.learning_goal.strip()}”开始学习。"
-    if (turn.recommended_entry_point or "").strip():
-        return f"用户需要先确认是否从“{turn.recommended_entry_point.strip()}”开始。"
-    return (turn.next_question or "").strip()
-
-
-def _blank_board_turn_guidance_strategy(turn: BlankBoardRequirementTurn) -> GuidedRequirementStrategy:
-    if turn.route == "ordinary_chat":
-        return "none"
-    if turn.work_mode == "practice_artifact":
-        return "mode_split"
-    if turn.ready_for_board or (turn.recommended_entry_point or "").strip():
-        return "recommended_entry"
-    if turn.granularity == "broad_topic":
-        return "domain_map"
-    if turn.work_mode == "knowledge_board":
-        return "starting_point"
-    return "implicit_observation"
-
-
-def _blank_board_turn_to_refinement(turn: BlankBoardRequirementTurn) -> BlankBoardRequirementRefinement:
-    recommended_entry = (turn.recommended_entry_point or "").strip()
-    learning_goal = (turn.learning_goal or "").strip()
-    entry_points = (
-        [GuidedRequirementEntryPoint(label=recommended_entry)]
-        if recommended_entry
-        else []
-    )
-    return BlankBoardRequirementRefinement(
-        route=turn.route,
-        chatbot_message=turn.chatbot_message,
-        progress=_blank_board_turn_progress(turn),
-        summary=_blank_board_turn_summary(turn),
-        work_mode=turn.work_mode,
-        granularity=turn.granularity,
-        learning_goal=learning_goal,
-        current_level=turn.current_level,
-        target_scenario=turn.target_scenario,
-        guidance_strategy=_blank_board_turn_guidance_strategy(turn),
-        learning_map_summary=(
-            f"建议先从“{recommended_entry}”进入，再根据用户起点继续收敛。"
-            if recommended_entry
-            else ""
-        ),
-        entry_point_options=entry_points,
-        recommended_entry_point=recommended_entry,
-        reason_for_recommendation=(
-            "这是当前信息下最容易落到第一块可学习内容的入口。"
-            if recommended_entry
-            else ""
-        ),
-        missing_items=turn.missing_items,
-        next_question=turn.next_question,
-        recommended_teaching_plan_summary=_blank_board_turn_summary(turn),
-        ready_for_board=turn.ready_for_board,
-    )
-
-
-def _compact_blank_board_requirement_state(raw: dict[str, Any] | None) -> dict[str, Any] | None:
-    if not isinstance(raw, dict):
-        return None
-    compact: dict[str, Any] = {}
-    for source, target in [
-        ("learning_goal", "learning_goal"),
-        ("level", "current_level"),
-        ("current_level", "current_level"),
-        ("known_background", "known_background"),
-        ("success_criteria", "target_scenario"),
-        ("target_scenario", "target_scenario"),
-        ("target_depth", "target_depth"),
-        ("work_mode", "work_mode"),
-        ("granularity", "granularity"),
-    ]:
-        value = raw.get(source)
-        if isinstance(value, str) and value.strip() and not _is_default_requirement_placeholder(value):
-            compact[target] = value.strip()
-    questions = raw.get("current_questions")
-    if isinstance(questions, list):
-        compact["next_question"] = next(
-            (str(item).strip() for item in questions if str(item).strip()),
-            "",
-        )
-    return {key: value for key, value in compact.items() if value} or None
-
-
-def _is_default_requirement_placeholder(value: str) -> bool:
-    compact = value.strip()
-    return any(
-        marker in compact
-        for marker in [
-            "先澄清用户具体想学什么",
-            "待确认用户",
-            "用户背景尚未明确",
-            "根据用户水平和目标场景",
-            "根据用户目标、资料结构和交互意图",
-            "优先围绕当前主题展开",
-        ]
-    )
-
-
-def _compact_blank_board_clarification_state(raw: dict[str, Any] | None) -> dict[str, Any] | None:
-    if not isinstance(raw, dict):
-        return None
-    compact: dict[str, Any] = {}
-    for key in ["progress", "summary", "next_question", "ready_for_board", "work_mode", "granularity"]:
-        value = raw.get(key)
-        if isinstance(value, str) and value.strip():
-            compact[key] = value.strip()
-        elif isinstance(value, (int, bool)):
-            compact[key] = value
-    missing_items = raw.get("missing_items")
-    if isinstance(missing_items, list):
-        compact["missing_items"] = [str(item).strip() for item in missing_items if str(item).strip()][:5]
-    return compact or None
 
 
 class InitialLearningWorkModeDecision(BaseModel):
@@ -1227,26 +1072,148 @@ class OpenAICourseAI:
     ) -> BlankBoardRequirementRefinement | BlankBoardRequirementRefinementResult | None:
         system_prompt = (
             "你是 OpenClass 的空白板书学习需求收敛器，也是左侧聊天框里的自然对话 AI。\n"
-            "运行前提：board_document_state.status 为 empty。本阶段只判断本轮对话和维护学习需求；"
+            "运行前提：board_document_state.status 必须是 empty；本阶段只维护 LearningRequirementSheet，"
             "不生成板书、不冻结清单、不调用 Board AI。\n"
-            "先判 route：ordinary_chat 表示用户没有学习、练习、资料或文档工作目的，直接自然回复且不更新清单；"
-            "requirement_refining 表示用户表达了学习或练习目的，需要继续收敛到可生成板书的入口。\n"
-            "work_mode 只用 knowledge_board、practice_artifact、unknown。"
-            "knowledge_board 用于学新知识：主题过宽时 granularity=broad_topic，只问一个最能确认起点的问题；"
-            "明确到单个概念、方法、步骤、问题，或纯新手已授权从基础总览入口开始时，granularity=single_knowledge_point。"
-            "practice_artifact 用于练习、测验、角色、问答、案例等可操练产物，ready_for_board 必须同时有"
-            " learning_goal、current_level、target_scenario；用户明确不限定场景时 target_scenario 可写“无明确应用场景”。\n"
-            "chatbot_message 要自然、短而有带路感；宽泛主题要给简短学习地图、推荐入口和一个主问题；"
-            "练习需求缺水平时优先问当前水平。不要输出内部字段名，不要让用户填表。\n"
-            "只根据通用学习形态、内容产物形态、用户目标和资料结构判断；不要写学科、教材、语言、考试或 demo 专属规则。"
+            "任务：先判断用户当前轮是 ordinary_chat 还是 requirement_refining。\n"
+            "ordinary_chat：用户没有表达学习、练习、资料、板书或教学目的时，像 ChatGPT 一样自然回复；"
+            "不要新建或更新清单，不要追问学习需求。\n"
+            "requirement_refining：用户表达了学习或练习目的，但还需要收敛到可生成板书的教学目标。"
+            "你要自然回复用户，同时输出结构化清单变化。\n"
+            "两类终点：\n"
+            "1. knowledge_board：用户想学新知识。只有 learning_goal 已经明确到一个具体知识点、概念、方法、步骤或单一问题，"
+            "且 granularity=single_knowledge_point 时，ready_for_board 才能为 true；其他场景、考试、工作用途只作为辅助因素。\n"
+            "2. practice_artifact：用户想练习已有知识或技能。ready_for_board=true 必须同时具备 learning_goal、"
+            "current_level、target_scenario 三个核心因素；如果用户明确没有场景或让系统不按场景定制，target_scenario 可写"
+            "“无明确应用场景”。\n"
+            "收敛方法：你必须根据上下文灵活选择起点定位法、轻量自述法、最近经历法、已会/未会法、"
+            "学习模式分流法、场景定位法、目标产出法、卡点定位法、选择卡片法、领域地图法、推荐入口法或隐性观察法。"
+            "这些方法只用于自然语言引导，不要变成固定问卷，也不要要求用户填字段。"
+            "你要在聊天中观察、承接、推荐和追问，同时把用户自然透露的信息记录到结构化字段；"
+            "不要让用户感觉自己在填写 LearningRequirementSheet。\n"
+            "引导策略选择优先级：\n"
+            "- 用户只说宽泛领域且起点未知：先用领域地图法打开结构，再用起点定位法或选择卡片法确认起点；"
+            "推荐入口只能是暂定入口，主问题优先问当前水平、已会/未会或最近接触情况。\n"
+            "- 用户说“不知道、你安排、帮我安排路线”：用选择卡片法降低表达成本，同时给出推荐入口和推荐理由；"
+            "如果同时是纯新手委托式入门，则直接落定领域总览型第一课。\n"
+            "- 用户自述“已经会/学过/还没学/忘得多”：优先用轻量自述法或已会/未会法，"
+            "把已会、未会、忘得多、下一步入口写入 known_background、learner_profile_inference 和 key_facts。\n"
+            "- 用户说“最近学到、最近做过、最近卡在”：优先用最近经历法；如果有明显卡点，优先用卡点定位法，"
+            "先判断卡在概念、步骤、公式/规则、应用迁移、表达或不知道从哪开始。\n"
+            "- 用户说“练习、训练、提高、复习、测验、实战、角色扮演”等：优先归为 practice_artifact，"
+            "自然收敛想练的内容、当前水平、面向场景；不要只给领域地图，也不要把练习需求当成新知识点教学。\n"
+            "- 练习型需求中，如果用户已经说清想练的内容，但没有说明当前水平，必须优先用选择卡片法探寻水平；"
+            "chatbot_message 必须先承接用户的练习目标，再给一个自然标题、一个降低选择压力的副标题，以及 4-6 个 A/B/C 卡片选项。"
+            "卡片选项由你根据当前技能自主生成，应该覆盖从纯入门、基础规则/语法、写过基础产物、能写标准组件、想练复杂任务到不确定等通用水平梯度。"
+            "entry_point_options 也要记录这些水平卡片。不要默认用户从基础练起，不要先推荐具体练习难度，"
+            "也不要在同一轮同时追问面向场景；等当前水平明确后再继续收敛场景。\n"
+            "- 用户表达“为了、用来、应对、解决、学完能做到/会做/看懂/写出”：使用场景定位法或目标产出法，"
+            "练习型面向场景写入 target_scenario，新知识点教学的深度倾向写入 target_depth；不要生成泛化 success_criteria。\n"
+            "- 用户表达不清时，可以给 3-6 个 A/B/C 选择卡片，但卡片必须是通用学习状态或内容形态，"
+            "不是学科模板；选择卡片后仍只问一个主问题。\n"
+            "如果用户是纯新手且想入门某领域，可以用领域地图介绍该领域由哪些通用部分构成、推荐一个入门入口，"
+            "并继续把需求收敛到一个可开始的知识点或练习产物。纯新手、零基础、入门、先了解一下、"
+            "感兴趣想学，都表示一种明确的入门型学习状态；默认目的可以记录为“入门了解 / 建立领域地图 / 找到第一个学习入口”。"
+            "这时不要强制追问考试、面试、工作、赚钱、项目或现实产出场景；如果用户没有主动说场景，"
+            "不要把应用场景当作缺失核心因素。\n"
+            "宽泛复合领域且用户起点未知时，可以给学习地图和暂定入口，但不要把具体工具、语法、框架或项目实操入口直接判定为最终第一课；"
+            "entry_point_options 应优先作为学习者起点/背景的选择卡片，而不是让用户在高级内容路线里做选择；"
+            "唯一主问题必须优先询问用户起点、已有背景、已会/未会或最近接触情况。\n"
+            "如果用户已经说明自己是纯新手/零基础/纯入门/先了解一下/感兴趣想入门，"
+            "即使没有明确说“你安排”，也表示系统应选择最安全的基础入口；"
+            "不要再让用户在工具、语法、框架、测试或项目实操等后续模块里选择。"
+            "这时要主动落定一个基础总览型第一课，例如“这个领域的基础概念与整体组成 / 核心对象、基本流程和关键术语 / 整体结构是什么”。"
+            "此时必须输出 work_mode=knowledge_board、granularity=single_knowledge_point、ready_for_board=true，"
+            "learning_goal 写成这个具体基础入口，next_question 为空。\n"
+            "如果用户已经说明自己是纯新手/零基础/纯入门，并表达“为我指导、你安排、帮我安排、帮我规划、按你推荐、听你的、直接安排”等委托意图，"
+            "表示用户进一步授权你主动选择入口；这时更不要再问“你愿意从 X 开始吗”，而要主动落定一个领域总览型第一课，"
+            "例如“这个领域由哪几部分组成 / 整体结构是什么 / 基本工作方式是什么 / 它和普通系统有什么区别”这一类可教学入口。"
+            "此时必须输出 work_mode=knowledge_board、granularity=single_knowledge_point、ready_for_board=true，"
+            "learning_goal 写成这个具体第一课入口，next_question 为空。\n"
+            "当 learning_goal 仍是宽泛主题、granularity=broad_topic 或用户说不知道从哪开始时，"
+            "chatbot_message 必须优先呈现“开场承接 + 简短学习地图 + 2-5 个入口选项 + 一个推荐入口 + 推荐理由 + 一个绑定推荐入口的主问题”，"
+            "而不是只追问“具体想学什么”；学习地图和入口选项必须真的写进 chatbot_message，不能只写在结构化字段里。\n"
+            "宽泛主题下，chatbot_message 不能是一两句话，也不能只是列分支名；它要像老师在聊天框里给用户打开地图，"
+            "先降低表达成本，再把用户带向一个可开始的知识点。\n"
+            "entry_point_options 只记录通用入口建议，由模型根据当前领域自主生成；不要写固定讲义正文或固定课程模板。"
+            "recommended_entry_point 必须从 entry_point_options 或用户已明确内容中选择一个最适合的入口。"
+            "learner_profile_inference 只记录可由用户自述、最近经历、已会/未会或卡点直接推出的起点信息。\n"
+            "如果你已经给出 recommended_entry_point，但 current_level、known_background 和 learner_profile_inference "
+            "都没有可靠依据，那么 chatbot_message 结尾的唯一主问题必须优先询问用户当前水平、已会/未会或最近学到哪里；"
+            "不要继续只问用户要不要选择推荐入口。\n"
+            "如果用户明确表达“想学某个领域/方向/主题”，即使主题很宽，也应归为 knowledge_board + broad_topic；"
+            "只有连学习还是练习、或主题对象都无法判断时，work_mode 才保持 unknown。\n"
+            "规则：\n"
+            "1. 不写任何学科、教材、考试、语言名、旅游场景或 demo 专属规则；只根据用户意图形态和内容产物形态判断。\n"
+            "2. 不脑补核心因素；核心因素不全时 ready_for_board=false，但要通过引导、推荐和选择卡片降低表达成本，"
+            "最后只问一个最关键问题。\n"
+            "3. 辅助因素只记录会改变教学入口或讲解深度的用户事实，例如 known_background、target_depth、output_preference。"
+            "不要把页面标题、课程标题、系统流程检查项或泛化学习结果写入 board_scope、learning_need_checklist 或 success_criteria；"
+            "这些字段在本链路会被后端忽略。\n"
+            "如果是纯新手入门型宽泛主题，target_depth 可写“入门了解 / 建立领域地图”，"
+            "不要额外补一个成功标准字段。\n"
+            "4. key_facts 只记录用户已经透露或你从当前对话可直接归纳的事实，优先使用标签："
+            "用户想学的内容、当前水平、面向场景。\n"
+            "5. chatbot_message 面向用户自然表达；必须综合使用 learning_map_summary、entry_point_options、"
+            "recommended_entry_point 和 reason_for_recommendation 中的有用信息，但不要输出 JSON、字段名、内部状态名或右侧板书正文。"
+            "不要说“请填写学习内容/当前水平/面向场景”，不要暴露 learning_goal、current_level、target_scenario、"
+            "missing_items、ready_for_board 等内部字段名；如果需要信息，用自然聊天的一句话询问。"
         )
         user_prompt = _json(
             {
                 "board_document_state": board_document_state or {},
                 "recent_conversation": conversation_summary or "",
                 "current_user_message": user_message,
-                "existing_requirement_state": _compact_blank_board_requirement_state(existing_requirement_sheet),
-                "existing_clarification_state": _compact_blank_board_clarification_state(existing_clarification),
+                "existing_requirement_sheet": existing_requirement_sheet or None,
+                "existing_clarification": existing_clarification or None,
+                "response_contract": {
+                    "route": "ordinary_chat 或 requirement_refining。",
+                    "chatbot_message": (
+                        "直接给用户看的自然回复；如果是宽泛主题，必须包含开场承接、学习地图、"
+                        "2-5 个入口选项、一个推荐入口、推荐理由和一个关键问题；每次最多追问一个主问题；"
+                        "不得输出内部字段名、JSON、表单格式或让用户填写清单。"
+                    ),
+                    "progress": "0-100 的清单完整度；ready_for_board=true 时必须为 100。",
+                    "summary": "当前学习需求的一句话摘要；普通聊天可为空。",
+                    "work_mode": "knowledge_board、practice_artifact 或 unknown；本阶段不使用其他新值。",
+                    "granularity": "single_knowledge_point、practice_artifact、broad_topic 或 unclear。",
+                    "learning_goal": "核心因素。新知识点教学写用户具体想学的知识点；练习型写用户具体想练的内容。",
+                    "current_level": "练习型核心因素。用户当前水平、已有基础或最近状态；新知识点教学可作为辅助。",
+                    "target_scenario": "练习型核心因素。用户面向的任务、应用、输出或“无明确应用场景”。",
+                    "known_background": "可选辅助因素：已会、未会、最近经历、卡点或背景。",
+                    "target_depth": "可选辅助因素：希望理解、会做、能应用、能讲给别人等深度。",
+                    "output_preference": "可选辅助因素：希望板书或教学呈现的形态偏好。",
+                    "boundary": "可选辅助因素：范围边界或不要展开的部分。",
+                    "board_scope": "兼容字段：本链路不要填写，不能写页面标题、课程标题或未来板书目录。",
+                    "success_criteria": "兼容字段：本链路不要填写泛化成功标准；练习型面向场景请写 target_scenario。",
+                    "learning_need_checklist": "兼容字段：本链路不要填写系统流程检查项。",
+                    "key_facts": "0-5 条事实，每项包含 label、value、evidence、category。",
+                    "checklist": "2-5 个动态检查项，每项包含 title、is_clear、evidence。",
+                    "guidance_strategy": (
+                        "本轮采用的通用引导策略。只能使用 none、starting_point、light_self_report、"
+                        "recent_experience、known_unknown、mode_split、scenario、goal_output、stuck_point、"
+                        "choice_cards、domain_map、recommended_entry、implicit_observation。必须和用户当前表达形态匹配："
+                        "宽泛领域用 domain_map/starting_point/choice_cards；自述已会未会用 known_unknown/light_self_report；"
+                        "最近经历用 recent_experience；卡点用 stuck_point；练习需求用 mode_split/starting_point/scenario/goal_output；"
+                        "练习需求缺当前水平时优先用 choice_cards；"
+                        "不知道你安排用 choice_cards/recommended_entry。"
+                    ),
+                    "learning_map_summary": "给用户看的简短学习地图摘要；宽泛主题时应填写，不写固定讲义正文。",
+                    "entry_point_options": (
+                        "2-6 个候选入口或水平卡片，每项包含 label、why_it_matters、best_for；"
+                        "练习型缺当前水平时这里必须是当前技能水平卡片，而不是练习任务清单。没有必要时可为空。"
+                    ),
+                    "recommended_entry_point": "AI 推荐的一个入口，优先来自 entry_point_options。",
+                    "reason_for_recommendation": "推荐理由，必须基于用户已说信息或通用入门原则。",
+                    "learner_profile_inference": "从用户自述、最近经历、已会/未会或卡点推断出的起点信息。",
+                    "missing_items": "仍缺少的核心因素或重要辅助因素；核心因素不全必须列出。",
+                    "next_question": (
+                        "清单未完整时下一轮最有价值的一个问题；如果已推荐入口但不了解用户水平，"
+                        "优先询问当前水平、已会/未会或最近学到哪里；如果用户已说明纯新手入门，"
+                        "必须直接落定基础总览型第一课，next_question 为空；ready_for_board=true 时可为空。"
+                    ),
+                    "recommended_teaching_plan_summary": "可选：给用户看的教学方案摘要，不是板书正文。",
+                    "ready_for_board": "只表示清单核心因素齐全，可以进入未来板书生成；本阶段不会实际生成。",
+                },
             }
         )
         if include_stream_result:
@@ -1254,18 +1221,14 @@ class OpenAICourseAI:
                 "pm",
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
-                schema=BlankBoardRequirementTurn,
+                schema=BlankBoardRequirementRefinement,
                 visible_stream_field="chatbot_message",
                 disable_stream_repair=True,
             )
             if response is None:
                 return BlankBoardRequirementRefinementResult(result=None)
             parsed = response.output_parsed
-            result = (
-                _blank_board_turn_to_refinement(parsed)
-                if isinstance(parsed, BlankBoardRequirementTurn)
-                else None
-            )
+            result = parsed if isinstance(parsed, BlankBoardRequirementRefinement) else None
             visible_chat_buffer = (response.visible_field_value or "").strip()
             if result is not None and visible_chat_buffer:
                 result = result.model_copy(update={"chatbot_message": visible_chat_buffer})
@@ -1276,13 +1239,13 @@ class OpenAICourseAI:
                 structured_parse_failed=response.structured_parse_failed or result is None,
             )
 
-        turn = self._parse(
+        result = self._parse(
             "pm",
             system_prompt=system_prompt,
             user_prompt=user_prompt,
-            schema=BlankBoardRequirementTurn,
+            schema=BlankBoardRequirementRefinement,
         )
-        return _blank_board_turn_to_refinement(turn) if isinstance(turn, BlankBoardRequirementTurn) else None
+        return result if isinstance(result, BlankBoardRequirementRefinement) else None
 
     def generate_chatbot_reply(
         self,

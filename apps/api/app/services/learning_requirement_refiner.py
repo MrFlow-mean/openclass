@@ -55,8 +55,8 @@ def refine_blank_board_requirement(
         board_document_state=board_document_state.model_context(),
         conversation_summary=conversation_summary,
         user_message=user_message,
-        existing_requirement_sheet=_compact_existing_requirement_context(active_requirement),
-        existing_clarification=_compact_existing_clarification_context(active_clarification),
+        existing_requirement_sheet=base_requirement.model_dump(mode="json"),
+        existing_clarification=active_clarification.model_dump(mode="json") if active_clarification else None,
         include_stream_result=True,
     )
     visible_chat_buffer = ""
@@ -174,66 +174,6 @@ def _model_from_history_json(
         return schema.model_validate_json(raw)
     except Exception:
         return None
-
-
-def _compact_existing_requirement_context(requirement: LearningRequirementSheet | None) -> dict[str, Any] | None:
-    if requirement is None:
-        return None
-    compact: dict[str, Any] = {}
-    for source, target in [
-        ("learning_goal", "learning_goal"),
-        ("level", "current_level"),
-        ("known_background", "known_background"),
-        ("target_depth", "target_depth"),
-        ("output_preference", "output_preference"),
-        ("success_criteria", "target_scenario"),
-    ]:
-        value = getattr(requirement, source, "")
-        if isinstance(value, str) and value.strip() and not _is_default_requirement_placeholder(value):
-            compact[target] = value.strip()
-    if requirement.current_questions:
-        compact["next_question"] = next(
-            (question.strip() for question in requirement.current_questions if question.strip()),
-            "",
-        )
-    if requirement.work_mode:
-        compact["work_mode"] = requirement.work_mode
-    if requirement.granularity:
-        compact["granularity"] = requirement.granularity
-    return compact or None
-
-
-def _compact_existing_clarification_context(
-    clarification: LearningClarificationStatus | None,
-) -> dict[str, Any] | None:
-    if clarification is None:
-        return None
-    compact: dict[str, Any] = {
-        "progress": clarification.progress,
-        "ready_for_board": clarification.ready_for_board,
-    }
-    for key in ["summary", "next_question", "work_mode", "granularity"]:
-        value = getattr(clarification, key, "")
-        if isinstance(value, str) and value.strip():
-            compact[key] = value.strip()
-    if clarification.missing_items:
-        compact["missing_items"] = [item for item in clarification.missing_items if item][:5]
-    return compact
-
-
-def _is_default_requirement_placeholder(value: str) -> bool:
-    compact = value.strip()
-    return any(
-        marker in compact
-        for marker in [
-            "先澄清用户具体想学什么",
-            "待确认用户",
-            "用户背景尚未明确",
-            "根据用户水平和目标场景",
-            "根据用户目标、资料结构和交互意图",
-            "优先围绕当前主题展开",
-        ]
-    )
 
 
 def _basic_chat_clarification() -> LearningClarificationStatus:

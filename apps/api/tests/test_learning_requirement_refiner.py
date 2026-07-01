@@ -11,7 +11,6 @@ from app.services.lesson_factory import create_empty_lesson
 from app.services.openai_course_ai import (
     BlankBoardRequirementRefinement,
     BlankBoardRequirementRefinementResult,
-    BlankBoardRequirementTurn,
     ChatbotReply,
     OpenAICourseAI,
     bind_ai_output_stream,
@@ -33,7 +32,7 @@ def _seed_empty_workspace(store: SqliteCourseStore, user_id: str, title: str = "
     return lesson
 
 
-def test_blank_board_refinement_prompt_uses_lightweight_turn_schema(
+def test_blank_board_refinement_prompt_requires_rich_broad_topic_guidance(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     ai = OpenAICourseAI()
@@ -44,7 +43,7 @@ def test_blank_board_refinement_prompt_uses_lightweight_turn_schema(
         captured["system_prompt"] = system_prompt
         captured["user_prompt"] = user_prompt
         captured["schema"] = schema
-        return BlankBoardRequirementTurn(route="ordinary_chat", chatbot_message="收到。")
+        return BlankBoardRequirementRefinement(route="ordinary_chat", chatbot_message="收到。")
 
     monkeypatch.setattr(ai, "_parse", _fake_parse)
 
@@ -55,21 +54,37 @@ def test_blank_board_refinement_prompt_uses_lightweight_turn_schema(
     )
 
     assert captured["role"] == "pm"
-    assert captured["schema"] is BlankBoardRequirementTurn
+    assert captured["schema"] is BlankBoardRequirementRefinement
     system_prompt = str(captured["system_prompt"])
-    assert "只判断本轮对话和维护学习需求" in system_prompt
-    assert "ordinary_chat" in system_prompt
-    assert "requirement_refining" in system_prompt
-    assert "practice_artifact" in system_prompt
-    assert "宽泛主题要给简短学习地图、推荐入口和一个主问题" in system_prompt
-    assert "不要写学科、教材、语言、考试或 demo 专属规则" in system_prompt
-    assert len(system_prompt) < 1400
+    assert "开场承接 + 简短学习地图 + 2-5 个入口选项 + 一个推荐入口 + 推荐理由 + 一个绑定推荐入口的主问题" in system_prompt
+    assert "学习地图和入口选项必须真的写进 chatbot_message" in system_prompt
+    assert "knowledge_board + broad_topic" in system_prompt
+    assert "纯新手、零基础、入门、先了解一下" in system_prompt
+    assert "不要强制追问考试、面试、工作、赚钱、项目或现实产出场景" in system_prompt
+    assert "宽泛复合领域且用户起点未知" in system_prompt
+    assert "学习者起点/背景的选择卡片" in system_prompt
+    assert "即使没有明确说“你安排”" in system_prompt
+    assert "不要再让用户在工具、语法、框架、测试或项目实操等后续模块里选择" in system_prompt
+    assert "为我指导、你安排、帮我安排" in system_prompt
+    assert "granularity=single_knowledge_point" in system_prompt
+    assert "ready_for_board=true" in system_prompt
+    assert "引导策略选择优先级" in system_prompt
+    assert "最近经历法" in system_prompt
+    assert "卡点定位法" in system_prompt
+    assert "优先归为 practice_artifact" in system_prompt
+    assert "练习型需求中，如果用户已经说清想练的内容，但没有说明当前水平" in system_prompt
+    assert "自然标题、一个降低选择压力的副标题" in system_prompt
+    assert "4-6 个 A/B/C 卡片选项" in system_prompt
+    assert "不要默认用户从基础练起" in system_prompt
     payload = json.loads(str(captured["user_prompt"]))
-    assert "response_contract" not in payload
-    assert "existing_requirement_sheet" not in payload
-    assert payload["existing_requirement_state"] is None
-    assert payload["existing_clarification_state"] is None
-    assert payload["current_user_message"] == "我想学一个领域"
+    assert "开场承接" in payload["response_contract"]["chatbot_message"]
+    assert "推荐理由" in payload["response_contract"]["chatbot_message"]
+    assert "必须和用户当前表达形态匹配" in payload["response_contract"]["guidance_strategy"]
+    assert "练习需求缺当前水平时优先用 choice_cards" in payload["response_contract"]["guidance_strategy"]
+    assert "当前技能水平卡片" in payload["response_contract"]["entry_point_options"]
+    assert "当前水平" in payload["response_contract"]["next_question"]
+    assert "纯新手入门" in payload["response_contract"]["next_question"]
+    assert "已会/未会" in system_prompt
 
 
 def test_parse_response_logs_model_call_started(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -143,8 +158,8 @@ def test_blank_board_stream_parser_emits_chatbot_message_before_json_is_complete
             client=client,
             model="test-model",
             messages=[],
-            schema=BlankBoardRequirementTurn,
-            schema_payload=BlankBoardRequirementTurn.model_json_schema(),
+            schema=BlankBoardRequirementRefinement,
+            schema_payload=BlankBoardRequirementRefinement.model_json_schema(),
             role="pm",
             field_name="chatbot_message",
             use_response_format=True,
@@ -165,7 +180,7 @@ def test_blank_board_stream_parser_emits_chatbot_message_before_json_is_complete
     ]
     assert all(event["role"] == "pm" for event in timing_events)
     assert all(event["model"] == "test-model" for event in timing_events)
-    assert all(event["schema"] == "BlankBoardRequirementTurn" for event in timing_events)
+    assert all(event["schema"] == "BlankBoardRequirementRefinement" for event in timing_events)
     assert all(event["field"] == "chatbot_message" for event in timing_events)
     assert all(isinstance(event["elapsed_ms"], int) for event in timing_events)
 
@@ -183,8 +198,6 @@ def test_empty_board_ordinary_chat_does_not_create_requirement(
     def _fake_refinement(**kwargs):
         nonlocal call_count
         call_count += 1
-        assert kwargs["existing_requirement_sheet"] is None
-        assert kwargs["existing_clarification"] is None
         return BlankBoardRequirementRefinement(
             route="ordinary_chat",
             chatbot_message="可以，我们就正常聊这个。",
@@ -574,14 +587,6 @@ def test_pure_novice_intro_lands_foundation_entry_without_requiring_external_sce
     )
 
     assert len(calls) == 2
-    assert calls[0]["existing_requirement_sheet"] is None
-    second_requirement_context = calls[1]["existing_requirement_sheet"]
-    assert isinstance(second_requirement_context, dict)
-    assert second_requirement_context["learning_goal"] == "一个宽泛领域"
-    assert second_requirement_context["next_question"] == "你之前接触过这个领域吗，还是更接近完全新手？"
-    assert "theme" not in second_requirement_context
-    assert "board_scope" not in second_requirement_context
-    assert "risk_notes" not in second_requirement_context
     assert second_response.requirement_run_id == first_response.requirement_run_id
     assert second_response.active_requirement_sheet is not None
     assert second_response.active_requirement_sheet.granularity == "single_knowledge_point"
