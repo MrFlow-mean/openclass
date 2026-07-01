@@ -66,6 +66,21 @@ class BoardSection(BaseModel):
     content_blocks: list[BoardContentBlock] = Field(default_factory=list)
 
 
+class BoardTemplateSection(BaseModel):
+    heading: str
+    purpose: str = ""
+    required_block_types: list[BoardContentBlockType] = Field(default_factory=list)
+
+
+class BoardTemplate(BaseModel):
+    template_id: str
+    board_mode: BoardMode
+    required_headings: list[str] = Field(default_factory=list)
+    sections: list[BoardTemplateSection] = Field(default_factory=list)
+    min_heading_count: int = 5
+    required_text_signals: list[str] = Field(default_factory=list)
+
+
 class BoardLesson(BaseModel):
     title: str
     learner_profile: str = ""
@@ -94,6 +109,7 @@ class BoardTeachingPlan(BaseModel):
     course_series_plan: CourseSeriesPlan | None = None
     current_lesson: BoardLesson
     required_structure: list[str] = Field(default_factory=list)
+    board_template: BoardTemplate | None = None
     deferred_topics: list[str] = Field(default_factory=list)
     quality_notes: list[str] = Field(default_factory=list)
     math_adapter_enabled: bool = False
@@ -200,11 +216,12 @@ def build_board_teaching_plan(
 
 
 def normalize_board_plan(board_plan: BoardTeachingPlan) -> BoardTeachingPlan:
-    section_titles = _MODE_SECTION_TITLES.get(board_plan.board_mode, _MODE_SECTION_TITLES["concept_explanation"])
-    sections = board_plan.current_lesson.sections or _sections_from_titles(section_titles)
-    required_structure = list(dict.fromkeys([*board_plan.required_structure, *section_titles]))
+    template = board_plan.board_template or _template_for_mode(board_plan.board_mode)
+    sections = board_plan.current_lesson.sections or _sections_from_template(template)
+    required_structure = list(dict.fromkeys([*board_plan.required_structure, *template.required_headings]))
     return board_plan.model_copy(
         update={
+            "board_template": template,
             "required_structure": required_structure,
             "current_lesson": board_plan.current_lesson.model_copy(update={"sections": sections}),
         }
@@ -214,7 +231,14 @@ def normalize_board_plan(board_plan: BoardTeachingPlan) -> BoardTeachingPlan:
 def split_broad_topic_into_lessons(board_plan: BoardTeachingPlan) -> CourseSeriesPlan:
     content = board_plan.content_to_learn or board_plan.current_lesson.title
     parts = _split_topic_parts(content)
-    if len(parts) >= 3:
+    if len(parts) >= 3 and board_plan.board_mode == "field_map":
+        lessons = [
+            "第 1 课：整体地图与协同流程",
+            f"第 2 课：{parts[0]}与{parts[1]}如何连接",
+            *[f"第 {index + 3} 课：{part}在系统中的作用" for index, part in enumerate(parts[2:5])],
+            f"第 {min(len(parts), 5) + 3} 课：从一个小任务串起完整流程",
+        ]
+    elif len(parts) >= 3:
         lessons = [f"第 {index} 课：{part}如何协同工作" for index, part in enumerate(parts, start=1)]
     elif len(parts) == 2:
         first, second = parts
@@ -256,12 +280,13 @@ def build_current_lesson_board_plan(board_plan: BoardTeachingPlan) -> BoardTeach
     title = course_series.current_lesson if course_series else board_plan.current_lesson.title
     next_lesson = course_series.lessons[1] if course_series and len(course_series.lessons) > 1 else None
     objectives = _lesson_objectives(board_plan, title)
+    template = _template_for_mode(board_plan.board_mode)
     lesson = BoardLesson(
         title=title,
         learner_profile=board_plan.learner_profile,
         lesson_objective=objectives,
         prerequisites=_prerequisites(board_plan),
-        sections=_sections_from_titles(_MODE_SECTION_TITLES.get(board_plan.board_mode, _MODE_SECTION_TITLES["concept_explanation"])),
+        sections=_sections_from_template(template),
         summary=[
             "用一句话说清本节核心概念。",
             "能把本节例子和学习目标对应起来。",
@@ -274,6 +299,7 @@ def build_current_lesson_board_plan(board_plan: BoardTeachingPlan) -> BoardTeach
     return normalize_board_plan(
         board_plan.model_copy(
             update={
+                "board_template": template,
                 "current_lesson": lesson,
                 "deferred_topics": deferred_topics,
                 "quality_notes": notes,
@@ -291,17 +317,14 @@ def validate_board_plan(board_plan: BoardTeachingPlan) -> BoardQualityValidation
     if not board_plan.current_lesson.learner_profile:
         issues.append(BoardQualityIssue(dimension="learnerFit", message="缺少学习对象画像。"))
         score -= 10
+    template = board_plan.board_template or _template_for_mode(board_plan.board_mode)
     section_text = "\n".join(section.title for section in board_plan.current_lesson.sections)
-    for signal, dimension in [
-        ("目标", "structureCompleteness"),
-        ("例", "structureCompleteness"),
-        ("练习", "exerciseQuality"),
-        ("小结", "structureCompleteness"),
-    ]:
+    for signal in template.required_text_signals:
         if signal not in section_text and signal not in "\n".join(board_plan.required_structure):
+            dimension = "exerciseQuality" if "练习" in signal or "任务" in signal else "structureCompleteness"
             issues.append(BoardQualityIssue(dimension=dimension, message=f"板书计划缺少“{signal}”相关结构。"))
             score -= 10
-    if len(board_plan.current_lesson.sections) < 5:
+    if len(board_plan.current_lesson.sections) < template.min_heading_count:
         issues.append(BoardQualityIssue(dimension="boardReadability", message="板书分段过少，不利于课堂呈现。", severity="warning"))
         score -= 8
     if board_plan.scope_kind == "lesson_series" and not board_plan.current_lesson.next_lesson:
@@ -334,18 +357,19 @@ def validate_generated_board_text(text: str, board_plan: BoardTeachingPlan) -> B
             score=0,
             issues=[BoardQualityIssue(dimension="boardReadability", message="板书正文为空。")],
         )
-    for signal, message, dimension in [
-        ("目标", "生成结果缺少本节目标。", "structureCompleteness"),
-        ("例", "生成结果缺少例子。", "structureCompleteness"),
-        ("练习", "生成结果缺少课堂练习。", "exerciseQuality"),
-        ("小结", "生成结果缺少本节小结。", "structureCompleteness"),
-        ("下一", "生成结果缺少下一步或下一节预告。", "nextStepClarity"),
-    ]:
+    template = board_plan.board_template or _template_for_mode(board_plan.board_mode)
+    generated_signals = list(dict.fromkeys([*template.required_text_signals, "下一"]))
+    for signal in generated_signals:
+        message = f"生成结果缺少“{signal}”相关内容。"
+        dimension = "exerciseQuality" if "练习" in signal or "任务" in signal else "structureCompleteness"
+        if signal == "下一":
+            message = "生成结果缺少下一步或下一节预告。"
+            dimension = "nextStepClarity"
         if signal not in stripped and not (signal == "下一" and "后续" in stripped):
             issues.append(BoardQualityIssue(dimension=dimension, message=message))
             score -= 10
     heading_count = len(re.findall(r"(?m)^#{1,3}\s+", stripped))
-    if heading_count < 3:
+    if heading_count < min(3, template.min_heading_count):
         issues.append(BoardQualityIssue(dimension="boardReadability", message="生成结果标题层级不足。"))
         score -= 15
     math_issues = _math_fragment_issues(stripped, block_type="paragraph", path="generated_content")
@@ -382,9 +406,12 @@ def generate_board_ai_input(
         "learner_profile": board_plan.learner_profile,
         "learning_context": board_plan.learning_context,
         "course_series_plan": board_plan.course_series_plan.model_dump(mode="json") if board_plan.course_series_plan else None,
+        "board_template": board_plan.board_template.model_dump(mode="json") if board_plan.board_template else None,
         "current_lesson": board_plan.current_lesson.model_dump(mode="json"),
         "quality_contract": {
             "must_include": board_plan.required_structure,
+            "template_id": board_plan.board_template.template_id if board_plan.board_template else "",
+            "required_text_signals": board_plan.board_template.required_text_signals if board_plan.board_template else [],
             "must_follow_board_mode": board_plan.board_mode,
             "must_generate_only_current_lesson": True,
             "defer_topics_to_next_lessons": board_plan.deferred_topics,
@@ -542,7 +569,7 @@ def _select_board_mode(
             learner_profile,
         ]
     )
-    if re.search(r"情景|场景|对话|dialogue|role", combined, flags=re.IGNORECASE):
+    if re.search(r"情景对话|对话|逐句|替换练习|dialogue|role", combined, flags=re.IGNORECASE):
         return "scenario_dialogue"
     if re.search(r"练习|刷题|操练|drill|题目|代码练", combined, flags=re.IGNORECASE):
         return "practice_drill"
@@ -590,6 +617,101 @@ def _prerequisites(board_plan: BoardTeachingPlan) -> list[str]:
     if board_plan.learner_profile and board_plan.learner_profile != "学习对象未明确":
         return [board_plan.learner_profile]
     return ["先使用学习者已经明确透露的基础，不额外假设背景。"]
+
+
+def _template_for_mode(board_mode: BoardMode) -> BoardTemplate:
+    section_specs: dict[BoardMode, list[tuple[str, list[BoardContentBlockType]]]] = {
+        "field_map": [
+            ("这个领域是什么", ["paragraph", "bullet_list"]),
+            ("它由哪些部分组成", ["bullet_list", "diagram_prompt"]),
+            ("一个完整流程", ["diagram_prompt", "example"]),
+            ("第一个最适合学习的入口", ["example", "exercise"]),
+            ("后续路线", ["bullet_list"]),
+        ],
+        "concept_explanation": [
+            ("本节目标", ["bullet_list"]),
+            ("核心直觉", ["paragraph", "diagram_prompt"]),
+            ("关键概念", ["paragraph", "formula"]),
+            ("例子", ["example", "table"]),
+            ("常见误区", ["misconception"]),
+            ("课堂练习", ["exercise"]),
+            ("本节小结", ["bullet_list"]),
+            ("下一步", ["paragraph"]),
+        ],
+        "scenario_dialogue": [
+            ("场景目标", ["paragraph"]),
+            ("核心表达", ["bullet_list"]),
+            ("对话课文", ["paragraph"]),
+            ("逐句解释", ["bullet_list"]),
+            ("替换练习", ["exercise"]),
+            ("用户输出任务", ["exercise"]),
+        ],
+        "practice_drill": [
+            ("当前水平", ["paragraph"]),
+            ("练习目标", ["bullet_list"]),
+            ("示例题或示例代码", ["example"]),
+            ("分步提示", ["bullet_list"]),
+            ("用户练习", ["exercise"]),
+            ("反馈规则", ["bullet_list"]),
+        ],
+        "review_lesson": [
+            ("旧知识唤醒", ["paragraph"]),
+            ("核心框架", ["bullet_list", "diagram_prompt"]),
+            ("易忘点", ["bullet_list", "misconception"]),
+            ("工作场景例子", ["example"]),
+            ("典型例子", ["example", "formula"]),
+            ("练习题", ["exercise"]),
+        ],
+    }
+    sections = [
+        BoardTemplateSection(
+            heading=heading,
+            purpose=f"生成时必须围绕“{heading}”写出可定位板书内容。",
+            required_block_types=block_types,
+        )
+        for heading, block_types in section_specs.get(board_mode, section_specs["concept_explanation"])
+    ]
+    headings = [section.heading for section in sections]
+    return BoardTemplate(
+        template_id=f"{board_mode}_v1",
+        board_mode=board_mode,
+        required_headings=headings,
+        sections=sections,
+        min_heading_count=min(5, len(sections)),
+        required_text_signals=_required_signals_for_mode(board_mode),
+    )
+
+
+def _required_signals_for_mode(board_mode: BoardMode) -> list[str]:
+    if board_mode == "field_map":
+        return ["是什么", "组成", "流程", "入口", "路线"]
+    if board_mode == "scenario_dialogue":
+        return ["场景", "表达", "对话", "替换练习", "输出任务"]
+    if board_mode == "practice_drill":
+        return ["水平", "练习目标", "示例", "用户练习", "反馈"]
+    if board_mode == "review_lesson":
+        return ["旧知识", "核心框架", "易忘", "例子", "练习"]
+    return ["目标", "核心直觉", "例", "练习", "小结"]
+
+
+def _sections_from_template(template: BoardTemplate) -> list[BoardSection]:
+    return [
+        BoardSection(
+            title=section.heading,
+            purpose=section.purpose,
+            content_blocks=[
+                BoardContentBlock(
+                    type=block_type,
+                    text=f"生成时展开“{section.heading}”。" if block_type == "paragraph" else "",
+                    title=section.heading if block_type in {"example", "exercise"} else "",
+                    question=f"围绕“{section.heading}”设计一个检查任务。" if block_type == "exercise" else "",
+                    description=f"用图像化方式呈现“{section.heading}”。" if block_type == "diagram_prompt" else "",
+                )
+                for block_type in section.required_block_types[:2]
+            ],
+        )
+        for section in template.sections
+    ]
 
 
 def _sections_from_titles(titles: list[str]) -> list[BoardSection]:
@@ -687,6 +809,7 @@ def _math_fragment_issues(
     path: str,
 ) -> list[BoardQualityIssue]:
     issues: list[BoardQualityIssue] = []
+    outside_math = value if block_type == "formula" else _remove_math_spans(value)
     checks = [
         ("displaystyle", "出现 displaystyle，可能是半渲染公式。"),
         ("begincases", "出现 begincases，分段函数没有使用标准 LaTeX cases。"),
@@ -696,13 +819,28 @@ def _math_fragment_issues(
     for needle, message in checks:
         if needle in value:
             issues.append(BoardQualityIssue(dimension="mathRendering", message=message, evidence=f"{path}: {needle}"))
-    if block_type != "formula" and re.search(r"(?<!\\)\bfrac\b", value):
-        issues.append(BoardQualityIssue(dimension="mathRendering", message="普通文本中出现 frac，疑似公式未进入公式块。", evidence=path))
-    if re.search(r"lim\s*x\s*→", value):
+    if block_type != "formula" and re.search(r"(?<![A-Za-z])(?:\\frac\b|\bfrac\b)", outside_math):
+        issues.append(BoardQualityIssue(dimension="mathRendering", message="普通文本中出现 frac，疑似公式未进入公式定界符或公式块。", evidence=path))
+    if block_type != "formula" and re.search(r"\\(?:lim|sum|int|begin|end|varepsilon|delta|sin|cos)\b", outside_math):
+        issues.append(BoardQualityIssue(dimension="mathRendering", message="普通文本中出现 LaTeX 命令，疑似公式未进入公式定界符或公式块。", evidence=path))
+    if re.search(r"lim\s*x\s*→", outside_math):
         issues.append(BoardQualityIssue(dimension="mathRendering", message="出现 lim x→ 这类半渲染极限文本。", evidence=path))
-    if block_type != "formula" and re.search(r"\w+\s*sim\s*\w+|\wsim\s*\w", value):
+    if block_type != "formula" and re.search(r"\w+\s*sim\s*\w+|\wsim\s*\w", outside_math):
         issues.append(BoardQualityIssue(dimension="mathRendering", message="出现 sim 代替 \\sim 的半渲染文本。", evidence=path))
     return issues
+
+
+def _remove_math_spans(value: str) -> str:
+    text = value or ""
+    patterns = [
+        r"\$\$.*?\$\$",
+        r"\$[^$\n]+?\$",
+        r"\\\[.*?\\\]",
+        r"\\\(.*?\\\)",
+    ]
+    for pattern in patterns:
+        text = re.sub(pattern, " ", text, flags=re.DOTALL)
+    return text
 
 
 def _field(source: Any, name: str) -> Any:

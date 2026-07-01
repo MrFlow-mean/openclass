@@ -8,6 +8,7 @@ from app.services.board_generation_quality import (
     build_board_teaching_plan,
     generate_board_ai_input,
     validate_board_plan,
+    validate_generated_board_text,
     validate_math_rendering,
 )
 from app.services.lesson_factory import create_empty_lesson
@@ -31,6 +32,9 @@ def test_board_generation_plan_splits_broad_calculus_preview() -> None:
     assert "极限的直观含义" in plan.current_lesson.title
     assert plan.board_mode == "concept_explanation"
     assert plan.math_adapter_enabled is True
+    assert plan.board_template is not None
+    assert plan.board_template.template_id == "concept_explanation_v1"
+    assert "本节目标" in plan.board_template.required_headings
     first_lesson_text = "\n".join(section.title for section in plan.current_lesson.sections)
     assert "等价无穷小" not in first_lesson_text
     assert "介值定理" not in first_lesson_text
@@ -65,6 +69,41 @@ def test_validate_math_rendering_rejects_half_rendered_fragments() -> None:
     assert "sim" in messages
 
 
+def test_validate_generated_board_text_allows_latex_inside_math_delimiters() -> None:
+    plan = build_board_teaching_plan({"domain": "公式", "contentToLearn": "分式与极限"})
+    content = (
+        "# 分式与极限\n\n"
+        "## 本节目标\n\n看懂公式。\n\n"
+        "## 核心直觉\n\n公式表达变化关系。\n\n"
+        "## 例子\n\n标准写法：$\\lim_{x\\to0}\\frac{\\sin x}{x}=1$。\n\n"
+        "## 课堂练习\n\n解释这个公式的含义。\n\n"
+        "## 本节小结\n\n公式要服务于直觉。\n\n"
+        "## 下一步\n\n继续。"
+    )
+
+    result = validate_generated_board_text(content, plan)
+
+    assert result.passed is True
+
+
+def test_validate_generated_board_text_rejects_latex_command_outside_math_delimiters() -> None:
+    plan = build_board_teaching_plan({"domain": "公式", "contentToLearn": "分式与极限"})
+    content = (
+        "# 分式与极限\n\n"
+        "## 本节目标\n\n看懂公式。\n\n"
+        "## 核心直觉\n\n公式表达变化关系。\n\n"
+        "## 例子\n\n错误写法：\\frac{1}{n}。\n\n"
+        "## 课堂练习\n\n解释这个公式的含义。\n\n"
+        "## 本节小结\n\n公式要服务于直觉。\n\n"
+        "## 下一步\n\n继续。"
+    )
+
+    result = validate_generated_board_text(content, plan)
+
+    assert result.passed is False
+    assert any("LaTeX 命令" in issue.message or "frac" in issue.message for issue in result.issues)
+
+
 def test_field_map_plan_for_beginner_multi_part_system() -> None:
     content = "账户、交易、Gas、EVM、智能合约、DApp 前端如何协同工作"
     plan = build_board_teaching_plan(
@@ -79,9 +118,14 @@ def test_field_map_plan_for_beginner_multi_part_system() -> None:
     payload_text = str(payload)
 
     assert plan.board_mode == "field_map"
+    assert plan.board_template is not None
+    assert plan.board_template.template_id == "field_map_v1"
+    assert "整体地图与协同流程" in plan.current_lesson.title
     for term in ["账户", "交易", "Gas", "EVM", "智能合约", "DApp"]:
         assert term in payload_text
     assert "一个完整流程" in payload_text
+    assert payload["quality_contract"]["template_id"] == "field_map_v1"
+    assert "board_template" in payload
 
 
 def test_scenario_dialogue_plan_for_language_scene() -> None:
@@ -188,3 +232,49 @@ def test_generate_from_requirements_retries_half_rendered_math(monkeypatch) -> N
     assert repair_context["board_generation_quality_validation"]["passed"] is False
     assert "displaystyle" not in outcome.new_document.content_text
     assert "begincases" not in outcome.new_document.content_text
+
+
+def test_generate_from_requirements_does_not_write_after_repeated_quality_failures(monkeypatch) -> None:
+    lesson = create_empty_lesson("公式质量失败")
+    requirements = lesson.learning_requirements
+    assert requirements is not None
+    requirements.theme = "公式"
+    requirements.learning_goal = "理解公式表达"
+    requirements.level = "有基础"
+    requirements.board_scope = ["公式质量失败"]
+    clarification = LearningClarificationStatus(progress=100, label="ready", reason="ready", ready_for_board=True)
+    calls: list[dict[str, object]] = []
+
+    def _bad_board_edit(**kwargs):
+        calls.append(kwargs)
+        return BoardDocumentEditResult(
+            operation="replace_document",
+            title="公式质量失败",
+            content_text=(
+                "# 公式质量失败\n\n"
+                "## 本节目标\n\n看懂公式。\n\n"
+                "## 核心直觉\n\n出现 displaystyle lim x→0。\n\n"
+                "## 例子\n\nsin xsim x。\n\n"
+                "## 课堂练习\n\n说出问题。\n\n"
+                "## 本节小结\n\n仍未修复。\n\n"
+                "## 下一步\n\n继续。"
+            ),
+            summary="坏公式。",
+            chatbot_message="已生成。",
+            section_titles=["本节目标", "核心直觉", "例子", "课堂练习", "本节小结", "下一步"],
+        )
+
+    monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _bad_board_edit)
+
+    outcome = generate_from_requirements(
+        lesson=lesson,
+        requirements=requirements,
+        clarification=clarification,
+        resource_summary="",
+    )
+
+    assert outcome.changed is False
+    assert outcome.quality_repair_attempts == 3
+    assert outcome.quality_review_status == "repair_required"
+    assert len(calls) == 3
+    assert outcome.new_document.content_text == ""
