@@ -226,6 +226,7 @@ export function CourseStudio() {
     boardEditPrompt,
     selectedReference,
     handleSubmitChat,
+    handleStopChat,
     handleEditMessage,
     handleScopeAction,
     handleReferenceAction,
@@ -578,6 +579,7 @@ export function CourseStudio() {
           onApplySelection={applySelection}
           onContinueTeaching={() => void handleContinueTeaching()}
           onSubmitChat={(payload) => handleSubmitChat(payload)}
+          onStopChat={handleStopChat}
           onEditMessage={(message, nextContent) => handleEditMessage(message, nextContent)}
           onScopeAction={(option) => handleScopeAction(option)}
           onReferenceAction={(action) => handleReferenceAction(action)}

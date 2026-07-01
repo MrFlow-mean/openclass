@@ -221,7 +221,7 @@ type ChatStreamHandlers = {
   onFinal?: (response: ChatResponse) => void;
 };
 
-export type ChatStreamFailureKind = "http" | "sse" | "missing_final";
+export type ChatStreamFailureKind = "http" | "sse" | "missing_final" | "aborted";
 
 export class ChatStreamTransportError extends Error {
   kind: ChatStreamFailureKind;
@@ -303,7 +303,16 @@ function handleChatStreamBlock(block: string, handlers: ChatStreamHandlers) {
   }
 }
 
-async function streamRequest(path: string, payload: unknown, handlers: ChatStreamHandlers): Promise<ChatResponse> {
+function isAbortError(error: unknown) {
+  return error instanceof DOMException && error.name === "AbortError";
+}
+
+async function streamRequest(
+  path: string,
+  payload: unknown,
+  handlers: ChatStreamHandlers,
+  options?: { signal?: AbortSignal }
+): Promise<ChatResponse> {
   let response: Response;
   try {
     response = await fetch(`${getApiBase()}${path}`, {
@@ -311,8 +320,12 @@ async function streamRequest(path: string, payload: unknown, handlers: ChatStrea
       headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify(payload),
       cache: "no-store",
+      signal: options?.signal,
     });
   } catch (fetchError) {
+    if (isAbortError(fetchError) || options?.signal?.aborted) {
+      throw new ChatStreamTransportError("聊天流已停止", "aborted");
+    }
     const message = fetchError instanceof Error ? fetchError.message : "聊天流连接失败";
     throw new ChatStreamTransportError(message, "missing_final");
   }
@@ -353,6 +366,9 @@ async function streamRequest(path: string, payload: unknown, handlers: ChatStrea
   } catch (streamError) {
     if (streamError instanceof ChatStreamTransportError) {
       throw streamError;
+    }
+    if (isAbortError(streamError) || options?.signal?.aborted) {
+      throw new ChatStreamTransportError("聊天流已停止", "aborted");
     }
     const message = streamError instanceof Error ? streamError.message : "聊天流连接中断";
     throw new ChatStreamTransportError(message, "missing_final");
@@ -598,8 +614,13 @@ export const api = {
       body: JSON.stringify(payload),
     });
   },
-  streamChatOnLesson(lessonId: string, payload: ChatRequestPayload, handlers: ChatStreamHandlers) {
-    return streamRequest(`/api/lessons/${lessonId}/chat/stream`, payload, handlers);
+  streamChatOnLesson(
+    lessonId: string,
+    payload: ChatRequestPayload,
+    handlers: ChatStreamHandlers,
+    options?: { signal?: AbortSignal }
+  ) {
+    return streamRequest(`/api/lessons/${lessonId}/chat/stream`, payload, handlers, options);
   },
   connectRealtime(lessonId: string, payload: RealtimeConnectPayload) {
     return request<RealtimeConnectResponse>(`/api/lessons/${lessonId}/realtime/connect`, {

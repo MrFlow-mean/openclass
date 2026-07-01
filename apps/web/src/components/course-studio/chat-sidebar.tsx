@@ -8,6 +8,7 @@ import {
   PencilLine,
   Radio,
   Send,
+  Square,
   TextQuote,
   Volume2,
   X,
@@ -260,6 +261,7 @@ type CourseStudioChatSidebarProps = {
   onApplySelection: (selection: SelectionRef, popoverPosition: ReturnType<typeof popoverPositionFromDomSelection>) => void;
   onContinueTeaching: () => void;
   onSubmitChat: (payload?: ChatRequestPayload) => void | Promise<void>;
+  onStopChat: () => void;
   onEditMessage: (message: ChatMessage, nextContent: string) => void | Promise<void>;
   onScopeAction: (option: ScopeOption) => void | Promise<void>;
   onReferenceAction: (action: "confirm" | "skip") => void | Promise<void>;
@@ -313,6 +315,7 @@ export function CourseStudioChatSidebar({
   onApplySelection,
   onContinueTeaching,
   onSubmitChat,
+  onStopChat,
   onEditMessage,
   onScopeAction,
   onReferenceAction,
@@ -656,7 +659,6 @@ export function CourseStudioChatSidebar({
           <textarea
             ref={chatInputRef}
             value={chatInput}
-            disabled={isChatBusy}
             rows={1}
             onFocus={() => {
               if (isPreviewMode) {
@@ -672,14 +674,15 @@ export function CourseStudioChatSidebar({
             onInput={() => onAdjustComposerHeight()}
             onKeyDown={(event) => {
               if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+                if (isChatBusy) {
+                  return;
+                }
                 event.preventDefault();
                 void onSubmitChat();
               }
             }}
             placeholder={
-              isChatBusy
-                ? "正在处理上一条请求..."
-                : isPreviewMode
+              isPreviewMode
                   ? "点击输入会回到当前版本并继续对话"
                   : composerMode === "direct_edit"
                     ? "描述要怎么改这段板书，或直接说“重写整篇”..."
@@ -687,7 +690,7 @@ export function CourseStudioChatSidebar({
                       ? "基于选中内容继续追问"
                       : "给 OpenClass 发消息..."
             }
-            className="custom-scrollbar block w-full resize-none border-0 bg-transparent px-3.5 py-2.5 text-[13px] leading-relaxed outline-none placeholder:text-gray-400 disabled:cursor-wait disabled:text-gray-400"
+            className="custom-scrollbar block w-full resize-none border-0 bg-transparent px-3.5 py-2.5 text-[13px] leading-relaxed outline-none placeholder:text-gray-400"
           />
           <div className="flex items-center justify-between gap-2 px-2.5 pb-2.5">
             <div className="flex min-w-0 flex-wrap items-center gap-2">
@@ -751,14 +754,20 @@ export function CourseStudioChatSidebar({
             </div>
             <button
               type="button"
-              onClick={() => void onSubmitChat()}
-              aria-label={isChatBusy ? "正在处理上一条请求" : "发送消息"}
-              title={isChatBusy ? "正在处理上一条请求" : "发送消息"}
-              disabled={isChatBusy || !chatInput.trim()}
+              onClick={() => {
+                if (isChatBusy) {
+                  onStopChat();
+                  return;
+                }
+                void onSubmitChat();
+              }}
+              aria-label={isChatBusy ? "停止回复" : "发送消息"}
+              title={isChatBusy ? "停止回复" : "发送消息"}
+              disabled={!isChatBusy && !chatInput.trim()}
               className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#1a1a1a] text-white shadow-sm transition-colors hover:bg-black disabled:cursor-not-allowed disabled:opacity-60"
             >
               {isChatBusy ? (
-                <LoaderCircle className="h-4 w-4 animate-spin" />
+                <Square className="h-3.5 w-3.5 fill-current" />
               ) : (
                 <Send className="h-4 w-4 -translate-x-[1px]" />
               )}

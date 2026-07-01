@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
+import { useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 
 import { api, isMissingChatStreamFinalError } from "@/lib/api";
 import { streamingMarkdownToHtml } from "@/lib/streaming-rich-document";
@@ -94,6 +94,8 @@ export function useLessonChatAgent({
   const [lastScopedRequest, setLastScopedRequest] = useState<ChatRequestPayload | null>(null);
   const [lastReferenceRequest, setLastReferenceRequest] = useState<ChatRequestPayload | null>(null);
   const [lastBoardEditRequest, setLastBoardEditRequest] = useState<ChatRequestPayload | null>(null);
+  const chatAbortControllerRef = useRef<AbortController | null>(null);
+  const chatAbortRequestedRef = useRef(false);
 
   const chatInput = activeComposerState.chatInput;
   const composerMode = activeComposerState.composerMode;
@@ -132,6 +134,17 @@ export function useLessonChatAgent({
   ) {
     updateLessonMessages(lessonId, (current) =>
       current.map((message) => (message.id === messageId ? { ...message, ...patch } : message))
+    );
+  }
+
+  function restoreComposerInputIfUntouched(lessonId: string, value: string) {
+    updateLessonComposerState(lessonId, (current) =>
+      current.chatInput.length > 0
+        ? current
+        : {
+            ...current,
+            chatInput: value,
+          }
     );
   }
 
@@ -265,7 +278,30 @@ export function useLessonChatAgent({
     let requestLesson = lesson;
     let baseStreamingDocument = currentBoardDocument ?? lesson.board_document;
     let requestStartedAtMs = Date.now();
+    const abortController = new AbortController();
 
+    function finishCancelledTurn() {
+      const stoppedContent = streamedChatContent.trim();
+      updateLessonMessages(lessonId, (current) =>
+        current
+          .map((message) =>
+            message.id === pendingAssistantMessage.id
+              ? {
+                  ...message,
+                  content: streamedChatContent,
+                  status: "ready" as const,
+                  statusLabel: undefined,
+                }
+              : message
+          )
+          .filter((message) => message.id !== pendingAssistantMessage.id || Boolean(stoppedContent))
+      );
+      setCurrentNeedPending(false);
+      setError(null);
+    }
+
+    chatAbortRequestedRef.current = false;
+    chatAbortControllerRef.current = abortController;
     chatRequestInFlightRef.current = true;
     setBusyAction(busyActionName);
     setError(null);
@@ -297,10 +333,7 @@ export function useLessonChatAgent({
           );
         }
         if (restoreComposerInput !== undefined) {
-          updateLessonComposerState(lessonId, (current) => ({
-            ...current,
-            chatInput: restoreComposerInput,
-          }));
+          restoreComposerInputIfUntouched(lessonId, restoreComposerInput);
         }
         setCurrentNeedPending(false);
         return;
@@ -318,49 +351,58 @@ export function useLessonChatAgent({
         baseStreamingDocument = beforeRequestResult.lesson.board_document;
       }
       const canStreamDocumentPreview = shouldStreamDocumentPreview(payloadWithConversation, baseStreamingDocument);
+      if (abortController.signal.aborted) {
+        finishCancelledTurn();
+        return;
+      }
       requestStarted = true;
       requestStartedAtMs = Date.now();
       updatePendingAssistant(lessonId, pendingAssistantMessage.id, { statusLabel: "正在回复" });
-      const response = await api.streamChatOnLesson(requestLesson.id, payloadWithConversation, {
-        onPhase(label) {
-          updatePendingAssistant(lessonId, pendingAssistantMessage.id, { statusLabel: label });
+      const response = await api.streamChatOnLesson(
+        requestLesson.id,
+        payloadWithConversation,
+        {
+          onPhase(label) {
+            updatePendingAssistant(lessonId, pendingAssistantMessage.id, { statusLabel: label });
+          },
+          onChatDelta(delta) {
+            streamedChatContent += delta;
+            updatePendingAssistant(lessonId, pendingAssistantMessage.id, {
+              content: streamedChatContent,
+              statusLabel: "正在回复",
+            });
+          },
+          onDocumentDelta(delta) {
+            if (!canStreamDocumentPreview) {
+              return;
+            }
+            streamedDocumentText += delta;
+            setStreamingDocumentPreview({
+              ...baseStreamingDocument,
+              content_json: {},
+              content_html: streamingMarkdownToHtml(streamedDocumentText),
+              content_text: streamedDocumentText,
+            });
+          },
+          onRequirementUpdate(payload) {
+            if (payload.learning_clarification?.ready_for_board) {
+              sawReadyForBoardRequirementUpdate = true;
+            }
+            setCurrentNeedPending(false);
+            setClarificationQuestions(payload.clarification_questions);
+            setLearningClarity(payload.learning_clarification);
+            setStreamedRequirementSheet(payload.active_requirement_sheet ?? payload.learning_requirement_sheet);
+          },
+          onBoardTaskUpdate(payload) {
+            setCurrentNeedPending(false);
+            setStreamedRequirementSheet(null);
+            setLearningClarity(null);
+            setClarificationQuestions([]);
+            setStreamedBoardTaskSheet(payload.active_board_task_sheet ?? payload.board_task_sheet);
+          },
         },
-        onChatDelta(delta) {
-          streamedChatContent += delta;
-          updatePendingAssistant(lessonId, pendingAssistantMessage.id, {
-            content: streamedChatContent,
-            statusLabel: "正在回复",
-          });
-        },
-        onDocumentDelta(delta) {
-          if (!canStreamDocumentPreview) {
-            return;
-          }
-          streamedDocumentText += delta;
-          setStreamingDocumentPreview({
-            ...baseStreamingDocument,
-            content_json: {},
-            content_html: streamingMarkdownToHtml(streamedDocumentText),
-            content_text: streamedDocumentText,
-          });
-        },
-        onRequirementUpdate(payload) {
-          if (payload.learning_clarification?.ready_for_board) {
-            sawReadyForBoardRequirementUpdate = true;
-          }
-          setCurrentNeedPending(false);
-          setClarificationQuestions(payload.clarification_questions);
-          setLearningClarity(payload.learning_clarification);
-          setStreamedRequirementSheet(payload.active_requirement_sheet ?? payload.learning_requirement_sheet);
-        },
-        onBoardTaskUpdate(payload) {
-          setCurrentNeedPending(false);
-          setStreamedRequirementSheet(null);
-          setLearningClarity(null);
-          setClarificationQuestions([]);
-          setStreamedBoardTaskSheet(payload.active_board_task_sheet ?? payload.board_task_sheet);
-        },
-      });
+        { signal: abortController.signal }
+      );
       const failedStreamingDocumentPreview =
         canStreamDocumentPreview &&
         streamedDocumentText.trim() &&
@@ -451,6 +493,10 @@ export function useLessonChatAgent({
         clearSelection();
       }
     } catch (chatError) {
+      if (abortController.signal.aborted && chatAbortRequestedRef.current) {
+        finishCancelledTurn();
+        return;
+      }
       const rawErrorMessage = chatError instanceof Error ? chatError.message : "聊天失败";
       const isTransientNetworkError =
         rawErrorMessage.toLowerCase().includes("network error") ||
@@ -510,10 +556,7 @@ export function useLessonChatAgent({
         }
       }
       if (restoreComposerInput !== undefined && !sawReadyForBoardRequirementUpdate) {
-        updateLessonComposerState(lessonId, (current) => ({
-          ...current,
-          chatInput: restoreComposerInput,
-        }));
+        restoreComposerInputIfUntouched(lessonId, restoreComposerInput);
       }
       if (!requestStarted && rollbackMessages) {
         updateLessonMessages(lessonId, () => rollbackMessages);
@@ -528,9 +571,21 @@ export function useLessonChatAgent({
       setError(userFacingError);
       setCurrentNeedPending(false);
     } finally {
+      if (chatAbortControllerRef.current === abortController) {
+        chatAbortControllerRef.current = null;
+      }
+      chatAbortRequestedRef.current = false;
       chatRequestInFlightRef.current = false;
       setBusyAction(null);
     }
+  }
+
+  function handleStopChat() {
+    if (!chatRequestInFlightRef.current || !chatAbortControllerRef.current) {
+      return;
+    }
+    chatAbortRequestedRef.current = true;
+    chatAbortControllerRef.current.abort();
   }
 
   async function handleSubmitChat(payloadOverride?: ChatRequestPayload, options?: { speakResponse?: boolean }) {
@@ -713,6 +768,7 @@ export function useLessonChatAgent({
     selectedReference,
     resetAgentState,
     handleSubmitChat,
+    handleStopChat,
     handleEditMessage,
     handleScopeAction,
     handleReferenceAction,
