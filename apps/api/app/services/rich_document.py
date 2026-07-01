@@ -2300,9 +2300,14 @@ def _append_omml_math(paragraph, latex: str, *, display: bool = False) -> None:
 
 
 def _append_math(paragraph, latex: str, *, display: bool = False) -> None:
-    _append_omml_math(paragraph, latex, display=display)
     if display:
+        for index, line in enumerate(_latex_display_lines(latex)):
+            if index:
+                paragraph.add_run().add_break()
+            paragraph.add_run(line)
         paragraph.paragraph_format.line_spacing = 1
+        return
+    paragraph.add_run(_latex_inline_text(latex) or latex)
 
 
 def _append_fragments(

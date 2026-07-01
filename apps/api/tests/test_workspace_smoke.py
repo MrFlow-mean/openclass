@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from io import BytesIO
+import json
+from zipfile import ZipFile
+from xml.etree import ElementTree as ET
 
 import pytest
 from fastapi.testclient import TestClient
@@ -55,6 +59,14 @@ def _document_with_text(document: dict, text: str) -> dict:
     return next_document
 
 
+def _docx_text_nodes(content: bytes) -> list[str]:
+    with ZipFile(BytesIO(content)) as archive:
+        document_xml = archive.read("word/document.xml")
+    root = ET.fromstring(document_xml)
+    ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    return [node.text or "" for node in root.findall(".//w:t", ns)]
+
+
 def test_workspace_document_history_flow(api_client: TestClient) -> None:
     created_workspace = api_client.post(
         "/api/packages",
@@ -107,6 +119,76 @@ def test_workspace_document_history_flow(api_client: TestClient) -> None:
     )
     assert restored.status_code == 200
     assert restored.json()["lessons"][0]["board_document"]["content_text"] == "First smoke version"
+
+
+def test_export_docx_rejects_empty_board_document(api_client: TestClient) -> None:
+    created_workspace = api_client.post(
+        "/api/packages",
+        json={"title": "Empty export package", "summary": ""},
+    )
+    assert created_workspace.status_code == 200
+    target_package_id = created_workspace.json()["active_package_id"]
+
+    generated = api_client.post(
+        "/api/lessons/generate",
+        json={"topic": "Empty export lesson", "target_package_id": target_package_id, "start_blank": True},
+    )
+    assert generated.status_code == 200
+    lesson = generated.json()["lessons"][0]
+
+    exported = api_client.get(f"/api/lessons/{lesson['id']}/document/export-docx")
+
+    assert exported.status_code == 409
+    assert "当前板书文档为空" in exported.text
+
+
+def test_export_docx_uses_head_snapshot_when_current_document_is_empty(api_client: TestClient) -> None:
+    created_workspace = api_client.post(
+        "/api/packages",
+        json={"title": "Snapshot export package", "summary": ""},
+    )
+    assert created_workspace.status_code == 200
+    target_package_id = created_workspace.json()["active_package_id"]
+
+    generated = api_client.post(
+        "/api/lessons/generate",
+        json={"topic": "Snapshot export lesson", "target_package_id": target_package_id, "start_blank": True},
+    )
+    assert generated.status_code == 200
+    lesson = generated.json()["lessons"][0]
+    saved_document = _document_with_text(lesson["board_document"], "Head snapshot survives export")
+    saved = api_client.post(
+        f"/api/lessons/{lesson['id']}/document/save",
+        json={
+            "document": saved_document,
+            "label": "Save export source",
+            "message": "Saved export source",
+            "metadata": {"kind": "manual_document_save"},
+        },
+    )
+    assert saved.status_code == 200
+
+    store = workspace_state.get_store()
+    empty_doc = {"type": "doc", "content": [{"type": "paragraph"}]}
+    with store._connect() as conn:
+        with conn:
+            conn.execute(
+                """
+                UPDATE lessons
+                SET board_document_title = title,
+                    board_content_json = ?,
+                    board_content_html = '',
+                    board_content_text = ''
+                WHERE id = ?
+                """,
+                (json.dumps(empty_doc), lesson["id"]),
+            )
+
+    exported = api_client.get(f"/api/lessons/{lesson['id']}/document/export-docx")
+
+    assert exported.status_code == 200
+    assert exported.headers["cache-control"].startswith("no-store")
+    assert "Head snapshot survives export" in "".join(_docx_text_nodes(exported.content))
 
 
 def test_resource_upload_endpoint_is_not_exposed(api_client: TestClient) -> None:

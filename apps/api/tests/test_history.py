@@ -1,5 +1,7 @@
 import base64
 import sys
+from zipfile import ZipFile
+from xml.etree import ElementTree as ET
 
 import pytest
 
@@ -1505,3 +1507,20 @@ def test_docx_import_export_roundtrip(tmp_path) -> None:
     assert imported.title == "Imported"
     assert "标题" in imported.content_text
     assert "正文" in imported.content_text
+
+
+def test_docx_export_preserves_math_as_visible_word_text(tmp_path) -> None:
+    document = build_document(title="Doc", content_text="公式：$a_n=\\frac{1}{n}$，极限 $\\lim_{x\\to0}\\frac{\\sin x}{x}=1$。")
+    export_path = tmp_path / "math.docx"
+
+    export_docx(document, export_path)
+
+    with ZipFile(export_path) as archive:
+        document_xml = archive.read("word/document.xml")
+    root = ET.fromstring(document_xml)
+    ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    visible_text = "".join(node.text or "" for node in root.findall(".//w:t", ns))
+
+    assert "an=1/n" in visible_text
+    assert "lim x→0" in visible_text
+    assert "(sin x)/x=1" in visible_text

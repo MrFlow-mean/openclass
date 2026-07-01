@@ -29,6 +29,7 @@ from app.services.rich_document import (
     document_changed,
     export_docx,
     import_docx,
+    is_document_empty,
     rich_structure_counts,
     rich_structure_score,
     would_flatten_rich_document,
@@ -46,6 +47,12 @@ from app.services.workspace_state import (
 )
 
 router = APIRouter()
+
+_DOCX_NO_STORE_HEADERS = {
+    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+    "Pragma": "no-cache",
+    "Expires": "0",
+}
 
 
 @router.get("/api/documents/search", response_model=DocumentSegmentSearchResponse)
@@ -293,13 +300,29 @@ def import_document_docx(
 def export_document_docx(lesson_id: str, user: UserView = Depends(current_user)) -> FileResponse:
     workspace = load_workspace_for_user(user.id)
     _, lesson = find_lesson_package(workspace, lesson_id)
+    document = _exportable_document_for_lesson(lesson)
+    if is_document_empty(document):
+        raise HTTPException(status_code=409, detail="当前板书文档为空，不能导出 DOCX")
     target_path = EXPORT_DIR / f"{lesson.slug or lesson.id}.docx"
-    export_docx(lesson.board_document, target_path)
+    export_docx(document, target_path)
     return FileResponse(
         target_path,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         filename=f"{lesson.slug or lesson.id}.docx",
+        headers=_DOCX_NO_STORE_HEADERS,
     )
+
+
+def _exportable_document_for_lesson(lesson) -> BoardDocument:
+    if not is_document_empty(lesson.board_document):
+        return lesson.board_document
+    try:
+        head_snapshot = current_head_commit(lesson).snapshot
+    except Exception:
+        return lesson.board_document
+    if not is_document_empty(head_snapshot):
+        return head_snapshot
+    return lesson.board_document
 
 
 @router.post("/api/lessons/{lesson_id}/branches", response_model=CoursePackageView)
