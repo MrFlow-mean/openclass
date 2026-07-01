@@ -3,6 +3,7 @@ import json
 import pytest
 
 from app.models import ChatRequest, ConversationTurn
+from app.services import openai_course_ai as openai_course_ai_module
 from app.services import workspace_state
 from app.services.chat_service import process_chat_on_lesson
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
@@ -86,7 +87,46 @@ def test_blank_board_refinement_prompt_requires_rich_broad_topic_guidance(
     assert "已会/未会" in system_prompt
 
 
-def test_blank_board_stream_parser_emits_chatbot_message_before_json_is_complete() -> None:
+def test_parse_response_logs_model_call_started(monkeypatch: pytest.MonkeyPatch) -> None:
+    ai = OpenAICourseAI()
+    logged_events: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        openai_course_ai_module.ai_usage_logger,
+        "log_event",
+        lambda event_type, **payload: logged_events.append({"event_type": event_type, **payload}) or payload,
+    )
+    monkeypatch.setattr(ai, "_model_for", lambda role: ("deepseek", "timing-model"))
+    monkeypatch.setattr(ai, "_provider_available", lambda provider: True)
+    monkeypatch.setattr(
+        ai,
+        "_call_parse",
+        lambda **kwargs: openai_course_ai_module.ParsedAIResponse(
+            output_parsed=BlankBoardRequirementRefinement(route="ordinary_chat", chatbot_message="收到。"),
+            output_text='{"route":"ordinary_chat","chatbot_message":"收到。"}',
+        ),
+    )
+
+    response = ai._parse_response(
+        "pm",
+        system_prompt="system",
+        user_prompt="user",
+        schema=BlankBoardRequirementRefinement,
+        visible_stream_field="chatbot_message",
+    )
+
+    assert response is not None
+    started_event = next(event for event in logged_events if event["event_type"] == "ai_model_call_started")
+    assert started_event["provider"] == "deepseek"
+    assert started_event["role"] == "pm"
+    assert started_event["model"] == "timing-model"
+    assert started_event["schema"] == "BlankBoardRequirementRefinement"
+    assert started_event["prompt_chars"] == len("system") + len("user")
+
+
+def test_blank_board_stream_parser_emits_chatbot_message_before_json_is_complete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     class _FakeCompletions:
         def __init__(self) -> None:
             self.calls: list[dict[str, object]] = []
@@ -107,6 +147,12 @@ def test_blank_board_stream_parser_emits_chatbot_message_before_json_is_complete
     ai = OpenAICourseAI()
     client = _FakeClient()
     stream_events: list[dict[str, object]] = []
+    logged_events: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        openai_course_ai_module.ai_usage_logger,
+        "log_event",
+        lambda event_type, **payload: logged_events.append({"event_type": event_type, **payload}) or payload,
+    )
     with bind_ai_output_stream(lambda payload: stream_events.append(payload)):
         result = ai._stream_openai_chat_completion(
             client=client,
@@ -127,6 +173,16 @@ def test_blank_board_stream_parser_emits_chatbot_message_before_json_is_complete
         for event in stream_events
         if event.get("type") == "field_delta" and event.get("field") == "chatbot_message"
     ] == ["你好", "世界"]
+    timing_events = [event for event in logged_events if event["event_type"] == "ai_stream_timing"]
+    assert [event["stream_event"] for event in timing_events] == [
+        "first_model_chunk",
+        "first_visible_field_delta",
+    ]
+    assert all(event["role"] == "pm" for event in timing_events)
+    assert all(event["model"] == "test-model" for event in timing_events)
+    assert all(event["schema"] == "BlankBoardRequirementRefinement" for event in timing_events)
+    assert all(event["field"] == "chatbot_message" for event in timing_events)
+    assert all(isinstance(event["elapsed_ms"], int) for event in timing_events)
 
 
 def test_empty_board_ordinary_chat_does_not_create_requirement(

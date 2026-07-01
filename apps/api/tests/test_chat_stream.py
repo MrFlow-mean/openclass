@@ -97,11 +97,27 @@ def test_chat_stream_emits_heartbeat_before_final(monkeypatch) -> None:
     event_names = [event for event, _payload in events]
     assert "heartbeat" in event_names
     assert event_names[-1] == "final"
-    assert [event["stream_event"] for event in logged_events] == ["stream_started", "stream_final_sent"]
+    assert [event["stream_event"] for event in logged_events] == [
+        "stream_started",
+        "process_chat_returned",
+        "first_chat_delta_sent",
+        "stream_final_sent",
+    ]
+    lifecycle_elapsed = [
+        event["elapsed_ms"]
+        for event in logged_events
+        if event["stream_event"] in {"stream_started", "process_chat_returned", "stream_final_sent"}
+    ]
+    assert lifecycle_elapsed == sorted(lifecycle_elapsed)
+    first_chat_delta = next(event for event in logged_events if event["stream_event"] == "first_chat_delta_sent")
+    assert first_chat_delta["role"] == "chatbot"
+    assert first_chat_delta["field"] == "chatbot_message"
     assert logged_events[-1]["produced_commit_id"] is not None
 
 
 def test_chat_stream_routes_pm_chatbot_message_as_chat_delta(monkeypatch) -> None:
+    logged_events: list[dict] = []
+
     def process_with_pm_stream(*args, **kwargs) -> ChatResponse:
         emit_ai_stream_event(
             {
@@ -115,6 +131,11 @@ def test_chat_stream_routes_pm_chatbot_message_as_chat_delta(monkeypatch) -> Non
         return _chat_response("lesson_stream_test", chatbot_message="正在自然收敛需求。")
 
     monkeypatch.setattr(chat_router, "process_chat_on_lesson", process_with_pm_stream)
+    monkeypatch.setattr(
+        chat_router.ai_usage_logger,
+        "log_event",
+        lambda event_type, **payload: logged_events.append({"event_type": event_type, **payload}) or payload,
+    )
 
     events = _collect_events(
         chat_router._chat_stream_events(
@@ -126,6 +147,12 @@ def test_chat_stream_routes_pm_chatbot_message_as_chat_delta(monkeypatch) -> Non
 
     assert _joined_delta(events, "chat_delta") == "正在自然收敛需求。"
     assert [event for event, _payload in events].count("final") == 1
+    first_chat_delta_events = [
+        event for event in logged_events if event["stream_event"] == "first_chat_delta_sent"
+    ]
+    assert len(first_chat_delta_events) == 1
+    assert first_chat_delta_events[0]["role"] == "pm"
+    assert first_chat_delta_events[0]["field"] == "chatbot_message"
 
 
 def test_chat_stream_synthesizes_final_chatbot_message_as_delta(monkeypatch) -> None:
@@ -171,6 +198,8 @@ def test_chat_stream_paces_visible_chat_deltas(monkeypatch) -> None:
 
 
 def test_chat_stream_synthesizes_document_delta_for_succeeded_board_operation(monkeypatch) -> None:
+    logged_events: list[dict] = []
+
     monkeypatch.setattr(
         chat_router,
         "process_chat_on_lesson",
@@ -180,6 +209,11 @@ def test_chat_stream_synthesizes_document_delta_for_succeeded_board_operation(mo
             document_text="# 新板书\n\n这里是生成后的板书内容。",
             board_document_operation_status="succeeded",
         ),
+    )
+    monkeypatch.setattr(
+        chat_router.ai_usage_logger,
+        "log_event",
+        lambda event_type, **payload: logged_events.append({"event_type": event_type, **payload}) or payload,
     )
 
     events = _collect_events(
@@ -193,6 +227,12 @@ def test_chat_stream_synthesizes_document_delta_for_succeeded_board_operation(mo
     event_names = [event for event, _payload in events]
     assert _joined_delta(events, "document_delta") == "# 新板书\n\n这里是生成后的板书内容。"
     assert event_names.index("document_delta") < event_names.index("final")
+    first_document_delta_events = [
+        event for event in logged_events if event["stream_event"] == "first_document_delta_sent"
+    ]
+    assert len(first_document_delta_events) == 1
+    assert first_document_delta_events[0]["role"] == "board"
+    assert first_document_delta_events[0]["field"] == "content_text"
 
 
 def test_chat_stream_worker_error_emits_error_and_lifecycle_log(monkeypatch) -> None:

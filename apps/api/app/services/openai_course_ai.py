@@ -2493,18 +2493,43 @@ class OpenAICourseAI:
             }
         output_parts: list[str] = []
         last_visible_value = ""
+        stream_started_at = time.perf_counter()
+        first_model_chunk_logged = False
+        first_visible_delta_logged = False
         try:
             stream = client.chat.completions.create(**kwargs)
             for chunk in stream:
                 delta_text = self._chat_completion_stream_delta(chunk)
                 if not delta_text:
                     continue
+                if not first_model_chunk_logged:
+                    first_model_chunk_logged = True
+                    ai_usage_logger.log_event(
+                        "ai_stream_timing",
+                        stream_event="first_model_chunk",
+                        role=role,
+                        model=model,
+                        schema=schema.__name__,
+                        field=field_name,
+                        elapsed_ms=_elapsed_ms(stream_started_at),
+                    )
                 output_parts.append(delta_text)
                 output_text = "".join(output_parts)
                 visible_value = _partial_json_string_field_value(output_text, field_name)
                 if observer and visible_value.startswith(last_visible_value):
                     visible_delta = visible_value[len(last_visible_value) :]
                     if visible_delta:
+                        if not first_visible_delta_logged:
+                            first_visible_delta_logged = True
+                            ai_usage_logger.log_event(
+                                "ai_stream_timing",
+                                stream_event="first_visible_field_delta",
+                                role=role,
+                                model=model,
+                                schema=schema.__name__,
+                                field=field_name,
+                                elapsed_ms=_elapsed_ms(stream_started_at),
+                            )
                         observer(
                             {
                                 "type": "field_delta",
@@ -2876,6 +2901,11 @@ class OpenAICourseAI:
 
         started_at = time.perf_counter()
         try:
+            ai_usage_logger.log_event(
+                "ai_model_call_started",
+                **call_details,
+                prompt_chars=len(system_prompt) + len(user_prompt),
+            )
             response = self._call_parse(
                 role=role,
                 provider=provider,
@@ -3054,6 +3084,11 @@ class OpenAICourseAI:
 
         primary_started_at = time.perf_counter()
         try:
+            ai_usage_logger.log_event(
+                "ai_model_call_started",
+                **call_details,
+                prompt_chars=len(system_prompt) + len(user_prompt),
+            )
             response = self._call_parse(
                 role=role,
                 provider=provider,

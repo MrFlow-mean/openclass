@@ -5,7 +5,8 @@ import queue
 import threading
 import time
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from time import perf_counter
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
@@ -28,7 +29,11 @@ class ChatStreamState:
     lesson_id: str
     user_id: str
     user_message_excerpt: str
+    started_at: float = field(default_factory=perf_counter)
     last_phase: str = "request"
+    first_chat_delta_ms: int | None = None
+    first_document_delta_ms: int | None = None
+    process_returned_ms: int | None = None
     final_enqueued: bool = False
     final_yielded: bool = False
     error_enqueued: bool = False
@@ -90,6 +95,10 @@ def _visible_delta_delay_seconds(event: str) -> float:
     return 0.0
 
 
+def _elapsed_ms_since(started_at: float) -> int:
+    return max(0, round((perf_counter() - started_at) * 1000))
+
+
 def _chat_stream_events(lesson_id: str, request: ChatRequest, *, user_id: str) -> Iterator[str]:
     events: queue.Queue[tuple[str, object] | None] = queue.Queue()
     state = ChatStreamState(
@@ -108,6 +117,31 @@ def _chat_stream_events(lesson_id: str, request: ChatRequest, *, user_id: str) -
 
     def emit(event: str, data: object) -> None:
         events.put((event, data))
+
+    def log_first_delta_once(
+        *,
+        metric: str,
+        role: str,
+        field: str,
+    ) -> None:
+        if metric == "chat" and state.first_chat_delta_ms is None:
+            state.first_chat_delta_ms = _elapsed_ms_since(state.started_at)
+            _log_stream_lifecycle(
+                state,
+                "first_chat_delta_sent",
+                elapsed_ms=state.first_chat_delta_ms,
+                role=role,
+                field=field,
+            )
+        elif metric == "document" and state.first_document_delta_ms is None:
+            state.first_document_delta_ms = _elapsed_ms_since(state.started_at)
+            _log_stream_lifecycle(
+                state,
+                "first_document_delta_sent",
+                elapsed_ms=state.first_document_delta_ms,
+                role=role,
+                field=field,
+            )
 
     def observer(payload: dict[str, object]) -> None:
         nonlocal chat_delta_emitted, document_delta_emitted
@@ -137,10 +171,12 @@ def _chat_stream_events(lesson_id: str, request: ChatRequest, *, user_id: str) -
         if not delta:
             return
         if role in {"chatbot", "pm"} and field == "chatbot_message":
+            log_first_delta_once(metric="chat", role=role, field=field)
             for char in delta:
                 emit("chat_delta", {"delta": char})
             chat_delta_emitted = True
         elif role == "board" and field == "content_text":
+            log_first_delta_once(metric="document", role=role, field=field)
             for char in delta:
                 emit("document_delta", {"delta": char})
             document_delta_emitted = True
@@ -148,6 +184,7 @@ def _chat_stream_events(lesson_id: str, request: ChatRequest, *, user_id: str) -
     def emit_missing_visible_deltas(response: ChatResponse) -> None:
         nonlocal chat_delta_emitted, document_delta_emitted
         if not chat_delta_emitted and response.chatbot_message:
+            log_first_delta_once(metric="chat", role="chatbot", field="chatbot_message")
             for char in response.chatbot_message:
                 emit("chat_delta", {"delta": char})
             chat_delta_emitted = True
@@ -157,6 +194,7 @@ def _chat_stream_events(lesson_id: str, request: ChatRequest, *, user_id: str) -
         ):
             document_text = _lesson_document_text(response, lesson_id)
             if document_text:
+                log_first_delta_once(metric="document", role="board", field="content_text")
                 for char in document_text:
                     emit("document_delta", {"delta": char})
                 document_delta_emitted = True
@@ -168,20 +206,35 @@ def _chat_stream_events(lesson_id: str, request: ChatRequest, *, user_id: str) -
             lesson_id=lesson_id,
             user_id=user_id,
         ):
-            _log_stream_lifecycle(state, "stream_started")
+            _log_stream_lifecycle(state, "stream_started", elapsed_ms=0)
             try:
                 emit("phase", {"label": "正在准备回复", "role": "request"})
                 with bind_ai_output_stream(observer):
                     response = process_chat_on_lesson(lesson_id, request, user_id=user_id)
+                state.process_returned_ms = _elapsed_ms_since(state.started_at)
+                _log_stream_lifecycle(
+                    state,
+                    "process_chat_returned",
+                    elapsed_ms=state.process_returned_ms,
+                )
                 state.produced_commit_id = _head_commit_id(response, lesson_id)
                 emit_missing_visible_deltas(response)
                 state.final_enqueued = True
                 emit("final", response.model_dump(mode="json"))
-                _log_stream_lifecycle(state, "stream_final_sent")
+                _log_stream_lifecycle(
+                    state,
+                    "stream_final_sent",
+                    elapsed_ms=_elapsed_ms_since(state.started_at),
+                )
             except Exception as exc:  # pragma: no cover - route safety net
                 state.error_enqueued = True
                 emit("error", {"message": str(exc), "trace_id": state.trace_id})
-                _log_stream_lifecycle(state, "stream_error", error_message=str(exc))
+                _log_stream_lifecycle(
+                    state,
+                    "stream_error",
+                    elapsed_ms=_elapsed_ms_since(state.started_at),
+                    error_message=str(exc),
+                )
             finally:
                 events.put(None)
 
@@ -205,7 +258,11 @@ def _chat_stream_events(lesson_id: str, request: ChatRequest, *, user_id: str) -
                 time.sleep(delay)
     finally:
         if not state.final_yielded and not state.error_enqueued:
-            _log_stream_lifecycle(state, "stream_disconnected_or_no_final")
+            _log_stream_lifecycle(
+                state,
+                "stream_disconnected_or_no_final",
+                elapsed_ms=_elapsed_ms_since(state.started_at),
+            )
 
 
 @router.post("/api/lessons/{lesson_id}/chat", response_model=ChatResponse)
