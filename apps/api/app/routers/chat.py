@@ -15,7 +15,7 @@ from app.models import ChatRequest, ChatResponse, UserView, new_id, now_iso
 from app.routers.auth import current_user
 from app.services.ai_logging import ai_log_context, ai_usage_logger
 from app.services.chat_service import process_chat_on_lesson
-from app.services.openai_course_ai import bind_ai_output_stream
+from app.services.openai_course_ai import AIStreamCancelledError, bind_ai_output_stream
 
 router = APIRouter()
 CHAT_STREAM_HEARTBEAT_SECONDS = 10.0
@@ -101,6 +101,7 @@ def _elapsed_ms_since(started_at: float) -> int:
 
 def _chat_stream_events(lesson_id: str, request: ChatRequest, *, user_id: str) -> Iterator[str]:
     events: queue.Queue[tuple[str, object] | None] = queue.Queue()
+    cancel_event = threading.Event()
     state = ChatStreamState(
         trace_id=new_id("chat"),
         lesson_id=lesson_id,
@@ -209,7 +210,7 @@ def _chat_stream_events(lesson_id: str, request: ChatRequest, *, user_id: str) -
             _log_stream_lifecycle(state, "stream_started", elapsed_ms=0)
             try:
                 emit("phase", {"label": "正在准备回复", "role": "request"})
-                with bind_ai_output_stream(observer):
+                with bind_ai_output_stream(observer, cancel_event.is_set):
                     response = process_chat_on_lesson(lesson_id, request, user_id=user_id)
                 state.process_returned_ms = _elapsed_ms_since(state.started_at)
                 _log_stream_lifecycle(
@@ -224,6 +225,12 @@ def _chat_stream_events(lesson_id: str, request: ChatRequest, *, user_id: str) -
                 _log_stream_lifecycle(
                     state,
                     "stream_final_sent",
+                    elapsed_ms=_elapsed_ms_since(state.started_at),
+                )
+            except AIStreamCancelledError:
+                _log_stream_lifecycle(
+                    state,
+                    "stream_cancelled",
                     elapsed_ms=_elapsed_ms_since(state.started_at),
                 )
             except Exception as exc:  # pragma: no cover - route safety net
@@ -258,6 +265,7 @@ def _chat_stream_events(lesson_id: str, request: ChatRequest, *, user_id: str) -
                 time.sleep(delay)
     finally:
         if not state.final_yielded and not state.error_enqueued:
+            cancel_event.set()
             _log_stream_lifecycle(
                 state,
                 "stream_disconnected_or_no_final",

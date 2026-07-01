@@ -78,7 +78,11 @@ _board_model_selection: ContextVar[AIModelSelection | None] = ContextVar(
     "board_model_selection", default=None
 )
 AIStreamObserver = Callable[[dict[str, Any]], None]
+AIStreamCancelChecker = Callable[[], bool]
 _ai_stream_observer: ContextVar[AIStreamObserver | None] = ContextVar("ai_stream_observer", default=None)
+_ai_stream_cancel_checker: ContextVar[AIStreamCancelChecker | None] = ContextVar(
+    "ai_stream_cancel_checker", default=None
+)
 CHATBOT_BOARD_DOCUMENT_REDACTION = (
     "已隔离：Chatbot 没有直接读取右侧板书文档的权限。"
     "如果本轮需要讲解板书内容，只能依据板书侧 directive、互动 session 或工具结果中明确提供的目标摘录和指令。"
@@ -302,6 +306,10 @@ class AIStreamOutputError(RuntimeError):
         self.visible_field_was_streamed = visible_field_was_streamed
 
 
+class AIStreamCancelledError(RuntimeError):
+    pass
+
+
 class ChatbotReply(BaseModel):
     chatbot_message: str
 
@@ -483,19 +491,32 @@ def bind_board_model_selection(selection: AIModelSelection | None):
         _board_model_selection.reset(token)
 
 
+def raise_if_ai_stream_cancelled() -> None:
+    checker = _ai_stream_cancel_checker.get()
+    if checker and checker():
+        raise AIStreamCancelledError("AI stream was cancelled")
+
+
 @contextmanager
-def bind_ai_output_stream(observer: AIStreamObserver | None) -> Iterator[None]:
+def bind_ai_output_stream(
+    observer: AIStreamObserver | None,
+    cancel_checker: AIStreamCancelChecker | None = None,
+) -> Iterator[None]:
     token = _ai_stream_observer.set(observer)
+    cancel_token = _ai_stream_cancel_checker.set(cancel_checker)
     try:
         yield
     finally:
+        _ai_stream_cancel_checker.reset(cancel_token)
         _ai_stream_observer.reset(token)
 
 
 def emit_ai_stream_event(payload: dict[str, Any]) -> None:
+    raise_if_ai_stream_cancelled()
     observer = _ai_stream_observer.get()
     if observer:
         observer(payload)
+    raise_if_ai_stream_cancelled()
 
 
 class OpenAIConfig(BaseModel):
@@ -2462,8 +2483,10 @@ class OpenAICourseAI:
         first_model_chunk_logged = False
         first_visible_delta_logged = False
         try:
+            raise_if_ai_stream_cancelled()
             stream = client.chat.completions.create(**kwargs)
             for chunk in stream:
+                raise_if_ai_stream_cancelled()
                 delta_text = self._chat_completion_stream_delta(chunk)
                 if not delta_text:
                     continue
@@ -2505,6 +2528,9 @@ class OpenAICourseAI:
                             }
                         )
                         last_visible_value = visible_value
+                raise_if_ai_stream_cancelled()
+        except AIStreamCancelledError:
+            raise
         except Exception as exc:
             raise AIStreamOutputError(
                 str(exc),

@@ -1,4 +1,5 @@
 import json
+import threading
 import time
 
 from app.models import (
@@ -12,7 +13,7 @@ from app.models import (
 from app.routers import chat as chat_router
 from app.services.ai_logging import ai_log_context
 from app.services.lesson_factory import create_empty_lesson
-from app.services.openai_course_ai import emit_ai_stream_event
+from app.services.openai_course_ai import AIStreamCancelledError, emit_ai_stream_event
 from app.services.route_context import bind_ai_request_context
 from app.services.workspace_state import package_view_for_lesson
 
@@ -288,6 +289,50 @@ def test_chat_stream_logs_disconnect_before_final(monkeypatch) -> None:
     stream.close()
 
     assert "stream_disconnected_or_no_final" in [event["stream_event"] for event in logged_events]
+
+
+def test_chat_stream_cancels_worker_after_disconnect(monkeypatch) -> None:
+    logged_events: list[dict] = []
+    allow_model_delta = threading.Event()
+    cancellation_seen = threading.Event()
+
+    def cancellable_process_chat_on_lesson(*args, **kwargs) -> ChatResponse:
+        allow_model_delta.wait(timeout=1)
+        try:
+            emit_ai_stream_event(
+                {
+                    "type": "field_delta",
+                    "role": "chatbot",
+                    "field": "chatbot_message",
+                    "delta": "不会继续输出",
+                }
+            )
+        except AIStreamCancelledError:
+            cancellation_seen.set()
+            raise
+        return _chat_response("lesson_stream_test")
+
+    monkeypatch.setattr(chat_router, "process_chat_on_lesson", cancellable_process_chat_on_lesson)
+    monkeypatch.setattr(
+        chat_router.ai_usage_logger,
+        "log_event",
+        lambda event_type, **payload: logged_events.append({"event_type": event_type, **payload}) or payload,
+    )
+
+    stream = chat_router._chat_stream_events(
+        "lesson_stream_test",
+        ChatRequest(message="帮我继续"),
+        user_id="user_stream_test",
+    )
+    next(stream)
+    stream.close()
+    allow_model_delta.set()
+
+    assert cancellation_seen.wait(timeout=1)
+    stream_events = [event["stream_event"] for event in logged_events]
+    assert "stream_disconnected_or_no_final" in stream_events
+    assert "stream_cancelled" in stream_events
+    assert "stream_final_sent" not in stream_events
 
 
 def test_route_context_reuses_outer_stream_trace() -> None:
