@@ -1,4 +1,5 @@
 import type {
+  BoardWorkflow,
   InitialLearningGranularity,
   InitialLearningWorkMode,
   LearningClarificationStatus,
@@ -52,11 +53,13 @@ export function buildLearningRequirementDisplay({
   const granularity = normalizeGranularity(requirementSheet?.granularity ?? clarification?.granularity ?? null);
   const learningGoal = meaningfulText(requirementSheet?.learning_goal ?? latestFactByCategory(facts, "learning")?.value);
   const progress = Math.max(0, Math.min(100, clarification?.progress ?? 0));
+  const boardWorkflowFactor = buildBoardWorkflowFactor(requirementSheet?.board_workflow ?? null);
 
   if (workMode === "knowledge_board") {
     const isSingleKnowledgePoint = granularity === "single_knowledge_point";
     const knowledgePoint = isSingleKnowledgePoint && learningGoal ? learningGoal : "待收敛到具体知识点";
     const coreFactors = [
+      boardWorkflowFactor,
       factor({
         key: "knowledge_point",
         label: "知识点",
@@ -83,6 +86,7 @@ export function buildLearningRequirementDisplay({
     const currentLevel = meaningfulText(latestFactByCategory(facts, "level")?.value) || meaningfulText(requirementSheet?.level);
     const targetScenario = meaningfulText(latestFactByCategory(facts, "scenario")?.value, { allowNoScenario: true });
     const coreFactors = [
+      boardWorkflowFactor,
       factor({
         key: "practice_content",
         label: "练习内容",
@@ -117,6 +121,7 @@ export function buildLearningRequirementDisplay({
   }
 
   const coreFactors = [
+    boardWorkflowFactor,
     factor({
       key: "learning_type",
       label: "学习类型",
@@ -136,6 +141,34 @@ export function buildLearningRequirementDisplay({
       usedValues: [],
     }),
   };
+}
+
+export function boardWorkflowLabel(value: BoardWorkflow | null | undefined) {
+  const workflow = normalizeBoardWorkflow(value);
+  if (workflow === "generate_from_scratch") {
+    return "从 0 生成板书";
+  }
+  if (workflow === "act_on_existing_board") {
+    return "对已有板书内容做动作";
+  }
+  return "待判断";
+}
+
+function buildBoardWorkflowFactor(value: BoardWorkflow | null | undefined) {
+  const workflow = normalizeBoardWorkflow(value);
+  return factor({
+    key: "board_workflow",
+    label: "板书链路",
+    value: boardWorkflowLabel(workflow),
+    filled: workflow !== "unknown",
+  });
+}
+
+function normalizeBoardWorkflow(value: BoardWorkflow | null | undefined): BoardWorkflow {
+  if (value === "generate_from_scratch" || value === "act_on_existing_board") {
+    return value;
+  }
+  return "unknown";
 }
 
 function normalizeWorkMode(value: InitialLearningWorkMode | null | undefined): InitialLearningWorkMode | "unknown" {

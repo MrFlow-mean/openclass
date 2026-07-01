@@ -47,6 +47,7 @@ def build_requirements(topic: str) -> LearningRequirementSheet:
         boundary="优先围绕当前主题展开，不自动跳到无关领域",
         board_scope=[],
         success_criteria="",
+        board_workflow="generate_from_scratch",
     )
 
 

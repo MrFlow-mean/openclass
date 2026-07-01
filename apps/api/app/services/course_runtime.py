@@ -36,6 +36,13 @@ def normalize_requirements(
             setattr(normalized, field_name, getattr(default_requirements, field_name))
     if normalized.current_questions == legacy_questions:
         normalized.current_questions = list(default_requirements.current_questions)
+    if normalized.board_workflow == "unknown":
+        has_existing_board_action = normalized.action_type is not None or normalized.target_location is not None
+        normalized.board_workflow = (
+            "act_on_existing_board"
+            if has_existing_board_action or document.content_text.strip()
+            else "generate_from_scratch"
+        )
     normalized.board_scope = []
     if not normalized.current_questions and normalized.action_type is None:
         normalized.current_questions = [f"如何理解 {normalized.theme or lesson_title}"]

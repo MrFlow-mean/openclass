@@ -30,6 +30,7 @@ from app.models import (
     BoardTaskAction,
     BoardTaskRequirementSheet,
     BoardTaskRoute,
+    BoardWorkflow,
     InitialLearningGranularity,
     InitialLearningWorkMode,
     InteractionRuleDraft,
@@ -429,6 +430,7 @@ class BlankBoardRequirementRefinement(BaseModel):
     chatbot_message: str = ""
     progress: int = Field(default=0, ge=0, le=100)
     summary: str = ""
+    board_workflow: BoardWorkflow = "generate_from_scratch"
     work_mode: InitialLearningWorkMode = "unknown"
     granularity: InitialLearningGranularity = "unclear"
     learning_goal: str = ""
@@ -1099,6 +1101,7 @@ class OpenAICourseAI:
             "你是 OpenClass 的空白板书学习需求收敛器，也是左侧聊天框里的自然对话 AI。\n"
             "运行前提：board_document_state.status 必须是 empty；本阶段只维护 LearningRequirementSheet，"
             "不生成板书、不冻结清单、不调用 Board AI。\n"
+            "结构化清单中的 board_workflow 必须记录为 generate_from_scratch，表示本轮属于从 0 生成板书前的学习需求收敛。\n"
             "任务：先判断用户当前轮是 ordinary_chat 还是 requirement_refining。\n"
             "ordinary_chat：用户没有表达学习、练习、资料、板书或教学目的时，像 ChatGPT 一样自然回复；"
             "不要新建或更新清单，不要追问学习需求。\n"
@@ -1175,6 +1178,7 @@ class OpenAICourseAI:
                     ),
                     "progress": "0-100 的清单完整度；ready_for_board=true 时必须为 100。",
                     "summary": "当前学习需求的一句话摘要；普通聊天可为空。",
+                    "board_workflow": "固定写 generate_from_scratch，表示从 0 生成板书前的学习需求清单。",
                     "work_mode": "knowledge_board、practice_artifact 或 unknown；本阶段不使用其他新值。",
                     "granularity": "single_knowledge_point、practice_artifact、broad_topic 或 unclear。",
                     "learning_goal": "核心因素。新知识点教学写用户具体想学的知识点；练习型写用户具体想练的内容。",
@@ -1374,6 +1378,7 @@ class OpenAICourseAI:
         system_prompt = (
             "你是 OpenClass 的已有板书任务清单 AI。当前右侧板书已经有内容，"
             "你的职责不是生成或讲解，而是从用户话语中维护一张四字段任务清单。\n"
+            "结构化清单中的 board_workflow 必须记录为 act_on_existing_board，表示本轮是在已有板书上定位、写入、修改、讲解或互动。\n"
             "四字段：目标位置、动作类型、问题/主题内容、是否有练习或特殊互动规则。\n"
             "规则：\n"
             "1. requested_action 只能是 write、edit、explain、chat；chat 只有用户明确要求按规则互动、练习、问答、"
@@ -1400,6 +1405,7 @@ class OpenAICourseAI:
                 "selection_excerpt": selection_excerpt or "",
                 "current_user_message": user_message,
                 "response_contract": {
+                    "board_workflow": "固定写 act_on_existing_board，表示对已有板书内容做动作。",
                     "target_hint": "用户给出的目标位置线索；有选区就概括选区。",
                     "location_status": "missing、selected、resolved、ambiguous 或 content_absent；清单阶段通常是 missing/selected。",
                     "requested_action": "write、edit、explain、chat 或 null。",

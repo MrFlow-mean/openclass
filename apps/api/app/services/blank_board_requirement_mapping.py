@@ -166,6 +166,7 @@ def build_requirement_sheet(
     requirement.action_instruction = ""
     requirement.location_clarification_question = ""
     requirement.interaction_rule_draft = None
+    requirement.board_workflow = "generate_from_scratch"
     requirement.work_mode = work_mode
     requirement.granularity = granularity
     return requirement

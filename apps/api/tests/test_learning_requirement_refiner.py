@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from app.models import ChatRequest, ConversationTurn
+from app.models import BoardTaskRequirementSheet, ChatRequest, ConversationTurn
 from app.services import learning_intake_policy
 from app.services import openai_course_ai as openai_course_ai_module
 from app.services import workspace_state
@@ -70,6 +70,7 @@ def test_blank_board_refinement_prompt_requires_rich_broad_topic_guidance(
     assert "granularity=single_knowledge_point" in system_prompt
     assert "ready_for_board=true" in system_prompt
     assert "通用 learning intake 策略" in system_prompt
+    assert "board_workflow 必须记录为 generate_from_scratch" in system_prompt
     assert "用户新增信息正在收敛哪一类不确定项" in system_prompt
     assert "背景 + 宽泛学习方向" in system_prompt
     assert "3-5 个 A/B/C/D 当前水平画像" in system_prompt
@@ -82,6 +83,7 @@ def test_blank_board_refinement_prompt_requires_rich_broad_topic_guidance(
     assert "4-6 个 A/B/C 卡片选项" in system_prompt
     assert "不要默认用户从基础练起" in system_prompt
     payload = json.loads(str(captured["user_prompt"]))
+    assert payload["response_contract"]["board_workflow"] == "固定写 generate_from_scratch，表示从 0 生成板书前的学习需求清单。"
     assert "开场承接" in payload["response_contract"]["chatbot_message"]
     assert "推荐理由" in payload["response_contract"]["chatbot_message"]
     assert "必须和用户当前表达形态匹配" in payload["response_contract"]["guidance_strategy"]
@@ -122,6 +124,44 @@ def test_learning_intake_policy_is_generic_and_covers_strategy_matrix() -> None:
     } <= set(learning_intake_policy.LEARNING_INTAKE_STRATEGIES)
     assert "背景 + 宽泛学习方向" in learning_intake_policy.BLANK_BOARD_LEARNING_INTAKE_POLICY
     assert "当前水平画像" in learning_intake_policy.BLANK_BOARD_LEARNING_INTAKE_POLICY
+
+
+def test_board_task_requirement_prompt_records_existing_board_workflow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ai = OpenAICourseAI()
+    captured: dict[str, object] = {}
+
+    def _fake_parse(role, system_prompt, user_prompt, schema, **kwargs):
+        captured["role"] = role
+        captured["system_prompt"] = system_prompt
+        captured["user_prompt"] = user_prompt
+        captured["schema"] = schema
+        return BoardTaskRequirementSheet(
+            target_hint="第一节",
+            requested_action="explain",
+            question_or_topic="讲解这里",
+            progress=100,
+        )
+
+    monkeypatch.setattr(ai, "_parse", _fake_parse)
+
+    result = ai.generate_board_task_requirement_sheet(
+        lesson_title="已有板书",
+        existing_task=None,
+        board_summary="第一节已有内容。",
+        resource_summary="",
+        conversation_summary="",
+        user_message="讲第一节",
+    )
+
+    assert result is not None
+    assert result.board_workflow == "act_on_existing_board"
+    assert captured["role"] == "pm"
+    assert captured["schema"] is BoardTaskRequirementSheet
+    assert "board_workflow 必须记录为 act_on_existing_board" in str(captured["system_prompt"])
+    payload = json.loads(str(captured["user_prompt"]))
+    assert payload["response_contract"]["board_workflow"] == "固定写 act_on_existing_board，表示对已有板书内容做动作。"
 
 
 def test_parse_response_logs_model_call_started(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -469,6 +509,7 @@ def test_empty_board_broad_learning_need_collects_requirement(
     assert response.active_requirement_sheet is not None
     assert response.active_requirement_sheet.work_mode == "knowledge_board"
     assert response.active_requirement_sheet.granularity == "broad_topic"
+    assert response.active_requirement_sheet.board_workflow == "generate_from_scratch"
     assert response.active_requirement_sheet.board_scope == []
     assert response.learning_clarification.ready_for_board is False
     assert response.requirement_phase == "collecting"
@@ -480,6 +521,7 @@ def test_empty_board_broad_learning_need_collects_requirement(
     sheet_json = json.loads(versions[0]["sheet_json"])
     assert sheet_json["work_mode"] == "knowledge_board"
     assert sheet_json["granularity"] == "broad_topic"
+    assert sheet_json["board_workflow"] == "generate_from_scratch"
     assert sheet_json["current_questions"] == ["你更想先理解整体组成，还是先挑一个最基础的概念开始？"]
     event_metadata = json.loads(events[0]["metadata_json"])
     assert event_metadata["guidance_strategy"] == "domain_map"

@@ -24,6 +24,7 @@ import {
 } from "@/components/course-studio/model-catalog";
 import { popoverPositionFromDomSelection } from "@/components/course-studio/selection-utils";
 import { LearningClarityCard } from "@/components/learning-clarity-card";
+import { boardWorkflowLabel } from "@/lib/learning-requirement-display";
 import type {
   AIModelCatalog,
   AIModelOption,
@@ -164,6 +165,7 @@ function CurrentNeedCard({
           <div className="h-full rounded-full bg-sky-500 transition-all" style={{ width: `${progress}%` }} />
         </div>
         <div className="mt-3 grid gap-2 text-xs leading-5 text-sky-950">
+          <p>链路：{boardWorkflowLabel(activeBoardTask.board_workflow ?? "act_on_existing_board")}</p>
           <p>位置：{activeBoardTask.target_hint || activeBoardTask.target_location?.display_label || activeBoardTask.location_status}</p>
           <p>动作：{boardTaskActionLabel(activeBoardTask.requested_action)}</p>
           <p>内容：{activeBoardTask.question_or_topic || "待确认"}</p>

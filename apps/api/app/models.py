@@ -111,6 +111,7 @@ ResourceScanStrategy = Literal["outline_only", "heading_section", "page_window",
 ChatInteractionMode = Literal["ask", "direct_edit"]
 TeachingAction = Literal["continue", "restart"]
 BoardGenerationAction = Literal["start"]
+BoardWorkflow = Literal["generate_from_scratch", "act_on_existing_board", "unknown"]
 LearningRequirementFactCategory = Literal["learning", "level", "vocabulary", "scenario", "output", "other"]
 LearningRequirementRunStatus = Literal["collecting", "ready", "frozen", "consumed", "archived"]
 LearningRequirementChangeKind = Literal[
@@ -463,11 +464,13 @@ class LearningRequirementSheet(BaseModel):
     action_instruction: str = ""
     location_clarification_question: str = ""
     interaction_rule_draft: InteractionRuleDraft | None = None
+    board_workflow: BoardWorkflow = "unknown"
     work_mode: InitialLearningWorkMode | None = None
     granularity: InitialLearningGranularity | None = None
 
 
 class BoardTaskRequirementSheet(BaseModel):
+    board_workflow: BoardWorkflow = "act_on_existing_board"
     target_hint: str = ""
     target_location: BoardFocusRef | None = None
     location_status: BoardTaskLocationStatus = "missing"

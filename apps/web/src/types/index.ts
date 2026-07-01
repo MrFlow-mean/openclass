@@ -103,10 +103,12 @@ export interface LearningRequirementSheet {
   action_instruction?: string;
   location_clarification_question?: string;
   interaction_rule_draft?: InteractionRuleDraft | null;
+  board_workflow?: BoardWorkflow | null;
   work_mode?: InitialLearningWorkMode | null;
   granularity?: InitialLearningGranularity | null;
 }
 
+export type BoardWorkflow = "generate_from_scratch" | "act_on_existing_board" | "unknown";
 export type InitialLearningWorkMode = "knowledge_board" | "narrow_topic" | "practice_artifact" | "unknown";
 export type InitialLearningGranularity = "single_knowledge_point" | "broad_topic" | "practice_artifact" | "unclear";
 export type BoardTaskRunStatus = "collecting" | "ready" | "awaiting_confirmation" | "consumed" | "not_executed" | "archived";
@@ -116,6 +118,7 @@ export type BoardTaskConfirmationStatus = "none" | "awaiting" | "confirmed" | "d
 export type BoardTaskLocationStatus = "missing" | "selected" | "resolved" | "ambiguous" | "content_absent";
 
 export interface BoardTaskRequirementSheet {
+  board_workflow?: BoardWorkflow | null;
   target_hint: string;
   target_location?: BoardFocusRef | null;
   location_status: BoardTaskLocationStatus;

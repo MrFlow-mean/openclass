@@ -108,6 +108,7 @@ def test_normalize_requirements_migrates_legacy_default_clarification() -> None:
         "你在这个领域目前是什么水平，已经掌握了哪些基础？",
         "你为什么学，之后要面对什么任务、场景或输出要求？",
     ]
+    assert normalized.board_workflow == "generate_from_scratch"
     assert "具体想学什么" in normalized.learning_goal
     assert normalized.success_criteria == ""
 
@@ -320,6 +321,7 @@ def test_branch_and_switch_restore_runtime_state_from_commit_metadata() -> None:
         question_or_topic="讲解目标",
         progress=80,
     )
+    assert board_task.board_workflow == "act_on_existing_board"
     lesson.learning_requirements = None
     lesson.board_task_requirements = board_task
     commit_operations(
