@@ -20,6 +20,13 @@ from app.services.document_ops import apply_board_patch, read_board_snapshot
 from app.services.history import current_head_commit
 from app.services.openai_course_ai import BoardDocumentEditResult, openai_course_ai
 from app.services.board_segment_index import build_board_segment_index
+from app.services.board_generation_quality import (
+    BoardQualityValidationResult,
+    build_board_teaching_plan,
+    generate_board_ai_input,
+    validate_board_plan,
+    validate_generated_board_text,
+)
 from app.services.resource_visual_evidence import (
     augment_document_with_resource_visual_evidence,
     visual_evidence_metadata,
@@ -82,15 +89,30 @@ def generate_from_requirements(
             "当前板书不是空白文档，已阻止整体覆盖。",
         )
 
+    board_plan = build_board_teaching_plan(requirements, clarification)
+    board_plan_validation = validate_board_plan(board_plan)
+    if not board_plan_validation.passed:
+        return _no_change(
+            lesson,
+            _board_quality_failure_reason("板书教学计划质量检查未通过", board_plan_validation),
+            quality_review_status="repair_required",
+        )
+
+    learning_requirement_context = _requirement_context(
+        requirements,
+        clarification,
+        requirement_run_id=requirement_run_id,
+        frozen_requirement_version_id=frozen_requirement_version_id,
+    )
+    learning_requirement_context["board_generation_quality_pipeline"] = generate_board_ai_input(
+        board_plan,
+        validation=board_plan_validation,
+    )
+
     request_kwargs = {
         "intent": "generate_from_requirements",
         "lesson_title": lesson.title,
-        "learning_requirement_context": _requirement_context(
-            requirements,
-            clarification,
-            requirement_run_id=requirement_run_id,
-            frozen_requirement_version_id=frozen_requirement_version_id,
-        ),
+        "learning_requirement_context": learning_requirement_context,
         "current_document_title": lesson.board_document.title,
         "current_document_text": _document_text(lesson.board_document),
         "resource_summary": resource_summary,
@@ -128,6 +150,19 @@ def generate_from_requirements(
                 attempt=attempt,
                 result=result,
             )
+            continue
+
+        generated_quality = validate_generated_board_text(content_text, board_plan)
+        if not generated_quality.passed:
+            failure_reason = _board_quality_failure_reason("板书生成质量检查未通过", generated_quality)
+            quality_repair_attempts = attempt + 1
+            quality_review_status = "repair_required"
+            repair_feedback = _quality_repair_feedback(
+                reason=failure_reason,
+                attempt=attempt,
+                result=result,
+            )
+            repair_feedback["board_generation_quality_validation"] = generated_quality.model_dump(mode="json")
             continue
 
         new_document = build_document(
@@ -726,6 +761,15 @@ def _document_quality_review_issue(
     return "板书候选内容一致性审查未通过。"
 
 
+def _board_quality_failure_reason(prefix: str, validation: BoardQualityValidationResult) -> str:
+    issues = [
+        f"{issue.dimension}: {issue.message}{f'（{issue.evidence}）' if issue.evidence else ''}"
+        for issue in validation.issues
+    ]
+    detail = "；".join(issues[:6]) or "未知质量问题"
+    return f"{prefix}，score={validation.score}：{detail}"
+
+
 def _quality_repair_feedback(
     *,
     reason: str,
@@ -747,6 +791,7 @@ def _quality_repair_feedback(
             "真实公式以外的普通文字不得使用公式定界符或公式节点。",
             "全文改写或缩短必须保留标题、列表、加粗、表格等必要文档结构。",
             "局部编辑必须返回目标片段，不得把整篇文档塞进局部替换。",
+            "首次生成板书必须包含本节目标、核心直觉、例子、课堂练习、本节小结和下一步。",
         ],
     }
     if result is not None:

@@ -1504,7 +1504,15 @@ def test_generate_from_requirements_appends_resource_visual_evidence(monkeypatch
         return BoardDocumentEditResult(
             operation="replace_document",
             title="第一章板书",
-            content_text="# 第一章\n\n根据资料整理的正文。",
+            content_text=(
+                "# 第一章板书\n\n"
+                "## 本节目标\n\n看懂第一章的核心结构。\n\n"
+                "## 核心直觉\n\n先把资料中的关键关系画成一条主线。\n\n"
+                "## 例子\n\n用资料中的结构图说明关系。\n\n"
+                "## 课堂练习\n\n复述第一章的主线。\n\n"
+                "## 本节小结\n\n本节先建立整体结构。\n\n"
+                "## 下一步\n\n继续展开细节。"
+            ),
             summary="已生成。",
             chatbot_message="已生成。",
             section_titles=["第一章"],

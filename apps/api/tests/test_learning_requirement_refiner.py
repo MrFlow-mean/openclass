@@ -163,6 +163,7 @@ def test_board_document_edit_prompt_scopes_initial_board_generation(
     system_prompt = str(captured["system_prompt"])
     assert "一次可讲完的聚焦板书" in system_prompt
     assert "不要在正文中完整讲解后续模块" in system_prompt
+    assert "board_generation_quality_pipeline" in system_prompt
     assert "本节目标和学习路线" in system_prompt
     assert "课堂练习" in system_prompt
     assert "后续学习路线" in system_prompt
