@@ -2340,6 +2340,19 @@ def _latex_to_math_children(latex: str) -> list[OxmlElement]:
     index = 0
     while index < len(latex):
         char = latex[index]
+        if latex.startswith(r"\displaystyle", index):
+            index += len(r"\displaystyle")
+            continue
+        if latex.startswith(r"\textstyle", index):
+            index += len(r"\textstyle")
+            continue
+        if latex.startswith(r"\begin{cases}", index):
+            end_index = latex.find(r"\end{cases}", index)
+            if end_index >= 0:
+                raw_cases = latex[index + len(r"\begin{cases}") : end_index]
+                children.extend(_latex_cases_children(raw_cases))
+                index = end_index + len(r"\end{cases}")
+                continue
         if char.isspace():
             if not children or (children[-1].tag != qn("m:r") or (children[-1].find(qn("m:t")).text or "") != " "):
                 children.append(_math_run(" "))
@@ -2389,6 +2402,17 @@ def _latex_to_math_children(latex: str) -> list[OxmlElement]:
     return children or [_math_run(latex)]
 
 
+def _latex_cases_children(raw_cases: str) -> list[OxmlElement]:
+    children: list[OxmlElement] = [_math_run("{ ")]
+    rows = [row.strip() for row in raw_cases.split(r"\\") if row.strip()]
+    for index, row in enumerate(rows):
+        if index:
+            children.append(_math_run("; "))
+        row_latex = " ".join(part.strip() for part in row.split("&") if part.strip())
+        children.extend(_latex_to_normalized_math_children(row_latex))
+    return children
+
+
 def _latex_to_normalized_math_children(latex: str) -> list[OxmlElement]:
     return _latex_to_math_children(_normalize_latex(latex))
 
@@ -2406,14 +2430,17 @@ def _append_omml_math(paragraph, latex: str, *, display: bool = False) -> None:
 
 
 def _append_math(paragraph, latex: str, *, display: bool = False) -> None:
-    if display:
-        for index, line in enumerate(_latex_display_lines(latex)):
-            if index:
-                paragraph.add_run().add_break()
-            paragraph.add_run(line)
-        paragraph.paragraph_format.line_spacing = 1
-        return
-    paragraph.add_run(_latex_inline_text(latex) or latex)
+    try:
+        _append_omml_math(paragraph, latex, display=display)
+    except Exception:
+        if display:
+            for index, line in enumerate(_latex_display_lines(latex)):
+                if index:
+                    paragraph.add_run().add_break()
+                paragraph.add_run(line)
+            paragraph.paragraph_format.line_spacing = 1
+            return
+        paragraph.add_run(_latex_inline_text(latex) or latex)
 
 
 def _append_fragments(

@@ -1618,8 +1618,14 @@ def test_docx_import_export_roundtrip(tmp_path) -> None:
     assert "正文" in imported.content_text
 
 
-def test_docx_export_preserves_math_as_visible_word_text(tmp_path) -> None:
-    document = build_document(title="Doc", content_text="公式：$a_n=\\frac{1}{n}$，极限 $\\lim_{x\\to0}\\frac{\\sin x}{x}=1$。")
+def test_docx_export_preserves_math_as_word_omml(tmp_path) -> None:
+    document = build_document(
+        title="Doc",
+        content_text=(
+            "公式：$a_n=\\frac{1}{n}$，极限 $\\displaystyle\\lim_{x\\to0}\\frac{\\sin x}{x}=1$。\n\n"
+            "$$f(x)=\\begin{cases} x^2, & x>0 \\\\ 0, & x=0 \\end{cases}$$"
+        ),
+    )
     export_path = tmp_path / "math.docx"
 
     export_docx(document, export_path)
@@ -1627,9 +1633,16 @@ def test_docx_export_preserves_math_as_visible_word_text(tmp_path) -> None:
     with ZipFile(export_path) as archive:
         document_xml = archive.read("word/document.xml")
     root = ET.fromstring(document_xml)
-    ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
-    visible_text = "".join(node.text or "" for node in root.findall(".//w:t", ns))
+    ns = {
+        "m": "http://schemas.openxmlformats.org/officeDocument/2006/math",
+        "w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
+    }
+    xml_text = document_xml.decode("utf-8")
+    math_text = "".join(node.text or "" for node in root.findall(".//m:t", ns))
 
-    assert "an=1/n" in visible_text
-    assert "lim x→0" in visible_text
-    assert "(sin x)/x=1" in visible_text
+    assert root.findall(".//m:oMath", ns)
+    assert "lim" in math_text
+    assert "sin" in math_text
+    assert "begin" not in math_text
+    assert "displaystyle" not in math_text
+    assert "begincases" not in xml_text

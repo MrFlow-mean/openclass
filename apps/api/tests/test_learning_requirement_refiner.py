@@ -12,6 +12,7 @@ from app.services.lesson_factory import create_empty_lesson
 from app.services.openai_course_ai import (
     BlankBoardRequirementRefinement,
     BlankBoardRequirementRefinementResult,
+    BoardDocumentEditResult,
     ChatbotReply,
     OpenAICourseAI,
     bind_ai_output_stream,
@@ -124,6 +125,52 @@ def test_learning_intake_policy_is_generic_and_covers_strategy_matrix() -> None:
     } <= set(learning_intake_policy.LEARNING_INTAKE_STRATEGIES)
     assert "背景 + 宽泛学习方向" in learning_intake_policy.BLANK_BOARD_LEARNING_INTAKE_POLICY
     assert "当前水平画像" in learning_intake_policy.BLANK_BOARD_LEARNING_INTAKE_POLICY
+
+
+def test_board_document_edit_prompt_scopes_initial_board_generation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ai = OpenAICourseAI()
+    captured: dict[str, object] = {}
+
+    def _fake_parse(role, system_prompt, user_prompt, schema, **kwargs):
+        captured["role"] = role
+        captured["system_prompt"] = system_prompt
+        captured["user_prompt"] = user_prompt
+        captured["schema"] = schema
+        return BoardDocumentEditResult(
+            operation="replace_document",
+            title="入口课",
+            content_text="# 入口课\n\n## 本节目标\n\n正文",
+            summary="已生成。",
+            chatbot_message="已生成。",
+            section_titles=["本节目标"],
+        )
+
+    monkeypatch.setattr(ai, "_parse", _fake_parse)
+
+    ai.generate_board_document_edit(
+        intent="generate_from_requirements",
+        lesson_title="学习页",
+        learning_requirement_context={"learning_goal": "学习一个新领域"},
+        current_document_title="",
+        current_document_text="",
+        resource_summary="",
+    )
+
+    assert captured["role"] == "board"
+    assert captured["schema"] is BoardDocumentEditResult
+    system_prompt = str(captured["system_prompt"])
+    assert "一次可讲完的聚焦板书" in system_prompt
+    assert "不要在正文中完整讲解后续模块" in system_prompt
+    assert "本节目标和学习路线" in system_prompt
+    assert "课堂练习" in system_prompt
+    assert "后续学习路线" in system_prompt
+    assert "不写任何固定主题模板" in system_prompt
+    payload = json.loads(str(captured["user_prompt"]))
+    assert payload["generation_source"] == "frozen_learning_requirement"
+    assert "一次可讲完的聚焦小课" in payload["response_contract"]["content_text"]
+    assert "后续学习路线/下一步" in payload["response_contract"]["content_text"]
 
 
 def test_board_task_requirement_prompt_records_existing_board_workflow(
