@@ -1,6 +1,6 @@
 "use client";
 
-import type { Dispatch, SetStateAction } from "react";
+import { useEffect, useRef, type Dispatch, type SetStateAction } from "react";
 
 import { api } from "@/lib/api";
 import type { AutoSaveReason } from "@/hooks/course-studio/use-board-draft";
@@ -34,10 +34,17 @@ export function useWorkspaceActions({
   setBusyAction,
   onLessonCreated,
 }: UseWorkspaceActionsOptions) {
+  const activeLessonIdRef = useRef<string | null>(activeLesson?.id ?? null);
+
+  useEffect(() => {
+    activeLessonIdRef.current = activeLesson?.id ?? null;
+  }, [activeLesson?.id]);
+
   async function saveGeneratedLesson(topic: string): Promise<boolean> {
     if (!topic.trim()) {
       return false;
     }
+    const initialActiveLessonId = activeLesson?.id ?? null;
     setBusyAction("generate");
     try {
       const nextPackage = await api.generateLesson(topic.trim(), {
@@ -45,8 +52,15 @@ export function useWorkspaceActions({
         startBlank: true,
         targetPackageId: coursePackage?.id,
       });
+      const generatedLessonId = nextPackage.active_lesson_id ?? null;
+      const currentActiveLessonId = activeLessonIdRef.current;
+      const shouldPreserveCurrentLesson =
+        currentActiveLessonId !== null &&
+        currentActiveLessonId !== initialActiveLessonId &&
+        nextPackage.workspace_tab_order.includes(currentActiveLessonId);
       updateCoursePackage(nextPackage, {
-        blankLessonIds: nextPackage.active_lesson_id ? [nextPackage.active_lesson_id] : [],
+        activeLessonId: shouldPreserveCurrentLesson ? currentActiveLessonId : generatedLessonId,
+        blankLessonIds: generatedLessonId ? [generatedLessonId] : [],
       });
       return true;
     } catch (generationError) {
