@@ -33,7 +33,7 @@ def _seed_empty_workspace(store: SqliteCourseStore, user_id: str, title: str = "
     return lesson
 
 
-def test_blank_board_refinement_prompt_uses_compact_fact_bounded_guidance(
+def test_blank_board_refinement_prompt_requires_rich_broad_topic_guidance(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     ai = OpenAICourseAI()
@@ -56,104 +56,49 @@ def test_blank_board_refinement_prompt_uses_compact_fact_bounded_guidance(
 
     assert captured["role"] == "pm"
     assert captured["schema"] is BlankBoardRequirementRefinement
-    assert list(BlankBoardRequirementRefinement.model_json_schema()["properties"])[:2] == [
-        "chatbot_message",
-        "route",
-    ]
     system_prompt = str(captured["system_prompt"])
-    assert "按 schema 顺序先写 chatbot_message" in system_prompt
-    assert "180-260 字" in system_prompt
-    assert "最多一个主问题" in system_prompt
+    assert "开场承接 + 简短学习地图 + 2-5 个入口选项 + 一个推荐入口 + 推荐理由 + 一个绑定推荐入口的主问题" in system_prompt
+    assert "学习地图和入口选项必须真的写进 chatbot_message" in system_prompt
+    assert "knowledge_board + broad_topic" in system_prompt
+    assert "纯新手、零基础、入门、先了解一下" in system_prompt
+    assert "不要强制追问考试、面试、工作、赚钱、项目或现实产出场景" in system_prompt
+    assert "宽泛复合领域且用户起点未知" in system_prompt
+    assert "学习者起点/背景的选择卡片" in system_prompt
+    assert "即使没有明确说“你安排”" in system_prompt
+    assert "不要再让用户在工具、语法、框架、测试或项目实操等后续模块里选择" in system_prompt
+    assert "为我指导、你安排、帮我安排" in system_prompt
     assert "granularity=single_knowledge_point" in system_prompt
+    assert "ready_for_board=true" in system_prompt
     assert "通用 learning intake 策略" in system_prompt
-    assert "宽泛主题" in system_prompt
-    assert "2-4 个入口或水平卡片" in system_prompt
-    assert "事实边界" in system_prompt
-    assert "current_level、known_background、target_scenario、key_facts 只能记录用户明说" in system_prompt
-    assert "不能把通用常识当证据" in system_prompt
-    assert "阶段：首次空白板书收敛" in system_prompt
-    assert "最多 3 个入口" in system_prompt
-    assert "2-5 个入口选项" not in system_prompt
-    assert "3-5 个 A/B/C/D 当前水平画像" not in system_prompt
-    user_prompt = str(captured["user_prompt"])
-    assert "\n" not in user_prompt
+    assert "用户新增信息正在收敛哪一类不确定项" in system_prompt
+    assert "背景 + 宽泛学习方向" in system_prompt
+    assert "3-5 个 A/B/C/D 当前水平画像" in system_prompt
+    assert "entry_point_options 同步记录这些水平卡片" in system_prompt
+    assert "最近经历法" in system_prompt
+    assert "卡点定位法" in system_prompt
+    assert "优先归为 practice_artifact" in system_prompt
+    assert "练习型需求中，如果用户已经说清想练的内容，但没有说明当前水平" in system_prompt
+    assert "自然标题、一个降低选择压力的副标题" in system_prompt
+    assert "4-6 个 A/B/C 卡片选项" in system_prompt
+    assert "不要默认用户从基础练起" in system_prompt
     payload = json.loads(str(captured["user_prompt"]))
-    assert payload["intake_stage"] == "fresh_intake"
-    assert payload["existing_requirement_sheet"] is None
-    assert payload["existing_clarification"] is None
-    assert "field_order" in payload["response_contract"]
-    assert "180-260 字" in payload["response_contract"]["chatbot_message"]
+    assert "开场承接" in payload["response_contract"]["chatbot_message"]
     assert "推荐理由" in payload["response_contract"]["chatbot_message"]
-    assert "用户明说或历史已有" in payload["response_contract"]["current_level"]
-    assert "不能来自常识推断" in payload["response_contract"]["key_facts"]
-    assert "可能/通常/待确认" in payload["response_contract"]["learner_profile_inference"]
+    assert "必须和用户当前表达形态匹配" in payload["response_contract"]["guidance_strategy"]
+    assert "背景 + 宽泛目标但当前水平未知" in payload["response_contract"]["guidance_strategy"]
+    assert "练习需求缺当前水平时优先用 choice_cards" in payload["response_contract"]["guidance_strategy"]
+    assert "当前水平画像卡片" in payload["response_contract"]["entry_point_options"]
+    assert "当前技能水平卡片" in payload["response_contract"]["entry_point_options"]
+    assert "选择最像自己的状态" in payload["response_contract"]["next_question"]
+    assert "当前水平" in payload["response_contract"]["next_question"]
+    assert "纯新手入门" in payload["response_contract"]["next_question"]
     assert "已会/未会" in system_prompt
-
-
-def test_blank_board_refinement_uses_followup_stage_and_compact_context(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    ai = OpenAICourseAI()
-    captured: dict[str, object] = {}
-
-    def _fake_parse(role, system_prompt, user_prompt, schema, **kwargs):
-        captured["system_prompt"] = system_prompt
-        captured["user_prompt"] = user_prompt
-        return BlankBoardRequirementRefinement(route="ordinary_chat", chatbot_message="收到。")
-
-    monkeypatch.setattr(ai, "_parse", _fake_parse)
-
-    ai.generate_blank_board_requirement_refinement(
-        board_document_state={"status": "empty"},
-        conversation_summary="",
-        user_message="我是刚毕业的学生，想提前看看后面要学的内容",
-        existing_requirement_sheet={
-            "theme": "某个宽泛主题",
-            "learning_goal": "某个宽泛主题",
-            "level": "待确认用户在这个领域的已有基础、熟悉程度和卡点。",
-            "known_background": "用户背景尚未明确，需要通过对话了解已有经验、相关资料和学习约束。",
-            "current_questions": ["你更想从哪个入口开始？"],
-            "output_preference": "根据用户目标、资料结构和交互意图动态决定输出形态",
-            "work_mode": "knowledge_board",
-            "granularity": "broad_topic",
-            "risk_notes": ["用户想学的内容需要收敛到具体知识点"],
-        },
-        existing_clarification={
-            "progress": 25,
-            "label": "collecting",
-            "summary": "用户正在收敛一个宽泛学习主题。",
-            "key_facts": [
-                {
-                    "label": "用户想学的内容",
-                    "value": "某个宽泛主题",
-                    "evidence": "历史清单",
-                    "category": "learning",
-                }
-            ],
-            "next_question": "你更想从哪个入口开始？",
-            "ready_for_board": False,
-        },
-    )
-
-    system_prompt = str(captured["system_prompt"])
-    assert "阶段：已有 active requirement" in system_prompt
-    payload = json.loads(str(captured["user_prompt"]))
-    assert payload["intake_stage"] == "collecting_followup"
-    sheet = payload["existing_requirement_sheet"]
-    assert sheet["theme"] == "某个宽泛主题"
-    assert sheet["current_questions"] == ["你更想从哪个入口开始？"]
-    assert "level" not in sheet
-    assert "known_background" not in sheet
-    assert "output_preference" not in sheet
-    assert payload["existing_clarification"]["key_facts"][0]["evidence"] == "历史清单"
 
 
 def test_learning_intake_policy_is_generic_and_covers_strategy_matrix() -> None:
     policy_text = " ".join(
         [
             learning_intake_policy.BLANK_BOARD_LEARNING_INTAKE_POLICY,
-            learning_intake_policy.BLANK_BOARD_FACT_BOUNDARY_POLICY,
-            *learning_intake_policy.BLANK_BOARD_STAGE_POLICIES.values(),
             *learning_intake_policy.BLANK_BOARD_LEARNING_INTAKE_RESPONSE_CONTRACT.values(),
         ]
     )
@@ -175,12 +120,8 @@ def test_learning_intake_policy_is_generic_and_covers_strategy_matrix() -> None:
         "recommended_entry",
         "implicit_observation",
     } <= set(learning_intake_policy.LEARNING_INTAKE_STRATEGIES)
-    assert "宽泛主题" in learning_intake_policy.BLANK_BOARD_LEARNING_INTAKE_POLICY
-    assert "水平卡片" in learning_intake_policy.BLANK_BOARD_LEARNING_INTAKE_POLICY
-    assert "事实边界" in learning_intake_policy.BLANK_BOARD_FACT_BOUNDARY_POLICY
-    assert "通用常识" in learning_intake_policy.BLANK_BOARD_FACT_BOUNDARY_POLICY
-    assert "fresh_intake" in learning_intake_policy.BLANK_BOARD_STAGE_POLICIES
-    assert "collecting_followup" in learning_intake_policy.BLANK_BOARD_STAGE_POLICIES
+    assert "背景 + 宽泛学习方向" in learning_intake_policy.BLANK_BOARD_LEARNING_INTAKE_POLICY
+    assert "当前水平画像" in learning_intake_policy.BLANK_BOARD_LEARNING_INTAKE_POLICY
 
 
 def test_parse_response_logs_model_call_started(monkeypatch: pytest.MonkeyPatch) -> None:

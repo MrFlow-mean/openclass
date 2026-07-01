@@ -57,11 +57,8 @@ from app.services.ai_model_catalog import (
 from app.services.codex_app_server import CodexAppServerTextClient, codex_provider_status
 from app.services.config import load_root_dotenv
 from app.services.learning_intake_policy import (
+    BLANK_BOARD_LEARNING_INTAKE_POLICY,
     BLANK_BOARD_LEARNING_INTAKE_RESPONSE_CONTRACT,
-    blank_board_context_text,
-    blank_board_refinement_system_prompt,
-    compact_blank_board_context,
-    select_blank_board_intake_stage,
 )
 
 logger = logging.getLogger(__name__)
@@ -420,8 +417,8 @@ class GuidedRequirementEntryPoint(BaseModel):
 
 
 class BlankBoardRequirementRefinement(BaseModel):
-    chatbot_message: str = ""
     route: Literal["ordinary_chat", "requirement_refining"] = "ordinary_chat"
+    chatbot_message: str = ""
     progress: int = Field(default=0, ge=0, le=100)
     summary: str = ""
     work_mode: InitialLearningWorkMode = "unknown"
@@ -1077,79 +1074,106 @@ class OpenAICourseAI:
         existing_clarification: dict[str, Any] | None = None,
         include_stream_result: bool = False,
     ) -> BlankBoardRequirementRefinement | BlankBoardRequirementRefinementResult | None:
-        intake_stage = select_blank_board_intake_stage(
-            existing_requirement_sheet=existing_requirement_sheet,
-            existing_clarification=existing_clarification,
+        system_prompt = (
+            "你是 OpenClass 的空白板书学习需求收敛器，也是左侧聊天框里的自然对话 AI。\n"
+            "运行前提：board_document_state.status 必须是 empty；本阶段只维护 LearningRequirementSheet，"
+            "不生成板书、不冻结清单、不调用 Board AI。\n"
+            "任务：先判断用户当前轮是 ordinary_chat 还是 requirement_refining。\n"
+            "ordinary_chat：用户没有表达学习、练习、资料、板书或教学目的时，像 ChatGPT 一样自然回复；"
+            "不要新建或更新清单，不要追问学习需求。\n"
+            "requirement_refining：用户表达了学习或练习目的，但还需要收敛到可生成板书的教学目标。"
+            "你要自然回复用户，同时输出结构化清单变化。\n"
+            "两类终点：\n"
+            "1. knowledge_board：用户想学新知识。只有 learning_goal 已经明确到一个具体知识点、概念、方法、步骤或单一问题，"
+            "且 granularity=single_knowledge_point 时，ready_for_board 才能为 true；其他场景、考试、工作用途只作为辅助因素。\n"
+            "2. practice_artifact：用户想练习已有知识或技能。ready_for_board=true 必须同时具备 learning_goal、"
+            "current_level、target_scenario 三个核心因素；如果用户明确没有场景或让系统不按场景定制，target_scenario 可写"
+            "“无明确应用场景”。\n"
+            f"{BLANK_BOARD_LEARNING_INTAKE_POLICY}\n"
+            "如果用户是纯新手且想入门某领域，可以用领域地图介绍该领域由哪些通用部分构成、推荐一个入门入口，"
+            "并继续把需求收敛到一个可开始的知识点或练习产物。纯新手、零基础、入门、先了解一下、"
+            "感兴趣想学，都表示一种明确的入门型学习状态；默认目的可以记录为“入门了解 / 建立领域地图 / 找到第一个学习入口”。"
+            "这时不要强制追问考试、面试、工作、赚钱、项目或现实产出场景；如果用户没有主动说场景，"
+            "不要把应用场景当作缺失核心因素。\n"
+            "宽泛复合领域且用户起点未知时，可以给学习地图和暂定入口，但不要把具体工具、语法、框架或项目实操入口直接判定为最终第一课；"
+            "entry_point_options 应优先作为学习者起点/背景的选择卡片，而不是让用户在高级内容路线里做选择；"
+            "唯一主问题必须优先询问用户起点、已有背景、已会/未会或最近接触情况。\n"
+            "如果用户已经说明自己是纯新手/零基础/纯入门/先了解一下/感兴趣想入门，"
+            "即使没有明确说“你安排”，也表示系统应选择最安全的基础入口；"
+            "不要再让用户在工具、语法、框架、测试或项目实操等后续模块里选择。"
+            "这时要主动落定一个基础总览型第一课，例如“这个领域的基础概念与整体组成 / 核心对象、基本流程和关键术语 / 整体结构是什么”。"
+            "此时必须输出 work_mode=knowledge_board、granularity=single_knowledge_point、ready_for_board=true，"
+            "learning_goal 写成这个具体基础入口，next_question 为空。\n"
+            "如果用户已经说明自己是纯新手/零基础/纯入门，并表达“为我指导、你安排、帮我安排、帮我规划、按你推荐、听你的、直接安排”等委托意图，"
+            "表示用户进一步授权你主动选择入口；这时更不要再问“你愿意从 X 开始吗”，而要主动落定一个领域总览型第一课，"
+            "例如“这个领域由哪几部分组成 / 整体结构是什么 / 基本工作方式是什么 / 它和普通系统有什么区别”这一类可教学入口。"
+            "此时必须输出 work_mode=knowledge_board、granularity=single_knowledge_point、ready_for_board=true，"
+            "learning_goal 写成这个具体第一课入口，next_question 为空。\n"
+            "当 learning_goal 仍是宽泛主题、granularity=broad_topic 或用户说不知道从哪开始时，"
+            "chatbot_message 必须优先呈现“开场承接 + 简短学习地图 + 2-5 个入口选项 + 一个推荐入口 + 推荐理由 + 一个绑定推荐入口的主问题”，"
+            "而不是只追问“具体想学什么”；学习地图和入口选项必须真的写进 chatbot_message，不能只写在结构化字段里。\n"
+            "宽泛主题下，chatbot_message 不能是一两句话，也不能只是列分支名；它要像老师在聊天框里给用户打开地图，"
+            "先降低表达成本，再把用户带向一个可开始的知识点。\n"
+            "entry_point_options 只记录通用入口建议，由模型根据当前领域自主生成；不要写固定讲义正文或固定课程模板。"
+            "recommended_entry_point 必须从 entry_point_options 或用户已明确内容中选择一个最适合的入口。"
+            "learner_profile_inference 只记录可由用户自述、最近经历、已会/未会或卡点直接推出的起点信息。\n"
+            "如果你已经给出 recommended_entry_point，但 current_level、known_background 和 learner_profile_inference "
+            "都没有可靠依据，那么 chatbot_message 结尾的唯一主问题必须优先询问用户当前水平、已会/未会或最近学到哪里；"
+            "不要继续只问用户要不要选择推荐入口。\n"
+            "如果用户明确表达“想学某个领域/方向/主题”，即使主题很宽，也应归为 knowledge_board + broad_topic；"
+            "只有连学习还是练习、或主题对象都无法判断时，work_mode 才保持 unknown。\n"
+            "规则：\n"
+            "1. 不写任何学科、教材、考试、语言名、旅游场景或 demo 专属规则；只根据用户意图形态和内容产物形态判断。\n"
+            "2. 不脑补核心因素；核心因素不全时 ready_for_board=false，但要通过引导、推荐和选择卡片降低表达成本，"
+            "最后只问一个最关键问题。\n"
+            "3. 辅助因素只记录会改变教学入口或讲解深度的用户事实，例如 known_background、target_depth、output_preference。"
+            "不要把页面标题、课程标题、系统流程检查项或泛化学习结果写入 board_scope、learning_need_checklist 或 success_criteria；"
+            "这些字段在本链路会被后端忽略。\n"
+            "如果是纯新手入门型宽泛主题，target_depth 可写“入门了解 / 建立领域地图”，"
+            "不要额外补一个成功标准字段。\n"
+            "4. key_facts 只记录用户已经透露或你从当前对话可直接归纳的事实，优先使用标签："
+            "用户想学的内容、当前水平、面向场景。\n"
+            "5. chatbot_message 面向用户自然表达；必须综合使用 learning_map_summary、entry_point_options、"
+            "recommended_entry_point 和 reason_for_recommendation 中的有用信息，但不要输出 JSON、字段名、内部状态名或右侧板书正文。"
+            "不要说“请填写学习内容/当前水平/面向场景”，不要暴露 learning_goal、current_level、target_scenario、"
+            "missing_items、ready_for_board 等内部字段名；如果需要信息，用自然聊天的一句话询问。"
         )
-        compact_requirement_sheet = compact_blank_board_context(
-            existing_requirement_sheet,
-            (
-                "theme",
-                "learning_goal",
-                "level",
-                "known_background",
-                "current_questions",
-                "target_depth",
-                "output_preference",
-                "boundary",
-                "work_mode",
-                "granularity",
-                "risk_notes",
-            ),
-        )
-        compact_clarification = compact_blank_board_context(
-            existing_clarification,
-            (
-                "progress",
-                "label",
-                "summary",
-                "key_facts",
-                "checklist",
-                "missing_items",
-                "next_question",
-                "ready_for_board",
-                "work_mode",
-                "granularity",
-            ),
-        )
-        system_prompt = blank_board_refinement_system_prompt(intake_stage)
-        user_prompt = _compact_json(
+        user_prompt = _json(
             {
                 "board_document_state": board_document_state or {},
-                "intake_stage": intake_stage,
-                "recent_conversation": blank_board_context_text(conversation_summary),
+                "recent_conversation": conversation_summary or "",
                 "current_user_message": user_message,
-                "existing_requirement_sheet": compact_requirement_sheet,
-                "existing_clarification": compact_clarification,
+                "existing_requirement_sheet": existing_requirement_sheet or None,
+                "existing_clarification": existing_clarification or None,
                 "response_contract": {
-                    "field_order": "先输出 chatbot_message，再输出 route/work_mode/granularity 等内部字段。",
                     "route": "ordinary_chat 或 requirement_refining。",
                     "chatbot_message": (
-                        "直接给用户看的自然回复；180-260 字；宽泛主题给简短地图、最多 3 个入口、"
-                        "一个推荐理由和一个主问题；不得输出内部字段名、JSON 或表单。"
+                        "直接给用户看的自然回复；如果是宽泛主题，必须包含开场承接、学习地图、"
+                        "2-5 个入口选项、一个推荐入口、推荐理由和一个关键问题；每次最多追问一个主问题；"
+                        "不得输出内部字段名、JSON、表单格式或让用户填写清单。"
                     ),
                     "progress": "0-100 的清单完整度；ready_for_board=true 时必须为 100。",
                     "summary": "当前学习需求的一句话摘要；普通聊天可为空。",
                     "work_mode": "knowledge_board、practice_artifact 或 unknown；本阶段不使用其他新值。",
                     "granularity": "single_knowledge_point、practice_artifact、broad_topic 或 unclear。",
-                    "learning_goal": "新知识点教学写具体知识点；练习型写具体想练的内容。",
-                    "current_level": "只写用户明说或历史已有的当前水平；不确定留空或待确认。",
-                    "target_scenario": "只写用户明说或历史已有的任务/应用/输出场景；不确定留空。",
-                    "known_background": "只写用户明说或历史已有的已会、未会、最近经历、卡点或背景。",
+                    "learning_goal": "核心因素。新知识点教学写用户具体想学的知识点；练习型写用户具体想练的内容。",
+                    "current_level": "练习型核心因素。用户当前水平、已有基础或最近状态；新知识点教学可作为辅助。",
+                    "target_scenario": "练习型核心因素。用户面向的任务、应用、输出或“无明确应用场景”。",
+                    "known_background": "可选辅助因素：已会、未会、最近经历、卡点或背景。",
                     "target_depth": "可选辅助因素：希望理解、会做、能应用、能讲给别人等深度。",
                     "output_preference": "可选辅助因素：希望板书或教学呈现的形态偏好。",
                     "boundary": "可选辅助因素：范围边界或不要展开的部分。",
                     "board_scope": "兼容字段：本链路不要填写，不能写页面标题、课程标题或未来板书目录。",
                     "success_criteria": "兼容字段：本链路不要填写泛化成功标准；练习型面向场景请写 target_scenario。",
                     "learning_need_checklist": "兼容字段：本链路不要填写系统流程检查项。",
-                    "key_facts": "0-5 条事实；evidence 必须来自用户原话或历史事实，不能来自常识推断。",
+                    "key_facts": "0-5 条事实，每项包含 label、value、evidence、category。",
                     "checklist": "2-5 个动态检查项，每项包含 title、is_clear、evidence。",
                     "guidance_strategy": BLANK_BOARD_LEARNING_INTAKE_RESPONSE_CONTRACT["guidance_strategy"],
                     "learning_map_summary": "给用户看的简短学习地图摘要；宽泛主题时应填写，不写固定讲义正文。",
                     "entry_point_options": BLANK_BOARD_LEARNING_INTAKE_RESPONSE_CONTRACT["entry_point_options"],
                     "recommended_entry_point": "AI 推荐的一个入口，优先来自 entry_point_options。",
                     "reason_for_recommendation": "推荐理由，必须基于用户已说信息或通用入门原则。",
-                    "learner_profile_inference": "只写谨慎推断，必须带可能/通常/待确认等不确定表达；不要写成事实。",
+                    "learner_profile_inference": "从用户自述、最近经历、已会/未会或卡点推断出的起点信息。",
                     "missing_items": "仍缺少的核心因素或重要辅助因素；核心因素不全必须列出。",
                     "next_question": BLANK_BOARD_LEARNING_INTAKE_RESPONSE_CONTRACT["next_question"],
                     "recommended_teaching_plan_summary": "可选：给用户看的教学方案摘要，不是板书正文。",
