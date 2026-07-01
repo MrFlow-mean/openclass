@@ -24,7 +24,7 @@ DocxBlock = tuple[str, list[InlineFragment], dict[str, Any]]
 
 _CJK_RE = re.compile(r"[\u3400-\u9fff]")
 _MATH_SIGNAL_RE = re.compile(
-    r"\\(?:begin|end|frac|sqrt|lim|sum|prod|int|sin|cos|tan|ln|log|exp|to|leftarrow|rightarrow|leftrightarrow|infty|cdot|times|div|leq?|geq?|approx|neq?|pm|in|notin|mid|subseteq?|supseteq?|cup|cap|mathbb|mathcal|mathfrak|mathbf|mathrm|operatorname|dots|cdots|ldots|vdots|partial|nabla|forall|exists|alpha|beta|gamma|delta|theta|lambda|mu|pi|sigma|phi|omega)\b"
+    r"\\(?:begin|end|frac|sqrt|lim|sum|prod|int|sin|cos|tan|ln|log|exp|to|leftarrow|rightarrow|leftrightarrow|infty|cdot|times|div|leq?|geq?|approx|neq?|pm|in|notin|mid|subseteq?|supseteq?|cup|cap|mathbb|mathcal|mathfrak|mathbf|mathrm|operatorname|dots|cdots|ldots|vdots|partial|nabla|forall|exists|alpha|beta|gamma|delta|epsilon|varepsilon|theta|lambda|mu|pi|sigma|phi|omega)\b"
     r"|[_^]"
     r"|[A-Za-z0-9)]\s*(?:[+\-−*/=<>≤≥≈≠±]|→|←)\s*[A-Za-z0-9(\\]"
     r"|\d+\s*/\s*\d+"
@@ -37,6 +37,10 @@ _NON_FORMULA_LETTER_RE = re.compile(r"[^\W\d_A-Za-zα-ωΑ-Ω]", re.UNICODE)
 _FORMULA_CHARS_RE = re.compile(r"^[A-Za-z0-9α-ωΑ-Ω\\_{}\[\]^()+\-−*/=·∞→←≤≥≈≠±<>|&:'\s.,]+$")
 _LATEX_ENVIRONMENT_RE = re.compile(r"\\(?:begin|end)\{[A-Za-z*]+\}")
 _LATEX_TEXT_ARGUMENT_RE = re.compile(r"\\(?:text|mathrm|operatorname)\{[^{}]*\}")
+_RAW_LATEX_COMMAND_RE = re.compile(
+    r"\\(?:alpha|beta|gamma|delta|epsilon|varepsilon|theta|lambda|mu|pi|sigma|phi|omega|infty)\b"
+)
+_MIXED_MATH_TEXT_RE = re.compile(r"([\u3400-\u9fff，。；：、]+)")
 _HTML_BLOCK_RE = re.compile(
     r"<(?P<tag>h[1-6]|p|li|blockquote)\b[^>]*>.*?</(?P=tag)>",
     re.IGNORECASE | re.DOTALL,
@@ -163,21 +167,70 @@ def _markdown_text_nodes(value: str) -> list[dict[str, Any]]:
     return nodes
 
 
+def _inline_math_node(latex: str) -> dict[str, Any]:
+    return {"type": "inlineMath", "attrs": {"latex": _normalize_latex(latex)}}
+
+
+def _markdown_text_nodes_with_raw_math(value: str) -> list[dict[str, Any]]:
+    nodes: list[dict[str, Any]] = []
+    cursor = 0
+    for match in _RAW_LATEX_COMMAND_RE.finditer(value):
+        command = match.group(0)
+        if not _is_likely_delimited_math(command):
+            continue
+        if match.start() > cursor:
+            nodes.extend(_markdown_text_nodes(value[cursor : match.start()]))
+        nodes.append(_inline_math_node(command))
+        cursor = match.end()
+    if cursor < len(value):
+        nodes.extend(_markdown_text_nodes(value[cursor:]))
+    return nodes
+
+
+def _append_text_or_formula_nodes(nodes: list[dict[str, Any]], value: str) -> bool:
+    if not value:
+        return False
+    stripped = value.strip()
+    leading = value[: len(value) - len(value.lstrip())]
+    trailing = value[len(value.rstrip()) :]
+    if stripped and _is_likely_delimited_math(stripped):
+        if leading:
+            nodes.extend(_markdown_text_nodes(leading))
+        nodes.append(_inline_math_node(stripped))
+        if trailing:
+            nodes.extend(_markdown_text_nodes(trailing))
+        return True
+    nodes.extend(_markdown_text_nodes_with_raw_math(value))
+    return False
+
+
+def _mixed_math_text_nodes(value: str) -> list[dict[str, Any]]:
+    nodes: list[dict[str, Any]] = []
+    cursor = 0
+    has_formula = False
+    for match in _MIXED_MATH_TEXT_RE.finditer(value):
+        has_formula = _append_text_or_formula_nodes(nodes, value[cursor : match.start()]) or has_formula
+        nodes.extend(_markdown_text_nodes(match.group(0)))
+        cursor = match.end()
+    has_formula = _append_text_or_formula_nodes(nodes, value[cursor:]) or has_formula
+    return nodes if has_formula else []
+
+
 def _inline_nodes(value: str) -> list[dict[str, Any]]:
     nodes: list[dict[str, Any]] = []
     cursor = 0
     for match in _DELIMITED_MATH_RE.finditer(value):
         if match.start() > cursor:
-            nodes.extend(_markdown_text_nodes(value[cursor : match.start()]))
+            nodes.extend(_markdown_text_nodes_with_raw_math(value[cursor : match.start()]))
         raw = match.group(0)
         latex = match.group(1) or match.group(2) or match.group(3) or match.group(4) or ""
         if latex.strip() and _is_likely_delimited_math(latex):
-            nodes.append({"type": "inlineMath", "attrs": {"latex": _normalize_latex(latex)}})
+            nodes.append(_inline_math_node(latex))
         else:
-            nodes.extend(_markdown_text_nodes(raw))
+            nodes.extend(_mixed_math_text_nodes(latex) or _markdown_text_nodes_with_raw_math(raw))
         cursor = match.end()
     if cursor < len(value):
-        nodes.extend(_markdown_text_nodes(value[cursor:]))
+        nodes.extend(_markdown_text_nodes_with_raw_math(value[cursor:]))
     return nodes
 
 
@@ -933,7 +986,42 @@ def _repair_suspicious_math_html(content_html: str) -> str:
         repaired,
         flags=re.IGNORECASE,
     )
-    return repaired
+    return _repair_raw_math_text_html(repaired)
+
+
+def _repair_raw_math_text_html(content_html: str) -> str:
+    pieces = re.split(r"(<[^>]+>)", content_html)
+    repaired: list[str] = []
+    for piece in pieces:
+        if not piece:
+            continue
+        if piece.startswith("<") and piece.endswith(">"):
+            repaired.append(piece)
+            continue
+        repaired.append(_inline_html(html.unescape(piece)))
+    return "".join(repaired)
+
+
+def _html_has_math_nodes(content_html: str) -> bool:
+    return any(
+        marker in content_html
+        for marker in (
+            'data-type="inline-math"',
+            "data-type='inline-math'",
+            'data-type="block-math"',
+            "data-type='block-math'",
+        )
+    )
+
+
+def _json_has_raw_math_text(node: dict[str, Any]) -> bool:
+    if node.get("type") == "text":
+        text = str(node.get("text") or "")
+        return "$" in text or "\\(" in text or "\\[" in text or bool(_RAW_LATEX_COMMAND_RE.search(text))
+    content = node.get("content")
+    if not isinstance(content, list):
+        return False
+    return any(_json_has_raw_math_text(child) for child in content if isinstance(child, dict))
 
 
 def build_document(
@@ -947,15 +1035,25 @@ def build_document(
 ) -> BoardDocument:
     normalized_html = (content_html or "").strip()
     normalized_text = (content_text or "").strip()
+    repaired_html = False
     if normalized_html:
-        normalized_html = _repair_suspicious_math_html(normalized_html)
+        next_html = _repair_suspicious_math_html(normalized_html)
+        repaired_html = next_html != normalized_html
+        normalized_html = next_html
     if not normalized_text and normalized_html:
         normalized_text = html_to_text(normalized_html)
     if not normalized_html and normalized_text:
         normalized_html = text_to_html(normalized_text)
     if not normalized_text and not normalized_html:
         normalized_html = "<p></p>"
-    normalized_json = content_json or (
+    stale_json = bool(
+        content_json
+        and normalized_html
+        and _html_has_math_nodes(normalized_html)
+        and _json_has_raw_math_text(content_json)
+    )
+    rebuild_json_from_html = stale_json or (repaired_html and _html_has_math_nodes(normalized_html))
+    normalized_json = content_json if content_json and not rebuild_json_from_html else (
         html_to_tiptap_doc(normalized_html) if normalized_html.strip() else text_to_tiptap_doc(normalized_text)
     )
     if isinstance(normalized_json, dict):
@@ -1009,7 +1107,15 @@ def _repair_existing_document(document: BoardDocument) -> BoardDocument:
     content_json = document.content_json if isinstance(document.content_json, dict) else {}
     sanitized_json, repaired_math = _sanitize_suspicious_math_json(content_json)
     repaired_html = _repair_suspicious_math_html(document.content_html)
-    if not repaired_math and repaired_html == document.content_html:
+    stale_json = _html_has_math_nodes(repaired_html) and _json_has_raw_math_text(sanitized_json)
+    rebuild_json_from_html = stale_json or (
+        repaired_html != document.content_html and _html_has_math_nodes(repaired_html)
+    )
+    if rebuild_json_from_html:
+        sanitized_json = html_to_tiptap_doc(repaired_html)
+        sanitized_json, json_repaired_math = _sanitize_suspicious_math_json(sanitized_json)
+        repaired_math = repaired_math or json_repaired_math
+    if not repaired_math and repaired_html == document.content_html and not stale_json:
         return document
     return BoardDocument(
         id=document.id,

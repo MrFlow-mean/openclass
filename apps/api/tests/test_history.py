@@ -914,6 +914,115 @@ def test_build_document_still_converts_real_inline_math() -> None:
     assert "\\frac{1}{2}" in document.content_html
 
 
+def test_build_document_converts_epsilon_latex_commands_to_inline_math() -> None:
+    document = build_document(title="Doc", content_text="任意 $\\varepsilon$ 与 $\\epsilon$ 都应显示为公式。")
+
+    assert document.content_html.count('data-type="inline-math"') == 2
+    assert 'data-latex="\\varepsilon"' in document.content_html
+    assert 'data-latex="\\epsilon"' in document.content_html
+
+
+def test_upgrade_markdown_like_document_keeps_epsilon_math_nodes() -> None:
+    legacy = BoardDocument(
+        title="Doc",
+        content_text="任意 $\\varepsilon$ 都应显示为公式。",
+        content_html='<p>任意 <span data-type="inline-math" data-latex="\\varepsilon"></span> 都应显示为公式。</p>',
+        content_json={
+            "type": "doc",
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "任意 "},
+                        {"type": "inlineMath", "attrs": {"latex": "\\varepsilon"}},
+                        {"type": "text", "text": " 都应显示为公式。"},
+                    ],
+                }
+            ],
+        },
+    )
+
+    upgraded = upgrade_markdown_like_document(legacy)
+
+    assert "inlineMath" in _collect_node_types(upgraded.content_json)
+    assert 'data-latex="\\varepsilon"' in upgraded.content_html
+
+
+def test_build_document_repairs_raw_epsilon_and_malformed_mixed_math_html() -> None:
+    document = build_document(
+        title="Doc",
+        content_html=(
+            "<p>对于任意给定的正数 \\varepsilon，总存在正数 "
+            '<span data-type="inline-math" data-latex="\\delta"></span>'
+            "，使得当 $0&lt;|x-x_0|&lt;\\delta时，有|f(x)-L|&lt;\\varepsilon$。</p>"
+        ),
+    )
+
+    assert document.content_html.count('data-type="inline-math"') == 4
+    assert 'data-latex="\\varepsilon"' in document.content_html
+    assert 'data-latex="0&lt;|x-x_0|&lt;\\delta"' in document.content_html
+    assert 'data-latex="|f(x)-L|&lt;\\varepsilon"' in document.content_html
+    assert "$0&lt;" not in document.content_html
+    assert "时，有" in document.content_html
+
+
+def test_build_document_rebuilds_json_when_repairing_math_html() -> None:
+    stale_json = {
+        "type": "doc",
+        "content": [
+            {
+                "type": "paragraph",
+                "content": [
+                    {"type": "text", "text": "使得当 $0<|x-x_0|<\\delta"},
+                    {"type": "text", "text": "时，有"},
+                    {"type": "text", "text": "|f(x)-L|<\\varepsilon$。"},
+                ],
+            }
+        ],
+    }
+    document = build_document(
+        title="Doc",
+        content_json=stale_json,
+        content_html="<p>使得当 $0&lt;|x-x_0|&lt;\\delta时，有|f(x)-L|&lt;\\varepsilon$。</p>",
+    )
+
+    json_text = str(document.content_json)
+    assert document.content_html.count('data-type="inline-math"') == 2
+    assert _collect_node_types(document.content_json).count("inlineMath") == 2
+    assert "$0<|x-x_0|" not in json_text
+    assert "时，有" in json_text
+
+
+def test_upgrade_markdown_like_document_rebuilds_stale_json_from_repaired_math_html() -> None:
+    legacy = BoardDocument(
+        title="Doc",
+        content_text="旧正文",
+        content_html=(
+            '<p>使得当 <span data-type="inline-math" data-latex="0&lt;|x-x_0|&lt;\\delta"></span>'
+            '时，有<span data-type="inline-math" data-latex="|f(x)-L|&lt;\\varepsilon"></span>。</p>'
+        ),
+        content_json={
+            "type": "doc",
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "使得当 $0<|x-x_0|<\\delta"},
+                        {"type": "text", "text": "时，有"},
+                        {"type": "text", "text": "|f(x)-L|<\\varepsilon$。"},
+                    ],
+                }
+            ],
+        },
+    )
+
+    upgraded = upgrade_markdown_like_document(legacy)
+
+    assert upgraded.content_html.count('data-type="inline-math"') == 2
+    assert _collect_node_types(upgraded.content_json).count("inlineMath") == 2
+    assert "$0<|x-x_0|" not in str(upgraded.content_json)
+
+
 def test_build_document_converts_latex_environment_inline_math() -> None:
     document = build_document(
         title="Doc",
