@@ -256,7 +256,10 @@ export function useBoardDraft({
   );
 
   const setStreamingDocumentPreview = useCallback(
-    (document: BoardDocument) => {
+    (lessonId: string, document: BoardDocument) => {
+      if (activeLessonRef.current?.id !== lessonId) {
+        return false;
+      }
       clearAutoSaveTimer();
       documentDraftVersionRef.current += 1;
       draftDocumentRef.current = document;
@@ -267,6 +270,7 @@ export function useBoardDraft({
       setIsDocumentDirty(false);
       setIsPreviewing(true);
       setAutoSaveStatus("idle");
+      return true;
     },
     [clearAutoSaveTimer]
   );

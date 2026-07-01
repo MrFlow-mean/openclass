@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
+import { useEffect, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 
 import { api, isMissingChatStreamFinalError } from "@/lib/api";
 import { streamingMarkdownToHtml } from "@/lib/streaming-rich-document";
@@ -50,7 +50,7 @@ type UseLessonChatAgentOptions = {
   ) => { activeLesson: Lesson | null } | void;
   updateLessonMessages: (lessonId: string, updater: (messages: ChatMessage[]) => ChatMessage[]) => void;
   updateLessonComposerState: (lessonId: string, updater: (current: LessonComposerState) => LessonComposerState) => void;
-  setStreamingDocumentPreview: (document: BoardDocument) => void;
+  setStreamingDocumentPreview: (lessonId: string, document: BoardDocument) => boolean;
   clearSelection: () => void;
   setError: Dispatch<SetStateAction<string | null>>;
   setBusyAction: Dispatch<SetStateAction<string | null>>;
@@ -94,8 +94,13 @@ export function useLessonChatAgent({
   const [lastScopedRequest, setLastScopedRequest] = useState<ChatRequestPayload | null>(null);
   const [lastReferenceRequest, setLastReferenceRequest] = useState<ChatRequestPayload | null>(null);
   const [lastBoardEditRequest, setLastBoardEditRequest] = useState<ChatRequestPayload | null>(null);
+  const activeLessonIdRef = useRef<string | null>(activeLesson?.id ?? null);
   const chatAbortControllerRef = useRef<AbortController | null>(null);
   const chatAbortRequestedRef = useRef(false);
+
+  useEffect(() => {
+    activeLessonIdRef.current = activeLesson?.id ?? null;
+  }, [activeLesson?.id]);
 
   const chatInput = activeComposerState.chatInput;
   const composerMode = activeComposerState.composerMode;
@@ -192,6 +197,22 @@ export function useLessonChatAgent({
 
   function lessonFromPackage(coursePackage: CoursePackage, lessonId: string) {
     return coursePackage.lessons.find((item) => item.id === lessonId) ?? null;
+  }
+
+  function activeLessonIdForAsyncPackage(
+    coursePackage: CoursePackage,
+    requestLessonId: string,
+    fallbackActiveLessonId?: string | null
+  ) {
+    const currentActiveLessonId = activeLessonIdRef.current;
+    if (
+      currentActiveLessonId &&
+      currentActiveLessonId !== requestLessonId &&
+      coursePackage.workspace_tab_order.includes(currentActiveLessonId)
+    ) {
+      return currentActiveLessonId;
+    }
+    return fallbackActiveLessonId;
   }
 
   function recoveredCommitForTurn(lesson: Lesson, submittedMessage: string, requestStartedAtMs: number) {
@@ -377,7 +398,7 @@ export function useLessonChatAgent({
               return;
             }
             streamedDocumentText += delta;
-            setStreamingDocumentPreview({
+            setStreamingDocumentPreview(requestLesson.id, {
               ...baseStreamingDocument,
               content_json: {},
               content_html: streamingMarkdownToHtml(streamedDocumentText),
@@ -427,11 +448,17 @@ export function useLessonChatAgent({
           }
         : userMessage;
       updateCoursePackage(response.course_package, {
-        activeLessonId: response.created_lesson ? undefined : requestLesson.id,
+        activeLessonId: activeLessonIdForAsyncPackage(
+          response.course_package,
+          requestLesson.id,
+          response.created_lesson ? undefined : requestLesson.id
+        ),
       });
       if (failedStreamingDocumentPreview) {
-        setStreamingDocumentPreview(failedStreamingDocumentPreview);
-        setError(response.board_document_operation_failure_reason ?? "右侧文档生成失败，已保留未保存的预览草稿。");
+        const previewApplied = setStreamingDocumentPreview(requestLesson.id, failedStreamingDocumentPreview);
+        if (previewApplied) {
+          setError(response.board_document_operation_failure_reason ?? "右侧文档生成失败，已保留未保存的预览草稿。");
+        }
       }
       setLatestBoardDecision(response.board_decision);
       setCurrentNeedPending(false);
@@ -516,7 +543,7 @@ export function useLessonChatAgent({
               ? recoveredCommitForTurn(refreshedLesson, payloadWithConversation.message, requestStartedAtMs)
               : null;
           updateCoursePackage(refreshedPackage, {
-            activeLessonId: requestLesson.id,
+            activeLessonId: activeLessonIdForAsyncPackage(refreshedPackage, requestLesson.id, requestLesson.id),
             rebuildMessageLessonIds: recoveredCommit ? [requestLesson.id] : undefined,
           });
           if (refreshedLesson) {
