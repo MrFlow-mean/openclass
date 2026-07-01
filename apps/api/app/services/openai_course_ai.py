@@ -56,6 +56,10 @@ from app.services.ai_model_catalog import (
 )
 from app.services.codex_app_server import CodexAppServerTextClient, codex_provider_status
 from app.services.config import load_root_dotenv
+from app.services.learning_intake_policy import (
+    BLANK_BOARD_LEARNING_INTAKE_POLICY,
+    BLANK_BOARD_LEARNING_INTAKE_RESPONSE_CONTRACT,
+)
 
 logger = logging.getLogger(__name__)
 _URLLIB_SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
@@ -1085,31 +1089,7 @@ class OpenAICourseAI:
             "2. practice_artifact：用户想练习已有知识或技能。ready_for_board=true 必须同时具备 learning_goal、"
             "current_level、target_scenario 三个核心因素；如果用户明确没有场景或让系统不按场景定制，target_scenario 可写"
             "“无明确应用场景”。\n"
-            "收敛方法：你必须根据上下文灵活选择起点定位法、轻量自述法、最近经历法、已会/未会法、"
-            "学习模式分流法、场景定位法、目标产出法、卡点定位法、选择卡片法、领域地图法、推荐入口法或隐性观察法。"
-            "这些方法只用于自然语言引导，不要变成固定问卷，也不要要求用户填字段。"
-            "你要在聊天中观察、承接、推荐和追问，同时把用户自然透露的信息记录到结构化字段；"
-            "不要让用户感觉自己在填写 LearningRequirementSheet。\n"
-            "引导策略选择优先级：\n"
-            "- 用户只说宽泛领域且起点未知：先用领域地图法打开结构，再用起点定位法或选择卡片法确认起点；"
-            "推荐入口只能是暂定入口，主问题优先问当前水平、已会/未会或最近接触情况。\n"
-            "- 用户说“不知道、你安排、帮我安排路线”：用选择卡片法降低表达成本，同时给出推荐入口和推荐理由；"
-            "如果同时是纯新手委托式入门，则直接落定领域总览型第一课。\n"
-            "- 用户自述“已经会/学过/还没学/忘得多”：优先用轻量自述法或已会/未会法，"
-            "把已会、未会、忘得多、下一步入口写入 known_background、learner_profile_inference 和 key_facts。\n"
-            "- 用户说“最近学到、最近做过、最近卡在”：优先用最近经历法；如果有明显卡点，优先用卡点定位法，"
-            "先判断卡在概念、步骤、公式/规则、应用迁移、表达或不知道从哪开始。\n"
-            "- 用户说“练习、训练、提高、复习、测验、实战、角色扮演”等：优先归为 practice_artifact，"
-            "自然收敛想练的内容、当前水平、面向场景；不要只给领域地图，也不要把练习需求当成新知识点教学。\n"
-            "- 练习型需求中，如果用户已经说清想练的内容，但没有说明当前水平，必须优先用选择卡片法探寻水平；"
-            "chatbot_message 必须先承接用户的练习目标，再给一个自然标题、一个降低选择压力的副标题，以及 4-6 个 A/B/C 卡片选项。"
-            "卡片选项由你根据当前技能自主生成，应该覆盖从纯入门、基础规则/语法、写过基础产物、能写标准组件、想练复杂任务到不确定等通用水平梯度。"
-            "entry_point_options 也要记录这些水平卡片。不要默认用户从基础练起，不要先推荐具体练习难度，"
-            "也不要在同一轮同时追问面向场景；等当前水平明确后再继续收敛场景。\n"
-            "- 用户表达“为了、用来、应对、解决、学完能做到/会做/看懂/写出”：使用场景定位法或目标产出法，"
-            "练习型面向场景写入 target_scenario，新知识点教学的深度倾向写入 target_depth；不要生成泛化 success_criteria。\n"
-            "- 用户表达不清时，可以给 3-6 个 A/B/C 选择卡片，但卡片必须是通用学习状态或内容形态，"
-            "不是学科模板；选择卡片后仍只问一个主问题。\n"
+            f"{BLANK_BOARD_LEARNING_INTAKE_POLICY}\n"
             "如果用户是纯新手且想入门某领域，可以用领域地图介绍该领域由哪些通用部分构成、推荐一个入门入口，"
             "并继续把需求收敛到一个可开始的知识点或练习产物。纯新手、零基础、入门、先了解一下、"
             "感兴趣想学，都表示一种明确的入门型学习状态；默认目的可以记录为“入门了解 / 建立领域地图 / 找到第一个学习入口”。"
@@ -1188,29 +1168,14 @@ class OpenAICourseAI:
                     "learning_need_checklist": "兼容字段：本链路不要填写系统流程检查项。",
                     "key_facts": "0-5 条事实，每项包含 label、value、evidence、category。",
                     "checklist": "2-5 个动态检查项，每项包含 title、is_clear、evidence。",
-                    "guidance_strategy": (
-                        "本轮采用的通用引导策略。只能使用 none、starting_point、light_self_report、"
-                        "recent_experience、known_unknown、mode_split、scenario、goal_output、stuck_point、"
-                        "choice_cards、domain_map、recommended_entry、implicit_observation。必须和用户当前表达形态匹配："
-                        "宽泛领域用 domain_map/starting_point/choice_cards；自述已会未会用 known_unknown/light_self_report；"
-                        "最近经历用 recent_experience；卡点用 stuck_point；练习需求用 mode_split/starting_point/scenario/goal_output；"
-                        "练习需求缺当前水平时优先用 choice_cards；"
-                        "不知道你安排用 choice_cards/recommended_entry。"
-                    ),
+                    "guidance_strategy": BLANK_BOARD_LEARNING_INTAKE_RESPONSE_CONTRACT["guidance_strategy"],
                     "learning_map_summary": "给用户看的简短学习地图摘要；宽泛主题时应填写，不写固定讲义正文。",
-                    "entry_point_options": (
-                        "2-6 个候选入口或水平卡片，每项包含 label、why_it_matters、best_for；"
-                        "练习型缺当前水平时这里必须是当前技能水平卡片，而不是练习任务清单。没有必要时可为空。"
-                    ),
+                    "entry_point_options": BLANK_BOARD_LEARNING_INTAKE_RESPONSE_CONTRACT["entry_point_options"],
                     "recommended_entry_point": "AI 推荐的一个入口，优先来自 entry_point_options。",
                     "reason_for_recommendation": "推荐理由，必须基于用户已说信息或通用入门原则。",
                     "learner_profile_inference": "从用户自述、最近经历、已会/未会或卡点推断出的起点信息。",
                     "missing_items": "仍缺少的核心因素或重要辅助因素；核心因素不全必须列出。",
-                    "next_question": (
-                        "清单未完整时下一轮最有价值的一个问题；如果已推荐入口但不了解用户水平，"
-                        "优先询问当前水平、已会/未会或最近学到哪里；如果用户已说明纯新手入门，"
-                        "必须直接落定基础总览型第一课，next_question 为空；ready_for_board=true 时可为空。"
-                    ),
+                    "next_question": BLANK_BOARD_LEARNING_INTAKE_RESPONSE_CONTRACT["next_question"],
                     "recommended_teaching_plan_summary": "可选：给用户看的教学方案摘要，不是板书正文。",
                     "ready_for_board": "只表示清单核心因素齐全，可以进入未来板书生成；本阶段不会实际生成。",
                 },

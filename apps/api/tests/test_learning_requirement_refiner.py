@@ -3,6 +3,7 @@ import json
 import pytest
 
 from app.models import ChatRequest, ConversationTurn
+from app.services import learning_intake_policy
 from app.services import openai_course_ai as openai_course_ai_module
 from app.services import workspace_state
 from app.services.chat_service import process_chat_on_lesson
@@ -68,7 +69,11 @@ def test_blank_board_refinement_prompt_requires_rich_broad_topic_guidance(
     assert "为我指导、你安排、帮我安排" in system_prompt
     assert "granularity=single_knowledge_point" in system_prompt
     assert "ready_for_board=true" in system_prompt
-    assert "引导策略选择优先级" in system_prompt
+    assert "通用 learning intake 策略" in system_prompt
+    assert "用户新增信息正在收敛哪一类不确定项" in system_prompt
+    assert "背景 + 宽泛学习方向" in system_prompt
+    assert "3-5 个 A/B/C/D 当前水平画像" in system_prompt
+    assert "entry_point_options 同步记录这些水平卡片" in system_prompt
     assert "最近经历法" in system_prompt
     assert "卡点定位法" in system_prompt
     assert "优先归为 practice_artifact" in system_prompt
@@ -80,11 +85,43 @@ def test_blank_board_refinement_prompt_requires_rich_broad_topic_guidance(
     assert "开场承接" in payload["response_contract"]["chatbot_message"]
     assert "推荐理由" in payload["response_contract"]["chatbot_message"]
     assert "必须和用户当前表达形态匹配" in payload["response_contract"]["guidance_strategy"]
+    assert "背景 + 宽泛目标但当前水平未知" in payload["response_contract"]["guidance_strategy"]
     assert "练习需求缺当前水平时优先用 choice_cards" in payload["response_contract"]["guidance_strategy"]
+    assert "当前水平画像卡片" in payload["response_contract"]["entry_point_options"]
     assert "当前技能水平卡片" in payload["response_contract"]["entry_point_options"]
+    assert "选择最像自己的状态" in payload["response_contract"]["next_question"]
     assert "当前水平" in payload["response_contract"]["next_question"]
     assert "纯新手入门" in payload["response_contract"]["next_question"]
     assert "已会/未会" in system_prompt
+
+
+def test_learning_intake_policy_is_generic_and_covers_strategy_matrix() -> None:
+    policy_text = " ".join(
+        [
+            learning_intake_policy.BLANK_BOARD_LEARNING_INTAKE_POLICY,
+            *learning_intake_policy.BLANK_BOARD_LEARNING_INTAKE_RESPONSE_CONTRACT.values(),
+        ]
+    )
+
+    for concrete_term in ["高数", "导数", "极限", "积分", "法语", "英语", "CSAPP", "统计学习理论", "高考", "旅游"]:
+        assert concrete_term not in policy_text
+
+    assert {
+        "starting_point",
+        "light_self_report",
+        "recent_experience",
+        "known_unknown",
+        "mode_split",
+        "scenario",
+        "goal_output",
+        "stuck_point",
+        "choice_cards",
+        "domain_map",
+        "recommended_entry",
+        "implicit_observation",
+    } <= set(learning_intake_policy.LEARNING_INTAKE_STRATEGIES)
+    assert "背景 + 宽泛学习方向" in learning_intake_policy.BLANK_BOARD_LEARNING_INTAKE_POLICY
+    assert "当前水平画像" in learning_intake_policy.BLANK_BOARD_LEARNING_INTAKE_POLICY
 
 
 def test_parse_response_logs_model_call_started(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -775,6 +812,137 @@ def test_empty_board_unknown_start_uses_recommended_entry(
     commit = store.load_for_user(user_id).packages[0].lessons[0].history_graph.commits[-1]
     assert commit.metadata["guided_requirement_discovery"]["guidance_strategy"] == "recommended_entry"
     assert commit.metadata["guided_requirement_discovery"]["recommended_entry_point"] == "基础概念"
+
+
+def test_background_plus_broad_goal_uses_level_choice_cards(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    user_id = "user_blank_background_broad_goal"
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    lesson = _seed_empty_workspace(store, user_id)
+
+    def _fake_refinement(**kwargs):
+        return BlankBoardRequirementRefinement(
+            route="requirement_refining",
+            chatbot_message=(
+                "这个方向已经明确了：你是在一个阶段转换点上，想提前进入新领域。"
+                "为了不把第一课定得太浅或太跳，我先帮你定位起点："
+                "\nA. 几乎没接触过前置概念"
+                "\nB. 有一些相关基础，但还没系统学过"
+                "\nC. 能做基础任务，但不清楚严格定义和应用边界"
+                "\nD. 已经预习过一部分，想查漏补缺"
+                "\n如果不确定，先选 B 就行。哪个最像你现在的状态？"
+            ),
+            progress=45,
+            summary="用户给出了学习背景和宽泛预习方向，但当前水平待确认。",
+            work_mode="knowledge_board",
+            granularity="broad_topic",
+            learning_goal="一个新领域的预习",
+            known_background="用户处在阶段转换点，想提前预习一个新领域。",
+            guidance_strategy="choice_cards",
+            learning_map_summary="先确认起点，再把宽泛预习方向落到第一课入口。",
+            entry_point_options=[
+                {
+                    "label": "A. 几乎没接触过前置概念",
+                    "why_it_matters": "适合从整体地图和最小术语开始。",
+                    "best_for": "只知道方向、还没有相关基础的人。",
+                },
+                {
+                    "label": "B. 有一些相关基础，但还没系统学过",
+                    "why_it_matters": "适合从前置能力到新领域入口的过渡开始。",
+                    "best_for": "有基础但没有系统进入新领域的人。",
+                },
+                {
+                    "label": "C. 能做基础任务，但不清楚严格定义和应用边界",
+                    "why_it_matters": "适合补定义、边界和应用连接。",
+                    "best_for": "会做一点但理解不稳的人。",
+                },
+                {
+                    "label": "D. 已经预习过一部分，想查漏补缺",
+                    "why_it_matters": "适合先做结构梳理和缺口定位。",
+                    "best_for": "已经自学过一轮的人。",
+                },
+            ],
+            recommended_entry_point="B. 有一些相关基础，但还没系统学过",
+            reason_for_recommendation="用户已经给出阶段背景，B 是较稳妥的默认过渡起点。",
+            learner_profile_inference="用户有明确背景和预习方向，但当前水平仍待确认。",
+            missing_items=["当前水平"],
+            next_question="哪个最像你现在的状态？",
+            ready_for_board=False,
+        )
+
+    monkeypatch.setattr(openai_course_ai, "generate_blank_board_requirement_refinement", _fake_refinement)
+
+    response = process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="我刚结束上一阶段学习，想预习一个新领域。"),
+        user_id=user_id,
+    )
+
+    assert response.learning_clarification.ready_for_board is False
+    assert "A. 几乎没接触过前置概念" in response.chatbot_message
+    assert response.active_requirement_sheet is not None
+    assert response.active_requirement_sheet.current_questions == ["哪个最像你现在的状态？"]
+    commit = store.load_for_user(user_id).packages[0].lessons[0].history_graph.commits[-1]
+    discovery = commit.metadata["guided_requirement_discovery"]
+    assert discovery["guidance_strategy"] == "choice_cards"
+    assert len(discovery["entry_point_options"]) == 4
+    assert discovery["entry_point_options"][1]["label"] == "B. 有一些相关基础，但还没系统学过"
+
+
+def test_choice_card_selection_updates_level_and_recommends_entry(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    user_id = "user_blank_choice_card_selected"
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    lesson = _seed_empty_workspace(store, user_id)
+
+    def _fake_refinement(**kwargs):
+        return BlankBoardRequirementRefinement(
+            route="requirement_refining",
+            chatbot_message=(
+                "好，那我先按“有一些相关基础，但还没系统学过”来安排。"
+                "我建议第一步从基础入口的直观含义开始，再慢慢补严格定义。"
+                "我们就从这个基础入口开始，可以吗？"
+            ),
+            progress=70,
+            summary="用户选择了水平卡片，适合从基础入口过渡到严格定义。",
+            work_mode="knowledge_board",
+            granularity="broad_topic",
+            learning_goal="基础入口的直观含义",
+            current_level="有一些相关基础，但还没系统学过",
+            known_background="用户选择了当前水平卡片 B。",
+            guidance_strategy="starting_point",
+            learning_map_summary="先用直观含义连接已有基础，再进入严格定义和应用边界。",
+            recommended_entry_point="基础入口的直观含义",
+            reason_for_recommendation="它能承接用户已有基础，又不会一开始跳到过深内容。",
+            learner_profile_inference="用户不是纯零基础，但还没有系统进入新领域。",
+            missing_items=["用户想学的内容需要收敛到具体知识点"],
+            next_question="我们就从这个基础入口开始，可以吗？",
+            ready_for_board=False,
+        )
+
+    monkeypatch.setattr(openai_course_ai, "generate_blank_board_requirement_refinement", _fake_refinement)
+
+    response = process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="选 B。"),
+        user_id=user_id,
+    )
+
+    assert response.active_requirement_sheet is not None
+    assert response.active_requirement_sheet.level == "有一些相关基础，但还没系统学过"
+    assert response.active_requirement_sheet.known_background == "用户选择了当前水平卡片 B。"
+    assert response.active_requirement_sheet.current_questions == ["我们就从这个基础入口开始，可以吗？"]
+    commit = store.load_for_user(user_id).packages[0].lessons[0].history_graph.commits[-1]
+    discovery = commit.metadata["guided_requirement_discovery"]
+    assert discovery["guidance_strategy"] == "starting_point"
+    assert discovery["recommended_entry_point"] == "基础入口的直观含义"
+    assert "不是纯零基础" in discovery["learner_profile_inference"]
 
 
 def test_empty_board_known_unknown_self_report_updates_background(
