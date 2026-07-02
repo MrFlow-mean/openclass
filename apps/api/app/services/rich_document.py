@@ -24,7 +24,7 @@ DocxBlock = tuple[str, list[InlineFragment], dict[str, Any]]
 
 _CJK_RE = re.compile(r"[\u3400-\u9fff]")
 _MATH_SIGNAL_RE = re.compile(
-    r"\\(?:begin|end|frac|sqrt|lim|sum|prod|int|sin|cos|tan|ln|log|exp|to|leftarrow|rightarrow|leftrightarrow|infty|cdot|times|div|leq?|geq?|approx|neq?|pm|in|notin|mid|subseteq?|supseteq?|cup|cap|mathbb|mathcal|mathfrak|mathbf|mathrm|operatorname|dots|cdots|ldots|vdots|partial|nabla|forall|exists|alpha|beta|gamma|delta|epsilon|varepsilon|theta|lambda|mu|pi|sigma|phi|omega)\b"
+    r"\\(?:begin|end|frac|dfrac|tfrac|sqrt|lim|sum|prod|int|sin|cos|tan|ln|log|exp|to|left|right|leftarrow|rightarrow|leftrightarrow|infty|cdot|times|div|leq?|geq?|approx|neq?|pm|sim|in|notin|mid|subseteq?|supseteq?|cup|cap|mathbb|mathcal|mathfrak|mathbf|mathrm|operatorname|text|dots|cdots|ldots|vdots|partial|nabla|forall|exists|alpha|beta|gamma|delta|epsilon|varepsilon|theta|lambda|mu|pi|sigma|phi|omega)\b"
     r"|[_^]"
     r"|[A-Za-z0-9)]\s*(?:[+\-−*/=<>≤≥≈≠±]|→|←)\s*[A-Za-z0-9(\\]"
     r"|\d+\s*/\s*\d+"
@@ -94,6 +94,8 @@ _HTML_BLOCK_TAGS = {
 _LATEX_SYMBOLS = {
     r"\to": "→",
     r"\leftarrow": "←",
+    r"\rightarrow": "→",
+    r"\leftrightarrow": "↔",
     r"\infty": "∞",
     r"\cdot": "·",
     r"\times": "×",
@@ -106,6 +108,18 @@ _LATEX_SYMBOLS = {
     r"\ne": "≠",
     r"\neq": "≠",
     r"\pm": "±",
+    r"\sim": "∼",
+    r"\forall": "∀",
+    r"\exists": "∃",
+    r"\in": "∈",
+    r"\notin": "∉",
+    r"\mid": "|",
+    r"\subset": "⊂",
+    r"\subseteq": "⊆",
+    r"\supset": "⊃",
+    r"\supseteq": "⊇",
+    r"\cup": "∪",
+    r"\cap": "∩",
     r"\alpha": "α",
     r"\beta": "β",
     r"\gamma": "γ",
@@ -123,8 +137,16 @@ _LATEX_SYMBOLS = {
     r"\partial": "∂",
     r"\int": "∫",
     r"\sum": "∑",
+    r"\prod": "∏",
+    r"\dots": "…",
+    r"\cdots": "⋯",
+    r"\ldots": "…",
 }
 _LATEX_FUNCTIONS = {"sin", "cos", "tan", "ln", "log", "sqrt", "exp", "lim"}
+_LATEX_TEXT_COMMANDS = {r"\text", r"\mathrm", r"\operatorname"}
+_LATEX_STYLE_COMMANDS = {r"\displaystyle", r"\textstyle", r"\scriptstyle", r"\scriptscriptstyle"}
+_LATEX_DELIMITER_COMMANDS = {r"\left", r"\right"}
+_LATEX_SPACING_COMMANDS = {r"\quad", r"\qquad", r"\,", r"\;", r"\:", r"\!"}
 _SUPERSCRIPT_CHARS = str.maketrans(
     "0123456789+-=()abcdefgijklmnoprstuvwxyz",
     "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾ᵃᵇᶜᵈᵉᶠᵍⁱʲᵏˡᵐⁿᵒᵖʳˢᵗᵘᵛʷˣʸᶻ",
@@ -1529,6 +1551,10 @@ def _normalize_limit_subscript(value: str) -> str:
 
 def _normalize_latex(value: str) -> str:
     latex = _TRAILING_SENTENCE_MARKS_RE.sub("", _LEADING_SENTENCE_MARKS_RE.sub("", value.strip()))
+    latex = latex.replace(r"\dfrac", r"\frac").replace(r"\tfrac", r"\frac")
+    latex = re.sub(r"\\\\\[[^\]]+\]", r"\\\\", latex)
+    latex = latex.replace(r"\ ", " ")
+    latex = latex.replace(r"\,", " ").replace(r"\;", " ").replace(r"\:", " ").replace(r"\!", "")
     replacements = [
         ("−", "-"),
         ("→", r"\to "),
@@ -1576,6 +1602,15 @@ def _normalize_latex(value: str) -> str:
     latex = re.sub(r"\(([^()]+)\)\s*/\s*([A-Za-z0-9\\]+(?:\^\{?[-+\w/]+\}?)?)", r"\\frac{\1}{\2}", latex)
     latex = _normalize_top_level_slash_fractions(latex)
     return re.sub(r"\s+", " ", latex).strip()
+
+
+def _plain_latex_text_argument(value: str) -> str:
+    text = value
+    for command in sorted(_LATEX_SPACING_COMMANDS, key=len, reverse=True):
+        text = text.replace(command, " " if command != r"\!" else "")
+    for command, symbol in _LATEX_SYMBOLS.items():
+        text = text.replace(command, symbol)
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def _matching_opener(value: str, end: int, opener: str, closer: str) -> int:
@@ -2011,6 +2046,23 @@ class _InlineLatexParser:
         return char
 
     def _parse_command(self) -> str:
+        for command in _LATEX_SPACING_COMMANDS:
+            if self.latex.startswith(command, self.index):
+                self.index += len(command)
+                return " " if command != r"\!" else ""
+        for command in _LATEX_DELIMITER_COMMANDS:
+            if self.latex.startswith(command, self.index):
+                self.index += len(command)
+                return ""
+        for command in _LATEX_STYLE_COMMANDS:
+            if self.latex.startswith(command, self.index):
+                self.index += len(command)
+                return ""
+        for command in _LATEX_TEXT_COMMANDS:
+            if self.latex.startswith(command, self.index):
+                self.index += len(command)
+                raw, self.index = _read_braced(self.latex, self.index)
+                return _plain_latex_text_argument(raw)
         if self.latex.startswith(r"\quad", self.index):
             self.index += len(r"\quad")
             return " "
@@ -2020,7 +2072,7 @@ class _InlineLatexParser:
             return ""
         command = command_match.group(0)
         self.index += len(command)
-        if command in {r"\left", r"\right"}:
+        if command in _LATEX_DELIMITER_COMMANDS:
             return ""
         if command in _LATEX_SYMBOLS:
             return _LATEX_SYMBOLS[command]
@@ -2181,16 +2233,30 @@ class _DisplayLatexParser:
         return raw
 
     def _parse_command(self) -> str:
-        if self.latex.startswith(r"\quad", self.index):
-            self.index += len(r"\quad")
-            return "  "
+        for command in _LATEX_SPACING_COMMANDS:
+            if self.latex.startswith(command, self.index):
+                self.index += len(command)
+                return "  " if command in {r"\quad", r"\qquad"} else " "
+        for command in _LATEX_DELIMITER_COMMANDS:
+            if self.latex.startswith(command, self.index):
+                self.index += len(command)
+                return ""
+        for command in _LATEX_STYLE_COMMANDS:
+            if self.latex.startswith(command, self.index):
+                self.index += len(command)
+                return ""
+        for command in _LATEX_TEXT_COMMANDS:
+            if self.latex.startswith(command, self.index):
+                self.index += len(command)
+                raw, self.index = _read_braced(self.latex, self.index)
+                return _plain_latex_text_argument(raw)
         command_match = re.match(r"\\[A-Za-z]+", self.latex[self.index :])
         if not command_match:
             self.index += 1
             return ""
         command = command_match.group(0)
         self.index += len(command)
-        if command in {r"\left", r"\right"}:
+        if command in _LATEX_DELIMITER_COMMANDS:
             return ""
         return _LATEX_SYMBOLS.get(command, command[1:])
 
@@ -2298,6 +2364,9 @@ def _read_base(value: str, index: int) -> tuple[list[OxmlElement], int]:
         return [_math_run("")], index
     if value[index] == "(":
         parenthesized, next_index = _read_parenthesized(value, index)
+        inner = parenthesized[1:-1] if parenthesized.startswith("(") and parenthesized.endswith(")") else ""
+        if inner:
+            return [_math_run("("), *_latex_to_normalized_math_children(inner), _math_run(")")], next_index
         return [_math_run(parenthesized)], next_index
     if value[index] == "{":
         braced, next_index = _read_braced(value, index)
@@ -2306,6 +2375,11 @@ def _read_base(value: str, index: int) -> tuple[list[OxmlElement], int]:
         command_match = re.match(r"\\[A-Za-z]+", value[index:])
         if command_match:
             command = command_match.group(0)
+            if command in _LATEX_TEXT_COMMANDS:
+                raw, next_index = _read_braced(value, index + len(command))
+                return [_math_run(_plain_latex_text_argument(raw))], next_index
+            if command in _LATEX_STYLE_COMMANDS or command in _LATEX_DELIMITER_COMMANDS:
+                return [_math_run("")], index + len(command)
             return [_math_run(_LATEX_SYMBOLS.get(command, command[1:]))], index + len(command)
     match = re.match(r"[A-Za-z]+(?:'\([^()]*\)|\([^()]*\)|')?", value[index:])
     if match:
@@ -2340,11 +2414,19 @@ def _latex_to_math_children(latex: str) -> list[OxmlElement]:
     index = 0
     while index < len(latex):
         char = latex[index]
-        if latex.startswith(r"\displaystyle", index):
-            index += len(r"\displaystyle")
+        matched_style = next((command for command in _LATEX_STYLE_COMMANDS if latex.startswith(command, index)), "")
+        if matched_style:
+            index += len(matched_style)
             continue
-        if latex.startswith(r"\textstyle", index):
-            index += len(r"\textstyle")
+        matched_delimiter = next((command for command in _LATEX_DELIMITER_COMMANDS if latex.startswith(command, index)), "")
+        if matched_delimiter:
+            index += len(matched_delimiter)
+            continue
+        matched_text = next((command for command in _LATEX_TEXT_COMMANDS if latex.startswith(command, index)), "")
+        if matched_text:
+            raw_text, index = _read_braced(latex, index + len(matched_text))
+            if raw_text:
+                children.append(_math_run(_plain_latex_text_argument(raw_text)))
             continue
         if latex.startswith(r"\begin{cases}", index):
             end_index = latex.find(r"\end{cases}", index)
@@ -2384,9 +2466,11 @@ def _latex_to_math_children(latex: str) -> list[OxmlElement]:
             index = next_index
             continue
         if char == "\\":
-            if latex.startswith(r"\quad", index):
-                children.append(_math_run("    "))
-                index += len(r"\quad")
+            matched_spacing = next((command for command in _LATEX_SPACING_COMMANDS if latex.startswith(command, index)), "")
+            if matched_spacing:
+                if matched_spacing != r"\!":
+                    children.append(_math_run("    " if matched_spacing in {r"\quad", r"\qquad"} else " "))
+                index += len(matched_spacing)
                 continue
             command_match = re.match(r"\\[A-Za-z]+", latex[index:])
             if command_match:
@@ -2404,12 +2488,14 @@ def _latex_to_math_children(latex: str) -> list[OxmlElement]:
 
 def _latex_cases_children(raw_cases: str) -> list[OxmlElement]:
     children: list[OxmlElement] = [_math_run("{ ")]
-    rows = [row.strip() for row in raw_cases.split(r"\\") if row.strip()]
+    normalized_cases = re.sub(r"\\\\\[[^\]]+\]", r"\\\\", raw_cases)
+    rows = [row.strip() for row in re.split(r"\\\\", normalized_cases) if row.strip()]
     for index, row in enumerate(rows):
         if index:
             children.append(_math_run("; "))
         row_latex = " ".join(part.strip() for part in row.split("&") if part.strip())
         children.extend(_latex_to_normalized_math_children(row_latex))
+    children.append(_math_run(" }"))
     return children
 
 

@@ -1654,3 +1654,44 @@ def test_docx_export_preserves_math_as_word_omml(tmp_path) -> None:
     assert "begin" not in math_text
     assert "displaystyle" not in math_text
     assert "begincases" not in xml_text
+
+
+def test_docx_export_normalizes_complex_board_formulas(tmp_path) -> None:
+    document = build_document(
+        title="Doc",
+        content_text=(
+            "ε-δ 定义：\n\n"
+            "$$\\forall \\varepsilon > 0, \\ \\exists \\delta > 0, "
+            "\\text{使得当 } 0 < |x-a| < \\delta \\text{ 时，有 } |f(x)-L| < \\varepsilon$$\n\n"
+            "分段函数：\n\n"
+            "$$f(x)=\\begin{cases} x, & x<1 \\\\[4pt] x+1, & x\\ge1 \\end{cases}$$\n\n"
+            "练习公式：$$f(x)=\\dfrac{x^2-4}{x-2}$$\n\n"
+            "后续公式：$$\\lim_{x\\to \\infty}\\left(1 + \\frac{1}{x}\\right)^x$$"
+        ),
+    )
+    export_path = tmp_path / "complex-math.docx"
+
+    export_docx(document, export_path)
+
+    with ZipFile(export_path) as archive:
+        document_xml = archive.read("word/document.xml")
+    root = ET.fromstring(document_xml)
+    ns = {
+        "m": "http://schemas.openxmlformats.org/officeDocument/2006/math",
+    }
+    xml_text = document_xml.decode("utf-8")
+    math_text = "".join(node.text or "" for node in root.findall(".//m:t", ns))
+
+    assert root.findall(".//m:oMath", ns)
+    assert "∀" in math_text
+    assert "∃" in math_text
+    assert "使得当" in math_text
+    assert "dfrac" not in math_text
+    assert "\\frac" not in math_text
+    assert "\\quad" not in math_text
+    assert "[4pt]" not in math_text
+    assert "text" not in math_text
+    assert "left" not in math_text
+    assert "right" not in math_text
+    assert "begin" not in math_text
+    assert "dfrac" not in xml_text

@@ -172,16 +172,20 @@ _MODE_SECTION_TITLES: dict[BoardMode, list[str]] = {
     ],
 }
 
-_MATH_DOMAIN_SIGNALS = (
-    "极限",
-    "函数",
-    "导数",
-    "积分",
-    "分式",
-    "公式",
-    "方程",
-    "数列",
-    "概率",
+_FORMULA_NOTATION_RE = re.compile(
+    r"\\(?:frac|dfrac|tfrac|lim|sum|prod|int|sqrt|begin\{cases\}|forall|exists|sin|cos|tan|ln|log)\b"
+    r"|[$][^$\n]+[$]"
+    r"|\\\[[\s\S]+?\\\]"
+    r"|[A-Za-z0-9)]\s*(?:[_^=<>≤≥≈≠±+\-*/]|→|←)\s*[A-Za-z0-9(\\]"
+    r"|[∀∃∑∫√∞≤≥≈≠±]"
+)
+_FORMULA_CONTEXT_RE = re.compile(
+    r"\b(formula|equation|symbolic|notation|derive|derivation)\b|公式|方程|符号|推导|表达式",
+    re.IGNORECASE,
+)
+_INLINE_MATH_SPAN_RE = re.compile(r"\\\((.+?)\\\)|(?<!\$)\$(?!\$)([^$\n]+?)\$(?!\$)", re.DOTALL)
+_COMPLEX_INLINE_FORMULA_RE = re.compile(
+    r"\\(?:lim|sum|prod|int|frac|dfrac|tfrac|begin\{cases\}|forall|exists)\b|\\\\|\\left|\\right"
 )
 
 
@@ -417,6 +421,7 @@ def generate_board_ai_input(
             "defer_topics_to_next_lessons": board_plan.deferred_topics,
             "quality_notes": board_plan.quality_notes,
             "math_adapter_enabled": board_plan.math_adapter_enabled,
+            "formula_rules": MathBoardAdapter.rules(),
             "math_rules": MathBoardAdapter.rules() if board_plan.math_adapter_enabled else [],
         },
         "validation": validation.model_dump(mode="json"),
@@ -436,11 +441,13 @@ class LessonScopeController:
         learner_profile: str,
     ) -> BoardScopeKind:
         granularity = str(_field(requirement, "granularity") or "")
+        parts = _split_topic_parts(content)
         if granularity == "single_knowledge_point":
+            if len(parts) >= 2 and _is_beginner(learner_profile):
+                return "lesson_series"
             return "single_lesson"
         if granularity == "broad_topic":
             return "lesson_series"
-        parts = _split_topic_parts(content)
         if len(parts) >= 3:
             return "lesson_series"
         if len(parts) == 2 and (_is_beginner(learner_profile) or len(content) >= 5):
@@ -454,16 +461,16 @@ class MathBoardAdapter:
     @staticmethod
     def is_applicable(*, domain: str, content: str, context: str) -> bool:
         haystack = f"{domain}\n{content}\n{context}"
-        return any(signal in haystack for signal in _MATH_DOMAIN_SIGNALS)
+        return bool(_FORMULA_NOTATION_RE.search(haystack) or _FORMULA_CONTEXT_RE.search(haystack))
 
     @staticmethod
     def rules() -> list[str]:
         return [
-            "所有真实公式使用标准 LaTeX；普通解释不要包进公式定界符。",
-            "分段函数必须使用 \\begin{cases} ... \\end{cases}。",
-            "极限、积分、导数、分式优先用 formula block 或独立公式行。",
-            "不得出现 displaystyle、begincases、endcases、xsim x 等半渲染文本。",
-            "预习第一课优先讲核心直觉、表格、图像化描述和简单例子。",
+            "如果本节需要公式，所有真实公式使用标准 LaTeX；普通解释不要包进公式定界符。",
+            "含 \\lim、\\sum、\\int、\\frac、量词、分段结构或多行关系的复杂公式必须使用独立公式块，不要混在普通段落里。",
+            "分式统一使用 \\frac{...}{...}，不要使用 \\dfrac 或 \\tfrac；分段结构使用 \\begin{cases} ... \\end{cases}，不要使用可选行距标记如 \\\\[4pt]。",
+            "不得出现 displaystyle、begincases、endcases、xsim x、裸露 LaTeX 命令等半渲染文本。",
+            "如果数值变化、结构关系或左右趋近能帮助理解，优先用 Markdown 表格或 diagram_prompt 描述可视化关系。",
         ]
 
 
@@ -730,8 +737,7 @@ def _quality_notes(board_plan: BoardTeachingPlan, deferred_topics: list[str]) ->
         "只生成当前第一节课，后续内容只放进简短路线，不在正文完整展开。",
         "板书要包含目标、核心直觉、例子、常见误区、课堂练习、小结和下一步。",
     ]
-    if board_plan.math_adapter_enabled:
-        notes.extend(MathBoardAdapter.rules())
+    notes.extend(MathBoardAdapter.rules())
     if deferred_topics:
         notes.append("这些主题只作为后续路线出现：" + "；".join(deferred_topics[:6]))
     return notes
@@ -819,7 +825,11 @@ def _math_fragment_issues(
     for needle, message in checks:
         if needle in value:
             issues.append(BoardQualityIssue(dimension="mathRendering", message=message, evidence=f"{path}: {needle}"))
-    if block_type != "formula" and re.search(r"(?<![A-Za-z])(?:\\frac\b|\bfrac\b)", outside_math):
+    if re.search(r"\\[dt]frac\b", value):
+        issues.append(BoardQualityIssue(dimension="mathRendering", message="出现 \\dfrac 或 \\tfrac；正式板书应统一使用 \\frac。", evidence=path))
+    if re.search(r"\\\\\[[^\]]+\]", value):
+        issues.append(BoardQualityIssue(dimension="mathRendering", message="分段或多行公式中出现可选行距标记，导出 Word 时容易残留。", evidence=path))
+    if block_type != "formula" and re.search(r"(?<![A-Za-z])(?:\\(?:dfrac|tfrac|frac)\b|\b(?:dfrac|tfrac|frac)\b)", outside_math):
         issues.append(BoardQualityIssue(dimension="mathRendering", message="普通文本中出现 frac，疑似公式未进入公式定界符或公式块。", evidence=path))
     if block_type != "formula" and re.search(r"\\(?:lim|sum|int|begin|end|varepsilon|delta|sin|cos)\b", outside_math):
         issues.append(BoardQualityIssue(dimension="mathRendering", message="普通文本中出现 LaTeX 命令，疑似公式未进入公式定界符或公式块。", evidence=path))
@@ -827,6 +837,16 @@ def _math_fragment_issues(
         issues.append(BoardQualityIssue(dimension="mathRendering", message="出现 lim x→ 这类半渲染极限文本。", evidence=path))
     if block_type != "formula" and re.search(r"\w+\s*sim\s*\w+|\wsim\s*\w", outside_math):
         issues.append(BoardQualityIssue(dimension="mathRendering", message="出现 sim 代替 \\sim 的半渲染文本。", evidence=path))
+    if block_type != "formula":
+        for inline_formula in _iter_inline_math_spans(value):
+            if _COMPLEX_INLINE_FORMULA_RE.search(inline_formula):
+                issues.append(
+                    BoardQualityIssue(
+                        dimension="mathRendering",
+                        message="复杂公式应使用独立公式块，避免在段落或列表中半渲染。",
+                        evidence=f"{path}: {inline_formula[:80]}",
+                    )
+                )
     return issues
 
 
@@ -841,6 +861,15 @@ def _remove_math_spans(value: str) -> str:
     for pattern in patterns:
         text = re.sub(pattern, " ", text, flags=re.DOTALL)
     return text
+
+
+def _iter_inline_math_spans(value: str) -> list[str]:
+    spans: list[str] = []
+    for match in _INLINE_MATH_SPAN_RE.finditer(value or ""):
+        latex = (match.group(1) or match.group(2) or "").strip()
+        if latex:
+            spans.append(latex)
+    return spans
 
 
 def _field(source: Any, name: str) -> Any:

@@ -31,7 +31,7 @@ def test_board_generation_plan_splits_broad_calculus_preview() -> None:
     assert "极限的直观含义" in plan.course_series_plan.current_lesson
     assert "极限的直观含义" in plan.current_lesson.title
     assert plan.board_mode == "concept_explanation"
-    assert plan.math_adapter_enabled is True
+    assert plan.math_adapter_enabled is False
     assert plan.board_template is not None
     assert plan.board_template.template_id == "concept_explanation_v1"
     assert "本节目标" in plan.board_template.required_headings
@@ -40,6 +40,21 @@ def test_board_generation_plan_splits_broad_calculus_preview() -> None:
     assert "介值定理" not in first_lesson_text
     assert "最值定理" not in first_lesson_text
     assert validate_board_plan(plan).passed is True
+    assert "formula_rules" in generate_board_ai_input(plan)["quality_contract"]
+
+
+def test_beginner_combined_topic_splits_even_when_granularity_is_single() -> None:
+    plan = build_board_teaching_plan(
+        {
+            "startingPoint": "刚开始预习，想先从入口建立直觉",
+            "contentToLearn": "概念A与概念B",
+            "granularity": "single_knowledge_point",
+        }
+    )
+
+    assert plan.scope_kind == "lesson_series"
+    assert plan.course_series_plan is not None
+    assert "概念A的直观含义" in plan.current_lesson.title
 
 
 def test_validate_math_rendering_rejects_half_rendered_fragments() -> None:
@@ -75,7 +90,7 @@ def test_validate_generated_board_text_allows_latex_inside_math_delimiters() -> 
         "# 分式与极限\n\n"
         "## 本节目标\n\n看懂公式。\n\n"
         "## 核心直觉\n\n公式表达变化关系。\n\n"
-        "## 例子\n\n标准写法：$\\lim_{x\\to0}\\frac{\\sin x}{x}=1$。\n\n"
+        "## 例子\n\n标准写法：\n\n$$\\lim_{x\\to0}\\frac{\\sin x}{x}=1$$\n\n"
         "## 课堂练习\n\n解释这个公式的含义。\n\n"
         "## 本节小结\n\n公式要服务于直觉。\n\n"
         "## 下一步\n\n继续。"
@@ -102,6 +117,24 @@ def test_validate_generated_board_text_rejects_latex_command_outside_math_delimi
 
     assert result.passed is False
     assert any("LaTeX 命令" in issue.message or "frac" in issue.message for issue in result.issues)
+
+
+def test_validate_generated_board_text_rejects_complex_inline_formula() -> None:
+    plan = build_board_teaching_plan({"domain": "公式", "contentToLearn": "符号表达"})
+    content = (
+        "# 符号表达\n\n"
+        "## 本节目标\n\n看懂公式。\n\n"
+        "## 核心直觉\n\n公式表达变化关系。\n\n"
+        "## 例子\n\n复杂公式不应内联：$\\lim_{x\\to0}\\frac{\\sin x}{x}=1$。\n\n"
+        "## 课堂练习\n\n解释这个公式的含义。\n\n"
+        "## 本节小结\n\n公式要服务于直觉。\n\n"
+        "## 下一步\n\n继续。"
+    )
+
+    result = validate_generated_board_text(content, plan)
+
+    assert result.passed is False
+    assert any("独立公式块" in issue.message for issue in result.issues)
 
 
 def test_field_map_plan_for_beginner_multi_part_system() -> None:
@@ -205,7 +238,7 @@ def test_generate_from_requirements_retries_half_rendered_math(monkeypatch) -> N
                 "# 公式质量\n\n"
                 "## 本节目标\n\n看懂公式。\n\n"
                 "## 核心直觉\n\n先理解公式描述的关系。\n\n"
-                "## 例子\n\n使用标准公式：$\\lim_{x\\to 0}\\frac{\\sin x}{x}=1$。\n\n"
+                "## 例子\n\n使用标准公式：\n\n$$\\lim_{x\\to 0}\\frac{\\sin x}{x}=1$$\n\n"
                 "## 课堂练习\n\n解释这个极限表达了什么。\n\n"
                 "## 本节小结\n\n公式要服务于直觉。\n\n"
                 "## 下一步\n\n继续练习。"
