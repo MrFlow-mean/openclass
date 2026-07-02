@@ -371,13 +371,6 @@ class BoardDocumentEditResult(BaseModel):
         return str(value)
 
 
-class BoardDocumentQualityReview(BaseModel):
-    status: Literal["pass", "repair_required"] = "pass"
-    issues: list[str] = Field(default_factory=list)
-    repair_instruction: str = ""
-    checked_dimensions: list[str] = Field(default_factory=list)
-
-
 class BoardTaskRouteDecision(BaseModel):
     route: BoardTaskRoute
     location_status: Literal["found", "missing", "ambiguous", "content_absent"] = "missing"
@@ -1866,39 +1859,32 @@ class OpenAICourseAI:
             "不要在正文中完整讲解后续模块，除非用户明确要求总览、速览或完整章节讲义。生成结果必须方便后续定位："
             "使用一个 H1 标题、多个编号化 H2 主分段，并在必要时使用 H3 子分段；"
             "每个分段标题都要表达清楚该段解决的学习问题，不要只写“第一部分”“内容”等空泛标题。\n"
-            "3. 如果 learning_requirement_context.board_generation_quality_pipeline 存在，"
-            "必须服从其中的 board_mode、course_series_plan、current_lesson 和 quality_contract："
-            "只展开 current_lesson；defer_topics_to_next_lessons 只能出现在简短后续路线中；"
-            "must_include 中列出的板书结构必须在正文中可见。\n"
-            "4. intent=edit_existing_document 时，有选区就优先 replace_selection；需要新增内容时用 append_section；"
+            "3. intent=edit_existing_document 时，有选区就优先 replace_selection；需要新增内容时用 append_section；"
             "只有 target_scope=whole_document 且 allow_replace_document=true 时才允许 replace_document，"
             "否则不要整体覆盖已有文档。\n"
-            "5. content_text 是可直接进入文档的正文；必须像 ChatGPT 正常回答一样使用 Markdown 或普通文本，"
+            "4. content_text 是可直接进入文档的正文；必须像 ChatGPT 正常回答一样使用 Markdown 或普通文本，"
             "用 Markdown 表达标题、列表、加粗和表格。除真正公式的 LaTeX 定界符外，"
             "不得在 content_text 或 content_html 中输出 HTML 标签，例如 <h1>、<p>、<strong>、<table>。"
             "全文重写、缩短或精简时也不能把原有层级压成普通段落。不要用代码块包裹全文。"
             "content_html 必须为空字符串；后端会把 content_text 规范化为可编辑富文本。\n"
-            "6. 如果 learning_requirement_context.document_quality_repair 存在，说明上一版输出已被后端质量门禁拒绝；"
-            "必须根据 failure_reason 重写不合格内容，直到满足格式、结构和操作范围要求，"
-            "不得重复返回被拒绝的 HTML、扁平段落或越界替换。\n"
-            "7. 完整生成时要像正式教材章节或大学课程讲义：开头可以给学习目标和前置知识，"
+            "5. 完整生成时要像正式教材章节或大学课程讲义：开头可以给学习目标和前置知识，"
             "但正文必须按概念引入、正式定义、性质或结论、典型例题、解答过程、注释、习题递进。"
             "避免口语化课堂讲解稿，不写“我们来看”“你会发现”“很容易理解”“错”等表达。\n"
-            "8. section_titles 写入本次文档的主要 H2 章节标题，用于后续分节讲解。\n"
-            "9. 格式约束：语言例句、语法说明、纠错箭头、对话台词和普通解释一律输出普通文字；"
+            "6. section_titles 写入本次文档的主要 H2 章节标题，用于后续分节讲解。\n"
+            "7. 格式约束：语言例句、语法说明、纠错箭头、对话台词和普通解释一律输出普通文字；"
             "只有真正公式才使用 LaTeX 定界符或公式排版。不要为了强调普通文字而使用 $...$、\\(...\\)、\\[...\\] 或 $$...$$。\n"
-            "10. 公式约束：如果需要输出含 \\lim、\\sum、\\int、\\frac、量词、多行关系或分段结构的复杂公式，"
+            "8. 公式约束：如果需要输出含 \\lim、\\sum、\\int、\\frac、量词、多行关系或分段结构的复杂公式，"
             "必须使用独立公式块（优先 $$...$$ 或 \\[...\\]），不要混在普通段落或列表句子里。"
             "分式统一写 \\frac{...}{...}，不要写 \\dfrac 或 \\tfrac；分段结构不要使用 \\\\[4pt] 这类可选行距标记。\n"
-            "11. 标题结构采用教材章节格式，H2 标题优先使用“1.1 ……、1.2 ……”；"
+            "9. 标题结构采用教材章节格式，H2 标题优先使用“1.1 ……、1.2 ……”；"
             "避免“为什么……”“核心思想”“常见误区”“检查问题”等口语化标题。\n"
-            "12. 典型例题使用教材格式：先写“例 1”，再写题干；解答过程使用“解：”开头；"
+            "10. 典型例题使用教材格式：先写“例 1”，再写题干；解答过程使用“解：”开头；"
             "必要时用“注：”说明概念边界。\n"
-            "13. 如果概念适合图像、流程、位置关系、变化趋势或结构关系理解，要写出“图示说明：……”或 diagram_prompt，"
+            "11. 如果概念适合图像、流程、位置关系、变化趋势或结构关系理解，要写出“图示说明：……”或 diagram_prompt，"
             "说明画什么、标出哪些对象、用什么箭头/空心点/高亮表达关系；不要用代码块伪造流程图。\n"
-            "14. 抽象或严格定义第一次出现时，先给概念引入，再给正式定义；"
+            "12. 抽象或严格定义第一次出现时，先给概念引入，再给正式定义；"
             "如果本节只要求建立直觉，写“注：本节只要求理解该定义所刻画的思想，暂不要求进行形式化证明。”\n"
-            "15. 不写任何固定主题模板，不根据主题名、资料名或样例走特殊规则。"
+            "13. 不写任何固定主题模板，不根据主题名、资料名或样例走特殊规则。"
         )
         user_payload: dict[str, Any] = {
             "intent": intent,
@@ -1916,7 +1902,6 @@ class OpenAICourseAI:
                     "复杂公式必须独立成公式块；短变量和单个符号可以内联。"
                     "完整生成时必须有一个 H1 标题、多个 H2 主分段和必要 H3 子分段，便于后续按标题、段落和小节定位。"
                     "如果学习目标包含多个后续模块，正文只展开当前入口小课，其余模块放进“后续学习路线/下一步”。"
-                    "如果传入 board_generation_quality_pipeline，必须覆盖其 quality_contract.must_include。"
                     "章节标题优先使用 1.1/1.2 编号；正文按概念引入、正式定义、性质或结论、典型例题、解答过程、注释、习题组织。"
                     "典型例题写“例”，解答写“解：”，注释写“注：”。"
                 ),
@@ -1948,64 +1933,6 @@ class OpenAICourseAI:
             schema=BoardDocumentEditResult,
         )
         return result if isinstance(result, BoardDocumentEditResult) else None
-
-    def generate_board_document_quality_review(
-        self,
-        *,
-        intent: str,
-        lesson_title: str,
-        learning_requirement_context: dict[str, Any],
-        operation: str,
-        candidate_title: str,
-        candidate_content_text: str,
-        resource_summary: str,
-        current_document_title: str = "",
-        target_scope: str | None = None,
-        selection_excerpt: str | None = None,
-        section_titles: list[str] | None = None,
-    ) -> BoardDocumentQualityReview | None:
-        system_prompt = (
-            "你是 OpenClass 的板书文档质量审查 AI，只负责审查候选板书是否能安全写入，"
-            "不负责和用户聊天，也不生成最终板书。\n"
-            "规则：\n"
-            "1. 只依据结构化需求/任务清单、候选板书正文、资料摘要和板书侧上下文审查；"
-            "不得要求或引用用户与 Chatbot 的原始聊天记录。\n"
-            "2. 只做通用质量审查，不写任何主题、学科、教材、考试或样例专属规则。\n"
-            "3. 必须检查候选文档内部一致性：标题、术语、定义、解释、例子、练习、答案、"
-            "输出范围、用户约束和章节结构之间不能互相矛盾。\n"
-            "4. 如果发现候选内容自相矛盾、范围错位、练习答案与说明冲突、术语前后不一致，"
-            "status 必须为 repair_required，并给出可交给 BoardEditor 重写的通用修复指令。\n"
-            "5. 如果只是需要更华丽的表达但没有一致性或安全问题，status 使用 pass。"
-        )
-        user_prompt = _json(
-            {
-                "intent": intent,
-                "lesson_title": lesson_title,
-                "learning_requirement_context": learning_requirement_context,
-                "operation": operation,
-                "candidate_title": candidate_title,
-                "candidate_content_text": candidate_content_text,
-                "resource_summary": resource_summary,
-                "current_document_title": current_document_title,
-                "target_scope": target_scope or "",
-                "selection_excerpt": selection_excerpt.strip() if selection_excerpt else "",
-                "section_titles": section_titles or [],
-                "input_isolation": BOARD_EDITOR_CHAT_LOG_REDACTION,
-                "response_contract": {
-                    "status": "pass 或 repair_required。",
-                    "issues": "候选文档存在的通用一致性问题；没有问题则为空数组。",
-                    "repair_instruction": "status=repair_required 时，给 BoardEditor 的自然语言重写指令。",
-                    "checked_dimensions": "实际检查过的维度，如 title_terms、definitions、examples、exercises、answers、scope、structure。",
-                },
-            }
-        )
-        result = self._parse(
-            "board",
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            schema=BoardDocumentQualityReview,
-        )
-        return result if isinstance(result, BoardDocumentQualityReview) else None
 
     def generate_learning_requirement_update(
         self,

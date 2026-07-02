@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Literal
 
 from app.models import (
     BoardDecision,
@@ -20,13 +20,6 @@ from app.services.document_ops import apply_board_patch, read_board_snapshot
 from app.services.history import current_head_commit
 from app.services.openai_course_ai import BoardDocumentEditResult, openai_course_ai
 from app.services.board_segment_index import build_board_segment_index
-from app.services.board_generation_quality import (
-    BoardQualityValidationResult,
-    build_board_teaching_plan,
-    generate_board_ai_input,
-    validate_board_plan,
-    validate_generated_board_text,
-)
 from app.services.resource_visual_evidence import (
     augment_document_with_resource_visual_evidence,
     visual_evidence_metadata,
@@ -40,15 +33,8 @@ from app.services.rich_document import (
     is_document_empty,
     looks_like_html_content,
     replace_selection_in_document,
-    rich_structure_counts,
     text_to_html,
-    would_flatten_rich_document,
 )
-
-
-_MAX_BOARD_DOCUMENT_QUALITY_ATTEMPTS = 3
-_QUALITY_REPAIR_EXCERPT_CHARS = 2400
-_QUALITY_REVIEW_CONTENT_CHARS = 10000
 
 
 @dataclass(frozen=True)
@@ -63,8 +49,6 @@ class BoardDocumentEditOutcome:
     changed: bool = False
     operation_status: Literal["succeeded", "failed"] = "failed"
     failure_reason: str | None = None
-    quality_repair_attempts: int = 0
-    quality_review_status: str = "not_run"
     operations: list[PatchOperation] | None = None
     diff_preview: list[DiffPreviewItem] | None = None
     patch_validation: BoardPatchValidationResult | None = None
@@ -89,26 +73,12 @@ def generate_from_requirements(
             "当前板书不是空白文档，已阻止整体覆盖。",
         )
 
-    board_plan = build_board_teaching_plan(requirements, clarification)
-    board_plan_validation = validate_board_plan(board_plan)
-    if not board_plan_validation.passed:
-        return _no_change(
-            lesson,
-            _board_quality_failure_reason("板书教学计划质量检查未通过", board_plan_validation),
-            quality_review_status="repair_required",
-        )
-
     learning_requirement_context = _requirement_context(
         requirements,
         clarification,
         requirement_run_id=requirement_run_id,
         frozen_requirement_version_id=frozen_requirement_version_id,
     )
-    learning_requirement_context["board_generation_quality_pipeline"] = generate_board_ai_input(
-        board_plan,
-        validation=board_plan_validation,
-    )
-
     request_kwargs = {
         "intent": "generate_from_requirements",
         "lesson_title": lesson.title,
@@ -118,120 +88,43 @@ def generate_from_requirements(
         "resource_summary": resource_summary,
         "selection_excerpt": None,
     }
-    failure_reason = "板书文档编辑 AI 没有返回生成结果。"
-    repair_feedback: dict[str, object] | None = None
-    quality_repair_attempts = 0
-    quality_review_status = "not_run"
-    for attempt in range(_MAX_BOARD_DOCUMENT_QUALITY_ATTEMPTS):
-        result = _request_board_document_edit(request_kwargs, repair_feedback=repair_feedback)
-        if not result:
-            failure_reason = "板书文档编辑 AI 没有返回生成结果。"
-            break
+    result = _request_board_document_edit(request_kwargs)
+    if not result:
+        return _no_change(lesson, "板书文档编辑 AI 没有返回生成结果。")
 
-        format_issue = _model_output_quality_issue(result)
-        if format_issue:
-            failure_reason = format_issue
-            quality_repair_attempts = attempt + 1
-            quality_review_status = "repair_required"
-            repair_feedback = _quality_repair_feedback(
-                reason=failure_reason,
-                attempt=attempt,
-                result=result,
-            )
-            continue
+    content_text, content_html = _edit_payload(result, prefer_content_html=False)
+    if not content_text and not content_html:
+        return _no_change(lesson, "板书文档编辑 AI 返回了空内容。")
 
-        content_text, content_html = _edit_payload(result, prefer_content_html=False)
-        if not content_text and not content_html:
-            failure_reason = "板书文档编辑 AI 返回了空内容。"
-            quality_repair_attempts = attempt + 1
-            quality_review_status = "repair_required"
-            repair_feedback = _quality_repair_feedback(
-                reason=failure_reason,
-                attempt=attempt,
-                result=result,
-            )
-            continue
-
-        generated_quality = validate_generated_board_text(content_text, board_plan)
-        if not generated_quality.passed:
-            failure_reason = _board_quality_failure_reason("板书生成质量检查未通过", generated_quality)
-            quality_repair_attempts = attempt + 1
-            quality_review_status = "repair_required"
-            repair_feedback = _quality_repair_feedback(
-                reason=failure_reason,
-                attempt=attempt,
-                result=result,
-            )
-            repair_feedback["board_generation_quality_validation"] = generated_quality.model_dump(mode="json")
-            continue
-
-        new_document = build_document(
-            title=result.title.strip() or lesson.board_document.title or lesson.title,
-            content_text=content_text,
-            content_html=content_html,
-            document_id=lesson.board_document.id,
-            page_settings=lesson.board_document.page_settings,
+    new_document = build_document(
+        title=result.title.strip() or lesson.board_document.title or lesson.title,
+        content_text=content_text,
+        content_html=content_html,
+        document_id=lesson.board_document.id,
+        page_settings=lesson.board_document.page_settings,
+    )
+    visual_evidence_summary = visual_evidence_metadata(reference_context.visual_evidence) if reference_context else []
+    before_visual_html = new_document.content_html
+    if reference_context is not None:
+        new_document = augment_document_with_resource_visual_evidence(
+            new_document,
+            reference_context=reference_context,
         )
-        if _would_store_flat_initial_board(new_document):
-            failure_reason = "首次板书生成结果缺少标题层级，已阻止写入。"
-            quality_repair_attempts = attempt + 1
-            quality_review_status = "repair_required"
-            repair_feedback = _quality_repair_feedback(
-                reason=failure_reason,
-                attempt=attempt,
-                result=result,
-            )
-            continue
-        consistency_issue = _document_quality_review_issue(
-            intent="generate_from_requirements",
-            lesson=lesson,
-            request_kwargs=request_kwargs,
-            result=result,
-            operation="replace_document",
-            new_document=new_document,
-            selection_excerpt=None,
-            target_scope=None,
-        )
-        if consistency_issue:
-            failure_reason = consistency_issue
-            quality_repair_attempts = attempt + 1
-            quality_review_status = "repair_required"
-            repair_feedback = _quality_repair_feedback(
-                reason=failure_reason,
-                attempt=attempt,
-                result=result,
-            )
-            continue
-        visual_evidence_summary = visual_evidence_metadata(reference_context.visual_evidence) if reference_context else []
-        before_visual_html = new_document.content_html
-        if reference_context is not None:
-            new_document = augment_document_with_resource_visual_evidence(
-                new_document,
-                reference_context=reference_context,
-            )
-        visual_inserted = (
-            min(len([item for item in reference_context.visual_evidence if item.image_src]), 2)
-            if reference_context is not None and new_document.content_html != before_visual_html
-            else 0
-        )
-        return _changed(
-            lesson=lesson,
-            new_document=new_document,
-            operation="replace_document",
-            summary=result.summary.strip(),
-            chatbot_message=result.chatbot_message.strip() or result.summary.strip(),
-            section_titles=result.section_titles,
-            reason="板书文档编辑 AI 已根据学习需求清单生成空白板书。",
-            quality_repair_attempts=quality_repair_attempts,
-            quality_review_status="pass",
-            resource_visual_evidence_inserted=visual_inserted,
-            resource_visual_evidence=visual_evidence_summary,
-        )
-    return _no_change(
-        lesson,
-        failure_reason,
-        quality_repair_attempts=quality_repair_attempts,
-        quality_review_status=quality_review_status,
+    visual_inserted = (
+        min(len([item for item in reference_context.visual_evidence if item.image_src]), 2)
+        if reference_context is not None and new_document.content_html != before_visual_html
+        else 0
+    )
+    return _changed(
+        lesson=lesson,
+        new_document=new_document,
+        operation="replace_document",
+        summary=result.summary.strip(),
+        chatbot_message=result.chatbot_message.strip() or result.summary.strip(),
+        section_titles=result.section_titles,
+        reason="板书文档编辑 AI 已根据学习需求清单生成空白板书。",
+        resource_visual_evidence_inserted=visual_inserted,
+        resource_visual_evidence=visual_evidence_summary,
     )
 
 
@@ -281,141 +174,39 @@ def edit_existing_document(
         if patch_outcome is not None:
             return patch_outcome
 
-    failure_reason = "板书文档编辑 AI 没有返回编辑结果。"
-    repair_feedback: dict[str, object] | None = None
-    quality_repair_attempts = 0
-    quality_review_status = "not_run"
-    for attempt in range(_MAX_BOARD_DOCUMENT_QUALITY_ATTEMPTS):
-        result = _request_board_document_edit(request_kwargs, repair_feedback=repair_feedback)
-        if not result:
-            failure_reason = "板书文档编辑 AI 没有返回编辑结果。"
-            break
+    result = _request_board_document_edit(request_kwargs)
+    if not result:
+        return _no_change(lesson, "板书文档编辑 AI 没有返回编辑结果。")
 
-        format_issue = _model_output_quality_issue(result)
-        if format_issue:
-            failure_reason = format_issue
-            quality_repair_attempts = attempt + 1
-            quality_review_status = "repair_required"
-            repair_feedback = _quality_repair_feedback(
-                reason=failure_reason,
-                attempt=attempt,
-                result=result,
-            )
-            continue
+    operation = "append_section" if is_append_request else result.operation
+    content_text, _content_html = _edit_payload(result, prefer_content_html=True)
+    if not content_text:
+        return _no_change(lesson, "板书文档编辑 AI 返回了空内容。")
+    if (
+        operation == "replace_document"
+        and not is_document_empty(lesson.board_document)
+        and not (allow_replace_document or is_whole_document_scope)
+    ):
+        return _no_change(lesson, "非全文编辑返回了整篇替换结果，已阻止写入。")
 
-        operation = "append_section" if is_append_request else result.operation
-        content_text, _content_html = _edit_payload(result, prefer_content_html=True)
-        if not content_text:
-            failure_reason = "板书文档编辑 AI 返回了空内容。"
-            quality_repair_attempts = attempt + 1
-            quality_review_status = "repair_required"
-            repair_feedback = _quality_repair_feedback(
-                reason=failure_reason,
-                attempt=attempt,
-                result=result,
-            )
-            continue
-        if (
-            operation == "replace_document"
-            and not is_document_empty(lesson.board_document)
-            and not (allow_replace_document or is_whole_document_scope)
-        ):
-            failure_reason = "非全文编辑返回了整篇替换结果，已阻止写入。"
-            quality_repair_attempts = attempt + 1
-            quality_review_status = "repair_required"
-            repair_feedback = _quality_repair_feedback(
-                reason=failure_reason,
-                attempt=attempt,
-                result=result,
-            )
-            continue
-        if (
-            operation == "replace_selection"
-            and target_excerpt
-            and _looks_like_whole_document_replacement(
-                current_document=lesson.board_document,
-                selection_excerpt=target_excerpt,
-                replacement_text=content_text,
-            )
-        ):
-            failure_reason = "局部替换结果看起来像整份文档，已阻止写入。"
-            quality_repair_attempts = attempt + 1
-            quality_review_status = "repair_required"
-            repair_feedback = _quality_repair_feedback(
-                reason=failure_reason,
-                attempt=attempt,
-                result=result,
-            )
-            continue
-        new_document = _apply_edit_result(
-            lesson=lesson,
-            result=result,
-            selection_excerpt=target_excerpt,
-            operation_override=operation,
-            allow_replace_document=allow_replace_document or is_whole_document_scope,
-        )
-        if not document_changed(lesson.board_document, new_document):
-            failure_reason = "板书文档编辑 AI 的结果没有改变当前文档。"
-            quality_repair_attempts = attempt + 1
-            quality_review_status = "repair_required"
-            repair_feedback = _quality_repair_feedback(
-                reason=failure_reason,
-                attempt=attempt,
-                result=result,
-            )
-            continue
-        if would_flatten_rich_document(
-            current_document=lesson.board_document,
-            new_document=new_document,
-            operation=operation,
-        ):
-            failure_reason = "全文替换结果丢失了原有标题、列表、加粗或表格结构，已阻止写入。"
-            quality_repair_attempts = attempt + 1
-            quality_review_status = "repair_required"
-            repair_feedback = _quality_repair_feedback(
-                reason=failure_reason,
-                attempt=attempt,
-                result=result,
-            )
-            continue
-        consistency_issue = _document_quality_review_issue(
-            intent="edit_existing_document",
-            lesson=lesson,
-            request_kwargs=request_kwargs,
-            result=result,
-            operation=operation,
-            new_document=new_document,
-            selection_excerpt=target_excerpt,
-            target_scope=target_scope,
-        )
-        if consistency_issue:
-            failure_reason = consistency_issue
-            quality_repair_attempts = attempt + 1
-            quality_review_status = "repair_required"
-            repair_feedback = _quality_repair_feedback(
-                reason=failure_reason,
-                attempt=attempt,
-                result=result,
-            )
-            continue
+    new_document = _apply_edit_result(
+        lesson=lesson,
+        result=result,
+        selection_excerpt=target_excerpt,
+        operation_override=operation,
+        allow_replace_document=allow_replace_document or is_whole_document_scope,
+    )
+    if not document_changed(lesson.board_document, new_document):
+        return _no_change(lesson, "板书文档编辑 AI 的结果没有改变当前文档。")
 
-        return _changed(
-            lesson=lesson,
-            new_document=new_document,
-            operation=operation,
-            summary=result.summary.strip(),
-            chatbot_message=result.chatbot_message.strip() or result.summary.strip(),
-            section_titles=result.section_titles,
-            reason="板书文档编辑 AI 已根据解析出的目标位置和指令更新板书。",
-            quality_repair_attempts=quality_repair_attempts,
-            quality_review_status="pass",
-        )
-
-    return _no_change(
-        lesson,
-        failure_reason,
-        quality_repair_attempts=quality_repair_attempts,
-        quality_review_status=quality_review_status,
+    return _changed(
+        lesson=lesson,
+        new_document=new_document,
+        operation=operation,
+        summary=result.summary.strip(),
+        chatbot_message=result.chatbot_message.strip() or result.summary.strip(),
+        section_titles=result.section_titles,
+        reason="板书文档编辑 AI 已根据解析出的目标位置和指令更新板书。",
     )
 
 
@@ -545,30 +336,7 @@ def _try_patch_existing_document(
         diff_preview=applied.diff_preview,
         patch_validation=applied.validation,
         patch_risk_level=patch.risk_level,
-        quality_review_status="pass",
     )
-
-
-def _looks_like_whole_document_replacement(
-    *,
-    current_document: BoardDocument,
-    selection_excerpt: str,
-    replacement_text: str,
-) -> bool:
-    current_text = _document_text(current_document).strip()
-    selection = (selection_excerpt or "").strip()
-    replacement = (replacement_text or "").strip()
-    if not current_text or not selection or not replacement:
-        return False
-    current_heading_titles = set(_document_heading_titles(current_document) or _markdown_heading_titles(current_text))
-    replacement_heading_titles = set(_markdown_heading_titles(replacement))
-    reused_document_headings = current_heading_titles.intersection(replacement_heading_titles)
-    if len(reused_document_headings) >= 2 and len(replacement) > len(selection) * 2:
-        return True
-    if len(replacement) > max(len(selection) * 4, 1200) and len(replacement) > len(current_text) * 0.6:
-        return True
-    prefix = current_text[: min(240, len(current_text))]
-    return len(prefix) >= 80 and prefix in replacement and len(replacement) > len(selection) * 2
 
 
 def _markdown_heading_titles(text: str) -> list[str]:
@@ -577,41 +345,6 @@ def _markdown_heading_titles(text: str) -> list[str]:
         title = re.sub(r"\s+", " ", match.group("title")).strip()
         if title:
             titles.append(title)
-    return titles
-
-
-def _document_heading_titles(document: BoardDocument) -> list[str]:
-    content_json = document.content_json if isinstance(document.content_json, dict) else {}
-    content = content_json.get("content")
-    if not isinstance(content, list):
-        return []
-    titles: list[str] = []
-
-    def node_text(value: Any) -> str:
-        if isinstance(value, dict):
-            if value.get("type") == "text":
-                text = value.get("text")
-                return text if isinstance(text, str) else ""
-            children = value.get("content")
-            if isinstance(children, list):
-                return "".join(node_text(child) for child in children)
-        return ""
-
-    def walk(value: Any) -> None:
-        if isinstance(value, dict):
-            if value.get("type") == "heading":
-                title = re.sub(r"\s+", " ", node_text(value)).strip()
-                if title:
-                    titles.append(title)
-            children = value.get("content")
-            if isinstance(children, list):
-                for child in children:
-                    walk(child)
-        elif isinstance(value, list):
-            for child in value:
-                walk(child)
-
-    walk(content)
     return titles
 
 
@@ -624,8 +357,6 @@ def _changed(
     chatbot_message: str,
     section_titles: list[str],
     reason: str,
-    quality_repair_attempts: int = 0,
-    quality_review_status: str = "not_run",
     operations: list[PatchOperation] | None = None,
     diff_preview: list[DiffPreviewItem] | None = None,
     patch_validation: BoardPatchValidationResult | None = None,
@@ -644,8 +375,6 @@ def _changed(
         changed=True,
         operation_status="succeeded",
         failure_reason=None,
-        quality_repair_attempts=quality_repair_attempts,
-        quality_review_status=quality_review_status,
         operations=operations or [],
         diff_preview=diff_preview or [],
         patch_validation=patch_validation,
@@ -659,8 +388,6 @@ def _no_change(
     lesson: Lesson,
     reason: str,
     *,
-    quality_repair_attempts: int = 0,
-    quality_review_status: str = "not_run",
     patch_validation: BoardPatchValidationResult | None = None,
     patch_risk_level: str | None = None,
 ) -> BoardDocumentEditOutcome:
@@ -675,8 +402,6 @@ def _no_change(
         changed=False,
         operation_status="failed",
         failure_reason=reason,
-        quality_repair_attempts=quality_repair_attempts,
-        quality_review_status=quality_review_status,
         operations=[],
         diff_preview=[],
         patch_validation=patch_validation,
@@ -695,127 +420,8 @@ def _patch_section_titles(diff_preview: list[DiffPreviewItem]) -> list[str]:
     return titles
 
 
-def _generate_board_document_edit_with_retry(**kwargs) -> BoardDocumentEditResult | None:
-    result = openai_course_ai.generate_board_document_edit(**kwargs)
-    if result is not None:
-        return result
-    return openai_course_ai.generate_board_document_edit(**kwargs)
-
-
-def _request_board_document_edit(
-    request_kwargs: dict[str, object],
-    *,
-    repair_feedback: dict[str, object] | None,
-) -> BoardDocumentEditResult | None:
-    kwargs = dict(request_kwargs)
-    if repair_feedback:
-        context = dict(kwargs.get("learning_requirement_context") or {})
-        context["document_quality_repair"] = repair_feedback
-        kwargs["learning_requirement_context"] = context
-    return _generate_board_document_edit_with_retry(**kwargs)
-
-
-def _model_output_quality_issue(result: BoardDocumentEditResult) -> str | None:
-    if looks_like_html_content(result.content_text):
-        return "板书文档编辑 AI 在 content_text 中返回了 HTML 标签，必须改写为 Markdown / 普通文本。"
-    if result.content_html.strip():
-        return "板书文档编辑 AI 返回了 content_html；模型输出必须只提供 Markdown / 普通文本 content_text。"
-    return None
-
-
-def _document_quality_review_issue(
-    *,
-    intent: str,
-    lesson: Lesson,
-    request_kwargs: dict[str, object],
-    result: BoardDocumentEditResult,
-    operation: str,
-    new_document: BoardDocument,
-    selection_excerpt: str | None,
-    target_scope: str | None,
-) -> str | None:
-    review = openai_course_ai.generate_board_document_quality_review(
-        intent=intent,
-        lesson_title=str(request_kwargs.get("lesson_title") or lesson.title),
-        learning_requirement_context=dict(request_kwargs.get("learning_requirement_context") or {}),
-        operation=operation,
-        candidate_title=result.title.strip() or new_document.title,
-        candidate_content_text=_compact_text(_document_text(new_document), limit=_QUALITY_REVIEW_CONTENT_CHARS),
-        resource_summary=str(request_kwargs.get("resource_summary") or ""),
-        current_document_title=lesson.board_document.title,
-        target_scope=target_scope,
-        selection_excerpt=selection_excerpt,
-        section_titles=result.section_titles,
-    )
-    if review is None or review.status != "repair_required":
-        return None
-
-    issues = [item.strip() for item in review.issues if item.strip()]
-    instruction = review.repair_instruction.strip()
-    if issues and instruction:
-        return f"板书候选内容一致性审查未通过：{'；'.join(issues)}。修复要求：{instruction}"
-    if issues:
-        return f"板书候选内容一致性审查未通过：{'；'.join(issues)}。"
-    if instruction:
-        return f"板书候选内容一致性审查未通过。修复要求：{instruction}"
-    return "板书候选内容一致性审查未通过。"
-
-
-def _board_quality_failure_reason(prefix: str, validation: BoardQualityValidationResult) -> str:
-    issues = [
-        f"{issue.dimension}: {issue.message}{f'（{issue.evidence}）' if issue.evidence else ''}"
-        for issue in validation.issues
-    ]
-    detail = "；".join(issues[:6]) or "未知质量问题"
-    return f"{prefix}，score={validation.score}：{detail}"
-
-
-def _quality_repair_feedback(
-    *,
-    reason: str,
-    attempt: int,
-    result: BoardDocumentEditResult | None,
-) -> dict[str, object]:
-    payload: dict[str, object] = {
-        "status": "previous_output_rejected",
-        "attempt_number": attempt + 1,
-        "failure_reason": reason,
-        "repair_instruction": (
-            "上一版板书编辑结果没有通过后端质量门禁。请不要放宽格式要求，"
-            "而是重写不合格内容，返回合格的 operation 和 Markdown / 普通文本 content_text；"
-            "content_html 必须为空字符串。"
-        ),
-        "required_contract": [
-            "content_text 使用 ChatGPT 风格 Markdown / 普通文本，不包含 HTML 标签。",
-            "content_html 为空字符串。",
-            "真实公式以外的普通文字不得使用公式定界符或公式节点。",
-            "全文改写或缩短必须保留标题、列表、加粗、表格等必要文档结构。",
-            "局部编辑必须返回目标片段，不得把整篇文档塞进局部替换。",
-            "首次生成板书必须包含本节目标、核心直觉、例子、课堂练习、本节小结和下一步。",
-        ],
-    }
-    if result is not None:
-        payload.update(
-            {
-                "previous_operation": result.operation,
-                "previous_title": result.title,
-                "previous_content_text_excerpt": _compact_repair_excerpt(result.content_text),
-                "previous_content_html_excerpt": _compact_repair_excerpt(result.content_html),
-                "previous_summary": result.summary,
-            }
-        )
-    return payload
-
-
-def _compact_repair_excerpt(value: str) -> str:
-    return _compact_text(value, limit=_QUALITY_REPAIR_EXCERPT_CHARS)
-
-
-def _compact_text(value: str, *, limit: int) -> str:
-    text = value.strip()
-    if len(text) <= limit:
-        return text
-    return text[:limit] + "\n..."
+def _request_board_document_edit(request_kwargs: dict[str, object]) -> BoardDocumentEditResult | None:
+    return openai_course_ai.generate_board_document_edit(**request_kwargs)
 
 
 def _edit_payload(result: BoardDocumentEditResult, *, prefer_content_html: bool) -> tuple[str, str]:

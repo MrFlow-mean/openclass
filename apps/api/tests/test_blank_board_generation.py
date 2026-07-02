@@ -93,7 +93,6 @@ def test_board_generation_action_generates_blank_board_without_chatbot_message(
             section_titles=["1. 极限要解决什么问题", "2. 连续的直觉"],
             changed=True,
             operation_status="succeeded",
-            quality_review_status="pass",
         )
 
     monkeypatch.setattr(blank_board_generation, "generate_from_requirements", _fake_generate_from_requirements)

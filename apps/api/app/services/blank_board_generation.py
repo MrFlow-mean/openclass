@@ -76,8 +76,6 @@ def run_blank_board_generation(
             metadata={
                 "board_generation_action": "start",
                 "operation": outcome.operation,
-                "quality_repair_attempts": outcome.quality_repair_attempts,
-                "quality_review_status": outcome.quality_review_status,
             },
         )
         workspace_state.save_workspace_and_learning_requirement_history_for_user(
@@ -121,8 +119,6 @@ def run_blank_board_generation(
             "requirement_phase": frozen_stamp.phase,
             "work_mode": requirements.work_mode,
             "granularity": requirements.granularity,
-            "quality_repair_attempts": outcome.quality_repair_attempts,
-            "quality_review_status": outcome.quality_review_status,
             "active_requirement_sheet_after": None,
             "active_board_task_sheet_after": None,
             "requirement_cleared": True,
