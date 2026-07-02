@@ -539,6 +539,7 @@ export function WordBoardEditor({
   onSelectBoardModel,
   onImportDocx,
   onExportDocx,
+  onExportHtml,
 }: {
   document: BoardDocument;
   readOnly: boolean;
@@ -560,6 +561,7 @@ export function WordBoardEditor({
   onSelectBoardModel: (option: AIModelOption) => void;
   onImportDocx: (file: File) => void;
   onExportDocx: () => void;
+  onExportHtml: () => void;
 }) {
   const importRef = useRef<HTMLInputElement | null>(null);
   const imageUploadRef = useRef<HTMLInputElement | null>(null);
@@ -1625,6 +1627,14 @@ export function WordBoardEditor({
               >
                 <Download className="h-4 w-4" />
                 导出 DOCX
+              </button>
+              <button
+                type="button"
+                onClick={onExportHtml}
+                className="inline-flex h-10 items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 text-[11px] font-bold uppercase tracking-wider text-gray-600 transition hover:border-gray-300"
+              >
+                <FileText className="h-4 w-4" />
+                导出 HTML
               </button>
             </div>
           </div>

@@ -25,7 +25,7 @@ DocxBlock = tuple[str, list[InlineFragment], dict[str, Any]]
 
 _CJK_RE = re.compile(r"[\u3400-\u9fff]")
 _MATH_SIGNAL_RE = re.compile(
-    r"\\(?:begin|end|frac|dfrac|tfrac|sqrt|lim|sum|prod|int|sin|cos|tan|ln|log|exp|to|left|right|leftarrow|rightarrow|leftrightarrow|infty|cdot|times|div|leq?|geq?|approx|neq?|pm|sim|in|notin|mid|subseteq?|supseteq?|cup|cap|mathbb|mathcal|mathfrak|mathbf|mathrm|operatorname|text|dots|cdots|ldots|vdots|partial|nabla|forall|exists|alpha|beta|gamma|delta|epsilon|varepsilon|theta|lambda|mu|pi|sigma|phi|omega)\b"
+    r"\\(?:begin|end|frac|dfrac|tfrac|sqrt|lim|sum|prod|int|sin|cos|tan|ln|log|exp|to|left|right|leftarrow|rightarrow|leftrightarrow|Leftarrow|Rightarrow|Leftrightarrow|Longleftarrow|Longrightarrow|Longleftrightarrow|infty|cdot|times|div|leq?|geq?|approx|neq?|pm|sim|in|notin|mid|subseteq?|supseteq?|cup|cap|mathbb|mathcal|mathfrak|mathbf|mathrm|operatorname|text|dots|cdots|ldots|vdots|partial|nabla|forall|exists|alpha|beta|gamma|delta|epsilon|varepsilon|theta|lambda|mu|pi|sigma|phi|omega)\b"
     r"|[_^]"
     r"|[A-Za-z0-9)]\s*(?:[+\-−*/=<>≤≥≈≠±]|→|←)\s*[A-Za-z0-9(\\]"
     r"|\d+\s*/\s*\d+"
@@ -100,6 +100,12 @@ _LATEX_SYMBOLS = {
     r"\leftarrow": "←",
     r"\rightarrow": "→",
     r"\leftrightarrow": "↔",
+    r"\Leftarrow": "⇐",
+    r"\Rightarrow": "⇒",
+    r"\Leftrightarrow": "⇔",
+    r"\Longleftarrow": "⟸",
+    r"\Longrightarrow": "⟹",
+    r"\Longleftrightarrow": "⟺",
     r"\infty": "∞",
     r"\cdot": "·",
     r"\times": "×",
@@ -155,7 +161,10 @@ _SUPERSCRIPT_CHARS = str.maketrans(
     "0123456789+-=()abcdefgijklmnoprstuvwxyz",
     "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾ᵃᵇᶜᵈᵉᶠᵍⁱʲᵏˡᵐⁿᵒᵖʳˢᵗᵘᵛʷˣʸᶻ",
 )
-_SUBSCRIPT_CHARS = str.maketrans("0123456789+-=()aeijoruvx", "₀₁₂₃₄₅₆₇₈₉₊₋₌₍₎ₐₑᵢⱼₒᵣᵤᵥₓ")
+_SUBSCRIPT_CHARS = str.maketrans(
+    "0123456789+-=()aehijklmnoprstuvx",
+    "₀₁₂₃₄₅₆₇₈₉₊₋₌₍₎ₐₑₕᵢⱼₖₗₘₙₒₚᵣₛₜᵤᵥₓ",
+)
 
 
 def html_to_text(content_html: str) -> str:
@@ -1556,9 +1565,11 @@ def _normalize_limit_subscript(value: str) -> str:
 def _normalize_latex(value: str) -> str:
     latex = _TRAILING_SENTENCE_MARKS_RE.sub("", _LEADING_SENTENCE_MARKS_RE.sub("", value.strip()))
     latex = latex.replace(r"\dfrac", r"\frac").replace(r"\tfrac", r"\frac")
-    latex = re.sub(r"\\\\\[[^\]]+\]", r"\\\\", latex)
+    line_break_token = "\ue000"
+    latex = re.sub(r"\\\\(?:\[[^\]]+\])?", line_break_token, latex)
     latex = latex.replace(r"\ ", " ")
     latex = latex.replace(r"\,", " ").replace(r"\;", " ").replace(r"\:", " ").replace(r"\!", "")
+    latex = latex.replace(line_break_token, r"\\")
     replacements = [
         ("−", "-"),
         ("→", r"\to "),
@@ -2059,6 +2070,8 @@ def _decode_data_uri(data_uri: str) -> bytes | None:
 
 def _script_text(value: str, *, subscript: bool = False) -> str:
     parsed = _latex_inline_text(value)
+    if subscript and re.search(r"[A-Za-zα-ωΑ-Ω]", parsed):
+        return f"_{parsed}"
     table = _SUBSCRIPT_CHARS if subscript else _SUPERSCRIPT_CHARS
     return parsed.translate(table)
 
@@ -2242,6 +2255,10 @@ class _DisplayLatexParser:
                 self._flush_text(text_buffer, boxes)
                 boxes.append(self._parse_limit())
                 continue
+            if self.latex.startswith(r"\begin{cases}", self.index):
+                self._flush_text(text_buffer, boxes)
+                boxes.append(self._parse_cases())
+                continue
             if char == "{":
                 raw, self.index = _read_braced(self.latex, self.index)
                 self._flush_text(text_buffer, boxes)
@@ -2285,6 +2302,28 @@ class _DisplayLatexParser:
             width = max(len("lim"), len(limit))
             return _DisplayMathBox(["lim".center(width), limit.center(width)], 0)
         return _DisplayMathBox(["lim"])
+
+    def _parse_cases(self) -> _DisplayMathBox:
+        end_index = self.latex.find(r"\end{cases}", self.index)
+        if end_index < 0:
+            self.index += len(r"\begin{cases}")
+            return _DisplayMathBox(["{"])
+        raw_cases = self.latex[self.index + len(r"\begin{cases}") : end_index]
+        self.index = end_index + len(r"\end{cases}")
+        normalized_cases = re.sub(r"\\\\\[[^\]]+\]", r"\\\\", raw_cases)
+        rows: list[str] = []
+        for raw_row in re.split(r"\\\\", normalized_cases):
+            row = raw_row.strip()
+            if not row:
+                continue
+            pieces = [_latex_inline_text(piece.strip()) for piece in row.split("&") if piece.strip()]
+            rows.append("  ".join(piece for piece in pieces if piece))
+        if not rows:
+            return _DisplayMathBox(["{ }"])
+        width = max(len(row) for row in rows)
+        lines = [("{ " + rows[0]).ljust(width + 2)]
+        lines.extend(("  " + row).ljust(width + 2) for row in rows[1:])
+        return _DisplayMathBox(lines)
 
     def _parse_scripts_box(self) -> _DisplayMathBox:
         if self.index >= len(self.latex) or self.latex[self.index] not in {"_", "^"}:
@@ -2378,8 +2417,17 @@ def _math_arg(tag: str, children: list[OxmlElement]) -> OxmlElement:
     return _math_container(tag, children or [_math_run("")])
 
 
+def _math_property_value(tag: str, attr: str, value: str) -> OxmlElement:
+    element = _m_element(tag)
+    element.set(qn(f"m:{attr}"), value)
+    return element
+
+
 def _math_fraction(numerator: list[OxmlElement], denominator: list[OxmlElement]) -> OxmlElement:
     fraction = _m_element("f")
+    fraction_properties = _m_element("fPr")
+    fraction_properties.append(_math_property_value("type", "val", "bar"))
+    fraction.append(fraction_properties)
     fraction.append(_math_arg("num", numerator))
     fraction.append(_math_arg("den", denominator))
     return fraction
@@ -2388,16 +2436,19 @@ def _math_fraction(numerator: list[OxmlElement], denominator: list[OxmlElement])
 def _math_script(base: list[OxmlElement], subscript: list[OxmlElement] | None, superscript: list[OxmlElement] | None) -> OxmlElement:
     if subscript is not None and superscript is not None:
         node = _m_element("sSubSup")
+        node.append(_m_element("sSubSupPr"))
         node.append(_math_arg("e", base))
         node.append(_math_arg("sub", subscript))
         node.append(_math_arg("sup", superscript))
         return node
     if subscript is not None:
         node = _m_element("sSub")
+        node.append(_m_element("sSubPr"))
         node.append(_math_arg("e", base))
         node.append(_math_arg("sub", subscript))
         return node
     node = _m_element("sSup")
+    node.append(_m_element("sSupPr"))
     node.append(_math_arg("e", base))
     node.append(_math_arg("sup", superscript or [_math_run("")]))
     return node
@@ -2405,6 +2456,7 @@ def _math_script(base: list[OxmlElement], subscript: list[OxmlElement] | None, s
 
 def _math_limit_low(base: list[OxmlElement], limit: list[OxmlElement]) -> OxmlElement:
     node = _m_element("limLow")
+    node.append(_m_element("limLowPr"))
     node.append(_math_arg("e", base))
     node.append(_math_arg("lim", limit))
     return node
@@ -2598,17 +2650,38 @@ def _append_omml_math(paragraph, latex: str, *, display: bool = False) -> None:
         paragraph._p.append(math)
 
 
+def _set_run_font(run, font_name: str) -> None:
+    run.font.name = font_name
+    r_pr = run._r.get_or_add_rPr()
+    r_fonts = r_pr.rFonts
+    if r_fonts is not None:
+        r_fonts.set(qn("w:eastAsia"), font_name)
+        r_fonts.set(qn("w:cs"), font_name)
+
+
+def _disable_run_proofing(run) -> None:
+    r_pr = run._r.get_or_add_rPr()
+    if r_pr.find(qn("w:noProof")) is None:
+        r_pr.append(OxmlElement("w:noProof"))
+
+
+def _append_display_math_text(paragraph, latex: str) -> None:
+    for index, line in enumerate(_latex_display_lines(latex)):
+        if index:
+            paragraph.add_run().add_break()
+        run = paragraph.add_run(line)
+        _set_run_font(run, "Menlo")
+        _disable_run_proofing(run)
+    paragraph.paragraph_format.line_spacing = 1
+
+
 def _append_math(paragraph, latex: str, *, display: bool = False) -> None:
+    if display:
+        _append_display_math_text(paragraph, latex)
+        return
     try:
         _append_omml_math(paragraph, latex, display=display)
     except Exception:
-        if display:
-            for index, line in enumerate(_latex_display_lines(latex)):
-                if index:
-                    paragraph.add_run().add_break()
-                paragraph.add_run(line)
-            paragraph.paragraph_format.line_spacing = 1
-            return
         paragraph.add_run(_latex_inline_text(latex) or latex)
 
 

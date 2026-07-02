@@ -146,6 +146,7 @@ export function CourseStudio() {
     handleLocalDocumentChange,
     handleImportDocx,
     handleExportDocx,
+    handleExportHtml,
   } = boardDraft;
   const {
     previewCommitId,
@@ -610,6 +611,7 @@ export function CourseStudio() {
           onSelectBoardModel={selectBoardModel}
           onImportDocx={(file) => void handleImportDocx(file)}
           onExportDocx={() => void handleExportDocx()}
+          onExportHtml={() => void handleExportHtml()}
         />
 
         <CourseStudioSidePanel

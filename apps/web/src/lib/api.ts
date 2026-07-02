@@ -571,6 +571,17 @@ export const api = {
     }
     return response.blob();
   },
+  async exportHtml(lessonId: string) {
+    const response = await fetch(`${getApiBase()}/api/lessons/${lessonId}/document/export-html`, {
+      headers: authHeaders(),
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(text || `Export failed with ${response.status}`);
+    }
+    return response.blob();
+  },
   createBranch(lessonId: string, name: string, fromCommitId?: string | null) {
     return request<CoursePackage>(`/api/lessons/${lessonId}/branches`, {
       method: "POST",

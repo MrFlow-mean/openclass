@@ -30,6 +30,7 @@ type BoardEditorPanelProps = {
   onSelectBoardModel: (option: AIModelOption) => void;
   onImportDocx: (file: File) => void;
   onExportDocx: () => void;
+  onExportHtml: () => void;
 };
 
 function stringValue(value: unknown) {
@@ -126,6 +127,7 @@ export function BoardEditorPanel({
   onSelectBoardModel,
   onImportDocx,
   onExportDocx,
+  onExportHtml,
 }: BoardEditorPanelProps) {
   const teachingFocus = currentTeachingFocus(activeLesson, previewCommit);
 
@@ -185,6 +187,7 @@ export function BoardEditorPanel({
         onSelectBoardModel={onSelectBoardModel}
         onImportDocx={onImportDocx}
         onExportDocx={onExportDocx}
+        onExportHtml={onExportHtml}
       />
     </section>
   );

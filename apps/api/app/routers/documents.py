@@ -25,6 +25,7 @@ from app.routers.auth import current_user
 from app.services.chat_service import document_ai_edit_request
 from app.services.course_runtime import refresh_lesson_runtime
 from app.services.history import create_branch, current_head_commit, restore_commit, switch_branch
+from app.services.html_document_export import export_html
 from app.services.rich_document import (
     document_changed,
     export_docx,
@@ -309,6 +310,23 @@ def export_document_docx(lesson_id: str, user: UserView = Depends(current_user))
         target_path,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         filename=f"{lesson.slug or lesson.id}.docx",
+        headers=_DOCX_NO_STORE_HEADERS,
+    )
+
+
+@router.get("/api/lessons/{lesson_id}/document/export-html")
+def export_document_html(lesson_id: str, user: UserView = Depends(current_user)) -> FileResponse:
+    workspace = load_workspace_for_user(user.id)
+    _, lesson = find_lesson_package(workspace, lesson_id)
+    document = _exportable_document_for_lesson(lesson)
+    if is_document_empty(document):
+        raise HTTPException(status_code=409, detail="当前板书文档为空，不能导出 HTML")
+    target_path = EXPORT_DIR / f"{lesson.slug or lesson.id}.html"
+    export_html(document, target_path)
+    return FileResponse(
+        target_path,
+        media_type="text/html; charset=utf-8",
+        filename=f"{lesson.slug or lesson.id}.html",
         headers=_DOCX_NO_STORE_HEADERS,
     )
 

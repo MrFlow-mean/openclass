@@ -576,6 +576,30 @@ export function useBoardDraft({
     }
   }, [flushAutoSave, setBusyAction, setError]);
 
+  const handleExportHtml = useCallback(async () => {
+    const lesson = activeLessonRef.current;
+    if (!lesson) {
+      return;
+    }
+    if (!(await flushAutoSave("export"))) {
+      return;
+    }
+    setBusyAction("export-html");
+    try {
+      const blob = await api.exportHtml(lesson.id);
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `${lesson.slug || lesson.id}.html`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+    } catch (exportError) {
+      setError(exportError instanceof Error ? exportError.message : "导出 HTML 失败");
+    } finally {
+      setBusyAction(null);
+    }
+  }, [flushAutoSave, setBusyAction, setError]);
+
   const scheduleAutoSaveEffectEvent = useEffectEvent(() => {
     scheduleAutoSave("debounce");
   });
@@ -612,5 +636,6 @@ export function useBoardDraft({
     handleLocalDocumentChange,
     handleImportDocx,
     handleExportDocx,
+    handleExportHtml,
   };
 }

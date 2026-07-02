@@ -28,6 +28,7 @@ from app.services.course_runtime import (
 from app.services.document_ops import apply_patch, document_hash, read_board_snapshot
 from app.services.board_document_editor import edit_existing_document, generate_from_requirements
 from app.services.history import bind_commit_metadata, commit_operations, create_branch, restore_commit, switch_branch
+from app.services.html_document_export import export_html
 from app.services.lesson_factory import create_empty_lesson, create_lesson
 from app.services.openai_course_ai import (
     BoardDocumentEditResult,
@@ -1628,6 +1629,30 @@ def test_docx_import_export_roundtrip(tmp_path) -> None:
     assert "正文" in imported.content_text
 
 
+def test_html_export_renders_math_nodes_with_katex_loader(tmp_path) -> None:
+    document = build_document(
+        title="Doc",
+        content_html=(
+            '<h1>公式讲义</h1>'
+            '<p>通项 <span data-type="inline-math" data-latex="a_n=1+\\frac{1}{n}"></span></p>'
+            '<div data-type="block-math" data-latex="\\lim_{n\\to\\infty}a_n=1"></div>'
+            '<script>alert("x")</script>'
+        ),
+    )
+    export_path = tmp_path / "math.html"
+
+    export_html(document, export_path)
+
+    html_text = export_path.read_text(encoding="utf-8")
+    assert "katex.min.css" in html_text
+    assert "katex.render" in html_text
+    assert 'data-type="inline-math"' in html_text
+    assert 'data-type="block-math"' in html_text
+    assert "a_n=1+\\frac{1}{n}" in html_text
+    assert "\\lim_{n\\to\\infty}a_n=1" in html_text
+    assert "<script>alert" not in html_text
+
+
 def test_docx_export_preserves_math_as_word_omml(tmp_path) -> None:
     document = build_document(
         title="Doc",
@@ -1656,6 +1681,44 @@ def test_docx_export_preserves_math_as_word_omml(tmp_path) -> None:
     assert "begin" not in math_text
     assert "displaystyle" not in math_text
     assert "begincases" not in xml_text
+
+
+def test_docx_export_renders_display_math_as_wps_safe_text(tmp_path) -> None:
+    document = build_document(
+        title="Doc",
+        content_text=(
+            "$$a_n=1+\\frac{1}{n}$$\n\n"
+            "$$f(x)=\\frac{x^2-1}{x-1}$$\n\n"
+            "$$\\lim_{n\\to\\infty} a_n=A,\\quad \\lim_{n\\to\\infty} a_n=B \\Longrightarrow A=B$$\n\n"
+            "$$\\lim_{x\\to a^-} f(x)=L,\\quad \\lim_{x\\to a^+} f(x)=L "
+            "\\Longrightarrow \\lim_{x\\to a} f(x)=L$$"
+        ),
+    )
+    export_path = tmp_path / "structured-math.docx"
+
+    export_docx(document, export_path)
+
+    with ZipFile(export_path) as archive:
+        document_xml = archive.read("word/document.xml")
+    root = ET.fromstring(document_xml)
+    ns = {
+        "m": "http://schemas.openxmlformats.org/officeDocument/2006/math",
+        "w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
+    }
+    xml_text = document_xml.decode("utf-8")
+    visible_text = "".join(node.text or "" for node in root.findall(".//w:t", ns))
+
+    assert not root.findall(".//m:oMath", ns)
+    assert "a_n=1+" in visible_text
+    assert "x²-1" in visible_text
+    assert "n→∞" in visible_text
+    assert "x→a⁻" in visible_text
+    assert "x→a⁺" in visible_text
+    assert "⟹" in visible_text
+    assert "Longrightarrow" not in visible_text
+    assert "\\Longrightarrow" not in xml_text
+    assert "\\frac" not in xml_text
+    assert root.findall(".//w:noProof", ns)
 
 
 def test_docx_export_preserves_markdown_tables_as_word_tables(tmp_path) -> None:
@@ -1768,20 +1831,23 @@ def test_docx_export_normalizes_complex_board_formulas(tmp_path) -> None:
     root = ET.fromstring(document_xml)
     ns = {
         "m": "http://schemas.openxmlformats.org/officeDocument/2006/math",
+        "w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
     }
     xml_text = document_xml.decode("utf-8")
     math_text = "".join(node.text or "" for node in root.findall(".//m:t", ns))
+    visible_text = "".join(node.text or "" for node in root.findall(".//w:t", ns))
+    exported_text = math_text + visible_text
 
-    assert root.findall(".//m:oMath", ns)
-    assert "∀" in math_text
-    assert "∃" in math_text
-    assert "使得当" in math_text
-    assert "dfrac" not in math_text
-    assert "\\frac" not in math_text
-    assert "\\quad" not in math_text
-    assert "[4pt]" not in math_text
-    assert "text" not in math_text
-    assert "left" not in math_text
-    assert "right" not in math_text
-    assert "begin" not in math_text
+    assert "∀" in exported_text
+    assert "∃" in exported_text
+    assert "使得当" in exported_text
+    assert "x≥1" in exported_text
+    assert "dfrac" not in exported_text
+    assert "\\frac" not in exported_text
+    assert "\\quad" not in exported_text
+    assert "[4pt]" not in exported_text
+    assert "text" not in exported_text
+    assert "left" not in exported_text
+    assert "right" not in exported_text
+    assert "begin" not in exported_text
     assert "dfrac" not in xml_text
