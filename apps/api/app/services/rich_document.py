@@ -20,6 +20,7 @@ from app.models import BoardDocument, DocumentPageSettings
 
 EMPTY_TIPTAP_DOC: dict[str, Any] = {"type": "doc", "content": [{"type": "paragraph"}]}
 InlineFragment = tuple[str, str]
+TableRows = list[list[list[InlineFragment]]]
 DocxBlock = tuple[str, list[InlineFragment], dict[str, Any]]
 
 _CJK_RE = re.compile(r"[\u3400-\u9fff]")
@@ -59,6 +60,7 @@ _MARKDOWN_HEADING_RE = re.compile(r"^(#{1,3})\s+(.+)$")
 _MARKDOWN_BULLET_RE = re.compile(r"^[-*]\s+(.+)$")
 _MARKDOWN_ORDERED_RE = re.compile(r"^\d+[.、]\s+(.+)$")
 _MARKDOWN_TABLE_SEPARATOR_RE = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$")
+_FENCED_CODE_TEXT_RE = re.compile(r"^```(?P<body>[\s\S]*?)```$")
 _VOID_HTML_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"}
 _HTML_BLOCK_TAGS = {
     "address",
@@ -1818,10 +1820,23 @@ class _DocxBlockParser(HTMLParser):
         self._attrs_stack: list[dict[str, Any]] = []
         self._fragments: list[InlineFragment] = []
         self._ignored_atom_depth = 0
+        self._table_rows: TableRows | None = None
+        self._table_row: list[list[InlineFragment]] | None = None
+        self._table_cell_fragments: list[InlineFragment] | None = None
+        self._table_cell_buffer: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag = tag.lower()
         attr_map = dict(attrs)
         node_type = (attr_map.get("data-type") or "").strip()
+        if self._table_rows is not None:
+            self._handle_table_starttag(tag, attr_map, node_type)
+            return
+        if tag == "table":
+            self._flush()
+            self._table_rows = []
+            self._table_row = None
+            return
         if node_type == "block-math":
             self._flush()
             latex = html.unescape((attr_map.get("data-latex") or "").strip())
@@ -1855,8 +1870,12 @@ class _DocxBlockParser(HTMLParser):
             self._buffer.append("\n")
 
     def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
         if self._ignored_atom_depth:
             self._ignored_atom_depth -= 1
+            return
+        if self._table_rows is not None:
+            self._handle_table_endtag(tag)
             return
         if tag in {"h1", "h2", "h3", "p", "li", "blockquote"}:
             current = self._tag_stack.pop() if self._tag_stack else tag
@@ -1866,7 +1885,64 @@ class _DocxBlockParser(HTMLParser):
     def handle_data(self, data: str) -> None:
         if self._ignored_atom_depth:
             return
+        if self._table_rows is not None:
+            if self._table_cell_fragments is not None:
+                self._table_cell_buffer.append(data)
+            return
         self._buffer.append(data)
+
+    def _handle_table_starttag(self, tag: str, attrs: dict[str, str | None], node_type: str) -> None:
+        if tag == "tr":
+            self._table_row = []
+            return
+        if tag in {"td", "th"}:
+            if self._table_row is None:
+                self._table_row = []
+            self._table_cell_fragments = []
+            self._table_cell_buffer = []
+            return
+        if tag == "br" and self._table_cell_fragments is not None:
+            self._table_cell_buffer.append("\n")
+            return
+        if node_type in {"inline-math", "block-math"} and self._table_cell_fragments is not None:
+            self._flush_table_cell_text()
+            latex = html.unescape((attrs.get("data-latex") or "").strip())
+            if latex:
+                self._table_cell_fragments.append(("math", latex))
+            self._ignored_atom_depth = 1
+
+    def _handle_table_endtag(self, tag: str) -> None:
+        if tag in {"td", "th"} and self._table_cell_fragments is not None:
+            self._flush_table_cell_text()
+            fragments = _trim_fragments(self._table_cell_fragments)
+            if self._table_row is None:
+                self._table_row = []
+            self._table_row.append(fragments or [("text", "")])
+            self._table_cell_fragments = None
+            self._table_cell_buffer = []
+            return
+        if tag == "tr":
+            if self._table_rows is not None and self._table_row:
+                self._table_rows.append(self._table_row)
+            self._table_row = None
+            return
+        if tag == "table":
+            rows = self._table_rows or []
+            if rows:
+                self.blocks.append(("table", [], {"rows": rows}))
+            self._table_rows = None
+            self._table_row = None
+            self._table_cell_fragments = None
+            self._table_cell_buffer = []
+
+    def _flush_table_cell_text(self) -> None:
+        if self._table_cell_fragments is None or not self._table_cell_buffer:
+            return
+        text = html.unescape("".join(self._table_cell_buffer))
+        self._table_cell_buffer = []
+        text = re.sub(r"\s+", " ", text)
+        if text:
+            self._table_cell_fragments.append(("text", text))
 
     def _flush_text(self) -> None:
         if not self._buffer:
@@ -1882,18 +1958,23 @@ class _DocxBlockParser(HTMLParser):
         if not self._fragments:
             return
 
-        fragments = list(self._fragments)
+        fragments = _trim_fragments(self._fragments)
         self._fragments = []
-        while fragments and fragments[0][0] == "text" and not fragments[0][1].strip():
-            fragments.pop(0)
-        while fragments and fragments[-1][0] == "text" and not fragments[-1][1].strip():
-            fragments.pop()
-        if fragments and fragments[0][0] == "text":
-            fragments[0] = ("text", fragments[0][1].lstrip())
-        if fragments and fragments[-1][0] == "text":
-            fragments[-1] = ("text", fragments[-1][1].rstrip())
         if fragments:
             self.blocks.append((tag or "p", fragments, attrs or {}))
+
+
+def _trim_fragments(fragments: list[InlineFragment]) -> list[InlineFragment]:
+    trimmed = list(fragments)
+    while trimmed and trimmed[0][0] == "text" and not trimmed[0][1].strip():
+        trimmed.pop(0)
+    while trimmed and trimmed[-1][0] == "text" and not trimmed[-1][1].strip():
+        trimmed.pop()
+    if trimmed and trimmed[0][0] == "text":
+        trimmed[0] = ("text", trimmed[0][1].lstrip())
+    if trimmed and trimmed[-1][0] == "text":
+        trimmed[-1] = ("text", trimmed[-1][1].rstrip())
+    return trimmed
 
 
 def _page_size_cm(page_size: str) -> tuple[float, float]:
@@ -2556,6 +2637,111 @@ def _add_fragment_paragraph(target: DocxDocument, fragments: list[InlineFragment
     return paragraph
 
 
+def _code_fence_body_after_opener(value: str) -> tuple[bool, list[str]]:
+    stripped = value.strip()
+    if not stripped.startswith("```"):
+        return False, []
+    body = stripped[3:].strip()
+    if not body:
+        return True, []
+    first_token, token_separator, token_remainder = body.partition(" ")
+    if token_separator and first_token.strip().lower() in {"text", "txt", "plain", "plaintext"}:
+        return True, [token_remainder.strip()] if token_remainder.strip() else []
+    if re.fullmatch(r"[A-Za-z0-9_-]+", body):
+        return True, []
+    return True, [body]
+
+
+def _normalize_fenced_docx_blocks(blocks: list[DocxBlock]) -> list[DocxBlock]:
+    normalized: list[DocxBlock] = []
+    index = 0
+    while index < len(blocks):
+        tag, fragments, attrs = blocks[index]
+        text = _fragment_text(fragments)
+        single_block_code = _fenced_code_text(text)
+        if tag == "p" and single_block_code is not None:
+            normalized.append(("pre", [("text", single_block_code)], {}))
+            index += 1
+            continue
+
+        is_opener, code_lines = _code_fence_body_after_opener(text)
+        if tag != "p" or not is_opener:
+            normalized.append((tag, fragments, attrs))
+            index += 1
+            continue
+
+        index += 1
+        closed = False
+        while index < len(blocks):
+            next_tag, next_fragments, _next_attrs = blocks[index]
+            next_text = _fragment_text(next_fragments)
+            stripped_next = next_text.strip()
+            if next_tag == "p" and stripped_next.endswith("```"):
+                before_close = stripped_next[:-3].strip()
+                if before_close:
+                    code_lines.append(before_close)
+                closed = True
+                index += 1
+                break
+            code_lines.append(next_text)
+            index += 1
+
+        if closed:
+            normalized.append(("pre", [("text", "\n".join(line for line in code_lines if line.strip()))], {}))
+        else:
+            normalized.append((tag, fragments, attrs))
+            for line in code_lines:
+                if line.strip():
+                    normalized.append(("p", [("text", line)], {}))
+    return normalized
+
+
+def _fenced_code_text(value: str) -> str | None:
+    match = _FENCED_CODE_TEXT_RE.match(value.strip())
+    if not match:
+        return None
+    body = match.group("body").strip()
+    if not body:
+        return ""
+    first_line, separator, remainder = body.partition("\n")
+    if separator and re.fullmatch(r"[A-Za-z0-9_-]+", first_line.strip()):
+        return remainder.strip()
+    first_token, token_separator, token_remainder = body.partition(" ")
+    if token_separator and first_token.strip().lower() in {"text", "txt", "plain", "plaintext"}:
+        return token_remainder.strip()
+    return body
+
+
+def _add_preformatted_paragraph(target: DocxDocument, value: str):
+    paragraph = target.add_paragraph()
+    lines = value.splitlines() or [value]
+    for index, line in enumerate(lines):
+        if index:
+            paragraph.add_run().add_break()
+        run = paragraph.add_run(line)
+        run.font.name = "Courier New"
+    return paragraph
+
+
+def _add_fragment_table(target: DocxDocument, rows: TableRows):
+    normalized_rows = [row for row in rows if row]
+    if not normalized_rows:
+        return None
+    width = max(len(row) for row in normalized_rows)
+    table = target.add_table(rows=len(normalized_rows), cols=width)
+    table.style = "Table Grid"
+    for row_index, row in enumerate(normalized_rows):
+        for cell_index in range(width):
+            cell = table.cell(row_index, cell_index)
+            fragments = row[cell_index] if cell_index < len(row) else [("text", "")]
+            paragraph = cell.paragraphs[0]
+            _append_fragments(paragraph, fragments)
+            if row_index == 0:
+                for run in paragraph.runs:
+                    run.bold = True
+    return table
+
+
 def export_docx(document: BoardDocument, path: Path) -> Path:
     target = DocxDocument()
     _apply_page_settings(target, document.page_settings)
@@ -2565,6 +2751,7 @@ def export_docx(document: BoardDocument, path: Path) -> Path:
     parser.feed(document.content_html or text_to_html(document.content_text))
     parser._flush()
     blocks = parser.blocks or [("p", [("text", line)], {}) for line in document.content_text.splitlines() if line.strip()]
+    blocks = _normalize_fenced_docx_blocks(blocks)
 
     for tag, fragments, attrs in blocks:
         text = _fragment_text(fragments)
@@ -2590,11 +2777,21 @@ def export_docx(document: BoardDocument, path: Path) -> Path:
                 target.add_paragraph(f"[图片] {text}")
         elif tag == "pageBreak":
             target.add_page_break()
+        elif tag == "table":
+            rows = attrs.get("rows")
+            if isinstance(rows, list):
+                _add_fragment_table(target, rows)
+        elif tag == "pre":
+            _add_preformatted_paragraph(target, text)
         elif tag == "math" or (len(fragments) == 1 and fragments[0][0] == "math"):
             paragraph = target.add_paragraph()
             paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
             _append_fragments(paragraph, fragments, auto_math=False, display_math=True)
         else:
+            fenced_text = _fenced_code_text(text)
+            if fenced_text is not None:
+                _add_preformatted_paragraph(target, fenced_text)
+                continue
             formula_latex = _formula_only_latex(text)
             if formula_latex:
                 paragraph = target.add_paragraph()

@@ -1656,6 +1656,62 @@ def test_docx_export_preserves_math_as_word_omml(tmp_path) -> None:
     assert "begincases" not in xml_text
 
 
+def test_docx_export_preserves_markdown_tables_as_word_tables(tmp_path) -> None:
+    document = build_document(
+        title="Doc",
+        content_text=(
+            "| x | f(x) | 观察 |\n"
+            "| --- | --- | --- |\n"
+            "| 1.9 | 3.61 | 接近 4 |\n"
+            "| 1.99 | 3.9601 | 更接近 4 |"
+        ),
+    )
+    export_path = tmp_path / "table.docx"
+
+    export_docx(document, export_path)
+
+    with ZipFile(export_path) as archive:
+        document_xml = archive.read("word/document.xml")
+    root = ET.fromstring(document_xml)
+    ns = {
+        "w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
+    }
+    text = "".join(node.text or "" for node in root.findall(".//w:t", ns))
+
+    assert len(root.findall(".//w:tbl", ns)) == 1
+    assert "1.99" in text
+    assert "|" not in text
+
+
+def test_docx_export_strips_text_fence_markers(tmp_path) -> None:
+    document = build_document(
+        title="Doc",
+        content_text=(
+            "图像化地图：\n\n"
+            "```text\n"
+            "函数 f(x)\n"
+            "↓\n"
+            "观察 f(x) 是否靠近 L\n"
+            "```"
+        ),
+    )
+    export_path = tmp_path / "code-fence.docx"
+
+    export_docx(document, export_path)
+
+    with ZipFile(export_path) as archive:
+        document_xml = archive.read("word/document.xml")
+    root = ET.fromstring(document_xml)
+    ns = {
+        "w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
+    }
+    text = "".join(node.text or "" for node in root.findall(".//w:t", ns))
+
+    assert "函数 f(x)" in text
+    assert "```" not in text
+    assert "text函数" not in text
+
+
 def test_docx_export_normalizes_complex_board_formulas(tmp_path) -> None:
     document = build_document(
         title="Doc",
