@@ -182,6 +182,26 @@ def test_validate_generated_board_text_rejects_oral_style() -> None:
     assert any(issue.dimension == "writingStyle" for issue in result.issues)
 
 
+def test_validate_generated_board_text_rejects_numbered_oral_heading() -> None:
+    plan = build_board_teaching_plan({"contentToLearn": "概念A"})
+    content = _textbook_content("概念A").replace("## 1.1 概念引入", "## 1.1 核心直觉")
+
+    result = validate_generated_board_text(content, plan)
+
+    assert result.passed is False
+    assert any(issue.dimension == "writingStyle" and "核心直觉" in issue.evidence for issue in result.issues)
+
+
+def test_validate_generated_board_text_requires_numbered_textbook_section_headings() -> None:
+    plan = build_board_teaching_plan({"contentToLearn": "概念A"})
+    content = _textbook_content("概念A").replace("## 1.2 正式定义", "## 正式定义")
+
+    result = validate_generated_board_text(content, plan)
+
+    assert result.passed is False
+    assert any("缺少 1.1/1.2" in issue.message for issue in result.issues)
+
+
 def test_scenario_dialogue_plan_for_language_scene() -> None:
     plan = build_board_teaching_plan(
         {

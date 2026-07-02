@@ -198,7 +198,13 @@ _COLLOQUIAL_STYLE_PHRASES = [
     "先别急",
     "不用怕",
 ]
-_ORAL_HEADING_RE = re.compile(r"(?m)^#{1,6}\s*(为什么|核心思想|核心直觉|常见误区|检查问题|下一步|后续路线|课堂练习)\b")
+_TEXTBOOK_HEADING_RE = re.compile(r"(?m)^##\s+(?P<title>.+?)\s*$")
+_NUMBERED_TEXTBOOK_HEADING_RE = re.compile(r"^\d+\.\d+(?:\.\d+)?\s+\S+")
+_ORAL_HEADING_RE = re.compile(
+    r"(?m)^#{1,6}\s*(?:\d+(?:\.\d+)*\s*)?"
+    r"(为什么|核心思想|核心直觉|常见误区|检查问题|下一步|后续路线|课堂练习)"
+    r"(?=$|[\s:：,，。])"
+)
 
 
 def build_board_teaching_plan(
@@ -401,6 +407,10 @@ def validate_generated_board_text(text: str, board_plan: BoardTeachingPlan) -> B
     if style_issues:
         issues.extend(style_issues)
         score -= 20
+    section_issues = _textbook_section_heading_issues(stripped, board_plan)
+    if section_issues:
+        issues.extend(section_issues)
+        score -= 20
     for topic in board_plan.deferred_topics:
         clean = re.sub(r"^第\s*\d+\s*课[:：]\s*", "", topic).strip()
         if clean and clean in stripped and _appears_before_next_step(stripped, clean):
@@ -522,6 +532,7 @@ class BoardPresentationRules:
             "标题结构采用教材章节格式，H2 标题优先使用“1.1 ……、1.2 ……”这类编号标题。",
             "标题应客观描述知识内容，例如“1.1 概念引入”“1.2 正式定义”“1.3 性质或结论”。",
             "避免使用口语化标题，例如“为什么……”“核心思想”“常见误区”“检查问题”。",
+            "不得用编号包装口语化标题；例如“1.1 核心直觉”“1.2 常见误区”仍不合格。",
         ]
 
     @staticmethod
@@ -990,6 +1001,33 @@ def _textbook_style_issues(text: str) -> list[BoardQualityIssue]:
                 evidence=match.group(0).strip(),
             )
         )
+    return issues
+
+
+def _textbook_section_heading_issues(text: str, board_plan: BoardTeachingPlan) -> list[BoardQualityIssue]:
+    if board_plan.board_mode != "concept_explanation":
+        return []
+    h2_titles = [match.group("title").strip() for match in _TEXTBOOK_HEADING_RE.finditer(text)]
+    issues: list[BoardQualityIssue] = []
+    for required in BoardPresentationRules.required_section_sequence():
+        matching_titles = [title for title in h2_titles if required in title]
+        if not matching_titles:
+            issues.append(
+                BoardQualityIssue(
+                    dimension="structureCompleteness",
+                    message=f"生成结果缺少教材章节标题“{required}”。",
+                    evidence=required,
+                )
+            )
+            continue
+        if not any(_NUMBERED_TEXTBOOK_HEADING_RE.match(title) for title in matching_titles):
+            issues.append(
+                BoardQualityIssue(
+                    dimension="writingStyle",
+                    message=f"教材章节标题“{required}”缺少 1.1/1.2 这类编号。",
+                    evidence=matching_titles[0],
+                )
+            )
     return issues
 
 
