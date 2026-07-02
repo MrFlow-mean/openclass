@@ -138,6 +138,17 @@ export function profileSettingsTexts(lang: InterfaceLanguage) {
       feedExpandAria: z ? "展开 Feed" : "Expand feed",
       feedSubtitle: z ? "最近的课程提交、资料收录和工作台推进会按时间排在这里。" : "Recent commits, resources, and studio updates.",
       feedEmpty: z ? "还没有可以展示的更新。新建课程、编辑文稿或上传资料后，这里会自动变成最近活动流。" : "Nothing here yet — edits and uploads will appear in this feed.",
+      feedTimelineSummary: (count: number) =>
+        z
+          ? `${count.toLocaleString(intl(lang))} 条修改记录`
+          : `${count.toLocaleString(intl(lang))} change${count === 1 ? "" : "s"}`,
+      feedTimelineLatestLabel: z ? "最近一次" : "Latest",
+      feedTimelineExpand: (count: number) =>
+        z
+          ? `展开 ${count.toLocaleString(intl(lang))} 条修改记录`
+          : `Show ${count.toLocaleString(intl(lang))} change${count === 1 ? "" : "s"}`,
+      feedTimelineCollapse: z ? "收起修改记录" : "Hide changes",
+      feedReadMore: z ? "查看详情" : "Read more",
       notificationToggleAria: z ? "切换消息面板" : "Toggle notifications",
       languageSwitchToEnglish: z ? "切换到英语界面" : "Switch to English",
       languageSwitchToChinese: z ? "切换到中文界面" : "Switch to Chinese",

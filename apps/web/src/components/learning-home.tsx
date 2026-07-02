@@ -35,6 +35,7 @@ import {
 import { AccountMenu } from "@/components/account-menu";
 import { BrandMark } from "@/components/brand-mark";
 import { InlineNameForm } from "@/components/inline-name-form";
+import { RecentFeedCard } from "@/components/recent-feed-card";
 import { useInterfaceLanguage } from "@/contexts/interface-language-context";
 import { api } from "@/lib/api";
 import { homeRelativeFormat } from "@/lib/i18n/product-ui";
@@ -233,18 +234,6 @@ function activityTone(level: ActivityDay["level"]) {
     3: "bg-slate-700/70",
     4: "bg-slate-950",
   }[level];
-}
-
-function feedKindTone(kind: "commit" | "resource") {
-  return kind === "commit" ? "bg-rose-100 text-rose-700" : "bg-emerald-100 text-emerald-700";
-}
-
-function feedKindLabel(kind: "commit" | "resource") {
-  return kind === "commit" ? "Commit" : "Resource";
-}
-
-function feedPreviewHeading(kind: "commit" | "resource") {
-  return kind === "commit" ? "What's Changed" : "Resource Summary";
 }
 
 function followedUpdateTone(kind: FollowedCourseUpdate["updateKind"]) {
@@ -1163,121 +1152,23 @@ export function LearningHome() {
                       {visibleFeedItems.length ? (
                         visibleFeedItems.map((item) => {
                           const buttonBusy = item.lessonId ? busyKey === `lesson:${item.lessonId}` : false;
-                          const hasCommitTimeline = item.kind === "commit" && Boolean(item.updates?.length);
 
                           return (
-                              <article key={item.id} className="rounded-lg border border-stone-300 bg-white p-4 shadow-sm">
-                                <div className="flex items-start justify-between gap-4">
-                                  <div className="flex min-w-0 gap-3">
-                                    <div
-                                      className={clsx(
-                                        "mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-white",
-                                        item.kind === "commit" ? "bg-rose-500" : "bg-emerald-500"
-                                      )}
-                                    >
-                                      {item.kind === "commit" ? (
-                                        <BookText className="h-4 w-4" />
-                                      ) : (
-                                        <FolderClosed className="h-4 w-4" />
-                                      )}
-                                    </div>
-
-                                    <div className="min-w-0">
-                                      <p className="text-sm text-stone-600">
-                                        <span className="font-semibold text-stone-950">{item.actor}</span> {item.action}
-                                      </p>
-                                      <p className="mt-1 text-xs text-stone-400">{homeRelFmt(item.timestamp)}</p>
-                                    </div>
-                                  </div>
-
-                                  <button
-                                    type="button"
-                                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-stone-400 transition hover:bg-stone-100 hover:text-stone-700"
-                                    aria-label={h.moreUpdatesAria}
-                                    title={h.moreUpdatesAria}
-                                  >
-                                    <MoreHorizontal className="h-4 w-4" />
-                                  </button>
-                                </div>
-
-                                <h4 className="mt-4 text-lg font-semibold text-stone-950">{item.title}</h4>
-                                <div className="mt-2 flex flex-wrap items-center gap-2">
-                                  <span className={clsx("rounded-full px-2.5 py-1 text-[10px] font-semibold", feedKindTone(item.kind))}>
-                                    {feedKindLabel(item.kind)}
-                                  </span>
-                                  <span className="text-xs text-stone-400">{item.pills.slice(0, 2).join(" · ")}</span>
-                                </div>
-
-                                <div className="mt-4 rounded-md bg-[#f6f8fa] p-4">
-                                  <div className="border-b border-stone-200 pb-3">
-                                    <p className="text-base font-semibold text-stone-950">{feedPreviewHeading(item.kind)}</p>
-                                  </div>
-
-                                  {hasCommitTimeline ? (
-                                    <ol className="mt-3">
-                                      {item.updates?.map((update, updateIndex) => {
-                                        const isLast = updateIndex === (item.updates?.length ?? 0) - 1;
-
-                                        return (
-                                          <li key={update.id} className="relative flex gap-3 pb-4 last:pb-0">
-                                            {!isLast ? <span className="absolute left-[5px] top-4 h-full w-px bg-stone-200" /> : null}
-                                            <span className="relative mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full bg-rose-500 ring-4 ring-white" />
-                                            <div className="min-w-0 flex-1">
-                                              <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-                                                <p className="text-sm font-semibold text-stone-950">
-                                                  {update.lessonTitle ?? update.title}
-                                                </p>
-                                                <span className="text-xs text-stone-400">{homeRelFmt(update.timestamp)}</span>
-                                              </div>
-                                              <div className="mt-1 flex flex-wrap items-center gap-2">
-                                                <p className="text-sm font-medium text-stone-800">{update.title}</p>
-                                                <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-semibold text-stone-500">
-                                                  {update.detailTitle}
-                                                </span>
-                                              </div>
-                                              <p className="mt-1 text-sm leading-6 text-stone-600">{update.detailBody}</p>
-                                            </div>
-                                          </li>
-                                        );
-                                      })}
-                                    </ol>
-                                  ) : (
-                                    <div className="mt-3">
-                                      <p className="text-sm font-semibold text-stone-950">{item.detailTitle}</p>
-                                      <p className="mt-2 text-sm leading-7 text-stone-600">{item.detailBody}</p>
-                                    </div>
-                                  )}
-
-                                  {item.lessonId ? (
-                                    <button
-                                      type="button"
-                                      onClick={() => void handleOpenLesson(item.lessonId!)}
-                                      className="mt-4 inline-flex items-center gap-2 text-xs font-semibold text-stone-800 underline underline-offset-2"
-                                    >
-                                      {buttonBusy ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : null}
-                                      <span>Read more</span>
-                                    </button>
-                                  ) : (
-                                    <Link
-                                      href="/studio"
-                                      className="mt-4 inline-flex text-xs font-semibold text-stone-800 underline underline-offset-2"
-                                    >
-                                      Read more
-                                    </Link>
-                                  )}
-                                </div>
-
-                                <div className="mt-4 flex flex-wrap items-center gap-2">
-                                  {item.pills.map((pill, pillIndex) => (
-                                    <span
-                                      key={`${item.id}:pill:${pillIndex}:${pill}`}
-                                      className="rounded-md border border-stone-200 bg-white px-2.5 py-1 text-[11px] font-medium text-stone-500"
-                                    >
-                                      {pill}
-                                    </span>
-                                  ))}
-                                </div>
-                              </article>
+                            <RecentFeedCard
+                              key={item.id}
+                              item={item}
+                              buttonBusy={buttonBusy}
+                              formatRelativeTime={homeRelFmt}
+                              labels={{
+                                moreUpdatesAria: h.moreUpdatesAria,
+                                timelineSummary: h.feedTimelineSummary,
+                                timelineLatestLabel: h.feedTimelineLatestLabel,
+                                timelineExpand: h.feedTimelineExpand,
+                                timelineCollapse: h.feedTimelineCollapse,
+                                readMore: h.feedReadMore,
+                              }}
+                              onOpenLesson={handleOpenLesson}
+                            />
                           );
                         })
                       ) : (
