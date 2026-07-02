@@ -236,6 +236,39 @@ def test_chat_stream_synthesizes_document_delta_for_succeeded_board_operation(mo
     assert first_document_delta_events[0]["field"] == "content_text"
 
 
+def test_chat_stream_does_not_emit_unvalidated_board_draft(monkeypatch) -> None:
+    def process_with_rejected_board_draft(*args, **kwargs) -> ChatResponse:
+        emit_ai_stream_event(
+            {
+                "type": "field_delta",
+                "role": "board",
+                "field": "content_text",
+                "delta": "# 被拒绝的中间稿\n\n这段不应进入右侧预览。",
+                "value": "# 被拒绝的中间稿\n\n这段不应进入右侧预览。",
+            }
+        )
+        return _chat_response(
+            "lesson_stream_test",
+            chatbot_message="",
+            document_text="# 最终通过版\n\n这里只显示质量门禁通过后的板书。",
+            board_document_operation_status="succeeded",
+        )
+
+    monkeypatch.setattr(chat_router, "process_chat_on_lesson", process_with_rejected_board_draft)
+
+    events = _collect_events(
+        chat_router._chat_stream_events(
+            "lesson_stream_test",
+            ChatRequest(message="开始生成板书", board_generation_action="start"),
+            user_id="user_stream_test",
+        )
+    )
+
+    document_text = _joined_delta(events, "document_delta")
+    assert document_text == "# 最终通过版\n\n这里只显示质量门禁通过后的板书。"
+    assert "被拒绝的中间稿" not in document_text
+
+
 def test_chat_stream_does_not_synthesize_chat_delta_for_silent_board_generation(monkeypatch) -> None:
     monkeypatch.setattr(
         chat_router,
