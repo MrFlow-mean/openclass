@@ -153,12 +153,31 @@ def test_field_map_plan_for_beginner_multi_part_system() -> None:
     assert plan.board_mode == "field_map"
     assert plan.board_template is not None
     assert plan.board_template.template_id == "field_map_v1"
-    assert "整体地图与协同流程" in plan.current_lesson.title
+    assert "入门地图" in plan.current_lesson.title
     for term in ["账户", "交易", "Gas", "EVM", "智能合约", "DApp"]:
         assert term in payload_text
     assert "一个完整流程" in payload_text
     assert payload["quality_contract"]["template_id"] == "field_map_v1"
     assert "board_template" in payload
+    assert any("课堂标题" in rule for rule in payload["quality_contract"]["title_rules"])
+    assert any("教学目的" in rule for rule in payload["quality_contract"]["example_rules"])
+    assert any("diagram_prompt" in rule for rule in payload["quality_contract"]["visual_rules"])
+
+
+def test_field_map_title_is_natural_for_intro_topic() -> None:
+    plan = build_board_teaching_plan(
+        {
+            "startingPoint": "刚高考完，想预习，先建立直觉",
+            "contentToLearn": "极限与连续的基本概念与直观理解（ε-δ语言基础）",
+            "granularity": "single_knowledge_point",
+        }
+    )
+    payload = generate_board_ai_input(plan)
+
+    assert plan.board_mode == "field_map"
+    assert plan.current_lesson.title == "第 1 课：极限与连续的入门地图"
+    assert "协同流程" not in plan.current_lesson.title
+    assert any("先看懂含义" in rule for rule in payload["quality_contract"]["presentation_rules"])
 
 
 def test_scenario_dialogue_plan_for_language_scene() -> None:

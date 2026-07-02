@@ -1679,8 +1679,40 @@ def test_docx_export_preserves_markdown_tables_as_word_tables(tmp_path) -> None:
     text = "".join(node.text or "" for node in root.findall(".//w:t", ns))
 
     assert len(root.findall(".//w:tbl", ns)) == 1
+    assert len(root.findall(".//w:tblHeader", ns)) == 1
+    assert len(root.findall(".//w:cantSplit", ns)) == 3
     assert "1.99" in text
     assert "|" not in text
+
+
+def test_docx_export_moves_late_table_to_next_page(tmp_path) -> None:
+    leading_paragraphs = "\n\n".join(
+        f"铺垫段落 {index}：这是一段用于占据页面空间的普通板书说明，帮助测试表格不要卡在页面底部。"
+        for index in range(12)
+    )
+    document = build_document(
+        title="Doc",
+        content_text=(
+            f"{leading_paragraphs}\n\n"
+            "| 步骤 | 说明 |\n"
+            "| --- | --- |\n"
+            "| 1 | 先观察输入 |\n"
+            "| 2 | 再观察输出 |"
+        ),
+    )
+    export_path = tmp_path / "late-table.docx"
+
+    export_docx(document, export_path)
+
+    with ZipFile(export_path) as archive:
+        document_xml = archive.read("word/document.xml")
+    root = ET.fromstring(document_xml)
+    ns = {
+        "w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
+    }
+
+    assert root.findall(".//w:tbl", ns)
+    assert root.findall(".//w:br[@w:type='page']", ns)
 
 
 def test_docx_export_strips_text_fence_markers(tmp_path) -> None:

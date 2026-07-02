@@ -61,6 +61,8 @@ _MARKDOWN_BULLET_RE = re.compile(r"^[-*]\s+(.+)$")
 _MARKDOWN_ORDERED_RE = re.compile(r"^\d+[.、]\s+(.+)$")
 _MARKDOWN_TABLE_SEPARATOR_RE = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$")
 _FENCED_CODE_TEXT_RE = re.compile(r"^```(?P<body>[\s\S]*?)```$")
+_DOCX_PAGE_UNIT_LIMIT = 34
+_DOCX_TABLE_PAGE_BREAK_THRESHOLD = 0.82
 _VOID_HTML_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"}
 _HTML_BLOCK_TAGS = {
     "address",
@@ -2736,16 +2738,85 @@ def _add_fragment_table(target: DocxDocument, rows: TableRows):
             fragments = row[cell_index] if cell_index < len(row) else [("text", "")]
             paragraph = cell.paragraphs[0]
             _append_fragments(paragraph, fragments)
+            paragraph.paragraph_format.keep_together = True
+            if row_index < len(normalized_rows) - 1:
+                paragraph.paragraph_format.keep_with_next = True
             if row_index == 0:
                 for run in paragraph.runs:
                     run.bold = True
+                _set_table_row_flag(table.rows[row_index], "tblHeader")
+            _set_table_row_flag(table.rows[row_index], "cantSplit")
     return table
+
+
+def _set_table_row_flag(row, flag_name: str) -> None:
+    tr_pr = row._tr.get_or_add_trPr()
+    if tr_pr.find(qn(f"w:{flag_name}")) is None:
+        tr_pr.append(OxmlElement(f"w:{flag_name}"))
+
+
+def _estimated_text_units(text: str, *, base: float = 1.0) -> float:
+    compact = re.sub(r"\s+", " ", text or "").strip()
+    if not compact:
+        return base
+    cjk_count = len(_CJK_RE.findall(compact))
+    weighted_length = cjk_count + max(0, len(compact) - cjk_count) / 2
+    return max(base, base + weighted_length / 34)
+
+
+def _estimated_block_units(tag: str, text: str) -> float:
+    if tag in {"h1"}:
+        return 3.2
+    if tag in {"h2"}:
+        return 2.4
+    if tag in {"h3"}:
+        return 2.0
+    if tag == "math":
+        return 2.2
+    if tag == "pre":
+        return max(1.6, len((text or "").splitlines()) * 1.2)
+    if tag in {"li"}:
+        return _estimated_text_units(text, base=0.75)
+    return _estimated_text_units(text)
+
+
+def _estimated_table_units(rows: TableRows) -> float:
+    if not rows:
+        return 0
+    row_units = 0.0
+    for row in rows:
+        cell_text = " ".join(_fragment_text(cell) for cell in row)
+        row_units += _estimated_text_units(cell_text, base=1.4)
+    return max(2.4, row_units + 1.2)
+
+
+def _advance_page_units(current_units: float, added_units: float) -> float:
+    if added_units >= _DOCX_PAGE_UNIT_LIMIT:
+        return added_units % _DOCX_PAGE_UNIT_LIMIT
+    next_units = current_units + added_units
+    if next_units > _DOCX_PAGE_UNIT_LIMIT:
+        return added_units
+    return next_units
+
+
+def _maybe_page_break_before_table(target: DocxDocument, rows: TableRows, current_units: float) -> float:
+    table_units = _estimated_table_units(rows)
+    if (
+        rows
+        and current_units > 0
+        and table_units < _DOCX_PAGE_UNIT_LIMIT
+        and current_units + table_units > _DOCX_PAGE_UNIT_LIMIT * _DOCX_TABLE_PAGE_BREAK_THRESHOLD
+    ):
+        target.add_page_break()
+        return 0
+    return current_units
 
 
 def export_docx(document: BoardDocument, path: Path) -> Path:
     target = DocxDocument()
     _apply_page_settings(target, document.page_settings)
     target.add_heading(document.title, level=0)
+    current_page_units = 4.0
 
     parser = _DocxBlockParser()
     parser.feed(document.content_html or text_to_html(document.content_text))
@@ -2757,17 +2828,25 @@ def export_docx(document: BoardDocument, path: Path) -> Path:
         text = _fragment_text(fragments)
         if tag == "h1":
             paragraph = target.add_heading("", level=1)
+            paragraph.paragraph_format.keep_with_next = True
             _append_fragments(paragraph, fragments)
+            current_page_units = _advance_page_units(current_page_units, _estimated_block_units(tag, text))
         elif tag == "h2":
             paragraph = target.add_heading("", level=2)
+            paragraph.paragraph_format.keep_with_next = True
             _append_fragments(paragraph, fragments)
+            current_page_units = _advance_page_units(current_page_units, _estimated_block_units(tag, text))
         elif tag == "h3":
             paragraph = target.add_heading("", level=3)
+            paragraph.paragraph_format.keep_with_next = True
             _append_fragments(paragraph, fragments)
+            current_page_units = _advance_page_units(current_page_units, _estimated_block_units(tag, text))
         elif tag == "li":
             _add_fragment_paragraph(target, fragments, style="List Bullet")
+            current_page_units = _advance_page_units(current_page_units, _estimated_block_units(tag, text))
         elif tag == "blockquote":
             _add_fragment_paragraph(target, fragments, style="Intense Quote")
+            current_page_units = _advance_page_units(current_page_units, _estimated_block_units(tag, text))
         elif tag == "img":
             src = str(attrs.get("src") or "").strip()
             image_bytes = _decode_data_uri(src)
@@ -2775,30 +2854,39 @@ def export_docx(document: BoardDocument, path: Path) -> Path:
                 target.add_picture(io.BytesIO(image_bytes))
             elif text:
                 target.add_paragraph(f"[图片] {text}")
+            current_page_units = _advance_page_units(current_page_units, 10)
         elif tag == "pageBreak":
             target.add_page_break()
+            current_page_units = 0
         elif tag == "table":
             rows = attrs.get("rows")
             if isinstance(rows, list):
+                current_page_units = _maybe_page_break_before_table(target, rows, current_page_units)
                 _add_fragment_table(target, rows)
+                current_page_units = _advance_page_units(current_page_units, _estimated_table_units(rows))
         elif tag == "pre":
             _add_preformatted_paragraph(target, text)
+            current_page_units = _advance_page_units(current_page_units, _estimated_block_units(tag, text))
         elif tag == "math" or (len(fragments) == 1 and fragments[0][0] == "math"):
             paragraph = target.add_paragraph()
             paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
             _append_fragments(paragraph, fragments, auto_math=False, display_math=True)
+            current_page_units = _advance_page_units(current_page_units, _estimated_block_units("math", text))
         else:
             fenced_text = _fenced_code_text(text)
             if fenced_text is not None:
                 _add_preformatted_paragraph(target, fenced_text)
+                current_page_units = _advance_page_units(current_page_units, _estimated_block_units("pre", fenced_text))
                 continue
             formula_latex = _formula_only_latex(text)
             if formula_latex:
                 paragraph = target.add_paragraph()
                 paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
                 _append_math(paragraph, formula_latex, display=True)
+                current_page_units = _advance_page_units(current_page_units, _estimated_block_units("math", text))
             else:
                 _add_fragment_paragraph(target, fragments)
+                current_page_units = _advance_page_units(current_page_units, _estimated_block_units(tag, text))
 
     path.parent.mkdir(parents=True, exist_ok=True)
     target.save(path)

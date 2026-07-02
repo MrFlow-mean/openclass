@@ -237,7 +237,7 @@ def split_broad_topic_into_lessons(board_plan: BoardTeachingPlan) -> CourseSerie
     parts = _split_topic_parts(content)
     if len(parts) >= 3 and board_plan.board_mode == "field_map":
         lessons = [
-            "第 1 课：整体地图与协同流程",
+            _intro_map_lesson_title(content, parts),
             f"第 2 课：{parts[0]}与{parts[1]}如何连接",
             *[f"第 {index + 3} 课：{part}在系统中的作用" for index, part in enumerate(parts[2:5])],
             f"第 {min(len(parts), 5) + 3} 课：从一个小任务串起完整流程",
@@ -423,6 +423,11 @@ def generate_board_ai_input(
             "math_adapter_enabled": board_plan.math_adapter_enabled,
             "formula_rules": MathBoardAdapter.rules(),
             "math_rules": MathBoardAdapter.rules() if board_plan.math_adapter_enabled else [],
+            "presentation_rules": BoardPresentationRules.rules(),
+            "title_rules": BoardPresentationRules.title_rules(),
+            "example_rules": BoardPresentationRules.example_rules(),
+            "visual_rules": BoardPresentationRules.visual_rules(),
+            "docx_layout_rules": BoardPresentationRules.docx_layout_rules(),
         },
         "validation": validation.model_dump(mode="json"),
     }
@@ -471,6 +476,55 @@ class MathBoardAdapter:
             "分式统一使用 \\frac{...}{...}，不要使用 \\dfrac 或 \\tfrac；分段结构使用 \\begin{cases} ... \\end{cases}，不要使用可选行距标记如 \\\\[4pt]。",
             "不得出现 displaystyle、begincases、endcases、xsim x、裸露 LaTeX 命令等半渲染文本。",
             "如果数值变化、结构关系或左右趋近能帮助理解，优先用 Markdown 表格或 diagram_prompt 描述可视化关系。",
+        ]
+
+
+class BoardPresentationRules:
+    @staticmethod
+    def title_rules() -> list[str]:
+        return [
+            "标题要像课堂标题，优先使用“从……理解……”“……的入门地图”“……如何判断/使用”等自然说法。",
+            "避免使用产品化或工程化标题词，例如“协同流程”“整体方案”“工作流”，除非用户明确要求系统流程视角。",
+        ]
+
+    @staticmethod
+    def example_rules() -> list[str]:
+        return [
+            "每个例子都要标明教学目的，例如“例 1：展示……”“例 2：对比……”，让学生知道为什么看这个例子。",
+            "多个例子并列时，要形成清晰对比关系，不要只堆计算过程。",
+        ]
+
+    @staticmethod
+    def visual_rules() -> list[str]:
+        return [
+            "如果概念适合用图像、流程、位置关系、变化趋势或结构关系理解，必须生成 diagram_prompt 或“图像提示：……”段落。",
+            "diagram_prompt 要描述画什么、标出哪些对象、用什么箭头/空心点/高亮表达关系；不要只写“画图”。",
+            "数值变化适合用 Markdown 表格，结构关系适合用 diagram_prompt；两者可以同时出现。",
+        ]
+
+    @staticmethod
+    def rigor_rules() -> list[str]:
+        return [
+            "抽象或严格定义第一次出现时，优先放在“拓展认识”“先看懂含义即可”这类轻量位置，不把第一课变成证明课。",
+            "如果本节只要求建立直觉，必须明确写出“不要求掌握证明/形式化推导，只先理解含义”。",
+        ]
+
+    @staticmethod
+    def docx_layout_rules() -> list[str]:
+        return [
+            "重要表格应作为真实 Markdown 表格输出，不要用空格或代码块伪造表格。",
+            "表格前要有简短说明，表格后要有一句读表结论，避免孤立表格。",
+            "流程图或示意图不要用 fenced code block 包裹；优先使用 diagram_prompt 或普通文本示意。",
+        ]
+
+    @classmethod
+    def rules(cls) -> list[str]:
+        return [
+            *cls.title_rules(),
+            *cls.example_rules(),
+            *cls.visual_rules(),
+            *cls.rigor_rules(),
+            *cls.docx_layout_rules(),
         ]
 
 
@@ -737,6 +791,7 @@ def _quality_notes(board_plan: BoardTeachingPlan, deferred_topics: list[str]) ->
         "只生成当前第一节课，后续内容只放进简短路线，不在正文完整展开。",
         "板书要包含目标、核心直觉、例子、常见误区、课堂练习、小结和下一步。",
     ]
+    notes.extend(BoardPresentationRules.rules())
     notes.extend(MathBoardAdapter.rules())
     if deferred_topics:
         notes.append("这些主题只作为后续路线出现：" + "；".join(deferred_topics[:6]))
@@ -753,6 +808,28 @@ def _course_title(domain: str, content: str) -> str:
     if domain and content and content not in domain:
         return f"{domain}：{content}"
     return content or domain or "学习课程"
+
+
+def _intro_map_lesson_title(content: str, parts: list[str]) -> str:
+    base = _compact_title_topic(content)
+    if base:
+        return f"第 1 课：{base}的入门地图"
+    if len(parts) >= 2:
+        return f"第 1 课：{parts[0]}与{parts[1]}的入门地图"
+    entry = parts[0] if parts else "当前主题"
+    return f"第 1 课：{entry}的入门地图"
+
+
+def _compact_title_topic(content: str) -> str:
+    base = re.sub(r"[（(].*?[）)]", "", content or "")
+    base = re.sub(r"\s+", "", base).strip(" ：:")
+    for suffix in ("的基本概念与直观理解", "基本概念与直观理解", "的基本概念", "基本概念"):
+        if base.endswith(suffix):
+            base = base[: -len(suffix)]
+            break
+    if 1 <= len(base) <= 18:
+        return base
+    return ""
 
 
 def _split_topic_parts(content: str) -> list[str]:
