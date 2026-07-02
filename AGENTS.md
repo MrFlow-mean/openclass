@@ -337,6 +337,7 @@ if "统计学习理论" in chapter_title:
 - AI 生成给右侧板书的正文必须是 ChatGPT 风格的 Markdown / 普通文本：标题用 Markdown 标题，列表用 Markdown 列表，强调用 Markdown 加粗，表格用 Markdown 表格。
 - 除了真实数学公式外，AI 生成的正文不得包含 HTML 格式内容或 HTML 标签，例如 `<h1>`、`<p>`、`<strong>`、`<em>`、`<ul>`、`<ol>`、`<li>`、`<table>`、`<span>`、`style=`、`class=`。
 - 真实数学公式才允许使用 LaTeX 数学定界符或数学节点；普通语言、例句、语法说明、箭头说明、纠错说明、角色台词、编号、等号、括号、斜杠等都必须保持普通可见文字。
+- 文档中的真实公式可以由系统渲染为 HTML / HTML DOM 或等价数学节点用于显示；这只属于展示层输出，不改变 `content_text` 仍以 Markdown / 普通文本与 LaTeX 数学表达作为事实来源的约束。
 - `content_text` 是 AI 正文的事实来源。模型不得把 `content_text` 写成 HTML；如果模型返回 HTML，后端必须转换成 Markdown / 普通文本或拒绝本次写入，不能把原始 HTML 当成正式板书正文保存。
 - `content_html` 和 `content_json` 只能是系统从受信任的 Markdown / 普通文本派生出来的内部渲染结果；BoardEditor 不得采信模型直接给出的 `content_html` 作为正式文档。
 - 前端编辑器可以用 HTML DOM 呈现富文本，这是 UI 渲染层职责；这不等于允许 AI 生成 HTML 正文，也不等于允许把 HTML 作为文档语义源头。
