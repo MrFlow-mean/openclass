@@ -118,15 +118,16 @@ class BoardTeachingPlan(BaseModel):
 _BASE_BOARD_STRUCTURE = [
     "标题",
     "学习对象",
-    "本节目标",
+    "学习目标",
     "前置知识",
-    "核心直觉",
-    "关键概念",
-    "例子",
-    "常见误区",
-    "课堂练习",
-    "本节小结",
-    "下一节预告",
+    "概念引入",
+    "正式定义",
+    "性质或结论",
+    "典型例题",
+    "解答过程",
+    "注释",
+    "习题",
+    "小结",
 ]
 
 _MODE_SECTION_TITLES: dict[BoardMode, list[str]] = {
@@ -138,13 +139,13 @@ _MODE_SECTION_TITLES: dict[BoardMode, list[str]] = {
         "后续路线",
     ],
     "concept_explanation": [
-        "核心直觉",
-        "关键概念",
-        "例子",
-        "图像或类比",
-        "常见误区",
-        "课堂练习",
-        "本节小结",
+        "1.1 概念引入",
+        "1.2 正式定义",
+        "1.3 性质或结论",
+        "1.4 典型例题",
+        "1.5 解答过程",
+        "1.6 注释",
+        "1.7 习题",
     ],
     "scenario_dialogue": [
         "场景目标",
@@ -187,6 +188,17 @@ _INLINE_MATH_SPAN_RE = re.compile(r"\\\((.+?)\\\)|(?<!\$)\$(?!\$)([^$\n]+?)\$(?!
 _COMPLEX_INLINE_FORMULA_RE = re.compile(
     r"\\(?:lim|sum|prod|int|frac|dfrac|tfrac|begin\{cases\}|forall|exists)\b|\\\\|\\left|\\right"
 )
+_COLLOQUIAL_STYLE_PHRASES = [
+    "我们来看",
+    "你会发现",
+    "直观上这就是",
+    "很容易理解",
+    "很简单",
+    "错",
+    "先别急",
+    "不用怕",
+]
+_ORAL_HEADING_RE = re.compile(r"(?m)^#{1,6}\s*(为什么|核心思想|核心直觉|常见误区|检查问题|下一步|后续路线|课堂练习)\b")
 
 
 def build_board_teaching_plan(
@@ -243,7 +255,12 @@ def split_broad_topic_into_lessons(board_plan: BoardTeachingPlan) -> CourseSerie
             f"第 {min(len(parts), 5) + 3} 课：从一个小任务串起完整流程",
         ]
     elif len(parts) >= 3:
-        lessons = [f"第 {index} 课：{part}如何协同工作" for index, part in enumerate(parts, start=1)]
+        first = parts[0]
+        lessons = [
+            f"第 1 课：{first}的直观含义",
+            f"第 2 课：{first}与{parts[1]}的基本关系",
+            *[f"第 {index + 3} 课：{part}的基本概念" for index, part in enumerate(parts[2:5])],
+        ]
     elif len(parts) == 2:
         first, second = parts
         lessons = [
@@ -251,7 +268,7 @@ def split_broad_topic_into_lessons(board_plan: BoardTeachingPlan) -> CourseSerie
             f"第 2 课：{first}与{second}的基本关系",
             f"第 3 课：{content}的基本方法",
             f"第 4 课：{content}中的典型例子",
-            f"第 5 课：{content}的常见误区",
+            f"第 5 课：{content}的注释与辨析",
             f"第 6 课：{second}的直观判断",
             f"第 7 课：{content}的应用与总结",
         ]
@@ -266,10 +283,10 @@ def split_broad_topic_into_lessons(board_plan: BoardTeachingPlan) -> CourseSerie
             ]
         else:
             lessons = [
-                f"第 1 课：{entry}的核心直觉",
-                f"第 2 课：{entry}的关键概念",
-                f"第 3 课：{entry}的典型例子",
-                f"第 4 课：{entry}的练习与应用",
+                f"第 1 课：{entry}的概念引入",
+                f"第 2 课：{entry}的正式定义",
+                f"第 3 课：{entry}的典型例题",
+                f"第 4 课：{entry}的习题与应用",
             ]
     return CourseSeriesPlan(
         course_title=_course_title(board_plan.domain_hint, content),
@@ -292,8 +309,8 @@ def build_current_lesson_board_plan(board_plan: BoardTeachingPlan) -> BoardTeach
         prerequisites=_prerequisites(board_plan),
         sections=_sections_from_template(template),
         summary=[
-            "用一句话说清本节核心概念。",
-            "能把本节例子和学习目标对应起来。",
+            "用规范表述概括本节核心概念。",
+            "能把本节例题和正式定义对应起来。",
             "知道下一步要学什么，不把后续模块提前讲完。",
         ],
         next_lesson=next_lesson,
@@ -380,6 +397,10 @@ def validate_generated_board_text(text: str, board_plan: BoardTeachingPlan) -> B
     if math_issues:
         issues.extend(math_issues)
         score -= 25
+    style_issues = _textbook_style_issues(stripped)
+    if style_issues:
+        issues.extend(style_issues)
+        score -= 20
     for topic in board_plan.deferred_topics:
         clean = re.sub(r"^第\s*\d+\s*课[:：]\s*", "", topic).strip()
         if clean and clean in stripped and _appears_before_next_step(stripped, clean):
@@ -423,6 +444,8 @@ def generate_board_ai_input(
             "math_adapter_enabled": board_plan.math_adapter_enabled,
             "formula_rules": MathBoardAdapter.rules(),
             "math_rules": MathBoardAdapter.rules() if board_plan.math_adapter_enabled else [],
+            "writing_style": "textbook_lecture_notes",
+            "required_lesson_section_sequence": BoardPresentationRules.required_section_sequence(),
             "presentation_rules": BoardPresentationRules.rules(),
             "title_rules": BoardPresentationRules.title_rules(),
             "example_rules": BoardPresentationRules.example_rules(),
@@ -481,23 +504,38 @@ class MathBoardAdapter:
 
 class BoardPresentationRules:
     @staticmethod
+    def required_section_sequence() -> list[str]:
+        return ["概念引入", "正式定义", "性质或结论", "典型例题", "解答过程", "注释", "习题"]
+
+    @staticmethod
+    def style_rules() -> list[str]:
+        return [
+            "文档目标是学生可正式阅读、复习和引用的教材式讲义，不是老师讲课时会说的话。",
+            "使用正式、客观、规范的学术表达，避免口语化讲解语气。",
+            "优先使用教材常见栏目：定义、定理、性质、例、解、注、习题、思考。",
+            "避免出现“我们来看”“你会发现”“直观上这就是”“很容易理解”“错”等口语化表述。",
+        ]
+
+    @staticmethod
     def title_rules() -> list[str]:
         return [
-            "标题要像课堂标题，优先使用“从……理解……”“……的入门地图”“……如何判断/使用”等自然说法。",
-            "避免使用产品化或工程化标题词，例如“协同流程”“整体方案”“工作流”，除非用户明确要求系统流程视角。",
+            "标题结构采用教材章节格式，H2 标题优先使用“1.1 ……、1.2 ……”这类编号标题。",
+            "标题应客观描述知识内容，例如“1.1 概念引入”“1.2 正式定义”“1.3 性质或结论”。",
+            "避免使用口语化标题，例如“为什么……”“核心思想”“常见误区”“检查问题”。",
         ]
 
     @staticmethod
     def example_rules() -> list[str]:
         return [
-            "每个例子都要标明教学目的，例如“例 1：展示……”“例 2：对比……”，让学生知道为什么看这个例子。",
+            "典型例题使用教材格式：先写“例 1”，再写题干；解答过程使用“解：”开头。",
+            "例题后可使用“注：”说明例题所体现的概念边界或方法意义。",
             "多个例子并列时，要形成清晰对比关系，不要只堆计算过程。",
         ]
 
     @staticmethod
     def visual_rules() -> list[str]:
         return [
-            "如果概念适合用图像、流程、位置关系、变化趋势或结构关系理解，必须生成 diagram_prompt 或“图像提示：……”段落。",
+            "如果概念适合用图像、流程、位置关系、变化趋势或结构关系理解，使用“图示说明：……”或 diagram_prompt。",
             "diagram_prompt 要描述画什么、标出哪些对象、用什么箭头/空心点/高亮表达关系；不要只写“画图”。",
             "数值变化适合用 Markdown 表格，结构关系适合用 diagram_prompt；两者可以同时出现。",
         ]
@@ -505,21 +543,22 @@ class BoardPresentationRules:
     @staticmethod
     def rigor_rules() -> list[str]:
         return [
-            "抽象或严格定义第一次出现时，优先放在“拓展认识”“先看懂含义即可”这类轻量位置，不把第一课变成证明课。",
-            "如果本节只要求建立直觉，必须明确写出“不要求掌握证明/形式化推导，只先理解含义”。",
+            "抽象或严格定义第一次出现时，先给概念引入，再给正式定义；不要用聊天式安抚语降低严谨性。",
+            "如果本节只要求建立直觉，使用“注：本节只要求理解该定义所刻画的思想，暂不要求进行形式化证明。”",
         ]
 
     @staticmethod
     def docx_layout_rules() -> list[str]:
         return [
             "重要表格应作为真实 Markdown 表格输出，不要用空格或代码块伪造表格。",
-            "表格前要有简短说明，表格后要有一句读表结论，避免孤立表格。",
+            "表格前要有正式说明，表格后要有结论性表述，避免孤立表格。",
             "流程图或示意图不要用 fenced code block 包裹；优先使用 diagram_prompt 或普通文本示意。",
         ]
 
     @classmethod
     def rules(cls) -> list[str]:
         return [
+            *cls.style_rules(),
             *cls.title_rules(),
             *cls.example_rules(),
             *cls.visual_rules(),
@@ -637,6 +676,8 @@ def _select_board_mode(
     if re.search(r"复习|回顾|遗忘|重新用起来|review", combined, flags=re.IGNORECASE):
         return "review_lesson"
     topic_parts = _split_topic_parts(content)
+    if scope_kind == "lesson_series" and _is_beginner(learner_profile) and re.search(r"直观|含义|概念|基础|定义", content):
+        return "concept_explanation"
     if scope_kind == "lesson_series" and _is_beginner(learner_profile) and (
         len(topic_parts) >= 3 or re.search(r"领域|体系|开发|协同|入门|路线", content)
     ):
@@ -649,7 +690,7 @@ def _lesson_objectives(board_plan: BoardTeachingPlan, title: str) -> list[str]:
     if board_plan.board_mode == "field_map":
         return [
             f"说清“{topic}”要解决什么问题。",
-            "看懂核心组成之间如何协同。",
+            "说明核心组成之间的关系。",
             "找到最适合当前水平的第一个学习入口。",
         ]
     if board_plan.board_mode == "scenario_dialogue":
@@ -668,9 +709,9 @@ def _lesson_objectives(board_plan: BoardTeachingPlan, title: str) -> list[str]:
             "找回容易遗忘的判断点和使用流程。",
         ]
     return [
-        f"理解“{topic}”的核心直觉。",
-        "能用一个例子解释它。",
-        "完成一个与本节目标匹配的小练习。",
+        f"准确表述“{topic}”的基本含义。",
+        "能结合典型例题说明该概念的使用条件。",
+        "完成与本节定义和结论对应的习题。",
     ]
 
 
@@ -690,14 +731,13 @@ def _template_for_mode(board_mode: BoardMode) -> BoardTemplate:
             ("后续路线", ["bullet_list"]),
         ],
         "concept_explanation": [
-            ("本节目标", ["bullet_list"]),
-            ("核心直觉", ["paragraph", "diagram_prompt"]),
-            ("关键概念", ["paragraph", "formula"]),
-            ("例子", ["example", "table"]),
-            ("常见误区", ["misconception"]),
-            ("课堂练习", ["exercise"]),
-            ("本节小结", ["bullet_list"]),
-            ("下一步", ["paragraph"]),
+            ("1.1 概念引入", ["paragraph", "diagram_prompt"]),
+            ("1.2 正式定义", ["paragraph", "formula"]),
+            ("1.3 性质或结论", ["bullet_list", "formula"]),
+            ("1.4 典型例题", ["example", "table"]),
+            ("1.5 解答过程", ["paragraph", "formula"]),
+            ("1.6 注释", ["paragraph"]),
+            ("1.7 习题", ["exercise"]),
         ],
         "scenario_dialogue": [
             ("场景目标", ["paragraph"]),
@@ -752,7 +792,7 @@ def _required_signals_for_mode(board_mode: BoardMode) -> list[str]:
         return ["水平", "练习目标", "示例", "用户练习", "反馈"]
     if board_mode == "review_lesson":
         return ["旧知识", "核心框架", "易忘", "例子", "练习"]
-    return ["目标", "核心直觉", "例", "练习", "小结"]
+    return ["概念引入", "定义", "性质", "例", "解", "注", "习题"]
 
 
 def _sections_from_template(template: BoardTemplate) -> list[BoardSection]:
@@ -789,7 +829,7 @@ def _sections_from_titles(titles: list[str]) -> list[BoardSection]:
 def _quality_notes(board_plan: BoardTeachingPlan, deferred_topics: list[str]) -> list[str]:
     notes = [
         "只生成当前第一节课，后续内容只放进简短路线，不在正文完整展开。",
-        "板书要包含目标、核心直觉、例子、常见误区、课堂练习、小结和下一步。",
+        "板书采用教材体，必须包含概念引入、正式定义、性质或结论、典型例题、解答过程、注释和习题。",
     ]
     notes.extend(BoardPresentationRules.rules())
     notes.extend(MathBoardAdapter.rules())
@@ -813,11 +853,11 @@ def _course_title(domain: str, content: str) -> str:
 def _intro_map_lesson_title(content: str, parts: list[str]) -> str:
     base = _compact_title_topic(content)
     if base:
-        return f"第 1 课：{base}的入门地图"
+        return f"第 1 课：{base}的基本框架"
     if len(parts) >= 2:
-        return f"第 1 课：{parts[0]}与{parts[1]}的入门地图"
+        return f"第 1 课：{parts[0]}与{parts[1]}的基本框架"
     entry = parts[0] if parts else "当前主题"
-    return f"第 1 课：{entry}的入门地图"
+    return f"第 1 课：{entry}的基本框架"
 
 
 def _compact_title_topic(content: str) -> str:
@@ -924,6 +964,32 @@ def _math_fragment_issues(
                         evidence=f"{path}: {inline_formula[:80]}",
                     )
                 )
+    return issues
+
+
+def _textbook_style_issues(text: str) -> list[BoardQualityIssue]:
+    issues: list[BoardQualityIssue] = []
+    for phrase in _COLLOQUIAL_STYLE_PHRASES:
+        if phrase == "错":
+            if not re.search(r"(?:——|：|:)\s*错(?:[。！!\s]|$)|错[。！!]", text):
+                continue
+        elif phrase not in text:
+            continue
+        issues.append(
+            BoardQualityIssue(
+                dimension="writingStyle",
+                message="生成结果包含口语化讲解表述，不符合教材体。",
+                evidence=phrase,
+            )
+        )
+    for match in _ORAL_HEADING_RE.finditer(text):
+        issues.append(
+            BoardQualityIssue(
+                dimension="writingStyle",
+                message="生成结果包含口语化标题，不符合教材章节格式。",
+                evidence=match.group(0).strip(),
+            )
+        )
     return issues
 
 

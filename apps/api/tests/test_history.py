@@ -1506,16 +1506,18 @@ def test_generate_from_requirements_appends_resource_visual_evidence(monkeypatch
             title="第一章板书",
             content_text=(
                 "# 第一章板书\n\n"
-                "## 本节目标\n\n看懂第一章的核心结构。\n\n"
-                "## 核心直觉\n\n先把资料中的关键关系画成一条主线。\n\n"
-                "## 例子\n\n用资料中的结构图说明关系。\n\n"
-                "## 课堂练习\n\n复述第一章的主线。\n\n"
-                "## 本节小结\n\n本节先建立整体结构。\n\n"
-                "## 下一步\n\n继续展开细节。"
+                "## 1.1 概念引入\n\n本节依据第一章资料说明关键结构关系。\n\n"
+                "## 1.2 正式定义\n\n定义：结构关系是资料中对象及其连接方式的概括。\n\n"
+                "## 1.3 性质或结论\n\n性质：关键结构图可以用于识别对象之间的主次关系。\n\n"
+                "## 1.4 典型例题\n\n例 1：根据资料中的结构图说明第一章的主线。\n\n"
+                "## 1.5 解答过程\n\n解：先确定图中对象，再分析对象之间的连接关系。\n\n"
+                "## 1.6 注释\n\n注：图像证据用于辅助说明资料中的结构关系。\n\n"
+                "## 1.7 习题\n\n习题 1：复述第一章资料中对象之间的关系。\n\n"
+                "## 下一节\n\n继续展开细节。"
             ),
             summary="已生成。",
             chatbot_message="已生成。",
-            section_titles=["第一章"],
+            section_titles=["1.1 概念引入", "1.2 正式定义", "1.3 性质或结论"],
         )
 
     monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _fake_board_edit)

@@ -15,6 +15,21 @@ from app.services.lesson_factory import create_empty_lesson
 from app.services.openai_course_ai import BoardDocumentEditResult, openai_course_ai
 
 
+def _textbook_content(title: str, body: str = "") -> str:
+    return (
+        f"# {title}\n\n"
+        "## 1.1 概念引入\n\n本节讨论该主题所刻画的基本对象与问题背景。\n\n"
+        "## 1.2 正式定义\n\n定义：相关对象可用下列关系加以刻画。\n\n"
+        f"{body}\n\n"
+        "## 1.3 性质或结论\n\n性质：该关系用于描述局部变化趋势或结构约束。\n\n"
+        "## 1.4 典型例题\n\n例 1：说明上述定义在具体对象中的含义。\n\n"
+        "## 1.5 解答过程\n\n解：根据定义，先确定研究对象，再分析对应关系。\n\n"
+        "## 1.6 注释\n\n注：公式和例题均服务于概念边界的说明。\n\n"
+        "## 1.7 习题\n\n习题 1：说明本节定义中的对象、条件与结论。\n\n"
+        "## 下一节\n\n继续讨论相关方法。"
+    )
+
+
 def test_board_generation_plan_splits_broad_calculus_preview() -> None:
     plan = build_board_teaching_plan(
         {
@@ -34,7 +49,7 @@ def test_board_generation_plan_splits_broad_calculus_preview() -> None:
     assert plan.math_adapter_enabled is False
     assert plan.board_template is not None
     assert plan.board_template.template_id == "concept_explanation_v1"
-    assert "本节目标" in plan.board_template.required_headings
+    assert "1.2 正式定义" in plan.board_template.required_headings
     first_lesson_text = "\n".join(section.title for section in plan.current_lesson.sections)
     assert "等价无穷小" not in first_lesson_text
     assert "介值定理" not in first_lesson_text
@@ -86,15 +101,7 @@ def test_validate_math_rendering_rejects_half_rendered_fragments() -> None:
 
 def test_validate_generated_board_text_allows_latex_inside_math_delimiters() -> None:
     plan = build_board_teaching_plan({"domain": "公式", "contentToLearn": "分式与极限"})
-    content = (
-        "# 分式与极限\n\n"
-        "## 本节目标\n\n看懂公式。\n\n"
-        "## 核心直觉\n\n公式表达变化关系。\n\n"
-        "## 例子\n\n标准写法：\n\n$$\\lim_{x\\to0}\\frac{\\sin x}{x}=1$$\n\n"
-        "## 课堂练习\n\n解释这个公式的含义。\n\n"
-        "## 本节小结\n\n公式要服务于直觉。\n\n"
-        "## 下一步\n\n继续。"
-    )
+    content = _textbook_content("分式与极限", "$$\\lim_{x\\to0}\\frac{\\sin x}{x}=1$$")
 
     result = validate_generated_board_text(content, plan)
 
@@ -103,15 +110,7 @@ def test_validate_generated_board_text_allows_latex_inside_math_delimiters() -> 
 
 def test_validate_generated_board_text_rejects_latex_command_outside_math_delimiters() -> None:
     plan = build_board_teaching_plan({"domain": "公式", "contentToLearn": "分式与极限"})
-    content = (
-        "# 分式与极限\n\n"
-        "## 本节目标\n\n看懂公式。\n\n"
-        "## 核心直觉\n\n公式表达变化关系。\n\n"
-        "## 例子\n\n错误写法：\\frac{1}{n}。\n\n"
-        "## 课堂练习\n\n解释这个公式的含义。\n\n"
-        "## 本节小结\n\n公式要服务于直觉。\n\n"
-        "## 下一步\n\n继续。"
-    )
+    content = _textbook_content("分式与极限", "错误写法：\\frac{1}{n}。")
 
     result = validate_generated_board_text(content, plan)
 
@@ -121,15 +120,7 @@ def test_validate_generated_board_text_rejects_latex_command_outside_math_delimi
 
 def test_validate_generated_board_text_rejects_complex_inline_formula() -> None:
     plan = build_board_teaching_plan({"domain": "公式", "contentToLearn": "符号表达"})
-    content = (
-        "# 符号表达\n\n"
-        "## 本节目标\n\n看懂公式。\n\n"
-        "## 核心直觉\n\n公式表达变化关系。\n\n"
-        "## 例子\n\n复杂公式不应内联：$\\lim_{x\\to0}\\frac{\\sin x}{x}=1$。\n\n"
-        "## 课堂练习\n\n解释这个公式的含义。\n\n"
-        "## 本节小结\n\n公式要服务于直觉。\n\n"
-        "## 下一步\n\n继续。"
-    )
+    content = _textbook_content("符号表达", "复杂公式不应内联：$\\lim_{x\\to0}\\frac{\\sin x}{x}=1$。")
 
     result = validate_generated_board_text(content, plan)
 
@@ -153,18 +144,18 @@ def test_field_map_plan_for_beginner_multi_part_system() -> None:
     assert plan.board_mode == "field_map"
     assert plan.board_template is not None
     assert plan.board_template.template_id == "field_map_v1"
-    assert "入门地图" in plan.current_lesson.title
+    assert "基本框架" in plan.current_lesson.title
     for term in ["账户", "交易", "Gas", "EVM", "智能合约", "DApp"]:
         assert term in payload_text
     assert "一个完整流程" in payload_text
     assert payload["quality_contract"]["template_id"] == "field_map_v1"
     assert "board_template" in payload
-    assert any("课堂标题" in rule for rule in payload["quality_contract"]["title_rules"])
-    assert any("教学目的" in rule for rule in payload["quality_contract"]["example_rules"])
+    assert any("教材章节" in rule for rule in payload["quality_contract"]["title_rules"])
+    assert any("例 1" in rule for rule in payload["quality_contract"]["example_rules"])
     assert any("diagram_prompt" in rule for rule in payload["quality_contract"]["visual_rules"])
 
 
-def test_field_map_title_is_natural_for_intro_topic() -> None:
+def test_intro_topic_uses_textbook_concept_plan() -> None:
     plan = build_board_teaching_plan(
         {
             "startingPoint": "刚高考完，想预习，先建立直觉",
@@ -174,10 +165,21 @@ def test_field_map_title_is_natural_for_intro_topic() -> None:
     )
     payload = generate_board_ai_input(plan)
 
-    assert plan.board_mode == "field_map"
-    assert plan.current_lesson.title == "第 1 课：极限与连续的入门地图"
+    assert plan.board_mode == "concept_explanation"
+    assert plan.current_lesson.title == "第 1 课：极限的直观含义"
     assert "协同流程" not in plan.current_lesson.title
-    assert any("先看懂含义" in rule for rule in payload["quality_contract"]["presentation_rules"])
+    assert payload["quality_contract"]["writing_style"] == "textbook_lecture_notes"
+    assert "概念引入" in payload["quality_contract"]["required_lesson_section_sequence"]
+
+
+def test_validate_generated_board_text_rejects_oral_style() -> None:
+    plan = build_board_teaching_plan({"domain": "概念", "contentToLearn": "概念A"})
+    content = _textbook_content("概念A", "我们来看这个定义，你会发现它很容易理解。")
+
+    result = validate_generated_board_text(content, plan)
+
+    assert result.passed is False
+    assert any(issue.dimension == "writingStyle" for issue in result.issues)
 
 
 def test_scenario_dialogue_plan_for_language_scene() -> None:
@@ -253,18 +255,18 @@ def test_generate_from_requirements_retries_half_rendered_math(monkeypatch) -> N
         return BoardDocumentEditResult(
             operation="replace_document",
             title="公式质量",
-            content_text=(
-                "# 公式质量\n\n"
-                "## 本节目标\n\n看懂公式。\n\n"
-                "## 核心直觉\n\n先理解公式描述的关系。\n\n"
-                "## 例子\n\n使用标准公式：\n\n$$\\lim_{x\\to 0}\\frac{\\sin x}{x}=1$$\n\n"
-                "## 课堂练习\n\n解释这个极限表达了什么。\n\n"
-                "## 本节小结\n\n公式要服务于直觉。\n\n"
-                "## 下一步\n\n继续练习。"
-            ),
+            content_text=_textbook_content("公式质量", "$$\\lim_{x\\to 0}\\frac{\\sin x}{x}=1$$"),
             summary="已修复。",
             chatbot_message="已生成。",
-            section_titles=["本节目标", "核心直觉", "例子", "课堂练习", "本节小结", "下一步"],
+            section_titles=[
+                "1.1 概念引入",
+                "1.2 正式定义",
+                "1.3 性质或结论",
+                "1.4 典型例题",
+                "1.5 解答过程",
+                "1.6 注释",
+                "1.7 习题",
+            ],
         )
 
     monkeypatch.setattr(openai_course_ai, "generate_board_document_edit", _fake_board_edit)

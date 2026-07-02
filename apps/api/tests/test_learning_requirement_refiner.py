@@ -141,10 +141,10 @@ def test_board_document_edit_prompt_scopes_initial_board_generation(
         return BoardDocumentEditResult(
             operation="replace_document",
             title="入口课",
-            content_text="# 入口课\n\n## 本节目标\n\n正文",
+            content_text="# 入口课\n\n## 1.1 概念引入\n\n正文",
             summary="已生成。",
             chatbot_message="已生成。",
-            section_titles=["本节目标"],
+            section_titles=["1.1 概念引入"],
         )
 
     monkeypatch.setattr(ai, "_parse", _fake_parse)
@@ -164,13 +164,14 @@ def test_board_document_edit_prompt_scopes_initial_board_generation(
     assert "一次可讲完的聚焦板书" in system_prompt
     assert "不要在正文中完整讲解后续模块" in system_prompt
     assert "board_generation_quality_pipeline" in system_prompt
-    assert "本节目标和学习路线" in system_prompt
-    assert "课堂练习" in system_prompt
+    assert "概念引入、正式定义、性质或结论" in system_prompt
+    assert "典型例题、解答过程、注释、习题" in system_prompt
     assert "后续学习路线" in system_prompt
     assert "不写任何固定主题模板" in system_prompt
     payload = json.loads(str(captured["user_prompt"]))
     assert payload["generation_source"] == "frozen_learning_requirement"
     assert "一次可讲完的聚焦小课" in payload["response_contract"]["content_text"]
+    assert "教材体/大学讲义体" in payload["response_contract"]["content_text"]
     assert "后续学习路线/下一步" in payload["response_contract"]["content_text"]
 
 
