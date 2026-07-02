@@ -2188,6 +2188,9 @@ class _InlineLatexParser:
             if self.latex.startswith(command, self.index):
                 self.index += len(command)
                 return ""
+        if self.latex.startswith(r"\|", self.index):
+            self.index += len(r"\|")
+            return "‖"
         for command in _LATEX_TEXT_COMMANDS:
             if self.latex.startswith(command, self.index):
                 self.index += len(command)
@@ -2557,7 +2560,7 @@ def _read_base(value: str, index: int) -> tuple[list[OxmlElement], int]:
             if command in _LATEX_STYLE_COMMANDS or command in _LATEX_DELIMITER_COMMANDS:
                 return [_math_run("")], index + len(command)
             return [_math_run(_LATEX_SYMBOLS.get(command, command[1:]))], index + len(command)
-    match = re.match(r"[A-Za-z]+(?:'\([^()]*\)|\([^()]*\)|')?", value[index:])
+    match = re.match(r"[A-Za-z]+(?:')?", value[index:])
     if match:
         token = match.group(0)
         return [_math_run(token)], index + len(token)
@@ -2648,6 +2651,10 @@ def _latex_to_math_children(latex: str) -> list[OxmlElement]:
                     children.append(_math_run("    " if matched_spacing in {r"\quad", r"\qquad"} else " "))
                 index += len(matched_spacing)
                 continue
+            if latex.startswith(r"\|", index):
+                children.append(_math_run("‖"))
+                index += len(r"\|")
+                continue
             command_match = re.match(r"\\[A-Za-z]+", latex[index:])
             if command_match:
                 command = command_match.group(0)
@@ -2717,13 +2724,13 @@ def _append_display_math_text(paragraph, latex: str) -> None:
 
 
 def _append_math(paragraph, latex: str, *, display: bool = False) -> None:
-    if display:
-        _append_display_math_text(paragraph, latex)
-        return
     try:
         _append_omml_math(paragraph, latex, display=display)
     except Exception:
-        paragraph.add_run(_latex_inline_text(latex) or latex)
+        if display:
+            _append_display_math_text(paragraph, latex)
+        else:
+            paragraph.add_run(_latex_inline_text(latex) or latex)
 
 
 def _append_fragments(

@@ -1683,7 +1683,7 @@ def test_docx_export_preserves_math_as_word_omml(tmp_path) -> None:
     assert "begincases" not in xml_text
 
 
-def test_docx_export_renders_display_math_as_wps_safe_text(tmp_path) -> None:
+def test_docx_export_renders_display_math_as_word_omml(tmp_path) -> None:
     document = build_document(
         title="Doc",
         content_text=(
@@ -1708,20 +1708,24 @@ def test_docx_export_renders_display_math_as_wps_safe_text(tmp_path) -> None:
     xml_text = document_xml.decode("utf-8")
     visible_text = "".join(node.text or "" for node in root.findall(".//w:t", ns))
 
-    assert not root.findall(".//m:oMath", ns)
-    assert "aₙ=1+" in visible_text
-    assert "x²-1" in visible_text
-    assert "n→∞" in visible_text
-    assert "x→a⁻" in visible_text
-    assert "x→a⁺" in visible_text
-    assert "⟹" in visible_text
+    math_text = "".join(node.text or "" for node in root.findall(".//m:t", ns))
+
+    assert root.findall(".//m:oMathPara", ns)
+    assert root.findall(".//m:oMath", ns)
+    assert root.findall(".//m:f", ns)
+    assert root.findall(".//m:sSub", ns)
+    assert root.findall(".//m:sSup", ns)
+    assert root.findall(".//m:limLow", ns)
+    assert "lim" in math_text
+    assert "∞" in math_text
+    assert "⟹" in math_text
+    assert "ₙ" not in visible_text
     assert "Longrightarrow" not in visible_text
     assert "\\Longrightarrow" not in xml_text
     assert "\\frac" not in xml_text
-    assert root.findall(".//w:noProof", ns)
 
 
-def test_docx_export_renders_calculus_formulas_as_wps_safe_text(tmp_path) -> None:
+def test_docx_export_renders_calculus_formulas_as_word_omml(tmp_path) -> None:
     document = build_document(
         title="Doc",
         content_text=(
@@ -1747,9 +1751,13 @@ def test_docx_export_renders_calculus_formulas_as_wps_safe_text(tmp_path) -> Non
     visible_text = "".join(node.text or "" for node in root.findall(".//w:t", ns))
     exported_text = math_text + visible_text
 
+    assert root.findall(".//m:oMathPara", ns)
+    assert root.findall(".//m:sSubSup", ns)
     assert "Φ(x)" in exported_text
-    assert "∫ₐˣ" in exported_text
-    assert "∫ₐᵇ" in exported_text
+    assert "∫" in exported_text
+    assert "a" in math_text
+    assert "b" in math_text
+    assert "x" in math_text
     assert "∀" in exported_text
     assert "[a,b]" in exported_text
     assert "Phi(x)" not in exported_text
@@ -1796,8 +1804,12 @@ def test_docx_export_rebuilds_stale_math_html_from_content_text(tmp_path) -> Non
     visible_text = "".join(node.text or "" for node in root.findall(".//w:t", ns))
     exported_text = math_text + visible_text
 
+    assert root.findall(".//m:oMathPara", ns)
+    assert root.findall(".//m:f", ns)
+    assert root.findall(".//m:sSubSup", ns)
     assert "ξ" in exported_text
-    assert "Sₙ" in exported_text
+    assert "S" in math_text
+    assert "n" in math_text
     assert "C=-F(a)" in exported_text
     assert "f(x)=|x|" in exported_text
     assert "\\(" not in xml_text
@@ -1805,6 +1817,40 @@ def test_docx_export_rebuilds_stale_math_html_from_content_text(tmp_path) -> Non
     assert "\\xi" not in xml_text
     assert "\\sum" not in xml_text
     assert "\\frac" not in xml_text
+
+
+def test_docx_export_converts_commands_inside_function_parentheses(tmp_path) -> None:
+    document = build_document(
+        title="Doc",
+        content_text=(
+            "$$\\|P\\| = \\max_{1\\le i\\le n} \\Delta x_i$$\n\n"
+            "$$S(P, \\xi) = \\sum_{i=1}^{n} f(\\xi_i)\\,\\Delta x_i$$\n\n"
+            "$$S_n = \\sum_{i=1}^n f\\!\\left(\\frac{i}{n}\\right)\\frac{1}{n}$$"
+        ),
+    )
+    export_path = tmp_path / "parenthesized-commands.docx"
+
+    export_docx(document, export_path)
+
+    with ZipFile(export_path) as archive:
+        document_xml = archive.read("word/document.xml")
+    root = ET.fromstring(document_xml)
+    ns = {
+        "m": "http://schemas.openxmlformats.org/officeDocument/2006/math",
+    }
+    xml_text = document_xml.decode("utf-8")
+    math_text = "".join(node.text or "" for node in root.findall(".//m:t", ns))
+
+    assert root.findall(".//m:oMathPara", ns)
+    assert root.findall(".//m:f", ns)
+    assert root.findall(".//m:sSubSup", ns)
+    assert "‖P‖" in math_text
+    assert "ξ" in math_text
+    assert "\\xi" not in xml_text
+    assert "\\|" not in xml_text
+    assert "\\!" not in xml_text
+    assert "\\left" not in xml_text
+    assert "\\right" not in xml_text
 
 
 def test_docx_export_preserves_markdown_tables_as_word_tables(tmp_path) -> None:
