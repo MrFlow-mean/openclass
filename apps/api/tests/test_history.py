@@ -1709,7 +1709,7 @@ def test_docx_export_renders_display_math_as_wps_safe_text(tmp_path) -> None:
     visible_text = "".join(node.text or "" for node in root.findall(".//w:t", ns))
 
     assert not root.findall(".//m:oMath", ns)
-    assert "a_n=1+" in visible_text
+    assert "aₙ=1+" in visible_text
     assert "x²-1" in visible_text
     assert "n→∞" in visible_text
     assert "x→a⁻" in visible_text
@@ -1719,6 +1719,92 @@ def test_docx_export_renders_display_math_as_wps_safe_text(tmp_path) -> None:
     assert "\\Longrightarrow" not in xml_text
     assert "\\frac" not in xml_text
     assert root.findall(".//w:noProof", ns)
+
+
+def test_docx_export_renders_calculus_formulas_as_wps_safe_text(tmp_path) -> None:
+    document = build_document(
+        title="Doc",
+        content_text=(
+            "设 \\(f\\) 在 \\([a,b]\\) 上可积，定义函数\n\n"
+            "$$\\Phi(x)=\\int_{a}^{x} f(t)\\,dt,\\quad x\\in[a,b]$$\n\n"
+            "$$\\Phi'(x)=f(x),\\quad \\forall x\\in[a,b]$$\n\n"
+            "$$\\int_{a}^{b} f(x)\\,dx=F(b)-F(a)$$"
+        ),
+    )
+    export_path = tmp_path / "calculus-math.docx"
+
+    export_docx(document, export_path)
+
+    with ZipFile(export_path) as archive:
+        document_xml = archive.read("word/document.xml")
+    root = ET.fromstring(document_xml)
+    ns = {
+        "m": "http://schemas.openxmlformats.org/officeDocument/2006/math",
+        "w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
+    }
+    xml_text = document_xml.decode("utf-8")
+    math_text = "".join(node.text or "" for node in root.findall(".//m:t", ns))
+    visible_text = "".join(node.text or "" for node in root.findall(".//w:t", ns))
+    exported_text = math_text + visible_text
+
+    assert "Φ(x)" in exported_text
+    assert "∫ₐˣ" in exported_text
+    assert "∫ₐᵇ" in exported_text
+    assert "∀" in exported_text
+    assert "[a,b]" in exported_text
+    assert "Phi(x)" not in exported_text
+    assert "a ^ x" not in exported_text
+    assert "\\(" not in xml_text
+    assert "\\[" not in xml_text
+    assert "\\Phi" not in xml_text
+    assert "\\int" not in xml_text
+
+
+def test_docx_export_rebuilds_stale_math_html_from_content_text(tmp_path) -> None:
+    document = BoardDocument(
+        title="Doc",
+        content_text=(
+            "介点组 \\(\\xi\\) 的黎曼和。\n\n"
+            "\\[\n"
+            "S_n = \\sum_{i=1}^n f\\!\\left(\\frac{i}{n}\\right)\\frac{1}{n}\n"
+            "= \\frac{1}{n} \\sum_{i=1}^n \\frac{i}{n}\n"
+            "\\]\n\n"
+            "故 \\(C=-F(a)\\)，并讨论 \\(f(x)=|x|\\)。"
+        ),
+        content_html=(
+            "<p>介点组 \\(\\xi\\) 的黎曼和。</p>"
+            "<p>\\[</p>"
+            "<p>S_n = \\sum_{i=1}^n f\\!\\left(\\frac{i}{n}\\right)\\frac{1}{n}</p>"
+            "<p>= \\frac{1}{n} \\sum_{i=1}^n \\frac{i}{n}</p>"
+            "<p>\\]</p>"
+            "<p>故 \\(C=-F(a)\\)，并讨论 \\(f(x)=|x|\\)。</p>"
+        ),
+    )
+    export_path = tmp_path / "stale-math-html.docx"
+
+    export_docx(document, export_path)
+
+    with ZipFile(export_path) as archive:
+        document_xml = archive.read("word/document.xml")
+    root = ET.fromstring(document_xml)
+    ns = {
+        "m": "http://schemas.openxmlformats.org/officeDocument/2006/math",
+        "w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
+    }
+    xml_text = document_xml.decode("utf-8")
+    math_text = "".join(node.text or "" for node in root.findall(".//m:t", ns))
+    visible_text = "".join(node.text or "" for node in root.findall(".//w:t", ns))
+    exported_text = math_text + visible_text
+
+    assert "ξ" in exported_text
+    assert "Sₙ" in exported_text
+    assert "C=-F(a)" in exported_text
+    assert "f(x)=|x|" in exported_text
+    assert "\\(" not in xml_text
+    assert "\\[" not in xml_text
+    assert "\\xi" not in xml_text
+    assert "\\sum" not in xml_text
+    assert "\\frac" not in xml_text
 
 
 def test_docx_export_preserves_markdown_tables_as_word_tables(tmp_path) -> None:

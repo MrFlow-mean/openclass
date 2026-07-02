@@ -25,12 +25,14 @@ DocxBlock = tuple[str, list[InlineFragment], dict[str, Any]]
 
 _CJK_RE = re.compile(r"[\u3400-\u9fff]")
 _MATH_SIGNAL_RE = re.compile(
-    r"\\(?:begin|end|frac|dfrac|tfrac|sqrt|lim|sum|prod|int|sin|cos|tan|ln|log|exp|to|left|right|leftarrow|rightarrow|leftrightarrow|Leftarrow|Rightarrow|Leftrightarrow|Longleftarrow|Longrightarrow|Longleftrightarrow|infty|cdot|times|div|leq?|geq?|approx|neq?|pm|sim|in|notin|mid|subseteq?|supseteq?|cup|cap|mathbb|mathcal|mathfrak|mathbf|mathrm|operatorname|text|dots|cdots|ldots|vdots|partial|nabla|forall|exists|alpha|beta|gamma|delta|epsilon|varepsilon|theta|lambda|mu|pi|sigma|phi|omega)\b"
+    r"\\(?:begin|end|frac|dfrac|tfrac|sqrt|lim|sum|prod|int|sin|cos|tan|ln|log|exp|to|left|right|leftarrow|rightarrow|leftrightarrow|Leftarrow|Rightarrow|Leftrightarrow|Longleftarrow|Longrightarrow|Longleftrightarrow|infty|cdot|times|div|leq?|geq?|approx|neq?|pm|sim|in|notin|mid|subseteq?|supseteq?|cup|cap|mathbb|mathcal|mathfrak|mathbf|mathrm|operatorname|text|dots|cdots|ldots|vdots|partial|nabla|forall|exists|alpha|beta|gamma|delta|epsilon|varepsilon|zeta|eta|theta|iota|kappa|lambda|mu|xi|pi|rho|varrho|sigma|tau|upsilon|phi|varphi|chi|psi|omega|Gamma|Delta|Theta|Lambda|Xi|Pi|Sigma|Phi|Psi|Omega)\b"
     r"|[_^]"
+    r"|[=<>≤≥≈≠]"
     r"|[A-Za-z0-9)]\s*(?:[+\-−*/=<>≤≥≈≠±]|→|←)\s*[A-Za-z0-9(\\]"
     r"|\d+\s*/\s*\d+"
     r"|\\[{}]"
     r"|^\([^()\n]{1,80},[^()\n]{1,80}\)$"
+    r"|^[\[(][A-Za-z0-9α-ωΑ-Ω\\_{}\s+\-−*/=.,]+,[A-Za-z0-9α-ωΑ-Ω\\_{}\s+\-−*/=.,]+[\])]$"
     r"|^[A-Za-z]{1,3}\s*\([A-Za-z0-9α-ωΑ-Ω\\_{}\[\]^()+\-−*/=·∞→←≤≥≈≠±<>|&:'\s.,]+\)$"
 )
 _LATIN_WORD_RE = re.compile(r"[A-Za-z]+")
@@ -39,7 +41,7 @@ _FORMULA_CHARS_RE = re.compile(r"^[A-Za-z0-9α-ωΑ-Ω\\_{}\[\]^()+\-−*/=·∞
 _LATEX_ENVIRONMENT_RE = re.compile(r"\\(?:begin|end)\{[A-Za-z*]+\}")
 _LATEX_TEXT_ARGUMENT_RE = re.compile(r"\\(?:text|mathrm|operatorname)\{[^{}]*\}")
 _RAW_LATEX_COMMAND_RE = re.compile(
-    r"\\(?:alpha|beta|gamma|delta|epsilon|varepsilon|theta|lambda|mu|pi|sigma|phi|omega|infty)\b"
+    r"\\(?:alpha|beta|gamma|delta|epsilon|varepsilon|zeta|eta|theta|iota|kappa|lambda|mu|xi|pi|rho|varrho|sigma|tau|upsilon|phi|varphi|chi|psi|omega|Gamma|Delta|Theta|Lambda|Xi|Pi|Sigma|Phi|Psi|Omega|infty|forall|exists|int|sum|prod|lim)\b"
 )
 _MIXED_MATH_TEXT_RE = re.compile(r"([\u3400-\u9fff，。；：、]+)")
 _HTML_BLOCK_RE = re.compile(
@@ -136,14 +138,35 @@ _LATEX_SYMBOLS = {
     r"\delta": "δ",
     r"\epsilon": "ε",
     r"\varepsilon": "ε",
+    r"\zeta": "ζ",
+    r"\eta": "η",
     r"\theta": "θ",
+    r"\iota": "ι",
+    r"\kappa": "κ",
     r"\lambda": "λ",
     r"\mu": "μ",
+    r"\xi": "ξ",
     r"\pi": "π",
+    r"\rho": "ρ",
+    r"\varrho": "ρ",
     r"\sigma": "σ",
+    r"\tau": "τ",
+    r"\upsilon": "υ",
     r"\phi": "φ",
     r"\varphi": "φ",
+    r"\chi": "χ",
+    r"\psi": "ψ",
     r"\omega": "ω",
+    r"\Gamma": "Γ",
+    r"\Delta": "Δ",
+    r"\Theta": "Θ",
+    r"\Lambda": "Λ",
+    r"\Xi": "Ξ",
+    r"\Pi": "Π",
+    r"\Sigma": "Σ",
+    r"\Phi": "Φ",
+    r"\Psi": "Ψ",
+    r"\Omega": "Ω",
     r"\partial": "∂",
     r"\int": "∫",
     r"\sum": "∑",
@@ -1049,6 +1072,11 @@ def _html_has_math_nodes(content_html: str) -> bool:
     )
 
 
+def _html_has_visible_raw_math_text(content_html: str) -> bool:
+    text = html_to_text(content_html)
+    return "$" in text or "\\(" in text or "\\[" in text or bool(_RAW_LATEX_COMMAND_RE.search(text))
+
+
 def _json_has_raw_math_text(node: dict[str, Any]) -> bool:
     if node.get("type") == "text":
         text = str(node.get("text") or "")
@@ -1526,7 +1554,10 @@ def _has_math_signal(value: str) -> bool:
 
 
 def _latex_validation_text(value: str) -> str:
-    return _LATEX_TEXT_ARGUMENT_RE.sub("", _LATEX_ENVIRONMENT_RE.sub("", value))
+    text = _LATEX_TEXT_ARGUMENT_RE.sub("", _LATEX_ENVIRONMENT_RE.sub("", value))
+    for command in _LATEX_SPACING_COMMANDS:
+        text = text.replace(command, "")
+    return text
 
 
 def _has_non_formula_letters(value: str) -> bool:
@@ -2070,10 +2101,13 @@ def _decode_data_uri(data_uri: str) -> bytes | None:
 
 def _script_text(value: str, *, subscript: bool = False) -> str:
     parsed = _latex_inline_text(value)
-    if subscript and re.search(r"[A-Za-zα-ωΑ-Ω]", parsed):
-        return f"_{parsed}"
     table = _SUBSCRIPT_CHARS if subscript else _SUPERSCRIPT_CHARS
-    return parsed.translate(table)
+    translated = parsed.translate(table)
+    if subscript and re.search(r"[A-Za-zα-ωΑ-Ω]", parsed):
+        for original, converted in zip(parsed, translated):
+            if original.isalpha() and original == converted:
+                return f"_{parsed}"
+    return translated
 
 
 class _InlineLatexParser:
@@ -2389,7 +2423,14 @@ def _latex_display_box(latex: str) -> _DisplayMathBox:
 
 
 def _latex_display_lines(latex: str) -> list[str]:
-    return [line.rstrip() for line in _latex_display_box(latex).lines]
+    normalized = _normalize_latex(latex)
+    if r"\begin{cases}" in normalized:
+        return [line.rstrip() for line in _latex_display_box(normalized).lines]
+    if r"\\" in normalized:
+        lines = [_latex_inline_text(part.strip()) for part in re.split(r"\\\\", normalized) if part.strip()]
+        return lines or [""]
+    text = _latex_inline_text(normalized)
+    return [text] if text else [line.rstrip() for line in _latex_display_box(normalized).lines]
 
 
 def _m_element(tag: str, text: str | None = None) -> OxmlElement:
@@ -2892,7 +2933,15 @@ def export_docx(document: BoardDocument, path: Path) -> Path:
     current_page_units = 4.0
 
     parser = _DocxBlockParser()
-    parser.feed(document.content_html or text_to_html(document.content_text))
+    content_html = (document.content_html or "").strip()
+    content_text = (document.content_text or "").strip()
+    if content_html and content_text and _html_has_visible_raw_math_text(content_html):
+        content_html = text_to_html(content_text)
+    elif content_html:
+        content_html = _repair_suspicious_math_html(content_html)
+    else:
+        content_html = text_to_html(content_text)
+    parser.feed(content_html)
     parser._flush()
     blocks = parser.blocks or [("p", [("text", line)], {}) for line in document.content_text.splitlines() if line.strip()]
     blocks = _normalize_fenced_docx_blocks(blocks)
