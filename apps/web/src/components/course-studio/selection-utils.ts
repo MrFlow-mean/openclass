@@ -57,3 +57,7 @@ export function popoverPositionFromDomSelection(): SelectionPopoverPosition | nu
   }
   return clampSelectionPopover(rect.left + rect.width / 2, rect.top - 44);
 }
+
+export function popoverPositionFromCaretRect(rect: { left: number; right: number; top: number }): SelectionPopoverPosition {
+  return clampSelectionPopover((rect.left + rect.right) / 2, rect.top - 44);
+}

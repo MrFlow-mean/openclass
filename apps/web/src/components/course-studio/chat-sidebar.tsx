@@ -74,6 +74,9 @@ function composerSelectionLabel(selection: SelectionRef) {
   if (selection.kind === "board" && selection.location_kind === "target_range") {
     return "TargetRange";
   }
+  if (selection.kind === "board" && selection.location_kind === "insertion_anchor") {
+    return "InsertionAnchor";
+  }
   return selection.kind === "board" ? "板书选区" : "对话引用";
 }
 

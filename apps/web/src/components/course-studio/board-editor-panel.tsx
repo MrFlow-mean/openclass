@@ -175,6 +175,7 @@ export function BoardEditorPanel({
           onApplySelection(
             {
               kind: "board",
+              location_kind: payload.locationKind,
               lesson_id: activeLesson.id,
               document_id: payload.documentId,
               excerpt: payload.excerpt,

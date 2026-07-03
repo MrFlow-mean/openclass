@@ -197,6 +197,8 @@ def _normalize_board_task_sheet(
     location_kind = sheet.location_kind
     if selection and selection.location_kind == "target_range":
         location_kind = "target_range"
+    if selection and selection.location_kind == "insertion_anchor":
+        location_kind = "insertion_anchor"
     if location_kind == "unspecified" and (sheet.target_hint.strip() or selection):
         location_kind = "insertion_anchor" if requested_action == "write" else "target_range"
     update["location_kind"] = location_kind
@@ -231,6 +233,8 @@ def _focus_from_selection(selection: SelectionRef) -> BoardFocusRef:
 def _selection_display_label(selection: SelectionRef) -> str:
     if selection.kind == "board" and selection.location_kind == "target_range":
         return "TargetRange"
+    if selection.kind == "board" and selection.location_kind == "insertion_anchor":
+        return "InsertionAnchor"
     if selection.kind == "board":
         return "当前选区"
     return "当前上下文"

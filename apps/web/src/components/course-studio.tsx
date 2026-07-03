@@ -318,7 +318,7 @@ export function CourseStudio() {
       current?.kind === "board"
         ? {
             ...current,
-            location_kind: "target_range",
+            location_kind: current.location_kind === "insertion_anchor" ? "insertion_anchor" : "target_range",
           }
         : current
     );

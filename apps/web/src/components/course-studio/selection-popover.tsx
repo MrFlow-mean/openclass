@@ -32,7 +32,7 @@ export function SelectionPopover({
         className="inline-flex h-10 items-center gap-2 px-3.5 transition-colors hover:bg-gray-50"
       >
         <TextQuote className="h-4 w-4" />
-        标记 TargetRange
+        引用到输入框
       </button>
     </div>
   );

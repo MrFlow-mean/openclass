@@ -212,3 +212,51 @@ def test_board_selection_quote_marks_target_range(
     assert response.active_board_task_sheet.target_location is not None
     assert response.active_board_task_sheet.target_location.display_label == "TargetRange"
     assert response.active_board_task_sheet.progress == 100
+
+
+def test_board_caret_quote_marks_insertion_anchor(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    user_id = "user_existing_board_insertion_anchor"
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    lesson = _seed_existing_board_workspace(store, user_id)
+
+    def _fake_refinement(**kwargs):
+        assert "第一节" in kwargs["selection_excerpt"]
+        return BoardTaskRequirementRefinement(
+            route="board_task_refining",
+            chatbot_message="我已经把光标位置标为插入锚点。",
+            board_task_sheet=BoardTaskRequirementSheet(
+                requested_action="write",
+                question_or_topic="在这里补充一个说明",
+                progress=66,
+            ),
+        )
+
+    monkeypatch.setattr(openai_course_ai, "generate_board_task_requirement_refinement", _fake_refinement)
+
+    response = process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(
+            message="在这里补充一个说明。",
+            selection=SelectionRef(
+                kind="board",
+                excerpt="第一节｜这里已经有一段学习内容。",
+                location_kind="insertion_anchor",
+                lesson_id=lesson.id,
+                document_id=lesson.board_document.id,
+                before_text="第一节",
+                after_text="这里已经有一段学习内容。",
+            ),
+        ),
+        user_id=user_id,
+    )
+
+    assert response.active_board_task_sheet is not None
+    assert response.active_board_task_sheet.location_kind == "insertion_anchor"
+    assert response.active_board_task_sheet.target_hint == "第一节｜这里已经有一段学习内容。"
+    assert response.active_board_task_sheet.target_location is not None
+    assert response.active_board_task_sheet.target_location.display_label == "InsertionAnchor"
+    assert response.active_board_task_sheet.progress == 100

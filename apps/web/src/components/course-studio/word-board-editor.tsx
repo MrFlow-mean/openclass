@@ -74,6 +74,7 @@ import {
   pagePreviewMetrics,
 } from "@/components/course-studio/page-settings";
 import {
+  popoverPositionFromCaretRect,
   popoverPositionFromDomSelection,
   type SelectionPopoverPosition,
 } from "@/components/course-studio/selection-utils";
@@ -85,7 +86,14 @@ import {
 } from "@/components/course-studio/word-editor-toolbar";
 import { BoardModelPicker } from "@/components/course-studio/board-model-picker";
 import { MATH_TEXT_SERIALIZERS, normalizeEditorMath } from "@/lib/math-content";
-import type { AIModelOption, AIModelSelection, BoardDocument, BoardFocusRef, DocumentPageSettings } from "@/types";
+import type {
+  AIModelOption,
+  AIModelSelection,
+  BoardDocument,
+  BoardFocusRef,
+  BoardTaskLocationKind,
+  DocumentPageSettings,
+} from "@/types";
 
 type WordRibbonTab = "home" | "insert" | "page";
 
@@ -526,6 +534,28 @@ function teachingFocusKey(focus: BoardFocusRef | null | undefined) {
   ].join("\u001f");
 }
 
+function compactAnchorContext(value: string, maxLength = 90) {
+  const compact = value.replace(/\s+/g, " ").trim();
+  return compact.length > maxLength ? compact.slice(-maxLength) : compact;
+}
+
+function insertionAnchorExcerpt(beforeText: string, afterText: string) {
+  const before = compactAnchorContext(beforeText);
+  const after = compactAnchorContext(afterText);
+  if (before && after) {
+    return `${before}｜${after}`;
+  }
+  return before || after || "当前光标位置";
+}
+
+function popoverPositionFromEditorCaret(editor: TiptapEditor, position: number) {
+  try {
+    return popoverPositionFromCaretRect(editor.view.coordsAtPos(position));
+  } catch {
+    return popoverPositionFromDomSelection();
+  }
+}
+
 export function WordBoardEditor({
   document,
   readOnly,
@@ -551,6 +581,7 @@ export function WordBoardEditor({
   onDocumentChange: (document: BoardDocument) => void;
   onSelectionChange: (
     selection: {
+      locationKind: BoardTaskLocationKind;
       excerpt: string;
       position: SelectionPopoverPosition | null;
       documentId: string;
@@ -635,8 +666,25 @@ export function WordBoardEditor({
     }
     setIsTableActive(currentEditor.isActive("table"));
     const { from, to } = currentEditor.state.selection;
+    const beforeText = currentEditor.state.doc
+      .textBetween(Math.max(0, from - 240), from, " ")
+      .trim();
+    const afterText = currentEditor.state.doc
+      .textBetween(to, Math.min(currentEditor.state.doc.content.size, to + 240), " ")
+      .trim();
     if (from === to) {
-      latestOnSelectionChangeRef.current(null);
+      if (!currentEditor.isFocused) {
+        latestOnSelectionChangeRef.current(null);
+        return;
+      }
+      latestOnSelectionChangeRef.current({
+        locationKind: "insertion_anchor",
+        excerpt: insertionAnchorExcerpt(beforeText, afterText),
+        position: popoverPositionFromEditorCaret(currentEditor, from),
+        documentId: latestDocumentRef.current.id,
+        beforeText,
+        afterText,
+      });
       return;
     }
     const excerpt = currentEditor.state.doc.textBetween(from, to, " ").trim();
@@ -644,13 +692,8 @@ export function WordBoardEditor({
       latestOnSelectionChangeRef.current(null);
       return;
     }
-    const beforeText = currentEditor.state.doc
-      .textBetween(Math.max(0, from - 240), from, " ")
-      .trim();
-    const afterText = currentEditor.state.doc
-      .textBetween(to, Math.min(currentEditor.state.doc.content.size, to + 240), " ")
-      .trim();
     latestOnSelectionChangeRef.current({
+      locationKind: "target_range",
       excerpt,
       position: popoverPositionFromDomSelection(),
       documentId: latestDocumentRef.current.id,
