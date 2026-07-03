@@ -680,6 +680,7 @@ class WorkspaceState(BaseModel):
 class SelectionRef(BaseModel):
     kind: SelectionKind
     excerpt: str
+    location_kind: BoardTaskLocationKind | None = None
     lesson_id: str | None = None
     block_id: str | None = None
     document_id: str | None = None

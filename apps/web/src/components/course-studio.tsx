@@ -314,6 +314,14 @@ export function CourseStudio() {
     if (!selection) {
       return;
     }
+    setSelection((current) =>
+      current?.kind === "board"
+        ? {
+            ...current,
+            location_kind: "target_range",
+          }
+        : current
+    );
     updateActiveLessonComposerState((current) => ({
       ...current,
       composerMode: nextMode,
@@ -451,8 +459,7 @@ export function CourseStudio() {
     <SelectionPopover
       selection={selection}
       position={selectionPopover}
-      isPreviewMode={isPreviewMode}
-      onFocusComposerWithSelection={focusComposerWithSelection}
+      onFocusComposerWithSelection={() => focusComposerWithSelection("ask")}
     />
   );
 

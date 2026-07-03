@@ -416,6 +416,7 @@ export interface CodexLoginStatusResponse {
 export interface SelectionRef {
   kind: "chat" | "board";
   excerpt: string;
+  location_kind?: BoardTaskLocationKind | null;
   lesson_id?: string | null;
   block_id?: string | null;
   document_id?: string | null;

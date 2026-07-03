@@ -70,6 +70,13 @@ function boardTaskLocationLabel(task: BoardTaskRequirementSheet) {
   return `${kind} · ${hint}`;
 }
 
+function composerSelectionLabel(selection: SelectionRef) {
+  if (selection.kind === "board" && selection.location_kind === "target_range") {
+    return "TargetRange";
+  }
+  return selection.kind === "board" ? "板书选区" : "对话引用";
+}
+
 function sequenceFocusLabel(lesson: Lesson) {
   const session = lesson.active_interaction_session;
   if (!session || session.sequence_mode !== "section_explanation" || !session.sequence_items?.length) {
@@ -699,6 +706,9 @@ export function CourseStudioChatSidebar({
                 ) : (
                   <TextQuote className="h-4 w-4 shrink-0 text-gray-500" />
                 )}
+                <span className="shrink-0 rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-bold text-sky-700">
+                  {composerSelectionLabel(composerSelection)}
+                </span>
                 <p className="min-w-0 truncate text-xs leading-5 text-gray-700">
                   “{composerSelection.excerpt.replace(/\s+/g, " ").slice(0, 160)}”
                 </p>

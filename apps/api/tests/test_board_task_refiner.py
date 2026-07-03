@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from app.models import BoardTaskRequirementSheet, ChatRequest, ConversationTurn
+from app.models import BoardTaskRequirementSheet, ChatRequest, ConversationTurn, SelectionRef
 from app.services import workspace_state
 from app.services.chat_service import process_chat_on_lesson
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
@@ -166,3 +166,49 @@ def test_existing_board_action_need_records_board_task_history(
     assert commit.metadata["board_task_sheet"]["location_kind"] == "target_range"
     assert commit.metadata["board_task_history_changed"] is True
     assert commit.metadata["document_changed"] is False
+
+
+def test_board_selection_quote_marks_target_range(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    user_id = "user_existing_board_selection_target"
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    lesson = _seed_existing_board_workspace(store, user_id)
+
+    def _fake_refinement(**kwargs):
+        assert kwargs["selection_excerpt"] == "这里已经有一段学习内容。"
+        return BoardTaskRequirementRefinement(
+            route="board_task_refining",
+            chatbot_message="我已经把你选中的文字标为目标范围。",
+            board_task_sheet=BoardTaskRequirementSheet(
+                requested_action="explain",
+                question_or_topic="讲清楚选中内容",
+                progress=66,
+            ),
+        )
+
+    monkeypatch.setattr(openai_course_ai, "generate_board_task_requirement_refinement", _fake_refinement)
+
+    response = process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(
+            message="讲清楚这段。",
+            selection=SelectionRef(
+                kind="board",
+                excerpt="这里已经有一段学习内容。",
+                location_kind="target_range",
+                lesson_id=lesson.id,
+                document_id=lesson.board_document.id,
+            ),
+        ),
+        user_id=user_id,
+    )
+
+    assert response.active_board_task_sheet is not None
+    assert response.active_board_task_sheet.location_kind == "target_range"
+    assert response.active_board_task_sheet.target_hint == "这里已经有一段学习内容。"
+    assert response.active_board_task_sheet.target_location is not None
+    assert response.active_board_task_sheet.target_location.display_label == "TargetRange"
+    assert response.active_board_task_sheet.progress == 100

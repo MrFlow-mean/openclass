@@ -11,6 +11,7 @@ export function sameSelection(left: SelectionRef | null, right: SelectionRef | n
   }
   return (
     left.kind === right.kind &&
+    left.location_kind === right.location_kind &&
     left.lesson_id === right.lesson_id &&
     left.block_id === right.block_id &&
     left.document_id === right.document_id &&

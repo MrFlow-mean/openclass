@@ -195,6 +195,8 @@ def _normalize_board_task_sheet(
         update["target_hint"] = selection.excerpt.strip()[:240]
     requested_action = update.get("requested_action", sheet.requested_action)
     location_kind = sheet.location_kind
+    if selection and selection.location_kind == "target_range":
+        location_kind = "target_range"
     if location_kind == "unspecified" and (sheet.target_hint.strip() or selection):
         location_kind = "insertion_anchor" if requested_action == "write" else "target_range"
     update["location_kind"] = location_kind
@@ -222,8 +224,16 @@ def _focus_from_selection(selection: SelectionRef) -> BoardFocusRef:
         text_hash=selection.text_hash,
         confidence=0.8,
         reason="用户当前选区提供了位置线索。",
-        display_label="当前选区" if selection.kind == "board" else "当前上下文",
+        display_label=_selection_display_label(selection),
     )
+
+
+def _selection_display_label(selection: SelectionRef) -> str:
+    if selection.kind == "board" and selection.location_kind == "target_range":
+        return "TargetRange"
+    if selection.kind == "board":
+        return "当前选区"
+    return "当前上下文"
 
 
 def _missing_items(sheet: BoardTaskRequirementSheet) -> list[str]:

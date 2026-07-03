@@ -1,21 +1,19 @@
 "use client";
 
-import { PencilLine, TextQuote } from "lucide-react";
+import { TextQuote } from "lucide-react";
 
-import type { ChatInteractionMode, SelectionRef } from "@/types";
+import type { SelectionRef } from "@/types";
 import type { SelectionPopoverPosition } from "@/components/course-studio/selection-utils";
 
 type SelectionPopoverProps = {
   selection: SelectionRef | null;
   position: SelectionPopoverPosition | null;
-  isPreviewMode: boolean;
-  onFocusComposerWithSelection: (mode: ChatInteractionMode) => void;
+  onFocusComposerWithSelection: () => void;
 };
 
 export function SelectionPopover({
   selection,
   position,
-  isPreviewMode,
   onFocusComposerWithSelection,
 }: SelectionPopoverProps) {
   if (!selection || !position) {
@@ -30,25 +28,12 @@ export function SelectionPopover({
     >
       <button
         type="button"
-        onClick={() => onFocusComposerWithSelection("ask")}
+        onClick={onFocusComposerWithSelection}
         className="inline-flex h-10 items-center gap-2 px-3.5 transition-colors hover:bg-gray-50"
       >
         <TextQuote className="h-4 w-4" />
-        引用到输入框
+        标记 TargetRange
       </button>
-      {selection.kind === "board" && !isPreviewMode ? (
-        <>
-          <div className="h-5 w-px bg-gray-200" />
-          <button
-            type="button"
-            onClick={() => onFocusComposerWithSelection("direct_edit")}
-            className="inline-flex h-10 items-center gap-2 px-3.5 transition-colors hover:bg-amber-50 hover:text-amber-700"
-          >
-            <PencilLine className="h-4 w-4" />
-            编辑文档
-          </button>
-        </>
-      ) : null}
     </div>
   );
 }
