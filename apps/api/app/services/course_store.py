@@ -24,6 +24,7 @@ from app.models import (
     WorkspaceState,
 )
 from app.services.document_segment_store import DocumentSegmentStore
+from app.services.board_task_history import BoardTaskHistoryStore
 from app.services.learning_requirement_history import LearningRequirementHistoryStore
 from app.services.rich_document import upgrade_markdown_like_document
 
@@ -43,6 +44,7 @@ class SqliteCourseStore:
         self._lock = threading.RLock()
         self._document_segments = DocumentSegmentStore()
         self._learning_requirement_history = LearningRequirementHistoryStore()
+        self._board_task_history = BoardTaskHistoryStore()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
@@ -104,6 +106,22 @@ class SqliteCourseStore:
                         learning_requirement_history_operations or [],
                     )
 
+    def save_for_user_with_board_task_history(
+        self,
+        owner_user_id: str,
+        workspace: WorkspaceState,
+        *,
+        board_task_history_operations: list[dict[str, Any]] | None = None,
+    ) -> None:
+        with self._lock:
+            with self._connect() as conn:
+                with conn:
+                    self._replace_workspace(conn, workspace, owner_user_id=owner_user_id)
+                    self._board_task_history.apply_operations(
+                        conn,
+                        board_task_history_operations or [],
+                    )
+
     def load_learning_requirement_history_state(
         self,
         owner_user_id: str,
@@ -112,6 +130,45 @@ class SqliteCourseStore:
         with self._lock:
             with self._connect() as conn:
                 return self._learning_requirement_history.load_state(
+                    conn,
+                    owner_user_id=owner_user_id,
+                    lesson_id=lesson_id,
+                )
+
+    def load_board_task_history_state(
+        self,
+        owner_user_id: str,
+        lesson_id: str,
+    ) -> dict[str, Any] | None:
+        with self._lock:
+            with self._connect() as conn:
+                return self._board_task_history.load_state(
+                    conn,
+                    owner_user_id=owner_user_id,
+                    lesson_id=lesson_id,
+                )
+
+    def list_board_task_versions(
+        self,
+        owner_user_id: str,
+        lesson_id: str,
+    ) -> list[dict[str, Any]]:
+        with self._lock:
+            with self._connect() as conn:
+                return self._board_task_history.list_versions(
+                    conn,
+                    owner_user_id=owner_user_id,
+                    lesson_id=lesson_id,
+                )
+
+    def list_board_task_events(
+        self,
+        owner_user_id: str,
+        lesson_id: str,
+    ) -> list[dict[str, Any]]:
+        with self._lock:
+            with self._connect() as conn:
+                return self._board_task_history.list_events(
                     conn,
                     owner_user_id=owner_user_id,
                     lesson_id=lesson_id,
@@ -357,6 +414,7 @@ class SqliteCourseStore:
         )
         self._migrate_schema(conn)
         self._learning_requirement_history.create_schema(conn)
+        self._board_task_history.create_schema(conn)
         self._document_segments.create_fts_schema(conn)
         self._document_segments.backfill(conn, _document_from_row)
         conn.execute(

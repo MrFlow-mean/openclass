@@ -7,7 +7,7 @@ from app.services import workspace_state
 from app.services.chat_service import process_chat_on_lesson
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
 from app.services.lesson_factory import build_requirements, create_empty_lesson
-from app.services.openai_course_ai import ChatbotReply, OpenAICourseAI, openai_course_ai
+from app.services.openai_course_ai import BoardTaskRequirementRefinement, ChatbotReply, OpenAICourseAI, openai_course_ai
 
 
 TEST_USER_ID = "user_basic_chat"
@@ -67,11 +67,16 @@ def test_process_chat_on_lesson_records_basic_chat_without_document_change(
     lesson = _seed_workspace(store)
     captured: dict[str, object] = {}
 
-    def _fake_basic_reply(**kwargs):
+    def _fake_refinement(**kwargs):
         captured.update(kwargs)
-        return ChatbotReply(chatbot_message="这是一个普通聊天回答。")
+        return BoardTaskRequirementRefinement(route="ordinary_chat", chatbot_message="这是一个普通聊天回答。")
 
-    monkeypatch.setattr(openai_course_ai, "generate_basic_chat_reply", _fake_basic_reply)
+    monkeypatch.setattr(openai_course_ai, "generate_board_task_requirement_refinement", _fake_refinement)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_basic_chat_reply",
+        lambda **kwargs: pytest.fail("non-empty board should be classified by board task refinement first"),
+    )
 
     response = process_chat_on_lesson(
         lesson.id,
@@ -87,13 +92,18 @@ def test_process_chat_on_lesson_records_basic_chat_without_document_change(
     assert response.active_requirement_sheet is None
     assert response.active_board_task_sheet is None
     assert captured == {
+        "lesson_title": "基础聊天页",
+        "existing_task": None,
         "board_document_state": {
             "status": "non_empty",
             "has_content": True,
             "reason": "当前右侧板书文档已有可见内容。",
         },
+        "board_summary": "基础聊天页\n\n这段右侧文档不应该被聊天修改。",
         "conversation_summary": "user: 你好",
         "user_message": "你现在能正常问答吗？",
+        "selection_excerpt": None,
+        "include_stream_result": True,
     }
     saved = store.load_for_user(TEST_USER_ID)
     saved_lesson = saved.packages[0].lessons[0]
@@ -103,6 +113,7 @@ def test_process_chat_on_lesson_records_basic_chat_without_document_change(
     assert commit.label == "Basic chat"
     assert commit.metadata["kind"] == "basic_chat"
     assert commit.metadata["basic_chat_only"] is True
+    assert commit.metadata["board_task_refinement_route"] == "ordinary_chat"
     assert commit.metadata["board_document_state"] == {
         "status": "non_empty",
         "has_content": True,
@@ -111,7 +122,7 @@ def test_process_chat_on_lesson_records_basic_chat_without_document_change(
     assert commit.metadata["document_changed"] is False
 
 
-def test_non_empty_basic_chat_preserves_existing_learning_requirement_sheet(
+def test_non_empty_basic_chat_clears_legacy_learning_requirement_sheet(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
@@ -129,8 +140,8 @@ def test_non_empty_basic_chat_preserves_existing_learning_requirement_sheet(
 
     monkeypatch.setattr(
         openai_course_ai,
-        "generate_basic_chat_reply",
-        lambda **kwargs: ChatbotReply(chatbot_message="继续正常聊天。"),
+        "generate_board_task_requirement_refinement",
+        lambda **kwargs: BoardTaskRequirementRefinement(route="ordinary_chat", chatbot_message="继续正常聊天。"),
     )
 
     response = process_chat_on_lesson(
@@ -140,12 +151,10 @@ def test_non_empty_basic_chat_preserves_existing_learning_requirement_sheet(
     )
 
     assert response.chatbot_message == "继续正常聊天。"
-    assert response.active_requirement_sheet is not None
-    assert response.active_requirement_sheet.learning_goal == "以太坊开发由哪几部分组成"
-    assert response.requirement_cleared is False
+    assert response.active_requirement_sheet is None
+    assert response.requirement_cleared is True
     saved_lesson = store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
-    assert saved_lesson.learning_requirements is not None
-    assert saved_lesson.learning_requirements.learning_goal == "以太坊开发由哪几部分组成"
+    assert saved_lesson.learning_requirements is None
     commit = saved_lesson.history_graph.commits[-1]
     assert commit.metadata["kind"] == "basic_chat"
-    assert commit.metadata["active_requirement_sheet_after"]["learning_goal"] == "以太坊开发由哪几部分组成"
+    assert commit.metadata["active_requirement_sheet_after"] is None

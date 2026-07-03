@@ -116,9 +116,11 @@ export type BoardDocumentOperationStatus = "none" | "succeeded" | "failed";
 export type BoardTaskRequestedAction = "write" | "edit" | "explain" | "chat";
 export type BoardTaskConfirmationStatus = "none" | "awaiting" | "confirmed" | "declined";
 export type BoardTaskLocationStatus = "missing" | "selected" | "resolved" | "ambiguous" | "content_absent";
+export type BoardTaskLocationKind = "target_range" | "insertion_anchor" | "unspecified";
 
 export interface BoardTaskRequirementSheet {
   board_workflow?: BoardWorkflow | null;
+  location_kind?: BoardTaskLocationKind;
   target_hint: string;
   target_location?: BoardFocusRef | null;
   location_status: BoardTaskLocationStatus;

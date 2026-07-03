@@ -139,6 +139,7 @@ BoardTaskRequestedAction = Literal["write", "edit", "explain", "chat"]
 BoardTaskConfirmationStatus = Literal["none", "awaiting", "confirmed", "declined"]
 BoardTaskRoute = Literal["write", "edit", "explain", "chat", "clarify_location", "await_write_confirmation"]
 BoardTaskLocationStatus = Literal["missing", "selected", "resolved", "ambiguous", "content_absent"]
+BoardTaskLocationKind = Literal["target_range", "insertion_anchor", "unspecified"]
 BoardDocumentOperationStatus = Literal["none", "succeeded", "failed"]
 BoardPatchRiskLevel = Literal["low", "medium", "high"]
 BoardPatchTargetScope = Literal["focus", "section", "whole_document", "append"]
@@ -471,6 +472,7 @@ class LearningRequirementSheet(BaseModel):
 
 class BoardTaskRequirementSheet(BaseModel):
     board_workflow: BoardWorkflow = "act_on_existing_board"
+    location_kind: BoardTaskLocationKind = "unspecified"
     target_hint: str = ""
     target_location: BoardFocusRef | None = None
     location_status: BoardTaskLocationStatus = "missing"

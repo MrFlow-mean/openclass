@@ -59,6 +59,17 @@ function boardTaskActionLabel(action: BoardTaskRequirementSheet["requested_actio
   return action ? BOARD_TASK_ACTION_LABELS[action] ?? action : "待确认";
 }
 
+function boardTaskLocationLabel(task: BoardTaskRequirementSheet) {
+  const kindLabels: Record<NonNullable<BoardTaskRequirementSheet["location_kind"]>, string> = {
+    target_range: "目标范围",
+    insertion_anchor: "插入位置",
+    unspecified: "待确认",
+  };
+  const kind = kindLabels[task.location_kind ?? "unspecified"];
+  const hint = task.target_hint || task.target_location?.display_label || task.location_status;
+  return `${kind} · ${hint}`;
+}
+
 function sequenceFocusLabel(lesson: Lesson) {
   const session = lesson.active_interaction_session;
   if (!session || session.sequence_mode !== "section_explanation" || !session.sequence_items?.length) {
@@ -124,7 +135,7 @@ function CurrentNeedCard({
         <div className="mt-3 h-2 rounded-full bg-white">
           <div className="h-full w-1/3 rounded-full bg-sky-500 transition-all" />
         </div>
-        <p className="mt-3 text-xs leading-6 text-sky-950">正在把你的新问题整理成目标位置、动作类型、问题内容和互动要求。</p>
+        <p className="mt-3 text-xs leading-6 text-sky-950">正在把你的新问题整理成位置、动作和怎么做。</p>
       </div>
     );
   }
@@ -171,7 +182,7 @@ function CurrentNeedCard({
         </div>
         <div className="mt-3 grid gap-2 text-xs leading-5 text-emerald-950">
           <p>链路：{boardWorkflowLabel(task.board_workflow ?? "act_on_existing_board")}</p>
-          <p>位置：{task.target_hint || task.target_location?.display_label || task.location_status}</p>
+          <p>位置：{boardTaskLocationLabel(task)}</p>
           <p>动作：{boardTaskActionLabel(task.requested_action)}</p>
           <p>内容：{task.question_or_topic || "已执行的板书任务"}</p>
           <p>
@@ -212,7 +223,7 @@ function CurrentNeedCard({
         </div>
         <div className="mt-3 grid gap-2 text-xs leading-5 text-sky-950">
           <p>链路：{boardWorkflowLabel(activeBoardTask.board_workflow ?? "act_on_existing_board")}</p>
-          <p>位置：{activeBoardTask.target_hint || activeBoardTask.target_location?.display_label || activeBoardTask.location_status}</p>
+          <p>位置：{boardTaskLocationLabel(activeBoardTask)}</p>
           <p>动作：{boardTaskActionLabel(activeBoardTask.requested_action)}</p>
           <p>内容：{activeBoardTask.question_or_topic || "待确认"}</p>
           <p>

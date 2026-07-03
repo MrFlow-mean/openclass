@@ -10,6 +10,8 @@ from app.models import (
 from app.services import workspace_state
 from app.services.blank_board_generation import run_blank_board_generation
 from app.services.board_document_sensor import read_board_document_sensor
+from app.services.board_task_history import BoardTaskHistoryStamp
+from app.services.board_task_refiner import refine_existing_board_task_requirement
 from app.services.course_runtime import effective_requirements
 from app.services.history import commit_operations
 from app.services.learning_requirement_history import RequirementHistoryStamp
@@ -25,6 +27,7 @@ from app.services.route_context import bind_ai_request_context
 
 BASIC_CHAT_METADATA_KIND = "basic_chat"
 LEARNING_REQUIREMENT_REFINEMENT_METADATA_KIND = "learning_requirement_refinement"
+BOARD_TASK_REFINEMENT_METADATA_KIND = "board_task_requirement_refinement"
 
 
 def _conversation_summary(conversation: list[ConversationTurn], *, limit: int = 1600) -> str:
@@ -81,6 +84,9 @@ def _build_response(
     learning_clarification: LearningClarificationStatus | None = None,
     requirement_stamp: RequirementHistoryStamp | None = None,
     requirement_cleared: bool = True,
+    active_board_task_sheet=None,
+    board_task_stamp: BoardTaskHistoryStamp | None = None,
+    board_task_questions: list[str] | None = None,
 ) -> ChatResponse:
     requirements = effective_requirements(lesson)
     return ChatResponse(
@@ -93,9 +99,12 @@ def _build_response(
         requirement_run_id=requirement_stamp.run_id if requirement_stamp else None,
         requirement_version_id=requirement_stamp.version_id if requirement_stamp else None,
         requirement_phase=requirement_stamp.phase if requirement_stamp else None,
-        board_task_sheet=None,
-        active_board_task_sheet=None,
-        board_task_questions=[],
+        board_task_sheet=active_board_task_sheet,
+        active_board_task_sheet=active_board_task_sheet,
+        board_task_run_id=board_task_stamp.run_id if board_task_stamp else None,
+        board_task_version_id=board_task_stamp.version_id if board_task_stamp else None,
+        board_task_phase=board_task_stamp.phase if board_task_stamp else None,
+        board_task_questions=board_task_questions or [],
         board_decision=board_decision,
         needs_clarification=False,
         clarification_questions=[],
@@ -103,6 +112,103 @@ def _build_response(
         focus_candidates=[],
         requirement_cleared=requirement_cleared,
         course_package=workspace_state.package_view_for_lesson(workspace, package, lesson.id),
+    )
+
+
+def _run_board_task_refinement_turn(
+    *,
+    workspace,
+    package,
+    lesson,
+    request: ChatRequest,
+    user_id: str,
+    board_document_state,
+) -> ChatResponse:
+    history_state = workspace_state.load_board_task_history_state_for_user(user_id, lesson.id)
+    outcome = refine_existing_board_task_requirement(
+        owner_user_id=user_id,
+        lesson=lesson,
+        board_document_state=board_document_state,
+        conversation_summary=_conversation_summary(request.conversation),
+        user_message=request.message,
+        selection=request.selection,
+        history_state=history_state,
+    )
+    if outcome is None:
+        return _run_basic_chat_turn(
+            workspace=workspace,
+            package=package,
+            lesson=lesson,
+            request=request,
+            user_id=user_id,
+            board_document_state=board_document_state,
+            clear_learning_requirements=True,
+        )
+
+    lesson.learning_requirements = None
+    lesson.board_task_requirements = outcome.active_board_task_sheet
+    lesson.active_interaction_session = None
+    board_decision = BoardDecision(
+        action="no_change",
+        reason="已有板书任务需求收敛只维护清单，本阶段不执行讲解或写入。",
+    )
+    metadata_kind = (
+        BOARD_TASK_REFINEMENT_METADATA_KIND
+        if outcome.route == "board_task_refining"
+        else BASIC_CHAT_METADATA_KIND
+    )
+    active_board_task = outcome.active_board_task_sheet
+    commit_operations(
+        lesson,
+        [],
+        label="Board task requirement refinement" if outcome.route == "board_task_refining" else "Basic chat",
+        message=(
+            "Recorded an existing-board task requirement refinement turn"
+            if outcome.route == "board_task_refining"
+            else "Recorded a basic chatbot conversation turn"
+        ),
+        new_document=lesson.board_document,
+        metadata={
+            "kind": metadata_kind,
+            "board_task_refinement_route": outcome.route,
+            "user_message": request.message,
+            "assistant_message": outcome.chatbot_message,
+            "assistant_message_source": "chatbot" if outcome.chatbot_message else "chatbot_empty",
+            "board_document_state": board_document_state.model_context(),
+            "interaction_mode": request.interaction_mode,
+            "selection": request.selection.model_dump(mode="json") if request.selection else None,
+            "basic_chat_only": outcome.route == "ordinary_chat",
+            "document_changed": False,
+            "active_requirement_sheet_after": None,
+            "board_task_sheet": active_board_task.model_dump(mode="json") if active_board_task else None,
+            "active_board_task_sheet_after": active_board_task.model_dump(mode="json") if active_board_task else None,
+            "board_task_cleared": active_board_task is None,
+            "board_task_questions": outcome.board_task_questions,
+            "board_task_run_id": outcome.history_stamp.run_id,
+            "board_task_version_id": outcome.history_stamp.version_id,
+            "board_task_phase": outcome.history_stamp.phase,
+            "board_task_history_changed": outcome.changed,
+            "board_task_guidance": outcome.guidance_metadata,
+        },
+    )
+    workspace_state.normalize_package_state(package)
+    workspace_state.save_workspace_and_board_task_history_for_user(
+        user_id,
+        workspace,
+        board_task_history_operations=outcome.history_operations,
+    )
+    return _build_response(
+        workspace=workspace,
+        package=package,
+        lesson=lesson,
+        chatbot_message=outcome.chatbot_message,
+        board_decision=board_decision,
+        active_requirement_sheet=None,
+        learning_clarification=_reset_clarification(),
+        requirement_cleared=True,
+        active_board_task_sheet=active_board_task,
+        board_task_stamp=outcome.history_stamp,
+        board_task_questions=outcome.board_task_questions,
     )
 
 
@@ -286,14 +392,13 @@ def _run_chat_turn(lesson_id: str, request: ChatRequest, *, user_id: str) -> Cha
             user_id=user_id,
             board_document_state=board_document_state,
         )
-    return _run_basic_chat_turn(
+    return _run_board_task_refinement_turn(
         workspace=workspace,
         package=package,
         lesson=lesson,
         request=request,
         user_id=user_id,
         board_document_state=board_document_state,
-        clear_learning_requirements=False,
     )
 
 

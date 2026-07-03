@@ -13,6 +13,7 @@ from app.services.openai_course_ai import (
     BlankBoardRequirementRefinement,
     BlankBoardRequirementRefinementResult,
     BoardDocumentEditResult,
+    BoardTaskRequirementRefinement,
     ChatbotReply,
     OpenAICourseAI,
     bind_ai_output_stream,
@@ -209,8 +210,11 @@ def test_board_task_requirement_prompt_records_existing_board_workflow(
     assert captured["role"] == "pm"
     assert captured["schema"] is BoardTaskRequirementSheet
     assert "board_workflow 必须记录为 act_on_existing_board" in str(captured["system_prompt"])
+    assert "核心三因素：位置、动作、怎么做" in str(captured["system_prompt"])
+    assert "location_kind=target_range" in str(captured["system_prompt"])
     payload = json.loads(str(captured["user_prompt"]))
     assert payload["response_contract"]["board_workflow"] == "固定写 act_on_existing_board，表示对已有板书内容做动作。"
+    assert payload["response_contract"]["location_kind"] == "target_range、insertion_anchor 或 unspecified。"
 
 
 def test_parse_response_logs_model_call_started(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -469,7 +473,7 @@ def test_empty_board_refinement_parse_failure_keeps_visible_reply_without_requir
     assert discovery["requirement_update_skipped"] is True
 
 
-def test_non_empty_board_keeps_basic_chat_path(
+def test_non_empty_board_uses_existing_board_task_entry(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
@@ -489,8 +493,16 @@ def test_non_empty_board_keeps_basic_chat_path(
     )
     monkeypatch.setattr(
         openai_course_ai,
+        "generate_board_task_requirement_refinement",
+        lambda **kwargs: BoardTaskRequirementRefinement(
+            route="ordinary_chat",
+            chatbot_message="我会按已有板书继续正常聊天。",
+        ),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
         "generate_basic_chat_reply",
-        lambda **kwargs: ChatbotReply(chatbot_message="我会按已有板书继续正常聊天。"),
+        lambda **kwargs: pytest.fail("non-empty board should be classified by board task refinement first"),
     )
 
     response = process_chat_on_lesson(
@@ -504,6 +516,7 @@ def test_non_empty_board_keeps_basic_chat_path(
     saved_lesson = store.load_for_user(user_id).packages[0].lessons[0]
     commit = saved_lesson.history_graph.commits[-1]
     assert commit.metadata["kind"] == "basic_chat"
+    assert commit.metadata["board_task_refinement_route"] == "ordinary_chat"
     assert commit.metadata["board_document_state"]["status"] == "non_empty"
 
 
