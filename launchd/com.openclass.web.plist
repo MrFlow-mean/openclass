@@ -13,13 +13,14 @@
   <key>ProgramArguments</key>
   <array>
     <string>/bin/zsh</string>
-    <string>-lc</string>
-    <string>cd "__LAUNCH_DIR__" &amp;&amp; export NEXT_TELEMETRY_DISABLED=1 NODE_ENV=production; while true; do if [[ ! -f "__LAUNCH_DIR__/apps/web/.next/BUILD_ID" ]]; then npm run build:web; fi; echo "[openclass-web] $(date '+%Y-%m-%d %H:%M:%S') starting Next.js production server on :3000"; npm --prefix apps/web run start; code=$?; echo "[openclass-web] $(date '+%Y-%m-%d %H:%M:%S') server exited with code $code; restarting in 5s"; sleep 5; done</string>
+    <string>__WEB_RUNNER__</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
-    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <string>__OPENCLASS_RUNTIME_PATH__</string>
+    <key>OPENCLASS_PROJECT_DIR</key>
+    <string>__PROJECT_DIR__</string>
   </dict>
   <key>StandardOutPath</key>
   <string>/tmp/openclass-web.log</string>
