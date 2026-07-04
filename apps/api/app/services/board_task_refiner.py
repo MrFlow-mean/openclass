@@ -235,6 +235,8 @@ def _normalize_board_task_sheet(
         update["location_status"] = "selected"
 
     normalized = sheet.model_copy(update=update)
+    if _is_optional_explain_clarification(normalized, normalized.clarification_question):
+        normalized = normalized.model_copy(update={"clarification_question": ""})
     missing_items = _missing_items(normalized, declared_missing=sheet.missing_items)
     progress = _progress_from_missing(missing_items)
     return normalized.model_copy(update={"missing_items": missing_items, "progress": progress})
@@ -285,7 +287,7 @@ def _missing_items(
         missing.append("澄清问题")
     for item in declared_missing or []:
         compact = str(item or "").strip()
-        if compact and compact not in missing:
+        if compact and _should_keep_declared_missing(sheet, compact) and compact not in missing:
             missing.append(compact)
     return missing
 
@@ -296,10 +298,49 @@ def _progress_from_missing(missing_items: list[str]) -> int:
 
 def _has_unresolved_clarification(sheet: BoardTaskRequirementSheet) -> bool:
     question = sheet.clarification_question.strip()
-    if question:
+    if question and not _is_optional_explain_clarification(sheet, question):
         return True
     compact = re.sub(r"\s+", "", sheet.question_or_topic)
+    if _explain_has_minimum_context(sheet) and _mentions_optional_explain_detail(compact):
+        return False
     return bool(re.search(r"(待定|未定|不明确|不清楚|不确定|待确认|需确认|需要澄清|尚未明确)", compact))
+
+
+def _should_keep_declared_missing(sheet: BoardTaskRequirementSheet, item: str) -> bool:
+    if not _explain_has_minimum_context(sheet):
+        return True
+    if _is_optional_explain_detail(item):
+        return False
+    return True
+
+
+def _explain_has_minimum_context(sheet: BoardTaskRequirementSheet) -> bool:
+    has_location = sheet.location_kind != "unspecified" and bool(
+        sheet.target_hint.strip() or sheet.target_location
+    )
+    return sheet.requested_action == "explain" and has_location
+
+
+def _is_optional_explain_clarification(sheet: BoardTaskRequirementSheet, question: str) -> bool:
+    if not _explain_has_minimum_context(sheet):
+        return False
+    return _is_optional_explain_detail(question)
+
+
+def _is_optional_explain_detail(value: str) -> bool:
+    compact = re.sub(r"\s+", "", value or "")
+    return _mentions_optional_explain_detail(compact)
+
+
+def _mentions_optional_explain_detail(compact: str) -> bool:
+    if not compact:
+        return False
+    return bool(
+        re.search(
+            r"(讲解)?(角度|深度|风格|方式|重点|方面|层次|主题|内容)|怎么讲|怎么做|待定|未指定",
+            compact,
+        )
+    )
 
 
 def _board_task_questions(sheet: BoardTaskRequirementSheet | None) -> list[str]:

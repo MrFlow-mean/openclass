@@ -213,7 +213,7 @@ def test_existing_board_explain_ready_executes_and_consumes_board_task(
     assert commit.metadata["document_changed"] is False
 
 
-def test_existing_board_task_with_clarification_does_not_execute_same_turn(
+def test_existing_board_explain_optional_clarification_executes_same_turn(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
@@ -238,11 +238,26 @@ def test_existing_board_task_with_clarification_does_not_execute_same_turn(
         )
 
     monkeypatch.setattr(openai_course_ai, "generate_board_task_requirement_refinement", _fake_refinement)
+    monkeypatch.setattr(openai_course_ai, "generate_board_search_rerank", lambda **kwargs: None)
+    monkeypatch.setattr(openai_course_ai, "generate_board_task_route_decision", lambda **kwargs: None)
+
+    def _fake_directed_explanation(**kwargs):
+        assert "这里已经有一段学习内容" in kwargs["target_excerpt"]
+        return BoardDirectedExplanationResult(
+            chatbot_message="这是第一节的默认讲解。",
+            assistant_message_source="chatbot_board_directed",
+            directive_payload={
+                "status": "approved",
+                "target_summary": "第一节",
+                "target_excerpt": kwargs["target_excerpt"],
+                "teaching_instruction": "按默认讲解方式讲清目标片段。",
+            },
+        )
+
     monkeypatch.setattr(
         board_task_executor,
-        "execute_ready_board_task",
-        lambda **kwargs: pytest.fail("Unresolved clarification must not execute."),
-        raising=False,
+        "generate_board_directed_explanation_message",
+        _fake_directed_explanation,
     )
 
     response = process_chat_on_lesson(
@@ -251,17 +266,15 @@ def test_existing_board_task_with_clarification_does_not_execute_same_turn(
         user_id=user_id,
     )
 
-    assert response.chatbot_message == "你想让我从哪个角度讲第一节？"
-    assert response.active_board_task_sheet is not None
-    assert response.active_board_task_sheet.progress < 100
-    assert "澄清问题" in response.active_board_task_sheet.missing_items
-    assert "具体讲解主题" in response.active_board_task_sheet.missing_items
-    assert response.board_task_phase == "collecting"
+    assert response.chatbot_message == "这是第一节的默认讲解。"
+    assert response.active_board_task_sheet is None
+    assert response.board_task_phase == "consumed"
     saved_lesson = store.load_for_user(user_id).packages[0].lessons[0]
     commit = saved_lesson.history_graph.commits[-1]
-    assert commit.metadata["kind"] == "board_task_requirement_refinement"
+    assert commit.metadata["kind"] == "chat_flow"
+    assert commit.metadata["board_task_route"] == "explain"
+    assert commit.metadata["board_task_cleared"] is True
     assert commit.metadata["board_task_sheet"]["location_kind"] == "target_range"
-    assert commit.metadata["board_task_history_changed"] is True
     assert commit.metadata["document_changed"] is False
 
 
@@ -383,7 +396,7 @@ def test_existing_board_absent_explain_asks_write_confirmation(
     assert commit.metadata["document_changed"] is False
 
 
-def test_board_selection_quote_marks_target_range(
+def test_board_selection_quote_explain_executes_target_range(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
@@ -406,6 +419,26 @@ def test_board_selection_quote_marks_target_range(
         )
 
     monkeypatch.setattr(openai_course_ai, "generate_board_task_requirement_refinement", _fake_refinement)
+    monkeypatch.setattr(openai_course_ai, "generate_board_search_rerank", lambda **kwargs: None)
+    monkeypatch.setattr(openai_course_ai, "generate_board_task_route_decision", lambda **kwargs: None)
+
+    def _fake_directed_explanation(**kwargs):
+        assert "这里已经有一段学习内容" in kwargs["target_excerpt"]
+        return BoardDirectedExplanationResult(
+            chatbot_message="这是选中内容的讲解。",
+            assistant_message_source="chatbot_board_directed",
+            directive_payload={
+                "status": "approved",
+                "target_summary": "选中内容",
+                "target_excerpt": kwargs["target_excerpt"],
+            },
+        )
+
+    monkeypatch.setattr(
+        board_task_executor,
+        "generate_board_directed_explanation_message",
+        _fake_directed_explanation,
+    )
 
     response = process_chat_on_lesson(
         lesson.id,
@@ -422,12 +455,16 @@ def test_board_selection_quote_marks_target_range(
         user_id=user_id,
     )
 
-    assert response.active_board_task_sheet is not None
-    assert response.active_board_task_sheet.location_kind == "target_range"
-    assert response.active_board_task_sheet.target_hint == "这里已经有一段学习内容。"
-    assert response.active_board_task_sheet.target_location is not None
-    assert response.active_board_task_sheet.target_location.display_label == "TargetRange"
-    assert response.active_board_task_sheet.progress < 100
+    assert response.active_board_task_sheet is None
+    assert response.board_task_phase == "consumed"
+    assert response.resolved_focus is not None
+    assert "这里已经有一段学习内容" in response.resolved_focus.excerpt
+    saved_lesson = store.load_for_user(user_id).packages[0].lessons[0]
+    commit = saved_lesson.history_graph.commits[-1]
+    assert commit.metadata["board_task_route"] == "explain"
+    assert commit.metadata["board_task_sheet"]["location_kind"] == "target_range"
+    assert commit.metadata["board_task_sheet"]["target_hint"] == "这里已经有一段学习内容。"
+    assert commit.metadata["board_task_cleared"] is True
 
 
 def test_board_caret_quote_marks_insertion_anchor(
