@@ -86,12 +86,19 @@ def _resource_index_status(resource: ResourceLibraryItem) -> ResourceAIIndexStat
     multimodal_unit_count = sum(1 for unit in resource.source_units if _normalize_content_type(unit.content_type) != "text")
     rag_content_list = source_units_to_rag_content_list(resource.source_units)
     warnings = list(resource.parse_warnings)
+    if resource.ingestion_status == "failed" and resource.ingestion_error:
+        warnings.append(resource.ingestion_error)
     if resource.parser_provider.startswith("raganything") and not rag_content_list:
         warnings.append("RAG-Anything parser metadata is present, but no reusable content list units were stored.")
     return ResourceAIIndexStatus(
         resource_id=resource.id,
         resource_name=resource.name,
         parser_provider=resource.parser_provider,
+        source_type=resource.source_type,
+        ingestion_status=resource.ingestion_status,
+        ingestion_error=resource.ingestion_error,
+        ingestion_progress=resource.ingestion_progress,
+        ingestion_adapter=resource.ingestion_adapter,
         extracted_text_available=resource.extracted_text_available,
         source_unit_count=len(resource.source_units),
         text_unit_count=text_unit_count,
@@ -220,7 +227,7 @@ def _resource_matches_from_candidates(candidates: list[_EvidenceCandidate]) -> l
 
 
 def _candidate_to_evidence_unit(candidate: _EvidenceCandidate) -> ResourceAIEvidenceUnit:
-    metadata = _safe_metadata(candidate.unit.metadata)
+    metadata = _safe_metadata({**candidate.unit.metadata, **_unit_locator_metadata(candidate.unit)})
     return ResourceAIEvidenceUnit(
         resource_id=candidate.resource.id,
         resource_name=candidate.resource.name,
@@ -305,6 +312,17 @@ def _reason(unit: ResourceSourceUnit, chapter: LibraryChapter | None) -> str:
         location.append(f"文件页码：{unit.page_no}")
     if isinstance(page_role_label, str) and page_role_label:
         location.append(f"页面分区：{page_role_label}")
+    if unit.url:
+        location.append(f"网页：{unit.url}")
+    if unit.heading_path:
+        location.append(f"标题路径：{' > '.join(unit.heading_path)}")
+    if unit.paragraph_index is not None:
+        location.append(f"段落：{unit.paragraph_index + 1}")
+    if unit.timestamp_start is not None:
+        timestamp = f"{unit.timestamp_start:g}s"
+        if unit.timestamp_end is not None:
+            timestamp = f"{timestamp}-{unit.timestamp_end:g}s"
+        location.append(f"时间戳：{timestamp}")
     if unit.source_locator:
         location.append(f"定位：{unit.source_locator}")
     location_text = "；".join(location) if location else "资料来源单元"
@@ -312,9 +330,24 @@ def _reason(unit: ResourceSourceUnit, chapter: LibraryChapter | None) -> str:
 
 
 def _unit_search_text(unit: ResourceSourceUnit) -> str:
-    parts = [unit.text]
+    parts = [unit.text, " ".join(unit.heading_path)]
     parts.extend(_metadata_text_parts(unit.metadata))
     return "\n".join(part for part in parts if part).strip()
+
+
+def _unit_locator_metadata(unit: ResourceSourceUnit) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    if unit.url:
+        metadata["url"] = unit.url
+    if unit.heading_path:
+        metadata["heading_path"] = unit.heading_path
+    if unit.paragraph_index is not None:
+        metadata["paragraph_index"] = unit.paragraph_index
+    if unit.timestamp_start is not None:
+        metadata["timestamp_start"] = unit.timestamp_start
+    if unit.timestamp_end is not None:
+        metadata["timestamp_end"] = unit.timestamp_end
+    return metadata
 
 
 def _metadata_text_parts(value: Any) -> list[str]:

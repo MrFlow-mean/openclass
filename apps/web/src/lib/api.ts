@@ -568,6 +568,12 @@ export const api = {
     }
     return response.json() as Promise<CoursePackage>;
   },
+  addResourceUrl(lessonId: string, payload: { url: string; title?: string }) {
+    return request<CoursePackage>(`/api/lessons/${lessonId}/resources/add-url`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
   resourceIndex(lessonId: string) {
     return request<ResourceAIIndexStatus[]>(`/api/lessons/${lessonId}/resources/index`);
   },

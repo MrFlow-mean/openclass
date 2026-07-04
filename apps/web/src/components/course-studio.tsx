@@ -408,6 +408,23 @@ export function CourseStudio() {
     }
   }
 
+  async function handleAddResourceUrl(url: string) {
+    if (!activeLesson) {
+      return;
+    }
+    setBusyAction("resource-url");
+    setError(null);
+    try {
+      const nextPackage = await api.addResourceUrl(activeLesson.id, { url });
+      updateCoursePackage(nextPackage);
+      setSidebarTab("library");
+    } catch (error) {
+      setError(error instanceof Error ? error.message : "链接添加失败");
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
   const workspaceActions = useWorkspaceActions({
     coursePackage,
     activeLesson,
@@ -671,6 +688,8 @@ export function CourseStudio() {
           resources={coursePackage.resources}
           isUploadingResource={busyAction === "resource-upload"}
           onUploadResource={(file) => handleUploadResource(file)}
+          isAddingResourceUrl={busyAction === "resource-url"}
+          onAddResourceUrl={(url) => handleAddResourceUrl(url)}
           relatedEdges={relatedEdges}
           lessonMap={lessonMap}
           onCreateBranch={() => handleCreateBranch()}

@@ -22,6 +22,7 @@ from app.models import (
     ResourceLibraryItem,
     ResourcePageStructure,
     ResourceSourceUnit,
+    SourceIngestionJob,
     WorkspaceState,
 )
 from app.services.document_segment_store import DocumentSegmentStore
@@ -29,7 +30,7 @@ from app.services.board_task_history import BoardTaskHistoryStore
 from app.services.learning_requirement_history import LearningRequirementHistoryStore
 from app.services.rich_document import upgrade_markdown_like_document
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 
 def _active_package_setting_key(owner_user_id: str | None) -> str:
@@ -381,6 +382,13 @@ class SqliteCourseStore:
                 extracted_text_available INTEGER NOT NULL,
                 text_content TEXT,
                 source_path TEXT,
+                source_type TEXT NOT NULL DEFAULT 'local_file',
+                source_uri TEXT,
+                ingestion_status TEXT NOT NULL DEFAULT 'ready',
+                ingestion_error TEXT NOT NULL DEFAULT '',
+                ingestion_progress INTEGER NOT NULL DEFAULT 100,
+                ingestion_adapter TEXT NOT NULL DEFAULT '',
+                ingestion_job_json TEXT,
                 parser_provider TEXT NOT NULL DEFAULT 'native',
                 parser_artifacts_path TEXT,
                 parser_message TEXT NOT NULL DEFAULT '',
@@ -459,6 +467,20 @@ class SqliteCourseStore:
             conn.execute("ALTER TABLE resources ADD COLUMN source_units_json TEXT NOT NULL DEFAULT '[]'")
         if "page_structure_json" not in resource_columns:
             conn.execute("ALTER TABLE resources ADD COLUMN page_structure_json TEXT")
+        if "source_type" not in resource_columns:
+            conn.execute("ALTER TABLE resources ADD COLUMN source_type TEXT NOT NULL DEFAULT 'local_file'")
+        if "source_uri" not in resource_columns:
+            conn.execute("ALTER TABLE resources ADD COLUMN source_uri TEXT")
+        if "ingestion_status" not in resource_columns:
+            conn.execute("ALTER TABLE resources ADD COLUMN ingestion_status TEXT NOT NULL DEFAULT 'ready'")
+        if "ingestion_error" not in resource_columns:
+            conn.execute("ALTER TABLE resources ADD COLUMN ingestion_error TEXT NOT NULL DEFAULT ''")
+        if "ingestion_progress" not in resource_columns:
+            conn.execute("ALTER TABLE resources ADD COLUMN ingestion_progress INTEGER NOT NULL DEFAULT 100")
+        if "ingestion_adapter" not in resource_columns:
+            conn.execute("ALTER TABLE resources ADD COLUMN ingestion_adapter TEXT NOT NULL DEFAULT ''")
+        if "ingestion_job_json" not in resource_columns:
+            conn.execute("ALTER TABLE resources ADD COLUMN ingestion_job_json TEXT")
         package_columns = {
             row["name"]
             for row in conn.execute("PRAGMA table_info(course_packages)").fetchall()
@@ -703,6 +725,7 @@ class SqliteCourseStore:
 
     def _read_resource(self, conn: sqlite3.Connection, row: sqlite3.Row) -> ResourceLibraryItem:
         raw_page_structure = _loads(row["page_structure_json"], None) if row["page_structure_json"] else None
+        raw_ingestion_job = _loads(row["ingestion_job_json"], None) if row["ingestion_job_json"] else None
         chapters = [
             LibraryChapter(
                 id=chapter_row["id"],
@@ -743,6 +766,17 @@ class SqliteCourseStore:
             extracted_text_available=bool(row["extracted_text_available"]),
             text_content=row["text_content"],
             source_path=row["source_path"],
+            source_type=row["source_type"] or "local_file",
+            source_uri=row["source_uri"],
+            ingestion_status=row["ingestion_status"] or "ready",
+            ingestion_error=row["ingestion_error"] or "",
+            ingestion_progress=int(row["ingestion_progress"]) if row["ingestion_progress"] is not None else 100,
+            ingestion_adapter=row["ingestion_adapter"] or "",
+            ingestion_job=(
+                SourceIngestionJob.model_validate(raw_ingestion_job)
+                if isinstance(raw_ingestion_job, dict)
+                else None
+            ),
             parser_provider=row["parser_provider"] or "native",
             parser_artifacts_path=row["parser_artifacts_path"],
             parser_message=row["parser_message"] or "",
@@ -947,9 +981,11 @@ class SqliteCourseStore:
             INSERT INTO resources(
                 id, package_id, sort_order, name, mime_type, resource_type, size_bytes,
                 uploaded_at, scope_lesson_id, concept_index_json, extracted_text_available, text_content, source_path,
+                source_type, source_uri, ingestion_status, ingestion_error, ingestion_progress, ingestion_adapter,
+                ingestion_job_json,
                 parser_provider, parser_artifacts_path, parser_message, parse_warnings_json, source_units_json,
                 page_structure_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 resource.id,
@@ -965,6 +1001,13 @@ class SqliteCourseStore:
                 int(resource.extracted_text_available),
                 resource.text_content,
                 resource.source_path,
+                resource.source_type,
+                resource.source_uri,
+                resource.ingestion_status,
+                resource.ingestion_error,
+                resource.ingestion_progress,
+                resource.ingestion_adapter,
+                _dumps(resource.ingestion_job.model_dump(mode="json")) if resource.ingestion_job is not None else None,
                 resource.parser_provider,
                 resource.parser_artifacts_path,
                 resource.parser_message,

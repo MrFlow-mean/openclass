@@ -298,10 +298,40 @@ export interface ResourceSourceUnit {
   page_idx?: number | null;
   page_no?: number | null;
   source_locator?: string | null;
+  url?: string | null;
+  heading_path: string[];
+  paragraph_index?: number | null;
+  timestamp_start?: number | null;
+  timestamp_end?: number | null;
   asset_path?: string | null;
   bbox: number[];
   order_index: number;
   metadata: Record<string, unknown>;
+}
+
+export type ResourceSourceType =
+  | "local_file"
+  | "web_url"
+  | "audio_file"
+  | "video_file"
+  | "video_url"
+  | "pasted_text"
+  | "transcript";
+
+export type SourceIngestionStatus = "queued" | "fetching" | "parsing" | "indexing" | "ready" | "failed";
+
+export interface SourceIngestionJob {
+  id: string;
+  resource_id?: string | null;
+  source_type: ResourceSourceType;
+  source_uri?: string | null;
+  adapter: string;
+  status: SourceIngestionStatus;
+  progress: number;
+  error: string;
+  phase_history: string[];
+  created_at: string;
+  updated_at: string;
 }
 
 export type ResourcePageRole =
@@ -357,6 +387,13 @@ export interface ResourceLibraryItem {
   outline: LibraryChapter[];
   concept_index: Record<string, string[]>;
   extracted_text_available: boolean;
+  source_type: ResourceSourceType;
+  source_uri?: string | null;
+  ingestion_status: SourceIngestionStatus;
+  ingestion_error: string;
+  ingestion_progress: number;
+  ingestion_adapter: string;
+  ingestion_job?: SourceIngestionJob | null;
   parser_provider: string;
   parser_artifacts_path?: string | null;
   parser_message: string;
@@ -371,6 +408,11 @@ export interface ResourceAIIndexStatus {
   resource_id: string;
   resource_name: string;
   parser_provider: string;
+  source_type: ResourceSourceType;
+  ingestion_status: SourceIngestionStatus;
+  ingestion_error: string;
+  ingestion_progress: number;
+  ingestion_adapter: string;
   extracted_text_available: boolean;
   source_unit_count: number;
   text_unit_count: number;

@@ -708,6 +708,32 @@ class ResourcePageStructure(BaseModel):
     confidence: float = 0.0
 
 
+ResourceSourceType = Literal[
+    "local_file",
+    "web_url",
+    "audio_file",
+    "video_file",
+    "video_url",
+    "pasted_text",
+    "transcript",
+]
+SourceIngestionStatus = Literal["queued", "fetching", "parsing", "indexing", "ready", "failed"]
+
+
+class SourceIngestionJob(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("ingest"))
+    resource_id: str | None = None
+    source_type: ResourceSourceType = "local_file"
+    source_uri: str | None = None
+    adapter: str = ""
+    status: SourceIngestionStatus = "queued"
+    progress: int = Field(default=0, ge=0, le=100)
+    error: str = ""
+    phase_history: list[str] = Field(default_factory=list)
+    created_at: str = Field(default_factory=now_iso)
+    updated_at: str = Field(default_factory=now_iso)
+
+
 class LibraryChapter(BaseModel):
     id: str = Field(default_factory=lambda: new_id("chapter"))
     title: str
@@ -733,6 +759,11 @@ class ResourceSourceUnit(BaseModel):
     page_idx: int | None = None
     page_no: int | None = None
     source_locator: str | None = None
+    url: str | None = None
+    heading_path: list[str] = Field(default_factory=list)
+    paragraph_index: int | None = None
+    timestamp_start: float | None = None
+    timestamp_end: float | None = None
     asset_path: str | None = None
     bbox: list[float] = Field(default_factory=list)
     order_index: int = 0
@@ -752,6 +783,13 @@ class ResourceLibraryItem(BaseModel):
     extracted_text_available: bool = False
     text_content: str | None = None
     source_path: str | None = None
+    source_type: ResourceSourceType = "local_file"
+    source_uri: str | None = None
+    ingestion_status: SourceIngestionStatus = "ready"
+    ingestion_error: str = ""
+    ingestion_progress: int = Field(default=100, ge=0, le=100)
+    ingestion_adapter: str = ""
+    ingestion_job: SourceIngestionJob | None = None
     parser_provider: str = "native"
     parser_artifacts_path: str | None = None
     parser_message: str = ""
@@ -771,6 +809,13 @@ class ResourceLibraryItemView(BaseModel):
     outline: list[LibraryChapter] = Field(default_factory=list)
     concept_index: dict[str, list[str]] = Field(default_factory=dict)
     extracted_text_available: bool = False
+    source_type: ResourceSourceType = "local_file"
+    source_uri: str | None = None
+    ingestion_status: SourceIngestionStatus = "ready"
+    ingestion_error: str = ""
+    ingestion_progress: int = Field(default=100, ge=0, le=100)
+    ingestion_adapter: str = ""
+    ingestion_job: SourceIngestionJob | None = None
     parser_provider: str = "native"
     parser_artifacts_path: str | None = None
     parser_message: str = ""
@@ -946,6 +991,11 @@ class ResourceAIIndexStatus(BaseModel):
     resource_id: str
     resource_name: str
     parser_provider: str
+    source_type: ResourceSourceType = "local_file"
+    ingestion_status: SourceIngestionStatus = "ready"
+    ingestion_error: str = ""
+    ingestion_progress: int = Field(default=100, ge=0, le=100)
+    ingestion_adapter: str = ""
     extracted_text_available: bool = False
     source_unit_count: int = 0
     text_unit_count: int = 0
@@ -1247,6 +1297,11 @@ class CreatePackageRequest(BaseModel):
 class UpdatePackageRequest(BaseModel):
     title: str | None = None
     summary: str | None = None
+
+
+class AddResourceUrlRequest(BaseModel):
+    url: str = Field(min_length=1, max_length=4096)
+    title: str | None = Field(default=None, max_length=300)
 
 
 class MoveLessonRequest(BaseModel):

@@ -10,6 +10,7 @@ from app.models import (
     CourseGraphEdge,
     CoursePackage,
     CoursePackageView,
+    AddResourceUrlRequest,
     CreatePackageRequest,
     GenerateLessonRequest,
     MoveLessonRequest,
@@ -26,6 +27,7 @@ from app.services.lesson_factory import create_empty_lesson
 from app.services.route_context import bind_ai_request_context
 from app.services.resource_service import delete_uploaded_resource_file
 from app.services.resource_library import build_resource_item
+from app.services.web_resource_adapter import build_failed_web_resource_item, build_web_resource_item
 from app.services.workspace_state import (
     UPLOAD_DIR,
     find_lesson_package,
@@ -219,6 +221,38 @@ def upload_lesson_resource(
         except Exception as exc:
             destination.unlink(missing_ok=True)
             raise HTTPException(status_code=400, detail=f"Resource parse failed: {exc}") from exc
+        if is_standalone_package(workspace, package):
+            resource.scope_lesson_id = lesson.id
+        package.resources.append(resource)
+        normalize_package_state(package)
+        save_workspace_for_user(user.id, workspace)
+    return package_view_for_lesson(workspace, package, lesson.id)
+
+
+@router.post("/api/lessons/{lesson_id}/resources/add-url", response_model=CoursePackageView)
+def add_lesson_resource_url(
+    lesson_id: str,
+    request: AddResourceUrlRequest,
+    user: UserView = Depends(current_user),
+) -> CoursePackageView:
+    workspace = load_workspace_for_user(user.id)
+    package, lesson = find_lesson_package(workspace, lesson_id)
+    package.active_lesson_id = lesson.id
+    url = request.url.strip()
+    title = request.title.strip() if request.title else None
+    if not url:
+        raise HTTPException(status_code=400, detail="Resource URL is required")
+
+    with bind_ai_request_context(
+        "/api/lessons/{lesson_id}/resources/add-url",
+        lesson=lesson,
+        trace_prefix="resource_add_url",
+        url=url,
+    ):
+        try:
+            resource = build_web_resource_item(url, title=title)
+        except Exception as exc:
+            resource = build_failed_web_resource_item(url, title=title, error=str(exc))
         if is_standalone_package(workspace, package):
             resource.scope_lesson_id = lesson.id
         package.resources.append(resource)

@@ -1,6 +1,6 @@
 import clsx from "clsx";
-import { useRef, useState, type ChangeEvent, type DragEvent } from "react";
-import { FileText, TriangleAlert, UploadCloud } from "lucide-react";
+import { useRef, useState, type ChangeEvent, type DragEvent, type FormEvent } from "react";
+import { ArrowRight, FileText, Link2, TriangleAlert, UploadCloud } from "lucide-react";
 
 import { CourseGraphPanel } from "@/components/course-studio/course-graph-panel";
 import type { CoursePackage, Lesson } from "@/types";
@@ -10,6 +10,8 @@ type ResourcePanelProps = {
   resources: CoursePackage["resources"];
   isUploadingResource: boolean;
   onUploadResource: (file: File) => void | Promise<void>;
+  isAddingResourceUrl: boolean;
+  onAddResourceUrl: (url: string) => void | Promise<void>;
   relatedEdges: CoursePackage["course_graph"];
   lessonMap: Map<string, Lesson>;
   onOpenLesson: (lessonId: string) => void | Promise<void>;
@@ -25,6 +27,42 @@ function parserLabel(provider: string) {
   return "原生解析";
 }
 
+function sourceTypeLabel(sourceType: CoursePackage["resources"][number]["source_type"]) {
+  switch (sourceType) {
+    case "web_url":
+      return "网页链接";
+    case "audio_file":
+      return "音频文件";
+    case "video_file":
+      return "视频文件";
+    case "video_url":
+      return "视频链接";
+    case "pasted_text":
+      return "粘贴文本";
+    case "transcript":
+      return "转写文本";
+    default:
+      return "本地文件";
+  }
+}
+
+function ingestionStatusLabel(status: CoursePackage["resources"][number]["ingestion_status"]) {
+  switch (status) {
+    case "queued":
+      return "排队中";
+    case "fetching":
+      return "抓取中";
+    case "parsing":
+      return "解析中";
+    case "indexing":
+      return "索引中";
+    case "failed":
+      return "失败";
+    default:
+      return "可用";
+  }
+}
+
 function dragIncludesFiles(event: DragEvent<HTMLElement>) {
   return Array.from(event.dataTransfer.types).includes("Files");
 }
@@ -34,6 +72,8 @@ export function ResourcePanel({
   resources,
   isUploadingResource,
   onUploadResource,
+  isAddingResourceUrl,
+  onAddResourceUrl,
   relatedEdges,
   lessonMap,
   onOpenLesson,
@@ -41,12 +81,14 @@ export function ResourcePanel({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const dragDepthRef = useRef(0);
   const [isDragActive, setIsDragActive] = useState(false);
+  const [resourceUrl, setResourceUrl] = useState("");
+  const isResourceBusy = isUploadingResource || isAddingResourceUrl;
   const visibleResources = resources.filter(
     (resource) => !resource.scope_lesson_id || resource.scope_lesson_id === activeLesson.id
   );
 
   function handleFile(file: File | null | undefined) {
-    if (file && !isUploadingResource) {
+    if (file && !isResourceBusy) {
       void onUploadResource(file);
     }
   }
@@ -63,7 +105,7 @@ export function ResourcePanel({
     event.preventDefault();
     event.stopPropagation();
     dragDepthRef.current += 1;
-    if (!isUploadingResource) {
+    if (!isResourceBusy) {
       event.dataTransfer.dropEffect = "copy";
       setIsDragActive(true);
     }
@@ -75,8 +117,8 @@ export function ResourcePanel({
     }
     event.preventDefault();
     event.stopPropagation();
-    event.dataTransfer.dropEffect = isUploadingResource ? "none" : "copy";
-    if (!isUploadingResource) {
+    event.dataTransfer.dropEffect = isResourceBusy ? "none" : "copy";
+    if (!isResourceBusy) {
       setIsDragActive(true);
     }
   }
@@ -105,8 +147,8 @@ export function ResourcePanel({
   }
 
   const dropzoneProps = {
-    "aria-busy": isUploadingResource,
-    "aria-disabled": isUploadingResource,
+    "aria-busy": isResourceBusy,
+    "aria-disabled": isResourceBusy,
     "data-testid": "resource-upload-dropzone",
     onDragEnter: handleDragEnter,
     onDragOver: handleDragOver,
@@ -114,11 +156,21 @@ export function ResourcePanel({
     onDrop: handleDrop,
   };
 
+  function handleUrlSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const nextUrl = resourceUrl.trim();
+    if (!nextUrl || isResourceBusy) {
+      return;
+    }
+    setResourceUrl("");
+    void onAddResourceUrl(nextUrl);
+  }
+
   const uploadButton = (
     <button
       type="button"
       onClick={() => fileInputRef.current?.click()}
-      disabled={isUploadingResource}
+      disabled={isResourceBusy}
       className="inline-flex items-center gap-1.5 rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 shadow-sm transition-colors hover:border-gray-300 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
     >
       <UploadCloud className="h-3.5 w-3.5" />
@@ -140,64 +192,110 @@ export function ResourcePanel({
             onChange={handleFileChange}
           />
         </div>
+        <form onSubmit={handleUrlSubmit} className="mt-4 flex items-center gap-2">
+          <label className="flex min-w-0 flex-1 items-center gap-2 rounded-md border border-gray-200 bg-white px-2.5 py-2 text-xs text-gray-600 shadow-sm focus-within:border-gray-400">
+            <Link2 className="h-3.5 w-3.5 flex-none text-gray-400" />
+            <input
+              value={resourceUrl}
+              onChange={(event) => setResourceUrl(event.target.value)}
+              disabled={isResourceBusy}
+              placeholder="粘贴网页链接"
+              className="min-w-0 flex-1 bg-transparent text-xs text-gray-900 outline-none placeholder:text-gray-400 disabled:cursor-not-allowed"
+            />
+          </label>
+          <button
+            type="submit"
+            disabled={!resourceUrl.trim() || isResourceBusy}
+            className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-gray-200 bg-white text-gray-700 shadow-sm transition-colors hover:border-gray-300 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+            aria-label={isAddingResourceUrl ? "正在添加链接" : "添加链接"}
+          >
+            <ArrowRight className="h-3.5 w-3.5" />
+          </button>
+        </form>
         <div
           {...dropzoneProps}
           aria-label="资料上传区域"
           className={clsx(
             "mt-4 rounded-lg transition",
-            isDragActive && !isUploadingResource && "bg-blue-50/70 ring-2 ring-blue-200"
+            isDragActive && !isResourceBusy && "bg-blue-50/70 ring-2 ring-blue-200"
           )}
         >
           {visibleResources.length ? (
             <div className="space-y-3">
-              {visibleResources.map((resource) => (
-                <article
-                  key={resource.id}
-                  className={clsx(
-                    "rounded-lg border bg-white p-3 shadow-sm transition-colors",
-                    isDragActive && !isUploadingResource ? "border-blue-300" : "border-gray-200"
-                  )}
-                >
-                  <div className="flex items-start gap-3">
-                    <span className="mt-0.5 rounded-md border border-gray-200 bg-gray-50 p-1.5 text-gray-500">
-                      <FileText className="h-3.5 w-3.5" />
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-semibold text-gray-900">{resource.name}</p>
-                      <p className="mt-1 text-xs text-gray-500">
-                        {parserLabel(resource.parser_provider)} · {resource.outline.length} 个索引片段 ·{" "}
-                        {resource.source_units.length} 个解析单元
-                      </p>
-                      {resource.parser_message ? (
-                        <p className="mt-2 line-clamp-2 text-xs text-gray-500">{resource.parser_message}</p>
-                      ) : null}
-                    </div>
-                  </div>
-                  {resource.parse_warnings.length ? (
-                    <div className="mt-3 space-y-1 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-2 text-xs text-amber-800">
-                      {resource.parse_warnings.slice(0, 2).map((warning) => (
-                        <p key={warning} className="flex gap-1.5">
-                          <TriangleAlert className="mt-0.5 h-3 w-3 flex-none" />
-                          <span className="line-clamp-2">{warning}</span>
+              {visibleResources.map((resource) => {
+                const isFailed = resource.ingestion_status === "failed";
+                const warnings = Array.from(
+                  new Set([resource.ingestion_error, ...resource.parse_warnings].filter(Boolean))
+                );
+                const ResourceIcon = resource.source_type === "web_url" ? Link2 : FileText;
+                return (
+                  <article
+                    key={resource.id}
+                    className={clsx(
+                      "rounded-lg border bg-white p-3 shadow-sm transition-colors",
+                      isFailed
+                        ? "border-red-200"
+                        : isDragActive && !isResourceBusy
+                          ? "border-blue-300"
+                          : "border-gray-200"
+                    )}
+                  >
+                    <div className="flex items-start gap-3">
+                      <span
+                        className={clsx(
+                          "mt-0.5 rounded-md border p-1.5",
+                          isFailed ? "border-red-200 bg-red-50 text-red-500" : "border-gray-200 bg-gray-50 text-gray-500"
+                        )}
+                      >
+                        <ResourceIcon className="h-3.5 w-3.5" />
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-semibold text-gray-900">{resource.name}</p>
+                        <p className="mt-1 text-xs text-gray-500">
+                          {sourceTypeLabel(resource.source_type)} · {ingestionStatusLabel(resource.ingestion_status)} ·{" "}
+                          {resource.outline.length} 个索引片段 · {resource.source_units.length} 个证据单元
                         </p>
-                      ))}
+                        {resource.source_uri ? (
+                          <p className="mt-1 truncate text-xs text-gray-400">{resource.source_uri}</p>
+                        ) : null}
+                        {resource.parser_message ? (
+                          <p className="mt-2 line-clamp-2 text-xs text-gray-500">{resource.parser_message}</p>
+                        ) : null}
+                      </div>
                     </div>
-                  ) : null}
-                </article>
-              ))}
+                    {warnings.length ? (
+                      <div
+                        className={clsx(
+                          "mt-3 space-y-1 rounded-md border px-2.5 py-2 text-xs",
+                          isFailed
+                            ? "border-red-200 bg-red-50 text-red-700"
+                            : "border-amber-200 bg-amber-50 text-amber-800"
+                        )}
+                      >
+                        {warnings.slice(0, 2).map((warning) => (
+                          <p key={warning} className="flex gap-1.5">
+                            <TriangleAlert className="mt-0.5 h-3 w-3 flex-none" />
+                            <span className="line-clamp-2">{warning}</span>
+                          </p>
+                        ))}
+                      </div>
+                    ) : null}
+                  </article>
+                );
+              })}
             </div>
           ) : (
             <div
               aria-label="资料区预留位"
               className={clsx(
                 "flex min-h-40 flex-col items-center justify-center gap-3 rounded-lg border border-dashed bg-white px-4 text-center text-xs transition-colors",
-                isDragActive && !isUploadingResource
+                isDragActive && !isResourceBusy
                   ? "border-blue-400 text-blue-700"
                   : "border-gray-200 text-gray-400"
               )}
             >
               {uploadButton}
-              <span>{isUploadingResource ? "正在解析资料。" : "当前课还没有资料。"}</span>
+              <span>{isResourceBusy ? "正在处理资料。" : "当前课还没有资料。"}</span>
             </div>
           )}
         </div>

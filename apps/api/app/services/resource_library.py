@@ -27,6 +27,7 @@ from app.services.resource_page_structure import (
     enrich_source_units_with_page_structure,
     physical_page_candidates_for_printed_page,
 )
+from app.services.source_ingestion import mark_local_file_ready
 from app.services.resource_visual_evidence import select_resource_visual_evidence
 
 
@@ -1657,7 +1658,7 @@ def build_resource_item(file_path: Path, original_name: str) -> ResourceLibraryI
         for keyword in [*chapter.keywords, *path_keywords]:
             concept_index.setdefault(keyword, []).append(chapter.id)
 
-    return ResourceLibraryItem(
+    resource = ResourceLibraryItem(
         name=original_name,
         mime_type=mime_type,
         resource_type="image" if mime_type.startswith("image/") else "document",
@@ -1674,6 +1675,7 @@ def build_resource_item(file_path: Path, original_name: str) -> ResourceLibraryI
         source_units=source_units,
         page_structure=page_structure,
     )
+    return mark_local_file_ready(resource, str(file_path))
 
 
 def extract_reference_context(

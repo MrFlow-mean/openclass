@@ -27,6 +27,8 @@ type CourseStudioSidePanelProps = {
   resources: CoursePackage["resources"];
   isUploadingResource: boolean;
   onUploadResource: (file: File) => void | Promise<void>;
+  isAddingResourceUrl: boolean;
+  onAddResourceUrl: (url: string) => void | Promise<void>;
   relatedEdges: CoursePackage["course_graph"];
   lessonMap: Map<string, Lesson>;
   onCreateBranch: () => void | Promise<void>;
@@ -55,6 +57,8 @@ export function CourseStudioSidePanel({
   resources,
   isUploadingResource,
   onUploadResource,
+  isAddingResourceUrl,
+  onAddResourceUrl,
   relatedEdges,
   lessonMap,
   onCreateBranch,
@@ -151,6 +155,8 @@ export function CourseStudioSidePanel({
             resources={resources}
             isUploadingResource={isUploadingResource}
             onUploadResource={onUploadResource}
+            isAddingResourceUrl={isAddingResourceUrl}
+            onAddResourceUrl={onAddResourceUrl}
             relatedEdges={relatedEdges}
             lessonMap={lessonMap}
             onOpenLesson={onOpenLesson}
