@@ -506,4 +506,9 @@ def _requirement_context(
         "action_type": requirements.action_type,
         "action_instruction": requirements.action_instruction,
         "target_location": requirements.target_location.model_dump(mode="json") if requirements.target_location else None,
+        "selected_resource_reference": (
+            requirements.selected_resource_reference.model_dump(mode="json")
+            if requirements.selected_resource_reference is not None
+            else None
+        ),
     }

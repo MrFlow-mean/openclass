@@ -34,6 +34,7 @@ from app.services.openai_course_ai import (
     bind_text_model_selection,
     openai_course_ai,
 )
+from app.services.resource_reference_confirmation import run_resource_reference_confirmation_turn
 from app.services.route_context import bind_ai_request_context
 
 
@@ -108,6 +109,9 @@ def _build_response(
     teaching_progress=None,
     active_interaction_session=None,
     interaction_decision=None,
+    resource_matches=None,
+    reference_prompt=None,
+    selected_reference=None,
 ) -> ChatResponse:
     requirements = effective_requirements(lesson)
     return ChatResponse(
@@ -129,7 +133,9 @@ def _build_response(
         board_decision=board_decision,
         needs_clarification=False,
         clarification_questions=[],
-        resource_matches=[],
+        resource_matches=resource_matches or [],
+        reference_prompt=reference_prompt,
+        selected_reference=selected_reference,
         resolved_focus=resolved_focus,
         focus_candidates=focus_candidates or [],
         board_search_evidence=board_search_evidence,
@@ -368,6 +374,21 @@ def _run_requirement_refinement_turn(
     board_document_state,
 ) -> ChatResponse:
     history_state = workspace_state.load_learning_requirement_history_state_for_user(user_id, lesson.id)
+    visible_resources = workspace_state.package_context_for_lesson(workspace, package, lesson.id).resources
+    if request.resource_reference_action is not None:
+        response = run_resource_reference_confirmation_turn(
+            workspace=workspace,
+            package=package,
+            lesson=lesson,
+            request=request,
+            user_id=user_id,
+            board_document_state=board_document_state,
+            history_state=history_state,
+            visible_resources=visible_resources,
+        )
+        if response is not None:
+            return response
+
     outcome = refine_blank_board_requirement(
         owner_user_id=user_id,
         lesson=lesson,
@@ -375,6 +396,7 @@ def _run_requirement_refinement_turn(
         conversation_summary=_conversation_summary(request.conversation),
         user_message=request.message,
         history_state=history_state,
+        visible_resources=visible_resources,
     )
     if outcome is None:
         return _run_basic_chat_turn(
@@ -451,6 +473,9 @@ def _run_requirement_refinement_turn(
         learning_clarification=outcome.learning_clarification,
         requirement_stamp=outcome.history_stamp,
         requirement_cleared=outcome.active_requirement_sheet is None,
+        resource_matches=outcome.resource_matches,
+        reference_prompt=outcome.reference_prompt,
+        selected_reference=outcome.selected_reference,
     )
 
 

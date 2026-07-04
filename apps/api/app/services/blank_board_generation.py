@@ -18,6 +18,10 @@ from app.services.learning_requirement_history import (
     RequirementHistoryStamp,
 )
 from app.services.openai_course_ai import openai_course_ai
+from app.services.resource_requirement_bridge import (
+    resolve_confirmed_requirement_reference_context,
+    resource_summary_from_reference_context,
+)
 from app.services.rich_document import is_document_empty
 
 
@@ -62,11 +66,18 @@ def run_blank_board_generation(
         forced=clarification.forced_start,
         change_summary="学习需求已冻结，准备生成空白板书。",
     )
+    visible_resources = workspace_state.package_context_for_lesson(workspace, package, lesson.id).resources
+    reference_context = resolve_confirmed_requirement_reference_context(
+        resources=visible_resources,
+        requirement=requirements,
+    )
+    resource_summary = resource_summary_from_reference_context(reference_context)
     outcome = generate_from_requirements(
         lesson=lesson,
         requirements=requirements,
         clarification=clarification,
-        resource_summary="",
+        resource_summary=resource_summary,
+        reference_context=reference_context,
         requirement_run_id=frozen_stamp.run_id,
         frozen_requirement_version_id=frozen_stamp.version_id,
     )
@@ -103,7 +114,7 @@ def run_blank_board_generation(
         lesson_title=lesson.title,
         learning_goal=requirements.learning_goal,
         board_summary=lesson.board_teaching_guide.chatbot_brief,
-        resource_summary="",
+        resource_summary=resource_summary,
         requirement_context=requirements.model_dump(mode="json"),
         editor_summary=outcome.summary,
         section_titles=outcome.section_titles or lesson.board_teaching_guide.teaching_flow,
@@ -145,6 +156,14 @@ def run_blank_board_generation(
             "requirement_phase": frozen_stamp.phase,
             "work_mode": requirements.work_mode,
             "granularity": requirements.granularity,
+            "selected_resource_reference": (
+                requirements.selected_resource_reference.model_dump(mode="json")
+                if requirements.selected_resource_reference is not None
+                else None
+            ),
+            "resource_reference_context": (
+                reference_context.model_dump(mode="json") if reference_context is not None else None
+            ),
             "active_requirement_sheet_after": None,
             "active_board_task_sheet_after": None,
             "requirement_cleared": True,
@@ -177,6 +196,7 @@ def run_blank_board_generation(
         needs_clarification=False,
         clarification_questions=[],
         resource_matches=[],
+        selected_reference=reference_context,
         focus_candidates=[],
         requirement_cleared=True,
         board_document_operation_status="succeeded",

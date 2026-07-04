@@ -134,6 +134,7 @@ TeachingAction = Literal["continue", "restart"]
 BoardGenerationAction = Literal["start"]
 BoardWorkflow = Literal["generate_from_scratch", "act_on_existing_board", "unknown"]
 LearningRequirementFactCategory = Literal["learning", "level", "vocabulary", "scenario", "output", "other"]
+LearningResourceReferenceStatus = Literal["suggested", "confirmed", "skipped"]
 LearningRequirementRunStatus = Literal["collecting", "ready", "frozen", "consumed", "archived"]
 LearningRequirementChangeKind = Literal[
     "created",
@@ -519,6 +520,21 @@ class InteractionTurnDecision(BaseModel):
     user_intent: str = ""
 
 
+class LearningResourceReference(BaseModel):
+    resource_id: str
+    resource_name: str
+    chapter_id: str
+    chapter_title: str
+    query: str = ""
+    excerpt: str = ""
+    page_no: int | None = None
+    page_idx: int | None = None
+    source_locator: str | None = None
+    reason: str = ""
+    score: float = 0.0
+    status: LearningResourceReferenceStatus = "suggested"
+
+
 class LearningRequirementSheet(BaseModel):
     theme: str
     learning_goal: str
@@ -541,6 +557,8 @@ class LearningRequirementSheet(BaseModel):
     board_workflow: BoardWorkflow = "unknown"
     work_mode: InitialLearningWorkMode | None = None
     granularity: InitialLearningGranularity | None = None
+    resource_references: list[LearningResourceReference] = Field(default_factory=list)
+    selected_resource_reference: LearningResourceReference | None = None
 
 
 class BoardTaskRequirementSheet(BaseModel):

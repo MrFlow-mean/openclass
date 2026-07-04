@@ -84,6 +84,23 @@ export interface DiffPreviewItem {
   summary: string;
 }
 
+export type LearningResourceReferenceStatus = "suggested" | "confirmed" | "skipped";
+
+export interface LearningResourceReference {
+  resource_id: string;
+  resource_name: string;
+  chapter_id: string;
+  chapter_title: string;
+  query: string;
+  excerpt: string;
+  page_no?: number | null;
+  page_idx?: number | null;
+  source_locator?: string | null;
+  reason: string;
+  score: number;
+  status: LearningResourceReferenceStatus;
+}
+
 export interface LearningRequirementSheet {
   theme: string;
   learning_goal: string;
@@ -106,6 +123,8 @@ export interface LearningRequirementSheet {
   board_workflow?: BoardWorkflow | null;
   work_mode?: InitialLearningWorkMode | null;
   granularity?: InitialLearningGranularity | null;
+  resource_references?: LearningResourceReference[];
+  selected_resource_reference?: LearningResourceReference | null;
 }
 
 export type BoardWorkflow = "generate_from_scratch" | "act_on_existing_board" | "unknown";
