@@ -129,6 +129,7 @@ ResourceReferenceAction = Literal["confirm", "skip"]
 BoardEditConfirmationAction = Literal["confirm", "skip"]
 ResourceScanStrategy = Literal["outline_only", "heading_section", "page_window", "fulltext_match"]
 ChatInteractionMode = Literal["ask", "direct_edit"]
+FormulaInkAction = Literal["reference", "replace"]
 TeachingAction = Literal["continue", "restart"]
 BoardGenerationAction = Literal["start"]
 BoardWorkflow = Literal["generate_from_scratch", "act_on_existing_board", "unknown"]
@@ -742,6 +743,12 @@ class SelectionRef(BaseModel):
     text_hash: str | None = None
 
 
+class FormulaInkPayload(BaseModel):
+    image_data_url: str
+    source_latex: str | None = None
+    action: FormulaInkAction
+
+
 class ConversationTurn(BaseModel):
     role: ConversationRole
     content: str
@@ -938,6 +945,7 @@ class ChatRequest(BaseModel):
     text_model: AIModelSelection | None = None
     board_model: AIModelSelection | None = None
     selection: SelectionRef | None = None
+    formula_ink: FormulaInkPayload | None = None
     interaction_mode: ChatInteractionMode = "ask"
     scope_action: ScopeAction | None = None
     resource_chapter_id: str | None = None

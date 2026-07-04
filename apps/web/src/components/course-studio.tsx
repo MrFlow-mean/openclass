@@ -8,6 +8,7 @@ import { BookOpen, Plus } from "lucide-react";
 import { BoardEditorPanel } from "@/components/course-studio/board-editor-panel";
 import { CourseStudioChatSidebar } from "@/components/course-studio/chat-sidebar";
 import { CourseStudioPageShell } from "@/components/course-studio/course-studio-page-shell";
+import type { FormulaInkEditorSubmitPayload } from "@/components/course-studio/word-board-editor";
 import {
   buildLessonMessagesFromHistory,
   isBoardDocumentEmpty,
@@ -333,6 +334,36 @@ export function CourseStudio() {
     });
   }
 
+  function handleFormulaInkSubmit(payload: FormulaInkEditorSubmitPayload) {
+    if (!activeLesson) {
+      return;
+    }
+    const formulaSelection: SelectionRef = {
+      kind: "board",
+      location_kind: payload.selection.locationKind,
+      lesson_id: activeLesson.id,
+      document_id: payload.selection.documentId,
+      excerpt: payload.selection.excerpt,
+      before_text: payload.selection.beforeText,
+      after_text: payload.selection.afterText,
+    };
+    setSelection(formulaSelection);
+    setSelectionPopover(null);
+    const isReplaceAction = payload.action === "replace";
+    void handleSubmitChat({
+      message: isReplaceAction
+        ? "请识别我手写的公式，并把当前选中的公式更改为识别结果。"
+        : "请识别我手写的公式，并结合当前选中的公式回答。",
+      selection: formulaSelection,
+      interaction_mode: isReplaceAction ? "direct_edit" : "ask",
+      formula_ink: {
+        action: payload.action,
+        image_data_url: payload.imageDataUrl,
+        source_latex: payload.sourceLatex,
+      },
+    });
+  }
+
   function speakChatbotResponse(content: string) {
     voice.speakControlledChatbotMessage(content);
     voice.setVoiceStatusText("Chatbot 回复已通过受控工作流播出，可以继续提问");
@@ -619,6 +650,7 @@ export function CourseStudio() {
           onImportDocx={(file) => void handleImportDocx(file)}
           onExportDocx={() => void handleExportDocx()}
           onExportHtml={() => void handleExportHtml()}
+          onFormulaInkSubmit={handleFormulaInkSubmit}
         />
 
         <CourseStudioSidePanel

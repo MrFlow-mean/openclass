@@ -435,6 +435,14 @@ export interface SelectionRef {
   text_hash?: string | null;
 }
 
+export type FormulaInkAction = "reference" | "replace";
+
+export interface FormulaInkPayload {
+  image_data_url: string;
+  source_latex?: string | null;
+  action: FormulaInkAction;
+}
+
 export interface BoardFocusRef {
   source: "board" | "resource" | "chat";
   lesson_id?: string | null;
@@ -580,6 +588,7 @@ export interface ChatRequestPayload {
   text_model?: AIModelSelection | null;
   board_model?: AIModelSelection | null;
   selection?: SelectionRef | null;
+  formula_ink?: FormulaInkPayload | null;
   interaction_mode?: ChatInteractionMode;
   scope_action?: ScopeAction | null;
   resource_chapter_id?: string | null;

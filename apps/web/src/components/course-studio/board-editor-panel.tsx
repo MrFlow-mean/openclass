@@ -1,6 +1,6 @@
 "use client";
 
-import { WordBoardEditor } from "@/components/course-studio/word-board-editor";
+import { WordBoardEditor, type FormulaInkEditorSubmitPayload } from "@/components/course-studio/word-board-editor";
 import type { SelectionPopoverPosition } from "@/components/course-studio/selection-utils";
 import type {
   AIModelCatalog,
@@ -31,6 +31,7 @@ type BoardEditorPanelProps = {
   onImportDocx: (file: File) => void;
   onExportDocx: () => void;
   onExportHtml: () => void;
+  onFormulaInkSubmit: (payload: FormulaInkEditorSubmitPayload) => void;
 };
 
 function stringValue(value: unknown) {
@@ -128,6 +129,7 @@ export function BoardEditorPanel({
   onImportDocx,
   onExportDocx,
   onExportHtml,
+  onFormulaInkSubmit,
 }: BoardEditorPanelProps) {
   const teachingFocus = currentTeachingFocus(activeLesson, previewCommit);
 
@@ -189,6 +191,21 @@ export function BoardEditorPanel({
         onImportDocx={onImportDocx}
         onExportDocx={onExportDocx}
         onExportHtml={onExportHtml}
+        onFormulaInkSubmit={(payload) => {
+          onApplySelection(
+            {
+              kind: "board",
+              location_kind: payload.selection.locationKind,
+              lesson_id: activeLesson.id,
+              document_id: payload.selection.documentId,
+              excerpt: payload.selection.excerpt,
+              before_text: payload.selection.beforeText,
+              after_text: payload.selection.afterText,
+            },
+            null
+          );
+          onFormulaInkSubmit(payload);
+        }}
       />
     </section>
   );

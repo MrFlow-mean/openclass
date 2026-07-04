@@ -11,7 +11,7 @@ import TableRow from "@tiptap/extension-table-row";
 import TextAlign from "@tiptap/extension-text-align";
 import { TextStyle } from "@tiptap/extension-text-style";
 import UnderlineExtension from "@tiptap/extension-underline";
-import { Plugin, PluginKey } from "@tiptap/pm/state";
+import { NodeSelection, Plugin, PluginKey } from "@tiptap/pm/state";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
@@ -76,8 +76,10 @@ import {
 import {
   popoverPositionFromCaretRect,
   popoverPositionFromDomSelection,
+  popoverPositionFromRect,
   type SelectionPopoverPosition,
 } from "@/components/course-studio/selection-utils";
+import { FormulaInkPopover, type FormulaInkSubmitPayload } from "@/components/course-studio/formula-ink-popover";
 import {
   RibbonActionButton,
   RibbonTabButton,
@@ -97,6 +99,24 @@ import type {
 } from "@/types";
 
 type WordRibbonTab = "home" | "insert" | "page";
+
+type WordBoardSelectionPayload = {
+  locationKind: BoardTaskLocationKind;
+  excerpt: string;
+  position: SelectionPopoverPosition | null;
+  documentId: string;
+  beforeText: string;
+  afterText: string;
+};
+
+type ActiveFormulaSelection = WordBoardSelectionPayload & {
+  latex: string;
+  nodeType: "inlineMath" | "blockMath";
+};
+
+export type FormulaInkEditorSubmitPayload = FormulaInkSubmitPayload & {
+  selection: WordBoardSelectionPayload;
+};
 
 declare module "@tiptap/core" {
   interface Commands<ReturnType> {
@@ -557,6 +577,50 @@ function popoverPositionFromEditorCaret(editor: TiptapEditor, position: number) 
   }
 }
 
+function isFormulaNodeName(value: string): value is ActiveFormulaSelection["nodeType"] {
+  return value === "inlineMath" || value === "blockMath";
+}
+
+function formulaPopoverPositionFromNode(editor: TiptapEditor, position: number) {
+  const dom = editor.view.nodeDOM(position);
+  if (dom instanceof Element) {
+    return popoverPositionFromRect(dom.getBoundingClientRect());
+  }
+  return popoverPositionFromEditorCaret(editor, position);
+}
+
+function activeFormulaSelectionFromEditor(
+  editor: TiptapEditor,
+  {
+    beforeText,
+    afterText,
+    documentId,
+  }: {
+    beforeText: string;
+    afterText: string;
+    documentId: string;
+  }
+): ActiveFormulaSelection | null {
+  const { selection } = editor.state;
+  if (!(selection instanceof NodeSelection) || !isFormulaNodeName(selection.node.type.name)) {
+    return null;
+  }
+  const latex = String(selection.node.attrs.latex ?? "").trim();
+  if (!latex) {
+    return null;
+  }
+  return {
+    locationKind: "target_range",
+    excerpt: latex,
+    position: formulaPopoverPositionFromNode(editor, selection.from),
+    documentId,
+    beforeText,
+    afterText,
+    latex,
+    nodeType: selection.node.type.name,
+  };
+}
+
 export function WordBoardEditor({
   document,
   readOnly,
@@ -571,6 +635,7 @@ export function WordBoardEditor({
   onImportDocx,
   onExportDocx,
   onExportHtml,
+  onFormulaInkSubmit,
 }: {
   document: BoardDocument;
   readOnly: boolean;
@@ -594,6 +659,7 @@ export function WordBoardEditor({
   onImportDocx: (file: File) => void;
   onExportDocx: () => void;
   onExportHtml: () => void;
+  onFormulaInkSubmit?: (payload: FormulaInkEditorSubmitPayload) => void;
 }) {
   const importRef = useRef<HTMLInputElement | null>(null);
   const imageUploadRef = useRef<HTMLInputElement | null>(null);
@@ -605,6 +671,7 @@ export function WordBoardEditor({
   const [tableHasHeaderRow, setTableHasHeaderRow] = useState(true);
   const [isTableActive, setIsTableActive] = useState(false);
   const [pageZoom, setPageZoom] = useState(PAGE_ZOOM_DEFAULT);
+  const [activeFormulaSelection, setActiveFormulaSelection] = useState<ActiveFormulaSelection | null>(null);
   const documentJson =
     document.content_json && Object.keys(document.content_json).length ? document.content_json : null;
   const editorContent = documentJson ?? (document.content_html.trim() || "<p></p>");
@@ -662,6 +729,7 @@ export function WordBoardEditor({
   const handleEditorSelectionUpdate = useCallback(({ editor: currentEditor }: { editor: TiptapEditor }) => {
     if (latestReadOnlyRef.current) {
       setIsTableActive(false);
+      setActiveFormulaSelection(null);
       latestOnSelectionChangeRef.current(null);
       return;
     }
@@ -673,6 +741,17 @@ export function WordBoardEditor({
     const afterText = currentEditor.state.doc
       .textBetween(to, Math.min(currentEditor.state.doc.content.size, to + 240), " ")
       .trim();
+    const formulaSelection = activeFormulaSelectionFromEditor(currentEditor, {
+      beforeText,
+      afterText,
+      documentId: latestDocumentRef.current.id,
+    });
+    if (formulaSelection) {
+      setActiveFormulaSelection(formulaSelection);
+      latestOnSelectionChangeRef.current({ ...formulaSelection, position: null });
+      return;
+    }
+    setActiveFormulaSelection(null);
     if (from === to) {
       if (!currentEditor.isFocused) {
         latestOnSelectionChangeRef.current(null);
@@ -1719,6 +1798,19 @@ export function WordBoardEditor({
               />
             </div>
             <div className="flex-1" style={contentStyle}>
+              {activeFormulaSelection && onFormulaInkSubmit ? (
+                <FormulaInkPopover
+                  position={activeFormulaSelection.position}
+                  sourceLatex={activeFormulaSelection.latex}
+                  disabled={readOnly}
+                  onSubmit={(payload) =>
+                    onFormulaInkSubmit({
+                      ...payload,
+                      selection: activeFormulaSelection,
+                    })
+                  }
+                />
+              ) : null}
               <EditorContent editor={editor} />
             </div>
             {pageSettings.footer_text || currentPageNumberLabel ? (

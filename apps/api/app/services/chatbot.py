@@ -25,6 +25,7 @@ from app.services.board_teaching_orchestrator import (
 from app.services.course_runtime import effective_requirements
 from app.services.history import bind_commit_metadata, commit_operations, current_head_commit
 from app.services.interaction_session_orchestrator import run_interaction_session_turn
+from app.services.formula_ink_resolver import resolve_formula_ink_request
 from app.services.learning_requirement_history import RequirementHistoryStamp
 from app.services.learning_requirement_refiner import refine_blank_board_requirement
 from app.services.lesson_factory import build_requirements
@@ -649,6 +650,7 @@ def _refine_agent_decision_from_commit(
 
 
 def _run_chat_turn(lesson_id: str, request: ChatRequest, *, user_id: str) -> ChatResponse:
+    request = resolve_formula_ink_request(request)
     workspace = workspace_state.load_workspace_for_user(user_id)
     package, lesson = workspace_state.find_lesson_package(workspace, lesson_id)
     board_document_state = read_board_document_sensor(lesson.board_document)

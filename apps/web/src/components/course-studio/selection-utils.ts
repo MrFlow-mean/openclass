@@ -43,6 +43,10 @@ function clampSelectionPopover(left: number, top: number): SelectionPopoverPosit
   };
 }
 
+export function popoverPositionFromRect(rect: DOMRect | { left: number; width: number; top: number }): SelectionPopoverPosition {
+  return clampSelectionPopover(rect.left + rect.width / 2, rect.top - 44);
+}
+
 export function popoverPositionFromDomSelection(): SelectionPopoverPosition | null {
   if (typeof window === "undefined") {
     return null;
