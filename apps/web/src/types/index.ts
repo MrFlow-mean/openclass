@@ -144,6 +144,14 @@ export interface InteractionRuleDraft {
   reference_instruction: string;
 }
 
+export interface InteractionRuleStep {
+  order_index: number;
+  expected_user_input: string;
+  assistant_response: string;
+  source_excerpt: string;
+  completed: boolean;
+}
+
 export interface LearningRequirementChecklistItem {
   title: string;
   is_clear: boolean;
@@ -460,6 +468,9 @@ export interface InteractionSession {
   source_board_task_run_id?: string | null;
   source_board_task_version_id?: string | null;
   source_board_task_route?: string | null;
+  rule_steps?: InteractionRuleStep[];
+  current_step_index?: number;
+  last_violation_reason?: string;
   sequence_items?: BoardFocusRef[];
   sequence_index?: number;
   sequence_mode?: string;

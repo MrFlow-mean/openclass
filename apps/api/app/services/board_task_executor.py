@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -12,6 +13,7 @@ from app.models import (
     DiffPreviewItem,
     LearningClarificationStatus,
     LearningRequirementSheet,
+    InteractionSession,
     Lesson,
     SelectionRef,
 )
@@ -20,6 +22,7 @@ from app.services.board_explanation_gate import generate_board_directed_explanat
 from app.services.board_task_history import BoardTaskHistoryRecorder, BoardTaskHistoryStamp
 from app.services.course_runtime import effective_requirements
 from app.services.history import commit_operations
+from app.services.interaction_rule_compiler import compile_interaction_session
 from app.services.openai_course_ai import BoardTaskRouteDecision, openai_course_ai
 from app.services.segment_resolver import FocusResolution, focus_context, resolve_board_focus
 
@@ -37,6 +40,7 @@ class BoardTaskExecutionOutcome:
     board_document_operation_status: str = "none"
     board_document_operation_failure_reason: str | None = None
     board_patch_diff: list[DiffPreviewItem] | None = None
+    active_interaction_session: InteractionSession | None = None
 
 
 def execute_ready_board_task(
@@ -80,6 +84,16 @@ def execute_ready_board_task(
             board_task=board_task,
             user_message=user_message,
             conversation_summary=conversation_summary,
+            recorder=recorder,
+            operations=operations,
+            decision=decision,
+            resolution=resolution,
+        )
+    if decision.route == "chat":
+        return _execute_chat(
+            lesson=lesson,
+            board_task=board_task,
+            user_message=user_message,
             recorder=recorder,
             operations=operations,
             decision=decision,
@@ -201,6 +215,82 @@ def _execute_explain(
         history_operations=operations,
         resolved_focus=focus,
         focus_candidates=resolution.candidates,
+    )
+
+
+def _execute_chat(
+    *,
+    lesson: Lesson,
+    board_task: BoardTaskRequirementSheet,
+    user_message: str,
+    recorder: BoardTaskHistoryRecorder,
+    operations: list[dict[str, Any]],
+    decision: BoardTaskRouteDecision,
+    resolution: FocusResolution,
+) -> BoardTaskExecutionOutcome:
+    focus = _decision_focus(decision, resolution)
+    if focus is None:
+        return _clarify_location(
+            lesson=lesson,
+            board_task=board_task,
+            user_message=user_message,
+            recorder=recorder,
+            operations=operations,
+            decision=_clarify_decision(decision=decision, resolution=resolution),
+            resolution=resolution,
+        )
+    source_stamp = recorder.current_stamp()
+    target_excerpt = _interaction_target_context(lesson=lesson, focus=focus)
+    session = compile_interaction_session(
+        board_task=board_task,
+        focus=focus,
+        target_excerpt=target_excerpt,
+        board_task_stamp=source_stamp,
+    )
+    chatbot_message = _interaction_opening_message(session)
+    lesson.learning_requirements = None
+    lesson.board_task_requirements = None
+    lesson.active_interaction_session = session
+    commit_operations(
+        lesson,
+        [],
+        label="Interaction session start",
+        message="Started an existing-board interaction session",
+        new_document=lesson.board_document,
+        metadata={
+            "kind": "interaction_session_start",
+            "user_message": user_message,
+            "assistant_message": chatbot_message,
+            "assistant_message_source": "interaction_session",
+            "document_changed": False,
+            "resolved_focus": focus.model_dump(mode="json"),
+            "active_interaction_session_after": session.model_dump(mode="json"),
+            "interaction_session_after": session.model_dump(mode="json"),
+            **_board_task_metadata(
+                board_task=board_task,
+                stamp=source_stamp,
+                route="chat",
+                decision=decision,
+                cleared=True,
+            ),
+            **_location_metadata(resolution),
+        },
+    )
+    stamp = recorder.consume(
+        commit_id=lesson.history_graph.commits[-1].id,
+        change_summary="Board chat task started an interaction session and was consumed.",
+    )
+    operations.extend(recorder.operations)
+    return BoardTaskExecutionOutcome(
+        chatbot_message=chatbot_message,
+        board_decision=BoardDecision(action="no_change", reason=decision.reason),
+        active_board_task_sheet=None,
+        board_task_stamp=stamp,
+        board_task_questions=[],
+        history_operations=operations,
+        resolved_focus=focus,
+        focus_candidates=resolution.candidates,
+        active_interaction_session=session,
     )
 
 
@@ -470,7 +560,7 @@ def _fallback_route_decision(
             write_proposal=board_task.question_or_topic or board_task.target_hint,
             target_scope="append",
         )
-    if resolution.resolved and resolution.focus is not None and board_task.requested_action in {"write", "edit", "explain"}:
+    if resolution.resolved and resolution.focus is not None and board_task.requested_action in {"write", "edit", "explain", "chat"}:
         return BoardTaskRouteDecision(
             route=board_task.requested_action,
             location_status="found",
@@ -500,11 +590,11 @@ def _clarify_decision(
 
 
 def _needs_focus(*, board_task: BoardTaskRequirementSheet, decision: BoardTaskRouteDecision) -> bool:
-    if decision.route in {"explain", "edit"}:
+    if decision.route in {"explain", "edit", "chat"}:
         return True
     if decision.route == "write" and decision.target_scope != "append":
         return True
-    return board_task.location_kind == "target_range" and decision.route in {"write", "edit", "explain"}
+    return board_task.location_kind == "target_range" and decision.route in {"write", "edit", "explain", "chat"}
 
 
 def _decision_focus(
@@ -624,3 +714,66 @@ def _location_metadata(resolution: FocusResolution) -> dict[str, object]:
 def _board_task_questions(sheet: BoardTaskRequirementSheet) -> list[str]:
     question = sheet.clarification_question.strip()
     return [question] if question else []
+
+
+def _interaction_opening_message(session: InteractionSession) -> str:
+    if session.rule_steps:
+        first_step = session.rule_steps[0]
+        if first_step.expected_user_input.strip():
+            return f"好，我们按这个规则来。你先输入：{first_step.expected_user_input.strip()}"
+    if session.compliant_input_rule.strip():
+        return f"好，我们按这个规则开始。{session.compliant_input_rule.strip()}"
+    return "好，我们按这个规则开始。你先按规则输入。"
+
+
+def _interaction_target_context(*, lesson: Lesson, focus: BoardFocusRef) -> str:
+    context = focus_context(focus)
+    section_excerpt = _section_excerpt_for_focus(lesson=lesson, focus=focus)
+    if not section_excerpt:
+        return context
+    if section_excerpt in context:
+        return context
+    return f"{context}\n目标范围扩展：\n{section_excerpt}"
+
+
+def _section_excerpt_for_focus(*, lesson: Lesson, focus: BoardFocusRef, limit: int = 1800) -> str:
+    text = lesson.board_document.content_text or ""
+    if not text.strip():
+        return ""
+    labels = [part for part in [*focus.heading_path, focus.display_label, focus.excerpt] if part]
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        title, level = _markdown_heading(line)
+        if not title or not _matches_focus_label(title, labels):
+            continue
+        collected = [line]
+        for following in lines[index + 1 :]:
+            following_title, following_level = _markdown_heading(following)
+            if following_title and following_level <= level:
+                break
+            collected.append(following)
+        excerpt = "\n".join(collected).strip()
+        return excerpt[:limit]
+    return ""
+
+
+def _markdown_heading(line: str) -> tuple[str, int]:
+    match = re.match(r"^\s*(#{1,6})\s+(?P<title>.+?)\s*$", line or "")
+    if match:
+        return re.sub(r"\s+", " ", match.group("title")).strip(), len(match.group(1))
+    return "", 7
+
+
+def _matches_focus_label(title: str, labels: list[str]) -> bool:
+    title_key = _label_key(title)
+    if not title_key:
+        return False
+    for label in labels:
+        label_key = _label_key(label)
+        if label_key and (title_key in label_key or label_key in title_key):
+            return True
+    return False
+
+
+def _label_key(value: str) -> str:
+    return re.sub(r"[\s#>*_`：:，,。；;.!?！？（）()\\/\-]+", "", value or "").casefold()

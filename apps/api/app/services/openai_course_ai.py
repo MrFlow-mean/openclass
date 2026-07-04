@@ -1389,13 +1389,14 @@ class OpenAICourseAI:
             "核心三因素：位置、动作、怎么做。位置是上位概念，包含 target_range（目标文本范围）"
             "和 insertion_anchor（插入锚点）两种类型。\n"
             "规则：\n"
-            "1. requested_action 本阶段只允许 write、edit、explain 或 null；规则互动先不做。\n"
+            "1. requested_action 只允许 write、edit、explain、chat 或 null；"
+            "只有用户明确要求角色扮演、轮流读、问答、纠错、测验等特殊互动方式时，才使用 chat。\n"
             "2. location_kind=target_range 表示用户要对已有目标文本范围做动作；"
             "location_kind=insertion_anchor 表示用户要新增内容并给出插入位置；"
             "location_kind=unspecified 表示还没说清位置类型或位置线索。\n"
             "3. target_hint 只记录用户给出的定位线索、选区摘要、标题、编号或前后文；不要编造段落 ID。\n"
             "4. question_or_topic 记录用户想怎么讲、怎么写、围绕什么主题或要求处理；不能把系统追问写成用户需求。\n"
-            "5. interaction_rule_draft 本阶段固定留空。\n"
+            "5. interaction_rule_draft 只在 requested_action=chat 时填写；必须记录规则文本、用户合规输入方式和 AI 行为方式。\n"
             "6. progress 按 location、action、instruction 三项清晰度估算；三项都清楚才到 100。\n"
             "7. 用户没有明确要求行动时，清单应尽量完善，缺项就追问；用户已经明确要求写或讲时，"
             "只要三项达到可执行最低条件，就不要为了追求更完整背景而阻止行动。\n"
@@ -1418,9 +1419,9 @@ class OpenAICourseAI:
                     "location_kind": "target_range、insertion_anchor 或 unspecified。",
                     "target_hint": "用户给出的目标位置线索；有选区就概括选区。",
                     "location_status": "missing、selected、resolved、ambiguous 或 content_absent；清单阶段通常是 missing/selected。",
-                    "requested_action": "只允许 write、edit、explain 或 null。",
+                    "requested_action": "只允许 write、edit、explain、chat 或 null。",
                     "question_or_topic": "用户要怎么讲、怎么写、围绕什么主题或要求处理。",
-                    "interaction_rule_draft": "本阶段固定为 null。",
+                    "interaction_rule_draft": "chat 任务时填写规则草稿；非 chat 任务写 null。",
                     "missing_items": "仍缺少的位置、动作、怎么做。",
                     "progress": "三项清晰度百分比。",
                     "confirmation_status": "none、awaiting、confirmed 或 declined。",
@@ -1452,7 +1453,8 @@ class OpenAICourseAI:
         system_prompt = (
             "你是 OpenClass 的已有板书任务需求引导 AI，也是左侧聊天框里的自然对话 AI。\n"
             "运行前提：board_document_state.status 必须是 non_empty；右侧板书已经有内容。"
-            "本阶段只维护 BoardTaskRequirementSheet，不讲解、不写入、不修改右侧文档、不启动规则互动。\n"
+            "本阶段只维护 BoardTaskRequirementSheet，不讲解、不写入、不修改右侧文档；"
+            "如果清单足够完整，后端会在同轮启动规则互动。\n"
             "任务：先判断用户当前轮是 ordinary_chat 还是 board_task_refining。\n"
             "ordinary_chat：用户没有表达围绕板书做动作的需求时，像 ChatGPT 一样自然回复；"
             "不要新建或更新任务清单，不要追问板书动作需求。\n"
@@ -1461,13 +1463,14 @@ class OpenAICourseAI:
             "清单只收敛三个核心因素：\n"
             "1. location：位置。它是上位概念，包含 target_range（对已有哪段内容操作）和 "
             "insertion_anchor（新内容插到哪里）两种类型；用户未说明时 location_kind=unspecified。\n"
-            "2. action：动作。本阶段只允许 explain、write 或 edit；不要使用 chat 执行。\n"
+            "2. action：动作。本阶段只允许 explain、write、edit 或 chat；"
+            "只有用户明确提出特殊互动规则时，才使用 chat。\n"
             "3. instruction：怎么做，也就是 question_or_topic，记录用户希望讲什么角度、补写什么主题、"
             "写成什么样，或仍需澄清的操作要求。\n"
             "规则：\n"
             "1. board_task_sheet.board_workflow 必须记录为 act_on_existing_board。\n"
-            "2. requested_action 只能是 explain、write、edit 或 null；规则互动、角色扮演、问答循环先不做，"
-            "不要把本轮判成 chat。\n"
+            "2. requested_action 只能是 explain、write、edit、chat 或 null；"
+            "角色扮演、轮流读、问答、纠错、测验等特殊互动规则属于 chat。\n"
             "3. location_kind=target_range 表示用户要对已有目标文本范围做动作；"
             "location_kind=insertion_anchor 表示用户要新增内容并给出插入位置；"
             "location_kind=unspecified 表示还没说清位置类型或位置线索。\n"
@@ -1476,10 +1479,12 @@ class OpenAICourseAI:
             "6. progress 按 location、action、instruction 三项估算：每项约 33 分，三项都清楚才到 100。\n"
             "7. 对 explain：如果用户已经给出目标位置并明确要求讲解，目标内容本身就是可讲主题；"
             "讲解角度、深度、风格、重点只是可选偏好，不得作为阻止执行的缺项，不要继续追问这些可选偏好。\n"
-            "8. 对 write/edit：因为会修改右侧文档，仍必须有明确位置和写改指令；缺少核心信息时才追问。\n"
-            "9. missing_items 只写仍缺少的位置、动作、怎么做；clarification_question 只问真正阻止执行的一个关键缺项。\n"
-            "10. 用户表达过宽时，要把它转成更容易回答的一个问题，例如先问要处理哪部分、还是先问想讲/写什么。\n"
-            "11. 不写任何学科、教材、考试或样例专属规则。"
+            "8. 对 chat：必须有目标位置、规则文本、用户合规输入方式和 AI 行为方式；"
+            "如果这些都明确，不要继续追问偏好问题，允许后端同轮启动 InteractionSession。\n"
+            "9. 对 write/edit：因为会修改右侧文档，仍必须有明确位置和写改指令；缺少核心信息时才追问。\n"
+            "10. missing_items 只写仍缺少的位置、动作、怎么做或互动规则；clarification_question 只问真正阻止执行的一个关键缺项。\n"
+            "11. 用户表达过宽时，要把它转成更容易回答的一个问题，例如先问要处理哪部分、还是先问想讲/写什么。\n"
+            "12. 不写任何学科、教材、考试或样例专属规则。"
         )
         user_prompt = _json(
             {
@@ -1501,10 +1506,10 @@ class OpenAICourseAI:
                         "location_kind": "target_range、insertion_anchor 或 unspecified。",
                         "target_hint": "用户给出的位置线索；有选区就概括选区。",
                         "location_status": "清单阶段通常是 missing 或 selected；不要假装已经定位完成。",
-                        "requested_action": "只允许 explain、write、edit 或 null。",
+                        "requested_action": "只允许 explain、write、edit、chat 或 null。",
                         "question_or_topic": "用户要怎么讲、怎么写、围绕什么主题或要求处理。",
-                        "interaction_rule_draft": "本阶段固定为 null；规则互动先不做。",
-                        "missing_items": "仍缺少的位置、动作、怎么做。",
+                        "interaction_rule_draft": "chat 任务时填写规则草稿；非 chat 任务写 null。",
+                        "missing_items": "仍缺少的位置、动作、怎么做或互动规则。",
                         "progress": "三项清晰度百分比；三项都清楚才是 100。",
                         "confirmation_status": "固定 none，除非已有任务明确在等待确认。",
                         "clarification_question": "未完整时只问一个最关键问题。",
@@ -1889,6 +1894,47 @@ class OpenAICourseAI:
             schema=InteractionTurnDecision,
         )
         return result if isinstance(result, InteractionTurnDecision) else None
+
+    def generate_interaction_session_reply(
+        self,
+        *,
+        lesson_title: str,
+        session: InteractionSession,
+        decision: InteractionTurnDecision,
+        conversation_summary: str,
+        user_message: str,
+    ) -> ChatbotReply | None:
+        if not self.enabled:
+            return None
+        system_prompt = (
+            "你是 OpenClass 的规则互动 Chatbot，只在已有 InteractionSession 中面向学习者回复。\n"
+            "你只能依据 session 里的规则、目标摘录、当前步骤和本轮 route 回复；不要读取或推测完整板书。\n"
+            "规则：\n"
+            "1. continue_rule：按当前互动规则继续，必要时给出下一句、下一问或下一步提示。\n"
+            "2. rule_violation：只做规则内纠错，说明哪里不符合当前规则，并提示用户按当前规则继续；不要退出 session。\n"
+            "3. exit_rule：自然结束当前互动，不提供按钮或快捷操作。\n"
+            "4. new_task：只简短承接将回到板书任务链路，不在这里执行新任务。\n"
+            "5. 不套用固定场景模板，不根据学科、教材、考试或样例分支。"
+        )
+        user_prompt = _json(
+            {
+                "lesson_title": lesson_title,
+                "interaction_session": session.model_dump(mode="json"),
+                "interaction_decision": decision.model_dump(mode="json"),
+                "recent_conversation": conversation_summary,
+                "user_message": user_message,
+                "response_contract": {
+                    "chatbot_message": "直接给学习者看的当前互动回复；只依据 session 规则和目标摘录。",
+                },
+            }
+        )
+        result = self._parse(
+            "chatbot",
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            schema=ChatbotReply,
+        )
+        return result if isinstance(result, ChatbotReply) else None
 
     def generate_board_patch_plan(
         self,

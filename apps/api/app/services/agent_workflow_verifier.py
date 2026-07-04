@@ -58,6 +58,19 @@ def verify_agent_response(
         if metadata.get("document_changed") is not True:
             issues.append("board_write_or_edit_without_document_change")
 
+    if board_task_route == "chat":
+        _require(metadata, "resolved_focus", issues)
+        _require(metadata, "board_task_run_id", issues)
+        _require(metadata, "board_task_version_id", issues)
+        _require(metadata, "active_interaction_session_after", issues)
+        if metadata.get("document_changed") is True:
+            issues.append("board_chat_route_changed_document")
+
+    if kind == "interaction_session_turn":
+        _require(metadata, "interaction_decision", issues)
+        if metadata.get("document_changed") is True:
+            issues.append("interaction_session_turn_changed_document")
+
     if decision.route == "blank_board_generate" and response.board_document_operation_status == "succeeded":
         if not response.requirement_run_id or not response.requirement_version_id:
             issues.append("generation_response_without_requirement_stamp")

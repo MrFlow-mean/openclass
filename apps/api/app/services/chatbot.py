@@ -24,6 +24,7 @@ from app.services.board_teaching_orchestrator import (
 )
 from app.services.course_runtime import effective_requirements
 from app.services.history import bind_commit_metadata, commit_operations, current_head_commit
+from app.services.interaction_session_orchestrator import run_interaction_session_turn
 from app.services.learning_requirement_history import RequirementHistoryStamp
 from app.services.learning_requirement_refiner import refine_blank_board_requirement
 from app.services.lesson_factory import build_requirements
@@ -103,14 +104,16 @@ def _build_response(
     board_document_operation_failure_reason=None,
     board_patch_diff=None,
     teaching_progress=None,
+    active_interaction_session=None,
+    interaction_decision=None,
 ) -> ChatResponse:
     requirements = effective_requirements(lesson)
     return ChatResponse(
         chatbot_message=chatbot_message,
         learning_requirement_sheet=requirements,
         active_requirement_sheet=active_requirement_sheet,
-        active_interaction_session=None,
-        interaction_decision=None,
+        active_interaction_session=active_interaction_session,
+        interaction_decision=interaction_decision,
         learning_clarification=learning_clarification or _reset_clarification(),
         requirement_run_id=requirement_stamp.run_id if requirement_stamp else None,
         requirement_version_id=requirement_stamp.version_id if requirement_stamp else None,
@@ -139,7 +142,7 @@ def _build_response(
 def _board_task_ready_for_execution(active_board_task_sheet) -> bool:
     if active_board_task_sheet is None:
         return False
-    if active_board_task_sheet.requested_action not in {"explain", "write", "edit"}:
+    if active_board_task_sheet.requested_action not in {"explain", "write", "edit", "chat"}:
         return False
     if active_board_task_sheet.progress < 100:
         return False
@@ -150,6 +153,7 @@ def _board_task_ready_for_execution(active_board_task_sheet) -> bool:
     return bool(
         active_board_task_sheet.question_or_topic.strip()
         or active_board_task_sheet.target_hint.strip()
+        or active_board_task_sheet.interaction_rule_draft is not None
     )
 
 
@@ -230,6 +234,7 @@ def _run_board_task_refinement_turn(
             board_document_operation_status=execution.board_document_operation_status,
             board_document_operation_failure_reason=execution.board_document_operation_failure_reason,
             board_patch_diff=execution.board_patch_diff,
+            active_interaction_session=execution.active_interaction_session,
         )
     commit_operations(
         lesson,
@@ -484,6 +489,64 @@ def _run_decided_chat_turn(
             board_document_state=board_document_state,
         )
         workflow.record_execution(label="整理学习需求或普通聊天", role="RequirementManager", response=response)
+        return response
+    if lesson.active_interaction_session is not None:
+        workflow.record_context_ready(
+            label="读取规则互动会话",
+            role="InteractionSession",
+            metadata={
+                "session_id": lesson.active_interaction_session.id,
+                "turn_count": lesson.active_interaction_session.turn_count,
+            },
+        )
+        interaction = run_interaction_session_turn(
+            lesson=lesson,
+            request=request,
+            conversation_summary=_conversation_summary(request.conversation),
+        )
+        if interaction.reroute_user_message:
+            workflow.record_execution(
+                label="结束规则互动并回流任务",
+                role="InteractionSession",
+                response=_build_response(
+                    workspace=workspace,
+                    package=package,
+                    lesson=lesson,
+                    chatbot_message=interaction.chatbot_message,
+                    board_decision=interaction.board_decision,
+                    active_requirement_sheet=None,
+                    learning_clarification=_reset_clarification(),
+                    requirement_cleared=True,
+                    active_board_task_sheet=None,
+                    active_interaction_session=None,
+                    interaction_decision=interaction.interaction_decision,
+                ),
+            )
+            response = _run_board_task_refinement_turn(
+                workspace=workspace,
+                package=package,
+                lesson=lesson,
+                request=request,
+                user_id=user_id,
+                board_document_state=board_document_state,
+            )
+            workflow.record_target_resolution(response)
+            workflow.record_execution(label="回流已有板书任务", role="BoardTaskManager", response=response)
+            return response
+        response = _build_response(
+            workspace=workspace,
+            package=package,
+            lesson=lesson,
+            chatbot_message=interaction.chatbot_message,
+            board_decision=interaction.board_decision,
+            active_requirement_sheet=None,
+            learning_clarification=_reset_clarification(),
+            requirement_cleared=True,
+            active_board_task_sheet=None,
+            active_interaction_session=interaction.active_interaction_session,
+            interaction_decision=interaction.interaction_decision,
+        )
+        workflow.record_execution(label="执行规则互动", role="InteractionSession", response=response)
         return response
     if should_continue_board_teaching(lesson, request):
         workflow.record_context_ready(

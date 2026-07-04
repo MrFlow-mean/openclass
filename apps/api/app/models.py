@@ -458,6 +458,14 @@ class InteractionRuleDraft(BaseModel):
     reference_instruction: str = ""
 
 
+class InteractionRuleStep(BaseModel):
+    order_index: int = Field(ge=0)
+    expected_user_input: str = ""
+    assistant_response: str = ""
+    source_excerpt: str = ""
+    completed: bool = False
+
+
 class InteractionSession(BaseModel):
     id: str = Field(default_factory=lambda: new_id("interaction"))
     status: InteractionSessionStatus = "active"
@@ -474,6 +482,9 @@ class InteractionSession(BaseModel):
     source_board_task_run_id: str | None = None
     source_board_task_version_id: str | None = None
     source_board_task_route: str | None = None
+    rule_steps: list[InteractionRuleStep] = Field(default_factory=list)
+    current_step_index: int = Field(default=0, ge=0)
+    last_violation_reason: str = ""
     sequence_items: list[BoardFocusRef] = Field(default_factory=list)
     sequence_index: int = Field(default=0, ge=0)
     sequence_mode: str = ""

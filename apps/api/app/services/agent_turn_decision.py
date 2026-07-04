@@ -33,6 +33,15 @@ def decide_agent_turn(
             needs_user_confirmation=False,
         )
 
+    if lesson.active_interaction_session is not None:
+        return AgentTurnDecision(
+            route="interaction_session_turn",
+            reason="当前已有进行中的规则互动会话。",
+            required_role="InteractionSession",
+            next_step="先判断用户输入是否继续当前规则、纠错、退出或发起新任务。",
+            needs_user_confirmation=False,
+        )
+
     if should_continue_board_teaching(lesson, request):
         return AgentTurnDecision(
             route="board_teaching_continue",
@@ -51,19 +60,10 @@ def decide_agent_turn(
             needs_user_confirmation=False,
         )
 
-    if lesson.active_interaction_session is not None:
-        return AgentTurnDecision(
-            route="interaction_session_turn",
-            reason="当前已有进行中的规则互动会话。",
-            required_role="InteractionSession",
-            next_step="先判断用户输入是否继续当前规则、纠错、退出或发起新任务。",
-            needs_user_confirmation=False,
-        )
-
     return AgentTurnDecision(
         route="board_task_refine_or_execute",
         reason="当前右侧板书已有内容，本轮进入第二层已有板书任务清单链路。",
         required_role="BoardTaskManager",
-        next_step="先维护 BoardTaskRequirementSheet；清单完整后定位并执行讲解、补写或改写。",
+        next_step="先维护 BoardTaskRequirementSheet；清单完整后定位并执行讲解、补写、改写或规则互动。",
         needs_user_confirmation=False,
     )

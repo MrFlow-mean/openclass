@@ -211,7 +211,6 @@ def _normalize_board_task_sheet(
 ) -> BoardTaskRequirementSheet:
     update: dict[str, Any] = {
         "board_workflow": "act_on_existing_board",
-        "interaction_rule_draft": None,
         "confirmation_status": sheet.confirmation_status or "none",
     }
     if sheet.requested_action not in {"write", "edit", "explain", "chat", None}:
@@ -238,7 +237,7 @@ def _normalize_board_task_sheet(
     if _is_optional_explain_clarification(normalized, normalized.clarification_question):
         normalized = normalized.model_copy(update={"clarification_question": ""})
     missing_items = _missing_items(normalized, declared_missing=sheet.missing_items)
-    progress = _progress_from_missing(missing_items)
+    progress = _progress_from_missing(missing_items, total=_progress_total(normalized))
     return normalized.model_copy(update={"missing_items": missing_items, "progress": progress})
 
 
@@ -277,12 +276,22 @@ def _missing_items(
     missing: list[str] = []
     if sheet.location_kind == "unspecified" or not (sheet.target_hint.strip() or sheet.target_location):
         missing.append("位置")
-    if sheet.requested_action not in {"write", "edit", "explain"}:
+    if sheet.requested_action not in {"write", "edit", "explain", "chat"}:
         missing.append("动作")
-    if not sheet.question_or_topic.strip():
-        missing.append("怎么做")
     if sheet.requested_action == "chat":
-        missing.append("互动规则执行暂未启用")
+        draft = sheet.interaction_rule_draft
+        if draft is None or not draft.should_start or not draft.rule_text.strip():
+            missing.append("互动规则")
+        if draft is None or not draft.expected_user_behavior.strip():
+            missing.append("用户输入规则")
+        if draft is None or not draft.assistant_behavior.strip():
+            missing.append("AI行为规则")
+        if not sheet.question_or_topic.strip() and not (
+            draft and (draft.rule_text.strip() or draft.interaction_goal.strip())
+        ):
+            missing.append("怎么做")
+    elif not sheet.question_or_topic.strip():
+        missing.append("怎么做")
     if _has_unresolved_clarification(sheet):
         missing.append("澄清问题")
     for item in declared_missing or []:
@@ -292,8 +301,13 @@ def _missing_items(
     return missing
 
 
-def _progress_from_missing(missing_items: list[str]) -> int:
-    return max(0, min(100, round(((3 - len(missing_items)) / 3) * 100)))
+def _progress_from_missing(missing_items: list[str], *, total: int = 3) -> int:
+    denominator = max(1, total)
+    return max(0, min(100, round(((denominator - len(missing_items)) / denominator) * 100)))
+
+
+def _progress_total(sheet: BoardTaskRequirementSheet) -> int:
+    return 5 if sheet.requested_action == "chat" else 3
 
 
 def _has_unresolved_clarification(sheet: BoardTaskRequirementSheet) -> bool:
@@ -307,6 +321,10 @@ def _has_unresolved_clarification(sheet: BoardTaskRequirementSheet) -> bool:
 
 
 def _should_keep_declared_missing(sheet: BoardTaskRequirementSheet, item: str) -> bool:
+    if sheet.requested_action == "chat" and "暂未启用" in item:
+        return False
+    if _chat_has_minimum_context(sheet) and _is_chat_rule_detail(item):
+        return False
     if not _explain_has_minimum_context(sheet):
         return True
     if _is_optional_explain_detail(item):
@@ -319,6 +337,27 @@ def _explain_has_minimum_context(sheet: BoardTaskRequirementSheet) -> bool:
         sheet.target_hint.strip() or sheet.target_location
     )
     return sheet.requested_action == "explain" and has_location
+
+
+def _chat_has_minimum_context(sheet: BoardTaskRequirementSheet) -> bool:
+    has_location = sheet.location_kind != "unspecified" and bool(
+        sheet.target_hint.strip() or sheet.target_location
+    )
+    draft = sheet.interaction_rule_draft
+    return bool(
+        sheet.requested_action == "chat"
+        and has_location
+        and draft is not None
+        and draft.should_start
+        and draft.rule_text.strip()
+        and draft.expected_user_behavior.strip()
+        and draft.assistant_behavior.strip()
+    )
+
+
+def _is_chat_rule_detail(value: str) -> bool:
+    compact = re.sub(r"\s+", "", value or "")
+    return bool(re.search(r"(互动规则|用户输入规则|AI行为规则|合规输入|交互方式|怎么互动|怎么聊)", compact))
 
 
 def _is_optional_explain_clarification(sheet: BoardTaskRequirementSheet, question: str) -> bool:

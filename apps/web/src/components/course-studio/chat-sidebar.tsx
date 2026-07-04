@@ -463,6 +463,22 @@ export function CourseStudioChatSidebar({
                     activeLesson.active_interaction_session.expected_user_behavior ||
                     "按当前规则回应"}
                 </p>
+                {activeLesson.active_interaction_session.rule_steps?.length ? (
+                  <p>
+                    进度：
+                    {Math.min(
+                      (activeLesson.active_interaction_session.current_step_index ?? 0) + 1,
+                      activeLesson.active_interaction_session.rule_steps.length
+                    )}{" "}
+                    / {activeLesson.active_interaction_session.rule_steps.length}
+                  </p>
+                ) : null}
+                {activeLesson.active_interaction_session.progress_note ? (
+                  <p>状态：{activeLesson.active_interaction_session.progress_note}</p>
+                ) : null}
+                {activeLesson.active_interaction_session.last_violation_reason ? (
+                  <p>最近纠错：{activeLesson.active_interaction_session.last_violation_reason}</p>
+                ) : null}
               </div>
             </div>
           ) : null}
