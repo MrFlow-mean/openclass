@@ -3,6 +3,7 @@ import type { CourseChatMessageView } from "@/components/chatbot";
 import { normalizePageSettings } from "@/components/course-studio/page-settings";
 import type {
   BoardDocument,
+  BoardSearchEvidence,
   ChatInteractionMode,
   CommitRecord,
   LearningClarificationStatus,
@@ -46,6 +47,7 @@ export function createChatMessage(
       | "interactionMode"
       | "editedFromCommitId"
       | "agentActivity"
+      | "boardSearchEvidence"
     >
   >
 ): ChatMessage {
@@ -158,6 +160,23 @@ function teachingProgressFromMetadata(value: unknown): SectionTeachingProgress |
     has_next_section: raw.has_next_section === true,
     waiting_for_continue: raw.waiting_for_continue === true,
   };
+}
+
+function boardSearchEvidenceFromMetadata(value: unknown): BoardSearchEvidence | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const status = (value as { status?: unknown }).status;
+  if (
+    status !== "selected" &&
+    status !== "found" &&
+    status !== "ambiguous" &&
+    status !== "missing" &&
+    status !== "content_absent"
+  ) {
+    return null;
+  }
+  return value as BoardSearchEvidence;
 }
 
 export function currentHeadCommitId(lesson: Lesson): string | null {
@@ -292,7 +311,10 @@ export function buildLessonMessagesFromHistory(lesson: Lesson, commitId?: string
           "ready",
           `${commit.id}:assistant`,
           null,
-          teachingProgressFromMetadata(commit.metadata?.teaching_progress)
+          teachingProgressFromMetadata(commit.metadata?.teaching_progress),
+          {
+            boardSearchEvidence: boardSearchEvidenceFromMetadata(commit.metadata?.board_search_evidence),
+          }
         )
       );
     }

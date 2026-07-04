@@ -566,7 +566,11 @@ def test_segment_resolver_uses_numbered_heading_location_without_selection() -> 
 
     assert resolution.resolved
     assert resolution.focus is not None
-    assert resolution.focus.excerpt == "4. 检查问题"
+    assert "4. 检查问题" in resolution.focus.excerpt
+    assert "第四节正文" in resolution.focus.excerpt
+    assert resolution.evidence is not None
+    assert resolution.evidence.read_context is not None
+    assert "第四节正文" in resolution.evidence.read_context.target_excerpt
 
 
 def test_segment_resolver_uses_exact_multi_level_heading_before_ordinal_fallback() -> None:
@@ -600,9 +604,16 @@ def test_segment_resolver_uses_exact_multi_level_heading_before_ordinal_fallback
 
     assert resolution.resolved
     assert resolution.focus is not None
-    assert resolution.focus.excerpt == "1.4.4 对比示例"
+    assert "1.4.4 对比示例" in resolution.focus.excerpt
+    assert "已有例子" in resolution.focus.excerpt
+    assert "1.5 练习" not in resolution.focus.excerpt
+    assert resolution.focus.order_end is not None
+    assert resolution.focus.order_start is not None
+    assert resolution.focus.order_end > resolution.focus.order_start
     assert resolution.focus.segment_id is not None
     assert resolution.evidence is not None
+    assert resolution.evidence.read_context is not None
+    assert "已有例子" in resolution.evidence.read_context.target_excerpt
     assert resolution.evidence.query_plan.structured_target == "1.4.4"
     assert resolution.evidence.candidates[0].source == "heading_lookup"
     assert resolution.evidence.candidates[0].score_breakdown["heading_ref_exact"] == 0.98
@@ -628,8 +639,12 @@ def test_segment_resolver_keeps_parent_heading_ref_separate_from_child_heading()
 
     assert resolution.resolved
     assert resolution.focus is not None
-    assert resolution.focus.excerpt == "1.4 核心概念"
+    assert resolution.focus.heading_path[-1] == "1.4 核心概念"
+    assert "父级正文" in resolution.focus.excerpt
+    assert "1.4.1 概念引入" in resolution.focus.excerpt
     assert resolution.evidence is not None
+    assert resolution.evidence.read_context is not None
+    assert resolution.evidence.read_context.target_focus.heading_path[-1] == "1.4 核心概念"
     assert resolution.evidence.candidates[0].source == "heading_lookup"
 
 
@@ -780,6 +795,49 @@ def test_segment_resolver_can_target_reverse_sentence_without_speaker() -> None:
     assert resolution.focus.excerpt == "第二句是目标。"
     assert resolution.evidence is not None
     assert resolution.evidence.query_plan.structured_target == "倒数2句"
+
+
+def test_segment_resolver_can_target_last_paragraph_read_context() -> None:
+    lesson = create_empty_lesson("定位测试")
+    lesson.board_document = build_document(
+        title="定位测试",
+        content_text="# 主线\n\n第一段说明。\n\n第二段目标。",
+    )
+
+    resolution = resolve_board_focus(
+        lesson=lesson,
+        user_message="最后一段是什么意思？",
+        action_type="explain_target",
+    )
+
+    assert resolution.resolved
+    assert resolution.focus is not None
+    assert resolution.focus.excerpt == "第二段目标。"
+    assert resolution.evidence is not None
+    assert resolution.evidence.read_context is not None
+    assert resolution.evidence.read_context.target_excerpt == "第二段目标。"
+
+
+def test_segment_resolver_can_target_numbered_example_unit() -> None:
+    lesson = create_empty_lesson("定位测试")
+    lesson.board_document = build_document(
+        title="定位测试",
+        content_text="# 主线\n\n例子一：先处理基本情况。\n\n示例二：这里是目标内容。\n\n案例三：用于对照。",
+    )
+
+    resolution = resolve_board_focus(
+        lesson=lesson,
+        user_message="讲一下第二个例子",
+        action_type="explain_target",
+    )
+
+    assert resolution.resolved
+    assert resolution.focus is not None
+    assert "示例二" in resolution.focus.excerpt
+    assert "目标内容" in resolution.focus.excerpt
+    assert resolution.evidence is not None
+    assert resolution.evidence.read_context is not None
+    assert resolution.evidence.failure_reason_code == ""
 
 
 def test_commit_snapshot_is_isolated_from_runtime_document_mutation() -> None:

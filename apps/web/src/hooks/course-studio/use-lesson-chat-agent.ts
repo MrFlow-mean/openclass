@@ -506,10 +506,14 @@ export function useLessonChatAgent({
             responseCommit
               ? {
                   agentActivity: finalAgentActivity,
+                  boardSearchEvidence: response.board_search_evidence ?? null,
                   commitId: responseCommit.id,
                   parentCommitIds: responseCommit.parent_ids,
                 }
-              : { agentActivity: finalAgentActivity }
+              : {
+                  agentActivity: finalAgentActivity,
+                  boardSearchEvidence: response.board_search_evidence ?? null,
+                }
           )
         );
       } else if (streamedFallbackMessage) {
@@ -524,10 +528,14 @@ export function useLessonChatAgent({
             responseCommit
               ? {
                   agentActivity: finalAgentActivity,
+                  boardSearchEvidence: response.board_search_evidence ?? null,
                   commitId: responseCommit.id,
                   parentCommitIds: responseCommit.parent_ids,
                 }
-              : { agentActivity: finalAgentActivity }
+              : {
+                  agentActivity: finalAgentActivity,
+                  boardSearchEvidence: response.board_search_evidence ?? null,
+                }
           )
         );
       }

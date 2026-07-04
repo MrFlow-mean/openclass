@@ -411,6 +411,19 @@ class BoardFocusRef(BaseModel):
     score_breakdown: dict[str, float] = Field(default_factory=dict)
 
 
+class BoardReadContext(BaseModel):
+    target_focus: BoardFocusRef
+    target_excerpt: str = ""
+    surrounding_context: str = ""
+    before_text: str = ""
+    after_text: str = ""
+    range_label: str = ""
+    source_segment_ids: list[str] = Field(default_factory=list)
+    order_start: int | None = None
+    order_end: int | None = None
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
 class BoardSearchQueryPlan(BaseModel):
     query_text: str = ""
     search_terms: list[str] = Field(default_factory=list)
@@ -435,6 +448,14 @@ class BoardSearchEvidence(BaseModel):
     query_plan: BoardSearchQueryPlan = Field(default_factory=BoardSearchQueryPlan)
     candidates: list[BoardSearchCandidate] = Field(default_factory=list)
     selected_match_id: str | None = None
+    source: str = ""
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    range_label: str = ""
+    order_start: int | None = None
+    order_end: int | None = None
+    candidate_count: int = 0
+    failure_reason_code: str = ""
+    read_context: BoardReadContext | None = None
     reason: str = ""
 
 
@@ -1083,6 +1104,7 @@ class ChatResponse(BaseModel):
     selected_reference: ResourceReferenceContext | None = None
     resolved_focus: BoardFocusRef | None = None
     focus_candidates: list[BoardFocusRef] = Field(default_factory=list)
+    board_search_evidence: BoardSearchEvidence | None = None
     requirement_cleared: bool = False
     board_document_operation_status: BoardDocumentOperationStatus = "none"
     board_document_operation_failure_reason: str | None = None

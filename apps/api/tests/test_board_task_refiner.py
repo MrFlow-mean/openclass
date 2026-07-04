@@ -199,6 +199,9 @@ def test_existing_board_explain_ready_executes_and_consumes_board_task(
     assert response.active_board_task_sheet is None
     assert response.resolved_focus is not None
     assert "第一节" in response.resolved_focus.excerpt
+    assert response.board_search_evidence is not None
+    assert response.board_search_evidence.read_context is not None
+    assert "这里已经有一段学习内容" in response.board_search_evidence.read_context.target_excerpt
     assert response.board_task_run_id
     assert response.board_task_version_id
     assert response.board_task_phase == "consumed"
@@ -218,6 +221,7 @@ def test_existing_board_explain_ready_executes_and_consumes_board_task(
     assert commit.metadata["kind"] == "chat_flow"
     assert commit.metadata["board_task_route"] == "explain"
     assert commit.metadata["board_task_cleared"] is True
+    assert commit.metadata["board_search_evidence"]["read_context"]["target_excerpt"]
     assert commit.metadata["assistant_message_source"] == "chatbot_board_directed"
     assert commit.metadata["board_explanation_directive"]["status"] == "approved"
     assert commit.metadata["document_changed"] is False
@@ -469,12 +473,15 @@ def test_board_selection_quote_explain_executes_target_range(
     assert response.board_task_phase == "consumed"
     assert response.resolved_focus is not None
     assert "这里已经有一段学习内容" in response.resolved_focus.excerpt
+    assert response.board_search_evidence is not None
+    assert response.board_search_evidence.source == "selection"
     saved_lesson = store.load_for_user(user_id).packages[0].lessons[0]
     commit = saved_lesson.history_graph.commits[-1]
     assert commit.metadata["board_task_route"] == "explain"
     assert commit.metadata["board_task_sheet"]["location_kind"] == "target_range"
     assert commit.metadata["board_task_sheet"]["target_hint"] == "这里已经有一段学习内容。"
     assert commit.metadata["board_task_cleared"] is True
+    assert commit.metadata["board_search_evidence"]["source"] == "selection"
 
 
 def test_existing_board_chat_ready_starts_interaction_session(

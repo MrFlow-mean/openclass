@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass
 from typing import Any
 
 from app.models import (
     BoardDecision,
     BoardFocusRef,
+    BoardReadContext,
+    BoardSearchEvidence,
     BoardTaskAction,
     BoardTaskRequirementSheet,
     DiffPreviewItem,
@@ -19,6 +20,7 @@ from app.models import (
 )
 from app.services.board_document_editor import edit_existing_document
 from app.services.board_explanation_gate import generate_board_directed_explanation_message
+from app.services.board_range_reader import build_board_read_context
 from app.services.board_task_history import BoardTaskHistoryRecorder, BoardTaskHistoryStamp
 from app.services.course_runtime import effective_requirements
 from app.services.history import commit_operations
@@ -37,6 +39,7 @@ class BoardTaskExecutionOutcome:
     history_operations: list[dict[str, Any]]
     resolved_focus: BoardFocusRef | None = None
     focus_candidates: list[BoardFocusRef] | None = None
+    board_search_evidence: BoardSearchEvidence | None = None
     board_document_operation_status: str = "none"
     board_document_operation_failure_reason: str | None = None
     board_patch_diff: list[DiffPreviewItem] | None = None
@@ -153,7 +156,9 @@ def _execute_explain(
             decision=_clarify_decision(decision=decision, resolution=resolution),
             resolution=resolution,
         )
-    target_excerpt = focus_context(focus)
+    read_context = _read_context_for_resolution(lesson=lesson, resolution=resolution, focus=focus)
+    focus = read_context.target_focus
+    target_excerpt = read_context.surrounding_context or focus_context(focus)
     task_requirements = _requirements_from_board_task(
         lesson=lesson,
         board_task=board_task,
@@ -215,6 +220,7 @@ def _execute_explain(
         history_operations=operations,
         resolved_focus=focus,
         focus_candidates=resolution.candidates,
+        board_search_evidence=resolution.evidence,
     )
 
 
@@ -240,7 +246,9 @@ def _execute_chat(
             resolution=resolution,
         )
     source_stamp = recorder.current_stamp()
-    target_excerpt = _interaction_target_context(lesson=lesson, focus=focus)
+    read_context = _read_context_for_resolution(lesson=lesson, resolution=resolution, focus=focus)
+    focus = read_context.target_focus
+    target_excerpt = read_context.target_excerpt or focus_context(focus)
     session = compile_interaction_session(
         board_task=board_task,
         focus=focus,
@@ -290,6 +298,7 @@ def _execute_chat(
         history_operations=operations,
         resolved_focus=focus,
         focus_candidates=resolution.candidates,
+        board_search_evidence=resolution.evidence,
         active_interaction_session=session,
     )
 
@@ -316,6 +325,8 @@ def _execute_write_or_edit(
             decision=_clarify_decision(decision=decision, resolution=resolution),
             resolution=resolution,
         )
+    read_context = _read_context_for_resolution(lesson=lesson, resolution=resolution, focus=focus)
+    focus = read_context.target_focus
     action_type: BoardTaskAction = "rewrite_target" if decision.route == "edit" else "expand_target"
     target_scope = decision.target_scope or "focus"
     task_requirements = _requirements_from_board_task(
@@ -359,6 +370,7 @@ def _execute_write_or_edit(
             history_operations=operations,
             resolved_focus=focus,
             focus_candidates=resolution.candidates,
+            board_search_evidence=resolution.evidence,
             board_document_operation_status=edit_outcome.operation_status,
             board_document_operation_failure_reason=edit_outcome.failure_reason,
         )
@@ -407,6 +419,7 @@ def _execute_write_or_edit(
         history_operations=operations,
         resolved_focus=focus,
         focus_candidates=resolution.candidates,
+        board_search_evidence=resolution.evidence,
         board_document_operation_status=edit_outcome.operation_status,
         board_document_operation_failure_reason=None,
         board_patch_diff=edit_outcome.diff_preview or [],
@@ -472,6 +485,7 @@ def _await_write_confirmation(
         board_task_questions=[],
         history_operations=operations,
         focus_candidates=resolution.candidates,
+        board_search_evidence=resolution.evidence,
     )
 
 
@@ -527,6 +541,7 @@ def _clarify_location(
         board_task_questions=[question],
         history_operations=operations,
         focus_candidates=decision.candidate_focuses or resolution.candidates,
+        board_search_evidence=resolution.evidence,
     )
 
 
@@ -601,6 +616,9 @@ def _decision_focus(
     decision: BoardTaskRouteDecision,
     resolution: FocusResolution,
 ) -> BoardFocusRef | None:
+    if decision.target_focus is not None and resolution.focus is not None:
+        if _same_focus(decision.target_focus, resolution.focus):
+            return resolution.focus
     return decision.target_focus or resolution.focus
 
 
@@ -726,54 +744,23 @@ def _interaction_opening_message(session: InteractionSession) -> str:
     return "好，我们按这个规则开始。你先按规则输入。"
 
 
-def _interaction_target_context(*, lesson: Lesson, focus: BoardFocusRef) -> str:
-    context = focus_context(focus)
-    section_excerpt = _section_excerpt_for_focus(lesson=lesson, focus=focus)
-    if not section_excerpt:
-        return context
-    if section_excerpt in context:
-        return context
-    return f"{context}\n目标范围扩展：\n{section_excerpt}"
+def _read_context_for_resolution(
+    *,
+    lesson: Lesson,
+    resolution: FocusResolution,
+    focus: BoardFocusRef,
+) -> BoardReadContext:
+    read_context = resolution.evidence.read_context if resolution.evidence else None
+    if read_context is not None and _same_focus(read_context.target_focus, focus):
+        return read_context
+    return build_board_read_context(lesson=lesson, focus=focus)
 
 
-def _section_excerpt_for_focus(*, lesson: Lesson, focus: BoardFocusRef, limit: int = 1800) -> str:
-    text = lesson.board_document.content_text or ""
-    if not text.strip():
-        return ""
-    labels = [part for part in [*focus.heading_path, focus.display_label, focus.excerpt] if part]
-    lines = text.splitlines()
-    for index, line in enumerate(lines):
-        title, level = _markdown_heading(line)
-        if not title or not _matches_focus_label(title, labels):
-            continue
-        collected = [line]
-        for following in lines[index + 1 :]:
-            following_title, following_level = _markdown_heading(following)
-            if following_title and following_level <= level:
-                break
-            collected.append(following)
-        excerpt = "\n".join(collected).strip()
-        return excerpt[:limit]
-    return ""
-
-
-def _markdown_heading(line: str) -> tuple[str, int]:
-    match = re.match(r"^\s*(#{1,6})\s+(?P<title>.+?)\s*$", line or "")
-    if match:
-        return re.sub(r"\s+", " ", match.group("title")).strip(), len(match.group(1))
-    return "", 7
-
-
-def _matches_focus_label(title: str, labels: list[str]) -> bool:
-    title_key = _label_key(title)
-    if not title_key:
-        return False
-    for label in labels:
-        label_key = _label_key(label)
-        if label_key and (title_key in label_key or label_key in title_key):
-            return True
+def _same_focus(left: BoardFocusRef, right: BoardFocusRef) -> bool:
+    if left.match_id and right.match_id and left.match_id == right.match_id:
+        return True
+    if left.segment_id and right.segment_id and left.segment_id == right.segment_id:
+        return True
+    if left.text_hash and right.text_hash and left.text_hash == right.text_hash:
+        return True
     return False
-
-
-def _label_key(value: str) -> str:
-    return re.sub(r"[\s#>*_`：:，,。；;.!?！？（）()\\/\-]+", "", value or "").casefold()

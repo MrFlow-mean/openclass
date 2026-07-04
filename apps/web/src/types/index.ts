@@ -458,6 +458,59 @@ export interface BoardFocusRef {
   confidence: number;
   reason: string;
   display_label?: string;
+  match_id?: string | null;
+  source_segment_ids?: string[];
+  order_start?: number | null;
+  order_end?: number | null;
+  score_breakdown?: Record<string, number>;
+}
+
+export interface BoardReadContext {
+  target_focus: BoardFocusRef;
+  target_excerpt: string;
+  surrounding_context: string;
+  before_text: string;
+  after_text: string;
+  range_label: string;
+  source_segment_ids: string[];
+  order_start?: number | null;
+  order_end?: number | null;
+  confidence: number;
+}
+
+export interface BoardSearchQueryPlan {
+  query_text: string;
+  search_terms: string[];
+  structured_target: string;
+  scope_hint: string;
+  action_type?: BoardTaskAction | null;
+}
+
+export interface BoardSearchCandidate {
+  match_id: string;
+  source: string;
+  chunk_id?: string | null;
+  source_segment_ids: string[];
+  focus: BoardFocusRef;
+  score: number;
+  score_breakdown: Record<string, number>;
+  reason: string;
+}
+
+export interface BoardSearchEvidence {
+  status: "selected" | "found" | "ambiguous" | "missing" | "content_absent";
+  query_plan: BoardSearchQueryPlan;
+  candidates: BoardSearchCandidate[];
+  selected_match_id?: string | null;
+  source: string;
+  confidence: number;
+  range_label: string;
+  order_start?: number | null;
+  order_end?: number | null;
+  candidate_count: number;
+  failure_reason_code: string;
+  read_context?: BoardReadContext | null;
+  reason: string;
 }
 
 export interface InteractionSession {
@@ -683,6 +736,7 @@ export interface ChatResponse {
   selected_reference?: ResourceReferenceContext | null;
   resolved_focus?: BoardFocusRef | null;
   focus_candidates?: BoardFocusRef[];
+  board_search_evidence?: BoardSearchEvidence | null;
   requirement_cleared?: boolean;
   board_document_operation_status?: BoardDocumentOperationStatus;
   board_document_operation_failure_reason?: string | null;

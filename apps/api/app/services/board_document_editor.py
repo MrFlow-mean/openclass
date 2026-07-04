@@ -479,10 +479,6 @@ def _expanded_focus_excerpt(*, focus: BoardFocusRef, current_document: BoardDocu
     expanded = "\n\n".join(segment.text for segment in selected_segments if segment.text.strip()).strip()
     if not expanded:
         return ""
-    focus_key = re.sub(r"\s+", "", focus.excerpt or "")
-    expanded_key = re.sub(r"\s+", "", expanded)
-    if focus_key and focus_key not in expanded_key:
-        return ""
     return expanded
 
 

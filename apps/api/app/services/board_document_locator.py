@@ -17,6 +17,7 @@ from app.models import (
 )
 from app.services.board_segment_index import build_board_segment_index, compact_segment_text, segment_text_hash
 from app.services.board_heading_lookup import find_heading_lookup_matches, heading_reference_label
+from app.services.board_search_tool import board_search_tool
 from app.services.openai_course_ai import openai_course_ai
 
 
@@ -28,11 +29,11 @@ ORDINAL_LOCATION_PATTERN = re.compile(
 REVERSE_STRUCTURED_TARGET_PATTERN = re.compile(
     r"(?:(?P<reverse>倒数)\s*(?:第\s*)?(?P<reverse_number>[0-9０-９一二三四五六七八九十两]+)"
     r"|(?P<last>最后|末尾)\s*(?:第\s*)?(?P<last_number>[0-9０-９一二三四五六七八九十两]+)?)"
-    r"\s*(?:个|道)?\s*(?P<unit>空|题|问题|项|条|选项|句|句话|行|段)"
+    r"\s*(?:个|道)?\s*(?P<unit>空|题|问题|项|条|选项|句|句话|行|段|例|例子|示例|案例)"
 )
 STRUCTURED_TARGET_PATTERN = re.compile(
     r"(?:第\s*)?(?P<number>[0-9０-９一二三四五六七八九十两]+)\s*(?:个|道)?\s*"
-    r"(?P<unit>空|题|问题|项|条|选项|句|句话|行)"
+    r"(?P<unit>空|题|问题|项|条|选项|句|句话|行|例|例子|示例|案例)"
 )
 SPEAKER_LABEL_PATTERN = re.compile(
     r"(?P<speaker>[A-Za-zÀ-ÖØ-öø-ÿ][A-Za-zÀ-ÖØ-öø-ÿ0-9_'’.-]{0,40}|[\u4e00-\u9fff]{1,12})\s*[:：]\s*"
@@ -62,6 +63,10 @@ BLANK_MARKER_PATTERN = re.compile(
     r"(?:[\(（]\s*(?P<paren>[0-9０-９一二三四五六七八九十两]+)\s*[\)）]"
     r"|(?P<prefix>[0-9０-９一二三四五六七八九十两]+)\s*[.．、:：)）])"
     r"\s*[_＿—-]{2,}"
+)
+EXAMPLE_MARKER_PATTERN = re.compile(
+    r"(示例|案例|例子|举例|例如|(?:第\s*)?[0-9０-９一二三四五六七八九十两]+\s*例|例\s*[0-9０-９一二三四五六七八九十两]+|example)",
+    re.IGNORECASE,
 )
 SENTENCE_SPLIT_PATTERN = re.compile(r"[^。！？!?；;.\n\r]+[。！？!?；;.]?")
 QUANTITY_OR_LENGTH_PATTERN = re.compile(
@@ -120,6 +125,28 @@ class SpeakerTarget:
 
 class BoardDocumentLocator:
     def locate(
+        self,
+        *,
+        lesson: Lesson,
+        query_text: str,
+        selection: SelectionRef | None = None,
+        selection_text: str | None = None,
+        action_type: BoardTaskAction | None = None,
+        board_task: BoardTaskRequirementSheet | None = None,
+    ) -> FocusResolution:
+        return board_search_tool.search(
+            lesson=lesson,
+            resolve_focus=lambda: self._locate_focus(
+                lesson=lesson,
+                query_text=query_text,
+                selection=selection,
+                selection_text=selection_text,
+                action_type=action_type,
+                board_task=board_task,
+            ),
+        )
+
+    def _locate_focus(
         self,
         *,
         lesson: Lesson,
@@ -820,7 +847,11 @@ def _ordinal_index(number: int, size: int, origin: str) -> int | None:
 
 
 def _normalized_target_unit(unit: str) -> str:
-    return "句" if unit == "句话" else unit
+    if unit == "句话":
+        return "句"
+    if unit in {"例", "示例", "案例"}:
+        return "例子"
+    return unit
 
 
 def _sentences_for_text(text: str) -> list[str]:
@@ -931,6 +962,10 @@ def _structured_candidate_focuses(
         paragraph_candidates = _paragraph_candidate_focuses(lesson=lesson, target=target, segments=segments)
         if paragraph_candidates:
             return paragraph_candidates
+    if target.unit == "例子":
+        example_candidates = _example_candidate_focuses(lesson=lesson, target=target, segments=segments)
+        if example_candidates:
+            return example_candidates
 
     candidates: list[BoardFocusRef] = []
     seen: set[tuple[str | None, str]] = set()
@@ -1074,6 +1109,39 @@ def _paragraph_candidate_focuses(
             reason="根据用户给出的倒序段落序号定位。" if target.origin == "end" else "根据用户给出的段落序号定位。",
             source_segment_ids=[segment.segment_id],
             score_breakdown={"structured_paragraph": 0.9},
+        )
+    ]
+
+
+def _example_candidate_focuses(
+    *,
+    lesson: Lesson,
+    target: StructuredTarget,
+    segments: list[BoardSegment],
+) -> list[BoardFocusRef]:
+    example_segments: list[BoardSegment] = []
+    seen: set[str] = set()
+    for segment in segments:
+        text = compact_segment_text(segment.text, limit=500)
+        if not text or not EXAMPLE_MARKER_PATTERN.search(text):
+            continue
+        if segment.segment_id in seen:
+            continue
+        seen.add(segment.segment_id)
+        example_segments.append(segment)
+    index = _ordinal_index(target.number, len(example_segments), target.origin)
+    if index is None:
+        return []
+    segment = example_segments[index]
+    return [
+        _focus_from_segment(
+            lesson=lesson,
+            segment=segment,
+            segments=segments,
+            confidence=0.88,
+            reason="根据用户给出的示例序号定位到对应内容单元。",
+            source_segment_ids=[segment.segment_id],
+            score_breakdown={"structured_example": 0.88},
         )
     ]
 
