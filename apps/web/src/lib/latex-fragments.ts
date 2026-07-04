@@ -4,6 +4,8 @@ const STRONG_MATH_SIGNAL =
 const DELIMITED_MATH = /\\\[([\s\S]+?)\\\]|\\\((.+?)\\\)|\$\$([\s\S]+?)\$\$|\$(?!\d+\$)([^$\n]+?)\$(?!\d)/g;
 const RAW_LATEX_COMMAND =
   /\\(?:begin|end|frac|dfrac|tfrac|sqrt|lim|sum|prod|int|sin|cos|tan|ln|log|exp|to|left|right|leftarrow|rightarrow|leftrightarrow|Leftarrow|Rightarrow|Leftrightarrow|Longleftarrow|Longrightarrow|Longleftrightarrow|infty|cdot|times|div|leq?|geq?|approx|neq?|pm|sim|in|notin|mid|subseteq?|supseteq?|cup|cap|mathbb|mathcal|mathfrak|mathbf|mathrm|operatorname|text|ce|pu|dots|cdots|ldots|vdots|partial|nabla|forall|exists|alpha|beta|gamma|delta|epsilon|varepsilon|zeta|eta|theta|iota|kappa|lambda|mu|xi|pi|rho|varrho|sigma|tau|upsilon|phi|varphi|chi|psi|omega|Gamma|Delta|Theta|Lambda|Xi|Pi|Sigma|Phi|Psi|Omega)(?![A-Za-z])/g;
+const ESCAPED_SET = /\\\{([^{}\n]{1,120})\\\}/g;
+const ESCAPED_SET_SIGNAL = /[_^0-9,=<>≤≥≈≠+\-−*/]|\\[A-Za-z]+|[α-ωΑ-Ω]/;
 const ORPHAN_MATH_DOLLAR = /(?:(?<=^)|(?<=[\s.,，。；;:：、]))\$(?=$|[\s.,，。；;:：、])/g;
 const TRAILING_SENTENCE_MARKS = /[\s.,，。；;:：]+$/;
 const LEADING_SENTENCE_MARKS = /^[\s.,，。；;:：]+/;
@@ -147,11 +149,25 @@ function trimFragmentBounds(value: string, start: number, end: number) {
   return { start, end };
 }
 
+function rawLatexCandidateMatches(value: string) {
+  const candidates: Array<{ index: number; text: string }> = [];
+  for (const match of value.matchAll(RAW_LATEX_COMMAND)) {
+    candidates.push({ index: match.index ?? 0, text: match[0] });
+  }
+  for (const match of value.matchAll(ESCAPED_SET)) {
+    const body = match[1]?.trim() ?? "";
+    if (ESCAPED_SET_SIGNAL.test(body) || /^[A-Za-z]$/.test(body)) {
+      candidates.push({ index: match.index ?? 0, text: match[0] });
+    }
+  }
+  return candidates.sort((left, right) => left.index - right.index || right.text.length - left.text.length);
+}
+
 function rawLatexSegments(value: string): MathSegment[] {
   const segments: MathSegment[] = [];
-  for (const match of value.matchAll(RAW_LATEX_COMMAND)) {
-    let start = match.index ?? 0;
-    let end = start + match[0].length;
+  for (const match of rawLatexCandidateMatches(value)) {
+    let start = match.index;
+    let end = start + match.text.length;
     while (start > 0 && isRawFormulaChar(value[start - 1] ?? "")) {
       start -= 1;
     }

@@ -8,6 +8,8 @@ LatexFragment = tuple[int, int, str]
 _RAW_LATEX_COMMAND_RE = re.compile(
     r"\\(?:begin|end|frac|dfrac|tfrac|sqrt|lim|sum|prod|int|sin|cos|tan|ln|log|exp|to|left|right|leftarrow|rightarrow|leftrightarrow|Leftarrow|Rightarrow|Leftrightarrow|Longleftarrow|Longrightarrow|Longleftrightarrow|infty|cdot|times|div|leq?|geq?|approx|neq?|pm|sim|in|notin|mid|subseteq?|supseteq?|cup|cap|mathbb|mathcal|mathfrak|mathbf|mathrm|operatorname|text|ce|pu|dots|cdots|ldots|vdots|partial|nabla|forall|exists|alpha|beta|gamma|delta|epsilon|varepsilon|zeta|eta|theta|iota|kappa|lambda|mu|xi|pi|rho|varrho|sigma|tau|upsilon|phi|varphi|chi|psi|omega|Gamma|Delta|Theta|Lambda|Xi|Pi|Sigma|Phi|Psi|Omega)(?![A-Za-z])"
 )
+_ESCAPED_SET_RE = re.compile(r"\\\{(?P<body>[^{}\n]{1,120})\\\}")
+_ESCAPED_SET_SIGNAL_RE = re.compile(r"[_^0-9,=<>≤≥≈≠+\-−*/]|\\[A-Za-z]+|[α-ωΑ-Ω]")
 _ORPHAN_MATH_DOLLAR_RE = re.compile(r"(?:(?<=^)|(?<=[\s.,，。；;:：、]))\$(?=$|[\s.,，。；;:：、])")
 _RAW_FORMULA_CHAR_RE = re.compile(r"[A-Za-z0-9α-ωΑ-Ω\\_{}\[\]^()+\-−*/=#<>≤≥≈≠±|&'→←∞·\s]")
 
@@ -30,6 +32,15 @@ def _is_raw_formula_char(char: str) -> bool:
     return bool(_RAW_FORMULA_CHAR_RE.fullmatch(char))
 
 
+def _raw_latex_candidate_matches(value: str) -> list[re.Match[str]]:
+    candidates = list(_RAW_LATEX_COMMAND_RE.finditer(value))
+    for match in _ESCAPED_SET_RE.finditer(value):
+        body = match.group("body").strip()
+        if _ESCAPED_SET_SIGNAL_RE.search(body) or re.fullmatch(r"[A-Za-z]", body):
+            candidates.append(match)
+    return sorted(candidates, key=lambda item: (item.start(), -item.end()))
+
+
 def find_raw_latex_fragments(
     value: str,
     *,
@@ -37,7 +48,7 @@ def find_raw_latex_fragments(
     normalize_latex: Callable[[str], str],
 ) -> list[LatexFragment]:
     fragments: list[LatexFragment] = []
-    for match in _RAW_LATEX_COMMAND_RE.finditer(value):
+    for match in _raw_latex_candidate_matches(value):
         start = match.start()
         end = match.end()
         while start > 0 and _is_raw_formula_char(value[start - 1]):

@@ -1058,6 +1058,18 @@ def test_build_document_converts_escaped_set_notation() -> None:
     assert "$\\{2, -2\\}$" not in document.content_html
 
 
+def test_build_document_converts_raw_escaped_set_notation_in_prose() -> None:
+    document = build_document(
+        title="Doc",
+        content_text="定义 1（数列极限）设 \\{a_n\\} 是数列，则称数列\\{a_n\\}以A为极限。",
+    )
+
+    assert document.content_html.count('data-type="inline-math"') == 2
+    assert document.content_html.count('data-latex="\\{a_n\\}"') == 2
+    assert "数列\\{a_n\\}" not in document.content_html
+    assert _collect_node_types(document.content_json).count("inlineMath") == 2
+
+
 def test_build_document_converts_coordinate_arrow_and_text_annotation_math() -> None:
     document = build_document(
         title="Doc",
