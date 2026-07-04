@@ -49,6 +49,7 @@ def _resource() -> ResourceLibraryItem:
                 page_no=1,
                 source_locator="raganything:text:item=0:page=1",
                 order_index=0,
+                metadata={"printed_page": 1, "page_role_label": "正文"},
             ),
             ResourceSourceUnit(
                 id="unit_table",
@@ -58,6 +59,7 @@ def _resource() -> ResourceLibraryItem:
                 page_no=2,
                 source_locator="raganything:table:item=1:page=2",
                 order_index=1,
+                metadata={"printed_page": 2, "page_role_label": "正文"},
             ),
         ],
     )
@@ -102,6 +104,9 @@ def test_resource_ai_query_returns_traceable_evidence_and_reference_context() ->
     assert response.evidence_units[0].resource_id == "resource_1"
     assert response.evidence_units[0].chapter_id == "chapter_evidence"
     assert "selected" in response.evidence_units[0].excerpt.lower()
+    assert "书内页码：" in response.evidence_units[0].reason
+    assert "文件页码：" in response.evidence_units[0].reason
+    assert "页面分区：正文" in response.evidence_units[0].reason
     assert response.resource_matches[0].chapter_id == "chapter_evidence"
     assert response.selected_reference is not None
     assert response.selected_reference.resource_id == "resource_1"

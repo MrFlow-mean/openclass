@@ -230,7 +230,7 @@ def _prompt_reason(reference: LearningResourceReference) -> str:
     if reference.excerpt:
         parts.append(f"匹配片段：{compact_reference_text(reference.excerpt, limit=220)}")
     if reference.page_no is not None:
-        parts.append(f"页码：{reference.page_no}")
+        parts.append(f"文件页码：{reference.page_no}")
     if reference.source_locator:
         parts.append(f"定位：{reference.source_locator}")
     if reference.reason:

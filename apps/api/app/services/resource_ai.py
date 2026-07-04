@@ -98,6 +98,9 @@ def _resource_index_status(resource: ResourceLibraryItem) -> ResourceAIIndexStat
         multimodal_unit_count=multimodal_unit_count,
         chapter_count=len(resource.outline),
         rag_content_list_available=bool(rag_content_list),
+        page_structure_available=resource.page_structure is not None,
+        body_start_page_no=resource.page_structure.body_start_page_no if resource.page_structure else None,
+        page_map_count=len(resource.page_structure.page_map) if resource.page_structure else 0,
         parser_artifacts_path=resource.parser_artifacts_path,
         warnings=warnings,
     )
@@ -294,8 +297,14 @@ def _reason(unit: ResourceSourceUnit, chapter: LibraryChapter | None) -> str:
     location = []
     if chapter is not None:
         location.append(f"章节：{chapter.title}")
+    printed_page = unit.metadata.get("printed_page") if isinstance(unit.metadata, dict) else None
+    page_role_label = unit.metadata.get("page_role_label") if isinstance(unit.metadata, dict) else None
+    if isinstance(printed_page, int):
+        location.append(f"书内页码：{printed_page}")
     if unit.page_no is not None:
-        location.append(f"页码：{unit.page_no}")
+        location.append(f"文件页码：{unit.page_no}")
+    if isinstance(page_role_label, str) and page_role_label:
+        location.append(f"页面分区：{page_role_label}")
     if unit.source_locator:
         location.append(f"定位：{unit.source_locator}")
     location_text = "；".join(location) if location else "资料来源单元"

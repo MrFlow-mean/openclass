@@ -15,11 +15,18 @@ from app.models import (
     LibraryChapter,
     ResourceContextChunk,
     ResourceLibraryItem,
+    ResourcePageStructure,
     ResourceReferenceContext,
     ResourceSourceUnit,
 )
 from app.services.image_ocr import extract_image_text, extract_pdf_pages_text
 from app.services.rag_anything_adapter import parse_with_rag_anything
+from app.services.resource_page_structure import (
+    build_page_structure_from_source_units,
+    build_pdf_page_structure,
+    enrich_source_units_with_page_structure,
+    physical_page_candidates_for_printed_page,
+)
 from app.services.resource_visual_evidence import select_resource_visual_evidence
 
 
@@ -1064,9 +1071,15 @@ def _extract_markdown_section_text(file_path: Path, chapter: LibraryChapter) -> 
     return str(target["title"])
 
 
-def _extract_pdf_chapter_text(file_path: Path, chapter: LibraryChapter, query: str) -> str:
+def _extract_pdf_chapter_text(
+    file_path: Path,
+    chapter: LibraryChapter,
+    query: str,
+    *,
+    page_structure: ResourcePageStructure | None = None,
+) -> str:
     reader = PdfReader(str(file_path))
-    candidate_pages = _pdf_page_candidates(chapter, len(reader.pages))
+    candidate_pages = _pdf_page_candidates(chapter, len(reader.pages), page_structure=page_structure)
     best_text = ""
     best_score = -1
     locator_source = _pdf_locator_source(chapter.locator_hint)
@@ -1126,14 +1139,20 @@ def _extract_pdf_chapter_text(file_path: Path, chapter: LibraryChapter, query: s
     return "\n\n".join(passages)
 
 
-def _pdf_page_candidates(chapter: LibraryChapter, total_pages: int) -> list[int]:
+def _pdf_page_candidates(
+    chapter: LibraryChapter,
+    total_pages: int,
+    *,
+    page_structure: ResourcePageStructure | None = None,
+) -> list[int]:
+    printed_page = _pdf_locator_value(chapter.locator_hint, "printed_page")
     raw_candidates = [
         chapter.page_start,
         _pdf_locator_value(chapter.locator_hint, "actual_page"),
-        _pdf_locator_value(chapter.locator_hint, "printed_page"),
+        *physical_page_candidates_for_printed_page(page_structure, printed_page),
+        printed_page,
     ]
     toc_page = _pdf_locator_value(chapter.locator_hint, "toc_page")
-    printed_page = _pdf_locator_value(chapter.locator_hint, "printed_page")
     if toc_page and printed_page:
         raw_candidates.extend([toc_page + printed_page, toc_page + printed_page - 1])
 
@@ -1296,8 +1315,15 @@ def _resolve_toc_entry_actual_page(
     title: str,
     toc_page: int,
     printed_page: int,
+    page_structure: ResourcePageStructure | None = None,
 ) -> int | None:
-    candidates = [printed_page, toc_page + printed_page, toc_page + printed_page - 1]
+    candidates = [
+        *physical_page_candidates_for_printed_page(page_structure, printed_page),
+        printed_page,
+        toc_page + printed_page,
+        toc_page + printed_page - 1,
+    ]
+    candidates = list(dict.fromkeys(candidates))
     for candidate in candidates:
         if candidate < 1 or candidate > len(reader.pages):
             continue
@@ -1315,7 +1341,12 @@ def _resolve_toc_entry_actual_page(
     return next((candidate for candidate in candidates if 1 <= candidate <= len(reader.pages)), None)
 
 
-def _toc_entries_to_chapters(reader: PdfReader, toc_pages: list[tuple[int, str]]) -> list[LibraryChapter]:
+def _toc_entries_to_chapters(
+    reader: PdfReader,
+    toc_pages: list[tuple[int, str]],
+    *,
+    page_structure: ResourcePageStructure | None = None,
+) -> list[LibraryChapter]:
     raw_entries: list[tuple[str, int, int, int]] = []
     for toc_page, toc_text in toc_pages:
         for title, level, printed_page in _parse_toc_entries(toc_text):
@@ -1330,6 +1361,7 @@ def _toc_entries_to_chapters(reader: PdfReader, toc_pages: list[tuple[int, str]]
             title=title,
             toc_page=toc_page,
             printed_page=printed_page,
+            page_structure=page_structure,
         )
         page_end = None
         next_entry = next(
@@ -1346,6 +1378,7 @@ def _toc_entries_to_chapters(reader: PdfReader, toc_pages: list[tuple[int, str]]
                 title=next_entry[0],
                 toc_page=next_entry[3],
                 printed_page=next_entry[2],
+                page_structure=page_structure,
             )
             if next_actual_page and next_actual_page > actual_page:
                 page_end = next_actual_page - 1
@@ -1382,14 +1415,18 @@ def _toc_entries_to_chapters(reader: PdfReader, toc_pages: list[tuple[int, str]]
     return chapters
 
 
-def extract_outline(file_path: Path, original_name: str, mime_type: str) -> tuple[list[LibraryChapter], bool, str | None]:
+def extract_outline(
+    file_path: Path,
+    original_name: str,
+    mime_type: str,
+) -> tuple[list[LibraryChapter], bool, str | None, ResourcePageStructure | None]:
     if mime_type.startswith("image/"):
         generic_title = Path(original_name).stem
         extracted_text = extract_image_text(file_path)
         if extracted_text:
             ai_outline = _ai_generated_outline(original_name, extracted_text)
             if ai_outline:
-                return ai_outline, True, extracted_text
+                return ai_outline, True, extracted_text, None
             return (
                 [
                     _generic_chapter_from_text(
@@ -1400,6 +1437,7 @@ def extract_outline(file_path: Path, original_name: str, mime_type: str) -> tupl
                 ],
                 True,
                 extracted_text,
+                None,
             )
         return (
             [
@@ -1413,16 +1451,17 @@ def extract_outline(file_path: Path, original_name: str, mime_type: str) -> tupl
             ],
             False,
             None,
+            None,
         )
 
     if mime_type in {"text/plain", "text/markdown"} or file_path.suffix.lower() in {".md", ".txt"}:
         text = _read_text_file(file_path)
         outline = _extract_markdown_outline(text)
         if outline:
-            return outline, True, text
+            return outline, True, text, None
         ai_outline = _ai_generated_outline(original_name, text)
         if ai_outline:
-            return ai_outline, True, text
+            return ai_outline, True, text, None
         return (
             [
                 _generic_chapter_from_text(
@@ -1433,16 +1472,17 @@ def extract_outline(file_path: Path, original_name: str, mime_type: str) -> tupl
             ],
             True,
             text,
+            None,
         )
 
     if file_path.suffix.lower() == ".docx":
         text = _read_docx_text(file_path)
         outline = _extract_docx_outline(file_path)
         if outline:
-            return outline, True, text
+            return outline, True, text, None
         ai_outline = _ai_generated_outline(original_name, text)
         if ai_outline:
-            return ai_outline, True, text
+            return ai_outline, True, text, None
         return (
             [
                 _generic_chapter_from_text(
@@ -1453,17 +1493,18 @@ def extract_outline(file_path: Path, original_name: str, mime_type: str) -> tupl
             ],
             True,
             text,
+            None,
         )
 
     if file_path.suffix.lower() == ".epub":
         text = _read_epub_text(file_path)
         outline = _extract_epub_outline(file_path)
         if outline:
-            return outline, True, text[:200000] if text else None
+            return outline, True, text[:200000] if text else None, None
         if text:
             ai_outline = _ai_generated_outline(original_name, text)
             if ai_outline:
-                return ai_outline, True, text[:200000]
+                return ai_outline, True, text[:200000], None
             return (
                 [
                     _generic_chapter_from_text(
@@ -1474,10 +1515,12 @@ def extract_outline(file_path: Path, original_name: str, mime_type: str) -> tupl
                 ],
                 True,
                 text[:200000],
+                None,
             )
 
     if file_path.suffix.lower() == ".pdf":
         reader = PdfReader(str(file_path))
+        page_structure = build_pdf_page_structure(reader)
         if reader.outline:
             entries: list[tuple[str, int, int | None]] = []
 
@@ -1497,12 +1540,12 @@ def extract_outline(file_path: Path, original_name: str, mime_type: str) -> tupl
             _walk_outline(list(reader.outline))
             chapters = _outline_entries_to_chapters(entries, len(reader.pages), reader=reader)
             if chapters:
-                return chapters, True, None
+                return chapters, True, None, page_structure
 
         toc_pages = _extract_pdf_toc_text_pages(reader, file_path)
-        toc_chapters = _toc_entries_to_chapters(reader, toc_pages)
+        toc_chapters = _toc_entries_to_chapters(reader, toc_pages, page_structure=page_structure)
         if toc_chapters:
-            return toc_chapters, True, None
+            return toc_chapters, True, None, page_structure
         extracted_text = []
         for page in reader.pages[:2]:
             try:
@@ -1513,7 +1556,7 @@ def extract_outline(file_path: Path, original_name: str, mime_type: str) -> tupl
         if joined_text:
             ai_outline = _ai_generated_outline(original_name, joined_text)
             if ai_outline:
-                return ai_outline, True, None
+                return ai_outline, True, None, page_structure
             return (
                 [
                     _generic_chapter_from_text(
@@ -1524,6 +1567,7 @@ def extract_outline(file_path: Path, original_name: str, mime_type: str) -> tupl
                 ],
                 True,
                 None,
+                page_structure,
             )
     generic_title = Path(original_name).stem
     return (
@@ -1537,6 +1581,7 @@ def extract_outline(file_path: Path, original_name: str, mime_type: str) -> tupl
             )
         ],
         False,
+        None,
         None,
     )
 
@@ -1585,6 +1630,7 @@ def build_resource_item(file_path: Path, original_name: str) -> ResourceLibraryI
     parser_message = "Parsed by native OpenClass parser."
     parse_warnings: list[str] = []
     source_units: list[ResourceSourceUnit] = []
+    page_structure: ResourcePageStructure | None = None
 
     rag_attempt = parse_with_rag_anything(file_path, original_name, mime_type)
     parse_warnings.extend(rag_attempt.warnings)
@@ -1593,13 +1639,14 @@ def build_resource_item(file_path: Path, original_name: str) -> ResourceLibraryI
         outline = _outline_from_source_text(original_name, rag_result.text_content)
         extracted = True
         text_content = rag_result.text_content
-        source_units = rag_result.source_units
+        page_structure = build_page_structure_from_source_units(rag_result.source_units)
+        source_units = enrich_source_units_with_page_structure(rag_result.source_units, page_structure)
         parser_provider = rag_result.parser_provider
         parser_artifacts_path = rag_result.parser_artifacts_path
         parser_message = rag_result.parser_message
         parse_warnings.extend(rag_result.warnings)
     else:
-        outline, extracted, text_content = extract_outline(file_path, original_name, mime_type)
+        outline, extracted, text_content, page_structure = extract_outline(file_path, original_name, mime_type)
         source_units = _source_units_from_native_text(original_name, text_content)
         parser_provider, parser_message = _native_provider_from_warnings(parse_warnings)
 
@@ -1625,6 +1672,7 @@ def build_resource_item(file_path: Path, original_name: str) -> ResourceLibraryI
         parser_message=parser_message,
         parse_warnings=parse_warnings,
         source_units=source_units,
+        page_structure=page_structure,
     )
 
 
@@ -1698,7 +1746,12 @@ def extract_reference_context(
                 }
             )
     elif suffix == ".pdf":
-        raw_text = _extract_pdf_chapter_text(file_path, chapter, user_query)
+        raw_text = _extract_pdf_chapter_text(
+            file_path,
+            chapter,
+            user_query,
+            page_structure=resource.page_structure,
+        )
     else:
         raw_text = resource.text_content or f"{chapter.title}\n{chapter.summary}\n{' '.join(chapter.keywords)}"
 

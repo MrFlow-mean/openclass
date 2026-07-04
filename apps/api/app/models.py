@@ -128,6 +128,7 @@ AIRealtimeTransport = Literal["openai_webrtc", "gemini_live_websocket"]
 ResourceReferenceAction = Literal["confirm", "skip"]
 BoardEditConfirmationAction = Literal["confirm", "skip"]
 ResourceScanStrategy = Literal["outline_only", "heading_section", "page_window", "fulltext_match"]
+ResourcePageRole = Literal["cover", "copyright", "toc", "preface", "body", "appendix", "back_matter", "unknown"]
 ChatInteractionMode = Literal["ask", "direct_edit"]
 FormulaInkAction = Literal["reference", "replace"]
 TeachingAction = Literal["continue", "restart"]
@@ -675,6 +676,38 @@ class CourseGraphEdge(BaseModel):
     relationship: CourseEdgeType
 
 
+class ResourcePageSection(BaseModel):
+    role: ResourcePageRole = "unknown"
+    page_idx_start: int | None = None
+    page_idx_end: int | None = None
+    page_no_start: int | None = None
+    page_no_end: int | None = None
+    title: str = ""
+    confidence: float = 0.0
+    evidence_excerpt: str = ""
+
+
+class ResourcePageMapEntry(BaseModel):
+    page_idx: int
+    page_no: int
+    role: ResourcePageRole = "unknown"
+    printed_page: int | None = None
+    body_offset: int | None = None
+    confidence: float = 0.0
+    evidence_excerpt: str = ""
+
+
+class ResourcePageStructure(BaseModel):
+    page_count: int = 0
+    body_start_page_idx: int | None = None
+    body_start_page_no: int | None = None
+    toc_page_indices: list[int] = Field(default_factory=list)
+    sections: list[ResourcePageSection] = Field(default_factory=list)
+    page_map: list[ResourcePageMapEntry] = Field(default_factory=list)
+    diagnostics: list[str] = Field(default_factory=list)
+    confidence: float = 0.0
+
+
 class LibraryChapter(BaseModel):
     id: str = Field(default_factory=lambda: new_id("chapter"))
     title: str
@@ -724,6 +757,7 @@ class ResourceLibraryItem(BaseModel):
     parser_message: str = ""
     parse_warnings: list[str] = Field(default_factory=list)
     source_units: list[ResourceSourceUnit] = Field(default_factory=list)
+    page_structure: ResourcePageStructure | None = None
 
 
 class ResourceLibraryItemView(BaseModel):
@@ -742,6 +776,7 @@ class ResourceLibraryItemView(BaseModel):
     parser_message: str = ""
     parse_warnings: list[str] = Field(default_factory=list)
     source_units: list[ResourceSourceUnit] = Field(default_factory=list)
+    page_structure: ResourcePageStructure | None = None
 
 
 class CoursePackage(BaseModel):
@@ -917,6 +952,9 @@ class ResourceAIIndexStatus(BaseModel):
     multimodal_unit_count: int = 0
     chapter_count: int = 0
     rag_content_list_available: bool = False
+    page_structure_available: bool = False
+    body_start_page_no: int | None = None
+    page_map_count: int = 0
     parser_artifacts_path: str | None = None
     warnings: list[str] = Field(default_factory=list)
 

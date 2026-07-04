@@ -20,6 +20,7 @@ from app.models import (
     LessonHistoryGraph,
     LibraryChapter,
     ResourceLibraryItem,
+    ResourcePageStructure,
     ResourceSourceUnit,
     WorkspaceState,
 )
@@ -28,7 +29,7 @@ from app.services.board_task_history import BoardTaskHistoryStore
 from app.services.learning_requirement_history import LearningRequirementHistoryStore
 from app.services.rich_document import upgrade_markdown_like_document
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 
 def _active_package_setting_key(owner_user_id: str | None) -> str:
@@ -384,7 +385,8 @@ class SqliteCourseStore:
                 parser_artifacts_path TEXT,
                 parser_message TEXT NOT NULL DEFAULT '',
                 parse_warnings_json TEXT NOT NULL DEFAULT '[]',
-                source_units_json TEXT NOT NULL DEFAULT '[]'
+                source_units_json TEXT NOT NULL DEFAULT '[]',
+                page_structure_json TEXT
             );
 
             CREATE INDEX IF NOT EXISTS idx_resources_package
@@ -455,6 +457,8 @@ class SqliteCourseStore:
             conn.execute("ALTER TABLE resources ADD COLUMN parse_warnings_json TEXT NOT NULL DEFAULT '[]'")
         if "source_units_json" not in resource_columns:
             conn.execute("ALTER TABLE resources ADD COLUMN source_units_json TEXT NOT NULL DEFAULT '[]'")
+        if "page_structure_json" not in resource_columns:
+            conn.execute("ALTER TABLE resources ADD COLUMN page_structure_json TEXT")
         package_columns = {
             row["name"]
             for row in conn.execute("PRAGMA table_info(course_packages)").fetchall()
@@ -698,6 +702,7 @@ class SqliteCourseStore:
         )
 
     def _read_resource(self, conn: sqlite3.Connection, row: sqlite3.Row) -> ResourceLibraryItem:
+        raw_page_structure = _loads(row["page_structure_json"], None) if row["page_structure_json"] else None
         chapters = [
             LibraryChapter(
                 id=chapter_row["id"],
@@ -747,6 +752,11 @@ class SqliteCourseStore:
                 for unit in _loads(row["source_units_json"], [])
                 if isinstance(unit, dict)
             ],
+            page_structure=(
+                ResourcePageStructure.model_validate(raw_page_structure)
+                if isinstance(raw_page_structure, dict)
+                else None
+            ),
         )
 
     def _replace_workspace(
@@ -937,8 +947,9 @@ class SqliteCourseStore:
             INSERT INTO resources(
                 id, package_id, sort_order, name, mime_type, resource_type, size_bytes,
                 uploaded_at, scope_lesson_id, concept_index_json, extracted_text_available, text_content, source_path,
-                parser_provider, parser_artifacts_path, parser_message, parse_warnings_json, source_units_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                parser_provider, parser_artifacts_path, parser_message, parse_warnings_json, source_units_json,
+                page_structure_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 resource.id,
@@ -959,6 +970,7 @@ class SqliteCourseStore:
                 resource.parser_message,
                 _dumps(resource.parse_warnings),
                 _dumps([unit.model_dump(mode="json") for unit in resource.source_units]),
+                _dumps(resource.page_structure.model_dump(mode="json")) if resource.page_structure is not None else None,
             ),
         )
         for chapter_index, chapter in enumerate(resource.outline):

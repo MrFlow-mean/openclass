@@ -304,6 +304,48 @@ export interface ResourceSourceUnit {
   metadata: Record<string, unknown>;
 }
 
+export type ResourcePageRole =
+  | "cover"
+  | "copyright"
+  | "toc"
+  | "preface"
+  | "body"
+  | "appendix"
+  | "back_matter"
+  | "unknown";
+
+export interface ResourcePageSection {
+  role: ResourcePageRole;
+  page_idx_start?: number | null;
+  page_idx_end?: number | null;
+  page_no_start?: number | null;
+  page_no_end?: number | null;
+  title: string;
+  confidence: number;
+  evidence_excerpt: string;
+}
+
+export interface ResourcePageMapEntry {
+  page_idx: number;
+  page_no: number;
+  role: ResourcePageRole;
+  printed_page?: number | null;
+  body_offset?: number | null;
+  confidence: number;
+  evidence_excerpt: string;
+}
+
+export interface ResourcePageStructure {
+  page_count: number;
+  body_start_page_idx?: number | null;
+  body_start_page_no?: number | null;
+  toc_page_indices: number[];
+  sections: ResourcePageSection[];
+  page_map: ResourcePageMapEntry[];
+  diagnostics: string[];
+  confidence: number;
+}
+
 export interface ResourceLibraryItem {
   id: string;
   name: string;
@@ -320,6 +362,7 @@ export interface ResourceLibraryItem {
   parser_message: string;
   parse_warnings: string[];
   source_units: ResourceSourceUnit[];
+  page_structure?: ResourcePageStructure | null;
 }
 
 export type ResourceAIBackend = "openclass_source_units" | "raganything";
@@ -334,6 +377,9 @@ export interface ResourceAIIndexStatus {
   multimodal_unit_count: number;
   chapter_count: number;
   rag_content_list_available: boolean;
+  page_structure_available: boolean;
+  body_start_page_no?: number | null;
+  page_map_count: number;
   parser_artifacts_path?: string | null;
   warnings: string[];
 }
