@@ -1128,6 +1128,42 @@ def test_build_document_converts_mhchem_latex_commands_to_math_nodes() -> None:
     assert 'data-latex="\\pu{mol L-1}"' in document.content_html
 
 
+def test_build_document_removes_orphan_dollars_around_repaired_math_spans() -> None:
+    document = build_document(
+        title="Doc",
+        content_html=(
+            '<blockquote><p>使得当 $<span data-type="inline-math" '
+            'data-latex="0&lt;|x-x_0|&lt;\\delta"></span>时，恒有'
+            '<span data-type="inline-math" data-latex="|f(x)-A|&lt;\\varepsilon"></span>$</p></blockquote>'
+        ),
+        content_json={
+            "type": "doc",
+            "content": [
+                {
+                    "type": "blockquote",
+                    "content": [
+                        {
+                            "type": "paragraph",
+                            "content": [
+                                {"type": "text", "text": "使得当 $"},
+                                {"type": "inlineMath", "attrs": {"latex": "0<|x-x_0|<\\delta"}},
+                                {"type": "text", "text": "时，恒有"},
+                                {"type": "inlineMath", "attrs": {"latex": "|f(x)-A|<\\varepsilon"}},
+                                {"type": "text", "text": "$"},
+                            ],
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+
+    assert "$" not in document.content_html
+    assert "$" not in str(document.content_json)
+    assert document.content_html.count('data-type="inline-math"') == 2
+    assert _collect_node_types(document.content_json).count("inlineMath") == 2
+
+
 def test_upgrade_markdown_like_document_repairs_suspicious_math_nodes() -> None:
     sentence = "Je me disais que tu allais peut-être oublier notre rendez-vous."
     legacy = BoardDocument(

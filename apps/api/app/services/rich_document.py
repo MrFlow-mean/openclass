@@ -1050,7 +1050,23 @@ def _repair_suspicious_math_html(content_html: str) -> str:
         repaired,
         flags=re.IGNORECASE,
     )
-    return _repair_raw_math_text_html(repaired)
+    return _strip_orphan_math_html_dollars(_repair_raw_math_text_html(repaired))
+
+
+def _strip_orphan_math_html_dollars(content_html: str) -> str:
+    inline_math_tag = r"<span\b(?=[^>]*data-type=['\"]inline-math['\"])[^>]*>\s*</span>"
+    repaired = re.sub(
+        rf"\$(?=\s*{inline_math_tag})",
+        "",
+        content_html,
+        flags=re.IGNORECASE,
+    )
+    return re.sub(
+        rf"({inline_math_tag})\s*\$",
+        r"\1",
+        repaired,
+        flags=re.IGNORECASE,
+    )
 
 
 def _repair_raw_math_text_html(content_html: str) -> str:
