@@ -129,6 +129,7 @@ def standalone_html(document: BoardDocument) -> str:
     {content}
   </main>
   <script defer src="https://cdn.jsdelivr.net/npm/katex@{_KATEX_VERSION}/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@{_KATEX_VERSION}/dist/contrib/mhchem.min.js"></script>
   <script>
     window.addEventListener("load", function () {{
       document.querySelectorAll('[data-type="inline-math"], [data-type="block-math"]').forEach(function (node) {{

@@ -84,7 +84,7 @@ _LATEX_SYMBOLS = {
     r"\cdots": "⋯",
     r"\ldots": "…",
 }
-_LATEX_TEXT_COMMANDS = {r"\text", r"\mathrm", r"\operatorname"}
+_LATEX_TEXT_COMMANDS = {r"\text", r"\mathrm", r"\operatorname", r"\ce", r"\pu"}
 _LATEX_STYLE_COMMANDS = {r"\displaystyle", r"\textstyle", r"\scriptstyle", r"\scriptscriptstyle"}
 _LATEX_DELIMITER_COMMANDS = {r"\left", r"\right"}
 _LATEX_SPACING_COMMANDS = {r"\quad", r"\qquad", r"\,", r"\;", r"\:", r"\!"}

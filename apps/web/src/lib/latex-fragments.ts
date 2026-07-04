@@ -1,17 +1,18 @@
 const CJK_TEXT = /[\u3400-\u9fff]/;
 const STRONG_MATH_SIGNAL =
-  /\\(?:begin|end|frac|sqrt|lim|sum|prod|int|sin|cos|tan|ln|log|exp|to|left|right|leftarrow|rightarrow|leftrightarrow|Leftarrow|Rightarrow|Leftrightarrow|Longleftarrow|Longrightarrow|Longleftrightarrow|infty|cdot|times|div|leq?|geq?|approx|neq?|pm|sim|in|notin|mid|subseteq?|supseteq?|cup|cap|mathbb|mathcal|mathfrak|mathbf|mathrm|operatorname|text|dots|cdots|ldots|vdots|partial|nabla|forall|exists|alpha|beta|gamma|delta|epsilon|varepsilon|zeta|eta|theta|iota|kappa|lambda|mu|xi|pi|rho|varrho|sigma|tau|upsilon|phi|varphi|chi|psi|omega|Gamma|Delta|Theta|Lambda|Xi|Pi|Sigma|Phi|Psi|Omega)(?![A-Za-z])|[_^]|[=<>≤≥≈≠]|[A-Za-z0-9)]\s*(?:[+\-−*/=<>≤≥≈≠±]|→|←)\s*[A-Za-z0-9(\\]|\d+\s*\/\s*\d+|\\[{}]|^\([^()\n]{1,80},[^()\n]{1,80}\)$|^[\[(][A-Za-z0-9α-ωΑ-Ω\\_{}\s+\-−*/=.,]+,[A-Za-z0-9α-ωΑ-Ω\\_{}\s+\-−*/=.,]+[\])]$|^[A-Za-z]{1,3}\s*\([A-Za-z0-9α-ωΑ-Ω\\_{}\[\]^()+\-−*/=·∞→←≤≥≈≠±<>|&:'\s.,]+\)$/;
+  /\\(?:begin|end|frac|sqrt|lim|sum|prod|int|sin|cos|tan|ln|log|exp|to|left|right|leftarrow|rightarrow|leftrightarrow|Leftarrow|Rightarrow|Leftrightarrow|Longleftarrow|Longrightarrow|Longleftrightarrow|infty|cdot|times|div|leq?|geq?|approx|neq?|pm|sim|in|notin|mid|subseteq?|supseteq?|cup|cap|mathbb|mathcal|mathfrak|mathbf|mathrm|operatorname|text|ce|pu|dots|cdots|ldots|vdots|partial|nabla|forall|exists|alpha|beta|gamma|delta|epsilon|varepsilon|zeta|eta|theta|iota|kappa|lambda|mu|xi|pi|rho|varrho|sigma|tau|upsilon|phi|varphi|chi|psi|omega|Gamma|Delta|Theta|Lambda|Xi|Pi|Sigma|Phi|Psi|Omega)(?![A-Za-z])|[_^]|[=<>≤≥≈≠]|[A-Za-z0-9)]\s*(?:[+\-−*/=<>≤≥≈≠±]|→|←)\s*[A-Za-z0-9(\\]|\d+\s*\/\s*\d+|\\[{}]|^\([^()\n]{1,80},[^()\n]{1,80}\)$|^[\[(][A-Za-z0-9α-ωΑ-Ω\\_{}\s+\-−*/=#.,]+,[A-Za-z0-9α-ωΑ-Ω\\_{}\s+\-−*/=#.,]+[\])]$|^[A-Za-z]{1,3}\s*\([A-Za-z0-9α-ωΑ-Ω\\_{}\[\]^()+\-−*/=#·∞→←≤≥≈≠±<>|&:'\s.,]+\)$/;
 const DELIMITED_MATH = /\\\[([\s\S]+?)\\\]|\\\((.+?)\\\)|\$\$([\s\S]+?)\$\$|\$(?!\d+\$)([^$\n]+?)\$(?!\d)/g;
 const RAW_LATEX_COMMAND =
-  /\\(?:begin|end|frac|dfrac|tfrac|sqrt|lim|sum|prod|int|sin|cos|tan|ln|log|exp|to|left|right|leftarrow|rightarrow|leftrightarrow|Leftarrow|Rightarrow|Leftrightarrow|Longleftarrow|Longrightarrow|Longleftrightarrow|infty|cdot|times|div|leq?|geq?|approx|neq?|pm|sim|in|notin|mid|subseteq?|supseteq?|cup|cap|mathbb|mathcal|mathfrak|mathbf|mathrm|operatorname|text|dots|cdots|ldots|vdots|partial|nabla|forall|exists|alpha|beta|gamma|delta|epsilon|varepsilon|zeta|eta|theta|iota|kappa|lambda|mu|xi|pi|rho|varrho|sigma|tau|upsilon|phi|varphi|chi|psi|omega|Gamma|Delta|Theta|Lambda|Xi|Pi|Sigma|Phi|Psi|Omega)(?![A-Za-z])/g;
+  /\\(?:begin|end|frac|dfrac|tfrac|sqrt|lim|sum|prod|int|sin|cos|tan|ln|log|exp|to|left|right|leftarrow|rightarrow|leftrightarrow|Leftarrow|Rightarrow|Leftrightarrow|Longleftarrow|Longrightarrow|Longleftrightarrow|infty|cdot|times|div|leq?|geq?|approx|neq?|pm|sim|in|notin|mid|subseteq?|supseteq?|cup|cap|mathbb|mathcal|mathfrak|mathbf|mathrm|operatorname|text|ce|pu|dots|cdots|ldots|vdots|partial|nabla|forall|exists|alpha|beta|gamma|delta|epsilon|varepsilon|zeta|eta|theta|iota|kappa|lambda|mu|xi|pi|rho|varrho|sigma|tau|upsilon|phi|varphi|chi|psi|omega|Gamma|Delta|Theta|Lambda|Xi|Pi|Sigma|Phi|Psi|Omega)(?![A-Za-z])/g;
 const ORPHAN_MATH_DOLLAR = /(?:(?<=^)|(?<=[\s.,，。；;:：、]))\$(?=$|[\s.,，。；;:：、])/g;
 const TRAILING_SENTENCE_MARKS = /[\s.,，。；;:：]+$/;
 const LEADING_SENTENCE_MARKS = /^[\s.,，。；;:：]+/;
 const LATIN_WORD = /[A-Za-z]+/g;
 const NON_FORMULA_LETTER = /[\u00c0-\u024f\u3400-\u9fff]/;
-const FORMULA_CHARS = /^[A-Za-z0-9α-ωΑ-Ω\\_{}\[\]^()+\-−*/=·∞→←≤≥≈≠±<>|&:'\s.,]+$/;
+const FORMULA_CHARS = /^[A-Za-z0-9α-ωΑ-Ω\\_{}\[\]^()+\-−*/=#·∞→←≤≥≈≠±<>|&:'\s.,]+$/;
 const LATEX_ENVIRONMENT = /\\(?:begin|end)\{[A-Za-z*]+\}/g;
 const LATEX_TEXT_ARGUMENT = /\\(?:text|mathrm|operatorname)\{[^{}]*\}/g;
+const LATEX_CHEM_ARGUMENT = /\\(?:ce|pu)\{[^{}]*\}/g;
 const LATEX_FUNCTIONS = new Set(["lim", "sin", "cos", "tan", "ln", "log", "sqrt", "exp"]);
 
 export type MathSegment = {
@@ -29,7 +30,7 @@ function latexValidationText(value: string) {
 }
 
 function withoutLatexCommands(value: string) {
-  return latexValidationText(value).replace(/\\[A-Za-z]+/g, "");
+  return latexValidationText(value).replace(LATEX_CHEM_ARGUMENT, "").replace(/\\[A-Za-z]+/g, "");
 }
 
 function hasNonFormulaLetters(value: string) {
@@ -133,7 +134,7 @@ export function stripOrphanMathDollars(value: string) {
 }
 
 function isRawFormulaChar(char: string) {
-  return /[A-Za-z0-9α-ωΑ-Ω\\_{}\[\]^()+\-−*/=<>≤≥≈≠±|&'→←∞·\s]/.test(char);
+  return /[A-Za-z0-9α-ωΑ-Ω\\_{}\[\]^()+\-−*/=#<>≤≥≈≠±|&'→←∞·\s]/.test(char);
 }
 
 function trimFragmentBounds(value: string, start: number, end: number) {

@@ -6,10 +6,10 @@ from collections.abc import Callable
 LatexFragment = tuple[int, int, str]
 
 _RAW_LATEX_COMMAND_RE = re.compile(
-    r"\\(?:begin|end|frac|dfrac|tfrac|sqrt|lim|sum|prod|int|sin|cos|tan|ln|log|exp|to|left|right|leftarrow|rightarrow|leftrightarrow|Leftarrow|Rightarrow|Leftrightarrow|Longleftarrow|Longrightarrow|Longleftrightarrow|infty|cdot|times|div|leq?|geq?|approx|neq?|pm|sim|in|notin|mid|subseteq?|supseteq?|cup|cap|mathbb|mathcal|mathfrak|mathbf|mathrm|operatorname|text|dots|cdots|ldots|vdots|partial|nabla|forall|exists|alpha|beta|gamma|delta|epsilon|varepsilon|zeta|eta|theta|iota|kappa|lambda|mu|xi|pi|rho|varrho|sigma|tau|upsilon|phi|varphi|chi|psi|omega|Gamma|Delta|Theta|Lambda|Xi|Pi|Sigma|Phi|Psi|Omega)(?![A-Za-z])"
+    r"\\(?:begin|end|frac|dfrac|tfrac|sqrt|lim|sum|prod|int|sin|cos|tan|ln|log|exp|to|left|right|leftarrow|rightarrow|leftrightarrow|Leftarrow|Rightarrow|Leftrightarrow|Longleftarrow|Longrightarrow|Longleftrightarrow|infty|cdot|times|div|leq?|geq?|approx|neq?|pm|sim|in|notin|mid|subseteq?|supseteq?|cup|cap|mathbb|mathcal|mathfrak|mathbf|mathrm|operatorname|text|ce|pu|dots|cdots|ldots|vdots|partial|nabla|forall|exists|alpha|beta|gamma|delta|epsilon|varepsilon|zeta|eta|theta|iota|kappa|lambda|mu|xi|pi|rho|varrho|sigma|tau|upsilon|phi|varphi|chi|psi|omega|Gamma|Delta|Theta|Lambda|Xi|Pi|Sigma|Phi|Psi|Omega)(?![A-Za-z])"
 )
 _ORPHAN_MATH_DOLLAR_RE = re.compile(r"(?:(?<=^)|(?<=[\s.,，。；;:：、]))\$(?=$|[\s.,，。；;:：、])")
-_RAW_FORMULA_CHAR_RE = re.compile(r"[A-Za-z0-9α-ωΑ-Ω\\_{}\[\]^()+\-−*/=<>≤≥≈≠±|&'→←∞·\s]")
+_RAW_FORMULA_CHAR_RE = re.compile(r"[A-Za-z0-9α-ωΑ-Ω\\_{}\[\]^()+\-−*/=#<>≤≥≈≠±|&'→←∞·\s]")
 
 
 def strip_orphan_math_dollars(value: str, *, has_math_signal: Callable[[str], bool]) -> str:

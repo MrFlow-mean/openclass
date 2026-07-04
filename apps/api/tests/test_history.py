@@ -1116,6 +1116,18 @@ def test_build_document_rebuilds_stale_json_with_raw_inline_latex_fragments() ->
     assert "$" not in str(document.content_json)
 
 
+def test_build_document_converts_mhchem_latex_commands_to_math_nodes() -> None:
+    document = build_document(
+        title="Doc",
+        content_text="物质式 $\\ce{H2O}$，反应 \\ce{CO2 + C -> 2CO}，单位 \\pu{mol L-1}。",
+    )
+
+    assert document.content_html.count('data-type="inline-math"') == 3
+    assert 'data-latex="\\ce{H2O}"' in document.content_html
+    assert 'data-latex="\\ce{CO2 + C -&gt; 2CO}"' in document.content_html
+    assert 'data-latex="\\pu{mol L-1}"' in document.content_html
+
+
 def test_upgrade_markdown_like_document_repairs_suspicious_math_nodes() -> None:
     sentence = "Je me disais que tu allais peut-être oublier notre rendez-vous."
     legacy = BoardDocument(
@@ -1689,6 +1701,7 @@ def test_html_export_renders_math_nodes_with_katex_loader(tmp_path) -> None:
 
     html_text = export_path.read_text(encoding="utf-8")
     assert "katex.min.css" in html_text
+    assert "mhchem.min.js" in html_text
     assert "katex.render" in html_text
     assert 'data-type="inline-math"' in html_text
     assert 'data-type="block-math"' in html_text

@@ -26,7 +26,7 @@ DocxBlock = tuple[str, list[InlineFragment], dict[str, Any]]
 
 _CJK_RE = re.compile(r"[\u3400-\u9fff]")
 _MATH_SIGNAL_RE = re.compile(
-    r"\\(?:begin|end|frac|dfrac|tfrac|sqrt|lim|sum|prod|int|sin|cos|tan|ln|log|exp|to|left|right|leftarrow|rightarrow|leftrightarrow|Leftarrow|Rightarrow|Leftrightarrow|Longleftarrow|Longrightarrow|Longleftrightarrow|infty|cdot|times|div|leq?|geq?|approx|neq?|pm|sim|in|notin|mid|subseteq?|supseteq?|cup|cap|mathbb|mathcal|mathfrak|mathbf|mathrm|operatorname|text|dots|cdots|ldots|vdots|partial|nabla|forall|exists|alpha|beta|gamma|delta|epsilon|varepsilon|zeta|eta|theta|iota|kappa|lambda|mu|xi|pi|rho|varrho|sigma|tau|upsilon|phi|varphi|chi|psi|omega|Gamma|Delta|Theta|Lambda|Xi|Pi|Sigma|Phi|Psi|Omega)(?![A-Za-z])"
+    r"\\(?:begin|end|frac|dfrac|tfrac|sqrt|lim|sum|prod|int|sin|cos|tan|ln|log|exp|to|left|right|leftarrow|rightarrow|leftrightarrow|Leftarrow|Rightarrow|Leftrightarrow|Longleftarrow|Longrightarrow|Longleftrightarrow|infty|cdot|times|div|leq?|geq?|approx|neq?|pm|sim|in|notin|mid|subseteq?|supseteq?|cup|cap|mathbb|mathcal|mathfrak|mathbf|mathrm|operatorname|text|ce|pu|dots|cdots|ldots|vdots|partial|nabla|forall|exists|alpha|beta|gamma|delta|epsilon|varepsilon|zeta|eta|theta|iota|kappa|lambda|mu|xi|pi|rho|varrho|sigma|tau|upsilon|phi|varphi|chi|psi|omega|Gamma|Delta|Theta|Lambda|Xi|Pi|Sigma|Phi|Psi|Omega)(?![A-Za-z])"
     r"|[_^]"
     r"|[=<>≤≥≈≠]"
     r"|[A-Za-z0-9)]\s*(?:[+\-−*/=<>≤≥≈≠±]|→|←)\s*[A-Za-z0-9(\\]"
@@ -38,9 +38,10 @@ _MATH_SIGNAL_RE = re.compile(
 )
 _LATIN_WORD_RE = re.compile(r"[A-Za-z]+")
 _NON_FORMULA_LETTER_RE = re.compile(r"[^\W\d_A-Za-zα-ωΑ-Ω]", re.UNICODE)
-_FORMULA_CHARS_RE = re.compile(r"^[A-Za-z0-9α-ωΑ-Ω\\_{}\[\]^()+\-−*/=·∞→←≤≥≈≠±<>|&:'\s.,]+$")
+_FORMULA_CHARS_RE = re.compile(r"^[A-Za-z0-9α-ωΑ-Ω\\_{}\[\]^()+\-−*/=#·∞→←≤≥≈≠±<>|&:'\s.,]+$")
 _LATEX_ENVIRONMENT_RE = re.compile(r"\\(?:begin|end)\{[A-Za-z*]+\}")
 _LATEX_TEXT_ARGUMENT_RE = re.compile(r"\\(?:text|mathrm|operatorname)\{[^{}]*\}")
+_LATEX_CHEM_ARGUMENT_RE = re.compile(r"\\(?:ce|pu)\{[^{}]*\}")
 _MIXED_MATH_TEXT_RE = re.compile(r"([\u3400-\u9fff，。；：、]+)")
 _HTML_BLOCK_RE = re.compile(
     r"<(?P<tag>h[1-6]|p|li|blockquote)\b[^>]*>.*?</(?P=tag)>",
@@ -174,7 +175,7 @@ _LATEX_SYMBOLS = {
     r"\ldots": "…",
 }
 _LATEX_FUNCTIONS = {"sin", "cos", "tan", "ln", "log", "sqrt", "exp", "lim"}
-_LATEX_TEXT_COMMANDS = {r"\text", r"\mathrm", r"\operatorname"}
+_LATEX_TEXT_COMMANDS = {r"\text", r"\mathrm", r"\operatorname", r"\ce", r"\pu"}
 _LATEX_STYLE_COMMANDS = {r"\displaystyle", r"\textstyle", r"\scriptstyle", r"\scriptscriptstyle"}
 _LATEX_DELIMITER_COMMANDS = {r"\left", r"\right"}
 _LATEX_SPACING_COMMANDS = {r"\quad", r"\qquad", r"\,", r"\;", r"\:", r"\!"}
@@ -1566,12 +1567,12 @@ def _latex_validation_text(value: str) -> str:
 
 
 def _has_non_formula_letters(value: str) -> bool:
-    without_latex_commands = re.sub(r"\\[A-Za-z]+", "", _latex_validation_text(value))
+    without_latex_commands = re.sub(r"\\[A-Za-z]+", "", _LATEX_CHEM_ARGUMENT_RE.sub("", _latex_validation_text(value)))
     return bool(_CJK_RE.search(without_latex_commands) or _NON_FORMULA_LETTER_RE.search(without_latex_commands))
 
 
 def _latin_words_are_formula_like(value: str) -> bool:
-    without_latex_commands = re.sub(r"\\[A-Za-z]+", "", _latex_validation_text(value))
+    without_latex_commands = re.sub(r"\\[A-Za-z]+", "", _LATEX_CHEM_ARGUMENT_RE.sub("", _latex_validation_text(value)))
     for word in _LATIN_WORD_RE.findall(without_latex_commands):
         if len(word) > 3 and word not in _LATEX_FUNCTIONS:
             return False

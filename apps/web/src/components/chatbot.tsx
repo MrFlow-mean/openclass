@@ -2,7 +2,6 @@
 
 import { useState, type ReactNode } from "react";
 import clsx from "clsx";
-import katex from "katex";
 import {
   ArrowRight,
   Check,
@@ -17,6 +16,7 @@ import {
   X,
 } from "lucide-react";
 
+import { katex } from "@/lib/katex-mhchem";
 import type { AgentActivityEvent, ChatInteractionMode, SectionTeachingProgress, SelectionRef } from "@/types";
 
 export type CourseChatMessageView = {

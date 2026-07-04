@@ -85,6 +85,7 @@ import {
   WordPageZoomControls,
 } from "@/components/course-studio/word-editor-toolbar";
 import { BoardModelPicker } from "@/components/course-studio/board-model-picker";
+import "@/lib/katex-mhchem";
 import { MATH_TEXT_SERIALIZERS, normalizeEditorMath } from "@/lib/math-content";
 import type {
   AIModelOption,
