@@ -18,6 +18,9 @@ import type {
   RealtimeConnectResponse,
   RealtimeEventLogPayload,
   RequirementUpdateStreamPayload,
+  ResourceAIIndexStatus,
+  ResourceAIQueryPayload,
+  ResourceAIQueryResponse,
   ScopeAction,
   WorkspaceState,
   UserView,
@@ -564,6 +567,15 @@ export const api = {
       throw new Error(text || `Upload failed with ${response.status}`);
     }
     return response.json() as Promise<CoursePackage>;
+  },
+  resourceIndex(lessonId: string) {
+    return request<ResourceAIIndexStatus[]>(`/api/lessons/${lessonId}/resources/index`);
+  },
+  queryResourceAI(lessonId: string, payload: ResourceAIQueryPayload) {
+    return request<ResourceAIQueryResponse>(`/api/lessons/${lessonId}/resources/query`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
   },
   async exportDocx(lessonId: string) {
     const response = await fetch(`${getApiBase()}/api/lessons/${lessonId}/document/export-docx`, {

@@ -303,6 +303,55 @@ export interface ResourceLibraryItem {
   source_units: ResourceSourceUnit[];
 }
 
+export type ResourceAIBackend = "openclass_source_units" | "raganything";
+
+export interface ResourceAIIndexStatus {
+  resource_id: string;
+  resource_name: string;
+  parser_provider: string;
+  extracted_text_available: boolean;
+  source_unit_count: number;
+  text_unit_count: number;
+  multimodal_unit_count: number;
+  chapter_count: number;
+  rag_content_list_available: boolean;
+  parser_artifacts_path?: string | null;
+  warnings: string[];
+}
+
+export interface ResourceAIEvidenceUnit {
+  resource_id: string;
+  resource_name: string;
+  chapter_id?: string | null;
+  chapter_title?: string | null;
+  content_type: string;
+  excerpt: string;
+  page_no?: number | null;
+  page_idx?: number | null;
+  source_locator?: string | null;
+  score: number;
+  reason: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface ResourceAIQueryPayload {
+  query: string;
+  resource_id?: string | null;
+  max_results?: number;
+  include_reference_context?: boolean;
+}
+
+export interface ResourceAIQueryResponse {
+  query: string;
+  backend: ResourceAIBackend;
+  used_rag_anything: boolean;
+  index_status: ResourceAIIndexStatus[];
+  evidence_units: ResourceAIEvidenceUnit[];
+  resource_matches: ResourceMatch[];
+  selected_reference?: ResourceReferenceContext | null;
+  warnings: string[];
+}
+
 export interface CoursePackage {
   id: string;
   title: string;

@@ -226,6 +226,35 @@ def _metadata(item: dict[str, Any]) -> dict[str, Any]:
     return metadata
 
 
+def source_units_to_rag_content_list(units: list[ResourceSourceUnit]) -> list[dict[str, Any]]:
+    content_list: list[dict[str, Any]] = []
+    for unit in sorted(units, key=lambda item: item.order_index):
+        content_type = unit.content_type.strip().lower() or "text"
+        item: dict[str, Any] = {"type": content_type}
+        if unit.page_idx is not None:
+            item["page_idx"] = unit.page_idx
+        if content_type == "image":
+            if unit.asset_path:
+                item["img_path"] = unit.asset_path
+            if unit.text:
+                item["image_caption"] = [unit.text]
+        elif content_type == "table":
+            item["table_body"] = unit.text
+        elif content_type == "equation":
+            item["latex"] = unit.text
+        else:
+            item["text"] = unit.text
+        if unit.metadata:
+            item.update(unit.metadata)
+        if unit.bbox:
+            item["bbox"] = unit.bbox
+        if unit.source_locator:
+            item["source_locator"] = unit.source_locator
+        if any(value for key, value in item.items() if key not in {"type", "page_idx", "bbox", "source_locator"}):
+            content_list.append(item)
+    return content_list
+
+
 def _map_content_list(content_list: Any) -> list[ResourceSourceUnit]:
     if not isinstance(content_list, list):
         raise RuntimeError("RAG-Anything parser returned a non-list content payload.")

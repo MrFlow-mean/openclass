@@ -886,6 +886,56 @@ class ResourceReferenceContext(BaseModel):
     full_text: str = Field(default="", exclude=True, repr=False)
 
 
+ResourceAIBackend = Literal["openclass_source_units", "raganything"]
+
+
+class ResourceAIIndexStatus(BaseModel):
+    resource_id: str
+    resource_name: str
+    parser_provider: str
+    extracted_text_available: bool = False
+    source_unit_count: int = 0
+    text_unit_count: int = 0
+    multimodal_unit_count: int = 0
+    chapter_count: int = 0
+    rag_content_list_available: bool = False
+    parser_artifacts_path: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+
+
+class ResourceAIEvidenceUnit(BaseModel):
+    resource_id: str
+    resource_name: str
+    chapter_id: str | None = None
+    chapter_title: str | None = None
+    content_type: str = "text"
+    excerpt: str
+    page_no: int | None = None
+    page_idx: int | None = None
+    source_locator: str | None = None
+    score: float = 0.0
+    reason: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ResourceAIQueryRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=2000)
+    resource_id: str | None = None
+    max_results: int = Field(default=6, ge=1, le=20)
+    include_reference_context: bool = True
+
+
+class ResourceAIQueryResponse(BaseModel):
+    query: str
+    backend: ResourceAIBackend = "openclass_source_units"
+    used_rag_anything: bool = False
+    index_status: list[ResourceAIIndexStatus] = Field(default_factory=list)
+    evidence_units: list[ResourceAIEvidenceUnit] = Field(default_factory=list)
+    resource_matches: list[ResourceMatch] = Field(default_factory=list)
+    selected_reference: ResourceReferenceContext | None = None
+    warnings: list[str] = Field(default_factory=list)
+
+
 class BoardDecision(BaseModel):
     action: BoardAction
     reason: str
