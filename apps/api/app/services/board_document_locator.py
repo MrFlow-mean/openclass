@@ -16,6 +16,7 @@ from app.models import (
     SelectionRef,
 )
 from app.services.board_segment_index import build_board_segment_index, compact_segment_text, segment_text_hash
+from app.services.board_heading_lookup import find_heading_lookup_matches, heading_reference_label
 from app.services.openai_course_ai import openai_course_ai
 
 
@@ -164,6 +165,15 @@ class BoardDocumentLocator:
         )
         if task_location_resolution is not None:
             return task_location_resolution
+
+        heading_lookup_resolution = _resolution_from_heading_lookup(
+            lesson=lesson,
+            plan=plan,
+            segments=index.segments,
+            action_type=action_type,
+        )
+        if heading_lookup_resolution is not None:
+            return heading_lookup_resolution
 
         task_hint_resolution = _resolution_from_board_task_text_evidence(
             lesson=lesson,
@@ -348,7 +358,11 @@ def _query_plan(
     return BoardSearchQueryPlan(
         query_text=compact,
         search_terms=sorted(_query_terms(compact)),
-        structured_target=_structured_target_label(compact),
+        structured_target=_structured_target_label(compact)
+        or heading_reference_label(
+            query_text=compact,
+            scope_hint=board_task.target_hint if board_task and board_task.target_hint else "",
+        ),
         scope_hint=board_task.target_hint if board_task and board_task.target_hint else "",
         action_type=action_type,
     )
@@ -530,6 +544,43 @@ def _resolution_from_board_task_location(
         action_type=action_type,
         force_unique=True,
         source="task_location_exact",
+    )
+
+
+def _resolution_from_heading_lookup(
+    *,
+    lesson: Lesson,
+    plan: BoardSearchQueryPlan,
+    segments: list[BoardSegment],
+    action_type: BoardTaskAction | None,
+) -> FocusResolution | None:
+    matches = find_heading_lookup_matches(
+        query_text=plan.query_text,
+        scope_hint=plan.scope_hint,
+        segments=segments,
+    )
+    if not matches:
+        return None
+    candidates = [
+        _focus_from_segment(
+            lesson=lesson,
+            segment=match.segment,
+            segments=segments,
+            confidence=match.confidence,
+            reason=match.reason,
+            source_segment_ids=[match.segment.segment_id],
+            score_breakdown=match.score_breakdown,
+        )
+        for match in matches[:5]
+    ]
+    return _resolution_from_candidates(
+        candidates=candidates,
+        plan=plan,
+        source_reason="根据板书标题编号或完整标题文本精确定位。",
+        resolved_question="我按板书标题找到了多个可能的位置。请确认你要操作的是哪一处。",
+        action_type=action_type,
+        force_unique=True,
+        source="heading_lookup",
     )
 
 

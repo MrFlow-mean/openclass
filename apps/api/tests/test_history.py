@@ -569,6 +569,70 @@ def test_segment_resolver_uses_numbered_heading_location_without_selection() -> 
     assert resolution.focus.excerpt == "4. 检查问题"
 
 
+def test_segment_resolver_uses_exact_multi_level_heading_before_ordinal_fallback() -> None:
+    lesson = create_empty_lesson("定位测试")
+    lesson.board_document = build_document(
+        title="定位测试",
+        content_text=(
+            "# 主线\n"
+            "## 1.4 核心概念\n父级正文。\n"
+            "### 1.4.1 概念引入\n第一段。\n"
+            "### 1.4.2 形式构成\n第二段。\n"
+            "### 1.4.3 应用场景\n第三段。\n"
+            "### 1.4.4 对比示例\n已有例子。\n"
+            "## 1.5 练习\n练习正文。"
+        ),
+    )
+    board_task = BoardTaskRequirementSheet(
+        location_kind="target_range",
+        target_hint="1.4.4 对比示例",
+        requested_action="edit",
+        question_or_topic="在1.4.4小节多加几个例子",
+        progress=100,
+    )
+
+    resolution = resolve_board_focus(
+        lesson=lesson,
+        user_message="1.4.4多加几个例子",
+        action_type="rewrite_target",
+        board_task=board_task,
+    )
+
+    assert resolution.resolved
+    assert resolution.focus is not None
+    assert resolution.focus.excerpt == "1.4.4 对比示例"
+    assert resolution.focus.segment_id is not None
+    assert resolution.evidence is not None
+    assert resolution.evidence.query_plan.structured_target == "1.4.4"
+    assert resolution.evidence.candidates[0].source == "heading_lookup"
+    assert resolution.evidence.candidates[0].score_breakdown["heading_ref_exact"] == 0.98
+
+
+def test_segment_resolver_keeps_parent_heading_ref_separate_from_child_heading() -> None:
+    lesson = create_empty_lesson("定位测试")
+    lesson.board_document = build_document(
+        title="定位测试",
+        content_text=(
+            "# 主线\n"
+            "## 1.4 核心概念\n父级正文。\n"
+            "### 1.4.1 概念引入\n第一段。\n"
+            "### 1.4.4 对比示例\n子级正文。"
+        ),
+    )
+
+    resolution = resolve_board_focus(
+        lesson=lesson,
+        user_message="讲一下1.4小节",
+        action_type="explain_target",
+    )
+
+    assert resolution.resolved
+    assert resolution.focus is not None
+    assert resolution.focus.excerpt == "1.4 核心概念"
+    assert resolution.evidence is not None
+    assert resolution.evidence.candidates[0].source == "heading_lookup"
+
+
 def test_segment_resolver_uses_numbered_list_item_location_without_selection() -> None:
     lesson = create_empty_lesson("定位测试")
     lesson.board_document = build_document(
