@@ -10,12 +10,14 @@ from app.models import (
 )
 from app.services import workspace_state
 from app.services.board_document_editor import generate_from_requirements
+from app.services.board_teaching import build_board_teaching_guide
 from app.services.course_runtime import effective_requirements
 from app.services.history import commit_operations, current_head_commit
 from app.services.learning_requirement_history import (
     LearningRequirementHistoryRecorder,
     RequirementHistoryStamp,
 )
+from app.services.openai_course_ai import openai_course_ai
 from app.services.rich_document import is_document_empty
 
 
@@ -94,6 +96,27 @@ def run_blank_board_generation(
             board_decision=outcome.board_decision,
         )
 
+    lesson_for_teaching = lesson.model_copy(deep=True, update={"board_document": outcome.new_document})
+    lesson.board_teaching_guide = build_board_teaching_guide(lesson_for_teaching)
+    lesson.board_teaching_progress = None
+    chatbot_reply = openai_course_ai.generate_post_board_generation_reply(
+        lesson_title=lesson.title,
+        learning_goal=requirements.learning_goal,
+        board_summary=lesson.board_teaching_guide.chatbot_brief,
+        resource_summary="",
+        requirement_context=requirements.model_dump(mode="json"),
+        editor_summary=outcome.summary,
+        section_titles=outcome.section_titles or lesson.board_teaching_guide.teaching_flow,
+    )
+    chatbot_message = (chatbot_reply.chatbot_message if chatbot_reply else outcome.chatbot_message).strip()
+    assistant_message_source = (
+        "chatbot_post_board_generation"
+        if chatbot_reply and chatbot_message
+        else outcome.assistant_message_source
+        if chatbot_message
+        else "chatbot_empty"
+    )
+
     lesson.learning_requirements = None
     lesson.board_task_requirements = None
     lesson.active_interaction_session = None
@@ -107,13 +130,16 @@ def run_blank_board_generation(
             "kind": "board_document_generation",
             "board_generation_action": "start",
             "user_message": "开始生成板书",
-            "assistant_message": "",
-            "assistant_message_source": "none",
+            "assistant_message": chatbot_message,
+            "assistant_message_source": assistant_message_source,
             "document_changed": True,
             "board_document_operation_status": outcome.operation_status,
             "board_document_editor_operation": outcome.operation,
             "board_document_editor_summary": outcome.summary,
             "section_titles": outcome.section_titles,
+            "board_teaching_flow": lesson.board_teaching_guide.teaching_flow,
+            "board_teaching_plan_count": len(lesson.board_teaching_guide.section_plans),
+            "teaching_progress_after": None,
             "requirement_run_id": frozen_stamp.run_id,
             "frozen_requirement_version_id": frozen_stamp.version_id,
             "requirement_phase": frozen_stamp.phase,
@@ -135,7 +161,7 @@ def run_blank_board_generation(
         learning_requirement_history_operations=recorder.operations,
     )
     return ChatResponse(
-        chatbot_message="",
+        chatbot_message=chatbot_message,
         learning_requirement_sheet=effective_requirements(lesson),
         active_requirement_sheet=None,
         active_interaction_session=None,

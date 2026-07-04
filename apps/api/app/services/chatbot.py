@@ -13,6 +13,11 @@ from app.services.board_document_sensor import read_board_document_sensor
 from app.services.board_task_executor import execute_ready_board_task
 from app.services.board_task_history import BoardTaskHistoryStamp
 from app.services.board_task_refiner import refine_existing_board_task_requirement
+from app.services.board_teaching_orchestrator import (
+    run_board_teaching_turn,
+    should_continue_board_teaching,
+    should_start_board_teaching,
+)
 from app.services.course_runtime import effective_requirements
 from app.services.history import commit_operations
 from app.services.learning_requirement_history import RequirementHistoryStamp
@@ -93,6 +98,7 @@ def _build_response(
     board_document_operation_status="none",
     board_document_operation_failure_reason=None,
     board_patch_diff=None,
+    teaching_progress=None,
 ) -> ChatResponse:
     requirements = effective_requirements(lesson)
     return ChatResponse(
@@ -121,6 +127,7 @@ def _build_response(
         board_document_operation_status=board_document_operation_status,
         board_document_operation_failure_reason=board_document_operation_failure_reason,
         board_patch_diff=board_patch_diff or [],
+        teaching_progress=teaching_progress,
         course_package=workspace_state.package_view_for_lesson(workspace, package, lesson.id),
     )
 
@@ -453,6 +460,48 @@ def _run_chat_turn(lesson_id: str, request: ChatRequest, *, user_id: str) -> Cha
             request=request,
             user_id=user_id,
             board_document_state=board_document_state,
+        )
+    if should_continue_board_teaching(lesson, request):
+        teaching = run_board_teaching_turn(
+            lesson=lesson,
+            request=request,
+            teaching_action="continue",
+            conversation_summary=_conversation_summary(request.conversation),
+        )
+        workspace_state.normalize_package_state(package)
+        workspace_state.save_workspace_for_user(user_id, workspace)
+        return _build_response(
+            workspace=workspace,
+            package=package,
+            lesson=lesson,
+            chatbot_message=teaching.chatbot_message,
+            board_decision=teaching.board_decision,
+            active_requirement_sheet=None,
+            learning_clarification=_reset_clarification(),
+            requirement_cleared=True,
+            active_board_task_sheet=None,
+            teaching_progress=teaching.teaching_progress,
+        )
+    if should_start_board_teaching(lesson, request):
+        teaching = run_board_teaching_turn(
+            lesson=lesson,
+            request=request,
+            teaching_action="restart",
+            conversation_summary=_conversation_summary(request.conversation),
+        )
+        workspace_state.normalize_package_state(package)
+        workspace_state.save_workspace_for_user(user_id, workspace)
+        return _build_response(
+            workspace=workspace,
+            package=package,
+            lesson=lesson,
+            chatbot_message=teaching.chatbot_message,
+            board_decision=teaching.board_decision,
+            active_requirement_sheet=None,
+            learning_clarification=_reset_clarification(),
+            requirement_cleared=True,
+            active_board_task_sheet=None,
+            teaching_progress=teaching.teaching_progress,
         )
     return _run_board_task_refinement_turn(
         workspace=workspace,
