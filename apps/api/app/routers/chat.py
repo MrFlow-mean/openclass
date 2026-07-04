@@ -199,6 +199,10 @@ def _chat_stream_events(lesson_id: str, request: ChatRequest, *, user_id: str) -
                     emit("document_delta", {"delta": char})
                 document_delta_emitted = True
 
+    def emit_agent_activity(response: ChatResponse) -> None:
+        for event in response.agent_activity:
+            emit("agent_activity", event.model_dump(mode="json"))
+
     def run() -> None:
         with ai_log_context(
             trace_id=state.trace_id,
@@ -219,6 +223,7 @@ def _chat_stream_events(lesson_id: str, request: ChatRequest, *, user_id: str) -
                 )
                 state.produced_commit_id = _head_commit_id(response, lesson_id)
                 emit_missing_visible_deltas(response)
+                emit_agent_activity(response)
                 state.final_enqueued = True
                 emit("final", response.model_dump(mode="json"))
                 _log_stream_lifecycle(

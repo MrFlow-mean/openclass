@@ -17,7 +17,7 @@ import {
   X,
 } from "lucide-react";
 
-import type { ChatInteractionMode, SectionTeachingProgress, SelectionRef } from "@/types";
+import type { AgentActivityEvent, ChatInteractionMode, SectionTeachingProgress, SelectionRef } from "@/types";
 
 export type CourseChatMessageView = {
   id: string;
@@ -26,6 +26,7 @@ export type CourseChatMessageView = {
   status?: "ready" | "pending" | "error";
   statusLabel?: string;
   selection?: SelectionRef | null;
+  agentActivity?: AgentActivityEvent[];
   teachingProgress?: SectionTeachingProgress | null;
   commitId?: string | null;
   parentCommitIds?: string[];
@@ -376,6 +377,42 @@ function ChatMessageContent({ content }: { content: string }) {
   );
 }
 
+function AgentActivityTimeline({ events }: { events: AgentActivityEvent[] }) {
+  const visibleEvents = events.slice(-7);
+  if (!visibleEvents.length) {
+    return null;
+  }
+  return (
+    <div className="rounded-xl border border-gray-200 bg-gray-50 px-3 py-2">
+      <div className="space-y-1.5">
+        {visibleEvents.map((event) => {
+          const isActive = event.status === "pending" || event.status === "running";
+          const isProblem = event.status === "blocked" || event.status === "failed";
+          return (
+            <div key={event.id} className="flex min-w-0 items-center gap-2 text-[11px] leading-5 text-gray-600">
+              <span
+                className={clsx(
+                  "flex h-4 w-4 shrink-0 items-center justify-center rounded-full border bg-white",
+                  isProblem ? "border-amber-300 text-amber-700" : "border-gray-200 text-gray-500"
+                )}
+              >
+                {isActive ? (
+                  <LoaderCircle className="h-3 w-3 animate-spin" />
+                ) : isProblem ? (
+                  <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+                ) : (
+                  <Check className="h-3 w-3" />
+                )}
+              </span>
+              <span className="truncate">{event.label}</span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export function CourseChatMessage({
   message,
   onContinueTeaching,
@@ -404,6 +441,7 @@ export function CourseChatMessage({
   const isError = message.status === "error";
   const selectedExcerpt = message.selection?.excerpt ? selectionPreviewText(message.selection.excerpt) : "";
   const teachingProgress = message.teachingProgress;
+  const agentActivity = message.agentActivity ?? [];
   const hasContent = message.content.trim().length > 0;
 
   async function copyMessage() {
@@ -546,6 +584,8 @@ export function CourseChatMessage({
             ) : null}
           </div>
         ) : null}
+
+        {isAssistant && agentActivity.length ? <AgentActivityTimeline events={agentActivity} /> : null}
 
         {hasContent && !isEditing ? (
           <div

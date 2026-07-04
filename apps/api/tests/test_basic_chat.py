@@ -119,6 +119,25 @@ def test_process_chat_on_lesson_records_basic_chat_without_document_change(
         "has_content": True,
         "reason": "当前右侧板书文档已有可见内容。",
     }
+    assert response.agent_turn_decision is not None
+    assert response.agent_turn_decision.route == "ordinary_chat"
+    assert [event.stage for event in response.agent_activity] == [
+        "turn_decision",
+        "build_context",
+        "execute_role",
+        "verify",
+        "persist_history",
+        "final",
+    ]
+    assert commit.metadata["agent_turn_decision"]["route"] == "ordinary_chat"
+    assert [event["stage"] for event in commit.metadata["agent_activity"]] == [
+        "turn_decision",
+        "build_context",
+        "execute_role",
+        "verify",
+        "persist_history",
+        "final",
+    ]
     assert commit.metadata["document_changed"] is False
 
 

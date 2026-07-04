@@ -3,6 +3,7 @@ import threading
 import time
 
 from app.models import (
+    AgentActivityEvent,
     BoardDecision,
     ChatRequest,
     ChatResponse,
@@ -174,6 +175,36 @@ def test_chat_stream_synthesizes_final_chatbot_message_as_delta(monkeypatch) -> 
     event_names = [event for event, _payload in events]
     assert _joined_delta(events, "chat_delta") == "最终回复也要流式出现。"
     assert event_names.index("chat_delta") < event_names.index("final")
+
+
+def test_chat_stream_emits_agent_activity_before_final(monkeypatch) -> None:
+    def process_with_agent_activity(*args, **kwargs) -> ChatResponse:
+        response = _chat_response("lesson_stream_test", chatbot_message="最终回复。")
+        response.agent_activity = [
+            AgentActivityEvent(
+                turn_id="agentturn_test",
+                stage="turn_decision",
+                label="判断任务类型",
+                role="AgentTurnDecision",
+            )
+        ]
+        return response
+
+    monkeypatch.setattr(chat_router, "process_chat_on_lesson", process_with_agent_activity)
+
+    events = _collect_events(
+        chat_router._chat_stream_events(
+            "lesson_stream_test",
+            ChatRequest(message="随便聊聊"),
+            user_id="user_stream_test",
+        )
+    )
+
+    event_names = [event for event, _payload in events]
+    activity_payload = next(payload for event, payload in events if event == "agent_activity")
+    assert activity_payload["stage"] == "turn_decision"
+    assert activity_payload["label"] == "判断任务类型"
+    assert event_names.index("agent_activity") < event_names.index("final")
 
 
 def test_chat_stream_paces_visible_chat_deltas(monkeypatch) -> None:

@@ -214,6 +214,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 type ChatStreamHandlers = {
   onPhase?: (label: string) => void;
+  onAgentActivity?: (event: NonNullable<ChatResponse["agent_activity"]>[number]) => void;
   onChatDelta?: (delta: string) => void;
   onDocumentDelta?: (delta: string) => void;
   onRequirementUpdate?: (payload: RequirementUpdateStreamPayload) => void;
@@ -269,6 +270,10 @@ function handleChatStreamBlock(block: string, handlers: ChatStreamHandlers) {
     if (label) {
       handlers.onPhase?.(label);
     }
+    return;
+  }
+  if (parsed.event === "agent_activity") {
+    handlers.onAgentActivity?.(payload as unknown as NonNullable<ChatResponse["agent_activity"]>[number]);
     return;
   }
   if (parsed.event === "chat_delta") {

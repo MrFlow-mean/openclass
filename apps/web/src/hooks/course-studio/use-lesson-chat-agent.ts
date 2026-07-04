@@ -14,6 +14,7 @@ import {
 import type { AutoSaveReason } from "@/hooks/course-studio/use-board-draft";
 import type { CoursePackageApplyOptions } from "@/hooks/course-studio/use-course-workspace";
 import type {
+  AgentActivityEvent,
   AIModelSelection,
   BoardDocument,
   BoardDecision,
@@ -135,7 +136,7 @@ export function useLessonChatAgent({
   function updatePendingAssistant(
     lessonId: string,
     messageId: string,
-    patch: Partial<Pick<ChatMessage, "content" | "statusLabel">>
+    patch: Partial<Pick<ChatMessage, "agentActivity" | "content" | "statusLabel">>
   ) {
     updateLessonMessages(lessonId, (current) =>
       current.map((message) => (message.id === messageId ? { ...message, ...patch } : message))
@@ -295,6 +296,7 @@ export function useLessonChatAgent({
     let requestStarted = false;
     let streamedChatContent = "";
     let streamedDocumentText = "";
+    let streamedAgentActivity: AgentActivityEvent[] = [];
     let sawReadyForBoardRequirementUpdate = false;
     let requestLesson = lesson;
     let baseStreamingDocument = currentBoardDocument ?? lesson.board_document;
@@ -310,6 +312,7 @@ export function useLessonChatAgent({
               ? {
                   ...message,
                   content: streamedChatContent,
+                  agentActivity: streamedAgentActivity,
                   status: "ready" as const,
                   statusLabel: undefined,
                 }
@@ -386,10 +389,18 @@ export function useLessonChatAgent({
           onPhase(label) {
             updatePendingAssistant(lessonId, pendingAssistantMessage.id, { statusLabel: label });
           },
+          onAgentActivity(event) {
+            streamedAgentActivity = [...streamedAgentActivity, event];
+            updatePendingAssistant(lessonId, pendingAssistantMessage.id, {
+              agentActivity: streamedAgentActivity,
+              statusLabel: event.label,
+            });
+          },
           onChatDelta(delta) {
             streamedChatContent += delta;
             updatePendingAssistant(lessonId, pendingAssistantMessage.id, {
               content: streamedChatContent,
+              agentActivity: streamedAgentActivity,
               statusLabel: "正在回复",
             });
           },
@@ -481,6 +492,7 @@ export function useLessonChatAgent({
       setLastBoardEditRequest(response.board_edit_prompt ? payloadWithConversation : null);
       const chatbotMessage = response.chatbot_message.trim();
       const streamedFallbackMessage = streamedChatContent.trim();
+      const finalAgentActivity = response.agent_activity?.length ? response.agent_activity : streamedAgentActivity;
       const assistantMessages: ChatMessage[] = [];
       if (chatbotMessage) {
         assistantMessages.push(
@@ -491,7 +503,13 @@ export function useLessonChatAgent({
             responseCommit ? `${responseCommit.id}:assistant` : undefined,
             null,
             response.teaching_progress ?? null,
-            responseCommit ? { commitId: responseCommit.id, parentCommitIds: responseCommit.parent_ids } : undefined
+            responseCommit
+              ? {
+                  agentActivity: finalAgentActivity,
+                  commitId: responseCommit.id,
+                  parentCommitIds: responseCommit.parent_ids,
+                }
+              : { agentActivity: finalAgentActivity }
           )
         );
       } else if (streamedFallbackMessage) {
@@ -503,7 +521,13 @@ export function useLessonChatAgent({
             responseCommit ? `${responseCommit.id}:assistant` : undefined,
             null,
             response.teaching_progress ?? null,
-            responseCommit ? { commitId: responseCommit.id, parentCommitIds: responseCommit.parent_ids } : undefined
+            responseCommit
+              ? {
+                  agentActivity: finalAgentActivity,
+                  commitId: responseCommit.id,
+                  parentCommitIds: responseCommit.parent_ids,
+                }
+              : { agentActivity: finalAgentActivity }
           )
         );
       }

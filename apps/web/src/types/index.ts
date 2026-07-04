@@ -593,8 +593,51 @@ export interface SectionTeachingProgress {
   waiting_for_continue: boolean;
 }
 
+export type AgentTurnRoute =
+  | "ordinary_chat"
+  | "blank_requirement_refine"
+  | "blank_board_generate"
+  | "post_generation_teaching_start"
+  | "board_teaching_continue"
+  | "board_task_refine_or_execute"
+  | "interaction_session_turn"
+  | "resource_grounded_task";
+
+export type AgentActivityStage =
+  | "turn_decision"
+  | "resolve_target"
+  | "build_context"
+  | "execute_role"
+  | "verify"
+  | "persist_history"
+  | "final";
+
+export type AgentActivityStatus = "pending" | "running" | "completed" | "blocked" | "failed" | "skipped";
+
+export interface AgentTurnDecision {
+  route: AgentTurnRoute;
+  reason: string;
+  required_role: string;
+  blockers: string[];
+  next_step: string;
+  needs_user_confirmation: boolean;
+}
+
+export interface AgentActivityEvent {
+  id: string;
+  turn_id: string;
+  stage: AgentActivityStage;
+  label: string;
+  status: AgentActivityStatus;
+  role: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+}
+
 export interface ChatResponse {
   chatbot_message: string;
+  agent_turn_decision?: AgentTurnDecision | null;
+  agent_activity?: AgentActivityEvent[];
   learning_requirement_sheet: LearningRequirementSheet;
   active_requirement_sheet?: LearningRequirementSheet | null;
   active_interaction_session?: InteractionSession | null;

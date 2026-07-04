@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.models import (
+    AgentTurnDecision,
     BoardDecision,
     ChatRequest,
     ChatResponse,
@@ -8,6 +9,9 @@ from app.models import (
     LearningClarificationStatus,
 )
 from app.services import workspace_state
+from app.services.agent_turn_decision import decide_agent_turn
+from app.services.agent_workflow_orchestrator import AgentWorkflowOrchestrator
+from app.services.agent_workflow_verifier import verify_agent_response
 from app.services.blank_board_generation import run_blank_board_generation
 from app.services.board_document_sensor import read_board_document_sensor
 from app.services.board_task_executor import execute_ready_board_task
@@ -19,7 +23,7 @@ from app.services.board_teaching_orchestrator import (
     should_start_board_teaching,
 )
 from app.services.course_runtime import effective_requirements
-from app.services.history import commit_operations
+from app.services.history import bind_commit_metadata, commit_operations, current_head_commit
 from app.services.learning_requirement_history import RequirementHistoryStamp
 from app.services.learning_requirement_refiner import refine_blank_board_requirement
 from app.services.lesson_factory import build_requirements
@@ -441,19 +445,37 @@ def _run_requirement_refinement_turn(
     )
 
 
-def _run_chat_turn(lesson_id: str, request: ChatRequest, *, user_id: str) -> ChatResponse:
-    workspace = workspace_state.load_workspace_for_user(user_id)
-    package, lesson = workspace_state.find_lesson_package(workspace, lesson_id)
-    board_document_state = read_board_document_sensor(lesson.board_document)
+def _run_decided_chat_turn(
+    *,
+    workspace,
+    package,
+    lesson,
+    request: ChatRequest,
+    user_id: str,
+    board_document_state,
+    workflow: AgentWorkflowOrchestrator,
+) -> ChatResponse:
     if request.board_generation_action == "start":
-        return run_blank_board_generation(
+        workflow.record_context_ready(
+            label="读取冻结学习需求",
+            role="RequirementHistory",
+            metadata={"board_document_state": board_document_state.model_context()},
+        )
+        response = run_blank_board_generation(
             workspace=workspace,
             package=package,
             lesson=lesson,
             user_id=user_id,
         )
+        workflow.record_execution(label="生成右侧板书", role="BoardEditor", response=response)
+        return response
     if board_document_state.status == "empty":
-        return _run_requirement_refinement_turn(
+        workflow.record_context_ready(
+            label="构造空白板书需求上下文",
+            role="RequirementManager",
+            metadata={"board_document_state": board_document_state.model_context()},
+        )
+        response = _run_requirement_refinement_turn(
             workspace=workspace,
             package=package,
             lesson=lesson,
@@ -461,7 +483,17 @@ def _run_chat_turn(lesson_id: str, request: ChatRequest, *, user_id: str) -> Cha
             user_id=user_id,
             board_document_state=board_document_state,
         )
+        workflow.record_execution(label="整理学习需求或普通聊天", role="RequirementManager", response=response)
+        return response
     if should_continue_board_teaching(lesson, request):
+        workflow.record_context_ready(
+            label="读取当前讲解进度",
+            role="BoardTeaching",
+            metadata={
+                "teaching_action": "continue",
+                "has_progress": lesson.board_teaching_progress is not None,
+            },
+        )
         teaching = run_board_teaching_turn(
             lesson=lesson,
             request=request,
@@ -470,7 +502,7 @@ def _run_chat_turn(lesson_id: str, request: ChatRequest, *, user_id: str) -> Cha
         )
         workspace_state.normalize_package_state(package)
         workspace_state.save_workspace_for_user(user_id, workspace)
-        return _build_response(
+        response = _build_response(
             workspace=workspace,
             package=package,
             lesson=lesson,
@@ -482,7 +514,14 @@ def _run_chat_turn(lesson_id: str, request: ChatRequest, *, user_id: str) -> Cha
             active_board_task_sheet=None,
             teaching_progress=teaching.teaching_progress,
         )
+        workflow.record_execution(label="继续讲解板书", role="BoardTeaching", response=response)
+        return response
     if should_start_board_teaching(lesson, request):
+        workflow.record_context_ready(
+            label="构造从头讲解上下文",
+            role="BoardTeaching",
+            metadata={"teaching_action": "restart"},
+        )
         teaching = run_board_teaching_turn(
             lesson=lesson,
             request=request,
@@ -491,7 +530,7 @@ def _run_chat_turn(lesson_id: str, request: ChatRequest, *, user_id: str) -> Cha
         )
         workspace_state.normalize_package_state(package)
         workspace_state.save_workspace_for_user(user_id, workspace)
-        return _build_response(
+        response = _build_response(
             workspace=workspace,
             package=package,
             lesson=lesson,
@@ -503,7 +542,14 @@ def _run_chat_turn(lesson_id: str, request: ChatRequest, *, user_id: str) -> Cha
             active_board_task_sheet=None,
             teaching_progress=teaching.teaching_progress,
         )
-    return _run_board_task_refinement_turn(
+        workflow.record_execution(label="从头讲解板书", role="BoardTeaching", response=response)
+        return response
+    workflow.record_context_ready(
+        label="构造已有板书任务上下文",
+        role="BoardTaskManager",
+        metadata={"board_document_state": board_document_state.model_context()},
+    )
+    response = _run_board_task_refinement_turn(
         workspace=workspace,
         package=package,
         lesson=lesson,
@@ -511,6 +557,63 @@ def _run_chat_turn(lesson_id: str, request: ChatRequest, *, user_id: str) -> Cha
         user_id=user_id,
         board_document_state=board_document_state,
     )
+    workflow.record_target_resolution(response)
+    workflow.record_execution(label="整理或执行已有板书任务", role="BoardTaskManager", response=response)
+    return response
+
+
+def _refine_agent_decision_from_commit(
+    *,
+    decision: AgentTurnDecision,
+    lesson,
+) -> AgentTurnDecision:
+    try:
+        metadata = current_head_commit(lesson).metadata
+    except Exception:
+        return decision
+    if not isinstance(metadata, dict) or metadata.get("basic_chat_only") is not True:
+        return decision
+    return decision.model_copy(
+        update={
+            "route": "ordinary_chat",
+            "reason": "本轮最终被执行为普通聊天，没有创建或执行文档任务。",
+            "required_role": "Chatbot",
+            "blockers": [],
+            "next_step": "直接返回自然聊天回复，不修改右侧板书。",
+            "needs_user_confirmation": False,
+        }
+    )
+
+
+def _run_chat_turn(lesson_id: str, request: ChatRequest, *, user_id: str) -> ChatResponse:
+    workspace = workspace_state.load_workspace_for_user(user_id)
+    package, lesson = workspace_state.find_lesson_package(workspace, lesson_id)
+    board_document_state = read_board_document_sensor(lesson.board_document)
+    decision = decide_agent_turn(
+        lesson=lesson,
+        request=request,
+        board_document_state=board_document_state,
+    )
+    workflow = AgentWorkflowOrchestrator(decision=decision)
+    with bind_commit_metadata(workflow.commit_metadata):
+        response = _run_decided_chat_turn(
+            workspace=workspace,
+            package=package,
+            lesson=lesson,
+            request=request,
+            user_id=user_id,
+            board_document_state=board_document_state,
+            workflow=workflow,
+        )
+    decision = _refine_agent_decision_from_commit(decision=decision, lesson=lesson)
+    workflow.update_decision(decision)
+    verification = verify_agent_response(lesson=lesson, response=response, decision=decision)
+    workflow.record_verification(verification)
+    workflow.record_persisted(response)
+    workflow.finalize_response(response)
+    workspace_state.save_workspace_for_user(user_id, workspace)
+    response.course_package = workspace_state.package_view_for_lesson(workspace, package, lesson.id)
+    return response
 
 
 def process_chat_on_lesson(lesson_id: str, request: ChatRequest, *, user_id: str) -> ChatResponse:

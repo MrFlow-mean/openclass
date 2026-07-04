@@ -74,6 +74,26 @@ BoardTaskAction = Literal[
     "expand_target",
     "simplify_target",
 ]
+AgentTurnRoute = Literal[
+    "ordinary_chat",
+    "blank_requirement_refine",
+    "blank_board_generate",
+    "post_generation_teaching_start",
+    "board_teaching_continue",
+    "board_task_refine_or_execute",
+    "interaction_session_turn",
+    "resource_grounded_task",
+]
+AgentActivityStage = Literal[
+    "turn_decision",
+    "resolve_target",
+    "build_context",
+    "execute_role",
+    "verify",
+    "persist_history",
+    "final",
+]
+AgentActivityStatus = Literal["pending", "running", "completed", "blocked", "failed", "skipped"]
 InitialLearningWorkMode = Literal["knowledge_board", "narrow_topic", "practice_artifact", "unknown"]
 InitialLearningGranularity = Literal[
     "single_knowledge_point",
@@ -346,6 +366,26 @@ class DocumentSegmentSearchResponse(BaseModel):
     query: str = ""
     kind: BoardSegmentKind | None = None
     results: list[DocumentSegmentSearchResult] = Field(default_factory=list)
+
+
+class AgentTurnDecision(BaseModel):
+    route: AgentTurnRoute
+    reason: str = ""
+    required_role: str = "chatbot"
+    blockers: list[str] = Field(default_factory=list)
+    next_step: str = ""
+    needs_user_confirmation: bool = False
+
+
+class AgentActivityEvent(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("agentevt"))
+    turn_id: str
+    stage: AgentActivityStage
+    label: str
+    status: AgentActivityStatus = "completed"
+    role: str = "system"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: str = Field(default_factory=now_iso)
 
 
 class BoardFocusRef(BaseModel):
@@ -997,6 +1037,8 @@ class AdminOverview(BaseModel):
 
 class ChatResponse(BaseModel):
     chatbot_message: str
+    agent_turn_decision: AgentTurnDecision | None = None
+    agent_activity: list[AgentActivityEvent] = Field(default_factory=list)
     learning_requirement_sheet: LearningRequirementSheet
     active_requirement_sheet: LearningRequirementSheet | None = None
     active_interaction_session: InteractionSession | None = None

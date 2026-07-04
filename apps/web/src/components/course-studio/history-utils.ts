@@ -40,7 +40,12 @@ export function createChatMessage(
   metadata?: Partial<
     Pick<
       ChatMessage,
-      "commitId" | "parentCommitIds" | "editableContent" | "interactionMode" | "editedFromCommitId"
+      | "commitId"
+      | "parentCommitIds"
+      | "editableContent"
+      | "interactionMode"
+      | "editedFromCommitId"
+      | "agentActivity"
     >
   >
 ): ChatMessage {
