@@ -16,6 +16,7 @@ dist/
 node_modules/
 apps/web/node_modules/
 apps/web/.next/
+RAG-Anything-main/
 .local-runtime/
 *.swp
 *.log

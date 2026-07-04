@@ -65,7 +65,11 @@ def _resource_parser_mode() -> str:
 def _rag_anything_path() -> Path:
     configured = os.getenv("OPENCLASS_RAG_ANYTHING_PATH")
     if configured:
-        return Path(configured).expanduser().resolve()
+        path = Path(configured).expanduser()
+        return path.resolve() if path.is_absolute() else (_repo_root() / path).resolve()
+    repo_local = (_repo_root() / "RAG-Anything-main").resolve()
+    if repo_local.exists():
+        return repo_local
     return (_repo_root().parent / "RAG-Anything-main").resolve()
 
 
