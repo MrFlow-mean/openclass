@@ -1,3 +1,5 @@
+import { inlineMathSegments, stripOrphanMathDollars } from "@/lib/latex-fragments";
+
 const MARKDOWN_HEADING_RE = /^(#{1,3})\s+(.+)$/;
 const MARKDOWN_BULLET_RE = /^[-*]\s+(.+)$/;
 const MARKDOWN_ORDERED_RE = /^\d+[.、]\s+(.+)$/;
@@ -31,42 +33,22 @@ function findClosingSingleAsterisk(value: string, startIndex: number) {
   return -1;
 }
 
-function renderDelimitedMath(value: string, index: number) {
-  const delimiters: Array<[string, string]> = [
-    ["\\(", "\\)"],
-    ["$", "$"],
-  ];
-  for (const [opener, closer] of delimiters) {
-    if (!value.startsWith(opener, index)) {
-      continue;
-    }
-    if (opener === "$" && /\d/.test(value[index + opener.length] ?? "")) {
-      continue;
-    }
-    const closeIndex = value.indexOf(closer, index + opener.length);
-    if (closeIndex <= index + opener.length) {
-      return null;
-    }
-    const latex = value.slice(index + opener.length, closeIndex).trim();
-    if (!latex) {
-      return null;
-    }
-    return {
-      endIndex: closeIndex + closer.length,
-      html: `<span data-type="inline-math" data-latex="${escapeHtml(latex)}"></span>`,
-    };
-  }
-  return null;
-}
-
 function renderInlineMarkdown(value: string): string {
+  value = stripOrphanMathDollars(value);
+  const mathSegments = inlineMathSegments(value);
   const parts: string[] = [];
   let index = 0;
+  let mathIndex = 0;
   while (index < value.length) {
-    const math = renderDelimitedMath(value, index);
-    if (math) {
-      parts.push(math.html);
-      index = math.endIndex;
+    const math = mathSegments[mathIndex];
+    if (math && math.start === index) {
+      parts.push(`<span data-type="inline-math" data-latex="${escapeHtml(math.latex)}"></span>`);
+      index = math.end;
+      mathIndex += 1;
+      continue;
+    }
+    if (math && math.start < index) {
+      mathIndex += 1;
       continue;
     }
 

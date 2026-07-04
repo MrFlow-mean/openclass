@@ -1072,6 +1072,50 @@ def test_build_document_converts_coordinate_arrow_and_text_annotation_math() -> 
     assert "$(0,0)$" not in document.content_html
 
 
+def test_build_document_converts_raw_inline_latex_fragments_in_prose() -> None:
+    document = build_document(
+        title="Doc",
+        content_text=(
+            "当 x\\neq1 时，函数取值可化简；因此 x\\to1 时可以讨论趋势。\n"
+            "> 使得当 0<|x-x_0|<\\delta 时，有 |f(x)-A|<\\varepsilon，"
+            "则称当 x\\to x_0 时极限为 A，记作 \\lim_{x\\to x_0} f(x)=A "
+            "或 f(x) \\to A (x \\to x_0). $"
+        ),
+    )
+
+    assert document.content_html.count('data-type="inline-math"') >= 6
+    assert 'data-latex="x\\neq1"' in document.content_html
+    assert 'data-latex="x\\to1"' in document.content_html
+    assert 'data-latex="0&lt;|x-x_0|&lt;\\delta"' in document.content_html
+    assert 'data-latex="|f(x)-A|&lt;\\varepsilon"' in document.content_html
+    assert 'data-latex="x\\to x_0"' in document.content_html
+    assert 'data-latex="\\lim_{x\\to x_0} f(x)=A"' in document.content_html
+    assert "$" not in document.content_html
+
+
+def test_build_document_rebuilds_stale_json_with_raw_inline_latex_fragments() -> None:
+    stale_json = {
+        "type": "doc",
+        "content": [
+            {
+                "type": "paragraph",
+                "content": [{"type": "text", "text": "当 x\\neq1 时，记作 \\lim_{x\\to x_0} f(x)=A. $"}],
+            }
+        ],
+    }
+
+    document = build_document(
+        title="Doc",
+        content_json=stale_json,
+        content_html="<p>当 x\\neq1 时，记作 \\lim_{x\\to x_0} f(x)=A. $</p>",
+    )
+
+    assert document.content_html.count('data-type="inline-math"') == 2
+    assert _collect_node_types(document.content_json).count("inlineMath") == 2
+    assert "$" not in document.content_html
+    assert "$" not in str(document.content_json)
+
+
 def test_upgrade_markdown_like_document_repairs_suspicious_math_nodes() -> None:
     sentence = "Je me disais que tu allais peut-être oublier notre rendez-vous."
     legacy = BoardDocument(

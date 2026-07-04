@@ -15,6 +15,7 @@ from docx.oxml.ns import qn
 from docx.shared import Cm
 
 from app.models import BoardDocument, DocumentPageSettings
+from app.services.latex_fragments import find_raw_latex_fragments, strip_orphan_math_dollars
 from app.services.latex_to_omml import append_omml_math as _append_normalized_omml_math
 
 
@@ -25,7 +26,7 @@ DocxBlock = tuple[str, list[InlineFragment], dict[str, Any]]
 
 _CJK_RE = re.compile(r"[\u3400-\u9fff]")
 _MATH_SIGNAL_RE = re.compile(
-    r"\\(?:begin|end|frac|dfrac|tfrac|sqrt|lim|sum|prod|int|sin|cos|tan|ln|log|exp|to|left|right|leftarrow|rightarrow|leftrightarrow|Leftarrow|Rightarrow|Leftrightarrow|Longleftarrow|Longrightarrow|Longleftrightarrow|infty|cdot|times|div|leq?|geq?|approx|neq?|pm|sim|in|notin|mid|subseteq?|supseteq?|cup|cap|mathbb|mathcal|mathfrak|mathbf|mathrm|operatorname|text|dots|cdots|ldots|vdots|partial|nabla|forall|exists|alpha|beta|gamma|delta|epsilon|varepsilon|zeta|eta|theta|iota|kappa|lambda|mu|xi|pi|rho|varrho|sigma|tau|upsilon|phi|varphi|chi|psi|omega|Gamma|Delta|Theta|Lambda|Xi|Pi|Sigma|Phi|Psi|Omega)\b"
+    r"\\(?:begin|end|frac|dfrac|tfrac|sqrt|lim|sum|prod|int|sin|cos|tan|ln|log|exp|to|left|right|leftarrow|rightarrow|leftrightarrow|Leftarrow|Rightarrow|Leftrightarrow|Longleftarrow|Longrightarrow|Longleftrightarrow|infty|cdot|times|div|leq?|geq?|approx|neq?|pm|sim|in|notin|mid|subseteq?|supseteq?|cup|cap|mathbb|mathcal|mathfrak|mathbf|mathrm|operatorname|text|dots|cdots|ldots|vdots|partial|nabla|forall|exists|alpha|beta|gamma|delta|epsilon|varepsilon|zeta|eta|theta|iota|kappa|lambda|mu|xi|pi|rho|varrho|sigma|tau|upsilon|phi|varphi|chi|psi|omega|Gamma|Delta|Theta|Lambda|Xi|Pi|Sigma|Phi|Psi|Omega)(?![A-Za-z])"
     r"|[_^]"
     r"|[=<>≤≥≈≠]"
     r"|[A-Za-z0-9)]\s*(?:[+\-−*/=<>≤≥≈≠±]|→|←)\s*[A-Za-z0-9(\\]"
@@ -40,9 +41,6 @@ _NON_FORMULA_LETTER_RE = re.compile(r"[^\W\d_A-Za-zα-ωΑ-Ω]", re.UNICODE)
 _FORMULA_CHARS_RE = re.compile(r"^[A-Za-z0-9α-ωΑ-Ω\\_{}\[\]^()+\-−*/=·∞→←≤≥≈≠±<>|&:'\s.,]+$")
 _LATEX_ENVIRONMENT_RE = re.compile(r"\\(?:begin|end)\{[A-Za-z*]+\}")
 _LATEX_TEXT_ARGUMENT_RE = re.compile(r"\\(?:text|mathrm|operatorname)\{[^{}]*\}")
-_RAW_LATEX_COMMAND_RE = re.compile(
-    r"\\(?:alpha|beta|gamma|delta|epsilon|varepsilon|zeta|eta|theta|iota|kappa|lambda|mu|xi|pi|rho|varrho|sigma|tau|upsilon|phi|varphi|chi|psi|omega|Gamma|Delta|Theta|Lambda|Xi|Pi|Sigma|Phi|Psi|Omega|infty|forall|exists|int|sum|prod|lim)\b"
-)
 _MIXED_MATH_TEXT_RE = re.compile(r"([\u3400-\u9fff，。；：、]+)")
 _HTML_BLOCK_RE = re.compile(
     r"<(?P<tag>h[1-6]|p|li|blockquote)\b[^>]*>.*?</(?P=tag)>",
@@ -229,17 +227,23 @@ def _inline_math_node(latex: str) -> dict[str, Any]:
     return {"type": "inlineMath", "attrs": {"latex": _normalize_latex(latex)}}
 
 
+def _raw_latex_fragments(value: str) -> list[tuple[int, int, str]]:
+    return find_raw_latex_fragments(
+        value,
+        is_likely_math=_is_likely_delimited_math,
+        normalize_latex=_normalize_latex,
+    )
+
+
 def _markdown_text_nodes_with_raw_math(value: str) -> list[dict[str, Any]]:
+    value = strip_orphan_math_dollars(value, has_math_signal=_has_math_signal)
     nodes: list[dict[str, Any]] = []
     cursor = 0
-    for match in _RAW_LATEX_COMMAND_RE.finditer(value):
-        command = match.group(0)
-        if not _is_likely_delimited_math(command):
-            continue
-        if match.start() > cursor:
-            nodes.extend(_markdown_text_nodes(value[cursor : match.start()]))
-        nodes.append(_inline_math_node(command))
-        cursor = match.end()
+    for start, end, latex in _raw_latex_fragments(value):
+        if start > cursor:
+            nodes.extend(_markdown_text_nodes(value[cursor:start]))
+        nodes.append(_inline_math_node(latex))
+        cursor = end
     if cursor < len(value):
         nodes.extend(_markdown_text_nodes(value[cursor:]))
     return nodes
@@ -258,8 +262,9 @@ def _append_text_or_formula_nodes(nodes: list[dict[str, Any]], value: str) -> bo
         if trailing:
             nodes.extend(_markdown_text_nodes(trailing))
         return True
-    nodes.extend(_markdown_text_nodes_with_raw_math(value))
-    return False
+    raw_nodes = _markdown_text_nodes_with_raw_math(value)
+    nodes.extend(raw_nodes)
+    return any(node.get("type") == "inlineMath" for node in raw_nodes)
 
 
 def _mixed_math_text_nodes(value: str) -> list[dict[str, Any]]:
@@ -1074,13 +1079,13 @@ def _html_has_math_nodes(content_html: str) -> bool:
 
 def _html_has_visible_raw_math_text(content_html: str) -> bool:
     text = html_to_text(content_html)
-    return "$" in text or "\\(" in text or "\\[" in text or bool(_RAW_LATEX_COMMAND_RE.search(text))
+    return "$" in text or "\\(" in text or "\\[" in text or bool(_raw_latex_fragments(text))
 
 
 def _json_has_raw_math_text(node: dict[str, Any]) -> bool:
     if node.get("type") == "text":
         text = str(node.get("text") or "")
-        return "$" in text or "\\(" in text or "\\[" in text or bool(_RAW_LATEX_COMMAND_RE.search(text))
+        return "$" in text or "\\(" in text or "\\[" in text or bool(_raw_latex_fragments(text))
     content = node.get("content")
     if not isinstance(content, list):
         return False
