@@ -1389,7 +1389,7 @@ class OpenAICourseAI:
             "核心三因素：位置、动作、怎么做。位置是上位概念，包含 target_range（目标文本范围）"
             "和 insertion_anchor（插入锚点）两种类型。\n"
             "规则：\n"
-            "1. requested_action 本阶段只允许 write、explain 或 null；规则互动和 edit 执行先不做。\n"
+            "1. requested_action 本阶段只允许 write、edit、explain 或 null；规则互动先不做。\n"
             "2. location_kind=target_range 表示用户要对已有目标文本范围做动作；"
             "location_kind=insertion_anchor 表示用户要新增内容并给出插入位置；"
             "location_kind=unspecified 表示还没说清位置类型或位置线索。\n"
@@ -1418,7 +1418,7 @@ class OpenAICourseAI:
                     "location_kind": "target_range、insertion_anchor 或 unspecified。",
                     "target_hint": "用户给出的目标位置线索；有选区就概括选区。",
                     "location_status": "missing、selected、resolved、ambiguous 或 content_absent；清单阶段通常是 missing/selected。",
-                    "requested_action": "只允许 write、explain 或 null。",
+                    "requested_action": "只允许 write、edit、explain 或 null。",
                     "question_or_topic": "用户要怎么讲、怎么写、围绕什么主题或要求处理。",
                     "interaction_rule_draft": "本阶段固定为 null。",
                     "missing_items": "仍缺少的位置、动作、怎么做。",
@@ -1461,12 +1461,12 @@ class OpenAICourseAI:
             "清单只收敛三个核心因素：\n"
             "1. location：位置。它是上位概念，包含 target_range（对已有哪段内容操作）和 "
             "insertion_anchor（新内容插到哪里）两种类型；用户未说明时 location_kind=unspecified。\n"
-            "2. action：动作。本阶段只允许 explain 或 write；不要使用 edit 或 chat。\n"
+            "2. action：动作。本阶段只允许 explain、write 或 edit；不要使用 chat 执行。\n"
             "3. instruction：怎么做，也就是 question_or_topic，记录用户希望讲什么角度、补写什么主题、"
             "写成什么样，或仍需澄清的操作要求。\n"
             "规则：\n"
             "1. board_task_sheet.board_workflow 必须记录为 act_on_existing_board。\n"
-            "2. requested_action 只能是 explain、write 或 null；规则互动、角色扮演、问答循环先不做，"
+            "2. requested_action 只能是 explain、write、edit 或 null；规则互动、角色扮演、问答循环先不做，"
             "不要把本轮判成 chat。\n"
             "3. location_kind=target_range 表示用户要对已有目标文本范围做动作；"
             "location_kind=insertion_anchor 表示用户要新增内容并给出插入位置；"
@@ -1498,7 +1498,7 @@ class OpenAICourseAI:
                         "location_kind": "target_range、insertion_anchor 或 unspecified。",
                         "target_hint": "用户给出的位置线索；有选区就概括选区。",
                         "location_status": "清单阶段通常是 missing 或 selected；不要假装已经定位完成。",
-                        "requested_action": "只允许 explain、write 或 null。",
+                        "requested_action": "只允许 explain、write、edit 或 null。",
                         "question_or_topic": "用户要怎么讲、怎么写、围绕什么主题或要求处理。",
                         "interaction_rule_draft": "本阶段固定为 null；规则互动先不做。",
                         "missing_items": "仍缺少的位置、动作、怎么做。",

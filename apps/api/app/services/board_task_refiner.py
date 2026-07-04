@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -172,9 +173,35 @@ def _model_from_history_json(
 
 
 def _board_summary(lesson: Lesson, *, limit: int = 2200) -> str:
-    parts = [lesson.board_document.title.strip(), (lesson.board_document.content_text or "").strip()]
+    parts = [
+        lesson.board_document.title.strip(),
+        _board_outline(lesson),
+        (lesson.board_document.content_text or "").strip(),
+    ]
     text = "\n\n".join(part for part in parts if part)
     return text[:limit]
+
+
+def _board_outline(lesson: Lesson, *, limit: int = 1200) -> str:
+    lines: list[str] = []
+    seen: set[str] = set()
+    text = lesson.board_document.content_text or ""
+    for match in re.finditer(r"(?m)^\s*(?:#{1,6}\s+)?(?P<title>(?:\d+(?:\.\d+)*|[一二三四五六七八九十]+[、.．])\s+.+?)\s*$", text):
+        title = re.sub(r"\s+", " ", match.group("title")).strip()
+        if not title or title in seen:
+            continue
+        seen.add(title)
+        lines.append(f"- {title}")
+    for match in re.finditer(r"(?m)^\s*(#{1,6})\s+(?P<title>.+?)\s*$", text):
+        title = re.sub(r"\s+", " ", match.group("title")).strip()
+        if not title or title in seen:
+            continue
+        seen.add(title)
+        lines.append(f"- {title}")
+    if not lines:
+        return ""
+    outline = "板书结构目录：\n" + "\n".join(lines[:24])
+    return outline[:limit]
 
 
 def _normalize_board_task_sheet(
@@ -187,7 +214,7 @@ def _normalize_board_task_sheet(
         "interaction_rule_draft": None,
         "confirmation_status": sheet.confirmation_status or "none",
     }
-    if sheet.requested_action not in {"write", "explain", None}:
+    if sheet.requested_action not in {"write", "edit", "explain", "chat", None}:
         update["requested_action"] = None
     if selection and not sheet.target_location:
         update["target_location"] = _focus_from_selection(selection)
@@ -208,7 +235,7 @@ def _normalize_board_task_sheet(
         update["location_status"] = "selected"
 
     normalized = sheet.model_copy(update=update)
-    missing_items = _missing_items(normalized)
+    missing_items = _missing_items(normalized, declared_missing=sheet.missing_items)
     progress = _progress_from_missing(missing_items)
     return normalized.model_copy(update={"missing_items": missing_items, "progress": progress})
 
@@ -240,19 +267,39 @@ def _selection_display_label(selection: SelectionRef) -> str:
     return "当前上下文"
 
 
-def _missing_items(sheet: BoardTaskRequirementSheet) -> list[str]:
+def _missing_items(
+    sheet: BoardTaskRequirementSheet,
+    *,
+    declared_missing: list[str] | None = None,
+) -> list[str]:
     missing: list[str] = []
     if sheet.location_kind == "unspecified" or not (sheet.target_hint.strip() or sheet.target_location):
         missing.append("位置")
-    if sheet.requested_action not in {"write", "explain"}:
+    if sheet.requested_action not in {"write", "edit", "explain"}:
         missing.append("动作")
     if not sheet.question_or_topic.strip():
         missing.append("怎么做")
+    if sheet.requested_action == "chat":
+        missing.append("互动规则执行暂未启用")
+    if _has_unresolved_clarification(sheet):
+        missing.append("澄清问题")
+    for item in declared_missing or []:
+        compact = str(item or "").strip()
+        if compact and compact not in missing:
+            missing.append(compact)
     return missing
 
 
 def _progress_from_missing(missing_items: list[str]) -> int:
     return max(0, min(100, round(((3 - len(missing_items)) / 3) * 100)))
+
+
+def _has_unresolved_clarification(sheet: BoardTaskRequirementSheet) -> bool:
+    question = sheet.clarification_question.strip()
+    if question:
+        return True
+    compact = re.sub(r"\s+", "", sheet.question_or_topic)
+    return bool(re.search(r"(待定|未定|不明确|不清楚|不确定|待确认|需确认|需要澄清|尚未明确)", compact))
 
 
 def _board_task_questions(sheet: BoardTaskRequirementSheet | None) -> list[str]:

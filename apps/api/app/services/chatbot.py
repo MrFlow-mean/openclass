@@ -10,6 +10,7 @@ from app.models import (
 from app.services import workspace_state
 from app.services.blank_board_generation import run_blank_board_generation
 from app.services.board_document_sensor import read_board_document_sensor
+from app.services.board_task_executor import execute_ready_board_task
 from app.services.board_task_history import BoardTaskHistoryStamp
 from app.services.board_task_refiner import refine_existing_board_task_requirement
 from app.services.course_runtime import effective_requirements
@@ -87,6 +88,11 @@ def _build_response(
     active_board_task_sheet=None,
     board_task_stamp: BoardTaskHistoryStamp | None = None,
     board_task_questions: list[str] | None = None,
+    resolved_focus=None,
+    focus_candidates=None,
+    board_document_operation_status="none",
+    board_document_operation_failure_reason=None,
+    board_patch_diff=None,
 ) -> ChatResponse:
     requirements = effective_requirements(lesson)
     return ChatResponse(
@@ -109,9 +115,30 @@ def _build_response(
         needs_clarification=False,
         clarification_questions=[],
         resource_matches=[],
-        focus_candidates=[],
+        resolved_focus=resolved_focus,
+        focus_candidates=focus_candidates or [],
         requirement_cleared=requirement_cleared,
+        board_document_operation_status=board_document_operation_status,
+        board_document_operation_failure_reason=board_document_operation_failure_reason,
+        board_patch_diff=board_patch_diff or [],
         course_package=workspace_state.package_view_for_lesson(workspace, package, lesson.id),
+    )
+
+
+def _board_task_ready_for_execution(active_board_task_sheet) -> bool:
+    if active_board_task_sheet is None:
+        return False
+    if active_board_task_sheet.requested_action not in {"explain", "write", "edit"}:
+        return False
+    if active_board_task_sheet.progress < 100:
+        return False
+    if active_board_task_sheet.missing_items:
+        return False
+    if active_board_task_sheet.clarification_question.strip():
+        return False
+    return bool(
+        active_board_task_sheet.question_or_topic.strip()
+        or active_board_task_sheet.target_hint.strip()
     )
 
 
@@ -158,6 +185,41 @@ def _run_board_task_refinement_turn(
         else BASIC_CHAT_METADATA_KIND
     )
     active_board_task = outcome.active_board_task_sheet
+    if outcome.route == "board_task_refining" and _board_task_ready_for_execution(active_board_task):
+        execution = execute_ready_board_task(
+            owner_user_id=user_id,
+            lesson=lesson,
+            board_task=active_board_task,
+            user_message=request.message,
+            selection=request.selection,
+            conversation_summary=_conversation_summary(request.conversation),
+            history_stamp=outcome.history_stamp,
+            history_operations=outcome.history_operations,
+        )
+        workspace_state.normalize_package_state(package)
+        workspace_state.save_workspace_and_board_task_history_for_user(
+            user_id,
+            workspace,
+            board_task_history_operations=execution.history_operations,
+        )
+        return _build_response(
+            workspace=workspace,
+            package=package,
+            lesson=lesson,
+            chatbot_message=execution.chatbot_message,
+            board_decision=execution.board_decision,
+            active_requirement_sheet=None,
+            learning_clarification=_reset_clarification(),
+            requirement_cleared=True,
+            active_board_task_sheet=execution.active_board_task_sheet,
+            board_task_stamp=execution.board_task_stamp,
+            board_task_questions=execution.board_task_questions,
+            resolved_focus=execution.resolved_focus,
+            focus_candidates=execution.focus_candidates,
+            board_document_operation_status=execution.board_document_operation_status,
+            board_document_operation_failure_reason=execution.board_document_operation_failure_reason,
+            board_patch_diff=execution.board_patch_diff,
+        )
     commit_operations(
         lesson,
         [],
