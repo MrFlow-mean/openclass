@@ -4,89 +4,164 @@
   <img src="docs/assets/openclass-product-cover.png" alt="OpenClass 产品封面" width="280" />
 </p>
 
-开放课堂（OpenClass）是一个面向课程设计、讲义创作和资料管理的课程工作台。当前代码保留前端工作台、富文本讲义编辑、资料库、版本历史、课程图谱和持久化后端；旧的后端 AI 工作流程运行框架已经移除，新的产品工作架构等待重新接入。
+开放课堂（OpenClass）是一个面向严肃学习、研究、写作和知识工作的 AI document workspace（AI 文档工作台）。它把 AI conversation（AI 对话）和 AI document writing（AI 文档编写）放在同一个工作空间里：左侧 Chatbot（对话角色）理解需求、承接讲解和确认行动，右侧 Board（板书文档）沉淀结构化成果、支持继续编辑、导入导出和版本回退。
 
-## 产品能力
+当前仓库是一个本地优先的课程 / 文档工作台：前端提供 OpenClass Studio、课程包、lesson（工作单元 / 文档单元）、资料库、富文本文档编辑器、模型选择、Realtime（实时输入输出）入口和版本历史；后端提供 FastAPI（Python API 服务框架）、SQLite（本地关系型数据库）持久化、AI workflow（AI 工作链路）、资料解析、文档导入导出和审计日志。
 
-- 前端课程工作台：围绕课程包、lesson、资料和文档编辑提供统一操作界面。
-- 富文本讲义编辑：右侧类 Word 编辑器支持手动编辑、DOCX 导入导出。
-- 资料库与引用：上传课程资料，抽取章节结构，作为后续文档整理和新架构接入的资料基础。
-- 课程包管理：一个课程包可以包含多节 lesson，适合按主题、章节或教学单元组织内容。
-- 版本与分支：每节课支持 commit / branch / restore，可以尝试不同讲法再安全回退。
-- 课程图谱：用结构化关系串联 lesson、知识点和课程路径。
-- 模型配置入口：保留文本模型配置与健康检查，供后续新架构复用。
+OpenClass 不做固定学科模板系统，也不向 general agent（通用智能代理）方向扩张。产品需求、目标用户和边界见 [OpenClass PRD](docs/product/openclass-prd.md)。
 
-产品需求与边界见 [OpenClass PRD](docs/product/openclass-prd.md)。
+## 当前能力
+
+- 工作空间与课程包：创建、打开、重命名、删除课程包，按 lesson 组织严肃学习或文档工作。
+- Chatbot + Board 双工作面：对话负责需求、讲解、确认和状态反馈；Board 负责生成、编辑和保存正式文档内容。
+- 空白 Board 生成：空板书时先判断学习 / 文档工作模式，维护 LearningRequirementSheet（学习需求清单），冻结后交给 BoardEditor（板书文档编辑器）生成结构化文档。
+- 已有 Board 任务：非空板书进入 BoardTaskRequirementSheet（已有板书任务清单），再通过 FocusResolver（目标定位器）定位目标内容，最后按 write / edit / explain / chat（写入 / 编辑 / 讲解 / 互动）路线执行。
+- 规则互动：用户明确要求问答、练习、轮次、纠错等互动时，可启动 InteractionSession（规则互动会话），围绕目标文档内容继续对话。
+- 富文本文档编辑：右侧类 Word 编辑器支持标题、段落、列表、表格、强调、数学公式、手动编辑和自动保存。
+- 文档格式约束：正式 `content_text` 以 Markdown（轻量标记文本格式）/ 普通文本为事实来源；HTML（超文本标记语言）只作为渲染层或导出层结果。
+- 资料库与引用：上传文件或添加 URL（网页地址），解析 PDF（便携式文档格式）、DOCX、Markdown、EPUB（电子书格式）等资料结构，保存章节、页面、片段和可检索 evidence（证据）。
+- 资料解析增强：可选接入 RAG-Anything，用于复杂资料解析；未启用时使用后端原生解析路径。
+- 导入导出：支持 DOCX（Word 文档格式）导入、DOCX 导出和 HTML 导出。
+- 版本历史：lesson 支持 commit（提交记录）、branch（分支）、restore（恢复）和图谱化历史查看。
+- 模型目录：`/api/ai-models` 暴露可用模型和 provider（模型提供方）状态，前端可切换文本 / 板书模型。
+- Realtime：默认关闭；开启后作为同一个 Chatbot 的实时语音 / 实时输入输出形态，而不是新的独立教师角色。
+- 登录与管理：支持邮箱登录、游客登录、可选 OAuth（第三方登录授权）和基础 admin（管理员）总览。
 
 ## 产品 Workflow
 
-1. 创建课程包：为一门课、一个专题或一次培训建立独立课程空间。
-2. 添加 lesson：按章节、知识点或教学任务拆分课程内容。
-3. 上传资料：导入讲义、参考文档、案例材料或课堂素材，系统记录 metadata 并抽取结构。
-4. 整理资料：通过资料库保存上传文件 metadata、抽取结果和章节入口。
-5. 手动打磨：在富文本编辑器中直接调整标题、段落、重点、示例和课堂活动。
-6. 保存版本：对稳定结果创建 commit；需要探索新讲法时创建 branch，满意后再保留或回退。
-7. 组织课程路径：通过课程包、标签页和课程图谱把多个 lesson 串成完整教学流程。
-8. 导入导出：用 DOCX 导入导出进入线下备课、分享和归档流程。
+### 从空白 Board 到文档
+
+1. 用户提出学习、研究、写作或文档任务。
+2. 后端判断当前 Board 是否为空，并识别本轮是否需要生成文档。
+3. Requirement Manager（需求管理器）维护最小必要需求清单；信息不足时只追问关键缺口。
+4. 需求达到可执行条件后写入 frozen requirement（冻结需求快照）。
+5. BoardEditor 只根据冻结快照和必要资料摘要生成右侧 Board。
+6. 系统写入 lesson commit，并保留 requirement run（需求运行记录）与 metadata（元数据）。
+7. Chatbot 承接下一步，不把临时聊天内容当作正式文档事实来源。
+
+### 围绕已有 Board 工作
+
+1. 用户发起讲解、补充、改写、练习或互动请求。
+2. 系统维护 BoardTaskRequirementSheet，明确目标位置、动作类型、问题 / 主题和特殊互动方式。
+3. FocusResolver 把“这里”“第 2 节”“选中的内容”等表达定位为具体 target focus（目标范围）。
+4. Board AI（板书侧智能）裁决路线：write、edit、explain、chat、clarify_location（澄清位置）或 await_write_confirmation（等待写入确认）。
+5. write / edit 路线由 BoardEditor 修改 Board；explain 路线先生成 BoardExplanationDirective（板书讲解指令）再交给 Chatbot 讲解；chat 路线启动 InteractionSession。
+6. 成功执行后写入 commit / chat history（聊天历史）和 board task metadata，清空当前 active task（活跃任务），保留历史。
+
+## 仓库地图
+
+```text
+.
+├── apps/
+│   ├── api/                         # FastAPI 后端
+│   │   ├── app/main.py              # 应用组装、CORS（跨源资源共享）、健康检查、模型目录
+│   │   ├── app/routers/             # API route（接口路由）：auth / workspace / documents / chat / realtime / resources
+│   │   ├── app/services/            # service layer（服务层）：AI workflow、文档、资料、历史、模型、Realtime
+│   │   ├── app/models.py            # model/schema（数据结构）：Board、lesson、资源、任务、响应模型
+│   │   ├── tests/                   # pytest（Python 测试框架）用例
+│   │   └── data/                    # 本地运行数据，已 gitignore（Git 忽略）
+│   └── web/                         # Next.js（React 应用框架）前端
+│       ├── src/app/                 # 页面路由：home / studio / course / auth / admin
+│       ├── src/components/          # frontend UI（前端界面）组件
+│       ├── src/components/course-studio/
+│       ├── src/hooks/course-studio/ # hook（前端状态逻辑）
+│       └── src/lib/                 # 前端 API、格式、模型和状态工具
+├── docs/
+│   ├── assets/                      # README 和产品展示素材
+│   └── product/openclass-prd.md     # PRD（产品需求文档）
+├── launcher/                        # 本地入口 HTML
+├── launchd/                         # macOS 后台守护配置
+├── scripts/                         # 本地守护、安装和 guard（守卫检查）脚本
+├── package.json                     # 根 workspace（工作区）脚本
+├── pyproject.toml                   # 后端依赖与 pytest 配置
+└── .env.example                     # 环境变量示例
+```
 
 ## 本地运行
 
-需要 Node.js 20+ 和 Python 3.13+。
+需要 Node.js（JavaScript 运行时）20+ 和 Python（后端语言）3.13+。
 
 ```bash
-npm run setup            # 首次安装：npm install + .venv + editable 装后端
-cp .env.example .env     # 配置至少一个 provider
+npm run setup            # 首次安装：npm install + .venv + editable（可编辑模式）安装后端
+cp .env.example .env     # 配置至少一个 provider（模型提供方）
 npm run dev              # 同时启动前后端
 ```
 
-- 前端 http://localhost:3000，后端 http://localhost:8000（健康检查 `/health`）。
-- SQLite 主库：`apps/api/data/openclass.sqlite3`。首次启动会从旧 `apps/api/data/store.json` 导入并归档旧文件；线上部署可用 `OPENCLASS_DATABASE_PATH`、`OPENCLASS_UPLOAD_DIR`、`OPENCLASS_EXPORT_DIR` 指到持久化目录。
-- AI 调用日志：`apps/api/data/logs/ai-usage.jsonl`。
-- 也可以双击 `start-ai-board.command`，它会用后台守护进程启动前后端并打开 `launcher/personal-home.html`。日常长时间使用优先用这个入口。
+- 前端：http://localhost:3000
+- 后端：http://localhost:8000
+- 健康检查：http://localhost:8000/health
+- SQLite 主库：`apps/api/data/openclass.sqlite3`
+- AI 调用日志：`apps/api/data/logs/ai-usage.jsonl`
 
-## 模型配置
+也可以双击 `start-ai-board.command`，它会通过本地守护进程启动前后端，并打开 `launcher/personal-home.html`。日常长时间使用优先用这个入口。
+
+生产或长期运行时，建议把数据目录指到稳定持久化路径：
+
+```bash
+OPENCLASS_DATABASE_PATH=/var/lib/openclass/openclass.sqlite3
+OPENCLASS_UPLOAD_DIR=/var/lib/openclass/uploads
+OPENCLASS_EXPORT_DIR=/var/lib/openclass/exports
+OPENCLASS_PUBLIC_ORIGIN=https://your-domain.example
+OPENCLASS_WEB_ORIGIN=https://your-domain.example
+```
+
+## 模型与 Provider（模型提供方）
 
 最小配置：
 
 ```bash
 OPENAI_API_KEY=...
+OPENAI_BASE_URL=https://api.openai.com/v1
 OPENAI_COMPAT_API=chat_completions
+AI_TEXT_PROVIDER=openai
+AI_REALTIME_PROVIDER=openai
 OPENAI_MODEL=gpt-5.5
+OPENAI_PM_MODEL=gpt-5.5
+OPENAI_BOARD_MODEL=gpt-5.5
+OPENAI_CHATBOT_MODEL=gpt-5.5
 OPENAI_CATALOG_MODEL=gpt-5.4-mini
 OPENCLASS_REALTIME_ENABLED=false
 OPENCLASS_REALTIME_TOOLS_ENABLED=false
 OPENAI_REALTIME_MODEL=gpt-realtime-2
 OPENAI_IMAGE_MODEL=gpt-image-2
-AI_TEXT_PROVIDER=openai
-AI_REALTIME_PROVIDER=openai
 ```
 
-OpenAI/GPT 文本交互和 GPT Image 2 默认走官方 OpenAI API：`https://api.openai.com/v1`。交互 AI 文本默认用 GPT-5.5；语音交互默认用 GPT Realtime 2，但需要显式设置 `OPENCLASS_REALTIME_ENABLED=true` 才会启用后端 WebRTC 连接，`OPENCLASS_REALTIME_TOOLS_ENABLED=true` 才允许 Realtime 调用后端 Chatbot 工具。复杂问题的隐藏强推理工具默认使用 `OPENAI_STRONG_REASONING_MODEL=gpt-5.5` 和 `OPENAI_STRONG_REASONING_EFFORT=high`，只有设置 `OPENCLASS_STRONG_REASONING_ALLOW_PRO=true` 时才会使用 `OPENAI_PRO_REASONING_MODEL`。上传资料的目录 AI 通过 `OPENAI_CATALOG_MODEL` 独立配置，默认用 GPT-5.4 mini。其他 provider（Anthropic / Google / DeepSeek / Kimi / MiniMax / 自定义兼容网关）和默认模型见 `.env.example`。
+`.env.example` 还包含 Anthropic、Google、DeepSeek、Kimi、MiniMax、自定义 OpenAI-compatible（兼容 OpenAI 接口）网关、自定义 Anthropic-compatible（兼容 Anthropic 接口）网关，以及本地 Codex app-server（Codex 应用服务）适配器配置。
 
-前端"选择模型"调 `/api/ai-models`，未配置 key 的 provider 会标为未配置。当前保留并启用的是模型目录、课程聊天入口、文档保存/导入/导出和资料解析等工作台能力；Realtime 默认关闭，开启后仍作为同一个 Chatbot 的实时输入/输出形态，而不是新的教学角色。`BoardTeachingGuide` / `BoardTeachingProgress` 等教学工作流 schema 仅作为历史兼容和 future workflow 预留，不代表完整 AI 教学编排已经接回。
+Realtime 默认关闭；只有设置 `OPENCLASS_REALTIME_ENABLED=true` 才会启用后端实时连接，设置 `OPENCLASS_REALTIME_TOOLS_ENABLED=true` 才允许 Realtime 调用后端 Chatbot 工具。
 
-## 测试
+## 数据与文档格式
 
-`npm run verify` 是本地和 CI 的必跑验证入口，不需要真实 LLM API key：
+- AI 写入 Board 的正式正文必须是 Markdown / 普通文本，不能把模型直接返回的 HTML 保存为正式 `content_text`。
+- 前端编辑器可以把文档渲染成 HTML DOM（浏览器文档对象模型），但这只是展示层，不改变后端事实来源。
+- DOCX 导出走后端原生渲染路径，和网页富文本渲染保持分离。
+- 资料解析以通用结构为边界：章节、页面、片段、引用范围和 evidence，不在核心代码里内置具体学科、教材或 demo 内容。
+
+## 测试与验证
+
+`npm run verify` 是本地和 CI（持续集成）的主验证入口，不需要真实 LLM（大语言模型）API key（接口密钥）：
 
 ```bash
+npm run guard:file-sizes
 npm run lint:web
 npm run typecheck:web
 npm run test:api
 npm run build:web
-npm run verify            # 文件尺寸安全线 + 前端 lint/typecheck + 后端测试 + 前端构建
+npm run verify
 ```
 
-GitHub Actions 会在 PR 和 `main` 分支 push 时运行同一条 required gate。该 workflow 合并并在 `main` 上通过后，应在 GitHub Branch protection 或 Rulesets 中要求 `Required: npm run verify` 通过后才能合并。
+GitHub Actions 会在 PR（Pull Request，合并请求）和 `main` 分支 push（推送）时运行 `.github/workflows/verify.yml` 中的 verify workflow（验证工作流）。
 
-Playwright 主流程 smoke test 是可选验证，默认不作为合并门禁：
+Playwright（浏览器端到端测试工具）主流程 smoke test（冒烟测试）是可选验证，默认不作为合并门禁：
 
 ```bash
 npm run test:e2e          # 默认启动 127.0.0.1:3110 / 127.0.0.1:8110
 ```
 
-CI 中的 Playwright smoke test 只在手动触发 `Verify` workflow 并勾选 `run_e2e` 时运行。
+## 协作约定
 
-## 协作
-
-工程与 AI 协作约定见 `AGENTS.md`（根）和 `apps/web/AGENTS.md`（前端）。提交前跑 `npm run verify`。
+- 工程与 AI 协作规则见 [AGENTS.md](AGENTS.md)。
+- 前端协作规则见 [apps/web/AGENTS.md](apps/web/AGENTS.md)。
+- 提交前优先运行 `npm run verify`。
+- 新功能应接入现有 AI workflow，不绕过需求清单、目标定位、资料选择、写入确认、讲解授权和历史审计。
+- OpenClass 保持通用能力优先：不要把具体学科、教材、考试、固定讲义或 demo 样例写入核心默认路径。
