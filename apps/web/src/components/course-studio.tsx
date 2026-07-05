@@ -232,6 +232,7 @@ export function CourseStudio() {
     handleEditMessage,
     handleScopeAction,
     handleReferenceAction,
+    handleSelectResourceChapter,
     handleBoardEditAction,
     handleContinueTeaching,
   } = chatAgent;
@@ -690,6 +691,8 @@ export function CourseStudio() {
           onUploadResource={(file) => handleUploadResource(file)}
           isAddingResourceUrl={busyAction === "resource-url"}
           onAddResourceUrl={(url) => handleAddResourceUrl(url)}
+          selectedResourceReference={activeRequirements?.selected_resource_reference ?? null}
+          onSelectResourceChapter={(resource, chapter) => handleSelectResourceChapter(resource, chapter)}
           relatedEdges={relatedEdges}
           lessonMap={lessonMap}
           onCreateBranch={() => handleCreateBranch()}

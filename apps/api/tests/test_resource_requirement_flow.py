@@ -130,6 +130,46 @@ def test_blank_requirement_refinement_suggests_matching_resource_reference(
     assert "selected_resource_reference" in str(history_state["latest_sheet_json"])
 
 
+def test_explicit_resource_chapter_selection_records_reference_without_generation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    lesson_id = _seed_blank_lesson_with_resource(store)
+
+    response = process_chat_on_lesson(
+        lesson_id,
+        ChatRequest(
+            message="选择资料章节：workflow-source.pdf / Source selection workflow",
+            resource_reference_action="confirm",
+            resource_reference_resource_id="resource_workflow",
+            resource_reference_chapter_id="chapter_source_selection",
+        ),
+        user_id=TEST_USER_ID,
+    )
+
+    assert response.board_document_operation_status == "none"
+    assert response.active_requirement_sheet is not None
+    selected = response.active_requirement_sheet.selected_resource_reference
+    assert selected is not None
+    assert selected.status == "confirmed"
+    assert selected.resource_id == "resource_workflow"
+    assert selected.chapter_id == "chapter_source_selection"
+    assert response.selected_reference is not None
+    assert response.selected_reference.resource_id == "resource_workflow"
+
+    saved = store.load_for_user(TEST_USER_ID)
+    lesson = saved.packages[0].lessons[-1]
+    assert not lesson.board_document.content_text.strip()
+    assert lesson.learning_requirements is not None
+    assert lesson.learning_requirements.selected_resource_reference is not None
+
+    history_state = store.load_learning_requirement_history_state(TEST_USER_ID, lesson_id)
+    assert history_state is not None
+    assert "resource_workflow" in str(history_state["latest_sheet_json"])
+
+
 def test_confirmed_resource_reference_reaches_blank_board_generation(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,

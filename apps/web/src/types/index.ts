@@ -286,6 +286,9 @@ export interface LibraryChapter {
   summary: string;
   keywords: string[];
   prerequisites: string[];
+  parent_id?: string | null;
+  parent_title?: string | null;
+  path: string[];
   locator_hint?: string | null;
   order_index: number;
   scan_strategy: "outline_only" | "heading_section" | "page_window" | "fulltext_match";

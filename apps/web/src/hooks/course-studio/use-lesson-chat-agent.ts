@@ -26,6 +26,7 @@ import type {
   LearningClarificationStatus,
   LearningRequirementSheet,
   Lesson,
+  LibraryChapter,
   ResourceMatch,
   ResourceReferenceContext,
   ResourceReferencePrompt,
@@ -178,7 +179,7 @@ export function useLessonChatAgent({
       return `暂不扩选板书：${payload.board_edit_topic ?? payload.message}`;
     }
     if (payload.resource_reference_action === "confirm") {
-      return "继续执行：参考推荐章节生成讲义";
+      return payload.message || "选择资料章节";
     }
     if (payload.resource_reference_action === "skip") {
       return "继续执行：先不参考推荐章节";
@@ -779,6 +780,27 @@ export function useLessonChatAgent({
     setLastReferenceRequest(null);
   }
 
+  async function handleSelectResourceChapter(
+    resource: CoursePackage["resources"][number],
+    chapter: LibraryChapter
+  ) {
+    if (!activeLesson) {
+      return;
+    }
+    if (!isBoardDocumentEmpty(currentBoardDocument ?? activeLesson.board_document)) {
+      setError("当前板书已有内容。请在聊天框说明要把这个资料章节补充、改写或讲解到哪里。");
+      return;
+    }
+    const titlePath = chapter.path.length ? chapter.path.join(" / ") : chapter.title;
+    await handleSubmitChat({
+      message: `选择资料章节：${resource.name} / ${titlePath}`,
+      interaction_mode: "ask",
+      resource_reference_action: "confirm",
+      resource_reference_resource_id: resource.id,
+      resource_reference_chapter_id: chapter.id,
+    });
+  }
+
   async function handleBoardEditAction(action: "confirm" | "skip") {
     if (!boardEditPrompt || !lastBoardEditRequest) {
       return;
@@ -831,6 +853,7 @@ export function useLessonChatAgent({
     handleEditMessage,
     handleScopeAction,
     handleReferenceAction,
+    handleSelectResourceChapter,
     handleBoardEditAction,
     handleContinueTeaching,
   };

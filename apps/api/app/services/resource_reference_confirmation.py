@@ -12,6 +12,7 @@ from app.services import workspace_state
 from app.services.course_runtime import effective_requirements
 from app.services.history import commit_operations
 from app.services.learning_requirement_history import LearningRequirementHistoryRecorder
+from app.services.lesson_factory import build_requirements
 from app.services.resource_requirement_bridge import (
     confirm_requirement_resource_reference,
     skip_requirement_resource_reference,
@@ -32,7 +33,14 @@ def run_resource_reference_confirmation_turn(
     active_requirement = _learning_requirement_from_history_or_lesson(lesson, history_state)
     active_clarification = _learning_clarification_from_history(history_state)
     if active_requirement is None or active_clarification is None:
-        return None
+        explicit_state = _explicit_resource_selection_state(
+            lesson=lesson,
+            request=request,
+            visible_resources=visible_resources,
+        )
+        if explicit_state is None:
+            return None
+        active_requirement, active_clarification = explicit_state
 
     if request.resource_reference_action == "confirm":
         if not request.resource_reference_resource_id or not request.resource_reference_chapter_id:
@@ -161,8 +169,59 @@ def _learning_clarification_from_history(history_state) -> LearningClarification
     return None
 
 
+def _explicit_resource_selection_state(
+    *,
+    lesson,
+    request: ChatRequest,
+    visible_resources: list[ResourceLibraryItem],
+) -> tuple[LearningRequirementSheet, LearningClarificationStatus] | None:
+    if request.resource_reference_action != "confirm":
+        return None
+    if not request.resource_reference_resource_id or not request.resource_reference_chapter_id:
+        return None
+    resource = next(
+        (candidate for candidate in visible_resources if candidate.id == request.resource_reference_resource_id),
+        None,
+    )
+    if resource is None:
+        return None
+    chapter = next(
+        (candidate for candidate in resource.outline if candidate.id == request.resource_reference_chapter_id),
+        None,
+    )
+    if chapter is None:
+        return None
+
+    chapter_path = " / ".join(chapter.path) if chapter.path else chapter.title
+    requirement = build_requirements(chapter.title)
+    requirement.theme = chapter.title
+    requirement.learning_goal = f"围绕资料章节“{chapter_path}”生成板书文档。"
+    requirement.current_questions = ["请说明希望这节资料生成成什么样的板书。"]
+    requirement.target_depth = "根据用户后续指令决定讲解深度。"
+    requirement.output_preference = "板书文档"
+    requirement.boundary = f"优先围绕《{resource.name}》中的“{chapter_path}”。"
+    requirement.board_workflow = "generate_from_scratch"
+    requirement.work_mode = "knowledge_board"
+    requirement.granularity = "single_knowledge_point"
+
+    clarification = LearningClarificationStatus(
+        progress=40,
+        label="collecting",
+        reason=f"已选择《{resource.name}》中的“{chapter_path}”作为后续板书资料范围。",
+        missing_items=["生成指令"],
+        can_start=False,
+        forced_start=False,
+        summary=f"后续板书将优先参考资料章节“{chapter_path}”。",
+        next_question="你希望基于这一节生成怎样的板书？",
+        ready_for_board=False,
+        work_mode="knowledge_board",
+        granularity="single_knowledge_point",
+    )
+    return requirement, clarification
+
+
 def _resource_confirmation_message(requirement: LearningRequirementSheet) -> str:
     reference = requirement.selected_resource_reference
     if reference is None or reference.status != "confirmed":
         return "已记录这次资料选择。"
-    return f"已确认以《{reference.resource_name}》中的“{reference.chapter_title}”作为板书生成依据。"
+    return f"已选择《{reference.resource_name}》中的“{reference.chapter_title}”作为后续板书资料范围。"

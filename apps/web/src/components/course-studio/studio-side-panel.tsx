@@ -5,7 +5,7 @@ import type { HTMLAttributes } from "react";
 import { BranchPanel } from "@/components/course-studio/branch-panel";
 import { ResourcePanel } from "@/components/course-studio/resource-panel";
 import { VersionHistoryPanel } from "@/components/course-studio/version-history-panel";
-import type { BoardDecision, CommitRecord, CoursePackage, Lesson } from "@/types";
+import type { BoardDecision, CommitRecord, CoursePackage, LearningResourceReference, Lesson, LibraryChapter } from "@/types";
 
 export type CourseStudioSidebarTab = "history" | "branch" | "library";
 
@@ -29,6 +29,11 @@ type CourseStudioSidePanelProps = {
   onUploadResource: (file: File) => void | Promise<void>;
   isAddingResourceUrl: boolean;
   onAddResourceUrl: (url: string) => void | Promise<void>;
+  selectedResourceReference?: LearningResourceReference | null;
+  onSelectResourceChapter: (
+    resource: CoursePackage["resources"][number],
+    chapter: LibraryChapter
+  ) => void | Promise<void>;
   relatedEdges: CoursePackage["course_graph"];
   lessonMap: Map<string, Lesson>;
   onCreateBranch: () => void | Promise<void>;
@@ -59,6 +64,8 @@ export function CourseStudioSidePanel({
   onUploadResource,
   isAddingResourceUrl,
   onAddResourceUrl,
+  selectedResourceReference,
+  onSelectResourceChapter,
   relatedEdges,
   lessonMap,
   onCreateBranch,
@@ -157,6 +164,8 @@ export function CourseStudioSidePanel({
             onUploadResource={onUploadResource}
             isAddingResourceUrl={isAddingResourceUrl}
             onAddResourceUrl={onAddResourceUrl}
+            selectedResourceReference={selectedResourceReference}
+            onSelectResourceChapter={onSelectResourceChapter}
             relatedEdges={relatedEdges}
             lessonMap={lessonMap}
             onOpenLesson={onOpenLesson}

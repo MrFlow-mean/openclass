@@ -1,9 +1,10 @@
 import clsx from "clsx";
 import { useRef, useState, type ChangeEvent, type DragEvent, type FormEvent } from "react";
-import { ArrowRight, FileText, Link2, TriangleAlert, UploadCloud } from "lucide-react";
+import { ArrowRight, ChevronDown, ChevronRight, FileText, Link2, TriangleAlert, UploadCloud } from "lucide-react";
 
 import { CourseGraphPanel } from "@/components/course-studio/course-graph-panel";
-import type { CoursePackage, Lesson } from "@/types";
+import { buildResourceOutlineTree, ResourceOutlineTree } from "@/components/course-studio/resource-outline-tree";
+import type { CoursePackage, LearningResourceReference, Lesson, LibraryChapter } from "@/types";
 
 type ResourcePanelProps = {
   activeLesson: Lesson;
@@ -12,20 +13,15 @@ type ResourcePanelProps = {
   onUploadResource: (file: File) => void | Promise<void>;
   isAddingResourceUrl: boolean;
   onAddResourceUrl: (url: string) => void | Promise<void>;
+  selectedResourceReference?: LearningResourceReference | null;
+  onSelectResourceChapter: (
+    resource: CoursePackage["resources"][number],
+    chapter: LibraryChapter
+  ) => void | Promise<void>;
   relatedEdges: CoursePackage["course_graph"];
   lessonMap: Map<string, Lesson>;
   onOpenLesson: (lessonId: string) => void | Promise<void>;
 };
-
-function parserLabel(provider: string) {
-  if (provider.startsWith("raganything")) {
-    return "RAG-Anything";
-  }
-  if (provider === "native_fallback") {
-    return "原生解析（回退）";
-  }
-  return "原生解析";
-}
 
 function sourceTypeLabel(sourceType: CoursePackage["resources"][number]["source_type"]) {
   switch (sourceType) {
@@ -74,6 +70,8 @@ export function ResourcePanel({
   onUploadResource,
   isAddingResourceUrl,
   onAddResourceUrl,
+  selectedResourceReference,
+  onSelectResourceChapter,
   relatedEdges,
   lessonMap,
   onOpenLesson,
@@ -82,6 +80,8 @@ export function ResourcePanel({
   const dragDepthRef = useRef(0);
   const [isDragActive, setIsDragActive] = useState(false);
   const [resourceUrl, setResourceUrl] = useState("");
+  const [expandedResourceIds, setExpandedResourceIds] = useState<Set<string>>(new Set());
+  const [expandedOutlineNodeIds, setExpandedOutlineNodeIds] = useState<Set<string>>(new Set());
   const isResourceBusy = isUploadingResource || isAddingResourceUrl;
   const visibleResources = resources.filter(
     (resource) => !resource.scope_lesson_id || resource.scope_lesson_id === activeLesson.id
@@ -166,6 +166,31 @@ export function ResourcePanel({
     void onAddResourceUrl(nextUrl);
   }
 
+  function toggleResourceOutline(resourceId: string) {
+    setExpandedResourceIds((current) => {
+      const next = new Set(current);
+      if (next.has(resourceId)) {
+        next.delete(resourceId);
+      } else {
+        next.add(resourceId);
+      }
+      return next;
+    });
+  }
+
+  function toggleOutlineNode(resourceId: string, chapterId: string) {
+    const key = `${resourceId}:${chapterId}`;
+    setExpandedOutlineNodeIds((current) => {
+      const next = new Set(current);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  }
+
   const uploadButton = (
     <button
       type="button"
@@ -224,6 +249,19 @@ export function ResourcePanel({
             <div className="space-y-3">
               {visibleResources.map((resource) => {
                 const isFailed = resource.ingestion_status === "failed";
+                const isOutlineExpanded = expandedResourceIds.has(resource.id);
+                const selectedChapterId =
+                  selectedResourceReference?.resource_id === resource.id
+                    ? selectedResourceReference.chapter_id
+                    : null;
+                const outlineTree = buildResourceOutlineTree(resource.outline);
+                const expandedNodeIds = new Set<string>();
+                expandedOutlineNodeIds.forEach((key) => {
+                  const [resourceId, chapterId] = key.split(":");
+                  if (resourceId === resource.id && chapterId) {
+                    expandedNodeIds.add(chapterId);
+                  }
+                });
                 const warnings = Array.from(
                   new Set([resource.ingestion_error, ...resource.parse_warnings].filter(Boolean))
                 );
@@ -263,6 +301,31 @@ export function ResourcePanel({
                         ) : null}
                       </div>
                     </div>
+                    {resource.outline.length ? (
+                      <div className="mt-3 border-t border-gray-100 pt-3">
+                        <button
+                          type="button"
+                          onClick={() => toggleResourceOutline(resource.id)}
+                          className="inline-flex items-center gap-1.5 rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-gray-700 shadow-sm transition hover:border-gray-300"
+                          aria-expanded={isOutlineExpanded}
+                        >
+                          {isOutlineExpanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                          {isOutlineExpanded ? "收起目录" : "展开目录"}
+                        </button>
+                        {isOutlineExpanded ? (
+                          <div className="mt-2 max-h-80 overflow-y-auto pr-1 custom-scrollbar">
+                            <ResourceOutlineTree
+                              resource={resource}
+                              nodes={outlineTree}
+                              expandedNodeIds={expandedNodeIds}
+                              selectedChapterId={selectedChapterId}
+                              onToggleNode={toggleOutlineNode}
+                              onSelectNode={onSelectResourceChapter}
+                            />
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
                     {warnings.length ? (
                       <div
                         className={clsx(
