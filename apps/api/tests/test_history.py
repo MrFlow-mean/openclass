@@ -43,6 +43,7 @@ from app.services.resource_library import (
     extract_reference_context,
     resource_with_epub_catalog_outline,
 )
+from app.services.resource_chapter_indexer import index_resource_chapters, text_for_chapter_source_units
 from app.services.resource_visual_evidence import augment_document_with_resource_visual_evidence
 from app.services.board_segment_index import build_board_segment_index
 from app.services.rich_document import (
@@ -1708,7 +1709,9 @@ def get_parser(name):
 
     assert [chapter.title for chapter in resource.outline[:2]] == ["第 1 章 绪论", "1.1 背景"]
     assert resource.outline[1].parent_title == "第 1 章 绪论"
+    assert resource.outline[1].body_start_order == 0
     assert resource.source_units[0].heading_path == ["第 1 章 绪论", "1.1 背景"]
+    assert resource.source_units[0].metadata["chapter_title"] == "1.1 背景"
 
 
 def test_build_resource_item_prefers_richer_epub_catalog_before_body_snippets(
@@ -1831,6 +1834,129 @@ def test_build_resource_item_prefers_richer_epub_catalog_before_body_snippets(
     assert [chapter.id for chapter in repaired_resource.outline] == [chapter.id for chapter in repaired_again.outline]
 
 
+def test_epub_catalog_indexes_multilevel_chapters_and_slices_body_text(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("OPENCLASS_RESOURCE_PARSER", "native")
+    resource_path = tmp_path / "systems.epub"
+    with ZipFile(resource_path, "w") as archive:
+        archive.writestr("mimetype", "application/epub+zip")
+        archive.writestr(
+            "META-INF/container.xml",
+            """<?xml version="1.0"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>
+""",
+        )
+        archive.writestr(
+            "OEBPS/content.opf",
+            """<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" unique-identifier="bookid" version="2.0">
+  <manifest>
+    <item href="toc.ncx" id="ncx" media-type="application/x-dtbncx+xml"/>
+    <item href="toc.html" id="tocpage" media-type="application/xhtml+xml"/>
+    <item href="chapter10.html" id="c10" media-type="application/xhtml+xml"/>
+    <item href="chapter11.html" id="c11" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine toc="ncx">
+    <itemref idref="tocpage"/>
+    <itemref idref="c10"/>
+    <itemref idref="c11"/>
+  </spine>
+</package>
+""",
+        )
+        archive.writestr(
+            "OEBPS/toc.ncx",
+            """<?xml version="1.0" encoding="UTF-8"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
+  <navMap>
+    <navPoint id="c10" playOrder="1"><navLabel><text>第10章系统级 I/O      622</text></navLabel><content src="chapter10.html"/></navPoint>
+    <navPoint id="c11" playOrder="2"><navLabel><text>第11章网络编程      642</text></navLabel><content src="chapter11.html"/></navPoint>
+  </navMap>
+</ncx>
+""",
+        )
+        archive.writestr(
+            "OEBPS/toc.html",
+            """<html><body>
+<p>目录</p>
+<p>第 10 章 系统级 I/O ........ 622</p>
+<p>10.1 Unix I/O ........ 622</p>
+<p>10.2 文件 ........ 623</p>
+<p>10.3 打开和关闭文件 ........ 624</p>
+<p>10.4 读和写文件 ........ 625</p>
+<p>10.5 用 RIO 包健壮地读写 ........ 626</p>
+<p>10.5.1 RIO 的无缓冲的输入输出函数 ........ 627</p>
+<p>10.5.2 RIO 的带缓冲的输入函数 ........ 627</p>
+<p>10.12 小结 ........ 640</p>
+<p>第 11 章 网络编程 ........ 642</p>
+<p>11.1 客户端-服务器编程模型 ........ 642</p>
+<p>11.3 全球 IP 因特网 ........ 646</p>
+<p>11.3.1 IP 地址 ........ 647</p>
+<p>11.4 套接字接口 ........ 652</p>
+<p>11.4.9 echo 客户端和服务器的示例 ........ 662</p>
+<p>11.5 Web 服务器 ........ 665</p>
+<p>11.5.4 服务动态内容 ........ 669</p>
+<p>11.7 小结 ........ 678</p>
+</body></html>""",
+        )
+        archive.writestr(
+            "OEBPS/chapter10.html",
+            """<html><body>
+<h1>第 10 章 系统级 I/O</h1><p>第十章导言正文。</p>
+<h2>10.1 Unix I/O</h2><p>Unix I/O 正文 unique。</p>
+<h2>10.5 用 RIO 包健壮地读写</h2><p>RIO 总览正文。</p>
+<h3>10.5.1 RIO 的无缓冲的输入输出函数</h3><p>无缓冲正文 unique。</p>
+<h3>10.5.2 RIO 的带缓冲的输入函数</h3><p>带缓冲正文 unique。</p>
+</body></html>""",
+        )
+        archive.writestr(
+            "OEBPS/chapter11.html",
+            """<html><body>
+<h1>第 11 章 网络编程</h1><p>第十一章导言正文。</p>
+<h2>11.1 客户端-服务器编程模型</h2><p>客户端服务器正文 unique。</p>
+<h2>11.4 套接字接口</h2><p>套接字总览正文。</p>
+<h3>11.4.9 echo 客户端和服务器的示例</h3><p>echo 示例正文 unique。</p>
+<h2>11.5 Web 服务器</h2><p>Web 服务器正文 unique。</p>
+<h3>11.5.4 服务动态内容</h3><p>动态内容正文 unique。</p>
+</body></html>""",
+        )
+
+    resource = build_resource_item(resource_path, "systems.epub")
+
+    chapter10 = next(chapter for chapter in resource.outline if chapter.title.startswith("第 10 章"))
+    chapter11 = next(chapter for chapter in resource.outline if chapter.title.startswith("第 11 章"))
+    section1051 = next(chapter for chapter in resource.outline if chapter.title.startswith("10.5.1"))
+    section1149 = next(chapter for chapter in resource.outline if chapter.title.startswith("11.4.9"))
+    assert any(chapter.title.startswith("10.12") for chapter in resource.outline)
+    assert any(chapter.title.startswith("11.7") for chapter in resource.outline)
+    assert section1051.parent_title == "10.5 用 RIO 包健壮地读写"
+    assert section1149.parent_title == "11.4 套接字接口"
+    assert chapter10.body_start_order is not None
+    assert chapter11.body_start_order is not None
+    assert chapter10.body_end_order is not None and chapter10.body_end_order < (chapter11.body_start_order or 0)
+
+    target_unit = next(unit for unit in resource.source_units if "无缓冲正文" in unit.text)
+    assert target_unit.metadata["chapter_title"] == section1051.title
+
+    target_context = extract_reference_context(resource, section1051.id, user_query="讲 10.5.1")
+    assert target_context is not None
+    assert "无缓冲正文" in target_context.full_text
+    assert "带缓冲正文" not in target_context.full_text
+    assert "Web服务器正文" not in target_context.full_text
+
+    parent_context = extract_reference_context(resource, chapter10.id, user_query="讲第 10 章")
+    assert parent_context is not None
+    assert "Unix I/O正文" in parent_context.full_text
+    assert "无缓冲正文" in parent_context.full_text
+    assert "客户端服务器正文" not in parent_context.full_text
+
+
 def test_build_resource_item_falls_back_to_native_parser_in_auto_mode(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
@@ -1892,6 +2018,44 @@ def test_resource_source_unit_model_keeps_source_location_metadata() -> None:
 
     assert unit.page_no == 3
     assert unit.metadata["origin"] == "content_list"
+
+
+def test_chapter_indexer_uses_printed_page_metadata_for_page_windows() -> None:
+    chapters = [
+        LibraryChapter(title="1.1 第一节", level=2, summary="", page_start=623, order_index=0),
+        LibraryChapter(title="1.2 第二节", level=2, summary="", page_start=624, order_index=1),
+    ]
+    units = [
+        ResourceSourceUnit(
+            content_type="text",
+            text="前一页正文",
+            page_no=1,
+            order_index=0,
+            metadata={"printed_page": 622},
+        ),
+        ResourceSourceUnit(
+            content_type="text",
+            text="第一节正文",
+            page_no=2,
+            order_index=1,
+            metadata={"printed_page": 623},
+        ),
+        ResourceSourceUnit(
+            content_type="text",
+            text="第二节正文",
+            page_no=3,
+            order_index=2,
+            metadata={"printed_page": 624},
+        ),
+    ]
+
+    indexed_chapters, indexed_units = index_resource_chapters(chapters, units)
+
+    assert indexed_chapters[0].body_start_order == 1
+    assert indexed_chapters[0].body_end_order == 1
+    assert indexed_chapters[0].body_match_status == "page_window"
+    assert "第一节正文" in text_for_chapter_source_units(indexed_units, indexed_chapters[0])
+    assert "前一页正文" not in text_for_chapter_source_units(indexed_units, indexed_chapters[0])
 
 
 def test_resource_reference_context_selects_visual_evidence_from_chapter_assets(tmp_path) -> None:

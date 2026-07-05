@@ -196,9 +196,10 @@ def _document_toc_entries(archive: zipfile.ZipFile) -> list[EpubTocEntry]:
         except KeyError:
             continue
         marker_count = len(_TOC_MARKER_PATTERN.findall(_normalize_toc_text(text)))
+        toc_shape_count = _toc_line_shape_count(text)
         compact_prefix = re.sub(r"\s+", "", text[:160]).lower()
         starts_toc = "目录" in compact_prefix or "contents" in compact_prefix
-        is_toc_page = starts_toc or (seen_toc and marker_count >= 4)
+        is_toc_page = starts_toc or toc_shape_count >= 4 or (seen_toc and toc_shape_count >= 2 and marker_count >= 2)
         if is_toc_page:
             toc_pages.append(text)
             seen_toc = True
@@ -208,6 +209,22 @@ def _document_toc_entries(archive: zipfile.ZipFile) -> list[EpubTocEntry]:
     if not toc_pages:
         return []
     return _parse_document_toc_text("\n".join(toc_pages))
+
+
+def _toc_line_shape_count(text: str) -> int:
+    count = 0
+    for raw_line in text.splitlines():
+        line = re.sub(r"\s+", " ", raw_line).strip()
+        if not line:
+            continue
+        if re.search(r"[.．·•…]{2,}.*\d{1,4}\s*$", line):
+            count += 1
+        elif re.match(
+            rf"^(?:第\s*{_EPUB_NUMBER_PATTERN}\s*章|\d{{1,2}}(?:[.．]\d{{1,2}}){{1,3}})\b.+\s+\d{{1,4}}$",
+            line,
+        ):
+            count += 1
+    return count
 
 
 def _html_text(raw_html: str) -> str:

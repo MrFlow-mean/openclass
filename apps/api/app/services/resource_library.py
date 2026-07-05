@@ -23,6 +23,7 @@ from app.models import (
 from app.services.epub_toc import extract_epub_toc_entries
 from app.services.image_ocr import extract_image_text, extract_pdf_pages_text
 from app.services.rag_anything_adapter import parse_with_rag_anything
+from app.services.resource_chapter_indexer import index_resource_chapters, text_for_chapter_source_units
 from app.services.resource_page_structure import (
     build_page_structure_from_source_units,
     build_pdf_page_structure,
@@ -1104,6 +1105,8 @@ def _build_reference_context(
         summary = f"《{resource.name}》的《{chapter.title}》包含这些讲解入口：{child_titles}。"
     else:
         summary = f"《{resource.name}》的《{chapter.title}》可以作为本次讲解参考。"
+    if chapter.body_match_status in {"page_window", "weak_title_match", "child_range"}:
+        summary += "正文定位来自目录页码或弱标题匹配，使用时需要结合原文校验。"
     summary = (
         f"{summary}"
         "下面的上下文会优先保留本章结构、关键定义和可用于课堂解释的片段。"
@@ -1745,9 +1748,11 @@ def resource_with_epub_catalog_outline(resource: ResourceLibraryItem) -> Resourc
     outline = _attach_outline_hierarchy(_extract_epub_outline(file_path))
     if not outline:
         return resource
+    outline, source_units = index_resource_chapters(outline, resource.source_units, page_structure=resource.page_structure)
     return resource.model_copy(
         update={
             "outline": outline,
+            "source_units": source_units,
             "concept_index": _concept_index_from_outline(outline),
         }
     )
@@ -1765,6 +1770,123 @@ def _source_units_from_native_text(original_name: str, text_content: str | None)
             order_index=0,
         )
     ]
+
+
+def _source_units_from_epub(file_path: Path) -> list[ResourceSourceUnit]:
+    units: list[ResourceSourceUnit] = []
+    try:
+        with zipfile.ZipFile(file_path) as archive:
+            paths = _epub_reading_order_paths(archive)
+            if not paths:
+                paths = [
+                    path
+                    for path in archive.namelist()
+                    if _epub_is_html_path(path) and not re.search(r"(?:^|/)(?:nav|toc|cover)\.", path, flags=re.IGNORECASE)
+                ]
+            for path in paths:
+                try:
+                    raw_html = _decode_epub_bytes(archive.read(path))
+                except KeyError:
+                    continue
+                item_text = _epub_text_from_html(raw_html)
+                if _looks_like_epub_toc_source_unit(item_text):
+                    continue
+                heading_matches = list(re.finditer(r"(?is)<h([1-6])\b[^>]*>(.*?)</h\1>", raw_html))
+                if not heading_matches:
+                    title = _epub_html_title(raw_html, path)
+                    text = item_text.strip()
+                    if text:
+                        units.append(
+                            ResourceSourceUnit(
+                                content_type="text",
+                                text=text[:120000],
+                                source_locator=f"native:epub:{path}",
+                                heading_path=[title] if title else [],
+                                order_index=len(units),
+                                metadata={"section_title": title, "section_level": 1, "epub_path": path},
+                            )
+                        )
+                    continue
+                for local_index, match in enumerate(heading_matches):
+                    title = _epub_fragment_text(match.group(2))
+                    end = heading_matches[local_index + 1].start() if local_index + 1 < len(heading_matches) else len(raw_html)
+                    content = _epub_fragment_text(raw_html[match.end() : end])
+                    text = "\n".join(part for part in [title, content] if part.strip()).strip()
+                    if not text or _looks_like_epub_toc_source_unit(text):
+                        continue
+                    units.append(
+                        ResourceSourceUnit(
+                            content_type="text",
+                            text=text[:120000],
+                            source_locator=f"native:epub:{path}#heading={local_index}",
+                            heading_path=[title] if title else [],
+                            order_index=len(units),
+                            metadata={"section_title": title, "section_level": int(match.group(1)), "epub_path": path},
+                        )
+                    )
+    except (zipfile.BadZipFile, OSError):
+        return []
+    if units:
+        return units
+    text = _read_epub_text(file_path)
+    return _source_units_from_native_text(file_path.name, text)
+
+
+def _looks_like_epub_toc_source_unit(text: str) -> bool:
+    compact = re.sub(r"\s+", "", text[:120]).lower()
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if compact in {"目录", "contents"}:
+        return True
+    if "目录" in compact[:20] or "contents" in compact[:30]:
+        return True
+    toc_line_count = 0
+    for line in lines[:12]:
+        cleaned = re.sub(r"\s+", " ", line)
+        if re.search(r"[.．·•…]{2,}.*\d{1,4}\s*$", cleaned):
+            toc_line_count += 1
+        elif re.match(r"^(?:第\s*[0-9一二三四五六七八九十百〇零两]+\s*章|\d+(?:[.．]\d+){1,3})\b.+\s+\d{1,4}$", cleaned):
+            toc_line_count += 1
+    return toc_line_count >= max(2, min(4, len(lines[:12]) // 2))
+
+
+def _source_units_from_pdf(file_path: Path, page_structure: ResourcePageStructure | None) -> list[ResourceSourceUnit]:
+    try:
+        reader = PdfReader(str(file_path))
+    except Exception:
+        return []
+    units: list[ResourceSourceUnit] = []
+    for page_index, page in enumerate(reader.pages):
+        try:
+            text = _normalize_extracted_text(page.extract_text() or "")
+        except Exception:
+            text = ""
+        if not text:
+            continue
+        page_no = page_index + 1
+        metadata: dict[str, object] = {}
+        if page_structure is not None:
+            page_entry = next((entry for entry in page_structure.page_map if entry.page_idx == page_index), None)
+            if page_entry is not None:
+                metadata.update(
+                    {
+                        "printed_page": page_entry.printed_page,
+                        "page_role": page_entry.role,
+                        "page_role_label": page_entry.title,
+                        "body_offset": page_entry.body_offset,
+                    }
+                )
+        units.append(
+            ResourceSourceUnit(
+                content_type="text",
+                text=text[:120000],
+                page_idx=page_index,
+                page_no=page_no,
+                source_locator=f"native:pdf:page={page_no}",
+                order_index=len(units),
+                metadata=metadata,
+            )
+        )
+    return units
 
 
 def _native_provider_from_warnings(warnings: list[str]) -> tuple[str, str]:
@@ -1801,10 +1923,17 @@ def build_resource_item(file_path: Path, original_name: str) -> ResourceLibraryI
         parse_warnings.extend(rag_result.warnings)
     else:
         outline, extracted, text_content, page_structure = extract_outline(file_path, original_name, mime_type)
-        source_units = _source_units_from_native_text(original_name, text_content)
+        suffix = file_path.suffix.lower()
+        if suffix == ".epub":
+            source_units = _source_units_from_epub(file_path)
+        elif suffix == ".pdf":
+            source_units = _source_units_from_pdf(file_path, page_structure)
+        else:
+            source_units = _source_units_from_native_text(original_name, text_content)
         parser_provider, parser_message = _native_provider_from_warnings(parse_warnings)
 
     outline = _attach_outline_hierarchy(outline)
+    outline, source_units = index_resource_chapters(outline, source_units, page_structure=page_structure)
     concept_index = _concept_index_from_outline(outline)
 
     resource = ResourceLibraryItem(
@@ -1836,6 +1965,15 @@ def extract_reference_context(
     chapter = next((candidate for candidate in resource.outline if candidate.id == chapter_id), None)
     if chapter is None:
         return None
+
+    indexed_text = text_for_chapter_source_units(resource.source_units, chapter)
+    if indexed_text:
+        return _build_reference_context(
+            resource,
+            chapter,
+            user_query,
+            raw_text=indexed_text,
+        )
 
     if resource.parser_provider.startswith("raganything") and resource.text_content and resource.source_units:
         return _build_reference_context(

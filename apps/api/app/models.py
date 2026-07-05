@@ -757,6 +757,13 @@ class LibraryChapter(BaseModel):
     locator_hint: str | None = None
     order_index: int = 0
     scan_strategy: ResourceScanStrategy = "outline_only"
+    body_start_order: int | None = None
+    body_end_order: int | None = None
+    body_page_start: int | None = None
+    body_page_end: int | None = None
+    body_match_status: str = ""
+    body_match_confidence: float = 0.0
+    body_match_reason: str = ""
 
 
 class ResourceSourceUnit(BaseModel):
