@@ -74,13 +74,10 @@ export function CourseStudioSidePanel({
   onSwitchBranch,
   onOpenLesson,
 }: CourseStudioSidePanelProps) {
-  const isHistoryTab = sidebarTab === "history";
-
   return (
     <aside
       className={clsx(
-        "relative h-full min-h-0 min-w-0 flex-col border-l",
-        isHistoryTab ? "border-[#20242d] bg-[#0f1218]" : "border-gray-200 bg-[#fcfcfc]",
+        "relative h-full min-h-0 min-w-0 flex-col border-l border-gray-200 bg-[#fcfcfc]",
         open ? "hidden xl:flex" : "hidden"
       )}
     >
@@ -99,28 +96,20 @@ export function CourseStudioSidePanel({
         />
       </div>
 
-      <div
-        className={clsx(
-          "flex h-12 items-center justify-between border-b px-5",
-          isHistoryTab ? "border-[#20242d] bg-[#0f1218]" : "border-gray-200 bg-white"
-        )}
-      >
+      <div className="flex h-12 items-center justify-between border-b border-gray-200 bg-white px-5">
         <h4 className="text-[10px] font-bold uppercase tracking-widest text-gray-500">
           课程工作台辅助
         </h4>
         <button
           type="button"
           onClick={onClose}
-          className={clsx(
-            "rounded-md p-1.5 transition-colors",
-            isHistoryTab ? "text-gray-500 hover:bg-white/10 hover:text-white" : "text-gray-400 hover:bg-gray-100 hover:text-black"
-          )}
+          className="rounded-md p-1.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-black"
         >
           <X className="h-3.5 w-3.5" />
         </button>
       </div>
 
-      <div className={clsx("flex border-b", isHistoryTab ? "border-[#20242d] bg-[#0f1218]" : "border-gray-200 bg-white")}>
+      <div className="flex border-b border-gray-200 bg-white">
         {[
           { value: "history", label: "History" },
           { value: "library", label: "Library" },
@@ -131,13 +120,9 @@ export function CourseStudioSidePanel({
             onClick={() => onSidebarTabChange(tab.value as CourseStudioSidebarTab)}
             className={clsx(
               "flex-1 py-3 text-[10px] font-bold uppercase tracking-wider transition-colors",
-              isHistoryTab
-                ? sidebarTab === tab.value
-                  ? "border-b-2 border-white text-white"
-                  : "text-gray-500 hover:text-white"
-                : sidebarTab === tab.value
-                  ? "border-b-2 border-black text-black"
-                  : "text-gray-400 hover:text-black"
+              sidebarTab === tab.value
+                ? "border-b-2 border-black text-black"
+                : "text-gray-400 hover:text-black"
             )}
           >
             {tab.label}
@@ -145,7 +130,7 @@ export function CourseStudioSidePanel({
         ))}
       </div>
 
-      <div className={clsx("min-h-0 flex-1 overflow-y-auto custom-scrollbar", isHistoryTab ? "p-4" : "p-5")}>
+      <div className="min-h-0 flex-1 overflow-y-auto p-5 custom-scrollbar">
         {sidebarTab === "history" ? (
           <VersionControlPanel
             activeLesson={activeLesson}

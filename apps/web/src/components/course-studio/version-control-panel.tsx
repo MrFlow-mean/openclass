@@ -46,15 +46,15 @@ function FactorList({ title, factors }: { title: string; factors: LearningRequir
     return null;
   }
   return (
-    <div className="mt-4 rounded-md border border-white/10 bg-white/[0.03] p-4">
-      <p className="text-[10px] font-bold uppercase tracking-widest text-gray-500">{title}</p>
+    <div className="mt-4 rounded-lg border border-gray-200 bg-white p-4">
+      <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">{title}</p>
       <dl className="mt-3 space-y-2 text-[11px] leading-6">
         {factors.map((factor) => (
           <div key={factor.key} className="grid grid-cols-[72px_minmax(0,1fr)] gap-3">
-            <dt className={clsx("font-semibold", factor.required ? "text-gray-300" : "text-gray-500")}>
+            <dt className={clsx("font-semibold", factor.required ? "text-gray-700" : "text-gray-500")}>
               {factor.label}
             </dt>
-            <dd className={clsx("min-w-0 break-words", factor.filled ? "text-gray-200" : "text-gray-500")}>
+            <dd className={clsx("min-w-0 break-words", factor.filled ? "text-gray-900" : "text-gray-400")}>
               {factor.value}
             </dd>
           </div>
@@ -275,16 +275,16 @@ export function VersionControlPanel({
   const { lanes, rows } = buildHistoryGraphRows(activeLesson, previewCommitId);
 
   return (
-    <div className="space-y-7 text-gray-200">
+    <div className="space-y-8">
       <section>
         <div className="flex items-center justify-between gap-3">
           <div>
-            <p className="text-[10px] font-bold uppercase tracking-widest text-gray-500">历史分支图</p>
-            <p className="mt-1 text-xs font-semibold text-gray-200">
+            <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">历史分支图</p>
+            <p className="mt-1 text-xs font-semibold text-gray-900">
               {activeLesson.history_graph.commits.length} nodes · {lanes.length} branches
             </p>
           </div>
-          <GitCommitHorizontal className="h-4 w-4 text-gray-500" />
+          <GitCommitHorizontal className="h-4 w-4 text-gray-400" />
         </div>
 
         <div className="mt-4 flex gap-2">
@@ -292,12 +292,12 @@ export function VersionControlPanel({
             value={newBranchName}
             onChange={(event) => onNewBranchNameChange(event.target.value)}
             placeholder="新分支名"
-            className="min-w-0 flex-1 rounded-md border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-gray-100 outline-none placeholder:text-gray-600 focus:border-white/30"
+            className="min-w-0 flex-1 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm outline-none focus:border-black"
           />
           <button
             type="button"
             onClick={() => void onCreateBranch()}
-            className="inline-flex items-center gap-1.5 rounded-md bg-white px-3 py-2 text-[11px] font-bold uppercase tracking-wider text-[#101318]"
+            className="inline-flex items-center gap-1.5 rounded-lg bg-[#1a1a1a] px-3 py-2 text-[11px] font-bold uppercase tracking-wider text-white"
           >
             <GitBranch className="h-3.5 w-3.5" />
             开分支
@@ -313,8 +313,8 @@ export function VersionControlPanel({
               className={clsx(
                 "inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-[10px] font-bold uppercase tracking-[0.16em] transition",
                 lane.isCurrent
-                  ? "border-white bg-white text-[#101318]"
-                  : "border-white/10 bg-white/[0.04] text-gray-400 hover:border-white/25 hover:text-white"
+                  ? "border-black bg-black text-white"
+                  : "border-gray-200 bg-white text-gray-500 hover:text-black"
               )}
             >
               <span className="h-2 w-2 rounded-full" style={{ backgroundColor: lane.color }} />
@@ -325,8 +325,8 @@ export function VersionControlPanel({
       </section>
 
       <section>
-        <p className="text-[10px] font-bold uppercase tracking-widest text-gray-500">修订记录</p>
-        <div className="mt-4 rounded-md border border-[#20242d] bg-[#101318] p-2 shadow-sm">
+        <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">修订记录</p>
+        <div className="mt-4 rounded-lg border border-[#20242d] bg-[#101318] p-2 shadow-sm">
           {rows.map((row) => (
             <HistoryGraphRowItem
               key={row.commit.id}
@@ -342,22 +342,22 @@ export function VersionControlPanel({
         </div>
       </section>
 
-      <section className="border-t border-white/10 pt-6">
+      <section className="border-t border-gray-200 pt-6">
         <div className="flex items-center gap-2">
-          <GitBranch className="h-4 w-4 text-gray-500" />
-          <p className="text-[10px] font-bold uppercase tracking-widest text-gray-500">当前上下文</p>
+          <GitBranch className="h-4 w-4 text-gray-400" />
+          <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">当前上下文</p>
         </div>
         {previewCommit ? (
-          <div className="mt-4 rounded-md border border-white/10 bg-white/[0.03] p-4">
-            <p className="text-xs font-semibold text-gray-100">{previewCommit.label}</p>
+          <div className="mt-4 rounded-lg border border-gray-200 bg-white p-4">
+            <p className="text-xs font-semibold text-gray-900">{previewCommit.label}</p>
             <p className="mt-2 text-[11px] leading-6 text-gray-500">{compactText(previewCommit.message, 180)}</p>
           </div>
         ) : null}
         {activeBoardTask ? (
           <>
-            <p className="mt-4 text-sm leading-7 text-gray-300">{activeBoardTask.question_or_topic}</p>
-            <div className="mt-4 rounded-md border border-white/10 bg-white/[0.03] p-4">
-              <p className="text-xs font-semibold text-gray-100">{activeBoardTask.requested_action ?? "暂无待执行任务"}</p>
+            <p className="mt-4 text-sm leading-7 text-gray-700">{activeBoardTask.question_or_topic}</p>
+            <div className="mt-4 rounded-lg border border-gray-200 bg-white p-4">
+              <p className="text-xs font-semibold text-gray-900">{activeBoardTask.requested_action ?? "暂无待执行任务"}</p>
               <p className="mt-2 text-[11px] leading-6 text-gray-500">
                 {activeBoardTask.target_hint || "执行完成后，当前清单会归档到历史并清空。"}
               </p>
@@ -365,13 +365,13 @@ export function VersionControlPanel({
           </>
         ) : learningRequirementDisplay ? (
           <>
-            <div className="mt-4 rounded-md border border-white/10 bg-white/[0.03] p-4">
+            <div className="mt-4 rounded-lg border border-gray-200 bg-white p-4">
               <div className="flex items-center justify-between gap-3">
                 <div>
-                  <p className="text-[10px] font-bold uppercase tracking-widest text-gray-500">教学类型</p>
-                  <p className="mt-1 text-sm font-semibold text-gray-100">{learningRequirementDisplay.teachingType}</p>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">教学类型</p>
+                  <p className="mt-1 text-sm font-semibold text-gray-900">{learningRequirementDisplay.teachingType}</p>
                 </div>
-                <span className="rounded-full bg-white/10 px-2.5 py-1 text-[11px] font-semibold text-gray-300">
+                <span className="rounded-full bg-gray-100 px-2.5 py-1 text-[11px] font-semibold text-gray-600">
                   {learningRequirementStatusLabel(learningRequirementDisplay.status)}
                 </span>
               </div>
@@ -383,14 +383,14 @@ export function VersionControlPanel({
             <FactorList title="辅助因素" factors={learningRequirementDisplay.auxiliaryFactors} />
           </>
         ) : (
-          <p className="mt-4 text-sm leading-7 text-gray-400">
+          <p className="mt-4 text-sm leading-7 text-gray-700">
             等待下一次任务需求：说明要操作的位置、动作类型，以及希望怎么讲解或怎么编写。
           </p>
         )}
         {latestBoardDecision ? (
-          <div className="mt-4 rounded-md border border-white/10 bg-white/[0.03] p-4">
-            <p className="text-[10px] font-bold uppercase tracking-widest text-gray-500">当前讲义决策</p>
-            <p className="mt-2 text-xs font-semibold text-gray-100">{latestBoardDecision.action}</p>
+          <div className="mt-4 rounded-lg border border-gray-200 bg-white p-4">
+            <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">当前讲义决策</p>
+            <p className="mt-2 text-xs font-semibold text-gray-900">{latestBoardDecision.action}</p>
             <p className="mt-2 text-[11px] leading-6 text-gray-500">{latestBoardDecision.reason}</p>
           </div>
         ) : null}
