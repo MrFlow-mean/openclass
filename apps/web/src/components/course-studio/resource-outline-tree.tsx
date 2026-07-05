@@ -8,6 +8,40 @@ export type ResourceOutlineNode = {
   children: ResourceOutlineNode[];
 };
 
+const PARSER_ARTIFACT_TITLE_PATTERN = /^(?:text|image|img|table|equation|formula|figure|page)\d{3,}$/i;
+
+function isParserArtifactTitle(title: string) {
+  const compact = title.replace(/[\s_-]+/g, "").replace(/[：:]+$/g, "").toLowerCase();
+  return PARSER_ARTIFACT_TITLE_PATTERN.test(compact);
+}
+
+function readableSummarySnippet(summary: string) {
+  const cleaned = summary
+    .replace(/来自资料标题“[^”]+”的章节摘要待进一步展开。/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!cleaned || isParserArtifactTitle(cleaned)) {
+    return "";
+  }
+  return cleaned.length > 42 ? `${cleaned.slice(0, 42)}...` : cleaned;
+}
+
+function chapterDisplayTitle(chapter: LibraryChapter) {
+  const title = chapter.title.trim();
+  if (title && !isParserArtifactTitle(title)) {
+    return title;
+  }
+  const pathTitle = [...chapter.path].reverse().find((part) => part.trim() && !isParserArtifactTitle(part));
+  if (pathTitle) {
+    return pathTitle.trim();
+  }
+  const summaryTitle = readableSummarySnippet(chapter.summary);
+  if (summaryTitle) {
+    return summaryTitle;
+  }
+  return `资料片段 ${chapter.order_index + 1}`;
+}
+
 export function buildResourceOutlineTree(outline: LibraryChapter[]) {
   const sorted = [...outline].sort((first, second) => first.order_index - second.order_index);
   const nodesById = new Map<string, ResourceOutlineNode>();
@@ -73,6 +107,7 @@ export function ResourceOutlineTree({
         const isExpanded = expandedNodeIds.has(node.chapter.id);
         const isSelected = selectedChapterId === node.chapter.id;
         const location = chapterLocationLabel(node.chapter);
+        const displayTitle = chapterDisplayTitle(node.chapter);
 
         return (
           <div key={node.chapter.id}>
@@ -84,7 +119,7 @@ export function ResourceOutlineTree({
             >
               <div className="min-w-0 flex-1">
                 <p className={clsx("truncate text-xs font-medium", isSelected ? "text-emerald-950" : "text-gray-800")}>
-                  {node.chapter.title}
+                  {displayTitle}
                 </p>
                 {location ? <p className="mt-0.5 text-[10px] text-gray-400">{location}</p> : null}
               </div>

@@ -204,6 +204,17 @@ def _bbox(item: dict[str, Any]) -> list[float]:
     return numbers[:16]
 
 
+def _heading_path(item: dict[str, Any]) -> list[str]:
+    for key in ("heading_path", "headings", "section_path", "title_path", "breadcrumbs", "breadcrumb"):
+        parts = _string_parts(item.get(key))
+        if len(parts) == 1 and (">" in parts[0] or "/" in parts[0]):
+            parts = [part.strip() for part in re.split(r"\s*(?:>|/)\s*", parts[0])]
+        cleaned = [re.sub(r"\s+", " ", part).strip()[:120] for part in parts if part.strip()]
+        if cleaned:
+            return list(dict.fromkeys(cleaned))[:6]
+    return []
+
+
 def _metadata(item: dict[str, Any]) -> dict[str, Any]:
     excluded = {
         "text",
@@ -216,6 +227,12 @@ def _metadata(item: dict[str, Any]) -> dict[str, Any]:
         "caption",
         "img_caption",
         "image_caption",
+        "heading_path",
+        "headings",
+        "section_path",
+        "title_path",
+        "breadcrumbs",
+        "breadcrumb",
     }
     metadata: dict[str, Any] = {}
     for key, value in item.items():
@@ -250,6 +267,8 @@ def source_units_to_rag_content_list(units: list[ResourceSourceUnit]) -> list[di
             item["text"] = unit.text
         if unit.metadata:
             item.update(unit.metadata)
+        if unit.heading_path:
+            item["heading_path"] = unit.heading_path
         if unit.bbox:
             item["bbox"] = unit.bbox
         if unit.source_locator:
@@ -284,6 +303,7 @@ def _map_content_list(content_list: Any) -> list[ResourceSourceUnit]:
                 source_locator=":".join(locator_parts),
                 asset_path=asset_path,
                 bbox=_bbox(raw_item),
+                heading_path=_heading_path(raw_item),
                 order_index=index,
                 metadata=_metadata(raw_item),
             )

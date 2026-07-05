@@ -1587,6 +1587,80 @@ def test_build_resource_item_uses_rag_anything_parser_adapter(
     assert reloaded.source_units[0].source_locator == resource.source_units[0].source_locator
 
 
+def test_build_resource_item_filters_raganything_parser_artifact_headings(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    fake_root = tmp_path / "RAG-Anything-main"
+    package_dir = fake_root / "raganything"
+    package_dir.mkdir(parents=True)
+    (package_dir / "__init__.py").write_text("", encoding="utf-8")
+    (package_dir / "parser.py").write_text(
+        """
+class FakeParser:
+    def parse_document(self, *args, **kwargs):
+        return [{"type": "text", "text": "# text00000\\n这一段是资料正文，没有真实标题。", "page_idx": 0}]
+
+
+def get_parser(name):
+    return FakeParser()
+""",
+        encoding="utf-8",
+    )
+    _clear_fake_raganything_modules()
+    monkeypatch.setenv("OPENCLASS_RESOURCE_PARSER", "raganything")
+    monkeypatch.setenv("OPENCLASS_RAG_ANYTHING_PATH", str(fake_root))
+
+    resource_path = tmp_path / "artifact-material.pdf"
+    resource_path.write_bytes(b"%PDF fake input handled by fake parser")
+
+    resource = build_resource_item(resource_path, "artifact-material.pdf")
+
+    assert resource.outline[0].title == "artifact-material"
+    assert all(chapter.title != "text00000" for chapter in resource.outline)
+
+
+def test_build_resource_item_prefers_raganything_heading_path_for_outline(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    fake_root = tmp_path / "RAG-Anything-main"
+    package_dir = fake_root / "raganything"
+    package_dir.mkdir(parents=True)
+    (package_dir / "__init__.py").write_text("", encoding="utf-8")
+    (package_dir / "parser.py").write_text(
+        """
+class FakeParser:
+    def parse_document(self, *args, **kwargs):
+        return [
+            {
+                "type": "text",
+                "text": "这里是小节正文。",
+                "page_idx": 0,
+                "heading_path": ["第 1 章 绪论", "1.1 背景"],
+            }
+        ]
+
+
+def get_parser(name):
+    return FakeParser()
+""",
+        encoding="utf-8",
+    )
+    _clear_fake_raganything_modules()
+    monkeypatch.setenv("OPENCLASS_RESOURCE_PARSER", "raganything")
+    monkeypatch.setenv("OPENCLASS_RAG_ANYTHING_PATH", str(fake_root))
+
+    resource_path = tmp_path / "chaptered-material.pdf"
+    resource_path.write_bytes(b"%PDF fake input handled by fake parser")
+
+    resource = build_resource_item(resource_path, "chaptered-material.pdf")
+
+    assert [chapter.title for chapter in resource.outline[:2]] == ["第 1 章 绪论", "1.1 背景"]
+    assert resource.outline[1].parent_title == "第 1 章 绪论"
+    assert resource.source_units[0].heading_path == ["第 1 章 绪论", "1.1 背景"]
+
+
 def test_build_resource_item_falls_back_to_native_parser_in_auto_mode(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,

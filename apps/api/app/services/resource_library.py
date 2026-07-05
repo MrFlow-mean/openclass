@@ -33,6 +33,48 @@ from app.services.resource_visual_evidence import select_resource_visual_evidenc
 
 _PDF_TEXT_SUMMARY_LIMIT = 140
 _PDF_LOCATOR_SEPARATOR = " || "
+_PARSER_ARTIFACT_TITLE_PATTERN = re.compile(
+    r"^(?:text|image|img|table|equation|formula|figure|page)\d{3,}$",
+    re.IGNORECASE,
+)
+
+
+def _is_parser_artifact_title(title: str) -> bool:
+    compact = re.sub(r"[\s_-]+", "", title).strip("：:").lower()
+    return bool(_PARSER_ARTIFACT_TITLE_PATTERN.fullmatch(compact))
+
+
+def _clean_outline_title(title: str) -> str:
+    return re.sub(r"\s+", " ", title).strip()
+
+
+def _heading_parts_from_value(value: object) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        raw_parts = re.split(r"\s*(?:>|/)\s*", value) if (">" in value or "/" in value) else [value]
+        return [_clean_outline_title(part) for part in raw_parts if _clean_outline_title(part)]
+    if isinstance(value, list):
+        parts: list[str] = []
+        for item in value:
+            parts.extend(_heading_parts_from_value(item))
+        return parts
+    return []
+
+
+def _readable_heading_path(unit: ResourceSourceUnit) -> list[str]:
+    raw_parts = list(unit.heading_path)
+    if not raw_parts:
+        for key in ("heading_path", "headings", "section_path", "title_path", "breadcrumbs", "breadcrumb"):
+            raw_parts = _heading_parts_from_value(unit.metadata.get(key))
+            if raw_parts:
+                break
+    cleaned: list[str] = []
+    for part in raw_parts:
+        title = _clean_outline_title(str(part))
+        if title and not _is_parser_artifact_title(title):
+            cleaned.append(title[:120])
+    return cleaned[:6]
 
 
 def _normalize_extracted_text(text: str) -> str:
@@ -186,8 +228,8 @@ def _markdown_sections(text: str) -> list[dict[str, object]]:
         if not line or not line.startswith("#"):
             continue
         level = len(line) - len(line.lstrip("#"))
-        title = line[level:].strip()
-        if title:
+        title = _clean_outline_title(line[level:])
+        if title and not _is_parser_artifact_title(title):
             headings.append((index, level, title))
 
     sections: list[dict[str, object]] = []
@@ -213,6 +255,8 @@ def _extract_markdown_outline(text: str) -> list[LibraryChapter]:
     chapters: list[LibraryChapter] = []
     for section in _markdown_sections(text):
         title = str(section["title"])
+        if _is_parser_artifact_title(title):
+            continue
         content = str(section["content"])
         summary_seed = re.sub(r"\s+", " ", content).strip()[:90]
         summary = summary_seed or f"来自资料标题“{title}”的章节摘要待进一步展开。"
@@ -308,9 +352,9 @@ def _ai_generated_outline(original_name: str, text: str) -> list[LibraryChapter]
     chapters: list[LibraryChapter] = []
     seen_titles: set[str] = set()
     for index, item in enumerate(generated.chapters):
-        title = re.sub(r"\s+", " ", item.title).strip()
+        title = _clean_outline_title(item.title)
         summary = re.sub(r"\s+", " ", item.summary).strip()
-        if not title or title.lower() in seen_titles:
+        if not title or _is_parser_artifact_title(title) or title.lower() in seen_titles:
             continue
         seen_titles.add(title.lower())
         chapters.append(
@@ -1587,6 +1631,36 @@ def extract_outline(
     )
 
 
+def _outline_from_source_units(original_name: str, source_units: list[ResourceSourceUnit]) -> list[LibraryChapter]:
+    chapters: list[LibraryChapter] = []
+    chapters_by_path: dict[tuple[str, ...], LibraryChapter] = {}
+    for unit in sorted(source_units, key=lambda item: item.order_index):
+        heading_path = _readable_heading_path(unit)
+        if not heading_path:
+            continue
+        for depth in range(1, len(heading_path) + 1):
+            path = tuple(heading_path[:depth])
+            if path in chapters_by_path:
+                continue
+            title = path[-1]
+            snippet = _summary_snippet(unit.text) if depth == len(heading_path) else ""
+            summary = snippet or f"来自资料“{Path(original_name).stem}”的目录入口：{' > '.join(path)}。"
+            chapter = _chapter(
+                title=title,
+                summary=summary,
+                keywords=_keywords_from_text(f"{' '.join(path)}\n{unit.text}"),
+                level=depth,
+                locator_hint=f"heading:{' > '.join(path)}",
+                order_index=len(chapters),
+                scan_strategy="heading_section",
+                page_start=unit.page_no,
+                page_end=unit.page_no,
+            )
+            chapters_by_path[path] = chapter
+            chapters.append(chapter)
+    return chapters
+
+
 def _outline_from_source_text(original_name: str, text: str) -> list[LibraryChapter]:
     outline = _extract_markdown_outline(text)
     if outline:
@@ -1637,11 +1711,14 @@ def build_resource_item(file_path: Path, original_name: str) -> ResourceLibraryI
     parse_warnings.extend(rag_attempt.warnings)
     if rag_attempt.result is not None:
         rag_result = rag_attempt.result
-        outline = _outline_from_source_text(original_name, rag_result.text_content)
         extracted = True
         text_content = rag_result.text_content
         page_structure = build_page_structure_from_source_units(rag_result.source_units)
         source_units = enrich_source_units_with_page_structure(rag_result.source_units, page_structure)
+        outline = _outline_from_source_units(original_name, source_units) or _outline_from_source_text(
+            original_name,
+            rag_result.text_content,
+        )
         parser_provider = rag_result.parser_provider
         parser_artifacts_path = rag_result.parser_artifacts_path
         parser_message = rag_result.parser_message
