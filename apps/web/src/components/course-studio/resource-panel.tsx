@@ -3,11 +3,7 @@ import { useRef, useState, type ChangeEvent, type DragEvent, type FormEvent } fr
 import { ArrowRight, ChevronDown, ChevronRight, FileText, Link2, TriangleAlert, UploadCloud } from "lucide-react";
 
 import { CourseGraphPanel } from "@/components/course-studio/course-graph-panel";
-import {
-  buildResourceOutlineTree,
-  ResourceOutlineTree,
-  type ResourceOutlineNode,
-} from "@/components/course-studio/resource-outline-tree";
+import { buildResourceOutlineTree, ResourceOutlineTree } from "@/components/course-studio/resource-outline-tree";
 import type { CoursePackage, LearningResourceReference, Lesson, LibraryChapter } from "@/types";
 
 type ResourcePanelProps = {
@@ -65,18 +61,6 @@ function ingestionStatusLabel(status: CoursePackage["resources"][number]["ingest
 
 function dragIncludesFiles(event: DragEvent<HTMLElement>) {
   return Array.from(event.dataTransfer.types).includes("Files");
-}
-
-function collectDefaultExpandedOutlineKeys(resourceId: string, nodes: ResourceOutlineNode[], level = 0): string[] {
-  const keys: string[] = [];
-  nodes.forEach((node) => {
-    if (!node.children.length || level >= 2) {
-      return;
-    }
-    keys.push(`${resourceId}:${node.chapter.id}`);
-    keys.push(...collectDefaultExpandedOutlineKeys(resourceId, node.children, level + 1));
-  });
-  return keys;
 }
 
 export function ResourcePanel({
@@ -182,8 +166,7 @@ export function ResourcePanel({
     void onAddResourceUrl(nextUrl);
   }
 
-  function toggleResourceOutline(resourceId: string, outlineTree: ResourceOutlineNode[]) {
-    const willExpand = !expandedResourceIds.has(resourceId);
+  function toggleResourceOutline(resourceId: string) {
     setExpandedResourceIds((current) => {
       const next = new Set(current);
       if (next.has(resourceId)) {
@@ -193,13 +176,15 @@ export function ResourcePanel({
       }
       return next;
     });
-    if (willExpand) {
-      setExpandedOutlineNodeIds((current) => {
-        const next = new Set(current);
-        collectDefaultExpandedOutlineKeys(resourceId, outlineTree).forEach((key) => next.add(key));
-        return next;
+    setExpandedOutlineNodeIds((current) => {
+      const next = new Set(current);
+      current.forEach((key) => {
+        if (key.startsWith(`${resourceId}:`)) {
+          next.delete(key);
+        }
       });
-    }
+      return next;
+    });
   }
 
   function toggleOutlineNode(resourceId: string, chapterId: string) {
@@ -329,7 +314,7 @@ export function ResourcePanel({
                       <div className="mt-3 border-t border-gray-100 pt-3">
                         <button
                           type="button"
-                          onClick={() => toggleResourceOutline(resource.id, outlineTree)}
+                          onClick={() => toggleResourceOutline(resource.id)}
                           className="inline-flex items-center gap-1.5 rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-gray-700 shadow-sm transition hover:border-gray-300"
                           aria-expanded={isOutlineExpanded}
                         >
