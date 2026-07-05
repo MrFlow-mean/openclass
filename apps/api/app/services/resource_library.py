@@ -745,7 +745,7 @@ def _extract_epub_outline(file_path: Path) -> list[LibraryChapter]:
             page_start = entry.page_start
             chapter = _chapter(
                 title=title,
-                summary=f"来自 EPUB 原生目录的章节入口：{title}。",
+                summary=f"来自 EPUB 目录的章节入口：{title}。",
                 keywords=_keywords_from_text(title),
                 level=entry.level,
                 locator_hint=title,

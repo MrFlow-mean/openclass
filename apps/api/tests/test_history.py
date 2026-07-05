@@ -1666,7 +1666,7 @@ def get_parser(name):
     assert resource.source_units[0].heading_path == ["第 1 章 绪论", "1.1 背景"]
 
 
-def test_build_resource_item_uses_epub_native_toc_before_body_snippets(
+def test_build_resource_item_prefers_richer_epub_catalog_before_body_snippets(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
@@ -1706,16 +1706,26 @@ def test_build_resource_item_uses_epub_native_toc_before_body_snippets(
 <ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
   <navMap>
     <navPoint id="c1" playOrder="1"><navLabel><text>第1章计算机系统漫游      1</text></navLabel><content src="text00010.html"/></navPoint>
-    <navPoint id="s11" playOrder="2"><navLabel><text>1.1信息就是位+上下文      1</text></navLabel><content src="text00010.html#s11"/></navPoint>
-    <navPoint id="s111" playOrder="3"><navLabel><text>1.1.1系统的硬件组成      5</text></navLabel><content src="text00011.html"/></navPoint>
-    <navPoint id="c2" playOrder="4"><navLabel><text>第2章信息的表示和处理      20</text></navLabel><content src="text00011.html#c2"/></navPoint>
+    <navPoint id="c2" playOrder="2"><navLabel><text>第2章信息的表示和处理      20</text></navLabel><content src="text00011.html#c2"/></navPoint>
   </navMap>
 </ncx>
 """,
         )
         archive.writestr(
             "OEBPS/text00010.html",
-            "<html><body><p>addi $64, %ecx cmpl $16, %edx jne .L6</p></body></html>",
+            """<html><body>
+<p>目录</p>
+<p>第 1 章 计算机系统漫游 ........ 1</p>
+<p>1.1 信息就是位+上下文 ........ 1</p>
+<p>1.2 程序被其他程序翻译成不同的格式 ........ 3</p>
+<p>1.4 处理器读并解释储存在内存中的指令 ........ 5</p>
+<p>系统的硬件组成 ........ 5</p>
+<p>运行 hello 程序 ........ 7</p>
+<p>1.5 高速缓存至关重要 ........ 9</p>
+<p>第 2 章 信息的表示和处理 ........ 20</p>
+<p>2.1 信息存储 ........ 22</p>
+<p>2 1.1 十六进制表示法 ........ 22</p>
+</body></html>""",
         )
         archive.writestr(
             "OEBPS/text00011.html",
@@ -1724,15 +1734,23 @@ def test_build_resource_item_uses_epub_native_toc_before_body_snippets(
 
     resource = build_resource_item(resource_path, "chaptered.epub")
 
-    assert [chapter.title for chapter in resource.outline[:4]] == [
+    assert [chapter.title for chapter in resource.outline[:10]] == [
         "第 1 章 计算机系统漫游",
         "1.1 信息就是位+上下文",
-        "1.1.1 系统的硬件组成",
+        "1.2 程序被其他程序翻译成不同的格式",
+        "1.4 处理器读并解释储存在内存中的指令",
+        "1.4.1 系统的硬件组成",
+        "1.4.2 运行 hello 程序",
+        "1.5 高速缓存至关重要",
         "第 2 章 信息的表示和处理",
+        "2.1 信息存储",
+        "2.1.1 十六进制表示法",
     ]
-    assert [chapter.level for chapter in resource.outline[:4]] == [1, 2, 3, 1]
+    assert [chapter.level for chapter in resource.outline[:10]] == [1, 2, 2, 2, 3, 3, 2, 1, 2, 3]
     assert resource.outline[1].parent_title == "第 1 章 计算机系统漫游"
-    assert resource.outline[2].parent_title == "1.1 信息就是位+上下文"
+    assert resource.outline[4].parent_title == "1.4 处理器读并解释储存在内存中的指令"
+    assert resource.outline[9].parent_title == "2.1 信息存储"
+    assert resource.outline[0].summary == "来自 EPUB 目录的章节入口：第 1 章 计算机系统漫游。"
     assert all("addi" not in chapter.title for chapter in resource.outline)
 
     stale_resource = resource.model_copy(

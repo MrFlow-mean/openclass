@@ -101,7 +101,7 @@ export function ResourceOutlineTree({
   level?: number;
 }) {
   return (
-    <div className={clsx("space-y-1", level > 0 && "ml-3 border-l border-gray-100 pl-2")}>
+    <div className={clsx("space-y-0.5", level > 0 && "ml-4 border-l border-gray-100 pl-3")}>
       {nodes.map((node) => {
         const hasChildren = node.children.length > 0;
         const isExpanded = expandedNodeIds.has(node.chapter.id);
@@ -113,12 +113,18 @@ export function ResourceOutlineTree({
           <div key={node.chapter.id}>
             <div
               className={clsx(
-                "group flex items-center gap-2 rounded-md border px-2 py-1.5 transition",
-                isSelected ? "border-emerald-200 bg-emerald-50" : "border-transparent bg-gray-50/60 hover:bg-gray-50"
+                "group flex items-center gap-2 rounded-sm px-1.5 py-1.5 transition",
+                isSelected ? "bg-emerald-50" : "hover:bg-gray-50"
               )}
             >
               <div className="min-w-0 flex-1">
-                <p className={clsx("truncate text-xs font-medium", isSelected ? "text-emerald-950" : "text-gray-800")}>
+                <p
+                  className={clsx(
+                    "truncate text-xs",
+                    level === 0 ? "font-semibold" : "font-medium",
+                    isSelected ? "text-emerald-950" : "text-gray-800"
+                  )}
+                >
                   {displayTitle}
                 </p>
                 {location ? <p className="mt-0.5 text-[10px] text-gray-400">{location}</p> : null}
