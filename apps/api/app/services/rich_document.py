@@ -1519,17 +1519,7 @@ def replace_selection_in_document(
             page_settings=document.page_settings,
         )
 
-    next_text = f"{document.content_text.rstrip()}\n\n{replacement}".strip()
-    next_html = "\n".join(
-        part for part in [document.content_html.strip(), block_replacement_html.strip()] if part
-    )
-    return build_document(
-        title=document.title,
-        content_html=next_html,
-        content_text=next_text,
-        document_id=document.id,
-        page_settings=document.page_settings,
-    )
+    return document
 
 
 def import_docx(path: Path, *, title: str | None = None) -> BoardDocument:

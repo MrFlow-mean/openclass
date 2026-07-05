@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 def now_iso() -> str:
@@ -276,6 +276,13 @@ class PatchOperation(BaseModel):
     style: BlockStyle | None = None
     asset_url: str | None = None
     note: str | None = None
+
+    @field_validator("node_path", mode="before")
+    @classmethod
+    def _coerce_nullable_node_path(cls, value: object) -> object:
+        if value is None:
+            return []
+        return value
 
 
 class DiffPreviewItem(BaseModel):

@@ -174,6 +174,36 @@ def test_apply_patch_inserts_after_target_block() -> None:
     assert diff[0].op == "insert_block"
 
 
+def test_apply_patch_accepts_nullable_node_path_when_anchor_is_present() -> None:
+    document = build_document(title="Test", content_text="# Section\n\nfirst")
+    snapshot = read_board_snapshot(document)
+    target = snapshot["blocks"][-1]
+
+    next_document, diff, validation = apply_patch(
+        document,
+        BoardPatchRequest(
+            source_document_hash=document_hash(document),
+            target_scope="focus",
+            operations=[
+                PatchOperation.model_validate(
+                    {
+                        "op": "insert_block",
+                        "after_block_id": target["block_id"],
+                        "node_path": None,
+                        "content": "added near target",
+                    }
+                )
+            ],
+            summary="Add one block near the target.",
+            risk_level="low",
+        ),
+    )
+
+    assert validation.status == "pass"
+    assert next_document.content_text.endswith("first\n\nadded near target")
+    assert diff[0].op == "insert_block"
+
+
 def test_apply_patch_rejects_stale_hash_and_html_content() -> None:
     document = build_document(title="Test", content_text="first")
     snapshot = read_board_snapshot(document)
@@ -410,6 +440,20 @@ def test_replace_selection_in_document_replaces_exact_block_without_nested_parag
 
     assert "新的第二段" in replaced.content_text
     assert "<p><p>" not in replaced.content_html
+
+
+def test_replace_selection_in_document_does_not_append_when_selection_is_missing() -> None:
+    document = build_document(title="Doc", content_text="# Section\n\n第一段内容")
+
+    replaced = replace_selection_in_document(
+        document,
+        selection_text="不存在的选区",
+        replacement_text="不应该追加的内容",
+        replacement_html="<p>不应该追加的内容</p>",
+    )
+
+    assert replaced.content_text == document.content_text
+    assert replaced.content_html == document.content_html
 
 
 def test_board_segment_index_builds_machine_directory_from_rich_document() -> None:
