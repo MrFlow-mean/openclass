@@ -87,6 +87,7 @@ import {
   WordPageZoomControls,
 } from "@/components/course-studio/word-editor-toolbar";
 import { BoardModelPicker } from "@/components/course-studio/board-model-picker";
+import { ResourceVisualBlock } from "@/components/course-studio/resource-visual-block-extension";
 import "@/lib/katex-mhchem";
 import { MATH_TEXT_SERIALIZERS, normalizeEditorMath } from "@/lib/math-content";
 import type {
@@ -359,6 +360,7 @@ const WORD_EDITOR_EXTENSIONS = [
     },
   }),
   PageBreak,
+  ResourceVisualBlock,
   FontSize,
   FontFamily,
 ];

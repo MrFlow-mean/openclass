@@ -739,6 +739,8 @@ def _html_node_to_blocks(node: dict[str, Any]) -> list[dict[str, Any]]:
     attrs = node.get("attrs", {})
     children = node.get("children", [])
     node_type = (attrs.get("data-type") or "").strip()
+    if node_type == "resource-visual-block":
+        return [{"type": "resourceVisualBlock", "attrs": _resource_visual_attrs(attrs)}]
     if node_type == "page-break":
         return [{"type": "pageBreak"}]
     if node_type == "block-math":
@@ -812,6 +814,7 @@ def _html_children_to_blocks(children: list[Any]) -> list[dict[str, Any]]:
         if child.get("tag") in _HTML_BLOCK_TAGS or (child.get("attrs", {}).get("data-type") or "").strip() in {
             "block-math",
             "page-break",
+            "resource-visual-block",
         }:
             if inline_children:
                 paragraph = _text_block_node("paragraph", {}, _html_inline_nodes(inline_children))
@@ -833,6 +836,22 @@ def html_to_tiptap_doc(content_html: str) -> dict[str, Any]:
     parser.feed(content_html)
     nodes = _html_children_to_blocks(parser.root["children"])
     return {"type": "doc", "content": nodes or [{"type": "paragraph"}]}
+
+
+def _resource_visual_attrs(attrs: dict[str, str]) -> dict[str, Any]:
+    return {
+        "marker": attrs.get("data-openclass-resource-visual", ""),
+        "caption": html.unescape(attrs.get("data-caption", "")),
+        "source": html.unescape(attrs.get("data-source", "")),
+        "recreationKind": attrs.get("data-recreation-kind", "original"),
+        "recreationStatus": attrs.get("data-recreation-status", "original_only"),
+        "recreationConfidence": attrs.get("data-recreation-confidence", "0.00"),
+        "recreationNote": html.unescape(attrs.get("data-recreation-note", "")),
+        "recreationHtml": html.unescape(attrs.get("data-recreation-html", "")),
+        "originalSrc": attrs.get("data-original-src", ""),
+        "originalAlt": html.unescape(attrs.get("data-original-alt", "")),
+        "originalInitiallyCollapsed": attrs.get("data-original-initially-collapsed", "true") != "false",
+    }
 
 
 def _markdown_escape(value: str) -> str:
@@ -930,6 +949,17 @@ def _markdown_blocks(nodes: list[dict[str, Any]], *, list_depth: int = 0) -> lis
             alt = str(attrs.get("alt") or "").strip()
             if src:
                 blocks.append(f"![{alt}]({src})")
+        elif node_type == "resourceVisualBlock":
+            attrs = node.get("attrs", {})
+            caption = str(attrs.get("caption") or "资料视觉素材").strip()
+            source = str(attrs.get("source") or "").strip()
+            status = str(attrs.get("recreationStatus") or "").strip()
+            note = str(attrs.get("recreationNote") or "").strip()
+            blocks.append(f"复刻图示：{caption}")
+            if status and status != "recreated":
+                blocks.append(f"复刻状态：{note or '未可靠复刻，保留原图来源供核对。'}")
+            if source:
+                blocks.append(f"原图来源：{source}")
         elif content:
             blocks.extend(_markdown_blocks(content, list_depth=list_depth))
     return blocks
@@ -1885,6 +1915,10 @@ class _DocxBlockParser(HTMLParser):
         tag = tag.lower()
         attr_map = dict(attrs)
         node_type = (attr_map.get("data-type") or "").strip()
+        if self._ignored_atom_depth:
+            if tag not in _VOID_HTML_TAGS:
+                self._ignored_atom_depth += 1
+            return
         if self._table_rows is not None:
             self._handle_table_starttag(tag, attr_map, node_type)
             return
@@ -1892,6 +1926,11 @@ class _DocxBlockParser(HTMLParser):
             self._flush()
             self._table_rows = []
             self._table_row = None
+            return
+        if node_type == "resource-visual-block":
+            self._flush()
+            self.blocks.extend(_resource_visual_docx_blocks(attr_map))
+            self._ignored_atom_depth = 1
             return
         if node_type == "block-math":
             self._flush()
@@ -2031,6 +2070,26 @@ def _trim_fragments(fragments: list[InlineFragment]) -> list[InlineFragment]:
     if trimmed and trimmed[-1][0] == "text":
         trimmed[-1] = ("text", trimmed[-1][1].rstrip())
     return trimmed
+
+
+def _resource_visual_docx_blocks(attrs: dict[str, Any]) -> list[DocxBlock]:
+    visual_attrs = _resource_visual_attrs({str(key): str(value or "") for key, value in attrs.items()})
+    caption = str(visual_attrs.get("caption") or "资料视觉素材").strip()
+    source = str(visual_attrs.get("source") or "").strip()
+    status = str(visual_attrs.get("recreationStatus") or "").strip()
+    note = str(visual_attrs.get("recreationNote") or "").strip()
+    original_src = str(visual_attrs.get("originalSrc") or "").strip()
+    original_alt = str(visual_attrs.get("originalAlt") or caption).strip()
+    blocks: list[DocxBlock] = [
+        ("p", [("text", f"复刻图示：{caption}")], {}),
+    ]
+    if status and status != "recreated":
+        blocks.append(("p", [("text", f"复刻状态：{note or '未可靠复刻，保留原图来源供核对。'}")], {}))
+    if source:
+        blocks.append(("p", [("text", f"原图来源：{source}")], {}))
+    if original_src:
+        blocks.append(("img", [("text", original_alt)], {"src": original_src, "alt": original_alt}))
+    return blocks
 
 
 def _page_size_cm(page_size: str) -> tuple[float, float]:

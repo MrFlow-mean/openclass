@@ -17,6 +17,7 @@ from app.models import (
     ResourceVisualEvidence,
 )
 from app.services.rich_document import build_document
+from app.services.resource_visual_recreation import recreate_resource_visual_evidence
 
 
 _VISUAL_CONTENT_TYPES = {"image", "table", "equation"}
@@ -56,7 +57,9 @@ def select_resource_visual_evidence(
         if unit.content_type not in _VISUAL_CONTENT_TYPES:
             continue
         image_src = _safe_asset_data_uri(resource, unit)
-        if not image_src:
+        if unit.content_type == "image" and not image_src:
+            continue
+        if unit.content_type in {"table", "equation"} and not (image_src or unit.text.strip()):
             continue
 
         in_page_window = _unit_in_chapter_page_window(unit, chapter)
@@ -99,7 +102,9 @@ def select_resource_visual_evidence(
             source_locator=unit.source_locator,
             relevance_reason="；".join(reasons),
             relevance_score=round(score, 3),
-            image_src=image_src,
+            image_src=image_src or "",
+            source_text=unit.text,
+            source_metadata=dict(unit.metadata or {}),
         )
         candidates.append(_VisualCandidate(evidence=evidence, order_index=unit.order_index, relevance_score=score))
 
@@ -131,7 +136,11 @@ def augment_document_with_resource_visual_evidence(
     reference_context: ResourceReferenceContext,
     max_items: int = 2,
 ) -> BoardDocument:
-    visuals = [item for item in getattr(reference_context, "visual_evidence", []) if item.image_src][:max_items]
+    visuals = [
+        item
+        for item in getattr(reference_context, "visual_evidence", [])
+        if item.image_src or item.source_text.strip()
+    ][:max_items]
     if not visuals:
         return document
 
@@ -279,10 +288,37 @@ def _visual_html(reference_context: ResourceReferenceContext, visual: ResourceVi
     source = f"{reference_context.resource_name} / {reference_context.chapter_title}{page_text}"
     alt = html.escape(caption[:120] or source, quote=True)
     escaped_marker = html.escape(marker, quote=True)
+    recreation = recreate_resource_visual_evidence(visual)
+    original_src_attr = html.escape(visual.image_src, quote=True)
+    original_alt_attr = alt
+    original_html = (
+        f'<img src="{original_src_attr}" alt="{original_alt_attr}" />'
+        if visual.image_src
+        else '<p class="openclass-resource-visual__source-note">原始图片不可用，已保留解析出的文字证据。</p>'
+    )
     return "\n".join(
         [
-            f'<p data-openclass-resource-visual="{escaped_marker}">{html.escape(caption)}（来源：{html.escape(source)}）</p>',
-            f'<img src="{html.escape(visual.image_src, quote=True)}" alt="{alt}" />',
+            (
+                '<section data-type="resource-visual-block" class="openclass-resource-visual" '
+                f'data-openclass-resource-visual="{escaped_marker}" '
+                f'data-caption="{html.escape(caption, quote=True)}" '
+                f'data-source="{html.escape(source, quote=True)}" '
+                f'data-recreation-kind="{html.escape(recreation.kind, quote=True)}" '
+                f'data-recreation-status="{html.escape(recreation.status, quote=True)}" '
+                f'data-recreation-confidence="{recreation.confidence:.2f}" '
+                f'data-recreation-note="{html.escape(recreation.note, quote=True)}" '
+                f'data-recreation-html="{html.escape(recreation.html, quote=True)}" '
+                f'data-original-src="{original_src_attr}" '
+                f'data-original-alt="{original_alt_attr}">'
+            ),
+            '<p class="openclass-resource-visual__label"><strong>复刻图示</strong>：'
+            f'{html.escape(caption)}（来源：{html.escape(source)}）</p>',
+            f'<div data-openclass-visual-replica="true">{recreation.html}</div>',
+            '<div data-openclass-original-visual="true" hidden>',
+            f'<p>原图来源：{html.escape(source)}</p>',
+            original_html,
+            "</div>",
+            "</section>",
         ]
     )
 

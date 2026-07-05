@@ -1929,7 +1929,7 @@ def test_resource_reference_context_selects_visual_evidence_from_chapter_assets(
             ResourceSourceUnit(content_type="text", text="第一章\n这里解释结构关系。", page_no=1, order_index=0),
             ResourceSourceUnit(
                 content_type="image",
-                text="关键结构图",
+                text="输入 -> 处理 -> 输出",
                 page_no=1,
                 source_locator="page=1#image-1",
                 asset_path="figure.png",
@@ -1952,20 +1952,25 @@ def test_resource_reference_context_selects_visual_evidence_from_chapter_assets(
     assert context is not None
     assert len(context.visual_evidence) == 1
     visual = context.visual_evidence[0]
-    assert visual.caption == "关键结构图"
+    assert visual.caption == "输入 -> 处理 -> 输出"
     assert visual.source_locator == "page=1#image-1"
     assert visual.image_src.startswith("data:image/png;base64,")
+    assert visual.source_text == "输入 -> 处理 -> 输出"
     dumped = context.model_dump(mode="json")
     assert "image_src" not in str(dumped)
     assert "data:image" not in str(dumped)
+    assert "source_text" not in str(dumped)
 
     document = build_document(title="第一章板书", content_text="# 第一章\n\n正文内容")
     augmented = augment_document_with_resource_visual_evidence(document, reference_context=context)
 
-    assert '<img src="data:image/png;base64,' in augmented.content_html
+    assert 'data-type="resource-visual-block"' in augmented.content_html
+    assert 'data-recreation-status="recreated"' in augmented.content_html
+    assert "openclass-resource-visual__replica-svg" in augmented.content_html
+    assert 'data-openclass-original-visual="true"' in augmented.content_html
     assert "data-openclass-resource-visual" in augmented.content_html
     assert any(
-        node.get("type") == "image"
+        node.get("type") == "resourceVisualBlock"
         for node in augmented.content_json.get("content", [])
         if isinstance(node, dict)
     )
@@ -1997,7 +2002,7 @@ def test_generate_from_requirements_appends_resource_visual_evidence(monkeypatch
             ResourceSourceUnit(content_type="text", text="第一章\n这里解释结构关系。", page_no=1, order_index=0),
             ResourceSourceUnit(
                 content_type="image",
-                text="关键结构图",
+                text="输入 -> 处理 -> 输出",
                 page_no=1,
                 source_locator="page=1#image-1",
                 asset_path="figure.png",
@@ -2048,7 +2053,156 @@ def test_generate_from_requirements_appends_resource_visual_evidence(monkeypatch
     assert outcome.changed is True
     assert outcome.resource_visual_evidence_inserted == 1
     assert outcome.resource_visual_evidence[0]["source_locator"] == "page=1#image-1"
-    assert '<img src="data:image/png;base64,' in outcome.new_document.content_html
+    assert 'data-type="resource-visual-block"' in outcome.new_document.content_html
+    assert 'data-recreation-status="recreated"' in outcome.new_document.content_html
+    assert 'data-openclass-original-visual="true"' in outcome.new_document.content_html
+
+
+def test_resource_visual_evidence_recreates_table_without_original_image() -> None:
+    chapter = LibraryChapter(title="第一章", level=1, summary="第一章摘要", page_start=1, page_end=1, order_index=0)
+    resource = ResourceLibraryItem(
+        name="resource.pdf",
+        mime_type="application/pdf",
+        resource_type="document",
+        size_bytes=100,
+        outline=[chapter],
+        extracted_text_available=True,
+        text_content="第一章\n表格说明。",
+        parser_provider="raganything:fake",
+        source_units=[
+            ResourceSourceUnit(content_type="text", text="第一章\n表格说明。", page_no=1, order_index=0),
+            ResourceSourceUnit(
+                content_type="table",
+                text="阶段 | 输出\n--- | ---\n解析 | source unit\n生成 | board block",
+                page_no=1,
+                source_locator="page=1#table-1",
+                order_index=1,
+            ),
+        ],
+    )
+    context = extract_reference_context(resource, chapter.id, user_query="参考第一章表格")
+    assert context is not None
+    assert len(context.visual_evidence) == 1
+
+    document = build_document(title="第一章板书", content_text="# 第一章\n\n正文内容")
+    augmented = augment_document_with_resource_visual_evidence(document, reference_context=context)
+
+    assert 'data-type="resource-visual-block"' in augmented.content_html
+    assert 'data-recreation-kind="table"' in augmented.content_html
+    assert "openclass-resource-visual__replica-table" in augmented.content_html
+    assert "原始图片不可用" in augmented.content_html
+
+
+def test_resource_visual_evidence_recreates_equation_without_original_image() -> None:
+    chapter = LibraryChapter(title="第一章", level=1, summary="第一章摘要", page_start=1, page_end=1, order_index=0)
+    resource = ResourceLibraryItem(
+        name="resource.pdf",
+        mime_type="application/pdf",
+        resource_type="document",
+        size_bytes=100,
+        outline=[chapter],
+        extracted_text_available=True,
+        text_content="第一章\n公式说明。",
+        parser_provider="raganything:fake",
+        source_units=[
+            ResourceSourceUnit(content_type="text", text="第一章\n公式说明。", page_no=1, order_index=0),
+            ResourceSourceUnit(
+                content_type="equation",
+                text=r"E = mc^2",
+                page_no=1,
+                source_locator="page=1#equation-1",
+                order_index=1,
+            ),
+        ],
+    )
+    context = extract_reference_context(resource, chapter.id, user_query="参考第一章公式")
+    assert context is not None
+    assert len(context.visual_evidence) == 1
+
+    document = build_document(title="第一章板书", content_text="# 第一章\n\n正文内容")
+    augmented = augment_document_with_resource_visual_evidence(document, reference_context=context)
+
+    assert 'data-recreation-kind="equation"' in augmented.content_html
+    assert "openclass-resource-visual__formula" in augmented.content_html
+    assert "E = mc^2" in augmented.content_html
+
+
+def test_resource_visual_evidence_keeps_complex_image_folded_without_fake_recreation(tmp_path) -> None:
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    (artifacts / "complex.png").write_bytes(_TINY_PNG)
+    chapter = LibraryChapter(title="第一章", level=1, summary="第一章摘要", page_start=1, page_end=1, order_index=0)
+    resource = ResourceLibraryItem(
+        name="resource.pdf",
+        mime_type="application/pdf",
+        resource_type="document",
+        size_bytes=100,
+        outline=[chapter],
+        extracted_text_available=True,
+        text_content="第一章\n这里解释复杂图像。",
+        parser_provider="raganything:fake",
+        parser_artifacts_path=str(artifacts),
+        source_units=[
+            ResourceSourceUnit(content_type="text", text="第一章\n这里解释复杂图像。", page_no=1, order_index=0),
+            ResourceSourceUnit(
+                content_type="image",
+                text="复杂关系图",
+                page_no=1,
+                source_locator="page=1#image-complex",
+                asset_path="complex.png",
+                order_index=1,
+            ),
+        ],
+    )
+    context = extract_reference_context(resource, chapter.id, user_query="参考第一章复杂图像")
+    assert context is not None
+
+    document = build_document(title="第一章板书", content_text="# 第一章\n\n正文内容")
+    augmented = augment_document_with_resource_visual_evidence(document, reference_context=context)
+
+    assert 'data-recreation-status="original_only"' in augmented.content_html
+    assert "暂未可靠复刻" in augmented.content_html
+    assert '<img src="data:image/png;base64,' in augmented.content_html
+
+
+def test_docx_export_keeps_resource_visual_original_source(tmp_path) -> None:
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    (artifacts / "figure.png").write_bytes(_TINY_PNG)
+    chapter = LibraryChapter(title="第一章", level=1, summary="第一章摘要", page_start=1, page_end=1, order_index=0)
+    resource = ResourceLibraryItem(
+        name="resource.pdf",
+        mime_type="application/pdf",
+        resource_type="document",
+        size_bytes=100,
+        outline=[chapter],
+        extracted_text_available=True,
+        text_content="第一章\n这里解释结构关系。",
+        parser_provider="raganything:fake",
+        parser_artifacts_path=str(artifacts),
+        source_units=[
+            ResourceSourceUnit(content_type="text", text="第一章\n这里解释结构关系。", page_no=1, order_index=0),
+            ResourceSourceUnit(
+                content_type="image",
+                text="输入 -> 处理 -> 输出",
+                page_no=1,
+                source_locator="page=1#image-1",
+                asset_path="figure.png",
+                order_index=1,
+            ),
+        ],
+    )
+    context = extract_reference_context(resource, chapter.id, user_query="参考第一章生成板书")
+    assert context is not None
+    document = build_document(title="第一章板书", content_text="# 第一章\n\n正文内容")
+    augmented = augment_document_with_resource_visual_evidence(document, reference_context=context)
+
+    export_path = tmp_path / "visual-source.docx"
+    export_docx(augmented, export_path)
+    imported = import_docx(export_path, title="Imported")
+
+    assert "复刻图示：输入 -> 处理 -> 输出" in imported.content_text
+    assert "原图来源：resource.pdf / 第一章，页码 1" in imported.content_text
 
 
 def test_resource_visual_evidence_skips_path_traversal_assets(tmp_path) -> None:

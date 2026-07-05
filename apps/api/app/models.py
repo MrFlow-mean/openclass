@@ -977,6 +977,8 @@ class ResourceVisualEvidence(BaseModel):
     relevance_reason: str = ""
     relevance_score: float = 0.0
     image_src: str = Field(default="", exclude=True, repr=False)
+    source_text: str = Field(default="", exclude=True, repr=False)
+    source_metadata: dict[str, Any] = Field(default_factory=dict, exclude=True, repr=False)
 
 
 class ResourceReferenceContext(BaseModel):
