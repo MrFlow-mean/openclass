@@ -253,3 +253,141 @@ def test_confirmed_resource_reference_reaches_blank_board_generation(
     commit = saved.packages[0].lessons[-1].history_graph.commits[-1]
     assert commit.metadata["selected_resource_reference"]["status"] == "confirmed"
     assert commit.metadata["resource_reference_context"]["resource_id"] == "resource_workflow"
+
+
+def test_combined_reference_confirmation_and_board_generation_uses_reference(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    lesson_id = _seed_blank_lesson_with_resource(store)
+    monkeypatch.setattr(openai_course_ai, "generate_blank_board_requirement_refinement", _ready_refinement)
+
+    first = process_chat_on_lesson(
+        lesson_id,
+        ChatRequest(message="I want to learn source selection workflow"),
+        user_id=TEST_USER_ID,
+    )
+    assert first.reference_prompt is not None
+
+    captured: dict[str, object] = {}
+
+    def _fake_generate_from_requirements(**kwargs):
+        captured.update(kwargs)
+        lesson = kwargs["lesson"]
+        return BoardDocumentEditOutcome(
+            chatbot_message="",
+            new_document=build_document(
+                title="Grounded board",
+                content_text="# Grounded board\n\nSource evidence is selected before writing.",
+                document_id=lesson.board_document.id,
+                page_settings=lesson.board_document.page_settings,
+            ),
+            board_decision=BoardDecision(action="edit_board", reason="Generated from confirmed source."),
+            assistant_message_source="board_document_editor_ai",
+            operation="replace_document",
+            summary="Generated a grounded board.",
+            section_titles=["Grounded board"],
+            changed=True,
+            operation_status="succeeded",
+        )
+
+    monkeypatch.setattr(blank_board_generation, "generate_from_requirements", _fake_generate_from_requirements)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_post_board_generation_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="Board generated from the selected source."),
+    )
+
+    generated = process_chat_on_lesson(
+        lesson_id,
+        ChatRequest(
+            message="开始生成板书",
+            board_generation_action="start",
+            resource_reference_action="confirm",
+            resource_reference_resource_id=first.reference_prompt.resource_id,
+            resource_reference_chapter_id=first.reference_prompt.chapter_id,
+        ),
+        user_id=TEST_USER_ID,
+    )
+
+    assert generated.board_document_operation_status == "succeeded"
+    assert captured["reference_context"] is not None
+    assert "workflow-source.pdf" in str(captured["resource_summary"])
+    assert captured["requirements"].selected_resource_reference.status == "confirmed"
+
+    saved = store.load_for_user(TEST_USER_ID)
+    commit = saved.packages[0].lessons[-1].history_graph.commits[-1]
+    assert commit.metadata["board_generation_action"] == "start"
+    assert commit.metadata["selected_resource_reference"]["status"] == "confirmed"
+    assert commit.metadata["resource_reference_context"]["resource_id"] == "resource_workflow"
+    assert store.load_learning_requirement_history_state(TEST_USER_ID, lesson_id) is None
+
+
+def test_combined_reference_skip_and_board_generation_omits_reference_context(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    lesson_id = _seed_blank_lesson_with_resource(store)
+    monkeypatch.setattr(openai_course_ai, "generate_blank_board_requirement_refinement", _ready_refinement)
+
+    first = process_chat_on_lesson(
+        lesson_id,
+        ChatRequest(message="I want to learn source selection workflow"),
+        user_id=TEST_USER_ID,
+    )
+    assert first.reference_prompt is not None
+
+    captured: dict[str, object] = {}
+
+    def _fake_generate_from_requirements(**kwargs):
+        captured.update(kwargs)
+        lesson = kwargs["lesson"]
+        return BoardDocumentEditOutcome(
+            chatbot_message="",
+            new_document=build_document(
+                title="Ungrounded board",
+                content_text="# Ungrounded board\n\nGenerated without the suggested source.",
+                document_id=lesson.board_document.id,
+                page_settings=lesson.board_document.page_settings,
+            ),
+            board_decision=BoardDecision(action="edit_board", reason="Generated without suggested source."),
+            assistant_message_source="board_document_editor_ai",
+            operation="replace_document",
+            summary="Generated without the suggested source.",
+            section_titles=["Ungrounded board"],
+            changed=True,
+            operation_status="succeeded",
+        )
+
+    monkeypatch.setattr(blank_board_generation, "generate_from_requirements", _fake_generate_from_requirements)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_post_board_generation_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="Board generated without the suggested source."),
+    )
+
+    generated = process_chat_on_lesson(
+        lesson_id,
+        ChatRequest(
+            message="开始生成板书",
+            board_generation_action="start",
+            resource_reference_action="skip",
+            resource_reference_resource_id=first.reference_prompt.resource_id,
+            resource_reference_chapter_id=first.reference_prompt.chapter_id,
+        ),
+        user_id=TEST_USER_ID,
+    )
+
+    assert generated.board_document_operation_status == "succeeded"
+    assert captured["reference_context"] is None
+    assert captured["resource_summary"] == ""
+    assert captured["requirements"].selected_resource_reference.status == "skipped"
+
+    saved = store.load_for_user(TEST_USER_ID)
+    commit = saved.packages[0].lessons[-1].history_graph.commits[-1]
+    assert commit.metadata["selected_resource_reference"]["status"] == "skipped"
+    assert commit.metadata["resource_reference_context"] is None

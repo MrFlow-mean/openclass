@@ -7,6 +7,7 @@ from app.models import (
     ChatResponse,
     LearningClarificationStatus,
     LearningRequirementSheet,
+    ResourceReferenceAction,
 )
 from app.services import workspace_state
 from app.services.board_document_editor import generate_from_requirements
@@ -19,8 +20,10 @@ from app.services.learning_requirement_history import (
 )
 from app.services.openai_course_ai import openai_course_ai
 from app.services.resource_requirement_bridge import (
+    confirm_requirement_resource_reference,
     resolve_confirmed_requirement_reference_context,
     resource_summary_from_reference_context,
+    skip_requirement_resource_reference,
 )
 from app.services.rich_document import is_document_empty
 
@@ -31,6 +34,10 @@ def run_blank_board_generation(
     package,
     lesson,
     user_id: str,
+    resource_reference_action: ResourceReferenceAction | None = None,
+    resource_reference_resource_id: str | None = None,
+    resource_reference_chapter_id: str | None = None,
+    resource_reference_user_message: str = "",
 ) -> ChatResponse:
     history_state = workspace_state.load_learning_requirement_history_state_for_user(user_id, lesson.id)
     requirements = _requirement_from_state(history_state) or lesson.learning_requirements
@@ -60,13 +67,24 @@ def run_blank_board_generation(
         lesson_id=lesson.id,
         state=history_state,
     )
+    visible_resources = workspace_state.package_context_for_lesson(workspace, package, lesson.id).resources
+    requirements = _apply_resource_reference_decision(
+        recorder=recorder,
+        requirements=requirements,
+        clarification=clarification,
+        visible_resources=visible_resources,
+        action=resource_reference_action,
+        resource_id=resource_reference_resource_id,
+        chapter_id=resource_reference_chapter_id,
+        user_message=resource_reference_user_message,
+    )
+    lesson.learning_requirements = requirements
     frozen_stamp = recorder.freeze(
         requirements=requirements,
         clarification=clarification,
         forced=clarification.forced_start,
         change_summary="学习需求已冻结，准备生成空白板书。",
     )
-    visible_resources = workspace_state.package_context_for_lesson(workspace, package, lesson.id).resources
     reference_context = resolve_confirmed_requirement_reference_context(
         resources=visible_resources,
         requirement=requirements,
@@ -228,6 +246,55 @@ def _model_from_history_json(
         return schema.model_validate_json(raw)
     except Exception:
         return None
+
+
+def _apply_resource_reference_decision(
+    *,
+    recorder: LearningRequirementHistoryRecorder,
+    requirements: LearningRequirementSheet,
+    clarification: LearningClarificationStatus,
+    visible_resources,
+    action: ResourceReferenceAction | None,
+    resource_id: str | None,
+    chapter_id: str | None,
+    user_message: str,
+) -> LearningRequirementSheet:
+    if action == "confirm":
+        if not resource_id or not chapter_id:
+            return requirements
+        alignment = confirm_requirement_resource_reference(
+            resources=visible_resources,
+            requirement=requirements,
+            resource_id=resource_id,
+            chapter_id=chapter_id,
+            user_message=user_message,
+        )
+        next_requirements = alignment.requirement
+        change_summary = "用户确认以指定资料位置作为空白板书生成依据。"
+    elif action == "skip":
+        alignment = skip_requirement_resource_reference(requirement=requirements)
+        next_requirements = alignment.requirement
+        change_summary = "用户跳过推荐资料位置。"
+    else:
+        return requirements
+
+    recorder.record_update(
+        requirements=next_requirements,
+        clarification=clarification,
+        change_summary=change_summary,
+        metadata={
+            "resource_reference_action": action,
+            "resource_reference_resource_id": resource_id,
+            "resource_reference_chapter_id": chapter_id,
+            "selected_resource_reference": (
+                next_requirements.selected_resource_reference.model_dump(mode="json")
+                if next_requirements.selected_resource_reference is not None
+                else None
+            ),
+            "combined_with_board_generation": True,
+        },
+    )
+    return next_requirements
 
 
 def _failure_response(

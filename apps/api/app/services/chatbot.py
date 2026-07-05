@@ -500,6 +500,10 @@ def _run_decided_chat_turn(
             package=package,
             lesson=lesson,
             user_id=user_id,
+            resource_reference_action=request.resource_reference_action,
+            resource_reference_resource_id=request.resource_reference_resource_id,
+            resource_reference_chapter_id=request.resource_reference_chapter_id,
+            resource_reference_user_message=request.message,
         )
         workflow.record_execution(label="生成右侧板书", role="BoardEditor", response=response)
         return response
