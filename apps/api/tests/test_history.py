@@ -416,6 +416,51 @@ def test_commit_metadata_context_marks_edited_chat_branch() -> None:
     assert metadata["chat_edit_original_message"] == "原问题"
 
 
+def test_commit_operations_classifies_chat_history_node() -> None:
+    lesson = create_empty_lesson("聊天节点")
+
+    commit_operations(
+        lesson,
+        [],
+        label="Basic chat",
+        message="Recorded a basic chatbot conversation turn",
+        metadata={
+            "kind": "basic_chat",
+            "user_message": "讲讲这一段",
+            "assistant_message": "这一段可以先看主线。",
+            "document_changed": False,
+        },
+    )
+
+    metadata = lesson.history_graph.commits[-1].metadata
+    assert metadata["history_node_kind"] == "chat"
+    assert metadata["history_node_title"] == "讲讲这一段"
+    assert metadata["history_node_summary"] == "这一段可以先看主线。"
+
+
+def test_commit_operations_classifies_document_history_node() -> None:
+    lesson = create_empty_lesson("文档节点")
+    next_document = build_document(title="文档节点", content_text="新的板书内容")
+
+    commit_operations(
+        lesson,
+        [PatchOperation(op="insert_block", content="新的板书内容")],
+        label="Board task write",
+        message="Executed an existing-board write task",
+        new_document=next_document,
+        metadata={
+            "kind": "board_document_edit",
+            "board_document_editor_summary": "补写目标位置的内容",
+            "document_changed": True,
+        },
+    )
+
+    metadata = lesson.history_graph.commits[-1].metadata
+    assert metadata["history_node_kind"] == "document"
+    assert metadata["history_node_title"] == "补写目标位置的内容"
+    assert metadata["history_node_summary"] == "补写目标位置的内容"
+
+
 def test_create_empty_lesson_starts_with_blank_rich_document() -> None:
     lesson = create_empty_lesson("空白页")
 

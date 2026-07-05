@@ -1,4 +1,3 @@
-import type { BranchSequenceOption } from "@/components/branch-sequence-selector";
 import type { CourseChatMessageView } from "@/components/chatbot";
 import { normalizePageSettings } from "@/components/course-studio/page-settings";
 import type {
@@ -102,10 +101,14 @@ const LEGACY_NON_AI_ASSISTANT_PATTERNS = [
 
 const DISPLAYABLE_CHAT_COMMIT_KINDS = new Set([
   "chat_flow",
+  "interaction_session_start",
+  "interaction_session_turn",
+  "board_section_teaching",
   "board_document_generation",
   "board_document_edit",
   "basic_chat",
   "learning_requirement_refinement",
+  "board_task_requirement_refinement",
 ]);
 
 function isDisplayableAssistantContent(content: string | null, source?: string | null): content is string {
@@ -429,32 +432,6 @@ export function nextEditBranchName(lesson: Lesson) {
     name = `edit-${index}`;
   }
   return name;
-}
-
-export function branchSequenceForCommit(lesson: Lesson, commit: CommitRecord): BranchSequenceOption[] {
-  const commitsById = new Map(lesson.history_graph.commits.map((item) => [item.id, item]));
-  return Object.values(lesson.history_graph.branches)
-    .filter((branch) => branch.base_commit_id === commit.id)
-    .sort((left, right) => {
-      const timeDelta = new Date(left.created_at).getTime() - new Date(right.created_at).getTime();
-      if (timeDelta !== 0) {
-        return timeDelta;
-      }
-      return left.name.localeCompare(right.name, "zh-CN", { numeric: true });
-    })
-    .map((branch, index) => {
-      const headCommit = commitsById.get(branch.head_commit_id);
-      const snapshot = headCommit?.snapshot ?? commit.snapshot;
-      return {
-        order: index + 1,
-        branchName: branch.name,
-        documentTitle: snapshot.title || "未命名章节",
-        documentOverview: compactText(snapshot.content_text || snapshot.title || "这个分支暂时还没有章节正文。", 220),
-        latestLabel: headCommit?.label ?? "分支起点",
-        latestMessage: compactText(headCommit?.message || commit.message || "还没有新的章节更新。", 120),
-        updatedAt: headCommit?.created_at ?? branch.created_at,
-      };
-    });
 }
 
 export function documentsEqual(left: BoardDocument | null | undefined, right: BoardDocument | null | undefined) {

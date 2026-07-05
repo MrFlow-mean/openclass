@@ -233,6 +233,9 @@ export interface CommitRecord {
   metadata?: Record<string, unknown> & {
     board_patch_diff?: DiffPreviewItem[];
     board_patch_risk_level?: "low" | "medium" | "high";
+    history_node_kind?: "chat" | "document" | "restore" | "system";
+    history_node_title?: string;
+    history_node_summary?: string;
   };
 }
 

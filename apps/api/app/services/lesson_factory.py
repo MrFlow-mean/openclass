@@ -92,6 +92,9 @@ def _initial_history(document: BoardDocument, requirements: LearningRequirementS
         snapshot=document,
         metadata={
             "kind": "initial_document",
+            "history_node_kind": "system",
+            "history_node_title": "Initial document",
+            "history_node_summary": f"Generated starter rich document for {document.title}",
             "active_requirement_sheet_after": requirements.model_dump(mode="json"),
             "active_interaction_session_after": None,
             "active_board_task_sheet_after": None,
