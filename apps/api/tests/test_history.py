@@ -37,7 +37,12 @@ from app.services.openai_course_ai import (
     OpenAICourseAI,
     openai_course_ai,
 )
-from app.services.resource_library import _epub_section_body_score, build_resource_item, extract_reference_context
+from app.services.resource_library import (
+    _epub_section_body_score,
+    build_resource_item,
+    extract_reference_context,
+    resource_with_epub_catalog_outline,
+)
 from app.services.resource_visual_evidence import augment_document_with_resource_visual_evidence
 from app.services.board_segment_index import build_board_segment_index
 from app.services.rich_document import (
@@ -1659,6 +1664,108 @@ def get_parser(name):
     assert [chapter.title for chapter in resource.outline[:2]] == ["第 1 章 绪论", "1.1 背景"]
     assert resource.outline[1].parent_title == "第 1 章 绪论"
     assert resource.source_units[0].heading_path == ["第 1 章 绪论", "1.1 背景"]
+
+
+def test_build_resource_item_uses_epub_native_toc_before_body_snippets(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("OPENCLASS_RESOURCE_PARSER", "native")
+    resource_path = tmp_path / "chaptered.epub"
+    with ZipFile(resource_path, "w") as archive:
+        archive.writestr("mimetype", "application/epub+zip")
+        archive.writestr(
+            "META-INF/container.xml",
+            """<?xml version="1.0"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>
+""",
+        )
+        archive.writestr(
+            "OEBPS/content.opf",
+            """<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" unique-identifier="bookid" version="2.0">
+  <manifest>
+    <item href="toc.ncx" id="ncx" media-type="application/x-dtbncx+xml"/>
+    <item href="text00010.html" id="text10" media-type="application/xhtml+xml"/>
+    <item href="text00011.html" id="text11" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine toc="ncx">
+    <itemref idref="text10"/>
+    <itemref idref="text11"/>
+  </spine>
+</package>
+""",
+        )
+        archive.writestr(
+            "OEBPS/toc.ncx",
+            """<?xml version="1.0" encoding="UTF-8"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
+  <navMap>
+    <navPoint id="c1" playOrder="1"><navLabel><text>第1章计算机系统漫游      1</text></navLabel><content src="text00010.html"/></navPoint>
+    <navPoint id="s11" playOrder="2"><navLabel><text>1.1信息就是位+上下文      1</text></navLabel><content src="text00010.html#s11"/></navPoint>
+    <navPoint id="s111" playOrder="3"><navLabel><text>1.1.1系统的硬件组成      5</text></navLabel><content src="text00011.html"/></navPoint>
+    <navPoint id="c2" playOrder="4"><navLabel><text>第2章信息的表示和处理      20</text></navLabel><content src="text00011.html#c2"/></navPoint>
+  </navMap>
+</ncx>
+""",
+        )
+        archive.writestr(
+            "OEBPS/text00010.html",
+            "<html><body><p>addi $64, %ecx cmpl $16, %edx jne .L6</p></body></html>",
+        )
+        archive.writestr(
+            "OEBPS/text00011.html",
+            "<html><body><p>Registers: Arow in %esi, Bptr in %ebx.</p></body></html>",
+        )
+
+    resource = build_resource_item(resource_path, "chaptered.epub")
+
+    assert [chapter.title for chapter in resource.outline[:4]] == [
+        "第 1 章 计算机系统漫游",
+        "1.1 信息就是位+上下文",
+        "1.1.1 系统的硬件组成",
+        "第 2 章 信息的表示和处理",
+    ]
+    assert [chapter.level for chapter in resource.outline[:4]] == [1, 2, 3, 1]
+    assert resource.outline[1].parent_title == "第 1 章 计算机系统漫游"
+    assert resource.outline[2].parent_title == "1.1 信息就是位+上下文"
+    assert all("addi" not in chapter.title for chapter in resource.outline)
+
+    stale_resource = resource.model_copy(
+        update={
+            "outline": [
+                LibraryChapter(
+                    title="addi $64, %ecx cmpl $16, %edx jne .L6",
+                    level=1,
+                    summary="正文片段",
+                    order_index=0,
+                ),
+                LibraryChapter(
+                    title="Registers: Arow in %esi, Bptr in %ebx.",
+                    level=1,
+                    summary="正文片段",
+                    order_index=1,
+                ),
+                LibraryChapter(
+                    title="这段代码计算元素的地址并访问寄存器，属于正文片段",
+                    level=1,
+                    summary="正文片段",
+                    order_index=2,
+                ),
+            ],
+            "concept_index": {},
+        }
+    )
+    repaired_resource = resource_with_epub_catalog_outline(stale_resource)
+    repaired_again = resource_with_epub_catalog_outline(stale_resource)
+
+    assert repaired_resource.outline[0].title == "第 1 章 计算机系统漫游"
+    assert repaired_resource.outline[1].parent_title == "第 1 章 计算机系统漫游"
+    assert [chapter.id for chapter in repaired_resource.outline] == [chapter.id for chapter in repaired_again.outline]
 
 
 def test_build_resource_item_falls_back_to_native_parser_in_auto_mode(

@@ -20,6 +20,7 @@ from app.services.course_store import SqliteCourseStore
 from app.services.config import API_BASE_DIR as BASE_DIR, DATA_DIR, ROOT_DIR, load_root_dotenv
 from app.services.course_runtime import active_task_requirements
 from app.services.history import commit_operations
+from app.services.resource_library import resource_with_epub_catalog_outline
 
 
 def _load_root_dotenv() -> None:
@@ -182,10 +183,14 @@ def resources_visible_to_lesson(
     isolate_lesson_resources: bool,
 ) -> list[ResourceLibraryItem]:
     if not isolate_lesson_resources:
-        return package.resources
+        return [resource_with_epub_catalog_outline(resource) for resource in package.resources]
     if not lesson_id:
         return []
-    return [resource for resource in package.resources if resource.scope_lesson_id == lesson_id]
+    return [
+        resource_with_epub_catalog_outline(resource)
+        for resource in package.resources
+        if resource.scope_lesson_id == lesson_id
+    ]
 
 
 def package_context_for_lesson(

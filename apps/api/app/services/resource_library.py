@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import hashlib
 import mimetypes
 import posixpath
 import re
@@ -19,6 +20,7 @@ from app.models import (
     ResourceReferenceContext,
     ResourceSourceUnit,
 )
+from app.services.epub_toc import extract_epub_toc_entries
 from app.services.image_ocr import extract_image_text, extract_pdf_pages_text
 from app.services.rag_anything_adapter import parse_with_rag_anything
 from app.services.resource_page_structure import (
@@ -735,6 +737,28 @@ def _read_epub_text(file_path: Path) -> str:
 
 
 def _extract_epub_outline(file_path: Path) -> list[LibraryChapter]:
+    toc_entries = extract_epub_toc_entries(file_path)
+    if toc_entries:
+        chapters: list[LibraryChapter] = []
+        for index, entry in enumerate(toc_entries):
+            title = entry.title
+            page_start = entry.page_start
+            chapter = _chapter(
+                title=title,
+                summary=f"来自 EPUB 原生目录的章节入口：{title}。",
+                keywords=_keywords_from_text(title),
+                level=entry.level,
+                locator_hint=title,
+                order_index=index,
+                scan_strategy="outline_only",
+                page_start=page_start,
+                page_end=page_start,
+            )
+            stable_seed = f"{file_path.name}\n{index}\n{title}\n{entry.source}"
+            stable_id = f"chapter_epub_{hashlib.sha256(stable_seed.encode('utf-8')).hexdigest()[:16]}"
+            chapters.append(chapter.model_copy(update={"id": stable_id}))
+        return chapters
+
     chapters: list[LibraryChapter] = []
     for section in _epub_sections(file_path):
         title = str(section["title"]).strip()
@@ -1677,6 +1701,58 @@ def _outline_from_source_text(original_name: str, text: str) -> list[LibraryChap
     ]
 
 
+def _concept_index_from_outline(outline: list[LibraryChapter]) -> dict[str, list[str]]:
+    concept_index: dict[str, list[str]] = {}
+    for chapter in outline:
+        path_keywords = _keywords_from_text(" ".join(chapter.path))
+        for keyword in [*chapter.keywords, *path_keywords]:
+            concept_index.setdefault(keyword, []).append(chapter.id)
+    return concept_index
+
+
+def _outline_looks_like_body_fragments(outline: list[LibraryChapter]) -> bool:
+    if not outline:
+        return True
+    structured_count = 0
+    fragment_count = 0
+    artifact_count = 0
+    for chapter in outline[:20]:
+        title = chapter.title.strip()
+        if _is_parser_artifact_title(title):
+            artifact_count += 1
+            fragment_count += 1
+            continue
+        if _looks_like_reference_heading(title):
+            structured_count += 1
+            continue
+        compact = re.sub(r"\s+", "", title)
+        punctuation_count = len(re.findall(r"[,，;；:：/*%{}=]|\\.\\.\\.", title))
+        if len(compact) >= 34 or punctuation_count >= 2:
+            fragment_count += 1
+    if artifact_count >= 2:
+        return True
+    return structured_count <= 1 and fragment_count >= max(2, min(5, len(outline[:20]) // 2))
+
+
+def resource_with_epub_catalog_outline(resource: ResourceLibraryItem) -> ResourceLibraryItem:
+    if not resource.source_path or Path(resource.source_path).suffix.lower() != ".epub":
+        return resource
+    if not _outline_looks_like_body_fragments(resource.outline):
+        return resource
+    file_path = Path(resource.source_path)
+    if not file_path.exists():
+        return resource
+    outline = _attach_outline_hierarchy(_extract_epub_outline(file_path))
+    if not outline:
+        return resource
+    return resource.model_copy(
+        update={
+            "outline": outline,
+            "concept_index": _concept_index_from_outline(outline),
+        }
+    )
+
+
 def _source_units_from_native_text(original_name: str, text_content: str | None) -> list[ResourceSourceUnit]:
     if not text_content:
         return []
@@ -1729,11 +1805,7 @@ def build_resource_item(file_path: Path, original_name: str) -> ResourceLibraryI
         parser_provider, parser_message = _native_provider_from_warnings(parse_warnings)
 
     outline = _attach_outline_hierarchy(outline)
-    concept_index: dict[str, list[str]] = {}
-    for chapter in outline:
-        path_keywords = _keywords_from_text(" ".join(chapter.path))
-        for keyword in [*chapter.keywords, *path_keywords]:
-            concept_index.setdefault(keyword, []).append(chapter.id)
+    concept_index = _concept_index_from_outline(outline)
 
     resource = ResourceLibraryItem(
         name=original_name,
