@@ -79,15 +79,15 @@ function HistoryNodeIcon({ kind }: { kind: HistoryNodeKind }) {
 
 function nodeKindClasses(kind: HistoryNodeKind) {
   if (kind === "chat") {
-    return "bg-sky-500/15 text-sky-200";
+    return "bg-sky-50 text-sky-700";
   }
   if (kind === "document") {
-    return "bg-emerald-500/15 text-emerald-200";
+    return "bg-emerald-50 text-emerald-700";
   }
   if (kind === "restore") {
-    return "bg-amber-500/15 text-amber-200";
+    return "bg-amber-50 text-amber-700";
   }
-  return "bg-white/10 text-gray-200";
+  return "bg-gray-100 text-gray-600";
 }
 
 function GraphCell({ row, lanes }: { row: HistoryGraphRow; lanes: HistoryGraphLane[] }) {
@@ -131,9 +131,9 @@ function GraphCell({ row, lanes }: { row: HistoryGraphRow; lanes: HistoryGraphLa
       })}
       <span
         className={clsx(
-          "absolute top-[17px] h-3 w-3 rounded-full border-2 bg-[#101318]",
-          row.active && "ring-2 ring-white/80 ring-offset-2 ring-offset-[#101318]",
-          row.head && "shadow-[0_0_0_3px_rgba(255,255,255,0.08)]"
+          "absolute top-[17px] h-3 w-3 rounded-full border-2 bg-white",
+          row.active && "ring-2 ring-blue-500/40 ring-offset-2 ring-offset-white",
+          row.head && "shadow-[0_0_0_3px_rgba(37,99,235,0.14)]"
         )}
         style={
           {
@@ -168,7 +168,7 @@ function HistoryGraphRowItem({
       onClick={() => void onPreviewCommit(row.commit)}
       className={clsx(
         "group grid w-full cursor-pointer grid-cols-[auto_minmax(0,1fr)] gap-3 rounded-md px-2 py-2 text-left font-mono transition",
-        row.active ? "bg-white/10" : "hover:bg-white/[0.06]"
+        row.active ? "bg-blue-50" : "hover:bg-gray-50"
       )}
     >
       <GraphCell row={row} lanes={lanes} />
@@ -181,19 +181,19 @@ function HistoryGraphRowItem({
           <span
             className={clsx(
               "shrink-0 rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.12em]",
-              row.lane.branchName === currentBranchName ? "bg-white text-[#101318]" : "bg-white/10 text-gray-300"
+              row.lane.branchName === currentBranchName ? "bg-black text-white" : "bg-gray-100 text-gray-600"
             )}
           >
             {row.lane.branchName}
           </span>
           {row.head ? (
-            <span className="shrink-0 rounded bg-white/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.12em] text-gray-300">
+            <span className="shrink-0 rounded bg-gray-100 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.12em] text-gray-600">
               Head
             </span>
           ) : null}
-          <p className="min-w-0 flex-1 truncate text-[12px] font-bold text-gray-50">{row.title}</p>
+          <p className="min-w-0 flex-1 truncate text-[12px] font-bold text-gray-900">{row.title}</p>
         </div>
-        <div className="mt-1 flex min-w-0 items-center gap-2 text-[11px] leading-5 text-gray-400">
+        <div className="mt-1 flex min-w-0 items-center gap-2 text-[11px] leading-5 text-gray-500">
           <span className="shrink-0 text-gray-500">{formatDate(row.commit.created_at)}</span>
           <span className="min-w-0 flex-1 truncate">{row.summary}</span>
         </div>
@@ -206,7 +206,7 @@ function HistoryGraphRowItem({
               event.stopPropagation();
               void onPreviewCommit(row.commit);
             }}
-            className="inline-flex h-6 w-6 items-center justify-center rounded border border-white/10 bg-white/[0.04] text-gray-400 hover:border-white/25 hover:text-white"
+            className="inline-flex h-6 w-6 items-center justify-center rounded border border-gray-200 bg-white text-gray-500 hover:border-gray-300 hover:text-black"
           >
             <Eye className="h-3.5 w-3.5" />
           </button>
@@ -218,7 +218,7 @@ function HistoryGraphRowItem({
               event.stopPropagation();
               void onRestoreCommit(row.commit.id);
             }}
-            className="inline-flex h-6 w-6 items-center justify-center rounded border border-white/10 bg-white/[0.04] text-gray-400 hover:border-white/25 hover:text-white"
+            className="inline-flex h-6 w-6 items-center justify-center rounded border border-gray-200 bg-white text-gray-500 hover:border-gray-300 hover:text-black"
           >
             <RotateCcw className="h-3.5 w-3.5" />
           </button>
@@ -230,7 +230,7 @@ function HistoryGraphRowItem({
               event.stopPropagation();
               void onCreateBranchFromCommit(row.commit);
             }}
-            className="inline-flex h-6 w-6 items-center justify-center rounded border border-white/10 bg-white/[0.04] text-gray-400 hover:border-white/25 hover:text-white"
+            className="inline-flex h-6 w-6 items-center justify-center rounded border border-gray-200 bg-white text-gray-500 hover:border-gray-300 hover:text-black"
           >
             <GitBranch className="h-3.5 w-3.5" />
           </button>
@@ -243,7 +243,7 @@ function HistoryGraphRowItem({
                 event.stopPropagation();
                 void onSwitchBranch(row.lane.branchName);
               }}
-              className="inline-flex h-6 w-6 items-center justify-center rounded border border-white/10 bg-white/[0.04] text-gray-400 hover:border-white/25 hover:text-white"
+              className="inline-flex h-6 w-6 items-center justify-center rounded border border-gray-200 bg-white text-gray-500 hover:border-gray-300 hover:text-black"
             >
               <GitCommitHorizontal className="h-3.5 w-3.5" />
             </button>
@@ -326,7 +326,7 @@ export function VersionControlPanel({
 
       <section>
         <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">修订记录</p>
-        <div className="mt-4 rounded-lg border border-[#20242d] bg-[#101318] p-2 shadow-sm">
+        <div className="mt-4 rounded-lg border border-gray-200 bg-white p-2 shadow-sm">
           {rows.map((row) => (
             <HistoryGraphRowItem
               key={row.commit.id}
