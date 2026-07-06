@@ -28,6 +28,7 @@ from app.services.resource_page_structure import (
     build_page_structure_from_source_units,
     build_pdf_page_structure,
     enrich_source_units_with_page_structure,
+    page_role_label,
     physical_page_candidates_for_printed_page,
 )
 from app.services.source_ingestion import mark_local_file_ready
@@ -45,6 +46,62 @@ _PARSER_ARTIFACT_TITLE_PATTERN = re.compile(
 def _is_parser_artifact_title(title: str) -> bool:
     compact = re.sub(r"[\s_-]+", "", title).strip("：:").lower()
     return bool(_PARSER_ARTIFACT_TITLE_PATTERN.fullmatch(compact))
+
+
+def _catalog_marker_count(text: str) -> int:
+    normalized = re.sub(r"\s+", "", text or "")
+    if not normalized:
+        return 0
+    chapter_markers = re.findall(
+        rf"(?:第{_EPUB_NUMBER_PATTERN}章|chapter\d+)",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    dotted_markers = re.findall(r"\d{1,2}[.．]\d{1,2}(?:[.．]\d{1,2}){0,4}", normalized)
+    return len(chapter_markers) + len(dotted_markers)
+
+
+def _looks_like_catalog_fragment_title(title: str) -> bool:
+    compact = re.sub(r"\s+", "", title or "")
+    if not compact:
+        return False
+    marker_count = _catalog_marker_count(title)
+    punctuation_count = len(re.findall(r"[,，;；:：/*%{}=]|\\.\\.\\.|…|•|·", title))
+    digit_count = len(re.findall(r"\d", compact))
+    if len(compact) >= 60 and marker_count >= 2:
+        return True
+    if marker_count >= 4:
+        return True
+    if marker_count >= 2 and punctuation_count >= 2:
+        return True
+    if marker_count >= 1 and punctuation_count >= 4:
+        return True
+    if marker_count >= 1 and digit_count >= max(8, int(len(compact) * 0.55)):
+        return True
+    return False
+
+
+def _clean_epub_section_title(title: str) -> str:
+    cleaned = _clean_outline_title(title).strip("|｜")
+    cleaned = re.sub(r"[\s.,，;；:：/\\*%{}=…•·|｜]+$", "", cleaned).strip()
+    if not cleaned or _is_parser_artifact_title(cleaned):
+        return ""
+    if not _looks_like_catalog_fragment_title(cleaned):
+        return cleaned[:120]
+
+    dotted = re.match(
+        r"^(\d{1,3}(?:[.．]\d{1,3}){1,5}\s*[^,，;；:：/*%{}=\\.．…•·|｜\d]{1,40})",
+        cleaned,
+    )
+    if dotted:
+        candidate = dotted.group(1).strip()
+        if len(re.sub(r"^\d{1,3}(?:[.．]\d{1,3}){1,5}", "", candidate).strip()) >= 2:
+            return candidate[:120]
+
+    chapter = re.match(rf"^(第\s*{_EPUB_NUMBER_PATTERN}\s*章)", cleaned)
+    if chapter:
+        return chapter.group(1)
+    return ""
 
 
 def _clean_outline_title(title: str) -> str:
@@ -74,8 +131,8 @@ def _readable_heading_path(unit: ResourceSourceUnit) -> list[str]:
                 break
     cleaned: list[str] = []
     for part in raw_parts:
-        title = _clean_outline_title(str(part))
-        if title and not _is_parser_artifact_title(title):
+        title = _clean_epub_section_title(str(part))
+        if title and not _is_parser_artifact_title(title) and not _looks_like_catalog_fragment_title(title):
             cleaned.append(title[:120])
     return cleaned[:6]
 
@@ -158,6 +215,18 @@ def _pdf_locator_value(locator_hint: str | None, key: str) -> int | None:
                 return int(value.strip())
             except ValueError:
                 return None
+    return None
+
+
+def _metadata_int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
     return None
 
 
@@ -683,6 +752,8 @@ def _looks_like_epub_heading(line: str) -> bool:
     cleaned = line.strip()
     if len(cleaned) > 90:
         return False
+    if _looks_like_catalog_fragment_title(cleaned):
+        return False
     if _looks_like_reference_heading(cleaned):
         return True
     if re.match(r"^(?:chapter\s+\d+|\d+\s*[.．]\s*\d+|\d+\s+[A-Za-z\u4e00-\u9fff])", cleaned, flags=re.IGNORECASE):
@@ -695,6 +766,8 @@ def _epub_sections(file_path: Path) -> list[dict[str, object]]:
     sections: list[dict[str, object]] = []
     for item in items:
         text = str(item["text"])
+        if _looks_like_epub_toc_source_unit(text):
+            continue
         lines = [line.strip() for line in text.splitlines() if line.strip()]
         if not lines:
             continue
@@ -1331,27 +1404,64 @@ def _toc_entry_level(title: str) -> int:
     cleaned = title.strip()
     if re.match(r"^(?:第\s*[0-9一二三四五六七八九十百〇零两]+\s*章|chapter\s+\d+)\b", cleaned, flags=re.IGNORECASE):
         return 1
-    if re.match(r"^\d+\s*[.．]\s*\d+", cleaned):
-        return 2
+    dotted = re.match(r"^(\d+\s*[.．]\s*\d+(?:\s*[.．]\s*\d+){0,4})", cleaned)
+    if dotted:
+        return min(6, len(re.findall(r"\d+", dotted.group(1))))
     return 1
 
 
 def _parse_toc_entries(text: str) -> list[tuple[str, int, int]]:
     entries: list[tuple[str, int, int]] = []
-    for raw_line in text.splitlines():
+    lines = _prepare_toc_lines(text)
+    index = 0
+    last_page = 0
+    pending_title_fragment = ""
+    while index < len(lines):
+        raw_line = lines[index]
+        index += 1
+        if index < len(lines) and re.fullmatch(r"\d+(?:[.．]\d+)*", raw_line.strip()):
+            next_line = lines[index].strip()
+            if re.match(r"^\d{1,2}(?:[.．]\d{1,2}){1,4}\b", next_line):
+                raw_line = f"{raw_line.strip()}{next_line}"
+                index += 1
         line = re.sub(r"\s+", " ", raw_line).strip(" .·•\t")
         if not line or line in {"目录", "目 录", "contents", "Contents"}:
             continue
         line = re.sub(r"[.．·•…]{2,}", " ", line)
         match = re.search(r"(?P<title>.+?)\s+(?P<page>\d{1,4})$", line)
         if not match:
+            if re.match(r"^(?:[A-Z]?[0-9]{1,2}|[0-9]{1,2}[.．][0-9]{1,2})(?:[.．]\d{1,2}){0,4}\b", line):
+                pending_title_fragment = line
             continue
         title = match.group("title").strip(" .·•…")
-        if len(title) < 2 or not re.search(r"(?:第\s*[0-9一二三四五六七八九十百〇零两]+\s*章|\d+\s*[.．]\s*\d+|chapter\s+\d+)", title, re.IGNORECASE):
+        if pending_title_fragment and not re.match(r"^(?:[A-Z]?[0-9]{1,2}(?:[.．]\d{1,2}){1,5}|第\s*[0-9一二三四五六七八九十百〇零两]+\s*章|chapter\s*\d+)\b", title, flags=re.IGNORECASE):
+            title = f"{pending_title_fragment} {title}".strip()
+        pending_title_fragment = ""
+        if len(title) < 2 or len(title) > 180:
             continue
         page_number = int(match.group("page"))
+        if index < len(lines) and re.fullmatch(r"\d{1,2}", lines[index].strip()):
+            combined_page = int(f"{page_number}{lines[index].strip()}")
+            if page_number < last_page and combined_page >= last_page:
+                page_number = combined_page
+                index += 1
         entries.append((title, _toc_entry_level(title), page_number))
+        last_page = max(last_page, page_number)
     return entries
+
+
+def _prepare_toc_lines(text: str) -> list[str]:
+    normalized = re.sub(r"[.．·•…]{2,}", " ", text)
+    chapter_number = r"(?:[1-9]|[12]\d|3\d|4\d|50)"
+    numbered_start = rf"(?:第\s*[0-9一二三四五六七八九十百〇零两]+\s*章|chapter\s*\d+|{chapter_number}\s*[.．]\s*\d{{1,2}}(?:\s*[.．]\s*\d{{1,2}}){{0,4}})"
+    normalized = re.sub(rf"(?<=\d)(?={numbered_start}\s+)", "\n", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(
+        r"(?<=\d)(?=[A-Z][A-Za-z][A-Za-z0-9&:/,'’().+\-\s]{2,90}\s+\d{1,4}(?:\s|\d{1,2}[.．]\d))",
+        "\n",
+        normalized,
+    )
+    normalized = re.sub(r"(?<=\d)(?=(?:Bibliographic Notes|Homework Problems|Solutions to Practice Problems|References|Index)\s+\d{1,4})", "\n", normalized)
+    return [line.strip() for line in normalized.splitlines() if line.strip()]
 
 
 def _looks_like_toc_page(text: str) -> bool:
@@ -1480,11 +1590,179 @@ def _toc_entries_to_chapters(
                 ),
                 order_index=index,
                 scan_strategy="page_window" if actual_page else "fulltext_match",
-                page_start=actual_page,
-                page_end=page_end,
+                page_start=printed_page,
+                page_end=next_entry[2] - 1 if next_entry and next_entry[2] > printed_page else printed_page,
             )
         )
     return chapters
+
+
+def _outline_is_richer(candidate: list[LibraryChapter], baseline: list[LibraryChapter]) -> bool:
+    if not candidate:
+        return False
+    if not baseline:
+        return True
+    candidate_depth = max((chapter.level for chapter in candidate), default=1)
+    baseline_depth = max((chapter.level for chapter in baseline), default=1)
+    if candidate_depth > baseline_depth:
+        return True
+    candidate_score = len(candidate) + sum(max(0, chapter.level - 1) for chapter in candidate)
+    baseline_score = len(baseline) + sum(max(0, chapter.level - 1) for chapter in baseline)
+    return candidate_score >= max(baseline_score + 4, int(baseline_score * 1.2))
+
+
+def _merge_outline_candidates(primary: list[LibraryChapter], secondary: list[LibraryChapter]) -> list[LibraryChapter]:
+    if not primary:
+        return secondary
+    if not secondary:
+        return primary
+
+    merged_by_key: dict[str, LibraryChapter] = {}
+    merged_by_number: dict[tuple[int, ...], LibraryChapter] = {}
+    merged: list[LibraryChapter] = []
+
+    def add_or_enrich(chapter: LibraryChapter) -> None:
+        key = _outline_identity_key(chapter.title)
+        number_path = _outline_number_path(chapter.title)
+        existing = merged_by_key.get(key) or (merged_by_number.get(number_path) if number_path else None)
+        if existing is None:
+            merged_by_key[key] = chapter
+            if number_path:
+                merged_by_number[number_path] = chapter
+            merged.append(chapter)
+            return
+
+        updates: dict[str, object] = {}
+        if _should_prefer_body_heading_title(existing, chapter):
+            updates["title"] = chapter.title
+            updates["summary"] = chapter.summary
+            updates["keywords"] = chapter.keywords
+            updates["locator_hint"] = chapter.locator_hint
+            if chapter.page_start is None and _outline_title_suffix(existing.title) != _outline_title_suffix(chapter.title):
+                updates["page_start"] = None
+                updates["page_end"] = None
+                updates["page_range"] = None
+        if existing.page_start is None and chapter.page_start is not None:
+            updates["page_start"] = chapter.page_start
+            updates["page_end"] = chapter.page_end
+            updates["page_range"] = chapter.page_range
+        if existing.scan_strategy == "outline_only" and chapter.scan_strategy != "outline_only":
+            updates["scan_strategy"] = chapter.scan_strategy
+        if existing.summary.strip() in {"", f"来自 EPUB 目录的章节入口：{existing.title}。"} and chapter.summary.strip():
+            updates["summary"] = chapter.summary
+        if updates:
+            enriched = existing.model_copy(update=updates)
+            existing_key = _outline_identity_key(existing.title)
+            existing_number_path = _outline_number_path(existing.title)
+            merged_by_key[existing_key] = enriched
+            merged_by_key[key] = enriched
+            if existing_number_path:
+                merged_by_number[existing_number_path] = enriched
+            if number_path:
+                merged_by_number[number_path] = enriched
+            merged_by_key[_outline_identity_key(enriched.title)] = enriched
+            index = _merged_outline_index(merged, existing, existing_key, existing_number_path)
+            if index is None:
+                return
+            merged[index] = enriched
+
+    for chapter in primary:
+        add_or_enrich(chapter)
+    for chapter in secondary:
+        add_or_enrich(chapter)
+
+    ordered = sorted(enumerate(merged), key=lambda item: _outline_sort_key(item[1], item[0]))
+    return [chapter.model_copy(update={"order_index": index}) for index, (_, chapter) in enumerate(ordered)]
+
+
+def _merged_outline_index(
+    merged: list[LibraryChapter],
+    existing: LibraryChapter,
+    existing_key: str,
+    existing_number_path: tuple[int, ...] | None,
+) -> int | None:
+    for index, chapter in enumerate(merged):
+        if chapter.id == existing.id:
+            return index
+        if _outline_identity_key(chapter.title) == existing_key:
+            return index
+        if existing_number_path and _outline_number_path(chapter.title) == existing_number_path:
+            return index
+    return None
+
+
+def _should_prefer_body_heading_title(existing: LibraryChapter, candidate: LibraryChapter) -> bool:
+    if candidate.scan_strategy != "heading_section":
+        return False
+    existing_number = _outline_number_path(existing.title)
+    candidate_number = _outline_number_path(candidate.title)
+    if not existing_number or existing_number != candidate_number:
+        return False
+    if _outline_identity_key(existing.title) == _outline_identity_key(candidate.title):
+        return False
+    suffix = _outline_title_suffix(candidate.title)
+    if not 2 <= len(re.sub(r"\s+", "", suffix)) <= 36:
+        return False
+    if len(re.findall(r"[,，;；:：/*%{}=…•·|｜.．]", suffix)) >= 2:
+        return False
+    if re.search(r"[{}=%$#]|\\b(?:int|void|return|malloc)\\b", suffix):
+        return False
+    if re.search(r"^(?:编写|编译|证明|假设|计算)?图\s*\d", suffix):
+        return False
+    return True
+
+
+def _outline_title_suffix(title: str) -> str:
+    cleaned = re.sub(r"\s+", " ", title or "").strip()
+    cleaned = re.sub(r"^第\s*[0-9一二三四五六七八九十百〇零两]+\s*章\s*", "", cleaned)
+    cleaned = re.sub(r"^\d{1,3}(?:[.．]\d{1,3}){1,5}\s*", "", cleaned)
+    return cleaned.strip()
+
+
+def _outline_identity_key(title: str) -> str:
+    return re.sub(r"[\s.．·•…:：,，;；、/\\|()（）\[\]【】_-]+", "", title or "").lower()
+
+
+def _outline_sort_key(chapter: LibraryChapter, fallback_index: int) -> tuple[int, tuple[int, ...], int, int]:
+    number_path = _outline_number_path(chapter.title)
+    if number_path:
+        return (0, number_path, chapter.page_start or 0, fallback_index)
+    if chapter.page_start is not None:
+        return (1, (chapter.page_start,), chapter.page_start, fallback_index)
+    return (2, (fallback_index,), chapter.order_index, fallback_index)
+
+
+def _outline_number_path(title: str) -> tuple[int, ...] | None:
+    cleaned = re.sub(r"\s+", " ", title or "").strip()
+    chapter_match = re.match(
+        rf"^(?:第\s*({_EPUB_NUMBER_PATTERN})\s*章|chapter\s+(\d+))\b",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    if chapter_match:
+        parsed = _parse_epub_outline_number(chapter_match.group(1) or chapter_match.group(2))
+        return (parsed,) if parsed is not None else None
+
+    dotted = re.match(r"^(\d{1,3}\s*[.．]\s*\d{1,3}(?:\s*[.．]\s*\d{1,3}){0,5})", cleaned)
+    if dotted:
+        parts = [int(part) for part in re.findall(r"\d+", dotted.group(1))]
+        return tuple(parts) if parts else None
+
+    numbered = re.match(r"^(\d+)\s+(.+)$", cleaned)
+    if numbered and _looks_like_bare_number_outline_title(numbered.group(2)):
+        return (int(numbered.group(1)),)
+    return None
+
+
+def _looks_like_bare_number_outline_title(title: str) -> bool:
+    compact = re.sub(r"\s+", "", title or "")
+    if not 2 <= len(compact) <= 80:
+        return False
+    if re.search(r"[{}=%$#;+*/<>]|\\b(?:return|goto|testl|movl|cmpl|jmp|call|exit)\\b", title, flags=re.IGNORECASE):
+        return False
+    if title[:1].islower() and not re.search(r"[\u4e00-\u9fff]", title):
+        return False
+    return True
 
 
 def extract_outline(
@@ -1593,6 +1871,7 @@ def extract_outline(
     if file_path.suffix.lower() == ".pdf":
         reader = PdfReader(str(file_path))
         page_structure = build_pdf_page_structure(reader)
+        outline_chapters: list[LibraryChapter] = []
         if reader.outline:
             entries: list[tuple[str, int, int | None]] = []
 
@@ -1610,12 +1889,14 @@ def extract_outline(
                     entries.append((title, level, page_start))
 
             _walk_outline(list(reader.outline))
-            chapters = _outline_entries_to_chapters(entries, len(reader.pages), reader=reader)
-            if chapters:
-                return chapters, True, None, page_structure
+            outline_chapters = _outline_entries_to_chapters(entries, len(reader.pages), reader=reader)
 
         toc_pages = _extract_pdf_toc_text_pages(reader, file_path)
         toc_chapters = _toc_entries_to_chapters(reader, toc_pages, page_structure=page_structure)
+        if toc_chapters and _outline_is_richer(toc_chapters, outline_chapters):
+            return toc_chapters, True, None, page_structure
+        if outline_chapters:
+            return outline_chapters, True, None, page_structure
         if toc_chapters:
             return toc_chapters, True, None, page_structure
         extracted_text = []
@@ -1665,8 +1946,14 @@ def _outline_from_source_units(original_name: str, source_units: list[ResourceSo
         heading_path = _readable_heading_path(unit)
         if not heading_path:
             continue
-        for depth in range(1, len(heading_path) + 1):
+        section_level = _metadata_int(unit.metadata.get("section_level")) if unit.metadata else None
+        depths = list(range(1, len(heading_path) + 1))
+        if len(heading_path) == 1 and section_level and section_level > 0:
+            depths = [section_level]
+        for depth in depths:
             path = tuple(heading_path[:depth])
+            if len(heading_path) == 1:
+                path = tuple(heading_path)
             if path in chapters_by_path:
                 continue
             title = path[-1]
@@ -1737,18 +2024,54 @@ def _outline_looks_like_body_fragments(outline: list[LibraryChapter]) -> bool:
     return structured_count <= 1 and fragment_count >= max(2, min(5, len(outline[:20]) // 2))
 
 
+def _outline_needs_body_index(outline: list[LibraryChapter]) -> bool:
+    return bool(outline) and any(
+        chapter.body_start_order is None or chapter.body_end_order is None
+        for chapter in outline
+    )
+
+
 def resource_with_epub_catalog_outline(resource: ResourceLibraryItem) -> ResourceLibraryItem:
     if not resource.source_path or Path(resource.source_path).suffix.lower() != ".epub":
-        return resource
-    if not _outline_looks_like_body_fragments(resource.outline):
         return resource
     file_path = Path(resource.source_path)
     if not file_path.exists():
         return resource
-    outline = _attach_outline_hierarchy(_extract_epub_outline(file_path))
+    if not resource.source_units and len(resource.outline) > 200:
+        return resource
+    has_fragment_outline = _outline_looks_like_body_fragments(resource.outline)
+    needs_body_index = _outline_needs_body_index(resource.outline)
+    if not has_fragment_outline and not needs_body_index:
+        return resource
+
+    source_units = resource.source_units
+    rebuilt_units = _source_units_from_epub(file_path)
+    if rebuilt_units and (
+        not source_units
+        or _epub_units_should_use_section_fallback(source_units, rebuilt_units)
+        or (needs_body_index and len(rebuilt_units) > len(source_units))
+    ):
+        source_units = rebuilt_units
+
+    catalog_outline = _extract_epub_outline(file_path)
+    unit_outline = _outline_from_source_units(resource.name, source_units)
+    if catalog_outline and unit_outline:
+        outline = _merge_outline_candidates(catalog_outline, unit_outline)
+    elif catalog_outline:
+        outline = catalog_outline
+    elif unit_outline and (has_fragment_outline or _outline_is_richer(unit_outline, resource.outline)):
+        outline = unit_outline
+    else:
+        outline = resource.outline
+
+    outline = _attach_outline_hierarchy(outline)
     if not outline:
         return resource
-    outline, source_units = index_resource_chapters(outline, resource.source_units, page_structure=resource.page_structure)
+    if not has_fragment_outline and not needs_body_index and not _outline_is_richer(outline, resource.outline):
+        return resource
+    if needs_body_index and not has_fragment_outline and not _outline_is_richer(outline, resource.outline):
+        outline = _attach_outline_hierarchy(resource.outline)
+    outline, source_units = index_resource_chapters(outline, source_units, page_structure=resource.page_structure)
     return resource.model_copy(
         update={
             "outline": outline,
@@ -1796,16 +2119,22 @@ def _source_units_from_epub(file_path: Path) -> list[ResourceSourceUnit]:
                     title = _epub_html_title(raw_html, path)
                     text = item_text.strip()
                     if text:
-                        units.append(
-                            ResourceSourceUnit(
-                                content_type="text",
-                                text=text[:120000],
-                                source_locator=f"native:epub:{path}",
-                                heading_path=[title] if title else [],
-                                order_index=len(units),
-                                metadata={"section_title": title, "section_level": 1, "epub_path": path},
+                        for part in _split_epub_section_text_by_inline_headings(text, title, 1):
+                            units.append(
+                                ResourceSourceUnit(
+                                    content_type="text",
+                                    text=part["text"][:120000],
+                                    source_locator=f"native:epub:{path}#part={len(units)}",
+                                    heading_path=[part["title"]] if part["title"] else [],
+                                    order_index=len(units),
+                                    metadata={
+                                        "section_title": part["title"] or title,
+                                        "section_level": part["level"],
+                                        "epub_path": path,
+                                        "source": part["source"],
+                                    },
+                                )
                             )
-                        )
                     continue
                 for local_index, match in enumerate(heading_matches):
                     title = _epub_fragment_text(match.group(2))
@@ -1826,10 +2155,176 @@ def _source_units_from_epub(file_path: Path) -> list[ResourceSourceUnit]:
                     )
     except (zipfile.BadZipFile, OSError):
         return []
+    section_units = _source_units_from_epub_sections(file_path)
+    if _epub_units_should_use_section_fallback(units, section_units):
+        return section_units
     if units:
         return units
     text = _read_epub_text(file_path)
     return _source_units_from_native_text(file_path.name, text)
+
+
+def _source_units_from_epub_sections(file_path: Path) -> list[ResourceSourceUnit]:
+    units: list[ResourceSourceUnit] = []
+    for section in _epub_sections(file_path):
+        raw_title = str(section.get("title") or "").strip()
+        title = _clean_epub_section_title(raw_title)
+        content = str(section.get("content") or "").strip()
+        text = "\n".join(part for part in [title, content] if part).strip()
+        if not text or _looks_like_epub_toc_source_unit(text):
+            continue
+        fallback_level = int(section.get("level") or 1)
+        section_order = int(section.get("order_index") or len(units))
+        for part in _split_epub_section_text_by_inline_headings(text, title, fallback_level):
+            units.append(
+                ResourceSourceUnit(
+                    content_type="text",
+                    text=part["text"][:120000],
+                    source_locator=f"native:epub:section={len(units)}",
+                    heading_path=[part["title"]] if part["title"] else [],
+                    order_index=len(units),
+                    metadata={
+                        "section_title": part["title"] or title or raw_title,
+                        "section_level": part["level"],
+                        "epub_order_index": section_order,
+                        "source": part["source"],
+                    },
+                )
+            )
+    return units
+
+
+_INLINE_NUMBERED_HEADING_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9])(?P<number>\d{1,3}[.．]\d{1,3}(?:[.．]\d{1,3}){0,4})(?=\s*[A-Za-z\u4e00-\u9fff])"
+)
+
+
+def _split_epub_section_text_by_inline_headings(
+    text: str,
+    fallback_title: str,
+    fallback_level: int,
+) -> list[dict[str, object]]:
+    markers: list[tuple[int, str, int]] = []
+    for match in _INLINE_NUMBERED_HEADING_PATTERN.finditer(text):
+        parsed = _inline_numbered_heading(text, match)
+        if parsed is None:
+            continue
+        markers.append((match.start(), parsed[0], parsed[1]))
+        if len(markers) >= 120:
+            break
+    if not markers:
+        return [
+            {
+                "title": fallback_title,
+                "level": fallback_level,
+                "text": text,
+                "source": "epub_text_heading",
+            }
+        ]
+
+    parts: list[dict[str, object]] = []
+    first_start = markers[0][0]
+    prefix = text[:first_start].strip()
+    if prefix:
+        parts.append(
+            {
+                "title": fallback_title,
+                "level": fallback_level,
+                "text": prefix,
+                "source": "epub_text_heading",
+            }
+        )
+    for index, (start, title, level) in enumerate(markers):
+        end = markers[index + 1][0] if index + 1 < len(markers) else len(text)
+        body = text[start:end].strip()
+        if not body:
+            continue
+        parts.append(
+            {
+                "title": title,
+                "level": level,
+                "text": body,
+                "source": "epub_inline_heading",
+            }
+        )
+    return parts
+
+
+def _inline_numbered_heading(text: str, match: re.Match[str]) -> tuple[str, int] | None:
+    raw_number = match.group("number").replace("．", ".")
+    number_parts = [int(part) for part in raw_number.split(".") if part.isdigit()]
+    if len(number_parts) < 2 or not number_parts[0] or any(part > 99 for part in number_parts):
+        return None
+    before = text[max(0, match.start() - 1) : match.start()]
+    if before and before in "+-=*/×(<[{" or before == ".":
+        return None
+    tail = text[match.end() : match.end() + 90]
+    if re.match(r"\s*(?:节|小节|章|页|[)\]）】])", tail):
+        return None
+    title_match = re.match(r"\s*(?P<title>[A-Za-z\u4e00-\u9fff][^。！？!?；;\n]{1,70})", tail)
+    if not title_match:
+        return None
+    title = _clean_chunk_like_heading_title(title_match.group("title"))
+    if not title:
+        return None
+    level = max(2, min(raw_number.count(".") + 1, 6))
+    return f"{raw_number} {title}", level
+
+
+def _clean_chunk_like_heading_title(title: str) -> str:
+    cleaned = re.sub(r"\s+", " ", title).strip(" \t\n\r-—,，;；:：/|")
+    cleaned = re.sub(r"^(?:节|小节|章|页)\b", "", cleaned).strip()
+    cleaned = _trim_inline_heading_title(cleaned)
+    if not cleaned:
+        return ""
+    compact = re.sub(r"\s+", "", cleaned)
+    if len(compact) % 2 == 0 and compact[: len(compact) // 2] == compact[len(compact) // 2 :]:
+        compact = compact[: len(compact) // 2]
+        cleaned = compact
+    if not 2 <= len(compact) <= 60:
+        return ""
+    if re.search(r"[{}=%$#]|\\b(?:int|void|return|malloc)\\b", cleaned):
+        return ""
+    return cleaned[:60]
+
+
+def _trim_inline_heading_title(title: str) -> str:
+    best = title
+    for pattern in (
+        r"图\s*\d",
+        r"表\s*\d",
+        r"代码",
+        r"学习",
+        r"正文",
+        r"下面",
+        r"以下",
+        r"我们",
+        r"本节",
+    ):
+        match = re.search(pattern, best)
+        if match and len(re.sub(r"\s+", "", best[: match.start()])) >= 4:
+            best = best[: match.start()]
+    return best.strip(" \t\n\r-—,，;；:：/|")
+
+
+def _epub_units_should_use_section_fallback(
+    units: list[ResourceSourceUnit],
+    section_units: list[ResourceSourceUnit],
+) -> bool:
+    if not section_units:
+        return False
+
+    def readable_count(items: list[ResourceSourceUnit]) -> int:
+        count = 0
+        for unit in items:
+            title = unit.heading_path[-1] if unit.heading_path else ""
+            if title and not _is_parser_artifact_title(title):
+                count += 1
+        return count
+
+    current_readable = readable_count(units)
+    section_readable = readable_count(section_units)
+    return section_readable >= max(12, current_readable + 8)
 
 
 def _looks_like_epub_toc_source_unit(text: str) -> bool:
@@ -1838,6 +2333,15 @@ def _looks_like_epub_toc_source_unit(text: str) -> bool:
     if compact in {"目录", "contents"}:
         return True
     if "目录" in compact[:20] or "contents" in compact[:30]:
+        return True
+    if len(_parse_toc_entries(text)) >= 6:
+        return True
+    marker_count = _catalog_marker_count(text[:6000])
+    page_like_count = len(re.findall(r"(?<![A-Fa-f0-9])[1-9]\d{2,3}(?![A-Fa-f0-9])", text[:6000]))
+    explanatory_count = _continuous_explanatory_sentence_count(text[:6000])
+    if marker_count >= 8 and explanatory_count <= 2:
+        return True
+    if marker_count >= 5 and page_like_count >= max(3, marker_count // 2) and explanatory_count <= 3:
         return True
     toc_line_count = 0
     for line in lines[:12]:
@@ -1871,7 +2375,7 @@ def _source_units_from_pdf(file_path: Path, page_structure: ResourcePageStructur
                     {
                         "printed_page": page_entry.printed_page,
                         "page_role": page_entry.role,
-                        "page_role_label": page_entry.title,
+                        "page_role_label": page_role_label(page_entry.role),
                         "body_offset": page_entry.body_offset,
                     }
                 )
@@ -1932,6 +2436,9 @@ def build_resource_item(file_path: Path, original_name: str) -> ResourceLibraryI
             source_units = _source_units_from_native_text(original_name, text_content)
         parser_provider, parser_message = _native_provider_from_warnings(parse_warnings)
 
+    unit_outline = _outline_from_source_units(original_name, source_units)
+    if file_path.suffix.lower() == ".epub" and unit_outline:
+        outline = _merge_outline_candidates(outline, unit_outline)
     outline = _attach_outline_hierarchy(outline)
     outline, source_units = index_resource_chapters(outline, source_units, page_structure=page_structure)
     concept_index = _concept_index_from_outline(outline)

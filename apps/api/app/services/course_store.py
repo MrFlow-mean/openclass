@@ -418,6 +418,13 @@ class SqliteCourseStore:
                 locator_hint TEXT,
                 order_index INTEGER NOT NULL,
                 scan_strategy TEXT NOT NULL,
+                body_start_order INTEGER,
+                body_end_order INTEGER,
+                body_page_start INTEGER,
+                body_page_end INTEGER,
+                body_match_status TEXT NOT NULL DEFAULT '',
+                body_match_confidence REAL NOT NULL DEFAULT 0,
+                body_match_reason TEXT NOT NULL DEFAULT '',
                 PRIMARY KEY (resource_id, id)
             );
             """
@@ -481,6 +488,24 @@ class SqliteCourseStore:
             conn.execute("ALTER TABLE resources ADD COLUMN ingestion_adapter TEXT NOT NULL DEFAULT ''")
         if "ingestion_job_json" not in resource_columns:
             conn.execute("ALTER TABLE resources ADD COLUMN ingestion_job_json TEXT")
+        chapter_columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(resource_chapters)").fetchall()
+        }
+        if "body_start_order" not in chapter_columns:
+            conn.execute("ALTER TABLE resource_chapters ADD COLUMN body_start_order INTEGER")
+        if "body_end_order" not in chapter_columns:
+            conn.execute("ALTER TABLE resource_chapters ADD COLUMN body_end_order INTEGER")
+        if "body_page_start" not in chapter_columns:
+            conn.execute("ALTER TABLE resource_chapters ADD COLUMN body_page_start INTEGER")
+        if "body_page_end" not in chapter_columns:
+            conn.execute("ALTER TABLE resource_chapters ADD COLUMN body_page_end INTEGER")
+        if "body_match_status" not in chapter_columns:
+            conn.execute("ALTER TABLE resource_chapters ADD COLUMN body_match_status TEXT NOT NULL DEFAULT ''")
+        if "body_match_confidence" not in chapter_columns:
+            conn.execute("ALTER TABLE resource_chapters ADD COLUMN body_match_confidence REAL NOT NULL DEFAULT 0")
+        if "body_match_reason" not in chapter_columns:
+            conn.execute("ALTER TABLE resource_chapters ADD COLUMN body_match_reason TEXT NOT NULL DEFAULT ''")
         package_columns = {
             row["name"]
             for row in conn.execute("PRAGMA table_info(course_packages)").fetchall()
@@ -743,6 +768,13 @@ class SqliteCourseStore:
                 locator_hint=chapter_row["locator_hint"],
                 order_index=chapter_row["order_index"],
                 scan_strategy=chapter_row["scan_strategy"],
+                body_start_order=chapter_row["body_start_order"],
+                body_end_order=chapter_row["body_end_order"],
+                body_page_start=chapter_row["body_page_start"],
+                body_page_end=chapter_row["body_page_end"],
+                body_match_status=chapter_row["body_match_status"] or "",
+                body_match_confidence=float(chapter_row["body_match_confidence"] or 0),
+                body_match_reason=chapter_row["body_match_reason"] or "",
             )
             for chapter_row in conn.execute(
                 """
@@ -1022,8 +1054,9 @@ class SqliteCourseStore:
                 INSERT INTO resource_chapters(
                     id, resource_id, sort_order, title, level, page_range, page_start, page_end,
                     summary, keywords_json, prerequisites_json, parent_id, parent_title, path_json,
-                    locator_hint, order_index, scan_strategy
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    locator_hint, order_index, scan_strategy, body_start_order, body_end_order,
+                    body_page_start, body_page_end, body_match_status, body_match_confidence, body_match_reason
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     chapter.id,
@@ -1043,6 +1076,13 @@ class SqliteCourseStore:
                     chapter.locator_hint,
                     chapter.order_index,
                     chapter.scan_strategy,
+                    chapter.body_start_order,
+                    chapter.body_end_order,
+                    chapter.body_page_start,
+                    chapter.body_page_end,
+                    chapter.body_match_status,
+                    chapter.body_match_confidence,
+                    chapter.body_match_reason,
                 ),
             )
 

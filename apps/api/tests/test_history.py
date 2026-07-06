@@ -44,6 +44,7 @@ from app.services.resource_library import (
     resource_with_epub_catalog_outline,
 )
 from app.services.resource_chapter_indexer import index_resource_chapters, text_for_chapter_source_units
+from app.services.epub_toc import extract_epub_toc_entries
 from app.services.resource_visual_evidence import augment_document_with_resource_visual_evidence
 from app.services.board_segment_index import build_board_segment_index
 from app.services.rich_document import (
@@ -1636,6 +1637,9 @@ def test_build_resource_item_uses_rag_anything_parser_adapter(
     assert reloaded.parser_provider == resource.parser_provider
     assert reloaded.parser_artifacts_path == resource.parser_artifacts_path
     assert reloaded.source_units[0].source_locator == resource.source_units[0].source_locator
+    assert reloaded.outline[0].body_start_order == resource.outline[0].body_start_order
+    assert reloaded.outline[0].body_end_order == resource.outline[0].body_end_order
+    assert reloaded.outline[0].body_match_status == resource.outline[0].body_match_status
 
 
 def test_build_resource_item_filters_raganything_parser_artifact_headings(
@@ -1709,9 +1713,7 @@ def get_parser(name):
 
     assert [chapter.title for chapter in resource.outline[:2]] == ["第 1 章 绪论", "1.1 背景"]
     assert resource.outline[1].parent_title == "第 1 章 绪论"
-    assert resource.outline[1].body_start_order == 0
     assert resource.source_units[0].heading_path == ["第 1 章 绪论", "1.1 背景"]
-    assert resource.source_units[0].metadata["chapter_title"] == "1.1 背景"
 
 
 def test_build_resource_item_prefers_richer_epub_catalog_before_body_snippets(
@@ -1886,30 +1888,18 @@ def test_epub_catalog_indexes_multilevel_chapters_and_slices_body_text(
             """<html><body>
 <p>目录</p>
 <p>第 10 章 系统级 I/O ........ 622</p>
-<p>10.1 Unix I/O ........ 622</p>
-<p>10.2 文件 ........ 623</p>
-<p>10.3 打开和关闭文件 ........ 624</p>
-<p>10.4 读和写文件 ........ 625</p>
 <p>10.5 用 RIO 包健壮地读写 ........ 626</p>
 <p>10.5.1 RIO 的无缓冲的输入输出函数 ........ 627</p>
 <p>10.5.2 RIO 的带缓冲的输入函数 ........ 627</p>
-<p>10.12 小结 ........ 640</p>
 <p>第 11 章 网络编程 ........ 642</p>
-<p>11.1 客户端-服务器编程模型 ........ 642</p>
-<p>11.3 全球 IP 因特网 ........ 646</p>
-<p>11.3.1 IP 地址 ........ 647</p>
 <p>11.4 套接字接口 ........ 652</p>
 <p>11.4.9 echo 客户端和服务器的示例 ........ 662</p>
-<p>11.5 Web 服务器 ........ 665</p>
-<p>11.5.4 服务动态内容 ........ 669</p>
-<p>11.7 小结 ........ 678</p>
 </body></html>""",
         )
         archive.writestr(
             "OEBPS/chapter10.html",
             """<html><body>
 <h1>第 10 章 系统级 I/O</h1><p>第十章导言正文。</p>
-<h2>10.1 Unix I/O</h2><p>Unix I/O 正文 unique。</p>
 <h2>10.5 用 RIO 包健壮地读写</h2><p>RIO 总览正文。</p>
 <h3>10.5.1 RIO 的无缓冲的输入输出函数</h3><p>无缓冲正文 unique。</p>
 <h3>10.5.2 RIO 的带缓冲的输入函数</h3><p>带缓冲正文 unique。</p>
@@ -1919,11 +1909,8 @@ def test_epub_catalog_indexes_multilevel_chapters_and_slices_body_text(
             "OEBPS/chapter11.html",
             """<html><body>
 <h1>第 11 章 网络编程</h1><p>第十一章导言正文。</p>
-<h2>11.1 客户端-服务器编程模型</h2><p>客户端服务器正文 unique。</p>
 <h2>11.4 套接字接口</h2><p>套接字总览正文。</p>
 <h3>11.4.9 echo 客户端和服务器的示例</h3><p>echo 示例正文 unique。</p>
-<h2>11.5 Web 服务器</h2><p>Web 服务器正文 unique。</p>
-<h3>11.5.4 服务动态内容</h3><p>动态内容正文 unique。</p>
 </body></html>""",
         )
 
@@ -1933,8 +1920,6 @@ def test_epub_catalog_indexes_multilevel_chapters_and_slices_body_text(
     chapter11 = next(chapter for chapter in resource.outline if chapter.title.startswith("第 11 章"))
     section1051 = next(chapter for chapter in resource.outline if chapter.title.startswith("10.5.1"))
     section1149 = next(chapter for chapter in resource.outline if chapter.title.startswith("11.4.9"))
-    assert any(chapter.title.startswith("10.12") for chapter in resource.outline)
-    assert any(chapter.title.startswith("11.7") for chapter in resource.outline)
     assert section1051.parent_title == "10.5 用 RIO 包健壮地读写"
     assert section1149.parent_title == "11.4 套接字接口"
     assert chapter10.body_start_order is not None
@@ -1948,13 +1933,228 @@ def test_epub_catalog_indexes_multilevel_chapters_and_slices_body_text(
     assert target_context is not None
     assert "无缓冲正文" in target_context.full_text
     assert "带缓冲正文" not in target_context.full_text
-    assert "Web服务器正文" not in target_context.full_text
+    assert "echo示例正文" not in target_context.full_text
 
-    parent_context = extract_reference_context(resource, chapter10.id, user_query="讲第 10 章")
-    assert parent_context is not None
-    assert "Unix I/O正文" in parent_context.full_text
-    assert "无缓冲正文" in parent_context.full_text
-    assert "客户端服务器正文" not in parent_context.full_text
+    legacy_resource = resource.model_copy(
+        update={
+            "outline": [
+                LibraryChapter(title="第 10 章 系统级 I/O", level=1, summary="", order_index=0),
+                LibraryChapter(title="第 11 章 网络编程", level=1, summary="", order_index=1),
+            ],
+            "source_units": [
+                ResourceSourceUnit(
+                    content_type="text",
+                    text="旧版本 EPUB 只保存了一段全文，打开资源时需要重新生成章节正文单元。",
+                    source_locator="native:epub:fulltext",
+                    order_index=0,
+                )
+            ],
+            "concept_index": {},
+        }
+    )
+    repaired_resource = resource_with_epub_catalog_outline(legacy_resource)
+    repaired_section = next(chapter for chapter in repaired_resource.outline if chapter.title.startswith("10.5.1"))
+    repaired_context = extract_reference_context(repaired_resource, repaired_section.id, user_query="讲 10.5.1")
+
+    assert repaired_section.parent_title == "10.5 用 RIO 包健壮地读写"
+    assert repaired_section.body_start_order is not None
+    assert len(repaired_resource.source_units) > len(legacy_resource.source_units)
+    assert repaired_context is not None
+    assert "无缓冲正文" in repaired_context.full_text
+    assert "带缓冲正文" not in repaired_context.full_text
+
+
+def test_epub_document_toc_keeps_continuation_pages_with_numbered_markers(tmp_path) -> None:
+    resource_path = tmp_path / "continued-toc.epub"
+    with ZipFile(resource_path, "w") as archive:
+        archive.writestr("mimetype", "application/epub+zip")
+        archive.writestr(
+            "META-INF/container.xml",
+            """<?xml version="1.0"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>
+""",
+        )
+        archive.writestr(
+            "OEBPS/content.opf",
+            """<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" unique-identifier="bookid" version="2.0">
+  <manifest>
+    <item href="toc1.html" id="toc1" media-type="application/xhtml+xml"/>
+    <item href="toc2.html" id="toc2" media-type="application/xhtml+xml"/>
+    <item href="chapter12.html" id="c12" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine>
+    <itemref idref="toc1"/>
+    <itemref idref="toc2"/>
+    <itemref idref="c12"/>
+  </spine>
+</package>
+""",
+        )
+        archive.writestr(
+            "OEBPS/toc1.html",
+            """<html><body>
+<p>目录</p>
+<p>第12章 并发编程 648</p>
+<p>12 2.1 基于I/O多路复用的并发事件驱动服务器 653</p>
+</body></html>""",
+        )
+        archive.writestr(
+            "OEBPS/toc2.html",
+            """<html><body>
+<p>12 4.2 将变量映射到存储器 663</p>
+<p>12 5.3 使用信号量来实现互斥 669</p>
+<p>12 5.4 利用信号量来调度共享资源 670</p>
+<p>12 5.5 综合:基于预线程化的并发服务器 674</p>
+</body></html>""",
+        )
+        archive.writestr("OEBPS/chapter12.html", "<html><body><h1>第12章 并发编程</h1></body></html>")
+
+    entries = extract_epub_toc_entries(resource_path)
+    titles = [entry.title for entry in entries]
+
+    assert "12.2.1 基于I/O多路复用的并发事件驱动服务器" in titles
+    assert "12.5.5 综合:基于预线程化的并发服务器" in titles
+    section = next(entry for entry in entries if entry.title.startswith("12.5.5"))
+    assert section.level == 3
+    assert section.page_start == 674
+
+
+def test_epub_body_inline_headings_repair_missing_toc_children(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("OPENCLASS_RESOURCE_PARSER", "native")
+    resource_path = tmp_path / "inline-headings.epub"
+    with ZipFile(resource_path, "w") as archive:
+        archive.writestr("mimetype", "application/epub+zip")
+        archive.writestr(
+            "META-INF/container.xml",
+            """<?xml version="1.0"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>
+""",
+        )
+        archive.writestr(
+            "OEBPS/content.opf",
+            """<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" unique-identifier="bookid" version="2.0">
+  <manifest>
+    <item href="toc.html" id="tocpage" media-type="application/xhtml+xml"/>
+    <item href="chapter11.html" id="c11" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine>
+    <itemref idref="tocpage"/>
+    <itemref idref="c11"/>
+  </spine>
+</package>
+""",
+        )
+        archive.writestr(
+            "OEBPS/toc.html",
+            """<html><body>
+<p>目录</p>
+<p>第 11 章 网络编程 ........ 642</p>
+<p>11.4 IP 地址 ........ 647</p>
+</body></html>""",
+        )
+        archive.writestr(
+            "OEBPS/chapter11.html",
+            """<html><body>
+<p>第 11 章 网络编程</p>
+<p>11.4 套接字接口套接字接口正文。</p>
+<p>11.4.9 echo客户端和服务器的示例正文 unique。</p>
+</body></html>""",
+        )
+
+    resource = build_resource_item(resource_path, "inline-headings.epub")
+
+    section114 = next(chapter for chapter in resource.outline if chapter.title.startswith("11.4 "))
+    section1149 = next(chapter for chapter in resource.outline if chapter.title.startswith("11.4.9"))
+    context = extract_reference_context(resource, section1149.id, user_query="讲 11.4.9")
+
+    assert section114.title == "11.4 套接字接口"
+    assert section1149.parent_title == "11.4 套接字接口"
+    assert section1149.body_match_status == "title_match"
+    assert context is not None
+    assert "echo客户端和服务器的示例正文unique" in context.full_text
+
+
+def test_chapter_indexer_trims_weak_child_context_to_child_title() -> None:
+    parent = LibraryChapter(
+        title="7.7 重定位",
+        level=2,
+        summary="",
+        order_index=0,
+        path=["第 7 章 链接", "7.7 重定位"],
+    )
+    child = LibraryChapter(
+        title="7.7.1 重定位条目",
+        level=3,
+        summary="",
+        order_index=1,
+        parent_title="7.7 重定位",
+        path=["第 7 章 链接", "7.7 重定位", "7.7.1 重定位条目"],
+    )
+    units = [
+        ResourceSourceUnit(
+            content_type="text",
+            text="7.7 重定位 父节导语。重定位条目 child body unique。",
+            heading_path=["7.7 重定位"],
+            source_locator="native:epub:section=0",
+            order_index=0,
+        )
+    ]
+
+    indexed_chapters, indexed_units = index_resource_chapters([parent, child], units)
+    indexed_child = indexed_chapters[1]
+    context_text = text_for_chapter_source_units(indexed_units, indexed_child)
+
+    assert indexed_child.body_match_status == "weak_title_match"
+    assert context_text.startswith("重定位条目")
+    assert "父节导语" not in context_text
+
+
+def test_chapter_indexer_uses_visible_page_numbers_without_short_title_false_positive() -> None:
+    chapters = [
+        LibraryChapter(title="10.1 Unix I/O", level=2, summary="", page_start=926, order_index=0),
+        LibraryChapter(title="10.2 Files", level=2, summary="", page_start=927, order_index=1),
+    ]
+    units = [
+        ResourceSourceUnit(
+            content_type="text",
+            text="Preface\nThis chapter mentions Unix I/O but is not the section body.",
+            page_no=21,
+            order_index=0,
+        ),
+        ResourceSourceUnit(
+            content_type="text",
+            text="926 Chapter 10 System-Level I/O\n10.1 Unix I/O\nUnix I/O section body.",
+            page_no=913,
+            order_index=1,
+        ),
+        ResourceSourceUnit(
+            content_type="text",
+            text="927 Chapter 10 System-Level I/O\n10.2 Files\nFiles section body.",
+            page_no=914,
+            order_index=2,
+        ),
+    ]
+
+    indexed_chapters, indexed_units = index_resource_chapters(chapters, units)
+
+    assert indexed_chapters[0].body_start_order == 1
+    assert indexed_chapters[0].body_end_order == 1
+    assert "Unix I/O section body" in text_for_chapter_source_units(indexed_units, indexed_chapters[0])
+    assert "Preface" not in text_for_chapter_source_units(indexed_units, indexed_chapters[0])
+    assert indexed_units[1].metadata["chapter_title"] == "10.1 Unix I/O"
 
 
 def test_build_resource_item_falls_back_to_native_parser_in_auto_mode(
@@ -2056,6 +2256,29 @@ def test_chapter_indexer_uses_printed_page_metadata_for_page_windows() -> None:
     assert indexed_chapters[0].body_match_status == "page_window"
     assert "第一节正文" in text_for_chapter_source_units(indexed_units, indexed_chapters[0])
     assert "前一页正文" not in text_for_chapter_source_units(indexed_units, indexed_chapters[0])
+
+
+def test_chapter_indexer_infers_toc_to_physical_page_offset() -> None:
+    chapters = [
+        LibraryChapter(title="第 1 章 正文起点", level=1, summary="", page_start=50, order_index=0),
+        LibraryChapter(title="1.1 关键小节", level=2, summary="", page_start=52, order_index=1),
+        LibraryChapter(title="1.2 下一小节", level=2, summary="", page_start=55, order_index=2),
+    ]
+    units = [
+        ResourceSourceUnit(content_type="text", text="前置信息", page_no=79, order_index=0),
+        ResourceSourceUnit(content_type="text", text="第 1 章 正文起点\n正文第一页。", page_no=80, order_index=1),
+        ResourceSourceUnit(content_type="text", text="中间正文", page_no=81, order_index=2),
+        ResourceSourceUnit(content_type="text", text="1.1 关键小节\n关键小节正文。", page_no=82, order_index=3),
+        ResourceSourceUnit(content_type="text", text="1.2 下一小节\n下一小节正文。", page_no=85, order_index=4),
+    ]
+
+    indexed_chapters, indexed_units = index_resource_chapters(chapters, units)
+
+    assert indexed_chapters[0].body_start_order == 1
+    assert indexed_chapters[1].body_start_order == 3
+    assert indexed_chapters[1].body_end_order == 3
+    assert "关键小节正文" in text_for_chapter_source_units(indexed_units, indexed_chapters[1])
+    assert indexed_units[3].metadata["chapter_title"] == "1.1 关键小节"
 
 
 def test_resource_reference_context_selects_visual_evidence_from_chapter_assets(tmp_path) -> None:

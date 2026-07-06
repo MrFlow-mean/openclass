@@ -199,7 +199,12 @@ def _document_toc_entries(archive: zipfile.ZipFile) -> list[EpubTocEntry]:
         toc_shape_count = _toc_line_shape_count(text)
         compact_prefix = re.sub(r"\s+", "", text[:160]).lower()
         starts_toc = "目录" in compact_prefix or "contents" in compact_prefix
-        is_toc_page = starts_toc or toc_shape_count >= 4 or (seen_toc and toc_shape_count >= 2 and marker_count >= 2)
+        is_toc_page = (
+            starts_toc
+            or toc_shape_count >= 4
+            or (seen_toc and toc_shape_count >= 2 and marker_count >= 2)
+            or (seen_toc and marker_count >= 3)
+        )
         if is_toc_page:
             toc_pages.append(text)
             seen_toc = True
@@ -271,6 +276,7 @@ def _parse_document_toc_text(text: str) -> list[EpubTocEntry]:
         if not chunks:
             continue
         main_title, page_start = chunks[0]
+        page_start = _repair_page_number(page_start, current_chapter_page_start)
         if chapter_number is not None:
             current_chapter_page_start = page_start
         elif _page_before_current_chapter(page_start, current_chapter_page_start):
@@ -280,13 +286,49 @@ def _parse_document_toc_text(text: str) -> list[EpubTocEntry]:
             parent_number = _entry_number(full_title)
             if parent_number is not None and "." in parent_number and len(parent_number.split(".")) <= 2:
                 for child_index, (child_title, child_page) in enumerate(chunks[1:4], start=1):
+                    child_page = _repair_page_number(child_page, current_chapter_page_start)
                     if _page_before_current_chapter(child_page, current_chapter_page_start):
                         continue
                     if not _looks_like_child_toc_title(child_title):
                         continue
                     child_number = f"{parent_number}.{child_index}"
                     _add_document_entry(entries, seen_titles, _compose_toc_title(child_number, child_title), child_page)
+            elif parent_number is not None and "." not in parent_number and chapter_number is not None:
+                inferred_index = 1
+                last_direct_title: str | None = None
+                last_direct_page: int | None = None
+                for child_title, child_page in chunks[1:18]:
+                    child_page = _repair_page_number(child_page, current_chapter_page_start)
+                    if _page_before_current_chapter(child_page, current_chapter_page_start):
+                        continue
+                    if not _looks_like_child_toc_title(child_title):
+                        continue
+                    if last_direct_title and _looks_like_nested_toc_child(child_title, last_direct_title, child_page, last_direct_page):
+                        _add_document_entry(entries, seen_titles, child_title, child_page, level_override=3)
+                        continue
+                    child_number = f"{parent_number}.{inferred_index}"
+                    if _add_document_entry(entries, seen_titles, _compose_toc_title(child_number, child_title), child_page):
+                        last_direct_title = child_title
+                        last_direct_page = child_page
+                        inferred_index += 1
     return entries
+
+
+def _repair_page_number(page_start: int | None, current_chapter_page_start: int | None) -> int | None:
+    if page_start is None or current_chapter_page_start is None or page_start >= current_chapter_page_start:
+        return page_start
+    page_text = str(page_start)
+    chapter_text = str(current_chapter_page_start)
+    if len(page_text) == len(chapter_text) - 1 and len(chapter_text) >= 3:
+        candidate = int(f"{chapter_text[:-1]}{page_text[-1]}")
+        if current_chapter_page_start <= candidate <= current_chapter_page_start + 80:
+            return candidate
+    if len(page_text) < len(chapter_text):
+        prefix = chapter_text[: len(chapter_text) - len(page_text)]
+        candidate = int(f"{prefix}{page_text}")
+        if current_chapter_page_start <= candidate <= current_chapter_page_start + 80:
+            return candidate
+    return page_start
 
 
 def _page_before_current_chapter(page_start: int | None, current_chapter_page_start: int | None) -> bool:
@@ -373,6 +415,8 @@ def _add_document_entry(
     seen_titles: set[str],
     title: str,
     page_start: int | None,
+    *,
+    level_override: int | None = None,
 ) -> bool:
     title = re.sub(r"\s+", " ", title).strip()
     if not title or _is_separator_title(title):
@@ -382,7 +426,7 @@ def _add_document_entry(
         return False
     seen_titles.add(key)
     number = _entry_number(title)
-    level = _entry_level(title, 1, seen_chapter=any(entry.level == 1 for entry in entries))
+    level = level_override or _entry_level(title, 1, seen_chapter=any(entry.level == 1 for entry in entries))
     entries.append(EpubTocEntry(title=title, level=level, source="document_toc", page_start=page_start))
     return bool(number)
 
@@ -424,6 +468,25 @@ def _looks_like_child_toc_title(title: str) -> bool:
     if _entry_number(title) is not None:
         return False
     return not re.search(r"[{}=%$#]|\\b(?:int|void|return|malloc)\\b", title)
+
+
+def _looks_like_nested_toc_child(
+    title: str,
+    parent_title: str,
+    page_start: int | None,
+    parent_page_start: int | None,
+) -> bool:
+    if _entry_number(title) is not None:
+        return False
+    title_compact = re.sub(r"\s+", "", title)
+    parent_compact = re.sub(r"\s+", "", parent_title)
+    if len(title_compact) < 3 or len(parent_compact) < 3:
+        return False
+    shared = any(
+        len(token) >= 3 and token in parent_compact
+        for token in re.findall(r"[A-Za-z]+|[\u4e00-\u9fff]{2,}", title_compact)
+    )
+    return shared
 
 
 def _is_html_path(path: str) -> bool:
