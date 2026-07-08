@@ -9,7 +9,6 @@ from app.models import (
     LearningRequirementSheet,
     Lesson,
     LessonHistoryGraph,
-    ResourceReferenceContext,
     TeachingGuide,
     TeachingGuideMapping,
     new_id,
@@ -117,10 +116,9 @@ def create_lesson(
     title: str,
     *,
     requirements: LearningRequirementSheet | None = None,
-    reference_context: ResourceReferenceContext | None = None,
 ) -> Lesson:
     clean_title = _clean_topic(title)
-    document = build_document_for_topic_render(clean_title, reference_context)
+    document = build_document_for_topic_render(clean_title)
     normalized_requirements = requirements or build_requirements(clean_title)
     lesson_id = new_id("lesson")
     guide = build_teaching_guide(lesson_id, clean_title, document, normalized_requirements)

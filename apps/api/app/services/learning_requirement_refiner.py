@@ -1,16 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from app.models import (
     LearningClarificationStatus,
     LearningRequirementSheet,
     Lesson,
-    ResourceLibraryItem,
-    ResourceMatch,
-    ResourceReferenceContext,
-    ResourceReferencePrompt,
 )
 from app.services.board_document_sensor import BoardDocumentSensorReading
 from app.services.blank_board_requirement_mapping import build_blank_board_requirement_state
@@ -26,7 +22,6 @@ from app.services.openai_course_ai import (
     emit_ai_stream_event,
     openai_course_ai,
 )
-from app.services.resource_requirement_bridge import suggest_requirement_resource_reference
 
 
 LearningRequirementRefinementRoute = Literal["ordinary_chat", "requirement_refining"]
@@ -42,9 +37,6 @@ class LearningRequirementRefinementOutcome:
     history_operations: list[dict[str, Any]]
     guidance_metadata: dict[str, Any]
     changed: bool
-    resource_matches: list[ResourceMatch] = field(default_factory=list)
-    reference_prompt: ResourceReferencePrompt | None = None
-    selected_reference: ResourceReferenceContext | None = None
 
 
 def refine_blank_board_requirement(
@@ -55,7 +47,6 @@ def refine_blank_board_requirement(
     conversation_summary: str,
     user_message: str,
     history_state: dict[str, Any] | None,
-    visible_resources: list[ResourceLibraryItem] | None = None,
 ) -> LearningRequirementRefinementOutcome | None:
     active_requirement = _active_requirement_from_state(lesson, history_state)
     active_clarification = _active_clarification_from_state(history_state)
@@ -125,12 +116,7 @@ def refine_blank_board_requirement(
         base_requirement=base_requirement,
         result=result,
     )
-    resource_alignment = suggest_requirement_resource_reference(
-        resources=visible_resources or [],
-        requirement=requirement_state.requirement,
-        user_message=user_message,
-    )
-    requirement = resource_alignment.requirement
+    requirement = requirement_state.requirement
     metadata = _build_guidance_metadata(result)
     metadata.update(
         _stream_metadata(
@@ -139,15 +125,6 @@ def refine_blank_board_requirement(
             requirement_update_skipped=False,
         )
     )
-    if resource_alignment.resource_matches or resource_alignment.reference_prompt:
-        metadata["resource_alignment"] = {
-            "resource_matches": [match.model_dump(mode="json") for match in resource_alignment.resource_matches],
-            "reference_prompt": (
-                resource_alignment.reference_prompt.model_dump(mode="json")
-                if resource_alignment.reference_prompt is not None
-                else None
-            ),
-        }
     stamp = recorder.record_update(
         requirements=requirement,
         clarification=requirement_state.clarification,
@@ -163,9 +140,6 @@ def refine_blank_board_requirement(
         history_operations=list(recorder.operations),
         guidance_metadata=metadata,
         changed=bool(recorder.operations),
-        resource_matches=resource_alignment.resource_matches,
-        reference_prompt=resource_alignment.reference_prompt,
-        selected_reference=resource_alignment.selected_reference,
     )
 
 

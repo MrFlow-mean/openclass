@@ -16,7 +16,7 @@ export type FollowedCourseUpdate = {
   moduleTitle: string;
   summary: string;
   updatedAt: string;
-  updateKind: "new_lesson" | "course_revision" | "resource_added" | "note_added";
+  updateKind: "new_lesson" | "course_revision" | "note_added";
   lessonCount: number;
   views: number;
   comments: number;
@@ -33,7 +33,6 @@ export type FollowedCourseUpdateItem = {
 export const FOLLOWED_UPDATE_KIND_LABELS: Record<FollowedCourseUpdate["updateKind"], string> = {
   new_lesson: "新课",
   course_revision: "更新",
-  resource_added: "资料",
   note_added: "笔记",
 };
 
@@ -42,18 +41,18 @@ export const FOLLOWED_CREATORS: FollowedCreator[] = [
     id: "case-lab",
     name: "案例拆解室",
     handle: "case-lab",
-    bio: "把资料、案例和课堂问题整理成可迁移的学习路径。",
+    bio: "把案例和课堂问题整理成可迁移的学习路径。",
     field: "案例学习",
     followers: 128400,
     avatarSeed: "case-lab",
     unreadCount: 3,
   },
   {
-    id: "source-map",
-    name: "资料地图",
-    handle: "source-map",
-    bio: "从上传资料中提取目录、证据和讲解线索。",
-    field: "资料讲解",
+    id: "lesson-map",
+    name: "讲义地图",
+    handle: "lesson-map",
+    bio: "把课堂主题整理成目录、讲解线索和复习路径。",
+    field: "讲义设计",
     followers: 84200,
     avatarSeed: "source-map",
     unreadCount: 1,
@@ -149,32 +148,32 @@ export const FOLLOWED_COURSE_UPDATES: FollowedCourseUpdate[] = [
   {
     id: "pen-review-01",
     creatorId: "pen-review",
-    courseTitle: "高效笔记和资料库搭建",
-    moduleTitle: "新增资料包：论文阅读标注模板",
-    summary: "上传了三套可复用的阅读模板，覆盖概念卡片、证据摘录和复盘问题清单。",
+    courseTitle: "高效笔记和讲义整理",
+    moduleTitle: "课堂笔记：论文阅读标注模板",
+    summary: "整理了三套可复用的阅读模板，覆盖概念卡片、要点摘录和复盘问题清单。",
     updatedAt: "2026-04-25T18:06:00.000+08:00",
-    updateKind: "resource_added",
+    updateKind: "note_added",
     lessonCount: 12,
     views: 4860,
     comments: 19,
     likes: 306,
-    tags: ["笔记", "模板", "资料库"],
+    tags: ["笔记", "模板", "复盘"],
     coverSeed: "paper-note-kit",
   },
   {
-    id: "source-map-01",
-    creatorId: "source-map",
-    courseTitle: "资料扩讲型课程包",
-    moduleTitle: "课堂笔记：从资料片段到讲解主线",
-    summary: "整理了目录、材料片段和数据表，补充了几个适合做课堂讨论的问题。",
+    id: "lesson-map-01",
+    creatorId: "lesson-map",
+    courseTitle: "讲义扩展型课程包",
+    moduleTitle: "课堂笔记：从核心问题到讲解主线",
+    summary: "整理了目录、关键问题和数据表，补充了几个适合做课堂讨论的问题。",
     updatedAt: "2026-04-25T14:12:00.000+08:00",
     updateKind: "note_added",
     lessonCount: 9,
     views: 3520,
     comments: 26,
     likes: 211,
-    tags: ["资料", "数据", "讨论课"],
-    coverSeed: "source-context-data",
+    tags: ["讲义", "数据", "讨论课"],
+    coverSeed: "lesson-context-data",
   },
   {
     id: "practice-daily-01",

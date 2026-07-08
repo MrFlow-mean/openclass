@@ -12,10 +12,8 @@ export type BoardAction =
   | "append_section"
   | "create_new_lesson"
   | "await_scope_choice"
-  | "await_reference_choice"
   | "await_focus_choice";
 
-export type ResourceReferenceAction = "confirm" | "skip";
 export type BoardEditConfirmationAction = "confirm" | "skip";
 export type ChatInteractionMode = "ask" | "direct_edit";
 export type BoardTaskAction =
@@ -84,23 +82,6 @@ export interface DiffPreviewItem {
   summary: string;
 }
 
-export type LearningResourceReferenceStatus = "suggested" | "confirmed" | "skipped";
-
-export interface LearningResourceReference {
-  resource_id: string;
-  resource_name: string;
-  chapter_id: string;
-  chapter_title: string;
-  query: string;
-  excerpt: string;
-  page_no?: number | null;
-  page_idx?: number | null;
-  source_locator?: string | null;
-  reason: string;
-  score: number;
-  status: LearningResourceReferenceStatus;
-}
-
 export interface LearningRequirementSheet {
   theme: string;
   learning_goal: string;
@@ -123,8 +104,6 @@ export interface LearningRequirementSheet {
   board_workflow?: BoardWorkflow | null;
   work_mode?: InitialLearningWorkMode | null;
   granularity?: InitialLearningGranularity | null;
-  resource_references?: LearningResourceReference[];
-  selected_resource_reference?: LearningResourceReference | null;
 }
 
 export type BoardWorkflow = "generate_from_scratch" | "act_on_existing_board" | "unknown";
@@ -408,63 +387,6 @@ export interface ResourceLibraryItem {
   page_structure?: ResourcePageStructure | null;
 }
 
-export type ResourceAIBackend = "openclass_source_units" | "raganything";
-
-export interface ResourceAIIndexStatus {
-  resource_id: string;
-  resource_name: string;
-  parser_provider: string;
-  source_type: ResourceSourceType;
-  ingestion_status: SourceIngestionStatus;
-  ingestion_error: string;
-  ingestion_progress: number;
-  ingestion_adapter: string;
-  extracted_text_available: boolean;
-  source_unit_count: number;
-  text_unit_count: number;
-  multimodal_unit_count: number;
-  chapter_count: number;
-  rag_content_list_available: boolean;
-  page_structure_available: boolean;
-  body_start_page_no?: number | null;
-  page_map_count: number;
-  parser_artifacts_path?: string | null;
-  warnings: string[];
-}
-
-export interface ResourceAIEvidenceUnit {
-  resource_id: string;
-  resource_name: string;
-  chapter_id?: string | null;
-  chapter_title?: string | null;
-  content_type: string;
-  excerpt: string;
-  page_no?: number | null;
-  page_idx?: number | null;
-  source_locator?: string | null;
-  score: number;
-  reason: string;
-  metadata: Record<string, unknown>;
-}
-
-export interface ResourceAIQueryPayload {
-  query: string;
-  resource_id?: string | null;
-  max_results?: number;
-  include_reference_context?: boolean;
-}
-
-export interface ResourceAIQueryResponse {
-  query: string;
-  backend: ResourceAIBackend;
-  used_rag_anything: boolean;
-  index_status: ResourceAIIndexStatus[];
-  evidence_units: ResourceAIEvidenceUnit[];
-  resource_matches: ResourceMatch[];
-  selected_reference?: ResourceReferenceContext | null;
-  warnings: string[];
-}
-
 export interface CoursePackage {
   id: string;
   title: string;
@@ -606,7 +528,7 @@ export interface FormulaInkPayload {
 }
 
 export interface BoardFocusRef {
-  source: "board" | "resource" | "chat";
+  source: "board" | "chat";
   lesson_id?: string | null;
   document_id?: string | null;
   segment_id?: string | null;
@@ -721,29 +643,6 @@ export interface ScopeOption {
   action: ScopeAction;
   label: string;
   description: string;
-  resource_chapter_id?: string | null;
-}
-
-export interface ResourceMatch {
-  resource_id: string;
-  chapter_id: string;
-  resource_name: string;
-  chapter_title: string;
-  reason: string;
-  score: number;
-  is_high_overlap: boolean;
-}
-
-export interface ResourceReferencePrompt {
-  resource_id: string;
-  chapter_id: string;
-  resource_name: string;
-  chapter_title: string;
-  question: string;
-  reason: string;
-  confirm_label: string;
-  skip_label: string;
-  score: number;
 }
 
 export interface BoardEditPrompt {
@@ -752,35 +651,6 @@ export interface BoardEditPrompt {
   reason: string;
   confirm_label: string;
   skip_label: string;
-}
-
-export interface ResourceContextChunk {
-  title: string;
-  excerpt: string;
-  teaching_hint: string;
-}
-
-export interface ResourceVisualEvidence {
-  id: string;
-  content_type: string;
-  caption: string;
-  page_no?: number | null;
-  page_idx?: number | null;
-  bbox: number[];
-  source_locator?: string | null;
-  relevance_reason: string;
-  relevance_score: number;
-}
-
-export interface ResourceReferenceContext {
-  resource_id: string;
-  chapter_id: string;
-  resource_name: string;
-  chapter_title: string;
-  summary: string;
-  teaching_points: string[];
-  chunks: ResourceContextChunk[];
-  visual_evidence: ResourceVisualEvidence[];
 }
 
 export interface BoardDecision {
@@ -806,10 +676,6 @@ export interface ChatRequestPayload {
   formula_ink?: FormulaInkPayload | null;
   interaction_mode?: ChatInteractionMode;
   scope_action?: ScopeAction | null;
-  resource_chapter_id?: string | null;
-  resource_reference_action?: ResourceReferenceAction | null;
-  resource_reference_resource_id?: string | null;
-  resource_reference_chapter_id?: string | null;
   board_edit_action?: BoardEditConfirmationAction | null;
   board_edit_topic?: string | null;
   board_generation_action?: "start" | null;
@@ -835,8 +701,7 @@ export type AgentTurnRoute =
   | "post_generation_teaching_start"
   | "board_teaching_continue"
   | "board_task_refine_or_execute"
-  | "interaction_session_turn"
-  | "resource_grounded_task";
+  | "interaction_session_turn";
 
 export type AgentActivityStage =
   | "turn_decision"
@@ -892,10 +757,7 @@ export interface ChatResponse {
   clarification_questions: string[];
   patch_proposal?: PatchProposal | null;
   scope_options: ScopeOption[];
-  resource_matches: ResourceMatch[];
-  reference_prompt?: ResourceReferencePrompt | null;
   board_edit_prompt?: BoardEditPrompt | null;
-  selected_reference?: ResourceReferenceContext | null;
   resolved_focus?: BoardFocusRef | null;
   focus_candidates?: BoardFocusRef[];
   board_search_evidence?: BoardSearchEvidence | null;

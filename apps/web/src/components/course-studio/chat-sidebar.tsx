@@ -40,8 +40,6 @@ import type {
   LearningClarificationStatus,
   LearningRequirementSheet,
   Lesson,
-  ResourceReferenceContext,
-  ResourceReferencePrompt,
   ScopeOption,
   SelectionRef,
 } from "@/types";
@@ -304,14 +302,12 @@ type CourseStudioChatSidebarProps = {
   isChatBusy: boolean;
   showReadyForBoardCard: boolean;
   scopeOptions: ScopeOption[];
-  referencePrompt: ResourceReferencePrompt | null;
   boardEditPrompt: BoardEditPrompt | null;
   clarificationQuestions: string[];
   activeBoardTask: BoardTaskRequirementSheet | null;
   activeRequirementSheet: LearningRequirementSheet | null;
   currentNeedPending: boolean;
   latestBoardDecision: BoardDecision | null;
-  selectedReference: ResourceReferenceContext | null;
   chatScrollEndRef: RefObject<HTMLDivElement | null>;
   chatInputRef: RefObject<HTMLTextAreaElement | null>;
   remoteAudioRef: RefObject<HTMLAudioElement | null>;
@@ -334,7 +330,6 @@ type CourseStudioChatSidebarProps = {
   onStopChat: () => void;
   onEditMessage: (message: ChatMessage, nextContent: string) => void | Promise<void>;
   onScopeAction: (option: ScopeOption) => void | Promise<void>;
-  onReferenceAction: (action: "confirm" | "skip") => void | Promise<void>;
   onBoardEditAction: (action: "confirm" | "skip") => void | Promise<void>;
   onSelectTextModel: (option: AIModelOption) => void;
   onSelectRealtimeModel: (option: AIModelOption) => void;
@@ -358,14 +353,12 @@ export function CourseStudioChatSidebar({
   isChatBusy,
   showReadyForBoardCard,
   scopeOptions,
-  referencePrompt,
   boardEditPrompt,
   clarificationQuestions,
   activeBoardTask,
   activeRequirementSheet,
   currentNeedPending,
   latestBoardDecision,
-  selectedReference,
   chatScrollEndRef,
   chatInputRef,
   remoteAudioRef,
@@ -388,7 +381,6 @@ export function CourseStudioChatSidebar({
   onStopChat,
   onEditMessage,
   onScopeAction,
-  onReferenceAction,
   onBoardEditAction,
   onSelectTextModel,
   onSelectRealtimeModel,
@@ -542,7 +534,6 @@ export function CourseStudioChatSidebar({
               <BoardGenerationConfirmationCard
                 clarityStatus={clarityStatus}
                 isChatBusy={isChatBusy}
-                referencePrompt={referencePrompt}
                 onSubmitChat={onSubmitChat}
               />
             ) : null}
@@ -564,34 +555,6 @@ export function CourseStudioChatSidebar({
                     <span className="mt-1 block text-xs leading-6 text-gray-500">{option.description}</span>
                   </button>
                 ))}
-              </div>
-            </div>
-          ) : null}
-
-          {!isPreviewMode && referencePrompt && !showReadyForBoardCard ? (
-            <div className="rounded-xl border border-violet-200 bg-violet-50 p-4">
-              <p className="text-[11px] font-bold uppercase tracking-widest text-violet-700">章节参考建议</p>
-              <p className="mt-2 text-sm leading-6 text-violet-950">{referencePrompt.question}</p>
-              <p className="mt-2 text-xs leading-6 text-violet-900/80">{referencePrompt.reason}</p>
-              <div className="mt-3 grid gap-2">
-                <button
-                  type="button"
-                  onClick={() => void onReferenceAction("confirm")}
-                  className="w-full rounded-xl border border-violet-200 bg-white px-4 py-3 text-left transition hover:border-violet-300"
-                >
-                  <span className="block text-sm font-semibold text-gray-900">
-                    {referencePrompt.confirm_label}
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void onReferenceAction("skip")}
-                  className="w-full rounded-xl border border-violet-200 bg-white px-4 py-3 text-left transition hover:border-violet-300"
-                >
-                  <span className="block text-sm font-semibold text-gray-900">
-                    {referencePrompt.skip_label}
-                  </span>
-                </button>
               </div>
             </div>
           ) : null}
@@ -636,19 +599,6 @@ export function CourseStudioChatSidebar({
             </div>
           ) : null}
 
-          {!isPreviewMode && selectedReference ? (
-            <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
-              <p className="text-[11px] font-bold uppercase tracking-widest text-emerald-700">已引用参考资料</p>
-              <p className="mt-2 text-sm font-semibold text-gray-900">
-                {selectedReference.resource_name} / {selectedReference.chapter_title}
-              </p>
-              {selectedReference.visual_evidence.length > 0 ? (
-                <p className="mt-2 text-xs text-emerald-800">
-                  包含 {selectedReference.visual_evidence.length} 个视觉证据
-                </p>
-              ) : null}
-            </div>
-          ) : null}
         </div>
       </div>
 

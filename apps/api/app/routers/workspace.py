@@ -1,16 +1,11 @@
 from __future__ import annotations
 
-import shutil
-from pathlib import Path
-from uuid import uuid4
-
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, HTTPException
 
 from app.models import (
     CourseGraphEdge,
     CoursePackage,
     CoursePackageView,
-    AddResourceUrlRequest,
     CreatePackageRequest,
     GenerateLessonRequest,
     MoveLessonRequest,
@@ -25,15 +20,10 @@ from app.services.course_runtime import build_lesson_for_topic
 from app.services.history import current_head_commit
 from app.services.lesson_factory import create_empty_lesson
 from app.services.route_context import bind_ai_request_context
-from app.services.resource_service import delete_uploaded_resource_file
-from app.services.resource_library import build_resource_item
-from app.services.web_resource_adapter import build_failed_web_resource_item, build_web_resource_item
 from app.services.workspace_state import (
-    UPLOAD_DIR,
     find_lesson_package,
     get_package,
     get_standalone_package,
-    is_standalone_package,
     load_workspace_for_user,
     load_workspace_package_for_user,
     normalize_package_state,
@@ -134,20 +124,7 @@ def move_lesson(
     if source_package.active_lesson_id == lesson_id:
         source_package.active_lesson_id = None
 
-    moving_resources = []
-    if is_standalone_package(workspace, source_package):
-        moving_resources = [
-            resource for resource in source_package.resources if resource.scope_lesson_id == lesson_id
-        ]
-        source_package.resources = [
-            resource for resource in source_package.resources if resource.scope_lesson_id != lesson_id
-        ]
-
     target_package.lessons.append(lesson)
-    if moving_resources and not is_standalone_package(workspace, target_package):
-        for resource in moving_resources:
-            resource.scope_lesson_id = None
-        target_package.resources.extend(moving_resources)
     if lesson.id not in target_package.open_lesson_ids:
         target_package.open_lesson_ids.append(lesson.id)
     if lesson.id not in target_package.workspace_tab_order:
@@ -165,14 +142,6 @@ def move_lesson(
 def delete_lesson(lesson_id: str, user: UserView = Depends(current_user)) -> WorkspaceStateView:
     workspace = load_workspace_for_user(user.id)
     package, _ = find_lesson_package(workspace, lesson_id)
-    removed_resources = []
-    if is_standalone_package(workspace, package):
-        removed_resources = [
-            resource for resource in package.resources if resource.scope_lesson_id == lesson_id
-        ]
-        package.resources = [
-            resource for resource in package.resources if resource.scope_lesson_id != lesson_id
-        ]
 
     package.lessons = [current for current in package.lessons if current.id != lesson_id]
     package.open_lesson_ids = [current for current in package.open_lesson_ids if current != lesson_id]
@@ -182,8 +151,6 @@ def delete_lesson(lesson_id: str, user: UserView = Depends(current_user)) -> Wor
 
     normalize_package_state(package)
     save_workspace_for_user(user.id, workspace)
-    for resource in removed_resources:
-        delete_uploaded_resource_file(resource, UPLOAD_DIR)
     return workspace_view(workspace)
 
 
@@ -191,74 +158,6 @@ def delete_lesson(lesson_id: str, user: UserView = Depends(current_user)) -> Wor
 def get_course_package(user: UserView = Depends(current_user)) -> CoursePackageView:
     workspace, package = load_workspace_package_for_user(user.id)
     return package_view_for_lesson(workspace, package, package.active_lesson_id)
-
-
-@router.post("/api/lessons/{lesson_id}/resources/upload", response_model=CoursePackageView)
-def upload_lesson_resource(
-    lesson_id: str,
-    file: UploadFile = File(...),
-    user: UserView = Depends(current_user),
-) -> CoursePackageView:
-    workspace = load_workspace_for_user(user.id)
-    package, lesson = find_lesson_package(workspace, lesson_id)
-    package.active_lesson_id = lesson.id
-    safe_name = Path(file.filename or "resource").name
-    if not safe_name:
-        raise HTTPException(status_code=400, detail="Resource filename is required")
-
-    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    destination = UPLOAD_DIR / f"{lesson.id}_{uuid4().hex[:8]}_{safe_name}"
-    with bind_ai_request_context(
-        "/api/lessons/{lesson_id}/resources/upload",
-        lesson=lesson,
-        trace_prefix="resource_upload",
-        filename=safe_name,
-    ):
-        with destination.open("wb") as output:
-            shutil.copyfileobj(file.file, output)
-        try:
-            resource = build_resource_item(destination, safe_name)
-        except Exception as exc:
-            destination.unlink(missing_ok=True)
-            raise HTTPException(status_code=400, detail=f"Resource parse failed: {exc}") from exc
-        if is_standalone_package(workspace, package):
-            resource.scope_lesson_id = lesson.id
-        package.resources.append(resource)
-        normalize_package_state(package)
-        save_workspace_for_user(user.id, workspace)
-    return package_view_for_lesson(workspace, package, lesson.id)
-
-
-@router.post("/api/lessons/{lesson_id}/resources/add-url", response_model=CoursePackageView)
-def add_lesson_resource_url(
-    lesson_id: str,
-    request: AddResourceUrlRequest,
-    user: UserView = Depends(current_user),
-) -> CoursePackageView:
-    workspace = load_workspace_for_user(user.id)
-    package, lesson = find_lesson_package(workspace, lesson_id)
-    package.active_lesson_id = lesson.id
-    url = request.url.strip()
-    title = request.title.strip() if request.title else None
-    if not url:
-        raise HTTPException(status_code=400, detail="Resource URL is required")
-
-    with bind_ai_request_context(
-        "/api/lessons/{lesson_id}/resources/add-url",
-        lesson=lesson,
-        trace_prefix="resource_add_url",
-        url=url,
-    ):
-        try:
-            resource = build_web_resource_item(url, title=title)
-        except Exception as exc:
-            resource = build_failed_web_resource_item(url, title=title, error=str(exc))
-        if is_standalone_package(workspace, package):
-            resource.scope_lesson_id = lesson.id
-        package.resources.append(resource)
-        normalize_package_state(package)
-        save_workspace_for_user(user.id, workspace)
-    return package_view_for_lesson(workspace, package, lesson.id)
 
 
 @router.post("/api/lessons/generate", response_model=CoursePackageView)

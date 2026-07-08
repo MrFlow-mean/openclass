@@ -59,11 +59,10 @@ BoardAction = Literal[
     "append_section",
     "create_new_lesson",
     "await_scope_choice",
-    "await_reference_choice",
     "await_focus_choice",
 ]
 SelectionKind = Literal["chat", "board"]
-BoardFocusSource = Literal["board", "resource", "chat"]
+BoardFocusSource = Literal["board", "chat"]
 BoardFocusLocationStatus = Literal["missing", "selected", "resolved", "ambiguous"]
 BoardSegmentKind = Literal["heading", "paragraph", "list", "table", "code", "image", "formula", "other"]
 BoardTaskAction = Literal[
@@ -82,7 +81,6 @@ AgentTurnRoute = Literal[
     "board_teaching_continue",
     "board_task_refine_or_execute",
     "interaction_session_turn",
-    "resource_grounded_task",
 ]
 AgentActivityStage = Literal[
     "turn_decision",
@@ -125,7 +123,6 @@ AIProvider = Literal[
 ]
 AIModelCapability = Literal["text", "realtime"]
 AIRealtimeTransport = Literal["openai_webrtc", "gemini_live_websocket"]
-ResourceReferenceAction = Literal["confirm", "skip"]
 BoardEditConfirmationAction = Literal["confirm", "skip"]
 ResourceScanStrategy = Literal["outline_only", "heading_section", "page_window", "fulltext_match"]
 ResourcePageRole = Literal["cover", "copyright", "toc", "preface", "body", "appendix", "back_matter", "unknown"]
@@ -135,7 +132,6 @@ TeachingAction = Literal["continue", "restart"]
 BoardGenerationAction = Literal["start"]
 BoardWorkflow = Literal["generate_from_scratch", "act_on_existing_board", "unknown"]
 LearningRequirementFactCategory = Literal["learning", "level", "vocabulary", "scenario", "output", "other"]
-LearningResourceReferenceStatus = Literal["suggested", "confirmed", "skipped"]
 LearningRequirementRunStatus = Literal["collecting", "ready", "frozen", "consumed", "archived"]
 LearningRequirementChangeKind = Literal[
     "created",
@@ -528,21 +524,6 @@ class InteractionTurnDecision(BaseModel):
     user_intent: str = ""
 
 
-class LearningResourceReference(BaseModel):
-    resource_id: str
-    resource_name: str
-    chapter_id: str
-    chapter_title: str
-    query: str = ""
-    excerpt: str = ""
-    page_no: int | None = None
-    page_idx: int | None = None
-    source_locator: str | None = None
-    reason: str = ""
-    score: float = 0.0
-    status: LearningResourceReferenceStatus = "suggested"
-
-
 class LearningRequirementSheet(BaseModel):
     theme: str
     learning_goal: str
@@ -565,8 +546,6 @@ class LearningRequirementSheet(BaseModel):
     board_workflow: BoardWorkflow = "unknown"
     work_mode: InitialLearningWorkMode | None = None
     granularity: InitialLearningGranularity | None = None
-    resource_references: list[LearningResourceReference] = Field(default_factory=list)
-    selected_resource_reference: LearningResourceReference | None = None
 
 
 class BoardTaskRequirementSheet(BaseModel):
@@ -942,120 +921,6 @@ class ScopeOption(BaseModel):
     action: ScopeAction
     label: str
     description: str
-    resource_chapter_id: str | None = None
-
-
-class ResourceMatch(BaseModel):
-    resource_id: str
-    chapter_id: str
-    resource_name: str
-    chapter_title: str
-    reason: str
-    score: float = 0.0
-    is_high_overlap: bool = False
-
-
-class ResourceReferencePrompt(BaseModel):
-    resource_id: str
-    chapter_id: str
-    resource_name: str
-    chapter_title: str
-    question: str
-    reason: str
-    confirm_label: str = "参考这一章节"
-    skip_label: str = "先不参考"
-    score: float = 0.0
-
-
-class ResourceContextChunk(BaseModel):
-    title: str
-    excerpt: str
-    teaching_hint: str
-
-
-class ResourceVisualEvidence(BaseModel):
-    id: str = Field(default_factory=lambda: new_id("visual"))
-    content_type: str
-    caption: str = ""
-    page_no: int | None = None
-    page_idx: int | None = None
-    bbox: list[float] = Field(default_factory=list)
-    source_locator: str | None = None
-    relevance_reason: str = ""
-    relevance_score: float = 0.0
-    image_src: str = Field(default="", exclude=True, repr=False)
-    source_text: str = Field(default="", exclude=True, repr=False)
-    source_metadata: dict[str, Any] = Field(default_factory=dict, exclude=True, repr=False)
-
-
-class ResourceReferenceContext(BaseModel):
-    resource_id: str
-    chapter_id: str
-    resource_name: str
-    chapter_title: str
-    summary: str
-    teaching_points: list[str] = Field(default_factory=list)
-    chunks: list[ResourceContextChunk] = Field(default_factory=list)
-    visual_evidence: list[ResourceVisualEvidence] = Field(default_factory=list)
-    full_text: str = Field(default="", exclude=True, repr=False)
-
-
-ResourceAIBackend = Literal["openclass_source_units", "raganything"]
-
-
-class ResourceAIIndexStatus(BaseModel):
-    resource_id: str
-    resource_name: str
-    parser_provider: str
-    source_type: ResourceSourceType = "local_file"
-    ingestion_status: SourceIngestionStatus = "ready"
-    ingestion_error: str = ""
-    ingestion_progress: int = Field(default=100, ge=0, le=100)
-    ingestion_adapter: str = ""
-    extracted_text_available: bool = False
-    source_unit_count: int = 0
-    text_unit_count: int = 0
-    multimodal_unit_count: int = 0
-    chapter_count: int = 0
-    rag_content_list_available: bool = False
-    page_structure_available: bool = False
-    body_start_page_no: int | None = None
-    page_map_count: int = 0
-    parser_artifacts_path: str | None = None
-    warnings: list[str] = Field(default_factory=list)
-
-
-class ResourceAIEvidenceUnit(BaseModel):
-    resource_id: str
-    resource_name: str
-    chapter_id: str | None = None
-    chapter_title: str | None = None
-    content_type: str = "text"
-    excerpt: str
-    page_no: int | None = None
-    page_idx: int | None = None
-    source_locator: str | None = None
-    score: float = 0.0
-    reason: str = ""
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class ResourceAIQueryRequest(BaseModel):
-    query: str = Field(min_length=1, max_length=2000)
-    resource_id: str | None = None
-    max_results: int = Field(default=6, ge=1, le=20)
-    include_reference_context: bool = True
-
-
-class ResourceAIQueryResponse(BaseModel):
-    query: str
-    backend: ResourceAIBackend = "openclass_source_units"
-    used_rag_anything: bool = False
-    index_status: list[ResourceAIIndexStatus] = Field(default_factory=list)
-    evidence_units: list[ResourceAIEvidenceUnit] = Field(default_factory=list)
-    resource_matches: list[ResourceMatch] = Field(default_factory=list)
-    selected_reference: ResourceReferenceContext | None = None
-    warnings: list[str] = Field(default_factory=list)
 
 
 class BoardDecision(BaseModel):
@@ -1141,10 +1006,6 @@ class ChatRequest(BaseModel):
     formula_ink: FormulaInkPayload | None = None
     interaction_mode: ChatInteractionMode = "ask"
     scope_action: ScopeAction | None = None
-    resource_chapter_id: str | None = None
-    resource_reference_action: ResourceReferenceAction | None = None
-    resource_reference_resource_id: str | None = None
-    resource_reference_chapter_id: str | None = None
     board_edit_action: BoardEditConfirmationAction | None = None
     board_edit_topic: str | None = None
     board_generation_action: BoardGenerationAction | None = None
@@ -1270,10 +1131,7 @@ class ChatResponse(BaseModel):
     clarification_questions: list[str] = Field(default_factory=list)
     patch_proposal: PatchProposal | None = None
     scope_options: list[ScopeOption] = Field(default_factory=list)
-    resource_matches: list[ResourceMatch] = Field(default_factory=list)
-    reference_prompt: ResourceReferencePrompt | None = None
     board_edit_prompt: BoardEditPrompt | None = None
-    selected_reference: ResourceReferenceContext | None = None
     resolved_focus: BoardFocusRef | None = None
     focus_candidates: list[BoardFocusRef] = Field(default_factory=list)
     board_search_evidence: BoardSearchEvidence | None = None
@@ -1313,11 +1171,6 @@ class CreatePackageRequest(BaseModel):
 class UpdatePackageRequest(BaseModel):
     title: str | None = None
     summary: str | None = None
-
-
-class AddResourceUrlRequest(BaseModel):
-    url: str = Field(min_length=1, max_length=4096)
-    title: str | None = Field(default=None, max_length=300)
 
 
 class MoveLessonRequest(BaseModel):

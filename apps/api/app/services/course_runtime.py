@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.models import BoardDocument, LearningRequirementSheet, Lesson, ResourceReferenceContext
+from app.models import BoardDocument, LearningRequirementSheet, Lesson
 from app.services.lesson_factory import (
     build_requirements,
     build_teaching_guide,
@@ -114,14 +114,10 @@ def build_lesson_for_topic(
     topic: str,
     *,
     requirements: LearningRequirementSheet | None = None,
-    reference_context: ResourceReferenceContext | None = None,
 ) -> Lesson:
     if requirements is None:
-        if reference_context is None:
-            lesson = create_empty_lesson(topic)
-        else:
-            lesson = create_lesson(topic, reference_context=reference_context)
+        lesson = create_empty_lesson(topic)
     else:
-        lesson = create_lesson(topic, requirements=requirements, reference_context=reference_context)
+        lesson = create_lesson(topic, requirements=requirements)
     refresh_lesson_runtime(lesson, requirements=requirements)
     return lesson

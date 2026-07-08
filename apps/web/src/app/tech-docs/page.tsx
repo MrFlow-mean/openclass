@@ -26,12 +26,12 @@ const architectureSections = [
   {
     title: "API 后端",
     icon: TerminalSquare,
-    body: "FastAPI 暴露 workspace、documents、chat、realtime 和 resources 边界；router 处理 HTTP，业务状态和事务留在 services。",
+    body: "FastAPI 暴露 workspace、documents、chat 和 realtime 边界；router 处理 HTTP，业务状态和事务留在 services。",
   },
   {
     title: "数据与文件",
     icon: Database,
-    body: "SQLite 保存课程、资料、历史和账号状态；上传、导出和 AI 调用日志都写入持久化目录，不进入代码仓库。",
+    body: "SQLite 保存课程、历史和账号状态；导出文件和 AI 调用日志都写入持久化目录，不进入代码仓库。",
   },
   {
     title: "AI 协作边界",

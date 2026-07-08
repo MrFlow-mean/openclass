@@ -243,14 +243,6 @@ function chatUserContentFromCommit(commit: CommitRecord): string | null {
     return `继续执行：${scopeAction}`;
   }
 
-  const referenceAction = metadataText(commit, "resource_reference_action");
-  if (referenceAction === "confirm") {
-    return "继续执行：参考推荐章节生成讲义";
-  }
-  if (referenceAction === "skip") {
-    return "继续执行：先不参考推荐章节";
-  }
-
   const boardEditAction = metadataText(commit, "board_edit_action");
   const boardEditTopic = metadataText(commit, "board_edit_topic");
   if (boardEditAction === "confirm") {

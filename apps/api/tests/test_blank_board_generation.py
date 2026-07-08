@@ -117,7 +117,6 @@ def test_board_generation_action_generates_blank_board_and_invites_teaching(
     assert response.teaching_progress is None
     assert captured["requirement_run_id"] is not None
     assert captured["frozen_requirement_version_id"] is not None
-    assert captured["resource_summary"] == ""
 
     saved = store.load_for_user(TEST_USER_ID)
     saved_lesson = saved.packages[0].lessons[-1]

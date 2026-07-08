@@ -191,10 +191,6 @@ function buildActivitySummary(coursePackage: CoursePackage | null) {
       track(commit.created_at);
     });
   });
-  coursePackage?.resources.forEach((resource) => {
-    track(resource.uploaded_at);
-  });
-
   const days: ActivityDay[] = [];
   const totalDays = CONTRIBUTION_WEEKS * 7;
   for (let offset = totalDays - 1; offset >= 0; offset -= 1) {
@@ -238,8 +234,6 @@ function activityTone(level: ActivityDay["level"]) {
 
 function followedUpdateTone(kind: FollowedCourseUpdate["updateKind"]) {
   switch (kind) {
-    case "resource_added":
-      return "bg-emerald-100 text-emerald-700";
     case "note_added":
       return "bg-sky-100 text-sky-700";
     case "course_revision":
@@ -252,8 +246,6 @@ function followedUpdateTone(kind: FollowedCourseUpdate["updateKind"]) {
 
 function followedUpdateActionLabel(kind: FollowedCourseUpdate["updateKind"]) {
   switch (kind) {
-    case "resource_added":
-      return "added resources to";
     case "note_added":
       return "published notes in";
     case "course_revision":
@@ -266,8 +258,6 @@ function followedUpdateActionLabel(kind: FollowedCourseUpdate["updateKind"]) {
 
 function followedUpdatePreviewHeading(kind: FollowedCourseUpdate["updateKind"]) {
   switch (kind) {
-    case "resource_added":
-      return "Resource Notes";
     case "note_added":
       return "Class Notes";
     case "course_revision":
@@ -437,12 +427,6 @@ export function LearningHome() {
       isStandalone: packageItem.id === standalonePackage?.id,
     }))
   );
-  const feedResources = packages.flatMap((packageItem) =>
-    packageItem.resources.map((resource) => ({
-      resource,
-      packageTitle: packageItem.title,
-    }))
-  );
   const selectedPackageLessons = sortByUpdatedAt(selectedCoursePackage?.lessons ?? []);
   const selectedPackageActiveLesson = selectedLessonId
     ? selectedCoursePackage?.lessons.find((lesson) => lesson.id === selectedLessonId) ?? null
@@ -492,7 +476,7 @@ export function LearningHome() {
   const activity = buildActivitySummary(coursePackage);
   const lessonMenuLesson =
     lessonMenuState ? standaloneLessonItems.find(({ lesson }) => lesson.id === lessonMenuState.lessonId)?.lesson ?? null : null;
-  const feedItems = buildRecentFeed(feedLessons, feedResources);
+  const feedItems = buildRecentFeed(feedLessons);
   const visibleFeedItems = feedFilter === "all" ? feedItems : feedItems.filter((item) => item.kind === feedFilter);
   const followedProjectUpdates = useMemo(() => buildFollowedCourseUpdateItems(), []);
   const followingUnreadCount = followedProjectUpdates.length;
@@ -738,7 +722,6 @@ export function LearningHome() {
     () => [
       { id: "all" as const, label: h.filterAll },
       { id: "commit" as const, label: h.filterMine },
-      { id: "resource" as const, label: h.filterTrending },
     ],
     [h]
   );

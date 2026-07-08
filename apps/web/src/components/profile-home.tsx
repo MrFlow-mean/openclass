@@ -59,10 +59,8 @@ type ProfileHomeProps = {
 const PROFILE_AVATAR_URL = "https://api.dicebear.com/9.x/glass/svg?seed=kai-fang-ke-tang";
 
 function getPackageUpdatedAt(coursePackage: CoursePackage) {
-  const timestamps = [
-    ...coursePackage.lessons.map((lesson) => lesson.updated_at),
-    ...coursePackage.resources.map((resource) => resource.uploaded_at),
-  ]
+  const timestamps = coursePackage.lessons
+    .map((lesson) => lesson.updated_at)
     .map((value) => new Date(value).getTime())
     .filter((value) => !Number.isNaN(value));
 
@@ -80,9 +78,6 @@ function getPackageTopics(coursePackage: CoursePackage) {
   });
   if (!topics.size && coursePackage.lessons.length) {
     topics.add("course");
-  }
-  if (coursePackage.resources.length) {
-    topics.add("resources");
   }
   return Array.from(topics).slice(0, 5);
 }
@@ -757,7 +752,6 @@ export function ProfileHome({ initialTab = "settings" }: ProfileHomeProps) {
                 <GraduationCap className="h-3.5 w-3.5" />
                 {coursePackage.lessons.length} lessons
               </span>
-              <span>{coursePackage.resources.length} resources</span>
               <span>
                 {ph.updated} {updatedAt ? relFmt(updatedAt) : ph.noUpdatesYet}
               </span>

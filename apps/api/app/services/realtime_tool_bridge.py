@@ -159,17 +159,13 @@ def execute_realtime_tool(
             if not question:
                 raise ValueError("question is required")
             workspace = workspace_state.load_workspace_for_user(session.user_id)
-            package, lesson = workspace_state.find_lesson_package(workspace, session.lesson_id)
-            resource_summary = "\n".join(
-                f"{resource.name}: {' / '.join(chapter.title for chapter in resource.outline[:3] if chapter.title.strip())}"
-                for resource in package.resources[:5]
-            )
+            _, lesson = workspace_state.find_lesson_package(workspace, session.lesson_id)
             solution = openai_course_ai.solve_complex_problem(
                 lesson_title=lesson.title,
                 question=question,
                 target_excerpt=_compact_text(str(arguments.get("target_excerpt") or ""), limit=1600),
                 board_summary=_compact_text(lesson.board_document.content_text, limit=2400),
-                resource_summary=_compact_text(resource_summary, limit=1600),
+                resource_summary="",
                 desired_output=_compact_text(str(arguments.get("desired_output") or ""), limit=800),
                 high_value=False,
             )

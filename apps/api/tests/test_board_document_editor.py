@@ -35,7 +35,6 @@ def test_generate_from_requirements_saves_first_model_output_without_quality_ret
         lesson=lesson,
         requirements=requirements,
         clarification=clarification,
-        resource_summary="",
     )
 
     assert outcome.changed is True

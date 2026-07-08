@@ -9,7 +9,6 @@ import {
   ArrowLeft,
   BookText,
   Eye,
-  FolderClosed,
   Heart,
   MessageCircle,
   MoreHorizontal,
@@ -94,8 +93,6 @@ function formatCompactCount(value: number) {
 
 function updateTone(kind: FollowedCourseUpdate["updateKind"]) {
   switch (kind) {
-    case "resource_added":
-      return "bg-emerald-500";
     case "note_added":
       return "bg-sky-500";
     case "course_revision":
@@ -108,8 +105,6 @@ function updateTone(kind: FollowedCourseUpdate["updateKind"]) {
 
 function updateLabelTone(kind: FollowedCourseUpdate["updateKind"]) {
   switch (kind) {
-    case "resource_added":
-      return "bg-emerald-100 text-emerald-700";
     case "note_added":
       return "bg-sky-100 text-sky-700";
     case "course_revision":
@@ -122,8 +117,6 @@ function updateLabelTone(kind: FollowedCourseUpdate["updateKind"]) {
 
 function updateActionLabel(kind: FollowedCourseUpdate["updateKind"]) {
   switch (kind) {
-    case "resource_added":
-      return "added resources to";
     case "note_added":
       return "published notes in";
     case "course_revision":
@@ -136,8 +129,6 @@ function updateActionLabel(kind: FollowedCourseUpdate["updateKind"]) {
 
 function updatePreviewHeading(kind: FollowedCourseUpdate["updateKind"]) {
   switch (kind) {
-    case "resource_added":
-      return "Resource Notes";
     case "note_added":
       return "Class Notes";
     case "course_revision":
@@ -320,7 +311,6 @@ function FollowingCreatorRail({
 
 function renderFeedCard(item: FollowedCourseUpdateItem) {
   const { creator, update } = item;
-  const isResourceUpdate = update.updateKind === "resource_added";
 
   return (
     <article
@@ -344,7 +334,7 @@ function renderFeedCard(item: FollowedCourseUpdateItem) {
                 updateTone(update.updateKind)
               )}
             >
-              {isResourceUpdate ? <FolderClosed className="h-3 w-3" /> : <BookText className="h-3 w-3" />}
+              <BookText className="h-3 w-3" />
             </span>
           </span>
 

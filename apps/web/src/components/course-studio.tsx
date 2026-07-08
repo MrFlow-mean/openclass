@@ -32,7 +32,6 @@ import { useRealtimeVoice } from "@/hooks/course-studio/use-realtime-voice";
 import { useWorkspaceActions } from "@/hooks/course-studio/use-workspace-actions";
 import { InlineNameForm } from "@/components/inline-name-form";
 import { useResizablePanelWidth } from "@/hooks/use-resizable-panel-width";
-import { api } from "@/lib/api";
 import type { AIModelOption, ChatInteractionMode, CoursePackage, LearningClarificationStatus, SelectionRef } from "@/types";
 
 const CHAT_PANEL_WIDTH_STORAGE_KEY = "openclass:studio:chat-panel-width";
@@ -175,13 +174,6 @@ export function CourseStudio() {
   const currentRequirementCleared =
     !isPreviewMode && !persistedRequirements && activeHeadCommit?.metadata?.requirement_cleared === true;
   const latestAssistantMessage = [...activeMessages].reverse().find((message) => message.role === "assistant");
-  const relatedEdges =
-    activeLesson && coursePackage
-      ? coursePackage.course_graph.filter(
-          (edge) =>
-            edge.source_lesson_id === activeLesson.id || edge.target_lesson_id === activeLesson.id
-        )
-      : [];
   const composerSelection = selection && !selectionPopover ? selection : null;
   function exitAnyPreviewMode() {
     if (isDraftPreviewMode) {
@@ -224,15 +216,11 @@ export function CourseStudio() {
     streamedBoardTaskSheet,
     currentNeedPending,
     latestBoardDecision,
-    referencePrompt,
     boardEditPrompt,
-    selectedReference,
     handleSubmitChat,
     handleStopChat,
     handleEditMessage,
     handleScopeAction,
-    handleReferenceAction,
-    handleSelectResourceChapter,
     handleBoardEditAction,
     handleContinueTeaching,
   } = chatAgent;
@@ -392,40 +380,6 @@ export function CourseStudio() {
     chatAgent.resetAgentState();
   }
 
-  async function handleUploadResource(file: File) {
-    if (!activeLesson) {
-      return;
-    }
-    setBusyAction("resource-upload");
-    setError(null);
-    try {
-      const nextPackage = await api.uploadResource(activeLesson.id, file);
-      updateCoursePackage(nextPackage);
-      setSidebarTab("library");
-    } catch (error) {
-      setError(error instanceof Error ? error.message : "资料上传失败");
-    } finally {
-      setBusyAction(null);
-    }
-  }
-
-  async function handleAddResourceUrl(url: string) {
-    if (!activeLesson) {
-      return;
-    }
-    setBusyAction("resource-url");
-    setError(null);
-    try {
-      const nextPackage = await api.addResourceUrl(activeLesson.id, { url });
-      updateCoursePackage(nextPackage);
-      setSidebarTab("library");
-    } catch (error) {
-      setError(error instanceof Error ? error.message : "链接添加失败");
-    } finally {
-      setBusyAction(null);
-    }
-  }
-
   const workspaceActions = useWorkspaceActions({
     coursePackage,
     activeLesson,
@@ -441,7 +395,6 @@ export function CourseStudio() {
   });
   const {
     handleCreateLessonFromName,
-    handleOpenLesson,
     handleCloseLesson,
     handleSelectLesson,
   } = workspaceActions;
@@ -609,14 +562,12 @@ export function CourseStudio() {
           isChatBusy={isChatBusy}
           showReadyForBoardCard={showReadyForBoardCard}
           scopeOptions={scopeOptions}
-          referencePrompt={referencePrompt}
           boardEditPrompt={boardEditPrompt}
           clarificationQuestions={clarificationQuestions}
           activeBoardTask={activeBoardTask}
           activeRequirementSheet={activeRequirements}
           currentNeedPending={currentNeedPending}
           latestBoardDecision={latestBoardDecision}
-          selectedReference={selectedReference}
           chatScrollEndRef={chatScrollEndRef}
           chatInputRef={chatInputRef}
           remoteAudioRef={remoteAudioRef}
@@ -639,7 +590,6 @@ export function CourseStudio() {
           onStopChat={handleStopChat}
           onEditMessage={(message, nextContent) => handleEditMessage(message, nextContent)}
           onScopeAction={(option) => handleScopeAction(option)}
-          onReferenceAction={(action) => handleReferenceAction(action)}
           onBoardEditAction={(action) => handleBoardEditAction(action)}
           onSelectTextModel={selectTextModel}
           onSelectRealtimeModel={handleSelectRealtimeModel}
@@ -686,21 +636,11 @@ export function CourseStudio() {
           latestBoardDecision={latestBoardDecision}
           newBranchName={newBranchName}
           onNewBranchNameChange={setNewBranchName}
-          resources={coursePackage.resources}
-          isUploadingResource={busyAction === "resource-upload"}
-          onUploadResource={(file) => handleUploadResource(file)}
-          isAddingResourceUrl={busyAction === "resource-url"}
-          onAddResourceUrl={(url) => handleAddResourceUrl(url)}
-          selectedResourceReference={activeRequirements?.selected_resource_reference ?? null}
-          onSelectResourceChapter={(resource, chapter) => handleSelectResourceChapter(resource, chapter)}
-          relatedEdges={relatedEdges}
-          lessonMap={lessonMap}
           onCreateBranch={() => handleCreateBranch()}
           onPreviewCommit={(commit) => handlePreviewCommit(commit)}
           onRestoreCommit={(commitId) => handleRestoreCommit(commitId)}
           onCreateBranchFromCommit={(commit) => handleCreateBranchFromCommit(commit)}
           onSwitchBranch={(branchName) => handleSwitchBranch(branchName)}
-          onOpenLesson={(lessonId) => handleOpenLesson(lessonId)}
         />
       </div>
     </CourseStudioPageShell>

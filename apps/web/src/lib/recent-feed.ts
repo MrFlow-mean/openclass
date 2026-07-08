@@ -1,6 +1,6 @@
-import type { CommitRecord, Lesson, ResourceLibraryItem } from "@/types";
+import type { CommitRecord, Lesson } from "@/types";
 
-export type RecentFeedKind = "commit" | "resource";
+export type RecentFeedKind = "commit";
 export type RecentFeedFilter = "all" | RecentFeedKind;
 
 export type RecentFeedLesson = {
@@ -8,11 +8,6 @@ export type RecentFeedLesson = {
   packageId: string;
   packageTitle: string;
   isStandalone?: boolean;
-};
-
-export type RecentFeedResource = {
-  resource: ResourceLibraryItem;
-  packageTitle: string;
 };
 
 export type RecentFeedUpdate = {
@@ -84,25 +79,7 @@ function humanizeCommitMessage(commit: CommitRecord, lesson: Lesson) {
   return truncateText(rewritten, 180);
 }
 
-function resourceSummary(resource: ResourceLibraryItem) {
-  return resource.outline[0]?.summary ?? "已进入资料库，可在工作台中继续引用和扩展。";
-}
-
-function resourceTypeLabel(resource: ResourceLibraryItem) {
-  if (resource.mime_type.includes("pdf")) {
-    return "PDF";
-  }
-  if (resource.mime_type.includes("word") || resource.mime_type.includes("document")) {
-    return "Word";
-  }
-  if (resource.mime_type.startsWith("image/")) {
-    return "图片";
-  }
-
-  return resource.resource_type || "资料";
-}
-
-export function buildRecentFeed(lessons: RecentFeedLesson[], resources: RecentFeedResource[]) {
+export function buildRecentFeed(lessons: RecentFeedLesson[]) {
   const commitGroups = new Map<
     string,
     {
@@ -187,22 +164,7 @@ export function buildRecentFeed(lessons: RecentFeedLesson[], resources: RecentFe
     ];
   });
 
-  const resourceItems: RecentFeedItem[] = resources.map(({ resource, packageTitle }) => ({
-    id: `resource:${resource.id}`,
-    kind: "resource",
-    timestamp: resource.uploaded_at,
-    actor: packageTitle,
-    action: "收录了新资料",
-    title: resource.name,
-    detailTitle: resource.outline[0]?.title ?? "资料摘要",
-    detailBody: truncateText(resourceSummary(resource), 180),
-    pills: [
-      resourceTypeLabel(resource),
-      resource.outline.length ? `${resource.outline.length} 个索引片段` : "等待生成索引",
-    ],
-  }));
-
-  return [...commitItems, ...resourceItems].sort(
+  return commitItems.sort(
     (left, right) => new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime()
   );
 }

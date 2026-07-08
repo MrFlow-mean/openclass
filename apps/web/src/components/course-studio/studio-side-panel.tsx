@@ -2,11 +2,10 @@ import clsx from "clsx";
 import { X } from "lucide-react";
 import type { HTMLAttributes } from "react";
 
-import { ResourcePanel } from "@/components/course-studio/resource-panel";
 import { VersionControlPanel } from "@/components/course-studio/version-control-panel";
-import type { BoardDecision, CommitRecord, CoursePackage, LearningResourceReference, Lesson, LibraryChapter } from "@/types";
+import type { BoardDecision, CommitRecord, Lesson } from "@/types";
 
-export type CourseStudioSidebarTab = "history" | "library";
+export type CourseStudioSidebarTab = "history";
 
 type CourseStudioSidePanelProps = {
   open: boolean;
@@ -23,24 +22,11 @@ type CourseStudioSidePanelProps = {
   latestBoardDecision: BoardDecision | null;
   newBranchName: string;
   onNewBranchNameChange: (value: string) => void;
-  resources: CoursePackage["resources"];
-  isUploadingResource: boolean;
-  onUploadResource: (file: File) => void | Promise<void>;
-  isAddingResourceUrl: boolean;
-  onAddResourceUrl: (url: string) => void | Promise<void>;
-  selectedResourceReference?: LearningResourceReference | null;
-  onSelectResourceChapter: (
-    resource: CoursePackage["resources"][number],
-    chapter: LibraryChapter
-  ) => void | Promise<void>;
-  relatedEdges: CoursePackage["course_graph"];
-  lessonMap: Map<string, Lesson>;
   onCreateBranch: () => void | Promise<void>;
   onPreviewCommit: (commit: CommitRecord) => void | Promise<void>;
   onRestoreCommit: (commitId: string) => void | Promise<void>;
   onCreateBranchFromCommit: (commit: CommitRecord) => void | Promise<void>;
   onSwitchBranch: (branchName: string) => void | Promise<void>;
-  onOpenLesson: (lessonId: string) => void | Promise<void>;
 };
 
 export function CourseStudioSidePanel({
@@ -58,21 +44,11 @@ export function CourseStudioSidePanel({
   latestBoardDecision,
   newBranchName,
   onNewBranchNameChange,
-  resources,
-  isUploadingResource,
-  onUploadResource,
-  isAddingResourceUrl,
-  onAddResourceUrl,
-  selectedResourceReference,
-  onSelectResourceChapter,
-  relatedEdges,
-  lessonMap,
   onCreateBranch,
   onPreviewCommit,
   onRestoreCommit,
   onCreateBranchFromCommit,
   onSwitchBranch,
-  onOpenLesson,
 }: CourseStudioSidePanelProps) {
   return (
     <aside
@@ -112,7 +88,6 @@ export function CourseStudioSidePanel({
       <div className="flex border-b border-gray-200 bg-white">
         {[
           { value: "history", label: "History" },
-          { value: "library", label: "Library" },
         ].map((tab) => (
           <button
             key={tab.value}
@@ -149,21 +124,6 @@ export function CourseStudioSidePanel({
           />
         ) : null}
 
-        {sidebarTab === "library" ? (
-          <ResourcePanel
-            activeLesson={activeLesson}
-            resources={resources}
-            isUploadingResource={isUploadingResource}
-            onUploadResource={onUploadResource}
-            isAddingResourceUrl={isAddingResourceUrl}
-            onAddResourceUrl={onAddResourceUrl}
-            selectedResourceReference={selectedResourceReference}
-            onSelectResourceChapter={onSelectResourceChapter}
-            relatedEdges={relatedEdges}
-            lessonMap={lessonMap}
-            onOpenLesson={onOpenLesson}
-          />
-        ) : null}
       </div>
     </aside>
   );

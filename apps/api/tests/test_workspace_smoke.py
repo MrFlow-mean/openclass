@@ -37,8 +37,6 @@ def api_client(monkeypatch: pytest.MonkeyPatch, tmp_path):
     monkeypatch.setattr(workspace_state, "EXPORT_DIR", export_dir)
     monkeypatch.setattr(documents_router, "UPLOAD_DIR", upload_dir)
     monkeypatch.setattr(documents_router, "EXPORT_DIR", export_dir)
-    monkeypatch.setattr(workspace_router, "UPLOAD_DIR", upload_dir)
-    monkeypatch.setenv("OPENCLASS_RESOURCE_PARSER", "native")
     workspace_state.ensure_data_dirs()
 
     main_module.app.dependency_overrides[auth_router.current_user] = lambda: TEST_USER
@@ -197,29 +195,17 @@ def test_resource_upload_endpoint_is_not_exposed(api_client: TestClient) -> None
     assert upload.status_code == 404
 
 
-def test_lesson_resource_upload_endpoint_adds_resource(api_client: TestClient) -> None:
+def test_lesson_resource_upload_endpoint_is_not_exposed(api_client: TestClient) -> None:
     created_workspace = api_client.post(
-        "/api/packages",
-        json={"title": "Resource package", "summary": ""},
+        "/api/lessons/generate",
+        json={"topic": "Resource lesson", "start_blank": True},
     )
     assert created_workspace.status_code == 200
-    target_package_id = created_workspace.json()["active_package_id"]
-
-    generated = api_client.post(
-        "/api/lessons/generate",
-        json={"topic": "Resource lesson", "target_package_id": target_package_id, "start_blank": True},
-    )
-    assert generated.status_code == 200
-    lesson = generated.json()["lessons"][0]
+    lesson = created_workspace.json()["lessons"][0]
 
     upload = api_client.post(
         f"/api/lessons/{lesson['id']}/resources/upload",
         files={"file": ("resource.md", "# 第一章\n这是资料正文。".encode("utf-8"), "text/markdown")},
     )
 
-    assert upload.status_code == 200
-    resources = upload.json()["resources"]
-    assert len(resources) == 1
-    assert resources[0]["name"] == "resource.md"
-    assert resources[0]["parser_provider"] == "native"
-    assert resources[0]["source_units"]
+    assert upload.status_code == 404

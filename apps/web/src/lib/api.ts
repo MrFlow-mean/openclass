@@ -18,9 +18,6 @@ import type {
   RealtimeConnectResponse,
   RealtimeEventLogPayload,
   RequirementUpdateStreamPayload,
-  ResourceAIIndexStatus,
-  ResourceAIQueryPayload,
-  ResourceAIQueryResponse,
   ScopeAction,
   WorkspaceState,
   UserView,
@@ -553,36 +550,6 @@ export const api = {
     }
     return response.json() as Promise<CoursePackage>;
   },
-  async uploadResource(lessonId: string, file: File) {
-    const formData = new FormData();
-    formData.append("file", file);
-    const response = await fetch(`${getApiBase()}/api/lessons/${lessonId}/resources/upload`, {
-      method: "POST",
-      body: formData,
-      headers: authHeaders(),
-      cache: "no-store",
-    });
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Error(text || `Upload failed with ${response.status}`);
-    }
-    return response.json() as Promise<CoursePackage>;
-  },
-  addResourceUrl(lessonId: string, payload: { url: string; title?: string }) {
-    return request<CoursePackage>(`/api/lessons/${lessonId}/resources/add-url`, {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
-  },
-  resourceIndex(lessonId: string) {
-    return request<ResourceAIIndexStatus[]>(`/api/lessons/${lessonId}/resources/index`);
-  },
-  queryResourceAI(lessonId: string, payload: ResourceAIQueryPayload) {
-    return request<ResourceAIQueryResponse>(`/api/lessons/${lessonId}/resources/query`, {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
-  },
   async exportDocx(lessonId: string) {
     const response = await fetch(`${getApiBase()}/api/lessons/${lessonId}/document/export-docx`, {
       headers: authHeaders(),
@@ -688,14 +655,12 @@ export const api = {
     lessonId: string,
     message: string,
     selection: ChatRequestPayload["selection"],
-    scopeAction: ScopeAction,
-    resourceChapterId?: string | null
+    scopeAction: ScopeAction
   ) {
     return api.chatOnLesson(lessonId, {
       message,
       selection,
       scope_action: scopeAction,
-      resource_chapter_id: resourceChapterId ?? null,
     });
   },
 };

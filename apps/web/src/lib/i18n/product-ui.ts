@@ -136,8 +136,8 @@ export function profileSettingsTexts(lang: InterfaceLanguage) {
       noActivityYet: z ? "暂无记录" : "No activity yet",
       feedCollapseAria: z ? "收起 Feed" : "Collapse feed",
       feedExpandAria: z ? "展开 Feed" : "Expand feed",
-      feedSubtitle: z ? "最近的课程提交、资料收录和工作台推进会按时间排在这里。" : "Recent commits, resources, and studio updates.",
-      feedEmpty: z ? "还没有可以展示的更新。新建课程、编辑文稿或上传资料后，这里会自动变成最近活动流。" : "Nothing here yet — edits and uploads will appear in this feed.",
+      feedSubtitle: z ? "最近的课程提交和工作台推进会按时间排在这里。" : "Recent commits and studio updates appear here.",
+      feedEmpty: z ? "还没有可以展示的更新。新建课程或编辑文稿后，这里会自动变成最近活动流。" : "Nothing here yet — edits will appear in this feed.",
       feedTimelineSummary: (count: number) =>
         z
           ? `${count.toLocaleString(intl(lang))} 条修改记录`
@@ -326,16 +326,16 @@ export function profileSettingsTexts(lang: InterfaceLanguage) {
         testTitle: z ? "开放课堂通知测试" : "OpenClass test notification",
         testBody: (start: string, end: string) =>
           z
-            ? `课程活动、AI 结果和资料库变化会按 ${start}-${end} 的免打扰时段过滤。`
-            : `Course, AI and resource alerts are filtered during quiet hours (${start}–${end}).`,
+            ? `课程活动、AI 结果和文稿变化会按 ${start}-${end} 的免打扰时段过滤。`
+            : `Course, AI, and document alerts are filtered during quiet hours (${start}–${end}).`,
         courseActivityTitle: z ? "课程活动" : "Course activity",
-        courseActivityDesc: z ? "课程包、讲义和资料更新。" : "Packages, lessons and resources.",
+        courseActivityDesc: z ? "课程包和讲义更新。" : "Packages and lessons.",
         weeklyTitle: z ? "每周摘要" : "Weekly digest",
         weeklyDesc: z ? "Stars 收藏和个人项目的周报。" : "Stars and repos summary.",
         aiTitle: z ? "AI 生成结果" : "AI results",
         aiDesc: z ? "长任务结束后提醒。" : "Alerts when long jobs finish.",
-        resourceTitle: z ? "资料库变化" : "Resource library",
-        resourceDesc: z ? "上传资料解析完成或失败。" : "Upload parsing complete or failed.",
+        resourceTitle: z ? "文稿变化" : "Document changes",
+        resourceDesc: z ? "课程文稿生成、保存或恢复。" : "Document generation, saves, or restores.",
         quietStart: z ? "免打扰开始" : "Quiet hours start",
         quietEnd: z ? "免打扰结束" : "Quiet hours end",
         saveFooter: z ? "浏览器权限由当前浏览器控制，其他通知偏好保存到本机。" : "Browser permission is controlled by the browser; other prefs are saved locally.",

@@ -26,10 +26,6 @@ import type {
   LearningClarificationStatus,
   LearningRequirementSheet,
   Lesson,
-  LibraryChapter,
-  ResourceMatch,
-  ResourceReferenceContext,
-  ResourceReferencePrompt,
   ScopeOption,
   SelectionRef,
 } from "@/types";
@@ -83,18 +79,14 @@ export function useLessonChatAgent({
   onSpeakResponse,
 }: UseLessonChatAgentOptions) {
   const [scopeOptions, setScopeOptions] = useState<ScopeOption[]>([]);
-  const [, setResourceMatches] = useState<ResourceMatch[]>([]);
   const [clarificationQuestions, setClarificationQuestions] = useState<string[]>([]);
   const [learningClarity, setLearningClarity] = useState<LearningClarificationStatus | null>(null);
   const [streamedRequirementSheet, setStreamedRequirementSheet] = useState<LearningRequirementSheet | null>(null);
   const [streamedBoardTaskSheet, setStreamedBoardTaskSheet] = useState<BoardTaskRequirementSheet | null>(null);
   const [currentNeedPending, setCurrentNeedPending] = useState(false);
   const [latestBoardDecision, setLatestBoardDecision] = useState<BoardDecision | null>(null);
-  const [referencePrompt, setReferencePrompt] = useState<ResourceReferencePrompt | null>(null);
   const [boardEditPrompt, setBoardEditPrompt] = useState<BoardEditPrompt | null>(null);
-  const [selectedReference, setSelectedReference] = useState<ResourceReferenceContext | null>(null);
   const [lastScopedRequest, setLastScopedRequest] = useState<ChatRequestPayload | null>(null);
-  const [lastReferenceRequest, setLastReferenceRequest] = useState<ChatRequestPayload | null>(null);
   const [lastBoardEditRequest, setLastBoardEditRequest] = useState<ChatRequestPayload | null>(null);
   const activeLessonIdRef = useRef<string | null>(activeLesson?.id ?? null);
   const chatAbortControllerRef = useRef<AbortController | null>(null);
@@ -178,12 +170,6 @@ export function useLessonChatAgent({
     if (payload.board_edit_action === "skip") {
       return `暂不扩选板书：${payload.board_edit_topic ?? payload.message}`;
     }
-    if (payload.resource_reference_action === "confirm") {
-      return payload.message || "选择资料章节";
-    }
-    if (payload.resource_reference_action === "skip") {
-      return "继续执行：先不参考推荐章节";
-    }
     return payload.interaction_mode === "direct_edit" ? `直接编辑讲义：${payload.message}` : payload.message;
   }
 
@@ -239,25 +225,20 @@ export function useLessonChatAgent({
     }
     return (
       payload.board_generation_action === "start" ||
-      payload.resource_reference_action === "confirm" ||
       isBoardDocumentEmpty(document)
     );
   }
 
   function resetAgentState() {
     setScopeOptions([]);
-    setResourceMatches([]);
     setClarificationQuestions([]);
     setLearningClarity(null);
     setStreamedRequirementSheet(null);
     setStreamedBoardTaskSheet(null);
     setCurrentNeedPending(false);
     setLatestBoardDecision(null);
-    setReferencePrompt(null);
     setBoardEditPrompt(null);
-    setSelectedReference(null);
     setLastScopedRequest(null);
-    setLastReferenceRequest(null);
     setLastBoardEditRequest(null);
     clearSelection();
   }
@@ -484,12 +465,8 @@ export function useLessonChatAgent({
       );
       setStreamedBoardTaskSheet(nextBoardTaskSheet);
       setScopeOptions(response.scope_options);
-      setResourceMatches(response.resource_matches);
-      setReferencePrompt(response.reference_prompt ?? null);
       setBoardEditPrompt(response.board_edit_prompt ?? null);
-      setSelectedReference(response.selected_reference ?? null);
       setLastScopedRequest(response.scope_options.length ? payloadWithConversation : null);
-      setLastReferenceRequest(response.reference_prompt ? payloadWithConversation : null);
       setLastBoardEditRequest(response.board_edit_prompt ? payloadWithConversation : null);
       const chatbotMessage = response.chatbot_message.trim();
       const streamedFallbackMessage = streamedChatContent.trim();
@@ -756,49 +733,9 @@ export function useLessonChatAgent({
       selection: lastScopedRequest.selection,
       interaction_mode: lastScopedRequest.interaction_mode,
       scope_action: option.action,
-      resource_chapter_id: option.resource_chapter_id ?? undefined,
     });
     setScopeOptions([]);
     setLastScopedRequest(null);
-  }
-
-  async function handleReferenceAction(action: "confirm" | "skip") {
-    if (!referencePrompt || !lastReferenceRequest) {
-      return;
-    }
-    await handleSubmitChat({
-      message: lastReferenceRequest.message,
-      selection: lastReferenceRequest.selection,
-      interaction_mode: lastReferenceRequest.interaction_mode,
-      scope_action: lastReferenceRequest.scope_action,
-      resource_chapter_id: lastReferenceRequest.resource_chapter_id,
-      resource_reference_action: action,
-      resource_reference_resource_id: referencePrompt.resource_id,
-      resource_reference_chapter_id: referencePrompt.chapter_id,
-    });
-    setReferencePrompt(null);
-    setLastReferenceRequest(null);
-  }
-
-  async function handleSelectResourceChapter(
-    resource: CoursePackage["resources"][number],
-    chapter: LibraryChapter
-  ) {
-    if (!activeLesson) {
-      return;
-    }
-    if (!isBoardDocumentEmpty(currentBoardDocument ?? activeLesson.board_document)) {
-      setError("当前板书已有内容。请在聊天框说明要把这个资料章节补充、改写或讲解到哪里。");
-      return;
-    }
-    const titlePath = chapter.path.length ? chapter.path.join(" / ") : chapter.title;
-    await handleSubmitChat({
-      message: `选择资料章节：${resource.name} / ${titlePath}`,
-      interaction_mode: "ask",
-      resource_reference_action: "confirm",
-      resource_reference_resource_id: resource.id,
-      resource_reference_chapter_id: chapter.id,
-    });
   }
 
   async function handleBoardEditAction(action: "confirm" | "skip") {
@@ -810,10 +747,6 @@ export function useLessonChatAgent({
       selection: lastBoardEditRequest.selection,
       interaction_mode: lastBoardEditRequest.interaction_mode,
       scope_action: lastBoardEditRequest.scope_action,
-      resource_chapter_id: lastBoardEditRequest.resource_chapter_id,
-      resource_reference_action: lastBoardEditRequest.resource_reference_action,
-      resource_reference_resource_id: lastBoardEditRequest.resource_reference_resource_id,
-      resource_reference_chapter_id: lastBoardEditRequest.resource_reference_chapter_id,
       board_edit_action: action,
       board_edit_topic: boardEditPrompt.topic,
     });
@@ -844,16 +777,12 @@ export function useLessonChatAgent({
     streamedBoardTaskSheet,
     currentNeedPending,
     latestBoardDecision,
-    referencePrompt,
     boardEditPrompt,
-    selectedReference,
     resetAgentState,
     handleSubmitChat,
     handleStopChat,
     handleEditMessage,
     handleScopeAction,
-    handleReferenceAction,
-    handleSelectResourceChapter,
     handleBoardEditAction,
     handleContinueTeaching,
   };
