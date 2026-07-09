@@ -361,13 +361,7 @@ function SourceRow({
     try {
       const view = await api.getPackageSourceStructure(packageId, source.id);
       setStructureView(view);
-      setExpandedChapterIds(
-        new Set(
-          buildChapterTree(view.chapters.filter((chapter) => chapter.anchor_status === "verified")).map(
-            (node) => node.chapter.id
-          )
-        )
-      );
+      setExpandedChapterIds(new Set());
     } catch (error) {
       onError(error instanceof Error ? error.message : "资料结构读取失败");
     } finally {
