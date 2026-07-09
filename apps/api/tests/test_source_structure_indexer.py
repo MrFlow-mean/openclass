@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import zipfile
 from pathlib import Path
+from uuid import uuid4
 
 from reportlab.pdfgen import canvas
 
@@ -56,6 +57,44 @@ def test_source_structure_indexer_does_not_generate_fake_toc_without_headings(tm
     assert view is not None
     assert view.chapters == []
     assert view.chunks
+
+
+def test_source_structure_indexer_distinguishes_missing_file_from_url(tmp_path: Path) -> None:
+    structure_store = SourceStructureStore(tmp_path / "openclass.sqlite3")
+    missing_file = f"missing-{uuid4().hex}.txt"
+    file_record = SourceIngestionRecord(
+        id="source_missing_file",
+        owner_user_id="user_1",
+        package_id="pkg_1",
+        title=missing_file,
+        source_type="local_file",
+        file_name=missing_file,
+        mime_type="text/plain",
+        status="ready",
+        open_notebook_notebook_id="nb_1",
+        open_notebook_source_id="open_missing",
+    )
+    url_record = SourceIngestionRecord(
+        id="source_url",
+        owner_user_id="user_1",
+        package_id="pkg_1",
+        title="Example",
+        source_type="web_url",
+        source_uri="https://example.com/article",
+        mime_type="text/html",
+        status="ready",
+        open_notebook_notebook_id="nb_1",
+        open_notebook_source_id="open_url",
+    )
+    indexer = SourceStructureIndexer(store=structure_store)
+
+    missing_file_structure = indexer.rebuild_structure(file_record)
+    url_structure = indexer.rebuild_structure(url_record)
+
+    assert missing_file_structure.status == "linear_only"
+    assert missing_file_structure.metadata["missing_local_source_path"] is True
+    assert "URL 资料" not in missing_file_structure.warnings[0]
+    assert "URL 资料" in url_structure.warnings[0]
 
 
 def test_source_structure_indexer_maps_pdf_toc_to_body_heading(tmp_path: Path) -> None:

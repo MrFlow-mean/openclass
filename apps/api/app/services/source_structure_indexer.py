@@ -10,6 +10,7 @@ from typing import Any
 from xml.etree import ElementTree
 
 from app.models import SourceChapter, SourceChunk, SourceIngestionRecord, SourceStructure
+from app.services import workspace_state
 from app.services.source_structure_store import SourceStructureStore, source_structure_store
 
 CHUNK_CHAR_LIMIT = 1800
@@ -107,11 +108,17 @@ class SourceStructureIndexer:
     def _parse_record(self, record: SourceIngestionRecord) -> ParsedSourceDocument:
         local_path = _local_source_path(record)
         if not local_path:
+            is_url_source = record.source_type == "web_url" or bool(record.source_uri)
+            warning = (
+                "URL 资料 V1 暂不在 OpenClass 本地重建目录，使用 Open Notebook 检索。"
+                if is_url_source
+                else "未找到资料原文件，旧上传资料需要重新上传后才能尝试建立目录。"
+            )
             return ParsedSourceDocument(
                 text="",
                 strategy="open_notebook_search_only",
-                warnings=["URL 资料 V1 暂不在 OpenClass 本地重建目录，使用 Open Notebook 检索。"],
-                metadata={"source_type": record.source_type},
+                warnings=[warning],
+                metadata={"source_type": record.source_type, "missing_local_source_path": not is_url_source},
             )
         suffix = local_path.suffix.lower()
         if suffix == ".epub" or _looks_like_epub(record.mime_type):
@@ -223,10 +230,25 @@ class SourceStructureIndexer:
 def _local_source_path(record: SourceIngestionRecord) -> Path | None:
     raw_path = record.metadata.get("local_source_path")
     if not isinstance(raw_path, str) or not raw_path.strip():
-        return None
+        return _find_legacy_upload_path(record)
     path = Path(raw_path).expanduser()
     if path.exists() and path.is_file():
         return path
+    return _find_legacy_upload_path(record)
+
+
+def _find_legacy_upload_path(record: SourceIngestionRecord) -> Path | None:
+    upload_dir = workspace_state.UPLOAD_DIR
+    if not upload_dir.exists():
+        return None
+    file_name = Path(record.file_name or record.title).name.strip()
+    if not file_name:
+        return None
+    for candidate in upload_dir.rglob("*"):
+        if not candidate.is_file():
+            continue
+        if candidate.name == file_name or candidate.name.endswith(f"_{file_name}"):
+            return candidate
     return None
 
 

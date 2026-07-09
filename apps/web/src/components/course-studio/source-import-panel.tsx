@@ -343,7 +343,7 @@ function SourceRow({
   const structureIsFailed = source.structure_status === "failed";
 
   async function toggleStructure() {
-    if (!isReady || !source.structure_has_verified_toc) {
+    if (!isReady) {
       return;
     }
     const nextOpen = !isStructureOpen;
@@ -426,14 +426,19 @@ function SourceRow({
                   {structureLabel}
                 </span>
               ) : null}
-              {isReady && source.structure_has_verified_toc ? (
+              {isReady ? (
                 <button
                   type="button"
                   onClick={() => void toggleStructure()}
                   disabled={isLoadingStructure}
-                  className="flex h-7 w-7 items-center justify-center rounded-md border border-transparent text-gray-400 transition hover:border-blue-100 hover:bg-blue-50 hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
-                  title="查看目录"
-                  aria-label={`查看资料目录 ${source.title}`}
+                  className={clsx(
+                    "flex h-7 w-7 items-center justify-center rounded-md border border-transparent transition disabled:cursor-not-allowed disabled:opacity-50",
+                    source.structure_has_verified_toc
+                      ? "text-blue-600 hover:border-blue-100 hover:bg-blue-50"
+                      : "text-gray-400 hover:border-gray-200 hover:bg-gray-50 hover:text-gray-600"
+                  )}
+                  title={source.structure_has_verified_toc ? "查看目录" : "查看目录状态"}
+                  aria-label={`${source.structure_has_verified_toc ? "查看资料目录" : "查看资料目录状态"} ${source.title}`}
                 >
                   {isLoadingStructure ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <BookOpen className="h-3.5 w-3.5" />}
                 </button>
@@ -463,17 +468,53 @@ function SourceRow({
           ) : null}
           {source.error ? <p className="mt-2 text-xs leading-5 text-rose-700">{source.error}</p> : null}
           {source.structure_error ? <p className="mt-2 text-xs leading-5 text-amber-700">{source.structure_error}</p> : null}
-          {isStructureOpen && source.structure_has_verified_toc ? (
+          {isStructureOpen ? (
             <div className="mt-3 rounded-md border border-blue-100 bg-blue-50/40 p-2">
               {chapterTree.length ? (
                 <SourceChapterTree nodes={chapterTree} expandedIds={expandedChapterIds} onToggle={toggleChapter} />
               ) : (
-                <p className="text-xs text-gray-500">暂无可展示的已验证目录节点。</p>
+                <SourceStructureEmptyState source={source} structureView={structureView} />
               )}
             </div>
           ) : null}
         </div>
       </div>
+    </div>
+  );
+}
+
+function SourceStructureEmptyState({
+  source,
+  structureView,
+}: {
+  source: SourceIngestionRecord;
+  structureView: SourceStructureView | null;
+}) {
+  const structure = structureView?.structure;
+  const isWebUrl = source.source_type === "web_url";
+  const message =
+    source.structure_status === "failed"
+      ? source.structure_error || structure?.error || "目录结构索引失败。"
+      : source.structure_status === "linear_only"
+      ? isWebUrl
+        ? "URL 资料 V1 暂不在 OpenClass 本地重建目录，当前使用 Open Notebook 全文检索。"
+        : "未发现可验证目录，本资料当前只能按全文片段检索。旧上传资料如果没有保存本地原文件，需要重新上传后才能尝试建立目录。"
+      : "目录结构还没有完成，稍后刷新资料状态。";
+  const visibleWarnings = (structure?.warnings ?? []).filter(
+    (warning) => isWebUrl || !warning.startsWith("URL 资料 V1")
+  );
+  return (
+    <div className="space-y-2">
+      <p className="text-xs leading-5 text-gray-600">{message}</p>
+      {visibleWarnings.length ? (
+        <div className="space-y-1">
+          {visibleWarnings.slice(0, 2).map((warning) => (
+            <p key={warning} className="text-[11px] leading-4 text-amber-700">
+              {warning}
+            </p>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }
