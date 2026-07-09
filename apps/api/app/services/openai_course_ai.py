@@ -994,6 +994,7 @@ class OpenAICourseAI:
         board_document_state: dict[str, Any] | None = None,
         conversation_summary: str,
         user_message: str,
+        resource_summary: str = "",
     ) -> ChatbotReply | None:
         system_prompt = (
             "你是一个通用 AI 助手，在聊天对话框中和用户进行自然、连续、有帮助的你问我答交流。\n"
@@ -1001,6 +1002,8 @@ class OpenAICourseAI:
             "可以解释概念、协助写作、分析问题、生成想法、检查文本、回答代码或学习问题。\n"
             "不要套用课程模板，不要根据具体学科、教材、考试或 demo 文本走特殊规则。\n"
             "你会收到 board_document_state，它只说明右侧板书文档是否为空，不包含板书正文。\n"
+            "如果 resource_summary 提供了资料证据，只能基于这些摘录说明资料内容，并在回复里自然点明资料来源边界；"
+            "如果没有资料证据，不要声称参考了用户上传的资料。\n"
             "可以在用户问到当前板书/文档状态时自然说明 empty 或 non_empty 的含义；"
             "不要推测、引用或讲解任何未提供的板书正文。\n"
             "不要声称已经修改本地文件、右侧文档或外部应用；当前能力只是聊天框内的文本回答。"
@@ -1009,6 +1012,7 @@ class OpenAICourseAI:
             {
                 "board_document_state": board_document_state or {},
                 "recent_conversation": conversation_summary or "",
+                "resource_summary": resource_summary or "无",
                 "user_message": user_message,
                 "response_contract": {
                     "chatbot_message": "直接回复用户当前问题；允许根据需要输出完整解释、列表、步骤、示例或代码。",

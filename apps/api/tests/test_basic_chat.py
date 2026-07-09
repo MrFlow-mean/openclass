@@ -55,7 +55,7 @@ def test_basic_chat_prompt_is_chatgpt_like_without_board_workflow(monkeypatch: p
     assert payload["recent_conversation"] == "user: 你好"
     assert payload["user_message"] == "帮我解释一下这个概念"
     assert "lesson_title" not in payload
-    assert "resource_summary" not in payload
+    assert payload["resource_summary"] == "无"
 
 
 def test_process_chat_on_lesson_records_basic_chat_without_document_change(

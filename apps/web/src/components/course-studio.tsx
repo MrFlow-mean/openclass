@@ -217,11 +217,13 @@ export function CourseStudio() {
     currentNeedPending,
     latestBoardDecision,
     boardEditPrompt,
+    candidateEvidenceBundle,
     handleSubmitChat,
     handleStopChat,
     handleEditMessage,
     handleScopeAction,
     handleBoardEditAction,
+    handleEvidenceAction,
     handleContinueTeaching,
   } = chatAgent;
   const activeRequirements = streamedRequirementSheet ?? persistedRequirements;
@@ -563,6 +565,7 @@ export function CourseStudio() {
           showReadyForBoardCard={showReadyForBoardCard}
           scopeOptions={scopeOptions}
           boardEditPrompt={boardEditPrompt}
+          candidateEvidenceBundle={candidateEvidenceBundle}
           clarificationQuestions={clarificationQuestions}
           activeBoardTask={activeBoardTask}
           activeRequirementSheet={activeRequirements}
@@ -591,6 +594,7 @@ export function CourseStudio() {
           onEditMessage={(message, nextContent) => handleEditMessage(message, nextContent)}
           onScopeAction={(option) => handleScopeAction(option)}
           onBoardEditAction={(action) => handleBoardEditAction(action)}
+          onEvidenceAction={(bundleId, action) => handleEvidenceAction(bundleId, action)}
           onSelectTextModel={selectTextModel}
           onSelectRealtimeModel={handleSelectRealtimeModel}
           onVoiceToggle={handleVoiceToggle}
@@ -629,6 +633,7 @@ export function CourseStudio() {
           onSidebarTabChange={setSidebarTab}
           onClose={() => setRightSidebarOpen(false)}
           activeLesson={activeLesson}
+          packageId={coursePackage.id}
           previewCommit={previewCommit}
           previewCommitId={previewCommitId}
           activeRequirements={activeRequirements}
@@ -641,6 +646,7 @@ export function CourseStudio() {
           onRestoreCommit={(commitId) => handleRestoreCommit(commitId)}
           onCreateBranchFromCommit={(commit) => handleCreateBranchFromCommit(commit)}
           onSwitchBranch={(branchName) => handleSwitchBranch(branchName)}
+          onError={setError}
         />
       </div>
     </CourseStudioPageShell>

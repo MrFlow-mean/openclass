@@ -304,6 +304,8 @@ export type ResourceSourceType =
   | "transcript";
 
 export type SourceIngestionStatus = "queued" | "fetching" | "parsing" | "indexing" | "ready" | "failed";
+export type EvidenceBundleStatus = "candidate" | "confirmed" | "consumed" | "archived";
+export type EvidencePurpose = "chat" | "board_generation" | "board_edit" | "board_explain" | "board_chat";
 
 export interface SourceIngestionJob {
   id: string;
@@ -317,6 +319,63 @@ export interface SourceIngestionJob {
   phase_history: string[];
   created_at: string;
   updated_at: string;
+}
+
+export interface SourceIngestionRecord {
+  id: string;
+  owner_user_id: string;
+  package_id: string;
+  title: string;
+  source_type: ResourceSourceType;
+  source_uri?: string | null;
+  file_name: string;
+  mime_type: string;
+  size_bytes: number;
+  status: SourceIngestionStatus;
+  error: string;
+  open_notebook_notebook_id: string;
+  open_notebook_source_id: string;
+  open_notebook_command_id: string;
+  created_at: string;
+  updated_at: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface RetrievalEvidence {
+  id: string;
+  source_ingestion_id: string;
+  open_notebook_source_id: string;
+  source_title: string;
+  source_uri?: string | null;
+  section_path: string[];
+  page_range: string;
+  chunk_ids: string[];
+  excerpt: string;
+  expanded_text: string;
+  relevance_score: number;
+  reason: string;
+  token_count: number;
+  metadata: Record<string, unknown>;
+}
+
+export interface EvidenceBundle {
+  id: string;
+  owner_user_id: string;
+  package_id: string;
+  lesson_id?: string | null;
+  requirement_run_id?: string | null;
+  board_task_run_id?: string | null;
+  purpose: EvidencePurpose;
+  status: EvidenceBundleStatus;
+  query: string;
+  evidence_items: RetrievalEvidence[];
+  context_text: string;
+  token_count: number;
+  confirmed_by_user: boolean;
+  created_at: string;
+  updated_at: string;
+  confirmed_at?: string | null;
+  metadata: Record<string, unknown>;
 }
 
 export type ResourcePageRole =
@@ -761,6 +820,8 @@ export interface ChatResponse {
   resolved_focus?: BoardFocusRef | null;
   focus_candidates?: BoardFocusRef[];
   board_search_evidence?: BoardSearchEvidence | null;
+  evidence_bundle?: EvidenceBundle | null;
+  candidate_evidence_bundle?: EvidenceBundle | null;
   requirement_cleared?: boolean;
   board_document_operation_status?: BoardDocumentOperationStatus;
   board_document_operation_failure_reason?: string | null;

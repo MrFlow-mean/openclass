@@ -17,6 +17,7 @@ import { useState, type Dispatch, type HTMLAttributes, type ReactNode, type RefO
 
 import { CourseChatMessage } from "@/components/chatbot";
 import { BoardGenerationConfirmationCard } from "@/components/course-studio/board-generation-confirmation-card";
+import { EvidenceConfirmationCard } from "@/components/course-studio/evidence-confirmation-card";
 import {
   modelButtonLabel,
   modelOptionKey,
@@ -37,6 +38,7 @@ import type {
   ChatInteractionMode,
   ChatRequestPayload,
   CommitRecord,
+  EvidenceBundle,
   LearningClarificationStatus,
   LearningRequirementSheet,
   Lesson,
@@ -303,6 +305,7 @@ type CourseStudioChatSidebarProps = {
   showReadyForBoardCard: boolean;
   scopeOptions: ScopeOption[];
   boardEditPrompt: BoardEditPrompt | null;
+  candidateEvidenceBundle: EvidenceBundle | null;
   clarificationQuestions: string[];
   activeBoardTask: BoardTaskRequirementSheet | null;
   activeRequirementSheet: LearningRequirementSheet | null;
@@ -331,6 +334,7 @@ type CourseStudioChatSidebarProps = {
   onEditMessage: (message: ChatMessage, nextContent: string) => void | Promise<void>;
   onScopeAction: (option: ScopeOption) => void | Promise<void>;
   onBoardEditAction: (action: "confirm" | "skip") => void | Promise<void>;
+  onEvidenceAction: (bundleId: string, action: "confirm" | "skip") => void | Promise<void>;
   onSelectTextModel: (option: AIModelOption) => void;
   onSelectRealtimeModel: (option: AIModelOption) => void;
   onVoiceToggle: () => void | Promise<void>;
@@ -354,6 +358,7 @@ export function CourseStudioChatSidebar({
   showReadyForBoardCard,
   scopeOptions,
   boardEditPrompt,
+  candidateEvidenceBundle,
   clarificationQuestions,
   activeBoardTask,
   activeRequirementSheet,
@@ -382,6 +387,7 @@ export function CourseStudioChatSidebar({
   onEditMessage,
   onScopeAction,
   onBoardEditAction,
+  onEvidenceAction,
   onSelectTextModel,
   onSelectRealtimeModel,
   onVoiceToggle,
@@ -436,6 +442,14 @@ export function CourseStudioChatSidebar({
             lesson={activeLesson}
             targetCommitId={targetCommitId}
           />
+          {!isPreviewMode && candidateEvidenceBundle ? (
+            <EvidenceConfirmationCard
+              bundle={candidateEvidenceBundle}
+              isBusy={isChatBusy}
+              onConfirm={(bundleId) => onEvidenceAction(bundleId, "confirm")}
+              onSkip={(bundleId) => onEvidenceAction(bundleId, "skip")}
+            />
+          ) : null}
           {!isPreviewMode &&
           !activeBoardTask &&
           activeLesson?.active_interaction_session &&

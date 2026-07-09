@@ -18,7 +18,9 @@ from app.services.learning_requirement_history import (
     RequirementHistoryStamp,
 )
 from app.services.openai_course_ai import openai_course_ai
+from app.services.resource_resolver import evidence_metadata, resource_resolver
 from app.services.rich_document import is_document_empty
+from app.services.source_evidence_store import source_evidence_store
 
 
 def run_blank_board_generation(
@@ -56,6 +58,13 @@ def run_blank_board_generation(
         lesson_id=lesson.id,
         state=history_state,
     )
+    evidence_bundle = resource_resolver.latest_confirmed_bundle(
+        owner_user_id=user_id,
+        lesson_id=lesson.id,
+        purpose="board_generation",
+        requirement_run_id=recorder.snapshot.run_id,
+    )
+    resource_summary = evidence_bundle.context_text if evidence_bundle else ""
     lesson.learning_requirements = requirements
     frozen_stamp = recorder.freeze(
         requirements=requirements,
@@ -69,6 +78,7 @@ def run_blank_board_generation(
         clarification=clarification,
         requirement_run_id=frozen_stamp.run_id,
         frozen_requirement_version_id=frozen_stamp.version_id,
+        resource_summary=resource_summary,
     )
 
     if outcome.operation_status != "succeeded" or not outcome.changed:
@@ -103,7 +113,7 @@ def run_blank_board_generation(
         lesson_title=lesson.title,
         learning_goal=requirements.learning_goal,
         board_summary=lesson.board_teaching_guide.chatbot_brief,
-        resource_summary="",
+        resource_summary=resource_summary,
         requirement_context=requirements.model_dump(mode="json"),
         editor_summary=outcome.summary,
         section_titles=outcome.section_titles or lesson.board_teaching_guide.teaching_flow,
@@ -148,8 +158,11 @@ def run_blank_board_generation(
             "active_requirement_sheet_after": None,
             "active_board_task_sheet_after": None,
             "requirement_cleared": True,
+            **evidence_metadata(evidence_bundle),
         },
     )
+    if evidence_bundle is not None:
+        source_evidence_store.consume_bundle(owner_user_id=user_id, bundle_id=evidence_bundle.id)
     commit_id = current_head_commit(lesson).id
     consumed_stamp = recorder.consume(
         commit_id=commit_id,

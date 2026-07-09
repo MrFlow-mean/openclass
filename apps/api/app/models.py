@@ -704,6 +704,9 @@ ResourceSourceType = Literal[
     "transcript",
 ]
 SourceIngestionStatus = Literal["queued", "fetching", "parsing", "indexing", "ready", "failed"]
+EvidenceBundleStatus = Literal["candidate", "confirmed", "consumed", "archived"]
+EvidencePurpose = Literal["chat", "board_generation", "board_edit", "board_explain", "board_chat"]
+EvidenceConfirmationAction = Literal["confirm", "skip"]
 
 
 class SourceIngestionJob(BaseModel):
@@ -789,6 +792,73 @@ class ResourceLibraryItem(BaseModel):
     parse_warnings: list[str] = Field(default_factory=list)
     source_units: list[ResourceSourceUnit] = Field(default_factory=list)
     page_structure: ResourcePageStructure | None = None
+
+
+class SourceIngestionRecord(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("source"))
+    owner_user_id: str = ""
+    package_id: str
+    title: str
+    source_type: ResourceSourceType = "local_file"
+    source_uri: str | None = None
+    file_name: str = ""
+    mime_type: str = ""
+    size_bytes: int = 0
+    status: SourceIngestionStatus = "queued"
+    error: str = ""
+    open_notebook_notebook_id: str = ""
+    open_notebook_source_id: str = ""
+    open_notebook_command_id: str = ""
+    created_at: str = Field(default_factory=now_iso)
+    updated_at: str = Field(default_factory=now_iso)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class SourceUrlImportRequest(BaseModel):
+    source_uri: str
+    title: str = ""
+
+
+class RetrievalEvidence(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("evidence"))
+    source_ingestion_id: str = ""
+    open_notebook_source_id: str = ""
+    source_title: str = ""
+    source_uri: str | None = None
+    section_path: list[str] = Field(default_factory=list)
+    page_range: str = ""
+    chunk_ids: list[str] = Field(default_factory=list)
+    excerpt: str = ""
+    expanded_text: str = ""
+    relevance_score: float = 0.0
+    reason: str = ""
+    token_count: int = 0
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class EvidenceBundle(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("bundle"))
+    owner_user_id: str = ""
+    package_id: str
+    lesson_id: str | None = None
+    requirement_run_id: str | None = None
+    board_task_run_id: str | None = None
+    purpose: EvidencePurpose = "chat"
+    status: EvidenceBundleStatus = "candidate"
+    query: str = ""
+    evidence_items: list[RetrievalEvidence] = Field(default_factory=list)
+    context_text: str = ""
+    token_count: int = 0
+    confirmed_by_user: bool = False
+    created_at: str = Field(default_factory=now_iso)
+    updated_at: str = Field(default_factory=now_iso)
+    confirmed_at: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class EvidenceConfirmationRequest(BaseModel):
+    bundle_id: str
+    action: EvidenceConfirmationAction = "confirm"
 
 
 class ResourceLibraryItemView(BaseModel):
@@ -1135,6 +1205,8 @@ class ChatResponse(BaseModel):
     resolved_focus: BoardFocusRef | None = None
     focus_candidates: list[BoardFocusRef] = Field(default_factory=list)
     board_search_evidence: BoardSearchEvidence | None = None
+    evidence_bundle: EvidenceBundle | None = None
+    candidate_evidence_bundle: EvidenceBundle | None = None
     requirement_cleared: bool = False
     board_document_operation_status: BoardDocumentOperationStatus = "none"
     board_document_operation_failure_reason: str | None = None

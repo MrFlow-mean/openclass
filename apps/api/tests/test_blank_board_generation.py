@@ -1,6 +1,6 @@
 import pytest
 
-from app.models import BoardDecision, ChatRequest, LearningClarificationStatus
+from app.models import BoardDecision, ChatRequest, EvidenceBundle, LearningClarificationStatus, RetrievalEvidence
 from app.services import blank_board_generation, board_teaching, workspace_state
 from app.services.board_document_editor import BoardDocumentEditOutcome
 from app.services.board_explanation_gate import BoardDirectedExplanationResult
@@ -10,6 +10,7 @@ from app.services.learning_requirement_history import LearningRequirementHistory
 from app.services.lesson_factory import build_requirements, create_empty_lesson
 from app.services.openai_course_ai import ChatbotReply, openai_course_ai
 from app.services.rich_document import build_document
+from app.services.source_evidence_store import source_evidence_store
 
 
 TEST_USER_ID = "user_blank_board_generation"
@@ -117,6 +118,7 @@ def test_board_generation_action_generates_blank_board_and_invites_teaching(
     assert response.teaching_progress is None
     assert captured["requirement_run_id"] is not None
     assert captured["frozen_requirement_version_id"] is not None
+    assert captured["resource_summary"] == ""
 
     saved = store.load_for_user(TEST_USER_ID)
     saved_lesson = saved.packages[0].lessons[-1]
@@ -144,6 +146,89 @@ def test_board_generation_action_generates_blank_board_and_invites_teaching(
 
     history_state = store.load_learning_requirement_history_state(TEST_USER_ID, lesson_id)
     assert history_state is None
+
+
+def test_blank_board_generation_uses_confirmed_evidence_bundle(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    lesson_id = _seed_ready_blank_board(store)
+    history_state = store.load_learning_requirement_history_state(TEST_USER_ID, lesson_id)
+    bundle = source_evidence_store.save_bundle(
+        EvidenceBundle(
+            owner_user_id=TEST_USER_ID,
+            package_id=store.load_for_user(TEST_USER_ID).packages[0].id,
+            lesson_id=lesson_id,
+            requirement_run_id=history_state["run_id"],
+            purpose="board_generation",
+            status="confirmed",
+            query="结合资料生成板书",
+            evidence_items=[
+                RetrievalEvidence(
+                    source_ingestion_id="source_1",
+                    open_notebook_source_id="src_1",
+                    source_title="已确认资料",
+                    section_path=["第一节"],
+                    chunk_ids=["chunk_1"],
+                    excerpt="资料短摘录",
+                    expanded_text="已确认资料里的上下文内容。",
+                    token_count=12,
+                )
+            ],
+            context_text="资料证据上下文",
+            token_count=12,
+            confirmed_by_user=True,
+        )
+    )
+    captured: dict[str, object] = {}
+
+    def _fake_generate_from_requirements(**kwargs):
+        captured.update(kwargs)
+        lesson = kwargs["lesson"]
+        new_document = build_document(
+            title="证据驱动板书",
+            content_text="# 证据驱动板书\n\n资料证据已进入生成上下文。",
+            document_id=lesson.board_document.id,
+            page_settings=lesson.board_document.page_settings,
+        )
+        return BoardDocumentEditOutcome(
+            chatbot_message="板书已生成。",
+            new_document=new_document,
+            board_decision=BoardDecision(action="edit_board", reason="已生成空白板书。"),
+            assistant_message_source="board_document_editor_ai",
+            operation="replace_document",
+            summary="使用资料证据生成板书。",
+            section_titles=["证据驱动板书"],
+            changed=True,
+            operation_status="succeeded",
+        )
+
+    monkeypatch.setattr(blank_board_generation, "generate_from_requirements", _fake_generate_from_requirements)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_post_board_generation_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="板书已经结合资料生成好了。"),
+    )
+
+    response = process_chat_on_lesson(
+        lesson_id,
+        ChatRequest(message="开始生成板书", board_generation_action="start"),
+        user_id=TEST_USER_ID,
+    )
+
+    assert response.board_document_operation_status == "succeeded"
+    assert captured["resource_summary"] == "资料证据上下文"
+    saved_lesson = store.load_for_user(TEST_USER_ID).packages[0].lessons[-1]
+    commit = saved_lesson.history_graph.commits[-1]
+    assert commit.metadata["evidence_bundle_id"] == bundle.id
+    assert commit.metadata["source_ids"] == ["source_1"]
+    assert commit.metadata["chunk_ids"] == ["chunk_1"]
+    assert commit.metadata["confirmed_by_user"] is True
+    consumed = source_evidence_store.get_bundle(owner_user_id=TEST_USER_ID, bundle_id=bundle.id)
+    assert consumed is not None
+    assert consumed.status == "consumed"
 
 
 def test_confirm_after_board_generation_teaches_from_first_section(

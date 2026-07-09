@@ -6,6 +6,7 @@ from app.models import (
     ChatRequest,
     ChatResponse,
     ConversationTurn,
+    EvidenceBundle,
     LearningClarificationStatus,
 )
 from app.services import workspace_state
@@ -23,6 +24,11 @@ from app.services.board_teaching_orchestrator import (
     should_start_board_teaching,
 )
 from app.services.course_runtime import effective_requirements
+from app.services.evidence_workflow import (
+    evidence_confirmation_message,
+    resolve_board_task_evidence_gate,
+    source_absent_message,
+)
 from app.services.history import bind_commit_metadata, commit_operations, current_head_commit
 from app.services.interaction_session_orchestrator import run_interaction_session_turn
 from app.services.formula_ink_resolver import resolve_formula_ink_request
@@ -34,7 +40,9 @@ from app.services.openai_course_ai import (
     bind_text_model_selection,
     openai_course_ai,
 )
+from app.services.resource_resolver import evidence_metadata, resource_resolver
 from app.services.route_context import bind_ai_request_context
+from app.services.source_evidence_store import source_evidence_store
 
 
 BASIC_CHAT_METADATA_KIND = "basic_chat"
@@ -108,6 +116,8 @@ def _build_response(
     teaching_progress=None,
     active_interaction_session=None,
     interaction_decision=None,
+    evidence_bundle: EvidenceBundle | None = None,
+    candidate_evidence_bundle: EvidenceBundle | None = None,
 ) -> ChatResponse:
     requirements = effective_requirements(lesson)
     return ChatResponse(
@@ -132,6 +142,8 @@ def _build_response(
         resolved_focus=resolved_focus,
         focus_candidates=focus_candidates or [],
         board_search_evidence=board_search_evidence,
+        evidence_bundle=evidence_bundle,
+        candidate_evidence_bundle=candidate_evidence_bundle,
         requirement_cleared=requirement_cleared,
         board_document_operation_status=board_document_operation_status,
         board_document_operation_failure_reason=board_document_operation_failure_reason,
@@ -202,43 +214,64 @@ def _run_board_task_refinement_turn(
         else BASIC_CHAT_METADATA_KIND
     )
     active_board_task = outcome.active_board_task_sheet
+    candidate_evidence = None
+    chatbot_message = outcome.chatbot_message
     if outcome.route == "board_task_refining" and _board_task_ready_for_execution(active_board_task):
-        execution = execute_ready_board_task(
+        evidence_gate = resolve_board_task_evidence_gate(
             owner_user_id=user_id,
-            lesson=lesson,
-            board_task=active_board_task,
+            package_id=package.id,
+            lesson_id=lesson.id,
             user_message=request.message,
-            selection=request.selection,
-            conversation_summary=_conversation_summary(request.conversation),
-            history_stamp=outcome.history_stamp,
-            history_operations=outcome.history_operations,
+            board_task=active_board_task,
+            board_task_run_id=outcome.history_stamp.run_id,
+            base_chatbot_message=outcome.chatbot_message,
         )
-        workspace_state.normalize_package_state(package)
-        workspace_state.save_workspace_and_board_task_history_for_user(
-            user_id,
-            workspace,
-            board_task_history_operations=execution.history_operations,
-        )
-        return _build_response(
-            workspace=workspace,
-            package=package,
-            lesson=lesson,
-            chatbot_message=execution.chatbot_message,
-            board_decision=execution.board_decision,
-            active_requirement_sheet=None,
-            learning_clarification=_reset_clarification(),
-            requirement_cleared=True,
-            active_board_task_sheet=execution.active_board_task_sheet,
-            board_task_stamp=execution.board_task_stamp,
-            board_task_questions=execution.board_task_questions,
-            resolved_focus=execution.resolved_focus,
-            focus_candidates=execution.focus_candidates,
-            board_search_evidence=execution.board_search_evidence,
-            board_document_operation_status=execution.board_document_operation_status,
-            board_document_operation_failure_reason=execution.board_document_operation_failure_reason,
-            board_patch_diff=execution.board_patch_diff,
-            active_interaction_session=execution.active_interaction_session,
-        )
+        candidate_evidence = evidence_gate.evidence_bundle
+        chatbot_message = evidence_gate.chatbot_message
+        if evidence_gate.should_execute:
+            execution = execute_ready_board_task(
+                owner_user_id=user_id,
+                lesson=lesson,
+                board_task=active_board_task,
+                user_message=request.message,
+                selection=request.selection,
+                conversation_summary=_conversation_summary(request.conversation),
+                history_stamp=outcome.history_stamp,
+                history_operations=outcome.history_operations,
+                evidence_bundle=candidate_evidence,
+            )
+            workspace_state.normalize_package_state(package)
+            if candidate_evidence is not None and candidate_evidence.status == "confirmed":
+                source_evidence_store.consume_bundle(owner_user_id=user_id, bundle_id=candidate_evidence.id)
+            workspace_state.save_workspace_and_board_task_history_for_user(
+                user_id,
+                workspace,
+                board_task_history_operations=execution.history_operations,
+            )
+            return _build_response(
+                workspace=workspace,
+                package=package,
+                lesson=lesson,
+                chatbot_message=execution.chatbot_message,
+                board_decision=execution.board_decision,
+                active_requirement_sheet=None,
+                learning_clarification=_reset_clarification(),
+                requirement_cleared=True,
+                active_board_task_sheet=execution.active_board_task_sheet,
+                board_task_stamp=execution.board_task_stamp,
+                board_task_questions=execution.board_task_questions,
+                resolved_focus=execution.resolved_focus,
+                focus_candidates=execution.focus_candidates,
+                board_search_evidence=execution.board_search_evidence,
+                board_document_operation_status=execution.board_document_operation_status,
+                board_document_operation_failure_reason=execution.board_document_operation_failure_reason,
+                board_patch_diff=execution.board_patch_diff,
+                active_interaction_session=execution.active_interaction_session,
+                evidence_bundle=candidate_evidence,
+                candidate_evidence_bundle=(
+                    candidate_evidence if candidate_evidence and candidate_evidence.status == "candidate" else None
+                ),
+            )
     commit_operations(
         lesson,
         [],
@@ -253,13 +286,14 @@ def _run_board_task_refinement_turn(
             "kind": metadata_kind,
             "board_task_refinement_route": outcome.route,
             "user_message": request.message,
-            "assistant_message": outcome.chatbot_message,
-            "assistant_message_source": "chatbot" if outcome.chatbot_message else "chatbot_empty",
+            "assistant_message": chatbot_message,
+            "assistant_message_source": "chatbot" if chatbot_message else "chatbot_empty",
             "board_document_state": board_document_state.model_context(),
             "interaction_mode": request.interaction_mode,
             "selection": request.selection.model_dump(mode="json") if request.selection else None,
             "basic_chat_only": outcome.route == "ordinary_chat",
             "document_changed": False,
+            **evidence_metadata(candidate_evidence),
             "active_requirement_sheet_after": None,
             "board_task_sheet": active_board_task.model_dump(mode="json") if active_board_task else None,
             "active_board_task_sheet_after": active_board_task.model_dump(mode="json") if active_board_task else None,
@@ -282,7 +316,7 @@ def _run_board_task_refinement_turn(
         workspace=workspace,
         package=package,
         lesson=lesson,
-        chatbot_message=outcome.chatbot_message,
+        chatbot_message=chatbot_message,
         board_decision=board_decision,
         active_requirement_sheet=None,
         learning_clarification=_reset_clarification(),
@@ -290,6 +324,8 @@ def _run_board_task_refinement_turn(
         active_board_task_sheet=active_board_task,
         board_task_stamp=outcome.history_stamp,
         board_task_questions=outcome.board_task_questions,
+        evidence_bundle=candidate_evidence,
+        candidate_evidence_bundle=candidate_evidence if candidate_evidence and candidate_evidence.status == "candidate" else None,
     )
 
 
@@ -303,12 +339,36 @@ def _run_basic_chat_turn(
     board_document_state,
     clear_learning_requirements: bool,
 ) -> ChatResponse:
-    ai_reply = openai_course_ai.generate_basic_chat_reply(
-        board_document_state=board_document_state.model_context(),
-        conversation_summary=_conversation_summary(request.conversation),
-        user_message=request.message,
-    )
-    chatbot_message = (ai_reply.chatbot_message if ai_reply else "").strip()
+    candidate_evidence = None
+    resource_summary = ""
+    if resource_resolver.should_use_sources(request.message):
+        candidate_evidence = resource_resolver.resolve_for_learning_requirement(
+            owner_user_id=user_id,
+            package_id=package.id,
+            lesson_id=lesson.id,
+            user_message=request.message,
+            requirements=lesson.learning_requirements,
+            purpose="chat",
+        )
+        if candidate_evidence is None:
+            chatbot_message = source_absent_message()
+            ai_reply = None
+        else:
+            resource_summary = candidate_evidence.context_text
+            ai_reply = openai_course_ai.generate_basic_chat_reply(
+                board_document_state=board_document_state.model_context(),
+                conversation_summary=_conversation_summary(request.conversation),
+                user_message=request.message,
+                resource_summary=resource_summary,
+            )
+            chatbot_message = (ai_reply.chatbot_message if ai_reply else "").strip()
+    else:
+        ai_reply = openai_course_ai.generate_basic_chat_reply(
+            board_document_state=board_document_state.model_context(),
+            conversation_summary=_conversation_summary(request.conversation),
+            user_message=request.message,
+        )
+        chatbot_message = (ai_reply.chatbot_message if ai_reply else "").strip()
     if clear_learning_requirements:
         _clear_legacy_runtime_state(lesson)
         active_requirement_sheet = None
@@ -337,6 +397,7 @@ def _run_basic_chat_turn(
             "selection": request.selection.model_dump(mode="json") if request.selection else None,
             "basic_chat_only": True,
             "document_changed": False,
+            **evidence_metadata(candidate_evidence),
             "active_requirement_sheet_after": (
                 active_requirement_sheet.model_dump(mode="json")
                 if active_requirement_sheet is not None
@@ -354,6 +415,8 @@ def _run_basic_chat_turn(
         board_decision=board_decision,
         active_requirement_sheet=active_requirement_sheet,
         requirement_cleared=active_requirement_sheet is None,
+        evidence_bundle=candidate_evidence,
+        candidate_evidence_bundle=candidate_evidence,
     )
 
 
@@ -391,6 +454,28 @@ def _run_requirement_refinement_turn(
     else:
         lesson.learning_requirements = outcome.active_requirement_sheet
     _clear_board_task_runtime_state(lesson)
+    candidate_evidence = None
+    chatbot_message = outcome.chatbot_message
+    if (
+        outcome.route == "requirement_refining"
+        and outcome.active_requirement_sheet is not None
+        and outcome.learning_clarification.ready_for_board
+        and resource_resolver.should_use_sources(request.message)
+    ):
+        candidate_evidence = resource_resolver.resolve_for_learning_requirement(
+            owner_user_id=user_id,
+            package_id=package.id,
+            lesson_id=lesson.id,
+            user_message=request.message,
+            requirements=outcome.active_requirement_sheet,
+            requirement_run_id=outcome.history_stamp.run_id,
+            purpose="board_generation",
+        )
+        chatbot_message = (
+            evidence_confirmation_message(outcome.chatbot_message, candidate_evidence, action_label="生成板书")
+            if candidate_evidence is not None
+            else source_absent_message()
+        )
     board_decision = BoardDecision(
         action="no_change",
         reason="空白板书学习需求收敛只维护清单，不修改右侧文档。",
@@ -414,13 +499,14 @@ def _run_requirement_refinement_turn(
             "kind": metadata_kind,
             "refinement_route": outcome.route,
             "user_message": request.message,
-            "assistant_message": outcome.chatbot_message,
-            "assistant_message_source": "chatbot" if outcome.chatbot_message else "chatbot_empty",
+            "assistant_message": chatbot_message,
+            "assistant_message_source": "chatbot" if chatbot_message else "chatbot_empty",
             "board_document_state": board_document_state.model_context(),
             "interaction_mode": request.interaction_mode,
             "selection": request.selection.model_dump(mode="json") if request.selection else None,
             "basic_chat_only": outcome.route == "ordinary_chat",
             "document_changed": False,
+            **evidence_metadata(candidate_evidence),
             "active_requirement_sheet_after": (
                 outcome.active_requirement_sheet.model_dump(mode="json")
                 if outcome.active_requirement_sheet is not None
@@ -444,12 +530,14 @@ def _run_requirement_refinement_turn(
         workspace=workspace,
         package=package,
         lesson=lesson,
-        chatbot_message=outcome.chatbot_message,
+        chatbot_message=chatbot_message,
         board_decision=board_decision,
         active_requirement_sheet=outcome.active_requirement_sheet,
         learning_clarification=outcome.learning_clarification,
         requirement_stamp=outcome.history_stamp,
         requirement_cleared=outcome.active_requirement_sheet is None,
+        evidence_bundle=candidate_evidence,
+        candidate_evidence_bundle=candidate_evidence,
     )
 
 

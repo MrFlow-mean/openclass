@@ -7,6 +7,7 @@ from app.models import (
     BoardTaskRequirementSheet,
     ChatRequest,
     ConversationTurn,
+    SourceIngestionRecord,
     InteractionRuleDraft,
     InteractionRuleStep,
     InteractionSession,
@@ -22,7 +23,9 @@ from app.services.course_store import SqliteCourseStore, build_initial_workspace
 from app.services.lesson_factory import create_empty_lesson
 from app.services.openai_course_ai import BoardTaskRequirementRefinement, openai_course_ai
 from app.services.board_task_refiner import _board_summary
+from app.services.resource_resolver import resource_resolver
 from app.services.rich_document import build_document
+from app.services.source_evidence_store import source_evidence_store
 
 
 def test_existing_board_task_refinement_prompt_uses_three_factor_contract(
@@ -359,6 +362,92 @@ def test_existing_board_write_ready_generates_patch_and_consumes_board_task(
     assert commit.metadata["kind"] == "board_document_edit"
     assert commit.metadata["board_task_route"] == "write"
     assert commit.metadata["board_task_cleared"] is True
+
+
+def test_existing_board_source_grounded_write_requires_evidence_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    user_id = "user_existing_board_source_write"
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    lesson = _seed_existing_board_workspace(store, user_id)
+    package_id = store.load_for_user(user_id).packages[0].id
+    source_evidence_store.upsert_notebook(
+        owner_user_id=user_id,
+        package_id=package_id,
+        notebook_id="nb_task",
+        title="任务资料",
+    )
+    source_evidence_store.save_source(
+        SourceIngestionRecord(
+            owner_user_id=user_id,
+            package_id=package_id,
+            title="任务资料",
+            source_type="web_url",
+            source_uri="https://example.com/task",
+            status="ready",
+            open_notebook_notebook_id="nb_task",
+            open_notebook_source_id="src_task",
+        )
+    )
+
+    class _FakeSearchAdapter:
+        def search(self, *, notebook_id: str, query: str, limit: int, source_ids: list[str]):
+            assert notebook_id == "nb_task"
+            assert source_ids == ["src_task"]
+            return [
+                {
+                    "source_id": "src_task",
+                    "chunk_id": "chunk_task",
+                    "title": "任务资料",
+                    "url": "https://example.com/task",
+                    "section_path": ["第一节"],
+                    "text": "资料里用于补写的关键内容。",
+                    "expanded_text": "资料里用于补写的关键内容和上下文。",
+                    "score": 0.9,
+                }
+            ]
+
+    monkeypatch.setattr(resource_resolver, "adapter", _FakeSearchAdapter())
+
+    def _fake_refinement(**kwargs):
+        return BoardTaskRequirementRefinement(
+            route="board_task_refining",
+            chatbot_message="我会结合资料在第一节附近补写。",
+            board_task_sheet=BoardTaskRequirementSheet(
+                location_kind="insertion_anchor",
+                target_hint="第一节",
+                requested_action="write",
+                question_or_topic="补写资料中的关键内容",
+                progress=100,
+            ),
+        )
+
+    monkeypatch.setattr(openai_course_ai, "generate_board_task_requirement_refinement", _fake_refinement)
+    monkeypatch.setattr(
+        board_task_executor,
+        "edit_existing_document",
+        lambda **kwargs: pytest.fail("BoardEditor must wait for confirmed evidence before writing."),
+    )
+
+    response = process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="结合上传资料在第一节后面补写关键内容。"),
+        user_id=user_id,
+    )
+
+    assert response.board_decision.action == "no_change"
+    assert response.candidate_evidence_bundle is not None
+    assert response.candidate_evidence_bundle.status == "candidate"
+    assert response.candidate_evidence_bundle.evidence_items[0].chunk_ids == ["chunk_task"]
+    assert "确认是否使用这些资料" in response.chatbot_message
+    saved_lesson = store.load_for_user(user_id).packages[0].lessons[0]
+    assert "资料里用于补写的关键内容" not in saved_lesson.board_document.content_text
+    commit = saved_lesson.history_graph.commits[-1]
+    assert commit.metadata["document_changed"] is False
+    assert commit.metadata["evidence_bundle_id"] == response.candidate_evidence_bundle.id
+    assert commit.metadata["confirmed_by_user"] is False
 
 
 def test_existing_board_absent_explain_asks_write_confirmation(

@@ -57,6 +57,7 @@ def generate_from_requirements(
     clarification: LearningClarificationStatus,
     requirement_run_id: str | None = None,
     frozen_requirement_version_id: str | None = None,
+    resource_summary: str = "",
 ) -> BoardDocumentEditOutcome:
     if not is_document_empty(lesson.board_document):
         return _no_change(
@@ -76,7 +77,7 @@ def generate_from_requirements(
         "learning_requirement_context": learning_requirement_context,
         "current_document_title": lesson.board_document.title,
         "current_document_text": _document_text(lesson.board_document),
-        "resource_summary": "",
+        "resource_summary": resource_summary,
         "selection_excerpt": None,
     }
     result = _request_board_document_edit(request_kwargs)

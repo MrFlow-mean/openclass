@@ -19,6 +19,8 @@ import type {
   RealtimeEventLogPayload,
   RequirementUpdateStreamPayload,
   ScopeAction,
+  EvidenceBundle,
+  SourceIngestionRecord,
   WorkspaceState,
   UserView,
 } from "@/types";
@@ -485,6 +487,44 @@ export const api = {
   },
   getCoursePackage() {
     return request<CoursePackage>("/api/course-package");
+  },
+  listPackageSources(packageId: string) {
+    return request<SourceIngestionRecord[]>(`/api/packages/${packageId}/sources`);
+  },
+  async importPackageSource(
+    packageId: string,
+    payload: { file?: File | null; sourceUri?: string; title?: string }
+  ) {
+    const formData = new FormData();
+    if (payload.file) {
+      formData.append("file", payload.file);
+    }
+    if (payload.sourceUri) {
+      formData.append("source_uri", payload.sourceUri);
+    }
+    if (payload.title) {
+      formData.append("title", payload.title);
+    }
+    const response = await fetch(`${getApiBase()}/api/packages/${packageId}/sources`, {
+      method: "POST",
+      body: formData,
+      headers: authHeaders(),
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(text || `Source import failed with ${response.status}`);
+    }
+    return response.json() as Promise<SourceIngestionRecord>;
+  },
+  confirmEvidence(lessonId: string, bundleId: string, action: "confirm" | "skip") {
+    return request<EvidenceBundle>(`/api/lessons/${lessonId}/evidence/confirm`, {
+      method: "POST",
+      body: JSON.stringify({
+        bundle_id: bundleId,
+        action,
+      }),
+    });
   },
   generateLesson(
     topic: string,

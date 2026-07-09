@@ -12,6 +12,7 @@ from app.models import (
     BoardTaskAction,
     BoardTaskRequirementSheet,
     DiffPreviewItem,
+    EvidenceBundle,
     LearningClarificationStatus,
     LearningRequirementSheet,
     InteractionSession,
@@ -26,6 +27,7 @@ from app.services.course_runtime import effective_requirements
 from app.services.history import commit_operations
 from app.services.interaction_rule_compiler import compile_interaction_session
 from app.services.openai_course_ai import BoardTaskRouteDecision, openai_course_ai
+from app.services.resource_resolver import evidence_metadata
 from app.services.segment_resolver import FocusResolution, focus_context, resolve_board_focus
 
 
@@ -56,6 +58,7 @@ def execute_ready_board_task(
     conversation_summary: str,
     history_stamp: BoardTaskHistoryStamp,
     history_operations: list[dict[str, Any]],
+    evidence_bundle: EvidenceBundle | None = None,
 ) -> BoardTaskExecutionOutcome:
     operations = list(history_operations)
     recorder = _recorder_from_pending_history(
@@ -91,6 +94,7 @@ def execute_ready_board_task(
             operations=operations,
             decision=decision,
             resolution=resolution,
+            evidence_bundle=evidence_bundle,
         )
     if decision.route == "chat":
         return _execute_chat(
@@ -101,6 +105,7 @@ def execute_ready_board_task(
             operations=operations,
             decision=decision,
             resolution=resolution,
+            evidence_bundle=evidence_bundle,
         )
     if decision.route in {"write", "edit"}:
         return _execute_write_or_edit(
@@ -112,6 +117,7 @@ def execute_ready_board_task(
             operations=operations,
             decision=decision,
             resolution=resolution,
+            evidence_bundle=evidence_bundle,
         )
     if decision.route == "await_write_confirmation":
         return _await_write_confirmation(
@@ -144,6 +150,7 @@ def _execute_explain(
     operations: list[dict[str, Any]],
     decision: BoardTaskRouteDecision,
     resolution: FocusResolution,
+    evidence_bundle: EvidenceBundle | None,
 ) -> BoardTaskExecutionOutcome:
     focus = _decision_focus(decision, resolution)
     if focus is None:
@@ -169,7 +176,7 @@ def _execute_explain(
         lesson_title=lesson.title,
         learning_goal=task_requirements.learning_goal,
         board_summary=target_excerpt,
-        resource_summary="",
+        resource_summary=evidence_bundle.context_text if evidence_bundle else "",
         conversation_summary=conversation_summary,
         user_message=user_message,
         action_type="explain_target",
@@ -191,6 +198,7 @@ def _execute_explain(
             "document_changed": False,
             "board_explanation_directive": directed.directive_payload,
             "resolved_focus": focus.model_dump(mode="json"),
+            **evidence_metadata(evidence_bundle),
             **_board_task_metadata(
                 board_task=board_task,
                 stamp=source_stamp,
@@ -233,6 +241,7 @@ def _execute_chat(
     operations: list[dict[str, Any]],
     decision: BoardTaskRouteDecision,
     resolution: FocusResolution,
+    evidence_bundle: EvidenceBundle | None,
 ) -> BoardTaskExecutionOutcome:
     focus = _decision_focus(decision, resolution)
     if focus is None:
@@ -274,6 +283,7 @@ def _execute_chat(
             "resolved_focus": focus.model_dump(mode="json"),
             "active_interaction_session_after": session.model_dump(mode="json"),
             "interaction_session_after": session.model_dump(mode="json"),
+            **evidence_metadata(evidence_bundle),
             **_board_task_metadata(
                 board_task=board_task,
                 stamp=source_stamp,
@@ -313,6 +323,7 @@ def _execute_write_or_edit(
     operations: list[dict[str, Any]],
     decision: BoardTaskRouteDecision,
     resolution: FocusResolution,
+    evidence_bundle: EvidenceBundle | None,
 ) -> BoardTaskExecutionOutcome:
     focus = _decision_focus(decision, resolution)
     if focus is None:
@@ -341,7 +352,7 @@ def _execute_write_or_edit(
         lesson=lesson,
         requirements=task_requirements,
         clarification=_task_clarification(board_task),
-        resource_summary="",
+        resource_summary=evidence_bundle.context_text if evidence_bundle else "",
         conversation_summary=conversation_summary,
         user_instruction=task_requirements.action_instruction or user_message,
         selection_excerpt=None,
@@ -394,6 +405,7 @@ def _execute_write_or_edit(
             "board_patch_diff": [item.model_dump(mode="json") for item in edit_outcome.diff_preview or []],
             "resolved_focus": focus.model_dump(mode="json"),
             "target_scope": target_scope,
+            **evidence_metadata(evidence_bundle),
             **_board_task_metadata(
                 board_task=board_task,
                 stamp=source_stamp,

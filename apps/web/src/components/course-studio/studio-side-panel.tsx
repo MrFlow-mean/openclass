@@ -2,10 +2,11 @@ import clsx from "clsx";
 import { X } from "lucide-react";
 import type { HTMLAttributes } from "react";
 
+import { SourceImportPanel } from "@/components/course-studio/source-import-panel";
 import { VersionControlPanel } from "@/components/course-studio/version-control-panel";
 import type { BoardDecision, CommitRecord, Lesson } from "@/types";
 
-export type CourseStudioSidebarTab = "history";
+export type CourseStudioSidebarTab = "history" | "sources";
 
 type CourseStudioSidePanelProps = {
   open: boolean;
@@ -15,6 +16,7 @@ type CourseStudioSidePanelProps = {
   onSidebarTabChange: (tab: CourseStudioSidebarTab) => void;
   onClose: () => void;
   activeLesson: Lesson;
+  packageId: string;
   previewCommit: CommitRecord | null;
   previewCommitId: string | null;
   activeRequirements: Lesson["learning_requirements"];
@@ -27,6 +29,7 @@ type CourseStudioSidePanelProps = {
   onRestoreCommit: (commitId: string) => void | Promise<void>;
   onCreateBranchFromCommit: (commit: CommitRecord) => void | Promise<void>;
   onSwitchBranch: (branchName: string) => void | Promise<void>;
+  onError: (message: string) => void;
 };
 
 export function CourseStudioSidePanel({
@@ -37,6 +40,7 @@ export function CourseStudioSidePanel({
   onSidebarTabChange,
   onClose,
   activeLesson,
+  packageId,
   previewCommit,
   previewCommitId,
   activeRequirements,
@@ -49,6 +53,7 @@ export function CourseStudioSidePanel({
   onRestoreCommit,
   onCreateBranchFromCommit,
   onSwitchBranch,
+  onError,
 }: CourseStudioSidePanelProps) {
   return (
     <aside
@@ -87,6 +92,7 @@ export function CourseStudioSidePanel({
 
       <div className="flex border-b border-gray-200 bg-white">
         {[
+          { value: "sources", label: "Sources" },
           { value: "history", label: "History" },
         ].map((tab) => (
           <button
@@ -106,7 +112,9 @@ export function CourseStudioSidePanel({
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-5 custom-scrollbar">
-        {sidebarTab === "history" ? (
+        {sidebarTab === "sources" ? (
+          <SourceImportPanel packageId={packageId} onError={onError} />
+        ) : sidebarTab === "history" ? (
           <VersionControlPanel
             activeLesson={activeLesson}
             previewCommit={previewCommit}

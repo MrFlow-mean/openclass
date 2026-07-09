@@ -23,6 +23,7 @@ import type {
   ChatRequestPayload,
   CommitRecord,
   CoursePackage,
+  EvidenceBundle,
   LearningClarificationStatus,
   LearningRequirementSheet,
   Lesson,
@@ -86,6 +87,7 @@ export function useLessonChatAgent({
   const [currentNeedPending, setCurrentNeedPending] = useState(false);
   const [latestBoardDecision, setLatestBoardDecision] = useState<BoardDecision | null>(null);
   const [boardEditPrompt, setBoardEditPrompt] = useState<BoardEditPrompt | null>(null);
+  const [candidateEvidenceBundle, setCandidateEvidenceBundle] = useState<EvidenceBundle | null>(null);
   const [lastScopedRequest, setLastScopedRequest] = useState<ChatRequestPayload | null>(null);
   const [lastBoardEditRequest, setLastBoardEditRequest] = useState<ChatRequestPayload | null>(null);
   const activeLessonIdRef = useRef<string | null>(activeLesson?.id ?? null);
@@ -238,6 +240,7 @@ export function useLessonChatAgent({
     setCurrentNeedPending(false);
     setLatestBoardDecision(null);
     setBoardEditPrompt(null);
+    setCandidateEvidenceBundle(null);
     setLastScopedRequest(null);
     setLastBoardEditRequest(null);
     clearSelection();
@@ -466,6 +469,7 @@ export function useLessonChatAgent({
       setStreamedBoardTaskSheet(nextBoardTaskSheet);
       setScopeOptions(response.scope_options);
       setBoardEditPrompt(response.board_edit_prompt ?? null);
+      setCandidateEvidenceBundle(response.candidate_evidence_bundle ?? null);
       setLastScopedRequest(response.scope_options.length ? payloadWithConversation : null);
       setLastBoardEditRequest(response.board_edit_prompt ? payloadWithConversation : null);
       const chatbotMessage = response.chatbot_message.trim();
@@ -754,6 +758,21 @@ export function useLessonChatAgent({
     setLastBoardEditRequest(null);
   }
 
+  async function handleEvidenceAction(bundleId: string, action: "confirm" | "skip") {
+    if (!activeLesson || isChatBusy) {
+      return;
+    }
+    setBusyAction("chat");
+    try {
+      const bundle = await api.confirmEvidence(activeLesson.id, bundleId, action);
+      setCandidateEvidenceBundle(action === "confirm" ? bundle : null);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : "资料证据确认失败");
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
   async function handleContinueTeaching() {
     if (!activeLesson) {
       return;
@@ -778,12 +797,14 @@ export function useLessonChatAgent({
     currentNeedPending,
     latestBoardDecision,
     boardEditPrompt,
+    candidateEvidenceBundle,
     resetAgentState,
     handleSubmitChat,
     handleStopChat,
     handleEditMessage,
     handleScopeAction,
     handleBoardEditAction,
+    handleEvidenceAction,
     handleContinueTeaching,
   };
 }

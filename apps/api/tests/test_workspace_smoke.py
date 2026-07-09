@@ -10,12 +10,16 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app.main as main_module
-from app.models import UserView
+from app.models import EvidenceBundle, RetrievalEvidence, UserView
 from app.routers import auth as auth_router
 from app.routers import documents as documents_router
 from app.routers import workspace as workspace_router
+from app.services import source_ingestion_service as source_ingestion_module
 from app.services import workspace_state
 from app.services.course_store import SqliteCourseStore
+from app.services.open_notebook_adapter import OpenNotebookSourceResult
+from app.services.source_evidence_store import source_evidence_store
+from app.services.source_ingestion_service import source_ingestion_service
 
 
 TEST_USER = UserView(
@@ -209,3 +213,85 @@ def test_lesson_resource_upload_endpoint_is_not_exposed(api_client: TestClient) 
     )
 
     assert upload.status_code == 404
+
+
+def test_open_notebook_source_import_and_evidence_confirm(
+    api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created_workspace = api_client.post(
+        "/api/packages",
+        json={"title": "Source package", "summary": ""},
+    )
+    assert created_workspace.status_code == 200
+    package_id = created_workspace.json()["active_package_id"]
+    generated = api_client.post(
+        "/api/lessons/generate",
+        json={"topic": "Source lesson", "target_package_id": package_id, "start_blank": True},
+    )
+    assert generated.status_code == 200
+    lesson = generated.json()["lessons"][0]
+
+    class _FakeAdapter:
+        def create_notebook(self, *, title: str, description: str = "") -> str:
+            return "nb_api"
+
+        def add_url_source(self, *, notebook_id: str, source_uri: str, title: str = "") -> OpenNotebookSourceResult:
+            assert notebook_id == "nb_api"
+            return OpenNotebookSourceResult(
+                source_id="src_api",
+                command_id="cmd_api",
+                status="completed",
+                raw={"source_id": "src_api"},
+            )
+
+    monkeypatch.setattr(source_ingestion_module, "_validate_public_url", lambda raw_uri: raw_uri)
+    monkeypatch.setattr(source_ingestion_service, "adapter", _FakeAdapter())
+
+    imported = api_client.post(
+        f"/api/packages/{package_id}/sources",
+        data={"source_uri": "https://example.com/source", "title": "示例网页"},
+    )
+    assert imported.status_code == 200
+    source = imported.json()
+    assert source["status"] == "ready"
+    assert source["open_notebook_source_id"] == "src_api"
+
+    listed = api_client.get(f"/api/packages/{package_id}/sources")
+    assert listed.status_code == 200
+    assert listed.json()[0]["title"] == "示例网页"
+
+    bundle = source_evidence_store.save_bundle(
+        EvidenceBundle(
+            owner_user_id=TEST_USER.id,
+            package_id=package_id,
+            lesson_id=lesson["id"],
+            purpose="board_generation",
+            query="结合资料生成",
+            evidence_items=[
+                RetrievalEvidence(
+                    source_ingestion_id=source["id"],
+                    open_notebook_source_id="src_api",
+                    source_title="示例网页",
+                    source_uri="https://example.com/source",
+                    section_path=["第一节"],
+                    page_range="p. 1",
+                    chunk_ids=["chunk_api"],
+                    excerpt="短摘录",
+                    expanded_text="短摘录和上下文",
+                    token_count=8,
+                )
+            ],
+            context_text="资料上下文",
+            token_count=8,
+        )
+    )
+
+    confirmed = api_client.post(
+        f"/api/lessons/{lesson['id']}/evidence/confirm",
+        json={"bundle_id": bundle.id, "action": "confirm"},
+    )
+    assert confirmed.status_code == 200
+    confirmed_payload = confirmed.json()
+    assert confirmed_payload["status"] == "confirmed"
+    assert confirmed_payload["confirmed_by_user"] is True
