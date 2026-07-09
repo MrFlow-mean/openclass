@@ -10,7 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app.main as main_module
-from app.models import EvidenceBundle, RetrievalEvidence, UserView
+from app.models import EvidenceBundle, RetrievalEvidence, SourceIngestionRecord, UserView
 from app.routers import auth as auth_router
 from app.routers import documents as documents_router
 from app.routers import workspace as workspace_router
@@ -315,7 +315,7 @@ def test_open_notebook_source_import_and_evidence_confirm(
     assert confirmed_payload["confirmed_by_user"] is True
 
 
-def test_source_import_records_failed_open_notebook_connection(
+def test_source_import_uses_local_file_when_open_notebook_is_unavailable(
     api_client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -340,10 +340,96 @@ def test_source_import_records_failed_open_notebook_connection(
     )
     assert imported.status_code == 200
     source = imported.json()
-    assert source["status"] == "failed"
+    assert source["status"] == "ready"
+    assert source["error"] == ""
     assert source["open_notebook_notebook_id"] == ""
-    assert "Open Notebook 服务未启动或不可达" in source["error"]
+    assert source["metadata"]["adapter"] == "openclass_local"
+    assert source["metadata"]["open_notebook_sync_status"] == "unavailable"
+    assert "Open Notebook 服务未启动或不可达" in source["metadata"]["open_notebook_sync_warning"]
+    assert source["structure_status"] == "ready"
 
     listed = api_client.get(f"/api/packages/{package_id}/sources")
     assert listed.status_code == 200
-    assert listed.json()[0]["status"] == "failed"
+    assert listed.json()[0]["status"] == "ready"
+    assert listed.json()[0]["structure_has_verified_toc"] is True
+
+
+def test_url_source_uses_local_snapshot_when_open_notebook_is_unavailable(
+    api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    created_workspace = api_client.post(
+        "/api/packages",
+        json={"title": "URL fallback package", "summary": ""},
+    )
+    assert created_workspace.status_code == 200
+    package_id = created_workspace.json()["active_package_id"]
+
+    class _UnavailableAdapter:
+        api_url = "http://localhost:5055"
+
+        def create_notebook(self, *, title: str, description: str = "") -> str:
+            raise OpenNotebookAdapterError("[Errno 61] Connection refused")
+
+    def _fake_snapshot(record: SourceIngestionRecord, source_uri: str) -> dict[str, str]:
+        snapshot_path = tmp_path / f"{record.id}.txt"
+        snapshot_path.write_text(
+            "Local webpage concept.\nThis snapshot remains usable without Open Notebook.",
+            encoding="utf-8",
+        )
+        return {"local_source_path": str(snapshot_path)}
+
+    monkeypatch.setattr(source_ingestion_module, "_validate_public_url", lambda raw_uri: raw_uri)
+    monkeypatch.setattr(source_ingestion_module, "fetch_url_source_snapshot", _fake_snapshot)
+    monkeypatch.setattr(source_ingestion_service, "adapter", _UnavailableAdapter())
+
+    imported = api_client.post(
+        f"/api/packages/{package_id}/sources",
+        data={"source_uri": "https://example.com/article", "title": "示例网页"},
+    )
+
+    assert imported.status_code == 200
+    source = imported.json()
+    assert source["status"] == "ready"
+    assert source["error"] == ""
+    assert source["source_type"] == "web_url"
+    assert source["metadata"]["adapter"] == "openclass_local_url"
+    assert source["metadata"]["open_notebook_sync_status"] == "unavailable"
+    assert source["structure_status"] == "linear_only"
+
+
+def test_list_sources_recovers_failed_local_open_notebook_record(
+    api_client: TestClient,
+    tmp_path,
+) -> None:
+    created_workspace = api_client.post(
+        "/api/packages",
+        json={"title": "Recover source package", "summary": ""},
+    )
+    assert created_workspace.status_code == 200
+    package_id = created_workspace.json()["active_package_id"]
+    local_path = tmp_path / "recover.md"
+    local_path.write_text("# Recovered\n\nRecovered local file body.", encoding="utf-8")
+    source_evidence_store.save_source(
+        SourceIngestionRecord(
+            owner_user_id=TEST_USER.id,
+            package_id=package_id,
+            title="recover.md",
+            source_type="local_file",
+            file_name="recover.md",
+            mime_type="text/markdown",
+            status="failed",
+            error="Open Notebook 服务未启动或不可达：http://localhost:5055。",
+            metadata={"local_source_path": str(local_path), "adapter": "open_notebook"},
+        )
+    )
+
+    listed = api_client.get(f"/api/packages/{package_id}/sources")
+
+    assert listed.status_code == 200
+    recovered = listed.json()[0]
+    assert recovered["status"] == "ready"
+    assert recovered["error"] == ""
+    assert recovered["metadata"]["open_notebook_sync_status"] == "unavailable"
+    assert recovered["structure_status"] == "ready"

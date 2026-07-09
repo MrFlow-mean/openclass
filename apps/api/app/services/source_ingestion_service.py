@@ -15,6 +15,7 @@ from app.services.open_notebook_adapter import (
 from app.services.source_evidence_store import SourceEvidenceStore, source_evidence_store
 from app.services.source_structure_indexer import SourceStructureIndexer
 from app.services.source_structure_store import SourceStructureStore, source_structure_store
+from app.services.source_url_snapshot import SourceUrlSnapshotError, fetch_url_source_snapshot
 from app.services import workspace_state
 
 
@@ -49,6 +50,7 @@ class SourceIngestionService:
         records = self.store.list_sources(owner_user_id=owner_user_id, package_id=package_id)
         refreshed: list[SourceIngestionRecord] = []
         for record in records:
+            record = self._recover_local_file_if_possible(record)
             if record.status in {"queued", "fetching", "parsing", "indexing"} and record.open_notebook_command_id:
                 refreshed.append(self.refresh_source(record))
             else:
@@ -80,7 +82,7 @@ class SourceIngestionService:
             metadata={"adapter": "open_notebook"},
         )
         if notebook_error:
-            return self.store.save_source(self._failed_record(record, notebook_error, phase="create_notebook"))
+            return self._save_url_with_native_fallback(record, normalized_uri, notebook_error, phase="create_notebook")
         try:
             result = self.adapter.add_url_source(
                 notebook_id=notebook_id,
@@ -96,7 +98,7 @@ class SourceIngestionService:
                 }
             )
         except OpenNotebookAdapterError as exc:
-            record = self._failed_record(record, self._format_adapter_error(exc), phase="add_source")
+            return self._save_url_with_native_fallback(record, normalized_uri, self._format_adapter_error(exc), phase="add_source")
         saved = self.store.save_source(record)
         return self._ensure_structure_if_ready(saved)
 
@@ -131,7 +133,8 @@ class SourceIngestionService:
         )
         record = record.model_copy(update={"metadata": {**record.metadata, **_save_local_source_file(record, content)}})
         if notebook_error:
-            return self.store.save_source(self._failed_record(record, notebook_error, phase="create_notebook"))
+            saved = self.store.save_source(self._local_file_ready_record(record, notebook_error, phase="create_notebook"))
+            return self._ensure_structure_if_ready(saved)
         try:
             result = self.adapter.upload_file_source(
                 notebook_id=notebook_id,
@@ -142,14 +145,19 @@ class SourceIngestionService:
             )
             record = record.model_copy(
                 update={
-                    "status": _status_from_open_notebook(result.status),
+                    "status": "ready",
                     "open_notebook_source_id": result.source_id,
                     "open_notebook_command_id": result.command_id,
-                    "metadata": {"adapter": "open_notebook", "open_notebook_response": result.raw or {}},
+                    "metadata": {
+                        **record.metadata,
+                        "adapter": "openclass_local",
+                        "open_notebook_sync_status": _status_from_open_notebook(result.status),
+                        "open_notebook_response": result.raw or {},
+                    },
                 }
             )
         except OpenNotebookAdapterError as exc:
-            record = self._failed_record(record, self._format_adapter_error(exc), phase="add_source")
+            record = self._local_file_ready_record(record, self._format_adapter_error(exc), phase="add_source")
         saved = self.store.save_source(record)
         return self._ensure_structure_if_ready(saved)
 
@@ -159,6 +167,9 @@ class SourceIngestionService:
         try:
             command = self.adapter.get_command(record.open_notebook_command_id)
         except OpenNotebookAdapterError as exc:
+            if record.source_type == "local_file" and record.metadata.get("local_source_path"):
+                saved = self.store.save_source(self._local_file_ready_record(record, self._format_adapter_error(exc), phase="refresh_command"))
+                return self._ensure_structure_if_ready(saved)
             return self.store.save_source(record.model_copy(update={"status": "failed", "error": str(exc)}))
         status = _status_from_open_notebook(_command_status(command))
         error = _command_error(command)
@@ -234,6 +245,64 @@ class SourceIngestionService:
                 },
             }
         )
+
+    def _local_file_ready_record(self, record: SourceIngestionRecord, warning: str, *, phase: str) -> SourceIngestionRecord:
+        return record.model_copy(
+            update={
+                "status": "ready",
+                "error": "",
+                "metadata": {
+                    **record.metadata,
+                    "adapter": "openclass_local",
+                    "open_notebook_sync_status": "unavailable",
+                    "open_notebook_sync_warning": warning,
+                    "open_notebook_sync_phase": phase,
+                    "open_notebook_api_url": getattr(self.adapter, "api_url", ""),
+                },
+            }
+        )
+
+    def _recover_local_file_if_possible(self, record: SourceIngestionRecord) -> SourceIngestionRecord:
+        if record.status != "failed" or record.source_type != "local_file":
+            return record
+        raw_path = record.metadata.get("local_source_path")
+        if not isinstance(raw_path, str) or not raw_path.strip() or not Path(raw_path).expanduser().is_file():
+            return record
+        error = record.error or str(record.metadata.get("open_notebook_sync_warning") or "")
+        if "Open Notebook" not in error:
+            return record
+        return self.store.save_source(self._local_file_ready_record(record, error, phase="recover_failed_local_file"))
+
+    def _save_url_with_native_fallback(
+        self,
+        record: SourceIngestionRecord,
+        source_uri: str,
+        warning: str,
+        *,
+        phase: str,
+    ) -> SourceIngestionRecord:
+        try:
+            snapshot_metadata = fetch_url_source_snapshot(record, source_uri)
+        except SourceUrlSnapshotError as exc:
+            error = f"{warning} OpenClass 本地网页抓取也失败：{exc}"
+            return self.store.save_source(self._failed_record(record, error, phase=phase))
+        ready = record.model_copy(
+            update={
+                "status": "ready",
+                "error": "",
+                "metadata": {
+                    **record.metadata,
+                    **snapshot_metadata,
+                    "adapter": "openclass_local_url",
+                    "open_notebook_sync_status": "unavailable",
+                    "open_notebook_sync_warning": warning,
+                    "open_notebook_sync_phase": phase,
+                    "open_notebook_api_url": getattr(self.adapter, "api_url", ""),
+                },
+            }
+        )
+        saved = self.store.save_source(ready)
+        return self._ensure_structure_if_ready(saved)
 
     def _ensure_structure_if_ready(self, record: SourceIngestionRecord) -> SourceIngestionRecord:
         if record.status != "ready":

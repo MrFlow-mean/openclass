@@ -210,7 +210,7 @@ class SourceEvidenceStore:
         return [
             source
             for source in self.list_sources(owner_user_id=owner_user_id, package_id=package_id)
-            if source.status == "ready" and source.open_notebook_source_id
+            if source.status == "ready"
         ]
 
     def get_source_by_open_notebook_id(

@@ -1,6 +1,8 @@
 from app.models import BoardTaskRequirementSheet, SourceIngestionRecord
 from app.services.resource_resolver import ResourceResolver
 from app.services.source_evidence_store import SourceEvidenceStore
+from app.services.source_structure_indexer import SourceStructureIndexer
+from app.services.source_structure_store import SourceStructureStore
 
 
 class _FakeSearchAdapter:
@@ -104,3 +106,38 @@ def test_resource_resolver_returns_none_without_ready_sources(tmp_path) -> None:
     )
 
     assert bundle is None
+
+
+def test_resource_resolver_falls_back_to_local_chunk_index(tmp_path) -> None:
+    local_path = tmp_path / "local.md"
+    local_path.write_text("# Cache Policy\n\nLocal cache policy explains write back behavior.", encoding="utf-8")
+    store = SourceEvidenceStore(tmp_path / "openclass.sqlite3")
+    structure_store = SourceStructureStore(tmp_path / "openclass.sqlite3")
+    source = SourceIngestionRecord(
+        owner_user_id="user_1",
+        package_id="pkg_1",
+        title="Local source",
+        source_type="local_file",
+        file_name="local.md",
+        mime_type="text/markdown",
+        status="ready",
+        metadata={"local_source_path": str(local_path), "adapter": "openclass_local"},
+    )
+    store.save_source(source)
+    SourceStructureIndexer(store=structure_store).rebuild_structure(source)
+    resolver = ResourceResolver(adapter=_FakeSearchAdapter(), store=store, structure_store=structure_store)
+
+    bundle = resolver.resolve_for_board_task(
+        owner_user_id="user_1",
+        package_id="pkg_1",
+        lesson_id="lesson_1",
+        user_message="结合上传资料讲 cache policy",
+        board_task=BoardTaskRequirementSheet(requested_action="explain", question_or_topic="cache policy", progress=100),
+        purpose="board_explain",
+    )
+
+    assert bundle is not None
+    assert bundle.metadata["retrieval_mode"] == "local_chunk_search"
+    assert bundle.evidence_items[0].source_ingestion_id == source.id
+    assert bundle.evidence_items[0].open_notebook_source_id == ""
+    assert "write back behavior" in bundle.evidence_items[0].expanded_text

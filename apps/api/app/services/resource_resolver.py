@@ -152,26 +152,45 @@ class ResourceResolver:
                 board_task_run_id=board_task_run_id,
                 metadata={"resolver": "source_structure_index", "retrieval_mode": "verified_chapter"},
             )
-        if not notebook_id:
-            return None
-        try:
-            raw_results = self.adapter.search(
-                notebook_id=notebook_id,
-                query=query,
-                limit=limit * 2,
-                source_ids=[source.open_notebook_source_id for source in ready_sources],
+        open_notebook_source_ids = [source.open_notebook_source_id for source in ready_sources if source.open_notebook_source_id]
+        if notebook_id and open_notebook_source_ids:
+            try:
+                raw_results = self.adapter.search(
+                    notebook_id=notebook_id,
+                    query=query,
+                    limit=limit * 2,
+                    source_ids=open_notebook_source_ids,
+                )
+            except OpenNotebookAdapterError:
+                raw_results = []
+            evidence = self._normalize_results(
+                owner_user_id=owner_user_id,
+                package_id=package_id,
+                raw_results=raw_results,
+                limit=limit,
+                token_budget=token_budget,
+                allowed_source_ids=set(open_notebook_source_ids),
             )
-        except OpenNotebookAdapterError:
-            return None
-        evidence = self._normalize_results(
+            if evidence:
+                return self._save_bundle(
+                    owner_user_id=owner_user_id,
+                    package_id=package_id,
+                    lesson_id=lesson_id,
+                    query=query,
+                    purpose=purpose,
+                    evidence=evidence,
+                    requirement_run_id=requirement_run_id,
+                    board_task_run_id=board_task_run_id,
+                    metadata={"resolver": "open_notebook_search", "retrieval_mode": "semantic_search"},
+                )
+        local_evidence = self.structure_store.chunk_evidence_search(
             owner_user_id=owner_user_id,
             package_id=package_id,
-            raw_results=raw_results,
+            query=query,
             limit=limit,
             token_budget=token_budget,
-            allowed_source_ids={source.open_notebook_source_id for source in ready_sources if source.open_notebook_source_id},
         )
-        if not evidence:
+        if not local_evidence:
             return None
         return self._save_bundle(
             owner_user_id=owner_user_id,
@@ -179,10 +198,10 @@ class ResourceResolver:
             lesson_id=lesson_id,
             query=query,
             purpose=purpose,
-            evidence=evidence,
+            evidence=local_evidence,
             requirement_run_id=requirement_run_id,
             board_task_run_id=board_task_run_id,
-            metadata={"resolver": "open_notebook_search", "retrieval_mode": "semantic_search"},
+            metadata={"resolver": "source_structure_index", "retrieval_mode": "local_chunk_search"},
         )
 
     def _save_bundle(

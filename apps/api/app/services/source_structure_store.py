@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import threading
 from pathlib import Path
@@ -435,6 +436,92 @@ class SourceStructureStore:
                         break
         return evidence
 
+    def chunk_evidence_search(
+        self,
+        *,
+        owner_user_id: str,
+        package_id: str,
+        query: str,
+        limit: int,
+        token_budget: int,
+    ) -> list[RetrievalEvidence]:
+        terms = _search_terms(query)
+        if not terms:
+            return []
+        with self._lock:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT source_chunks.*, source_ingestions.title AS source_title,
+                        source_ingestions.source_uri AS source_uri,
+                        source_ingestions.open_notebook_source_id AS open_notebook_source_id,
+                        source_chapters.title AS chapter_title,
+                        source_chapters.path_json AS chapter_path_json
+                    FROM source_chunks
+                    JOIN source_ingestions
+                        ON source_ingestions.owner_user_id = source_chunks.owner_user_id
+                        AND source_ingestions.package_id = source_chunks.package_id
+                        AND source_ingestions.id = source_chunks.source_ingestion_id
+                    JOIN source_structures
+                        ON source_structures.owner_user_id = source_chunks.owner_user_id
+                        AND source_structures.package_id = source_chunks.package_id
+                        AND source_structures.source_ingestion_id = source_chunks.source_ingestion_id
+                    LEFT JOIN source_chapters
+                        ON source_chapters.owner_user_id = source_chunks.owner_user_id
+                        AND source_chapters.package_id = source_chunks.package_id
+                        AND source_chapters.id = source_chunks.chapter_id
+                    WHERE source_chunks.owner_user_id = ?
+                        AND source_chunks.package_id = ?
+                        AND source_ingestions.status = 'ready'
+                        AND source_structures.status IN ('ready', 'linear_only')
+                    ORDER BY source_chunks.order_index ASC
+                    LIMIT 800
+                    """,
+                    (owner_user_id, package_id),
+                ).fetchall()
+
+        scored_rows: list[tuple[float, sqlite3.Row]] = []
+        for row in rows:
+            score = _chunk_search_score(str(row["text"] or ""), terms)
+            if score > 0:
+                scored_rows.append((score, row))
+        scored_rows.sort(key=lambda item: (-item[0], item[1]["order_index"]))
+
+        evidence: list[RetrievalEvidence] = []
+        used_tokens = 0
+        for score, row in scored_rows:
+            chunk = self._chunk_from_row(row)
+            token_count = chunk.token_count or _estimate_tokens(chunk.text)
+            if used_tokens and used_tokens + token_count > token_budget:
+                break
+            used_tokens += token_count
+            chapter_path = _loads(row["chapter_path_json"], [])
+            if not chapter_path and row["chapter_title"]:
+                chapter_path = [str(row["chapter_title"])]
+            evidence.append(
+                RetrievalEvidence(
+                    source_ingestion_id=chunk.source_ingestion_id,
+                    open_notebook_source_id=str(row["open_notebook_source_id"] or ""),
+                    source_title=str(row["source_title"] or ""),
+                    source_uri=row["source_uri"],
+                    section_path=chapter_path,
+                    page_range=_chunk_page_range(chunk),
+                    chunk_ids=[chunk.id],
+                    excerpt=_compact_text(chunk.text, 360),
+                    expanded_text=chunk.text,
+                    relevance_score=score,
+                    reason="Open Notebook 不可用或未命中时，命中 OpenClass 本地结构索引正文片段。",
+                    token_count=token_count,
+                    metadata={
+                        "retrieval_mode": "local_chunk_search",
+                        "source_locator": chunk.source_locator,
+                    },
+                )
+            )
+            if len(evidence) >= limit or used_tokens >= token_budget:
+                break
+        return evidence
+
     def _delete_index_rows(self, conn: sqlite3.Connection, structure: SourceStructure) -> None:
         conn.execute(
             """
@@ -518,12 +605,54 @@ def _compact_text(text: str, limit: int) -> str:
     return compacted if len(compacted) <= limit else compacted[: limit - 1].rstrip() + "…"
 
 
+def _search_terms(query: str) -> list[str]:
+    terms: list[str] = []
+    lowered = query.lower()
+    for token in re.findall(r"[a-z0-9]+(?:[._-][a-z0-9]+)*|\d+(?:\.\d+)+", lowered):
+        if len(token) >= 2:
+            terms.append(token)
+    for sequence in re.findall(r"[\u4e00-\u9fff]{2,}", query):
+        if len(sequence) <= 6:
+            terms.append(sequence)
+        else:
+            terms.extend(sequence[index : index + 2] for index in range(len(sequence) - 1))
+    seen: set[str] = set()
+    return [term for term in terms if not (term in seen or seen.add(term))]
+
+
+def _chunk_search_score(text: str, terms: list[str]) -> float:
+    lowered = text.lower()
+    score = 0.0
+    matched = 0
+    for term in terms:
+        count = lowered.count(term.lower())
+        if count <= 0:
+            continue
+        matched += 1
+        score += min(count, 3) * (1.0 + min(len(term), 12) / 12)
+    if matched == 0:
+        return 0.0
+    return score + matched / max(len(terms), 1)
+
+
+def _estimate_tokens(text: str) -> int:
+    return max(1, len(text) // 4)
+
+
 def _chapter_page_range(chapter: SourceChapter) -> str:
     if chapter.page_start is None:
         return ""
     if chapter.page_end is None or chapter.page_end == chapter.page_start:
         return f"p. {chapter.page_start}"
     return f"pp. {chapter.page_start}-{chapter.page_end}"
+
+
+def _chunk_page_range(chunk: SourceChunk) -> str:
+    if chunk.page_start is None:
+        return ""
+    if chunk.page_end is None or chunk.page_end == chunk.page_start:
+        return f"p. {chunk.page_start}"
+    return f"pp. {chunk.page_start}-{chunk.page_end}"
 
 
 source_structure_store = SourceStructureStore()

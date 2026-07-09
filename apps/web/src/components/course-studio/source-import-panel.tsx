@@ -341,6 +341,7 @@ function SourceRow({
   const structureLabel = structureStatusLabel(source);
   const structureIsGood = source.structure_status === "ready";
   const structureIsFailed = source.structure_status === "failed";
+  const openNotebookSyncMessage = getOpenNotebookSyncMessage(source);
 
   async function toggleStructure() {
     if (!isReady) {
@@ -466,6 +467,7 @@ function SourceRow({
           {isReady && source.structure_has_verified_toc ? (
             <p className="mt-2 text-xs leading-5 text-gray-500">已建立可验证目录，可按章节编号定位正文。</p>
           ) : null}
+          {openNotebookSyncMessage ? <p className="mt-2 text-xs leading-5 text-amber-700">{openNotebookSyncMessage}</p> : null}
           {source.error ? <p className="mt-2 text-xs leading-5 text-rose-700">{source.error}</p> : null}
           {source.structure_error ? <p className="mt-2 text-xs leading-5 text-amber-700">{source.structure_error}</p> : null}
           {isStructureOpen ? (
@@ -492,16 +494,18 @@ function SourceStructureEmptyState({
 }) {
   const structure = structureView?.structure;
   const isWebUrl = source.source_type === "web_url";
+  const hasLocalSnapshot = Boolean(metadataString(source, "local_source_path"));
+  const isRemoteOnlyWebUrl = isWebUrl && !hasLocalSnapshot;
   const message =
     source.structure_status === "failed"
       ? source.structure_error || structure?.error || "目录结构索引失败。"
       : source.structure_status === "linear_only"
-      ? isWebUrl
+      ? isRemoteOnlyWebUrl
         ? "URL 资料 V1 暂不在 OpenClass 本地重建目录，当前使用 Open Notebook 全文检索。"
         : "未发现可验证目录，本资料当前只能按全文片段检索。旧上传资料如果没有保存本地原文件，需要重新上传后才能尝试建立目录。"
       : "目录结构还没有完成，稍后刷新资料状态。";
   const visibleWarnings = (structure?.warnings ?? []).filter(
-    (warning) => isWebUrl || !warning.startsWith("URL 资料 V1")
+    (warning) => isRemoteOnlyWebUrl || !warning.startsWith("URL 资料 V1")
   );
   return (
     <div className="space-y-2">
@@ -647,4 +651,26 @@ function structureStatusLabel(source: SourceIngestionRecord) {
     return "有可信目录";
   }
   return STRUCTURE_STATUS_LABELS[source.structure_status] ?? "结构状态";
+}
+
+function getOpenNotebookSyncMessage(source: SourceIngestionRecord) {
+  const syncStatus = metadataString(source, "open_notebook_sync_status");
+  if (!syncStatus || (source.source_type !== "local_file" && source.source_type !== "web_url")) {
+    return "";
+  }
+  if (syncStatus === "unavailable" || syncStatus === "failed") {
+    if (source.source_type === "web_url") {
+      return "Open Notebook 未连接，已使用 OpenClass 本地网页快照解析；启动服务后重新导入可同步到 Open Notebook 检索。";
+    }
+    return "Open Notebook 未连接，已使用 OpenClass 本地解析；启动服务后重新上传可同步到 Open Notebook 检索。";
+  }
+  if (!["ready", "completed", "complete", "success", "succeeded", "done"].includes(syncStatus)) {
+    return "已使用 OpenClass 本地解析，Open Notebook 同步仍在后台处理中。";
+  }
+  return "";
+}
+
+function metadataString(source: SourceIngestionRecord, key: string) {
+  const value = source.metadata?.[key];
+  return typeof value === "string" ? value : "";
 }
