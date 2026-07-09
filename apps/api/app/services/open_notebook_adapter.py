@@ -46,7 +46,7 @@ class OpenNotebookAdapter:
 
     def add_url_source(self, *, notebook_id: str, source_uri: str, title: str = "") -> OpenNotebookSourceResult:
         data = {
-            "type": "url",
+            "type": "link",
             "notebook_id": notebook_id,
             "url": source_uri,
             "source_uri": source_uri,
@@ -78,7 +78,13 @@ class OpenNotebookAdapter:
     def get_command(self, command_id: str) -> dict[str, Any]:
         if not command_id:
             return {}
-        return self._request_json("GET", f"/commands/{command_id}")
+        last_error: OpenNotebookAdapterError | None = None
+        for path in (f"/commands/jobs/{command_id}", f"/commands/{command_id}"):
+            try:
+                return self._request_json("GET", path)
+            except OpenNotebookAdapterError as exc:
+                last_error = exc
+        raise last_error or OpenNotebookAdapterError("Open Notebook command lookup failed.")
 
     def search(
         self,
@@ -92,8 +98,11 @@ class OpenNotebookAdapter:
             "notebook_id": notebook_id,
             "query": query,
             "question": query,
+            "type": "text",
             "limit": limit,
             "source_ids": source_ids or [],
+            "search_sources": True,
+            "search_notes": False,
         }
         data = self._request_json("POST", "/search", json=payload)
         return _search_items(data)

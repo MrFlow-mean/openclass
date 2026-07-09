@@ -17,10 +17,15 @@ def test_open_notebook_adapter_wraps_source_command_and_search(monkeypatch) -> N
         if url.endswith("/api/sources") and kwargs.get("files"):
             return _response(method, url, {"source_id": "src_file", "command_id": "cmd_file", "status": "processing"})
         if url.endswith("/api/sources"):
+            assert kwargs["data"]["type"] == "link"
             return _response(method, url, {"source_id": "src_url", "command_id": "cmd_url", "status": "queued"})
+        if url.endswith("/api/commands/jobs/cmd_url"):
+            return _response(method, url, {"status": "completed", "result": {"source_id": "src_url"}})
         if url.endswith("/api/commands/cmd_url"):
             return _response(method, url, {"status": "completed", "source_id": "src_url"})
         if url.endswith("/api/search"):
+            assert kwargs["json"]["type"] == "text"
+            assert kwargs["json"]["search_notes"] is False
             return _response(method, url, {"results": [{"source_id": "src_url", "chunk_id": "chunk_1", "text": "命中内容"}]})
         raise AssertionError(f"unexpected Open Notebook call {method} {url}")
 
@@ -47,6 +52,6 @@ def test_open_notebook_adapter_wraps_source_command_and_search(monkeypatch) -> N
     assert {url for _method, url in calls} >= {
         "http://notebook.local/api/notebooks",
         "http://notebook.local/api/sources",
-        "http://notebook.local/api/commands/cmd_url",
+        "http://notebook.local/api/commands/jobs/cmd_url",
         "http://notebook.local/api/search",
     }

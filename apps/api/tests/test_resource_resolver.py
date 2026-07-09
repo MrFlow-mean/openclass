@@ -36,6 +36,14 @@ class _FakeSearchAdapter:
                 "expanded_text": "第二段命中内容，继续提供上下文。",
                 "score": 0.81,
             },
+            {
+                "source_id": "src_other",
+                "chunk_id": "chunk_other",
+                "title": "其他课程包资料",
+                "text": "不应该进入本课程包的证据包。",
+                "expanded_text": "不应该进入本课程包的证据包。",
+                "score": 0.99,
+            },
         ]
 
 

@@ -145,6 +145,7 @@ class ResourceResolver:
             raw_results=raw_results,
             limit=limit,
             token_budget=token_budget,
+            allowed_source_ids={source.open_notebook_source_id for source in ready_sources if source.open_notebook_source_id},
         )
         if not evidence:
             return None
@@ -173,12 +174,15 @@ class ResourceResolver:
         raw_results: list[dict[str, Any]],
         limit: int,
         token_budget: int,
+        allowed_source_ids: set[str],
     ) -> list[RetrievalEvidence]:
         items: list[RetrievalEvidence] = []
         seen: set[str] = set()
         current_tokens = 0
         for raw in raw_results:
             source_id = _text(raw, "source_id", "source", "parent_id")
+            if not source_id or source_id not in allowed_source_ids:
+                continue
             source_record = (
                 self.store.get_source_by_open_notebook_id(
                     owner_user_id=owner_user_id,

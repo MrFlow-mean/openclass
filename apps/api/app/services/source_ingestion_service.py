@@ -270,10 +270,13 @@ def _command_status(command: dict[str, object]) -> str:
 
 
 def _command_error(command: dict[str, object]) -> str:
-    for key in ("error", "message", "detail"):
+    for key in ("error", "error_message", "message", "detail"):
         value = command.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip()
+    result = command.get("result")
+    if isinstance(result, dict):
+        return _command_error(result)
     nested = command.get("data")
     return _command_error(nested) if isinstance(nested, dict) else ""
 
@@ -283,6 +286,9 @@ def _command_source_id(command: dict[str, object]) -> str:
         value = command.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip()
+    result = command.get("result")
+    if isinstance(result, dict):
+        return _command_source_id(result)
     nested = command.get("data")
     return _command_source_id(nested) if isinstance(nested, dict) else ""
 
