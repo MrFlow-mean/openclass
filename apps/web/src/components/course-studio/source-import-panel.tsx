@@ -603,11 +603,11 @@ function SourceChapterNode({
           <button
             type="button"
             onClick={() => onReferenceToChatInput(formatSourceChapterChatReference(source, node.chapter))}
-            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-gray-400 opacity-100 transition hover:bg-blue-50 hover:text-blue-700 md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100"
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-emerald-200 bg-emerald-50 text-emerald-700 shadow-sm transition hover:border-emerald-300 hover:bg-emerald-100 hover:text-emerald-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300"
             title="引用到输入框"
             aria-label={`引用章节到输入框 ${title || "未命名章节"}`}
           >
-            <TextQuote className="h-3.5 w-3.5" />
+            <TextQuote className="h-4 w-4" />
           </button>
         ) : null}
       </div>
