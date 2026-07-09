@@ -1,7 +1,7 @@
 "use client";
 
 import clsx from "clsx";
-import { FileUp, Globe2, RefreshCw, UploadCloud } from "lucide-react";
+import { Globe2, RefreshCw, UploadCloud } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type DragEvent } from "react";
 
 import { api } from "@/lib/api";
@@ -21,6 +21,10 @@ const STATUS_LABELS: Record<SourceIngestionRecord["status"], string> = {
   ready: "就绪",
   failed: "失败",
 };
+
+function dragIncludesFiles(event: DragEvent<HTMLElement>) {
+  return Array.from(event.dataTransfer.types).includes("Files");
+}
 
 export function SourceImportPanel({ packageId, disabled = false, onError }: SourceImportPanelProps) {
   const [sources, setSources] = useState<SourceIngestionRecord[]>([]);
@@ -103,28 +107,36 @@ export function SourceImportPanel({ packageId, disabled = false, onError }: Sour
   }
 
   function handleDragEnter(event: DragEvent<HTMLDivElement>) {
-    if (disabled || isImporting || !event.dataTransfer.types.includes("Files")) {
+    if (!dragIncludesFiles(event)) {
       return;
     }
     event.preventDefault();
+    event.stopPropagation();
     dragDepthRef.current += 1;
-    setIsDragActive(true);
+    if (!disabled && !isImporting) {
+      event.dataTransfer.dropEffect = "copy";
+      setIsDragActive(true);
+    }
   }
 
   function handleDragOver(event: DragEvent<HTMLDivElement>) {
-    if (disabled || isImporting || !event.dataTransfer.types.includes("Files")) {
+    if (!dragIncludesFiles(event)) {
       return;
     }
     event.preventDefault();
-    event.dataTransfer.dropEffect = "copy";
-    setIsDragActive(true);
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = disabled || isImporting ? "none" : "copy";
+    if (!disabled && !isImporting) {
+      setIsDragActive(true);
+    }
   }
 
   function handleDragLeave(event: DragEvent<HTMLDivElement>) {
-    if (!event.dataTransfer.types.includes("Files")) {
+    if (!dragIncludesFiles(event)) {
       return;
     }
     event.preventDefault();
+    event.stopPropagation();
     dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
     if (dragDepthRef.current === 0) {
       setIsDragActive(false);
@@ -132,10 +144,11 @@ export function SourceImportPanel({ packageId, disabled = false, onError }: Sour
   }
 
   function handleDrop(event: DragEvent<HTMLDivElement>) {
-    if (!event.dataTransfer.types.includes("Files")) {
+    if (!dragIncludesFiles(event)) {
       return;
     }
     event.preventDefault();
+    event.stopPropagation();
     dragDepthRef.current = 0;
     setIsDragActive(false);
     if (disabled || isImporting) {
@@ -144,18 +157,21 @@ export function SourceImportPanel({ packageId, disabled = false, onError }: Sour
     void submitFiles(event.dataTransfer.files);
   }
 
+  const uploadButton = (
+    <button
+      type="button"
+      onClick={() => fileInputRef.current?.click()}
+      disabled={disabled || isImporting}
+      className="inline-flex items-center gap-1.5 rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 shadow-sm transition-colors hover:border-gray-300 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
+    >
+      <UploadCloud className="h-3.5 w-3.5" />
+      {isImporting ? "解析中" : isDragActive ? "松开上传" : "上传资料"}
+    </button>
+  );
+
   return (
     <div className="space-y-4">
-      <div
-        onDragEnter={handleDragEnter}
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
-        onDrop={handleDrop}
-        className={clsx(
-          "rounded-lg border bg-white p-3 transition",
-          isDragActive ? "border-black bg-gray-50" : "border-gray-200"
-        )}
-      >
+      <div className="rounded-lg border border-gray-200 bg-white p-3">
         <label className="text-[11px] font-bold uppercase tracking-widest text-gray-500">标题</label>
         <input
           value={title}
@@ -184,7 +200,7 @@ export function SourceImportPanel({ packageId, disabled = false, onError }: Sour
             <Globe2 className="h-4 w-4" />
           </button>
         </div>
-        <div className="mt-3 flex items-center gap-2">
+        <div className="mt-3 flex items-center justify-end">
           <input
             ref={fileInputRef}
             type="file"
@@ -194,18 +210,6 @@ export function SourceImportPanel({ packageId, disabled = false, onError }: Sour
             className="hidden"
             disabled={disabled || isImporting}
           />
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={disabled || isImporting}
-            className="inline-flex h-9 items-center gap-2 rounded-md border border-gray-200 bg-white px-3 text-sm font-semibold text-gray-700 transition hover:border-gray-300 hover:text-black disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <FileUp className="h-4 w-4" />
-            文件
-          </button>
-          <span className="min-w-0 flex-1 truncate text-xs text-gray-500">
-            {isDragActive ? "松开以上传文件" : "可拖入 PDF、DOCX、TXT 或 Markdown"}
-          </span>
           <button
             type="button"
             onClick={() => void refreshSources()}
@@ -219,12 +223,43 @@ export function SourceImportPanel({ packageId, disabled = false, onError }: Sour
         </div>
       </div>
 
-      <div className="space-y-2">
+      <div
+        aria-busy={isImporting}
+        aria-disabled={disabled || isImporting}
+        aria-label="资料上传区域"
+        data-testid="source-upload-dropzone"
+        onDragEnter={handleDragEnter}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+        className={clsx(
+          "rounded-lg transition",
+          isDragActive && !disabled && !isImporting && "bg-blue-50/70 ring-2 ring-blue-200"
+        )}
+      >
         {sources.length ? (
-          sources.map((source) => <SourceRow key={source.id} source={source} />)
+          <div className="space-y-2">
+            <div
+              className={clsx(
+                "flex min-h-20 flex-col items-center justify-center gap-2 rounded-lg border border-dashed bg-white px-4 text-center text-xs transition-colors",
+                isDragActive && !disabled && !isImporting ? "border-blue-400 text-blue-700" : "border-gray-200 text-gray-400"
+              )}
+            >
+              {uploadButton}
+              <span>{isImporting ? "正在解析资料。" : "继续拖入资料，或点击上传。"}</span>
+            </div>
+            {sources.map((source) => <SourceRow key={source.id} source={source} />)}
+          </div>
         ) : (
-          <div className="rounded-lg border border-dashed border-gray-200 bg-white p-4 text-sm text-gray-500">
-            暂无资料
+          <div
+            className={clsx(
+              "flex min-h-40 flex-col items-center justify-center gap-3 rounded-lg border border-dashed bg-white px-4 text-center text-xs transition-colors",
+              isDragActive && !disabled && !isImporting ? "border-blue-400 text-blue-700" : "border-gray-200 text-gray-400"
+            )}
+          >
+            <UploadCloud className={clsx("h-8 w-8", isDragActive ? "text-blue-600" : "text-gray-300")} />
+            {uploadButton}
+            <span>{isImporting ? "正在解析资料。" : isDragActive ? "松开上传资料。" : "拖拽文件到这里，或点击上传资料。"}</span>
           </div>
         )}
       </div>
