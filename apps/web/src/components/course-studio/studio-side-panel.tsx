@@ -30,6 +30,7 @@ type CourseStudioSidePanelProps = {
   onCreateBranchFromCommit: (commit: CommitRecord) => void | Promise<void>;
   onSwitchBranch: (branchName: string) => void | Promise<void>;
   onError: (message: string) => void;
+  onReferenceToChatInput?: (text: string) => void;
 };
 
 export function CourseStudioSidePanel({
@@ -54,6 +55,7 @@ export function CourseStudioSidePanel({
   onCreateBranchFromCommit,
   onSwitchBranch,
   onError,
+  onReferenceToChatInput,
 }: CourseStudioSidePanelProps) {
   return (
     <aside
@@ -113,7 +115,7 @@ export function CourseStudioSidePanel({
 
       <div className="min-h-0 flex-1 overflow-y-auto p-5 custom-scrollbar">
         {sidebarTab === "sources" ? (
-          <SourceImportPanel packageId={packageId} onError={onError} />
+          <SourceImportPanel packageId={packageId} onError={onError} onReferenceToChatInput={onReferenceToChatInput} />
         ) : sidebarTab === "history" ? (
           <VersionControlPanel
             activeLesson={activeLesson}

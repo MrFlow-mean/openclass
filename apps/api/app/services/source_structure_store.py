@@ -381,59 +381,123 @@ class SourceStructureStore:
                     """,
                     (owner_user_id, package_id, normalized_number, limit),
                 ).fetchall()
-                evidence: list[RetrievalEvidence] = []
-                used_tokens = 0
-                for chapter_row in chapter_rows:
-                    chapter = self._chapter_from_row(chapter_row)
-                    chunk_rows = conn.execute(
-                        """
-                        SELECT *
-                        FROM source_chunks
-                        WHERE owner_user_id = ? AND package_id = ? AND chapter_id = ?
-                        ORDER BY order_index
-                        """,
-                        (owner_user_id, package_id, chapter.id),
-                    ).fetchall()
-                    chunks = [self._chunk_from_row(row) for row in chunk_rows]
-                    if not chunks:
-                        continue
-                    chunk_ids: list[str] = []
-                    text_parts: list[str] = []
-                    chunk_tokens = 0
-                    for chunk in chunks:
-                        if used_tokens and used_tokens + chunk.token_count > token_budget:
-                            break
-                        chunk_ids.append(chunk.id)
-                        text_parts.append(chunk.text)
-                        chunk_tokens += chunk.token_count
-                        used_tokens += chunk.token_count
-                    if not text_parts:
-                        break
-                    expanded_text = "\n\n".join(text_parts).strip()
-                    evidence.append(
-                        RetrievalEvidence(
-                            source_ingestion_id=chapter.source_ingestion_id,
-                            open_notebook_source_id=str(chapter_row["open_notebook_source_id"] or ""),
-                            source_title=str(chapter_row["source_title"] or ""),
-                            source_uri=chapter_row["source_uri"],
-                            chapter_id=chapter.id,
-                            section_path=chapter.path or [chapter.title],
-                            page_range=_chapter_page_range(chapter),
-                            chunk_ids=chunk_ids,
-                            excerpt=chapter.excerpt or _compact_text(expanded_text, 360),
-                            expanded_text=expanded_text,
-                            relevance_score=chapter.confidence,
-                            reason="命中已验证目录节点并抽取对应正文范围。",
-                            token_count=chunk_tokens,
-                            metadata={
-                                "retrieval_mode": "verified_chapter",
-                                "chapter_number": chapter.normalized_number,
-                                "source_locator": chapter.source_locator,
-                            },
-                        )
-                    )
-                    if len(evidence) >= limit or used_tokens >= token_budget:
-                        break
+                return self._chapter_evidence_from_rows(
+                    conn,
+                    owner_user_id=owner_user_id,
+                    package_id=package_id,
+                    chapter_rows=chapter_rows,
+                    limit=limit,
+                    token_budget=token_budget,
+                )
+
+    def chapter_evidence_by_id(
+        self,
+        *,
+        owner_user_id: str,
+        package_id: str,
+        chapter_id: str,
+        limit: int,
+        token_budget: int,
+    ) -> list[RetrievalEvidence]:
+        with self._lock:
+            with self._connect() as conn:
+                chapter_rows = conn.execute(
+                    """
+                    SELECT source_chapters.*, source_ingestions.title AS source_title,
+                        source_ingestions.source_uri AS source_uri,
+                        source_ingestions.open_notebook_source_id AS open_notebook_source_id
+                    FROM source_chapters
+                    JOIN source_ingestions
+                        ON source_ingestions.owner_user_id = source_chapters.owner_user_id
+                        AND source_ingestions.package_id = source_chapters.package_id
+                        AND source_ingestions.id = source_chapters.source_ingestion_id
+                    JOIN source_structures
+                        ON source_structures.owner_user_id = source_chapters.owner_user_id
+                        AND source_structures.package_id = source_chapters.package_id
+                        AND source_structures.source_ingestion_id = source_chapters.source_ingestion_id
+                    WHERE source_chapters.owner_user_id = ?
+                        AND source_chapters.package_id = ?
+                        AND source_chapters.id = ?
+                        AND source_chapters.anchor_status = 'verified'
+                        AND source_structures.status = 'ready'
+                        AND source_ingestions.status = 'ready'
+                    ORDER BY source_chapters.confidence DESC, source_chapters.order_index ASC
+                    LIMIT ?
+                    """,
+                    (owner_user_id, package_id, chapter_id, limit),
+                ).fetchall()
+                return self._chapter_evidence_from_rows(
+                    conn,
+                    owner_user_id=owner_user_id,
+                    package_id=package_id,
+                    chapter_rows=chapter_rows,
+                    limit=limit,
+                    token_budget=token_budget,
+                )
+
+    def _chapter_evidence_from_rows(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        owner_user_id: str,
+        package_id: str,
+        chapter_rows: list[sqlite3.Row],
+        limit: int,
+        token_budget: int,
+    ) -> list[RetrievalEvidence]:
+        evidence: list[RetrievalEvidence] = []
+        used_tokens = 0
+        for chapter_row in chapter_rows:
+            chapter = self._chapter_from_row(chapter_row)
+            chunk_rows = conn.execute(
+                """
+                SELECT *
+                FROM source_chunks
+                WHERE owner_user_id = ? AND package_id = ? AND chapter_id = ?
+                ORDER BY order_index
+                """,
+                (owner_user_id, package_id, chapter.id),
+            ).fetchall()
+            chunks = [self._chunk_from_row(row) for row in chunk_rows]
+            if not chunks:
+                continue
+            chunk_ids: list[str] = []
+            text_parts: list[str] = []
+            chunk_tokens = 0
+            for chunk in chunks:
+                if used_tokens and used_tokens + chunk.token_count > token_budget:
+                    break
+                chunk_ids.append(chunk.id)
+                text_parts.append(chunk.text)
+                chunk_tokens += chunk.token_count
+                used_tokens += chunk.token_count
+            if not text_parts:
+                break
+            expanded_text = "\n\n".join(text_parts).strip()
+            evidence.append(
+                RetrievalEvidence(
+                    source_ingestion_id=chapter.source_ingestion_id,
+                    open_notebook_source_id=str(chapter_row["open_notebook_source_id"] or ""),
+                    source_title=str(chapter_row["source_title"] or ""),
+                    source_uri=chapter_row["source_uri"],
+                    chapter_id=chapter.id,
+                    section_path=chapter.path or [chapter.title],
+                    page_range=_chapter_page_range(chapter),
+                    chunk_ids=chunk_ids,
+                    excerpt=chapter.excerpt or _compact_text(expanded_text, 360),
+                    expanded_text=expanded_text,
+                    relevance_score=chapter.confidence,
+                    reason="命中已验证目录节点并抽取对应正文范围。",
+                    token_count=chunk_tokens,
+                    metadata={
+                        "retrieval_mode": "verified_chapter",
+                        "chapter_number": chapter.normalized_number,
+                        "source_locator": chapter.source_locator,
+                    },
+                )
+            )
+            if len(evidence) >= limit or used_tokens >= token_budget:
+                break
         return evidence
 
     def chunk_evidence_search(

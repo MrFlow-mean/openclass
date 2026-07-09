@@ -142,6 +142,41 @@ def test_resource_resolver_prefers_verified_chapter_index(tmp_path: Path) -> Non
     assert "exact source" in bundle.evidence_items[0].expanded_text
 
 
+def test_resource_resolver_uses_explicit_source_chapter_reference(tmp_path: Path) -> None:
+    target_path = tmp_path / "target.md"
+    other_path = tmp_path / "other.md"
+    target_path.write_text("# 7.7.3 Target Chapter\n\nTarget source body.", encoding="utf-8")
+    other_path.write_text("# 7.7.3 Other Chapter\n\nOther source body.", encoding="utf-8")
+    store = SourceEvidenceStore(tmp_path / "openclass.sqlite3")
+    structure_store = SourceStructureStore(tmp_path / "openclass.sqlite3")
+    store.upsert_notebook(owner_user_id="user_1", package_id="pkg_1", notebook_id="nb_1", title="资料容器")
+    target = _source_record(tmp_path, file_name="target.md", mime_type="text/markdown", path=target_path)
+    other = _source_record(tmp_path, file_name="other.md", mime_type="text/markdown", path=other_path)
+    store.save_source(target)
+    store.save_source(other)
+    indexer = SourceStructureIndexer(store=structure_store)
+    indexer.rebuild_structure(target)
+    indexer.rebuild_structure(other)
+    target_view = structure_store.get_structure_view(source=target)
+    assert target_view is not None
+    target_chapter = target_view.chapters[0]
+    resolver = ResourceResolver(adapter=_NoSearchAdapter(), store=store, structure_store=structure_store)
+
+    bundle = resolver.resolve_for_board_task(
+        owner_user_id="user_1",
+        package_id="pkg_1",
+        lesson_id="lesson_1",
+        user_message=f"结合资料回答。\n资料章节引用：source_chapter_id={target_chapter.id}",
+        board_task=BoardTaskRequirementSheet(requested_action="explain", question_or_topic="这一节", progress=100),
+        purpose="board_explain",
+    )
+
+    assert bundle is not None
+    assert bundle.evidence_items[0].chapter_id == target_chapter.id
+    assert "Target source body" in bundle.evidence_items[0].expanded_text
+    assert "Other source body" not in bundle.evidence_items[0].expanded_text
+
+
 def _source_record(tmp_path: Path, *, file_name: str, mime_type: str, path: Path) -> SourceIngestionRecord:
     return SourceIngestionRecord(
         id=f"source_{path.stem}",

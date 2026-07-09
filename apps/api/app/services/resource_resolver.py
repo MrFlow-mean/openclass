@@ -244,6 +244,15 @@ class ResourceResolver:
         limit: int,
         token_budget: int,
     ) -> list[RetrievalEvidence]:
+        chapter_id = _explicit_source_chapter_id(query)
+        if chapter_id:
+            return self.structure_store.chapter_evidence_by_id(
+                owner_user_id=owner_user_id,
+                package_id=package_id,
+                chapter_id=chapter_id,
+                limit=limit,
+                token_budget=token_budget,
+            )
         number = _explicit_chapter_number(query)
         if not number:
             return []
@@ -438,6 +447,11 @@ def _explicit_chapter_number(query: str) -> str:
     if not match:
         return ""
     return ".".join(str(int(part)) for part in match.group(1).split(".") if part.isdigit())
+
+
+def _explicit_source_chapter_id(query: str) -> str:
+    match = re.search(r"\bsource_chapter_id\s*=\s*([A-Za-z0-9_-]{8,})\b", query)
+    return match.group(1) if match else ""
 
 
 def _estimate_tokens(text: str) -> int:

@@ -1,9 +1,10 @@
 "use client";
 
 import clsx from "clsx";
-import { BookOpen, ChevronDown, ChevronRight, Globe2, RefreshCw, Trash2, UploadCloud } from "lucide-react";
+import { BookOpen, ChevronDown, ChevronRight, Globe2, RefreshCw, TextQuote, Trash2, UploadCloud } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type DragEvent } from "react";
 
+import { formatSourceChapterChatReference } from "@/components/course-studio/source-reference";
 import { api } from "@/lib/api";
 import type { SourceChapter, SourceIngestionRecord, SourceStructureView } from "@/types";
 
@@ -11,6 +12,7 @@ type SourceImportPanelProps = {
   packageId: string;
   disabled?: boolean;
   onError: (message: string) => void;
+  onReferenceToChatInput?: (text: string) => void;
 };
 
 type ChapterTreeNode = {
@@ -42,7 +44,7 @@ function dragIncludesFiles(event: DragEvent<HTMLElement>) {
   return Array.from(event.dataTransfer.types).includes("Files");
 }
 
-export function SourceImportPanel({ packageId, disabled = false, onError }: SourceImportPanelProps) {
+export function SourceImportPanel({ packageId, disabled = false, onError, onReferenceToChatInput }: SourceImportPanelProps) {
   const [sources, setSources] = useState<SourceIngestionRecord[]>([]);
   const [sourceUri, setSourceUri] = useState("");
   const [title, setTitle] = useState("");
@@ -298,6 +300,7 @@ export function SourceImportPanel({ packageId, disabled = false, onError }: Sour
                 isRemoving={removingSourceId === source.id}
                 onRemove={() => void removeSource(source.id)}
                 onError={onError}
+                onReferenceToChatInput={onReferenceToChatInput}
               />
             ))}
           </div>
@@ -324,12 +327,14 @@ function SourceRow({
   isRemoving,
   onRemove,
   onError,
+  onReferenceToChatInput,
 }: {
   packageId: string;
   source: SourceIngestionRecord;
   isRemoving: boolean;
   onRemove: () => void;
   onError: (message: string) => void;
+  onReferenceToChatInput?: (text: string) => void;
 }) {
   const [structureView, setStructureView] = useState<SourceStructureView | null>(null);
   const [isStructureOpen, setIsStructureOpen] = useState(false);
@@ -473,7 +478,13 @@ function SourceRow({
           {isStructureOpen ? (
             <div className="mt-3 rounded-md border border-blue-100 bg-blue-50/40 p-2">
               {chapterTree.length ? (
-                <SourceChapterTree nodes={chapterTree} expandedIds={expandedChapterIds} onToggle={toggleChapter} />
+                <SourceChapterTree
+                  source={source}
+                  nodes={chapterTree}
+                  expandedIds={expandedChapterIds}
+                  onToggle={toggleChapter}
+                  onReferenceToChatInput={onReferenceToChatInput}
+                />
               ) : (
                 <SourceStructureEmptyState source={source} structureView={structureView} />
               )}
@@ -524,32 +535,48 @@ function SourceStructureEmptyState({
 }
 
 function SourceChapterTree({
+  source,
   nodes,
   expandedIds,
   onToggle,
+  onReferenceToChatInput,
 }: {
+  source: SourceIngestionRecord;
   nodes: ChapterTreeNode[];
   expandedIds: Set<string>;
   onToggle: (chapterId: string) => void;
+  onReferenceToChatInput?: (text: string) => void;
 }) {
   return (
     <div className="space-y-1">
       {nodes.map((node) => (
-        <SourceChapterNode key={node.chapter.id} node={node} expandedIds={expandedIds} onToggle={onToggle} depth={0} />
+        <SourceChapterNode
+          key={node.chapter.id}
+          source={source}
+          node={node}
+          expandedIds={expandedIds}
+          onToggle={onToggle}
+          onReferenceToChatInput={onReferenceToChatInput}
+          depth={0}
+        />
       ))}
     </div>
   );
 }
 
 function SourceChapterNode({
+  source,
   node,
   expandedIds,
   onToggle,
+  onReferenceToChatInput,
   depth,
 }: {
+  source: SourceIngestionRecord;
   node: ChapterTreeNode;
   expandedIds: Set<string>;
   onToggle: (chapterId: string) => void;
+  onReferenceToChatInput?: (text: string) => void;
   depth: number;
 }) {
   const hasChildren = node.children.length > 0;
@@ -557,35 +584,49 @@ function SourceChapterNode({
   const title = chapterDisplayTitle(node.chapter);
   return (
     <div>
-      <button
-        type="button"
-        onClick={() => (hasChildren ? onToggle(node.chapter.id) : undefined)}
-        className={clsx(
-          "flex w-full items-center gap-1 rounded-md px-1.5 py-1 text-left text-xs text-gray-700 transition hover:bg-white",
-          !hasChildren && "cursor-default hover:bg-transparent"
-        )}
+      <div
+        className="group flex items-center gap-1 rounded-md px-1.5 py-1 text-xs text-gray-700 transition hover:bg-white"
         style={{ paddingLeft: `${Math.min(depth, 5) * 12 + 6}px` }}
-        title={node.chapter.path.join(" > ") || title}
       >
-        {hasChildren ? (
-          isExpanded ? (
-            <ChevronDown className="h-3.5 w-3.5 shrink-0 text-blue-600" />
+        <button
+          type="button"
+          onClick={() => (hasChildren ? onToggle(node.chapter.id) : undefined)}
+          className={clsx("flex min-w-0 flex-1 items-center gap-1 text-left", !hasChildren && "cursor-default")}
+          title={node.chapter.path.join(" > ") || title}
+        >
+          {hasChildren ? (
+            isExpanded ? (
+              <ChevronDown className="h-3.5 w-3.5 shrink-0 text-blue-600" />
+            ) : (
+              <ChevronRight className="h-3.5 w-3.5 shrink-0 text-gray-400" />
+            )
           ) : (
-            <ChevronRight className="h-3.5 w-3.5 shrink-0 text-gray-400" />
-          )
-        ) : (
-          <span className="h-3.5 w-3.5 shrink-0" />
-        )}
-        <span className="min-w-0 flex-1 truncate">{title || "未命名章节"}</span>
-      </button>
+            <span className="h-3.5 w-3.5 shrink-0" />
+          )}
+          <span className="min-w-0 flex-1 truncate">{title || "未命名章节"}</span>
+        </button>
+        {onReferenceToChatInput ? (
+          <button
+            type="button"
+            onClick={() => onReferenceToChatInput(formatSourceChapterChatReference(source, node.chapter))}
+            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-gray-400 opacity-100 transition hover:bg-blue-50 hover:text-blue-700 md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100"
+            title="引用到输入框"
+            aria-label={`引用章节到输入框 ${title || "未命名章节"}`}
+          >
+            <TextQuote className="h-3.5 w-3.5" />
+          </button>
+        ) : null}
+      </div>
       {hasChildren && isExpanded ? (
         <div className="mt-0.5 space-y-0.5">
           {node.children.map((child) => (
             <SourceChapterNode
               key={child.chapter.id}
+              source={source}
               node={child}
               expandedIds={expandedIds}
               onToggle={onToggle}
+              onReferenceToChatInput={onReferenceToChatInput}
               depth={depth + 1}
             />
           ))}
