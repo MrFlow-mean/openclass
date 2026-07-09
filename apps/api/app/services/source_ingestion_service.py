@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import ipaddress
+import re
 import socket
+from pathlib import Path
 from urllib.parse import urlparse
 
 from app.models import CoursePackage, SourceIngestionRecord, now_iso
@@ -11,10 +13,14 @@ from app.services.open_notebook_adapter import (
     open_notebook_adapter,
 )
 from app.services.source_evidence_store import SourceEvidenceStore, source_evidence_store
+from app.services.source_structure_indexer import SourceStructureIndexer
+from app.services.source_structure_store import SourceStructureStore, source_structure_store
+from app.services import workspace_state
 
 
 SUPPORTED_FILE_MIME_PREFIXES = (
     "application/pdf",
+    "application/epub+zip",
     "application/vnd.openxmlformats-officedocument",
     "application/msword",
     "text/",
@@ -31,9 +37,13 @@ class SourceIngestionService:
         *,
         adapter: OpenNotebookAdapter = open_notebook_adapter,
         store: SourceEvidenceStore = source_evidence_store,
+        structure_indexer: SourceStructureIndexer | None = None,
+        structure_store: SourceStructureStore | None = None,
     ) -> None:
         self.adapter = adapter
         self.store = store
+        self.structure_store = structure_store or _structure_store_for_source_store(store)
+        self.structure_indexer = structure_indexer or SourceStructureIndexer(store=self.structure_store)
 
     def list_sources(self, *, owner_user_id: str, package_id: str) -> list[SourceIngestionRecord]:
         records = self.store.list_sources(owner_user_id=owner_user_id, package_id=package_id)
@@ -42,8 +52,8 @@ class SourceIngestionService:
             if record.status in {"queued", "fetching", "parsing", "indexing"} and record.open_notebook_command_id:
                 refreshed.append(self.refresh_source(record))
             else:
-                refreshed.append(record)
-        return refreshed
+                refreshed.append(self._ensure_structure_if_ready(record))
+        return [self.structure_store.attach_summary(self._ensure_structure_if_ready(record)) for record in refreshed]
 
     def add_url_source(
         self,
@@ -87,7 +97,8 @@ class SourceIngestionService:
             )
         except OpenNotebookAdapterError as exc:
             record = self._failed_record(record, self._format_adapter_error(exc), phase="add_source")
-        return self.store.save_source(record)
+        saved = self.store.save_source(record)
+        return self._ensure_structure_if_ready(saved)
 
     def add_file_source(
         self,
@@ -118,6 +129,7 @@ class SourceIngestionService:
             open_notebook_notebook_id=notebook_id,
             metadata={"adapter": "open_notebook"},
         )
+        record = record.model_copy(update={"metadata": {**record.metadata, **_save_local_source_file(record, content)}})
         if notebook_error:
             return self.store.save_source(self._failed_record(record, notebook_error, phase="create_notebook"))
         try:
@@ -138,7 +150,8 @@ class SourceIngestionService:
             )
         except OpenNotebookAdapterError as exc:
             record = self._failed_record(record, self._format_adapter_error(exc), phase="add_source")
-        return self.store.save_source(record)
+        saved = self.store.save_source(record)
+        return self._ensure_structure_if_ready(saved)
 
     def refresh_source(self, record: SourceIngestionRecord) -> SourceIngestionRecord:
         if not record.open_notebook_command_id:
@@ -158,7 +171,8 @@ class SourceIngestionService:
                 "metadata": {**record.metadata, "last_command": command, "refreshed_at": now_iso()},
             }
         )
-        return self.store.save_source(updated)
+        saved = self.store.save_source(updated)
+        return self._ensure_structure_if_ready(saved)
 
     def remove_source(self, *, owner_user_id: str, package_id: str, source_id: str) -> SourceIngestionRecord | None:
         record = self.store.get_source(owner_user_id=owner_user_id, package_id=package_id, source_id=source_id)
@@ -170,6 +184,7 @@ class SourceIngestionService:
             except OpenNotebookAdapterError:
                 # Local removal must still work when the sidecar is unavailable or the remote source was already gone.
                 pass
+        self.structure_store.delete_for_source(owner_user_id=owner_user_id, package_id=package_id, source_id=source_id)
         return self.store.delete_source(owner_user_id=owner_user_id, package_id=package_id, source_id=source_id)
 
     def _ensure_notebook(self, *, owner_user_id: str, package: CoursePackage) -> str:
@@ -220,12 +235,46 @@ class SourceIngestionService:
             }
         )
 
+    def _ensure_structure_if_ready(self, record: SourceIngestionRecord) -> SourceIngestionRecord:
+        if record.status != "ready":
+            return record
+        try:
+            self.structure_indexer.ensure_structure(record)
+        except Exception:
+            return record
+        updated = self.store.get_source(
+            owner_user_id=record.owner_user_id,
+            package_id=record.package_id,
+            source_id=record.id,
+        ) or record
+        return self.structure_store.attach_summary(updated)
+
 
 def _supported_mime(mime_type: str, file_name: str) -> bool:
     lowered = file_name.lower()
-    if lowered.endswith((".pdf", ".docx", ".doc", ".txt", ".md", ".markdown")):
+    if lowered.endswith((".pdf", ".epub", ".docx", ".doc", ".txt", ".md", ".markdown")):
         return True
     return any((mime_type or "").startswith(prefix) for prefix in SUPPORTED_FILE_MIME_PREFIXES)
+
+
+def _save_local_source_file(record: SourceIngestionRecord, content: bytes) -> dict[str, str]:
+    safe_name = _safe_file_name(record.file_name or record.id)
+    source_dir = workspace_state.UPLOAD_DIR / "sources"
+    source_dir.mkdir(parents=True, exist_ok=True)
+    path = source_dir / f"{record.id}_{safe_name}"
+    path.write_bytes(content)
+    return {"local_source_path": str(path)}
+
+
+def _safe_file_name(file_name: str) -> str:
+    name = Path(file_name).name.strip() or "source"
+    return re.sub(r"[^A-Za-z0-9._ -]+", "_", name)[:180]
+
+
+def _structure_store_for_source_store(store: SourceEvidenceStore) -> SourceStructureStore:
+    if getattr(store, "_path", None) is None:
+        return source_structure_store
+    return SourceStructureStore(store.path)
 
 
 def _looks_like_connection_refused(message: str) -> bool:

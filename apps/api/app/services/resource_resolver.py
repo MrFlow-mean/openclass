@@ -16,6 +16,7 @@ from app.services.open_notebook_adapter import (
     open_notebook_adapter,
 )
 from app.services.source_evidence_store import SourceEvidenceStore, source_evidence_store
+from app.services.source_structure_store import SourceStructureStore, source_structure_store
 
 
 SOURCE_INTENT_PATTERNS = (
@@ -45,9 +46,11 @@ class ResourceResolver:
         *,
         adapter: OpenNotebookAdapter = open_notebook_adapter,
         store: SourceEvidenceStore = source_evidence_store,
+        structure_store: SourceStructureStore | None = None,
     ) -> None:
         self.adapter = adapter
         self.store = store
+        self.structure_store = structure_store or _structure_store_for_source_store(store)
 
     def should_use_sources(self, message: str) -> bool:
         lowered = message.lower()
@@ -126,10 +129,31 @@ class ResourceResolver:
     ) -> EvidenceBundle | None:
         notebook_id = self.store.get_notebook_id(owner_user_id=owner_user_id, package_id=package_id)
         ready_sources = self.store.ready_sources(owner_user_id=owner_user_id, package_id=package_id)
-        if not notebook_id or not ready_sources or not query.strip():
+        if not ready_sources or not query.strip():
             return None
         limit = BOARD_CHUNK_LIMIT if purpose in {"board_generation", "board_edit"} else CHAT_CHUNK_LIMIT
         token_budget = BOARD_TOKEN_BUDGET if purpose in {"board_generation", "board_edit"} else CHAT_TOKEN_BUDGET
+        chapter_evidence = self._resolve_verified_chapter(
+            owner_user_id=owner_user_id,
+            package_id=package_id,
+            query=query,
+            limit=limit,
+            token_budget=token_budget,
+        )
+        if chapter_evidence:
+            return self._save_bundle(
+                owner_user_id=owner_user_id,
+                package_id=package_id,
+                lesson_id=lesson_id,
+                query=query,
+                purpose=purpose,
+                evidence=chapter_evidence,
+                requirement_run_id=requirement_run_id,
+                board_task_run_id=board_task_run_id,
+                metadata={"resolver": "source_structure_index", "retrieval_mode": "verified_chapter"},
+            )
+        if not notebook_id:
+            return None
         try:
             raw_results = self.adapter.search(
                 notebook_id=notebook_id,
@@ -149,6 +173,31 @@ class ResourceResolver:
         )
         if not evidence:
             return None
+        return self._save_bundle(
+            owner_user_id=owner_user_id,
+            package_id=package_id,
+            lesson_id=lesson_id,
+            query=query,
+            purpose=purpose,
+            evidence=evidence,
+            requirement_run_id=requirement_run_id,
+            board_task_run_id=board_task_run_id,
+            metadata={"resolver": "open_notebook_search", "retrieval_mode": "semantic_search"},
+        )
+
+    def _save_bundle(
+        self,
+        *,
+        owner_user_id: str,
+        package_id: str,
+        lesson_id: str,
+        query: str,
+        purpose: EvidencePurpose,
+        evidence: list[RetrievalEvidence],
+        requirement_run_id: str | None = None,
+        board_task_run_id: str | None = None,
+        metadata: dict[str, object] | None = None,
+    ) -> EvidenceBundle:
         context_text = format_evidence_context(evidence)
         bundle = EvidenceBundle(
             owner_user_id=owner_user_id,
@@ -163,8 +212,29 @@ class ResourceResolver:
             context_text=context_text,
             token_count=sum(item.token_count for item in evidence),
             confirmed_by_user=False,
+            metadata=metadata or {},
         )
         return self.store.save_bundle(bundle)
+
+    def _resolve_verified_chapter(
+        self,
+        *,
+        owner_user_id: str,
+        package_id: str,
+        query: str,
+        limit: int,
+        token_budget: int,
+    ) -> list[RetrievalEvidence]:
+        number = _explicit_chapter_number(query)
+        if not number:
+            return []
+        return self.structure_store.chapter_evidence_by_number(
+            owner_user_id=owner_user_id,
+            package_id=package_id,
+            normalized_number=number,
+            limit=limit,
+            token_budget=token_budget,
+        )
 
     def _normalize_results(
         self,
@@ -259,10 +329,12 @@ def evidence_metadata(bundle: EvidenceBundle | None) -> dict[str, object]:
         if item.source_ingestion_id or item.open_notebook_source_id
     ]
     chunk_ids = [chunk_id for item in bundle.evidence_items for chunk_id in item.chunk_ids]
+    chapter_ids = [item.chapter_id for item in bundle.evidence_items if item.chapter_id]
     return {
         "evidence_bundle_id": bundle.id,
         "source_ids": source_ids,
         "chunk_ids": chunk_ids,
+        "chapter_ids": chapter_ids,
         "confirmed_by_user": bundle.confirmed_by_user,
         "evidence_bundle_status": bundle.status,
         "evidence_purpose": bundle.purpose,
@@ -342,6 +414,13 @@ def _score(raw: dict[str, Any]) -> float:
     return 0.0
 
 
+def _explicit_chapter_number(query: str) -> str:
+    match = re.search(r"(?<!\d)(\d+(?:\.\d+){1,8})(?![\d.])", query)
+    if not match:
+        return ""
+    return ".".join(str(int(part)) for part in match.group(1).split(".") if part.isdigit())
+
+
 def _estimate_tokens(text: str) -> int:
     stripped = text.strip()
     if not stripped:
@@ -361,6 +440,12 @@ def _trim_to_token_budget(text: str, *, max_tokens: int) -> str:
 def _compact(text: str, limit: int) -> str:
     compacted = re.sub(r"\s+", " ", text).strip()
     return compacted if len(compacted) <= limit else compacted[: limit - 1].rstrip() + "…"
+
+
+def _structure_store_for_source_store(store: SourceEvidenceStore) -> SourceStructureStore:
+    if getattr(store, "_path", None) is None:
+        return source_structure_store
+    return SourceStructureStore(store.path)
 
 
 resource_resolver = ResourceResolver()

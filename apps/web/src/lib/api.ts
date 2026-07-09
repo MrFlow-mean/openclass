@@ -21,6 +21,7 @@ import type {
   ScopeAction,
   EvidenceBundle,
   SourceIngestionRecord,
+  SourceStructureView,
   WorkspaceState,
   UserView,
 } from "@/types";
@@ -499,6 +500,14 @@ export const api = {
   deletePackageSource(packageId: string, sourceId: string) {
     return request<SourceIngestionRecord>(`/api/packages/${packageId}/sources/${sourceId}`, {
       method: "DELETE",
+    });
+  },
+  getPackageSourceStructure(packageId: string, sourceId: string) {
+    return request<SourceStructureView>(`/api/packages/${packageId}/sources/${sourceId}/structure`);
+  },
+  rebuildPackageSourceStructure(packageId: string, sourceId: string) {
+    return request<SourceStructureView>(`/api/packages/${packageId}/sources/${sourceId}/structure/rebuild`, {
+      method: "POST",
     });
   },
   async importPackageSource(

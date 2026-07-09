@@ -707,6 +707,18 @@ SourceIngestionStatus = Literal["queued", "fetching", "parsing", "indexing", "re
 EvidenceBundleStatus = Literal["candidate", "confirmed", "consumed", "archived"]
 EvidencePurpose = Literal["chat", "board_generation", "board_edit", "board_explain", "board_chat"]
 EvidenceConfirmationAction = Literal["confirm", "skip"]
+SourceStructureStatus = Literal["pending", "building", "ready", "linear_only", "failed"]
+SourceStructureStrategy = Literal[
+    "epub_navigation",
+    "epub_heading",
+    "pdf_outline",
+    "pdf_toc",
+    "docx_heading",
+    "markdown_heading",
+    "linear_text",
+    "open_notebook_search_only",
+]
+SourceChapterAnchorStatus = Literal["verified", "unverified"]
 
 
 class SourceIngestionJob(BaseModel):
@@ -809,6 +821,11 @@ class SourceIngestionRecord(BaseModel):
     open_notebook_notebook_id: str = ""
     open_notebook_source_id: str = ""
     open_notebook_command_id: str = ""
+    structure_status: SourceStructureStatus = "pending"
+    structure_strategy: SourceStructureStrategy | None = None
+    structure_has_verified_toc: bool = False
+    structure_error: str = ""
+    structure_updated_at: str | None = None
     created_at: str = Field(default_factory=now_iso)
     updated_at: str = Field(default_factory=now_iso)
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -825,6 +842,7 @@ class RetrievalEvidence(BaseModel):
     open_notebook_source_id: str = ""
     source_title: str = ""
     source_uri: str | None = None
+    chapter_id: str = ""
     section_path: list[str] = Field(default_factory=list)
     page_range: str = ""
     chunk_ids: list[str] = Field(default_factory=list)
@@ -834,6 +852,71 @@ class RetrievalEvidence(BaseModel):
     reason: str = ""
     token_count: int = 0
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class SourceStructure(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("structure"))
+    owner_user_id: str = ""
+    package_id: str
+    source_ingestion_id: str
+    status: SourceStructureStatus = "pending"
+    strategy: SourceStructureStrategy = "linear_text"
+    has_verified_toc: bool = False
+    chapter_count: int = 0
+    chunk_count: int = 0
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    error: str = ""
+    warnings: list[str] = Field(default_factory=list)
+    created_at: str = Field(default_factory=now_iso)
+    updated_at: str = Field(default_factory=now_iso)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class SourceChapter(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("sourcechapter"))
+    owner_user_id: str = ""
+    package_id: str
+    source_ingestion_id: str
+    parent_id: str | None = None
+    number: str = ""
+    normalized_number: str = ""
+    title: str
+    level: int = 1
+    path: list[str] = Field(default_factory=list)
+    order_index: int = 0
+    source_locator: str = ""
+    body_start_offset: int | None = None
+    body_end_offset: int | None = None
+    page_start: int | None = None
+    page_end: int | None = None
+    anchor_status: SourceChapterAnchorStatus = "unverified"
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    excerpt: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class SourceChunk(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("sourcechunk"))
+    owner_user_id: str = ""
+    package_id: str
+    source_ingestion_id: str
+    chapter_id: str | None = None
+    order_index: int = 0
+    source_locator: str = ""
+    text: str = ""
+    start_offset: int = 0
+    end_offset: int = 0
+    page_start: int | None = None
+    page_end: int | None = None
+    token_count: int = 0
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class SourceStructureView(BaseModel):
+    source: SourceIngestionRecord
+    structure: SourceStructure | None = None
+    chapters: list[SourceChapter] = Field(default_factory=list)
+    chunks: list[SourceChunk] = Field(default_factory=list)
 
 
 class EvidenceBundle(BaseModel):

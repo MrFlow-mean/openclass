@@ -65,6 +65,9 @@ function EvidenceItem({ item }: { item: RetrievalEvidence }) {
         <FileText className="h-4 w-4 shrink-0 text-violet-600" />
         <p className="min-w-0 truncate text-xs font-semibold text-gray-800">{location || "未命名资料"}</p>
       </div>
+      {item.chapter_id ? (
+        <p className="mt-1 text-[11px] font-semibold text-violet-700">已按验证目录定位正文</p>
+      ) : null}
       <p className="mt-2 max-h-16 overflow-hidden text-xs leading-5 text-gray-600">{item.excerpt}</p>
     </div>
   );

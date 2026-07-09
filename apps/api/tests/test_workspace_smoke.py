@@ -259,10 +259,17 @@ def test_open_notebook_source_import_and_evidence_confirm(
     source = imported.json()
     assert source["status"] == "ready"
     assert source["open_notebook_source_id"] == "src_api"
+    assert source["structure_status"] == "linear_only"
 
     listed = api_client.get(f"/api/packages/{package_id}/sources")
     assert listed.status_code == 200
     assert listed.json()[0]["title"] == "示例网页"
+    assert listed.json()[0]["structure_status"] == "linear_only"
+
+    structure = api_client.get(f"/api/packages/{package_id}/sources/{source['id']}/structure")
+    assert structure.status_code == 200
+    assert structure.json()["structure"]["strategy"] == "open_notebook_search_only"
+    assert structure.json()["chapters"] == []
 
     deleted = api_client.delete(f"/api/packages/{package_id}/sources/{source['id']}")
     assert deleted.status_code == 200

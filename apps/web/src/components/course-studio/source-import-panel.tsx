@@ -1,11 +1,11 @@
 "use client";
 
 import clsx from "clsx";
-import { Globe2, RefreshCw, Trash2, UploadCloud } from "lucide-react";
+import { BookOpen, Globe2, RefreshCw, Trash2, UploadCloud } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type DragEvent } from "react";
 
 import { api } from "@/lib/api";
-import type { SourceIngestionRecord } from "@/types";
+import type { SourceIngestionRecord, SourceStructureView } from "@/types";
 
 type SourceImportPanelProps = {
   packageId: string;
@@ -22,7 +22,16 @@ const STATUS_LABELS: Record<SourceIngestionRecord["status"], string> = {
   failed: "失败",
 };
 
+const STRUCTURE_STATUS_LABELS: Record<SourceIngestionRecord["structure_status"], string> = {
+  pending: "待建索引",
+  building: "结构索引",
+  ready: "有可信目录",
+  linear_only: "仅全文检索",
+  failed: "结构失败",
+};
+
 const ACTIVE_SOURCE_STATUSES = new Set<SourceIngestionRecord["status"]>(["queued", "fetching", "parsing", "indexing"]);
+const ACTIVE_STRUCTURE_STATUSES = new Set<SourceIngestionRecord["structure_status"]>(["pending", "building"]);
 
 function dragIncludesFiles(event: DragEvent<HTMLElement>) {
   return Array.from(event.dataTransfer.types).includes("Files");
@@ -61,7 +70,7 @@ export function SourceImportPanel({ packageId, disabled = false, onError }: Sour
   }, [refreshSources]);
 
   useEffect(() => {
-    if (disabled || !sources.some((source) => ACTIVE_SOURCE_STATUSES.has(source.status))) {
+    if (disabled || !sources.some(sourceNeedsRefresh)) {
       return;
     }
     const intervalId = window.setInterval(() => {
@@ -233,7 +242,7 @@ export function SourceImportPanel({ packageId, disabled = false, onError }: Sour
             ref={fileInputRef}
             type="file"
             multiple
-            accept=".pdf,.doc,.docx,.txt,.md,.markdown,application/pdf,text/plain,text/markdown,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            accept=".pdf,.epub,.doc,.docx,.txt,.md,.markdown,application/pdf,application/epub+zip,text/plain,text/markdown,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
             onChange={(event) => void submitFiles(event.target.files)}
             className="hidden"
             disabled={disabled || isImporting}
@@ -279,9 +288,11 @@ export function SourceImportPanel({ packageId, disabled = false, onError }: Sour
             {sources.map((source) => (
               <SourceRow
                 key={source.id}
+                packageId={packageId}
                 source={source}
                 isRemoving={removingSourceId === source.id}
                 onRemove={() => void removeSource(source.id)}
+                onError={onError}
               />
             ))}
           </div>
@@ -303,17 +314,48 @@ export function SourceImportPanel({ packageId, disabled = false, onError }: Sour
 }
 
 function SourceRow({
+  packageId,
   source,
   isRemoving,
   onRemove,
+  onError,
 }: {
+  packageId: string;
   source: SourceIngestionRecord;
   isRemoving: boolean;
   onRemove: () => void;
+  onError: (message: string) => void;
 }) {
+  const [structureView, setStructureView] = useState<SourceStructureView | null>(null);
+  const [isStructureOpen, setIsStructureOpen] = useState(false);
+  const [isLoadingStructure, setIsLoadingStructure] = useState(false);
   const isReady = source.status === "ready";
   const isFailed = source.status === "failed";
   const isActive = ACTIVE_SOURCE_STATUSES.has(source.status);
+  const structureLabel = structureStatusLabel(source);
+  const structureIsGood = source.structure_status === "ready";
+  const structureIsFailed = source.structure_status === "failed";
+
+  async function toggleStructure() {
+    if (!isReady || !source.structure_has_verified_toc) {
+      return;
+    }
+    const nextOpen = !isStructureOpen;
+    setIsStructureOpen(nextOpen);
+    if (!nextOpen || structureView || isLoadingStructure) {
+      return;
+    }
+    setIsLoadingStructure(true);
+    try {
+      setStructureView(await api.getPackageSourceStructure(packageId, source.id));
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "资料结构读取失败");
+    } finally {
+      setIsLoadingStructure(false);
+    }
+  }
+
+  const verifiedChapters = (structureView?.chapters ?? []).filter((chapter) => chapter.anchor_status === "verified");
   return (
     <div className="rounded-lg border border-gray-200 bg-white p-3">
       <div className="flex items-start gap-3">
@@ -341,6 +383,34 @@ function SourceRow({
               >
                 {STATUS_LABELS[source.status]}
               </span>
+              {isReady ? (
+                <span
+                  className={clsx(
+                    "rounded-full px-2 py-0.5 text-[11px] font-semibold",
+                    structureIsGood
+                      ? "bg-blue-50 text-blue-700"
+                      : structureIsFailed
+                      ? "bg-amber-50 text-amber-700"
+                      : source.structure_status === "linear_only"
+                      ? "bg-gray-100 text-gray-600"
+                      : "bg-sky-50 text-sky-700"
+                  )}
+                >
+                  {structureLabel}
+                </span>
+              ) : null}
+              {isReady && source.structure_has_verified_toc ? (
+                <button
+                  type="button"
+                  onClick={() => void toggleStructure()}
+                  disabled={isLoadingStructure}
+                  className="flex h-7 w-7 items-center justify-center rounded-md border border-transparent text-gray-400 transition hover:border-blue-100 hover:bg-blue-50 hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                  title="查看目录"
+                  aria-label={`查看资料目录 ${source.title}`}
+                >
+                  {isLoadingStructure ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <BookOpen className="h-3.5 w-3.5" />}
+                </button>
+              ) : null}
               <button
                 type="button"
                 onClick={onRemove}
@@ -355,9 +425,57 @@ function SourceRow({
           </div>
           <p className="mt-1 truncate text-xs text-gray-500">{source.source_uri || source.file_name || source.mime_type}</p>
           {isActive ? <p className="mt-2 text-xs leading-5 text-gray-500">正在处理资料，大文件可能需要几分钟。</p> : null}
+          {isReady && ACTIVE_STRUCTURE_STATUSES.has(source.structure_status) ? (
+            <p className="mt-2 text-xs leading-5 text-gray-500">正在建立目录与正文索引。</p>
+          ) : null}
+          {isReady && source.structure_status === "linear_only" ? (
+            <p className="mt-2 text-xs leading-5 text-gray-500">未发现可验证目录，本资料将按全文片段检索。</p>
+          ) : null}
+          {isReady && source.structure_has_verified_toc ? (
+            <p className="mt-2 text-xs leading-5 text-gray-500">已建立可验证目录，可按章节编号定位正文。</p>
+          ) : null}
           {source.error ? <p className="mt-2 text-xs leading-5 text-rose-700">{source.error}</p> : null}
+          {source.structure_error ? <p className="mt-2 text-xs leading-5 text-amber-700">{source.structure_error}</p> : null}
+          {isStructureOpen && source.structure_has_verified_toc ? (
+            <div className="mt-3 rounded-md border border-blue-100 bg-blue-50/40 p-2">
+              {verifiedChapters.length ? (
+                <div className="space-y-1">
+                  {verifiedChapters.slice(0, 10).map((chapter) => (
+                    <div
+                      key={chapter.id}
+                      className="truncate text-xs text-gray-700"
+                      style={{ paddingLeft: `${Math.min(Math.max(chapter.level - 1, 0), 4) * 12}px` }}
+                      title={chapter.path.join(" > ") || chapter.title}
+                    >
+                      {chapter.number ? `${chapter.number} ` : ""}
+                      {chapter.title}
+                    </div>
+                  ))}
+                  {verifiedChapters.length > 10 ? (
+                    <p className="text-[11px] text-gray-500">还有 {verifiedChapters.length - 10} 个已验证目录节点。</p>
+                  ) : null}
+                </div>
+              ) : (
+                <p className="text-xs text-gray-500">暂无可展示的已验证目录节点。</p>
+              )}
+            </div>
+          ) : null}
         </div>
       </div>
     </div>
   );
+}
+
+function sourceNeedsRefresh(source: SourceIngestionRecord) {
+  if (ACTIVE_SOURCE_STATUSES.has(source.status)) {
+    return true;
+  }
+  return source.status === "ready" && ACTIVE_STRUCTURE_STATUSES.has(source.structure_status);
+}
+
+function structureStatusLabel(source: SourceIngestionRecord) {
+  if (source.structure_has_verified_toc) {
+    return "有可信目录";
+  }
+  return STRUCTURE_STATUS_LABELS[source.structure_status] ?? "结构状态";
 }

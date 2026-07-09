@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
-from app.models import EvidenceBundle, EvidenceConfirmationRequest, SourceIngestionRecord, UserView
+from app.models import EvidenceBundle, EvidenceConfirmationRequest, SourceIngestionRecord, SourceStructureView, UserView
 from app.routers.auth import current_user
 from app.services import workspace_state
 from app.services.source_evidence_store import source_evidence_store
 from app.services.source_ingestion_service import SourceIngestionError, source_ingestion_service
+from app.services.source_structure_indexer import source_structure_indexer
+from app.services.source_structure_store import source_structure_store
 
 router = APIRouter()
 
@@ -69,6 +71,35 @@ def delete_package_source(
     if removed is None:
         raise HTTPException(status_code=404, detail="Source not found.")
     return removed
+
+
+@router.get("/api/packages/{package_id}/sources/{source_id}/structure", response_model=SourceStructureView)
+def get_package_source_structure(
+    package_id: str,
+    source_id: str,
+    user: UserView = Depends(current_user),
+) -> SourceStructureView:
+    workspace = workspace_state.load_workspace_for_user(user.id)
+    workspace_state.get_package(workspace, package_id)
+    source = source_evidence_store.get_source(owner_user_id=user.id, package_id=package_id, source_id=source_id)
+    if source is None:
+        raise HTTPException(status_code=404, detail="Source not found.")
+    return source_structure_store.get_structure_view(source=source)
+
+
+@router.post("/api/packages/{package_id}/sources/{source_id}/structure/rebuild", response_model=SourceStructureView)
+def rebuild_package_source_structure(
+    package_id: str,
+    source_id: str,
+    user: UserView = Depends(current_user),
+) -> SourceStructureView:
+    workspace = workspace_state.load_workspace_for_user(user.id)
+    workspace_state.get_package(workspace, package_id)
+    source = source_evidence_store.get_source(owner_user_id=user.id, package_id=package_id, source_id=source_id)
+    if source is None:
+        raise HTTPException(status_code=404, detail="Source not found.")
+    source_structure_indexer.rebuild_structure(source)
+    return source_structure_store.get_structure_view(source=source)
 
 
 @router.post("/api/lessons/{lesson_id}/evidence/confirm", response_model=EvidenceBundle)

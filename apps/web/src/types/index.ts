@@ -306,6 +306,16 @@ export type ResourceSourceType =
 export type SourceIngestionStatus = "queued" | "fetching" | "parsing" | "indexing" | "ready" | "failed";
 export type EvidenceBundleStatus = "candidate" | "confirmed" | "consumed" | "archived";
 export type EvidencePurpose = "chat" | "board_generation" | "board_edit" | "board_explain" | "board_chat";
+export type SourceStructureStatus = "pending" | "building" | "ready" | "linear_only" | "failed";
+export type SourceStructureStrategy =
+  | "epub_navigation"
+  | "epub_heading"
+  | "pdf_outline"
+  | "pdf_toc"
+  | "docx_heading"
+  | "markdown_heading"
+  | "linear_text"
+  | "open_notebook_search_only";
 
 export interface SourceIngestionJob {
   id: string;
@@ -336,6 +346,11 @@ export interface SourceIngestionRecord {
   open_notebook_notebook_id: string;
   open_notebook_source_id: string;
   open_notebook_command_id: string;
+  structure_status: SourceStructureStatus;
+  structure_strategy?: SourceStructureStrategy | null;
+  structure_has_verified_toc: boolean;
+  structure_error: string;
+  structure_updated_at?: string | null;
   created_at: string;
   updated_at: string;
   metadata: Record<string, unknown>;
@@ -347,6 +362,7 @@ export interface RetrievalEvidence {
   open_notebook_source_id: string;
   source_title: string;
   source_uri?: string | null;
+  chapter_id: string;
   section_path: string[];
   page_range: string;
   chunk_ids: string[];
@@ -356,6 +372,71 @@ export interface RetrievalEvidence {
   reason: string;
   token_count: number;
   metadata: Record<string, unknown>;
+}
+
+export interface SourceStructure {
+  id: string;
+  owner_user_id: string;
+  package_id: string;
+  source_ingestion_id: string;
+  status: SourceStructureStatus;
+  strategy: SourceStructureStrategy;
+  has_verified_toc: boolean;
+  chapter_count: number;
+  chunk_count: number;
+  confidence: number;
+  error: string;
+  warnings: string[];
+  created_at: string;
+  updated_at: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface SourceChapter {
+  id: string;
+  owner_user_id: string;
+  package_id: string;
+  source_ingestion_id: string;
+  parent_id?: string | null;
+  number: string;
+  normalized_number: string;
+  title: string;
+  level: number;
+  path: string[];
+  order_index: number;
+  source_locator: string;
+  body_start_offset?: number | null;
+  body_end_offset?: number | null;
+  page_start?: number | null;
+  page_end?: number | null;
+  anchor_status: "verified" | "unverified";
+  confidence: number;
+  excerpt: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface SourceChunk {
+  id: string;
+  owner_user_id: string;
+  package_id: string;
+  source_ingestion_id: string;
+  chapter_id?: string | null;
+  order_index: number;
+  source_locator: string;
+  text: string;
+  start_offset: number;
+  end_offset: number;
+  page_start?: number | null;
+  page_end?: number | null;
+  token_count: number;
+  metadata: Record<string, unknown>;
+}
+
+export interface SourceStructureView {
+  source: SourceIngestionRecord;
+  structure?: SourceStructure | null;
+  chapters: SourceChapter[];
+  chunks: SourceChunk[];
 }
 
 export interface EvidenceBundle {
