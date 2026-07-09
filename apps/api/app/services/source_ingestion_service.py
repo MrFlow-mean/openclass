@@ -160,6 +160,18 @@ class SourceIngestionService:
         )
         return self.store.save_source(updated)
 
+    def remove_source(self, *, owner_user_id: str, package_id: str, source_id: str) -> SourceIngestionRecord | None:
+        record = self.store.get_source(owner_user_id=owner_user_id, package_id=package_id, source_id=source_id)
+        if record is None:
+            return None
+        if record.open_notebook_source_id:
+            try:
+                self.adapter.delete_source(record.open_notebook_source_id)
+            except OpenNotebookAdapterError:
+                # Local removal must still work when the sidecar is unavailable or the remote source was already gone.
+                pass
+        return self.store.delete_source(owner_user_id=owner_user_id, package_id=package_id, source_id=source_id)
+
     def _ensure_notebook(self, *, owner_user_id: str, package: CoursePackage) -> str:
         notebook_id, error = self._resolve_notebook(owner_user_id=owner_user_id, package=package)
         if error:

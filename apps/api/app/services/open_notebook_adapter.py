@@ -86,6 +86,11 @@ class OpenNotebookAdapter:
                 last_error = exc
         raise last_error or OpenNotebookAdapterError("Open Notebook command lookup failed.")
 
+    def delete_source(self, source_id: str) -> None:
+        if not source_id:
+            return
+        self._request_json("DELETE", f"/sources/{source_id}")
+
     def search(
         self,
         *,

@@ -1,7 +1,7 @@
 "use client";
 
 import clsx from "clsx";
-import { Globe2, RefreshCw, UploadCloud } from "lucide-react";
+import { Globe2, RefreshCw, Trash2, UploadCloud } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type DragEvent } from "react";
 
 import { api } from "@/lib/api";
@@ -32,6 +32,7 @@ export function SourceImportPanel({ packageId, disabled = false, onError }: Sour
   const [title, setTitle] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
+  const [removingSourceId, setRemovingSourceId] = useState<string | null>(null);
   const [isDragActive, setIsDragActive] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const dragDepthRef = useRef(0);
@@ -103,6 +104,21 @@ export function SourceImportPanel({ packageId, disabled = false, onError }: Sour
       onError(error instanceof Error ? error.message : "文件导入失败");
     } finally {
       setIsImporting(false);
+    }
+  }
+
+  async function removeSource(sourceId: string) {
+    if (!sourceId || disabled || removingSourceId) {
+      return;
+    }
+    setRemovingSourceId(sourceId);
+    try {
+      await api.deletePackageSource(packageId, sourceId);
+      setSources((current) => current.filter((source) => source.id !== sourceId));
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "资料移除失败");
+    } finally {
+      setRemovingSourceId(null);
     }
   }
 
@@ -248,7 +264,14 @@ export function SourceImportPanel({ packageId, disabled = false, onError }: Sour
               {uploadButton}
               <span>{isImporting ? "正在解析资料。" : "继续拖入资料，或点击上传。"}</span>
             </div>
-            {sources.map((source) => <SourceRow key={source.id} source={source} />)}
+            {sources.map((source) => (
+              <SourceRow
+                key={source.id}
+                source={source}
+                isRemoving={removingSourceId === source.id}
+                onRemove={() => void removeSource(source.id)}
+              />
+            ))}
           </div>
         ) : (
           <div
@@ -267,7 +290,15 @@ export function SourceImportPanel({ packageId, disabled = false, onError }: Sour
   );
 }
 
-function SourceRow({ source }: { source: SourceIngestionRecord }) {
+function SourceRow({
+  source,
+  isRemoving,
+  onRemove,
+}: {
+  source: SourceIngestionRecord;
+  isRemoving: boolean;
+  onRemove: () => void;
+}) {
   const isReady = source.status === "ready";
   const isFailed = source.status === "failed";
   return (
@@ -282,20 +313,32 @@ function SourceRow({ source }: { source: SourceIngestionRecord }) {
           <UploadCloud className="h-4 w-4" />
         </div>
         <div className="min-w-0 flex-1">
-          <div className="flex items-center justify-between gap-2">
+          <div className="flex items-start justify-between gap-2">
             <p className="truncate text-sm font-semibold text-gray-900">{source.title}</p>
-            <span
-              className={clsx(
-                "shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold",
-                isReady
-                  ? "bg-emerald-50 text-emerald-700"
-                  : isFailed
-                  ? "bg-rose-50 text-rose-700"
-                  : "bg-gray-100 text-gray-600"
-              )}
-            >
-              {STATUS_LABELS[source.status]}
-            </span>
+            <div className="flex shrink-0 items-center gap-1.5">
+              <span
+                className={clsx(
+                  "rounded-full px-2 py-0.5 text-[11px] font-semibold",
+                  isReady
+                    ? "bg-emerald-50 text-emerald-700"
+                    : isFailed
+                    ? "bg-rose-50 text-rose-700"
+                    : "bg-gray-100 text-gray-600"
+                )}
+              >
+                {STATUS_LABELS[source.status]}
+              </span>
+              <button
+                type="button"
+                onClick={onRemove}
+                disabled={isRemoving}
+                className="flex h-7 w-7 items-center justify-center rounded-md border border-transparent text-gray-400 transition hover:border-rose-100 hover:bg-rose-50 hover:text-rose-600 disabled:cursor-not-allowed disabled:opacity-50"
+                title="移除资料"
+                aria-label={`移除资料 ${source.title}`}
+              >
+                {isRemoving ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+              </button>
+            </div>
           </div>
           <p className="mt-1 truncate text-xs text-gray-500">{source.source_uri || source.file_name || source.mime_type}</p>
           {source.error ? <p className="mt-2 text-xs leading-5 text-rose-700">{source.error}</p> : null}

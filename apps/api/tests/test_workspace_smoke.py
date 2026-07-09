@@ -245,6 +245,9 @@ def test_open_notebook_source_import_and_evidence_confirm(
                 raw={"source_id": "src_api"},
             )
 
+        def delete_source(self, source_id: str) -> None:
+            assert source_id == "src_api"
+
     monkeypatch.setattr(source_ingestion_module, "_validate_public_url", lambda raw_uri: raw_uri)
     monkeypatch.setattr(source_ingestion_service, "adapter", _FakeAdapter())
 
@@ -260,6 +263,14 @@ def test_open_notebook_source_import_and_evidence_confirm(
     listed = api_client.get(f"/api/packages/{package_id}/sources")
     assert listed.status_code == 200
     assert listed.json()[0]["title"] == "示例网页"
+
+    deleted = api_client.delete(f"/api/packages/{package_id}/sources/{source['id']}")
+    assert deleted.status_code == 200
+    assert deleted.json()["id"] == source["id"]
+
+    listed_after_delete = api_client.get(f"/api/packages/{package_id}/sources")
+    assert listed_after_delete.status_code == 200
+    assert listed_after_delete.json() == []
 
     bundle = source_evidence_store.save_bundle(
         EvidenceBundle(

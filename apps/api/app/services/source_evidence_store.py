@@ -232,6 +232,47 @@ class SourceEvidenceStore:
                 ).fetchone()
         return self._source_from_row(row) if row else None
 
+    def get_source(
+        self,
+        *,
+        owner_user_id: str,
+        package_id: str,
+        source_id: str,
+    ) -> SourceIngestionRecord | None:
+        with self._lock:
+            with self._connect() as conn:
+                row = conn.execute(
+                    """
+                    SELECT *
+                    FROM source_ingestions
+                    WHERE owner_user_id = ? AND package_id = ? AND id = ?
+                    """,
+                    (owner_user_id, package_id, source_id),
+                ).fetchone()
+        return self._source_from_row(row) if row else None
+
+    def delete_source(
+        self,
+        *,
+        owner_user_id: str,
+        package_id: str,
+        source_id: str,
+    ) -> SourceIngestionRecord | None:
+        record = self.get_source(owner_user_id=owner_user_id, package_id=package_id, source_id=source_id)
+        if record is None:
+            return None
+        with self._lock:
+            with self._connect() as conn:
+                with conn:
+                    conn.execute(
+                        """
+                        DELETE FROM source_ingestions
+                        WHERE owner_user_id = ? AND package_id = ? AND id = ?
+                        """,
+                        (owner_user_id, package_id, source_id),
+                    )
+        return record
+
     def save_bundle(self, bundle: EvidenceBundle) -> EvidenceBundle:
         bundle = bundle.model_copy(update={"updated_at": now_iso()})
         with self._lock:

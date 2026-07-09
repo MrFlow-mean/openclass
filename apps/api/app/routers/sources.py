@@ -53,6 +53,24 @@ async def import_package_source(
     raise HTTPException(status_code=400, detail="Provide either a file or source_uri.")
 
 
+@router.delete("/api/packages/{package_id}/sources/{source_id}", response_model=SourceIngestionRecord)
+def delete_package_source(
+    package_id: str,
+    source_id: str,
+    user: UserView = Depends(current_user),
+) -> SourceIngestionRecord:
+    workspace = workspace_state.load_workspace_for_user(user.id)
+    workspace_state.get_package(workspace, package_id)
+    removed = source_ingestion_service.remove_source(
+        owner_user_id=user.id,
+        package_id=package_id,
+        source_id=source_id,
+    )
+    if removed is None:
+        raise HTTPException(status_code=404, detail="Source not found.")
+    return removed
+
+
 @router.post("/api/lessons/{lesson_id}/evidence/confirm", response_model=EvidenceBundle)
 def confirm_lesson_evidence(
     lesson_id: str,

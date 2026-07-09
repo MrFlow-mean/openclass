@@ -496,6 +496,11 @@ export const api = {
   listPackageSources(packageId: string) {
     return request<SourceIngestionRecord[]>(`/api/packages/${packageId}/sources`);
   },
+  deletePackageSource(packageId: string, sourceId: string) {
+    return request<SourceIngestionRecord>(`/api/packages/${packageId}/sources/${sourceId}`, {
+      method: "DELETE",
+    });
+  },
   async importPackageSource(
     packageId: string,
     payload: { file?: File | null; sourceUri?: string; title?: string }

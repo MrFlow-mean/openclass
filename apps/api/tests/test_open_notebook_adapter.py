@@ -23,6 +23,8 @@ def test_open_notebook_adapter_wraps_source_command_and_search(monkeypatch) -> N
             return _response(method, url, {"status": "completed", "result": {"source_id": "src_url"}})
         if url.endswith("/api/commands/cmd_url"):
             return _response(method, url, {"status": "completed", "source_id": "src_url"})
+        if url.endswith("/api/sources/src_url") and method == "DELETE":
+            return _response(method, url, {})
         if url.endswith("/api/search"):
             assert kwargs["json"]["type"] == "text"
             assert kwargs["json"]["search_notes"] is False
@@ -42,6 +44,7 @@ def test_open_notebook_adapter_wraps_source_command_and_search(monkeypatch) -> N
         title="文件",
     )
     command = adapter.get_command(url_result.command_id)
+    adapter.delete_source(url_result.source_id)
     results = adapter.search(notebook_id=notebook_id, query="学习目标", limit=4, source_ids=["src_url"])
 
     assert notebook_id == "nb_1"
@@ -52,6 +55,7 @@ def test_open_notebook_adapter_wraps_source_command_and_search(monkeypatch) -> N
     assert {url for _method, url in calls} >= {
         "http://notebook.local/api/notebooks",
         "http://notebook.local/api/sources",
+        "http://notebook.local/api/sources/src_url",
         "http://notebook.local/api/commands/jobs/cmd_url",
         "http://notebook.local/api/search",
     }
