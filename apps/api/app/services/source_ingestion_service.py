@@ -16,6 +16,12 @@ from app.services.source_evidence_store import SourceEvidenceStore, source_evide
 from app.services.source_structure_indexer import SourceStructureIndexer
 from app.services.source_structure_store import SourceStructureStore, source_structure_store
 from app.services.source_url_snapshot import SourceUrlSnapshotError, fetch_url_source_snapshot
+from app.services.youtube_transcript_adapter import (
+    YouTubeTranscriptAdapter,
+    YouTubeTranscriptAdapterError,
+    is_youtube_url,
+    youtube_transcript_adapter,
+)
 from app.services import workspace_state
 
 
@@ -37,11 +43,13 @@ class SourceIngestionService:
         self,
         *,
         adapter: OpenNotebookAdapter = open_notebook_adapter,
+        youtube_adapter: YouTubeTranscriptAdapter = youtube_transcript_adapter,
         store: SourceEvidenceStore = source_evidence_store,
         structure_indexer: SourceStructureIndexer | None = None,
         structure_store: SourceStructureStore | None = None,
     ) -> None:
         self.adapter = adapter
+        self.youtube_adapter = youtube_adapter
         self.store = store
         self.structure_store = structure_store or _structure_store_for_source_store(store)
         self.structure_indexer = structure_indexer or SourceStructureIndexer(store=self.structure_store)
@@ -66,6 +74,13 @@ class SourceIngestionService:
         title: str = "",
     ) -> SourceIngestionRecord:
         normalized_uri = _validate_public_url(source_uri)
+        if is_youtube_url(normalized_uri):
+            return self._save_youtube_transcript_source(
+                owner_user_id=owner_user_id,
+                package=package,
+                source_uri=normalized_uri,
+                title=title,
+            )
         notebook_id, notebook_error = self._resolve_notebook(owner_user_id=owner_user_id, package=package)
         display_title = title.strip() or normalized_uri
         record = SourceIngestionRecord(
@@ -304,6 +319,49 @@ class SourceIngestionService:
         saved = self.store.save_source(ready)
         return self._ensure_structure_if_ready(saved)
 
+    def _save_youtube_transcript_source(
+        self,
+        *,
+        owner_user_id: str,
+        package: CoursePackage,
+        source_uri: str,
+        title: str,
+    ) -> SourceIngestionRecord:
+        display_title = title.strip() or source_uri
+        record = SourceIngestionRecord(
+            owner_user_id=owner_user_id,
+            package_id=package.id,
+            title=display_title,
+            source_type="video_url",
+            source_uri=source_uri,
+            file_name="youtube-transcript.txt",
+            mime_type="text/plain",
+            size_bytes=0,
+            status="fetching",
+            metadata={"adapter": "youtube_transcript", "media_provider": "youtube", "media_kind": "video"},
+        )
+        try:
+            transcript = self.youtube_adapter.extract(source_uri, title=title)
+        except YouTubeTranscriptAdapterError as exc:
+            return self.store.save_source(self._failed_record(record, str(exc), phase="youtube_transcript"))
+        transcript_file_name = _safe_file_name(f"{transcript.video_id or record.id}-transcript.txt")
+        record_for_file = record.model_copy(update={"title": transcript.title, "file_name": transcript_file_name})
+        transcript_bytes = transcript.text.encode("utf-8")
+        ready = record_for_file.model_copy(
+            update={
+                "status": "ready",
+                "error": "",
+                "size_bytes": len(transcript_bytes),
+                "metadata": {
+                    **record_for_file.metadata,
+                    **transcript.metadata,
+                    **_save_local_source_text(record_for_file, transcript.text),
+                },
+            }
+        )
+        saved = self.store.save_source(ready)
+        return self._ensure_structure_if_ready(saved)
+
     def _ensure_structure_if_ready(self, record: SourceIngestionRecord) -> SourceIngestionRecord:
         if record.status != "ready":
             return record
@@ -333,6 +391,10 @@ def _save_local_source_file(record: SourceIngestionRecord, content: bytes) -> di
     path = source_dir / f"{record.id}_{safe_name}"
     path.write_bytes(content)
     return {"local_source_path": str(path)}
+
+
+def _save_local_source_text(record: SourceIngestionRecord, text: str) -> dict[str, str]:
+    return _save_local_source_file(record, text.encode("utf-8"))
 
 
 def _safe_file_name(file_name: str) -> str:

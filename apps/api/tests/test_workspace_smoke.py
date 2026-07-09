@@ -20,6 +20,7 @@ from app.services.course_store import SqliteCourseStore
 from app.services.open_notebook_adapter import OpenNotebookAdapterError, OpenNotebookSourceResult
 from app.services.source_evidence_store import source_evidence_store
 from app.services.source_ingestion_service import source_ingestion_service
+from app.services.youtube_transcript_adapter import YouTubeTranscript
 
 
 TEST_USER = UserView(
@@ -397,6 +398,64 @@ def test_url_source_uses_local_snapshot_when_open_notebook_is_unavailable(
     assert source["metadata"]["adapter"] == "openclass_local_url"
     assert source["metadata"]["open_notebook_sync_status"] == "unavailable"
     assert source["structure_status"] == "linear_only"
+
+
+def test_youtube_url_source_uses_transcript_adapter(
+    api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created_workspace = api_client.post(
+        "/api/packages",
+        json={"title": "YouTube source package", "summary": ""},
+    )
+    assert created_workspace.status_code == 200
+    package_id = created_workspace.json()["active_package_id"]
+
+    class _FakeYouTubeAdapter:
+        def extract(self, source_uri: str, *, title: str = "") -> YouTubeTranscript:
+            return YouTubeTranscript(
+                title=title or "Transcript source",
+                video_id="video_123",
+                language="en",
+                text=(
+                    "Title: Transcript source\n"
+                    "Source: https://www.youtube.com/watch?v=video_123\n"
+                    "Media type: YouTube video\n"
+                    "Transcript:\n"
+                    "[00:00] This transcript is indexed as local source text."
+                ),
+                metadata={
+                    "adapter": "youtube_transcript",
+                    "media_provider": "youtube",
+                    "media_kind": "video",
+                    "video_id": "video_123",
+                    "transcript_language": "en",
+                },
+            )
+
+    monkeypatch.setattr(source_ingestion_module, "_validate_public_url", lambda raw_uri: raw_uri)
+    monkeypatch.setattr(source_ingestion_service, "youtube_adapter", _FakeYouTubeAdapter())
+
+    imported = api_client.post(
+        f"/api/packages/{package_id}/sources",
+        data={"source_uri": "https://www.youtube.com/watch?v=video_123", "title": "视频字幕"},
+    )
+
+    assert imported.status_code == 200
+    source = imported.json()
+    assert source["status"] == "ready"
+    assert source["source_type"] == "video_url"
+    assert source["mime_type"] == "text/plain"
+    assert source["metadata"]["adapter"] == "youtube_transcript"
+    assert source["metadata"]["video_id"] == "video_123"
+    assert source["structure_status"] == "linear_only"
+
+    structure = api_client.get(f"/api/packages/{package_id}/sources/{source['id']}/structure")
+    assert structure.status_code == 200
+    structure_payload = structure.json()
+    assert structure_payload["structure"]["status"] == "linear_only"
+    assert structure_payload["chunks"]
+    assert "indexed as local source text" in structure_payload["chunks"][0]["text"]
 
 
 def test_list_sources_recovers_failed_local_open_notebook_record(

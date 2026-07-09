@@ -108,6 +108,13 @@ def test_resource_resolver_returns_none_without_ready_sources(tmp_path) -> None:
     assert bundle is None
 
 
+def test_resource_resolver_detects_video_source_intent(tmp_path) -> None:
+    resolver = ResourceResolver(adapter=_FakeSearchAdapter(), store=SourceEvidenceStore(tmp_path / "openclass.sqlite3"))
+
+    assert resolver.should_use_sources("结合这个 YouTube 视频讲一下")
+    assert resolver.should_use_sources("根据视频字幕解释这一段")
+
+
 def test_resource_resolver_falls_back_to_local_chunk_index(tmp_path) -> None:
     local_path = tmp_path / "local.md"
     local_path.write_text("# Cache Policy\n\nLocal cache policy explains write back behavior.", encoding="utf-8")

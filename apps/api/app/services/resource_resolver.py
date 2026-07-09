@@ -32,6 +32,11 @@ SOURCE_INTENT_PATTERNS = (
     "file",
     "document",
     "reference",
+    "视频",
+    "字幕",
+    "音频",
+    "youtube",
+    "YouTube",
 )
 
 CHAT_CHUNK_LIMIT = 4
