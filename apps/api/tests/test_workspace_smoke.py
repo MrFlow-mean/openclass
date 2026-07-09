@@ -17,7 +17,7 @@ from app.routers import workspace as workspace_router
 from app.services import source_ingestion_service as source_ingestion_module
 from app.services import workspace_state
 from app.services.course_store import SqliteCourseStore
-from app.services.open_notebook_adapter import OpenNotebookSourceResult
+from app.services.open_notebook_adapter import OpenNotebookAdapterError, OpenNotebookSourceResult
 from app.services.source_evidence_store import source_evidence_store
 from app.services.source_ingestion_service import source_ingestion_service
 
@@ -295,3 +295,37 @@ def test_open_notebook_source_import_and_evidence_confirm(
     confirmed_payload = confirmed.json()
     assert confirmed_payload["status"] == "confirmed"
     assert confirmed_payload["confirmed_by_user"] is True
+
+
+def test_source_import_records_failed_open_notebook_connection(
+    api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created_workspace = api_client.post(
+        "/api/packages",
+        json={"title": "Unavailable source package", "summary": ""},
+    )
+    assert created_workspace.status_code == 200
+    package_id = created_workspace.json()["active_package_id"]
+
+    class _UnavailableAdapter:
+        api_url = "http://localhost:5055"
+
+        def create_notebook(self, *, title: str, description: str = "") -> str:
+            raise OpenNotebookAdapterError("[Errno 61] Connection refused")
+
+    monkeypatch.setattr(source_ingestion_service, "adapter", _UnavailableAdapter())
+
+    imported = api_client.post(
+        f"/api/packages/{package_id}/sources",
+        files={"file": ("source.md", b"# title", "text/markdown")},
+    )
+    assert imported.status_code == 200
+    source = imported.json()
+    assert source["status"] == "failed"
+    assert source["open_notebook_notebook_id"] == ""
+    assert "Open Notebook 服务未启动或不可达" in source["error"]
+
+    listed = api_client.get(f"/api/packages/{package_id}/sources")
+    assert listed.status_code == 200
+    assert listed.json()[0]["status"] == "failed"

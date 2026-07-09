@@ -179,6 +179,20 @@ export function getApiWebSocketUrl(pathOrUrl: string) {
   return withAuthTokenQuery(new URL(pathOrUrl, baseUrl).toString());
 }
 
+async function responseErrorMessage(response: Response, fallback: string) {
+  const text = await response.text();
+  let message = text || fallback;
+  try {
+    const parsed = JSON.parse(text) as { detail?: unknown };
+    if (typeof parsed.detail === "string") {
+      message = parsed.detail;
+    }
+  } catch {
+    // Keep the raw response text for non-JSON errors.
+  }
+  return message;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   if (!headers.has("Content-Type") && !(init?.body instanceof FormData) && !(init?.body instanceof Blob)) {
@@ -198,16 +212,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
 
   if (!response.ok) {
-    const text = await response.text();
-    let message = text || `Request failed with ${response.status}`;
-    try {
-      const parsed = JSON.parse(text) as { detail?: unknown };
-      if (typeof parsed.detail === "string") {
-        message = parsed.detail;
-      }
-    } catch {
-      // Keep the raw response text for non-JSON errors.
-    }
+    const message = await responseErrorMessage(response, `Request failed with ${response.status}`);
     throw new Error(message);
   }
 
@@ -512,8 +517,8 @@ export const api = {
       cache: "no-store",
     });
     if (!response.ok) {
-      const text = await response.text();
-      throw new Error(text || `Source import failed with ${response.status}`);
+      const message = await responseErrorMessage(response, `Source import failed with ${response.status}`);
+      throw new Error(message);
     }
     return response.json() as Promise<SourceIngestionRecord>;
   },

@@ -54,7 +54,7 @@ class SourceIngestionService:
         title: str = "",
     ) -> SourceIngestionRecord:
         normalized_uri = _validate_public_url(source_uri)
-        notebook_id = self._ensure_notebook(owner_user_id=owner_user_id, package=package)
+        notebook_id, notebook_error = self._resolve_notebook(owner_user_id=owner_user_id, package=package)
         display_title = title.strip() or normalized_uri
         record = SourceIngestionRecord(
             owner_user_id=owner_user_id,
@@ -69,6 +69,8 @@ class SourceIngestionService:
             open_notebook_notebook_id=notebook_id,
             metadata={"adapter": "open_notebook"},
         )
+        if notebook_error:
+            return self.store.save_source(self._failed_record(record, notebook_error, phase="create_notebook"))
         try:
             result = self.adapter.add_url_source(
                 notebook_id=notebook_id,
@@ -84,7 +86,7 @@ class SourceIngestionService:
                 }
             )
         except OpenNotebookAdapterError as exc:
-            record = record.model_copy(update={"status": "failed", "error": str(exc)})
+            record = self._failed_record(record, self._format_adapter_error(exc), phase="add_source")
         return self.store.save_source(record)
 
     def add_file_source(
@@ -101,7 +103,7 @@ class SourceIngestionService:
             raise SourceIngestionError("File name is required.")
         if not _supported_mime(mime_type, file_name):
             raise SourceIngestionError("Only PDF, Office, TXT, and Markdown files are supported in V1.")
-        notebook_id = self._ensure_notebook(owner_user_id=owner_user_id, package=package)
+        notebook_id, notebook_error = self._resolve_notebook(owner_user_id=owner_user_id, package=package)
         display_title = title.strip() or file_name
         record = SourceIngestionRecord(
             owner_user_id=owner_user_id,
@@ -116,6 +118,8 @@ class SourceIngestionService:
             open_notebook_notebook_id=notebook_id,
             metadata={"adapter": "open_notebook"},
         )
+        if notebook_error:
+            return self.store.save_source(self._failed_record(record, notebook_error, phase="create_notebook"))
         try:
             result = self.adapter.upload_file_source(
                 notebook_id=notebook_id,
@@ -133,7 +137,7 @@ class SourceIngestionService:
                 }
             )
         except OpenNotebookAdapterError as exc:
-            record = record.model_copy(update={"status": "failed", "error": str(exc)})
+            record = self._failed_record(record, self._format_adapter_error(exc), phase="add_source")
         return self.store.save_source(record)
 
     def refresh_source(self, record: SourceIngestionRecord) -> SourceIngestionRecord:
@@ -157,23 +161,52 @@ class SourceIngestionService:
         return self.store.save_source(updated)
 
     def _ensure_notebook(self, *, owner_user_id: str, package: CoursePackage) -> str:
+        notebook_id, error = self._resolve_notebook(owner_user_id=owner_user_id, package=package)
+        if error:
+            raise SourceIngestionError(error)
+        return notebook_id
+
+    def _resolve_notebook(self, *, owner_user_id: str, package: CoursePackage) -> tuple[str, str]:
         existing = self.store.get_notebook_id(owner_user_id=owner_user_id, package_id=package.id)
         if existing:
-            return existing
+            return existing, ""
         try:
             notebook_id = self.adapter.create_notebook(
                 title=f"OpenClass - {package.title}",
                 description=f"Sources imported for OpenClass package {package.id}.",
             )
         except OpenNotebookAdapterError as exc:
-            raise SourceIngestionError(str(exc)) from exc
+            return "", self._format_adapter_error(exc)
         self.store.upsert_notebook(
             owner_user_id=owner_user_id,
             package_id=package.id,
             notebook_id=notebook_id,
             title=package.title,
         )
-        return notebook_id
+        return notebook_id, ""
+
+    def _format_adapter_error(self, exc: OpenNotebookAdapterError) -> str:
+        raw_message = str(exc).strip() or "Open Notebook request failed."
+        lowered = raw_message.lower()
+        api_url = getattr(self.adapter, "api_url", "http://localhost:5055")
+        if _looks_like_connection_refused(lowered):
+            return f"Open Notebook 服务未启动或不可达：{api_url}。请先启动 Open Notebook，或设置 OPEN_NOTEBOOK_API_URL 后重试。"
+        if "timed out" in lowered or "timeout" in lowered:
+            return f"Open Notebook 请求超时：{api_url}。请确认 Open Notebook 正在运行且 API 可访问。"
+        return raw_message
+
+    def _failed_record(self, record: SourceIngestionRecord, error: str, *, phase: str) -> SourceIngestionRecord:
+        return record.model_copy(
+            update={
+                "status": "failed",
+                "error": error,
+                "metadata": {
+                    **record.metadata,
+                    "error_phase": phase,
+                    "open_notebook_api_url": getattr(self.adapter, "api_url", ""),
+                },
+            }
+        )
 
 
 def _supported_mime(mime_type: str, file_name: str) -> bool:
@@ -181,6 +214,17 @@ def _supported_mime(mime_type: str, file_name: str) -> bool:
     if lowered.endswith((".pdf", ".docx", ".doc", ".txt", ".md", ".markdown")):
         return True
     return any((mime_type or "").startswith(prefix) for prefix in SUPPORTED_FILE_MIME_PREFIXES)
+
+
+def _looks_like_connection_refused(message: str) -> bool:
+    return any(
+        needle in message
+        for needle in (
+            "connection refused",
+            "connecterror",
+            "all connection attempts failed",
+        )
+    )
 
 
 def _validate_public_url(raw_uri: str) -> str:
