@@ -61,6 +61,8 @@ export function useRealtimeVoice({
   const googleInputTranscriptRef = useRef("");
   const googleOutputTranscriptRef = useRef("");
   const openAIResponseInProgressRef = useRef(false);
+  const openAIRealtimeToolsEnabledRef = useRef(false);
+  const openAIAssistantTranscriptRef = useRef("");
   const realtimeLessonIdRef = useRef<string | null>(null);
   const realtimeClientSessionIdRef = useRef<string | null>(null);
   const realtimeLessonTitleRef = useRef<string | null>(null);
@@ -140,6 +142,8 @@ export function useRealtimeVoice({
     googleInputTranscriptRef.current = "";
     googleOutputTranscriptRef.current = "";
     openAIResponseInProgressRef.current = false;
+    openAIRealtimeToolsEnabledRef.current = false;
+    openAIAssistantTranscriptRef.current = "";
 
     if (realtimePeerRef.current) {
       realtimePeerRef.current.ontrack = null;
@@ -195,6 +199,10 @@ export function useRealtimeVoice({
       return;
     }
     enqueueRealtimeLogEvent(lessonId, "user", eventType, normalized);
+    if (openAIRealtimeToolsEnabledRef.current) {
+      setVoiceStatusText("Realtime 正在通过后端 Chatbot 工具处理这句话");
+      return;
+    }
     if (chatRequestInFlightRef.current) {
       setVoiceStatusText("正在处理上一句语音，请稍等片刻");
       return;
@@ -443,13 +451,19 @@ export function useRealtimeVoice({
           const payload = JSON.parse(messageEvent.data) as {
             type?: string;
             transcript?: string;
+            delta?: string;
             name?: string;
             call_id?: string;
           };
           if (payload.type === "response.created") {
             openAIResponseInProgressRef.current = true;
           }
-          if (payload.type === "response.done" || payload.type === "response.audio.done") {
+          if (
+            payload.type === "response.done" ||
+            payload.type === "response.audio.done" ||
+            payload.type === "response.output_audio.done" ||
+            payload.type === "response.output_text.done"
+          ) {
             openAIResponseInProgressRef.current = false;
           }
           if (payload.type === "input_audio_buffer.speech_started") {
@@ -457,6 +471,7 @@ export function useRealtimeVoice({
               dataChannel.send(JSON.stringify({ type: "response.cancel" }));
               openAIResponseInProgressRef.current = false;
             }
+            openAIAssistantTranscriptRef.current = "";
             resetOpenAIRemoteAudioPlayback();
           }
           const lessonId = realtimeLessonIdRef.current;
@@ -471,17 +486,23 @@ export function useRealtimeVoice({
               `${payload.name}${payload.call_id ? ` (${payload.call_id})` : ""}`
             );
           }
-          if (!payload.transcript) {
-            return;
-          }
           if (
-            payload.type === "conversation.item.input_audio_transcription.completed" ||
-            payload.type === "conversation.item.input_audio_transcription.done"
+            payload.transcript &&
+            (payload.type === "conversation.item.input_audio_transcription.completed" ||
+              payload.type === "conversation.item.input_audio_transcription.done")
           ) {
             handleRealtimeUserTranscript(lessonId, payload.transcript, payload.type);
           }
-          if (payload.type === "response.audio_transcript.done") {
-            enqueueRealtimeLogEvent(lessonId, "assistant", payload.type, payload.transcript);
+          if (payload.type === "response.output_audio_transcript.delta" && payload.delta) {
+            openAIAssistantTranscriptRef.current += payload.delta;
+          }
+          if (
+            payload.type === "response.audio_transcript.done" ||
+            payload.type === "response.output_audio_transcript.done"
+          ) {
+            const transcript = payload.transcript ?? openAIAssistantTranscriptRef.current;
+            enqueueRealtimeLogEvent(lessonId, "assistant", payload.type, transcript);
+            openAIAssistantTranscriptRef.current = "";
           }
         } catch {
           // ignore
@@ -500,6 +521,7 @@ export function useRealtimeVoice({
       if (realtimeResponse.client_session_id) {
         realtimeClientSessionIdRef.current = realtimeResponse.client_session_id;
       }
+      openAIRealtimeToolsEnabledRef.current = Boolean(realtimeResponse.tools_enabled);
 
       await peerConnection.setRemoteDescription({
         type: "answer",

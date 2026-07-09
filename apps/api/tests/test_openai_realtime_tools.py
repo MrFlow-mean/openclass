@@ -110,6 +110,9 @@ def test_realtime_connect_posts_sdp_with_chatbot_tools(monkeypatch, isolated_sto
     session_payload = json.loads(captured["files"]["session"][1])
     assert session_payload["model"] == "gpt-realtime-2"
     assert session_payload["audio"]["output"]["voice"] == "verse"
+    assert session_payload["audio"]["input"]["turn_detection"]["create_response"] is True
+    assert session_payload["audio"]["input"]["turn_detection"]["interrupt_response"] is True
+    assert session_payload["reasoning"]["effort"] == "low"
     tool_names = {tool["name"] for tool in session_payload["tools"]}
     assert {"run_chatbot_workflow", "solve_complex_problem"} <= tool_names
     assert "同一个角色" in session_payload["instructions"]
@@ -117,6 +120,30 @@ def test_realtime_connect_posts_sdp_with_chatbot_tools(monkeypatch, isolated_sto
     assert "实时 Chatbot 不能直接读取" in session_payload["instructions"]
     assert sideband_sessions[0][0].call_id == "rtc_test_call"
     assert sideband_sessions[0][1] == "test-openai-key"
+
+
+def test_realtime_config_without_tools_uses_transcription_only_turns(monkeypatch, isolated_store) -> None:
+    monkeypatch.setenv("OPENAI_REALTIME_MODEL", "gpt-realtime-2.1")
+    monkeypatch.setenv("OPENAI_REALTIME_REASONING_EFFORT", "medium")
+    monkeypatch.delenv("OPENCLASS_REALTIME_TOOLS_ENABLED", raising=False)
+    _seed_workspace(isolated_store)
+
+    config = openai_realtime.build_openai_realtime_session_config(
+        lesson_title="Realtime 测试页",
+        board_summary="这段内容不能直接进入实时语音提示。",
+        request=RealtimeConnectRequest(offer_sdp="v=0", client_session_id="realtime_test"),
+    )
+
+    session_payload = config.session_payload
+    assert config.tools_enabled is False
+    assert "tools" not in session_payload
+    assert session_payload["model"] == "gpt-realtime-2.1"
+    assert session_payload["audio"]["input"]["turn_detection"]["type"] == "server_vad"
+    assert session_payload["audio"]["input"]["turn_detection"]["create_response"] is False
+    assert session_payload["audio"]["input"]["turn_detection"]["interrupt_response"] is False
+    assert session_payload["reasoning"]["effort"] == "medium"
+    assert "只负责麦克风转写" in session_payload["instructions"]
+    assert "这段内容不能直接进入" not in session_payload["instructions"]
 
 
 def test_realtime_tool_run_chatbot_workflow_reuses_chat_service(monkeypatch, isolated_store, isolated_ai_log) -> None:

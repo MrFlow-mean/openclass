@@ -14,7 +14,8 @@ OPENAI_FAST_TEXT_MODEL = "gpt-5.4-mini"
 OPENAI_CODEX_DEFAULT_TEXT_MODEL = "gpt-5.5"
 OPENAI_DEFAULT_TEXT_MODEL = OPENAI_PREMIUM_TEXT_MODEL
 OPENAI_IMAGE_MODEL = "gpt-image-2"
-OPENAI_DEFAULT_REALTIME_MODEL = "gpt-realtime-2"
+OPENAI_DEFAULT_REALTIME_MODEL = "gpt-realtime-2.1"
+OPENAI_FAST_REALTIME_MODEL = "gpt-realtime-2.1-mini"
 ANTHROPIC_ECONOMY_TEXT_MODEL = "claude-haiku-4-5"
 ANTHROPIC_FAST_TEXT_MODEL = "claude-sonnet-4-6"
 ANTHROPIC_DEFAULT_TEXT_MODEL = ANTHROPIC_FAST_TEXT_MODEL
@@ -75,7 +76,8 @@ CURATED_TEXT_MODELS: dict[AIProvider, tuple[tuple[str, str], ...]] = {
 
 CURATED_REALTIME_MODELS: dict[AIProvider, tuple[tuple[str, str, str], ...]] = {
     "openai": (
-        (OPENAI_DEFAULT_REALTIME_MODEL, "OpenAI GPT Realtime 2", "openai_webrtc"),
+        (OPENAI_FAST_REALTIME_MODEL, "OpenAI GPT Realtime 2.1 Mini", "openai_webrtc"),
+        (OPENAI_DEFAULT_REALTIME_MODEL, "OpenAI GPT Realtime 2.1", "openai_webrtc"),
     ),
 }
 

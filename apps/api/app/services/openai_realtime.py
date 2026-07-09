@@ -63,6 +63,11 @@ def _openai_realtime_base_url() -> str:
     return os.getenv("OPENAI_REALTIME_BASE_URL", os.getenv("OPENAI_BASE_URL", OPENAI_OFFICIAL_BASE_URL)).rstrip("/")
 
 
+def _realtime_reasoning_effort() -> str:
+    value = (os.getenv("OPENAI_REALTIME_REASONING_EFFORT") or "low").strip().lower()
+    return value if value in {"low", "medium", "high"} else "low"
+
+
 def _compact_text(value: str | None, *, limit: int = 1200) -> str:
     normalized = " ".join((value or "").split())
     if len(normalized) <= limit:
@@ -90,7 +95,7 @@ def _realtime_instructions(
     tool_rule = (
         "可以调用后端工具，但只能调用工具列表中存在的函数；课程状态、板书修改和强推理都由后端工具执行。"
         if tools_enabled
-        else "当前实时会话只负责自然语音交流和转写，不直接执行课程工具。"
+        else "当前实时会话只负责麦克风转写，不自行回答学习内容；转写文本会交给同一个文字 Chatbot 工作流处理。"
     )
     return (
         "你是 OpenClass 的 Chatbot 的实时语音形态，和文字 Chatbot 是同一个角色。\n"
@@ -138,10 +143,16 @@ def build_openai_realtime_session_config(
             "input": {
                 "transcription": {
                     "model": os.getenv("OPENAI_REALTIME_TRANSCRIPTION_MODEL", "gpt-4o-transcribe"),
-                }
+                },
+                "turn_detection": {
+                    "type": "server_vad",
+                    "create_response": tools_enabled,
+                    "interrupt_response": tools_enabled,
+                },
             },
             "output": {"voice": voice},
         },
+        "reasoning": {"effort": _realtime_reasoning_effort()},
     }
     if tools_enabled:
         session_payload["tools"] = realtime_tool_schemas()

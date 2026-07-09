@@ -119,13 +119,14 @@ OPENAI_BOARD_MODEL=gpt-5.5
 OPENAI_CHATBOT_MODEL=gpt-5.5
 OPENCLASS_REALTIME_ENABLED=false
 OPENCLASS_REALTIME_TOOLS_ENABLED=false
-OPENAI_REALTIME_MODEL=gpt-realtime-2
+OPENAI_REALTIME_MODEL=gpt-realtime-2.1
+OPENAI_REALTIME_REASONING_EFFORT=low
 OPENAI_IMAGE_MODEL=gpt-image-2
 ```
 
 `.env.example` 还包含 Anthropic、Google、DeepSeek、Kimi、MiniMax、自定义 OpenAI-compatible（兼容 OpenAI 接口）网关、自定义 Anthropic-compatible（兼容 Anthropic 接口）网关，以及本地 Codex app-server（Codex 应用服务）适配器配置。
 
-Realtime 默认关闭；只有设置 `OPENCLASS_REALTIME_ENABLED=true` 才会启用后端实时连接，设置 `OPENCLASS_REALTIME_TOOLS_ENABLED=true` 才允许 Realtime 调用后端 Chatbot 工具。
+Realtime 默认关闭；只有设置 `OPENCLASS_REALTIME_ENABLED=true` 才会启用后端实时连接。`OPENCLASS_REALTIME_TOOLS_ENABLED=true` 时，Realtime 会通过服务端 sideband（旁路控制通道）调用同一条 Chatbot workflow；关闭时只做麦克风转写，再把文本交给普通 Chatbot。`OPENAI_REALTIME_REASONING_EFFORT=low` 是语音默认推理强度，可按延迟和复杂度调成 `medium` 或 `high`。
 
 ## 数据与文档格式
 

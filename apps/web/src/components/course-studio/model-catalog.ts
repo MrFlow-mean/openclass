@@ -43,8 +43,8 @@ export const FALLBACK_MODEL_CATALOG: AIModelCatalog = {
   realtime: [
     {
       provider: "openai",
-      model: "gpt-realtime-2",
-      label: "OpenAI GPT Realtime 2",
+      model: "gpt-realtime-2.1",
+      label: "OpenAI GPT Realtime 2.1",
       capability: "realtime",
       enabled: true,
       configured: true,
@@ -54,7 +54,7 @@ export const FALLBACK_MODEL_CATALOG: AIModelCatalog = {
   ],
   defaults: {
     text: { provider: "openai", model: "gpt-5.5" },
-    realtime: { provider: "openai", model: "gpt-realtime-2" },
+    realtime: { provider: "openai", model: "gpt-realtime-2.1" },
   },
 };
 

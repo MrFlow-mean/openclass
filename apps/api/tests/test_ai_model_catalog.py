@@ -51,7 +51,7 @@ def test_catalog_realtime_options_are_removed_with_backend_runtime(monkeypatch) 
     catalog = ai_model_catalog.build_model_catalog()
 
     assert catalog.defaults["realtime"].provider == "openai"
-    assert catalog.defaults["realtime"].model == "gpt-realtime-2"
+    assert catalog.defaults["realtime"].model == "gpt-realtime-2.1"
     assert catalog.realtime == []
 
 
@@ -62,14 +62,14 @@ def test_catalog_exposes_openai_realtime_when_runtime_enabled(monkeypatch) -> No
     monkeypatch.delenv("AI_REALTIME_MODELS_JSON", raising=False)
     monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
     monkeypatch.setenv("AI_REALTIME_PROVIDER", "openai")
-    monkeypatch.setenv("OPENAI_REALTIME_MODEL", "gpt-realtime-2")
+    monkeypatch.setenv("OPENAI_REALTIME_MODEL", "gpt-realtime-2.1")
 
     catalog = ai_model_catalog.build_model_catalog()
 
     assert catalog.defaults["realtime"].provider == "openai"
-    assert catalog.defaults["realtime"].model == "gpt-realtime-2"
-    assert _models_by_provider(catalog, "realtime", "openai") == ["gpt-realtime-2"]
-    option = catalog.realtime[0]
+    assert catalog.defaults["realtime"].model == "gpt-realtime-2.1"
+    assert _models_by_provider(catalog, "realtime", "openai") == ["gpt-realtime-2.1-mini", "gpt-realtime-2.1"]
+    option = next(item for item in catalog.realtime if item.model == "gpt-realtime-2.1")
     assert option.enabled is True
     assert option.configured is True
     assert option.transport == "openai_webrtc"
@@ -93,6 +93,7 @@ def test_catalog_defaults_to_configured_google_when_openai_is_missing(monkeypatc
     monkeypatch.delenv("AI_REALTIME_PROVIDER", raising=False)
     monkeypatch.delenv("AI_TEXT_MODELS_JSON", raising=False)
     monkeypatch.delenv("AI_REALTIME_MODELS_JSON", raising=False)
+    monkeypatch.delenv("OPENAI_REALTIME_MODEL", raising=False)
     monkeypatch.setenv("GOOGLE_API_KEY", "google-key")
 
     catalog = ai_model_catalog.build_model_catalog()
@@ -100,7 +101,7 @@ def test_catalog_defaults_to_configured_google_when_openai_is_missing(monkeypatc
     assert catalog.defaults["text"].provider == "google"
     assert catalog.defaults["text"].model == "gemini-3-flash-preview"
     assert catalog.defaults["realtime"].provider == "openai"
-    assert catalog.defaults["realtime"].model == "gpt-realtime-2"
+    assert catalog.defaults["realtime"].model == "gpt-realtime-2.1"
 
 
 def test_single_key_mode_keeps_text_models_on_official_openai(monkeypatch) -> None:
