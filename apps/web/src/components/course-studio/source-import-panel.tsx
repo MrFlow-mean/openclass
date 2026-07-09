@@ -22,6 +22,8 @@ const STATUS_LABELS: Record<SourceIngestionRecord["status"], string> = {
   failed: "失败",
 };
 
+const ACTIVE_SOURCE_STATUSES = new Set<SourceIngestionRecord["status"]>(["queued", "fetching", "parsing", "indexing"]);
+
 function dragIncludesFiles(event: DragEvent<HTMLElement>) {
   return Array.from(event.dataTransfer.types).includes("Files");
 }
@@ -57,6 +59,16 @@ export function SourceImportPanel({ packageId, disabled = false, onError }: Sour
     }, 0);
     return () => window.clearTimeout(timer);
   }, [refreshSources]);
+
+  useEffect(() => {
+    if (disabled || !sources.some((source) => ACTIVE_SOURCE_STATUSES.has(source.status))) {
+      return;
+    }
+    const intervalId = window.setInterval(() => {
+      void refreshSources();
+    }, 3000);
+    return () => window.clearInterval(intervalId);
+  }, [disabled, refreshSources, sources]);
 
   async function submitUrl() {
     const uri = sourceUri.trim();
@@ -301,6 +313,7 @@ function SourceRow({
 }) {
   const isReady = source.status === "ready";
   const isFailed = source.status === "failed";
+  const isActive = ACTIVE_SOURCE_STATUSES.has(source.status);
   return (
     <div className="rounded-lg border border-gray-200 bg-white p-3">
       <div className="flex items-start gap-3">
@@ -341,6 +354,7 @@ function SourceRow({
             </div>
           </div>
           <p className="mt-1 truncate text-xs text-gray-500">{source.source_uri || source.file_name || source.mime_type}</p>
+          {isActive ? <p className="mt-2 text-xs leading-5 text-gray-500">正在处理资料，大文件可能需要几分钟。</p> : null}
           {source.error ? <p className="mt-2 text-xs leading-5 text-rose-700">{source.error}</p> : null}
         </div>
       </div>
