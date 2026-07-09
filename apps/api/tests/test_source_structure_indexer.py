@@ -33,6 +33,8 @@ def test_source_structure_indexer_uses_epub_navigation_metadata(tmp_path: Path) 
     assert structure.strategy == "epub_navigation"
     assert view is not None
     assert [chapter.normalized_number for chapter in view.chapters] == ["1", "1.1"]
+    assert view.chapters[1].parent_id == view.chapters[0].id
+    assert view.chapters[1].path == ["1 Foundations", "1.1 Details"]
     assert all(chapter.anchor_status == "verified" for chapter in view.chapters)
     assert view.chunks
 

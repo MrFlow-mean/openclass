@@ -1,16 +1,21 @@
 "use client";
 
 import clsx from "clsx";
-import { BookOpen, Globe2, RefreshCw, Trash2, UploadCloud } from "lucide-react";
+import { BookOpen, ChevronDown, ChevronRight, Globe2, RefreshCw, Trash2, UploadCloud } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type DragEvent } from "react";
 
 import { api } from "@/lib/api";
-import type { SourceIngestionRecord, SourceStructureView } from "@/types";
+import type { SourceChapter, SourceIngestionRecord, SourceStructureView } from "@/types";
 
 type SourceImportPanelProps = {
   packageId: string;
   disabled?: boolean;
   onError: (message: string) => void;
+};
+
+type ChapterTreeNode = {
+  chapter: SourceChapter;
+  children: ChapterTreeNode[];
 };
 
 const STATUS_LABELS: Record<SourceIngestionRecord["status"], string> = {
@@ -329,6 +334,7 @@ function SourceRow({
   const [structureView, setStructureView] = useState<SourceStructureView | null>(null);
   const [isStructureOpen, setIsStructureOpen] = useState(false);
   const [isLoadingStructure, setIsLoadingStructure] = useState(false);
+  const [expandedChapterIds, setExpandedChapterIds] = useState<Set<string>>(new Set());
   const isReady = source.status === "ready";
   const isFailed = source.status === "failed";
   const isActive = ACTIVE_SOURCE_STATUSES.has(source.status);
@@ -347,7 +353,15 @@ function SourceRow({
     }
     setIsLoadingStructure(true);
     try {
-      setStructureView(await api.getPackageSourceStructure(packageId, source.id));
+      const view = await api.getPackageSourceStructure(packageId, source.id);
+      setStructureView(view);
+      setExpandedChapterIds(
+        new Set(
+          buildChapterTree(view.chapters.filter((chapter) => chapter.anchor_status === "verified")).map(
+            (node) => node.chapter.id
+          )
+        )
+      );
     } catch (error) {
       onError(error instanceof Error ? error.message : "资料结构读取失败");
     } finally {
@@ -356,6 +370,19 @@ function SourceRow({
   }
 
   const verifiedChapters = (structureView?.chapters ?? []).filter((chapter) => chapter.anchor_status === "verified");
+  const chapterTree = buildChapterTree(verifiedChapters);
+  function toggleChapter(chapterId: string) {
+    setExpandedChapterIds((current) => {
+      const next = new Set(current);
+      if (next.has(chapterId)) {
+        next.delete(chapterId);
+      } else {
+        next.add(chapterId);
+      }
+      return next;
+    });
+  }
+
   return (
     <div className="rounded-lg border border-gray-200 bg-white p-3">
       <div className="flex items-start gap-3">
@@ -438,23 +465,8 @@ function SourceRow({
           {source.structure_error ? <p className="mt-2 text-xs leading-5 text-amber-700">{source.structure_error}</p> : null}
           {isStructureOpen && source.structure_has_verified_toc ? (
             <div className="mt-3 rounded-md border border-blue-100 bg-blue-50/40 p-2">
-              {verifiedChapters.length ? (
-                <div className="space-y-1">
-                  {verifiedChapters.slice(0, 10).map((chapter) => (
-                    <div
-                      key={chapter.id}
-                      className="truncate text-xs text-gray-700"
-                      style={{ paddingLeft: `${Math.min(Math.max(chapter.level - 1, 0), 4) * 12}px` }}
-                      title={chapter.path.join(" > ") || chapter.title}
-                    >
-                      {chapter.number ? `${chapter.number} ` : ""}
-                      {chapter.title}
-                    </div>
-                  ))}
-                  {verifiedChapters.length > 10 ? (
-                    <p className="text-[11px] text-gray-500">还有 {verifiedChapters.length - 10} 个已验证目录节点。</p>
-                  ) : null}
-                </div>
+              {chapterTree.length ? (
+                <SourceChapterTree nodes={chapterTree} expandedIds={expandedChapterIds} onToggle={toggleChapter} />
               ) : (
                 <p className="text-xs text-gray-500">暂无可展示的已验证目录节点。</p>
               )}
@@ -464,6 +476,122 @@ function SourceRow({
       </div>
     </div>
   );
+}
+
+function SourceChapterTree({
+  nodes,
+  expandedIds,
+  onToggle,
+}: {
+  nodes: ChapterTreeNode[];
+  expandedIds: Set<string>;
+  onToggle: (chapterId: string) => void;
+}) {
+  return (
+    <div className="space-y-1">
+      {nodes.map((node) => (
+        <SourceChapterNode key={node.chapter.id} node={node} expandedIds={expandedIds} onToggle={onToggle} depth={0} />
+      ))}
+    </div>
+  );
+}
+
+function SourceChapterNode({
+  node,
+  expandedIds,
+  onToggle,
+  depth,
+}: {
+  node: ChapterTreeNode;
+  expandedIds: Set<string>;
+  onToggle: (chapterId: string) => void;
+  depth: number;
+}) {
+  const hasChildren = node.children.length > 0;
+  const isExpanded = expandedIds.has(node.chapter.id);
+  const title = chapterDisplayTitle(node.chapter);
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => (hasChildren ? onToggle(node.chapter.id) : undefined)}
+        className={clsx(
+          "flex w-full items-center gap-1 rounded-md px-1.5 py-1 text-left text-xs text-gray-700 transition hover:bg-white",
+          !hasChildren && "cursor-default hover:bg-transparent"
+        )}
+        style={{ paddingLeft: `${Math.min(depth, 5) * 12 + 6}px` }}
+        title={node.chapter.path.join(" > ") || title}
+      >
+        {hasChildren ? (
+          isExpanded ? (
+            <ChevronDown className="h-3.5 w-3.5 shrink-0 text-blue-600" />
+          ) : (
+            <ChevronRight className="h-3.5 w-3.5 shrink-0 text-gray-400" />
+          )
+        ) : (
+          <span className="h-3.5 w-3.5 shrink-0" />
+        )}
+        <span className="min-w-0 flex-1 truncate">{title || "未命名章节"}</span>
+      </button>
+      {hasChildren && isExpanded ? (
+        <div className="mt-0.5 space-y-0.5">
+          {node.children.map((child) => (
+            <SourceChapterNode
+              key={child.chapter.id}
+              node={child}
+              expandedIds={expandedIds}
+              onToggle={onToggle}
+              depth={depth + 1}
+            />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function chapterDisplayTitle(chapter: SourceChapter) {
+  if (!chapter.number || chapter.title.trim().startsWith(chapter.number)) {
+    return chapter.title;
+  }
+  return `${chapter.number} ${chapter.title}`;
+}
+
+function buildChapterTree(chapters: SourceChapter[]): ChapterTreeNode[] {
+  const sorted = [...chapters].sort((left, right) => left.order_index - right.order_index);
+  if (sorted.some((chapter) => chapter.parent_id)) {
+    const nodeById = new Map(sorted.map((chapter) => [chapter.id, { chapter, children: [] as ChapterTreeNode[] }]));
+    const roots: ChapterTreeNode[] = [];
+    for (const chapter of sorted) {
+      const node = nodeById.get(chapter.id);
+      if (!node) {
+        continue;
+      }
+      const parent = chapter.parent_id ? nodeById.get(chapter.parent_id) : null;
+      if (parent) {
+        parent.children.push(node);
+      } else {
+        roots.push(node);
+      }
+    }
+    return roots;
+  }
+  const roots: ChapterTreeNode[] = [];
+  const stack: ChapterTreeNode[] = [];
+  for (const chapter of sorted) {
+    const node: ChapterTreeNode = { chapter, children: [] };
+    while (stack.length && stack[stack.length - 1].chapter.level >= chapter.level) {
+      stack.pop();
+    }
+    const parent = stack[stack.length - 1];
+    if (parent) {
+      parent.children.push(node);
+    } else {
+      roots.push(node);
+    }
+    stack.push(node);
+  }
+  return roots;
 }
 
 function sourceNeedsRefresh(source: SourceIngestionRecord) {

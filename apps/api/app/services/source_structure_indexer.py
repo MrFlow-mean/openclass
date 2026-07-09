@@ -124,6 +124,7 @@ class SourceStructureIndexer:
 
     def _chapters_for_record(self, record: SourceIngestionRecord, parsed: ParsedSourceDocument) -> list[SourceChapter]:
         chapters: list[SourceChapter] = []
+        level_stack: list[SourceChapter] = []
         sorted_chapters = sorted(
             [chapter for chapter in parsed.chapters if chapter.verified and chapter.start_offset is not None],
             key=lambda chapter: chapter.start_offset or 0,
@@ -136,29 +137,33 @@ class SourceStructureIndexer:
             excerpt = _compact(parsed.text[chapter.start_offset or 0 : end_offset or len(parsed.text)], 360)
             title = _clean_label(chapter.title)
             number = chapter.number or _number_from_title(title)
-            path = _path_for_chapter(sorted_chapters[: index + 1], chapter)
-            chapters.append(
-                SourceChapter(
-                    owner_user_id=record.owner_user_id,
-                    package_id=record.package_id,
-                    source_ingestion_id=record.id,
-                    number=number,
-                    normalized_number=_normalize_chapter_number(number),
-                    title=title,
-                    level=max(1, chapter.level),
-                    path=path,
-                    order_index=index,
-                    source_locator=chapter.source_locator,
-                    body_start_offset=chapter.start_offset,
-                    body_end_offset=end_offset,
-                    page_start=chapter.page_start,
-                    page_end=chapter.page_end,
-                    anchor_status="verified",
-                    confidence=chapter.confidence,
-                    excerpt=excerpt,
-                    metadata=chapter.metadata,
-                )
+            level = max(1, chapter.level)
+            while level_stack and level_stack[-1].level >= level:
+                level_stack.pop()
+            parent = level_stack[-1] if level_stack else None
+            source_chapter = SourceChapter(
+                owner_user_id=record.owner_user_id,
+                package_id=record.package_id,
+                source_ingestion_id=record.id,
+                parent_id=parent.id if parent else None,
+                number=number,
+                normalized_number=_normalize_chapter_number(number),
+                title=title,
+                level=level,
+                path=[*(parent.path if parent else []), title],
+                order_index=index,
+                source_locator=chapter.source_locator,
+                body_start_offset=chapter.start_offset,
+                body_end_offset=end_offset,
+                page_start=chapter.page_start,
+                page_end=chapter.page_end,
+                anchor_status="verified",
+                confidence=chapter.confidence,
+                excerpt=excerpt,
+                metadata=chapter.metadata,
             )
+            chapters.append(source_chapter)
+            level_stack.append(source_chapter)
         return chapters
 
     def _chunks_for_record(
@@ -715,20 +720,6 @@ def _close_chapter_ranges(chapters: list[DetectedChapter], text_length: int) -> 
             chapter.end_offset = next_chapter.start_offset if next_chapter else text_length
         if chapter.page_start is not None and chapter.page_end is None:
             chapter.page_end = next_chapter.page_start if next_chapter and next_chapter.page_start else chapter.page_start
-
-
-def _path_for_chapter(previous: list[DetectedChapter], chapter: DetectedChapter) -> list[str]:
-    ancestors = [item for item in previous if item.level < chapter.level]
-    path: list[str] = []
-    last_level = 0
-    for item in ancestors:
-        if item.level > last_level:
-            path.append(_clean_label(item.title))
-            last_level = item.level
-        elif item.level == last_level and path:
-            path[-1] = _clean_label(item.title)
-    path.append(_clean_label(chapter.title))
-    return [part for part in path if part]
 
 
 def _chapter_for_chunk(
