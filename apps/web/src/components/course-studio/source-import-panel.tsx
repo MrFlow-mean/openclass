@@ -2,7 +2,7 @@
 
 import clsx from "clsx";
 import { FileUp, Globe2, RefreshCw, UploadCloud } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type DragEvent } from "react";
 
 import { api } from "@/lib/api";
 import type { SourceIngestionRecord } from "@/types";
@@ -28,7 +28,9 @@ export function SourceImportPanel({ packageId, disabled = false, onError }: Sour
   const [title, setTitle] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
+  const [isDragActive, setIsDragActive] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const dragDepthRef = useRef(0);
 
   const refreshSources = useCallback(async () => {
     if (!packageId) {
@@ -69,14 +71,26 @@ export function SourceImportPanel({ packageId, disabled = false, onError }: Sour
     }
   }
 
-  async function submitFile(file: File | null) {
-    if (!file || disabled || isImporting) {
+  async function submitFiles(files: FileList | File[] | null) {
+    const fileList = Array.from(files ?? []);
+    if (!fileList.length || disabled || isImporting) {
       return;
     }
     setIsImporting(true);
     try {
-      const record = await api.importPackageSource(packageId, { file, title: title.trim() });
-      setSources((current) => [record, ...current.filter((item) => item.id !== record.id)]);
+      const imported: SourceIngestionRecord[] = [];
+      for (const file of fileList) {
+        imported.push(
+          await api.importPackageSource(packageId, {
+            file,
+            title: fileList.length === 1 ? title.trim() : "",
+          })
+        );
+      }
+      setSources((current) => [
+        ...imported,
+        ...current.filter((item) => !imported.some((record) => record.id === item.id)),
+      ]);
       setTitle("");
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
@@ -88,9 +102,60 @@ export function SourceImportPanel({ packageId, disabled = false, onError }: Sour
     }
   }
 
+  function handleDragEnter(event: DragEvent<HTMLDivElement>) {
+    if (disabled || isImporting || !event.dataTransfer.types.includes("Files")) {
+      return;
+    }
+    event.preventDefault();
+    dragDepthRef.current += 1;
+    setIsDragActive(true);
+  }
+
+  function handleDragOver(event: DragEvent<HTMLDivElement>) {
+    if (disabled || isImporting || !event.dataTransfer.types.includes("Files")) {
+      return;
+    }
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    setIsDragActive(true);
+  }
+
+  function handleDragLeave(event: DragEvent<HTMLDivElement>) {
+    if (!event.dataTransfer.types.includes("Files")) {
+      return;
+    }
+    event.preventDefault();
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) {
+      setIsDragActive(false);
+    }
+  }
+
+  function handleDrop(event: DragEvent<HTMLDivElement>) {
+    if (!event.dataTransfer.types.includes("Files")) {
+      return;
+    }
+    event.preventDefault();
+    dragDepthRef.current = 0;
+    setIsDragActive(false);
+    if (disabled || isImporting) {
+      return;
+    }
+    void submitFiles(event.dataTransfer.files);
+  }
+
   return (
     <div className="space-y-4">
-      <div className="rounded-lg border border-gray-200 bg-white p-3">
+      <div
+        onDragEnter={handleDragEnter}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+        className={clsx(
+          "rounded-lg border bg-white p-3 transition",
+          isDragActive ? "border-black bg-gray-50" : "border-gray-200"
+        )}
+      >
         <label className="text-[11px] font-bold uppercase tracking-widest text-gray-500">标题</label>
         <input
           value={title}
@@ -123,8 +188,9 @@ export function SourceImportPanel({ packageId, disabled = false, onError }: Sour
           <input
             ref={fileInputRef}
             type="file"
+            multiple
             accept=".pdf,.doc,.docx,.txt,.md,.markdown,application/pdf,text/plain,text/markdown,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-            onChange={(event) => void submitFile(event.target.files?.[0] ?? null)}
+            onChange={(event) => void submitFiles(event.target.files)}
             className="hidden"
             disabled={disabled || isImporting}
           />
@@ -137,6 +203,9 @@ export function SourceImportPanel({ packageId, disabled = false, onError }: Sour
             <FileUp className="h-4 w-4" />
             文件
           </button>
+          <span className="min-w-0 flex-1 truncate text-xs text-gray-500">
+            {isDragActive ? "松开以上传文件" : "可拖入 PDF、DOCX、TXT 或 Markdown"}
+          </span>
           <button
             type="button"
             onClick={() => void refreshSources()}
