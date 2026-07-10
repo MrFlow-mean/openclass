@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -97,6 +98,10 @@ def test_blank_board_refinement_prompt_requires_rich_broad_topic_guidance(
     assert "当前水平" in payload["response_contract"]["next_question"]
     assert "纯新手入门" in payload["response_contract"]["next_question"]
     assert "已会/未会" in system_prompt
+    assert "学习主题和明确结构范围" in system_prompt
+    assert "教材或课程名称缺失不影响先记录这些事实" in system_prompt
+    assert "已提供唯一匹配的可信章节" in system_prompt
+    assert "章节编号、节编号、章节标题或标题路径时必须记录" in payload["response_contract"]["boundary"]
 
 
 def test_learning_intake_policy_is_generic_and_covers_strategy_matrix() -> None:
@@ -313,6 +318,106 @@ def test_blank_board_stream_parser_emits_chatbot_message_before_json_is_complete
     assert all(event["schema"] == "BlankBoardRequirementRefinement" for event in timing_events)
     assert all(event["field"] == "chatbot_message" for event in timing_events)
     assert all(isinstance(event["elapsed_ms"], int) for event in timing_events)
+
+
+def test_non_stream_parser_retries_json_repair_without_response_schema() -> None:
+    invalid_output = (
+        '{"route":"requirement_refining","chatbot_message":"已确认",'
+        '"learning_goal":"某主题的第四章","key_facts":['
+        '{"label":"学习范围","value":"第四章","evidence":"用户说"第四章"",'
+        '"category":"learning"}]}'
+    )
+    repaired_output = json.dumps(
+        {
+            "route": "requirement_refining",
+            "chatbot_message": "已确认学习主题和章节范围。",
+            "work_mode": "knowledge_board",
+            "granularity": "broad_topic",
+            "learning_goal": "某主题的第四章",
+            "boundary": "第四章",
+            "ready_for_board": False,
+        },
+        ensure_ascii=False,
+    )
+
+    class _FakeCompletions:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def create(self, **kwargs):
+            self.calls.append(kwargs)
+            if len(self.calls) == 1:
+                return SimpleNamespace(
+                    choices=[SimpleNamespace(message=SimpleNamespace(content=invalid_output))],
+                    id="initial",
+                    usage=None,
+                )
+            if len(self.calls) == 2:
+                raise RuntimeError("schema repair request unavailable")
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content=repaired_output))],
+                id="repaired",
+                usage=None,
+            )
+
+    completions = _FakeCompletions()
+    client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+    ai = OpenAICourseAI()
+
+    response = ai._call_openai_chat_parse(
+        role="pm",
+        model="test-model",
+        system_prompt="system",
+        user_prompt="user",
+        schema=BlankBoardRequirementRefinement,
+        client=client,
+    )
+
+    assert isinstance(response.output_parsed, BlankBoardRequirementRefinement)
+    assert response.output_parsed.route == "requirement_refining"
+    assert response.output_parsed.learning_goal == "某主题的第四章"
+    assert response.output_parsed.boundary == "第四章"
+    assert len(completions.calls) == 3
+    assert "response_format" in completions.calls[1]
+    assert "response_format" not in completions.calls[2]
+
+
+def test_requirement_payload_cannot_be_downgraded_to_ordinary_chat(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    user_id = "user_structural_scope_requirement"
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    lesson = _seed_empty_workspace(store, user_id)
+
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_blank_board_requirement_refinement",
+        lambda **kwargs: BlankBoardRequirementRefinement(
+            route="ordinary_chat",
+            chatbot_message="已记录你要学习的主题和章节范围。",
+            summary="学习某主题的第四章。",
+            work_mode="knowledge_board",
+            granularity="broad_topic",
+            learning_goal="某主题的第四章",
+            boundary="第四章",
+            ready_for_board=False,
+        ),
+    )
+
+    response = process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="我想学习某主题的第四章"),
+        user_id=user_id,
+    )
+
+    assert response.active_requirement_sheet is not None
+    assert response.active_requirement_sheet.learning_goal == "某主题的第四章"
+    assert response.active_requirement_sheet.boundary == "第四章"
+    assert response.learning_clarification.label == "collecting"
+    versions = store.list_learning_requirement_versions(user_id, lesson.id)
+    assert len(versions) == 1
 
 
 def test_empty_board_ordinary_chat_does_not_create_requirement(

@@ -1152,6 +1152,11 @@ class OpenAICourseAI:
             "missing_items、ready_for_board 等内部字段名；如果需要信息，用自然聊天的一句话询问。"
             "如果 resource_summary 提供了当前课程包中已定位的候选资料章节证据，应先利用其中的资料标题、章节路径和摘录"
             "理解用户指向的内容，再决定还缺哪个学习起点；不要重复追问已经由证据明确的教材或章节。"
+            "如果用户已经给出学习主题和明确结构范围，例如章节编号、节编号、章节标题或标题路径，"
+            "这些都是已确认的学习需求事实，必须写入 learning_goal、boundary 和 key_facts；"
+            "教材或课程名称缺失不影响先记录这些事实，也不得因此把本轮降级为 ordinary_chat。"
+            "当 resource_summary 已提供唯一匹配的可信章节时，直接采用该资料和章节完成指向消解，不再追问资料名称；"
+            "如果没有匹配或存在多个候选，也要保留用户已经确认的主题和结构范围，由后续资料检索结果说明匹配状态。"
             "resource_summary 可能只是 OCR 摘录或有限页预览，不得声称已经读取完整章节，也不得把候选证据说成用户已确认引用。"
         )
         user_prompt = _json(
@@ -1180,7 +1185,7 @@ class OpenAICourseAI:
                     "known_background": "可选辅助因素：已会、未会、最近经历、卡点或背景。",
                     "target_depth": "可选辅助因素：希望理解、会做、能应用、能讲给别人等深度。",
                     "output_preference": "可选辅助因素：希望板书或教学呈现的形态偏好。",
-                    "boundary": "可选辅助因素：范围边界或不要展开的部分。",
+                    "boundary": "范围边界或不要展开的部分；用户明确给出章节编号、节编号、章节标题或标题路径时必须记录。",
                     "board_scope": "兼容字段：本链路不要填写，不能写页面标题、课程标题或未来板书目录。",
                     "success_criteria": "兼容字段：本链路不要填写泛化成功标准；练习型面向场景请写 target_scenario。",
                     "learning_need_checklist": "兼容字段：本链路不要填写系统流程检查项。",
@@ -2446,28 +2451,16 @@ class OpenAICourseAI:
                         visible_field_was_streamed=streamed.visible_field_was_streamed,
                         structured_parse_failed=True,
                     )
-                repair_prompt = (
-                    "The previous streamed response could not be parsed as valid JSON. "
-                    "Reformat the same answer as valid JSON that matches this JSON schema. "
-                    "Do not add new content. Return only JSON:\n"
-                    f"{_compact_json(schema_payload)}"
-                )
                 try:
-                    repair_response = client.chat.completions.create(
+                    repair_response = self._repair_openai_chat_completion(
+                        client=client,
                         model=model,
                         messages=[
                             *messages,
                             {"role": "assistant", "content": output_text},
-                            {"role": "user", "content": repair_prompt},
                         ],
-                        response_format={
-                            "type": "json_schema",
-                            "json_schema": {
-                                "name": schema.__name__,
-                                "schema": schema_payload,
-                                "strict": True,
-                            },
-                        },
+                        schema=schema,
+                        schema_payload=schema_payload,
                     )
                 except Exception as repair_request_exc:
                     raise AIOutputParseError(str(exc), output_text=output_text) from repair_request_exc
@@ -2516,28 +2509,16 @@ class OpenAICourseAI:
         try:
             output_parsed = schema.model_validate(_extract_json_object(output_text))
         except Exception as exc:
-            repair_prompt = (
-                "The previous response could not be parsed as valid JSON. "
-                "Reformat the same answer as valid JSON that matches this JSON schema. "
-                "Do not add new content. Return only JSON:\n"
-                f"{_compact_json(schema_payload)}"
-            )
             try:
-                repair_response = client.chat.completions.create(
+                repair_response = self._repair_openai_chat_completion(
+                    client=client,
                     model=model,
                     messages=[
                         *messages,
                         {"role": "assistant", "content": output_text},
-                        {"role": "user", "content": repair_prompt},
                     ],
-                    response_format={
-                        "type": "json_schema",
-                        "json_schema": {
-                            "name": schema.__name__,
-                            "schema": schema_payload,
-                            "strict": True,
-                        },
-                    },
+                    schema=schema,
+                    schema_payload=schema_payload,
                 )
             except Exception as repair_request_exc:
                 raise AIOutputParseError(str(exc), output_text=output_text) from repair_request_exc
@@ -2564,6 +2545,40 @@ class OpenAICourseAI:
             output_text=output_text,
             usage=getattr(response, "usage", None),
         )
+
+    def _repair_openai_chat_completion(
+        self,
+        *,
+        client: Any,
+        model: str,
+        messages: list[dict[str, str]],
+        schema: type[BaseModel],
+        schema_payload: dict[str, Any],
+    ) -> Any:
+        repair_prompt = (
+            "The previous response could not be parsed as valid JSON. "
+            "Reformat the same answer as valid JSON that matches this JSON schema. "
+            "Preserve the meaning, escape quotation marks inside string values, and do not add new content. "
+            "Return only JSON:\n"
+            f"{_compact_json(schema_payload)}"
+        )
+        repair_messages = [*messages, {"role": "user", "content": repair_prompt}]
+        try:
+            return client.chat.completions.create(
+                model=model,
+                messages=repair_messages,
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": schema.__name__,
+                        "schema": schema_payload,
+                        "strict": True,
+                    },
+                },
+            )
+        except Exception as exc:
+            logger.warning("Structured JSON repair failed; retrying without response_format: %s", exc)
+            return client.chat.completions.create(model=model, messages=repair_messages)
 
     def _stream_openai_chat_completion(
         self,

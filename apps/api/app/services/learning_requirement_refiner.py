@@ -94,6 +94,8 @@ def refine_blank_board_requirement(
         )
     if not isinstance(result, BlankBoardRequirementRefinement):
         return None
+    if result.route == "ordinary_chat" and _contains_requirement_payload(result):
+        result = result.model_copy(update={"route": "requirement_refining"})
     if visible_chat_buffer:
         result = result.model_copy(update={"chatbot_message": visible_chat_buffer})
     if not visible_chat_was_streamed:
@@ -202,6 +204,15 @@ def _first_text(*values: str) -> str:
         if text:
             return text
     return ""
+
+
+def _contains_requirement_payload(result: BlankBoardRequirementRefinement) -> bool:
+    return bool(
+        result.learning_goal.strip()
+        or result.work_mode in {"knowledge_board", "narrow_topic", "practice_artifact"}
+        or result.granularity in {"single_knowledge_point", "broad_topic", "practice_artifact"}
+        or result.key_facts
+    )
 
 
 def _stream_metadata(
