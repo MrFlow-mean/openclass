@@ -317,14 +317,50 @@ export function useLessonChatAgent({
     let requestStarted = false;
     let streamedChatContent = "";
     let streamedDocumentText = "";
+    let streamedDocumentPreviewFrame: number | null = null;
     let streamedAgentActivity: AgentActivityEvent[] = [];
     let sawReadyForBoardRequirementUpdate = false;
     let requestLesson = lesson;
     let baseStreamingDocument = currentBoardDocument ?? lesson.board_document;
     let requestStartedAtMs = Date.now();
     const abortController = new AbortController();
+    let canStreamDocumentPreview = false;
+
+    function flushStreamingDocumentPreview() {
+      if (!canStreamDocumentPreview || !streamedDocumentText) {
+        return;
+      }
+      setStreamingDocumentPreview(requestLesson.id, {
+        ...baseStreamingDocument,
+        content_json: {},
+        content_html: streamingMarkdownToHtml(streamedDocumentText),
+        content_text: streamedDocumentText,
+      });
+    }
+
+    function scheduleStreamingDocumentPreview() {
+      if (!canStreamDocumentPreview) {
+        return;
+      }
+      if (streamedDocumentPreviewFrame !== null) {
+        return;
+      }
+      streamedDocumentPreviewFrame = window.requestAnimationFrame(() => {
+        streamedDocumentPreviewFrame = null;
+        flushStreamingDocumentPreview();
+      });
+    }
+
+    function clearStreamingDocumentPreviewFrame() {
+      if (streamedDocumentPreviewFrame === null) {
+        return;
+      }
+      window.cancelAnimationFrame(streamedDocumentPreviewFrame);
+      streamedDocumentPreviewFrame = null;
+    }
 
     function finishCancelledTurn() {
+      clearStreamingDocumentPreviewFrame();
       const stoppedContent = streamedChatContent.trim();
       updateLessonMessages(lessonId, (current) =>
         current
@@ -395,7 +431,7 @@ export function useLessonChatAgent({
       } else if (beforeRequestResult?.lesson) {
         baseStreamingDocument = beforeRequestResult.lesson.board_document;
       }
-      const canStreamDocumentPreview = shouldStreamDocumentPreview(payloadWithConversation, baseStreamingDocument);
+      canStreamDocumentPreview = shouldStreamDocumentPreview(payloadWithConversation, baseStreamingDocument);
       if (abortController.signal.aborted) {
         finishCancelledTurn();
         return;
@@ -430,12 +466,7 @@ export function useLessonChatAgent({
               return;
             }
             streamedDocumentText += delta;
-            setStreamingDocumentPreview(requestLesson.id, {
-              ...baseStreamingDocument,
-              content_json: {},
-              content_html: streamingMarkdownToHtml(streamedDocumentText),
-              content_text: streamedDocumentText,
-            });
+            scheduleStreamingDocumentPreview();
           },
           onRequirementUpdate(payload) {
             if (payload.learning_clarification?.ready_for_board) {
@@ -456,6 +487,8 @@ export function useLessonChatAgent({
         },
         { signal: abortController.signal }
       );
+      clearStreamingDocumentPreviewFrame();
+      flushStreamingDocumentPreview();
       const failedStreamingDocumentPreview =
         canStreamDocumentPreview &&
         streamedDocumentText.trim() &&
@@ -654,6 +687,7 @@ export function useLessonChatAgent({
       setError(userFacingError);
       setCurrentNeedPending(false);
     } finally {
+      clearStreamingDocumentPreviewFrame();
       if (chatAbortControllerRef.current === abortController) {
         chatAbortControllerRef.current = null;
       }
