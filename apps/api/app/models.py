@@ -95,6 +95,7 @@ AgentActivityStatus = Literal["pending", "running", "completed", "blocked", "fai
 InitialLearningWorkMode = Literal["knowledge_board", "narrow_topic", "practice_artifact", "unknown"]
 InitialLearningGranularity = Literal[
     "single_knowledge_point",
+    "source_chapter",
     "broad_topic",
     "practice_artifact",
     "unclear",
@@ -534,6 +535,10 @@ class LearningSourceReference(BaseModel):
     source_chapter_id: str = ""
     chapter_number: str = ""
     chapter_title: str = ""
+    scope_kind: str = "section"
+    scope_chapter_id: str = ""
+    scope_chapter_number: str = ""
+    scope_chapter_title: str = ""
     section_path: list[str] = Field(default_factory=list)
     source_locator: str = ""
     page_range: str = ""

@@ -2017,7 +2017,11 @@ class OpenAICourseAI:
             "1. 生成空白板书的第一版时，只根据已冻结学习需求清单和资料摘要写入文档；"
             "编辑已有板书时，只根据结构化需求/任务清单、当前板书、目标选区/定位摘录和资料摘要写入，"
             "不得读取用户和 Chatbot 的原始聊天记录。\n"
-            "2. intent=generate_from_requirements 时，输出一份完整板书，operation 使用 replace_document，"
+            "2. intent=generate_from_requirements 时，输出一份完整板书，operation 使用 replace_document。"
+            "若冻结清单的 source_grounding 已确认，且其 confirmed_references 以同一个 scope_chapter_id 标记为 scope_kind=chapter，"
+            "这表示用户明确选择了一个资料章节作为完整范围：必须覆盖所有已确认的小节证据，不能只选第一个小节当作入口课。"
+            "此时以该章节范围为准，即使学习目标看起来较宽，也不要把其余已确认小节降为“后续学习路线”。"
+            "其他未确认或没有章节范围的宽泛主题，"
             "content_text 必须包含清晰章节标题；默认生成一次可讲完的聚焦板书，而不是把一个领域、"
             "一章或一串后续模块全部展开成总览讲义。若冻结清单的学习目标仍偏大，"
             "先选择最适合作为当前第一版的入口小课展开，把其余内容放入简短的“后续学习路线/下一步”中，"
@@ -2059,7 +2063,8 @@ class OpenAICourseAI:
                 "operation": "replace_document、replace_selection 或 append_section。",
                 "title": "文档标题；局部编辑时可沿用当前标题。",
                 "content_text": (
-                    "完整生成时是整份板书，默认按一次可讲完的聚焦小课展开；"
+                    "完整生成时是整份板书。若 confirmed_references 标记了同一 scope_chapter_id 的 scope_kind=chapter，"
+                    "必须按该资料章节覆盖全部已确认小节；否则默认按一次可讲完的聚焦小课展开；"
                     "局部替换时是替换片段；追加时是追加片段。生成结果应采用教材体/大学讲义体，"
                     "使用正式、客观、规范的学术表达；避免口语化讲课稿。必须像 ChatGPT 正常回答一样使用 Markdown/普通文本，"
                     "用 Markdown 保留标题、列表、加粗、表格等文档结构；不得输出 HTML 标签；"

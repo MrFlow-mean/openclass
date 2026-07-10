@@ -56,13 +56,14 @@ export function buildLearningRequirementDisplay({
   const boardWorkflowFactor = buildBoardWorkflowFactor(requirementSheet?.board_workflow ?? null);
 
   if (workMode === "knowledge_board") {
-    const isSingleKnowledgePoint = granularity === "single_knowledge_point";
+    const hasStructuredSourceScope = granularity === "source_chapter";
+    const isSingleKnowledgePoint = granularity === "single_knowledge_point" || hasStructuredSourceScope;
     const knowledgePoint = isSingleKnowledgePoint && learningGoal ? learningGoal : "待收敛到具体知识点";
     const coreFactors = [
       boardWorkflowFactor,
       factor({
         key: "knowledge_point",
-        label: "知识点",
+        label: hasStructuredSourceScope ? "资料章节" : "知识点",
         value: knowledgePoint,
         filled: Boolean(isSingleKnowledgePoint && learningGoal),
       }),
@@ -182,7 +183,7 @@ function normalizeWorkMode(value: InitialLearningWorkMode | null | undefined): I
 }
 
 function normalizeGranularity(value: InitialLearningGranularity | null | undefined): InitialLearningGranularity | "unclear" {
-  if (value === "single_knowledge_point" || value === "broad_topic" || value === "practice_artifact") {
+  if (value === "single_knowledge_point" || value === "source_chapter" || value === "broad_topic" || value === "practice_artifact") {
     return value;
   }
   return "unclear";

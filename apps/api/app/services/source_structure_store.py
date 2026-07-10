@@ -453,10 +453,30 @@ class SourceStructureStore:
                 """
                 SELECT *
                 FROM source_chunks
-                WHERE owner_user_id = ? AND package_id = ? AND chapter_id = ?
+                WHERE owner_user_id = ?
+                    AND package_id = ?
+                    AND source_ingestion_id = ?
+                    AND (
+                        chapter_id = ?
+                        OR (
+                            ? IS NOT NULL
+                            AND ? IS NOT NULL
+                            AND end_offset > ?
+                            AND start_offset < ?
+                        )
+                    )
                 ORDER BY order_index
                 """,
-                (owner_user_id, package_id, chapter.id),
+                (
+                    owner_user_id,
+                    package_id,
+                    chapter.source_ingestion_id,
+                    chapter.id,
+                    chapter.body_start_offset,
+                    chapter.body_end_offset,
+                    chapter.body_start_offset,
+                    chapter.body_end_offset,
+                ),
             ).fetchall()
             chunks = [self._chunk_from_row(row) for row in chunk_rows]
             if not chunks:
@@ -465,12 +485,16 @@ class SourceStructureStore:
             text_parts: list[str] = []
             chunk_tokens = 0
             for chunk in chunks:
-                if used_tokens and used_tokens + chunk.token_count > token_budget:
+                chunk_text = _chunk_text_for_chapter(chunk, chapter)
+                if not chunk_text:
+                    continue
+                chunk_token_count = _estimate_tokens(chunk_text)
+                if used_tokens and used_tokens + chunk_token_count > token_budget:
                     break
                 chunk_ids.append(chunk.id)
-                text_parts.append(chunk.text)
-                chunk_tokens += chunk.token_count
-                used_tokens += chunk.token_count
+                text_parts.append(chunk_text)
+                chunk_tokens += chunk_token_count
+                used_tokens += chunk_token_count
             if not text_parts:
                 break
             expanded_text = "\n\n".join(text_parts).strip()
@@ -719,6 +743,18 @@ def _chunk_page_range(chunk: SourceChunk) -> str:
     if display_end == chunk.page_start:
         return f"p. {chunk.page_start}"
     return f"pp. {chunk.page_start}-{display_end}"
+
+
+def _chunk_text_for_chapter(chunk: SourceChunk, chapter: SourceChapter) -> str:
+    if chapter.body_start_offset is None or chapter.body_end_offset is None:
+        return chunk.text.strip()
+    overlap_start = max(chunk.start_offset, chapter.body_start_offset)
+    overlap_end = min(chunk.end_offset, chapter.body_end_offset)
+    if overlap_end <= overlap_start:
+        return ""
+    start_index = max(0, overlap_start - chunk.start_offset)
+    end_index = max(start_index, overlap_end - chunk.start_offset)
+    return chunk.text[start_index:end_index].strip()
 
 
 source_structure_store = SourceStructureStore()

@@ -228,6 +228,47 @@ def test_resource_resolver_prefers_verified_chapter_index(tmp_path: Path) -> Non
     assert "exact source" in bundle.evidence_items[0].expanded_text
 
 
+def test_resource_resolver_covers_all_direct_sections_for_a_chapter_scope(tmp_path: Path) -> None:
+    markdown_path = tmp_path / "chapter-scope.md"
+    markdown_path.write_text(
+        "# 4 Whole Chapter\n\nChapter introduction.\n\n"
+        "## 4.1 First Section\n\nFirst section body.\n\n"
+        "## 4.2 Second Section\n\nSecond section body.\n\n"
+        "## 4.3 Third Section\n\nThird section body.",
+        encoding="utf-8",
+    )
+    store = SourceEvidenceStore(tmp_path / "openclass.sqlite3")
+    structure_store = SourceStructureStore(tmp_path / "openclass.sqlite3")
+    record = _source_record(tmp_path, file_name=markdown_path.name, mime_type="text/markdown", path=markdown_path)
+    store.save_source(record)
+    SourceStructureIndexer(store=structure_store).rebuild_structure(record)
+    resolver = ResourceResolver(adapter=_NoSearchAdapter(), store=store, structure_store=structure_store)
+
+    bundle = resolver.resolve_for_board_task(
+        owner_user_id="user_1",
+        package_id="pkg_1",
+        lesson_id="lesson_1",
+        user_message="结合资料讲第4章",
+        board_task=BoardTaskRequirementSheet(requested_action="explain", question_or_topic="第4章", progress=100),
+        purpose="board_explain",
+    )
+
+    assert bundle is not None
+    assert [item.metadata["scope_kind"] for item in bundle.evidence_items] == ["chapter", "chapter", "chapter"]
+    assert [item.metadata["scope_chapter_number"] for item in bundle.evidence_items] == ["4", "4", "4"]
+    assert [item.section_path[-1] for item in bundle.evidence_items] == [
+        "4.1 First Section",
+        "4.2 Second Section",
+        "4.3 Third Section",
+    ]
+    assert [item.expanded_text for item in bundle.evidence_items] == [
+        "## 4.1 First Section\n\nFirst section body.",
+        "## 4.2 Second Section\n\nSecond section body.",
+        "## 4.3 Third Section\n\nThird section body.",
+    ]
+    assert bundle.metadata["source_reference_resolution"]["scope_coverage"] == "all_direct_sections"
+
+
 def test_resource_resolver_uses_explicit_source_chapter_reference(tmp_path: Path) -> None:
     target_path = tmp_path / "target.md"
     other_path = tmp_path / "other.md"

@@ -139,7 +139,7 @@ export interface LearningRequirementSheet {
 
 export type BoardWorkflow = "generate_from_scratch" | "act_on_existing_board" | "unknown";
 export type InitialLearningWorkMode = "knowledge_board" | "narrow_topic" | "practice_artifact" | "unknown";
-export type InitialLearningGranularity = "single_knowledge_point" | "broad_topic" | "practice_artifact" | "unclear";
+export type InitialLearningGranularity = "single_knowledge_point" | "source_chapter" | "broad_topic" | "practice_artifact" | "unclear";
 export type BoardTaskRunStatus = "collecting" | "ready" | "awaiting_confirmation" | "consumed" | "not_executed" | "archived";
 export type BoardDocumentOperationStatus = "none" | "succeeded" | "failed";
 export type BoardTaskRequestedAction = "write" | "edit" | "explain" | "chat";

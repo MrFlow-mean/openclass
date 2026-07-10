@@ -8,7 +8,7 @@ from app.services.board_document_editor import BoardDocumentEditOutcome
 from app.services.chat_service import process_chat_on_lesson
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
 from app.services.learning_requirement_history import LearningRequirementHistoryRecorder
-from app.services.learning_source_reference_service import apply_evidence_confirmation
+from app.services.learning_source_reference_service import apply_evidence_confirmation, source_evidence_store
 from app.services.lesson_factory import build_requirements, create_empty_lesson
 from app.services.openai_course_ai import ChatbotReply, openai_course_ai
 from app.services.rich_document import build_document
@@ -129,6 +129,45 @@ def test_confirmed_evidence_is_written_to_new_requirement_version(
     commit = saved_lesson.history_graph.commits[-1]
     assert commit.metadata["kind"] == "source_reference_confirmed"
     assert commit.metadata["chapter_ids"] == [chapter.id]
+
+
+def test_confirming_a_chapter_scope_preserves_every_confirmed_section(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    store, user_id, lesson_id, source, chapter, bundle = _seed_candidate(tmp_path, monkeypatch)
+    scoped_items = [
+        item.model_copy(
+            update={
+                "metadata": {
+                    **item.metadata,
+                    "scope_kind": "chapter",
+                    "scope_chapter_id": "scope_root",
+                    "scope_chapter_number": "4",
+                    "scope_chapter_title": "Chapter scope",
+                }
+            }
+        )
+        for item in bundle.evidence_items
+    ]
+    scoped_bundle = bundle.model_copy(update={"evidence_items": scoped_items})
+    source_evidence_store.save_bundle(scoped_bundle)
+
+    result = apply_evidence_confirmation(
+        owner_user_id=user_id,
+        lesson_id=lesson_id,
+        bundle_id=scoped_bundle.id,
+        action="confirm",
+    )
+
+    assert result.active_requirement_sheet is not None
+    assert result.active_requirement_sheet.learning_goal == "Chapter scope"
+    assert result.active_requirement_sheet.boundary == "Chapter scope"
+    assert result.active_requirement_sheet.granularity == "source_chapter"
+    reference = result.active_requirement_sheet.source_grounding.confirmed_references[0]
+    assert reference.scope_kind == "chapter"
+    assert reference.scope_chapter_id == "scope_root"
+    assert reference.scope_chapter_title == "Chapter scope"
 
 
 def test_skipped_evidence_records_event_without_writing_reference(

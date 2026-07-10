@@ -397,6 +397,7 @@ export function learningClarityFromCommit(commit: CommitRecord | null): Learning
         : null,
     granularity:
       record.granularity === "single_knowledge_point" ||
+      record.granularity === "source_chapter" ||
       record.granularity === "broad_topic" ||
       record.granularity === "practice_artifact" ||
       record.granularity === "unclear"

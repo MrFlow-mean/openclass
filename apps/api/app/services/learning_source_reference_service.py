@@ -110,7 +110,7 @@ def apply_evidence_confirmation(
         confirmed_at=confirmed.confirmed_at,
         confirmed_references=references,
     )
-    updated_requirements = requirements.model_copy(deep=True, update={"source_grounding": grounding})
+    updated_requirements = _apply_confirmed_source_scope(requirements, grounding)
     lesson.learning_requirements = updated_requirements
     stamp = recorder.record_update(
         requirements=updated_requirements,
@@ -191,6 +191,10 @@ def _build_confirmed_references(bundle: EvidenceBundle) -> list[LearningSourceRe
                 source_chapter_id=chapter_id,
                 chapter_number=(chapter.normalized_number or chapter.number) if chapter else "",
                 chapter_title=chapter.title if chapter else (representative.section_path[-1] if representative.section_path else ""),
+                scope_kind=str(representative.metadata.get("scope_kind") or "section"),
+                scope_chapter_id=str(representative.metadata.get("scope_chapter_id") or chapter_id),
+                scope_chapter_number=str(representative.metadata.get("scope_chapter_number") or ""),
+                scope_chapter_title=str(representative.metadata.get("scope_chapter_title") or ""),
                 section_path=representative.section_path,
                 source_locator=(chapter.source_locator if chapter else "")
                 or str(representative.metadata.get("source_locator") or ""),
@@ -206,6 +210,37 @@ def _build_confirmed_references(bundle: EvidenceBundle) -> list[LearningSourceRe
             )
         )
     return references
+
+
+def _apply_confirmed_source_scope(
+    requirements: LearningRequirementSheet,
+    grounding: LearningSourceGrounding,
+) -> LearningRequirementSheet:
+    chapter_references = [reference for reference in grounding.confirmed_references if reference.scope_kind == "chapter"]
+    scope_ids = {reference.scope_chapter_id for reference in chapter_references if reference.scope_chapter_id}
+    if len(scope_ids) != 1:
+        return requirements.model_copy(deep=True, update={"source_grounding": grounding})
+    scope_title = next(
+        (reference.scope_chapter_title.strip() for reference in chapter_references if reference.scope_chapter_title.strip()),
+        "",
+    )
+    if not scope_title:
+        return requirements.model_copy(deep=True, update={"source_grounding": grounding})
+    section_scope = _dedupe(
+        " ".join(part for part in [reference.chapter_number, reference.chapter_title] if part).strip()
+        for reference in chapter_references
+    )
+    return requirements.model_copy(
+        deep=True,
+        update={
+            "theme": scope_title,
+            "learning_goal": scope_title,
+            "boundary": scope_title,
+            "board_scope": section_scope,
+            "granularity": "source_chapter",
+            "source_grounding": grounding,
+        },
+    )
 
 
 def _save_with_rollback(

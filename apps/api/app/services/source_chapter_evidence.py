@@ -36,25 +36,31 @@ def resolve_verified_chapter_evidence(
     if isinstance(match, dict):
         return [], match
     source, chapter, resolution = match
-    evidence = structure_store.chapter_evidence_by_id(
+    targets = _source_scope_targets(structure_store=structure_store, source=source, chapter=chapter)
+    evidence = _indexed_scope_evidence(
+        structure_store=structure_store,
         owner_user_id=owner_user_id,
         package_id=package_id,
-        chapter_id=chapter.id,
+        targets=targets,
         limit=limit,
         token_budget=token_budget,
     )
     if evidence:
         resolution["body_retrieval"] = "indexed_chunks"
+        _attach_scope_metadata(evidence, scope_chapter=chapter, covers_multiple_sections=len(targets) > 1)
+        _attach_scope_resolution(resolution, chapter=chapter, targets=targets)
         return evidence, resolution
     ocr_evidence = _ocr_chapter_evidence(
         source=source,
         chapter=chapter,
+        targets=targets,
         token_budget=token_budget,
         page_limit=page_limit,
     )
     if ocr_evidence:
         resolution["body_retrieval"] = "macos_vision_ocr"
-        resolution["ocr_partial"] = bool(ocr_evidence[0].metadata.get("ocr_partial"))
+        resolution["ocr_partial"] = any(bool(item.metadata.get("ocr_partial")) for item in ocr_evidence)
+        _attach_scope_resolution(resolution, chapter=chapter, targets=targets)
         return ocr_evidence, resolution
     resolution["status"] = "content_unavailable"
     resolution["body_retrieval"] = "unavailable"
@@ -174,6 +180,7 @@ def _ocr_chapter_evidence(
     *,
     source: SourceIngestionRecord,
     chapter: SourceChapter,
+    targets: list[SourceChapter],
     token_budget: int,
     page_limit: int,
 ) -> list[RetrievalEvidence]:
@@ -183,47 +190,142 @@ def _ocr_chapter_evidence(
     path = Path(raw_path).expanduser()
     if path.suffix.lower() != ".pdf" or not path.exists() or chapter.page_start is None:
         return []
-    page_start = max(1, chapter.page_start)
-    chapter_page_end = max(page_start, (chapter.page_end or page_start + 1) - 1)
-    pages_to_read = min(page_limit, chapter_page_end - page_start + 1)
-    ocr_page_end = page_start + pages_to_read - 1
-    text = extract_pdf_pages_text(
-        path,
-        page_start=page_start,
-        page_end=ocr_page_end,
-        max_pages=pages_to_read,
-    )
-    if not text:
-        return []
-    expanded_text = _trim_to_token_budget(text, max_tokens=token_budget)
-    token_count = _estimate_tokens(expanded_text)
-    page_range = f"p. {page_start}" if ocr_page_end == page_start else f"p. {page_start}-{ocr_page_end}"
-    return [
-        RetrievalEvidence(
-            source_ingestion_id=source.id,
-            open_notebook_source_id=source.open_notebook_source_id,
-            source_title=source.title,
-            source_uri=source.source_uri,
-            chapter_id=chapter.id,
-            section_path=chapter.path or [chapter.title],
-            page_range=page_range,
-            chunk_ids=[],
-            excerpt=_compact(expanded_text, 360),
-            expanded_text=expanded_text,
-            relevance_score=chapter.confidence,
-            reason="命中已验证目录节点；正文文本层为空，读取对应扫描页 OCR 摘录。",
-            token_count=token_count,
-            metadata={
-                "retrieval_mode": "verified_chapter_ocr",
-                "ocr_provider": "macos_vision",
-                "ocr_page_start": page_start,
-                "ocr_page_end": ocr_page_end,
-                "chapter_page_end_exclusive": chapter.page_end,
-                "ocr_partial": ocr_page_end < chapter_page_end,
-                "source_locator": chapter.source_locator,
-            },
+    targets = targets or [chapter]
+    page_budget = max(1, page_limit // len(targets))
+    token_share = max(1, token_budget // len(targets))
+    evidence: list[RetrievalEvidence] = []
+    for target in targets:
+        if target.page_start is None:
+            continue
+        page_start = max(1, target.page_start)
+        chapter_page_end = max(page_start, (target.page_end or page_start + 1) - 1)
+        pages_to_read = min(page_budget, chapter_page_end - page_start + 1)
+        ocr_page_end = page_start + pages_to_read - 1
+        text = extract_pdf_pages_text(
+            path,
+            page_start=page_start,
+            page_end=ocr_page_end,
+            max_pages=pages_to_read,
         )
+        if not text:
+            continue
+        expanded_text = _trim_to_token_budget(text, max_tokens=token_share)
+        token_count = _estimate_tokens(expanded_text)
+        page_range = f"p. {page_start}" if ocr_page_end == page_start else f"p. {page_start}-{ocr_page_end}"
+        evidence.append(
+            RetrievalEvidence(
+                source_ingestion_id=source.id,
+                open_notebook_source_id=source.open_notebook_source_id,
+                source_title=source.title,
+                source_uri=source.source_uri,
+                chapter_id=target.id,
+                section_path=target.path or [target.title],
+                page_range=page_range,
+                chunk_ids=[],
+                excerpt=_compact(expanded_text, 360),
+                expanded_text=expanded_text,
+                relevance_score=target.confidence,
+                reason="命中已验证目录节点；正文文本层为空，读取对应扫描页 OCR 摘录。",
+                token_count=token_count,
+                metadata={
+                    "retrieval_mode": "verified_chapter_ocr",
+                    "ocr_provider": "macos_vision",
+                    "ocr_page_start": page_start,
+                    "ocr_page_end": ocr_page_end,
+                    "chapter_page_end_exclusive": target.page_end,
+                    "ocr_partial": ocr_page_end < chapter_page_end,
+                    "source_locator": target.source_locator,
+                    "scope_kind": "chapter" if len(targets) > 1 else "section",
+                    "scope_chapter_id": chapter.id,
+                    "scope_chapter_number": chapter.normalized_number or chapter.number,
+                    "scope_chapter_title": chapter.title,
+                },
+            )
+        )
+    return evidence
+
+
+def _source_scope_targets(
+    *,
+    structure_store: SourceStructureStore,
+    source: SourceIngestionRecord,
+    chapter: SourceChapter,
+) -> list[SourceChapter]:
+    view = structure_store.get_structure_view(source=source, chunk_limit=0)
+    direct_children = [
+        candidate
+        for candidate in view.chapters
+        if candidate.parent_id == chapter.id
+        and candidate.anchor_status == "verified"
     ]
+    return direct_children or [chapter]
+
+
+def _indexed_scope_evidence(
+    *,
+    structure_store: SourceStructureStore,
+    owner_user_id: str,
+    package_id: str,
+    targets: list[SourceChapter],
+    limit: int,
+    token_budget: int,
+) -> list[RetrievalEvidence]:
+    if not targets:
+        return []
+    per_target_limit = max(1, limit // len(targets))
+    per_target_budget = max(1, token_budget // len(targets))
+    evidence: list[RetrievalEvidence] = []
+    for target in targets:
+        target_evidence = structure_store.chapter_evidence_by_id(
+            owner_user_id=owner_user_id,
+            package_id=package_id,
+            chapter_id=target.id,
+            limit=per_target_limit,
+            token_budget=per_target_budget,
+        )
+        evidence.extend(item for item in target_evidence if _has_substantive_evidence(item))
+        if len(evidence) >= limit:
+            break
+    if len(targets) > 1 and {item.chapter_id for item in evidence} != {target.id for target in targets}:
+        return []
+    return evidence[:limit]
+
+
+def _attach_scope_metadata(
+    evidence: list[RetrievalEvidence],
+    *,
+    scope_chapter: SourceChapter,
+    covers_multiple_sections: bool,
+) -> None:
+    for item in evidence:
+        item.metadata = {
+            **item.metadata,
+            "scope_kind": "chapter" if covers_multiple_sections else "section",
+            "scope_chapter_id": scope_chapter.id,
+            "scope_chapter_number": scope_chapter.normalized_number or scope_chapter.number,
+            "scope_chapter_title": scope_chapter.title,
+        }
+
+
+def _attach_scope_resolution(
+    resolution: dict[str, object],
+    *,
+    chapter: SourceChapter,
+    targets: list[SourceChapter],
+) -> None:
+    if len(targets) <= 1:
+        return
+    resolution["scope_kind"] = "chapter"
+    resolution["scope_chapter_id"] = chapter.id
+    resolution["scope_chapter_title"] = chapter.title
+    resolution["scope_section_count"] = len(targets)
+    resolution["scope_coverage"] = "all_direct_sections"
+
+
+def _has_substantive_evidence(item: RetrievalEvidence) -> bool:
+    text = item.expanded_text or item.excerpt
+    without_page_markers = re.sub(r"\[Page\s+\d+\]", "", text, flags=re.I)
+    return bool(without_page_markers.strip())
 
 
 def _source_resolution(
