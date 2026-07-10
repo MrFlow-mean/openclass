@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import json
 import re
 from functools import lru_cache
 from html.parser import HTMLParser
@@ -408,19 +409,97 @@ def _parse_fenced_code_block(lines: list[str], index: int) -> tuple[str | None, 
     return language, "\n".join(code_lines).rstrip("\n"), cursor
 
 
+_PYTHON_DEDENT_RE = re.compile(r"^(elif\b|else:|except\b|finally:)")
+
+
+def _code_needs_indentation(code: str) -> bool:
+    lines = code.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    non_empty = [line for line in lines if line.strip()]
+    if not non_empty:
+        return False
+    indented = [line for line in non_empty if re.match(r"^\s+\S", line)]
+    return len(indented) < len(non_empty) * 0.25
+
+
+def _brace_indent_delta(line: str) -> int:
+    delta = 0
+    in_string = False
+    string_char = ""
+    for index, char in enumerate(line):
+        if in_string:
+            if char == string_char and line[index - 1] != "\\":
+                in_string = False
+            continue
+        if char in {'"', "'", "`"}:
+            in_string = True
+            string_char = char
+            continue
+        if char == "{":
+            delta += 1
+        elif char == "}":
+            delta -= 1
+    return delta
+
+
+def _format_brace_indentation(code: str, indent_size: int = 4) -> str:
+    lines = code.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    result: list[str] = []
+    level = 0
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            result.append("")
+            continue
+        if stripped.startswith("}"):
+            level = max(0, level - 1)
+        result.append(" " * (level * indent_size) + stripped)
+        level = max(0, level + _brace_indent_delta(stripped))
+    return "\n".join(result).rstrip("\n")
+
+
+def _format_python_indentation(code: str, indent_size: int = 4) -> str:
+    lines = code.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    result: list[str] = []
+    level = 0
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            result.append("")
+            continue
+        if _PYTHON_DEDENT_RE.match(stripped):
+            level = max(0, level - 1)
+        result.append(" " * (level * indent_size) + stripped)
+        if re.search(r":\s*(#.*)?$", stripped):
+            level += 1
+    return "\n".join(result).rstrip("\n")
+
+
+def _format_code_indentation(code: str, language: str | None = None) -> str:
+    if not code.strip() or not _code_needs_indentation(code):
+        return code
+    normalized = (language or "").strip().lower()
+    if normalized in {"python", "py"}:
+        return _format_python_indentation(code)
+    if normalized in {"json", "bash", "shell", "sh"}:
+        return code
+    return _format_brace_indentation(code)
+
+
 def _code_block_html(language: str | None, code: str) -> str:
-    escaped = html.escape(code)
+    formatted = _format_code_indentation(code, language)
+    escaped = html.escape(formatted)
     if language:
         return f'<pre><code class="language-{html.escape(language, quote=True)}">{escaped}</code></pre>'
     return f"<pre><code>{escaped}</code></pre>"
 
 
 def _code_block_node(language: str | None, code: str) -> dict[str, Any]:
+    formatted = _format_code_indentation(code, language)
     node: dict[str, Any] = {"type": "codeBlock"}
     if language:
         node["attrs"] = {"language": language}
-    if code:
-        node["content"] = [{"type": "text", "text": code}]
+    if formatted:
+        node["content"] = [{"type": "text", "text": formatted}]
     return node
 
 
@@ -1301,8 +1380,50 @@ def _looks_like_markdown_document(content_text: str) -> bool:
     return False
 
 
+def _repair_code_block_indentation(document: BoardDocument) -> BoardDocument:
+    content_json = document.content_json if isinstance(document.content_json, dict) else {"type": "doc", "content": []}
+    content_json = json.loads(json.dumps(content_json, ensure_ascii=False))
+    changed = False
+
+    def walk(value: Any) -> None:
+        nonlocal changed
+        if isinstance(value, dict):
+            if value.get("type") == "codeBlock":
+                language = str(value.get("attrs", {}).get("language") or "").strip() or None
+                code = _code_block_plain_text(value)
+                formatted = _format_code_indentation(code, language)
+                if formatted != code:
+                    value["content"] = [{"type": "text", "text": formatted}] if formatted else []
+                    changed = True
+                return
+            for item in value.values():
+                walk(item)
+            return
+        if isinstance(value, list):
+            for item in value:
+                walk(item)
+
+    walk(content_json)
+    if not changed:
+        return document
+
+    repaired = document.model_copy(update={"content_json": content_json})
+    markdown = document_to_markdown(repaired)
+    content_html = text_to_html(markdown) if markdown else document.content_html
+    return repaired.model_copy(update={"content_html": content_html})
+
+
+def _code_block_plain_text(node: dict[str, Any]) -> str:
+    return "".join(
+        str(child.get("text") or "")
+        for child in node.get("content", [])
+        if isinstance(child, dict) and child.get("type") == "text"
+    )
+
+
 def upgrade_markdown_like_document(document: BoardDocument) -> BoardDocument:
     existing_document = _repair_existing_document(document)
+    existing_document = _repair_code_block_indentation(existing_document)
     if _document_has_unrendered_code_fences(existing_document):
         fence_repaired = _repair_document_code_fences(existing_document)
         if fence_repaired.model_dump(mode="json") != existing_document.model_dump(mode="json"):

@@ -6,6 +6,7 @@ import { Check, Code2, Copy } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { codeLanguageLabel, highlightCode } from "@/lib/code-highlight";
+import { formatCodeIndentation } from "@/lib/code-format";
 
 export function RichCodeBlockView({ node, editor }: NodeViewProps) {
   const language = typeof node.attrs.language === "string" ? node.attrs.language : null;
@@ -13,14 +14,15 @@ export function RichCodeBlockView({ node, editor }: NodeViewProps) {
   const code = node.textContent;
   const isEditable = editor.isEditable;
   const [copied, setCopied] = useState(false);
-  const highlighted = useMemo(() => highlightCode(code, language), [code, language]);
+  const displayCode = useMemo(() => formatCodeIndentation(code, language), [code, language]);
+  const highlighted = useMemo(() => highlightCode(displayCode, language), [displayCode, language]);
 
   async function handleCopy() {
-    if (!code.trim()) {
+    if (!displayCode.trim()) {
       return;
     }
     try {
-      await navigator.clipboard.writeText(code);
+      await navigator.clipboard.writeText(displayCode);
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1600);
     } catch {
