@@ -1303,6 +1303,10 @@ def _looks_like_markdown_document(content_text: str) -> bool:
 
 def upgrade_markdown_like_document(document: BoardDocument) -> BoardDocument:
     existing_document = _repair_existing_document(document)
+    if _document_has_unrendered_code_fences(existing_document):
+        fence_repaired = _repair_document_code_fences(existing_document)
+        if fence_repaired.model_dump(mode="json") != existing_document.model_dump(mode="json"):
+            return fence_repaired
     if not _looks_like_markdown_document(document.content_text):
         return existing_document
     upgraded = build_document(
@@ -1314,6 +1318,83 @@ def upgrade_markdown_like_document(document: BoardDocument) -> BoardDocument:
     if _would_downgrade_existing_rich_structure(existing_document, upgraded):
         return existing_document
     return upgraded
+
+
+def _paragraph_plain_text(node: dict[str, Any]) -> str:
+    if node.get("type") != "paragraph":
+        return ""
+    parts: list[str] = []
+    for child in node.get("content", []):
+        if isinstance(child, dict) and child.get("type") == "text":
+            parts.append(str(child.get("text") or ""))
+    return "".join(parts)
+
+
+def _document_has_code_blocks(document: BoardDocument) -> bool:
+    def walk(value: Any) -> bool:
+        if isinstance(value, dict):
+            if value.get("type") == "codeBlock":
+                return True
+            return any(walk(item) for item in value.values())
+        if isinstance(value, list):
+            return any(walk(item) for item in value)
+        return False
+
+    return walk(document.content_json)
+
+
+def _document_has_unrendered_code_fences(document: BoardDocument) -> bool:
+    return "```" in document.content_text and not _document_has_code_blocks(document)
+
+
+def _repair_document_code_fences(document: BoardDocument) -> BoardDocument:
+    if not _document_has_unrendered_code_fences(document):
+        return document
+
+    code_blocks = [
+        node
+        for node in text_to_tiptap_doc(document.content_text).get("content", [])
+        if node.get("type") == "codeBlock"
+    ]
+    if not code_blocks:
+        return document
+
+    new_content: list[dict[str, Any]] = []
+    code_index = 0
+    in_fence = False
+
+    for node in document.content_json.get("content", []):
+        if not isinstance(node, dict):
+            continue
+        if node.get("type") != "paragraph":
+            if not in_fence:
+                new_content.append(node)
+            continue
+
+        text = _paragraph_plain_text(node)
+        if not in_fence and "```" in text and code_index < len(code_blocks):
+            prefix = text.split("```", 1)[0].strip()
+            if prefix:
+                new_content.append(_paragraph_node(prefix))
+            new_content.append(code_blocks[code_index])
+            code_index += 1
+            in_fence = not text.rstrip().endswith("```")
+            continue
+
+        if in_fence:
+            if text.rstrip().endswith("```"):
+                in_fence = False
+            continue
+
+        new_content.append(node)
+
+    if code_index == 0:
+        return document
+
+    repaired = document.model_copy(update={"content_json": {"type": "doc", "content": new_content}})
+    markdown = document_to_markdown(repaired)
+    repaired_html = text_to_html(markdown) if markdown else document.content_html
+    return repaired.model_copy(update={"content_html": repaired_html})
 
 
 def _repair_existing_document(document: BoardDocument) -> BoardDocument:
