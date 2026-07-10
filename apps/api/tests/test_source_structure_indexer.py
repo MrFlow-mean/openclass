@@ -228,6 +228,43 @@ def test_resource_resolver_prefers_verified_chapter_index(tmp_path: Path) -> Non
     assert "exact source" in bundle.evidence_items[0].expanded_text
 
 
+def test_resource_resolver_uses_top_level_order_for_unnumbered_epub_chapters(tmp_path: Path) -> None:
+    epub_path = tmp_path / "unnumbered-guide.epub"
+    _write_epub_with_unnumbered_nav(epub_path)
+    store = SourceEvidenceStore(tmp_path / "openclass.sqlite3")
+    structure_store = SourceStructureStore(tmp_path / "openclass.sqlite3")
+    record = _source_record(tmp_path, file_name=epub_path.name, mime_type="application/epub+zip", path=epub_path)
+    store.save_source(record)
+    SourceStructureIndexer(store=structure_store).rebuild_structure(record)
+    numbered_path = tmp_path / "numbered-reference.md"
+    numbered_path.write_text("# 1 Numbered topic\n\nNumbered topic body.", encoding="utf-8")
+    numbered_record = _source_record(
+        tmp_path,
+        file_name=numbered_path.name,
+        mime_type="text/markdown",
+        path=numbered_path,
+    )
+    store.save_source(numbered_record)
+    SourceStructureIndexer(store=structure_store).rebuild_structure(numbered_record)
+    resolver = ResourceResolver(adapter=_NoSearchAdapter(), store=store, structure_store=structure_store)
+
+    bundle = resolver.resolve_for_board_task(
+        owner_user_id="user_1",
+        package_id="pkg_1",
+        lesson_id="lesson_1",
+        user_message="请结合 unnumbered guide 的第 1 章讲解",
+        board_task=BoardTaskRequirementSheet(requested_action="explain", question_or_topic="第 1 章", progress=100),
+        purpose="board_explain",
+    )
+
+    assert bundle is not None
+    assert bundle.evidence_items[0].section_path[-1] == "First topic"
+    assert bundle.evidence_items[0].metadata["requested_chapter_number"] == "1"
+    assert bundle.metadata["source_reference_resolution"]["matched_rules"] == [
+        "unnumbered_top_level_ordinal"
+    ]
+
+
 def test_resource_resolver_covers_all_direct_sections_for_a_chapter_scope(tmp_path: Path) -> None:
     markdown_path = tmp_path / "chapter-scope.md"
     markdown_path.write_text(
@@ -368,6 +405,42 @@ def _write_epub_with_nav(path: Path) -> None:
         )
         archive.writestr("OEBPS/ch1.xhtml", "<html><body><h1>1 Foundations</h1><p>Foundations body.</p></body></html>")
         archive.writestr("OEBPS/ch11.xhtml", "<html><body><h2>1.1 Details</h2><p>Details body.</p></body></html>")
+
+
+def _write_epub_with_unnumbered_nav(path: Path) -> None:
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("mimetype", "application/epub+zip")
+        archive.writestr(
+            "META-INF/container.xml",
+            """<?xml version="1.0"?>
+            <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+              <rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
+            </container>""",
+        )
+        archive.writestr(
+            "OEBPS/content.opf",
+            """<?xml version="1.0"?>
+            <package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+              <manifest>
+                <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+                <item id="first" href="first.xhtml" media-type="application/xhtml+xml"/>
+                <item id="second" href="second.xhtml" media-type="application/xhtml+xml"/>
+              </manifest>
+              <spine>
+                <itemref idref="first"/>
+                <itemref idref="second"/>
+              </spine>
+            </package>""",
+        )
+        archive.writestr(
+            "OEBPS/nav.xhtml",
+            """<html><body><nav epub:type="toc"><ol>
+              <li><a href="first.xhtml">First topic</a></li>
+              <li><a href="second.xhtml">Second topic</a></li>
+            </ol></nav></body></html>""",
+        )
+        archive.writestr("OEBPS/first.xhtml", "<html><body><h1>First topic</h1><p>First topic body.</p></body></html>")
+        archive.writestr("OEBPS/second.xhtml", "<html><body><h1>Second topic</h1><p>Second topic body.</p></body></html>")
 
 
 def _write_pdf_with_toc(path: Path) -> None:

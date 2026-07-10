@@ -148,8 +148,14 @@ def _can_reuse_requirement_bundle(
     if not requested_number:
         return True
     evidence_numbers = {
-        str(item.metadata.get("chapter_number") or explicit_chapter_number(" ".join(item.section_path)))
+        str(number)
         for item in bundle.evidence_items
+        for number in (
+            item.metadata.get("chapter_number"),
+            item.metadata.get("requested_chapter_number"),
+            explicit_chapter_number(" ".join(item.section_path)),
+        )
+        if number
     }
     return requested_number in evidence_numbers
 

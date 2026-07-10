@@ -36,6 +36,7 @@ def resolve_verified_chapter_evidence(
     if isinstance(match, dict):
         return [], match
     source, chapter, resolution = match
+    requested_chapter_number = str(resolution.get("requested_chapter_number") or "")
     targets = _source_scope_targets(structure_store=structure_store, source=source, chapter=chapter)
     evidence = _indexed_scope_evidence(
         structure_store=structure_store,
@@ -47,7 +48,12 @@ def resolve_verified_chapter_evidence(
     )
     if evidence:
         resolution["body_retrieval"] = "indexed_chunks"
-        _attach_scope_metadata(evidence, scope_chapter=chapter, covers_multiple_sections=len(targets) > 1)
+        _attach_scope_metadata(
+            evidence,
+            scope_chapter=chapter,
+            covers_multiple_sections=len(targets) > 1,
+            requested_chapter_number=requested_chapter_number,
+        )
         _attach_scope_resolution(resolution, chapter=chapter, targets=targets)
         return evidence, resolution
     ocr_evidence = _ocr_chapter_evidence(
@@ -60,6 +66,7 @@ def resolve_verified_chapter_evidence(
     if ocr_evidence:
         resolution["body_retrieval"] = "macos_vision_ocr"
         resolution["ocr_partial"] = any(bool(item.metadata.get("ocr_partial")) for item in ocr_evidence)
+        _attach_requested_chapter_number(ocr_evidence, requested_chapter_number)
         _attach_scope_resolution(resolution, chapter=chapter, targets=targets)
         return ocr_evidence, resolution
     resolution["status"] = "content_unavailable"
@@ -104,6 +111,7 @@ def _match_verified_chapter(
     explicit_id = explicit_source_chapter_id(query)
     requested_number = explicit_chapter_number(query)
     candidates: list[tuple[SourceIngestionRecord, SourceChapter, int]] = []
+    ordinal_candidates: list[tuple[SourceIngestionRecord, SourceChapter, int]] = []
     for source in ready_sources:
         view = structure_store.get_structure_view(source=source, chunk_limit=0)
         if view.structure is None or view.structure.status != "ready":
@@ -121,11 +129,12 @@ def _match_verified_chapter(
                         source_title_overlap=title_overlap,
                     )
                 continue
-            chapter_number = _normalize_chapter_number(
-                chapter.normalized_number or chapter.number or explicit_chapter_number(chapter.title)
-            )
+            chapter_number = _chapter_number(chapter)
             if requested_number and chapter_number == requested_number:
                 candidates.append((source, chapter, title_overlap))
+        ordinal_chapter = _unnumbered_top_level_chapter_at(view.chapters, requested_number)
+        if ordinal_chapter is not None:
+            ordinal_candidates.append((source, ordinal_chapter, title_overlap))
     if explicit_id:
         return {
             "status": "not_found",
@@ -135,15 +144,34 @@ def _match_verified_chapter(
             "document_changed": False,
             "reason": "指定的资料章节已经不存在或不再是已验证节点。",
         }
-    if not requested_number or not candidates:
+    if not requested_number:
+        return None
+    match_mode = "unique_verified_chapter_number"
+    source_scoped_ordinal_candidates = [
+        ordinal_candidate
+        for ordinal_candidate in ordinal_candidates
+        if ordinal_candidate[2] >= SOURCE_TITLE_OVERLAP_MIN
+        and not any(
+            numbered_candidate[0].id == ordinal_candidate[0].id
+            for numbered_candidate in candidates
+        )
+    ]
+    if source_scoped_ordinal_candidates:
+        candidates = source_scoped_ordinal_candidates
+        match_mode = "unnumbered_top_level_ordinal"
+    elif not candidates:
+        candidates = ordinal_candidates
+        match_mode = "unnumbered_top_level_ordinal"
+    if not candidates:
         return None
     if len(candidates) == 1:
         source, chapter, overlap = candidates[0]
         return source, chapter, _source_resolution(
             source=source,
             chapter=chapter,
-            match_mode="unique_verified_chapter_number",
+            match_mode=match_mode,
             source_title_overlap=overlap,
+            requested_chapter_number=requested_number if match_mode == "unnumbered_top_level_ordinal" else "",
         )
     ranked = sorted(candidates, key=lambda item: item[2], reverse=True)
     top_overlap = ranked[0][2]
@@ -171,8 +199,38 @@ def _match_verified_chapter(
     return source, chapter, _source_resolution(
         source=source,
         chapter=chapter,
-        match_mode="source_title_and_chapter_number",
+        match_mode=(
+            "source_title_and_unnumbered_top_level_ordinal"
+            if match_mode == "unnumbered_top_level_ordinal"
+            else "source_title_and_chapter_number"
+        ),
         source_title_overlap=overlap,
+        requested_chapter_number=requested_number if match_mode == "unnumbered_top_level_ordinal" else "",
+    )
+
+
+def _unnumbered_top_level_chapter_at(
+    chapters: list[SourceChapter],
+    requested_number: str,
+) -> SourceChapter | None:
+    if not requested_number.isdigit() or "." in requested_number:
+        return None
+    ordinal = int(requested_number)
+    if ordinal < 1:
+        return None
+    top_level = [
+        chapter
+        for chapter in chapters
+        if chapter.anchor_status == "verified" and chapter.parent_id is None
+    ]
+    if not top_level or any(_chapter_number(chapter) for chapter in top_level):
+        return None
+    return top_level[ordinal - 1] if ordinal <= len(top_level) else None
+
+
+def _chapter_number(chapter: SourceChapter) -> str:
+    return _normalize_chapter_number(
+        chapter.normalized_number or chapter.number or explicit_chapter_number(chapter.title)
     )
 
 
@@ -296,6 +354,7 @@ def _attach_scope_metadata(
     *,
     scope_chapter: SourceChapter,
     covers_multiple_sections: bool,
+    requested_chapter_number: str = "",
 ) -> None:
     for item in evidence:
         item.metadata = {
@@ -305,6 +364,17 @@ def _attach_scope_metadata(
             "scope_chapter_number": scope_chapter.normalized_number or scope_chapter.number,
             "scope_chapter_title": scope_chapter.title,
         }
+    _attach_requested_chapter_number(evidence, requested_chapter_number)
+
+
+def _attach_requested_chapter_number(
+    evidence: list[RetrievalEvidence],
+    requested_chapter_number: str,
+) -> None:
+    if not requested_chapter_number:
+        return
+    for item in evidence:
+        item.metadata = {**item.metadata, "requested_chapter_number": requested_chapter_number}
 
 
 def _attach_scope_resolution(
@@ -334,8 +404,9 @@ def _source_resolution(
     chapter: SourceChapter,
     match_mode: str,
     source_title_overlap: int,
+    requested_chapter_number: str = "",
 ) -> dict[str, object]:
-    return {
+    resolution: dict[str, object] = {
         "status": "matched",
         "intent_signals": ["explicit_chapter_locator"],
         "matched_rules": [match_mode],
@@ -344,12 +415,14 @@ def _source_resolution(
         "document_changed": False,
         "source_ingestion_id": source.id,
         "chapter_id": chapter.id,
-        "chapter_number": _normalize_chapter_number(
-            chapter.normalized_number or chapter.number or explicit_chapter_number(chapter.title)
-        ),
+        "chapter_number": _chapter_number(chapter),
         "source_title_overlap": source_title_overlap,
         "reason": "唯一已验证章节由显式章节定位和当前课程包资料结构共同确定。",
     }
+    if requested_chapter_number:
+        resolution["requested_chapter_number"] = requested_chapter_number
+        resolution["chapter_ordinal"] = int(requested_chapter_number)
+    return resolution
 
 
 def _normalize_chapter_number(number: str) -> str:
