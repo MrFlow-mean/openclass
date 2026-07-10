@@ -61,7 +61,7 @@ BoardAction = Literal[
     "await_scope_choice",
     "await_focus_choice",
 ]
-SelectionKind = Literal["chat", "board"]
+SelectionKind = Literal["chat", "board", "source"]
 BoardFocusSource = Literal["board", "chat"]
 BoardFocusLocationStatus = Literal["missing", "selected", "resolved", "ambiguous"]
 BoardSegmentKind = Literal["heading", "paragraph", "list", "table", "code", "image", "formula", "other"]
@@ -1006,6 +1006,13 @@ class SelectionRef(BaseModel):
     before_text: str = ""
     after_text: str = ""
     text_hash: str | None = None
+    source_ingestion_id: str | None = None
+    source_title: str = ""
+    source_uri: str | None = None
+    source_chapter_id: str | None = None
+    source_chapter_number: str = ""
+    source_chapter_title: str = ""
+    source_page_range: str = ""
 
 
 class FormulaInkPayload(BaseModel):

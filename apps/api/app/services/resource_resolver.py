@@ -15,6 +15,11 @@ from app.services.open_notebook_adapter import (
     OpenNotebookAdapterError,
     open_notebook_adapter,
 )
+from app.services.source_chapter_evidence import (
+    explicit_chapter_number,
+    explicit_source_chapter_id,
+    resolve_verified_chapter_evidence,
+)
 from app.services.source_evidence_store import SourceEvidenceStore, source_evidence_store
 from app.services.source_structure_store import SourceStructureStore, source_structure_store
 
@@ -43,6 +48,8 @@ CHAT_CHUNK_LIMIT = 4
 BOARD_CHUNK_LIMIT = 8
 CHAT_TOKEN_BUDGET = 2000
 BOARD_TOKEN_BUDGET = 6000
+OCR_CHAT_PAGE_LIMIT = 4
+OCR_BOARD_PAGE_LIMIT = 12
 
 
 class ResourceResolver:
@@ -60,6 +67,51 @@ class ResourceResolver:
     def should_use_sources(self, message: str) -> bool:
         lowered = message.lower()
         return any(pattern.lower() in lowered for pattern in SOURCE_INTENT_PATTERNS)
+
+    def has_ready_sources(self, *, owner_user_id: str, package_id: str) -> bool:
+        return bool(self.store.ready_sources(owner_user_id=owner_user_id, package_id=package_id))
+
+    def resolve_explicit_source_reference(
+        self,
+        *,
+        owner_user_id: str,
+        package_id: str,
+        lesson_id: str,
+        user_message: str,
+        source_chapter_id: str | None = None,
+        requirement_run_id: str | None = None,
+        purpose: EvidencePurpose = "chat",
+    ) -> EvidenceBundle | None:
+        query = _learning_query(user_message=user_message, requirements=None)
+        if source_chapter_id:
+            query = _compact(f"{query} source_chapter_id={source_chapter_id}", 900)
+        if not explicit_source_chapter_id(query) and not explicit_chapter_number(query):
+            return None
+        limit = BOARD_CHUNK_LIMIT if purpose in {"board_generation", "board_edit"} else CHAT_CHUNK_LIMIT
+        token_budget = BOARD_TOKEN_BUDGET if purpose in {"board_generation", "board_edit"} else CHAT_TOKEN_BUDGET
+        evidence, resolution = self._resolve_verified_chapter(
+            owner_user_id=owner_user_id,
+            package_id=package_id,
+            query=query,
+            limit=limit,
+            token_budget=token_budget,
+        )
+        if not evidence or resolution is None:
+            return None
+        return self._save_bundle(
+            owner_user_id=owner_user_id,
+            package_id=package_id,
+            lesson_id=lesson_id,
+            query=query,
+            purpose=purpose,
+            evidence=evidence,
+            requirement_run_id=requirement_run_id,
+            metadata={
+                "resolver": "source_structure_index",
+                "retrieval_mode": evidence[0].metadata.get("retrieval_mode", "verified_chapter"),
+                "source_reference_resolution": resolution,
+            },
+        )
 
     def resolve_for_learning_requirement(
         self,
@@ -138,7 +190,7 @@ class ResourceResolver:
             return None
         limit = BOARD_CHUNK_LIMIT if purpose in {"board_generation", "board_edit"} else CHAT_CHUNK_LIMIT
         token_budget = BOARD_TOKEN_BUDGET if purpose in {"board_generation", "board_edit"} else CHAT_TOKEN_BUDGET
-        chapter_evidence = self._resolve_verified_chapter(
+        chapter_evidence, chapter_resolution = self._resolve_verified_chapter(
             owner_user_id=owner_user_id,
             package_id=package_id,
             query=query,
@@ -155,8 +207,14 @@ class ResourceResolver:
                 evidence=chapter_evidence,
                 requirement_run_id=requirement_run_id,
                 board_task_run_id=board_task_run_id,
-                metadata={"resolver": "source_structure_index", "retrieval_mode": "verified_chapter"},
+                metadata={
+                    "resolver": "source_structure_index",
+                    "retrieval_mode": chapter_evidence[0].metadata.get("retrieval_mode", "verified_chapter"),
+                    "source_reference_resolution": chapter_resolution,
+                },
             )
+        if chapter_resolution is not None:
+            return None
         open_notebook_source_ids = [source.open_notebook_source_id for source in ready_sources if source.open_notebook_source_id]
         if notebook_id and open_notebook_source_ids:
             try:
@@ -248,25 +306,16 @@ class ResourceResolver:
         query: str,
         limit: int,
         token_budget: int,
-    ) -> list[RetrievalEvidence]:
-        chapter_id = _explicit_source_chapter_id(query)
-        if chapter_id:
-            return self.structure_store.chapter_evidence_by_id(
-                owner_user_id=owner_user_id,
-                package_id=package_id,
-                chapter_id=chapter_id,
-                limit=limit,
-                token_budget=token_budget,
-            )
-        number = _explicit_chapter_number(query)
-        if not number:
-            return []
-        return self.structure_store.chapter_evidence_by_number(
+    ) -> tuple[list[RetrievalEvidence], dict[str, object] | None]:
+        return resolve_verified_chapter_evidence(
+            source_store=self.store,
+            structure_store=self.structure_store,
             owner_user_id=owner_user_id,
             package_id=package_id,
-            normalized_number=number,
+            query=query,
             limit=limit,
             token_budget=token_budget,
+            page_limit=OCR_BOARD_PAGE_LIMIT if token_budget == BOARD_TOKEN_BUDGET else OCR_CHAT_PAGE_LIMIT,
         )
 
     def _normalize_results(
@@ -371,6 +420,7 @@ def evidence_metadata(bundle: EvidenceBundle | None) -> dict[str, object]:
         "confirmed_by_user": bundle.confirmed_by_user,
         "evidence_bundle_status": bundle.status,
         "evidence_purpose": bundle.purpose,
+        "source_reference_resolution": bundle.metadata.get("source_reference_resolution"),
     }
 
 
@@ -445,18 +495,6 @@ def _score(raw: dict[str, Any]) -> float:
             except ValueError:
                 continue
     return 0.0
-
-
-def _explicit_chapter_number(query: str) -> str:
-    match = re.search(r"(?<!\d)(\d+(?:\.\d+){1,8})(?![\d.])", query)
-    if not match:
-        return ""
-    return ".".join(str(int(part)) for part in match.group(1).split(".") if part.isdigit())
-
-
-def _explicit_source_chapter_id(query: str) -> str:
-    match = re.search(r"\bsource_chapter_id\s*=\s*([A-Za-z0-9_-]{8,})\b", query)
-    return match.group(1) if match else ""
 
 
 def _estimate_tokens(text: str) -> int:
