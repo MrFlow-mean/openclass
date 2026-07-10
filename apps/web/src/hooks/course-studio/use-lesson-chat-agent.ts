@@ -276,7 +276,6 @@ export function useLessonChatAgent({
     setCurrentNeedPending(false);
     setLatestBoardDecision(null);
     setBoardEditPrompt(null);
-    setCandidateEvidenceState(null);
     setLastScopedRequest(null);
     setLastBoardEditRequest(null);
     clearSelection();
@@ -505,13 +504,10 @@ export function useLessonChatAgent({
       setStreamedBoardTaskSheet(nextBoardTaskSheet);
       setScopeOptions(response.scope_options);
       setBoardEditPrompt(response.board_edit_prompt ?? null);
-      setCandidateEvidenceState((current) =>
-        response.requirement_cleared
-          ? { lessonId: requestLesson.id, bundle: null }
-          : response.candidate_evidence_bundle
-          ? { lessonId: requestLesson.id, bundle: response.candidate_evidence_bundle }
-          : current
-      );
+      setCandidateEvidenceState({
+        lessonId: requestLesson.id,
+        bundle: response.requirement_cleared ? null : response.candidate_evidence_bundle ?? null,
+      });
       setLastScopedRequest(response.scope_options.length ? payloadWithConversation : null);
       setLastBoardEditRequest(response.board_edit_prompt ? payloadWithConversation : null);
       const chatbotMessage = response.chatbot_message.trim();
