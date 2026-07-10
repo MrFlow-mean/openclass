@@ -32,8 +32,10 @@ from app.services.history import bind_commit_metadata, commit_operations, curren
 from app.services.interaction_session_orchestrator import run_interaction_session_turn
 from app.services.formula_ink_resolver import resolve_formula_ink_request
 from app.services.learning_requirement_history import RequirementHistoryStamp
-from app.services.learning_requirement_refiner import refine_blank_board_requirement
-from app.services.learning_source_discovery import run_learning_source_discovery
+from app.services.learning_intake_orchestrator import (
+    rollback_learning_intake_turn,
+    run_learning_intake_turn,
+)
 from app.services.lesson_factory import build_requirements
 from app.services.openai_course_ai import (
     bind_board_model_selection,
@@ -346,11 +348,14 @@ def _run_basic_chat_turn(
     user_id: str,
     board_document_state,
     clear_learning_requirements: bool,
+    allow_source_resolution: bool = True,
+    additional_metadata: dict[str, object] | None = None,
+    requirement_stamp: RequirementHistoryStamp | None = None,
 ) -> ChatResponse:
     candidate_evidence = None
     resource_summary = ""
     retrieval_user_message = source_aware_user_message(request, include_locator=True)
-    if resource_resolver.should_use_sources(retrieval_user_message):
+    if allow_source_resolution and resource_resolver.should_use_sources(retrieval_user_message):
         candidate_evidence = resource_resolver.resolve_for_learning_requirement(
             owner_user_id=user_id,
             package_id=package.id,
@@ -412,6 +417,7 @@ def _run_basic_chat_turn(
                 if active_requirement_sheet is not None
                 else None
             ),
+            **(additional_metadata or {}),
         },
     )
     workspace_state.normalize_package_state(package)
@@ -423,6 +429,7 @@ def _run_basic_chat_turn(
         chatbot_message=chatbot_message,
         board_decision=board_decision,
         active_requirement_sheet=active_requirement_sheet,
+        requirement_stamp=requirement_stamp,
         requirement_cleared=active_requirement_sheet is None,
         evidence_bundle=candidate_evidence,
         candidate_evidence_bundle=candidate_evidence,
@@ -439,43 +446,16 @@ def _run_requirement_refinement_turn(
     board_document_state,
 ) -> ChatResponse:
     history_state = workspace_state.load_learning_requirement_history_state_for_user(user_id, lesson.id)
-    refinement_user_message = source_aware_user_message(request)
-    retrieval_user_message = source_aware_user_message(request, include_locator=True)
-    active_requirement_evidence = None
-    active_requirement_run_id = history_state.get("run_id") if history_state else None
-    if isinstance(active_requirement_run_id, str) and active_requirement_run_id:
-        active_requirement_evidence = resource_resolver.latest_requirement_bundle(
-            owner_user_id=user_id,
-            lesson_id=lesson.id,
-            requirement_run_id=active_requirement_run_id,
-        )
-    selected_source_chapter_id = (
-        getattr(request.selection, "source_chapter_id", None) if request.selection is not None else None
-    )
-    explicit_source_evidence = resource_resolver.resolve_explicit_source_reference(
+    turn = run_learning_intake_turn(
         owner_user_id=user_id,
         package_id=package.id,
-        lesson_id=lesson.id,
-        user_message=request.message,
-        source_chapter_id=selected_source_chapter_id,
-        purpose="chat",
-    )
-    pre_refinement_evidence = explicit_source_evidence or active_requirement_evidence
-    source_discovery_expected = pre_refinement_evidence is not None or resource_resolver.has_ready_sources(
-        owner_user_id=user_id,
-        package_id=package.id,
-    ) or resource_resolver.should_use_sources(retrieval_user_message)
-    outcome = refine_blank_board_requirement(
-        owner_user_id=user_id,
         lesson=lesson,
+        request=request,
         board_document_state=board_document_state,
         conversation_summary=_conversation_summary(request.conversation),
-        user_message=refinement_user_message,
         history_state=history_state,
-        resource_summary=pre_refinement_evidence.context_text if pre_refinement_evidence is not None else "",
-        include_stream_result=not source_discovery_expected,
     )
-    if outcome is None or (source_reference_selection(request) is not None and outcome.route == "ordinary_chat"):
+    if turn.route == "ordinary_chat" or turn.refinement is None:
         return _run_basic_chat_turn(
             workspace=workspace,
             package=package,
@@ -484,83 +464,85 @@ def _run_requirement_refinement_turn(
             user_id=user_id,
             board_document_state=board_document_state,
             clear_learning_requirements=history_state is None,
+            allow_source_resolution=False,
+            additional_metadata={
+                "refinement_route": "ordinary_chat",
+                "initial_learning_work_mode_decision": (
+                    turn.initial_decision.model_dump(mode="json") if turn.initial_decision is not None else None
+                ),
+                "visible_reply_owner": "chatbot",
+                "requirement_run_id": (
+                    turn.refinement.history_stamp.run_id if turn.refinement is not None else None
+                ),
+                "requirement_version_id": (
+                    turn.refinement.history_stamp.version_id if turn.refinement is not None else None
+                ),
+                "requirement_phase": (
+                    turn.refinement.history_stamp.phase if turn.refinement is not None else None
+                ),
+            },
+            requirement_stamp=turn.refinement.history_stamp if turn.refinement is not None else None,
         )
 
+    outcome = turn.refinement
     if outcome.active_requirement_sheet is None:
         lesson.learning_requirements = None
     else:
         lesson.learning_requirements = outcome.active_requirement_sheet
     _clear_board_task_runtime_state(lesson)
-    candidate_evidence = None
-    source_discovery_metadata: dict[str, object] | None = None
-    chatbot_message = outcome.chatbot_message
-    if outcome.route == "requirement_refining" and outcome.active_requirement_sheet is not None:
-        source_discovery = run_learning_source_discovery(
-            owner_user_id=user_id,
-            package_id=package.id,
-            lesson_id=lesson.id,
-            visible_user_message=request.message,
-            retrieval_user_message=retrieval_user_message,
-            requirements=outcome.active_requirement_sheet,
-            clarification=outcome.learning_clarification,
-            requirement_run_id=outcome.history_stamp.run_id,
-            base_chatbot_message=outcome.chatbot_message,
-            pre_resolved_evidence=pre_refinement_evidence,
-        )
-        candidate_evidence = source_discovery.evidence_bundle
-        chatbot_message = source_discovery.chatbot_message
-        source_discovery_metadata = source_discovery.metadata
+    chatbot_message = turn.chatbot_message
     board_decision = BoardDecision(
         action="no_change",
         reason="空白板书学习需求收敛只维护清单，不修改右侧文档。",
     )
-    metadata_kind = (
-        LEARNING_REQUIREMENT_REFINEMENT_METADATA_KIND
-        if outcome.route == "requirement_refining"
-        else BASIC_CHAT_METADATA_KIND
-    )
-    commit_operations(
-        lesson,
-        [],
-        label="Learning requirement refinement" if outcome.route == "requirement_refining" else "Basic chat",
-        message=(
-            "Recorded a blank-board learning requirement refinement turn"
-            if outcome.route == "requirement_refining"
-            else "Recorded a basic chatbot conversation turn"
-        ),
-        new_document=lesson.board_document,
-        metadata={
-            "kind": metadata_kind,
-            "refinement_route": outcome.route,
-            "user_message": request.message,
-            "assistant_message": chatbot_message,
-            "assistant_message_source": "chatbot" if chatbot_message else "chatbot_empty",
-            "board_document_state": board_document_state.model_context(),
-            "interaction_mode": request.interaction_mode,
-            "selection": request.selection.model_dump(mode="json") if request.selection else None,
-            "basic_chat_only": outcome.route == "ordinary_chat",
-            "document_changed": False,
-            **evidence_metadata(candidate_evidence),
-            "active_requirement_sheet_after": (
-                outcome.active_requirement_sheet.model_dump(mode="json")
-                if outcome.active_requirement_sheet is not None
-                else None
-            ),
-            "learning_clarification_after": outcome.learning_clarification.model_dump(mode="json"),
-            "guided_requirement_discovery": outcome.guidance_metadata,
-            "learning_source_discovery": source_discovery_metadata,
-            "requirement_run_id": outcome.history_stamp.run_id,
-            "requirement_version_id": outcome.history_stamp.version_id,
-            "requirement_phase": outcome.history_stamp.phase,
-            "requirement_history_changed": outcome.changed,
-        },
-    )
-    workspace_state.normalize_package_state(package)
-    workspace_state.save_workspace_and_learning_requirement_history_for_user(
-        user_id,
-        workspace,
-        learning_requirement_history_operations=outcome.history_operations,
-    )
+    try:
+        commit_operations(
+            lesson,
+            [],
+            label="Learning requirement refinement",
+            message="Recorded a source-first blank-board learning requirement refinement turn",
+            new_document=lesson.board_document,
+            metadata={
+                "kind": LEARNING_REQUIREMENT_REFINEMENT_METADATA_KIND,
+                "refinement_route": outcome.route,
+                "user_message": request.message,
+                "assistant_message": chatbot_message,
+                "assistant_message_source": turn.assistant_message_source if chatbot_message else "chatbot_empty",
+                "visible_reply_owner": "chatbot",
+                "board_document_state": board_document_state.model_context(),
+                "interaction_mode": request.interaction_mode,
+                "selection": request.selection.model_dump(mode="json") if request.selection else None,
+                "basic_chat_only": False,
+                "document_changed": False,
+                **evidence_metadata(turn.evidence_bundle),
+                "active_requirement_sheet_after": (
+                    outcome.active_requirement_sheet.model_dump(mode="json")
+                    if outcome.active_requirement_sheet is not None
+                    else None
+                ),
+                "learning_clarification_after": outcome.learning_clarification.model_dump(mode="json"),
+                "guided_requirement_discovery": outcome.guidance_metadata,
+                "initial_learning_work_mode_decision": (
+                    turn.initial_decision.model_dump(mode="json") if turn.initial_decision is not None else None
+                ),
+                "learning_source_discovery": (
+                    turn.source_discovery.metadata if turn.source_discovery is not None else None
+                ),
+                "requirement_run_id": outcome.history_stamp.run_id,
+                "requirement_version_id": outcome.history_stamp.version_id,
+                "requirement_phase": outcome.history_stamp.phase,
+                "requirement_history_changed": outcome.changed,
+            },
+        )
+        workspace_state.normalize_package_state(package)
+        workspace_state.save_workspace_and_learning_requirement_history_for_user(
+            user_id,
+            workspace,
+            learning_requirement_history_operations=outcome.history_operations,
+        )
+    except Exception:
+        rollback_learning_intake_turn(turn)
+        raise
     return _build_response(
         workspace=workspace,
         package=package,
@@ -571,8 +553,8 @@ def _run_requirement_refinement_turn(
         learning_clarification=outcome.learning_clarification,
         requirement_stamp=outcome.history_stamp,
         requirement_cleared=outcome.active_requirement_sheet is None,
-        evidence_bundle=candidate_evidence,
-        candidate_evidence_bundle=candidate_evidence,
+        evidence_bundle=turn.evidence_bundle,
+        candidate_evidence_bundle=turn.candidate_evidence_bundle,
     )
 
 

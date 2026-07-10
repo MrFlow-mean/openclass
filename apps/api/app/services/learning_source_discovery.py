@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
-from app.models import EvidenceBundle, LearningClarificationStatus, LearningRequirementSheet
+from app.models import EvidenceBundle, LearningRequirementSheet
 from app.services.evidence_workflow import evidence_reference_text
-from app.services.openai_course_ai import OpenAICourseAI, openai_course_ai
 from app.services.resource_resolver import ResourceResolver, resource_resolver
 from app.services.source_chapter_evidence import explicit_chapter_number
 
@@ -25,120 +24,171 @@ class LearningSourceDiscoveryOutcome:
     status: LearningSourceDiscoveryStatus
     attempted: bool
     evidence_bundle: EvidenceBundle | None
-    chatbot_message: str
+    evidence_references: str
+    source_requested_by_user: bool
+    provisional_bundle: bool
+    persisted_this_turn: bool
     metadata: dict[str, object]
 
+    @property
+    def context_text(self) -> str:
+        return self.evidence_bundle.context_text if self.evidence_bundle is not None else self.evidence_references
 
-def run_learning_source_discovery(
+
+def discover_learning_sources(
     *,
     owner_user_id: str,
     package_id: str,
     lesson_id: str,
-    visible_user_message: str,
     retrieval_user_message: str,
-    requirements: LearningRequirementSheet,
-    clarification: LearningClarificationStatus,
-    requirement_run_id: str,
-    base_chatbot_message: str,
+    requirements: LearningRequirementSheet | None,
+    active_requirement_run_id: str | None,
+    topic_hint: str = "",
+    source_requested_by_user: bool = False,
     pre_resolved_evidence: EvidenceBundle | None = None,
     resolver: ResourceResolver = resource_resolver,
-    course_ai: OpenAICourseAI = openai_course_ai,
 ) -> LearningSourceDiscoveryOutcome:
-    source_requested = resolver.should_use_sources(retrieval_user_message)
+    source_requested = source_requested_by_user or resolver.should_use_sources(retrieval_user_message)
     has_ready_sources = resolver.has_ready_sources(owner_user_id=owner_user_id, package_id=package_id)
-    if not has_ready_sources and not source_requested:
+    if not has_ready_sources:
+        status: LearningSourceDiscoveryStatus = "no_ready_sources" if source_requested else "not_needed"
         return LearningSourceDiscoveryOutcome(
-            status="not_needed",
+            status=status,
             attempted=False,
             evidence_bundle=None,
-            chatbot_message=base_chatbot_message,
-            metadata={"status": "not_needed", "attempted": False, "source_requested": False},
+            evidence_references="",
+            source_requested_by_user=source_requested,
+            provisional_bundle=False,
+            persisted_this_turn=False,
+            metadata={
+                "status": status,
+                "attempted": False,
+                "source_requested": source_requested,
+                "auto_triggered": False,
+                "purpose": "board_generation",
+                "evidence_bundle_id": None,
+                "evidence_count": 0,
+                "resolution": None,
+            },
         )
 
-    purpose = "board_generation"
     evidence_bundle = None
-    attempted = False
     resolution_metadata: dict[str, object] | None = None
-    if has_ready_sources:
-        attempted = True
-        if _can_reuse_requirement_bundle(
-            pre_resolved_evidence,
-            requirement_run_id=requirement_run_id,
-            retrieval_user_message=retrieval_user_message,
-        ):
-            evidence_bundle = pre_resolved_evidence
-            status: LearningSourceDiscoveryStatus = "matched"
-        else:
-            resolve_with_outcome = getattr(resolver, "resolve_for_learning_requirement_outcome", None)
-            if callable(resolve_with_outcome):
-                resolution = resolve_with_outcome(
-                    owner_user_id=owner_user_id,
-                    package_id=package_id,
-                    lesson_id=lesson_id,
-                    user_message=retrieval_user_message,
-                    requirements=requirements,
-                    requirement_run_id=requirement_run_id,
-                    purpose=purpose,
-                )
-                evidence_bundle = resolution.evidence_bundle
-                status = resolution.status
-                resolution_metadata = resolution.metadata
-            else:
-                evidence_bundle = resolver.resolve_for_learning_requirement(
-                    owner_user_id=owner_user_id,
-                    package_id=package_id,
-                    lesson_id=lesson_id,
-                    user_message=retrieval_user_message,
-                    requirements=requirements,
-                    requirement_run_id=requirement_run_id,
-                    purpose=purpose,
-                )
-                status = "matched" if evidence_bundle is not None else "no_match"
+    provisional_bundle = False
+    reused_pre_refinement_evidence = False
+    if _can_reuse_requirement_bundle(
+        pre_resolved_evidence,
+        requirement_run_id=active_requirement_run_id,
+        retrieval_user_message=retrieval_user_message,
+    ):
+        evidence_bundle = pre_resolved_evidence
+        status = "matched"
+        reused_pre_refinement_evidence = True
     else:
-        status = "no_ready_sources"
+        resolution = resolver.preview_for_learning_requirement(
+            owner_user_id=owner_user_id,
+            package_id=package_id,
+            lesson_id=lesson_id,
+            user_message=retrieval_user_message,
+            requirements=requirements,
+            topic_hint=topic_hint,
+            purpose="board_generation",
+        )
+        evidence_bundle = resolution.evidence_bundle
+        status = resolution.status
+        resolution_metadata = resolution.metadata
+        provisional_bundle = evidence_bundle is not None
 
     evidence_references = (
         evidence_reference_text(evidence_bundle)
         if evidence_bundle is not None
         else _resolution_reference_text(resolution_metadata)
     )
-    reply = course_ai.generate_learning_source_discovery_reply(
-        base_chatbot_message=base_chatbot_message,
-        user_message=visible_user_message,
-        requirement_context=requirements.model_dump(mode="json"),
-        clarification_context=clarification.model_dump(mode="json"),
-        discovery_status=status,
-        evidence_references=evidence_references,
-        requires_confirmation=evidence_bundle is not None and evidence_bundle.status == "candidate",
-    )
-    chatbot_message = (reply.chatbot_message if reply else "").strip() or base_chatbot_message
     metadata: dict[str, object] = {
         "status": status,
-        "attempted": attempted,
+        "attempted": True,
         "source_requested": source_requested,
-        "purpose": purpose,
-        "reused_pre_refinement_evidence": pre_resolved_evidence is evidence_bundle and evidence_bundle is not None,
-        "evidence_bundle_id": evidence_bundle.id if evidence_bundle is not None else None,
+        "auto_triggered": not source_requested,
+        "purpose": "board_generation",
+        "reused_pre_refinement_evidence": reused_pre_refinement_evidence,
+        "provisional_bundle": provisional_bundle,
+        "evidence_bundle_id": evidence_bundle.id if evidence_bundle is not None and not provisional_bundle else None,
+        "preview_evidence_count": len(evidence_bundle.evidence_items) if evidence_bundle is not None else 0,
         "evidence_count": len(evidence_bundle.evidence_items) if evidence_bundle is not None else 0,
         "resolution": resolution_metadata,
     }
     return LearningSourceDiscoveryOutcome(
         status=status,
-        attempted=attempted,
+        attempted=True,
         evidence_bundle=evidence_bundle,
-        chatbot_message=chatbot_message,
+        evidence_references=evidence_references,
+        source_requested_by_user=source_requested,
+        provisional_bundle=provisional_bundle,
+        persisted_this_turn=False,
         metadata=metadata,
+    )
+
+
+def bind_learning_source_discovery(
+    outcome: LearningSourceDiscoveryOutcome,
+    *,
+    requirement_run_id: str | None,
+    resolver: ResourceResolver = resource_resolver,
+) -> LearningSourceDiscoveryOutcome:
+    if outcome.evidence_bundle is None or not outcome.provisional_bundle:
+        return outcome
+    if not requirement_run_id:
+        return replace(
+            outcome,
+            evidence_bundle=None,
+            provisional_bundle=False,
+            metadata={
+                **outcome.metadata,
+                "provisional_bundle": False,
+                "evidence_bundle_id": None,
+                "discarded_unbound_bundle": True,
+            },
+        )
+    bound = resolver.bind_preview_bundle_to_requirement(
+        bundle=outcome.evidence_bundle,
+        requirement_run_id=requirement_run_id,
+    )
+    return replace(
+        outcome,
+        evidence_bundle=bound,
+        provisional_bundle=False,
+        persisted_this_turn=True,
+        metadata={
+            **outcome.metadata,
+            "provisional_bundle": False,
+            "evidence_bundle_id": bound.id,
+            "evidence_count": len(bound.evidence_items),
+        },
+    )
+
+
+def rollback_learning_source_discovery(
+    outcome: LearningSourceDiscoveryOutcome | None,
+    *,
+    resolver: ResourceResolver = resource_resolver,
+) -> None:
+    if outcome is None or not outcome.persisted_this_turn or outcome.evidence_bundle is None:
+        return
+    resolver.store.archive_bundle(
+        owner_user_id=outcome.evidence_bundle.owner_user_id,
+        bundle_id=outcome.evidence_bundle.id,
     )
 
 
 def _can_reuse_requirement_bundle(
     bundle: EvidenceBundle | None,
     *,
-    requirement_run_id: str,
+    requirement_run_id: str | None,
     retrieval_user_message: str,
 ) -> bool:
     if (
         bundle is None
+        or not requirement_run_id
         or bundle.purpose != "board_generation"
         or bundle.requirement_run_id != requirement_run_id
         or bundle.status not in {"candidate", "confirmed"}

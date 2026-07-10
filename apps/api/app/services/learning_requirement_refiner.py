@@ -19,7 +19,7 @@ from app.services.lesson_factory import build_requirements
 from app.services.openai_course_ai import (
     BlankBoardRequirementRefinement,
     BlankBoardRequirementRefinementResult,
-    emit_ai_stream_event,
+    InitialLearningWorkModeDecision,
     openai_course_ai,
 )
 
@@ -49,6 +49,8 @@ def refine_blank_board_requirement(
     history_state: dict[str, Any] | None,
     resource_summary: str = "",
     include_stream_result: bool = True,
+    initial_work_mode_decision: InitialLearningWorkModeDecision | None = None,
+    source_requested_by_user: bool = False,
 ) -> LearningRequirementRefinementOutcome | None:
     active_requirement = _active_requirement_from_state(lesson, history_state)
     active_clarification = _active_clarification_from_state(history_state)
@@ -61,6 +63,11 @@ def refine_blank_board_requirement(
         existing_clarification=active_clarification.model_dump(mode="json") if active_clarification else None,
         resource_summary=resource_summary,
         include_stream_result=include_stream_result,
+        initial_work_mode_decision=(
+            initial_work_mode_decision.model_dump(mode="json")
+            if initial_work_mode_decision is not None
+            else None
+        ),
     )
     visible_chat_buffer = ""
     visible_chat_was_streamed = False
@@ -94,12 +101,19 @@ def refine_blank_board_requirement(
         )
     if not isinstance(result, BlankBoardRequirementRefinement):
         return None
+    if initial_work_mode_decision is not None and initial_work_mode_decision.route == "learning_intake":
+        result = result.model_copy(
+            update={
+                "route": "requirement_refining",
+                "work_mode": initial_work_mode_decision.work_mode,
+                "granularity": initial_work_mode_decision.granularity,
+                "learning_goal": _first_text(result.learning_goal, initial_work_mode_decision.topic),
+            }
+        )
     if result.route == "ordinary_chat" and _contains_requirement_payload(result):
         result = result.model_copy(update={"route": "requirement_refining"})
     if visible_chat_buffer:
         result = result.model_copy(update={"chatbot_message": visible_chat_buffer})
-    if not visible_chat_was_streamed:
-        _emit_validated_chatbot_message(result)
     if result.route == "ordinary_chat":
         return LearningRequirementRefinementOutcome(
             route="ordinary_chat",
@@ -122,6 +136,15 @@ def refine_blank_board_requirement(
         result=result,
     )
     requirement = requirement_state.requirement
+    if source_requested_by_user and not requirement.source_grounding.requested_by_user:
+        requirement = requirement.model_copy(
+            deep=True,
+            update={
+                "source_grounding": requirement.source_grounding.model_copy(
+                    update={"requested_by_user": True}
+                )
+            },
+        )
     metadata = _build_guidance_metadata(result)
     metadata.update(
         _stream_metadata(
@@ -242,18 +265,3 @@ def _build_guidance_metadata(result: BlankBoardRequirementRefinement) -> dict[st
         "reason_for_recommendation": result.reason_for_recommendation,
         "learner_profile_inference": result.learner_profile_inference,
     }
-
-
-def _emit_validated_chatbot_message(result: BlankBoardRequirementRefinement) -> None:
-    message = _first_text(result.chatbot_message, result.next_question, result.summary)
-    if not message:
-        return
-    emit_ai_stream_event(
-        {
-            "type": "field_delta",
-            "role": "pm",
-            "field": "chatbot_message",
-            "delta": message,
-            "value": message,
-        }
-    )

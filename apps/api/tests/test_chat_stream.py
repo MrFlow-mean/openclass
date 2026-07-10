@@ -117,7 +117,7 @@ def test_chat_stream_emits_heartbeat_before_final(monkeypatch) -> None:
     assert logged_events[-1]["produced_commit_id"] is not None
 
 
-def test_chat_stream_routes_pm_chatbot_message_as_chat_delta(monkeypatch) -> None:
+def test_chat_stream_ignores_pm_draft_and_emits_only_final_chatbot_message(monkeypatch) -> None:
     logged_events: list[dict] = []
 
     def process_with_pm_stream(*args, **kwargs) -> ChatResponse:
@@ -130,7 +130,7 @@ def test_chat_stream_routes_pm_chatbot_message_as_chat_delta(monkeypatch) -> Non
                 "value": "正在自然收敛需求。",
             }
         )
-        return _chat_response("lesson_stream_test", chatbot_message="正在自然收敛需求。")
+        return _chat_response("lesson_stream_test", chatbot_message="这是 Chatbot 的最终回复。")
 
     monkeypatch.setattr(chat_router, "process_chat_on_lesson", process_with_pm_stream)
     monkeypatch.setattr(
@@ -147,13 +147,14 @@ def test_chat_stream_routes_pm_chatbot_message_as_chat_delta(monkeypatch) -> Non
         )
     )
 
-    assert _joined_delta(events, "chat_delta") == "正在自然收敛需求。"
+    assert _joined_delta(events, "chat_delta") == "这是 Chatbot 的最终回复。"
+    assert "正在自然收敛需求。" not in _joined_delta(events, "chat_delta")
     assert [event for event, _payload in events].count("final") == 1
     first_chat_delta_events = [
         event for event in logged_events if event["stream_event"] == "first_chat_delta_sent"
     ]
     assert len(first_chat_delta_events) == 1
-    assert first_chat_delta_events[0]["role"] == "pm"
+    assert first_chat_delta_events[0]["role"] == "chatbot"
     assert first_chat_delta_events[0]["field"] == "chatbot_message"
 
 

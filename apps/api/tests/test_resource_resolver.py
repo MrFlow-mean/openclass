@@ -14,7 +14,12 @@ from app.services import workspace_state
 from app.services.chat_service import process_chat_on_lesson
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
 from app.services.lesson_factory import build_requirements, create_empty_lesson
-from app.services.openai_course_ai import BlankBoardRequirementRefinement, ChatbotReply, openai_course_ai
+from app.services.openai_course_ai import (
+    BlankBoardRequirementRefinement,
+    ChatbotReply,
+    InitialLearningWorkModeDecision,
+    openai_course_ai,
+)
 from app.services.resource_resolver import ResourceResolver, resource_resolver
 from app.services.source_evidence_store import SourceEvidenceStore
 from app.services.source_structure_indexer import SourceStructureIndexer
@@ -169,6 +174,44 @@ def test_resource_resolver_builds_candidate_evidence_bundle(tmp_path) -> None:
     assert bundle.evidence_items[0].source_ingestion_id
     assert "第一章" in bundle.context_text
     assert bundle.token_count > 0
+
+
+def test_learning_requirement_preview_does_not_persist_until_bound(tmp_path) -> None:
+    store = SourceEvidenceStore(tmp_path / "openclass.sqlite3")
+    store.upsert_notebook(owner_user_id="user_1", package_id="pkg_1", notebook_id="nb_1", title="资料容器")
+    store.save_source(
+        SourceIngestionRecord(
+            owner_user_id="user_1",
+            package_id="pkg_1",
+            title="资料 A",
+            source_type="web_url",
+            source_uri="https://example.com/a",
+            status="ready",
+            open_notebook_notebook_id="nb_1",
+            open_notebook_source_id="src_1",
+        )
+    )
+    resolver = ResourceResolver(adapter=_FakeSearchAdapter(), store=store)
+
+    preview = resolver.preview_for_learning_requirement(
+        owner_user_id="user_1",
+        package_id="pkg_1",
+        lesson_id="lesson_1",
+        user_message="结合上传资料补写目标概念。",
+        requirements=None,
+    )
+
+    assert preview.evidence_bundle is not None
+    assert preview.evidence_bundle.requirement_run_id is None
+    assert store.get_bundle(owner_user_id="user_1", bundle_id=preview.evidence_bundle.id) is None
+
+    bound = resolver.bind_preview_bundle_to_requirement(
+        bundle=preview.evidence_bundle,
+        requirement_run_id="requirement_run_1",
+    )
+
+    assert bound.requirement_run_id == "requirement_run_1"
+    assert store.get_bundle(owner_user_id="user_1", bundle_id=bound.id) is not None
 
 
 def test_resource_resolver_returns_none_without_ready_sources(tmp_path) -> None:
@@ -402,8 +445,18 @@ def test_blank_requirement_discovers_matched_source_before_visible_reply(
         captured["discovery_reply"] = kwargs
         return ChatbotReply(chatbot_message="我找到了资料中的第四章“核心方法”，先从章内选择一个起点。")
 
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_initial_learning_work_mode",
+        lambda **kwargs: InitialLearningWorkModeDecision(
+            route="learning_intake",
+            work_mode="narrow_topic",
+            granularity="broad_topic",
+            topic="第四章",
+        ),
+    )
     monkeypatch.setattr(openai_course_ai, "generate_blank_board_requirement_refinement", _fake_refinement)
-    monkeypatch.setattr(openai_course_ai, "generate_learning_source_discovery_reply", _fake_discovery_reply)
+    monkeypatch.setattr(openai_course_ai, "generate_learning_intake_reply", _fake_discovery_reply)
 
     response = process_chat_on_lesson(
         lesson.id,
@@ -486,8 +539,18 @@ def test_blank_requirement_keeps_exact_chapter_evidence_across_short_follow_up(
         discovery_calls.append(kwargs)
         return ChatbotReply(chatbot_message="已保持同一份资料中的第四章。")
 
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_initial_learning_work_mode",
+        lambda **kwargs: InitialLearningWorkModeDecision(
+            route="learning_intake",
+            work_mode="narrow_topic",
+            granularity="broad_topic",
+            topic="第四章",
+        ),
+    )
     monkeypatch.setattr(openai_course_ai, "generate_blank_board_requirement_refinement", _fake_refinement)
-    monkeypatch.setattr(openai_course_ai, "generate_learning_source_discovery_reply", _fake_discovery_reply)
+    monkeypatch.setattr(openai_course_ai, "generate_learning_intake_reply", _fake_discovery_reply)
 
     first = process_chat_on_lesson(
         lesson.id,

@@ -111,6 +111,7 @@ def _chat_stream_events(lesson_id: str, request: ChatRequest, *, user_id: str) -
     phase_labels = {
         "chatbot": "正在回复",
         "pm": "正在整理学习需求",
+        "resource_resolver": "正在检索课程资料",
         "board": "正在生成右侧文档",
     }
     chat_delta_emitted = False
@@ -171,7 +172,7 @@ def _chat_stream_events(lesson_id: str, request: ChatRequest, *, user_id: str) -
         delta = str(payload.get("delta") or "")
         if not delta:
             return
-        if role in {"chatbot", "pm"} and field == "chatbot_message":
+        if role == "chatbot" and field == "chatbot_message":
             log_first_delta_once(metric="chat", role=role, field=field)
             for char in delta:
                 emit("chat_delta", {"delta": char})

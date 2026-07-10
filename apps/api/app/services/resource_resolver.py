@@ -167,6 +167,46 @@ class ResourceResolver:
             requirement_run_id=requirement_run_id,
         )
 
+    def preview_for_learning_requirement(
+        self,
+        *,
+        owner_user_id: str,
+        package_id: str,
+        lesson_id: str,
+        user_message: str,
+        requirements: LearningRequirementSheet | None,
+        topic_hint: str = "",
+        purpose: EvidencePurpose = "board_generation",
+    ) -> ResourceResolutionOutcome:
+        query = _learning_query(
+            user_message=user_message,
+            requirements=requirements,
+            topic_hint=topic_hint,
+        )
+        return self._resolve_outcome(
+            owner_user_id=owner_user_id,
+            package_id=package_id,
+            lesson_id=lesson_id,
+            query=query,
+            purpose=purpose,
+            persist_bundle=False,
+        )
+
+    def bind_preview_bundle_to_requirement(
+        self,
+        *,
+        bundle: EvidenceBundle,
+        requirement_run_id: str,
+    ) -> EvidenceBundle:
+        bound = bundle.model_copy(
+            deep=True,
+            update={
+                "requirement_run_id": requirement_run_id,
+                "purpose": "board_generation",
+            },
+        )
+        return self.store.save_bundle(bound)
+
     def resolve_for_board_task(
         self,
         *,
@@ -229,6 +269,7 @@ class ResourceResolver:
         purpose: EvidencePurpose,
         requirement_run_id: str | None = None,
         board_task_run_id: str | None = None,
+        persist_bundle: bool = True,
     ) -> ResourceResolutionOutcome:
         notebook_id = self.store.get_notebook_id(owner_user_id=owner_user_id, package_id=package_id)
         ready_sources = self.store.ready_sources(owner_user_id=owner_user_id, package_id=package_id)
@@ -244,7 +285,7 @@ class ResourceResolver:
             token_budget=token_budget,
         )
         if chapter_evidence:
-            bundle = self._save_bundle(
+            bundle = self._create_bundle(
                 owner_user_id=owner_user_id,
                 package_id=package_id,
                 lesson_id=lesson_id,
@@ -258,6 +299,7 @@ class ResourceResolver:
                     "retrieval_mode": chapter_evidence[0].metadata.get("retrieval_mode", "verified_chapter"),
                     "source_reference_resolution": chapter_resolution,
                 },
+                persist=persist_bundle,
             )
             return ResourceResolutionOutcome(status="matched", evidence_bundle=bundle, metadata=chapter_resolution)
         if chapter_resolution is not None:
@@ -290,7 +332,7 @@ class ResourceResolver:
                 allowed_source_ids=set(open_notebook_source_ids),
             )
             if evidence:
-                bundle = self._save_bundle(
+                bundle = self._create_bundle(
                     owner_user_id=owner_user_id,
                     package_id=package_id,
                     lesson_id=lesson_id,
@@ -300,6 +342,7 @@ class ResourceResolver:
                     requirement_run_id=requirement_run_id,
                     board_task_run_id=board_task_run_id,
                     metadata={"resolver": "open_notebook_search", "retrieval_mode": "semantic_search"},
+                    persist=persist_bundle,
                 )
                 return ResourceResolutionOutcome(status="matched", evidence_bundle=bundle)
         local_evidence = self.structure_store.chunk_evidence_search(
@@ -312,7 +355,7 @@ class ResourceResolver:
         local_evidence = filter_relevant_local_evidence(query=query, evidence=local_evidence)
         if not local_evidence:
             return ResourceResolutionOutcome(status="no_match")
-        bundle = self._save_bundle(
+        bundle = self._create_bundle(
             owner_user_id=owner_user_id,
             package_id=package_id,
             lesson_id=lesson_id,
@@ -322,8 +365,51 @@ class ResourceResolver:
             requirement_run_id=requirement_run_id,
             board_task_run_id=board_task_run_id,
             metadata={"resolver": "source_structure_index", "retrieval_mode": "local_chunk_search"},
+            persist=persist_bundle,
         )
         return ResourceResolutionOutcome(status="matched", evidence_bundle=bundle)
+
+    def _create_bundle(
+        self,
+        *,
+        owner_user_id: str,
+        package_id: str,
+        lesson_id: str,
+        query: str,
+        purpose: EvidencePurpose,
+        evidence: list[RetrievalEvidence],
+        requirement_run_id: str | None = None,
+        board_task_run_id: str | None = None,
+        metadata: dict[str, object] | None = None,
+        persist: bool,
+    ) -> EvidenceBundle:
+        if persist:
+            return self._save_bundle(
+                owner_user_id=owner_user_id,
+                package_id=package_id,
+                lesson_id=lesson_id,
+                query=query,
+                purpose=purpose,
+                evidence=evidence,
+                requirement_run_id=requirement_run_id,
+                board_task_run_id=board_task_run_id,
+                metadata=metadata,
+            )
+        return EvidenceBundle(
+            owner_user_id=owner_user_id,
+            package_id=package_id,
+            lesson_id=lesson_id,
+            requirement_run_id=requirement_run_id,
+            board_task_run_id=board_task_run_id,
+            purpose=purpose,
+            status="candidate",
+            query=query,
+            evidence_items=evidence,
+            context_text=format_evidence_context(evidence),
+            token_count=sum(item.token_count for item in evidence),
+            confirmed_by_user=False,
+            metadata=metadata or {},
+        )
 
     def _save_bundle(
         self,
@@ -482,8 +568,13 @@ def evidence_metadata(bundle: EvidenceBundle | None) -> dict[str, object]:
     }
 
 
-def _learning_query(*, user_message: str, requirements: LearningRequirementSheet | None) -> str:
-    parts = [user_message]
+def _learning_query(
+    *,
+    user_message: str,
+    requirements: LearningRequirementSheet | None,
+    topic_hint: str = "",
+) -> str:
+    parts = [user_message, topic_hint]
     if requirements is not None:
         parts.extend(
             [

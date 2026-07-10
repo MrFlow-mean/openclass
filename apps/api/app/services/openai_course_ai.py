@@ -464,6 +464,7 @@ class BoardTaskRequirementRefinement(BaseModel):
 
 
 class InitialLearningWorkModeDecision(BaseModel):
+    route: Literal["ordinary_chat", "learning_intake"] = "learning_intake"
     work_mode: InitialLearningWorkMode = "unknown"
     granularity: InitialLearningGranularity = "unclear"
     topic: str = ""
@@ -1027,43 +1028,50 @@ class OpenAICourseAI:
         )
         return result if isinstance(result, ChatbotReply) else None
 
-    def generate_learning_source_discovery_reply(
+    def generate_learning_intake_reply(
         self,
         *,
-        base_chatbot_message: str,
+        requirement_reply_draft: str,
         user_message: str,
         requirement_context: dict[str, Any],
         clarification_context: dict[str, Any],
+        guidance_context: dict[str, Any],
+        initial_work_mode_decision: dict[str, Any] | None,
         discovery_status: str,
         evidence_references: str,
+        source_requested_by_user: bool,
         requires_confirmation: bool,
     ) -> ChatbotReply | None:
         system_prompt = (
-            "你是 OpenClass 左侧聊天框中的 Chatbot。Requirement Manager 已经完成本轮学习需求判断，"
-            "ResourceResolver 也已经检查当前课程包中的已解析资料；你现在才生成用户可见回复。\n"
-            "base_chatbot_message 是需求管理器给出的回复草稿。保留它的学习方向、边界和唯一关键问题，"
-            "但要根据资料检索结果重新组织成一段自然连贯的最终回复。\n"
+            "你是 OpenClass 左侧聊天框中本轮唯一面向用户发言的 Chatbot。初始学习模式判断、"
+            "ResourceResolver 和 Requirement Manager 都已完成隐藏工作；它们的文字草稿从未展示给用户。\n"
+            "requirement_reply_draft 是需求管理器的内部草稿。结合结构化需求、引导信息和资料发现结果，"
+            "生成一段自然连贯的最终回复。不得提到内部角色、字段、流程或草稿。\n"
             "matched：自然说明找到了哪些相关资料或章节，只能依据 evidence_references 中的来源、位置和短摘录；"
-            "不得声称读过未提供的完整资料。requires_confirmation=true 时，提醒用户查看证据卡并确认是否使用，"
-            "不得声称证据已经确认，也不得生成右侧板书正文。\n"
-            "no_match：自然说明已经检查当前已解析资料但没有找到足够相关的内容，不得伪造引用；"
-            "随后继续 base_chatbot_message 中仍然必要的学习需求收敛。\n"
+            "不得声称读过未提供的完整资料。资料匹配不等于用户确认；requires_confirmation=true 时可以提示证据仍待确认，"
+            "但要保留 requirement_reply_draft 中当前真正需要用户回答的一个关键问题或选项。\n"
+            "no_match：不得伪造引用。source_requested_by_user=true 时说明已检查但未命中，并优先解决资料问题；"
+            "自动检索未命中时不要打断用户，也不要强调无关的检索失败，继续必要的学习需求收敛。\n"
             "ambiguous_source：说明多份资料存在相同章节号，必须请用户确认具体资料；不得自行选择，"
-            "也不得把它描述成没有资料。\n"
+            "也不得把它描述成没有资料。资料选择是本轮唯一关键问题，其他水平或入口问题延后。\n"
             "content_unavailable：说明目录位置已经找到但对应正文当前不可读取，提示用户重新解析或改用其他资料；"
-            "不得使用其他资料的相似片段替代。\n"
-            "no_ready_sources：自然说明当前没有可检索的已解析资料，并继续必要的需求收敛。\n"
+            "不得使用其他资料的相似片段替代；资料恢复方式是本轮唯一关键问题。\n"
+            "no_ready_sources：仅在用户明确要求资料时说明当前没有可检索的已解析资料；否则继续需求收敛。\n"
+            "not_needed：直接依据需求草稿和结构化引导生成回复。\n"
             "每轮最多保留一个关键问题；不要输出 JSON、内部字段名、固定模板、板书正文或未授权的实质讲解。"
         )
         user_prompt = _json(
             {
                 "user_message": user_message,
-                "base_chatbot_message": base_chatbot_message,
+                "requirement_reply_draft": requirement_reply_draft,
                 "requirement_context": requirement_context,
                 "clarification_context": clarification_context,
+                "guidance_context": guidance_context,
+                "initial_work_mode_decision": initial_work_mode_decision,
                 "source_discovery": {
                     "status": discovery_status,
                     "evidence_references": evidence_references or "无",
+                    "source_requested_by_user": source_requested_by_user,
                     "requires_confirmation": requires_confirmation,
                 },
                 "response_contract": {
@@ -1089,12 +1097,16 @@ class OpenAICourseAI:
         existing_clarification: dict[str, Any] | None = None,
         resource_summary: str = "",
         include_stream_result: bool = False,
+        initial_work_mode_decision: dict[str, Any] | None = None,
     ) -> BlankBoardRequirementRefinement | BlankBoardRequirementRefinementResult | None:
         system_prompt = (
-            "你是 OpenClass 的空白板书学习需求收敛器，也是左侧聊天框里的自然对话 AI。\n"
+            "你是 OpenClass 的空白板书学习需求收敛器。你只维护结构化需求并起草回复，不直接向用户发言。\n"
             "运行前提：board_document_state.status 必须是 empty；本阶段只维护 LearningRequirementSheet，"
             "不生成板书、不冻结清单、不调用 Board AI。\n"
             "结构化清单中的 board_workflow 必须记录为 generate_from_scratch，表示本轮属于从 0 生成板书前的学习需求收敛。\n"
+            "initial_work_mode_decision 如果存在，是资料检索前完成的权威入口判断。"
+            "route=learning_intake 时必须维护需求清单，不得改判为 ordinary_chat；work_mode、granularity 和 topic"
+            "是本轮需求整理的起点。chatbot_message 只是交给最终 Chatbot 的内部草稿。\n"
             "任务：先判断用户当前轮是 ordinary_chat 还是 requirement_refining。\n"
             "ordinary_chat：用户没有表达学习、练习、资料、板书或教学目的时，像 ChatGPT 一样自然回复；"
             "不要新建或更新清单，不要追问学习需求。\n"
@@ -1169,12 +1181,13 @@ class OpenAICourseAI:
                 "recent_conversation": conversation_summary or "",
                 "current_user_message": user_message,
                 "resource_summary": resource_summary or "无",
+                "initial_work_mode_decision": initial_work_mode_decision,
                 "existing_requirement_sheet": existing_requirement_sheet or None,
                 "existing_clarification": existing_clarification or None,
                 "response_contract": {
                     "route": "ordinary_chat 或 requirement_refining。",
                     "chatbot_message": (
-                        "直接给用户看的自然回复；如果是宽泛主题，必须包含开场承接、学习地图、"
+                        "交给最终 Chatbot 的自然回复草稿；如果是宽泛主题，必须包含开场承接、学习地图、"
                         "2-5 个入口选项、一个推荐入口、推荐理由和一个关键问题；每次最多追问一个主问题；"
                         "不得输出内部字段名、JSON、表单格式或让用户填写清单。"
                     ),
@@ -1691,7 +1704,9 @@ class OpenAICourseAI:
         system_prompt = (
             "你是 OpenClass 的初始学习入口分类 AI，只做通用学习工作模式判断，不直接回复用户，"
             "也不生成板书。\n"
-            "任务：在右侧板书为空时，判断用户本轮学习意图应进入哪种通用链路。\n"
+            "任务：在右侧板书为空时，先判断 route。ordinary_chat 表示用户没有学习、练习、资料、教学产物或"
+            "板书目的；learning_intake 表示用户正在学习、练习、使用资料或构造学习产物。"
+            "只有 learning_intake 才继续判断通用学习工作模式。\n"
             "分类：\n"
             "1. knowledge_board：用户想学新知识，且目标已经小到一个可生成聚焦板书的知识点、概念、方法、步骤或单一问题。"
             "系统后续会用最小清单生成相关知识板书。\n"
@@ -1717,6 +1732,7 @@ class OpenAICourseAI:
                 "recent_conversation": conversation_summary,
                 "current_user_message": user_message,
                 "response_contract": {
+                    "route": "ordinary_chat 或 learning_intake。普通闲聊必须是 ordinary_chat；学习、练习或资料请求必须是 learning_intake。",
                     "work_mode": "knowledge_board、narrow_topic、practice_artifact 或 unknown。",
                     "granularity": "single_knowledge_point、broad_topic、practice_artifact 或 unclear。",
                     "topic": "用户已表达的学习主题、知识点或练习产物目标。",

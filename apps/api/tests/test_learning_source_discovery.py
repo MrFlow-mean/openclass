@@ -2,31 +2,43 @@ import json
 
 import pytest
 
-from app.models import (
-    ChatRequest,
-    EvidenceBundle,
-    LearningClarificationStatus,
-    RetrievalEvidence,
-    SourceIngestionRecord,
-)
+from app.models import ChatRequest, EvidenceBundle, RetrievalEvidence, SourceIngestionRecord
 from app.services import workspace_state
 from app.services.chat_service import process_chat_on_lesson
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
-from app.services.learning_source_discovery import run_learning_source_discovery
+from app.services.learning_source_discovery import (
+    bind_learning_source_discovery,
+    discover_learning_sources,
+    rollback_learning_source_discovery,
+)
 from app.services.lesson_factory import build_requirements, create_empty_lesson
-from app.services.openai_course_ai import BlankBoardRequirementRefinement, ChatbotReply, OpenAICourseAI, openai_course_ai
-from app.services.resource_resolver import resource_resolver
+from app.services.openai_course_ai import (
+    BlankBoardRequirementRefinement,
+    ChatbotReply,
+    InitialLearningWorkModeDecision,
+    OpenAICourseAI,
+    openai_course_ai,
+)
+from app.services.resource_resolver import ResourceResolutionOutcome, resource_resolver
 from app.services.source_evidence_store import SourceEvidenceStore
 from app.services.source_structure_indexer import SourceStructureIndexer
 from app.services.source_structure_store import SourceStructureStore
 
 
 class _DiscoveryResolver:
-    def __init__(self, *, ready: bool, requested: bool, bundle: EvidenceBundle | None) -> None:
+    def __init__(
+        self,
+        *,
+        ready: bool,
+        requested: bool,
+        resolution: ResourceResolutionOutcome,
+    ) -> None:
         self.ready = ready
         self.requested = requested
-        self.bundle = bundle
-        self.resolve_calls: list[dict[str, object]] = []
+        self.resolution = resolution
+        self.preview_calls: list[dict[str, object]] = []
+        self.bind_calls: list[dict[str, object]] = []
+        self.store = _DiscoveryStore()
 
     def should_use_sources(self, _message: str) -> bool:
         return self.requested
@@ -36,19 +48,21 @@ class _DiscoveryResolver:
         assert package_id == "package_1"
         return self.ready
 
-    def resolve_for_learning_requirement(self, **kwargs):
-        self.resolve_calls.append(kwargs)
-        return self.bundle
+    def preview_for_learning_requirement(self, **kwargs):
+        self.preview_calls.append(kwargs)
+        return self.resolution
+
+    def bind_preview_bundle_to_requirement(self, *, bundle: EvidenceBundle, requirement_run_id: str):
+        self.bind_calls.append({"bundle": bundle, "requirement_run_id": requirement_run_id})
+        return bundle.model_copy(update={"requirement_run_id": requirement_run_id})
 
 
-class _DiscoveryAI:
-    def __init__(self, message: str = "完成资料比对后的回复。") -> None:
-        self.message = message
-        self.calls: list[dict[str, object]] = []
+class _DiscoveryStore:
+    def __init__(self) -> None:
+        self.archive_calls: list[dict[str, str]] = []
 
-    def generate_learning_source_discovery_reply(self, **kwargs):
-        self.calls.append(kwargs)
-        return ChatbotReply(chatbot_message=self.message)
+    def archive_bundle(self, *, owner_user_id: str, bundle_id: str) -> None:
+        self.archive_calls.append({"owner_user_id": owner_user_id, "bundle_id": bundle_id})
 
 
 def _requirements():
@@ -59,18 +73,6 @@ def _requirements():
             "work_mode": "knowledge_board",
             "granularity": "single_knowledge_point",
         }
-    )
-
-
-def _clarification(*, ready: bool) -> LearningClarificationStatus:
-    return LearningClarificationStatus(
-        progress=100 if ready else 60,
-        label="ready" if ready else "collecting",
-        reason="学习目标已明确。" if ready else "仍需确认学习深度。",
-        can_start=ready,
-        ready_for_board=ready,
-        work_mode="knowledge_board",
-        granularity="single_knowledge_point",
     )
 
 
@@ -87,7 +89,6 @@ def _bundle() -> EvidenceBundle:
     return EvidenceBundle(
         package_id="package_1",
         lesson_id="lesson_1",
-        requirement_run_id="requirement_run_1",
         purpose="board_generation",
         evidence_items=[evidence],
         context_text="资料证据上下文",
@@ -95,88 +96,145 @@ def _bundle() -> EvidenceBundle:
     )
 
 
-def test_learning_source_discovery_searches_ready_sources_without_source_words() -> None:
-    resolver = _DiscoveryResolver(ready=True, requested=False, bundle=_bundle())
-    course_ai = _DiscoveryAI()
+def test_learning_source_discovery_previews_ready_sources_without_persisting() -> None:
+    resolver = _DiscoveryResolver(
+        ready=True,
+        requested=False,
+        resolution=ResourceResolutionOutcome(status="matched", evidence_bundle=_bundle()),
+    )
 
-    outcome = run_learning_source_discovery(
+    outcome = discover_learning_sources(
         owner_user_id="user_1",
         package_id="package_1",
         lesson_id="lesson_1",
-        visible_user_message="我想学习目标章节。",
         retrieval_user_message="我想学习目标章节。",
         requirements=_requirements(),
-        clarification=_clarification(ready=True),
-        requirement_run_id="requirement_run_1",
-        base_chatbot_message="需求已经明确。",
+        active_requirement_run_id=None,
+        topic_hint="目标章节",
         resolver=resolver,
-        course_ai=course_ai,
     )
 
     assert outcome.status == "matched"
     assert outcome.attempted is True
+    assert outcome.provisional_bundle is True
+    assert outcome.persisted_this_turn is False
     assert outcome.evidence_bundle is not None
-    assert outcome.chatbot_message == "完成资料比对后的回复。"
-    assert resolver.resolve_calls[0]["purpose"] == "board_generation"
-    assert resolver.resolve_calls[0]["requirement_run_id"] == "requirement_run_1"
-    assert course_ai.calls[0]["discovery_status"] == "matched"
-    assert course_ai.calls[0]["requires_confirmation"] is True
-    assert "资料 A" in str(course_ai.calls[0]["evidence_references"])
+    assert outcome.evidence_bundle.requirement_run_id is None
+    assert outcome.source_requested_by_user is False
+    assert outcome.metadata["auto_triggered"] is True
+    assert resolver.preview_calls[0]["purpose"] == "board_generation"
+    assert resolver.preview_calls[0]["topic_hint"] == "目标章节"
+    assert resolver.bind_calls == []
 
 
-def test_learning_source_discovery_reports_no_match_after_search() -> None:
-    resolver = _DiscoveryResolver(ready=True, requested=False, bundle=None)
-    course_ai = _DiscoveryAI("已完成检索，但当前资料没有足够相关内容。")
-
-    outcome = run_learning_source_discovery(
+def test_learning_source_discovery_binds_preview_after_requirement_run_exists() -> None:
+    resolver = _DiscoveryResolver(
+        ready=True,
+        requested=True,
+        resolution=ResourceResolutionOutcome(status="matched", evidence_bundle=_bundle()),
+    )
+    preview = discover_learning_sources(
         owner_user_id="user_1",
         package_id="package_1",
         lesson_id="lesson_1",
-        visible_user_message="我想学习另一个主题。",
+        retrieval_user_message="按资料学习目标章节。",
+        requirements=_requirements(),
+        active_requirement_run_id=None,
+        resolver=resolver,
+    )
+
+    bound = bind_learning_source_discovery(
+        preview,
+        requirement_run_id="requirement_run_1",
+        resolver=resolver,
+    )
+
+    assert bound.evidence_bundle is not None
+    assert bound.evidence_bundle.requirement_run_id == "requirement_run_1"
+    assert bound.provisional_bundle is False
+    assert bound.persisted_this_turn is True
+    assert bound.metadata["evidence_bundle_id"] == bound.evidence_bundle.id
+    assert resolver.bind_calls[0]["requirement_run_id"] == "requirement_run_1"
+
+
+def test_learning_source_discovery_rolls_back_bundle_persisted_by_failed_turn() -> None:
+    resolver = _DiscoveryResolver(
+        ready=True,
+        requested=True,
+        resolution=ResourceResolutionOutcome(status="matched", evidence_bundle=_bundle()),
+    )
+    preview = discover_learning_sources(
+        owner_user_id="user_1",
+        package_id="package_1",
+        lesson_id="lesson_1",
+        retrieval_user_message="按资料学习目标章节。",
+        requirements=_requirements(),
+        active_requirement_run_id=None,
+        resolver=resolver,
+    )
+    bound = bind_learning_source_discovery(
+        preview,
+        requirement_run_id="requirement_run_1",
+        resolver=resolver,
+    )
+
+    rollback_learning_source_discovery(bound, resolver=resolver)
+
+    assert bound.evidence_bundle is not None
+    assert resolver.store.archive_calls == [
+        {
+            "owner_user_id": bound.evidence_bundle.owner_user_id,
+            "bundle_id": bound.evidence_bundle.id,
+        }
+    ]
+
+
+def test_learning_source_discovery_reports_no_match_without_chatbot_generation() -> None:
+    resolver = _DiscoveryResolver(
+        ready=True,
+        requested=False,
+        resolution=ResourceResolutionOutcome(status="no_match"),
+    )
+
+    outcome = discover_learning_sources(
+        owner_user_id="user_1",
+        package_id="package_1",
+        lesson_id="lesson_1",
         retrieval_user_message="我想学习另一个主题。",
         requirements=_requirements(),
-        clarification=_clarification(ready=False),
-        requirement_run_id="requirement_run_1",
-        base_chatbot_message="还需要确认学习深度。",
+        active_requirement_run_id=None,
         resolver=resolver,
-        course_ai=course_ai,
     )
 
     assert outcome.status == "no_match"
-    assert outcome.attempted is True
     assert outcome.evidence_bundle is None
-    assert resolver.resolve_calls[0]["purpose"] == "board_generation"
-    assert resolver.resolve_calls[0]["requirement_run_id"] == "requirement_run_1"
-    assert course_ai.calls[0]["discovery_status"] == "no_match"
-    assert course_ai.calls[0]["requires_confirmation"] is False
+    assert outcome.evidence_references == ""
+    assert len(resolver.preview_calls) == 1
 
 
 def test_learning_source_discovery_skips_when_no_sources_exist() -> None:
-    resolver = _DiscoveryResolver(ready=False, requested=False, bundle=None)
-    course_ai = _DiscoveryAI()
+    resolver = _DiscoveryResolver(
+        ready=False,
+        requested=False,
+        resolution=ResourceResolutionOutcome(status="no_match"),
+    )
 
-    outcome = run_learning_source_discovery(
+    outcome = discover_learning_sources(
         owner_user_id="user_1",
         package_id="package_1",
         lesson_id="lesson_1",
-        visible_user_message="我想学习一个主题。",
         retrieval_user_message="我想学习一个主题。",
         requirements=_requirements(),
-        clarification=_clarification(ready=False),
-        requirement_run_id="requirement_run_1",
-        base_chatbot_message="原始需求回复。",
+        active_requirement_run_id=None,
         resolver=resolver,
-        course_ai=course_ai,
     )
 
     assert outcome.status == "not_needed"
     assert outcome.attempted is False
-    assert outcome.chatbot_message == "原始需求回复。"
-    assert resolver.resolve_calls == []
-    assert course_ai.calls == []
+    assert resolver.preview_calls == []
 
 
-def test_learning_source_discovery_reply_prompt_preserves_role_boundaries(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_learning_intake_reply_prompt_preserves_role_boundaries(monkeypatch: pytest.MonkeyPatch) -> None:
     ai = OpenAICourseAI()
     captured: dict[str, object] = {}
 
@@ -193,26 +251,30 @@ def test_learning_source_discovery_reply_prompt_preserves_role_boundaries(monkey
 
     monkeypatch.setattr(ai, "_parse", _fake_parse)
 
-    result = ai.generate_learning_source_discovery_reply(
-        base_chatbot_message="需求已经明确。",
+    result = ai.generate_learning_intake_reply(
+        requirement_reply_draft="需求已经明确。",
         user_message="为我讲解这个章节。",
         requirement_context={"learning_goal": "理解目标章节"},
         clarification_context={"ready_for_board": True},
+        guidance_context={"entry_point_options": []},
+        initial_work_mode_decision={"route": "learning_intake"},
         discovery_status="matched",
         evidence_references="资料 A / 2.1 目标章节：短摘录",
+        source_requested_by_user=True,
         requires_confirmation=True,
     )
 
     assert result == ChatbotReply(chatbot_message="已完成资料检索，请确认是否使用命中章节。")
     assert captured["role"] == "chatbot"
-    assert "ResourceResolver" in str(captured["system_prompt"])
-    assert "不得生成右侧板书正文" in str(captured["system_prompt"])
+    assert "本轮唯一面向用户发言" in str(captured["system_prompt"])
+    assert "板书正文" in str(captured["system_prompt"])
     payload = json.loads(str(captured["user_prompt"]))
     assert payload["source_discovery"]["status"] == "matched"
+    assert payload["source_discovery"]["source_requested_by_user"] is True
     assert payload["source_discovery"]["requires_confirmation"] is True
 
 
-def test_blank_learning_requirement_searches_sources_before_chatbot_reply(
+def test_blank_learning_requirement_searches_sources_before_requirement_and_chatbot(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
@@ -248,10 +310,26 @@ def test_blank_learning_requirement_searches_sources_before_chatbot_reply(
     SourceStructureIndexer(store=structure_store).rebuild_structure(source)
     monkeypatch.setattr(resource_resolver, "store", source_store)
     monkeypatch.setattr(resource_resolver, "structure_store", structure_store)
+    call_order: list[str] = []
     captured: dict[str, object] = {}
+    original_preview = resource_resolver.preview_for_learning_requirement
+
+    def _fake_initial(**kwargs):
+        call_order.append("initial")
+        return InitialLearningWorkModeDecision(
+            route="learning_intake",
+            work_mode="knowledge_board",
+            granularity="single_knowledge_point",
+            topic="2.1 的核心内容",
+        )
+
+    def _traced_preview(**kwargs):
+        call_order.append("resource")
+        return original_preview(**kwargs)
 
     def _fake_refinement(**kwargs):
-        captured["include_stream_result"] = kwargs["include_stream_result"]
+        call_order.append("requirement")
+        captured["refinement"] = kwargs
         return BlankBoardRequirementRefinement(
             route="requirement_refining",
             chatbot_message="需求已经明确。",
@@ -263,13 +341,15 @@ def test_blank_learning_requirement_searches_sources_before_chatbot_reply(
             ready_for_board=True,
         )
 
-    def _fake_discovery_reply(**kwargs):
-        captured["discovery_status"] = kwargs["discovery_status"]
-        captured["evidence_references"] = kwargs["evidence_references"]
-        return ChatbotReply(chatbot_message="我已在上传资料中找到 2.1 的相关正文，请确认是否用于生成板书。")
+    def _fake_final_reply(**kwargs):
+        call_order.append("chatbot")
+        captured["final_reply"] = kwargs
+        return ChatbotReply(chatbot_message="我已找到 2.1 的相关正文，接下来确认学习起点。")
 
+    monkeypatch.setattr(openai_course_ai, "generate_initial_learning_work_mode", _fake_initial)
+    monkeypatch.setattr(resource_resolver, "preview_for_learning_requirement", _traced_preview)
     monkeypatch.setattr(openai_course_ai, "generate_blank_board_requirement_refinement", _fake_refinement)
-    monkeypatch.setattr(openai_course_ai, "generate_learning_source_discovery_reply", _fake_discovery_reply)
+    monkeypatch.setattr(openai_course_ai, "generate_learning_intake_reply", _fake_final_reply)
 
     response = process_chat_on_lesson(
         lesson.id,
@@ -277,15 +357,24 @@ def test_blank_learning_requirement_searches_sources_before_chatbot_reply(
         user_id=user_id,
     )
 
-    assert captured["include_stream_result"] is False
-    assert captured["discovery_status"] == "matched"
-    assert "Reference Book" in str(captured["evidence_references"])
-    assert response.chatbot_message == "我已在上传资料中找到 2.1 的相关正文，请确认是否用于生成板书。"
+    assert call_order == ["initial", "resource", "requirement", "chatbot"]
+    refinement_call = captured["refinement"]
+    assert isinstance(refinement_call, dict)
+    assert refinement_call["include_stream_result"] is False
+    assert "Grounded body" in str(refinement_call["resource_summary"])
+    final_reply_call = captured["final_reply"]
+    assert isinstance(final_reply_call, dict)
+    assert final_reply_call["discovery_status"] == "matched"
+    assert "Reference Book" in str(final_reply_call["evidence_references"])
+    assert response.chatbot_message == "我已找到 2.1 的相关正文，接下来确认学习起点。"
     assert response.candidate_evidence_bundle is not None
-    assert response.candidate_evidence_bundle.purpose == "board_generation"
     assert response.candidate_evidence_bundle.requirement_run_id == response.requirement_run_id
-    assert response.candidate_evidence_bundle.evidence_items[0].chapter_id
+    assert response.active_requirement_sheet is not None
+    assert response.active_requirement_sheet.source_grounding.requested_by_user is False
     saved = store.load_for_user(user_id).packages[0].lessons[0]
     commit = saved.history_graph.commits[-1]
+    assert commit.metadata["assistant_message"] == response.chatbot_message
+    assert commit.metadata["assistant_message_source"] == "chatbot_learning_intake"
+    assert commit.metadata["visible_reply_owner"] == "chatbot"
     assert commit.metadata["learning_source_discovery"]["status"] == "matched"
     assert commit.metadata["evidence_bundle_id"] == response.candidate_evidence_bundle.id

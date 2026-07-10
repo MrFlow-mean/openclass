@@ -16,6 +16,7 @@ from app.services.openai_course_ai import (
     BoardDocumentEditResult,
     BoardTaskRequirementRefinement,
     ChatbotReply,
+    InitialLearningWorkModeDecision,
     OpenAICourseAI,
     bind_ai_output_stream,
     emit_ai_stream_event,
@@ -438,11 +439,20 @@ def test_empty_board_ordinary_chat_does_not_create_requirement(
             chatbot_message="可以，我们就正常聊这个。",
         )
 
-    monkeypatch.setattr(openai_course_ai, "generate_blank_board_requirement_refinement", _fake_refinement)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_initial_learning_work_mode",
+        lambda **kwargs: InitialLearningWorkModeDecision(route="ordinary_chat"),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_blank_board_requirement_refinement",
+        lambda **kwargs: pytest.fail("ordinary chat must skip requirement manager"),
+    )
     monkeypatch.setattr(
         openai_course_ai,
         "generate_basic_chat_reply",
-        lambda **kwargs: pytest.fail("empty board ordinary chat should be decided by the refiner"),
+        lambda **kwargs: ChatbotReply(chatbot_message="可以，我们就正常聊这个。"),
     )
 
     response = process_chat_on_lesson(
@@ -455,7 +465,7 @@ def test_empty_board_ordinary_chat_does_not_create_requirement(
     )
 
     assert response.chatbot_message == "可以，我们就正常聊这个。"
-    assert call_count == 1
+    assert call_count == 0
     assert response.active_requirement_sheet is None
     assert response.requirement_run_id is None
     assert store.list_learning_requirement_versions(user_id, lesson.id) == []
@@ -469,7 +479,58 @@ def test_empty_board_ordinary_chat_does_not_create_requirement(
     assert commit.metadata["board_document_state"]["status"] == "empty"
 
 
-def test_empty_board_refinement_uses_streamed_visible_reply_as_history_source(
+def test_explicit_source_intent_is_persisted_in_learning_requirement(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    user_id = "user_blank_source_intent"
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    lesson = _seed_empty_workspace(store, user_id)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_initial_learning_work_mode",
+        lambda **kwargs: InitialLearningWorkModeDecision(
+            route="learning_intake",
+            work_mode="knowledge_board",
+            granularity="single_knowledge_point",
+            topic="目标知识点",
+        ),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_blank_board_requirement_refinement",
+        lambda **kwargs: BlankBoardRequirementRefinement(
+            route="requirement_refining",
+            chatbot_message="已经记录资料学习范围。",
+            progress=100,
+            summary="用户要求依据上传资料学习目标知识点。",
+            work_mode="knowledge_board",
+            granularity="single_knowledge_point",
+            learning_goal="目标知识点",
+            ready_for_board=True,
+        ),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_learning_intake_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="我会依据资料继续确认学习起点。"),
+    )
+
+    response = process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="请根据我上传的资料讲目标知识点。"),
+        user_id=user_id,
+    )
+
+    assert response.active_requirement_sheet is not None
+    assert response.active_requirement_sheet.source_grounding.requested_by_user is True
+    versions = store.list_learning_requirement_versions(user_id, lesson.id)
+    persisted_sheet = json.loads(versions[-1]["sheet_json"])
+    assert persisted_sheet["source_grounding"]["requested_by_user"] is True
+
+
+def test_empty_board_refinement_keeps_pm_draft_internal_and_persists_chatbot_reply(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
@@ -477,23 +538,24 @@ def test_empty_board_refinement_uses_streamed_visible_reply_as_history_source(
     store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
     monkeypatch.setattr(workspace_state, "STORE", store)
     lesson = _seed_empty_workspace(store, user_id)
-    visible_reply = "这段是用户实际看到的流式回复。"
+    pm_draft = "这段是需求管理器的内部草稿。"
+    final_reply = "这段才是 Chatbot 的最终回复。"
 
     def _fake_refinement(**kwargs):
-        assert kwargs["include_stream_result"] is True
+        assert kwargs["include_stream_result"] is False
         emit_ai_stream_event(
             {
                 "type": "field_delta",
                 "role": "pm",
                 "field": "chatbot_message",
-                "delta": visible_reply,
-                "value": visible_reply,
+                "delta": pm_draft,
+                "value": pm_draft,
             }
         )
         return BlankBoardRequirementRefinementResult(
             result=BlankBoardRequirementRefinement(
                 route="requirement_refining",
-                chatbot_message="这是最终 JSON 里的不同回复，不应该入库。",
+                chatbot_message=pm_draft,
                 progress=50,
                 summary="用户想学一个宽泛主题。",
                 work_mode="knowledge_board",
@@ -501,11 +563,26 @@ def test_empty_board_refinement_uses_streamed_visible_reply_as_history_source(
                 learning_goal="一个宽泛主题",
                 ready_for_board=False,
             ),
-            visible_chat_buffer=visible_reply,
+            visible_chat_buffer=pm_draft,
             visible_chat_was_streamed=True,
         )
 
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_initial_learning_work_mode",
+        lambda **kwargs: InitialLearningWorkModeDecision(
+            route="learning_intake",
+            work_mode="narrow_topic",
+            granularity="broad_topic",
+            topic="一个宽泛主题",
+        ),
+    )
     monkeypatch.setattr(openai_course_ai, "generate_blank_board_requirement_refinement", _fake_refinement)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_learning_intake_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message=final_reply),
+    )
 
     stream_events: list[dict[str, object]] = []
     with bind_ai_output_stream(lambda payload: stream_events.append(payload)):
@@ -522,16 +599,18 @@ def test_empty_board_refinement_uses_streamed_visible_reply_as_history_source(
         and event.get("role") == "pm"
         and event.get("field") == "chatbot_message"
     )
-    assert streamed_message == visible_reply
-    assert response.chatbot_message == visible_reply
+    assert streamed_message == pm_draft
+    assert response.chatbot_message == final_reply
     commit = store.load_for_user(user_id).packages[0].lessons[0].history_graph.commits[-1]
-    assert commit.metadata["assistant_message"] == visible_reply
+    assert commit.metadata["assistant_message"] == final_reply
+    assert commit.metadata["assistant_message_source"] == "chatbot_learning_intake"
+    assert commit.metadata["visible_reply_owner"] == "chatbot"
     discovery = commit.metadata["guided_requirement_discovery"]
     assert discovery["visible_chat_source"] == "streamed_buffer"
     assert discovery["visible_chat_was_streamed"] is True
 
 
-def test_empty_board_refinement_parse_failure_keeps_visible_reply_without_requirement_update(
+def test_empty_board_refinement_parse_failure_discards_pm_draft_without_requirement_update(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
@@ -539,27 +618,43 @@ def test_empty_board_refinement_parse_failure_keeps_visible_reply_without_requir
     store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
     monkeypatch.setattr(workspace_state, "STORE", store)
     lesson = _seed_empty_workspace(store, user_id)
-    visible_reply = "我已经先把可见回复发给你，但结构化清单这轮没有更新。"
+    pm_draft = "结构化清单失败前产生的内部草稿。"
+    final_reply = "这轮需求没有成功记录，我们可以继续正常交流。"
 
     def _fake_refinement(**kwargs):
-        assert kwargs["include_stream_result"] is True
+        assert kwargs["include_stream_result"] is False
         emit_ai_stream_event(
             {
                 "type": "field_delta",
                 "role": "pm",
                 "field": "chatbot_message",
-                "delta": visible_reply,
-                "value": visible_reply,
+                "delta": pm_draft,
+                "value": pm_draft,
             }
         )
         return BlankBoardRequirementRefinementResult(
             result=None,
-            visible_chat_buffer=visible_reply,
+            visible_chat_buffer=pm_draft,
             visible_chat_was_streamed=True,
             structured_parse_failed=True,
         )
 
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_initial_learning_work_mode",
+        lambda **kwargs: InitialLearningWorkModeDecision(
+            route="learning_intake",
+            work_mode="narrow_topic",
+            granularity="broad_topic",
+            topic="一个宽泛主题",
+        ),
+    )
     monkeypatch.setattr(openai_course_ai, "generate_blank_board_requirement_refinement", _fake_refinement)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_basic_chat_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message=final_reply),
+    )
 
     response = process_chat_on_lesson(
         lesson.id,
@@ -567,15 +662,12 @@ def test_empty_board_refinement_parse_failure_keeps_visible_reply_without_requir
         user_id=user_id,
     )
 
-    assert response.chatbot_message == visible_reply
+    assert response.chatbot_message == final_reply
     assert response.active_requirement_sheet is None
     assert store.list_learning_requirement_versions(user_id, lesson.id) == []
     commit = store.load_for_user(user_id).packages[0].lessons[0].history_graph.commits[-1]
-    assert commit.metadata["assistant_message"] == visible_reply
-    discovery = commit.metadata["guided_requirement_discovery"]
-    assert discovery["visible_chat_source"] == "streamed_buffer"
-    assert discovery["structured_parse_failed"] is True
-    assert discovery["requirement_update_skipped"] is True
+    assert commit.metadata["assistant_message"] == final_reply
+    assert commit.metadata["visible_reply_owner"] == "chatbot"
 
 
 def test_non_empty_board_uses_existing_board_task_entry(
@@ -714,6 +806,11 @@ def test_empty_board_broad_learning_need_collects_requirement(
         )
 
     monkeypatch.setattr(openai_course_ai, "generate_blank_board_requirement_refinement", _fake_ordinary_refinement)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_basic_chat_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="可以，先聊这个也没问题。"),
+    )
     ordinary_response = process_chat_on_lesson(
         lesson.id,
         ChatRequest(message="先不说学习，聊点别的。"),
