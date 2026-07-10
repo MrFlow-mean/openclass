@@ -17,7 +17,6 @@ import { useState, type Dispatch, type HTMLAttributes, type ReactNode, type RefO
 
 import { CourseChatMessage } from "@/components/chatbot";
 import { BoardGenerationConfirmationCard } from "@/components/course-studio/board-generation-confirmation-card";
-import { EvidenceConfirmationCard } from "@/components/course-studio/evidence-confirmation-card";
 import {
   modelButtonLabel,
   modelOptionKey,
@@ -454,16 +453,6 @@ export function CourseStudioChatSidebar({
             lesson={activeLesson}
             targetCommitId={targetCommitId}
           />
-          {!isPreviewMode &&
-          candidateEvidenceBundle &&
-          (!showReadyForBoardCard || candidateEvidenceBundle.purpose !== "board_generation") ? (
-            <EvidenceConfirmationCard
-              bundle={candidateEvidenceBundle}
-              isBusy={isChatBusy}
-              onConfirm={(bundleId) => onEvidenceAction(bundleId, "confirm")}
-              onSkip={(bundleId) => onEvidenceAction(bundleId, "skip")}
-            />
-          ) : null}
           {!isPreviewMode &&
           !activeBoardTask &&
           activeLesson?.active_interaction_session &&
