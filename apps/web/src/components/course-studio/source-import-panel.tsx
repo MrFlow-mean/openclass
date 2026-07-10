@@ -444,7 +444,7 @@ function SourceRow({
                   onClick={() => void toggleStructure()}
                   disabled={isLoadingStructure}
                   className={clsx(
-                    "flex h-7 w-7 items-center justify-center rounded-md border border-transparent transition disabled:cursor-not-allowed disabled:opacity-50",
+                    "flex min-w-10 flex-col items-center justify-center gap-0.5 rounded-md border border-transparent px-1 py-1 text-[10px] leading-none transition disabled:cursor-not-allowed disabled:opacity-50",
                     source.structure_has_verified_toc
                       ? "text-blue-600 hover:border-blue-100 hover:bg-blue-50"
                       : "text-gray-400 hover:border-gray-200 hover:bg-gray-50 hover:text-gray-600"
@@ -453,6 +453,7 @@ function SourceRow({
                   aria-label={`${source.structure_has_verified_toc ? "查看资料目录" : "查看资料目录状态"} ${source.title}`}
                 >
                   {isLoadingStructure ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <BookOpen className="h-3.5 w-3.5" />}
+                  <span>{isStructureOpen ? "收起" : "展开"}</span>
                 </button>
               ) : null}
               <button
