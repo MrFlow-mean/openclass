@@ -93,9 +93,9 @@ function EvidenceSummary({ item }: { item: RetrievalEvidence }) {
   const location = [item.source_title, item.section_path.join(" > "), item.page_range].filter(Boolean).join(" / ");
   return (
     <div className="grid gap-1 text-xs leading-5 text-emerald-950">
-      <p className="flex items-center gap-2 font-semibold">
-        <FileText className="h-4 w-4 shrink-0 text-emerald-600" />
-        <span className="min-w-0 truncate">{location || "未命名资料"}</span>
+      <p className="flex items-start gap-2 font-semibold">
+        <FileText className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
+        <span className="min-w-0 break-words">{location || "未命名资料"}</span>
       </p>
       {item.chapter_id ? <p className="text-[11px] font-semibold text-emerald-700">已按验证目录定位正文</p> : null}
       <p className="max-h-16 overflow-hidden text-gray-600">{item.excerpt}</p>
