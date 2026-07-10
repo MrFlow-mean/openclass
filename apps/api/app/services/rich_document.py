@@ -86,6 +86,7 @@ _HTML_BLOCK_TAGS = {
     "nav",
     "ol",
     "p",
+    "pre",
     "section",
     "table",
     "tbody",
@@ -356,6 +357,73 @@ def _display_math_block(lines: list[str], index: int) -> tuple[str, int] | None:
     return None
 
 
+def _html_plain_text(children: list[Any]) -> str:
+    parts: list[str] = []
+    for child in children:
+        if isinstance(child, str):
+            parts.append(child)
+        elif isinstance(child, dict):
+            parts.append(_html_plain_text(child.get("children", [])))
+    return "".join(parts)
+
+
+def _parse_fenced_code_block(lines: list[str], index: int) -> tuple[str | None, str, int] | None:
+    stripped = lines[index].strip()
+    single_block = _fenced_code_text(stripped)
+    if single_block is not None:
+        return None, single_block, index + 1
+    if not stripped.startswith("```"):
+        return None
+
+    is_opener, code_lines = _code_fence_body_after_opener(stripped)
+    if not is_opener:
+        return None
+
+    language: str | None = None
+    opener_body = stripped[3:].strip()
+    if opener_body and re.fullmatch(r"[A-Za-z0-9_-]+", opener_body):
+        language = opener_body
+
+    cursor = index + 1
+    closed = False
+    while cursor < len(lines):
+        next_stripped = lines[cursor].strip()
+        if next_stripped == "```":
+            closed = True
+            cursor += 1
+            break
+        if next_stripped.endswith("```"):
+            before_close = next_stripped[:-3].rstrip()
+            if before_close:
+                code_lines.append(before_close)
+            closed = True
+            cursor += 1
+            break
+        code_lines.append(lines[cursor])
+        cursor += 1
+
+    if not closed:
+        return None
+
+    return language, "\n".join(code_lines).rstrip("\n"), cursor
+
+
+def _code_block_html(language: str | None, code: str) -> str:
+    escaped = html.escape(code)
+    if language:
+        return f'<pre><code class="language-{html.escape(language, quote=True)}">{escaped}</code></pre>'
+    return f"<pre><code>{escaped}</code></pre>"
+
+
+def _code_block_node(language: str | None, code: str) -> dict[str, Any]:
+    node: dict[str, Any] = {"type": "codeBlock"}
+    if language:
+        node["attrs"] = {"language": language}
+    if code:
+        node["content"] = [{"type": "text", "text": code}]
+    return node
+
+
 def _table_node(rows: list[list[str]]) -> dict[str, Any]:
     table_rows: list[dict[str, Any]] = []
     for row_index, row in enumerate(rows):
@@ -399,6 +467,12 @@ def text_to_html(content_text: str) -> str:
             parts.append(
                 f'<div data-type="block-math" data-latex="{html.escape(_normalize_latex(latex), quote=True)}"></div>'
             )
+            continue
+
+        fenced_code = _parse_fenced_code_block(lines, index)
+        if fenced_code:
+            language, code, index = fenced_code
+            parts.append(_code_block_html(language, code))
             continue
 
         if _is_markdown_table(lines, index):
@@ -463,6 +537,12 @@ def text_to_tiptap_doc(content_text: str) -> dict[str, Any]:
         if display_math:
             latex, index = display_math
             nodes.append({"type": "blockMath", "attrs": {"latex": _normalize_latex(latex)}})
+            continue
+
+        fenced_code = _parse_fenced_code_block(lines, index)
+        if fenced_code:
+            language, code, index = fenced_code
+            nodes.append(_code_block_node(language, code))
             continue
 
         if _is_markdown_table(lines, index):
@@ -766,6 +846,17 @@ def _html_node_to_blocks(node: dict[str, Any]) -> list[dict[str, Any]]:
             _text_block_node("paragraph", {}, _html_inline_nodes(children))
         ]
         return [{"type": "blockquote", "content": content or [{"type": "paragraph"}]}]
+    if tag == "pre":
+        language: str | None = None
+        for child in children:
+            if not isinstance(child, dict) or child.get("tag") != "code":
+                continue
+            class_name = child.get("attrs", {}).get("class", "")
+            match = re.search(r"language-([\w-]+)", class_name)
+            if match:
+                language = match.group(1)
+        code_text = _html_plain_text(children).replace("\r\n", "\n")
+        return [_code_block_node(language, code_text)]
     if tag in {"ul", "ol"}:
         items = [
             _html_list_item_node(child)
@@ -941,6 +1032,11 @@ def _markdown_blocks(nodes: list[dict[str, Any]], *, list_depth: int = 0) -> lis
             latex = str(node.get("attrs", {}).get("latex") or "").strip()
             if latex:
                 blocks.append(f"$$\n{latex}\n$$")
+        elif node_type == "codeBlock":
+            code = "".join(str(child.get("text") or "") for child in content if child.get("type") == "text")
+            language = str(node.get("attrs", {}).get("language") or "").strip()
+            opener = f"```{language}" if language else "```"
+            blocks.append(f"{opener}\n{code}\n```")
         elif node_type == "pageBreak":
             blocks.append("---")
         elif node_type == "image":
@@ -1193,6 +1289,8 @@ def _looks_like_markdown_document(content_text: str) -> bool:
         return False
     for index, line in enumerate(lines):
         if _display_math_block(lines, index):
+            return True
+        if line.startswith("```"):
             return True
         if _MARKDOWN_HEADING_RE.match(line) or _MARKDOWN_BULLET_RE.match(line) or _MARKDOWN_ORDERED_RE.match(line):
             return True

@@ -149,10 +149,95 @@ function displayMathBlock(lines: string[], index: number) {
   return null;
 }
 
+function parseFencedCodeBlock(lines: string[], index: number): { language: string | null; code: string; nextIndex: number } | null {
+  const stripped = lines[index].trim();
+  const singleBlockMatch = stripped.match(/^```([\s\S]*?)```$/);
+  if (singleBlockMatch) {
+    const body = singleBlockMatch[1].trim();
+    if (!body) {
+      return { language: null, code: "", nextIndex: index + 1 };
+    }
+    const firstLineBreak = body.indexOf("\n");
+    if (firstLineBreak === -1) {
+      if (/^[A-Za-z0-9_-]+$/.test(body)) {
+        return { language: body, code: "", nextIndex: index + 1 };
+      }
+      return { language: null, code: body, nextIndex: index + 1 };
+    }
+    const firstLine = body.slice(0, firstLineBreak).trim();
+    const remainder = body.slice(firstLineBreak + 1);
+    if (/^[A-Za-z0-9_-]+$/.test(firstLine)) {
+      return { language: firstLine, code: remainder.trimEnd(), nextIndex: index + 1 };
+    }
+    return { language: null, code: body, nextIndex: index + 1 };
+  }
+
+  if (!stripped.startsWith("```")) {
+    return null;
+  }
+
+  const openerBody = stripped.slice(3).trim();
+  const codeLines: string[] = [];
+  let language: string | null = null;
+  if (!openerBody) {
+    // bare ``` opener
+  } else if (/^[A-Za-z0-9_-]+$/.test(openerBody)) {
+    language = openerBody;
+  } else {
+    const [firstToken, ...rest] = openerBody.split(" ");
+    if (["text", "txt", "plain", "plaintext"].includes(firstToken.toLowerCase()) && rest.length) {
+      codeLines.push(rest.join(" "));
+    } else {
+      codeLines.push(openerBody);
+    }
+  }
+
+  let cursor = index + 1;
+  let closed = false;
+  while (cursor < lines.length) {
+    const nextStripped = lines[cursor].trim();
+    if (nextStripped === "```") {
+      closed = true;
+      cursor += 1;
+      break;
+    }
+    if (nextStripped.endsWith("```")) {
+      const beforeClose = nextStripped.slice(0, -3).trimEnd();
+      if (beforeClose) {
+        codeLines.push(beforeClose);
+      }
+      closed = true;
+      cursor += 1;
+      break;
+    }
+    codeLines.push(lines[cursor]);
+    cursor += 1;
+  }
+
+  if (!closed) {
+    return null;
+  }
+
+  return {
+    language,
+    code: codeLines.join("\n").replace(/\n$/, ""),
+    nextIndex: cursor,
+  };
+}
+
+function renderCodeBlock(language: string | null, code: string) {
+  const escaped = escapeHtml(code);
+  if (language) {
+    return `<pre><code class="language-${escapeHtml(language)}">${escaped}</code></pre>`;
+  }
+  return `<pre><code>${escaped}</code></pre>`;
+}
+
 function lineStartsBlock(line: string) {
   const trimmed = line.trim();
   return (
     !trimmed ||
+    trimmed.startsWith("```") ||
     MARKDOWN_HEADING_RE.test(trimmed) ||
     MARKDOWN_BULLET_RE.test(trimmed) ||
     MARKDOWN_ORDERED_RE.test(trimmed) ||
@@ -186,6 +271,13 @@ export function streamingMarkdownToHtml(contentText: string) {
     if (displayMath) {
       parts.push(displayMath.html);
       index = displayMath.nextIndex;
+      continue;
+    }
+
+    const fencedCode = parseFencedCodeBlock(lines, index);
+    if (fencedCode) {
+      parts.push(renderCodeBlock(fencedCode.language, fencedCode.code));
+      index = fencedCode.nextIndex;
       continue;
     }
 
