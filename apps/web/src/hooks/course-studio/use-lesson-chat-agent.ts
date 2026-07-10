@@ -131,6 +131,8 @@ export function useLessonChatAgent({
     !isPreviewMode && candidateEvidenceState && candidateEvidenceState.lessonId === activeLesson?.id
       ? candidateEvidenceState.bundle
       : null;
+  const isPendingEvidenceLoading =
+    !isPreviewMode && Boolean(activeLesson?.id) && candidateEvidenceState?.lessonId !== activeLesson?.id;
 
   const chatInput = activeComposerState.chatInput;
   const composerMode = activeComposerState.composerMode;
@@ -844,6 +846,7 @@ export function useLessonChatAgent({
     latestBoardDecision,
     boardEditPrompt,
     candidateEvidenceBundle,
+    isPendingEvidenceLoading,
     resetAgentState,
     handleSubmitChat,
     handleStopChat,

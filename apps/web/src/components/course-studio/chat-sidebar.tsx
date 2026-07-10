@@ -313,6 +313,7 @@ type CourseStudioChatSidebarProps = {
   isPreviewMode: boolean;
   isChatBusy: boolean;
   showReadyForBoardCard: boolean;
+  isPendingEvidenceLoading: boolean;
   scopeOptions: ScopeOption[];
   boardEditPrompt: BoardEditPrompt | null;
   candidateEvidenceBundle: EvidenceBundle | null;
@@ -366,6 +367,7 @@ export function CourseStudioChatSidebar({
   isPreviewMode,
   isChatBusy,
   showReadyForBoardCard,
+  isPendingEvidenceLoading,
   scopeOptions,
   boardEditPrompt,
   candidateEvidenceBundle,
@@ -452,7 +454,9 @@ export function CourseStudioChatSidebar({
             lesson={activeLesson}
             targetCommitId={targetCommitId}
           />
-          {!isPreviewMode && candidateEvidenceBundle ? (
+          {!isPreviewMode &&
+          candidateEvidenceBundle &&
+          (!showReadyForBoardCard || candidateEvidenceBundle.purpose !== "board_generation") ? (
             <EvidenceConfirmationCard
               bundle={candidateEvidenceBundle}
               isBusy={isChatBusy}
@@ -558,7 +562,12 @@ export function CourseStudioChatSidebar({
               <BoardGenerationConfirmationCard
                 clarityStatus={clarityStatus}
                 isChatBusy={isChatBusy}
+                isPendingEvidenceLoading={isPendingEvidenceLoading}
+                candidateEvidenceBundle={
+                  candidateEvidenceBundle?.purpose === "board_generation" ? candidateEvidenceBundle : null
+                }
                 onSubmitChat={onSubmitChat}
+                onEvidenceAction={onEvidenceAction}
               />
             ) : null}
             <div ref={chatScrollEndRef} aria-hidden="true" />

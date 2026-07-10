@@ -218,6 +218,7 @@ export function CourseStudio() {
     latestBoardDecision,
     boardEditPrompt,
     candidateEvidenceBundle,
+    isPendingEvidenceLoading,
     handleSubmitChat,
     handleStopChat,
     handleEditMessage,
@@ -579,6 +580,7 @@ export function CourseStudio() {
           isPreviewMode={isPreviewMode}
           isChatBusy={isChatBusy}
           showReadyForBoardCard={showReadyForBoardCard}
+          isPendingEvidenceLoading={isPendingEvidenceLoading}
           scopeOptions={scopeOptions}
           boardEditPrompt={boardEditPrompt}
           candidateEvidenceBundle={candidateEvidenceBundle}
