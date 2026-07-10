@@ -289,7 +289,7 @@ export function SourceImportPanel({ packageId, disabled = false, onError, onSour
           <div className="space-y-2">
             <div
               className={clsx(
-                "flex min-h-20 flex-col items-center justify-center gap-2 rounded-lg border border-dashed bg-white px-4 text-center text-xs transition-colors",
+                "flex min-h-28 flex-col items-center justify-center gap-2 rounded-lg border border-dashed bg-white px-4 text-center text-xs transition-colors",
                 isDragActive && !disabled && !isImporting ? "border-blue-400 text-blue-700" : "border-gray-200 text-gray-400"
               )}
             >
