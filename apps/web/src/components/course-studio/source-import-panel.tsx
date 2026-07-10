@@ -4,19 +4,19 @@ import clsx from "clsx";
 import { BookOpen, ChevronDown, ChevronRight, Globe2, RefreshCw, TextQuote, Trash2, UploadCloud } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type DragEvent } from "react";
 
-import { formatSourceChapterChatReference } from "@/components/course-studio/source-reference";
+import { createSourceChapterSelection } from "@/components/course-studio/source-reference";
 import {
   getSourceProcessingState,
   SourceProcessingProgress,
 } from "@/components/course-studio/source-processing-progress";
 import { api } from "@/lib/api";
-import type { SourceChapter, SourceIngestionRecord, SourceStructureView } from "@/types";
+import type { SelectionRef, SourceChapter, SourceIngestionRecord, SourceStructureView } from "@/types";
 
 type SourceImportPanelProps = {
   packageId: string;
   disabled?: boolean;
   onError: (message: string) => void;
-  onReferenceToChatInput?: (text: string) => void;
+  onSourceReference?: (selection: SelectionRef) => void;
 };
 
 type ChapterTreeNode = {
@@ -48,7 +48,7 @@ function dragIncludesFiles(event: DragEvent<HTMLElement>) {
   return Array.from(event.dataTransfer.types).includes("Files");
 }
 
-export function SourceImportPanel({ packageId, disabled = false, onError, onReferenceToChatInput }: SourceImportPanelProps) {
+export function SourceImportPanel({ packageId, disabled = false, onError, onSourceReference }: SourceImportPanelProps) {
   const [sources, setSources] = useState<SourceIngestionRecord[]>([]);
   const [sourceUri, setSourceUri] = useState("");
   const [title, setTitle] = useState("");
@@ -308,7 +308,7 @@ export function SourceImportPanel({ packageId, disabled = false, onError, onRefe
                 isRemoving={removingSourceId === source.id}
                 onRemove={() => void removeSource(source.id)}
                 onError={onError}
-                onReferenceToChatInput={onReferenceToChatInput}
+                onSourceReference={onSourceReference}
               />
             ))}
           </div>
@@ -339,14 +339,14 @@ function SourceRow({
   isRemoving,
   onRemove,
   onError,
-  onReferenceToChatInput,
+  onSourceReference,
 }: {
   packageId: string;
   source: SourceIngestionRecord;
   isRemoving: boolean;
   onRemove: () => void;
   onError: (message: string) => void;
-  onReferenceToChatInput?: (text: string) => void;
+  onSourceReference?: (selection: SelectionRef) => void;
 }) {
   const [structureView, setStructureView] = useState<SourceStructureView | null>(null);
   const [isStructureOpen, setIsStructureOpen] = useState(false);
@@ -475,7 +475,9 @@ function SourceRow({
             <p className="mt-2 text-xs leading-5 text-gray-500">未发现可验证目录，本资料将按全文片段检索。</p>
           ) : null}
           {isReady && source.structure_has_verified_toc ? (
-            <p className="mt-2 text-xs leading-5 text-gray-500">已建立可验证目录，可按章节编号定位正文。</p>
+            <p className="mt-2 text-xs leading-5 text-gray-500">
+              已建立可验证目录；引用时会检查正文，扫描文件将自动尝试 OCR。
+            </p>
           ) : null}
           {openNotebookSyncMessage ? <p className="mt-2 text-xs leading-5 text-amber-700">{openNotebookSyncMessage}</p> : null}
           {source.error ? <p className="mt-2 text-xs leading-5 text-rose-700">{source.error}</p> : null}
@@ -488,7 +490,7 @@ function SourceRow({
                   nodes={chapterTree}
                   expandedIds={expandedChapterIds}
                   onToggle={toggleChapter}
-                  onReferenceToChatInput={onReferenceToChatInput}
+                  onSourceReference={onSourceReference}
                 />
               ) : (
                 <SourceStructureEmptyState source={source} structureView={structureView} />
@@ -544,13 +546,13 @@ function SourceChapterTree({
   nodes,
   expandedIds,
   onToggle,
-  onReferenceToChatInput,
+  onSourceReference,
 }: {
   source: SourceIngestionRecord;
   nodes: ChapterTreeNode[];
   expandedIds: Set<string>;
   onToggle: (chapterId: string) => void;
-  onReferenceToChatInput?: (text: string) => void;
+  onSourceReference?: (selection: SelectionRef) => void;
 }) {
   return (
     <div className="space-y-1">
@@ -561,7 +563,7 @@ function SourceChapterTree({
           node={node}
           expandedIds={expandedIds}
           onToggle={onToggle}
-          onReferenceToChatInput={onReferenceToChatInput}
+          onSourceReference={onSourceReference}
           depth={0}
         />
       ))}
@@ -574,14 +576,14 @@ function SourceChapterNode({
   node,
   expandedIds,
   onToggle,
-  onReferenceToChatInput,
+  onSourceReference,
   depth,
 }: {
   source: SourceIngestionRecord;
   node: ChapterTreeNode;
   expandedIds: Set<string>;
   onToggle: (chapterId: string) => void;
-  onReferenceToChatInput?: (text: string) => void;
+  onSourceReference?: (selection: SelectionRef) => void;
   depth: number;
 }) {
   const hasChildren = node.children.length > 0;
@@ -610,10 +612,10 @@ function SourceChapterNode({
           )}
           <span className="min-w-0 flex-1 truncate">{title || "未命名章节"}</span>
         </button>
-        {onReferenceToChatInput ? (
+        {onSourceReference ? (
           <button
             type="button"
-            onClick={() => onReferenceToChatInput(formatSourceChapterChatReference(source, node.chapter))}
+            onClick={() => onSourceReference(createSourceChapterSelection(source, node.chapter))}
             className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-emerald-200 bg-emerald-50 text-emerald-700 shadow-sm transition hover:border-emerald-300 hover:bg-emerald-100 hover:text-emerald-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300"
             title="引用到输入框"
             aria-label={`引用章节到输入框 ${title || "未命名章节"}`}
@@ -631,7 +633,7 @@ function SourceChapterNode({
               node={child}
               expandedIds={expandedIds}
               onToggle={onToggle}
-              onReferenceToChatInput={onReferenceToChatInput}
+              onSourceReference={onSourceReference}
               depth={depth + 1}
             />
           ))}

@@ -646,7 +646,7 @@ export interface CodexLoginStatusResponse {
 }
 
 export interface SelectionRef {
-  kind: "chat" | "board";
+  kind: "chat" | "board" | "source";
   excerpt: string;
   location_kind?: BoardTaskLocationKind | null;
   lesson_id?: string | null;
@@ -657,6 +657,13 @@ export interface SelectionRef {
   before_text?: string;
   after_text?: string;
   text_hash?: string | null;
+  source_ingestion_id?: string | null;
+  source_title?: string;
+  source_uri?: string | null;
+  source_chapter_id?: string | null;
+  source_chapter_number?: string;
+  source_chapter_title?: string;
+  source_page_range?: string;
 }
 
 export type FormulaInkAction = "reference" | "replace";

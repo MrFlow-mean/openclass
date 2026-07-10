@@ -1,19 +1,21 @@
-import type { SourceChapter, SourceIngestionRecord } from "@/types";
+import type { SelectionRef, SourceChapter, SourceIngestionRecord } from "@/types";
 
-export function formatSourceChapterChatReference(source: SourceIngestionRecord, chapter: SourceChapter) {
+export function createSourceChapterSelection(source: SourceIngestionRecord, chapter: SourceChapter): SelectionRef {
   const chapterLabel = sourceChapterLabel(chapter);
   const path = chapter.path.length ? chapter.path.join(" > ") : chapterLabel;
   const pageRange = sourceChapterPageRange(chapter);
-  const locatorParts = [chapterLabel ? `章节「${chapterLabel}」` : "已选章节", pageRange].filter(Boolean);
-
-  return [
-    `请结合已上传资料《${source.title}》中的${locatorParts.join(" · ")}回答。`,
-    `资料章节引用：source_chapter_id=${chapter.id}`,
-    path ? `章节路径：${path}` : "",
-    "",
-  ]
-    .filter((line) => line.length > 0)
-    .join("\n");
+  return {
+    kind: "source",
+    excerpt: [`《${source.title}》`, path, pageRange].filter(Boolean).join(" · "),
+    heading_path: chapter.path,
+    source_ingestion_id: source.id,
+    source_title: source.title,
+    source_uri: source.source_uri,
+    source_chapter_id: chapter.id,
+    source_chapter_number: chapter.number,
+    source_chapter_title: chapter.title,
+    source_page_range: pageRange,
+  };
 }
 
 function sourceChapterLabel(chapter: SourceChapter) {

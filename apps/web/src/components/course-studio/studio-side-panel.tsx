@@ -4,7 +4,7 @@ import type { HTMLAttributes } from "react";
 
 import { SourceImportPanel } from "@/components/course-studio/source-import-panel";
 import { VersionControlPanel } from "@/components/course-studio/version-control-panel";
-import type { BoardDecision, CommitRecord, Lesson } from "@/types";
+import type { BoardDecision, CommitRecord, Lesson, SelectionRef } from "@/types";
 
 export type CourseStudioSidebarTab = "history" | "sources";
 
@@ -30,7 +30,7 @@ type CourseStudioSidePanelProps = {
   onCreateBranchFromCommit: (commit: CommitRecord) => void | Promise<void>;
   onSwitchBranch: (branchName: string) => void | Promise<void>;
   onError: (message: string) => void;
-  onReferenceToChatInput?: (text: string) => void;
+  onSourceReference?: (selection: SelectionRef) => void;
 };
 
 export function CourseStudioSidePanel({
@@ -55,7 +55,7 @@ export function CourseStudioSidePanel({
   onCreateBranchFromCommit,
   onSwitchBranch,
   onError,
-  onReferenceToChatInput,
+  onSourceReference,
 }: CourseStudioSidePanelProps) {
   return (
     <aside
@@ -115,7 +115,7 @@ export function CourseStudioSidePanel({
 
       <div className="min-h-0 flex-1 overflow-y-auto p-5 custom-scrollbar">
         {sidebarTab === "sources" ? (
-          <SourceImportPanel packageId={packageId} onError={onError} onReferenceToChatInput={onReferenceToChatInput} />
+          <SourceImportPanel packageId={packageId} onError={onError} onSourceReference={onSourceReference} />
         ) : sidebarTab === "history" ? (
           <VersionControlPanel
             activeLesson={activeLesson}

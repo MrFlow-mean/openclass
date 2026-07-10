@@ -325,22 +325,19 @@ export function CourseStudio() {
     });
   }
 
-  function appendSourceReferenceToChatInput(referenceText: string) {
-    const trimmedReference = referenceText.trim();
-    if (!trimmedReference) {
+  function applySourceReference(sourceReference: SelectionRef) {
+    if (sourceReference.kind !== "source" || !sourceReference.source_chapter_id) {
       return;
     }
+    setSelection(sourceReference);
+    setSelectionPopover(null);
     updateActiveLessonComposerState((current) => ({
       ...current,
       composerMode: "ask",
-      chatInput: current.chatInput.trim()
-        ? `${current.chatInput.trimEnd()}\n\n${trimmedReference}\n`
-        : `${trimmedReference}\n`,
+      includeSelectionInPrompt: true,
     }));
-    setSelectionPopover(null);
     window.requestAnimationFrame(() => {
       chatInputRef.current?.focus();
-      adjustComposerHeight();
     });
   }
 
@@ -666,7 +663,7 @@ export function CourseStudio() {
           onCreateBranchFromCommit={(commit) => handleCreateBranchFromCommit(commit)}
           onSwitchBranch={(branchName) => handleSwitchBranch(branchName)}
           onError={setError}
-          onReferenceToChatInput={appendSourceReferenceToChatInput}
+          onSourceReference={applySourceReference}
         />
       </div>
     </CourseStudioPageShell>
