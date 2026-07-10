@@ -47,6 +47,8 @@ def refine_blank_board_requirement(
     conversation_summary: str,
     user_message: str,
     history_state: dict[str, Any] | None,
+    resource_summary: str = "",
+    include_stream_result: bool = True,
 ) -> LearningRequirementRefinementOutcome | None:
     active_requirement = _active_requirement_from_state(lesson, history_state)
     active_clarification = _active_clarification_from_state(history_state)
@@ -57,7 +59,8 @@ def refine_blank_board_requirement(
         user_message=user_message,
         existing_requirement_sheet=base_requirement.model_dump(mode="json"),
         existing_clarification=active_clarification.model_dump(mode="json") if active_clarification else None,
-        include_stream_result=True,
+        resource_summary=resource_summary,
+        include_stream_result=include_stream_result,
     )
     visible_chat_buffer = ""
     visible_chat_was_streamed = False

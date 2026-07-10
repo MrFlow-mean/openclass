@@ -1027,6 +1027,54 @@ class OpenAICourseAI:
         )
         return result if isinstance(result, ChatbotReply) else None
 
+    def generate_learning_source_discovery_reply(
+        self,
+        *,
+        base_chatbot_message: str,
+        user_message: str,
+        requirement_context: dict[str, Any],
+        clarification_context: dict[str, Any],
+        discovery_status: str,
+        evidence_references: str,
+        requires_confirmation: bool,
+    ) -> ChatbotReply | None:
+        system_prompt = (
+            "你是 OpenClass 左侧聊天框中的 Chatbot。Requirement Manager 已经完成本轮学习需求判断，"
+            "ResourceResolver 也已经检查当前课程包中的已解析资料；你现在才生成用户可见回复。\n"
+            "base_chatbot_message 是需求管理器给出的回复草稿。保留它的学习方向、边界和唯一关键问题，"
+            "但要根据资料检索结果重新组织成一段自然连贯的最终回复。\n"
+            "matched：自然说明找到了哪些相关资料或章节，只能依据 evidence_references 中的来源、位置和短摘录；"
+            "不得声称读过未提供的完整资料。requires_confirmation=true 时，提醒用户查看证据卡并确认是否使用，"
+            "不得声称证据已经确认，也不得生成右侧板书正文。\n"
+            "no_match：自然说明已经检查当前已解析资料但没有找到足够相关的内容，不得伪造引用；"
+            "随后继续 base_chatbot_message 中仍然必要的学习需求收敛。\n"
+            "no_ready_sources：自然说明当前没有可检索的已解析资料，并继续必要的需求收敛。\n"
+            "每轮最多保留一个关键问题；不要输出 JSON、内部字段名、固定模板、板书正文或未授权的实质讲解。"
+        )
+        user_prompt = _json(
+            {
+                "user_message": user_message,
+                "base_chatbot_message": base_chatbot_message,
+                "requirement_context": requirement_context,
+                "clarification_context": clarification_context,
+                "source_discovery": {
+                    "status": discovery_status,
+                    "evidence_references": evidence_references or "无",
+                    "requires_confirmation": requires_confirmation,
+                },
+                "response_contract": {
+                    "chatbot_message": "资料检索完成后直接给用户看的自然回复。",
+                },
+            }
+        )
+        result = self._parse(
+            "chatbot",
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            schema=ChatbotReply,
+        )
+        return result if isinstance(result, ChatbotReply) else None
+
     def generate_blank_board_requirement_refinement(
         self,
         *,
@@ -1035,6 +1083,7 @@ class OpenAICourseAI:
         user_message: str,
         existing_requirement_sheet: dict[str, Any] | None = None,
         existing_clarification: dict[str, Any] | None = None,
+        resource_summary: str = "",
         include_stream_result: bool = False,
     ) -> BlankBoardRequirementRefinement | BlankBoardRequirementRefinementResult | None:
         system_prompt = (
@@ -1101,12 +1150,16 @@ class OpenAICourseAI:
             "recommended_entry_point 和 reason_for_recommendation 中的有用信息，但不要输出 JSON、字段名、内部状态名或右侧板书正文。"
             "不要说“请填写学习内容/当前水平/面向场景”，不要暴露 learning_goal、current_level、target_scenario、"
             "missing_items、ready_for_board 等内部字段名；如果需要信息，用自然聊天的一句话询问。"
+            "如果 resource_summary 提供了当前课程包中已定位的候选资料章节证据，应先利用其中的资料标题、章节路径和摘录"
+            "理解用户指向的内容，再决定还缺哪个学习起点；不要重复追问已经由证据明确的教材或章节。"
+            "resource_summary 可能只是 OCR 摘录或有限页预览，不得声称已经读取完整章节，也不得把候选证据说成用户已确认引用。"
         )
         user_prompt = _json(
             {
                 "board_document_state": board_document_state or {},
                 "recent_conversation": conversation_summary or "",
                 "current_user_message": user_message,
+                "resource_summary": resource_summary or "无",
                 "existing_requirement_sheet": existing_requirement_sheet or None,
                 "existing_clarification": existing_clarification or None,
                 "response_contract": {

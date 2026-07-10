@@ -25,7 +25,6 @@ from app.services.board_teaching_orchestrator import (
 )
 from app.services.course_runtime import effective_requirements
 from app.services.evidence_workflow import (
-    evidence_confirmation_message,
     resolve_board_task_evidence_gate,
     source_absent_message,
 )
@@ -34,6 +33,7 @@ from app.services.interaction_session_orchestrator import run_interaction_sessio
 from app.services.formula_ink_resolver import resolve_formula_ink_request
 from app.services.learning_requirement_history import RequirementHistoryStamp
 from app.services.learning_requirement_refiner import refine_blank_board_requirement
+from app.services.learning_source_discovery import run_learning_source_discovery
 from app.services.lesson_factory import build_requirements
 from app.services.openai_course_ai import (
     bind_board_model_selection,
@@ -43,6 +43,11 @@ from app.services.openai_course_ai import (
 from app.services.resource_resolver import evidence_metadata, resource_resolver
 from app.services.route_context import bind_ai_request_context
 from app.services.source_evidence_store import source_evidence_store
+from app.services.source_reference_context import (
+    board_target_selection,
+    source_aware_user_message,
+    source_reference_selection,
+)
 
 
 BASIC_CHAT_METADATA_KIND = "basic_chat"
@@ -181,16 +186,19 @@ def _run_board_task_refinement_turn(
     board_document_state,
 ) -> ChatResponse:
     history_state = workspace_state.load_board_task_history_state_for_user(user_id, lesson.id)
+    target_selection = board_target_selection(request.selection)
+    refinement_user_message = source_aware_user_message(request)
+    retrieval_user_message = source_aware_user_message(request, include_locator=True)
     outcome = refine_existing_board_task_requirement(
         owner_user_id=user_id,
         lesson=lesson,
         board_document_state=board_document_state,
         conversation_summary=_conversation_summary(request.conversation),
-        user_message=request.message,
-        selection=request.selection,
+        user_message=refinement_user_message,
+        selection=target_selection,
         history_state=history_state,
     )
-    if outcome is None:
+    if outcome is None or (source_reference_selection(request) is not None and outcome.route == "ordinary_chat"):
         return _run_basic_chat_turn(
             workspace=workspace,
             package=package,
@@ -221,7 +229,7 @@ def _run_board_task_refinement_turn(
             owner_user_id=user_id,
             package_id=package.id,
             lesson_id=lesson.id,
-            user_message=request.message,
+            user_message=retrieval_user_message,
             board_task=active_board_task,
             board_task_run_id=outcome.history_stamp.run_id,
             base_chatbot_message=outcome.chatbot_message,
@@ -234,7 +242,7 @@ def _run_board_task_refinement_turn(
                 lesson=lesson,
                 board_task=active_board_task,
                 user_message=request.message,
-                selection=request.selection,
+                selection=target_selection,
                 conversation_summary=_conversation_summary(request.conversation),
                 history_stamp=outcome.history_stamp,
                 history_operations=outcome.history_operations,
@@ -341,12 +349,13 @@ def _run_basic_chat_turn(
 ) -> ChatResponse:
     candidate_evidence = None
     resource_summary = ""
-    if resource_resolver.should_use_sources(request.message):
+    retrieval_user_message = source_aware_user_message(request, include_locator=True)
+    if resource_resolver.should_use_sources(retrieval_user_message):
         candidate_evidence = resource_resolver.resolve_for_learning_requirement(
             owner_user_id=user_id,
             package_id=package.id,
             lesson_id=lesson.id,
-            user_message=request.message,
+            user_message=retrieval_user_message,
             requirements=lesson.learning_requirements,
             purpose="chat",
         )
@@ -430,15 +439,34 @@ def _run_requirement_refinement_turn(
     board_document_state,
 ) -> ChatResponse:
     history_state = workspace_state.load_learning_requirement_history_state_for_user(user_id, lesson.id)
+    refinement_user_message = source_aware_user_message(request)
+    retrieval_user_message = source_aware_user_message(request, include_locator=True)
+    selected_source_chapter_id = (
+        getattr(request.selection, "source_chapter_id", None) if request.selection is not None else None
+    )
+    pre_refinement_evidence = resource_resolver.resolve_explicit_source_reference(
+        owner_user_id=user_id,
+        package_id=package.id,
+        lesson_id=lesson.id,
+        user_message=request.message,
+        source_chapter_id=selected_source_chapter_id,
+        purpose="chat",
+    )
+    source_discovery_expected = pre_refinement_evidence is not None or resource_resolver.has_ready_sources(
+        owner_user_id=user_id,
+        package_id=package.id,
+    ) or resource_resolver.should_use_sources(retrieval_user_message)
     outcome = refine_blank_board_requirement(
         owner_user_id=user_id,
         lesson=lesson,
         board_document_state=board_document_state,
         conversation_summary=_conversation_summary(request.conversation),
-        user_message=request.message,
+        user_message=refinement_user_message,
         history_state=history_state,
+        resource_summary=pre_refinement_evidence.context_text if pre_refinement_evidence is not None else "",
+        include_stream_result=not source_discovery_expected,
     )
-    if outcome is None:
+    if outcome is None or (source_reference_selection(request) is not None and outcome.route == "ordinary_chat"):
         return _run_basic_chat_turn(
             workspace=workspace,
             package=package,
@@ -455,27 +483,24 @@ def _run_requirement_refinement_turn(
         lesson.learning_requirements = outcome.active_requirement_sheet
     _clear_board_task_runtime_state(lesson)
     candidate_evidence = None
+    source_discovery_metadata: dict[str, object] | None = None
     chatbot_message = outcome.chatbot_message
-    if (
-        outcome.route == "requirement_refining"
-        and outcome.active_requirement_sheet is not None
-        and outcome.learning_clarification.ready_for_board
-        and resource_resolver.should_use_sources(request.message)
-    ):
-        candidate_evidence = resource_resolver.resolve_for_learning_requirement(
+    if outcome.route == "requirement_refining" and outcome.active_requirement_sheet is not None:
+        source_discovery = run_learning_source_discovery(
             owner_user_id=user_id,
             package_id=package.id,
             lesson_id=lesson.id,
-            user_message=request.message,
+            visible_user_message=request.message,
+            retrieval_user_message=retrieval_user_message,
             requirements=outcome.active_requirement_sheet,
+            clarification=outcome.learning_clarification,
             requirement_run_id=outcome.history_stamp.run_id,
-            purpose="board_generation",
+            base_chatbot_message=outcome.chatbot_message,
+            pre_resolved_evidence=pre_refinement_evidence,
         )
-        chatbot_message = (
-            evidence_confirmation_message(outcome.chatbot_message, candidate_evidence, action_label="生成板书")
-            if candidate_evidence is not None
-            else source_absent_message()
-        )
+        candidate_evidence = source_discovery.evidence_bundle
+        chatbot_message = source_discovery.chatbot_message
+        source_discovery_metadata = source_discovery.metadata
     board_decision = BoardDecision(
         action="no_change",
         reason="空白板书学习需求收敛只维护清单，不修改右侧文档。",
@@ -514,6 +539,7 @@ def _run_requirement_refinement_turn(
             ),
             "learning_clarification_after": outcome.learning_clarification.model_dump(mode="json"),
             "guided_requirement_discovery": outcome.guidance_metadata,
+            "learning_source_discovery": source_discovery_metadata,
             "requirement_run_id": outcome.history_stamp.run_id,
             "requirement_version_id": outcome.history_stamp.version_id,
             "requirement_phase": outcome.history_stamp.phase,
