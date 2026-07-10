@@ -19,6 +19,14 @@ export function sameSelection(left: SelectionRef | null, right: SelectionRef | n
     left.before_text === right.before_text &&
     left.after_text === right.after_text &&
     left.text_hash === right.text_hash &&
+    left.source_ingestion_id === right.source_ingestion_id &&
+    left.source_title === right.source_title &&
+    left.source_uri === right.source_uri &&
+    left.source_chapter_id === right.source_chapter_id &&
+    left.source_chapter_number === right.source_chapter_number &&
+    left.source_chapter_title === right.source_chapter_title &&
+    left.source_page_range === right.source_page_range &&
+    (left.heading_path ?? []).join("\n") === (right.heading_path ?? []).join("\n") &&
     left.excerpt === right.excerpt
   );
 }

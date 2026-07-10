@@ -127,7 +127,7 @@ function selectionFromMetadata(value: unknown): SelectionRef | null {
     return null;
   }
   const raw = value as Record<string, unknown>;
-  const kind = raw.kind === "chat" || raw.kind === "board" ? raw.kind : null;
+  const kind = raw.kind === "chat" || raw.kind === "board" || raw.kind === "source" ? raw.kind : null;
   const excerpt = typeof raw.excerpt === "string" ? raw.excerpt.trim() : "";
   if (!kind || !excerpt) {
     return null;
@@ -143,6 +143,13 @@ function selectionFromMetadata(value: unknown): SelectionRef | null {
     before_text: typeof raw.before_text === "string" ? raw.before_text : "",
     after_text: typeof raw.after_text === "string" ? raw.after_text : "",
     text_hash: typeof raw.text_hash === "string" ? raw.text_hash : null,
+    source_ingestion_id: typeof raw.source_ingestion_id === "string" ? raw.source_ingestion_id : null,
+    source_title: typeof raw.source_title === "string" ? raw.source_title : "",
+    source_uri: typeof raw.source_uri === "string" ? raw.source_uri : null,
+    source_chapter_id: typeof raw.source_chapter_id === "string" ? raw.source_chapter_id : null,
+    source_chapter_number: typeof raw.source_chapter_number === "string" ? raw.source_chapter_number : "",
+    source_chapter_title: typeof raw.source_chapter_title === "string" ? raw.source_chapter_title : "",
+    source_page_range: typeof raw.source_page_range === "string" ? raw.source_page_range : "",
   };
 }
 

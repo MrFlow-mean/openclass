@@ -43,6 +43,9 @@ export type CourseChatMessageView = {
 };
 
 function selectionPreviewLabel(selection: SelectionRef): string {
+  if (selection.kind === "source") {
+    return "引用的资料章节";
+  }
   return selection.kind === "board" ? "选中的讲义" : "引用的对话";
 }
 

@@ -72,6 +72,9 @@ function boardTaskLocationLabel(task: BoardTaskRequirementSheet) {
 }
 
 function composerSelectionLabel(selection: SelectionRef) {
+  if (selection.kind === "source") {
+    return "资料章节";
+  }
   if (selection.kind === "board" && selection.location_kind === "target_range") {
     return "TargetRange";
   }
@@ -79,6 +82,13 @@ function composerSelectionLabel(selection: SelectionRef) {
     return "InsertionAnchor";
   }
   return selection.kind === "board" ? "板书选区" : "对话引用";
+}
+
+function composerSelectionToggleLabel(selection: SelectionRef, included: boolean) {
+  if (selection.kind === "source") {
+    return included ? "包含资料" : "忽略资料";
+  }
+  return included ? "包含选区" : "忽略选区";
 }
 
 function sequenceFocusLabel(lesson: Lesson) {
@@ -723,7 +733,9 @@ export function CourseStudioChatSidebar({
                   : composerMode === "direct_edit"
                     ? "描述要怎么改这段板书，或直接说“重写整篇”..."
                     : composerSelection
-                      ? "基于选中内容继续追问"
+                      ? composerSelection.kind === "source"
+                        ? "基于引用章节继续提问"
+                        : "基于选中内容继续追问"
                       : "给 OpenClass 发消息..."
             }
             className="custom-scrollbar block w-full resize-none border-0 bg-transparent px-3.5 py-2.5 text-[13px] leading-relaxed outline-none placeholder:text-gray-400"
@@ -784,7 +796,7 @@ export function CourseStudioChatSidebar({
                   )}
                 >
                   <TextQuote className="h-3.5 w-3.5" />
-                  {includeSelectionInPrompt ? "包含选区" : "忽略选区"}
+                  {composerSelectionToggleLabel(composerSelection, includeSelectionInPrompt)}
                 </button>
               ) : null}
             </div>
