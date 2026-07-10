@@ -6,8 +6,9 @@ from uuid import uuid4
 
 from reportlab.pdfgen import canvas
 
-from app.models import BoardTaskRequirementSheet, SourceIngestionRecord
+from app.models import BoardTaskRequirementSheet, ChatRequest, SelectionRef, SourceIngestionRecord
 from app.services.resource_resolver import ResourceResolver
+from app.services.source_reference_context import source_aware_user_message
 from app.services.source_evidence_store import SourceEvidenceStore
 from app.services.source_structure_indexer import SourceStructureIndexer
 from app.services.source_structure_store import SourceStructureStore
@@ -162,11 +163,24 @@ def test_resource_resolver_uses_explicit_source_chapter_reference(tmp_path: Path
     target_chapter = target_view.chapters[0]
     resolver = ResourceResolver(adapter=_NoSearchAdapter(), store=store, structure_store=structure_store)
 
+    request = ChatRequest(
+        message="请讲解这一章。",
+        selection=SelectionRef(
+            kind="source",
+            excerpt=f"《{target.title}》 · {target_chapter.title}",
+            heading_path=target_chapter.path,
+            source_ingestion_id=target.id,
+            source_title=target.title,
+            source_chapter_id=target_chapter.id,
+            source_chapter_number=target_chapter.number,
+            source_chapter_title=target_chapter.title,
+        ),
+    )
     bundle = resolver.resolve_for_board_task(
         owner_user_id="user_1",
         package_id="pkg_1",
         lesson_id="lesson_1",
-        user_message=f"结合资料回答。\n资料章节引用：source_chapter_id={target_chapter.id}",
+        user_message=source_aware_user_message(request, include_locator=True),
         board_task=BoardTaskRequirementSheet(requested_action="explain", question_or_topic="这一节", progress=100),
         purpose="board_explain",
     )

@@ -2,12 +2,16 @@ import json
 
 import pytest
 
-from app.models import ChatRequest, ConversationTurn
+from app.models import ChatRequest, ConversationTurn, SelectionRef, SourceIngestionRecord
 from app.services import workspace_state
 from app.services.chat_service import process_chat_on_lesson
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
 from app.services.lesson_factory import build_requirements, create_empty_lesson
 from app.services.openai_course_ai import BoardTaskRequirementRefinement, ChatbotReply, OpenAICourseAI, openai_course_ai
+from app.services.resource_resolver import resource_resolver
+from app.services.source_evidence_store import SourceEvidenceStore
+from app.services.source_structure_indexer import SourceStructureIndexer
+from app.services.source_structure_store import SourceStructureStore
 
 
 TEST_USER_ID = "user_basic_chat"
@@ -139,6 +143,82 @@ def test_process_chat_on_lesson_records_basic_chat_without_document_change(
         "final",
     ]
     assert commit.metadata["document_changed"] is False
+
+
+def test_structured_source_reference_grounds_basic_chat_without_visible_locator_text(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    database_path = tmp_path / "openclass.sqlite3"
+    store = SqliteCourseStore(database_path, legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    lesson = _seed_workspace(store)
+    package_id = store.load_for_user(TEST_USER_ID).packages[0].id
+    markdown_path = tmp_path / "reference.md"
+    markdown_path.write_text("# 2.1 Core Section\n\nExact grounded source body.", encoding="utf-8")
+    source_store = SourceEvidenceStore(database_path)
+    structure_store = SourceStructureStore(database_path)
+    source = SourceIngestionRecord(
+        id="source_structured_reference",
+        owner_user_id=TEST_USER_ID,
+        package_id=package_id,
+        title="Reference",
+        source_type="local_file",
+        file_name="reference.md",
+        mime_type="text/markdown",
+        size_bytes=markdown_path.stat().st_size,
+        status="ready",
+        metadata={"local_source_path": str(markdown_path)},
+    )
+    source_store.save_source(source)
+    SourceStructureIndexer(store=structure_store).rebuild_structure(source)
+    structure_view = structure_store.get_structure_view(source=source)
+    assert structure_view is not None
+    chapter = structure_view.chapters[0]
+    monkeypatch.setattr(resource_resolver, "store", source_store)
+    monkeypatch.setattr(resource_resolver, "structure_store", structure_store)
+    captured: dict[str, object] = {}
+
+    def _fake_refinement(**kwargs):
+        captured["refinement"] = kwargs
+        return BoardTaskRequirementRefinement(route="ordinary_chat", chatbot_message="不应直接使用这段未取证回复。")
+
+    def _fake_basic_reply(**kwargs):
+        captured["basic_reply"] = kwargs
+        return ChatbotReply(chatbot_message="这是基于指定章节的回答。")
+
+    monkeypatch.setattr(openai_course_ai, "generate_board_task_requirement_refinement", _fake_refinement)
+    monkeypatch.setattr(openai_course_ai, "generate_basic_chat_reply", _fake_basic_reply)
+
+    response = process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(
+            message="请讲解这一章。",
+            selection=SelectionRef(
+                kind="source",
+                excerpt="《Reference》 · 2.1 Core Section",
+                heading_path=chapter.path,
+                source_ingestion_id=source.id,
+                source_title=source.title,
+                source_chapter_id=chapter.id,
+                source_chapter_number=chapter.number,
+                source_chapter_title=chapter.title,
+            ),
+        ),
+        user_id=TEST_USER_ID,
+    )
+
+    assert response.chatbot_message == "这是基于指定章节的回答。"
+    assert response.candidate_evidence_bundle is not None
+    assert response.candidate_evidence_bundle.evidence_items[0].chapter_id == chapter.id
+    assert "Exact grounded source body" in captured["basic_reply"]["resource_summary"]
+    assert captured["basic_reply"]["user_message"] == "请讲解这一章。"
+    assert captured["refinement"]["selection_excerpt"] is None
+    assert "《Reference》" in captured["refinement"]["user_message"]
+    commit = store.load_for_user(TEST_USER_ID).packages[0].lessons[0].history_graph.commits[-1]
+    assert commit.metadata["user_message"] == "请讲解这一章。"
+    assert commit.metadata["selection"]["kind"] == "source"
+    assert commit.metadata["selection"]["source_chapter_id"] == chapter.id
 
 
 def test_non_empty_basic_chat_clears_legacy_learning_requirement_sheet(
