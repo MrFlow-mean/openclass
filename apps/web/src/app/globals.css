@@ -272,8 +272,13 @@ select {
 }
 
 .word-editor__content .block-math-inner {
-  min-width: min-content;
+  width: 100%;
+  min-width: 0;
   padding: 0.05em 0.35em;
+}
+
+.word-editor__content .block-math-inner > .katex-display {
+  width: 100%;
 }
 
 .word-editor__content .katex {

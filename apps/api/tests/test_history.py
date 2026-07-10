@@ -1119,6 +1119,32 @@ def test_build_document_still_converts_real_inline_math() -> None:
     assert "\\frac{1}{2}" in document.content_html
 
 
+def test_build_document_converts_explicit_numeric_inline_math() -> None:
+    document = build_document(
+        title="Doc",
+        content_text="最小值为 $0$，阈值为 $1.5$，最大值为 $\\log_2 |\\mathcal{Y}|$。",
+    )
+
+    assert document.content_html.count('data-type="inline-math"') == 3
+    assert 'data-latex="0"' in document.content_html
+    assert 'data-latex="1.5"' in document.content_html
+    assert "$0$" not in document.content_html
+
+
+def test_build_document_preserves_display_equation_tags_for_katex_layout() -> None:
+    document = build_document(
+        title="Doc",
+        content_text=(
+            "$$\n"
+            "\\operatorname{Ent}(D) = -\\sum_{k=1}^{|\\mathcal{Y}|} p_k \\log_2 p_k. \\tag{4.1}\n"
+            "$$"
+        ),
+    )
+
+    assert 'data-type="block-math"' in document.content_html
+    assert "\\tag{4.1}" in document.content_html
+
+
 def test_build_document_converts_epsilon_latex_commands_to_inline_math() -> None:
     document = build_document(title="Doc", content_text="任意 $\\varepsilon$ 与 $\\epsilon$ 都应显示为公式。")
 

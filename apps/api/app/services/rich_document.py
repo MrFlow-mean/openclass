@@ -52,7 +52,7 @@ _HTML_CONTENT_RE = re.compile(
     re.IGNORECASE,
 )
 _DELIMITED_MATH_RE = re.compile(
-    r"\\\[([\s\S]+?)\\\]|\\\((.+?)\\\)|\$\$([\s\S]+?)\$\$|\$(?!\d+\$)([^$\n]+?)\$(?!\d)"
+    r"\\\[([\s\S]+?)\\\]|\\\((.+?)\\\)|\$\$([\s\S]+?)\$\$|\$(?!\$)([^$\n]+?)\$(?!\$)"
 )
 _TRAILING_SENTENCE_MARKS_RE = re.compile(r"[\s.,，。；;:：]+$")
 _LEADING_SENTENCE_MARKS_RE = re.compile(r"^[\s.,，。；;:：]+")
@@ -1622,7 +1622,11 @@ def _is_likely_delimited_math(value: str) -> bool:
         return False
     if _has_non_formula_letters(compact) or not _latin_words_are_formula_like(compact):
         return False
-    return _has_math_signal(compact) or bool(re.fullmatch(r"[A-Za-zα-ωΑ-Ω]", validation_text))
+    return (
+        _has_math_signal(compact)
+        or bool(re.fullmatch(r"[A-Za-zα-ωΑ-Ω]", validation_text))
+        or bool(re.fullmatch(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)", validation_text))
+    )
 
 
 def _normalize_limit_subscript(value: str) -> str:

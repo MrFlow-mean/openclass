@@ -1,7 +1,7 @@
 const CJK_TEXT = /[\u3400-\u9fff]/;
 const STRONG_MATH_SIGNAL =
   /\\(?:begin|end|frac|sqrt|lim|sum|prod|int|sin|cos|tan|ln|log|exp|to|left|right|leftarrow|rightarrow|leftrightarrow|Leftarrow|Rightarrow|Leftrightarrow|Longleftarrow|Longrightarrow|Longleftrightarrow|infty|cdot|times|div|leq?|geq?|approx|neq?|pm|sim|in|notin|mid|subseteq?|supseteq?|cup|cap|mathbb|mathcal|mathfrak|mathbf|mathrm|operatorname|text|ce|pu|dots|cdots|ldots|vdots|partial|nabla|forall|exists|alpha|beta|gamma|delta|epsilon|varepsilon|zeta|eta|theta|iota|kappa|lambda|mu|xi|pi|rho|varrho|sigma|tau|upsilon|phi|varphi|chi|psi|omega|Gamma|Delta|Theta|Lambda|Xi|Pi|Sigma|Phi|Psi|Omega)(?![A-Za-z])|[_^]|[=<>≤≥≈≠]|[A-Za-z0-9)]\s*(?:[+\-−*/=<>≤≥≈≠±]|→|←)\s*[A-Za-z0-9(\\]|\d+\s*\/\s*\d+|\\[{}]|^\([^()\n]{1,80},[^()\n]{1,80}\)$|^[\[(][A-Za-z0-9α-ωΑ-Ω\\_{}\s+\-−*/=#.,]+,[A-Za-z0-9α-ωΑ-Ω\\_{}\s+\-−*/=#.,]+[\])]$|^[A-Za-z]{1,3}\s*\([A-Za-z0-9α-ωΑ-Ω\\_{}\[\]^()+\-−*/=#·∞→←≤≥≈≠±<>|&:'\s.,]+\)$/;
-const DELIMITED_MATH = /\\\[([\s\S]+?)\\\]|\\\((.+?)\\\)|\$\$([\s\S]+?)\$\$|\$(?!\d+\$)([^$\n]+?)\$(?!\d)/g;
+const DELIMITED_MATH = /\\\[([\s\S]+?)\\\]|\\\((.+?)\\\)|\$\$([\s\S]+?)\$\$|\$(?!\$)([^$\n]+?)\$(?!\$)/g;
 const RAW_LATEX_COMMAND =
   /\\(?:begin|end|frac|dfrac|tfrac|sqrt|lim|sum|prod|int|sin|cos|tan|ln|log|exp|to|left|right|leftarrow|rightarrow|leftrightarrow|Leftarrow|Rightarrow|Leftrightarrow|Longleftarrow|Longrightarrow|Longleftrightarrow|infty|cdot|times|div|leq?|geq?|approx|neq?|pm|sim|in|notin|mid|subseteq?|supseteq?|cup|cap|mathbb|mathcal|mathfrak|mathbf|mathrm|operatorname|text|ce|pu|dots|cdots|ldots|vdots|partial|nabla|forall|exists|alpha|beta|gamma|delta|epsilon|varepsilon|zeta|eta|theta|iota|kappa|lambda|mu|xi|pi|rho|varrho|sigma|tau|upsilon|phi|varphi|chi|psi|omega|Gamma|Delta|Theta|Lambda|Xi|Pi|Sigma|Phi|Psi|Omega)(?![A-Za-z])/g;
 const ESCAPED_SET = /\\\{([^{}\n]{1,120})\\\}/g;
@@ -61,7 +61,11 @@ export function isLikelyDelimitedMath(value: string) {
   ) {
     return false;
   }
-  return hasStrongMathSignal(compact) || /^[A-Za-zα-ωΑ-Ω]$/.test(validationText);
+  return (
+    hasStrongMathSignal(compact) ||
+    /^[A-Za-zα-ωΑ-Ω]$/.test(validationText) ||
+    /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(validationText)
+  );
 }
 
 function normalizeLimitSubscript(value: string) {
