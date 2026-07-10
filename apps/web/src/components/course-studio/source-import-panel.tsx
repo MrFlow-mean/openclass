@@ -5,6 +5,10 @@ import { BookOpen, ChevronDown, ChevronRight, Globe2, RefreshCw, TextQuote, Tras
 import { useCallback, useEffect, useRef, useState, type DragEvent } from "react";
 
 import { formatSourceChapterChatReference } from "@/components/course-studio/source-reference";
+import {
+  getSourceProcessingState,
+  SourceProcessingProgress,
+} from "@/components/course-studio/source-processing-progress";
 import { api } from "@/lib/api";
 import type { SourceChapter, SourceIngestionRecord, SourceStructureView } from "@/types";
 
@@ -290,7 +294,11 @@ export function SourceImportPanel({ packageId, disabled = false, onError, onRefe
               )}
             >
               {uploadButton}
-              <span>{isImporting ? "正在解析资料。" : "继续拖入资料，或点击上传。"}</span>
+              {isImporting ? (
+                <SourceProcessingProgress className="w-full max-w-60 text-left" label="正在上传并解析资料" />
+              ) : (
+                <span>继续拖入资料，或点击上传。</span>
+              )}
             </div>
             {sources.map((source) => (
               <SourceRow
@@ -313,7 +321,11 @@ export function SourceImportPanel({ packageId, disabled = false, onError, onRefe
           >
             <UploadCloud className={clsx("h-8 w-8", isDragActive ? "text-blue-600" : "text-gray-300")} />
             {uploadButton}
-            <span>{isImporting ? "正在解析资料。" : isDragActive ? "松开上传资料。" : "拖拽文件到这里，或点击上传资料。"}</span>
+            {isImporting ? (
+              <SourceProcessingProgress className="w-full max-w-60 text-left" label="正在上传并解析资料" />
+            ) : (
+              <span>{isDragActive ? "松开上传资料。" : "拖拽文件到这里，或点击上传资料。"}</span>
+            )}
           </div>
         )}
       </div>
@@ -342,11 +354,11 @@ function SourceRow({
   const [expandedChapterIds, setExpandedChapterIds] = useState<Set<string>>(new Set());
   const isReady = source.status === "ready";
   const isFailed = source.status === "failed";
-  const isActive = ACTIVE_SOURCE_STATUSES.has(source.status);
   const structureLabel = structureStatusLabel(source);
   const structureIsGood = source.structure_status === "ready";
   const structureIsFailed = source.structure_status === "failed";
   const openNotebookSyncMessage = getOpenNotebookSyncMessage(source);
+  const processingState = getSourceProcessingState(source);
 
   async function toggleStructure() {
     if (!isReady) {
@@ -456,9 +468,8 @@ function SourceRow({
             </div>
           </div>
           <p className="mt-1 truncate text-xs text-gray-500">{source.source_uri || source.file_name || source.mime_type}</p>
-          {isActive ? <p className="mt-2 text-xs leading-5 text-gray-500">正在处理资料，大文件可能需要几分钟。</p> : null}
-          {isReady && ACTIVE_STRUCTURE_STATUSES.has(source.structure_status) ? (
-            <p className="mt-2 text-xs leading-5 text-gray-500">正在建立目录与正文索引。</p>
+          {processingState ? (
+            <SourceProcessingProgress className="mt-2" label={processingState.label} value={processingState.value} />
           ) : null}
           {isReady && source.structure_status === "linear_only" ? (
             <p className="mt-2 text-xs leading-5 text-gray-500">未发现可验证目录，本资料将按全文片段检索。</p>
