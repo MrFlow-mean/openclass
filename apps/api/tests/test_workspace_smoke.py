@@ -317,6 +317,50 @@ def test_open_notebook_source_import_and_evidence_confirm(
     assert confirmed_payload["active_requirement_sheet"] is None
 
 
+def test_pending_lesson_evidence_can_be_recovered_after_reopening(
+    api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created_workspace = api_client.post(
+        "/api/packages",
+        json={"title": "Pending evidence package", "summary": ""},
+    )
+    assert created_workspace.status_code == 200
+    package_id = created_workspace.json()["active_package_id"]
+    generated = api_client.post(
+        "/api/lessons/generate",
+        json={"topic": "Pending evidence lesson", "target_package_id": package_id, "start_blank": True},
+    )
+    assert generated.status_code == 200
+    lesson_id = generated.json()["lessons"][0]["id"]
+    requirement_run_id = "reqrun_pending_evidence"
+    monkeypatch.setattr(
+        workspace_state,
+        "load_learning_requirement_history_state_for_user",
+        lambda _user_id, _lesson_id: {"run_id": requirement_run_id},
+    )
+    bundle = source_evidence_store.save_bundle(
+        EvidenceBundle(
+            owner_user_id=TEST_USER.id,
+            package_id=package_id,
+            lesson_id=lesson_id,
+            requirement_run_id=requirement_run_id,
+            purpose="board_generation",
+            query="需要确认的资料",
+            evidence_items=[],
+            context_text="资料上下文",
+            token_count=0,
+        )
+    )
+
+    pending = api_client.get(f"/api/lessons/{lesson_id}/evidence/pending")
+
+    assert pending.status_code == 200
+    assert pending.json()["id"] == bundle.id
+    source_evidence_store.confirm_bundle(owner_user_id=TEST_USER.id, bundle_id=bundle.id)
+    assert api_client.get(f"/api/lessons/{lesson_id}/evidence/pending").json() is None
+
+
 def test_source_import_uses_local_file_when_open_notebook_is_unavailable(
     api_client: TestClient,
     monkeypatch: pytest.MonkeyPatch,

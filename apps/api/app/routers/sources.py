@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
-from app.models import EvidenceConfirmationRequest, EvidenceConfirmationResult, SourceIngestionRecord, SourceStructureView, UserView
+from app.models import EvidenceBundle, EvidenceConfirmationRequest, EvidenceConfirmationResult, SourceIngestionRecord, SourceStructureView, UserView
 from app.routers.auth import current_user
 from app.services import workspace_state
 from app.services.learning_source_reference_service import LearningSourceReferenceError, apply_evidence_confirmation
@@ -118,3 +118,22 @@ def confirm_lesson_evidence(
         )
     except LearningSourceReferenceError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/api/lessons/{lesson_id}/evidence/pending", response_model=EvidenceBundle | None)
+def get_pending_lesson_evidence(
+    lesson_id: str,
+    user: UserView = Depends(current_user),
+) -> EvidenceBundle | None:
+    workspace = workspace_state.load_workspace_for_user(user.id)
+    workspace_state.find_lesson_package(workspace, lesson_id)
+    history_state = workspace_state.load_learning_requirement_history_state_for_user(user.id, lesson_id)
+    requirement_run_id = history_state.get("run_id") if history_state else None
+    if not isinstance(requirement_run_id, str) or not requirement_run_id:
+        return None
+    bundle = source_evidence_store.latest_requirement_bundle(
+        owner_user_id=user.id,
+        lesson_id=lesson_id,
+        requirement_run_id=requirement_run_id,
+    )
+    return bundle if bundle is not None and bundle.status == "candidate" else None

@@ -19,6 +19,7 @@ import type {
   RealtimeEventLogPayload,
   RequirementUpdateStreamPayload,
   ScopeAction,
+  EvidenceBundle,
   EvidenceConfirmationResult,
   SourceIngestionRecord,
   SourceStructureView,
@@ -544,6 +545,9 @@ export const api = {
         action,
       }),
     });
+  },
+  getPendingEvidence(lessonId: string) {
+    return request<EvidenceBundle | null>(`/api/lessons/${lessonId}/evidence/pending`);
   },
   generateLesson(
     topic: string,

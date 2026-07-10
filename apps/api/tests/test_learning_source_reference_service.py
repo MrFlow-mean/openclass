@@ -222,6 +222,8 @@ def test_board_generation_waits_for_candidate_evidence_decision(
 
     assert response.board_document_operation_status == "failed"
     assert "确认或跳过" in str(response.board_document_operation_failure_reason)
+    assert response.candidate_evidence_bundle is not None
+    assert response.candidate_evidence_bundle.id == bundle.id
     current = SourceEvidenceStore(workspace_state.get_store().path).get_bundle(
         owner_user_id=user_id,
         bundle_id=bundle.id,

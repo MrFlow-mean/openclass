@@ -57,6 +57,11 @@ type UseLessonChatAgentOptions = {
   onSpeakResponse: (content: string) => void;
 };
 
+type CandidateEvidenceState = {
+  lessonId: string;
+  bundle: EvidenceBundle | null;
+};
+
 export function useLessonChatAgent({
   activeLesson,
   activeMessages,
@@ -87,7 +92,7 @@ export function useLessonChatAgent({
   const [currentNeedPending, setCurrentNeedPending] = useState(false);
   const [latestBoardDecision, setLatestBoardDecision] = useState<BoardDecision | null>(null);
   const [boardEditPrompt, setBoardEditPrompt] = useState<BoardEditPrompt | null>(null);
-  const [candidateEvidenceBundle, setCandidateEvidenceBundle] = useState<EvidenceBundle | null>(null);
+  const [candidateEvidenceState, setCandidateEvidenceState] = useState<CandidateEvidenceState | null>(null);
   const [lastScopedRequest, setLastScopedRequest] = useState<ChatRequestPayload | null>(null);
   const [lastBoardEditRequest, setLastBoardEditRequest] = useState<ChatRequestPayload | null>(null);
   const activeLessonIdRef = useRef<string | null>(activeLesson?.id ?? null);
@@ -97,6 +102,35 @@ export function useLessonChatAgent({
   useEffect(() => {
     activeLessonIdRef.current = activeLesson?.id ?? null;
   }, [activeLesson?.id]);
+
+  useEffect(() => {
+    const lessonId = activeLesson?.id;
+    let disposed = false;
+    if (!lessonId || isPreviewMode) {
+      return;
+    }
+
+    void api
+      .getPendingEvidence(lessonId)
+      .then((bundle) => {
+        if (!disposed && activeLessonIdRef.current === lessonId) {
+          setCandidateEvidenceState({ lessonId, bundle });
+        }
+      })
+      .catch(() => {
+        if (!disposed && activeLessonIdRef.current === lessonId) {
+          setCandidateEvidenceState({ lessonId, bundle: null });
+        }
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [activeLesson?.id, isPreviewMode]);
+
+  const candidateEvidenceBundle =
+    !isPreviewMode && candidateEvidenceState && candidateEvidenceState.lessonId === activeLesson?.id
+      ? candidateEvidenceState.bundle
+      : null;
 
   const chatInput = activeComposerState.chatInput;
   const composerMode = activeComposerState.composerMode;
@@ -240,7 +274,7 @@ export function useLessonChatAgent({
     setCurrentNeedPending(false);
     setLatestBoardDecision(null);
     setBoardEditPrompt(null);
-    setCandidateEvidenceBundle(null);
+    setCandidateEvidenceState(null);
     setLastScopedRequest(null);
     setLastBoardEditRequest(null);
     clearSelection();
@@ -451,10 +485,10 @@ export function useLessonChatAgent({
         ),
       });
       if (failedStreamingDocumentPreview) {
-        const previewApplied = setStreamingDocumentPreview(requestLesson.id, failedStreamingDocumentPreview);
-        if (previewApplied) {
-          setError(response.board_document_operation_failure_reason ?? "右侧文档生成失败，已保留未保存的预览草稿。");
-        }
+        setStreamingDocumentPreview(requestLesson.id, failedStreamingDocumentPreview);
+      }
+      if (response.board_document_operation_status === "failed") {
+        setError(response.board_document_operation_failure_reason ?? "右侧文档生成失败，请重试。");
       }
       setLatestBoardDecision(response.board_decision);
       setCurrentNeedPending(false);
@@ -469,7 +503,13 @@ export function useLessonChatAgent({
       setStreamedBoardTaskSheet(nextBoardTaskSheet);
       setScopeOptions(response.scope_options);
       setBoardEditPrompt(response.board_edit_prompt ?? null);
-      setCandidateEvidenceBundle(response.candidate_evidence_bundle ?? null);
+      setCandidateEvidenceState((current) =>
+        response.requirement_cleared
+          ? { lessonId: requestLesson.id, bundle: null }
+          : response.candidate_evidence_bundle
+          ? { lessonId: requestLesson.id, bundle: response.candidate_evidence_bundle }
+          : current
+      );
       setLastScopedRequest(response.scope_options.length ? payloadWithConversation : null);
       setLastBoardEditRequest(response.board_edit_prompt ? payloadWithConversation : null);
       const chatbotMessage = response.chatbot_message.trim();
@@ -765,7 +805,10 @@ export function useLessonChatAgent({
     setBusyAction("chat");
     try {
       const result = await api.confirmEvidence(activeLesson.id, bundleId, action);
-      setCandidateEvidenceBundle(action === "confirm" ? result.evidence_bundle : null);
+      setCandidateEvidenceState({
+        lessonId: activeLesson.id,
+        bundle: action === "confirm" ? result.evidence_bundle : null,
+      });
       if (result.active_requirement_sheet) {
         setStreamedRequirementSheet(result.active_requirement_sheet);
       }

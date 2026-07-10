@@ -5,6 +5,7 @@ from typing import Any
 from app.models import (
     BoardDecision,
     ChatResponse,
+    EvidenceBundle,
     LearningClarificationStatus,
     LearningRequirementSheet,
 )
@@ -68,6 +69,11 @@ def run_blank_board_generation(
             requirements=requirements,
         )
     except ConfirmedSourceContextError as exc:
+        pending_evidence = source_evidence_store.latest_requirement_bundle(
+            owner_user_id=user_id,
+            lesson_id=lesson.id,
+            requirement_run_id=recorder.snapshot.run_id,
+        )
         return _failure_response(
             workspace=workspace,
             package=package,
@@ -75,6 +81,7 @@ def run_blank_board_generation(
             requirements=requirements,
             clarification=clarification,
             reason=str(exc),
+            candidate_evidence_bundle=pending_evidence if pending_evidence and pending_evidence.status == "candidate" else None,
         )
     evidence_bundle = source_context.evidence_bundle
     resource_summary = source_context.context_text
@@ -247,6 +254,7 @@ def _failure_response(
     reason: str,
     stamp: RequirementHistoryStamp | None = None,
     board_decision: BoardDecision | None = None,
+    candidate_evidence_bundle: EvidenceBundle | None = None,
 ) -> ChatResponse:
     active_requirements = requirements or lesson.learning_requirements
     return ChatResponse(
@@ -269,6 +277,7 @@ def _failure_response(
         requirement_cleared=False,
         board_document_operation_status="failed",
         board_document_operation_failure_reason=reason,
+        candidate_evidence_bundle=candidate_evidence_bundle,
         course_package=workspace_state.package_view_for_lesson(workspace, package, lesson.id),
     )
 
