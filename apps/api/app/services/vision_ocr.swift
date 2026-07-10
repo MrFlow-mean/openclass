@@ -7,11 +7,19 @@ struct OCRLine: Codable {
     let text: String
     let x: Double
     let y: Double
+    let width: Double
+    let height: Double
+}
+
+struct OCRPage: Codable {
+    let pageNumber: Int
+    let lines: [OCRLine]
 }
 
 struct OCRPayload: Codable {
     let text: String
     let lines: [String]
+    let pages: [OCRPage]
 }
 
 enum VisionOCRError: Error {
@@ -60,9 +68,41 @@ func recognizeText(from cgImage: CGImage) throws -> [OCRLine] {
         return OCRLine(
             text: candidate.string,
             x: Double(box.minX),
-            y: Double(box.midY)
+            y: Double(box.midY),
+            width: Double(box.width),
+            height: Double(box.height)
         )
     }
+}
+
+func recognizePDFText(from cgImage: CGImage) throws -> [OCRLine] {
+    var lines = try recognizeText(from: cgImage)
+    let cropStart = 0.68
+    let cropX = Int(Double(cgImage.width) * cropStart)
+    let cropRect = CGRect(x: cropX, y: 0, width: cgImage.width - cropX, height: cgImage.height)
+    guard let rightImage = cgImage.cropping(to: cropRect) else {
+        return lines
+    }
+    let rightLines = try recognizeText(from: rightImage).map { line in
+        OCRLine(
+            text: line.text,
+            x: cropStart + line.x * (1 - cropStart),
+            y: line.y,
+            width: line.width * (1 - cropStart),
+            height: line.height
+        )
+    }
+    for candidate in rightLines {
+        let duplicate = lines.contains { existing in
+            existing.text == candidate.text
+                && abs(existing.y - candidate.y) < 0.006
+                && abs(existing.x - candidate.x) < 0.05
+        }
+        if !duplicate {
+            lines.append(candidate)
+        }
+    }
+    return lines
 }
 
 func orderedTextLines(_ lines: [OCRLine]) -> [String] {
@@ -111,7 +151,7 @@ func orderedTextLines(_ lines: [OCRLine]) -> [String] {
 
 func renderPDFPage(_ page: PDFPage) throws -> CGImage {
     let bounds = page.bounds(for: .mediaBox)
-    let maxSide: CGFloat = 2200
+    let maxSide: CGFloat = 4200
     let scale = maxSide / max(bounds.width, bounds.height)
     let size = NSSize(width: max(bounds.width * scale, 1), height: max(bounds.height * scale, 1))
     let image = page.thumbnail(of: size, for: .mediaBox)
@@ -140,6 +180,7 @@ do {
         let endPage = min(requestedEnd, document.pageCount)
 
         var textLines: [String] = []
+        var pageLayouts: [OCRPage] = []
         var processedPages = 0
         if startPage <= endPage {
             for pageNumber in startPage...endPage {
@@ -149,10 +190,12 @@ do {
                 guard let page = document.page(at: pageNumber - 1) else {
                     continue
                 }
-                let pageLines = try orderedTextLines(recognizeText(from: renderPDFPage(page)))
+                let recognizedLines = try recognizePDFText(from: renderPDFPage(page))
+                let pageLines = orderedTextLines(recognizedLines)
                 if !pageLines.isEmpty {
                     textLines.append(contentsOf: pageLines)
                 }
+                pageLayouts.append(OCRPage(pageNumber: pageNumber, lines: recognizedLines))
                 processedPages += 1
             }
         }
@@ -160,7 +203,8 @@ do {
         try encodeAndPrint(
             OCRPayload(
                 text: textLines.joined(separator: "\n"),
-                lines: textLines
+                lines: textLines,
+                pages: pageLayouts
             )
         )
         exit(0)
@@ -170,11 +214,13 @@ do {
         throw VisionOCRError.cannotLoadImage
     }
 
-    let textLines = try orderedTextLines(recognizeText(from: cgImage(from: image)))
+    let recognizedLines = try recognizeText(from: cgImage(from: image))
+    let textLines = orderedTextLines(recognizedLines)
     try encodeAndPrint(
         OCRPayload(
             text: textLines.joined(separator: "\n"),
-            lines: textLines
+            lines: textLines,
+            pages: [OCRPage(pageNumber: 1, lines: recognizedLines)]
         )
     )
 } catch {

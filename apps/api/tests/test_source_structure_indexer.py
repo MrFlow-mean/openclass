@@ -7,6 +7,8 @@ from uuid import uuid4
 from reportlab.pdfgen import canvas
 
 from app.models import BoardTaskRequirementSheet, ChatRequest, SelectionRef, SourceIngestionRecord
+from app.services.image_ocr import OCRLineLayout, OCRPageLayout
+from app.services import pdf_toc_parser
 from app.services.resource_resolver import ResourceResolver
 from app.services.source_reference_context import source_aware_user_message
 from app.services.source_evidence_store import SourceEvidenceStore
@@ -115,6 +117,89 @@ def test_source_structure_indexer_maps_pdf_toc_to_body_heading(tmp_path: Path) -
     assert view is not None
     assert view.chapters[0].normalized_number == "1"
     assert view.chapters[0].page_start == 2
+
+
+def test_source_structure_indexer_merges_shallow_pdf_outline_with_all_toc_entries(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    pdf_path = tmp_path / "merged-toc.pdf"
+    _write_pdf_with_shallow_outline(pdf_path)
+    monkeypatch.setattr(
+        pdf_toc_parser,
+        "extract_pdf_pages_layout",
+        lambda *_args, **_kwargs: [
+            _toc_layout_page(
+                1,
+                [
+                    ("1 Intro", 1, 0.90, 0.20),
+                    ("1.1 Details", 1, 0.84, 0.24),
+                    ("1.2 More details", 2, 0.78, 0.24),
+                    ("2 Next", 3, 0.72, 0.20),
+                ],
+            )
+        ],
+    )
+    store = SourceEvidenceStore(tmp_path / "openclass.sqlite3")
+    structure_store = SourceStructureStore(tmp_path / "openclass.sqlite3")
+    record = _source_record(tmp_path, file_name=pdf_path.name, mime_type="application/pdf", path=pdf_path)
+    store.save_source(record)
+
+    structure = SourceStructureIndexer(store=structure_store).rebuild_structure(record)
+    view = structure_store.get_structure_view(source=record)
+
+    assert structure.strategy == "pdf_merged_toc"
+    assert structure.metadata["ocr_toc_node_count"] == 4
+    assert view is not None
+    assert [chapter.normalized_number for chapter in view.chapters] == ["", "1", "1.1", "1.2", "2"]
+    chapter_one = next(chapter for chapter in view.chapters if chapter.normalized_number == "1")
+    subsection_titles = [
+        chapter.title for chapter in view.chapters if chapter.parent_id == chapter_one.id
+    ]
+    assert subsection_titles == ["1.1 Details", "1.2 More details"]
+    assert all(chapter.anchor_status == "verified" for chapter in view.chapters)
+    assert next(chapter for chapter in view.chapters if chapter.normalized_number == "1.2").page_start == 3
+
+
+def test_source_structure_indexer_persists_unverified_toc_nodes_without_exposing_evidence(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    pdf_path = tmp_path / "candidate-toc.pdf"
+    _write_pdf_with_single_outline_anchor(pdf_path)
+    monkeypatch.setattr(
+        pdf_toc_parser,
+        "extract_pdf_pages_layout",
+        lambda *_args, **_kwargs: [
+            _toc_layout_page(
+                1,
+                [
+                    ("1 Intro", 1, 0.90, 0.20),
+                    ("1.1 Candidate", 2, 0.82, 0.24),
+                ],
+            )
+        ],
+    )
+    store = SourceEvidenceStore(tmp_path / "openclass.sqlite3")
+    structure_store = SourceStructureStore(tmp_path / "openclass.sqlite3")
+    record = _source_record(tmp_path, file_name=pdf_path.name, mime_type="application/pdf", path=pdf_path)
+    store.save_source(record)
+
+    structure = SourceStructureIndexer(store=structure_store).rebuild_structure(record)
+    view = structure_store.get_structure_view(source=record)
+
+    assert structure.status == "ready"
+    assert view is not None
+    candidate = next(chapter for chapter in view.chapters if chapter.normalized_number == "1.1")
+    assert candidate.anchor_status == "unverified"
+    assert candidate.body_start_offset is None
+    assert structure_store.chapter_evidence_by_number(
+        owner_user_id=record.owner_user_id,
+        package_id=record.package_id,
+        normalized_number="1.1",
+        limit=1,
+        token_budget=1000,
+    ) == []
 
 
 def test_resource_resolver_prefers_verified_chapter_index(tmp_path: Path) -> None:
@@ -252,3 +337,47 @@ def _write_pdf_with_toc(path: Path) -> None:
     pdf.drawString(72, 720, "1 Intro")
     pdf.drawString(72, 690, "Body text for this section.")
     pdf.save()
+
+
+def _write_pdf_with_shallow_outline(path: Path) -> None:
+    pdf = canvas.Canvas(str(path))
+    pdf.bookmarkPage("toc")
+    pdf.addOutlineEntry("Contents", "toc", level=0)
+    pdf.drawString(72, 720, "Contents")
+    pdf.showPage()
+    pdf.bookmarkPage("chapter-1")
+    pdf.addOutlineEntry("1 Intro", "chapter-1", level=0)
+    pdf.drawString(72, 720, "1 Intro")
+    pdf.drawString(72, 690, "1.1 Details")
+    pdf.showPage()
+    pdf.drawString(72, 720, "1.2 More details")
+    pdf.showPage()
+    pdf.bookmarkPage("chapter-2")
+    pdf.addOutlineEntry("2 Next", "chapter-2", level=0)
+    pdf.drawString(72, 720, "2 Next")
+    pdf.save()
+
+
+def _write_pdf_with_single_outline_anchor(path: Path) -> None:
+    pdf = canvas.Canvas(str(path))
+    pdf.bookmarkPage("toc")
+    pdf.addOutlineEntry("Contents", "toc", level=0)
+    pdf.drawString(72, 720, "Contents")
+    pdf.showPage()
+    pdf.bookmarkPage("chapter-1")
+    pdf.addOutlineEntry("1 Intro", "chapter-1", level=0)
+    pdf.drawString(72, 720, "1 Intro")
+    pdf.showPage()
+    pdf.drawString(72, 720, "1.1 Candidate")
+    pdf.save()
+
+
+def _toc_layout_page(
+    page_no: int,
+    rows: list[tuple[str, int, float, float]],
+) -> OCRPageLayout:
+    lines: list[OCRLineLayout] = []
+    for title, printed_page, y, x in rows:
+        lines.append(OCRLineLayout(text=title, x=x, y=y, width=0.30, height=0.02))
+        lines.append(OCRLineLayout(text=str(printed_page), x=0.84, y=y, width=0.03, height=0.02))
+    return OCRPageLayout(page_no=page_no, lines=lines)

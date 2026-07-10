@@ -4,7 +4,7 @@ import clsx from "clsx";
 import { BookOpen, ChevronDown, ChevronRight, Globe2, RefreshCw, TextQuote, Trash2, UploadCloud } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type DragEvent } from "react";
 
-import { createSourceChapterSelection } from "@/components/course-studio/source-reference";
+import { createSourceChapterSelection, sourceChapterLabel } from "@/components/course-studio/source-reference";
 import {
   getSourceProcessingState,
   SourceProcessingProgress,
@@ -309,6 +309,11 @@ export function SourceImportPanel({ packageId, disabled = false, onError, onSour
                 onRemove={() => void removeSource(source.id)}
                 onError={onError}
                 onSourceReference={onSourceReference}
+                onSourceUpdate={(updatedSource) =>
+                  setSources((current) =>
+                    current.map((item) => (item.id === updatedSource.id ? updatedSource : item))
+                  )
+                }
               />
             ))}
           </div>
@@ -340,6 +345,7 @@ function SourceRow({
   onRemove,
   onError,
   onSourceReference,
+  onSourceUpdate,
 }: {
   packageId: string;
   source: SourceIngestionRecord;
@@ -347,10 +353,12 @@ function SourceRow({
   onRemove: () => void;
   onError: (message: string) => void;
   onSourceReference?: (selection: SelectionRef) => void;
+  onSourceUpdate: (source: SourceIngestionRecord) => void;
 }) {
   const [structureView, setStructureView] = useState<SourceStructureView | null>(null);
   const [isStructureOpen, setIsStructureOpen] = useState(false);
   const [isLoadingStructure, setIsLoadingStructure] = useState(false);
+  const [isRebuildingStructure, setIsRebuildingStructure] = useState(false);
   const [expandedChapterIds, setExpandedChapterIds] = useState<Set<string>>(new Set());
   const isReady = source.status === "ready";
   const isFailed = source.status === "failed";
@@ -381,8 +389,25 @@ function SourceRow({
     }
   }
 
-  const verifiedChapters = (structureView?.chapters ?? []).filter((chapter) => chapter.anchor_status === "verified");
-  const chapterTree = buildChapterTree(verifiedChapters);
+  async function rebuildStructure() {
+    if (!isReady || isRebuildingStructure) {
+      return;
+    }
+    setIsRebuildingStructure(true);
+    try {
+      const view = await api.rebuildPackageSourceStructure(packageId, source.id);
+      setStructureView(view);
+      setIsStructureOpen(true);
+      setExpandedChapterIds(new Set());
+      onSourceUpdate(view.source);
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "资料目录重建失败");
+    } finally {
+      setIsRebuildingStructure(false);
+    }
+  }
+
+  const chapterTree = buildChapterTree(structureView?.chapters ?? []);
   function toggleChapter(chapterId: string) {
     setExpandedChapterIds((current) => {
       const next = new Set(current);
@@ -485,6 +510,18 @@ function SourceRow({
           {source.structure_error ? <p className="mt-2 text-xs leading-5 text-amber-700">{source.structure_error}</p> : null}
           {isStructureOpen ? (
             <div className="mt-3 rounded-md border border-blue-100 bg-blue-50/40 p-2">
+              <div className="mb-1 flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => void rebuildStructure()}
+                  disabled={isRebuildingStructure}
+                  className="flex h-7 w-7 items-center justify-center rounded-md border border-blue-100 bg-white text-blue-600 transition hover:border-blue-200 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
+                  title="重新建立目录"
+                  aria-label={`重新建立资料目录 ${source.title}`}
+                >
+                  <RefreshCw className={clsx("h-3.5 w-3.5", isRebuildingStructure && "animate-spin")} />
+                </button>
+              </div>
               {chapterTree.length ? (
                 <SourceChapterTree
                   source={source}
@@ -589,7 +626,8 @@ function SourceChapterNode({
 }) {
   const hasChildren = node.children.length > 0;
   const isExpanded = expandedIds.has(node.chapter.id);
-  const title = chapterDisplayTitle(node.chapter);
+  const isVerified = node.chapter.anchor_status === "verified";
+  const title = sourceChapterLabel(node.chapter);
   return (
     <div>
       <div
@@ -613,7 +651,12 @@ function SourceChapterNode({
           )}
           <span className="min-w-0 flex-1 truncate">{title || "未命名章节"}</span>
         </button>
-        {onSourceReference ? (
+        {!isVerified ? (
+          <span className="shrink-0 text-[10px] font-medium text-amber-700" title="目录条目已识别，正文范围尚未验证">
+            正文待验证
+          </span>
+        ) : null}
+        {onSourceReference && isVerified ? (
           <button
             type="button"
             onClick={() => onSourceReference(createSourceChapterSelection(source, node.chapter))}
@@ -642,13 +685,6 @@ function SourceChapterNode({
       ) : null}
     </div>
   );
-}
-
-function chapterDisplayTitle(chapter: SourceChapter) {
-  if (!chapter.number || chapter.title.trim().startsWith(chapter.number)) {
-    return chapter.title;
-  }
-  return `${chapter.number} ${chapter.title}`;
 }
 
 function buildChapterTree(chapters: SourceChapter[]): ChapterTreeNode[] {

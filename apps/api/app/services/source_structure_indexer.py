@@ -11,6 +11,7 @@ from xml.etree import ElementTree
 
 from app.models import SourceChapter, SourceChunk, SourceIngestionRecord, SourceStructure
 from app.services import workspace_state
+from app.services.pdf_toc_parser import PdfOutlineAnchor, PdfTocNode, extract_pdf_toc
 from app.services.source_structure_store import SourceStructureStore, source_structure_store
 
 CHUNK_CHAR_LIMIT = 1800
@@ -91,6 +92,13 @@ class SourceStructureIndexer:
                         **building.metadata,
                         **parsed.metadata,
                         "text_length": len(parsed.text),
+                        "chapter_node_count": len(chapters),
+                        "verified_chapter_count": sum(
+                            chapter.anchor_status == "verified" for chapter in chapters
+                        ),
+                        "unverified_chapter_count": sum(
+                            chapter.anchor_status == "unverified" for chapter in chapters
+                        ),
                     },
                 }
             )
@@ -132,16 +140,24 @@ class SourceStructureIndexer:
     def _chapters_for_record(self, record: SourceIngestionRecord, parsed: ParsedSourceDocument) -> list[SourceChapter]:
         chapters: list[SourceChapter] = []
         level_stack: list[SourceChapter] = []
-        sorted_chapters = sorted(
-            [chapter for chapter in parsed.chapters if chapter.verified and chapter.start_offset is not None],
-            key=lambda chapter: chapter.start_offset or 0,
-        )
-        for index, chapter in enumerate(sorted_chapters):
+        for index, chapter in enumerate(parsed.chapters):
+            is_verified = chapter.verified and chapter.start_offset is not None
             end_offset = chapter.end_offset
-            if end_offset is None:
-                next_chapter = sorted_chapters[index + 1] if index + 1 < len(sorted_chapters) else None
+            if is_verified and end_offset is None:
+                next_chapter = next(
+                    (
+                        candidate
+                        for candidate in parsed.chapters[index + 1 :]
+                        if candidate.verified and candidate.start_offset is not None
+                    ),
+                    None,
+                )
                 end_offset = next_chapter.start_offset if next_chapter else len(parsed.text)
-            excerpt = _compact(parsed.text[chapter.start_offset or 0 : end_offset or len(parsed.text)], 360)
+            excerpt = (
+                _compact(parsed.text[chapter.start_offset or 0 : end_offset or len(parsed.text)], 360)
+                if is_verified
+                else ""
+            )
             title = _clean_label(chapter.title)
             number = chapter.number or _number_from_title(title)
             level = max(1, chapter.level)
@@ -160,11 +176,11 @@ class SourceStructureIndexer:
                 path=[*(parent.path if parent else []), title],
                 order_index=index,
                 source_locator=chapter.source_locator,
-                body_start_offset=chapter.start_offset,
-                body_end_offset=end_offset,
-                page_start=chapter.page_start,
-                page_end=chapter.page_end,
-                anchor_status="verified",
+                body_start_offset=chapter.start_offset if is_verified else None,
+                body_end_offset=end_offset if is_verified else None,
+                page_start=chapter.page_start if is_verified else None,
+                page_end=chapter.page_end if is_verified else None,
+                anchor_status="verified" if is_verified else "unverified",
                 confidence=chapter.confidence,
                 excerpt=excerpt,
                 metadata=chapter.metadata,
@@ -184,12 +200,16 @@ class SourceStructureIndexer:
         chapter_ranges = [
             (
                 chapter.id,
-                chapter.body_start_offset if chapter.body_start_offset is not None else 0,
-                chapter.body_end_offset if chapter.body_end_offset is not None else len(parsed.text),
+                chapter.body_start_offset,
+                chapter.body_end_offset,
                 chapter.page_start,
                 chapter.page_end,
+                chapter.level,
             )
             for chapter in chapters
+            if chapter.anchor_status == "verified"
+            and chapter.body_start_offset is not None
+            and chapter.body_end_offset is not None
         ]
         chunks: list[SourceChunk] = []
         cursor = 0
@@ -329,18 +349,50 @@ def _parse_pdf(path: Path) -> ParsedSourceDocument:
         offset += len(page_text)
         pages.append(PageText(page_no=page_index + 1, text=text, start_offset=start, end_offset=offset))
     full_text = "".join(parts).strip()
-    chapters = _pdf_outline_chapters(reader, pages, full_text)
-    strategy = "pdf_outline" if chapters else "linear_text"
+    outline_chapters = _pdf_outline_chapters(reader, pages, full_text)
+    chapters = outline_chapters
+    strategy = "pdf_outline" if outline_chapters else "linear_text"
+    warnings: list[str] = []
+    toc_metadata: dict[str, Any] = {}
+
+    if outline_chapters and not any(chapter.level > 1 for chapter in outline_chapters):
+        extraction = extract_pdf_toc(
+            path,
+            outline=[
+                PdfOutlineAnchor(
+                    title=chapter.title,
+                    page_no=chapter.page_start,
+                    level=chapter.level,
+                    metadata=chapter.metadata,
+                )
+                for chapter in outline_chapters
+                if chapter.page_start is not None
+            ],
+            page_count=len(pages),
+        )
+        warnings.extend(extraction.warnings)
+        if extraction.nodes:
+            toc_chapters = _chapters_from_pdf_toc(extraction.nodes, pages)
+            chapters = _merge_pdf_navigation(outline_chapters, toc_chapters, extraction.nodes)
+            strategy = "pdf_merged_toc"
+            toc_metadata = {
+                "toc_page_start": extraction.toc_page_start,
+                "toc_page_end": extraction.toc_page_end,
+                "printed_page_offset": extraction.printed_page_offset,
+                "printed_page_mapping_support": extraction.mapping_support,
+                "ocr_toc_node_count": len(extraction.nodes),
+            }
     if not chapters:
         chapters = _pdf_toc_chapters(pages, full_text)
         strategy = "pdf_toc" if chapters else "linear_text"
-    _close_chapter_ranges(chapters, len(full_text))
+    _close_pdf_navigation_ranges(chapters, pages, len(full_text))
     return ParsedSourceDocument(
         text=full_text,
         chapters=chapters,
         pages=pages,
         strategy=strategy,
-        metadata={"parser": "pdf", "page_count": len(pages)},
+        warnings=warnings,
+        metadata={"parser": "pdf", "page_count": len(pages), **toc_metadata},
     )
 
 
@@ -663,18 +715,105 @@ def _pdf_outline_chapters(reader: Any, pages: list[PageText], full_text: str) ->
     return chapters
 
 
+def _chapters_from_pdf_toc(nodes: list[PdfTocNode], pages: list[PageText]) -> list[DetectedChapter]:
+    chapters: list[DetectedChapter] = []
+    for node in nodes:
+        page = (
+            pages[node.physical_page - 1]
+            if node.physical_page is not None and 1 <= node.physical_page <= len(pages)
+            else None
+        )
+        verified = node.verified and page is not None
+        chapters.append(
+            DetectedChapter(
+                title=node.title,
+                number=node.number,
+                level=node.level,
+                source_locator=f"pdf:toc-page:{node.toc_page}:printed:{node.printed_page}",
+                start_offset=page.start_offset if verified and page else None,
+                page_start=page.page_no if verified and page else None,
+                confidence=node.confidence,
+                verified=verified,
+                metadata=node.metadata,
+            )
+        )
+    return chapters
+
+
+def _merge_pdf_navigation(
+    outline: list[DetectedChapter],
+    toc_chapters: list[DetectedChapter],
+    toc_nodes: list[PdfTocNode],
+) -> list[DetectedChapter]:
+    matched_outline_pairs = {
+        (str(node.metadata.get("outline_title") or ""), int(node.metadata.get("outline_page") or 0))
+        for node in toc_nodes
+        if node.metadata.get("outline_title") and node.metadata.get("outline_page")
+    }
+    matched_root_pages = {
+        chapter.page_start
+        for chapter in toc_chapters
+        if chapter.level == 1 and chapter.page_start is not None
+    }
+    unmatched_outline = [
+        chapter
+        for chapter in outline
+        if (chapter.title, chapter.page_start or 0) not in matched_outline_pairs
+        and not (chapter.level == 1 and chapter.page_start in matched_root_pages)
+    ]
+    first_body_page = min(
+        (chapter.page_start for chapter in toc_chapters if chapter.page_start is not None),
+        default=max((node.toc_page for node in toc_nodes), default=0) + 1,
+    )
+    prefix = [chapter for chapter in unmatched_outline if (chapter.page_start or 0) < first_body_page]
+    suffix = [chapter for chapter in unmatched_outline if (chapter.page_start or 0) >= first_body_page]
+    return prefix + toc_chapters + suffix
+
+
+def _close_pdf_navigation_ranges(
+    chapters: list[DetectedChapter],
+    pages: list[PageText],
+    text_length: int,
+) -> None:
+    for index, chapter in enumerate(chapters):
+        if not chapter.verified or chapter.start_offset is None or chapter.page_start is None:
+            continue
+        boundary = next(
+            (
+                candidate
+                for candidate in chapters[index + 1 :]
+                if candidate.verified
+                and candidate.start_offset is not None
+                and candidate.page_start is not None
+                and candidate.level <= chapter.level
+            ),
+            None,
+        )
+        chapter.end_offset = boundary.start_offset if boundary else text_length
+        if boundary and boundary.page_start is not None:
+            chapter.page_end = max(chapter.page_start + 1, boundary.page_start)
+        else:
+            chapter.page_end = pages[-1].page_no + 1 if pages else chapter.page_start + 1
+
+
 def _pdf_toc_chapters(pages: list[PageText], full_text: str) -> list[DetectedChapter]:
     toc_pages = [page for page in pages[:30] if _looks_like_toc_page(page.text)]
     if not toc_pages:
         return []
     body_pages = [page for page in pages if page.page_no > max(toc.page_no for toc in toc_pages)]
     chapters: list[DetectedChapter] = []
+    seen: set[tuple[str, int]] = set()
+    has_root = False
     for toc_page in toc_pages[:6]:
         for line in toc_page.text.splitlines():
             parsed = _parse_toc_line(line)
             if not parsed:
                 continue
             title, printed_page = parsed
+            key = (_normalize_for_match(title), printed_page)
+            if key in seen:
+                continue
+            seen.add(key)
             title_offset = -1
             matched_page: PageText | None = None
             for page in body_pages:
@@ -683,19 +822,25 @@ def _pdf_toc_chapters(pages: list[PageText], full_text: str) -> list[DetectedCha
                     title_offset = page.start_offset + local_offset
                     matched_page = page
                     break
-            if title_offset < 0:
-                continue
+            number = _number_from_title(title)
+            level = max(1, len(number.split("."))) if number else (2 if has_root else 1)
+            if level == 1:
+                has_root = True
             chapters.append(
                 DetectedChapter(
                     title=title,
-                    number=_number_from_title(title),
-                    level=max(1, len((_number_from_title(title) or "1").split("."))),
+                    number=number,
+                    level=level,
                     source_locator=f"pdf:toc-page:{toc_page.page_no}:printed:{printed_page}",
-                    start_offset=title_offset,
+                    start_offset=title_offset if title_offset >= 0 else None,
                     page_start=matched_page.page_no if matched_page else None,
-                    confidence=0.82,
-                    verified=True,
-                    metadata={"source": "pdf_toc", "printed_page": printed_page},
+                    confidence=0.82 if title_offset >= 0 else 0.62,
+                    verified=title_offset >= 0,
+                    metadata={
+                        "source": "pdf_toc",
+                        "printed_page": printed_page,
+                        "verification": "body_title_match" if title_offset >= 0 else "toc_candidate",
+                    },
                 )
             )
     return chapters
@@ -747,14 +892,16 @@ def _close_chapter_ranges(chapters: list[DetectedChapter], text_length: int) -> 
 def _chapter_for_chunk(
     start: int,
     end: int,
-    chapter_ranges: list[tuple[str, int, int, int | None, int | None]],
+    chapter_ranges: list[tuple[str, int, int, int | None, int | None, int]],
 ) -> tuple[str | None, int | None, int | None]:
     best: tuple[str | None, int | None, int | None] = (None, None, None)
     best_overlap = 0
-    for chapter_id, chapter_start, chapter_end, page_start, page_end in chapter_ranges:
+    best_level = 0
+    for chapter_id, chapter_start, chapter_end, page_start, page_end, level in chapter_ranges:
         overlap = max(0, min(end, chapter_end) - max(start, chapter_start))
-        if overlap > best_overlap:
+        if overlap > best_overlap or (overlap == best_overlap and overlap > 0 and level > best_level):
             best_overlap = overlap
+            best_level = level
             best = (chapter_id, page_start, page_end)
     return best
 

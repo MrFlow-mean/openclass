@@ -18,19 +18,25 @@ export function createSourceChapterSelection(source: SourceIngestionRecord, chap
   };
 }
 
-function sourceChapterLabel(chapter: SourceChapter) {
-  if (!chapter.number || chapter.title.trim().startsWith(chapter.number)) {
-    return chapter.title.trim();
+export function sourceChapterLabel(chapter: SourceChapter) {
+  const title = chapter.title.trim();
+  if (
+    !chapter.number ||
+    title.startsWith(chapter.number) ||
+    /^第\s*[0-9一二三四五六七八九十百零〇两]+\s*[章节篇部]/.test(title)
+  ) {
+    return title;
   }
-  return `${chapter.number} ${chapter.title}`.trim();
+  return `${chapter.number} ${title}`.trim();
 }
 
 function sourceChapterPageRange(chapter: SourceChapter) {
   if (chapter.page_start == null) {
     return "";
   }
-  if (chapter.page_end == null || chapter.page_end === chapter.page_start) {
+  const displayEnd = Math.max(chapter.page_start, (chapter.page_end ?? chapter.page_start + 1) - 1);
+  if (displayEnd === chapter.page_start) {
     return `p. ${chapter.page_start}`;
   }
-  return `pp. ${chapter.page_start}-${chapter.page_end}`;
+  return `pp. ${chapter.page_start}-${displayEnd}`;
 }

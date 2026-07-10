@@ -706,17 +706,19 @@ def _estimate_tokens(text: str) -> int:
 def _chapter_page_range(chapter: SourceChapter) -> str:
     if chapter.page_start is None:
         return ""
-    if chapter.page_end is None or chapter.page_end == chapter.page_start:
+    display_end = max(chapter.page_start, (chapter.page_end or chapter.page_start + 1) - 1)
+    if display_end == chapter.page_start:
         return f"p. {chapter.page_start}"
-    return f"pp. {chapter.page_start}-{chapter.page_end}"
+    return f"pp. {chapter.page_start}-{display_end}"
 
 
 def _chunk_page_range(chunk: SourceChunk) -> str:
     if chunk.page_start is None:
         return ""
-    if chunk.page_end is None or chunk.page_end == chunk.page_start:
+    display_end = max(chunk.page_start, (chunk.page_end or chunk.page_start + 1) - 1)
+    if display_end == chunk.page_start:
         return f"p. {chunk.page_start}"
-    return f"pp. {chunk.page_start}-{chunk.page_end}"
+    return f"pp. {chunk.page_start}-{display_end}"
 
 
 source_structure_store = SourceStructureStore()
