@@ -145,7 +145,8 @@ def test_learning_source_discovery_reports_no_match_after_search() -> None:
     assert outcome.status == "no_match"
     assert outcome.attempted is True
     assert outcome.evidence_bundle is None
-    assert resolver.resolve_calls[0]["purpose"] == "chat"
+    assert resolver.resolve_calls[0]["purpose"] == "board_generation"
+    assert resolver.resolve_calls[0]["requirement_run_id"] == "requirement_run_1"
     assert course_ai.calls[0]["discovery_status"] == "no_match"
     assert course_ai.calls[0]["requires_confirmation"] is False
 

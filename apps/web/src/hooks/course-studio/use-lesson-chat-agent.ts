@@ -764,8 +764,11 @@ export function useLessonChatAgent({
     }
     setBusyAction("chat");
     try {
-      const bundle = await api.confirmEvidence(activeLesson.id, bundleId, action);
-      setCandidateEvidenceBundle(action === "confirm" ? bundle : null);
+      const result = await api.confirmEvidence(activeLesson.id, bundleId, action);
+      setCandidateEvidenceBundle(action === "confirm" ? result.evidence_bundle : null);
+      if (result.active_requirement_sheet) {
+        setStreamedRequirementSheet(result.active_requirement_sheet);
+      }
     } catch (error) {
       setError(error instanceof Error ? error.message : "资料证据确认失败");
     } finally {

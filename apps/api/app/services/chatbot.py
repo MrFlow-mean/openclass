@@ -441,10 +441,18 @@ def _run_requirement_refinement_turn(
     history_state = workspace_state.load_learning_requirement_history_state_for_user(user_id, lesson.id)
     refinement_user_message = source_aware_user_message(request)
     retrieval_user_message = source_aware_user_message(request, include_locator=True)
+    active_requirement_evidence = None
+    active_requirement_run_id = history_state.get("run_id") if history_state else None
+    if isinstance(active_requirement_run_id, str) and active_requirement_run_id:
+        active_requirement_evidence = resource_resolver.latest_requirement_bundle(
+            owner_user_id=user_id,
+            lesson_id=lesson.id,
+            requirement_run_id=active_requirement_run_id,
+        )
     selected_source_chapter_id = (
         getattr(request.selection, "source_chapter_id", None) if request.selection is not None else None
     )
-    pre_refinement_evidence = resource_resolver.resolve_explicit_source_reference(
+    explicit_source_evidence = resource_resolver.resolve_explicit_source_reference(
         owner_user_id=user_id,
         package_id=package.id,
         lesson_id=lesson.id,
@@ -452,6 +460,7 @@ def _run_requirement_refinement_turn(
         source_chapter_id=selected_source_chapter_id,
         purpose="chat",
     )
+    pre_refinement_evidence = explicit_source_evidence or active_requirement_evidence
     source_discovery_expected = pre_refinement_evidence is not None or resource_resolver.has_ready_sources(
         owner_user_id=user_id,
         package_id=package.id,

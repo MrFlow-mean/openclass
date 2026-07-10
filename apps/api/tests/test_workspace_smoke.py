@@ -312,8 +312,9 @@ def test_open_notebook_source_import_and_evidence_confirm(
     )
     assert confirmed.status_code == 200
     confirmed_payload = confirmed.json()
-    assert confirmed_payload["status"] == "confirmed"
-    assert confirmed_payload["confirmed_by_user"] is True
+    assert confirmed_payload["evidence_bundle"]["status"] == "confirmed"
+    assert confirmed_payload["evidence_bundle"]["confirmed_by_user"] is True
+    assert confirmed_payload["active_requirement_sheet"] is None
 
 
 def test_source_import_uses_local_file_when_open_notebook_is_unavailable(

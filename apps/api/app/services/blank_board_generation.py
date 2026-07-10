@@ -12,13 +12,14 @@ from app.services import workspace_state
 from app.services.board_document_editor import generate_from_requirements
 from app.services.board_teaching import build_board_teaching_guide
 from app.services.course_runtime import effective_requirements
+from app.services.confirmed_source_context import ConfirmedSourceContextError, load_confirmed_source_context
 from app.services.history import commit_operations, current_head_commit
 from app.services.learning_requirement_history import (
     LearningRequirementHistoryRecorder,
     RequirementHistoryStamp,
 )
 from app.services.openai_course_ai import openai_course_ai
-from app.services.resource_resolver import evidence_metadata, resource_resolver
+from app.services.resource_resolver import evidence_metadata
 from app.services.rich_document import is_document_empty
 from app.services.source_evidence_store import source_evidence_store
 
@@ -58,13 +59,25 @@ def run_blank_board_generation(
         lesson_id=lesson.id,
         state=history_state,
     )
-    evidence_bundle = resource_resolver.latest_confirmed_bundle(
-        owner_user_id=user_id,
-        lesson_id=lesson.id,
-        purpose="board_generation",
-        requirement_run_id=recorder.snapshot.run_id,
-    )
-    resource_summary = evidence_bundle.context_text if evidence_bundle else ""
+    try:
+        source_context = load_confirmed_source_context(
+            owner_user_id=user_id,
+            package_id=package.id,
+            lesson_id=lesson.id,
+            requirement_run_id=recorder.snapshot.run_id,
+            requirements=requirements,
+        )
+    except ConfirmedSourceContextError as exc:
+        return _failure_response(
+            workspace=workspace,
+            package=package,
+            lesson=lesson,
+            requirements=requirements,
+            clarification=clarification,
+            reason=str(exc),
+        )
+    evidence_bundle = source_context.evidence_bundle
+    resource_summary = source_context.context_text
     lesson.learning_requirements = requirements
     frozen_stamp = recorder.freeze(
         requirements=requirements,
@@ -158,6 +171,8 @@ def run_blank_board_generation(
             "active_requirement_sheet_after": None,
             "active_board_task_sheet_after": None,
             "requirement_cleared": True,
+            "source_grounding": requirements.source_grounding.model_dump(mode="json"),
+            "legacy_evidence_fallback": source_context.used_legacy_bundle,
             **evidence_metadata(evidence_bundle),
         },
     )

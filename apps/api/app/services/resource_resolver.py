@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import re
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Literal
 
 from app.models import (
     BoardTaskRequirementSheet,
@@ -15,6 +16,7 @@ from app.services.open_notebook_adapter import (
     OpenNotebookAdapterError,
     open_notebook_adapter,
 )
+from app.services.evidence_quality_gate import filter_relevant_local_evidence
 from app.services.source_chapter_evidence import (
     explicit_chapter_number,
     explicit_source_chapter_id,
@@ -50,6 +52,16 @@ CHAT_TOKEN_BUDGET = 2000
 BOARD_TOKEN_BUDGET = 6000
 OCR_CHAT_PAGE_LIMIT = 4
 OCR_BOARD_PAGE_LIMIT = 12
+
+
+ResourceResolutionStatus = Literal["matched", "no_match", "ambiguous_source", "content_unavailable"]
+
+
+@dataclass(frozen=True)
+class ResourceResolutionOutcome:
+    status: ResourceResolutionStatus
+    evidence_bundle: EvidenceBundle | None = None
+    metadata: dict[str, object] | None = None
 
 
 class ResourceResolver:
@@ -124,8 +136,29 @@ class ResourceResolver:
         requirement_run_id: str | None = None,
         purpose: EvidencePurpose = "board_generation",
     ) -> EvidenceBundle | None:
+        return self.resolve_for_learning_requirement_outcome(
+            owner_user_id=owner_user_id,
+            package_id=package_id,
+            lesson_id=lesson_id,
+            user_message=user_message,
+            requirements=requirements,
+            requirement_run_id=requirement_run_id,
+            purpose=purpose,
+        ).evidence_bundle
+
+    def resolve_for_learning_requirement_outcome(
+        self,
+        *,
+        owner_user_id: str,
+        package_id: str,
+        lesson_id: str,
+        user_message: str,
+        requirements: LearningRequirementSheet | None,
+        requirement_run_id: str | None = None,
+        purpose: EvidencePurpose = "board_generation",
+    ) -> ResourceResolutionOutcome:
         query = _learning_query(user_message=user_message, requirements=requirements)
-        return self._resolve(
+        return self._resolve_outcome(
             owner_user_id=owner_user_id,
             package_id=package_id,
             lesson_id=lesson_id,
@@ -146,14 +179,14 @@ class ResourceResolver:
         purpose: EvidencePurpose = "board_edit",
     ) -> EvidenceBundle | None:
         query = _board_task_query(user_message=user_message, board_task=board_task)
-        return self._resolve(
+        return self._resolve_outcome(
             owner_user_id=owner_user_id,
             package_id=package_id,
             lesson_id=lesson_id,
             query=query,
             purpose=purpose,
             board_task_run_id=board_task_run_id,
-        )
+        ).evidence_bundle
 
     def latest_confirmed_bundle(
         self,
@@ -173,7 +206,20 @@ class ResourceResolver:
             board_task_run_id=board_task_run_id,
         )
 
-    def _resolve(
+    def latest_requirement_bundle(
+        self,
+        *,
+        owner_user_id: str,
+        lesson_id: str,
+        requirement_run_id: str,
+    ) -> EvidenceBundle | None:
+        return self.store.latest_requirement_bundle(
+            owner_user_id=owner_user_id,
+            lesson_id=lesson_id,
+            requirement_run_id=requirement_run_id,
+        )
+
+    def _resolve_outcome(
         self,
         *,
         owner_user_id: str,
@@ -183,11 +229,11 @@ class ResourceResolver:
         purpose: EvidencePurpose,
         requirement_run_id: str | None = None,
         board_task_run_id: str | None = None,
-    ) -> EvidenceBundle | None:
+    ) -> ResourceResolutionOutcome:
         notebook_id = self.store.get_notebook_id(owner_user_id=owner_user_id, package_id=package_id)
         ready_sources = self.store.ready_sources(owner_user_id=owner_user_id, package_id=package_id)
         if not ready_sources or not query.strip():
-            return None
+            return ResourceResolutionOutcome(status="no_match")
         limit = BOARD_CHUNK_LIMIT if purpose in {"board_generation", "board_edit"} else CHAT_CHUNK_LIMIT
         token_budget = BOARD_TOKEN_BUDGET if purpose in {"board_generation", "board_edit"} else CHAT_TOKEN_BUDGET
         chapter_evidence, chapter_resolution = self._resolve_verified_chapter(
@@ -198,7 +244,7 @@ class ResourceResolver:
             token_budget=token_budget,
         )
         if chapter_evidence:
-            return self._save_bundle(
+            bundle = self._save_bundle(
                 owner_user_id=owner_user_id,
                 package_id=package_id,
                 lesson_id=lesson_id,
@@ -213,8 +259,17 @@ class ResourceResolver:
                     "source_reference_resolution": chapter_resolution,
                 },
             )
+            return ResourceResolutionOutcome(status="matched", evidence_bundle=bundle, metadata=chapter_resolution)
         if chapter_resolution is not None:
-            return None
+            resolution_status = str(chapter_resolution.get("status") or "")
+            status: ResourceResolutionStatus = (
+                "ambiguous_source"
+                if resolution_status == "ambiguous"
+                else "content_unavailable"
+                if resolution_status == "content_unavailable"
+                else "no_match"
+            )
+            return ResourceResolutionOutcome(status=status, metadata=chapter_resolution)
         open_notebook_source_ids = [source.open_notebook_source_id for source in ready_sources if source.open_notebook_source_id]
         if notebook_id and open_notebook_source_ids:
             try:
@@ -235,7 +290,7 @@ class ResourceResolver:
                 allowed_source_ids=set(open_notebook_source_ids),
             )
             if evidence:
-                return self._save_bundle(
+                bundle = self._save_bundle(
                     owner_user_id=owner_user_id,
                     package_id=package_id,
                     lesson_id=lesson_id,
@@ -246,6 +301,7 @@ class ResourceResolver:
                     board_task_run_id=board_task_run_id,
                     metadata={"resolver": "open_notebook_search", "retrieval_mode": "semantic_search"},
                 )
+                return ResourceResolutionOutcome(status="matched", evidence_bundle=bundle)
         local_evidence = self.structure_store.chunk_evidence_search(
             owner_user_id=owner_user_id,
             package_id=package_id,
@@ -253,9 +309,10 @@ class ResourceResolver:
             limit=limit,
             token_budget=token_budget,
         )
+        local_evidence = filter_relevant_local_evidence(query=query, evidence=local_evidence)
         if not local_evidence:
-            return None
-        return self._save_bundle(
+            return ResourceResolutionOutcome(status="no_match")
+        bundle = self._save_bundle(
             owner_user_id=owner_user_id,
             package_id=package_id,
             lesson_id=lesson_id,
@@ -266,6 +323,7 @@ class ResourceResolver:
             board_task_run_id=board_task_run_id,
             metadata={"resolver": "source_structure_index", "retrieval_mode": "local_chunk_search"},
         )
+        return ResourceResolutionOutcome(status="matched", evidence_bundle=bundle)
 
     def _save_bundle(
         self,
@@ -431,9 +489,20 @@ def _learning_query(*, user_message: str, requirements: LearningRequirementSheet
             [
                 requirements.learning_goal,
                 requirements.theme,
-                " ".join(requirements.current_questions),
-                requirements.output_preference,
-                requirements.success_criteria,
+                requirements.boundary,
+                " ".join(
+                    " ".join(
+                        part
+                        for part in [
+                            reference.source_title,
+                            reference.chapter_number,
+                            reference.chapter_title,
+                            " ".join(reference.section_path),
+                        ]
+                        if part
+                    )
+                    for reference in requirements.source_grounding.confirmed_references
+                ),
             ]
         )
     return _compact(" ".join(part for part in parts if part), 900)

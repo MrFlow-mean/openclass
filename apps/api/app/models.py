@@ -137,12 +137,15 @@ LearningRequirementChangeKind = Literal[
     "created",
     "updated",
     "completed",
+    "source_reference_confirmed",
+    "source_reference_declined",
     "frozen",
     "forced_frozen",
     "consumed",
     "archived",
     "generation_failed",
 ]
+LearningSourceConfirmationStatus = Literal["none", "confirmed", "skipped", "stale"]
 BoardTaskRunStatus = Literal["collecting", "ready", "awaiting_confirmation", "consumed", "not_executed", "archived"]
 BoardTaskChangeKind = Literal[
     "created",
@@ -524,6 +527,34 @@ class InteractionTurnDecision(BaseModel):
     user_intent: str = ""
 
 
+class LearningSourceReference(BaseModel):
+    evidence_bundle_id: str
+    source_ingestion_id: str
+    source_title: str = ""
+    source_chapter_id: str = ""
+    chapter_number: str = ""
+    chapter_title: str = ""
+    section_path: list[str] = Field(default_factory=list)
+    source_locator: str = ""
+    page_range: str = ""
+    page_start: int | None = None
+    page_end: int | None = None
+    body_start_offset: int | None = None
+    body_end_offset: int | None = None
+    chunk_ids: list[str] = Field(default_factory=list)
+    source_structure_id: str = ""
+    source_structure_updated_at: str = ""
+    content_hash: str = ""
+
+
+class LearningSourceGrounding(BaseModel):
+    requested_by_user: bool = False
+    confirmation_status: LearningSourceConfirmationStatus = "none"
+    confirmed_bundle_id: str = ""
+    confirmed_at: str | None = None
+    confirmed_references: list[LearningSourceReference] = Field(default_factory=list)
+
+
 class LearningRequirementSheet(BaseModel):
     theme: str
     learning_goal: str
@@ -546,6 +577,7 @@ class LearningRequirementSheet(BaseModel):
     board_workflow: BoardWorkflow = "unknown"
     work_mode: InitialLearningWorkMode | None = None
     granularity: InitialLearningGranularity | None = None
+    source_grounding: LearningSourceGrounding = Field(default_factory=LearningSourceGrounding)
 
 
 class BoardTaskRequirementSheet(BaseModel):
@@ -942,6 +974,14 @@ class EvidenceBundle(BaseModel):
 class EvidenceConfirmationRequest(BaseModel):
     bundle_id: str
     action: EvidenceConfirmationAction = "confirm"
+
+
+class EvidenceConfirmationResult(BaseModel):
+    evidence_bundle: EvidenceBundle
+    active_requirement_sheet: LearningRequirementSheet | None = None
+    requirement_run_id: str | None = None
+    requirement_version_id: str | None = None
+    requirement_phase: LearningRequirementRunStatus | None = None
 
 
 class ResourceLibraryItemView(BaseModel):

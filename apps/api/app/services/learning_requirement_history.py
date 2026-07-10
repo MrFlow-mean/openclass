@@ -7,6 +7,7 @@ from typing import Any
 
 from app.models import (
     LearningClarificationStatus,
+    LearningRequirementChangeKind,
     LearningRequirementRunStatus,
     LearningRequirementSheet,
     new_id,
@@ -350,6 +351,7 @@ class LearningRequirementHistoryRecorder:
         requirements: LearningRequirementSheet,
         clarification: LearningClarificationStatus,
         change_summary: str | None = None,
+        change_kind_override: LearningRequirementChangeKind | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> RequirementHistoryStamp:
         sheet_json = _canonical_json(requirements)
@@ -365,7 +367,9 @@ class LearningRequirementHistoryRecorder:
         created_run = self._ensure_mutable_run()
         phase: LearningRequirementRunStatus = "ready" if clarification.ready_for_board else "collecting"
         version_number = self.snapshot.latest_version_number + 1
-        if clarification.ready_for_board:
+        if change_kind_override is not None:
+            change_kind = change_kind_override
+        elif clarification.ready_for_board:
             change_kind = "completed"
         elif version_number == 1:
             change_kind = "created"
@@ -421,6 +425,24 @@ class LearningRequirementHistoryRecorder:
         self.snapshot.latest_version_number = version_number
         self.snapshot.latest_sheet_json = sheet_json
         self.snapshot.latest_clarification_json = clarification_json
+        return self.current_stamp()
+
+    def record_event(
+        self,
+        *,
+        event_type: LearningRequirementChangeKind,
+        change_summary: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> RequirementHistoryStamp:
+        if not self.snapshot.run_id:
+            return self.current_stamp()
+        self._append_event(
+            event_type=event_type,
+            from_version_id=self.snapshot.latest_version_id,
+            to_version_id=self.snapshot.latest_version_id,
+            change_summary=change_summary,
+            metadata=metadata,
+        )
         return self.current_stamp()
 
     def freeze(

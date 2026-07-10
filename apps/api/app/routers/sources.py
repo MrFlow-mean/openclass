@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
-from app.models import EvidenceBundle, EvidenceConfirmationRequest, SourceIngestionRecord, SourceStructureView, UserView
+from app.models import EvidenceConfirmationRequest, EvidenceConfirmationResult, SourceIngestionRecord, SourceStructureView, UserView
 from app.routers.auth import current_user
 from app.services import workspace_state
+from app.services.learning_source_reference_service import LearningSourceReferenceError, apply_evidence_confirmation
 from app.services.source_evidence_store import source_evidence_store
 from app.services.source_ingestion_service import SourceIngestionError, source_ingestion_service
 from app.services.source_structure_indexer import source_structure_indexer
@@ -102,23 +103,18 @@ def rebuild_package_source_structure(
     return source_structure_store.get_structure_view(source=source)
 
 
-@router.post("/api/lessons/{lesson_id}/evidence/confirm", response_model=EvidenceBundle)
+@router.post("/api/lessons/{lesson_id}/evidence/confirm", response_model=EvidenceConfirmationResult)
 def confirm_lesson_evidence(
     lesson_id: str,
     request: EvidenceConfirmationRequest,
     user: UserView = Depends(current_user),
-) -> EvidenceBundle:
-    workspace = workspace_state.load_workspace_for_user(user.id)
-    package, _lesson = workspace_state.find_lesson_package(workspace, lesson_id)
-    bundle = source_evidence_store.get_bundle(owner_user_id=user.id, bundle_id=request.bundle_id)
-    if bundle is None or bundle.lesson_id != lesson_id or bundle.package_id != package.id:
-        raise HTTPException(status_code=404, detail="Evidence bundle not found.")
-    if request.action == "skip":
-        archived = source_evidence_store.archive_bundle(owner_user_id=user.id, bundle_id=request.bundle_id)
-        if archived is None:
-            raise HTTPException(status_code=404, detail="Evidence bundle not found.")
-        return archived
-    confirmed = source_evidence_store.confirm_bundle(owner_user_id=user.id, bundle_id=request.bundle_id)
-    if confirmed is None:
-        raise HTTPException(status_code=404, detail="Evidence bundle not found.")
-    return confirmed
+) -> EvidenceConfirmationResult:
+    try:
+        return apply_evidence_confirmation(
+            owner_user_id=user.id,
+            lesson_id=lesson_id,
+            bundle_id=request.bundle_id,
+            action=request.action,
+        )
+    except LearningSourceReferenceError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc

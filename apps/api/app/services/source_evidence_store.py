@@ -367,6 +367,31 @@ class SourceEvidenceStore:
                 ).fetchone()
         return self._bundle_from_row(row) if row else None
 
+    def latest_requirement_bundle(
+        self,
+        *,
+        owner_user_id: str,
+        lesson_id: str,
+        requirement_run_id: str,
+    ) -> EvidenceBundle | None:
+        with self._lock:
+            with self._connect() as conn:
+                row = conn.execute(
+                    """
+                    SELECT *
+                    FROM evidence_bundles
+                    WHERE owner_user_id = ?
+                      AND lesson_id = ?
+                      AND requirement_run_id = ?
+                      AND purpose = 'board_generation'
+                      AND status IN ('candidate', 'confirmed')
+                    ORDER BY updated_at DESC
+                    LIMIT 1
+                    """,
+                    (owner_user_id, lesson_id, requirement_run_id),
+                ).fetchone()
+        return self._bundle_from_row(row) if row else None
+
     def confirm_bundle(self, *, owner_user_id: str, bundle_id: str) -> EvidenceBundle | None:
         bundle = self.get_bundle(owner_user_id=owner_user_id, bundle_id=bundle_id)
         if bundle is None:

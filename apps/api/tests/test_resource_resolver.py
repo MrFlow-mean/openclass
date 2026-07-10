@@ -13,7 +13,7 @@ from app.services import source_chapter_evidence as source_chapter_evidence_modu
 from app.services import workspace_state
 from app.services.chat_service import process_chat_on_lesson
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
-from app.services.lesson_factory import create_empty_lesson
+from app.services.lesson_factory import build_requirements, create_empty_lesson
 from app.services.openai_course_ai import BlankBoardRequirementRefinement, ChatbotReply, openai_course_ai
 from app.services.resource_resolver import ResourceResolver, resource_resolver
 from app.services.source_evidence_store import SourceEvidenceStore
@@ -186,7 +186,6 @@ def test_resource_resolver_returns_none_without_ready_sources(tmp_path) -> None:
 
     assert bundle is None
 
-
 def test_resource_resolver_detects_video_source_intent(tmp_path) -> None:
     resolver = ResourceResolver(adapter=_FakeSearchAdapter(), store=SourceEvidenceStore(tmp_path / "openclass.sqlite3"))
 
@@ -321,6 +320,19 @@ def test_chapter_locator_does_not_choose_between_ambiguous_sources(
 
     assert bundle is None
 
+    outcome = resolver.resolve_for_learning_requirement_outcome(
+        owner_user_id="user_1",
+        package_id="pkg_1",
+        lesson_id="lesson_1",
+        user_message="我想学第四章",
+        requirements=build_requirements("第四章"),
+        requirement_run_id="run_1",
+    )
+    assert outcome.status == "ambiguous_source"
+    assert outcome.evidence_bundle is None
+    assert outcome.metadata is not None
+    assert len(outcome.metadata["candidates"]) == 2
+
 
 def test_non_chapter_ordinal_does_not_trigger_source_resolution(
     monkeypatch: pytest.MonkeyPatch,
@@ -412,3 +424,90 @@ def test_blank_requirement_discovers_matched_source_before_visible_reply(
     assert resolution["selected_action"] == "resolve_source_chapter"
     assert resolution["role_executed"] == "resource_resolver"
     assert resolution["document_changed"] is False
+
+
+def test_blank_requirement_keeps_exact_chapter_evidence_across_short_follow_up(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "openclass.sqlite3"
+    course_store = SqliteCourseStore(database_path, legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", course_store)
+    package, lesson = _seed_empty_lesson(course_store, user_id="user_1")
+    source_store = SourceEvidenceStore(database_path)
+    structure_store = SourceStructureStore(database_path)
+    selected_source, selected_chapter = _save_outline_only_source(
+        tmp_path=tmp_path,
+        store=source_store,
+        structure_store=structure_store,
+        package_id=package.id,
+        title="主题学习手册.pdf",
+        chapter_title="第四章 核心方法",
+    )
+    other_source, _other_chapter = _save_outline_only_source(
+        tmp_path=tmp_path,
+        store=source_store,
+        structure_store=structure_store,
+        package_id=package.id,
+        title="系统实践手册.pdf",
+        chapter_title="第4章 处理器结构",
+    )
+    monkeypatch.setattr(resource_resolver, "store", source_store)
+    monkeypatch.setattr(resource_resolver, "structure_store", structure_store)
+    monkeypatch.setattr(
+        source_chapter_evidence_module,
+        "extract_pdf_pages_text",
+        lambda path, **kwargs: (
+            "第四章 核心方法\n这是需要跨回合保持的正文证据。"
+            if "主题学习手册" in path.name
+            else "第4章 处理器结构\n这是另一份资料的正文。"
+        ),
+    )
+    refinement_calls: list[dict[str, object]] = []
+    discovery_calls: list[dict[str, object]] = []
+
+    def _fake_refinement(**kwargs):
+        refinement_calls.append(kwargs)
+        return BlankBoardRequirementRefinement(
+            route="requirement_refining",
+            chatbot_message="继续收敛学习起点。",
+            progress=40 if len(refinement_calls) == 1 else 60,
+            summary="已经定位第四章，继续确认学习起点。",
+            work_mode="knowledge_board",
+            granularity="broad_topic",
+            learning_goal="核心方法（第四章）",
+            current_level="已有基础" if len(refinement_calls) > 1 else "",
+            boundary="第四章 核心方法，主题学习手册",
+            next_question="请选择本章中的学习入口。",
+            ready_for_board=False,
+        )
+
+    def _fake_discovery_reply(**kwargs):
+        discovery_calls.append(kwargs)
+        return ChatbotReply(chatbot_message="已保持同一份资料中的第四章。")
+
+    monkeypatch.setattr(openai_course_ai, "generate_blank_board_requirement_refinement", _fake_refinement)
+    monkeypatch.setattr(openai_course_ai, "generate_learning_source_discovery_reply", _fake_discovery_reply)
+
+    first = process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="我想学主题学习手册的第四章"),
+        user_id="user_1",
+    )
+    second = process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="B"),
+        user_id="user_1",
+    )
+
+    assert first.candidate_evidence_bundle is not None
+    assert first.candidate_evidence_bundle.purpose == "board_generation"
+    assert first.candidate_evidence_bundle.requirement_run_id == first.requirement_run_id
+    assert second.candidate_evidence_bundle is not None
+    assert second.candidate_evidence_bundle.id == first.candidate_evidence_bundle.id
+    assert second.candidate_evidence_bundle.evidence_items[0].source_ingestion_id == selected_source.id
+    assert second.candidate_evidence_bundle.evidence_items[0].chapter_id == selected_chapter.id
+    assert all(item.source_ingestion_id != other_source.id for item in second.candidate_evidence_bundle.evidence_items)
+    assert "需要跨回合保持的正文证据" in str(refinement_calls[1]["resource_summary"])
+    assert discovery_calls[1]["discovery_status"] == "matched"
+    assert "主题学习手册" in str(discovery_calls[1]["evidence_references"])

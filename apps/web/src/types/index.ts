@@ -82,6 +82,36 @@ export interface DiffPreviewItem {
   summary: string;
 }
 
+export type LearningSourceConfirmationStatus = "none" | "confirmed" | "skipped" | "stale";
+
+export interface LearningSourceReference {
+  evidence_bundle_id: string;
+  source_ingestion_id: string;
+  source_title: string;
+  source_chapter_id: string;
+  chapter_number: string;
+  chapter_title: string;
+  section_path: string[];
+  source_locator: string;
+  page_range: string;
+  page_start?: number | null;
+  page_end?: number | null;
+  body_start_offset?: number | null;
+  body_end_offset?: number | null;
+  chunk_ids: string[];
+  source_structure_id: string;
+  source_structure_updated_at: string;
+  content_hash: string;
+}
+
+export interface LearningSourceGrounding {
+  requested_by_user: boolean;
+  confirmation_status: LearningSourceConfirmationStatus;
+  confirmed_bundle_id: string;
+  confirmed_at?: string | null;
+  confirmed_references: LearningSourceReference[];
+}
+
 export interface LearningRequirementSheet {
   theme: string;
   learning_goal: string;
@@ -104,6 +134,7 @@ export interface LearningRequirementSheet {
   board_workflow?: BoardWorkflow | null;
   work_mode?: InitialLearningWorkMode | null;
   granularity?: InitialLearningGranularity | null;
+  source_grounding?: LearningSourceGrounding;
 }
 
 export type BoardWorkflow = "generate_from_scratch" | "act_on_existing_board" | "unknown";
@@ -457,6 +488,14 @@ export interface EvidenceBundle {
   updated_at: string;
   confirmed_at?: string | null;
   metadata: Record<string, unknown>;
+}
+
+export interface EvidenceConfirmationResult {
+  evidence_bundle: EvidenceBundle;
+  active_requirement_sheet?: LearningRequirementSheet | null;
+  requirement_run_id?: string | null;
+  requirement_version_id?: string | null;
+  requirement_phase?: LearningRequirementRunStatus | null;
 }
 
 export type ResourcePageRole =

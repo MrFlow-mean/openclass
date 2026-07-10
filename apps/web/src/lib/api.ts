@@ -19,7 +19,7 @@ import type {
   RealtimeEventLogPayload,
   RequirementUpdateStreamPayload,
   ScopeAction,
-  EvidenceBundle,
+  EvidenceConfirmationResult,
   SourceIngestionRecord,
   SourceStructureView,
   WorkspaceState,
@@ -537,7 +537,7 @@ export const api = {
     return response.json() as Promise<SourceIngestionRecord>;
   },
   confirmEvidence(lessonId: string, bundleId: string, action: "confirm" | "skip") {
-    return request<EvidenceBundle>(`/api/lessons/${lessonId}/evidence/confirm`, {
+    return request<EvidenceConfirmationResult>(`/api/lessons/${lessonId}/evidence/confirm`, {
       method: "POST",
       body: JSON.stringify({
         bundle_id: bundleId,

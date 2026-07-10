@@ -245,6 +245,7 @@ function buildAuxiliaryFactors({
   const used = new Set(usedValues.map((value) => normalizeText(value ?? "")).filter(Boolean));
   const factors: LearningRequirementDisplayFactor[] = [];
 
+  pushAuxiliary(factors, used, "confirmed_source", "已确认资料", confirmedSourceLabel(requirementSheet));
   pushAuxiliary(factors, used, "broad_topic", "当前方向", broadTopic);
   pushAuxiliary(factors, used, "known_background", "已有背景", requirementSheet?.known_background);
   pushAuxiliary(factors, used, "target_depth", "目标深度", requirementSheet?.target_depth);
@@ -259,6 +260,19 @@ function buildAuxiliaryFactors({
   }
 
   return factors.slice(0, 6);
+}
+
+function confirmedSourceLabel(requirementSheet?: LearningRequirementSheet | null) {
+  const grounding = requirementSheet?.source_grounding;
+  if (grounding?.confirmation_status !== "confirmed" || !grounding.confirmed_references.length) {
+    return "";
+  }
+  const reference = grounding.confirmed_references[0];
+  const location = [reference.source_title, reference.section_path.join(" > "), reference.page_range]
+    .filter(Boolean)
+    .join(" / ");
+  const remaining = grounding.confirmed_references.length - 1;
+  return remaining > 0 ? `${location} 等 ${grounding.confirmed_references.length} 处` : location;
 }
 
 function pushAuxiliary(

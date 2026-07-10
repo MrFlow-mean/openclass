@@ -33,6 +33,8 @@ def resolve_verified_chapter_evidence(
     )
     if match is None:
         return [], None
+    if isinstance(match, dict):
+        return [], match
     source, chapter, resolution = match
     evidence = structure_store.chapter_evidence_by_id(
         owner_user_id=owner_user_id,
@@ -91,7 +93,7 @@ def _match_verified_chapter(
     owner_user_id: str,
     package_id: str,
     query: str,
-) -> tuple[SourceIngestionRecord, SourceChapter, dict[str, object]] | None:
+) -> tuple[SourceIngestionRecord, SourceChapter, dict[str, object]] | dict[str, object] | None:
     ready_sources = source_store.ready_sources(owner_user_id=owner_user_id, package_id=package_id)
     explicit_id = explicit_source_chapter_id(query)
     requested_number = explicit_chapter_number(query)
@@ -118,7 +120,16 @@ def _match_verified_chapter(
             )
             if requested_number and chapter_number == requested_number:
                 candidates.append((source, chapter, title_overlap))
-    if explicit_id or not requested_number or not candidates:
+    if explicit_id:
+        return {
+            "status": "not_found",
+            "intent_signals": ["explicit_source_chapter_id"],
+            "selected_action": "resolve_source_chapter",
+            "role_executed": "resource_resolver",
+            "document_changed": False,
+            "reason": "指定的资料章节已经不存在或不再是已验证节点。",
+        }
+    if not requested_number or not candidates:
         return None
     if len(candidates) == 1:
         source, chapter, overlap = candidates[0]
@@ -132,7 +143,24 @@ def _match_verified_chapter(
     top_overlap = ranked[0][2]
     top_candidates = [candidate for candidate in ranked if candidate[2] == top_overlap]
     if top_overlap < SOURCE_TITLE_OVERLAP_MIN or len(top_candidates) != 1:
-        return None
+        return {
+            "status": "ambiguous",
+            "intent_signals": ["explicit_chapter_locator"],
+            "selected_action": "clarify_source_chapter",
+            "role_executed": "resource_resolver",
+            "document_changed": False,
+            "chapter_number": requested_number,
+            "candidates": [
+                {
+                    "source_ingestion_id": source.id,
+                    "source_title": source.title,
+                    "chapter_id": chapter.id,
+                    "chapter_title": chapter.title,
+                }
+                for source, chapter, _overlap in ranked
+            ],
+            "reason": "当前课程包中有多份资料包含相同章节号，需要先确认具体资料。",
+        }
     source, chapter, overlap = top_candidates[0]
     return source, chapter, _source_resolution(
         source=source,
