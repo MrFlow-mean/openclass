@@ -1859,6 +1859,87 @@ def test_docx_export_moves_late_table_to_next_page(tmp_path) -> None:
     assert root.findall(".//w:br[@w:type='page']", ns)
 
 
+def test_build_document_renders_fenced_code_blocks() -> None:
+    document = build_document(
+        title="Doc",
+        content_text=(
+            "代码示例：\n\n"
+            "```rust\n"
+            "use std::io;\n\n"
+            "fn main() {\n"
+            '    println!("请输入您的猜测：");\n'
+            "}\n"
+            "```"
+        ),
+    )
+
+    assert "```" not in document.content_html
+    assert "<pre><code" in document.content_html
+    assert "use std::io;" in document.content_html
+    assert any(node.get("type") == "codeBlock" for node in document.content_json.get("content", []))
+
+
+def test_build_document_indents_flat_fenced_code_blocks() -> None:
+    document = build_document(
+        title="Doc",
+        content_text=(
+            "```rust\n"
+            "fn main() {\n"
+            'println!("hello");\n'
+            "loop {\n"
+            'println!("guess");\n'
+            "}\n"
+            "}\n"
+            "```"
+        ),
+    )
+    code_nodes = [
+        node
+        for node in document.content_json.get("content", [])
+        if node.get("type") == "codeBlock"
+    ]
+    assert len(code_nodes) == 1
+    code = "".join(
+        str(child.get("text") or "")
+        for child in code_nodes[0].get("content", [])
+        if child.get("type") == "text"
+    )
+    assert '    println!("hello");' in code
+    assert '        println!("guess");' in code
+
+
+def test_upgrade_markdown_like_document_repairs_flat_code_block_indentation() -> None:
+    legacy = BoardDocument(
+        id="doc_flat_code",
+        title="Doc",
+        content_json={
+            "type": "doc",
+            "content": [
+                {
+                    "type": "codeBlock",
+                    "attrs": {"language": "rust"},
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": 'fn main() {\nprintln!("hello");\n}',
+                        }
+                    ],
+                }
+            ],
+        },
+        content_html='<pre><code class="language-rust">fn main() {\nprintln!("hello");\n}</code></pre>',
+        content_text='```rust\nfn main() {\nprintln!("hello");\n}\n```',
+    )
+
+    upgraded = upgrade_markdown_like_document(legacy)
+    code = "".join(
+        str(child.get("text") or "")
+        for child in upgraded.content_json["content"][0]["content"]
+        if child.get("type") == "text"
+    )
+    assert '    println!("hello");' in code
+
+
 def test_docx_export_strips_text_fence_markers(tmp_path) -> None:
     document = build_document(
         title="Doc",

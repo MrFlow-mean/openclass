@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import json
 import re
 from functools import lru_cache
 from html.parser import HTMLParser
@@ -17,6 +18,7 @@ from docx.shared import Cm
 from app.models import BoardDocument, DocumentPageSettings
 from app.services.latex_fragments import find_raw_latex_fragments, strip_orphan_math_dollars
 from app.services.latex_to_omml import append_omml_math as _append_normalized_omml_math
+from app.services.markdown_parser import parse_markdown_to_html, parse_markdown_to_tiptap
 
 
 EMPTY_TIPTAP_DOC: dict[str, Any] = {"type": "doc", "content": [{"type": "paragraph"}]}
@@ -86,6 +88,7 @@ _HTML_BLOCK_TAGS = {
     "nav",
     "ol",
     "p",
+    "pre",
     "section",
     "table",
     "tbody",
@@ -356,6 +359,151 @@ def _display_math_block(lines: list[str], index: int) -> tuple[str, int] | None:
     return None
 
 
+def _html_plain_text(children: list[Any]) -> str:
+    parts: list[str] = []
+    for child in children:
+        if isinstance(child, str):
+            parts.append(child)
+        elif isinstance(child, dict):
+            parts.append(_html_plain_text(child.get("children", [])))
+    return "".join(parts)
+
+
+def _parse_fenced_code_block(lines: list[str], index: int) -> tuple[str | None, str, int] | None:
+    stripped = lines[index].strip()
+    single_block = _fenced_code_text(stripped)
+    if single_block is not None:
+        return None, single_block, index + 1
+    if not stripped.startswith("```"):
+        return None
+
+    is_opener, code_lines = _code_fence_body_after_opener(stripped)
+    if not is_opener:
+        return None
+
+    language: str | None = None
+    opener_body = stripped[3:].strip()
+    if opener_body and re.fullmatch(r"[A-Za-z0-9_-]+", opener_body):
+        language = opener_body
+
+    cursor = index + 1
+    closed = False
+    while cursor < len(lines):
+        next_stripped = lines[cursor].strip()
+        if next_stripped == "```":
+            closed = True
+            cursor += 1
+            break
+        if next_stripped.endswith("```"):
+            before_close = next_stripped[:-3].rstrip()
+            if before_close:
+                code_lines.append(before_close)
+            closed = True
+            cursor += 1
+            break
+        code_lines.append(lines[cursor])
+        cursor += 1
+
+    if not closed:
+        return None
+
+    return language, "\n".join(code_lines).rstrip("\n"), cursor
+
+
+_PYTHON_DEDENT_RE = re.compile(r"^(elif\b|else:|except\b|finally:)")
+
+
+def _code_needs_indentation(code: str) -> bool:
+    lines = code.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    non_empty = [line for line in lines if line.strip()]
+    if not non_empty:
+        return False
+    indented = [line for line in non_empty if re.match(r"^\s+\S", line)]
+    return len(indented) < len(non_empty) * 0.25
+
+
+def _brace_indent_delta(line: str) -> int:
+    delta = 0
+    in_string = False
+    string_char = ""
+    for index, char in enumerate(line):
+        if in_string:
+            if char == string_char and line[index - 1] != "\\":
+                in_string = False
+            continue
+        if char in {'"', "'", "`"}:
+            in_string = True
+            string_char = char
+            continue
+        if char == "{":
+            delta += 1
+        elif char == "}":
+            delta -= 1
+    return delta
+
+
+def _format_brace_indentation(code: str, indent_size: int = 4) -> str:
+    lines = code.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    result: list[str] = []
+    level = 0
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            result.append("")
+            continue
+        if stripped.startswith("}"):
+            level = max(0, level - 1)
+        result.append(" " * (level * indent_size) + stripped)
+        level = max(0, level + _brace_indent_delta(stripped))
+    return "\n".join(result).rstrip("\n")
+
+
+def _format_python_indentation(code: str, indent_size: int = 4) -> str:
+    lines = code.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    result: list[str] = []
+    level = 0
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            result.append("")
+            continue
+        if _PYTHON_DEDENT_RE.match(stripped):
+            level = max(0, level - 1)
+        result.append(" " * (level * indent_size) + stripped)
+        if re.search(r":\s*(#.*)?$", stripped):
+            level += 1
+    return "\n".join(result).rstrip("\n")
+
+
+def _format_code_indentation(code: str, language: str | None = None) -> str:
+    if not code.strip() or not _code_needs_indentation(code):
+        return code
+    normalized = (language or "").strip().lower()
+    if normalized in {"python", "py"}:
+        return _format_python_indentation(code)
+    if normalized in {"json", "bash", "shell", "sh"}:
+        return code
+    return _format_brace_indentation(code)
+
+
+def _code_block_html(language: str | None, code: str) -> str:
+    formatted = _format_code_indentation(code, language)
+    escaped = html.escape(formatted)
+    if language:
+        return f'<pre><code class="language-{html.escape(language, quote=True)}">{escaped}</code></pre>'
+    return f"<pre><code>{escaped}</code></pre>"
+
+
+def _code_block_node(language: str | None, code: str) -> dict[str, Any]:
+    formatted = _format_code_indentation(code, language)
+    node: dict[str, Any] = {"type": "codeBlock"}
+    if language:
+        node["attrs"] = {"language": language}
+    if formatted:
+        node["content"] = [{"type": "text", "text": formatted}]
+    return node
+
+
 def _table_node(rows: list[list[str]]) -> dict[str, Any]:
     table_rows: list[dict[str, Any]] = []
     for row_index, row in enumerate(rows):
@@ -384,139 +532,22 @@ def _table_html(rows: list[list[str]]) -> str:
 
 
 def text_to_html(content_text: str) -> str:
-    parts: list[str] = []
-    lines = content_text.splitlines()
-    index = 0
-    while index < len(lines):
-        line = lines[index].strip()
-        if not line:
-            index += 1
-            continue
-
-        display_math = _display_math_block(lines, index)
-        if display_math:
-            latex, index = display_math
-            parts.append(
-                f'<div data-type="block-math" data-latex="{html.escape(_normalize_latex(latex), quote=True)}"></div>'
-            )
-            continue
-
-        if _is_markdown_table(lines, index):
-            rows = [_split_markdown_table_row(line)]
-            index += 2
-            while index < len(lines) and "|" in lines[index].strip():
-                rows.append(_split_markdown_table_row(lines[index]))
-                index += 1
-            parts.append(_table_html(rows))
-            continue
-
-        heading_match = _MARKDOWN_HEADING_RE.match(line)
-        if heading_match:
-            level = min(len(heading_match.group(1)), 3)
-            parts.append(f"<h{level}>{_inline_html(heading_match.group(2).strip())}</h{level}>")
-            index += 1
-            continue
-
-        bullet_match = _MARKDOWN_BULLET_RE.match(line)
-        if bullet_match:
-            items: list[str] = []
-            while index < len(lines):
-                item_match = _MARKDOWN_BULLET_RE.match(lines[index].strip())
-                if not item_match:
-                    break
-                items.append(item_match.group(1).strip())
-                index += 1
-            parts.append("<ul>" + "".join(f"<li>{_inline_html(item)}</li>" for item in items) + "</ul>")
-            continue
-
-        ordered_match = _MARKDOWN_ORDERED_RE.match(line)
-        if ordered_match:
-            items = []
-            while index < len(lines):
-                item_match = _MARKDOWN_ORDERED_RE.match(lines[index].strip())
-                if not item_match:
-                    break
-                items.append(item_match.group(1).strip())
-                index += 1
-            parts.append("<ol>" + "".join(f"<li>{_inline_html(item)}</li>" for item in items) + "</ol>")
-            continue
-
-        if line.startswith(">"):
-            parts.append(f"<blockquote>{_inline_html(line.lstrip('>').strip())}</blockquote>")
-        else:
-            parts.append(f"<p>{_inline_html(line)}</p>")
-        index += 1
-    return "\n".join(parts) or "<p></p>"
+    return parse_markdown_to_html(
+        content_text,
+        inline_html=_inline_html,
+        normalize_latex=_normalize_latex,
+        code_block_html=_code_block_html,
+    )
 
 
 def text_to_tiptap_doc(content_text: str) -> dict[str, Any]:
-    nodes: list[dict[str, Any]] = []
-    lines = content_text.splitlines()
-    index = 0
-    while index < len(lines):
-        line = lines[index].strip()
-        if not line:
-            index += 1
-            continue
-
-        display_math = _display_math_block(lines, index)
-        if display_math:
-            latex, index = display_math
-            nodes.append({"type": "blockMath", "attrs": {"latex": _normalize_latex(latex)}})
-            continue
-
-        if _is_markdown_table(lines, index):
-            rows = [_split_markdown_table_row(line)]
-            index += 2
-            while index < len(lines) and "|" in lines[index].strip():
-                rows.append(_split_markdown_table_row(lines[index]))
-                index += 1
-            nodes.append(_table_node(rows))
-            continue
-
-        heading_match = _MARKDOWN_HEADING_RE.match(line)
-        if heading_match:
-            level = min(len(heading_match.group(1)), 3)
-            nodes.append(
-                {
-                    "type": "heading",
-                    "attrs": {"level": level},
-                    "content": _inline_nodes(heading_match.group(2).strip()),
-                }
-            )
-            index += 1
-            continue
-
-        bullet_match = _MARKDOWN_BULLET_RE.match(line)
-        if bullet_match:
-            items: list[dict[str, Any]] = []
-            while index < len(lines):
-                item_match = _MARKDOWN_BULLET_RE.match(lines[index].strip())
-                if not item_match:
-                    break
-                items.append({"type": "listItem", "content": [_paragraph_node(item_match.group(1).strip())]})
-                index += 1
-            nodes.append({"type": "bulletList", "content": items})
-            continue
-
-        ordered_match = _MARKDOWN_ORDERED_RE.match(line)
-        if ordered_match:
-            items = []
-            while index < len(lines):
-                item_match = _MARKDOWN_ORDERED_RE.match(lines[index].strip())
-                if not item_match:
-                    break
-                items.append({"type": "listItem", "content": [_paragraph_node(item_match.group(1).strip())]})
-                index += 1
-            nodes.append({"type": "orderedList", "content": items})
-            continue
-
-        if line.startswith(">"):
-            nodes.append({"type": "blockquote", "content": [_paragraph_node(line.lstrip(">").strip())]})
-        else:
-            nodes.append(_paragraph_node(line))
-        index += 1
-    return {"type": "doc", "content": nodes or [{"type": "paragraph"}]}
+    return parse_markdown_to_tiptap(
+        content_text,
+        inline_nodes=_inline_nodes,
+        normalize_latex=_normalize_latex,
+        code_block_node=_code_block_node,
+        paragraph_node=_paragraph_node,
+    )
 
 
 class _HTMLTreeParser(HTMLParser):
@@ -766,6 +797,17 @@ def _html_node_to_blocks(node: dict[str, Any]) -> list[dict[str, Any]]:
             _text_block_node("paragraph", {}, _html_inline_nodes(children))
         ]
         return [{"type": "blockquote", "content": content or [{"type": "paragraph"}]}]
+    if tag == "pre":
+        language: str | None = None
+        for child in children:
+            if not isinstance(child, dict) or child.get("tag") != "code":
+                continue
+            class_name = child.get("attrs", {}).get("class", "")
+            match = re.search(r"language-([\w-]+)", class_name)
+            if match:
+                language = match.group(1)
+        code_text = _html_plain_text(children).replace("\r\n", "\n")
+        return [_code_block_node(language, code_text)]
     if tag in {"ul", "ol"}:
         items = [
             _html_list_item_node(child)
@@ -941,6 +983,11 @@ def _markdown_blocks(nodes: list[dict[str, Any]], *, list_depth: int = 0) -> lis
             latex = str(node.get("attrs", {}).get("latex") or "").strip()
             if latex:
                 blocks.append(f"$$\n{latex}\n$$")
+        elif node_type == "codeBlock":
+            code = "".join(str(child.get("text") or "") for child in content if child.get("type") == "text")
+            language = str(node.get("attrs", {}).get("language") or "").strip()
+            opener = f"```{language}" if language else "```"
+            blocks.append(f"{opener}\n{code}\n```")
         elif node_type == "pageBreak":
             blocks.append("---")
         elif node_type == "image":
@@ -1194,6 +1241,8 @@ def _looks_like_markdown_document(content_text: str) -> bool:
     for index, line in enumerate(lines):
         if _display_math_block(lines, index):
             return True
+        if line.startswith("```"):
+            return True
         if _MARKDOWN_HEADING_RE.match(line) or _MARKDOWN_BULLET_RE.match(line) or _MARKDOWN_ORDERED_RE.match(line):
             return True
         if _MARKDOWN_INLINE_RE.search(line):
@@ -1203,8 +1252,54 @@ def _looks_like_markdown_document(content_text: str) -> bool:
     return False
 
 
+def _repair_code_block_indentation(document: BoardDocument) -> BoardDocument:
+    content_json = document.content_json if isinstance(document.content_json, dict) else {"type": "doc", "content": []}
+    content_json = json.loads(json.dumps(content_json, ensure_ascii=False))
+    changed = False
+
+    def walk(value: Any) -> None:
+        nonlocal changed
+        if isinstance(value, dict):
+            if value.get("type") == "codeBlock":
+                language = str(value.get("attrs", {}).get("language") or "").strip() or None
+                code = _code_block_plain_text(value)
+                formatted = _format_code_indentation(code, language)
+                if formatted != code:
+                    value["content"] = [{"type": "text", "text": formatted}] if formatted else []
+                    changed = True
+                return
+            for item in value.values():
+                walk(item)
+            return
+        if isinstance(value, list):
+            for item in value:
+                walk(item)
+
+    walk(content_json)
+    if not changed:
+        return document
+
+    repaired = document.model_copy(update={"content_json": content_json})
+    markdown = document_to_markdown(repaired)
+    content_html = text_to_html(markdown) if markdown else document.content_html
+    return repaired.model_copy(update={"content_html": content_html})
+
+
+def _code_block_plain_text(node: dict[str, Any]) -> str:
+    return "".join(
+        str(child.get("text") or "")
+        for child in node.get("content", [])
+        if isinstance(child, dict) and child.get("type") == "text"
+    )
+
+
 def upgrade_markdown_like_document(document: BoardDocument) -> BoardDocument:
     existing_document = _repair_existing_document(document)
+    existing_document = _repair_code_block_indentation(existing_document)
+    if _document_has_unrendered_code_fences(existing_document):
+        fence_repaired = _repair_document_code_fences(existing_document)
+        if fence_repaired.model_dump(mode="json") != existing_document.model_dump(mode="json"):
+            return fence_repaired
     if not _looks_like_markdown_document(document.content_text):
         return existing_document
     upgraded = build_document(
@@ -1216,6 +1311,83 @@ def upgrade_markdown_like_document(document: BoardDocument) -> BoardDocument:
     if _would_downgrade_existing_rich_structure(existing_document, upgraded):
         return existing_document
     return upgraded
+
+
+def _paragraph_plain_text(node: dict[str, Any]) -> str:
+    if node.get("type") != "paragraph":
+        return ""
+    parts: list[str] = []
+    for child in node.get("content", []):
+        if isinstance(child, dict) and child.get("type") == "text":
+            parts.append(str(child.get("text") or ""))
+    return "".join(parts)
+
+
+def _document_has_code_blocks(document: BoardDocument) -> bool:
+    def walk(value: Any) -> bool:
+        if isinstance(value, dict):
+            if value.get("type") == "codeBlock":
+                return True
+            return any(walk(item) for item in value.values())
+        if isinstance(value, list):
+            return any(walk(item) for item in value)
+        return False
+
+    return walk(document.content_json)
+
+
+def _document_has_unrendered_code_fences(document: BoardDocument) -> bool:
+    return "```" in document.content_text and not _document_has_code_blocks(document)
+
+
+def _repair_document_code_fences(document: BoardDocument) -> BoardDocument:
+    if not _document_has_unrendered_code_fences(document):
+        return document
+
+    code_blocks = [
+        node
+        for node in text_to_tiptap_doc(document.content_text).get("content", [])
+        if node.get("type") == "codeBlock"
+    ]
+    if not code_blocks:
+        return document
+
+    new_content: list[dict[str, Any]] = []
+    code_index = 0
+    in_fence = False
+
+    for node in document.content_json.get("content", []):
+        if not isinstance(node, dict):
+            continue
+        if node.get("type") != "paragraph":
+            if not in_fence:
+                new_content.append(node)
+            continue
+
+        text = _paragraph_plain_text(node)
+        if not in_fence and "```" in text and code_index < len(code_blocks):
+            prefix = text.split("```", 1)[0].strip()
+            if prefix:
+                new_content.append(_paragraph_node(prefix))
+            new_content.append(code_blocks[code_index])
+            code_index += 1
+            in_fence = not text.rstrip().endswith("```")
+            continue
+
+        if in_fence:
+            if text.rstrip().endswith("```"):
+                in_fence = False
+            continue
+
+        new_content.append(node)
+
+    if code_index == 0:
+        return document
+
+    repaired = document.model_copy(update={"content_json": {"type": "doc", "content": new_content}})
+    markdown = document_to_markdown(repaired)
+    repaired_html = text_to_html(markdown) if markdown else document.content_html
+    return repaired.model_copy(update={"content_html": repaired_html})
 
 
 def _repair_existing_document(document: BoardDocument) -> BoardDocument:
@@ -1422,15 +1594,6 @@ def would_flatten_rich_document(
     paragraph_heavy = new_counts.get("paragraph", 0) >= max(8, old_counts.get("paragraph", 0) // 2)
     return structure_dropped and paragraph_heavy
 
-
-def append_html_section(document: BoardDocument, section_html: str) -> BoardDocument:
-    next_html = "\n".join(part for part in [document.content_html.strip(), section_html.strip()] if part)
-    return build_document(
-        title=document.title,
-        content_html=next_html,
-        document_id=document.id,
-        page_settings=document.page_settings,
-    )
 
 
 def _looks_like_html(value: str) -> bool:

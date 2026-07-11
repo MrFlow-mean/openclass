@@ -90,6 +90,7 @@ import { BoardModelPicker } from "@/components/course-studio/board-model-picker"
 import { ResourceVisualBlock } from "@/components/course-studio/resource-visual-block-extension";
 import "@/lib/katex-mhchem";
 import { MATH_TEXT_SERIALIZERS, normalizeEditorMath } from "@/lib/math-content";
+import { RichCodeBlock } from "@/lib/rich-code-block-extension";
 import type {
   AIModelOption,
   AIModelSelection,
@@ -326,7 +327,9 @@ const WORD_EDITOR_EXTENSIONS = [
     heading: { levels: [1, 2, 3] },
     link: false,
     underline: false,
+    codeBlock: false,
   }),
+  RichCodeBlock,
   TextStyle,
   Color,
   Highlight.configure({ multicolor: true }),
@@ -813,8 +816,19 @@ export function WordBoardEditor({
         ? editor.getHTML() === incomingHtml
         : false;
     if (!matchesIncomingDocument) {
-      editor.commands.setContent(editorContent, { emitUpdate: false });
-      normalizeEditorMath(editor);
+      const content = editorContent;
+      const docId = document.id;
+      let cancelled = false;
+      queueMicrotask(() => {
+        if (cancelled || editor.isDestroyed || latestDocumentRef.current.id !== docId) {
+          return;
+        }
+        editor.commands.setContent(content, { emitUpdate: false });
+        normalizeEditorMath(editor);
+      });
+      return () => {
+        cancelled = true;
+      };
     }
   }, [document.id, document.content_html, documentJson, editor, editorContent, readOnly]);
 

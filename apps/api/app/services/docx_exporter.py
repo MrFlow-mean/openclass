@@ -7,7 +7,7 @@ from docx import Document as DocxDocument
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
 from app.models import BoardDocument
-from app.services import rich_document as rd
+from app.services.rich_document import core as rd
 from app.services.docx_quality_check import assert_docx_export_quality
 from app.services.docx_styles import apply_textbook_docx_styles
 
