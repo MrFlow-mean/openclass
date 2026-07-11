@@ -277,3 +277,133 @@ test("restores persisted learning-intake assistant replies after a page refresh"
   await expect(chatSidebar.getByText(userMessage)).toBeVisible();
   await expect(chatSidebar.getByText(assistantMessage)).toBeVisible();
 });
+
+test("allows board generation when a ready learning turn has no relevant evidence", async ({ page }) => {
+  const unique = Date.now();
+  const userMessage = `直接开始生成板书 ${unique}`;
+  const assistantMessage = `学习需求已准备好 ${unique}`;
+  const requirementSheet = {
+    theme: `聚焦学习主题 ${unique}`,
+    learning_goal: `理解聚焦学习主题 ${unique}`,
+    level: "入门",
+    known_background: "",
+    current_questions: [],
+    learning_need_checklist: [],
+    target_depth: "建立直觉",
+    output_preference: "",
+    boundary: "",
+    board_scope: [],
+    success_criteria: "",
+    risk_notes: [],
+    board_workflow: "generate_from_scratch",
+    work_mode: "knowledge_board",
+    granularity: "single_knowledge_point",
+  };
+  const clarityStatus = {
+    progress: 100,
+    label: "ready",
+    reason: requirementSheet.learning_goal,
+    missing_items: [],
+    can_start: true,
+    forced_start: false,
+    summary: requirementSheet.learning_goal,
+    key_facts: [],
+    checklist: [],
+    next_question: "",
+    ready_for_board: true,
+    work_mode: "knowledge_board",
+    granularity: "single_knowledge_point",
+  };
+
+  await enterAsGuest(page);
+  await createPackageFromHome(page, `无资料生成测试课程包 ${unique}`);
+  await page.route("**/api/lessons/*/evidence/pending", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: "null" });
+  });
+  const initialEvidenceResponse = page.waitForResponse(
+    (response) => response.url().includes("/evidence/pending") && response.request().method() === "GET"
+  );
+  await createLessonFromEmptyStudio(page, `无资料生成测试页面 ${unique}`);
+  await initialEvidenceResponse;
+
+  await page.route("**/api/lessons/*/chat/stream", async (route) => {
+    const authHeader = route.request().headers().authorization;
+    const currentPackageResponse = await page.request.get(`${API_BASE_URL}/api/course-package`, {
+      headers: authHeader ? { Authorization: authHeader } : undefined,
+    });
+    const currentPackage = await currentPackageResponse.json();
+    const lesson = currentPackage.lessons[0];
+    const branch = lesson.history_graph.branches[lesson.history_graph.current_branch];
+    const commitId = `commit_ready_without_evidence_${unique}`;
+    lesson.learning_requirements = requirementSheet;
+    lesson.history_graph.commits.push({
+      id: commitId,
+      label: "Learning requirement refinement",
+      message: "Recorded a ready learning requirement without source evidence",
+      branch_name: lesson.history_graph.current_branch,
+      created_at: new Date().toISOString(),
+      parent_ids: branch.head_commit_id ? [branch.head_commit_id] : [],
+      operations: [],
+      snapshot: lesson.board_document,
+      metadata: {
+        kind: "learning_requirement_refinement",
+        user_message: userMessage,
+        assistant_message: assistantMessage,
+        assistant_message_source: "chatbot_learning_intake",
+        learning_clarification_after: clarityStatus,
+      },
+    });
+    branch.head_commit_id = commitId;
+    const response = {
+      chatbot_message: assistantMessage,
+      agent_turn_decision: null,
+      agent_activity: [],
+      learning_requirement_sheet: requirementSheet,
+      active_requirement_sheet: requirementSheet,
+      active_interaction_session: null,
+      interaction_decision: null,
+      learning_clarification: clarityStatus,
+      requirement_run_id: `reqrun_ready_without_evidence_${unique}`,
+      requirement_version_id: `reqver_ready_without_evidence_${unique}`,
+      requirement_phase: "ready",
+      learning_requirement_operation_status: "succeeded",
+      learning_requirement_operation_failure_reason: null,
+      board_task_sheet: null,
+      active_board_task_sheet: null,
+      board_task_run_id: null,
+      board_task_version_id: null,
+      board_task_phase: null,
+      board_task_questions: [],
+      board_decision: { action: "no_change", reason: "等待用户开始生成板书" },
+      needs_clarification: false,
+      clarification_questions: [],
+      patch_proposal: null,
+      scope_options: [],
+      board_edit_prompt: null,
+      resolved_focus: null,
+      focus_candidates: [],
+      board_search_evidence: null,
+      evidence_bundle: null,
+      candidate_evidence_bundle: null,
+      requirement_cleared: false,
+      board_document_operation_status: "none",
+      board_document_operation_failure_reason: null,
+      board_patch_diff: [],
+      created_lesson: null,
+      teaching_progress: null,
+      course_package: currentPackage,
+    };
+    await route.fulfill({
+      status: 200,
+      contentType: "text/event-stream",
+      body: `event: final\ndata: ${JSON.stringify(response)}\n\n`,
+    });
+  });
+
+  await page.getByPlaceholder("给 OpenClass 发消息...").fill(userMessage);
+  await page.getByRole("button", { name: "发送消息" }).click();
+
+  const startBoardButton = page.getByRole("button", { name: "开始生成板书" });
+  await expect(startBoardButton).toBeEnabled();
+  await expect(page.getByText("正在核对本轮资料证据。")).toHaveCount(0);
+});
