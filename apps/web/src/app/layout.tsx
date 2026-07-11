@@ -9,13 +9,6 @@ export const metadata: Metadata = {
     template: "%s | 开放课堂",
   },
   description: "面向课程主页、资料管理、富文本讲义编辑和版本回溯的课程工作台。",
-  icons: {
-    icon: [
-      { url: "/favicon.ico", sizes: "any" },
-      { url: "/icon.png", type: "image/png", sizes: "512x512" },
-    ],
-    apple: [{ url: "/apple-icon.png", type: "image/png", sizes: "180x180" }],
-  },
 };
 
 export default function RootLayout({
