@@ -293,7 +293,6 @@ export function useLessonChatAgent({
     setCurrentNeedPending(false);
     setLatestBoardDecision(null);
     setBoardEditPrompt(null);
-    setCandidateEvidenceState(null);
     setLastScopedRequest(null);
     setLastBoardEditRequest(null);
     clearSelection();
