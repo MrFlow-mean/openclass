@@ -18,6 +18,7 @@ from docx.shared import Cm
 from app.models import BoardDocument, DocumentPageSettings
 from app.services.latex_fragments import find_raw_latex_fragments, strip_orphan_math_dollars
 from app.services.latex_to_omml import append_omml_math as _append_normalized_omml_math
+from app.services.markdown_parser import parse_markdown_to_html, parse_markdown_to_tiptap
 
 
 EMPTY_TIPTAP_DOC: dict[str, Any] = {"type": "doc", "content": [{"type": "paragraph"}]}
@@ -531,151 +532,22 @@ def _table_html(rows: list[list[str]]) -> str:
 
 
 def text_to_html(content_text: str) -> str:
-    parts: list[str] = []
-    lines = content_text.splitlines()
-    index = 0
-    while index < len(lines):
-        line = lines[index].strip()
-        if not line:
-            index += 1
-            continue
-
-        display_math = _display_math_block(lines, index)
-        if display_math:
-            latex, index = display_math
-            parts.append(
-                f'<div data-type="block-math" data-latex="{html.escape(_normalize_latex(latex), quote=True)}"></div>'
-            )
-            continue
-
-        fenced_code = _parse_fenced_code_block(lines, index)
-        if fenced_code:
-            language, code, index = fenced_code
-            parts.append(_code_block_html(language, code))
-            continue
-
-        if _is_markdown_table(lines, index):
-            rows = [_split_markdown_table_row(line)]
-            index += 2
-            while index < len(lines) and "|" in lines[index].strip():
-                rows.append(_split_markdown_table_row(lines[index]))
-                index += 1
-            parts.append(_table_html(rows))
-            continue
-
-        heading_match = _MARKDOWN_HEADING_RE.match(line)
-        if heading_match:
-            level = min(len(heading_match.group(1)), 3)
-            parts.append(f"<h{level}>{_inline_html(heading_match.group(2).strip())}</h{level}>")
-            index += 1
-            continue
-
-        bullet_match = _MARKDOWN_BULLET_RE.match(line)
-        if bullet_match:
-            items: list[str] = []
-            while index < len(lines):
-                item_match = _MARKDOWN_BULLET_RE.match(lines[index].strip())
-                if not item_match:
-                    break
-                items.append(item_match.group(1).strip())
-                index += 1
-            parts.append("<ul>" + "".join(f"<li>{_inline_html(item)}</li>" for item in items) + "</ul>")
-            continue
-
-        ordered_match = _MARKDOWN_ORDERED_RE.match(line)
-        if ordered_match:
-            items = []
-            while index < len(lines):
-                item_match = _MARKDOWN_ORDERED_RE.match(lines[index].strip())
-                if not item_match:
-                    break
-                items.append(item_match.group(1).strip())
-                index += 1
-            parts.append("<ol>" + "".join(f"<li>{_inline_html(item)}</li>" for item in items) + "</ol>")
-            continue
-
-        if line.startswith(">"):
-            parts.append(f"<blockquote>{_inline_html(line.lstrip('>').strip())}</blockquote>")
-        else:
-            parts.append(f"<p>{_inline_html(line)}</p>")
-        index += 1
-    return "\n".join(parts) or "<p></p>"
+    return parse_markdown_to_html(
+        content_text,
+        inline_html=_inline_html,
+        normalize_latex=_normalize_latex,
+        code_block_html=_code_block_html,
+    )
 
 
 def text_to_tiptap_doc(content_text: str) -> dict[str, Any]:
-    nodes: list[dict[str, Any]] = []
-    lines = content_text.splitlines()
-    index = 0
-    while index < len(lines):
-        line = lines[index].strip()
-        if not line:
-            index += 1
-            continue
-
-        display_math = _display_math_block(lines, index)
-        if display_math:
-            latex, index = display_math
-            nodes.append({"type": "blockMath", "attrs": {"latex": _normalize_latex(latex)}})
-            continue
-
-        fenced_code = _parse_fenced_code_block(lines, index)
-        if fenced_code:
-            language, code, index = fenced_code
-            nodes.append(_code_block_node(language, code))
-            continue
-
-        if _is_markdown_table(lines, index):
-            rows = [_split_markdown_table_row(line)]
-            index += 2
-            while index < len(lines) and "|" in lines[index].strip():
-                rows.append(_split_markdown_table_row(lines[index]))
-                index += 1
-            nodes.append(_table_node(rows))
-            continue
-
-        heading_match = _MARKDOWN_HEADING_RE.match(line)
-        if heading_match:
-            level = min(len(heading_match.group(1)), 3)
-            nodes.append(
-                {
-                    "type": "heading",
-                    "attrs": {"level": level},
-                    "content": _inline_nodes(heading_match.group(2).strip()),
-                }
-            )
-            index += 1
-            continue
-
-        bullet_match = _MARKDOWN_BULLET_RE.match(line)
-        if bullet_match:
-            items: list[dict[str, Any]] = []
-            while index < len(lines):
-                item_match = _MARKDOWN_BULLET_RE.match(lines[index].strip())
-                if not item_match:
-                    break
-                items.append({"type": "listItem", "content": [_paragraph_node(item_match.group(1).strip())]})
-                index += 1
-            nodes.append({"type": "bulletList", "content": items})
-            continue
-
-        ordered_match = _MARKDOWN_ORDERED_RE.match(line)
-        if ordered_match:
-            items = []
-            while index < len(lines):
-                item_match = _MARKDOWN_ORDERED_RE.match(lines[index].strip())
-                if not item_match:
-                    break
-                items.append({"type": "listItem", "content": [_paragraph_node(item_match.group(1).strip())]})
-                index += 1
-            nodes.append({"type": "orderedList", "content": items})
-            continue
-
-        if line.startswith(">"):
-            nodes.append({"type": "blockquote", "content": [_paragraph_node(line.lstrip(">").strip())]})
-        else:
-            nodes.append(_paragraph_node(line))
-        index += 1
-    return {"type": "doc", "content": nodes or [{"type": "paragraph"}]}
+    return parse_markdown_to_tiptap(
+        content_text,
+        inline_nodes=_inline_nodes,
+        normalize_latex=_normalize_latex,
+        code_block_node=_code_block_node,
+        paragraph_node=_paragraph_node,
+    )
 
 
 class _HTMLTreeParser(HTMLParser):
@@ -1722,15 +1594,6 @@ def would_flatten_rich_document(
     paragraph_heavy = new_counts.get("paragraph", 0) >= max(8, old_counts.get("paragraph", 0) // 2)
     return structure_dropped and paragraph_heavy
 
-
-def append_html_section(document: BoardDocument, section_html: str) -> BoardDocument:
-    next_html = "\n".join(part for part in [document.content_html.strip(), section_html.strip()] if part)
-    return build_document(
-        title=document.title,
-        content_html=next_html,
-        document_id=document.id,
-        page_settings=document.page_settings,
-    )
 
 
 def _looks_like_html(value: str) -> bool:

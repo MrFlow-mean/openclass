@@ -28,6 +28,7 @@ from app.services.rich_document import (
     is_document_empty,
     looks_like_html_content,
     replace_selection_in_document,
+    rich_structure_counts,
     text_to_html,
 )
 

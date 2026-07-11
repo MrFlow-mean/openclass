@@ -412,64 +412,90 @@ select {
 
 .rich-code-block .hljs-keyword,
 .rich-code-block .hljs-selector-tag,
-.rich-code-block .hljs-built_in {
+.rich-code-block .hljs-built_in,
+.chat-markdown .hljs-keyword,
+.chat-markdown .hljs-selector-tag,
+.chat-markdown .hljs-built_in {
   color: #ff7b72;
 }
 
 .rich-code-block .hljs-title,
 .rich-code-block .hljs-title.function_,
-.rich-code-block .hljs-function .hljs-title {
+.rich-code-block .hljs-function .hljs-title,
+.chat-markdown .hljs-title,
+.chat-markdown .hljs-title.function_,
+.chat-markdown .hljs-function .hljs-title {
   color: #d2a8ff;
 }
 
 .rich-code-block .hljs-string,
-.rich-code-block .hljs-meta .hljs-string {
+.rich-code-block .hljs-meta .hljs-string,
+.chat-markdown .hljs-string,
+.chat-markdown .hljs-meta .hljs-string {
   color: #a5d6a7;
 }
 
 .rich-code-block .hljs-number,
-.rich-code-block .hljs-literal {
+.rich-code-block .hljs-literal,
+.chat-markdown .hljs-number,
+.chat-markdown .hljs-literal {
   color: #79c0ff;
 }
 
 .rich-code-block .hljs-comment,
-.rich-code-block .hljs-quote {
+.rich-code-block .hljs-quote,
+.chat-markdown .hljs-comment,
+.chat-markdown .hljs-quote {
   color: #8b949e;
   font-style: italic;
 }
 
 .rich-code-block .hljs-type,
-.rich-code-block .hljs-class .hljs-title {
+.rich-code-block .hljs-class .hljs-title,
+.chat-markdown .hljs-type,
+.chat-markdown .hljs-class .hljs-title {
   color: #ffa657;
 }
 
 .rich-code-block .hljs-attr,
 .rich-code-block .hljs-attribute,
 .rich-code-block .hljs-variable,
-.rich-code-block .hljs-template-variable {
+.rich-code-block .hljs-template-variable,
+.chat-markdown .hljs-attr,
+.chat-markdown .hljs-attribute,
+.chat-markdown .hljs-variable,
+.chat-markdown .hljs-template-variable {
   color: #79c0ff;
 }
 
 .rich-code-block .hljs-symbol,
-.rich-code-block .hljs-bullet {
+.rich-code-block .hljs-bullet,
+.chat-markdown .hljs-symbol,
+.chat-markdown .hljs-bullet {
   color: #ffa657;
 }
 
 .rich-code-block .hljs-regexp,
-.rich-code-block .hljs-link {
+.rich-code-block .hljs-link,
+.chat-markdown .hljs-regexp,
+.chat-markdown .hljs-link {
   color: #a5d6ff;
 }
 
 .rich-code-block .hljs-meta,
-.rich-code-block .hljs-name {
+.rich-code-block .hljs-name,
+.chat-markdown .hljs-meta,
+.chat-markdown .hljs-name {
   color: #c9d1d9;
 }
 
-.rich-code-block .hljs-params {
+.rich-code-block .hljs-params,
+.chat-markdown .hljs-params {
   color: #e6edf3;
 }
 
-.rich-code-block .hljs-punctuation {
+.rich-code-block .hljs-punctuation,
+.chat-markdown .hljs-punctuation {
   color: #e6edf3;
 }
 
