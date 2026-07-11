@@ -7,6 +7,7 @@ import { streamingMarkdownToHtml } from "@/lib/streaming-rich-document";
 import {
   createChatMessage,
   isBoardDocumentEmpty,
+  learningClarityFromCommit,
   nextEditBranchName,
   type ChatMessage,
   type LessonComposerState,
@@ -61,6 +62,22 @@ type CandidateEvidenceState = {
   lessonId: string;
   bundle: EvidenceBundle | null;
 };
+
+const DEFAULT_LEARNING_REQUIREMENT_FAILURE_REASON = "本轮学习需求没有成功更新，请重试刚才的输入。";
+
+export function recoveredLearningRequirementFailureReason(commit: CommitRecord | null): string | null {
+  const metadata = commit?.metadata;
+  if (
+    metadata?.learning_requirement_operation_status !== "failed" &&
+    metadata?.refinement_route !== "refinement_failed"
+  ) {
+    return null;
+  }
+  const failureReason = metadata.learning_requirement_operation_failure_reason;
+  return typeof failureReason === "string" && failureReason.trim()
+    ? failureReason.trim()
+    : DEFAULT_LEARNING_REQUIREMENT_FAILURE_REASON;
+}
 
 export function useLessonChatAgent({
   activeLesson,
@@ -492,6 +509,12 @@ export function useLessonChatAgent({
       if (response.board_document_operation_status === "failed") {
         setError(response.board_document_operation_failure_reason ?? "右侧文档生成失败，请重试。");
       }
+      if (response.learning_requirement_operation_status === "failed") {
+        setError(
+          response.learning_requirement_operation_failure_reason ??
+            "本轮学习需求没有成功更新，请重试。"
+        );
+      }
       setLatestBoardDecision(response.board_decision);
       setCurrentNeedPending(false);
       setClarificationQuestions(response.clarification_questions);
@@ -609,12 +632,12 @@ export function useLessonChatAgent({
                 : refreshedLesson.learning_requirements ?? null
             );
             setStreamedBoardTaskSheet(refreshedLesson.board_task_requirements ?? null);
-            setLearningClarity(null);
+            setLearningClarity(recoveredCommit ? learningClarityFromCommit(recoveredCommit) : null);
             setClarificationQuestions([]);
           }
           setCurrentNeedPending(false);
           if (recoveredCommit) {
-            setError(null);
+            setError(recoveredLearningRequirementFailureReason(recoveredCommit));
             return;
           }
           updateLessonMessages(lessonId, (current) =>

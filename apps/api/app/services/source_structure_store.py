@@ -532,14 +532,24 @@ class SourceStructureStore:
         query: str,
         limit: int,
         token_budget: int,
+        source_ingestion_ids: list[str] | tuple[str, ...] | None = None,
     ) -> list[RetrievalEvidence]:
         terms = _search_terms(query)
         if not terms:
             return []
+        requested_source_ids = tuple(
+            dict.fromkeys(source_id for source_id in source_ingestion_ids or [] if source_id)
+        )
+        source_filter_sql = ""
+        query_params: list[object] = [owner_user_id, package_id]
+        if requested_source_ids:
+            placeholders = ", ".join("?" for _ in requested_source_ids)
+            source_filter_sql = f"AND source_chunks.source_ingestion_id IN ({placeholders})"
+            query_params.extend(requested_source_ids)
         with self._lock:
             with self._connect() as conn:
                 rows = conn.execute(
-                    """
+                    f"""
                     SELECT source_chunks.*, source_ingestions.title AS source_title,
                         source_ingestions.source_uri AS source_uri,
                         source_ingestions.open_notebook_source_id AS open_notebook_source_id,
@@ -562,10 +572,11 @@ class SourceStructureStore:
                         AND source_chunks.package_id = ?
                         AND source_ingestions.status = 'ready'
                         AND source_structures.status IN ('ready', 'linear_only')
+                        {source_filter_sql}
                     ORDER BY source_chunks.order_index ASC
                     LIMIT 800
                     """,
-                    (owner_user_id, package_id),
+                    query_params,
                 ).fetchall()
 
         scored_rows: list[tuple[float, sqlite3.Row]] = []

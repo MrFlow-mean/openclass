@@ -159,3 +159,67 @@ test("DOCX import and export entry points complete without breaking the editor",
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toMatch(/\.docx$/);
 });
+
+test("keeps the learning requirement failure visible when the chat final event is missing", async ({ page }) => {
+  const unique = Date.now();
+  const userMessage = `继续整理我的学习需求 ${unique}`;
+  const failureReason = "本轮学习需求没有成功更新，请重试刚才的输入。";
+  let recoveredPackage: Record<string, unknown> | null = null;
+
+  await enterAsGuest(page);
+  await createPackageFromHome(page, `失败恢复测试课程包 ${unique}`);
+  await createLessonFromEmptyStudio(page, `失败恢复测试页面 ${unique}`);
+
+  await page.route("**/api/course-package", async (route) => {
+    if (route.request().method() === "GET" && recoveredPackage) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(recoveredPackage),
+      });
+      return;
+    }
+    await route.continue();
+  });
+  await page.route("**/api/lessons/*/chat/stream", async (route) => {
+    const authHeader = route.request().headers().authorization;
+    const currentPackageResponse = await page.request.get(`${API_BASE_URL}/api/course-package`, {
+      headers: authHeader ? { Authorization: authHeader } : undefined,
+    });
+    const currentPackage = await currentPackageResponse.json();
+    const lesson = currentPackage.lessons[0];
+    const branch = lesson.history_graph.branches[lesson.history_graph.current_branch];
+    const commitId = `commit_recovered_failure_${unique}`;
+    lesson.history_graph.commits.push({
+      id: commitId,
+      label: "Learning requirement refinement failed",
+      message: "Recorded a failed blank-board learning requirement refinement turn",
+      branch_name: lesson.history_graph.current_branch,
+      created_at: new Date().toISOString(),
+      parent_ids: branch.head_commit_id ? [branch.head_commit_id] : [],
+      operations: [],
+      snapshot: lesson.board_document,
+      metadata: {
+        kind: "learning_requirement_refinement",
+        refinement_route: "refinement_failed",
+        user_message: userMessage,
+        assistant_message: "",
+        assistant_message_source: "chatbot_empty",
+        learning_requirement_operation_status: "failed",
+        learning_requirement_operation_failure_reason: failureReason,
+      },
+    });
+    branch.head_commit_id = commitId;
+    recoveredPackage = currentPackage;
+    await route.fulfill({
+      status: 200,
+      contentType: "text/event-stream",
+      body: 'event: phase\ndata: {"label":"正在整理学习需求"}\n\n',
+    });
+  });
+
+  await page.getByPlaceholder("给 OpenClass 发消息...").fill(userMessage);
+  await page.getByRole("button", { name: "发送消息" }).click();
+
+  await expect(page.getByRole("alert").filter({ hasText: failureReason })).toBeVisible();
+});

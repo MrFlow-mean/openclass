@@ -17,6 +17,10 @@ from app.services.open_notebook_adapter import (
     open_notebook_adapter,
 )
 from app.services.evidence_quality_gate import filter_relevant_local_evidence
+from app.services.learning_source_intent import (
+    mentioned_ready_source_ids,
+    source_intent_requested,
+)
 from app.services.source_chapter_evidence import (
     explicit_chapter_number,
     explicit_source_chapter_id,
@@ -25,26 +29,6 @@ from app.services.source_chapter_evidence import (
 from app.services.source_evidence_store import SourceEvidenceStore, source_evidence_store
 from app.services.source_structure_store import SourceStructureStore, source_structure_store
 
-
-SOURCE_INTENT_PATTERNS = (
-    "资料",
-    "文件",
-    "上传",
-    "网页",
-    "链接",
-    "url",
-    "URL",
-    "source",
-    "sources",
-    "file",
-    "document",
-    "reference",
-    "视频",
-    "字幕",
-    "音频",
-    "youtube",
-    "YouTube",
-)
 
 CHAT_CHUNK_LIMIT = 4
 BOARD_CHUNK_LIMIT = 8
@@ -77,11 +61,40 @@ class ResourceResolver:
         self.structure_store = structure_store or _structure_store_for_source_store(store)
 
     def should_use_sources(self, message: str) -> bool:
-        lowered = message.lower()
-        return any(pattern.lower() in lowered for pattern in SOURCE_INTENT_PATTERNS)
+        return source_intent_requested(message)
 
     def has_ready_sources(self, *, owner_user_id: str, package_id: str) -> bool:
         return bool(self.store.ready_sources(owner_user_id=owner_user_id, package_id=package_id))
+
+    def message_mentions_ready_source(
+        self,
+        *,
+        owner_user_id: str,
+        package_id: str,
+        message: str,
+    ) -> bool:
+        return bool(
+            self.ready_source_ids_mentioned(
+                owner_user_id=owner_user_id,
+                package_id=package_id,
+                message=message,
+            )
+        )
+
+    def ready_source_ids_mentioned(
+        self,
+        *,
+        owner_user_id: str,
+        package_id: str,
+        message: str,
+    ) -> list[str]:
+        return mentioned_ready_source_ids(
+            message=message,
+            ready_sources=self.store.ready_sources(
+                owner_user_id=owner_user_id,
+                package_id=package_id,
+            ),
+        )
 
     def resolve_explicit_source_reference(
         self,
@@ -177,6 +190,7 @@ class ResourceResolver:
         requirements: LearningRequirementSheet | None,
         topic_hint: str = "",
         purpose: EvidencePurpose = "board_generation",
+        source_ingestion_ids: list[str] | tuple[str, ...] | None = None,
     ) -> ResourceResolutionOutcome:
         query = _learning_query(
             user_message=user_message,
@@ -190,6 +204,7 @@ class ResourceResolver:
             query=query,
             purpose=purpose,
             persist_bundle=False,
+            source_ingestion_ids=source_ingestion_ids,
         )
 
     def bind_preview_bundle_to_requirement(
@@ -259,6 +274,19 @@ class ResourceResolver:
             requirement_run_id=requirement_run_id,
         )
 
+    def requirement_bundle_by_id(
+        self,
+        *,
+        owner_user_id: str,
+        package_id: str,
+        lesson_id: str,
+        bundle_id: str,
+    ) -> EvidenceBundle | None:
+        bundle = self.store.get_bundle(owner_user_id=owner_user_id, bundle_id=bundle_id)
+        if bundle is None or bundle.package_id != package_id or bundle.lesson_id != lesson_id:
+            return None
+        return bundle
+
     def _resolve_outcome(
         self,
         *,
@@ -270,9 +298,13 @@ class ResourceResolver:
         requirement_run_id: str | None = None,
         board_task_run_id: str | None = None,
         persist_bundle: bool = True,
+        source_ingestion_ids: list[str] | tuple[str, ...] | None = None,
     ) -> ResourceResolutionOutcome:
         notebook_id = self.store.get_notebook_id(owner_user_id=owner_user_id, package_id=package_id)
         ready_sources = self.store.ready_sources(owner_user_id=owner_user_id, package_id=package_id)
+        requested_source_ids = {source_id for source_id in source_ingestion_ids or [] if source_id}
+        if requested_source_ids:
+            ready_sources = [source for source in ready_sources if source.id in requested_source_ids]
         if not ready_sources or not query.strip():
             return ResourceResolutionOutcome(status="no_match")
         limit = BOARD_CHUNK_LIMIT if purpose in {"board_generation", "board_edit"} else CHAT_CHUNK_LIMIT
@@ -283,6 +315,7 @@ class ResourceResolver:
             query=query,
             limit=limit,
             token_budget=token_budget,
+            source_ingestion_ids=tuple(source.id for source in ready_sources),
         )
         if chapter_evidence:
             bundle = self._create_bundle(
@@ -351,6 +384,7 @@ class ResourceResolver:
             query=query,
             limit=limit,
             token_budget=token_budget,
+            source_ingestion_ids=tuple(source.id for source in ready_sources),
         )
         local_evidence = filter_relevant_local_evidence(query=query, evidence=local_evidence)
         if not local_evidence:
@@ -450,6 +484,7 @@ class ResourceResolver:
         query: str,
         limit: int,
         token_budget: int,
+        source_ingestion_ids: tuple[str, ...] | None = None,
     ) -> tuple[list[RetrievalEvidence], dict[str, object] | None]:
         return resolve_verified_chapter_evidence(
             source_store=self.store,
@@ -460,6 +495,7 @@ class ResourceResolver:
             limit=limit,
             token_budget=token_budget,
             page_limit=OCR_BOARD_PAGE_LIMIT if token_budget == BOARD_TOKEN_BUDGET else OCR_CHAT_PAGE_LIMIT,
+            source_ingestion_ids=source_ingestion_ids,
         )
 
     def _normalize_results(

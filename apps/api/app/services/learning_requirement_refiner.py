@@ -24,7 +24,13 @@ from app.services.openai_course_ai import (
 )
 
 
-LearningRequirementRefinementRoute = Literal["ordinary_chat", "requirement_refining"]
+LearningRequirementRefinementRoute = Literal[
+    "ordinary_chat",
+    "requirement_refining",
+    "refinement_failed",
+]
+
+LEARNING_REQUIREMENT_REFINEMENT_FAILURE_REASON = "本轮学习需求没有成功更新，请重试刚才的输入。"
 
 
 @dataclass(frozen=True)
@@ -72,11 +78,17 @@ def refine_blank_board_requirement(
     visible_chat_buffer = ""
     visible_chat_was_streamed = False
     structured_parse_failed = False
+    failure_kind = "model_call_failed"
+    failure_reason = ""
     if isinstance(refinement, BlankBoardRequirementRefinementResult):
         result = refinement.result
         visible_chat_buffer = refinement.visible_chat_buffer.strip()
         visible_chat_was_streamed = refinement.visible_chat_was_streamed
         structured_parse_failed = refinement.structured_parse_failed
+        failure_kind = refinement.failure_kind or (
+            "structured_parse_failed" if structured_parse_failed else "model_call_failed"
+        )
+        failure_reason = refinement.failure_reason
     else:
         result = refinement
     recorder = LearningRequirementHistoryRecorder.from_store_state(
@@ -84,23 +96,18 @@ def refine_blank_board_requirement(
         lesson_id=lesson.id,
         state=history_state,
     )
-    if result is None and visible_chat_buffer:
-        return LearningRequirementRefinementOutcome(
-            route="requirement_refining",
-            chatbot_message=visible_chat_buffer,
-            active_requirement_sheet=active_requirement,
-            learning_clarification=active_clarification or _basic_chat_clarification(),
-            history_stamp=recorder.current_stamp(),
-            history_operations=[],
-            guidance_metadata=_stream_metadata(
-                visible_chat_was_streamed=visible_chat_was_streamed,
-                structured_parse_failed=structured_parse_failed,
-                requirement_update_skipped=True,
-            ),
-            changed=False,
-        )
     if not isinstance(result, BlankBoardRequirementRefinement):
-        return None
+        return build_failed_blank_board_requirement_outcome(
+            owner_user_id=owner_user_id,
+            lesson=lesson,
+            history_state=history_state,
+            initial_work_mode_decision=initial_work_mode_decision,
+            visible_chat_buffer=visible_chat_buffer,
+            visible_chat_was_streamed=visible_chat_was_streamed,
+            structured_parse_failed=structured_parse_failed,
+            failure_code=_requirement_failure_code(failure_kind),
+            failure_detail=failure_reason,
+        )
     if initial_work_mode_decision is not None and initial_work_mode_decision.route == "learning_intake":
         result = result.model_copy(
             update={
@@ -171,6 +178,56 @@ def refine_blank_board_requirement(
     )
 
 
+def build_failed_blank_board_requirement_outcome(
+    *,
+    owner_user_id: str,
+    lesson: Lesson,
+    history_state: dict[str, Any] | None,
+    initial_work_mode_decision: InitialLearningWorkModeDecision | None = None,
+    visible_chat_buffer: str = "",
+    visible_chat_was_streamed: bool = False,
+    structured_parse_failed: bool = False,
+    failure_code: str = "missing_requirement_refinement_outcome",
+    failure_detail: str = "",
+) -> LearningRequirementRefinementOutcome:
+    active_requirement = _active_requirement_from_state(lesson, history_state)
+    active_clarification = _active_clarification_from_state(history_state)
+    recorder = LearningRequirementHistoryRecorder.from_store_state(
+        owner_user_id=owner_user_id,
+        lesson_id=lesson.id,
+        state=history_state,
+    )
+    history_reason = "学习需求整理失败，保留上一版本等待重试。"
+    failure_metadata = {
+        **_stream_metadata(
+            visible_chat_was_streamed=visible_chat_was_streamed,
+            structured_parse_failed=structured_parse_failed,
+            requirement_update_skipped=True,
+        ),
+        "failure_code": failure_code,
+        "failure_detail": failure_detail[:800],
+        "discarded_unvalidated_pm_draft": bool(visible_chat_buffer),
+    }
+    stamp = recorder.record_event(
+        event_type="refinement_failed",
+        change_summary=history_reason,
+        metadata=failure_metadata,
+    )
+    return LearningRequirementRefinementOutcome(
+        route="refinement_failed",
+        chatbot_message="",
+        active_requirement_sheet=active_requirement,
+        learning_clarification=_failed_refinement_clarification(
+            active_clarification,
+            initial_work_mode_decision,
+        ),
+        history_stamp=stamp,
+        history_operations=list(recorder.operations),
+        guidance_metadata=failure_metadata,
+        changed=bool(recorder.operations),
+    )
+
+
 def _active_requirement_from_state(
     lesson: Lesson,
     history_state: dict[str, Any] | None,
@@ -219,6 +276,37 @@ def _basic_chat_clarification() -> LearningClarificationStatus:
         work_mode="unknown",
         granularity="unclear",
     )
+
+
+def _failed_refinement_clarification(
+    active: LearningClarificationStatus | None,
+    initial_decision: InitialLearningWorkModeDecision | None,
+) -> LearningClarificationStatus:
+    if active is not None:
+        return active
+    return LearningClarificationStatus(
+        progress=0,
+        label="collecting",
+        reason="本轮需求整理失败，尚未改变学习需求清单。",
+        missing_items=[],
+        can_start=False,
+        forced_start=False,
+        summary="",
+        next_question="",
+        ready_for_board=False,
+        work_mode=(initial_decision.work_mode if initial_decision is not None else "unknown"),
+        granularity=(initial_decision.granularity if initial_decision is not None else "unclear"),
+    )
+
+
+def _requirement_failure_code(failure_kind: str) -> str:
+    return {
+        "structured_parse_failed": "structured_requirement_parse_failed",
+        "deadline_exceeded": "requirement_refinement_deadline_exceeded",
+        "output_budget_exceeded": "requirement_refinement_output_budget_exceeded",
+        "provider_unavailable": "requirement_provider_unavailable",
+        "model_call_failed": "requirement_model_call_failed",
+    }.get(failure_kind, "requirement_model_call_failed")
 
 
 def _first_text(*values: str) -> str:

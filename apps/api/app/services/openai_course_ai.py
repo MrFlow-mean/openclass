@@ -30,7 +30,6 @@ from app.models import (
     BoardTaskAction,
     BoardTaskRequirementSheet,
     BoardTaskRoute,
-    BoardWorkflow,
     InitialLearningGranularity,
     InitialLearningWorkMode,
     InteractionRuleDraft,
@@ -40,6 +39,24 @@ from app.models import (
     LearningRequirementKeyFact,
 )
 from app.services.ai_logging import ai_usage_logger
+from app.services.ai_call_budget import (
+    AICallBudget,
+    AICallBudgetExceeded,
+    AICallFailureKind,
+    AIOutputBudgetExceeded,
+    ChatCompletionTokenParameter,
+    ai_request_timeout,
+    bind_ai_call_budget,
+    bounded_ai_log_text,
+    budgeted_chat_completion_options,
+    budgeted_openai_client,
+    budgeted_responses_options,
+    current_ai_call_budget,
+    official_openai_token_parameter,
+    record_current_ai_call_failure,
+    strict_json_schema,
+    validate_ai_output_budget,
+)
 from app.services.ai_model_catalog import (
     ANTHROPIC_DEFAULT_TEXT_MODEL,
     ANTHROPIC_COMPATIBLE_DEFAULT_TEXT_MODEL,
@@ -54,11 +71,18 @@ from app.services.ai_model_catalog import (
     OPENAI_IMAGE_MODEL,
     default_text_selection,
 )
+from app.services.blank_board_requirement_contract import (
+    BlankBoardRequirementRefinement,
+    BlankBoardRequirementTurn,
+    compact_clarification_state,
+    compact_requirement_state,
+    merge_turn_with_existing_requirement,
+    refinement_from_turn,
+)
 from app.services.codex_app_server import CodexAppServerTextClient, codex_provider_status
 from app.services.config import load_root_dotenv
 from app.services.learning_intake_policy import (
     BLANK_BOARD_LEARNING_INTAKE_POLICY,
-    BLANK_BOARD_LEARNING_INTAKE_RESPONSE_CONTRACT,
 )
 
 logger = logging.getLogger(__name__)
@@ -289,6 +313,8 @@ class BlankBoardRequirementRefinementResult:
     visible_chat_buffer: str = ""
     visible_chat_was_streamed: bool = False
     structured_parse_failed: bool = False
+    failure_kind: AICallFailureKind | None = None
+    failure_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -400,61 +426,6 @@ class LearningRequirementUpdate(BaseModel):
     action_instruction: str = ""
     target_hint: str = ""
     interaction_rule_draft: InteractionRuleDraft | None = None
-
-
-GuidedRequirementStrategy = Literal[
-    "none",
-    "starting_point",
-    "light_self_report",
-    "recent_experience",
-    "known_unknown",
-    "mode_split",
-    "scenario",
-    "goal_output",
-    "stuck_point",
-    "choice_cards",
-    "domain_map",
-    "recommended_entry",
-    "implicit_observation",
-]
-
-
-class GuidedRequirementEntryPoint(BaseModel):
-    label: str
-    why_it_matters: str = ""
-    best_for: str = ""
-
-
-class BlankBoardRequirementRefinement(BaseModel):
-    route: Literal["ordinary_chat", "requirement_refining"] = "ordinary_chat"
-    chatbot_message: str = ""
-    progress: int = Field(default=0, ge=0, le=100)
-    summary: str = ""
-    board_workflow: BoardWorkflow = "generate_from_scratch"
-    work_mode: InitialLearningWorkMode = "unknown"
-    granularity: InitialLearningGranularity = "unclear"
-    learning_goal: str = ""
-    current_level: str = ""
-    target_scenario: str = ""
-    known_background: str = ""
-    target_depth: str = ""
-    output_preference: str = ""
-    boundary: str = ""
-    board_scope: list[str] = Field(default_factory=list)
-    success_criteria: str = ""
-    learning_need_checklist: list[str] = Field(default_factory=list)
-    key_facts: list[LearningRequirementKeyFact] = Field(default_factory=list)
-    checklist: list[LearningRequirementChecklistItem] = Field(default_factory=list)
-    guidance_strategy: GuidedRequirementStrategy = "none"
-    learning_map_summary: str = ""
-    entry_point_options: list[GuidedRequirementEntryPoint] = Field(default_factory=list)
-    recommended_entry_point: str = ""
-    reason_for_recommendation: str = ""
-    learner_profile_inference: str = ""
-    missing_items: list[str] = Field(default_factory=list)
-    next_question: str = ""
-    recommended_teaching_plan_summary: str = ""
-    ready_for_board: bool = False
 
 
 class BoardTaskRequirementRefinement(BaseModel):
@@ -768,9 +739,14 @@ class AnthropicTextClient:
             raise RuntimeError("Anthropic is not configured")
 
         tool_schema = schema.model_json_schema()
+        budget = current_ai_call_budget()
         payload = {
             "model": model,
-            "max_tokens": self.config.max_tokens,
+            "max_tokens": (
+                min(self.config.max_tokens, budget.max_output_tokens)
+                if budget is not None
+                else self.config.max_tokens
+            ),
             "system": (
                 f"{system_prompt}\n\n"
                 "Return the final answer by calling the return_result tool. "
@@ -797,6 +773,7 @@ class AnthropicTextClient:
             if block.get("type") == "text" and isinstance(block.get("text"), str):
                 output_text_parts.append(block["text"])
         output_text = "\n".join(output_text_parts)
+        validate_ai_output_budget(output_text)
         if parsed_payload is None:
             parsed_payload = _extract_json_object(output_text)
         return ParsedAIResponse(
@@ -819,7 +796,11 @@ class AnthropicTextClient:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=120, context=_URLLIB_SSL_CONTEXT) as response:
+            with urllib.request.urlopen(
+                request,
+                timeout=ai_request_timeout(120),
+                context=_URLLIB_SSL_CONTEXT,
+            ) as response:
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
@@ -841,13 +822,17 @@ class GoogleTextClient:
         if not self.config.api_key:
             raise RuntimeError("Google Gemini is not configured")
 
+        budget = current_ai_call_budget()
+        generation_config: dict[str, Any] = {
+            "responseMimeType": "application/json",
+            "responseJsonSchema": schema.model_json_schema(),
+        }
+        if budget is not None:
+            generation_config["maxOutputTokens"] = budget.max_output_tokens
         payload = {
             "systemInstruction": {"parts": [{"text": system_prompt}]},
             "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
-            "generationConfig": {
-                "responseMimeType": "application/json",
-                "responseJsonSchema": schema.model_json_schema(),
-            },
+            "generationConfig": generation_config,
         }
         normalized_model = model.removeprefix("models/")
         path_model = urllib.parse.quote(normalized_model, safe="")
@@ -859,6 +844,7 @@ class GoogleTextClient:
         output_text = "\n".join(
             part.get("text", "") for part in parts if isinstance(part, dict) and isinstance(part.get("text"), str)
         )
+        validate_ai_output_budget(output_text)
         parsed_payload = _extract_json_object(output_text)
         return ParsedAIResponse(
             output_parsed=schema.model_validate(parsed_payload),
@@ -878,7 +864,11 @@ class GoogleTextClient:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=120, context=_URLLIB_SSL_CONTEXT) as response:
+            with urllib.request.urlopen(
+                request,
+                timeout=ai_request_timeout(120),
+                context=_URLLIB_SSL_CONTEXT,
+            ) as response:
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
@@ -1100,140 +1090,53 @@ class OpenAICourseAI:
         initial_work_mode_decision: dict[str, Any] | None = None,
     ) -> BlankBoardRequirementRefinement | BlankBoardRequirementRefinementResult | None:
         system_prompt = (
-            "你是 OpenClass 的空白板书学习需求收敛器。你只维护结构化需求并起草回复，不直接向用户发言。\n"
-            "运行前提：board_document_state.status 必须是 empty；本阶段只维护 LearningRequirementSheet，"
-            "不生成板书、不冻结清单、不调用 Board AI。\n"
-            "结构化清单中的 board_workflow 必须记录为 generate_from_scratch，表示本轮属于从 0 生成板书前的学习需求收敛。\n"
-            "initial_work_mode_decision 如果存在，是资料检索前完成的权威入口判断。"
-            "route=learning_intake 时必须维护需求清单，不得改判为 ordinary_chat；work_mode、granularity 和 topic"
-            "是本轮需求整理的起点。chatbot_message 只是交给最终 Chatbot 的内部草稿。\n"
-            "任务：先判断用户当前轮是 ordinary_chat 还是 requirement_refining。\n"
-            "ordinary_chat：用户没有表达学习、练习、资料、板书或教学目的时，像 ChatGPT 一样自然回复；"
-            "不要新建或更新清单，不要追问学习需求。\n"
-            "requirement_refining：用户表达了学习或练习目的，但还需要收敛到可生成板书的教学目标。"
-            "你要自然回复用户，同时输出结构化清单变化。\n"
-            "两类终点：\n"
-            "1. knowledge_board：用户想学新知识。只有 learning_goal 已经明确到一个具体知识点、概念、方法、步骤或单一问题，"
-            "且 granularity=single_knowledge_point 时，ready_for_board 才能为 true；其他场景、考试、工作用途只作为辅助因素。\n"
-            "2. practice_artifact：用户想练习已有知识或技能。ready_for_board=true 必须同时具备 learning_goal、"
-            "current_level、target_scenario 三个核心因素；如果用户明确没有场景或让系统不按场景定制，target_scenario 可写"
-            "“无明确应用场景”。\n"
+            "你是 OpenClass 的空白板书 Requirement Manager，只维护结构化学习需求并起草回复，"
+            "不直接向用户发言，不生成板书，不冻结清单，不调用 Board AI。\n"
+            "initial_work_mode_decision 是本轮权威入口判断；route=learning_intake 时必须返回 requirement_refining，"
+            "并以其中的 work_mode、granularity、topic 为起点。只有入口明确为普通聊天时才返回 ordinary_chat。\n"
+            "knowledge_board 用于学习新知识：具体到单一知识点、概念、方法、步骤或问题时才可 ready_for_board=true；"
+            "宽泛主题继续用一个最有价值的问题收敛起点。practice_artifact 用于练习、测验、角色、问答或案例等可操练产物，"
+            "ready_for_board=true 时必须具备 learning_goal、current_level、target_scenario。\n"
+            "每轮只新增或修正用户本轮实际提供、可直接归纳的信息；输出必须是合并已有事实后的完整快照，"
+            "不得把未被本轮否定的既有事实清空，也不把候选资料当成用户已确认资料。"
+            "chatbot_message 是给最终 Chatbot 的内部草稿，必须自然承接、与下一步教学入口直接相关，且最多追问一个主问题。\n"
             f"{BLANK_BOARD_LEARNING_INTAKE_POLICY}\n"
-            "如果用户是纯新手且想入门某领域，可以用领域地图介绍该领域由哪些通用部分构成、推荐一个入门入口，"
-            "并继续把需求收敛到一个可开始的知识点或练习产物。纯新手、零基础、入门、先了解一下、"
-            "感兴趣想学，都表示一种明确的入门型学习状态；默认目的可以记录为“入门了解 / 建立领域地图 / 找到第一个学习入口”。"
-            "这时不要强制追问考试、面试、工作、赚钱、项目或现实产出场景；如果用户没有主动说场景，"
-            "不要把应用场景当作缺失核心因素。\n"
-            "宽泛复合领域且用户起点未知时，可以给学习地图和暂定入口，但不要把具体工具、语法、框架或项目实操入口直接判定为最终第一课；"
-            "entry_point_options 应优先作为学习者起点/背景的选择卡片，而不是让用户在高级内容路线里做选择；"
-            "唯一主问题必须优先询问用户起点、已有背景、已会/未会或最近接触情况。\n"
-            "如果用户已经说明自己是纯新手/零基础/纯入门/先了解一下/感兴趣想入门，"
-            "即使没有明确说“你安排”，也表示系统应选择最安全的基础入口；"
-            "不要再让用户在工具、语法、框架、测试或项目实操等后续模块里选择。"
-            "这时要主动落定一个基础总览型第一课，例如“这个领域的基础概念与整体组成 / 核心对象、基本流程和关键术语 / 整体结构是什么”。"
-            "此时必须输出 work_mode=knowledge_board、granularity=single_knowledge_point、ready_for_board=true，"
-            "learning_goal 写成这个具体基础入口，next_question 为空。\n"
-            "如果用户已经说明自己是纯新手/零基础/纯入门，并表达“为我指导、你安排、帮我安排、帮我规划、按你推荐、听你的、直接安排”等委托意图，"
-            "表示用户进一步授权你主动选择入口；这时更不要再问“你愿意从 X 开始吗”，而要主动落定一个领域总览型第一课，"
-            "例如“这个领域由哪几部分组成 / 整体结构是什么 / 基本工作方式是什么 / 它和普通系统有什么区别”这一类可教学入口。"
-            "此时必须输出 work_mode=knowledge_board、granularity=single_knowledge_point、ready_for_board=true，"
-            "learning_goal 写成这个具体第一课入口，next_question 为空。\n"
-            "当 learning_goal 仍是宽泛主题、granularity=broad_topic 或用户说不知道从哪开始时，"
-            "chatbot_message 必须优先呈现“开场承接 + 简短学习地图 + 2-5 个入口选项 + 一个推荐入口 + 推荐理由 + 一个绑定推荐入口的主问题”，"
-            "而不是只追问“具体想学什么”；学习地图和入口选项必须真的写进 chatbot_message，不能只写在结构化字段里。\n"
-            "宽泛主题下，chatbot_message 不能是一两句话，也不能只是列分支名；它要像老师在聊天框里给用户打开地图，"
-            "先降低表达成本，再把用户带向一个可开始的知识点。\n"
-            "entry_point_options 只记录通用入口建议，由模型根据当前领域自主生成；不要写固定讲义正文或固定课程模板。"
-            "recommended_entry_point 必须从 entry_point_options 或用户已明确内容中选择一个最适合的入口。"
-            "learner_profile_inference 只记录可由用户自述、最近经历、已会/未会或卡点直接推出的起点信息。\n"
-            "如果你已经给出 recommended_entry_point，但 current_level、known_background 和 learner_profile_inference "
-            "都没有可靠依据，那么 chatbot_message 结尾的唯一主问题必须优先询问用户当前水平、已会/未会或最近学到哪里；"
-            "不要继续只问用户要不要选择推荐入口。\n"
-            "如果用户明确表达“想学某个领域/方向/主题”，即使主题很宽，也应归为 knowledge_board + broad_topic；"
-            "只有连学习还是练习、或主题对象都无法判断时，work_mode 才保持 unknown。\n"
-            "规则：\n"
-            "1. 不写任何学科、教材、考试、语言名、旅游场景或 demo 专属规则；只根据用户意图形态和内容产物形态判断。\n"
-            "2. 不脑补核心因素；核心因素不全时 ready_for_board=false，但要通过引导、推荐和选择卡片降低表达成本，"
-            "最后只问一个最关键问题。\n"
-            "3. 辅助因素只记录会改变教学入口或讲解深度的用户事实，例如 known_background、target_depth、output_preference。"
-            "不要把页面标题、课程标题、系统流程检查项或泛化学习结果写入 board_scope、learning_need_checklist 或 success_criteria；"
-            "这些字段在本链路会被后端忽略。\n"
-            "如果是纯新手入门型宽泛主题，target_depth 可写“入门了解 / 建立领域地图”，"
-            "不要额外补一个成功标准字段。\n"
-            "4. key_facts 只记录用户已经透露或你从当前对话可直接归纳的事实，优先使用标签："
-            "用户想学的内容、当前水平、面向场景。\n"
-            "5. chatbot_message 面向用户自然表达；必须综合使用 learning_map_summary、entry_point_options、"
-            "recommended_entry_point 和 reason_for_recommendation 中的有用信息，但不要输出 JSON、字段名、内部状态名或右侧板书正文。"
-            "不要说“请填写学习内容/当前水平/面向场景”，不要暴露 learning_goal、current_level、target_scenario、"
-            "missing_items、ready_for_board 等内部字段名；如果需要信息，用自然聊天的一句话询问。"
-            "如果 resource_summary 提供了当前课程包中已定位的候选资料章节证据，应先利用其中的资料标题、章节路径和摘录"
-            "理解用户指向的内容，再决定还缺哪个学习起点；不要重复追问已经由证据明确的教材或章节。"
-            "如果用户已经给出学习主题和明确结构范围，例如章节编号、节编号、章节标题或标题路径，"
-            "这些都是已确认的学习需求事实，必须写入 learning_goal、boundary 和 key_facts；"
-            "教材或课程名称缺失不影响先记录这些事实，也不得因此把本轮降级为 ordinary_chat。"
-            "当 resource_summary 已提供唯一匹配的可信章节时，直接采用该资料和章节完成指向消解，不再追问资料名称；"
-            "如果没有匹配或存在多个候选，也要保留用户已经确认的主题和结构范围，由后续资料检索结果说明匹配状态。"
-            "resource_summary 可能只是 OCR 摘录或有限页预览，不得声称已经读取完整章节，也不得把候选证据说成用户已确认引用。"
+            "如果用户已经明确自己是纯新手并委托系统安排，可选择一个通用基础总览入口；不要继续追问应用场景。"
+            "不得写学科、教材、考试、语言或 demo 专属规则；只依据通用学习形态、内容产物形态、用户事实和资料结构判断。"
         )
+        existing_requirement_state = compact_requirement_state(existing_requirement_sheet)
         user_prompt = _json(
             {
                 "board_document_state": board_document_state or {},
-                "recent_conversation": conversation_summary or "",
+                "recent_conversation": (conversation_summary or "")[-6000:],
                 "current_user_message": user_message,
-                "resource_summary": resource_summary or "无",
+                "source_reference_summary": (resource_summary or "")[:4000] or "无",
                 "initial_work_mode_decision": initial_work_mode_decision,
-                "existing_requirement_sheet": existing_requirement_sheet or None,
-                "existing_clarification": existing_clarification or None,
-                "response_contract": {
-                    "route": "ordinary_chat 或 requirement_refining。",
-                    "chatbot_message": (
-                        "交给最终 Chatbot 的自然回复草稿；如果是宽泛主题，必须包含开场承接、学习地图、"
-                        "2-5 个入口选项、一个推荐入口、推荐理由和一个关键问题；每次最多追问一个主问题；"
-                        "不得输出内部字段名、JSON、表单格式或让用户填写清单。"
-                    ),
-                    "progress": "0-100 的清单完整度；ready_for_board=true 时必须为 100。",
-                    "summary": "当前学习需求的一句话摘要；普通聊天可为空。",
-                    "board_workflow": "固定写 generate_from_scratch，表示从 0 生成板书前的学习需求清单。",
-                    "work_mode": "knowledge_board、practice_artifact 或 unknown；本阶段不使用其他新值。",
-                    "granularity": "single_knowledge_point、practice_artifact、broad_topic 或 unclear。",
-                    "learning_goal": "核心因素。新知识点教学写用户具体想学的知识点；练习型写用户具体想练的内容。",
-                    "current_level": "练习型核心因素。用户当前水平、已有基础或最近状态；新知识点教学可作为辅助。",
-                    "target_scenario": "练习型核心因素。用户面向的任务、应用、输出或“无明确应用场景”。",
-                    "known_background": "可选辅助因素：已会、未会、最近经历、卡点或背景。",
-                    "target_depth": "可选辅助因素：希望理解、会做、能应用、能讲给别人等深度。",
-                    "output_preference": "可选辅助因素：希望板书或教学呈现的形态偏好。",
-                    "boundary": "范围边界或不要展开的部分；用户明确给出章节编号、节编号、章节标题或标题路径时必须记录。",
-                    "board_scope": "兼容字段：本链路不要填写，不能写页面标题、课程标题或未来板书目录。",
-                    "success_criteria": "兼容字段：本链路不要填写泛化成功标准；练习型面向场景请写 target_scenario。",
-                    "learning_need_checklist": "兼容字段：本链路不要填写系统流程检查项。",
-                    "key_facts": "0-5 条事实，每项包含 label、value、evidence、category。",
-                    "checklist": "2-5 个动态检查项，每项包含 title、is_clear、evidence。",
-                    "guidance_strategy": BLANK_BOARD_LEARNING_INTAKE_RESPONSE_CONTRACT["guidance_strategy"],
-                    "learning_map_summary": "给用户看的简短学习地图摘要；宽泛主题时应填写，不写固定讲义正文。",
-                    "entry_point_options": BLANK_BOARD_LEARNING_INTAKE_RESPONSE_CONTRACT["entry_point_options"],
-                    "recommended_entry_point": "AI 推荐的一个入口，优先来自 entry_point_options。",
-                    "reason_for_recommendation": "推荐理由，必须基于用户已说信息或通用入门原则。",
-                    "learner_profile_inference": "从用户自述、最近经历、已会/未会或卡点推断出的起点信息。",
-                    "missing_items": "仍缺少的核心因素或重要辅助因素；核心因素不全必须列出。",
-                    "next_question": BLANK_BOARD_LEARNING_INTAKE_RESPONSE_CONTRACT["next_question"],
-                    "recommended_teaching_plan_summary": "可选：给用户看的教学方案摘要，不是板书正文。",
-                    "ready_for_board": "只表示清单核心因素齐全，可以进入未来板书生成；本阶段不会实际生成。",
-                },
+                "existing_requirement_state": existing_requirement_state,
+                "existing_clarification_state": compact_clarification_state(existing_clarification),
             }
         )
-        if include_stream_result:
+        budget = AICallBudget.for_requirement_refinement()
+        with bind_ai_call_budget(budget):
             response = self._parse_response(
                 "pm",
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
-                schema=BlankBoardRequirementRefinement,
+                schema=BlankBoardRequirementTurn,
                 visible_stream_field="chatbot_message",
                 disable_stream_repair=True,
             )
+        if include_stream_result:
             if response is None:
-                return BlankBoardRequirementRefinementResult(result=None)
+                return BlankBoardRequirementRefinementResult(
+                    result=None,
+                    failure_kind=budget.failure_kind or "model_call_failed",
+                    failure_reason=budget.failure_reason or "Requirement model returned no response",
+                )
             parsed = response.output_parsed
-            result = parsed if isinstance(parsed, BlankBoardRequirementRefinement) else None
+            if isinstance(parsed, BlankBoardRequirementTurn):
+                parsed = merge_turn_with_existing_requirement(parsed, existing_requirement_state)
+            result = refinement_from_turn(parsed) if isinstance(parsed, BlankBoardRequirementTurn) else None
             visible_chat_buffer = (response.visible_field_value or "").strip()
             if result is not None and visible_chat_buffer:
                 result = result.model_copy(update={"chatbot_message": visible_chat_buffer})
@@ -1242,15 +1145,19 @@ class OpenAICourseAI:
                 visible_chat_buffer=visible_chat_buffer,
                 visible_chat_was_streamed=response.visible_field_was_streamed,
                 structured_parse_failed=response.structured_parse_failed or result is None,
+                failure_kind=(
+                    budget.failure_kind
+                    or ("structured_parse_failed" if result is None else None)
+                ),
+                failure_reason=budget.failure_reason,
             )
-
-        result = self._parse(
-            "pm",
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            schema=BlankBoardRequirementRefinement,
+        if response is None or not isinstance(response.output_parsed, BlankBoardRequirementTurn):
+            return None
+        parsed = merge_turn_with_existing_requirement(
+            response.output_parsed,
+            existing_requirement_state,
         )
-        return result if isinstance(result, BlankBoardRequirementRefinement) else None
+        return refinement_from_turn(parsed)
 
     def generate_chatbot_reply(
         self,
@@ -2254,6 +2161,7 @@ class OpenAICourseAI:
                 config=self.deepseek_config,
                 visible_stream_field=visible_stream_field,
                 disable_stream_repair=disable_stream_repair,
+                chat_completion_token_parameter="max_tokens",
             )
         if provider == "kimi":
             return self._call_openai_parse(
@@ -2266,6 +2174,7 @@ class OpenAICourseAI:
                 config=self.kimi_config,
                 visible_stream_field=visible_stream_field,
                 disable_stream_repair=disable_stream_repair,
+                chat_completion_token_parameter="max_tokens",
             )
         if provider == "minimax":
             return self._call_openai_parse(
@@ -2278,6 +2187,7 @@ class OpenAICourseAI:
                 config=self.minimax_config,
                 visible_stream_field=visible_stream_field,
                 disable_stream_repair=disable_stream_repair,
+                chat_completion_token_parameter="max_tokens",
             )
         if provider == "openai_compatible":
             return self._call_openai_parse(
@@ -2290,6 +2200,7 @@ class OpenAICourseAI:
                 config=self.openai_compatible_config,
                 visible_stream_field=visible_stream_field,
                 disable_stream_repair=disable_stream_repair,
+                chat_completion_token_parameter="max_tokens",
             )
         return self._call_openai_parse(
             role=role,
@@ -2301,6 +2212,7 @@ class OpenAICourseAI:
             config=self.config,
             visible_stream_field=visible_stream_field,
             disable_stream_repair=disable_stream_repair,
+            chat_completion_token_parameter=official_openai_token_parameter(model),
         )
 
     def _call_openai_parse(
@@ -2315,6 +2227,7 @@ class OpenAICourseAI:
         config: Any | None = None,
         visible_stream_field: str | None = None,
         disable_stream_repair: bool = False,
+        chat_completion_token_parameter: ChatCompletionTokenParameter | None = None,
     ) -> ParsedAIResponse | Any:
         client = client or self.client
         config = config or self.config
@@ -2335,7 +2248,10 @@ class OpenAICourseAI:
                     client=client,
                     visible_stream_field=stream_field,
                     disable_stream_repair=disable_stream_repair,
+                    chat_completion_token_parameter=chat_completion_token_parameter,
                 )
+            except (AIStreamCancelledError, AICallBudgetExceeded, AIOutputBudgetExceeded):
+                raise
             except Exception:
                 pass
         if compat_mode in {"chat", "chat_completions", "chat-completions"}:
@@ -2348,16 +2264,21 @@ class OpenAICourseAI:
                 client=client,
                 visible_stream_field=stream_field,
                 disable_stream_repair=disable_stream_repair,
+                chat_completion_token_parameter=chat_completion_token_parameter,
             )
         try:
-            return client.responses.parse(
+            request_client = budgeted_openai_client(client)
+            response = request_client.responses.parse(
                 model=model,
                 input=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
                 text_format=schema,
+                **budgeted_responses_options(),
             )
+            validate_ai_output_budget(str(getattr(response, "output_text", "") or ""))
+            return response
         except Exception as exc:
             if not self._should_retry_openai_chat_parse(exc):
                 raise
@@ -2370,6 +2291,7 @@ class OpenAICourseAI:
                 client=client,
                 visible_stream_field=stream_field,
                 disable_stream_repair=disable_stream_repair,
+                chat_completion_token_parameter=chat_completion_token_parameter,
             )
 
     def _should_retry_openai_chat_parse(self, exc: Exception) -> bool:
@@ -2399,10 +2321,11 @@ class OpenAICourseAI:
         client: Any | None = None,
         visible_stream_field: str | None = None,
         disable_stream_repair: bool = False,
+        chat_completion_token_parameter: ChatCompletionTokenParameter | None = None,
     ) -> ParsedAIResponse:
         client = client or self.client
         assert client is not None
-        schema_payload = schema.model_json_schema()
+        schema_payload = strict_json_schema(schema)
         messages = [
             {
                 "role": "system",
@@ -2429,9 +2352,10 @@ class OpenAICourseAI:
                     role=role,
                     field_name=stream_field,
                     use_response_format=True,
+                    chat_completion_token_parameter=chat_completion_token_parameter,
                 )
             except AIStreamOutputError as exc:
-                if disable_stream_repair and exc.visible_field_value:
+                if disable_stream_repair and exc.output_text:
                     return ParsedAIResponse(
                         output_parsed=None,
                         output_text=exc.output_text,
@@ -2450,6 +2374,7 @@ class OpenAICourseAI:
                     role=role,
                     field_name=stream_field,
                     use_response_format=False,
+                    chat_completion_token_parameter=chat_completion_token_parameter,
                 )
             except Exception as exc:
                 if not self._should_retry_openai_chat_without_schema(exc):
@@ -2463,12 +2388,14 @@ class OpenAICourseAI:
                     role=role,
                     field_name=stream_field,
                     use_response_format=False,
+                    chat_completion_token_parameter=chat_completion_token_parameter,
                 )
             output_text = streamed.output_text
+            validate_ai_output_budget(output_text)
             try:
                 output_parsed = schema.model_validate(_extract_json_object(output_text))
             except Exception as exc:
-                if disable_stream_repair and streamed.visible_field_value:
+                if disable_stream_repair:
                     return ParsedAIResponse(
                         output_parsed=None,
                         output_text=output_text,
@@ -2486,10 +2413,12 @@ class OpenAICourseAI:
                         ],
                         schema=schema,
                         schema_payload=schema_payload,
+                        chat_completion_token_parameter=chat_completion_token_parameter,
                     )
                 except Exception as repair_request_exc:
                     raise AIOutputParseError(str(exc), output_text=output_text) from repair_request_exc
                 repair_output_text = self._chat_completion_text(repair_response)
+                validate_ai_output_budget(repair_output_text)
                 try:
                     output_parsed = schema.model_validate(_extract_json_object(repair_output_text))
                 except Exception as repair_parse_exc:
@@ -2513,7 +2442,8 @@ class OpenAICourseAI:
                 visible_field_was_streamed=streamed.visible_field_was_streamed,
             )
         try:
-            response = client.chat.completions.create(
+            request_client = budgeted_openai_client(client)
+            response = request_client.chat.completions.create(
                 model=model,
                 messages=messages,
                 response_format={
@@ -2524,16 +2454,39 @@ class OpenAICourseAI:
                         "strict": True,
                     },
                 },
+                **budgeted_chat_completion_options(
+                    model,
+                    token_parameter=chat_completion_token_parameter,
+                ),
             )
         except Exception as exc:
+            if isinstance(exc, (AIStreamCancelledError, AICallBudgetExceeded, AIOutputBudgetExceeded)):
+                raise
             if not self._should_retry_openai_chat_without_schema(exc):
                 raise
-            response = client.chat.completions.create(model=model, messages=messages)
+            request_client = budgeted_openai_client(client)
+            response = request_client.chat.completions.create(
+                model=model,
+                messages=messages,
+                **budgeted_chat_completion_options(
+                    model,
+                    token_parameter=chat_completion_token_parameter,
+                ),
+            )
 
         output_text = self._chat_completion_text(response)
+        validate_ai_output_budget(output_text)
         try:
             output_parsed = schema.model_validate(_extract_json_object(output_text))
         except Exception as exc:
+            if disable_stream_repair:
+                return ParsedAIResponse(
+                    output_parsed=None,
+                    id=getattr(response, "id", None),
+                    output_text=output_text,
+                    usage=getattr(response, "usage", None),
+                    structured_parse_failed=True,
+                )
             try:
                 repair_response = self._repair_openai_chat_completion(
                     client=client,
@@ -2544,11 +2497,13 @@ class OpenAICourseAI:
                     ],
                     schema=schema,
                     schema_payload=schema_payload,
+                    chat_completion_token_parameter=chat_completion_token_parameter,
                 )
             except Exception as repair_request_exc:
                 raise AIOutputParseError(str(exc), output_text=output_text) from repair_request_exc
 
             repair_output_text = self._chat_completion_text(repair_response)
+            validate_ai_output_budget(repair_output_text)
             try:
                 output_parsed = schema.model_validate(_extract_json_object(repair_output_text))
             except Exception as repair_parse_exc:
@@ -2579,6 +2534,7 @@ class OpenAICourseAI:
         messages: list[dict[str, str]],
         schema: type[BaseModel],
         schema_payload: dict[str, Any],
+        chat_completion_token_parameter: ChatCompletionTokenParameter | None = None,
     ) -> Any:
         repair_prompt = (
             "The previous response could not be parsed as valid JSON. "
@@ -2589,7 +2545,8 @@ class OpenAICourseAI:
         )
         repair_messages = [*messages, {"role": "user", "content": repair_prompt}]
         try:
-            return client.chat.completions.create(
+            request_client = budgeted_openai_client(client)
+            return request_client.chat.completions.create(
                 model=model,
                 messages=repair_messages,
                 response_format={
@@ -2600,10 +2557,24 @@ class OpenAICourseAI:
                         "strict": True,
                     },
                 },
+                **budgeted_chat_completion_options(
+                    model,
+                    token_parameter=chat_completion_token_parameter,
+                ),
             )
         except Exception as exc:
+            if isinstance(exc, (AIStreamCancelledError, AICallBudgetExceeded, AIOutputBudgetExceeded)):
+                raise
             logger.warning("Structured JSON repair failed; retrying without response_format: %s", exc)
-            return client.chat.completions.create(model=model, messages=repair_messages)
+            request_client = budgeted_openai_client(client)
+            return request_client.chat.completions.create(
+                model=model,
+                messages=repair_messages,
+                **budgeted_chat_completion_options(
+                    model,
+                    token_parameter=chat_completion_token_parameter,
+                ),
+            )
 
     def _stream_openai_chat_completion(
         self,
@@ -2616,12 +2587,17 @@ class OpenAICourseAI:
         role: str,
         field_name: str,
         use_response_format: bool,
+        chat_completion_token_parameter: ChatCompletionTokenParameter | None = None,
     ) -> StreamedChatCompletionResult:
         observer = _ai_stream_observer.get()
         kwargs: dict[str, Any] = {
             "model": model,
             "messages": messages,
             "stream": True,
+            **budgeted_chat_completion_options(
+                model,
+                token_parameter=chat_completion_token_parameter,
+            ),
         }
         if use_response_format:
             kwargs["response_format"] = {
@@ -2639,9 +2615,13 @@ class OpenAICourseAI:
         first_visible_delta_logged = False
         try:
             raise_if_ai_stream_cancelled()
-            stream = client.chat.completions.create(**kwargs)
+            request_client = budgeted_openai_client(client)
+            stream = request_client.chat.completions.create(**kwargs)
             for chunk in stream:
                 raise_if_ai_stream_cancelled()
+                budget = current_ai_call_budget()
+                if budget is not None:
+                    budget.checkpoint()
                 delta_text = self._chat_completion_stream_delta(chunk)
                 if not delta_text:
                     continue
@@ -2658,6 +2638,7 @@ class OpenAICourseAI:
                     )
                 output_parts.append(delta_text)
                 output_text = "".join(output_parts)
+                validate_ai_output_budget(output_text)
                 visible_value = _partial_json_string_field_value(output_text, field_name)
                 if observer and visible_value.startswith(last_visible_value):
                     visible_delta = visible_value[len(last_visible_value) :]
@@ -2684,7 +2665,7 @@ class OpenAICourseAI:
                         )
                         last_visible_value = visible_value
                 raise_if_ai_stream_cancelled()
-        except AIStreamCancelledError:
+        except (AIStreamCancelledError, AICallBudgetExceeded, AIOutputBudgetExceeded):
             raise
         except Exception as exc:
             raise AIStreamOutputError(
@@ -2938,8 +2919,16 @@ class OpenAICourseAI:
         failed_provider: AIProvider,
         failed_model: str,
         error: Exception,
+        visible_stream_field: str | None = None,
+        disable_stream_repair: bool = False,
     ):
         for fallback_provider, fallback_model in self._fallback_provider_candidates(failed_provider, role):
+            budget = current_ai_call_budget()
+            if budget is not None:
+                try:
+                    budget.checkpoint()
+                except AICallBudgetExceeded:
+                    return None
             ai_usage_logger.log_event(
                 self._log_event_name(failed_provider, "_provider_retry"),
                 **call_details,
@@ -2961,6 +2950,8 @@ class OpenAICourseAI:
                     system_prompt=system_prompt,
                     user_prompt=user_prompt,
                     schema=schema,
+                    visible_stream_field=visible_stream_field,
+                    disable_stream_repair=disable_stream_repair,
                 )
                 ai_usage_logger.log_event(
                     self._log_event_name(fallback_provider, ""),
@@ -2975,6 +2966,10 @@ class OpenAICourseAI:
                 )
                 return response.output_parsed
             except Exception as fallback_exc:  # pragma: no cover - network/runtime dependent
+                if isinstance(fallback_exc, AIStreamCancelledError):
+                    raise
+                if isinstance(fallback_exc, (AICallBudgetExceeded, AIOutputBudgetExceeded)):
+                    return None
                 ai_usage_logger.log_event(
                     self._log_event_name(fallback_provider, "_error"),
                     **fallback_details,
@@ -3039,8 +3034,16 @@ class OpenAICourseAI:
                 failed_provider=provider,
                 failed_model=requested_model,
                 error=RuntimeError("client_disabled"),
+                visible_stream_field=visible_stream_field,
+                disable_stream_repair=disable_stream_repair,
             )
-            return ParsedAIResponse(output_parsed=fallback) if fallback is not None else None
+            if fallback is not None:
+                return ParsedAIResponse(output_parsed=fallback)
+            record_current_ai_call_failure(
+                "provider_unavailable",
+                f"{provider} provider is not configured",
+            )
+            return None
 
         started_at = time.perf_counter()
         try:
@@ -3074,6 +3077,24 @@ class OpenAICourseAI:
             return response
         except Exception as exc:  # pragma: no cover - network/runtime dependent
             duration_ms = _elapsed_ms(started_at)
+            if isinstance(exc, AIStreamCancelledError):
+                raise
+            if isinstance(exc, (AICallBudgetExceeded, AIOutputBudgetExceeded)):
+                failure_kind: AICallFailureKind = (
+                    "deadline_exceeded"
+                    if isinstance(exc, AICallBudgetExceeded)
+                    else "output_budget_exceeded"
+                )
+                ai_usage_logger.log_event(
+                    self._log_event_name(provider, "_error"),
+                    **call_details,
+                    duration_ms=duration_ms,
+                    failure_kind=failure_kind,
+                    error=str(exc),
+                    output_text=bounded_ai_log_text(getattr(exc, "output_text", None)),
+                )
+                record_current_ai_call_failure(failure_kind, str(exc))
+                return None
             if disable_stream_repair and isinstance(exc, AIStreamOutputError) and exc.visible_field_value:
                 response = ParsedAIResponse(
                     output_parsed=None,
@@ -3162,18 +3183,29 @@ class OpenAICourseAI:
                     failed_provider=provider,
                     failed_model=requested_model,
                     error=exc,
+                    visible_stream_field=visible_stream_field,
+                    disable_stream_repair=disable_stream_repair,
                 )
                 if fallback is not None:
                     return ParsedAIResponse(output_parsed=fallback)
+            failure_kind = (
+                "deadline_exceeded"
+                if isinstance(exc, AICallBudgetExceeded)
+                else "output_budget_exceeded"
+                if isinstance(exc, AIOutputBudgetExceeded)
+                else "model_call_failed"
+            )
             ai_usage_logger.log_event(
                 self._log_event_name(provider, "_error"),
                 **call_details,
                 duration_ms=duration_ms,
+                failure_kind=failure_kind,
                 error=str(exc),
-                output_text=getattr(exc, "output_text", None),
-                repair_output_text=getattr(exc, "repair_output_text", None),
+                output_text=bounded_ai_log_text(getattr(exc, "output_text", None)),
+                repair_output_text=bounded_ai_log_text(getattr(exc, "repair_output_text", None)),
             )
             logger.warning("%s %s call failed, falling back to heuristic flow: %s", provider, role, exc)
+            record_current_ai_call_failure(failure_kind, str(exc))
             return None
 
     def _parse(
@@ -3252,6 +3284,22 @@ class OpenAICourseAI:
             return response.output_parsed
         except Exception as exc:  # pragma: no cover - network/runtime dependent
             primary_duration_ms = _elapsed_ms(primary_started_at)
+            if isinstance(exc, AIStreamCancelledError):
+                raise
+            if isinstance(exc, (AICallBudgetExceeded, AIOutputBudgetExceeded)):
+                ai_usage_logger.log_event(
+                    self._log_event_name(provider, "_error"),
+                    **call_details,
+                    duration_ms=primary_duration_ms,
+                    failure_kind=(
+                        "deadline_exceeded"
+                        if isinstance(exc, AICallBudgetExceeded)
+                        else "output_budget_exceeded"
+                    ),
+                    error=str(exc),
+                    output_text=bounded_ai_log_text(getattr(exc, "output_text", None)),
+                )
+                return None
             if schema is ChatbotReply and isinstance(exc, AIOutputParseError):
                 ai_usage_logger.log_event(
                     self._log_event_name(provider, "_retry"),
@@ -3260,8 +3308,8 @@ class OpenAICourseAI:
                     retry_model=requested_model,
                     retry_reason="chatbot_reply_parse",
                     error=str(exc),
-                    output_text=getattr(exc, "output_text", None),
-                    repair_output_text=getattr(exc, "repair_output_text", None),
+                    output_text=bounded_ai_log_text(getattr(exc, "output_text", None)),
+                    repair_output_text=bounded_ai_log_text(getattr(exc, "repair_output_text", None)),
                 )
                 retry_started_at = time.perf_counter()
                 try:
@@ -3305,8 +3353,8 @@ class OpenAICourseAI:
                     **call_details,
                     duration_ms=primary_duration_ms,
                     error=str(exc),
-                    output_text=getattr(exc, "output_text", None),
-                    repair_output_text=getattr(exc, "repair_output_text", None),
+                    output_text=bounded_ai_log_text(getattr(exc, "output_text", None)),
+                    repair_output_text=bounded_ai_log_text(getattr(exc, "repair_output_text", None)),
                     parsed_output=recovered_chatbot_reply,
                 )
                 return recovered_chatbot_reply
@@ -3401,8 +3449,8 @@ class OpenAICourseAI:
                 **call_details,
                 duration_ms=primary_duration_ms,
                 error=str(exc),
-                output_text=getattr(exc, "output_text", None),
-                repair_output_text=getattr(exc, "repair_output_text", None),
+                output_text=bounded_ai_log_text(getattr(exc, "output_text", None)),
+                repair_output_text=bounded_ai_log_text(getattr(exc, "repair_output_text", None)),
             )
             logger.warning("%s %s call failed, falling back to heuristic flow: %s", provider, role, exc)
             return None

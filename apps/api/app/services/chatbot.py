@@ -36,6 +36,10 @@ from app.services.learning_intake_orchestrator import (
     rollback_learning_intake_turn,
     run_learning_intake_turn,
 )
+from app.services.learning_requirement_refiner import (
+    LEARNING_REQUIREMENT_REFINEMENT_FAILURE_REASON,
+    build_failed_blank_board_requirement_outcome,
+)
 from app.services.lesson_factory import build_requirements
 from app.services.openai_course_ai import (
     bind_board_model_selection,
@@ -111,6 +115,8 @@ def _build_response(
     learning_clarification: LearningClarificationStatus | None = None,
     requirement_stamp: RequirementHistoryStamp | None = None,
     requirement_cleared: bool = True,
+    learning_requirement_operation_status="none",
+    learning_requirement_operation_failure_reason=None,
     active_board_task_sheet=None,
     board_task_stamp: BoardTaskHistoryStamp | None = None,
     board_task_questions: list[str] | None = None,
@@ -137,6 +143,8 @@ def _build_response(
         requirement_run_id=requirement_stamp.run_id if requirement_stamp else None,
         requirement_version_id=requirement_stamp.version_id if requirement_stamp else None,
         requirement_phase=requirement_stamp.phase if requirement_stamp else None,
+        learning_requirement_operation_status=learning_requirement_operation_status,
+        learning_requirement_operation_failure_reason=learning_requirement_operation_failure_reason,
         board_task_sheet=active_board_task_sheet,
         active_board_task_sheet=active_board_task_sheet,
         board_task_run_id=board_task_stamp.run_id if board_task_stamp else None,
@@ -455,7 +463,7 @@ def _run_requirement_refinement_turn(
         conversation_summary=_conversation_summary(request.conversation),
         history_state=history_state,
     )
-    if turn.route == "ordinary_chat" or turn.refinement is None:
+    if turn.route == "ordinary_chat":
         return _run_basic_chat_turn(
             workspace=workspace,
             package=package,
@@ -483,8 +491,17 @@ def _run_requirement_refinement_turn(
             },
             requirement_stamp=turn.refinement.history_stamp if turn.refinement is not None else None,
         )
-
-    outcome = turn.refinement
+    outcome = turn.refinement or build_failed_blank_board_requirement_outcome(
+        owner_user_id=user_id,
+        lesson=lesson,
+        history_state=history_state,
+        initial_work_mode_decision=turn.initial_decision,
+    )
+    requirement_operation_failed = outcome.route == "refinement_failed"
+    requirement_operation_status = "failed" if requirement_operation_failed else "succeeded"
+    requirement_operation_failure_reason = (
+        LEARNING_REQUIREMENT_REFINEMENT_FAILURE_REASON if requirement_operation_failed else None
+    )
     if outcome.active_requirement_sheet is None:
         lesson.learning_requirements = None
     else:
@@ -499,8 +516,16 @@ def _run_requirement_refinement_turn(
         commit_operations(
             lesson,
             [],
-            label="Learning requirement refinement",
-            message="Recorded a source-first blank-board learning requirement refinement turn",
+            label=(
+                "Learning requirement refinement failed"
+                if requirement_operation_failed
+                else "Learning requirement refinement"
+            ),
+            message=(
+                "Recorded a failed blank-board learning requirement refinement turn"
+                if requirement_operation_failed
+                else "Recorded a blank-board learning requirement refinement turn"
+            ),
             new_document=lesson.board_document,
             metadata={
                 "kind": LEARNING_REQUIREMENT_REFINEMENT_METADATA_KIND,
@@ -532,6 +557,8 @@ def _run_requirement_refinement_turn(
                 "requirement_version_id": outcome.history_stamp.version_id,
                 "requirement_phase": outcome.history_stamp.phase,
                 "requirement_history_changed": outcome.changed,
+                "learning_requirement_operation_status": requirement_operation_status,
+                "learning_requirement_operation_failure_reason": requirement_operation_failure_reason,
             },
         )
         workspace_state.normalize_package_state(package)
@@ -553,6 +580,8 @@ def _run_requirement_refinement_turn(
         learning_clarification=outcome.learning_clarification,
         requirement_stamp=outcome.history_stamp,
         requirement_cleared=outcome.active_requirement_sheet is None,
+        learning_requirement_operation_status=requirement_operation_status,
+        learning_requirement_operation_failure_reason=requirement_operation_failure_reason,
         evidence_bundle=turn.evidence_bundle,
         candidate_evidence_bundle=turn.candidate_evidence_bundle,
     )

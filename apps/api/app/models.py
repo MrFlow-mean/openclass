@@ -138,6 +138,7 @@ LearningRequirementChangeKind = Literal[
     "created",
     "updated",
     "completed",
+    "refinement_failed",
     "source_reference_confirmed",
     "source_reference_declined",
     "frozen",
@@ -164,6 +165,7 @@ BoardTaskRoute = Literal["write", "edit", "explain", "chat", "clarify_location",
 BoardTaskLocationStatus = Literal["missing", "selected", "resolved", "ambiguous", "content_absent"]
 BoardTaskLocationKind = Literal["target_range", "insertion_anchor", "unspecified"]
 BoardDocumentOperationStatus = Literal["none", "succeeded", "failed"]
+LearningRequirementOperationStatus = Literal["none", "succeeded", "failed"]
 BoardPatchRiskLevel = Literal["low", "medium", "high"]
 BoardPatchTargetScope = Literal["focus", "section", "whole_document", "append"]
 BoardPatchContentFormat = Literal["markdown", "plain_text"]
@@ -1326,6 +1328,8 @@ class ChatResponse(BaseModel):
     requirement_run_id: str | None = None
     requirement_version_id: str | None = None
     requirement_phase: LearningRequirementRunStatus | None = None
+    learning_requirement_operation_status: LearningRequirementOperationStatus = "none"
+    learning_requirement_operation_failure_reason: str | None = None
     board_task_sheet: BoardTaskRequirementSheet | None = None
     active_board_task_sheet: BoardTaskRequirementSheet | None = None
     board_task_run_id: str | None = None

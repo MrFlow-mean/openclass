@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from pathlib import Path
+from typing import Collection
 
 from app.models import RetrievalEvidence, SourceChapter, SourceIngestionRecord
 from app.services.image_ocr import extract_pdf_pages_text
@@ -23,6 +24,7 @@ def resolve_verified_chapter_evidence(
     limit: int,
     token_budget: int,
     page_limit: int,
+    source_ingestion_ids: Collection[str] | None = None,
 ) -> tuple[list[RetrievalEvidence], dict[str, object] | None]:
     match = _match_verified_chapter(
         source_store=source_store,
@@ -30,6 +32,7 @@ def resolve_verified_chapter_evidence(
         owner_user_id=owner_user_id,
         package_id=package_id,
         query=query,
+        source_ingestion_ids=source_ingestion_ids,
     )
     if match is None:
         return [], None
@@ -106,8 +109,12 @@ def _match_verified_chapter(
     owner_user_id: str,
     package_id: str,
     query: str,
+    source_ingestion_ids: Collection[str] | None = None,
 ) -> tuple[SourceIngestionRecord, SourceChapter, dict[str, object]] | dict[str, object] | None:
     ready_sources = source_store.ready_sources(owner_user_id=owner_user_id, package_id=package_id)
+    requested_source_ids = {source_id for source_id in source_ingestion_ids or [] if source_id}
+    if requested_source_ids:
+        ready_sources = [source for source in ready_sources if source.id in requested_source_ids]
     explicit_id = explicit_source_chapter_id(query)
     requested_number = explicit_chapter_number(query)
     candidates: list[tuple[SourceIngestionRecord, SourceChapter, int]] = []

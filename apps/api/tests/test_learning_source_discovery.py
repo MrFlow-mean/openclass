@@ -80,6 +80,7 @@ def _bundle() -> EvidenceBundle:
     evidence = RetrievalEvidence(
         source_ingestion_id="source_1",
         source_title="资料 A",
+        chapter_id="sourcechapter_old",
         section_path=["2.1 目标章节"],
         chunk_ids=["chunk_1"],
         excerpt="与学习需求相关的短摘录。",
@@ -96,7 +97,7 @@ def _bundle() -> EvidenceBundle:
     )
 
 
-def test_learning_source_discovery_previews_ready_sources_without_persisting() -> None:
+def test_learning_source_discovery_skips_ready_sources_without_user_intent() -> None:
     resolver = _DiscoveryResolver(
         ready=True,
         requested=False,
@@ -114,16 +115,14 @@ def test_learning_source_discovery_previews_ready_sources_without_persisting() -
         resolver=resolver,
     )
 
-    assert outcome.status == "matched"
-    assert outcome.attempted is True
-    assert outcome.provisional_bundle is True
+    assert outcome.status == "not_needed"
+    assert outcome.attempted is False
+    assert outcome.provisional_bundle is False
     assert outcome.persisted_this_turn is False
-    assert outcome.evidence_bundle is not None
-    assert outcome.evidence_bundle.requirement_run_id is None
+    assert outcome.evidence_bundle is None
     assert outcome.source_requested_by_user is False
-    assert outcome.metadata["auto_triggered"] is True
-    assert resolver.preview_calls[0]["purpose"] == "board_generation"
-    assert resolver.preview_calls[0]["topic_hint"] == "目标章节"
+    assert outcome.metadata["auto_triggered"] is False
+    assert resolver.preview_calls == []
     assert resolver.bind_calls == []
 
 
@@ -192,7 +191,7 @@ def test_learning_source_discovery_rolls_back_bundle_persisted_by_failed_turn() 
 def test_learning_source_discovery_reports_no_match_without_chatbot_generation() -> None:
     resolver = _DiscoveryResolver(
         ready=True,
-        requested=False,
+        requested=True,
         resolution=ResourceResolutionOutcome(status="no_match"),
     )
 
@@ -232,6 +231,131 @@ def test_learning_source_discovery_skips_when_no_sources_exist() -> None:
     assert outcome.status == "not_needed"
     assert outcome.attempted is False
     assert resolver.preview_calls == []
+
+
+def test_learning_source_discovery_ignores_unconfirmed_candidate_without_source_intent() -> None:
+    resolver = _DiscoveryResolver(
+        ready=True,
+        requested=False,
+        resolution=ResourceResolutionOutcome(status="matched", evidence_bundle=_bundle()),
+    )
+    candidate = _bundle().model_copy(update={"requirement_run_id": "requirement_run_1"})
+
+    outcome = discover_learning_sources(
+        owner_user_id="user_1",
+        package_id="package_1",
+        lesson_id="lesson_1",
+        retrieval_user_message="我高中毕业。",
+        requirements=_requirements(),
+        active_requirement_run_id="requirement_run_1",
+        pre_resolved_evidence=candidate,
+        resolver=resolver,
+    )
+
+    assert outcome.status == "not_needed"
+    assert outcome.attempted is False
+    assert outcome.evidence_bundle is None
+    assert outcome.metadata["ignored_unconfirmed_bundle_id"] == candidate.id
+    assert resolver.preview_calls == []
+
+
+def test_learning_source_discovery_reuses_user_confirmed_bundle_without_new_source_intent() -> None:
+    resolver = _DiscoveryResolver(
+        ready=False,
+        requested=False,
+        resolution=ResourceResolutionOutcome(status="no_match"),
+    )
+    confirmed = _bundle().model_copy(
+        update={
+            "requirement_run_id": "requirement_run_1",
+            "status": "confirmed",
+            "confirmed_by_user": True,
+        }
+    )
+
+    outcome = discover_learning_sources(
+        owner_user_id="user_1",
+        package_id="package_1",
+        lesson_id="lesson_1",
+        retrieval_user_message="我高中毕业。",
+        requirements=_requirements(),
+        active_requirement_run_id="requirement_run_1",
+        pre_resolved_evidence=confirmed,
+        resolver=resolver,
+    )
+
+    assert outcome.status == "matched"
+    assert outcome.attempted is False
+    assert outcome.evidence_bundle is confirmed
+    assert outcome.source_requested_by_user is False
+    assert outcome.metadata["reused_pre_refinement_evidence"] is True
+    assert "资料 A" in outcome.evidence_references
+    assert resolver.preview_calls == []
+
+
+def test_learning_source_discovery_does_not_reuse_confirmed_bundle_for_different_explicit_chapter() -> None:
+    resolver = _DiscoveryResolver(
+        ready=True,
+        requested=True,
+        resolution=ResourceResolutionOutcome(status="no_match"),
+    )
+    confirmed = _bundle().model_copy(
+        update={
+            "requirement_run_id": "requirement_run_1",
+            "status": "confirmed",
+            "confirmed_by_user": True,
+        }
+    )
+
+    outcome = discover_learning_sources(
+        owner_user_id="user_1",
+        package_id="package_1",
+        lesson_id="lesson_1",
+        retrieval_user_message=(
+            "请改用新选择的资料章节。\nsource_chapter_id=sourcechapter_new"
+        ),
+        requirements=_requirements(),
+        active_requirement_run_id="requirement_run_1",
+        source_requested_by_user=True,
+        requested_source_ingestion_ids=["source_1"],
+        pre_resolved_evidence=confirmed,
+        resolver=resolver,
+    )
+
+    assert outcome.status == "no_match"
+    assert outcome.evidence_bundle is None
+    assert len(resolver.preview_calls) == 1
+    assert resolver.preview_calls[0]["source_ingestion_ids"] == ("source_1",)
+
+
+def test_learning_source_discovery_does_not_reuse_bundle_from_another_scope() -> None:
+    resolver = _DiscoveryResolver(
+        ready=False,
+        requested=False,
+        resolution=ResourceResolutionOutcome(status="no_match"),
+    )
+    confirmed = _bundle().model_copy(
+        update={
+            "package_id": "package_other",
+            "requirement_run_id": "requirement_run_1",
+            "status": "confirmed",
+            "confirmed_by_user": True,
+        }
+    )
+
+    outcome = discover_learning_sources(
+        owner_user_id="user_1",
+        package_id="package_1",
+        lesson_id="lesson_1",
+        retrieval_user_message="我高中毕业。",
+        requirements=_requirements(),
+        active_requirement_run_id="requirement_run_1",
+        pre_resolved_evidence=confirmed,
+        resolver=resolver,
+    )
+
+    assert outcome.status == "not_needed"
+    assert outcome.evidence_bundle is None
 
 
 def test_learning_intake_reply_prompt_preserves_role_boundaries(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -274,7 +398,7 @@ def test_learning_intake_reply_prompt_preserves_role_boundaries(monkeypatch: pyt
     assert payload["source_discovery"]["requires_confirmation"] is True
 
 
-def test_blank_learning_requirement_searches_sources_before_requirement_and_chatbot(
+def test_blank_learning_requirement_searches_named_source_before_requirement_and_chatbot(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
@@ -353,14 +477,14 @@ def test_blank_learning_requirement_searches_sources_before_requirement_and_chat
 
     response = process_chat_on_lesson(
         lesson.id,
-        ChatRequest(message="我想学习 2.1 的核心内容。"),
+        ChatRequest(message="我想根据 Reference Book 学习 2.1 的核心内容。"),
         user_id=user_id,
     )
 
     assert call_order == ["initial", "resource", "requirement", "chatbot"]
     refinement_call = captured["refinement"]
     assert isinstance(refinement_call, dict)
-    assert refinement_call["include_stream_result"] is False
+    assert refinement_call["include_stream_result"] is True
     assert "Grounded body" in str(refinement_call["resource_summary"])
     final_reply_call = captured["final_reply"]
     assert isinstance(final_reply_call, dict)
@@ -370,7 +494,7 @@ def test_blank_learning_requirement_searches_sources_before_requirement_and_chat
     assert response.candidate_evidence_bundle is not None
     assert response.candidate_evidence_bundle.requirement_run_id == response.requirement_run_id
     assert response.active_requirement_sheet is not None
-    assert response.active_requirement_sheet.source_grounding.requested_by_user is False
+    assert response.active_requirement_sheet.source_grounding.requested_by_user is True
     saved = store.load_for_user(user_id).packages[0].lessons[0]
     commit = saved.history_graph.commits[-1]
     assert commit.metadata["assistant_message"] == response.chatbot_message

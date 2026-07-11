@@ -28,7 +28,11 @@ from app.services.source_reference_context import (
 )
 
 
-LearningIntakeTurnRoute = Literal["ordinary_chat", "requirement_refining"]
+LearningIntakeTurnRoute = Literal[
+    "ordinary_chat",
+    "requirement_refining",
+    "refinement_failed",
+]
 
 
 @dataclass(frozen=True)
@@ -57,20 +61,48 @@ def run_learning_intake_turn(
 ) -> LearningIntakeTurnOutcome:
     refinement_user_message = source_aware_user_message(request)
     retrieval_user_message = source_aware_user_message(request, include_locator=True)
+    source_selection = source_reference_selection(request)
     active_requirement = _active_requirement(lesson, history_state)
     active_requirement_run_id = _active_requirement_run_id(history_state)
-    active_evidence = (
-        resolver.latest_requirement_bundle(
+    confirmed_bundle_id = (
+        active_requirement.source_grounding.confirmed_bundle_id
+        if active_requirement is not None
+        else ""
+    )
+    active_evidence = None
+    if confirmed_bundle_id:
+        active_evidence = resolver.requirement_bundle_by_id(
+            owner_user_id=owner_user_id,
+            package_id=package_id,
+            lesson_id=lesson.id,
+            bundle_id=confirmed_bundle_id,
+        )
+    elif active_requirement_run_id:
+        active_evidence = resolver.latest_requirement_bundle(
             owner_user_id=owner_user_id,
             lesson_id=lesson.id,
             requirement_run_id=active_requirement_run_id,
         )
-        if active_requirement_run_id
-        else None
+    mentioned_source_ids = _ready_source_ids_mentioned(
+        resolver,
+        owner_user_id=owner_user_id,
+        package_id=package_id,
+        message=retrieval_user_message,
+    )
+    requested_source_ids = tuple(
+        dict.fromkeys(
+            source_id
+            for source_id in [
+                source_selection.source_ingestion_id if source_selection is not None else None,
+                *mentioned_source_ids,
+            ]
+            if source_id
+        )
     )
     source_requested = bool(
-        source_reference_selection(request)
+        source_selection
         or resolver.should_use_sources(retrieval_user_message)
+        or requested_source_ids
         or (active_requirement and active_requirement.source_grounding.requested_by_user)
     )
     initial_decision = course_ai.generate_initial_learning_work_mode(
@@ -95,10 +127,21 @@ def run_learning_intake_turn(
             conversation_summary=conversation_summary,
             user_message=refinement_user_message,
             history_state=history_state,
-            include_stream_result=False,
+            include_stream_result=True,
             source_requested_by_user=source_requested,
         )
-        if probe is None or probe.route == "ordinary_chat":
+        if probe is None or probe.route == "refinement_failed":
+            return LearningIntakeTurnOutcome(
+                route="refinement_failed",
+                initial_decision=None,
+                refinement=probe,
+                source_discovery=None,
+                chatbot_message="",
+                assistant_message_source="requirement_refinement_failed",
+                evidence_bundle=None,
+                candidate_evidence_bundle=None,
+            )
+        if probe.route == "ordinary_chat":
             return LearningIntakeTurnOutcome(
                 route="ordinary_chat",
                 initial_decision=None,
@@ -134,6 +177,7 @@ def run_learning_intake_turn(
         active_requirement_run_id=active_requirement_run_id,
         topic_hint=initial_decision.topic,
         source_requested_by_user=source_requested,
+        requested_source_ingestion_ids=requested_source_ids,
         pre_resolved_evidence=active_evidence,
         resolver=resolver,
     )
@@ -148,11 +192,22 @@ def run_learning_intake_turn(
             user_message=refinement_user_message,
             history_state=history_state,
             resource_summary=source_discovery.context_text,
-            include_stream_result=False,
+            include_stream_result=True,
             initial_work_mode_decision=initial_decision,
             source_requested_by_user=source_discovery.source_requested_by_user,
         )
-    if refinement is None or refinement.route == "ordinary_chat" or refinement.active_requirement_sheet is None:
+    if refinement is None or refinement.route == "refinement_failed":
+        return LearningIntakeTurnOutcome(
+            route="refinement_failed",
+            initial_decision=initial_decision,
+            refinement=refinement,
+            source_discovery=source_discovery,
+            chatbot_message="",
+            assistant_message_source="requirement_refinement_failed",
+            evidence_bundle=None,
+            candidate_evidence_bundle=None,
+        )
+    if refinement.route == "ordinary_chat" or refinement.active_requirement_sheet is None:
         return LearningIntakeTurnOutcome(
             route="ordinary_chat",
             initial_decision=initial_decision,
@@ -307,3 +362,23 @@ def _first_text(*values: str) -> str:
         if text:
             return text
     return ""
+
+
+def _ready_source_ids_mentioned(
+    resolver: ResourceResolver,
+    *,
+    owner_user_id: str,
+    package_id: str,
+    message: str,
+) -> tuple[str, ...]:
+    matcher = getattr(resolver, "ready_source_ids_mentioned", None)
+    if not callable(matcher):
+        return ()
+    matched = matcher(
+        owner_user_id=owner_user_id,
+        package_id=package_id,
+        message=message,
+    )
+    if not isinstance(matched, (list, tuple, set)):
+        return ()
+    return tuple(dict.fromkeys(str(source_id) for source_id in matched if str(source_id)))

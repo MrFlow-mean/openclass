@@ -5,8 +5,8 @@ from typing import Literal
 
 from app.models import EvidenceBundle, LearningRequirementSheet
 from app.services.evidence_workflow import evidence_reference_text
+from app.services.learning_source_reuse import can_reuse_requirement_bundle
 from app.services.resource_resolver import ResourceResolver, resource_resolver
-from app.services.source_chapter_evidence import explicit_chapter_number
 
 
 LearningSourceDiscoveryStatus = Literal[
@@ -32,7 +32,9 @@ class LearningSourceDiscoveryOutcome:
 
     @property
     def context_text(self) -> str:
-        return self.evidence_bundle.context_text if self.evidence_bundle is not None else self.evidence_references
+        # Requirement refinement only needs source identity, location, and a short excerpt.
+        # Full candidate text is reserved for the confirmed board-generation path.
+        return self.evidence_references
 
 
 def discover_learning_sources(
@@ -45,10 +47,95 @@ def discover_learning_sources(
     active_requirement_run_id: str | None,
     topic_hint: str = "",
     source_requested_by_user: bool = False,
+    requested_source_ingestion_ids: list[str] | tuple[str, ...] | None = None,
     pre_resolved_evidence: EvidenceBundle | None = None,
     resolver: ResourceResolver = resource_resolver,
 ) -> LearningSourceDiscoveryOutcome:
-    source_requested = source_requested_by_user or resolver.should_use_sources(retrieval_user_message)
+    scoped_source_ids = tuple(
+        dict.fromkeys(source_id for source_id in requested_source_ingestion_ids or [] if source_id)
+    )
+    if requested_source_ingestion_ids is None:
+        scoped_source_ids = _ready_source_ids_mentioned(
+            resolver,
+            owner_user_id=owner_user_id,
+            package_id=package_id,
+            message=retrieval_user_message,
+        )
+    source_requested = (
+        source_requested_by_user
+        or resolver.should_use_sources(retrieval_user_message)
+        or bool(scoped_source_ids)
+    )
+    reusable_bundle = (
+        pre_resolved_evidence
+        if can_reuse_requirement_bundle(
+            pre_resolved_evidence,
+            package_id=package_id,
+            lesson_id=lesson_id,
+            requirement_run_id=active_requirement_run_id,
+            retrieval_user_message=retrieval_user_message,
+            requested_source_ingestion_ids=scoped_source_ids,
+        )
+        else None
+    )
+    reusable_confirmed_bundle = (
+        reusable_bundle
+        if reusable_bundle is not None
+        and reusable_bundle.status == "confirmed"
+        and reusable_bundle.confirmed_by_user
+        else None
+    )
+    if not source_requested and reusable_confirmed_bundle is None:
+        return LearningSourceDiscoveryOutcome(
+            status="not_needed",
+            attempted=False,
+            evidence_bundle=None,
+            evidence_references="",
+            source_requested_by_user=False,
+            provisional_bundle=False,
+            persisted_this_turn=False,
+            metadata={
+                "status": "not_needed",
+                "attempted": False,
+                "source_requested": False,
+                "auto_triggered": False,
+                "purpose": "board_generation",
+                "reused_pre_refinement_evidence": False,
+                "ignored_unconfirmed_bundle_id": (
+                    reusable_bundle.id if reusable_bundle is not None else None
+                ),
+                "evidence_bundle_id": None,
+                "evidence_count": 0,
+                "resolution": None,
+                "requested_source_ingestion_ids": list(scoped_source_ids),
+            },
+        )
+
+    if reusable_confirmed_bundle is not None:
+        evidence_references = evidence_reference_text(reusable_confirmed_bundle)
+        return LearningSourceDiscoveryOutcome(
+            status="matched",
+            attempted=False,
+            evidence_bundle=reusable_confirmed_bundle,
+            evidence_references=evidence_references,
+            source_requested_by_user=source_requested,
+            provisional_bundle=False,
+            persisted_this_turn=False,
+            metadata={
+                "status": "matched",
+                "attempted": False,
+                "source_requested": source_requested,
+                "auto_triggered": False,
+                "purpose": "board_generation",
+                "reused_pre_refinement_evidence": True,
+                "provisional_bundle": False,
+                "evidence_bundle_id": reusable_confirmed_bundle.id,
+                "evidence_count": len(reusable_confirmed_bundle.evidence_items),
+                "resolution": reusable_confirmed_bundle.metadata.get("source_reference_resolution"),
+                "requested_source_ingestion_ids": list(scoped_source_ids),
+            },
+        )
+
     has_ready_sources = resolver.has_ready_sources(owner_user_id=owner_user_id, package_id=package_id)
     if not has_ready_sources:
         status: LearningSourceDiscoveryStatus = "no_ready_sources" if source_requested else "not_needed"
@@ -69,6 +156,7 @@ def discover_learning_sources(
                 "evidence_bundle_id": None,
                 "evidence_count": 0,
                 "resolution": None,
+                "requested_source_ingestion_ids": list(scoped_source_ids),
             },
         )
 
@@ -76,12 +164,8 @@ def discover_learning_sources(
     resolution_metadata: dict[str, object] | None = None
     provisional_bundle = False
     reused_pre_refinement_evidence = False
-    if _can_reuse_requirement_bundle(
-        pre_resolved_evidence,
-        requirement_run_id=active_requirement_run_id,
-        retrieval_user_message=retrieval_user_message,
-    ):
-        evidence_bundle = pre_resolved_evidence
+    if reusable_bundle is not None:
+        evidence_bundle = reusable_bundle
         status = "matched"
         reused_pre_refinement_evidence = True
     else:
@@ -93,6 +177,7 @@ def discover_learning_sources(
             requirements=requirements,
             topic_hint=topic_hint,
             purpose="board_generation",
+            source_ingestion_ids=scoped_source_ids,
         )
         evidence_bundle = resolution.evidence_bundle
         status = resolution.status
@@ -116,6 +201,7 @@ def discover_learning_sources(
         "preview_evidence_count": len(evidence_bundle.evidence_items) if evidence_bundle is not None else 0,
         "evidence_count": len(evidence_bundle.evidence_items) if evidence_bundle is not None else 0,
         "resolution": resolution_metadata,
+        "requested_source_ingestion_ids": list(scoped_source_ids),
     }
     return LearningSourceDiscoveryOutcome(
         status=status,
@@ -180,34 +266,24 @@ def rollback_learning_source_discovery(
     )
 
 
-def _can_reuse_requirement_bundle(
-    bundle: EvidenceBundle | None,
+def _ready_source_ids_mentioned(
+    resolver: ResourceResolver,
     *,
-    requirement_run_id: str | None,
-    retrieval_user_message: str,
-) -> bool:
-    if (
-        bundle is None
-        or not requirement_run_id
-        or bundle.purpose != "board_generation"
-        or bundle.requirement_run_id != requirement_run_id
-        or bundle.status not in {"candidate", "confirmed"}
-    ):
-        return False
-    requested_number = explicit_chapter_number(retrieval_user_message)
-    if not requested_number:
-        return True
-    evidence_numbers = {
-        str(number)
-        for item in bundle.evidence_items
-        for number in (
-            item.metadata.get("chapter_number"),
-            item.metadata.get("requested_chapter_number"),
-            explicit_chapter_number(" ".join(item.section_path)),
-        )
-        if number
-    }
-    return requested_number in evidence_numbers
+    owner_user_id: str,
+    package_id: str,
+    message: str,
+) -> tuple[str, ...]:
+    matcher = getattr(resolver, "ready_source_ids_mentioned", None)
+    if not callable(matcher):
+        return ()
+    matched = matcher(
+        owner_user_id=owner_user_id,
+        package_id=package_id,
+        message=message,
+    )
+    if not isinstance(matched, (list, tuple, set)):
+        return ()
+    return tuple(dict.fromkeys(str(source_id) for source_id in matched if str(source_id)))
 
 
 def _resolution_reference_text(metadata: dict[str, object] | None) -> str:

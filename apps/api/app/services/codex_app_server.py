@@ -16,6 +16,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from app.models import CodexAccountView, CodexLoginStartResponse, CodexLoginStatusResponse, CodexProviderStatus
+from app.services.ai_call_budget import AICallBudgetExceeded, current_ai_call_budget
 
 
 CODEX_DEFAULT_MODELS: tuple[tuple[str, str], ...] = (
@@ -30,6 +31,32 @@ _STATUS_CACHE_TTL_SECONDS = 10
 
 class CodexAppServerError(RuntimeError):
     pass
+
+
+def _deadline_for(
+    timeout_seconds: float,
+    *,
+    deadline_monotonic: float | None = None,
+) -> float:
+    deadline = (
+        deadline_monotonic
+        if deadline_monotonic is not None
+        else time.monotonic() + timeout_seconds
+    )
+    budget = current_ai_call_budget()
+    if budget is not None:
+        deadline = min(deadline, budget.deadline_monotonic)
+    return deadline
+
+
+def _remaining_before(deadline_monotonic: float, *, cap: float | None = None) -> float:
+    remaining = deadline_monotonic - time.monotonic()
+    if remaining <= 0:
+        budget = current_ai_call_budget()
+        if budget is not None:
+            budget.checkpoint()
+        raise CodexAppServerError("Timed out waiting for Codex app-server")
+    return min(remaining, cap) if cap is not None else remaining
 
 
 @dataclass
@@ -77,11 +104,20 @@ def _json_response_error(message: dict[str, Any]) -> CodexAppServerError:
 
 
 class CodexAppServerSession:
-    def __init__(self, *, timeout_seconds: int = CODEX_APP_SERVER_TIMEOUT_SECONDS) -> None:
+    def __init__(
+        self,
+        *,
+        timeout_seconds: float = CODEX_APP_SERVER_TIMEOUT_SECONDS,
+        deadline_monotonic: float | None = None,
+    ) -> None:
         binary = codex_binary_path()
         if not binary:
             raise CodexAppServerError("Codex CLI is not installed or OPENCLASS_CODEX_CLI_PATH is invalid")
         self.timeout_seconds = timeout_seconds
+        self.deadline_monotonic = _deadline_for(
+            timeout_seconds,
+            deadline_monotonic=deadline_monotonic,
+        )
         self.process = subprocess.Popen(
             [binary, "app-server"],
             stdin=subprocess.PIPE,
@@ -105,7 +141,7 @@ class CodexAppServerSession:
                     "version": "0.1.0",
                 }
             },
-            timeout_seconds=20,
+            timeout_seconds=_remaining_before(self.deadline_monotonic, cap=20),
         )
         self.notify("initialized", {})
 
@@ -114,7 +150,9 @@ class CodexAppServerSession:
             return
         self.process.terminate()
         try:
-            self.process.wait(timeout=3)
+            self.process.wait(
+                timeout=max(0, min(3, self.deadline_monotonic - time.monotonic()))
+            )
         except subprocess.TimeoutExpired:
             self.process.kill()
 
@@ -172,23 +210,27 @@ class CodexAppServerSession:
         method: str,
         params: dict[str, Any] | None = None,
         *,
-        timeout_seconds: int | None = None,
+        timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
         request_id = self._next_id
         self._next_id += 1
         self._write({"method": method, "id": request_id, "params": params or {}})
         return self.wait_for_response(request_id, timeout_seconds=timeout_seconds)
 
-    def wait_for_response(self, request_id: int, *, timeout_seconds: int | None = None) -> dict[str, Any]:
-        deadline = time.monotonic() + (timeout_seconds or self.timeout_seconds)
+    def wait_for_response(self, request_id: int, *, timeout_seconds: float | None = None) -> dict[str, Any]:
+        deadline = min(
+            self.deadline_monotonic,
+            time.monotonic() + (timeout_seconds or self.timeout_seconds),
+        )
         while time.monotonic() < deadline:
             if self.process.poll() is not None:
                 stderr = self._collect_stderr()
                 raise CodexAppServerError(f"Codex app-server exited unexpectedly{': ' + stderr if stderr else ''}")
             try:
-                message = self._messages.get(timeout=0.2)
+                message = self._messages.get(timeout=min(0.2, _remaining_before(deadline)))
             except queue.Empty:
                 continue
+            _remaining_before(deadline)
             if message.get("id") == request_id:
                 if "error" in message:
                     raise _json_response_error(message)
@@ -198,6 +240,7 @@ class CodexAppServerSession:
                 self._answer_server_request(message)
             else:
                 self.notifications.append(message)
+        _remaining_before(deadline)
         raise CodexAppServerError(f"Timed out waiting for Codex app-server response to {request_id}")
 
     def _collect_stderr(self) -> str:
@@ -215,11 +258,15 @@ def _read_account(refresh_token: bool = False) -> tuple[CodexAccountView | None,
 
 @dataclass
 class _ManagedSession:
-    timeout_seconds: int
+    timeout_seconds: float
+    deadline_monotonic: float
     session: CodexAppServerSession | None = None
 
     def __enter__(self) -> CodexAppServerSession:
-        self.session = CodexAppServerSession(timeout_seconds=self.timeout_seconds)
+        self.session = CodexAppServerSession(
+            timeout_seconds=self.timeout_seconds,
+            deadline_monotonic=self.deadline_monotonic,
+        )
         return self.session
 
     def __exit__(self, *_exc: object) -> None:
@@ -227,8 +274,19 @@ class _ManagedSession:
             self.session.close()
 
 
-def _managed_session(*, timeout_seconds: int) -> _ManagedSession:
-    return _ManagedSession(timeout_seconds=timeout_seconds)
+def _managed_session(
+    *,
+    timeout_seconds: float,
+    deadline_monotonic: float | None = None,
+) -> _ManagedSession:
+    deadline = _deadline_for(
+        timeout_seconds,
+        deadline_monotonic=deadline_monotonic,
+    )
+    return _ManagedSession(
+        timeout_seconds=_remaining_before(deadline),
+        deadline_monotonic=deadline,
+    )
 
 
 _cached_status: tuple[float, CodexProviderStatus] | None = None
@@ -250,7 +308,7 @@ def codex_provider_status(*, refresh: bool = False, include_rate_limits: bool = 
             configured=False,
             message="Set OPENCLASS_CODEX_APP_SERVER_ENABLED=true to enable the ChatGPT/Codex provider.",
         )
-        _cached_status = (now, status)
+        _cached_status = (time.monotonic(), status)
         return status
     if not available:
         status = CodexProviderStatus(
@@ -259,7 +317,7 @@ def codex_provider_status(*, refresh: bool = False, include_rate_limits: bool = 
             configured=False,
             message="Codex CLI is not installed or OPENCLASS_CODEX_CLI_PATH is invalid.",
         )
-        _cached_status = (now, status)
+        _cached_status = (time.monotonic(), status)
         return status
     try:
         account, _requires_openai_auth = _read_account(refresh_token=refresh)
@@ -275,8 +333,10 @@ def codex_provider_status(*, refresh: bool = False, include_rate_limits: bool = 
             rate_limits=rate_limits,
             message="" if account and account.type == "chatgpt" else "Sign in with ChatGPT/Codex to use subscription models.",
         )
-        _cached_status = (now, status)
+        _cached_status = (time.monotonic(), status)
         return status
+    except AICallBudgetExceeded:
+        raise
     except Exception as exc:
         status = CodexProviderStatus(
             enabled=True,
@@ -284,7 +344,7 @@ def codex_provider_status(*, refresh: bool = False, include_rate_limits: bool = 
             configured=False,
             message=str(exc),
         )
-        _cached_status = (now, status)
+        _cached_status = (time.monotonic(), status)
         return status
 
 
@@ -439,17 +499,30 @@ class CodexAppServerTextClient:
         user_prompt: str,
         schema: type[BaseModel],
     ) -> CodexParsedResponse:
+        budget = current_ai_call_budget()
         status = codex_provider_status(refresh=False)
         if not status.configured:
             raise CodexAppServerError(status.message or "ChatGPT/Codex provider is not signed in")
-        with _managed_session(timeout_seconds=CODEX_APP_SERVER_TIMEOUT_SECONDS) as session:
+        deadline_monotonic = (
+            budget.deadline_monotonic
+            if budget is not None
+            else time.monotonic() + CODEX_APP_SERVER_TIMEOUT_SECONDS
+        )
+        timeout_seconds = _remaining_before(deadline_monotonic)
+        with _managed_session(
+            timeout_seconds=timeout_seconds,
+            deadline_monotonic=deadline_monotonic,
+        ) as session:
             output_text, usage = _run_structured_turn(
                 session=session,
                 model=model,
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 schema=schema,
+                deadline_monotonic=deadline_monotonic,
             )
+        if budget is not None:
+            budget.validate_output(output_text)
         parsed = schema.model_validate(_extract_json(output_text))
         return CodexParsedResponse(output_parsed=parsed, output_text=output_text, usage=usage)
 
@@ -461,7 +534,16 @@ def _run_structured_turn(
     system_prompt: str,
     user_prompt: str,
     schema: type[BaseModel],
+    deadline_monotonic: float | None = None,
 ) -> tuple[str, Any]:
+    deadline = _deadline_for(
+        CODEX_APP_SERVER_TIMEOUT_SECONDS,
+        deadline_monotonic=(
+            deadline_monotonic
+            if deadline_monotonic is not None
+            else session.deadline_monotonic
+        ),
+    )
     with tempfile.TemporaryDirectory(prefix="openclass-codex-") as cwd:
         thread_result = session.request(
             "thread/start",
@@ -472,8 +554,9 @@ def _run_structured_turn(
                 "sandbox": "readOnly",
                 "serviceName": "openclass_codex_provider",
             },
-            timeout_seconds=30,
+            timeout_seconds=_remaining_before(deadline, cap=30),
         )
+        _remaining_before(deadline)
         thread = thread_result.get("thread") if isinstance(thread_result.get("thread"), dict) else {}
         thread_id = str(thread.get("id") or "")
         if not thread_id:
@@ -504,12 +587,12 @@ def _run_structured_turn(
         )
         final_text = ""
         usage: Any = None
-        deadline = time.monotonic() + CODEX_APP_SERVER_TIMEOUT_SECONDS
         while time.monotonic() < deadline:
             try:
-                message = session._messages.get(timeout=0.5)
+                message = session._messages.get(timeout=min(0.5, _remaining_before(deadline)))
             except queue.Empty:
                 continue
+            _remaining_before(deadline)
             if message.get("id") == request_id and "error" in message:
                 raise _json_response_error(message)
             if "method" in message and "id" in message and "result" not in message and "error" not in message:
@@ -531,6 +614,7 @@ def _run_structured_turn(
                 if final_text:
                     return final_text, usage
                 raise CodexAppServerError("Codex turn completed without an agent message")
+        _remaining_before(deadline)
         raise CodexAppServerError("Timed out waiting for Codex turn completion")
 
 

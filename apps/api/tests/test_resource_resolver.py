@@ -5,6 +5,7 @@ import pytest
 from app.models import (
     BoardTaskRequirementSheet,
     ChatRequest,
+    EvidenceBundle,
     SourceChapter,
     SourceIngestionRecord,
     SourceStructure,
@@ -179,7 +180,7 @@ def test_resource_resolver_builds_candidate_evidence_bundle(tmp_path) -> None:
 def test_learning_requirement_preview_does_not_persist_until_bound(tmp_path) -> None:
     store = SourceEvidenceStore(tmp_path / "openclass.sqlite3")
     store.upsert_notebook(owner_user_id="user_1", package_id="pkg_1", notebook_id="nb_1", title="资料容器")
-    store.save_source(
+    selected_source = store.save_source(
         SourceIngestionRecord(
             owner_user_id="user_1",
             package_id="pkg_1",
@@ -191,6 +192,18 @@ def test_learning_requirement_preview_does_not_persist_until_bound(tmp_path) -> 
             open_notebook_source_id="src_1",
         )
     )
+    store.save_source(
+        SourceIngestionRecord(
+            owner_user_id="user_1",
+            package_id="pkg_1",
+            title="资料 B",
+            source_type="web_url",
+            source_uri="https://example.com/b",
+            status="ready",
+            open_notebook_notebook_id="nb_1",
+            open_notebook_source_id="src_2",
+        )
+    )
     resolver = ResourceResolver(adapter=_FakeSearchAdapter(), store=store)
 
     preview = resolver.preview_for_learning_requirement(
@@ -199,6 +212,7 @@ def test_learning_requirement_preview_does_not_persist_until_bound(tmp_path) -> 
         lesson_id="lesson_1",
         user_message="结合上传资料补写目标概念。",
         requirements=None,
+        source_ingestion_ids=[selected_source.id],
     )
 
     assert preview.evidence_bundle is not None
@@ -234,6 +248,110 @@ def test_resource_resolver_detects_video_source_intent(tmp_path) -> None:
 
     assert resolver.should_use_sources("结合这个 YouTube 视频讲一下")
     assert resolver.should_use_sources("根据视频字幕解释这一段")
+    assert resolver.should_use_sources("use this file as the reference")
+    assert not resolver.should_use_sources("help me improve this profile")
+    assert not resolver.should_use_sources("recommend a documentary")
+
+
+def test_resource_resolver_detects_ready_source_name_without_subject_rules(tmp_path) -> None:
+    store = SourceEvidenceStore(tmp_path / "openclass.sqlite3")
+    named_source = store.save_source(
+        SourceIngestionRecord(
+            owner_user_id="user_1",
+            package_id="pkg_1",
+            title="General Learning Notes.pdf",
+            source_type="local_file",
+            file_name="general-learning-notes.pdf",
+            status="ready",
+        )
+    )
+    short_source = store.save_source(
+        SourceIngestionRecord(
+            owner_user_id="user_1",
+            package_id="pkg_1",
+            title="学习",
+            source_type="local_file",
+            file_name="学习.pdf",
+            status="ready",
+        )
+    )
+    resolver = ResourceResolver(adapter=_FakeSearchAdapter(), store=store)
+
+    assert resolver.message_mentions_ready_source(
+        owner_user_id="user_1",
+        package_id="pkg_1",
+        message="请根据 General Learning Notes 学习第三节。",
+    )
+    assert resolver.message_mentions_ready_source(
+        owner_user_id="user_1",
+        package_id="pkg_1",
+        message="打开 general-learning-notes.pdf。",
+    )
+    assert not resolver.message_mentions_ready_source(
+        owner_user_id="user_1",
+        package_id="pkg_1",
+        message="我高中毕业。",
+    )
+    assert not resolver.message_mentions_ready_source(
+        owner_user_id="user_1",
+        package_id="pkg_1",
+        message="我想学习函数。",
+    )
+    assert not resolver.message_mentions_ready_source(
+        owner_user_id="user_1",
+        package_id="pkg_1",
+        message="我想学习资料分析方法。",
+    )
+    assert resolver.ready_source_ids_mentioned(
+        owner_user_id="user_1",
+        package_id="pkg_1",
+        message="请使用《学习》这份资料。",
+    ) == [short_source.id]
+    assert resolver.ready_source_ids_mentioned(
+        owner_user_id="user_1",
+        package_id="pkg_1",
+        message="打开 学习.pdf。",
+    ) == [short_source.id]
+    assert resolver.ready_source_ids_mentioned(
+        owner_user_id="user_1",
+        package_id="pkg_1",
+        message="请根据 General Learning Notes 学习第三节。",
+    ) == [named_source.id]
+
+
+def test_requirement_bundle_by_id_validates_package_and_lesson(tmp_path) -> None:
+    store = SourceEvidenceStore(tmp_path / "openclass.sqlite3")
+    bundle = store.save_bundle(
+        EvidenceBundle(
+            owner_user_id="user_1",
+            package_id="pkg_1",
+            lesson_id="lesson_1",
+            requirement_run_id="run_1",
+            purpose="board_generation",
+            status="confirmed",
+            confirmed_by_user=True,
+        )
+    )
+    resolver = ResourceResolver(adapter=_FakeSearchAdapter(), store=store)
+
+    assert resolver.requirement_bundle_by_id(
+        owner_user_id="user_1",
+        package_id="pkg_1",
+        lesson_id="lesson_1",
+        bundle_id=bundle.id,
+    ) == bundle
+    assert resolver.requirement_bundle_by_id(
+        owner_user_id="user_1",
+        package_id="pkg_other",
+        lesson_id="lesson_1",
+        bundle_id=bundle.id,
+    ) is None
+    assert resolver.requirement_bundle_by_id(
+        owner_user_id="user_1",
+        package_id="pkg_1",
+        lesson_id="lesson_other",
+        bundle_id=bundle.id,
+    ) is None
 
 
 def test_resource_resolver_falls_back_to_local_chunk_index(tmp_path) -> None:
@@ -269,6 +387,105 @@ def test_resource_resolver_falls_back_to_local_chunk_index(tmp_path) -> None:
     assert bundle.evidence_items[0].source_ingestion_id == source.id
     assert bundle.evidence_items[0].open_notebook_source_id == ""
     assert "write back behavior" in bundle.evidence_items[0].expanded_text
+
+
+def test_named_ready_source_scope_limits_local_chunk_retrieval(tmp_path) -> None:
+    store = SourceEvidenceStore(tmp_path / "openclass.sqlite3")
+    structure_store = SourceStructureStore(tmp_path / "openclass.sqlite3")
+    sources: list[SourceIngestionRecord] = []
+    for file_name, body in [
+        ("Selected General Guide.md", "shared retrieval phrase selected content"),
+        ("Other General Guide.md", "shared retrieval phrase unrelated content"),
+    ]:
+        local_path = tmp_path / file_name
+        local_path.write_text(body, encoding="utf-8")
+        source = SourceIngestionRecord(
+            owner_user_id="user_1",
+            package_id="pkg_1",
+            title=file_name,
+            source_type="local_file",
+            file_name=file_name,
+            mime_type="text/markdown",
+            status="ready",
+            metadata={"local_source_path": str(local_path), "adapter": "openclass_local"},
+        )
+        store.save_source(source)
+        SourceStructureIndexer(store=structure_store).rebuild_structure(source)
+        sources.append(source)
+    resolver = ResourceResolver(adapter=_FakeSearchAdapter(), store=store, structure_store=structure_store)
+    message = "请根据 Selected General Guide 学习 shared retrieval phrase。"
+    mentioned_source_ids = resolver.ready_source_ids_mentioned(
+        owner_user_id="user_1",
+        package_id="pkg_1",
+        message=message,
+    )
+
+    outcome = resolver.preview_for_learning_requirement(
+        owner_user_id="user_1",
+        package_id="pkg_1",
+        lesson_id="lesson_1",
+        user_message=message,
+        requirements=None,
+        source_ingestion_ids=mentioned_source_ids,
+    )
+
+    assert mentioned_source_ids == [sources[0].id]
+    assert outcome.evidence_bundle is not None
+    assert {item.source_ingestion_id for item in outcome.evidence_bundle.evidence_items} == {sources[0].id}
+    assert "selected content" in outcome.evidence_bundle.context_text
+    assert "unrelated content" not in outcome.evidence_bundle.context_text
+
+
+def test_named_ready_source_scope_limits_verified_chapter_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "openclass.sqlite3"
+    store = SourceEvidenceStore(database_path)
+    structure_store = SourceStructureStore(database_path)
+    selected_source, selected_chapter = _save_outline_only_source(
+        tmp_path=tmp_path,
+        store=store,
+        structure_store=structure_store,
+        package_id="pkg_1",
+        title="Selected General Manual.pdf",
+        chapter_title="第四章 Selected topic",
+    )
+    _save_outline_only_source(
+        tmp_path=tmp_path,
+        store=store,
+        structure_store=structure_store,
+        package_id="pkg_1",
+        title="Other General Manual.pdf",
+        chapter_title="第四章 Other topic",
+    )
+    monkeypatch.setattr(
+        source_chapter_evidence_module,
+        "extract_pdf_pages_text",
+        lambda *_args, **_kwargs: "第四章 Selected topic\nselected chapter body",
+    )
+    resolver = ResourceResolver(adapter=_FakeSearchAdapter(), store=store, structure_store=structure_store)
+    message = "请根据 Selected General Manual 学习第四章。"
+    mentioned_source_ids = resolver.ready_source_ids_mentioned(
+        owner_user_id="user_1",
+        package_id="pkg_1",
+        message=message,
+    )
+
+    outcome = resolver.preview_for_learning_requirement(
+        owner_user_id="user_1",
+        package_id="pkg_1",
+        lesson_id="lesson_1",
+        user_message=message,
+        requirements=None,
+        source_ingestion_ids=mentioned_source_ids,
+    )
+
+    assert mentioned_source_ids == [selected_source.id]
+    assert outcome.status == "matched"
+    assert outcome.evidence_bundle is not None
+    assert outcome.evidence_bundle.evidence_items[0].source_ingestion_id == selected_source.id
+    assert outcome.evidence_bundle.evidence_items[0].chapter_id == selected_chapter.id
 
 
 def test_explicit_chapter_locator_uses_unique_source_title_and_scan_ocr(
@@ -464,7 +681,7 @@ def test_blank_requirement_discovers_matched_source_before_visible_reply(
         user_id="user_1",
     )
 
-    assert captured["refinement"]["include_stream_result"] is False
+    assert captured["refinement"]["include_stream_result"] is True
     assert captured["discovery_reply"]["discovery_status"] == "matched"
     assert "需求收敛前读取到的扫描正文" in str(captured["discovery_reply"]["evidence_references"])
     assert response.chatbot_message == "我找到了资料中的第四章“核心方法”，先从章内选择一个起点。"

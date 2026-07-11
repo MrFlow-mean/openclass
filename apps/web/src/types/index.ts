@@ -933,6 +933,8 @@ export interface ChatResponse {
   requirement_run_id?: string | null;
   requirement_version_id?: string | null;
   requirement_phase?: LearningRequirementRunStatus | null;
+  learning_requirement_operation_status?: "none" | "succeeded" | "failed";
+  learning_requirement_operation_failure_reason?: string | null;
   board_task_sheet?: BoardTaskRequirementSheet | null;
   active_board_task_sheet?: BoardTaskRequirementSheet | null;
   board_task_run_id?: string | null;

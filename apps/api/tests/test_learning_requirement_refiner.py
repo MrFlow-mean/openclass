@@ -8,11 +8,13 @@ from app.services import learning_intake_policy
 from app.services import openai_course_ai as openai_course_ai_module
 from app.services import workspace_state
 from app.services.chat_service import process_chat_on_lesson
+from app.services.blank_board_requirement_mapping import build_blank_board_requirement_state
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
 from app.services.lesson_factory import create_empty_lesson
 from app.services.openai_course_ai import (
     BlankBoardRequirementRefinement,
     BlankBoardRequirementRefinementResult,
+    BlankBoardRequirementTurn,
     BoardDocumentEditResult,
     BoardTaskRequirementRefinement,
     ChatbotReply,
@@ -43,14 +45,23 @@ def test_blank_board_refinement_prompt_requires_rich_broad_topic_guidance(
     ai = OpenAICourseAI()
     captured: dict[str, object] = {}
 
-    def _fake_parse(role, system_prompt, user_prompt, schema, **kwargs):
+    def _fake_parse_response(role, system_prompt, user_prompt, schema, **kwargs):
         captured["role"] = role
         captured["system_prompt"] = system_prompt
         captured["user_prompt"] = user_prompt
         captured["schema"] = schema
-        return BlankBoardRequirementRefinement(route="ordinary_chat", chatbot_message="收到。")
+        captured["kwargs"] = kwargs
+        return openai_course_ai_module.ParsedAIResponse(
+            output_parsed=BlankBoardRequirementTurn(
+                route="requirement_refining",
+                chatbot_message="先确认你的起点。",
+                work_mode="knowledge_board",
+                granularity="broad_topic",
+                learning_goal="一个领域",
+            )
+        )
 
-    monkeypatch.setattr(ai, "_parse", _fake_parse)
+    monkeypatch.setattr(ai, "_parse_response", _fake_parse_response)
 
     ai.generate_blank_board_requirement_refinement(
         board_document_state={"status": "empty"},
@@ -59,50 +70,70 @@ def test_blank_board_refinement_prompt_requires_rich_broad_topic_guidance(
     )
 
     assert captured["role"] == "pm"
-    assert captured["schema"] is BlankBoardRequirementRefinement
+    assert captured["schema"] is BlankBoardRequirementTurn
     system_prompt = str(captured["system_prompt"])
-    assert "开场承接 + 简短学习地图 + 2-5 个入口选项 + 一个推荐入口 + 推荐理由 + 一个绑定推荐入口的主问题" in system_prompt
-    assert "学习地图和入口选项必须真的写进 chatbot_message" in system_prompt
-    assert "knowledge_board + broad_topic" in system_prompt
-    assert "纯新手、零基础、入门、先了解一下" in system_prompt
-    assert "不要强制追问考试、面试、工作、赚钱、项目或现实产出场景" in system_prompt
-    assert "宽泛复合领域且用户起点未知" in system_prompt
-    assert "学习者起点/背景的选择卡片" in system_prompt
-    assert "即使没有明确说“你安排”" in system_prompt
-    assert "不要再让用户在工具、语法、框架、测试或项目实操等后续模块里选择" in system_prompt
-    assert "为我指导、你安排、帮我安排" in system_prompt
-    assert "granularity=single_knowledge_point" in system_prompt
-    assert "ready_for_board=true" in system_prompt
     assert "通用 learning intake 策略" in system_prompt
-    assert "board_workflow 必须记录为 generate_from_scratch" in system_prompt
     assert "用户新增信息正在收敛哪一类不确定项" in system_prompt
     assert "背景 + 宽泛学习方向" in system_prompt
     assert "3-5 个 A/B/C/D 当前水平画像" in system_prompt
     assert "entry_point_options 同步记录这些水平卡片" in system_prompt
-    assert "最近经历法" in system_prompt
-    assert "卡点定位法" in system_prompt
     assert "优先归为 practice_artifact" in system_prompt
-    assert "练习型需求中，如果用户已经说清想练的内容，但没有说明当前水平" in system_prompt
-    assert "自然标题、一个降低选择压力的副标题" in system_prompt
-    assert "4-6 个 A/B/C 卡片选项" in system_prompt
-    assert "不要默认用户从基础练起" in system_prompt
+    assert "不把候选资料当成用户已确认资料" in system_prompt
     payload = json.loads(str(captured["user_prompt"]))
-    assert payload["response_contract"]["board_workflow"] == "固定写 generate_from_scratch，表示从 0 生成板书前的学习需求清单。"
-    assert "开场承接" in payload["response_contract"]["chatbot_message"]
-    assert "推荐理由" in payload["response_contract"]["chatbot_message"]
-    assert "必须和用户当前表达形态匹配" in payload["response_contract"]["guidance_strategy"]
-    assert "背景 + 宽泛目标但当前水平未知" in payload["response_contract"]["guidance_strategy"]
-    assert "练习需求缺当前水平时优先用 choice_cards" in payload["response_contract"]["guidance_strategy"]
-    assert "当前水平画像卡片" in payload["response_contract"]["entry_point_options"]
-    assert "当前技能水平卡片" in payload["response_contract"]["entry_point_options"]
-    assert "选择最像自己的状态" in payload["response_contract"]["next_question"]
-    assert "当前水平" in payload["response_contract"]["next_question"]
-    assert "纯新手入门" in payload["response_contract"]["next_question"]
-    assert "已会/未会" in system_prompt
-    assert "学习主题和明确结构范围" in system_prompt
-    assert "教材或课程名称缺失不影响先记录这些事实" in system_prompt
-    assert "已提供唯一匹配的可信章节" in system_prompt
-    assert "章节编号、节编号、章节标题或标题路径时必须记录" in payload["response_contract"]["boundary"]
+    assert "response_contract" not in payload
+    assert payload["existing_requirement_state"] is None
+    assert payload["existing_clarification_state"] is None
+    assert payload["source_reference_summary"] == "无"
+    assert captured["kwargs"] == {
+        "visible_stream_field": "chatbot_message",
+        "disable_stream_repair": True,
+    }
+
+
+def test_compact_second_turn_keeps_existing_practice_goal_and_scenario(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ai = OpenAICourseAI()
+    lesson = create_empty_lesson("练习页")
+    assert lesson.learning_requirements is not None
+    existing = lesson.learning_requirements.model_copy(
+        update={
+            "learning_goal": "练习一个已学技能",
+            "success_criteria": "用于一个已确认场景",
+            "work_mode": "practice_artifact",
+            "granularity": "practice_artifact",
+        }
+    )
+    monkeypatch.setattr(
+        ai,
+        "_parse_response",
+        lambda *args, **kwargs: openai_course_ai_module.ParsedAIResponse(
+            output_parsed=BlankBoardRequirementTurn(
+                route="requirement_refining",
+                work_mode="practice_artifact",
+                granularity="practice_artifact",
+                current_level="高中毕业",
+            )
+        ),
+    )
+
+    result = ai.generate_blank_board_requirement_refinement(
+        board_document_state={"status": "empty"},
+        conversation_summary="",
+        user_message="我高中毕业",
+        existing_requirement_sheet=existing.model_dump(mode="json"),
+    )
+
+    assert isinstance(result, BlankBoardRequirementRefinement)
+    assert result.learning_goal == "练习一个已学技能"
+    assert result.current_level == "高中毕业"
+    assert result.target_scenario == "用于一个已确认场景"
+    state = build_blank_board_requirement_state(
+        lesson=lesson,
+        base_requirement=existing,
+        result=result,
+    )
+    assert state.requirement.success_criteria == "用于一个已确认场景"
 
 
 def test_learning_intake_policy_is_generic_and_covers_strategy_matrix() -> None:
@@ -542,7 +573,7 @@ def test_empty_board_refinement_keeps_pm_draft_internal_and_persists_chatbot_rep
     final_reply = "这段才是 Chatbot 的最终回复。"
 
     def _fake_refinement(**kwargs):
-        assert kwargs["include_stream_result"] is False
+        assert kwargs["include_stream_result"] is True
         emit_ai_stream_event(
             {
                 "type": "field_delta",
@@ -619,10 +650,9 @@ def test_empty_board_refinement_parse_failure_discards_pm_draft_without_requirem
     monkeypatch.setattr(workspace_state, "STORE", store)
     lesson = _seed_empty_workspace(store, user_id)
     pm_draft = "结构化清单失败前产生的内部草稿。"
-    final_reply = "这轮需求没有成功记录，我们可以继续正常交流。"
 
     def _fake_refinement(**kwargs):
-        assert kwargs["include_stream_result"] is False
+        assert kwargs["include_stream_result"] is True
         emit_ai_stream_event(
             {
                 "type": "field_delta",
@@ -653,7 +683,7 @@ def test_empty_board_refinement_parse_failure_discards_pm_draft_without_requirem
     monkeypatch.setattr(
         openai_course_ai,
         "generate_basic_chat_reply",
-        lambda **kwargs: ChatbotReply(chatbot_message=final_reply),
+        lambda **kwargs: pytest.fail("structured refinement failure must not fall back to ordinary chat"),
     )
 
     response = process_chat_on_lesson(
@@ -662,12 +692,131 @@ def test_empty_board_refinement_parse_failure_discards_pm_draft_without_requirem
         user_id=user_id,
     )
 
-    assert response.chatbot_message == final_reply
+    assert response.chatbot_message == ""
     assert response.active_requirement_sheet is None
+    assert response.learning_requirement_operation_status == "failed"
+    assert response.learning_requirement_operation_failure_reason == (
+        "本轮学习需求没有成功更新，请重试刚才的输入。"
+    )
     assert store.list_learning_requirement_versions(user_id, lesson.id) == []
+    assert store.list_learning_requirement_events(user_id, lesson.id) == []
     commit = store.load_for_user(user_id).packages[0].lessons[0].history_graph.commits[-1]
-    assert commit.metadata["assistant_message"] == final_reply
+    assert commit.metadata["refinement_route"] == "refinement_failed"
+    assert commit.metadata["assistant_message"] == ""
+    assert commit.metadata["assistant_message_source"] == "chatbot_empty"
     assert commit.metadata["visible_reply_owner"] == "chatbot"
+    discovery = commit.metadata["guided_requirement_discovery"]
+    assert discovery["structured_parse_failed"] is True
+    assert discovery["requirement_update_skipped"] is True
+    assert discovery["discarded_unvalidated_pm_draft"] is True
+
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_blank_board_requirement_refinement",
+        lambda **kwargs: BlankBoardRequirementRefinementResult(
+            result=None,
+            failure_kind="deadline_exceeded",
+            failure_reason="AI call deadline exceeded",
+        ),
+    )
+    timeout_response = process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="继续记录我的学习背景"),
+        user_id=user_id,
+    )
+    assert timeout_response.learning_requirement_operation_status == "failed"
+    timeout_commit = store.load_for_user(user_id).packages[0].lessons[0].history_graph.commits[-1]
+    timeout_discovery = timeout_commit.metadata["guided_requirement_discovery"]
+    assert timeout_discovery["failure_code"] == "requirement_refinement_deadline_exceeded"
+    assert timeout_discovery["failure_detail"] == "AI call deadline exceeded"
+    assert timeout_discovery["structured_parse_failed"] is False
+
+
+def test_empty_board_refinement_failure_keeps_active_requirement_version_and_records_event(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    user_id = "user_blank_active_refinement_failed"
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    lesson = _seed_empty_workspace(store, user_id)
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_initial_learning_work_mode",
+        lambda **kwargs: InitialLearningWorkModeDecision(
+            route="learning_intake",
+            work_mode="narrow_topic",
+            granularity="broad_topic",
+            topic="一个宽泛主题",
+        ),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_blank_board_requirement_refinement",
+        lambda **kwargs: BlankBoardRequirementRefinement(
+            route="requirement_refining",
+            chatbot_message="先确认学习起点。",
+            progress=40,
+            summary="用户想学习一个宽泛主题。",
+            work_mode="knowledge_board",
+            granularity="broad_topic",
+            learning_goal="一个宽泛主题",
+            missing_items=["具体学习入口"],
+            next_question="你想从哪个具体概念开始？",
+            ready_for_board=False,
+        ),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_learning_intake_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="你想从哪个具体概念开始？"),
+    )
+
+    first_response = process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="我想学一个宽泛主题"),
+        user_id=user_id,
+    )
+    versions_before = store.list_learning_requirement_versions(user_id, lesson.id)
+    events_before = store.list_learning_requirement_events(user_id, lesson.id)
+    assert len(versions_before) == 1
+
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_blank_board_requirement_refinement",
+        lambda **kwargs: BlankBoardRequirementRefinementResult(
+            result=None,
+            visible_chat_buffer="未校验的需求管理器草稿。",
+            visible_chat_was_streamed=True,
+            structured_parse_failed=True,
+        ),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_basic_chat_reply",
+        lambda **kwargs: pytest.fail("active refinement failure must not invoke ordinary chat"),
+    )
+
+    failed_response = process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="我高中毕业"),
+        user_id=user_id,
+    )
+
+    versions_after = store.list_learning_requirement_versions(user_id, lesson.id)
+    events_after = store.list_learning_requirement_events(user_id, lesson.id)
+    assert versions_after == versions_before
+    assert len(events_after) == len(events_before) + 1
+    assert events_after[-1]["event_type"] == "refinement_failed"
+    failure_metadata = json.loads(events_after[-1]["metadata_json"])
+    assert failure_metadata["discarded_unvalidated_pm_draft"] is True
+    assert failed_response.requirement_run_id == first_response.requirement_run_id
+    assert failed_response.requirement_version_id == first_response.requirement_version_id
+    assert failed_response.requirement_phase == first_response.requirement_phase
+    assert failed_response.active_requirement_sheet == first_response.active_requirement_sheet
+    assert failed_response.learning_clarification == first_response.learning_clarification
+    assert failed_response.chatbot_message == ""
+    assert failed_response.learning_requirement_operation_status == "failed"
 
 
 def test_non_empty_board_uses_existing_board_task_entry(
