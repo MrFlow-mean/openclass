@@ -260,13 +260,29 @@ export function useBoardDraft({
       if (activeLessonRef.current?.id !== lessonId) {
         return false;
       }
+      const currentDocument = draftDocumentRef.current;
+      const sameVisiblePreview =
+        isPreviewingRef.current &&
+        currentDocument?.id === document.id &&
+        visibleDocumentText(currentDocument) === visibleDocumentText(document);
+      if (sameVisiblePreview) {
+        return true;
+      }
       clearAutoSaveTimer();
       documentDraftVersionRef.current += 1;
       draftDocumentRef.current = document;
       isDocumentDirtyRef.current = false;
       isPreviewingRef.current = true;
       ignoredStreamingPreviewRef.current = document;
-      setDraftDocument(document);
+      setDraftDocument((current) => {
+        if (
+          current?.id === document.id &&
+          visibleDocumentText(current) === visibleDocumentText(document)
+        ) {
+          return current;
+        }
+        return document;
+      });
       setIsDocumentDirty(false);
       setIsPreviewing(true);
       setAutoSaveStatus("idle");

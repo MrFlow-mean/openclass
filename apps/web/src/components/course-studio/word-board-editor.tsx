@@ -801,8 +801,14 @@ export function WordBoardEditor({
       editor.setEditable(!readOnly);
     }
     const incomingHtml = document.content_html.trim();
+    const incomingPlainText = (document.content_text || incomingHtml.replace(/<[^>]+>/g, " "))
+      .replace(/\s+/g, " ")
+      .trim();
+    const editorPlainText = editor.getText({ textSerializers: MATH_TEXT_SERIALIZERS }).replace(/\s+/g, " ").trim();
     const matchesIncomingDocument = documentJson
       ? JSON.stringify(editor.getJSON()) === JSON.stringify(documentJson)
+      : readOnly
+        ? incomingPlainText === editorPlainText
       : incomingHtml
         ? editor.getHTML() === incomingHtml
         : false;
