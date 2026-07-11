@@ -307,9 +307,17 @@ def _preserve_active_learning_intent(
     if decision.route == "learning_intake" and active_requirement is not None:
         return decision.model_copy(
             update={
-                "work_mode": active_requirement.work_mode or decision.work_mode,
-                "granularity": active_requirement.granularity or decision.granularity,
-                "topic": active_requirement.learning_goal or decision.topic,
+                "work_mode": (
+                    decision.work_mode
+                    if decision.work_mode != "unknown"
+                    else active_requirement.work_mode or "unknown"
+                ),
+                "granularity": (
+                    decision.granularity
+                    if decision.granularity != "unclear"
+                    else active_requirement.granularity or "unclear"
+                ),
+                "topic": decision.topic.strip() or active_requirement.learning_goal,
             }
         )
     if not source_requested:

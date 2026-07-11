@@ -97,6 +97,34 @@ class _CourseAI:
         return ChatbotReply(chatbot_message="基于资料生成的唯一回复。")
 
 
+def test_active_broad_requirement_does_not_override_new_concrete_entry_decision() -> None:
+    active_requirement = build_requirements("一个宽泛方向").model_copy(
+        update={
+            "learning_goal": "一个宽泛方向",
+            "work_mode": "knowledge_board",
+            "granularity": "broad_topic",
+        }
+    )
+    decision = InitialLearningWorkModeDecision(
+        route="learning_intake",
+        work_mode="knowledge_board",
+        granularity="single_knowledge_point",
+        topic="一个具体学习入口",
+    )
+
+    preserved = orchestrator._preserve_active_learning_intent(
+        decision,
+        active_requirement=active_requirement,
+        source_requested=False,
+        user_message="就从这个入口开始",
+    )
+
+    assert preserved is not None
+    assert preserved.work_mode == "knowledge_board"
+    assert preserved.granularity == "single_knowledge_point"
+    assert preserved.topic == "一个具体学习入口"
+
+
 def test_ordinary_chat_skips_source_discovery_and_requirement_manager(monkeypatch) -> None:
     call_order: list[str] = []
     resolver = _Resolver(call_order, ready=True)
