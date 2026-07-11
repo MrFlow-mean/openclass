@@ -211,6 +211,9 @@ function extractBlockMath(text: string) {
     if (extracted) {
       const key = String(placeholderIndex);
       placeholders[key] = extracted.latex;
+      if (output.length && output[output.length - 1]?.trim()) {
+        output.push("");
+      }
       output.push(BLOCK_MATH_PLACEHOLDER.replace("{index}", key));
       output.push("");
       placeholderIndex += 1;
