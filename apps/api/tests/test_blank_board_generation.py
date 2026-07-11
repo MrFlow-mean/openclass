@@ -231,9 +231,11 @@ def test_blank_board_generation_uses_confirmed_evidence_bundle(
     assert consumed.status == "consumed"
 
 
+@pytest.mark.parametrize("teaching_start_message", ["好", "开始为我讲解"])
 def test_confirm_after_board_generation_teaches_from_first_section(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
+    teaching_start_message: str,
 ) -> None:
     store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
     monkeypatch.setattr(workspace_state, "STORE", store)
@@ -301,7 +303,7 @@ def test_confirm_after_board_generation_teaches_from_first_section(
 
     response = process_chat_on_lesson(
         lesson_id,
-        ChatRequest(message="好"),
+        ChatRequest(message=teaching_start_message),
         user_id=TEST_USER_ID,
     )
 

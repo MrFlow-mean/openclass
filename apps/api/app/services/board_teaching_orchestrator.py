@@ -113,7 +113,7 @@ def _is_start_from_beginning_request(message: str) -> bool:
     compact = _compact_intent_text(message)
     if _is_negative_teaching_reply(message):
         return False
-    return bool(re.search(r"(从头|从开头|从第一节|按顺序|依次|开始讲|开始讲解)", compact))
+    return bool(re.search(r"(从头|从开头|从第一节|按顺序|依次|开始(?:为我|给我|帮我)?讲(?:解)?)", compact))
 
 
 def _is_continue_teaching_request(message: str) -> bool:
