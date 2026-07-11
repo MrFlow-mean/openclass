@@ -602,6 +602,12 @@ export interface AuthSessionResponse {
   user: UserView;
 }
 
+export interface EmailCodeRequestResponse {
+  challenge_id: string;
+  expires_in_seconds: number;
+  message: string;
+}
+
 export interface AuthIdentityView {
   provider: string;
   provider_label: string;
