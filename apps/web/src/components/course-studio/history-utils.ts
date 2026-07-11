@@ -111,12 +111,9 @@ const DISPLAYABLE_CHAT_COMMIT_KINDS = new Set([
   "board_task_requirement_refinement",
 ]);
 
-function isDisplayableAssistantContent(content: string | null, source?: string | null): content is string {
+function isDisplayableAssistantContent(content: string | null): content is string {
   const text = content?.trim();
   if (!text) {
-    return false;
-  }
-  if (source && !["ai", "chatbot", "board_document_editor_ai", "workflow"].includes(source)) {
     return false;
   }
   return !LEGACY_NON_AI_ASSISTANT_PATTERNS.some((pattern) => text.includes(pattern));
@@ -305,7 +302,7 @@ export function buildLessonMessagesFromHistory(lesson: Lesson, commitId?: string
     const assistantMessageSource = metadataText(commit, "assistant_message_source");
     const legacyChatbotGeneratedDuringHandoff =
       metadataLearningClarificationForcedStart(commit) && assistantMessageSource === "ai";
-    if (!legacyChatbotGeneratedDuringHandoff && isDisplayableAssistantContent(assistantMessage, assistantMessageSource)) {
+    if (!legacyChatbotGeneratedDuringHandoff && isDisplayableAssistantContent(assistantMessage)) {
       messages.push(
         createChatMessage(
           "assistant",

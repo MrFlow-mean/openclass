@@ -223,3 +223,57 @@ test("keeps the learning requirement failure visible when the chat final event i
 
   await expect(page.getByRole("alert").filter({ hasText: failureReason })).toBeVisible();
 });
+
+test("restores persisted learning-intake assistant replies after a page refresh", async ({ page }) => {
+  const unique = Date.now();
+  const userMessage = `我想学习一个新知识点 ${unique}`;
+  const assistantMessage = `这是已持久化的学习需求回复 ${unique}`;
+  let persistedPackage: Record<string, unknown> | null = null;
+
+  await enterAsGuest(page);
+  await createPackageFromHome(page, `聊天历史恢复测试课程包 ${unique}`);
+  await createLessonFromEmptyStudio(page, `聊天历史恢复测试页面 ${unique}`);
+
+  await page.route("**/api/course-package", async (route) => {
+    if (!persistedPackage) {
+      const authHeader = route.request().headers().authorization;
+      const upstream = await page.request.get(`${API_BASE_URL}/api/course-package`, {
+        headers: authHeader ? { Authorization: authHeader } : undefined,
+      });
+      const nextPackage = (await upstream.json()) as Record<string, unknown>;
+      persistedPackage = nextPackage;
+      const lesson = (nextPackage.lessons as Array<Record<string, unknown>>)[0];
+      const historyGraph = lesson.history_graph as {
+        commits: Array<Record<string, unknown>>;
+        current_branch: string;
+        branches: Record<string, { head_commit_id: string | null }>;
+      };
+      const branch = historyGraph.branches[historyGraph.current_branch];
+      const commitId = `commit_persisted_learning_intake_${unique}`;
+      historyGraph.commits.push({
+        id: commitId,
+        label: "Learning requirement refinement",
+        message: "Recorded a learning-intake conversation turn",
+        branch_name: historyGraph.current_branch,
+        created_at: new Date().toISOString(),
+        parent_ids: branch.head_commit_id ? [branch.head_commit_id] : [],
+        operations: [],
+        snapshot: lesson.board_document,
+        metadata: {
+          kind: "learning_requirement_refinement",
+          user_message: userMessage,
+          assistant_message: assistantMessage,
+          assistant_message_source: "chatbot_learning_intake",
+        },
+      });
+      branch.head_commit_id = commitId;
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(persistedPackage) });
+  });
+
+  await page.reload();
+
+  const chatSidebar = page.getByRole("complementary");
+  await expect(chatSidebar.getByText(userMessage)).toBeVisible();
+  await expect(chatSidebar.getByText(assistantMessage)).toBeVisible();
+});
