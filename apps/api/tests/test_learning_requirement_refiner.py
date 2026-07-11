@@ -1032,6 +1032,8 @@ def test_pure_novice_intro_lands_foundation_entry_without_requiring_external_sce
             granularity="single_knowledge_point",
             learning_goal="这个领域的基础概念与整体组成",
             current_level="零基础纯新手",
+            current_level_source="user_statement",
+            current_level_evidence="纯新手入门",
             known_background="用户明确表示纯新手入门。",
             guidance_strategy="recommended_entry",
             learning_map_summary="纯新手先理解领域基础概念与整体组成。",
@@ -1164,6 +1166,8 @@ def test_delegated_pure_novice_intro_lands_first_lesson_ready(
             granularity="single_knowledge_point",
             learning_goal="这个领域由哪几部分组成",
             current_level="零基础纯新手",
+            current_level_source="user_statement",
+            current_level_evidence="纯入门新手",
             known_background="用户明确表示纯入门新手，并要求系统指导。",
             target_depth="入门了解 / 建立领域地图",
             success_criteria="理解领域组成，并确定后续学习入口",
@@ -1370,6 +1374,8 @@ def test_choice_card_selection_updates_level_and_recommends_entry(
             granularity="broad_topic",
             learning_goal="基础入口的直观含义",
             current_level="有一些相关基础，但还没系统学过",
+            current_level_source="user_statement",
+            current_level_evidence="有一些相关基础，但还没系统学过",
             known_background="用户选择了当前水平卡片 B。",
             guidance_strategy="starting_point",
             learning_map_summary="先用直观含义连接已有基础，再进入严格定义和应用边界。",
@@ -1385,7 +1391,7 @@ def test_choice_card_selection_updates_level_and_recommends_entry(
 
     response = process_chat_on_lesson(
         lesson.id,
-        ChatRequest(message="选 B。"),
+        ChatRequest(message="我有一些相关基础，但还没系统学过。"),
         user_id=user_id,
     )
 
@@ -1398,6 +1404,146 @@ def test_choice_card_selection_updates_level_and_recommends_entry(
     assert discovery["guidance_strategy"] == "starting_point"
     assert discovery["recommended_entry_point"] == "基础入口的直观含义"
     assert "不是纯零基础" in discovery["learner_profile_inference"]
+
+
+def test_learning_entry_choice_cannot_be_recorded_as_current_level(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    user_id = "user_blank_entry_choice_is_not_level"
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    lesson = _seed_empty_workspace(store, user_id)
+    calls: list[dict[str, object]] = []
+
+    def _fake_refinement(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return BlankBoardRequirementRefinement(
+                route="requirement_refining",
+                chatbot_message="我先列出几个学习入口，帮助你缩小主题。",
+                work_mode="knowledge_board",
+                granularity="broad_topic",
+                learning_goal="一个宽泛领域",
+                guidance_strategy="domain_map",
+                entry_point_options=[
+                    {
+                        "selection_key": "A",
+                        "option_kind": "learning_entry",
+                        "label": "先看整体概念",
+                    },
+                    {
+                        "selection_key": "B",
+                        "option_kind": "learning_entry",
+                        "label": "先看一个基础入口",
+                    },
+                ],
+                next_question="你更想先从哪个学习入口开始？",
+                ready_for_board=False,
+            )
+        return BlankBoardRequirementRefinement(
+            route="requirement_refining",
+            chatbot_message="我会从整体概念开始。",
+            work_mode="knowledge_board",
+            granularity="single_knowledge_point",
+            learning_goal="一个领域的整体概念",
+            current_level="了解不多",
+            current_level_source="level_profile_choice",
+            current_level_evidence="A",
+            known_background="用户选择了先看整体概念。",
+            ready_for_board=True,
+        )
+
+    monkeypatch.setattr(openai_course_ai, "generate_blank_board_requirement_refinement", _fake_refinement)
+
+    first_response = process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="我想学一个宽泛领域。"),
+        user_id=user_id,
+    )
+    second_response = process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="A"),
+        user_id=user_id,
+    )
+
+    assert first_response.learning_clarification.pending_level_profiles == {}
+    assert second_response.learning_clarification.ready_for_board is False
+    assert "当前水平" in second_response.learning_clarification.missing_items
+    assert second_response.active_requirement_sheet is not None
+    assert "待确认用户" in second_response.active_requirement_sheet.level
+
+
+def test_level_profile_choice_uses_persisted_profile_not_model_inference(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    user_id = "user_blank_level_profile_choice"
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    lesson = _seed_empty_workspace(store, user_id)
+    calls: list[dict[str, object]] = []
+
+    def _fake_refinement(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return BlankBoardRequirementRefinement(
+                route="requirement_refining",
+                chatbot_message="先确认你的起点。",
+                work_mode="knowledge_board",
+                granularity="broad_topic",
+                learning_goal="一个宽泛领域",
+                guidance_strategy="choice_cards",
+                entry_point_options=[
+                    {
+                        "selection_key": "A",
+                        "option_kind": "level_profile",
+                        "level_profile": "刚开始接触，还没有建立基础概念",
+                        "label": "刚开始接触，先建立基础概念",
+                    },
+                    {
+                        "selection_key": "B",
+                        "option_kind": "level_profile",
+                        "level_profile": "有一些相关基础，但还没有系统学习",
+                        "label": "有一些基础，但还没有系统学习",
+                    },
+                ],
+                next_question="哪个最像你现在的状态？",
+                ready_for_board=False,
+            )
+        return BlankBoardRequirementRefinement(
+            route="requirement_refining",
+            chatbot_message="我会按你的起点安排第一课。",
+            work_mode="knowledge_board",
+            granularity="broad_topic",
+            learning_goal="一个宽泛领域",
+            current_level="模型自由推断的内容",
+            current_level_source="level_profile_choice",
+            current_level_evidence="B",
+            ready_for_board=False,
+        )
+
+    monkeypatch.setattr(openai_course_ai, "generate_blank_board_requirement_refinement", _fake_refinement)
+
+    first_response = process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="我想学一个宽泛领域。"),
+        user_id=user_id,
+    )
+    second_response = process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="B"),
+        user_id=user_id,
+    )
+
+    assert first_response.learning_clarification.pending_level_profiles == {
+        "a": "刚开始接触，还没有建立基础概念",
+        "b": "有一些相关基础，但还没有系统学习",
+    }
+    assert second_response.active_requirement_sheet is not None
+    assert second_response.active_requirement_sheet.level == "有一些相关基础，但还没有系统学习"
+    assert second_response.learning_clarification.current_level_source == "level_profile_choice"
+    assert second_response.learning_clarification.current_level_evidence == "B"
 
 
 def test_empty_board_known_unknown_self_report_updates_background(
@@ -1419,6 +1565,8 @@ def test_empty_board_known_unknown_self_report_updates_background(
             granularity="broad_topic",
             learning_goal="未会部分的入门",
             current_level="已经学过一部分基础内容",
+            current_level_source="user_statement",
+            current_level_evidence="前面的基础学过，后面的还没学",
             known_background="已会：前置概念；未会：后续概念。",
             guidance_strategy="known_unknown",
             learner_profile_inference="用户已学过前置概念，还没学后续概念，适合从后续概念的直观含义开始。",
@@ -1476,6 +1624,8 @@ def test_recent_experience_and_stuck_point_records_background_without_repair(
             granularity="broad_topic",
             learning_goal="最近卡住的学习内容",
             current_level="最近做过相关任务，但迁移应用不稳定",
+            current_level_source="user_statement",
+            current_level_evidence="最近做过一个任务，但换个问题就不会了",
             known_background="最近经历：做过相关任务；卡点：迁移到新问题时不稳定。",
             guidance_strategy="stuck_point",
             learning_map_summary="可从卡点复盘、基础概念和应用迁移三个入口缩小。",
@@ -1628,6 +1778,8 @@ def test_empty_board_practice_need_with_three_core_factors_is_ready(
             granularity="practice_artifact",
             learning_goal="一项旧知识或技能",
             current_level="已经有基础但不稳定",
+            current_level_source="user_statement",
+            current_level_evidence="我有基础",
             target_scenario="无明确应用场景",
             ready_for_board=True,
         )

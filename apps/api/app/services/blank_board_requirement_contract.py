@@ -29,8 +29,19 @@ GuidedRequirementStrategy = Literal[
     "implicit_observation",
 ]
 
+GuidedRequirementOptionKind = Literal["level_profile", "learning_entry"]
+LearningLevelEvidenceSource = Literal[
+    "none",
+    "user_statement",
+    "level_profile_choice",
+    "existing_requirement",
+]
+
 
 class GuidedRequirementEntryPoint(BaseModel):
+    selection_key: str = Field(default="", max_length=32)
+    option_kind: GuidedRequirementOptionKind = "learning_entry"
+    level_profile: str = Field(default="", max_length=500)
     label: str = Field(max_length=160)
     why_it_matters: str = Field(default="", max_length=360)
     best_for: str = Field(default="", max_length=240)
@@ -43,6 +54,8 @@ class BlankBoardRequirementTurn(BaseModel):
     granularity: InitialLearningGranularity = "unclear"
     learning_goal: str = Field(default="", max_length=500)
     current_level: str = Field(default="", max_length=500)
+    current_level_source: LearningLevelEvidenceSource = "none"
+    current_level_evidence: str = Field(default="", max_length=500)
     known_background: str = Field(default="", max_length=700)
     target_scenario: str = Field(default="", max_length=500)
     target_depth: str = Field(default="", max_length=400)
@@ -69,6 +82,8 @@ class BlankBoardRequirementRefinement(BaseModel):
     granularity: InitialLearningGranularity = "unclear"
     learning_goal: str = ""
     current_level: str = ""
+    current_level_source: LearningLevelEvidenceSource = "none"
+    current_level_evidence: str = ""
     target_scenario: str = ""
     known_background: str = ""
     target_depth: str = ""
@@ -102,6 +117,8 @@ def refinement_from_turn(turn: BlankBoardRequirementTurn) -> BlankBoardRequireme
         granularity=turn.granularity,
         learning_goal=turn.learning_goal,
         current_level=turn.current_level,
+        current_level_source=turn.current_level_source,
+        current_level_evidence=turn.current_level_evidence,
         known_background=turn.known_background,
         target_scenario=turn.target_scenario,
         target_depth=turn.target_depth,
@@ -191,7 +208,17 @@ def compact_clarification_state(raw: dict[str, Any] | None) -> dict[str, Any] | 
     if not isinstance(raw, dict):
         return None
     compact: dict[str, Any] = {}
-    for key in ["progress", "summary", "next_question", "ready_for_board", "work_mode", "granularity"]:
+    for key in [
+        "progress",
+        "summary",
+        "next_question",
+        "ready_for_board",
+        "work_mode",
+        "granularity",
+        "current_level_source",
+        "current_level_evidence",
+        "pending_level_profiles",
+    ]:
         value = raw.get(key)
         if isinstance(value, str) and value.strip():
             compact[key] = value.strip()

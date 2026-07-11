@@ -630,6 +630,9 @@ class LearningClarificationStatus(BaseModel):
     ready_for_board: bool = False
     work_mode: InitialLearningWorkMode | None = None
     granularity: InitialLearningGranularity | None = None
+    current_level_source: Literal["none", "user_statement", "level_profile_choice", "existing_requirement"] = "none"
+    current_level_evidence: str = ""
+    pending_level_profiles: dict[str, str] = Field(default_factory=dict)
 
 
 class TeachingGuideMapping(BaseModel):

@@ -9,7 +9,10 @@ from app.models import (
     Lesson,
 )
 from app.services.board_document_sensor import BoardDocumentSensorReading
-from app.services.blank_board_requirement_mapping import build_blank_board_requirement_state
+from app.services.blank_board_requirement_mapping import (
+    build_blank_board_requirement_state,
+    validate_current_level_provenance,
+)
 from app.services.course_runtime import active_task_requirements
 from app.services.learning_requirement_history import (
     LearningRequirementHistoryRecorder,
@@ -136,6 +139,12 @@ def refine_blank_board_requirement(
             ),
             changed=False,
         )
+
+    result = validate_current_level_provenance(
+        result=result,
+        user_message=user_message,
+        active_clarification=active_clarification,
+    )
 
     requirement_state = build_blank_board_requirement_state(
         lesson=lesson,
