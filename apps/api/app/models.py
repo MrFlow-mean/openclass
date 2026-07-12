@@ -1061,6 +1061,9 @@ class SelectionRef(BaseModel):
     source_chapter_number: str = ""
     source_chapter_title: str = ""
     source_page_range: str = ""
+    source_locator: str = ""
+    source_page_start: int | None = None
+    source_page_end: int | None = None
 
 
 class FormulaInkPayload(BaseModel):

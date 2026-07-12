@@ -243,6 +243,7 @@ def _run_board_task_refinement_turn(
             board_task=active_board_task,
             board_task_run_id=outcome.history_stamp.run_id,
             base_chatbot_message=outcome.chatbot_message,
+            source_reference=source_reference_selection(request),
         )
         candidate_evidence = evidence_gate.evidence_bundle
         chatbot_message = evidence_gate.chatbot_message
@@ -371,6 +372,7 @@ def _run_basic_chat_turn(
             user_message=retrieval_user_message,
             requirements=lesson.learning_requirements,
             purpose="chat",
+            source_reference=source_reference_selection(request),
         )
         if candidate_evidence is None:
             chatbot_message = source_absent_message()

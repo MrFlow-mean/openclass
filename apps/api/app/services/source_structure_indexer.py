@@ -12,6 +12,7 @@ from xml.etree import ElementTree
 from app.models import SourceChapter, SourceChunk, SourceIngestionRecord, SourceStructure
 from app.services import workspace_state
 from app.services.pdf_toc_parser import PdfOutlineAnchor, PdfTocNode, extract_pdf_toc
+from app.services.source_chapter_identity import stable_source_chapter_id
 from app.services.source_structure_store import SourceStructureStore, source_structure_store
 
 CHUNK_CHAR_LIMIT = 1800
@@ -66,6 +67,11 @@ class SourceStructureIndexer:
         return self.rebuild_structure(record)
 
     def rebuild_structure(self, record: SourceIngestionRecord) -> SourceStructure:
+        previous = self.store.get_structure(
+            owner_user_id=record.owner_user_id,
+            package_id=record.package_id,
+            source_id=record.id,
+        )
         building = SourceStructure(
             owner_user_id=record.owner_user_id,
             package_id=record.package_id,
@@ -74,7 +80,6 @@ class SourceStructureIndexer:
             strategy="linear_text",
             metadata={"source_title": record.title, "mime_type": record.mime_type},
         )
-        self.store.save_structure_bundle(structure=building, chapters=[], chunks=[])
         try:
             parsed = self._parse_record(record)
             chapters = self._chapters_for_record(record, parsed)
@@ -104,6 +109,8 @@ class SourceStructureIndexer:
             )
             return self.store.save_structure_bundle(structure=structure, chapters=chapters, chunks=chunks)
         except Exception as exc:  # pragma: no cover - defensive boundary around third-party parsers
+            if previous is not None and previous.status in {"ready", "linear_only"}:
+                return self.store.record_rebuild_failure(structure=previous, error=str(exc))
             failed = building.model_copy(
                 update={
                     "status": "failed",
@@ -164,13 +171,23 @@ class SourceStructureIndexer:
             while level_stack and level_stack[-1].level >= level:
                 level_stack.pop()
             parent = level_stack[-1] if level_stack else None
+            normalized_number = _normalize_chapter_number(number)
             source_chapter = SourceChapter(
+                id=stable_source_chapter_id(
+                    source_ingestion_id=record.id,
+                    parent_path=parent.path if parent else (),
+                    normalized_number=normalized_number,
+                    title=title,
+                    level=level,
+                    source_locator=chapter.source_locator,
+                    order_index=index,
+                ),
                 owner_user_id=record.owner_user_id,
                 package_id=record.package_id,
                 source_ingestion_id=record.id,
                 parent_id=parent.id if parent else None,
                 number=number,
-                normalized_number=_normalize_chapter_number(number),
+                normalized_number=normalized_number,
                 title=title,
                 level=level,
                 path=[*(parent.path if parent else []), title],

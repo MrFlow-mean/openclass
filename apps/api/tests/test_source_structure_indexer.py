@@ -43,6 +43,64 @@ def test_source_structure_indexer_uses_epub_navigation_metadata(tmp_path: Path) 
     assert view.chunks
 
 
+def test_source_structure_rebuild_keeps_chapter_identity_stable(tmp_path: Path) -> None:
+    markdown_path = tmp_path / "stable-chapters.md"
+    markdown_path.write_text(
+        "# 1 Foundations\n\nIntroductory body.\n\n## 1.1 Details\n\nDetailed body.",
+        encoding="utf-8",
+    )
+    source_store = SourceEvidenceStore(tmp_path / "openclass.sqlite3")
+    structure_store = SourceStructureStore(tmp_path / "openclass.sqlite3")
+    record = _source_record(
+        tmp_path,
+        file_name=markdown_path.name,
+        mime_type="text/markdown",
+        path=markdown_path,
+    )
+    source_store.save_source(record)
+    indexer = SourceStructureIndexer(store=structure_store)
+
+    indexer.rebuild_structure(record)
+    first_view = structure_store.get_structure_view(source=record)
+    indexer.rebuild_structure(record)
+    second_view = structure_store.get_structure_view(source=record)
+
+    assert first_view is not None
+    assert second_view is not None
+    assert {tuple(chapter.path): chapter.id for chapter in first_view.chapters} == {
+        tuple(chapter.path): chapter.id for chapter in second_view.chapters
+    }
+    assert {chunk.chapter_id for chunk in first_view.chunks if chunk.chapter_id} == {
+        chunk.chapter_id for chunk in second_view.chunks if chunk.chapter_id
+    }
+
+
+def test_failed_structure_rebuild_keeps_the_last_usable_index(tmp_path: Path, monkeypatch) -> None:
+    markdown_path = tmp_path / "preserved-chapters.md"
+    markdown_path.write_text("# 1 Foundations\n\nIntroductory body.", encoding="utf-8")
+    source_store = SourceEvidenceStore(tmp_path / "openclass.sqlite3")
+    structure_store = SourceStructureStore(tmp_path / "openclass.sqlite3")
+    record = _source_record(
+        tmp_path,
+        file_name=markdown_path.name,
+        mime_type="text/markdown",
+        path=markdown_path,
+    )
+    source_store.save_source(record)
+    indexer = SourceStructureIndexer(store=structure_store)
+    indexer.rebuild_structure(record)
+    before = structure_store.get_structure_view(source=record)
+    monkeypatch.setattr(indexer, "_parse_record", lambda _record: (_ for _ in ()).throw(RuntimeError("parse failed")))
+
+    recovered = indexer.rebuild_structure(record)
+    after = structure_store.get_structure_view(source=record)
+
+    assert recovered.status == "ready"
+    assert recovered.error == "parse failed"
+    assert before.chapters == after.chapters
+    assert before.chunks == after.chunks
+
+
 def test_source_structure_indexer_does_not_generate_fake_toc_without_headings(tmp_path: Path) -> None:
     text_path = tmp_path / "notes.txt"
     text_path.write_text("第一段普通正文。\n\n第二段普通正文。", encoding="utf-8")
@@ -352,6 +410,92 @@ def test_resource_resolver_uses_explicit_source_chapter_reference(tmp_path: Path
     assert bundle.evidence_items[0].chapter_id == target_chapter.id
     assert "Target source body" in bundle.evidence_items[0].expanded_text
     assert "Other source body" not in bundle.evidence_items[0].expanded_text
+
+
+def test_resource_resolver_rebinds_a_stale_source_selection_within_its_original_source(tmp_path: Path) -> None:
+    target_path = tmp_path / "target.md"
+    other_path = tmp_path / "other.md"
+    target_path.write_text("# 7.7.3 Target Chapter\n\nTarget source body.", encoding="utf-8")
+    other_path.write_text("# 7.7.3 Target Chapter\n\nOther source body.", encoding="utf-8")
+    store = SourceEvidenceStore(tmp_path / "openclass.sqlite3")
+    structure_store = SourceStructureStore(tmp_path / "openclass.sqlite3")
+    target = _source_record(tmp_path, file_name=target_path.name, mime_type="text/markdown", path=target_path)
+    other = _source_record(tmp_path, file_name=other_path.name, mime_type="text/markdown", path=other_path)
+    store.save_source(target)
+    store.save_source(other)
+    indexer = SourceStructureIndexer(store=structure_store)
+    indexer.rebuild_structure(target)
+    indexer.rebuild_structure(other)
+    target_chapter = structure_store.get_structure_view(source=target).chapters[0]
+    resolver = ResourceResolver(adapter=_NoSearchAdapter(), store=store, structure_store=structure_store)
+    selection = SelectionRef(
+        kind="source",
+        excerpt=f"《{target.title}》 · {target_chapter.title}",
+        heading_path=target_chapter.path,
+        source_ingestion_id=target.id,
+        source_title=target.title,
+        source_chapter_id="sourcechapter_stale_selection",
+        source_chapter_number=target_chapter.number,
+        source_chapter_title=target_chapter.title,
+    )
+    request = ChatRequest(message="请讲解这一章。", selection=selection)
+
+    outcome = resolver.preview_for_learning_requirement(
+        owner_user_id="user_1",
+        package_id="pkg_1",
+        lesson_id="lesson_1",
+        user_message=source_aware_user_message(request, include_locator=True),
+        requirements=None,
+        source_ingestion_ids=[target.id],
+        source_reference=selection,
+    )
+
+    assert outcome.status == "matched"
+    assert outcome.evidence_bundle is not None
+    assert outcome.evidence_bundle.evidence_items[0].chapter_id == target_chapter.id
+    assert "Target source body" in outcome.evidence_bundle.evidence_items[0].expanded_text
+    assert "Other source body" not in outcome.evidence_bundle.evidence_items[0].expanded_text
+    resolution = outcome.metadata or {}
+    assert resolution["matched_rules"] == ["stale_source_chapter_selection_rebound"]
+    assert resolution["requested_chapter_id"] == "sourcechapter_stale_selection"
+    assert resolution["resolved_chapter_id"] == target_chapter.id
+    assert resolution["rebound_anchors"] == ["chapter_number", "chapter_title", "heading_path"]
+
+
+def test_resource_resolver_does_not_guess_when_a_stale_selection_lacks_strong_anchors(tmp_path: Path) -> None:
+    source_path = tmp_path / "target.md"
+    source_path.write_text("# 7.7.3 Target Chapter\n\nTarget source body.", encoding="utf-8")
+    store = SourceEvidenceStore(tmp_path / "openclass.sqlite3")
+    structure_store = SourceStructureStore(tmp_path / "openclass.sqlite3")
+    source = _source_record(tmp_path, file_name=source_path.name, mime_type="text/markdown", path=source_path)
+    store.save_source(source)
+    SourceStructureIndexer(store=structure_store).rebuild_structure(source)
+    target_chapter = structure_store.get_structure_view(source=source).chapters[0]
+    resolver = ResourceResolver(adapter=_NoSearchAdapter(), store=store, structure_store=structure_store)
+    selection = SelectionRef(
+        kind="source",
+        excerpt=f"《{source.title}》 · {target_chapter.title}",
+        source_ingestion_id=source.id,
+        source_title=source.title,
+        source_chapter_id="sourcechapter_stale_selection",
+        source_chapter_number=target_chapter.number,
+    )
+
+    outcome = resolver.preview_for_learning_requirement(
+        owner_user_id="user_1",
+        package_id="pkg_1",
+        lesson_id="lesson_1",
+        user_message=source_aware_user_message(
+            ChatRequest(message="请讲解这一章。", selection=selection),
+            include_locator=True,
+        ),
+        requirements=None,
+        source_ingestion_ids=[source.id],
+        source_reference=selection,
+    )
+
+    assert outcome.status == "no_match"
+    assert outcome.evidence_bundle is None
 
 
 def _source_record(tmp_path: Path, *, file_name: str, mime_type: str, path: Path) -> SourceIngestionRecord:

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Literal
 
-from app.models import EvidenceBundle, LearningRequirementSheet
+from app.models import EvidenceBundle, LearningRequirementSheet, SelectionRef
 from app.services.evidence_workflow import evidence_reference_text
 from app.services.learning_source_reuse import can_reuse_requirement_bundle
 from app.services.resource_resolver import ResourceResolver, resource_resolver
@@ -48,6 +48,7 @@ def discover_learning_sources(
     topic_hint: str = "",
     source_requested_by_user: bool = False,
     requested_source_ingestion_ids: list[str] | tuple[str, ...] | None = None,
+    source_reference: SelectionRef | None = None,
     pre_resolved_evidence: EvidenceBundle | None = None,
     resolver: ResourceResolver = resource_resolver,
 ) -> LearningSourceDiscoveryOutcome:
@@ -178,6 +179,7 @@ def discover_learning_sources(
             topic_hint=topic_hint,
             purpose="board_generation",
             source_ingestion_ids=scoped_source_ids,
+            source_reference=source_reference,
         )
         evidence_bundle = resolution.evidence_bundle
         status = resolution.status

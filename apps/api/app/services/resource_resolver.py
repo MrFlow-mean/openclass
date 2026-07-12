@@ -10,6 +10,7 @@ from app.models import (
     EvidencePurpose,
     LearningRequirementSheet,
     RetrievalEvidence,
+    SelectionRef,
 )
 from app.services.open_notebook_adapter import (
     OpenNotebookAdapter,
@@ -148,6 +149,7 @@ class ResourceResolver:
         requirements: LearningRequirementSheet | None,
         requirement_run_id: str | None = None,
         purpose: EvidencePurpose = "board_generation",
+        source_reference: SelectionRef | None = None,
     ) -> EvidenceBundle | None:
         return self.resolve_for_learning_requirement_outcome(
             owner_user_id=owner_user_id,
@@ -157,6 +159,7 @@ class ResourceResolver:
             requirements=requirements,
             requirement_run_id=requirement_run_id,
             purpose=purpose,
+            source_reference=source_reference,
         ).evidence_bundle
 
     def resolve_for_learning_requirement_outcome(
@@ -169,6 +172,7 @@ class ResourceResolver:
         requirements: LearningRequirementSheet | None,
         requirement_run_id: str | None = None,
         purpose: EvidencePurpose = "board_generation",
+        source_reference: SelectionRef | None = None,
     ) -> ResourceResolutionOutcome:
         query = _learning_query(user_message=user_message, requirements=requirements)
         return self._resolve_outcome(
@@ -178,6 +182,7 @@ class ResourceResolver:
             query=query,
             purpose=purpose,
             requirement_run_id=requirement_run_id,
+            source_reference=source_reference,
         )
 
     def preview_for_learning_requirement(
@@ -191,6 +196,7 @@ class ResourceResolver:
         topic_hint: str = "",
         purpose: EvidencePurpose = "board_generation",
         source_ingestion_ids: list[str] | tuple[str, ...] | None = None,
+        source_reference: SelectionRef | None = None,
     ) -> ResourceResolutionOutcome:
         query = _learning_query(
             user_message=user_message,
@@ -205,6 +211,7 @@ class ResourceResolver:
             purpose=purpose,
             persist_bundle=False,
             source_ingestion_ids=source_ingestion_ids,
+            source_reference=source_reference,
         )
 
     def bind_preview_bundle_to_requirement(
@@ -232,6 +239,7 @@ class ResourceResolver:
         board_task: BoardTaskRequirementSheet,
         board_task_run_id: str | None = None,
         purpose: EvidencePurpose = "board_edit",
+        source_reference: SelectionRef | None = None,
     ) -> EvidenceBundle | None:
         query = _board_task_query(user_message=user_message, board_task=board_task)
         return self._resolve_outcome(
@@ -241,6 +249,7 @@ class ResourceResolver:
             query=query,
             purpose=purpose,
             board_task_run_id=board_task_run_id,
+            source_reference=source_reference,
         ).evidence_bundle
 
     def latest_confirmed_bundle(
@@ -299,10 +308,13 @@ class ResourceResolver:
         board_task_run_id: str | None = None,
         persist_bundle: bool = True,
         source_ingestion_ids: list[str] | tuple[str, ...] | None = None,
+        source_reference: SelectionRef | None = None,
     ) -> ResourceResolutionOutcome:
         notebook_id = self.store.get_notebook_id(owner_user_id=owner_user_id, package_id=package_id)
         ready_sources = self.store.ready_sources(owner_user_id=owner_user_id, package_id=package_id)
         requested_source_ids = {source_id for source_id in source_ingestion_ids or [] if source_id}
+        if source_reference is not None and source_reference.kind == "source" and source_reference.source_ingestion_id:
+            requested_source_ids = {source_reference.source_ingestion_id}
         if requested_source_ids:
             ready_sources = [source for source in ready_sources if source.id in requested_source_ids]
         if not ready_sources or not query.strip():
@@ -316,6 +328,7 @@ class ResourceResolver:
             limit=limit,
             token_budget=token_budget,
             source_ingestion_ids=tuple(source.id for source in ready_sources),
+            source_reference=source_reference,
         )
         if chapter_evidence:
             bundle = self._create_bundle(
@@ -485,6 +498,7 @@ class ResourceResolver:
         limit: int,
         token_budget: int,
         source_ingestion_ids: tuple[str, ...] | None = None,
+        source_reference: SelectionRef | None = None,
     ) -> tuple[list[RetrievalEvidence], dict[str, object] | None]:
         return resolve_verified_chapter_evidence(
             source_store=self.store,
@@ -496,6 +510,7 @@ class ResourceResolver:
             token_budget=token_budget,
             page_limit=OCR_BOARD_PAGE_LIMIT if token_budget == BOARD_TOKEN_BUDGET else OCR_CHAT_PAGE_LIMIT,
             source_ingestion_ids=source_ingestion_ids,
+            source_reference=source_reference,
         )
 
     def _normalize_results(

@@ -1,6 +1,6 @@
 import pytest
 
-from app.models import ChatRequest, EvidenceBundle, LearningClarificationStatus, RetrievalEvidence
+from app.models import ChatRequest, EvidenceBundle, LearningClarificationStatus, RetrievalEvidence, SelectionRef
 from app.services import learning_intake_orchestrator as orchestrator
 from app.services.board_document_sensor import read_board_document_sensor
 from app.services.learning_requirement_history import RequirementHistoryStamp
@@ -272,12 +272,25 @@ def test_learning_intake_runs_source_before_requirement_and_chatbot(monkeypatch)
         )
 
     monkeypatch.setattr(orchestrator, "refine_blank_board_requirement", _fake_refinement)
+    selection = SelectionRef(
+        kind="source",
+        excerpt="《General Learning Notes》 · 目标章节",
+        heading_path=["目标章节"],
+        source_ingestion_id="source_1",
+        source_title="General Learning Notes",
+        source_chapter_id="sourcechapter_stale",
+        source_chapter_number="2.1",
+        source_chapter_title="目标章节",
+        source_locator="pdf:outline:12",
+        source_page_start=12,
+        source_page_end=18,
+    )
 
     outcome = orchestrator.run_learning_intake_turn(
         owner_user_id="user_1",
         package_id="package_1",
         lesson=lesson,
-        request=ChatRequest(message="请根据 General Learning Notes 学习目标知识点。"),
+        request=ChatRequest(message="请根据 General Learning Notes 学习目标知识点。", selection=selection),
         board_document_state=read_board_document_sensor(lesson.board_document),
         conversation_summary="",
         history_state=None,
@@ -291,6 +304,7 @@ def test_learning_intake_runs_source_before_requirement_and_chatbot(monkeypatch)
     assert outcome.evidence_bundle.requirement_run_id == "requirement_run_1"
     assert outcome.candidate_evidence_bundle is not None
     assert resolver.preview_requests[0]["source_ingestion_ids"] == ("source_1",)
+    assert resolver.preview_requests[0]["source_reference"] == selection
 
 
 def test_learning_intake_rolls_back_bound_candidate_when_chatbot_fails(monkeypatch) -> None:

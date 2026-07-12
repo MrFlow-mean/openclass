@@ -704,6 +704,9 @@ export interface SelectionRef {
   source_chapter_number?: string;
   source_chapter_title?: string;
   source_page_range?: string;
+  source_locator?: string;
+  source_page_start?: number | null;
+  source_page_end?: number | null;
 }
 
 export type FormulaInkAction = "reference" | "replace";

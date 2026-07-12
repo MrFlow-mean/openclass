@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app.models import BoardTaskRequirementSheet, EvidenceBundle, EvidencePurpose
+from app.models import BoardTaskRequirementSheet, EvidenceBundle, EvidencePurpose, SelectionRef
 from app.services.resource_resolver import resource_resolver
 
 
@@ -52,6 +52,7 @@ def resolve_board_task_evidence_gate(
     board_task: BoardTaskRequirementSheet,
     board_task_run_id: str | None,
     base_chatbot_message: str,
+    source_reference: SelectionRef | None = None,
 ) -> EvidenceGateOutcome:
     source_grounded = resource_resolver.should_use_sources(
         " ".join([user_message, board_task.question_or_topic, board_task.target_hint])
@@ -76,6 +77,7 @@ def resolve_board_task_evidence_gate(
             board_task=board_task,
             board_task_run_id=board_task_run_id,
             purpose="board_edit",
+            source_reference=source_reference,
         )
         if candidate is None:
             return EvidenceGateOutcome(chatbot_message=source_absent_message(), should_execute=False)
@@ -98,6 +100,7 @@ def resolve_board_task_evidence_gate(
         board_task=board_task,
         board_task_run_id=board_task_run_id,
         purpose=purpose,
+        source_reference=source_reference,
     )
     return EvidenceGateOutcome(evidence_bundle=candidate, chatbot_message=base_chatbot_message)
 

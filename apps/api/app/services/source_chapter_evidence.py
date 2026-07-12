@@ -5,8 +5,9 @@ import unicodedata
 from pathlib import Path
 from typing import Collection
 
-from app.models import RetrievalEvidence, SourceChapter, SourceIngestionRecord
+from app.models import RetrievalEvidence, SelectionRef, SourceChapter, SourceIngestionRecord
 from app.services.image_ocr import extract_pdf_pages_text
+from app.services.source_chapter_identity import rebind_stale_source_chapter_selection
 from app.services.source_evidence_store import SourceEvidenceStore
 from app.services.source_structure_store import SourceStructureStore
 
@@ -25,6 +26,7 @@ def resolve_verified_chapter_evidence(
     token_budget: int,
     page_limit: int,
     source_ingestion_ids: Collection[str] | None = None,
+    source_reference: SelectionRef | None = None,
 ) -> tuple[list[RetrievalEvidence], dict[str, object] | None]:
     match = _match_verified_chapter(
         source_store=source_store,
@@ -33,6 +35,7 @@ def resolve_verified_chapter_evidence(
         package_id=package_id,
         query=query,
         source_ingestion_ids=source_ingestion_ids,
+        source_reference=source_reference,
     )
     if match is None:
         return [], None
@@ -110,9 +113,17 @@ def _match_verified_chapter(
     package_id: str,
     query: str,
     source_ingestion_ids: Collection[str] | None = None,
+    source_reference: SelectionRef | None = None,
 ) -> tuple[SourceIngestionRecord, SourceChapter, dict[str, object]] | dict[str, object] | None:
     ready_sources = source_store.ready_sources(owner_user_id=owner_user_id, package_id=package_id)
     requested_source_ids = {source_id for source_id in source_ingestion_ids or [] if source_id}
+    selected_source_id = (
+        source_reference.source_ingestion_id
+        if source_reference is not None and source_reference.kind == "source"
+        else None
+    )
+    if selected_source_id:
+        requested_source_ids = {selected_source_id}
     if requested_source_ids:
         ready_sources = [source for source in ready_sources if source.id in requested_source_ids]
     explicit_id = explicit_source_chapter_id(query)
@@ -124,17 +135,53 @@ def _match_verified_chapter(
         if view.structure is None or view.structure.status != "ready":
             continue
         title_overlap = _longest_common_substring_length(query, source.title)
+        if explicit_id:
+            direct_match = next(
+                (
+                    chapter
+                    for chapter in view.chapters
+                    if chapter.anchor_status == "verified" and chapter.id == explicit_id
+                ),
+                None,
+            )
+            if direct_match is not None:
+                return source, direct_match, _source_resolution(
+                    source=source,
+                    chapter=direct_match,
+                    match_mode="explicit_source_chapter_id",
+                    source_title_overlap=title_overlap,
+                    requested_chapter_id=explicit_id,
+                )
+            if source_reference is not None:
+                rebound = rebind_stale_source_chapter_selection(
+                    selection=source_reference,
+                    source_ingestion_id=source.id,
+                    chapters=view.chapters,
+                )
+                if rebound.chapter is not None:
+                    return source, rebound.chapter, _source_resolution(
+                        source=source,
+                        chapter=rebound.chapter,
+                        match_mode="stale_source_chapter_selection_rebound",
+                        source_title_overlap=title_overlap,
+                        requested_chapter_id=explicit_id,
+                        rebound_anchors=rebound.matched_anchors,
+                    )
+                if rebound.is_ambiguous:
+                    return {
+                        "status": "ambiguous",
+                        "intent_signals": ["explicit_source_chapter_id", "stale_source_chapter_selection"],
+                        "selected_action": "clarify_source_chapter",
+                        "role_executed": "resource_resolver",
+                        "document_changed": False,
+                        "requested_chapter_id": explicit_id,
+                        "source_ingestion_id": source.id,
+                        "candidate_chapter_ids": list(rebound.candidate_ids),
+                        "reason": "资料目录已重建，旧章节引用对应多个当前章节，需要重新选择。",
+                    }
+            continue
         for chapter in view.chapters:
             if chapter.anchor_status != "verified":
-                continue
-            if explicit_id:
-                if chapter.id == explicit_id:
-                    return source, chapter, _source_resolution(
-                        source=source,
-                        chapter=chapter,
-                        match_mode="explicit_source_chapter_id",
-                        source_title_overlap=title_overlap,
-                    )
                 continue
             chapter_number = _chapter_number(chapter)
             if requested_number and chapter_number == requested_number:
@@ -412,6 +459,8 @@ def _source_resolution(
     match_mode: str,
     source_title_overlap: int,
     requested_chapter_number: str = "",
+    requested_chapter_id: str = "",
+    rebound_anchors: tuple[str, ...] = (),
 ) -> dict[str, object]:
     resolution: dict[str, object] = {
         "status": "matched",
@@ -426,6 +475,11 @@ def _source_resolution(
         "source_title_overlap": source_title_overlap,
         "reason": "唯一已验证章节由显式章节定位和当前课程包资料结构共同确定。",
     }
+    if requested_chapter_id:
+        resolution["requested_chapter_id"] = requested_chapter_id
+        resolution["resolved_chapter_id"] = chapter.id
+    if rebound_anchors:
+        resolution["rebound_anchors"] = list(rebound_anchors)
     if requested_chapter_number:
         resolution["requested_chapter_number"] = requested_chapter_number
         resolution["chapter_ordinal"] = int(requested_chapter_number)

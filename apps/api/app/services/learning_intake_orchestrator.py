@@ -178,6 +178,7 @@ def run_learning_intake_turn(
         topic_hint=initial_decision.topic,
         source_requested_by_user=source_requested,
         requested_source_ingestion_ids=requested_source_ids,
+        source_reference=source_selection,
         pre_resolved_evidence=active_evidence,
         resolver=resolver,
     )

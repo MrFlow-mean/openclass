@@ -290,6 +290,29 @@ class SourceStructureStore:
                     )
         return structure
 
+    def record_rebuild_failure(self, *, structure: SourceStructure, error: str) -> SourceStructure:
+        """Expose a failed reparse without replacing the last usable index."""
+        warning = "资料重新解析失败，已保留上一次可用的目录和正文索引。"
+        warnings = list(dict.fromkeys([*structure.warnings, warning]))
+        with self._lock:
+            with self._connect() as conn:
+                with conn:
+                    conn.execute(
+                        """
+                        UPDATE source_structures
+                        SET error = ?, warnings_json = ?
+                        WHERE owner_user_id = ? AND package_id = ? AND source_ingestion_id = ?
+                        """,
+                        (
+                            error,
+                            _dumps(warnings),
+                            structure.owner_user_id,
+                            structure.package_id,
+                            structure.source_ingestion_id,
+                        ),
+                    )
+        return structure.model_copy(update={"error": error, "warnings": warnings})
+
     def get_structure(self, *, owner_user_id: str, package_id: str, source_id: str) -> SourceStructure | None:
         with self._lock:
             with self._connect() as conn:
