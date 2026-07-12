@@ -8,6 +8,7 @@ from app.services.learning_requirement_refiner import LearningRequirementRefinem
 from app.services.lesson_factory import build_requirements, create_empty_lesson
 from app.services.openai_course_ai import ChatbotReply, InitialLearningWorkModeDecision
 from app.services.resource_resolver import ResourceResolutionOutcome
+from app.services.resolved_source_chapter_scope import ResolvedSourceChapterScope
 
 
 class _ResolverStore:
@@ -26,11 +27,13 @@ class _Resolver:
         ready: bool,
         requested: bool = False,
         mentioned_source_ids: tuple[str, ...] = (),
+        resolved_source_chapter: bool = False,
     ) -> None:
         self.call_order = call_order
         self.ready = ready
         self.requested = requested
         self.mentioned_source_ids = mentioned_source_ids
+        self.resolved_source_chapter = resolved_source_chapter
         self.preview_calls = 0
         self.preview_requests: list[dict[str, object]] = []
         self.store = _ResolverStore()
@@ -51,6 +54,8 @@ class _Resolver:
         self.call_order.append("resource")
         self.preview_calls += 1
         self.preview_requests.append(kwargs)
+        source_reference = kwargs.get("source_reference")
+        chapter_id = "sourcechapter_current" if self.resolved_source_chapter else ""
         evidence = RetrievalEvidence(
             source_ingestion_id="source_1",
             source_title="通用资料",
@@ -59,7 +64,26 @@ class _Resolver:
             excerpt="资料摘录",
             expanded_text="资料正文",
             token_count=10,
+            chapter_id=chapter_id,
+            metadata=(
+                {
+                    "scope_chapter_id": chapter_id,
+                    "scope_chapter_title": "已解析目标章节",
+                    "scope_chapter_number": "2.1",
+                }
+                if self.resolved_source_chapter
+                else {}
+            ),
         )
+        resolution = None
+        if self.resolved_source_chapter and isinstance(source_reference, SelectionRef):
+            resolution = {
+                "status": "matched",
+                "source_ingestion_id": source_reference.source_ingestion_id,
+                "chapter_id": chapter_id,
+                "chapter_title": "已解析目标章节",
+                "chapter_number": "2.1",
+            }
         return ResourceResolutionOutcome(
             status="matched",
             evidence_bundle=EvidenceBundle(
@@ -71,6 +95,7 @@ class _Resolver:
                 context_text="资料正文",
                 token_count=10,
             ),
+            metadata=resolution,
         )
 
     def bind_preview_bundle_to_requirement(self, *, bundle, requirement_run_id):
@@ -123,6 +148,28 @@ def test_active_broad_requirement_does_not_override_new_concrete_entry_decision(
     assert preserved.work_mode == "knowledge_board"
     assert preserved.granularity == "single_knowledge_point"
     assert preserved.topic == "一个具体学习入口"
+
+
+def test_resolved_source_chapter_keeps_practice_requirement_collection() -> None:
+    decision = InitialLearningWorkModeDecision(
+        route="learning_intake",
+        work_mode="practice_artifact",
+        granularity="practice_artifact",
+        topic="练习目标",
+    )
+
+    promoted = orchestrator._apply_resolved_source_chapter_scope(
+        decision,
+        scope=ResolvedSourceChapterScope(
+            source_ingestion_id="source_1",
+            source_chapter_id="sourcechapter_1",
+            chapter_title="已解析章节",
+        ),
+    )
+
+    assert promoted is decision
+    assert promoted.work_mode == "practice_artifact"
+    assert promoted.granularity == "practice_artifact"
 
 
 def test_ordinary_chat_skips_source_discovery_and_requirement_manager(monkeypatch) -> None:
@@ -230,6 +277,7 @@ def test_learning_intake_runs_source_before_requirement_and_chatbot(monkeypatch)
         ready=True,
         requested=False,
         mentioned_source_ids=("source_1",),
+        resolved_source_chapter=True,
     )
     course_ai = _CourseAI(call_order, route="learning_intake")
     lesson = create_empty_lesson("空白页")
@@ -256,6 +304,11 @@ def test_learning_intake_runs_source_before_requirement_and_chatbot(monkeypatch)
         call_order.append("requirement")
         assert kwargs["resource_summary"] == "1. 通用资料 / 目标章节：资料摘录"
         assert kwargs["include_stream_result"] is True
+        effective_decision = kwargs["initial_work_mode_decision"]
+        assert effective_decision.work_mode == "knowledge_board"
+        assert effective_decision.granularity == "source_chapter"
+        assert effective_decision.topic == "已解析目标章节"
+        assert kwargs["resolved_source_chapter"] is True
         return LearningRequirementRefinementOutcome(
             route="requirement_refining",
             chatbot_message="需求管理器内部草稿。",
@@ -303,6 +356,9 @@ def test_learning_intake_runs_source_before_requirement_and_chatbot(monkeypatch)
     assert outcome.evidence_bundle is not None
     assert outcome.evidence_bundle.requirement_run_id == "requirement_run_1"
     assert outcome.candidate_evidence_bundle is not None
+    assert outcome.initial_decision is not None
+    assert outcome.initial_decision.granularity == "source_chapter"
+    assert outcome.initial_decision.topic == "已解析目标章节"
     assert resolver.preview_requests[0]["source_ingestion_ids"] == ("source_1",)
     assert resolver.preview_requests[0]["source_reference"] == selection
 

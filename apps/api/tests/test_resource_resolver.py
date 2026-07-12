@@ -6,6 +6,7 @@ from app.models import (
     BoardTaskRequirementSheet,
     ChatRequest,
     EvidenceBundle,
+    SelectionRef,
     SourceChapter,
     SourceIngestionRecord,
     SourceStructure,
@@ -617,7 +618,7 @@ def test_non_chapter_ordinal_does_not_trigger_source_resolution(
     assert bundle is None
 
 
-def test_blank_requirement_discovers_matched_source_before_visible_reply(
+def test_blank_requirement_resolves_selected_chapter_before_visible_reply(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -648,9 +649,9 @@ def test_blank_requirement_discovers_matched_source_before_visible_reply(
         captured["refinement"] = kwargs
         return BlankBoardRequirementRefinement(
             route="requirement_refining",
-            chatbot_message="我已找到对应资料章节，接下来从章内核心内容选择起点。",
+            chatbot_message="我已找到对应资料章节。",
             progress=60,
-            summary="已定位资料章节，仍需收敛章内学习起点。",
+            summary="已定位资料章节。",
             work_mode="knowledge_board",
             granularity="broad_topic",
             learning_goal="通用学习手册第四章",
@@ -660,7 +661,7 @@ def test_blank_requirement_discovers_matched_source_before_visible_reply(
 
     def _fake_discovery_reply(**kwargs):
         captured["discovery_reply"] = kwargs
-        return ChatbotReply(chatbot_message="我找到了资料中的第四章“核心方法”，先从章内选择一个起点。")
+        return ChatbotReply(chatbot_message="我找到了资料中的第四章“核心方法”，请先确认这份候选资料。")
 
     monkeypatch.setattr(
         openai_course_ai,
@@ -675,16 +676,43 @@ def test_blank_requirement_discovers_matched_source_before_visible_reply(
     monkeypatch.setattr(openai_course_ai, "generate_blank_board_requirement_refinement", _fake_refinement)
     monkeypatch.setattr(openai_course_ai, "generate_learning_intake_reply", _fake_discovery_reply)
 
+    selection = SelectionRef(
+        kind="source",
+        excerpt="《通用学习手册》· 第四章 核心方法",
+        heading_path=[chapter.title],
+        source_ingestion_id=source.id,
+        source_title=source.title,
+        source_chapter_id=chapter.id,
+        source_chapter_title=chapter.title,
+        source_locator=chapter.source_locator,
+        source_page_start=chapter.page_start,
+        source_page_end=chapter.page_end,
+    )
     response = process_chat_on_lesson(
         lesson.id,
-        ChatRequest(message="我想学通用学习手册的第四章"),
+        ChatRequest(message="请讲解这一整章。", selection=selection),
         user_id="user_1",
     )
 
     assert captured["refinement"]["include_stream_result"] is True
+    effective_decision = captured["refinement"]["initial_work_mode_decision"]
+    assert effective_decision["work_mode"] == "knowledge_board"
+    assert effective_decision["granularity"] == "source_chapter"
+    assert effective_decision["topic"] == chapter.title
     assert captured["discovery_reply"]["discovery_status"] == "matched"
+    assert captured["discovery_reply"]["initial_work_mode_decision"]["granularity"] == "source_chapter"
+    assert captured["discovery_reply"]["requirement_context"]["granularity"] == "source_chapter"
+    assert captured["discovery_reply"]["clarification_context"]["ready_for_board"] is True
+    assert captured["discovery_reply"]["requires_confirmation"] is True
     assert "需求收敛前读取到的扫描正文" in str(captured["discovery_reply"]["evidence_references"])
-    assert response.chatbot_message == "我找到了资料中的第四章“核心方法”，先从章内选择一个起点。"
+    assert response.chatbot_message == "我找到了资料中的第四章“核心方法”，请先确认这份候选资料。"
+    assert response.active_requirement_sheet is not None
+    assert response.active_requirement_sheet.learning_goal == chapter.title
+    assert response.active_requirement_sheet.boundary == chapter.title
+    assert response.active_requirement_sheet.granularity == "source_chapter"
+    assert response.learning_clarification.ready_for_board is True
+    assert response.learning_clarification.missing_items == []
+    assert response.active_requirement_sheet.current_questions == []
     assert response.candidate_evidence_bundle is not None
     assert response.candidate_evidence_bundle.evidence_items[0].source_ingestion_id == source.id
     assert response.candidate_evidence_bundle.evidence_items[0].chapter_id == chapter.id

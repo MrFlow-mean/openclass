@@ -29,10 +29,11 @@ def build_blank_board_requirement_state(
     lesson: Lesson,
     base_requirement: LearningRequirementSheet,
     result: BlankBoardRequirementRefinement,
+    resolved_source_chapter: bool = False,
 ) -> BlankBoardRequirementState:
     work_mode = normalize_work_mode(result)
-    granularity = normalize_granularity(result, work_mode)
-    ready_for_board = is_core_ready(result, work_mode, granularity)
+    granularity = normalize_granularity(result, work_mode, resolved_source_chapter)
+    ready_for_board = is_core_ready(result, work_mode, granularity, resolved_source_chapter)
     missing_items = [] if ready_for_board else merged_missing_items(result, work_mode, granularity)
     requirement = build_requirement_sheet(
         lesson=lesson,
@@ -74,11 +75,14 @@ def normalize_work_mode(result: BlankBoardRequirementRefinement) -> InitialLearn
 def normalize_granularity(
     result: BlankBoardRequirementRefinement,
     work_mode: InitialLearningWorkMode,
+    resolved_source_chapter: bool = False,
 ) -> InitialLearningGranularity:
     if work_mode == "practice_artifact":
         return "practice_artifact"
     if result.granularity in {"single_knowledge_point", "broad_topic"}:
         return result.granularity
+    if result.granularity == "source_chapter" and resolved_source_chapter:
+        return "source_chapter"
     if work_mode == "knowledge_board" and _has_text(result.learning_goal):
         return "broad_topic"
     return "unclear"
@@ -88,11 +92,16 @@ def is_core_ready(
     result: BlankBoardRequirementRefinement,
     work_mode: InitialLearningWorkMode,
     granularity: InitialLearningGranularity,
+    resolved_source_chapter: bool = False,
 ) -> bool:
+    if work_mode == "knowledge_board":
+        if not _has_text(result.learning_goal):
+            return False
+        if granularity == "source_chapter":
+            return resolved_source_chapter
+        return result.ready_for_board and granularity == "single_knowledge_point"
     if not result.ready_for_board:
         return False
-    if work_mode == "knowledge_board":
-        return _has_text(result.learning_goal) and granularity == "single_knowledge_point"
     if work_mode == "practice_artifact":
         return (
             _has_text(result.learning_goal)
@@ -111,7 +120,7 @@ def merged_missing_items(
         missing: list[str] = []
         if not _has_text(result.learning_goal):
             missing.append("用户想学的内容")
-        if granularity != "single_knowledge_point":
+        if granularity not in {"single_knowledge_point", "source_chapter"}:
             missing.append("用户想学的内容需要收敛到具体知识点")
     elif work_mode == "practice_artifact":
         missing = []
@@ -254,7 +263,8 @@ def core_checklist(
         return [
             LearningRequirementChecklistItem(
                 title="用户想学的内容",
-                is_clear=_has_text(result.learning_goal) and granularity == "single_knowledge_point",
+                is_clear=_has_text(result.learning_goal)
+                and granularity in {"single_knowledge_point", "source_chapter"},
                 evidence=result.learning_goal.strip(),
             )
         ]

@@ -79,6 +79,7 @@ def test_blank_board_refinement_prompt_requires_rich_broad_topic_guidance(
     assert "entry_point_options 同步记录这些水平卡片" in system_prompt
     assert "优先归为 practice_artifact" in system_prompt
     assert "不把候选资料当成用户已确认资料" in system_prompt
+    assert "不得追问章节内子主题" in system_prompt
     payload = json.loads(str(captured["user_prompt"]))
     assert "response_contract" not in payload
     assert payload["existing_requirement_state"] is None
@@ -134,6 +135,43 @@ def test_compact_second_turn_keeps_existing_practice_goal_and_scenario(
         result=result,
     )
     assert state.requirement.success_criteria == "用于一个已确认场景"
+
+
+def test_resolved_source_chapter_is_ready_without_a_subtopic_question() -> None:
+    lesson = create_empty_lesson("资料学习页")
+    assert lesson.learning_requirements is not None
+    result = BlankBoardRequirementRefinement(
+        route="requirement_refining",
+        chatbot_message="请先确认候选资料。",
+        work_mode="knowledge_board",
+        granularity="source_chapter",
+        learning_goal="已解析章节",
+        boundary="已解析章节",
+        next_question="你想先从本章哪个内容开始？",
+        ready_for_board=False,
+    )
+
+    resolved = build_blank_board_requirement_state(
+        lesson=lesson,
+        base_requirement=lesson.learning_requirements,
+        result=result,
+        resolved_source_chapter=True,
+    )
+    unresolved = build_blank_board_requirement_state(
+        lesson=lesson,
+        base_requirement=lesson.learning_requirements,
+        result=result,
+    )
+
+    assert resolved.granularity == "source_chapter"
+    assert resolved.ready_for_board is True
+    assert resolved.missing_items == []
+    assert resolved.requirement.current_questions == []
+    assert resolved.clarification.next_question == ""
+    assert resolved.clarification.checklist[0].is_clear is True
+    assert unresolved.granularity == "broad_topic"
+    assert unresolved.ready_for_board is False
+    assert "用户想学的内容需要收敛到具体知识点" in unresolved.missing_items
 
 
 def test_learning_intake_policy_is_generic_and_covers_strategy_matrix() -> None:

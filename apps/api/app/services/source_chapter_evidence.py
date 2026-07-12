@@ -472,6 +472,7 @@ def _source_resolution(
         "source_ingestion_id": source.id,
         "chapter_id": chapter.id,
         "chapter_number": _chapter_number(chapter),
+        "chapter_title": chapter.title,
         "source_title_overlap": source_title_overlap,
         "reason": "唯一已验证章节由显式章节定位和当前课程包资料结构共同确定。",
     }

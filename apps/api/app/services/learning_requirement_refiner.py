@@ -57,6 +57,7 @@ def refine_blank_board_requirement(
     include_stream_result: bool = True,
     initial_work_mode_decision: InitialLearningWorkModeDecision | None = None,
     source_requested_by_user: bool = False,
+    resolved_source_chapter: bool = False,
 ) -> LearningRequirementRefinementOutcome | None:
     active_requirement = _active_requirement_from_state(lesson, history_state)
     active_clarification = _active_clarification_from_state(history_state)
@@ -109,14 +110,31 @@ def refine_blank_board_requirement(
             failure_detail=failure_reason,
         )
     if initial_work_mode_decision is not None and initial_work_mode_decision.route == "learning_intake":
-        result = result.model_copy(
-            update={
-                "route": "requirement_refining",
-                "work_mode": initial_work_mode_decision.work_mode,
-                "granularity": initial_work_mode_decision.granularity,
-                "learning_goal": _first_text(result.learning_goal, initial_work_mode_decision.topic),
-            }
-        )
+        initial_update: dict[str, object] = {
+            "route": "requirement_refining",
+            "work_mode": initial_work_mode_decision.work_mode,
+            "granularity": initial_work_mode_decision.granularity,
+            "learning_goal": _first_text(result.learning_goal, initial_work_mode_decision.topic),
+        }
+        if resolved_source_chapter and initial_work_mode_decision.granularity == "source_chapter":
+            initial_update.update(
+                {
+                    "work_mode": "knowledge_board",
+                    "learning_goal": initial_work_mode_decision.topic,
+                    "boundary": initial_work_mode_decision.topic,
+                    "summary": initial_work_mode_decision.topic,
+                    "missing_items": [],
+                    "next_question": "",
+                    "guidance_strategy": "none",
+                    "learning_map_summary": "",
+                    "entry_point_options": [],
+                    "recommended_entry_point": "",
+                    "reason_for_recommendation": "",
+                    "checklist": [],
+                    "ready_for_board": True,
+                }
+            )
+        result = result.model_copy(update=initial_update)
     if result.route == "ordinary_chat" and _contains_requirement_payload(result):
         result = result.model_copy(update={"route": "requirement_refining"})
     if visible_chat_buffer:
@@ -141,6 +159,7 @@ def refine_blank_board_requirement(
         lesson=lesson,
         base_requirement=base_requirement,
         result=result,
+        resolved_source_chapter=resolved_source_chapter,
     )
     requirement = requirement_state.requirement
     if source_requested_by_user and not requirement.source_grounding.requested_by_user:

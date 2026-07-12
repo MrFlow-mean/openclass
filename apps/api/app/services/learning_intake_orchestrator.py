@@ -15,6 +15,10 @@ from app.services.learning_source_discovery import (
     discover_learning_sources,
     rollback_learning_source_discovery,
 )
+from app.services.resolved_source_chapter_scope import (
+    ResolvedSourceChapterScope,
+    resolved_source_chapter_scope,
+)
 from app.services.openai_course_ai import (
     InitialLearningWorkModeDecision,
     OpenAICourseAI,
@@ -182,7 +186,20 @@ def run_learning_intake_turn(
         pre_resolved_evidence=active_evidence,
         resolver=resolver,
     )
-    if probe is not None and not source_discovery.context_text:
+    resolved_chapter_scope = resolved_source_chapter_scope(
+        source_reference=source_selection,
+        discovery_status=source_discovery.status,
+        evidence_bundle=source_discovery.evidence_bundle,
+        discovery_metadata=source_discovery.metadata,
+    )
+    initial_decision = _apply_resolved_source_chapter_scope(
+        initial_decision,
+        scope=resolved_chapter_scope,
+    )
+    source_chapter_resolved = (
+        resolved_chapter_scope is not None and initial_decision.granularity == "source_chapter"
+    )
+    if probe is not None and not source_discovery.context_text and not source_chapter_resolved:
         refinement = probe
     else:
         refinement = refine_blank_board_requirement(
@@ -196,6 +213,7 @@ def run_learning_intake_turn(
             include_stream_result=True,
             initial_work_mode_decision=initial_decision,
             source_requested_by_user=source_discovery.source_requested_by_user,
+            resolved_source_chapter=source_chapter_resolved,
         )
     if refinement is None or refinement.route == "refinement_failed":
         return LearningIntakeTurnOutcome(
@@ -348,6 +366,36 @@ def _decision_from_refinement(
         reason="初始分类不可用，使用隐藏需求判断结果继续资料优先链路。",
         next_question=refinement.learning_clarification.next_question,
         guided_discovery_reply=refinement.chatbot_message,
+    )
+
+
+def _apply_resolved_source_chapter_scope(
+    decision: InitialLearningWorkModeDecision,
+    *,
+    scope: ResolvedSourceChapterScope | None,
+) -> InitialLearningWorkModeDecision:
+    """Use a verified selected chapter as the content boundary for knowledge intake.
+
+    A source chapter settles what to learn, but it never confirms the candidate
+    evidence bundle. Practice requests deliberately keep their independent
+    level/scenario collection path.
+    """
+
+    if (
+        scope is None
+        or decision.route != "learning_intake"
+        or decision.work_mode == "practice_artifact"
+    ):
+        return decision
+    return decision.model_copy(
+        update={
+            "work_mode": "knowledge_board",
+            "granularity": "source_chapter",
+            "topic": scope.chapter_title,
+            "reason": "用户指定的资料章节已由当前资料结构精确解析，章节边界可直接作为学习目标。",
+            "next_question": "",
+            "guided_discovery_reply": "",
+        }
     )
 
 
