@@ -113,6 +113,8 @@ def merged_missing_items(
             missing.append("用户想学的内容")
         if granularity != "single_knowledge_point":
             missing.append("用户想学的内容需要收敛到具体知识点")
+        if "当前水平" in result.missing_items:
+            missing.append("当前水平")
     elif work_mode == "practice_artifact":
         missing = []
         if not _has_text(result.learning_goal):
@@ -196,7 +198,95 @@ def build_clarification(
         ready_for_board=ready_for_board,
         work_mode=work_mode,
         granularity=granularity,
+        current_level_source=(result.current_level_source if _has_text(result.current_level) else "none"),
+        current_level_evidence=(result.current_level_evidence.strip() if _has_text(result.current_level) else ""),
+        pending_level_profiles=({} if ready_for_board else _pending_level_profiles(result)),
     )
+
+
+def validate_current_level_provenance(
+    *,
+    result: BlankBoardRequirementRefinement,
+    user_message: str,
+    active_clarification: LearningClarificationStatus | None,
+) -> BlankBoardRequirementRefinement:
+    """Accept level data only when its source can be checked outside the model draft."""
+
+    if not _has_text(result.current_level):
+        return result
+
+    source = result.current_level_source
+    evidence = result.current_level_evidence.strip()
+    if source == "user_statement" and _user_statement_supports_level(user_message, evidence):
+        return result
+
+    if source == "level_profile_choice":
+        selected_profile = _selected_level_profile(user_message, active_clarification)
+        if selected_profile:
+            return result.model_copy(
+                update={
+                    "current_level": selected_profile,
+                    "current_level_evidence": _compact_text(user_message),
+                }
+            )
+
+    if source == "existing_requirement" and _has_verified_level(active_clarification):
+        return result.model_copy(
+            update={
+                "current_level_evidence": active_clarification.current_level_evidence,
+            }
+        )
+
+    missing_items = _dedupe_text([*result.missing_items, "当前水平"])
+    return result.model_copy(
+        update={
+            "current_level": "",
+            "current_level_source": "none",
+            "current_level_evidence": "",
+            "learner_profile_inference": "",
+            "ready_for_board": False,
+            "missing_items": missing_items,
+        }
+    )
+
+
+def _pending_level_profiles(result: BlankBoardRequirementRefinement) -> dict[str, str]:
+    profiles: dict[str, str] = {}
+    for option in result.entry_point_options:
+        key = option.selection_key.strip()
+        profile = option.level_profile.strip()
+        if option.option_kind == "level_profile" and key and profile:
+            profiles[key.casefold()] = profile
+    return profiles
+
+
+def _selected_level_profile(
+    user_message: str,
+    clarification: LearningClarificationStatus | None,
+) -> str:
+    if clarification is None:
+        return ""
+    selection = _compact_text(user_message).casefold()
+    if not selection:
+        return ""
+    return clarification.pending_level_profiles.get(selection, "")
+
+
+def _has_verified_level(clarification: LearningClarificationStatus | None) -> bool:
+    return bool(
+        clarification
+        and clarification.current_level_source != "none"
+        and clarification.current_level_evidence.strip()
+    )
+
+
+def _user_statement_supports_level(user_message: str, evidence: str) -> bool:
+    compact_evidence = _compact_text(evidence)
+    return len(compact_evidence) >= 2 and compact_evidence in _compact_text(user_message)
+
+
+def _compact_text(value: str) -> str:
+    return "".join((value or "").split())
 
 
 def merge_key_facts(

@@ -227,7 +227,8 @@ test("keeps the learning requirement failure visible when the chat final event i
 test("restores persisted learning-intake assistant replies after a page refresh", async ({ page }) => {
   const unique = Date.now();
   const userMessage = `我想学习一个新知识点 ${unique}`;
-  const assistantMessage = `这是已持久化的学习需求回复 ${unique}`;
+  const assistantOpening = `这是已持久化的学习需求回复 ${unique}`;
+  const assistantMessage = `${assistantOpening}\n$$\nx(t) = \\sin(2\\pi t)\n$$\n公式后面的说明仍应正常显示。`;
   let persistedPackage: Record<string, unknown> | null = null;
 
   await enterAsGuest(page);
@@ -275,7 +276,10 @@ test("restores persisted learning-intake assistant replies after a page refresh"
 
   const chatSidebar = page.getByRole("complementary");
   await expect(chatSidebar.getByText(userMessage)).toBeVisible();
-  await expect(chatSidebar.getByText(assistantMessage)).toBeVisible();
+  await expect(chatSidebar.getByText(assistantOpening)).toBeVisible();
+  await expect(chatSidebar.getByText("公式后面的说明仍应正常显示。")).toBeVisible();
+  await expect(chatSidebar.locator(".katex-display")).toHaveCount(1);
+  await expect(chatSidebar).not.toContainText("BLOCKMATH");
 });
 
 test("allows board generation when a ready learning turn has no relevant evidence", async ({ page }) => {

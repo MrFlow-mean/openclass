@@ -165,7 +165,7 @@ function getActivityLevel(count: number, maxCount: number): ActivityDay["level"]
   return 1;
 }
 
-function buildActivitySummary(coursePackage: CoursePackage | null) {
+function buildActivitySummary(lessons: Lesson[]) {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
@@ -184,7 +184,7 @@ function buildActivitySummary(coursePackage: CoursePackage | null) {
     activityByDay.set(key, (activityByDay.get(key) ?? 0) + 1);
   };
 
-  coursePackage?.lessons.forEach((lesson) => {
+  lessons.forEach((lesson) => {
     track(lesson.created_at);
     track(lesson.updated_at);
     lesson.history_graph.commits.forEach((commit) => {
@@ -410,14 +410,11 @@ export function LearningHome() {
   }, []);
 
   const packages = workspaceState?.packages ?? [];
-  const workspaceActivePackageId = workspaceState?.active_package_id ?? packages[0]?.id ?? null;
   const standalonePackage = packages.find((packageItem) => packageItem.is_standalone) ?? packages[0] ?? null;
   const coursePackages = packages.filter((packageItem) => packageItem.id !== standalonePackage?.id);
   const selectedCoursePackage = selectedPackageId
     ? coursePackages.find((item) => item.id === selectedPackageId) ?? null
     : null;
-  const coursePackage =
-    selectedCoursePackage ?? coursePackages.find((item) => item.id === workspaceActivePackageId) ?? coursePackages[0] ?? null;
   const movablePackages = coursePackages;
   const feedLessons = packages.flatMap((packageItem) =>
     packageItem.lessons.map((lesson) => ({
@@ -473,7 +470,7 @@ export function LearningHome() {
   }, [matchingOpenCourses, openCourseFacet, openCourseSort]);
   const collectedOpenCourseCount = collectedCourseIds.size;
 
-  const activity = buildActivitySummary(coursePackage);
+  const activity = buildActivitySummary(feedLessons.map(({ lesson }) => lesson));
   const lessonMenuLesson =
     lessonMenuState ? standaloneLessonItems.find(({ lesson }) => lesson.id === lessonMenuState.lessonId)?.lesson ?? null : null;
   const feedItems = buildRecentFeed(feedLessons);
@@ -755,7 +752,7 @@ export function LearningHome() {
               </div>
             </div>
 
-            <div className="mb-6 shrink-0">
+            <div className="mb-6 flex min-h-0 max-h-[42vh] shrink-0 flex-col">
               <div className="mb-3 flex items-center justify-between px-2">
                 <h2 className="text-[11px] font-semibold uppercase tracking-[0.24em] text-stone-400">{h.coursePackages}</h2>
                 <button
@@ -771,7 +768,7 @@ export function LearningHome() {
                   )}
                 </button>
               </div>
-              <div className="space-y-2">
+              <div className="custom-scrollbar min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
                 {coursePackages.length ? (
                   coursePackages.map((packageItem) => {
                     const isActive = packageItem.id === selectedPackageId;

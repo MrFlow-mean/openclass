@@ -30,6 +30,7 @@ import type {
 const configuredApiBase = process.env.NEXT_PUBLIC_API_BASE_URL;
 export const OPENCLASS_AUTH_TOKEN_STORAGE_KEY = "openclass.auth.token";
 export const OPENCLASS_GUEST_AUTH_TOKEN_STORAGE_KEY = "openclass.guest.auth.token";
+const API_REQUEST_TIMEOUT_MS = 20_000;
 let guestAuthToken: string | null = null;
 
 function readCookie(name: string) {
@@ -195,6 +196,32 @@ async function responseErrorMessage(response: Response, fallback: string) {
   return message;
 }
 
+function createRequestTimeout(signal?: AbortSignal) {
+  const controller = new AbortController();
+  let timedOut = false;
+  const abortForCaller = () => controller.abort(signal?.reason);
+
+  if (signal?.aborted) {
+    abortForCaller();
+  } else {
+    signal?.addEventListener("abort", abortForCaller, { once: true });
+  }
+
+  const timeoutId = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, API_REQUEST_TIMEOUT_MS);
+
+  return {
+    signal: controller.signal,
+    didTimeout: () => timedOut,
+    dispose: () => {
+      clearTimeout(timeoutId);
+      signal?.removeEventListener("abort", abortForCaller);
+    },
+  };
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   if (!headers.has("Content-Type") && !(init?.body instanceof FormData) && !(init?.body instanceof Blob)) {
@@ -207,11 +234,23 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     }
   }
 
-  const response = await fetch(`${getApiBase()}${path}`, {
-    ...init,
-    headers,
-    cache: "no-store",
-  });
+  const requestTimeout = createRequestTimeout(init?.signal ?? undefined);
+  let response: Response;
+  try {
+    response = await fetch(`${getApiBase()}${path}`, {
+      ...init,
+      headers,
+      cache: "no-store",
+      signal: requestTimeout.signal,
+    });
+  } catch (error) {
+    if (requestTimeout.didTimeout()) {
+      throw new Error("请求超时，请确认 OpenClass 服务已启动后重试。");
+    }
+    throw error;
+  } finally {
+    requestTimeout.dispose();
+  }
 
   if (!response.ok) {
     const message = await responseErrorMessage(response, `Request failed with ${response.status}`);
