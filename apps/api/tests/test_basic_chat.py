@@ -62,6 +62,40 @@ def test_basic_chat_prompt_is_chatgpt_like_without_board_workflow(monkeypatch: p
     assert payload["resource_summary"] == "无"
 
 
+def test_board_directed_explanation_prompt_uses_spoken_teacher_style(monkeypatch: pytest.MonkeyPatch) -> None:
+    ai = OpenAICourseAI()
+    captured: dict[str, object] = {}
+
+    def _fake_parse(role, system_prompt, user_prompt, schema, **kwargs):
+        captured["role"] = role
+        captured["system_prompt"] = system_prompt
+        captured["user_prompt"] = user_prompt
+        captured["schema"] = schema
+        return ChatbotReply(chatbot_message="这里的关键是先看条件怎么限制结论。")
+
+    monkeypatch.setattr(ai, "_parse", _fake_parse)
+
+    result = ai.generate_chatbot_reply(
+        lesson_title="任意课程",
+        learning_goal="理解当前概念",
+        board_summary="已隔离",
+        resource_summary="",
+        conversation_summary="user: 我没理解这里为什么这样做",
+        user_message="请讲解目标片段。",
+        selection_excerpt="目标片段中的实际内容。",
+        interaction_context={"board_explanation_directive": {"status": "approved"}},
+    )
+
+    assert result == ChatbotReply(chatbot_message="这里的关键是先看条件怎么限制结论。")
+    assert captured["role"] == "chatbot"
+    assert captured["schema"] is ChatbotReply
+    system_prompt = str(captured["system_prompt"])
+    assert "像老师正在当面讲这一小段内容" in system_prompt
+    assert "课件、教案或课程流程播报" in system_prompt
+    assert "不要机械布置“用自己的话复述”" in system_prompt
+    assert "不要为了互动而提问" in system_prompt
+
+
 def test_process_chat_on_lesson_records_basic_chat_without_document_change(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,

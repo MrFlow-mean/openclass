@@ -255,27 +255,19 @@ def _document_sections(lesson: Lesson) -> list[tuple[str, str]]:
 
 def _build_section_plan(*, index: int, heading: str, excerpt: str) -> BoardSectionTeachingPlan:
     points = _extract_core_points(excerpt, heading)
-    first_point = points[0] if points else heading
-    check_target = heading or first_point
     return BoardSectionTeachingPlan(
         order_index=index,
         heading=heading,
         board_excerpt=excerpt,
         core_points=points,
-        teaching_steps=[
-            f"先用一句话解释本节要解决的核心问题：{first_point}",
-            "再按照板书中的定义、条件、步骤或关系逐层展开。",
-            "接着用板书里的例子、类比或应用场景帮助学习者落地理解。",
-            "最后指出一个容易混淆的点，并用检查问题确认是否听懂。",
-        ],
-        teaching_method="按板书小节从概念到关系、从例子到检查问题逐步讲解。",
+        # Keep only evidence extracted from the board. The Chatbot decides how to
+        # explain this specific material instead of inheriting a canned lecture script.
+        teaching_steps=[],
+        teaching_method="",
         example_or_analogy=_first_example_line(excerpt),
-        common_pitfalls=[
-            "只记住结论，但没有说清它成立的条件或使用边界。",
-            "跳过中间推理，导致后续例子和检查问题无法对应到板书原文。",
-        ],
-        check_question=f"你能用自己的话说明“{check_target}”这一节的核心意思，并指出它和下一步学习有什么关系吗？",
-        transition_to_next="如果这一节能复述出来，再进入下一节；如果不能，先补一个例子或反例。",
+        common_pitfalls=[],
+        check_question="",
+        transition_to_next="",
     )
 
 
@@ -302,7 +294,7 @@ def _first_example_line(excerpt: str) -> str:
             continue
         if any(marker in line for marker in ("例", "比如", "例如", "如：", "应用", "场景")):
             return line
-    return "可结合板书中最具体的一句话或一个符号关系举例说明。"
+    return ""
 
 
 def _find_section_plan(lesson: Lesson, section_title: str) -> BoardSectionTeachingPlan | None:
