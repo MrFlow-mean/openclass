@@ -243,11 +243,14 @@ def test_board_document_edit_prompt_scopes_initial_board_generation(
     assert "概念引入、正式定义、性质或结论" in system_prompt
     assert "典型例题、解答过程、注释、习题" in system_prompt
     assert "后续学习路线" in system_prompt
+    assert "绝不能用 ASCII、Unicode 线框字符" in system_prompt
+    assert "只有真实代码、命令输出或算法伪代码可以使用代码块" in system_prompt
     assert "不写任何固定主题模板" in system_prompt
     payload = json.loads(str(captured["user_prompt"]))
     assert payload["generation_source"] == "frozen_learning_requirement"
     assert "一次可讲完的聚焦小课" in payload["response_contract"]["content_text"]
     assert "教材体/大学讲义体" in payload["response_contract"]["content_text"]
+    assert "不要在代码块中用 ASCII、Unicode 线框字符" in payload["response_contract"]["content_text"]
     assert "后续学习路线/下一步" in payload["response_contract"]["content_text"]
 
 
