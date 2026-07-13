@@ -299,6 +299,8 @@ export function LearningHome() {
   const [selectedPackageId, setSelectedPackageId] = useState<string | null>(null);
   const [selectedLessonId, setSelectedLessonId] = useState<string | null>(null);
   const [packageLessonsExpanded, setPackageLessonsExpanded] = useState(true);
+  const [coursePackagesCollapsed, setCoursePackagesCollapsed] = useState(false);
+  const [standaloneLessonsCollapsed, setStandaloneLessonsCollapsed] = useState(false);
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [lessonMenuState, setLessonMenuState] = useState<LessonMenuState | null>(null);
   const [lessonMoveMenuState, setLessonMoveMenuState] = useState<LessonMenuState | null>(null);
@@ -755,25 +757,49 @@ export function LearningHome() {
             <div className="mb-6 shrink-0">
               <div className="mb-3 flex items-center justify-between px-2">
                 <h2 className="text-[11px] font-semibold uppercase tracking-[0.24em] text-stone-400">{h.coursePackages}</h2>
-                <button
-                  type="button"
-                  onClick={() => setIsCreatingPackageInline(true)}
-                  className="flex h-8 w-8 items-center justify-center rounded-full border border-stone-200 bg-white text-stone-500 shadow-sm transition hover:border-stone-300 hover:bg-stone-50 hover:text-stone-950"
-                  aria-label={h.addPackageAria}
-                >
-                  {busyKey === "package:create" ? (
-                    <LoaderCircle className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Plus className="h-4 w-4" strokeWidth={2.2} />
-                  )}
-                </button>
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCoursePackagesCollapsed((current) => !current);
+                      setSelectedPackageId(null);
+                      setSelectedLessonId(null);
+                      setPackageLessonsExpanded(false);
+                    }}
+                    className="flex h-8 w-8 items-center justify-center rounded-full text-stone-400 transition hover:bg-stone-100 hover:text-stone-950"
+                    aria-label={coursePackagesCollapsed ? h.expandCoursePackages : h.collapseCoursePackages}
+                    aria-expanded={!coursePackagesCollapsed}
+                    aria-controls="learning-home-course-packages"
+                    title={coursePackagesCollapsed ? h.expandCoursePackages : h.collapseCoursePackages}
+                  >
+                    <ChevronDown
+                      className={clsx("h-4 w-4 transition-transform duration-200", coursePackagesCollapsed && "-rotate-90")}
+                    />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsCreatingPackageInline(true)}
+                    className="flex h-8 w-8 items-center justify-center rounded-full border border-stone-200 bg-white text-stone-500 shadow-sm transition hover:border-stone-300 hover:bg-stone-50 hover:text-stone-950"
+                    aria-label={h.addPackageAria}
+                  >
+                    {busyKey === "package:create" ? (
+                      <LoaderCircle className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Plus className="h-4 w-4" strokeWidth={2.2} />
+                    )}
+                  </button>
+                </div>
               </div>
-              <div className="space-y-2">
-                {coursePackages.length ? (
-                  coursePackages.map((packageItem) => {
-                    const isActive = packageItem.id === selectedPackageId;
-                    const isBusy = busyKey === `package:${packageItem.id}`;
-                    return (
+              <div
+                id="learning-home-course-packages"
+                className={clsx("overflow-hidden", coursePackagesCollapsed && "hidden")}
+              >
+                <div className="space-y-2">
+                  {coursePackages.length ? (
+                    coursePackages.map((packageItem) => {
+                      const isActive = packageItem.id === selectedPackageId;
+                      const isBusy = busyKey === `package:${packageItem.id}`;
+                      return (
                       <div key={packageItem.id} className="relative" data-package-selection-root>
                         <button
                           type="button"
@@ -847,24 +873,25 @@ export function LearningHome() {
                           </>
                         ) : null}
                       </div>
-                    );
-                  })
-                ) : isCreatingPackageInline ? null : (
-                  <div className="rounded-2xl border border-dashed border-stone-300 bg-white/70 px-4 py-6 text-sm text-stone-500">
-                    {h.noPackages}
-                  </div>
-                )}
-                {isCreatingPackageInline ? (
-                  <div data-package-selection-root>
-                    <InlineNameForm
-                      label={h.packageNameLabel}
-                      placeholder={h.packageNamePlaceholder}
-                      isBusy={busyKey === "package:create"}
-                      onCancel={() => setIsCreatingPackageInline(false)}
-                      onSubmit={handleCreatePackage}
-                    />
-                  </div>
-                ) : null}
+                      );
+                    })
+                  ) : isCreatingPackageInline ? null : (
+                    <div className="rounded-2xl border border-dashed border-stone-300 bg-white/70 px-4 py-6 text-sm text-stone-500">
+                      {h.noPackages}
+                    </div>
+                  )}
+                  {isCreatingPackageInline ? (
+                    <div data-package-selection-root>
+                      <InlineNameForm
+                        label={h.packageNameLabel}
+                        placeholder={h.packageNamePlaceholder}
+                        isBusy={busyKey === "package:create"}
+                        onCancel={() => setIsCreatingPackageInline(false)}
+                        onSubmit={handleCreatePackage}
+                      />
+                    </div>
+                  ) : null}
+                </div>
               </div>
             </div>
 
@@ -872,6 +899,19 @@ export function LearningHome() {
               <div className="mb-3 flex items-center justify-between px-2">
                 <h2 className="text-[11px] font-semibold uppercase tracking-[0.24em] text-stone-400">{h.standaloneLessons}</h2>
                 <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setStandaloneLessonsCollapsed((current) => !current)}
+                    className="flex h-8 w-8 items-center justify-center rounded-full text-stone-400 transition hover:bg-stone-100 hover:text-stone-950"
+                    aria-label={standaloneLessonsCollapsed ? h.expandStandaloneLessons : h.collapseStandaloneLessons}
+                    aria-expanded={!standaloneLessonsCollapsed}
+                    aria-controls="learning-home-standalone-lessons"
+                    title={standaloneLessonsCollapsed ? h.expandStandaloneLessons : h.collapseStandaloneLessons}
+                  >
+                    <ChevronDown
+                      className={clsx("h-4 w-4 transition-transform duration-200", standaloneLessonsCollapsed && "-rotate-90")}
+                    />
+                  </button>
                   <span className="rounded-full border border-stone-200 bg-white px-3 py-1 text-[10px] font-medium text-stone-500">
                     {h.standaloneHint}
                   </span>
@@ -891,7 +931,13 @@ export function LearningHome() {
                 </div>
               </div>
 
-              <div className="custom-scrollbar min-h-0 flex-1 space-y-2 overflow-y-auto pb-4 pr-1">
+              <div
+                id="learning-home-standalone-lessons"
+                className={clsx(
+                  "custom-scrollbar min-h-0 flex-1 space-y-2 overflow-y-auto pb-4 pr-1",
+                  standaloneLessonsCollapsed && "hidden"
+                )}
+              >
                 {isLoading ? (
                   Array.from({ length: 4 }).map((_, index) => (
                     <div key={index} className="rounded-2xl border border-stone-200 bg-white px-4 py-4">

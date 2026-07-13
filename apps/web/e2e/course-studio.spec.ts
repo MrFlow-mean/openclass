@@ -79,6 +79,27 @@ test("uses the top-right profile avatar as the only account menu on the home pag
   await expect(page.getByRole("menuitem", { name: "结束游客访问" })).toBeVisible();
 });
 
+test("collapses course package and standalone lesson lists independently", async ({ page }) => {
+  await enterAsGuest(page);
+
+  const packageList = page.locator("#learning-home-course-packages");
+  const standaloneList = page.locator("#learning-home-standalone-lessons");
+  const collapsePackages = page.getByLabel("收起课程包");
+  const collapseStandaloneLessons = page.getByLabel("收起单独课程");
+
+  await expect(packageList).toBeVisible();
+  await expect(standaloneList).toBeVisible();
+
+  await collapsePackages.click();
+  await expect(packageList).toBeHidden();
+  await expect(page.getByLabel("展开课程包")).toHaveAttribute("aria-expanded", "false");
+  await expect(standaloneList).toBeVisible();
+
+  await collapseStandaloneLessons.click();
+  await expect(standaloneList).toBeHidden();
+  await expect(page.getByLabel("展开单独课程")).toHaveAttribute("aria-expanded", "false");
+});
+
 test("localizes the empty course package page in English", async ({ page }) => {
   const unique = Date.now();
   await enterAsGuest(page);
