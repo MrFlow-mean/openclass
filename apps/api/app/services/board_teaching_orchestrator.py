@@ -29,6 +29,8 @@ def should_continue_board_teaching(lesson: Lesson, request: ChatRequest) -> bool
     progress = lesson.board_teaching_progress
     if request.teaching_action == "continue":
         return True
+    if _has_explicit_board_mutation_request(request.message):
+        return False
     if not progress or not progress.waiting_for_continue:
         return False
     return _is_continue_teaching_request(request.message) or _is_affirmative_teaching_reply(request.message)
@@ -121,6 +123,19 @@ def _is_continue_teaching_request(message: str) -> bool:
     if _is_negative_teaching_reply(message):
         return False
     return bool(re.search(r"(继续|下一节|下一部分|往下|接着讲|讲下去|下一步)", compact))
+
+
+def _has_explicit_board_mutation_request(message: str) -> bool:
+    """Keep a typed document request out of the conversational teaching flow."""
+    compact = _compact_intent_text(message)
+    if not compact:
+        return False
+    action = r"(?:生成|补写|写入|新增|添加|扩展|完善|修改|改写|重写|删除)"
+    target = r"(?:板书|文档|讲义|章节|小节|内容)"
+    return bool(
+        re.search(rf"{action}.{{0,12}}{target}", compact)
+        or re.search(rf"{target}.{{0,12}}{action}", compact)
+    )
 
 
 def _last_commit_kind(lesson: Lesson) -> str:
