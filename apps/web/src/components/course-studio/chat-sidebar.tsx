@@ -547,13 +547,16 @@ export function CourseStudioChatSidebar({
                 />
               </div>
             ))}
-            {showReadyForBoardCard ? (
+            {showReadyForBoardCard || (activeBoardTask?.requested_action && ["write", "edit"].includes(activeBoardTask.requested_action) && candidateEvidenceBundle?.purpose === "board_edit") ? (
               <BoardGenerationConfirmationCard
                 clarityStatus={clarityStatus}
+                boardTask={candidateEvidenceBundle?.purpose === "board_edit" ? activeBoardTask : null}
                 isChatBusy={isChatBusy}
                 isPendingEvidenceLoading={isPendingEvidenceLoading}
                 candidateEvidenceBundle={
-                  candidateEvidenceBundle?.purpose === "board_generation" ? candidateEvidenceBundle : null
+                  candidateEvidenceBundle?.purpose === "board_generation" || candidateEvidenceBundle?.purpose === "board_edit"
+                    ? candidateEvidenceBundle
+                    : null
                 }
                 onSubmitChat={onSubmitChat}
                 onEvidenceAction={onEvidenceAction}

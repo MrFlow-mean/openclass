@@ -110,6 +110,7 @@ export function useLessonChatAgent({
   const [latestBoardDecision, setLatestBoardDecision] = useState<BoardDecision | null>(null);
   const [boardEditPrompt, setBoardEditPrompt] = useState<BoardEditPrompt | null>(null);
   const [candidateEvidenceState, setCandidateEvidenceState] = useState<CandidateEvidenceState | null>(null);
+  const [lastEvidenceRequest, setLastEvidenceRequest] = useState<ChatRequestPayload | null>(null);
   const [lastScopedRequest, setLastScopedRequest] = useState<ChatRequestPayload | null>(null);
   const [lastBoardEditRequest, setLastBoardEditRequest] = useState<ChatRequestPayload | null>(null);
   const activeLessonIdRef = useRef<string | null>(activeLesson?.id ?? null);
@@ -562,8 +563,9 @@ export function useLessonChatAgent({
       setBoardEditPrompt(response.board_edit_prompt ?? null);
       setCandidateEvidenceState({
         lessonId: requestLesson.id,
-        bundle: response.requirement_cleared ? null : response.candidate_evidence_bundle ?? null,
+        bundle: response.candidate_evidence_bundle ?? null,
       });
+      setLastEvidenceRequest(response.candidate_evidence_bundle ? payloadWithConversation : null);
       setLastScopedRequest(response.scope_options.length ? payloadWithConversation : null);
       setLastBoardEditRequest(response.board_edit_prompt ? payloadWithConversation : null);
       const chatbotMessage = response.chatbot_message.trim();
@@ -860,12 +862,25 @@ export function useLessonChatAgent({
     setBusyAction("chat");
     try {
       const result = await api.confirmEvidence(activeLesson.id, bundleId, action);
+      const shouldResumeBoardTask =
+        action === "confirm" && candidateEvidenceBundle?.id === bundleId && candidateEvidenceBundle.purpose === "board_edit";
+      const resumePayload = shouldResumeBoardTask
+        ? lastEvidenceRequest ?? {
+            message: activeLesson.board_task_requirements?.question_or_topic ?? "继续执行当前板书写入任务",
+            interaction_mode: "ask" as const,
+          }
+        : null;
       setCandidateEvidenceState({
         lessonId: activeLesson.id,
-        bundle: action === "confirm" ? result.evidence_bundle : null,
+        bundle: resumePayload ? null : action === "confirm" ? result.evidence_bundle : null,
       });
+      setLastEvidenceRequest(null);
       if (result.active_requirement_sheet) {
         setStreamedRequirementSheet(result.active_requirement_sheet);
+      }
+      if (resumePayload) {
+        setBusyAction(null);
+        await handleSubmitChat(resumePayload);
       }
     } catch (error) {
       setError(error instanceof Error ? error.message : "资料证据确认失败");

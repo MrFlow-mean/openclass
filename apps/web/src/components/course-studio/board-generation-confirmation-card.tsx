@@ -1,9 +1,16 @@
 import { Check, FileText, X } from "lucide-react";
 
-import type { ChatRequestPayload, EvidenceBundle, LearningClarificationStatus, RetrievalEvidence } from "@/types";
+import type {
+  BoardTaskRequirementSheet,
+  ChatRequestPayload,
+  EvidenceBundle,
+  LearningClarificationStatus,
+  RetrievalEvidence,
+} from "@/types";
 
 type BoardGenerationConfirmationCardProps = {
   clarityStatus: LearningClarificationStatus;
+  boardTask?: BoardTaskRequirementSheet | null;
   isChatBusy: boolean;
   isPendingEvidenceLoading: boolean;
   candidateEvidenceBundle: EvidenceBundle | null;
@@ -13,14 +20,17 @@ type BoardGenerationConfirmationCardProps = {
 
 export function BoardGenerationConfirmationCard({
   clarityStatus,
+  boardTask = null,
   isChatBusy,
   isPendingEvidenceLoading,
   candidateEvidenceBundle,
   onSubmitChat,
   onEvidenceAction,
 }: BoardGenerationConfirmationCardProps) {
+  const isExistingBoardWrite = Boolean(boardTask && candidateEvidenceBundle?.purpose === "board_edit");
   const requiresEvidenceConfirmation =
-    candidateEvidenceBundle?.status === "candidate" && candidateEvidenceBundle.purpose === "board_generation";
+    candidateEvidenceBundle?.status === "candidate" &&
+    (candidateEvidenceBundle.purpose === "board_generation" || isExistingBoardWrite);
   const startDisabled = isChatBusy || isPendingEvidenceLoading || requiresEvidenceConfirmation;
 
   function submitBoardGeneration() {
@@ -34,8 +44,12 @@ export function BoardGenerationConfirmationCard({
 
   return (
     <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
-      <p className="text-[11px] font-bold uppercase tracking-widest text-emerald-700">学习需求已清晰</p>
-      <p className="mt-2 text-sm leading-6 text-emerald-950">{clarityStatus.summary || clarityStatus.reason}</p>
+      <p className="text-[11px] font-bold uppercase tracking-widest text-emerald-700">
+        {isExistingBoardWrite ? "板书写入已准备好" : "学习需求已清晰"}
+      </p>
+      <p className="mt-2 text-sm leading-6 text-emerald-950">
+        {isExistingBoardWrite ? boardTask?.question_or_topic || "当前板书写入任务已准备好。" : clarityStatus.summary || clarityStatus.reason}
+      </p>
       {isPendingEvidenceLoading ? (
         <p className="mt-3 border-t border-emerald-100 pt-3 text-xs leading-6 text-emerald-900/80">正在核对本轮资料证据。</p>
       ) : candidateEvidenceBundle ? (
@@ -60,7 +74,7 @@ export function BoardGenerationConfirmationCard({
                 className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-emerald-300 bg-white px-3 text-xs font-semibold text-emerald-800 transition hover:border-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Check className="h-4 w-4" />
-                使用资料
+                {isExistingBoardWrite ? "确认并写入" : "使用资料"}
               </button>
               <button
                 type="button"
@@ -77,14 +91,18 @@ export function BoardGenerationConfirmationCard({
       ) : (
         <p className="mt-2 text-xs leading-6 text-emerald-900/80">接下来将基于这份学习需求生成板书，是否开始？</p>
       )}
-      <button
-        type="button"
-        onClick={submitBoardGeneration}
-        disabled={startDisabled}
-        className="mt-3 inline-flex h-9 items-center justify-center rounded-lg bg-emerald-600 px-3 text-xs font-semibold text-white shadow-sm transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
-      >
-        开始生成板书
-      </button>
+      {isExistingBoardWrite ? (
+        <p className="mt-3 text-xs leading-6 text-emerald-900/80">确认资料后会自动继续写入右侧板书。</p>
+      ) : (
+        <button
+          type="button"
+          onClick={submitBoardGeneration}
+          disabled={startDisabled}
+          className="mt-3 inline-flex h-9 items-center justify-center rounded-lg bg-emerald-600 px-3 text-xs font-semibold text-white shadow-sm transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          开始生成板书
+        </button>
+      )}
     </div>
   );
 }

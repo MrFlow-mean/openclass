@@ -271,6 +271,18 @@ def get_pending_lesson_evidence(
 ) -> EvidenceBundle | None:
     workspace = workspace_state.load_workspace_for_user(user.id)
     workspace_state.find_lesson_package(workspace, lesson_id)
+    board_task_state = workspace_state.load_board_task_history_state_for_user(user.id, lesson_id)
+    board_task_run_id = board_task_state.get("run_id") if board_task_state else None
+    if isinstance(board_task_run_id, str) and board_task_run_id:
+        board_task_bundle = source_evidence_store.latest_bundle(
+            owner_user_id=user.id,
+            lesson_id=lesson_id,
+            status="candidate",
+            purpose="board_edit",
+            board_task_run_id=board_task_run_id,
+        )
+        if board_task_bundle is not None:
+            return board_task_bundle
     history_state = workspace_state.load_learning_requirement_history_state_for_user(user.id, lesson_id)
     requirement_run_id = history_state.get("run_id") if history_state else None
     if not isinstance(requirement_run_id, str) or not requirement_run_id:
