@@ -27,7 +27,14 @@ export function BoardGenerationConfirmationCard({
   onSubmitChat,
   onEvidenceAction,
 }: BoardGenerationConfirmationCardProps) {
-  const isExistingBoardWrite = Boolean(boardTask && candidateEvidenceBundle?.purpose === "board_edit");
+  const isReadyExistingBoardWrite = Boolean(
+    boardTask &&
+      ["write", "edit"].includes(boardTask.requested_action ?? "") &&
+      boardTask.progress >= 100 &&
+      boardTask.missing_items.length === 0 &&
+      !boardTask.clarification_question.trim()
+  );
+  const isExistingBoardWrite = Boolean(isReadyExistingBoardWrite && candidateEvidenceBundle?.purpose === "board_edit");
   const requiresEvidenceConfirmation =
     candidateEvidenceBundle?.status === "candidate" &&
     (candidateEvidenceBundle.purpose === "board_generation" || isExistingBoardWrite);

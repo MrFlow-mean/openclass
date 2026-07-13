@@ -27,6 +27,8 @@ def should_start_board_teaching(lesson: Lesson, request: ChatRequest) -> bool:
 
 def should_continue_board_teaching(lesson: Lesson, request: ChatRequest) -> bool:
     progress = lesson.board_teaching_progress
+    if request.board_task_execution_action == "resume_confirmed":
+        return False
     if request.teaching_action == "continue":
         return True
     if has_explicit_board_mutation_request(request.message):
@@ -135,8 +137,8 @@ def has_explicit_board_mutation_request(message: str) -> bool:
     action = r"(?:生成|补写|写入|新增|添加|扩展|完善|修改|改写|重写|删除)"
     target = r"(?:板书|文档|讲义|章节|小节|内容)"
     return bool(
-        re.search(rf"{action}.{{0,12}}{target}", compact)
-        or re.search(rf"{target}.{{0,12}}{action}", compact)
+        re.search(rf"{action}.{{0,64}}{target}", compact)
+        or re.search(rf"{target}.{{0,64}}{action}", compact)
     )
 
 

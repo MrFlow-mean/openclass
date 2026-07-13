@@ -34,3 +34,38 @@ def test_explicit_board_generation_request_does_not_continue_teaching() -> None:
         lesson,
         ChatRequest(message="继续为我生成下一个章节的板书"),
     )
+
+
+def test_confirmed_board_write_resume_never_continues_teaching() -> None:
+    lesson = create_empty_lesson("已有讲解进度")
+    lesson.board_teaching_progress = BoardTeachingProgress(
+        board_document_id=lesson.board_document.id,
+        board_snapshot_hash="snapshot",
+        current_section_index=1,
+        completed_section_indexes=[0, 1],
+        waiting_for_continue=True,
+    )
+
+    assert not should_continue_board_teaching(
+        lesson,
+        ChatRequest(
+            message="继续生成关于一个较长主题名称的板书内容",
+            board_task_execution_action="resume_confirmed",
+        ),
+    )
+
+
+def test_long_explicit_board_write_request_never_continues_teaching() -> None:
+    lesson = create_empty_lesson("已有讲解进度")
+    lesson.board_teaching_progress = BoardTeachingProgress(
+        board_document_id=lesson.board_document.id,
+        board_snapshot_hash="snapshot",
+        current_section_index=1,
+        completed_section_indexes=[0, 1],
+        waiting_for_continue=True,
+    )
+
+    assert not should_continue_board_teaching(
+        lesson,
+        ChatRequest(message="继续生成关于一个较长、带有多个限定词和说明的主题名称的板书内容"),
+    )

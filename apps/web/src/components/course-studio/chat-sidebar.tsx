@@ -547,7 +547,7 @@ export function CourseStudioChatSidebar({
                 />
               </div>
             ))}
-            {showReadyForBoardCard || (activeBoardTask?.requested_action && ["write", "edit"].includes(activeBoardTask.requested_action) && candidateEvidenceBundle?.purpose === "board_edit") ? (
+            {showReadyForBoardCard || (activeBoardTask?.requested_action && ["write", "edit"].includes(activeBoardTask.requested_action) && activeBoardTask.progress >= 100 && activeBoardTask.missing_items.length === 0 && !activeBoardTask.clarification_question.trim() && candidateEvidenceBundle?.purpose === "board_edit") ? (
               <BoardGenerationConfirmationCard
                 clarityStatus={clarityStatus}
                 boardTask={candidateEvidenceBundle?.purpose === "board_edit" ? activeBoardTask : null}
