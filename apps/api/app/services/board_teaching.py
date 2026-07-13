@@ -13,7 +13,7 @@ from app.models import (
     Lesson,
     SectionTeachingProgressView,
 )
-from app.services.board_explanation_gate import generate_board_directed_explanation_message
+from app.services.openai_course_ai import openai_course_ai
 
 
 MAX_TEACHING_CONTEXT_CHARS = 2200
@@ -24,8 +24,8 @@ MAX_SECTION_EXCERPT_CHARS = 900
 class BoardTeachingResult:
     chatbot_message: str
     progress_view: SectionTeachingProgressView
-    assistant_message_source: str = "chatbot_board_directed"
-    board_explanation_directive: dict[str, object] | None = None
+    assistant_message_source: str = "chatbot_unreferenced_board_explanation"
+    chatbot_board_context: str = "not_referenced"
 
 
 def teach_first_section(
@@ -33,12 +33,14 @@ def teach_first_section(
     lesson: Lesson,
     resource_summary: str,
     conversation_summary: str,
+    user_message: str,
 ) -> BoardTeachingResult:
     return _teach_section(
         lesson=lesson,
         section_index=0,
         resource_summary=resource_summary,
         conversation_summary=conversation_summary,
+        user_message=user_message,
     )
 
 
@@ -47,6 +49,7 @@ def teach_next_section(
     lesson: Lesson,
     resource_summary: str,
     conversation_summary: str,
+    user_message: str,
 ) -> BoardTeachingResult:
     sections = _section_titles(lesson)
     current = lesson.board_teaching_progress.current_section_index if lesson.board_teaching_progress else -1
@@ -56,6 +59,7 @@ def teach_next_section(
         section_index=next_index,
         resource_summary=resource_summary,
         conversation_summary=conversation_summary,
+        user_message=user_message,
     )
 
 
@@ -109,30 +113,22 @@ def _teach_section(
     section_index: int,
     resource_summary: str,
     conversation_summary: str,
+    user_message: str,
 ) -> BoardTeachingResult:
     sections = _section_titles(lesson)
     safe_index = min(max(section_index, 0), len(sections) - 1)
     section_title = sections[safe_index]
     has_next = safe_index < len(sections) - 1
-    user_message = (
-        f"请讲解当前板书的第 {safe_index + 1} 节：{section_title}。"
-        f"当前是否还有后续章节：{'是' if has_next else '否'}。"
-        "请根据这个状态自然决定结尾怎么收束。"
-    )
-    section_context = _section_context(lesson, section_title)
-    directed = generate_board_directed_explanation_message(
-        lesson_title=lesson.title,
-        learning_goal=lesson.learning_requirements.learning_goal if lesson.learning_requirements else lesson.summary,
-        board_summary=section_context,
-        resource_summary=resource_summary,
+    ai_reply = openai_course_ai.generate_basic_chat_reply(
+        board_document_state={"status": "non_empty", "has_content": True},
         conversation_summary=conversation_summary,
         user_message=user_message,
-        action_type="teach_section",
-        target_excerpt=section_context,
-        interaction_mode="ask",
+        resource_summary=resource_summary,
     )
+    chatbot_message = (ai_reply.chatbot_message if ai_reply else "").strip()
+    assistant_message_source = "chatbot_unreferenced_board_explanation" if chatbot_message else "chatbot_empty"
 
-    if directed.assistant_message_source == "chatbot_board_directed":
+    if chatbot_message:
         completed = set(lesson.board_teaching_progress.completed_section_indexes if lesson.board_teaching_progress else [])
         completed.add(safe_index)
         lesson.board_teaching_progress = BoardTeachingProgress(
@@ -152,10 +148,9 @@ def _teach_section(
     else:
         progress_view = _current_progress_view(lesson, sections, fallback_index=safe_index)
     return BoardTeachingResult(
-        chatbot_message=directed.chatbot_message,
+        chatbot_message=chatbot_message,
         progress_view=progress_view,
-        assistant_message_source=directed.assistant_message_source,
-        board_explanation_directive=directed.directive_payload,
+        assistant_message_source=assistant_message_source,
     )
 
 

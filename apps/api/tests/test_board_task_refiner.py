@@ -17,11 +17,10 @@ from app.models import (
 from app.services import workspace_state
 from app.services import board_task_executor
 from app.services.board_document_editor import BoardDocumentEditOutcome
-from app.services.board_explanation_gate import BoardDirectedExplanationResult
 from app.services.chat_service import process_chat_on_lesson
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
 from app.services.lesson_factory import create_empty_lesson
-from app.services.openai_course_ai import BoardTaskRequirementRefinement, openai_course_ai
+from app.services.openai_course_ai import BoardTaskRequirementRefinement, ChatbotReply, openai_course_ai
 from app.services.board_task_refiner import _board_summary
 from app.services.resource_resolver import resource_resolver
 from app.services.rich_document import build_document
@@ -174,24 +173,13 @@ def test_existing_board_explain_ready_executes_and_consumes_board_task(
     monkeypatch.setattr(openai_course_ai, "generate_board_search_rerank", lambda **kwargs: None)
     monkeypatch.setattr(openai_course_ai, "generate_board_task_route_decision", lambda **kwargs: None)
 
-    def _fake_directed_explanation(**kwargs):
-        assert "这里已经有一段学习内容" in kwargs["target_excerpt"]
-        return BoardDirectedExplanationResult(
-            chatbot_message="这是第一节的讲解。",
-            assistant_message_source="chatbot_board_directed",
-            directive_payload={
-                "status": "approved",
-                "target_summary": "第一节",
-                "target_excerpt": kwargs["target_excerpt"],
-                "teaching_instruction": "只讲目标片段。",
-            },
-        )
+    def _fake_basic_chat_reply(**kwargs):
+        assert kwargs["user_message"] == "讲第一节，按初学者角度讲清楚。"
+        assert kwargs["board_document_state"] == {"status": "non_empty", "has_content": True}
+        assert "target_excerpt" not in kwargs
+        return ChatbotReply(chatbot_message="这是不参考板书的讲解。")
 
-    monkeypatch.setattr(
-        board_task_executor,
-        "generate_board_directed_explanation_message",
-        _fake_directed_explanation,
-    )
+    monkeypatch.setattr(openai_course_ai, "generate_basic_chat_reply", _fake_basic_chat_reply)
 
     response = process_chat_on_lesson(
         lesson.id,
@@ -200,7 +188,7 @@ def test_existing_board_explain_ready_executes_and_consumes_board_task(
     )
 
     assert response.board_decision.action == "no_change"
-    assert response.chatbot_message == "这是第一节的讲解。"
+    assert response.chatbot_message == "这是不参考板书的讲解。"
     assert response.active_board_task_sheet is None
     assert response.resolved_focus is not None
     assert "第一节" in response.resolved_focus.excerpt
@@ -227,8 +215,8 @@ def test_existing_board_explain_ready_executes_and_consumes_board_task(
     assert commit.metadata["board_task_route"] == "explain"
     assert commit.metadata["board_task_cleared"] is True
     assert commit.metadata["board_search_evidence"]["read_context"]["target_excerpt"]
-    assert commit.metadata["assistant_message_source"] == "chatbot_board_directed"
-    assert commit.metadata["board_explanation_directive"]["status"] == "approved"
+    assert commit.metadata["assistant_message_source"] == "chatbot_unreferenced_board_explanation"
+    assert commit.metadata["chatbot_board_context"] == "not_referenced"
     assert commit.metadata["document_changed"] is False
 
 
@@ -260,24 +248,12 @@ def test_existing_board_explain_optional_clarification_executes_same_turn(
     monkeypatch.setattr(openai_course_ai, "generate_board_search_rerank", lambda **kwargs: None)
     monkeypatch.setattr(openai_course_ai, "generate_board_task_route_decision", lambda **kwargs: None)
 
-    def _fake_directed_explanation(**kwargs):
-        assert "这里已经有一段学习内容" in kwargs["target_excerpt"]
-        return BoardDirectedExplanationResult(
-            chatbot_message="这是第一节的默认讲解。",
-            assistant_message_source="chatbot_board_directed",
-            directive_payload={
-                "status": "approved",
-                "target_summary": "第一节",
-                "target_excerpt": kwargs["target_excerpt"],
-                "teaching_instruction": "按默认讲解方式讲清目标片段。",
-            },
-        )
+    def _fake_basic_chat_reply(**kwargs):
+        assert kwargs["user_message"] == "讲第一节。"
+        assert kwargs["board_document_state"] == {"status": "non_empty", "has_content": True}
+        return ChatbotReply(chatbot_message="这是第一节的默认讲解。")
 
-    monkeypatch.setattr(
-        board_task_executor,
-        "generate_board_directed_explanation_message",
-        _fake_directed_explanation,
-    )
+    monkeypatch.setattr(openai_course_ai, "generate_basic_chat_reply", _fake_basic_chat_reply)
 
     response = process_chat_on_lesson(
         lesson.id,
@@ -507,23 +483,12 @@ def test_board_selection_quote_explain_executes_target_range(
     monkeypatch.setattr(openai_course_ai, "generate_board_search_rerank", lambda **kwargs: None)
     monkeypatch.setattr(openai_course_ai, "generate_board_task_route_decision", lambda **kwargs: None)
 
-    def _fake_directed_explanation(**kwargs):
-        assert "这里已经有一段学习内容" in kwargs["target_excerpt"]
-        return BoardDirectedExplanationResult(
-            chatbot_message="这是选中内容的讲解。",
-            assistant_message_source="chatbot_board_directed",
-            directive_payload={
-                "status": "approved",
-                "target_summary": "选中内容",
-                "target_excerpt": kwargs["target_excerpt"],
-            },
-        )
+    def _fake_basic_chat_reply(**kwargs):
+        assert kwargs["user_message"] == "讲清楚这段。"
+        assert kwargs["board_document_state"] == {"status": "non_empty", "has_content": True}
+        return ChatbotReply(chatbot_message="这是选中内容的讲解。")
 
-    monkeypatch.setattr(
-        board_task_executor,
-        "generate_board_directed_explanation_message",
-        _fake_directed_explanation,
-    )
+    monkeypatch.setattr(openai_course_ai, "generate_basic_chat_reply", _fake_basic_chat_reply)
 
     response = process_chat_on_lesson(
         lesson.id,

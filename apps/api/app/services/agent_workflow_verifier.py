@@ -39,13 +39,15 @@ def verify_agent_response(
             issues.append("board_generation_without_document_change")
 
     if kind == "board_section_teaching":
-        _require(metadata, "board_explanation_directive", issues)
+        if metadata.get("chatbot_board_context") != "not_referenced":
+            issues.append("teaching_response_referenced_board_context")
         _require(metadata, "teaching_progress", issues)
         if response.teaching_progress is None:
             issues.append("teaching_response_without_progress")
 
     if board_task_route == "explain":
-        _require(metadata, "board_explanation_directive", issues)
+        if metadata.get("chatbot_board_context") != "not_referenced":
+            issues.append("board_explanation_referenced_board_context")
         _require(metadata, "resolved_focus", issues)
         _require(metadata, "board_task_run_id", issues)
         _require(metadata, "board_task_version_id", issues)

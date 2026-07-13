@@ -20,7 +20,6 @@ from app.models import (
     SelectionRef,
 )
 from app.services.board_document_editor import edit_existing_document
-from app.services.board_explanation_gate import generate_board_directed_explanation_message
 from app.services.board_range_reader import build_board_read_context
 from app.services.board_task_history import BoardTaskHistoryRecorder, BoardTaskHistoryStamp
 from app.services.course_runtime import effective_requirements
@@ -165,24 +164,15 @@ def _execute_explain(
         )
     read_context = _read_context_for_resolution(lesson=lesson, resolution=resolution, focus=focus)
     focus = read_context.target_focus
-    target_excerpt = read_context.surrounding_context or focus_context(focus)
-    task_requirements = _requirements_from_board_task(
-        lesson=lesson,
-        board_task=board_task,
-        action_type="explain_target",
-        focus=focus,
-    )
-    directed = generate_board_directed_explanation_message(
-        lesson_title=lesson.title,
-        learning_goal=task_requirements.learning_goal,
-        board_summary=target_excerpt,
-        resource_summary=evidence_bundle.context_text if evidence_bundle else "",
+    ai_reply = openai_course_ai.generate_basic_chat_reply(
+        board_document_state={"status": "non_empty", "has_content": True},
         conversation_summary=conversation_summary,
         user_message=user_message,
-        action_type="explain_target",
-        target_excerpt=target_excerpt,
+        resource_summary=evidence_bundle.context_text if evidence_bundle else "",
     )
-    cleared = directed.assistant_message_source == "chatbot_board_directed" and bool(directed.chatbot_message)
+    chatbot_message = (ai_reply.chatbot_message if ai_reply else "").strip()
+    assistant_message_source = "chatbot_unreferenced_board_explanation" if chatbot_message else "chatbot_empty"
+    cleared = bool(chatbot_message)
     source_stamp = recorder.current_stamp()
     commit_operations(
         lesson,
@@ -193,10 +183,10 @@ def _execute_explain(
         metadata={
             "kind": "chat_flow",
             "user_message": user_message,
-            "assistant_message": directed.chatbot_message,
-            "assistant_message_source": directed.assistant_message_source,
+            "assistant_message": chatbot_message,
+            "assistant_message_source": assistant_message_source,
             "document_changed": False,
-            "board_explanation_directive": directed.directive_payload,
+            "chatbot_board_context": "not_referenced",
             "resolved_focus": focus.model_dump(mode="json"),
             **evidence_metadata(evidence_bundle),
             **_board_task_metadata(
@@ -220,7 +210,7 @@ def _execute_explain(
         lesson.board_task_requirements = board_task
     operations.extend(recorder.operations)
     return BoardTaskExecutionOutcome(
-        chatbot_message=directed.chatbot_message,
+        chatbot_message=chatbot_message,
         board_decision=BoardDecision(action="no_change", reason=decision.reason),
         active_board_task_sheet=None if cleared else board_task,
         board_task_stamp=stamp,

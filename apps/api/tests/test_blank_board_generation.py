@@ -1,9 +1,8 @@
 import pytest
 
 from app.models import BoardDecision, ChatRequest, EvidenceBundle, LearningClarificationStatus, RetrievalEvidence
-from app.services import blank_board_generation, board_teaching, workspace_state
+from app.services import blank_board_generation, workspace_state
 from app.services.board_document_editor import BoardDocumentEditOutcome
-from app.services.board_explanation_gate import BoardDirectedExplanationResult
 from app.services.chat_service import process_chat_on_lesson
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
 from app.services.learning_requirement_history import LearningRequirementHistoryRecorder
@@ -281,20 +280,12 @@ def test_confirm_after_board_generation_teaches_from_first_section(
     )
     assert generation_response.chatbot_message
 
-    def _fake_directed_explanation(**kwargs):
-        assert kwargs["action_type"] == "teach_section"
-        assert "极限要解决什么问题" in kwargs["target_excerpt"]
-        return BoardDirectedExplanationResult(
-            chatbot_message="第一节讲解内容。",
-            assistant_message_source="chatbot_board_directed",
-            directive_payload={
-                "status": "approved",
-                "target_summary": "第一节",
-                "target_excerpt": kwargs["target_excerpt"],
-            },
-        )
+    def _fake_basic_chat_reply(**kwargs):
+        assert kwargs["user_message"] == teaching_start_message
+        assert kwargs["board_document_state"] == {"status": "non_empty", "has_content": True}
+        return ChatbotReply(chatbot_message="第一节讲解内容。")
 
-    monkeypatch.setattr(board_teaching, "generate_board_directed_explanation_message", _fake_directed_explanation)
+    monkeypatch.setattr(openai_course_ai, "generate_basic_chat_reply", _fake_basic_chat_reply)
     monkeypatch.setattr(
         openai_course_ai,
         "generate_board_task_requirement_refinement",
@@ -368,18 +359,14 @@ def test_continue_after_first_section_teaches_next_section(
         user_id=TEST_USER_ID,
     )
 
-    def _fake_directed_explanation(**kwargs):
-        if "连续的直觉" in kwargs["target_excerpt"]:
-            message = "第二节讲解内容。"
-        else:
-            message = "第一节讲解内容。"
-        return BoardDirectedExplanationResult(
-            chatbot_message=message,
-            assistant_message_source="chatbot_board_directed",
-            directive_payload={"status": "approved", "target_excerpt": kwargs["target_excerpt"]},
-        )
+    seen_messages: list[str] = []
 
-    monkeypatch.setattr(board_teaching, "generate_board_directed_explanation_message", _fake_directed_explanation)
+    def _fake_basic_chat_reply(**kwargs):
+        assert kwargs["board_document_state"] == {"status": "non_empty", "has_content": True}
+        seen_messages.append(kwargs["user_message"])
+        return ChatbotReply(chatbot_message="第一节讲解内容。" if len(seen_messages) == 1 else "第二节讲解内容。")
+
+    monkeypatch.setattr(openai_course_ai, "generate_basic_chat_reply", _fake_basic_chat_reply)
     process_chat_on_lesson(
         lesson_id,
         ChatRequest(message="好"),
@@ -398,6 +385,7 @@ def test_continue_after_first_section_teaches_next_section(
     assert response.teaching_progress.current_section_title == "2. 连续的直觉"
     assert response.teaching_progress.has_next_section is False
     assert response.teaching_progress.waiting_for_continue is False
+    assert seen_messages == ["好", "继续"]
 
 
 def test_board_generation_action_requires_ready_requirement(

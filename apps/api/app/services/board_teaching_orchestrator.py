@@ -53,6 +53,7 @@ def run_board_teaching_turn(
             lesson=lesson,
             resource_summary="",
             conversation_summary=conversation_summary,
+            user_message=request.message,
         )
     else:
         lesson.board_teaching_progress = None
@@ -60,6 +61,7 @@ def run_board_teaching_turn(
             lesson=lesson,
             resource_summary="",
             conversation_summary=conversation_summary,
+            user_message=request.message,
         )
     board_decision = BoardDecision(
         action="no_change",
@@ -80,7 +82,7 @@ def run_board_teaching_turn(
             "teaching_action": teaching_action,
             "teaching_progress": result.progress_view.model_dump(mode="json"),
             "teaching_progress_after": result.progress_view.model_dump(mode="json"),
-            "board_explanation_directive": result.board_explanation_directive,
+            "chatbot_board_context": result.chatbot_board_context,
             "board_teaching_flow": lesson.board_teaching_guide.teaching_flow,
             "active_requirement_sheet_after": None,
             "active_board_task_sheet_after": None,
