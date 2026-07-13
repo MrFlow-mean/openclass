@@ -13,7 +13,19 @@ import { api, clearAuthToken } from "@/lib/api";
 import { userAccountLabel, userDisplayName, userInitial } from "@/lib/account";
 import type { UserView } from "@/types";
 
-export function AccountMenu({ compact = false }: { compact?: boolean }) {
+type AccountMenuProps = {
+  compact?: boolean;
+  fallbackAvatarUrl?: string;
+  ariaLabel?: string;
+  trigger?: "default" | "avatar";
+};
+
+export function AccountMenu({
+  compact = false,
+  fallbackAvatarUrl,
+  ariaLabel,
+  trigger = "default",
+}: AccountMenuProps) {
   const router = useRouter();
   const { texts: txt } = useInterfaceLanguage();
   const m = txt.accountMenu;
@@ -50,6 +62,7 @@ export function AccountMenu({ compact = false }: { compact?: boolean }) {
   }
 
   const isGuest = user?.role === "guest";
+  const avatarUrl = user?.avatar_url ?? fallbackAvatarUrl;
 
   function handleLoginToSave() {
     setOpen(false);
@@ -63,22 +76,37 @@ export function AccountMenu({ compact = false }: { compact?: boolean }) {
         type="button"
         onClick={() => setOpen((current) => !current)}
         className={clsx(
-          "inline-flex h-10 items-center gap-2 rounded-xl border border-stone-200 bg-white px-2 text-sm font-semibold text-stone-700 shadow-sm transition hover:border-stone-300 hover:text-stone-950",
-          compact ? "w-10 justify-center px-0" : "max-w-[16rem]"
+          trigger === "avatar"
+            ? "inline-flex h-11 w-11 items-center justify-center overflow-hidden rounded-full border-2 border-white bg-stone-200 shadow-[0_10px_24px_rgba(15,23,42,0.08)] transition hover:scale-[1.03]"
+            : "inline-flex h-10 items-center gap-2 rounded-xl border border-stone-200 bg-white px-2 text-sm font-semibold text-stone-700 shadow-sm transition hover:border-stone-300 hover:text-stone-950",
+          trigger === "default" && (compact ? "w-10 justify-center px-0" : "max-w-[16rem]")
         )}
         aria-haspopup="menu"
         aria-expanded={open}
+        aria-label={ariaLabel}
         title={userAccountLabel(user)}
       >
-        <span className="flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-full bg-stone-950 text-xs font-bold text-white">
-          {user?.avatar_url ? (
-            <Image src={user.avatar_url} alt="" width={28} height={28} className="h-full w-full object-cover" unoptimized />
+        <span
+          className={clsx(
+            "flex shrink-0 items-center justify-center overflow-hidden rounded-full",
+            trigger === "avatar" ? "h-full w-full" : "h-7 w-7 bg-stone-950 text-xs font-bold text-white"
+          )}
+        >
+          {avatarUrl ? (
+            <Image
+              src={avatarUrl}
+              alt=""
+              width={trigger === "avatar" ? 44 : 28}
+              height={trigger === "avatar" ? 44 : 28}
+              className="h-full w-full object-cover"
+              unoptimized
+            />
           ) : (
             userInitial(user)
           )}
         </span>
-        {!compact ? <span className="truncate">{userDisplayName(user)}</span> : null}
-        {!compact ? <ChevronDown className="h-4 w-4 shrink-0 text-stone-400" /> : null}
+        {trigger === "default" && !compact ? <span className="truncate">{userDisplayName(user)}</span> : null}
+        {trigger === "default" && !compact ? <ChevronDown className="h-4 w-4 shrink-0 text-stone-400" /> : null}
       </button>
 
       {open ? (
@@ -89,8 +117,8 @@ export function AccountMenu({ compact = false }: { compact?: boolean }) {
           <div className="border-b border-stone-200 p-4">
             <div className="flex items-start gap-3">
               <span className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-full bg-stone-950 text-sm font-bold text-white">
-                {user?.avatar_url ? (
-                  <Image src={user.avatar_url} alt="" width={44} height={44} className="h-full w-full object-cover" unoptimized />
+                {avatarUrl ? (
+                  <Image src={avatarUrl} alt="" width={44} height={44} className="h-full w-full object-cover" unoptimized />
                 ) : (
                   userInitial(user)
                 )}

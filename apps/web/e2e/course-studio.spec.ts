@@ -68,6 +68,17 @@ test("creates a package and lesson, edits the document, and persists a version",
   await expect(page.getByText("Auto Save").first()).toBeVisible();
 });
 
+test("uses the top-right profile avatar as the only account menu on the home page", async ({ page }) => {
+  await enterAsGuest(page);
+
+  const accountMenu = page.locator("[data-account-menu-root]");
+  await expect(accountMenu).toHaveCount(1);
+  await page.getByRole("button", { name: "开放课堂用户头像" }).click();
+  await expect(page.getByRole("menu")).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "登录以保存" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "结束游客访问" })).toBeVisible();
+});
+
 test("localizes the empty course package page in English", async ({ page }) => {
   const unique = Date.now();
   await enterAsGuest(page);

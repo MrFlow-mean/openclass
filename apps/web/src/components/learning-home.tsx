@@ -750,9 +750,6 @@ export function LearningHome() {
                   <h1 className="mt-1 truncate text-2xl font-semibold tracking-tight text-stone-950">{h.brandTitle}</h1>
                 </div>
               </div>
-              <div className="flex shrink-0 items-center gap-1">
-                <AccountMenu compact />
-              </div>
             </div>
 
             <div className="mb-6 shrink-0">
@@ -1748,20 +1745,11 @@ export function LearningHome() {
               <span>{language === "en" ? "中" : "EN"}</span>
             </button>
           </div>
-          <Link
-            href="/profile"
-            className="h-11 w-11 overflow-hidden rounded-full border-2 border-white bg-stone-200 shadow-[0_10px_24px_rgba(15,23,42,0.08)] transition hover:scale-[1.03]"
-            aria-label="用户头像"
-          >
-            <Image
-              src="https://api.dicebear.com/9.x/glass/svg?seed=kai-fang-ke-tang"
-              alt="开放课堂用户头像"
-              className="h-full w-full object-cover"
-              width={44}
-              height={44}
-              unoptimized
-            />
-          </Link>
+          <AccountMenu
+            ariaLabel={txt.profileHome.avatarAlt}
+            fallbackAvatarUrl="https://api.dicebear.com/9.x/glass/svg?seed=kai-fang-ke-tang"
+            trigger="avatar"
+          />
         </div>
 
         {notificationOpen ? (
