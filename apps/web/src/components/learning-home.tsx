@@ -224,11 +224,11 @@ function buildActivitySummary(coursePackage: CoursePackage | null) {
 
 function activityTone(level: ActivityDay["level"]) {
   return {
-    0: "bg-stone-200",
-    1: "bg-stone-300",
-    2: "bg-slate-400/70",
-    3: "bg-slate-700/70",
-    4: "bg-slate-950",
+    0: "bg-white",
+    1: "bg-amber-100",
+    2: "bg-amber-300",
+    3: "bg-amber-500",
+    4: "bg-orange-600",
   }[level];
 }
 
@@ -1049,11 +1049,11 @@ export function LearningHome() {
               <div className="mt-5 flex flex-col gap-3 text-xs text-stone-400 sm:flex-row sm:items-center sm:justify-between">
                 <div className="flex items-center gap-1.5">
                   <span>Less</span>
-                  <div className="h-3 w-3 rounded-[3px] bg-stone-200" />
-                  <div className="h-3 w-3 rounded-[3px] bg-stone-300" />
-                  <div className="h-3 w-3 rounded-[3px] bg-slate-400/70" />
-                  <div className="h-3 w-3 rounded-[3px] bg-slate-700/70" />
-                  <div className="h-3 w-3 rounded-[3px] bg-slate-950" />
+                  <div className="h-3 w-3 rounded-[3px] bg-white" />
+                  <div className="h-3 w-3 rounded-[3px] bg-amber-100" />
+                  <div className="h-3 w-3 rounded-[3px] bg-amber-300" />
+                  <div className="h-3 w-3 rounded-[3px] bg-amber-500" />
+                  <div className="h-3 w-3 rounded-[3px] bg-orange-600" />
                   <span>More</span>
                 </div>
                 <p>
