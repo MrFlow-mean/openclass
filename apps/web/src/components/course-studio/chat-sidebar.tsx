@@ -1,12 +1,12 @@
 import clsx from "clsx";
 import {
+  AudioLines,
   BrainCircuit,
   CheckCircle2,
   ChevronDown,
   LoaderCircle,
   MessageSquare,
   PencilLine,
-  Radio,
   Send,
   Square,
   TextQuote,
@@ -655,11 +655,11 @@ export function CourseStudioChatSidebar({
             aria-label={voiceStatusText}
             title={voiceStatusText}
             className={clsx(
-              "flex h-10 w-10 items-center justify-center rounded-xl text-white shadow-sm transition-all hover:scale-105 hover:shadow-md",
+              "flex h-10 w-10 items-center justify-center rounded-full text-white shadow-sm transition-all hover:scale-105 hover:shadow-md",
               voiceActive ? "bg-gray-800 ring-2 ring-gray-200" : "bg-[#1a1a1a]"
             )}
           >
-            {voiceActive ? <Radio className="h-4.5 w-4.5" /> : <Volume2 className="h-4.5 w-4.5" />}
+            <AudioLines className="h-4.5 w-4.5" />
           </button>
         </div>
         <p className="mb-2 truncate px-1 text-center text-[10px] leading-4 text-gray-500">{voiceStatusText}</p>
