@@ -248,7 +248,10 @@ def _validate_patch_request(
             continue
         if operation.op == "insert_block":
             has_anchor = operation.after_block_id or operation.block_id or operation.node_path
-            if has_anchor and target_index is None:
+            # An append patch has an unambiguous safe fallback: the document end.
+            # Keep rejecting unresolved anchors for every other target scope, where
+            # silently moving content would change the requested location.
+            if has_anchor and target_index is None and patch.target_scope != "append":
                 issues.append("insert_block anchor could not be resolved.")
             continue
         target = blocks[target_index]

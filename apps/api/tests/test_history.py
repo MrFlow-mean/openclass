@@ -167,6 +167,31 @@ def test_apply_patch_inserts_after_target_block() -> None:
     assert diff[0].op == "insert_block"
 
 
+def test_apply_append_patch_falls_back_to_document_end_for_unresolved_anchor() -> None:
+    document = build_document(title="Test", content_text="# Section\n\nfirst")
+
+    next_document, diff, validation = apply_patch(
+        document,
+        BoardPatchRequest(
+            source_document_hash=document_hash(document),
+            target_scope="append",
+            operations=[
+                PatchOperation(
+                    op="insert_block",
+                    after_block_id="missing-anchor",
+                    content="appended despite stale anchor",
+                )
+            ],
+            summary="Append one block.",
+            risk_level="low",
+        ),
+    )
+
+    assert validation.status == "pass"
+    assert next_document.content_text.endswith("first\n\nappended despite stale anchor")
+    assert diff[0].op == "insert_block"
+
+
 def test_apply_patch_accepts_nullable_node_path_when_anchor_is_present() -> None:
     document = build_document(title="Test", content_text="# Section\n\nfirst")
     snapshot = read_board_snapshot(document)
