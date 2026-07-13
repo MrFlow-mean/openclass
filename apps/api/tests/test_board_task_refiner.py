@@ -16,6 +16,7 @@ from app.models import (
 )
 from app.services import workspace_state
 from app.services import board_task_executor
+from app.services import chatbot
 from app.services.board_document_editor import BoardDocumentEditOutcome
 from app.services.chat_service import process_chat_on_lesson
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
@@ -58,6 +59,7 @@ def test_existing_board_task_refinement_prompt_uses_three_factor_contract(
     assert captured["schema"] is BoardTaskRequirementRefinement
     system_prompt = str(captured["system_prompt"])
     assert "清单只收敛三个核心因素" in system_prompt
+    assert "不得输出完整章节、完整代码实现" in system_prompt
     assert "location：位置" in system_prompt
     assert "explain、write、edit 或 chat" in system_prompt
     payload = json.loads(str(captured["user_prompt"]))
@@ -144,6 +146,46 @@ def test_existing_board_ordinary_chat_does_not_create_board_task(
     assert commit.metadata["board_task_refinement_route"] == "ordinary_chat"
     assert commit.metadata["basic_chat_only"] is True
     assert commit.metadata["document_changed"] is False
+
+
+def test_explicit_board_write_request_never_falls_back_to_basic_chat(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    user_id = "user_existing_board_write_no_chat_fallback"
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    lesson = _seed_existing_board_workspace(store, user_id)
+
+    monkeypatch.setattr(
+        chatbot,
+        "source_reference_selection",
+        lambda _request: SelectionRef(kind="source", excerpt="已选资料章节"),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_board_task_requirement_refinement",
+        lambda **_kwargs: BoardTaskRequirementRefinement(
+            route="ordinary_chat",
+            chatbot_message="我会保留当前文档任务，不在聊天框输出板书正文。",
+        ),
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_basic_chat_reply",
+        lambda **_kwargs: pytest.fail("explicit board writes must not fall back to ChatbotReply"),
+    )
+
+    response = process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="继续补写当前板书内容。"),
+        user_id=user_id,
+    )
+
+    assert response.chatbot_message == "我会保留当前文档任务，不在聊天框输出板书正文。"
+    assert response.board_decision.action == "no_change"
+    saved_lesson = store.load_for_user(user_id).packages[0].lessons[0]
+    assert saved_lesson.board_document.content_text == lesson.board_document.content_text
 
 
 def test_existing_board_explain_ready_executes_and_consumes_board_task(

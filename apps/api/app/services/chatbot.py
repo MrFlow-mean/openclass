@@ -258,6 +258,7 @@ def _run_board_task_refinement_turn(
         source_reference_selection(request) is not None
         and outcome.route == "ordinary_chat"
         and not resume_confirmed_board_task
+        and not has_explicit_board_mutation_request(request.message)
     ):
         return _run_basic_chat_turn(
             workspace=workspace,
