@@ -7,7 +7,13 @@ from app.services import workspace_state
 from app.services.chat_service import process_chat_on_lesson
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
 from app.services.lesson_factory import build_requirements, create_empty_lesson
-from app.services.openai_course_ai import BoardTaskRequirementRefinement, ChatbotReply, OpenAICourseAI, openai_course_ai
+from app.services.openai_course_ai import (
+    BoardExplanationDirective,
+    BoardTaskRequirementRefinement,
+    ChatbotReply,
+    OpenAICourseAI,
+    openai_course_ai,
+)
 from app.services.resource_resolver import resource_resolver
 from app.services.source_evidence_store import SourceEvidenceStore
 from app.services.source_structure_indexer import SourceStructureIndexer
@@ -94,6 +100,44 @@ def test_board_directed_explanation_prompt_uses_spoken_teacher_style(monkeypatch
     assert "课件、教案或课程流程播报" in system_prompt
     assert "不要机械布置“用自己的话复述”" in system_prompt
     assert "不要为了互动而提问" in system_prompt
+    assert "聊天框只负责用自然语言讲解" in system_prompt
+    assert "不得把原图、原表、字符画、代码围栏" in system_prompt
+    payload = json.loads(str(captured["user_prompt"]))
+    assert "只描述和解释，不复制原图、原表、字符画或代码围栏" in payload["response_contract"]["chatbot_message"]
+
+
+def test_board_explanation_directive_requires_visual_description_without_copying(monkeypatch: pytest.MonkeyPatch) -> None:
+    ai = OpenAICourseAI()
+    captured: dict[str, object] = {}
+
+    def _fake_parse(role, system_prompt, user_prompt, schema, **kwargs):
+        captured["role"] = role
+        captured["system_prompt"] = system_prompt
+        captured["schema"] = schema
+        return BoardExplanationDirective(
+            status="approved",
+            target_excerpt="目标摘录。",
+            teaching_instruction="用文字说明图中的关系。",
+        )
+
+    monkeypatch.setattr(ai, "_parse", _fake_parse)
+
+    result = ai.generate_board_explanation_directive(
+        lesson_title="任意课程",
+        learning_goal="理解当前关系",
+        board_summary="当前板书摘要。",
+        target_excerpt="图示包含几个对象和它们的连接关系。",
+        user_message="请讲解这里。",
+        action_type="teach_section",
+        resource_summary="",
+    )
+
+    assert result is not None
+    assert captured["role"] == "board"
+    assert captured["schema"] is BoardExplanationDirective
+    assert "teaching_instruction 必须说明" in str(captured["system_prompt"])
+    assert "Chatbot 应如何解释对象、关系和结论" in str(captured["system_prompt"])
+    assert "不得要求 Chatbot 复刻图形、表格、字符画或代码围栏" in str(captured["system_prompt"])
 
 
 def test_process_chat_on_lesson_records_basic_chat_without_document_change(
