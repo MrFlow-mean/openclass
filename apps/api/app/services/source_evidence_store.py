@@ -163,6 +163,11 @@ class SourceEvidenceStore:
                         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ON CONFLICT(id) DO UPDATE SET
                             title = excluded.title,
+                            source_type = excluded.source_type,
+                            source_uri = excluded.source_uri,
+                            file_name = excluded.file_name,
+                            mime_type = excluded.mime_type,
+                            size_bytes = excluded.size_bytes,
                             status = excluded.status,
                             error = excluded.error,
                             open_notebook_source_id = excluded.open_notebook_source_id,

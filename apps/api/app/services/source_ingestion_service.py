@@ -1,18 +1,17 @@
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import re
 import socket
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 from urllib.parse import urlparse
 
-from app.models import CoursePackage, SourceIngestionRecord, now_iso
-from app.services.open_notebook_adapter import (
-    OpenNotebookAdapter,
-    OpenNotebookAdapterError,
-    open_notebook_adapter,
-)
+from app.models import CoursePackage, SourceIngestionJob, SourceIngestionRecord
 from app.services.source_evidence_store import SourceEvidenceStore, source_evidence_store
+from app.services.source_ingestion_jobs import SourceIngestionJobStore, source_ingestion_job_store
 from app.services.source_structure_indexer import SourceStructureIndexer
 from app.services.source_structure_store import SourceStructureStore, source_structure_store
 from app.services.source_url_snapshot import SourceUrlSnapshotError, fetch_url_source_snapshot
@@ -23,14 +22,17 @@ from app.services.youtube_transcript_adapter import (
     youtube_transcript_adapter,
 )
 from app.services import workspace_state
+from app.services.media_transcription_adapter import MediaTranscriptionError, media_transcription_provider
 
 
 SUPPORTED_FILE_MIME_PREFIXES = (
     "application/pdf",
     "application/epub+zip",
     "application/vnd.openxmlformats-officedocument",
-    "application/msword",
     "text/",
+    "audio/",
+    "video/",
+    "image/",
 )
 
 
@@ -38,32 +40,36 @@ class SourceIngestionError(RuntimeError):
     pass
 
 
+@dataclass(frozen=True)
+class SourceImportAutomationOutcome:
+    artifact_ids: list[str]
+    errors: list[str]
+
+
+SourceImportAutomationRunner = Callable[..., SourceImportAutomationOutcome]
+
+
 class SourceIngestionService:
     def __init__(
         self,
         *,
-        adapter: OpenNotebookAdapter = open_notebook_adapter,
         youtube_adapter: YouTubeTranscriptAdapter = youtube_transcript_adapter,
         store: SourceEvidenceStore = source_evidence_store,
+        job_store: SourceIngestionJobStore = source_ingestion_job_store,
         structure_indexer: SourceStructureIndexer | None = None,
         structure_store: SourceStructureStore | None = None,
+        import_automation_runner: SourceImportAutomationRunner | None = None,
     ) -> None:
-        self.adapter = adapter
         self.youtube_adapter = youtube_adapter
         self.store = store
+        self.job_store = job_store
         self.structure_store = structure_store or _structure_store_for_source_store(store)
         self.structure_indexer = structure_indexer or SourceStructureIndexer(store=self.structure_store)
+        self.import_automation_runner = import_automation_runner or _run_research_import_automations
 
     def list_sources(self, *, owner_user_id: str, package_id: str) -> list[SourceIngestionRecord]:
         records = self.store.list_sources(owner_user_id=owner_user_id, package_id=package_id)
-        refreshed: list[SourceIngestionRecord] = []
-        for record in records:
-            record = self._recover_local_file_if_possible(record)
-            if record.status in {"queued", "fetching", "parsing", "indexing"} and record.open_notebook_command_id:
-                refreshed.append(self.refresh_source(record))
-            else:
-                refreshed.append(self._ensure_structure_if_ready(record))
-        return [self.structure_store.attach_summary(self._ensure_structure_if_ready(record)) for record in refreshed]
+        return [self.structure_store.attach_summary(record) for record in records]
 
     def add_url_source(
         self,
@@ -81,7 +87,6 @@ class SourceIngestionService:
                 source_uri=normalized_uri,
                 title=title,
             )
-        notebook_id, notebook_error = self._resolve_notebook(owner_user_id=owner_user_id, package=package)
         display_title = title.strip() or normalized_uri
         record = SourceIngestionRecord(
             owner_user_id=owner_user_id,
@@ -92,30 +97,31 @@ class SourceIngestionService:
             file_name="",
             mime_type="text/html",
             size_bytes=0,
-            status="queued",
-            open_notebook_notebook_id=notebook_id,
-            metadata={"adapter": "open_notebook"},
+            status="fetching",
+            metadata={"adapter": "openclass_native_url"},
         )
-        if notebook_error:
-            return self._save_url_with_native_fallback(record, normalized_uri, notebook_error, phase="create_notebook")
+        job = self._start_job(record, adapter="openclass_native_url", phase="fetching", progress=10)
         try:
-            result = self.adapter.add_url_source(
-                notebook_id=notebook_id,
-                source_uri=normalized_uri,
-                title=display_title,
-            )
-            record = record.model_copy(
-                update={
-                    "status": _status_from_open_notebook(result.status),
-                    "open_notebook_source_id": result.source_id,
-                    "open_notebook_command_id": result.command_id,
-                    "metadata": {"adapter": "open_notebook", "open_notebook_response": result.raw or {}},
-                }
-            )
-        except OpenNotebookAdapterError as exc:
-            return self._save_url_with_native_fallback(record, normalized_uri, self._format_adapter_error(exc), phase="add_source")
-        saved = self.store.save_source(record)
-        return self._ensure_structure_if_ready(saved)
+            snapshot_metadata = fetch_url_source_snapshot(record, normalized_uri)
+        except SourceUrlSnapshotError as exc:
+            failed = self.store.save_source(self._failed_record(record, str(exc), phase="fetch_url"))
+            self._finish_job(job, record=failed, status="failed", progress=100, error=str(exc), phase="failed")
+            return failed
+        local_path = Path(str(snapshot_metadata.get("local_source_path") or ""))
+        size_bytes = local_path.stat().st_size if local_path.is_file() else 0
+        ready = record.model_copy(
+            update={
+                "status": "ready",
+                "size_bytes": size_bytes,
+                "metadata": {
+                    **record.metadata,
+                    **snapshot_metadata,
+                    "content_hash": _file_content_hash(local_path),
+                    "native_index_version": 1,
+                },
+            }
+        )
+        return self._save_and_index(ready, job)
 
     def add_file_source(
         self,
@@ -130,123 +136,331 @@ class SourceIngestionService:
         if not file_name.strip():
             raise SourceIngestionError("File name is required.")
         if not _supported_mime(mime_type, file_name):
-            raise SourceIngestionError("Only PDF, Office, TXT, and Markdown files are supported in V1.")
-        notebook_id, notebook_error = self._resolve_notebook(owner_user_id=owner_user_id, package=package)
+            raise SourceIngestionError("This file type is not supported by the native source importer.")
         display_title = title.strip() or file_name
+        source_type = _source_type_for_upload(mime_type=mime_type, file_name=file_name)
         record = SourceIngestionRecord(
             owner_user_id=owner_user_id,
             package_id=package.id,
             title=display_title,
-            source_type="local_file",
+            source_type=source_type,
             source_uri=None,
             file_name=file_name,
             mime_type=mime_type or "application/octet-stream",
             size_bytes=len(content),
-            status="queued",
-            open_notebook_notebook_id=notebook_id,
-            metadata={"adapter": "open_notebook"},
+            status="parsing",
+            metadata={"adapter": "openclass_native"},
         )
-        record = record.model_copy(update={"metadata": {**record.metadata, **_save_local_source_file(record, content)}})
-        if notebook_error:
-            saved = self.store.save_source(self._local_file_ready_record(record, notebook_error, phase="create_notebook"))
-            return self._ensure_structure_if_ready(saved)
-        try:
-            result = self.adapter.upload_file_source(
-                notebook_id=notebook_id,
-                file_name=file_name,
-                content=content,
-                mime_type=mime_type,
-                title=display_title,
+        file_metadata = _save_local_source_file(record, content)
+        if source_type in {"audio_file", "video_file"}:
+            original_path = Path(file_metadata["local_source_path"])
+            try:
+                transcript = media_transcription_provider.transcribe(original_path, mime_type=mime_type)
+            except MediaTranscriptionError as exc:
+                failed = self.store.save_source(self._failed_record(record.model_copy(update={"metadata": {**record.metadata, **file_metadata}}), str(exc), phase="transcription"))
+                job = self._start_job(failed, adapter="openclass_native_media", phase="transcription", progress=100)
+                self._finish_job(job, record=failed, status="failed", progress=100, phase="failed", error=str(exc))
+                return failed
+            transcript_record = record.model_copy(
+                update={"file_name": f"{Path(file_name).stem}-transcript.txt", "mime_type": "text/plain"}
             )
-            record = record.model_copy(
-                update={
-                    "status": "ready",
-                    "open_notebook_source_id": result.source_id,
-                    "open_notebook_command_id": result.command_id,
-                    "metadata": {
-                        **record.metadata,
-                        "adapter": "openclass_local",
-                        "open_notebook_sync_status": _status_from_open_notebook(result.status),
-                        "open_notebook_response": result.raw or {},
-                    },
-                }
-            )
-        except OpenNotebookAdapterError as exc:
-            record = self._local_file_ready_record(record, self._format_adapter_error(exc), phase="add_source")
-        saved = self.store.save_source(record)
-        return self._ensure_structure_if_ready(saved)
-
-    def refresh_source(self, record: SourceIngestionRecord) -> SourceIngestionRecord:
-        if not record.open_notebook_command_id:
-            return record
-        try:
-            command = self.adapter.get_command(record.open_notebook_command_id)
-        except OpenNotebookAdapterError as exc:
-            if record.source_type == "local_file" and record.metadata.get("local_source_path"):
-                saved = self.store.save_source(self._local_file_ready_record(record, self._format_adapter_error(exc), phase="refresh_command"))
-                return self._ensure_structure_if_ready(saved)
-            return self.store.save_source(record.model_copy(update={"status": "failed", "error": str(exc)}))
-        status = _status_from_open_notebook(_command_status(command))
-        error = _command_error(command)
-        source_id = _command_source_id(command) or record.open_notebook_source_id
-        updated = record.model_copy(
+            transcript_metadata = _save_local_source_text(transcript_record, transcript.text)
+            file_metadata = {
+                **transcript_metadata,
+                "original_source_path": str(original_path),
+                "original_mime_type": mime_type,
+                "transcription_provider": transcript.provider,
+                "transcription_model": transcript.model,
+                "transcript_language": transcript.language,
+            }
+        record = record.model_copy(
             update={
-                "status": status,
-                "error": error if status == "failed" else "",
-                "open_notebook_source_id": source_id,
-                "metadata": {**record.metadata, "last_command": command, "refreshed_at": now_iso()},
+                "status": "ready",
+                "metadata": {
+                    **record.metadata,
+                    **file_metadata,
+                    "content_hash": hashlib.sha256(content).hexdigest(),
+                    "native_index_version": 1,
+                },
             }
         )
-        saved = self.store.save_source(updated)
-        return self._ensure_structure_if_ready(saved)
+        job = self._start_job(record, adapter="openclass_native", phase="parsing", progress=25)
+        return self._save_and_index(record, job)
+
+    def add_text_source(
+        self,
+        *,
+        owner_user_id: str,
+        package: CoursePackage,
+        text: str,
+        title: str = "",
+    ) -> SourceIngestionRecord:
+        content = text.strip()
+        if not content:
+            raise SourceIngestionError("Pasted text is empty.")
+        record = SourceIngestionRecord(
+            owner_user_id=owner_user_id,
+            package_id=package.id,
+            title=title.strip() or _text_title(content),
+            source_type="pasted_text",
+            file_name="pasted-text.md",
+            mime_type="text/markdown",
+            size_bytes=len(content.encode("utf-8")),
+            status="ready",
+            metadata={"adapter": "openclass_native_text", "native_index_version": 1},
+        )
+        metadata = _save_local_source_text(record, content)
+        record = record.model_copy(
+            update={"metadata": {**record.metadata, **metadata, "content_hash": hashlib.sha256(content.encode("utf-8")).hexdigest()}}
+        )
+        job = self._start_job(record, adapter="openclass_native_text", phase="parsing", progress=25)
+        return self._save_and_index(record, job)
 
     def remove_source(self, *, owner_user_id: str, package_id: str, source_id: str) -> SourceIngestionRecord | None:
         record = self.store.get_source(owner_user_id=owner_user_id, package_id=package_id, source_id=source_id)
         if record is None:
             return None
-        if record.open_notebook_source_id:
-            try:
-                self.adapter.delete_source(record.open_notebook_source_id)
-            except OpenNotebookAdapterError:
-                # Local removal must still work when the sidecar is unavailable or the remote source was already gone.
-                pass
         self.structure_store.delete_for_source(owner_user_id=owner_user_id, package_id=package_id, source_id=source_id)
-        return self.store.delete_source(owner_user_id=owner_user_id, package_id=package_id, source_id=source_id)
+        removed = self.store.delete_source(owner_user_id=owner_user_id, package_id=package_id, source_id=source_id)
+        self.job_store.delete_for_source(owner_user_id=owner_user_id, package_id=package_id, source_id=source_id)
+        _delete_local_source_file(record)
+        return removed
 
-    def _ensure_notebook(self, *, owner_user_id: str, package: CoursePackage) -> str:
-        notebook_id, error = self._resolve_notebook(owner_user_id=owner_user_id, package=package)
-        if error:
-            raise SourceIngestionError(error)
-        return notebook_id
+    def rename_source(
+        self,
+        *,
+        owner_user_id: str,
+        package_id: str,
+        source_id: str,
+        title: str,
+    ) -> SourceIngestionRecord | None:
+        record = self.store.get_source(owner_user_id=owner_user_id, package_id=package_id, source_id=source_id)
+        normalized = title.strip()
+        if record is None or not normalized:
+            return None
+        return self.structure_store.attach_summary(self.store.save_source(record.model_copy(update={"title": normalized})))
 
-    def _resolve_notebook(self, *, owner_user_id: str, package: CoursePackage) -> tuple[str, str]:
-        existing = self.store.get_notebook_id(owner_user_id=owner_user_id, package_id=package.id)
-        if existing:
-            return existing, ""
-        try:
-            notebook_id = self.adapter.create_notebook(
-                title=f"OpenClass - {package.title}",
-                description=f"Sources imported for OpenClass package {package.id}.",
-            )
-        except OpenNotebookAdapterError as exc:
-            return "", self._format_adapter_error(exc)
-        self.store.upsert_notebook(
-            owner_user_id=owner_user_id,
-            package_id=package.id,
-            notebook_id=notebook_id,
-            title=package.title,
+    def update_source_content(
+        self,
+        *,
+        owner_user_id: str,
+        package_id: str,
+        source_id: str,
+        content: str,
+    ) -> SourceIngestionRecord | None:
+        record = self.store.get_source(owner_user_id=owner_user_id, package_id=package_id, source_id=source_id)
+        if record is None:
+            return None
+        normalized = content.strip()
+        if not normalized:
+            raise SourceIngestionError("Source content cannot be empty.")
+
+        current_path = source_local_path(record)
+        metadata = dict(record.metadata)
+        is_native_text = record.source_type == "pasted_text"
+        if not is_native_text and "original_source_path" not in metadata and current_path is not None:
+            metadata["original_source_path"] = str(current_path)
+            metadata["original_mime_type"] = record.mime_type
+
+        editable_record = record.model_copy(
+            update={
+                "file_name": record.file_name if is_native_text else f"{Path(record.file_name or record.id).stem}-edited.md",
+                "mime_type": "text/markdown",
+                "size_bytes": len(normalized.encode("utf-8")),
+                "status": "ready",
+                "error": "",
+                "metadata": metadata,
+            }
         )
-        return notebook_id, ""
+        local_metadata = _save_local_source_text(editable_record, normalized)
+        editable_record = editable_record.model_copy(
+            update={
+                "metadata": {
+                    **metadata,
+                    **local_metadata,
+                    "adapter": "openclass_native_text",
+                    "content_hash": hashlib.sha256(normalized.encode("utf-8")).hexdigest(),
+                    "content_edited": True,
+                    "native_index_version": 1,
+                }
+            }
+        )
+        job = self._start_job(editable_record, adapter="openclass_native_text", phase="parsing", progress=25)
+        return self._save_and_index(editable_record, job, rebuild=True)
 
-    def _format_adapter_error(self, exc: OpenNotebookAdapterError) -> str:
-        raw_message = str(exc).strip() or "Open Notebook request failed."
-        lowered = raw_message.lower()
-        api_url = getattr(self.adapter, "api_url", "http://localhost:5055")
-        if _looks_like_connection_refused(lowered):
-            return f"Open Notebook 服务未启动或不可达：{api_url}。请先启动 Open Notebook，或设置 OPEN_NOTEBOOK_API_URL 后重试。"
-        if "timed out" in lowered or "timeout" in lowered:
-            return f"Open Notebook 请求超时：{api_url}。请确认 Open Notebook 正在运行且 API 可访问。"
-        return raw_message
+    def retry_source(
+        self,
+        *,
+        owner_user_id: str,
+        package_id: str,
+        source_id: str,
+    ) -> SourceIngestionRecord | None:
+        record = self.store.get_source(owner_user_id=owner_user_id, package_id=package_id, source_id=source_id)
+        if record is None:
+            return None
+        local_path = source_local_path(record)
+        if local_path is None:
+            raise SourceIngestionError("Source content is unavailable; import the source again.")
+        retrying = record.model_copy(update={"status": "ready", "error": ""})
+        self.store.save_source(retrying)
+        job = self._start_job(retrying, adapter=str(record.metadata.get("adapter") or "openclass_native"), phase="parsing", progress=20)
+        return self._save_and_index(retrying, job, rebuild=True)
+
+    def list_jobs(self, *, owner_user_id: str, package_id: str) -> list[SourceIngestionJob]:
+        return self.job_store.list(owner_user_id=owner_user_id, package_id=package_id)
+
+    def source_content(
+        self,
+        *,
+        owner_user_id: str,
+        package_id: str,
+        source_id: str,
+    ) -> tuple[SourceIngestionRecord, str] | None:
+        record = self.store.get_source(owner_user_id=owner_user_id, package_id=package_id, source_id=source_id)
+        if record is None:
+            return None
+        path = source_local_path(record)
+        if path is None:
+            return record, ""
+        if record.mime_type.startswith("text/") and record.mime_type != "text/html":
+            return record, path.read_text(encoding="utf-8", errors="replace")
+        view = self.structure_store.get_structure_view(source=record, chunk_limit=5000)
+        return record, "\n\n".join(chunk.text for chunk in view.chunks)
+
+    def _start_job(
+        self,
+        record: SourceIngestionRecord,
+        *,
+        adapter: str,
+        phase: str,
+        progress: int,
+    ) -> SourceIngestionJob:
+        return self.job_store.save(
+            SourceIngestionJob(
+                resource_id=record.id,
+                source_type=record.source_type,
+                source_uri=record.source_uri,
+                adapter=adapter,
+                status=record.status,
+                progress=progress,
+                phase_history=[phase],
+            ),
+            owner_user_id=record.owner_user_id,
+            package_id=record.package_id,
+        )
+
+    def _finish_job(
+        self,
+        job: SourceIngestionJob,
+        *,
+        record: SourceIngestionRecord,
+        status: str,
+        progress: int,
+        phase: str,
+        error: str = "",
+    ) -> SourceIngestionJob:
+        updated = job.model_copy(
+            update={
+                "status": status,
+                "progress": progress,
+                "error": error,
+                "phase_history": [*job.phase_history, phase],
+            }
+        )
+        return self.job_store.save(
+            updated,
+            owner_user_id=record.owner_user_id,
+            package_id=record.package_id,
+        )
+
+    def _save_and_index(
+        self,
+        record: SourceIngestionRecord,
+        job: SourceIngestionJob,
+        *,
+        rebuild: bool = False,
+    ) -> SourceIngestionRecord:
+        saved = self.store.save_source(record)
+        indexing_job = self.job_store.save(
+            job.model_copy(update={"status": "indexing", "progress": 55, "phase_history": [*job.phase_history, "indexing"]}),
+            owner_user_id=record.owner_user_id,
+            package_id=record.package_id,
+        )
+        try:
+            structure = (
+                self.structure_indexer.rebuild_structure(saved)
+                if rebuild
+                else self.structure_indexer.ensure_structure(saved)
+            )
+        except Exception as exc:
+            failed = self.store.save_source(saved.model_copy(update={"status": "failed", "error": str(exc)}))
+            self.job_store.save(
+                indexing_job.model_copy(
+                    update={"status": "failed", "progress": 100, "error": str(exc), "phase_history": [*indexing_job.phase_history, "failed"]}
+                ),
+                owner_user_id=record.owner_user_id,
+                package_id=record.package_id,
+            )
+            return self.structure_store.attach_summary(failed)
+        final_status = "ready" if structure.status in {"ready", "linear_only"} else "failed"
+        error = structure.error if final_status == "failed" else ""
+        automation_outcome = SourceImportAutomationOutcome(artifact_ids=[], errors=[])
+        if final_status == "ready":
+            transforming_job = self.job_store.save(
+                indexing_job.model_copy(
+                    update={
+                        "status": "indexing",
+                        "progress": 85,
+                        "phase_history": [*indexing_job.phase_history, "transforming"],
+                    }
+                ),
+                owner_user_id=record.owner_user_id,
+                package_id=record.package_id,
+            )
+            indexing_job = transforming_job
+            try:
+                automation_outcome = self.import_automation_runner(
+                    owner_user_id=record.owner_user_id,
+                    package_id=record.package_id,
+                    source_ingestion_id=record.id,
+                )
+            except Exception as exc:
+                automation_outcome = SourceImportAutomationOutcome(
+                    artifact_ids=[],
+                    errors=[str(exc)],
+                )
+            if automation_outcome.errors:
+                error = "Automatic import transformation failed: " + "; ".join(automation_outcome.errors)
+        final_record = self.store.save_source(
+            saved.model_copy(
+                update={
+                    "status": final_status,
+                    "error": error,
+                    "metadata": {
+                        **saved.metadata,
+                        "import_transformation_status": (
+                            "failed"
+                            if automation_outcome.errors
+                            else "ready" if automation_outcome.artifact_ids else "not_configured"
+                        ),
+                        "import_transformation_artifact_ids": automation_outcome.artifact_ids,
+                    },
+                }
+            )
+        )
+        self.job_store.save(
+            indexing_job.model_copy(
+                update={
+                    "status": final_status,
+                    "progress": 100,
+                    "error": error,
+                    "phase_history": [*indexing_job.phase_history, final_status],
+                }
+            ),
+            owner_user_id=record.owner_user_id,
+            package_id=record.package_id,
+        )
+        return self.structure_store.attach_summary(final_record)
 
     def _failed_record(self, record: SourceIngestionRecord, error: str, *, phase: str) -> SourceIngestionRecord:
         return record.model_copy(
@@ -256,68 +470,9 @@ class SourceIngestionService:
                 "metadata": {
                     **record.metadata,
                     "error_phase": phase,
-                    "open_notebook_api_url": getattr(self.adapter, "api_url", ""),
                 },
             }
         )
-
-    def _local_file_ready_record(self, record: SourceIngestionRecord, warning: str, *, phase: str) -> SourceIngestionRecord:
-        return record.model_copy(
-            update={
-                "status": "ready",
-                "error": "",
-                "metadata": {
-                    **record.metadata,
-                    "adapter": "openclass_local",
-                    "open_notebook_sync_status": "unavailable",
-                    "open_notebook_sync_warning": warning,
-                    "open_notebook_sync_phase": phase,
-                    "open_notebook_api_url": getattr(self.adapter, "api_url", ""),
-                },
-            }
-        )
-
-    def _recover_local_file_if_possible(self, record: SourceIngestionRecord) -> SourceIngestionRecord:
-        if record.status != "failed" or record.source_type != "local_file":
-            return record
-        raw_path = record.metadata.get("local_source_path")
-        if not isinstance(raw_path, str) or not raw_path.strip() or not Path(raw_path).expanduser().is_file():
-            return record
-        error = record.error or str(record.metadata.get("open_notebook_sync_warning") or "")
-        if "Open Notebook" not in error:
-            return record
-        return self.store.save_source(self._local_file_ready_record(record, error, phase="recover_failed_local_file"))
-
-    def _save_url_with_native_fallback(
-        self,
-        record: SourceIngestionRecord,
-        source_uri: str,
-        warning: str,
-        *,
-        phase: str,
-    ) -> SourceIngestionRecord:
-        try:
-            snapshot_metadata = fetch_url_source_snapshot(record, source_uri)
-        except SourceUrlSnapshotError as exc:
-            error = f"{warning} OpenClass 本地网页抓取也失败：{exc}"
-            return self.store.save_source(self._failed_record(record, error, phase=phase))
-        ready = record.model_copy(
-            update={
-                "status": "ready",
-                "error": "",
-                "metadata": {
-                    **record.metadata,
-                    **snapshot_metadata,
-                    "adapter": "openclass_local_url",
-                    "open_notebook_sync_status": "unavailable",
-                    "open_notebook_sync_warning": warning,
-                    "open_notebook_sync_phase": phase,
-                    "open_notebook_api_url": getattr(self.adapter, "api_url", ""),
-                },
-            }
-        )
-        saved = self.store.save_source(ready)
-        return self._ensure_structure_if_ready(saved)
 
     def _save_youtube_transcript_source(
         self,
@@ -343,7 +498,10 @@ class SourceIngestionService:
         try:
             transcript = self.youtube_adapter.extract(source_uri, title=title)
         except YouTubeTranscriptAdapterError as exc:
-            return self.store.save_source(self._failed_record(record, str(exc), phase="youtube_transcript"))
+            failed = self.store.save_source(self._failed_record(record, str(exc), phase="youtube_transcript"))
+            job = self._start_job(failed, adapter="youtube_transcript", phase="transcription", progress=100)
+            self._finish_job(job, record=failed, status="failed", progress=100, phase="failed", error=str(exc))
+            return failed
         transcript_file_name = _safe_file_name(f"{transcript.video_id or record.id}-transcript.txt")
         record_for_file = record.model_copy(update={"title": transcript.title, "file_name": transcript_file_name})
         transcript_bytes = transcript.text.encode("utf-8")
@@ -356,30 +514,25 @@ class SourceIngestionService:
                     **record_for_file.metadata,
                     **transcript.metadata,
                     **_save_local_source_text(record_for_file, transcript.text),
+                    "content_hash": hashlib.sha256(transcript_bytes).hexdigest(),
+                    "native_index_version": 1,
                 },
             }
         )
-        saved = self.store.save_source(ready)
-        return self._ensure_structure_if_ready(saved)
-
-    def _ensure_structure_if_ready(self, record: SourceIngestionRecord) -> SourceIngestionRecord:
-        if record.status != "ready":
-            return record
-        try:
-            self.structure_indexer.ensure_structure(record)
-        except Exception:
-            return record
-        updated = self.store.get_source(
-            owner_user_id=record.owner_user_id,
-            package_id=record.package_id,
-            source_id=record.id,
-        ) or record
-        return self.structure_store.attach_summary(updated)
+        job = self._start_job(ready, adapter="youtube_transcript", phase="parsing", progress=25)
+        return self._save_and_index(ready, job)
 
 
 def _supported_mime(mime_type: str, file_name: str) -> bool:
     lowered = file_name.lower()
-    if lowered.endswith((".pdf", ".epub", ".docx", ".doc", ".txt", ".md", ".markdown")):
+    if lowered.endswith(
+        (
+            ".pdf", ".epub", ".docx", ".pptx", ".xlsx", ".csv",
+            ".txt", ".md", ".markdown", ".html", ".htm", ".json", ".xml",
+            ".png", ".jpg", ".jpeg", ".webp", ".gif", ".mp3", ".m4a", ".wav",
+            ".ogg", ".mp4", ".mov", ".webm", ".mpeg",
+        )
+    ):
         return True
     return any((mime_type or "").startswith(prefix) for prefix in SUPPORTED_FILE_MIME_PREFIXES)
 
@@ -397,6 +550,66 @@ def _save_local_source_text(record: SourceIngestionRecord, text: str) -> dict[st
     return _save_local_source_file(record, text.encode("utf-8"))
 
 
+def source_local_path(record: SourceIngestionRecord) -> Path | None:
+    raw_path = record.metadata.get("local_source_path")
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        return None
+    path = Path(raw_path).expanduser().resolve()
+    allowed_root = (workspace_state.UPLOAD_DIR / "sources").resolve()
+    if allowed_root not in path.parents or not path.is_file():
+        return None
+    return path
+
+
+def source_download_path(record: SourceIngestionRecord) -> Path | None:
+    raw_path = record.metadata.get("original_source_path") or record.metadata.get("local_source_path")
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        return None
+    path = Path(raw_path).expanduser().resolve()
+    allowed_root = (workspace_state.UPLOAD_DIR / "sources").resolve()
+    return path if allowed_root in path.parents and path.is_file() else None
+
+
+def _delete_local_source_file(record: SourceIngestionRecord) -> None:
+    paths = [source_local_path(record)]
+    raw_original = record.metadata.get("original_source_path")
+    if isinstance(raw_original, str) and raw_original.strip():
+        candidate = Path(raw_original).expanduser().resolve()
+        allowed_root = (workspace_state.UPLOAD_DIR / "sources").resolve()
+        if allowed_root in candidate.parents and candidate.is_file():
+            paths.append(candidate)
+    for path in dict.fromkeys(item for item in paths if item is not None):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _file_content_hash(path: Path) -> str:
+    if not path.is_file():
+        return ""
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _source_type_for_upload(*, mime_type: str, file_name: str) -> str:
+    normalized_mime = (mime_type or "").lower()
+    suffix = Path(file_name).suffix.lower()
+    if normalized_mime.startswith("audio/") or suffix in {".mp3", ".m4a", ".wav", ".ogg"}:
+        return "audio_file"
+    if normalized_mime.startswith("video/") or suffix in {".mp4", ".mov", ".webm", ".mpeg"}:
+        return "video_file"
+    return "local_file"
+
+
+def _text_title(text: str, limit: int = 80) -> str:
+    first_line = next((line.strip("# *\t") for line in text.splitlines() if line.strip()), "")
+    return first_line[:limit] or "Pasted text"
+
+
 def _safe_file_name(file_name: str) -> str:
     name = Path(file_name).name.strip() or "source"
     return re.sub(r"[^A-Za-z0-9._ -]+", "_", name)[:180]
@@ -408,14 +621,22 @@ def _structure_store_for_source_store(store: SourceEvidenceStore) -> SourceStruc
     return SourceStructureStore(store.path)
 
 
-def _looks_like_connection_refused(message: str) -> bool:
-    return any(
-        needle in message
-        for needle in (
-            "connection refused",
-            "connecterror",
-            "all connection attempts failed",
-        )
+def _run_research_import_automations(
+    *,
+    owner_user_id: str,
+    package_id: str,
+    source_ingestion_id: str,
+) -> SourceImportAutomationOutcome:
+    from app.services.research_workspace import research_workspace_service
+
+    result = research_workspace_service.run_import_transformations(
+        owner_user_id=owner_user_id,
+        package_id=package_id,
+        source_ingestion_id=source_ingestion_id,
+    )
+    return SourceImportAutomationOutcome(
+        artifact_ids=[artifact.id for artifact in result.artifacts],
+        errors=result.errors,
     )
 
 
@@ -435,54 +656,6 @@ def _validate_public_url(raw_uri: str) -> str:
     except socket.gaierror as exc:
         raise SourceIngestionError("URL hostname could not be resolved.") from exc
     return uri
-
-
-def _status_from_open_notebook(raw_status: str) -> str:
-    normalized = (raw_status or "").strip().lower()
-    if normalized in {"ready", "completed", "complete", "success", "succeeded", "done"}:
-        return "ready"
-    if normalized in {"failed", "error", "errored"}:
-        return "failed"
-    if normalized in {"fetching", "downloading"}:
-        return "fetching"
-    if normalized in {"parsing", "processing"}:
-        return "parsing"
-    if normalized in {"indexing", "embedding", "vectorizing"}:
-        return "indexing"
-    return "queued"
-
-
-def _command_status(command: dict[str, object]) -> str:
-    for key in ("status", "state", "phase"):
-        value = command.get(key)
-        if isinstance(value, str):
-            return value
-    nested = command.get("data")
-    return _command_status(nested) if isinstance(nested, dict) else ""
-
-
-def _command_error(command: dict[str, object]) -> str:
-    for key in ("error", "error_message", "message", "detail"):
-        value = command.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    result = command.get("result")
-    if isinstance(result, dict):
-        return _command_error(result)
-    nested = command.get("data")
-    return _command_error(nested) if isinstance(nested, dict) else ""
-
-
-def _command_source_id(command: dict[str, object]) -> str:
-    for key in ("source_id", "id", "record_id"):
-        value = command.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    result = command.get("result")
-    if isinstance(result, dict):
-        return _command_source_id(result)
-    nested = command.get("data")
-    return _command_source_id(nested) if isinstance(nested, dict) else ""
 
 
 source_ingestion_service = SourceIngestionService()

@@ -17,7 +17,6 @@ from app.routers import workspace as workspace_router
 from app.services import source_ingestion_service as source_ingestion_module
 from app.services import workspace_state
 from app.services.course_store import SqliteCourseStore
-from app.services.open_notebook_adapter import OpenNotebookAdapterError, OpenNotebookSourceResult
 from app.services.source_evidence_store import source_evidence_store
 from app.services.source_ingestion_service import source_ingestion_service
 from app.services.youtube_transcript_adapter import YouTubeTranscript
@@ -216,9 +215,10 @@ def test_lesson_resource_upload_endpoint_is_not_exposed(api_client: TestClient) 
     assert upload.status_code == 404
 
 
-def test_open_notebook_source_import_and_evidence_confirm(
+def test_native_url_source_import_and_evidence_confirm(
     api_client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
 ) -> None:
     created_workspace = api_client.post(
         "/api/packages",
@@ -233,24 +233,15 @@ def test_open_notebook_source_import_and_evidence_confirm(
     assert generated.status_code == 200
     lesson = generated.json()["lessons"][0]
 
-    class _FakeAdapter:
-        def create_notebook(self, *, title: str, description: str = "") -> str:
-            return "nb_api"
-
-        def add_url_source(self, *, notebook_id: str, source_uri: str, title: str = "") -> OpenNotebookSourceResult:
-            assert notebook_id == "nb_api"
-            return OpenNotebookSourceResult(
-                source_id="src_api",
-                command_id="cmd_api",
-                status="completed",
-                raw={"source_id": "src_api"},
-            )
-
-        def delete_source(self, source_id: str) -> None:
-            assert source_id == "src_api"
+    def _fake_snapshot(record: SourceIngestionRecord, source_uri: str) -> dict[str, str]:
+        source_dir = workspace_state.UPLOAD_DIR / "sources"
+        source_dir.mkdir(parents=True, exist_ok=True)
+        snapshot_path = source_dir / f"{record.id}.html"
+        snapshot_path.write_text("<h1>Native source</h1><p>Native indexed body.</p>", encoding="utf-8")
+        return {"local_source_path": str(snapshot_path)}
 
     monkeypatch.setattr(source_ingestion_module, "_validate_public_url", lambda raw_uri: raw_uri)
-    monkeypatch.setattr(source_ingestion_service, "adapter", _FakeAdapter())
+    monkeypatch.setattr(source_ingestion_module, "fetch_url_source_snapshot", _fake_snapshot)
 
     imported = api_client.post(
         f"/api/packages/{package_id}/sources",
@@ -259,18 +250,20 @@ def test_open_notebook_source_import_and_evidence_confirm(
     assert imported.status_code == 200
     source = imported.json()
     assert source["status"] == "ready"
-    assert source["open_notebook_source_id"] == "src_api"
-    assert source["structure_status"] == "linear_only"
+    assert source["open_notebook_source_id"] == ""
+    assert source["metadata"]["adapter"] == "openclass_native_url"
+    assert source["structure_status"] == "ready"
 
     listed = api_client.get(f"/api/packages/{package_id}/sources")
     assert listed.status_code == 200
     assert listed.json()[0]["title"] == "示例网页"
-    assert listed.json()[0]["structure_status"] == "linear_only"
+    assert listed.json()[0]["structure_status"] == "ready"
 
     structure = api_client.get(f"/api/packages/{package_id}/sources/{source['id']}/structure")
     assert structure.status_code == 200
-    assert structure.json()["structure"]["strategy"] == "open_notebook_search_only"
-    assert structure.json()["chapters"] == []
+    assert structure.json()["structure"]["strategy"] == "markdown_heading"
+    assert structure.json()["chapters"]
+    assert structure.json()["chunks"]
 
     deleted = api_client.delete(f"/api/packages/{package_id}/sources/{source['id']}")
     assert deleted.status_code == 200
@@ -290,7 +283,7 @@ def test_open_notebook_source_import_and_evidence_confirm(
             evidence_items=[
                 RetrievalEvidence(
                     source_ingestion_id=source["id"],
-                    open_notebook_source_id="src_api",
+                    open_notebook_source_id="",
                     source_title="示例网页",
                     source_uri="https://example.com/source",
                     section_path=["第一节"],
@@ -361,9 +354,8 @@ def test_pending_lesson_evidence_can_be_recovered_after_reopening(
     assert api_client.get(f"/api/lessons/{lesson_id}/evidence/pending").json() is None
 
 
-def test_source_import_uses_local_file_when_open_notebook_is_unavailable(
+def test_source_import_uses_native_local_index(
     api_client: TestClient,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     created_workspace = api_client.post(
         "/api/packages",
@@ -371,14 +363,6 @@ def test_source_import_uses_local_file_when_open_notebook_is_unavailable(
     )
     assert created_workspace.status_code == 200
     package_id = created_workspace.json()["active_package_id"]
-
-    class _UnavailableAdapter:
-        api_url = "http://localhost:5055"
-
-        def create_notebook(self, *, title: str, description: str = "") -> str:
-            raise OpenNotebookAdapterError("[Errno 61] Connection refused")
-
-    monkeypatch.setattr(source_ingestion_service, "adapter", _UnavailableAdapter())
 
     imported = api_client.post(
         f"/api/packages/{package_id}/sources",
@@ -389,9 +373,9 @@ def test_source_import_uses_local_file_when_open_notebook_is_unavailable(
     assert source["status"] == "ready"
     assert source["error"] == ""
     assert source["open_notebook_notebook_id"] == ""
-    assert source["metadata"]["adapter"] == "openclass_local"
-    assert source["metadata"]["open_notebook_sync_status"] == "unavailable"
-    assert "Open Notebook 服务未启动或不可达" in source["metadata"]["open_notebook_sync_warning"]
+    assert source["metadata"]["adapter"] == "openclass_native"
+    assert source["metadata"]["content_hash"]
+    assert "open_notebook_sync_status" not in source["metadata"]
     assert source["structure_status"] == "ready"
 
     listed = api_client.get(f"/api/packages/{package_id}/sources")
@@ -400,7 +384,7 @@ def test_source_import_uses_local_file_when_open_notebook_is_unavailable(
     assert listed.json()[0]["structure_has_verified_toc"] is True
 
 
-def test_url_source_uses_local_snapshot_when_open_notebook_is_unavailable(
+def test_url_source_uses_native_local_snapshot(
     api_client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
@@ -412,12 +396,6 @@ def test_url_source_uses_local_snapshot_when_open_notebook_is_unavailable(
     assert created_workspace.status_code == 200
     package_id = created_workspace.json()["active_package_id"]
 
-    class _UnavailableAdapter:
-        api_url = "http://localhost:5055"
-
-        def create_notebook(self, *, title: str, description: str = "") -> str:
-            raise OpenNotebookAdapterError("[Errno 61] Connection refused")
-
     def _fake_snapshot(record: SourceIngestionRecord, source_uri: str) -> dict[str, str]:
         snapshot_path = tmp_path / f"{record.id}.txt"
         snapshot_path.write_text(
@@ -428,7 +406,6 @@ def test_url_source_uses_local_snapshot_when_open_notebook_is_unavailable(
 
     monkeypatch.setattr(source_ingestion_module, "_validate_public_url", lambda raw_uri: raw_uri)
     monkeypatch.setattr(source_ingestion_module, "fetch_url_source_snapshot", _fake_snapshot)
-    monkeypatch.setattr(source_ingestion_service, "adapter", _UnavailableAdapter())
 
     imported = api_client.post(
         f"/api/packages/{package_id}/sources",
@@ -440,8 +417,8 @@ def test_url_source_uses_local_snapshot_when_open_notebook_is_unavailable(
     assert source["status"] == "ready"
     assert source["error"] == ""
     assert source["source_type"] == "web_url"
-    assert source["metadata"]["adapter"] == "openclass_local_url"
-    assert source["metadata"]["open_notebook_sync_status"] == "unavailable"
+    assert source["metadata"]["adapter"] == "openclass_native_url"
+    assert source["metadata"]["content_hash"]
     assert source["structure_status"] == "linear_only"
 
 
@@ -503,7 +480,7 @@ def test_youtube_url_source_uses_transcript_adapter(
     assert "indexed as local source text" in structure_payload["chunks"][0]["text"]
 
 
-def test_list_sources_recovers_failed_local_open_notebook_record(
+def test_failed_legacy_source_can_be_retried_into_native_index(
     api_client: TestClient,
     tmp_path,
 ) -> None:
@@ -513,7 +490,9 @@ def test_list_sources_recovers_failed_local_open_notebook_record(
     )
     assert created_workspace.status_code == 200
     package_id = created_workspace.json()["active_package_id"]
-    local_path = tmp_path / "recover.md"
+    source_dir = workspace_state.UPLOAD_DIR / "sources"
+    source_dir.mkdir(parents=True, exist_ok=True)
+    local_path = source_dir / "recover.md"
     local_path.write_text("# Recovered\n\nRecovered local file body.", encoding="utf-8")
     source_evidence_store.save_source(
         SourceIngestionRecord(
@@ -532,8 +511,12 @@ def test_list_sources_recovers_failed_local_open_notebook_record(
     listed = api_client.get(f"/api/packages/{package_id}/sources")
 
     assert listed.status_code == 200
-    recovered = listed.json()[0]
+    assert listed.json()[0]["status"] == "failed"
+
+    retried = api_client.post(f"/api/packages/{package_id}/sources/{listed.json()[0]['id']}/retry")
+
+    assert retried.status_code == 200
+    recovered = retried.json()
     assert recovered["status"] == "ready"
     assert recovered["error"] == ""
-    assert recovered["metadata"]["open_notebook_sync_status"] == "unavailable"
     assert recovered["structure_status"] == "ready"

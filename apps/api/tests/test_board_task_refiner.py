@@ -26,6 +26,8 @@ from app.services.board_task_refiner import _board_summary
 from app.services.resource_resolver import resource_resolver
 from app.services.rich_document import build_document
 from app.services.source_evidence_store import source_evidence_store
+from app.services.source_structure_indexer import SourceStructureIndexer
+from app.services.source_structure_store import SourceStructureStore
 
 
 def test_existing_board_task_refinement_prompt_uses_three_factor_contract(
@@ -373,43 +375,23 @@ def test_existing_board_source_grounded_write_requires_evidence_confirmation(
     monkeypatch.setattr(workspace_state, "STORE", store)
     lesson = _seed_existing_board_workspace(store, user_id)
     package_id = store.load_for_user(user_id).packages[0].id
-    source_evidence_store.upsert_notebook(
-        owner_user_id=user_id,
-        package_id=package_id,
-        notebook_id="nb_task",
-        title="任务资料",
-    )
-    source_evidence_store.save_source(
+    local_path = tmp_path / "task-source.md"
+    local_path.write_text("# 第一节\n\n资料里用于补写的关键内容和上下文。", encoding="utf-8")
+    task_source = source_evidence_store.save_source(
         SourceIngestionRecord(
             owner_user_id=user_id,
             package_id=package_id,
             title="任务资料",
-            source_type="web_url",
-            source_uri="https://example.com/task",
+            source_type="local_file",
+            file_name=local_path.name,
+            mime_type="text/markdown",
             status="ready",
-            open_notebook_notebook_id="nb_task",
-            open_notebook_source_id="src_task",
+            metadata={"local_source_path": str(local_path), "adapter": "openclass_native"},
         )
     )
-
-    class _FakeSearchAdapter:
-        def search(self, *, notebook_id: str, query: str, limit: int, source_ids: list[str]):
-            assert notebook_id == "nb_task"
-            assert source_ids == ["src_task"]
-            return [
-                {
-                    "source_id": "src_task",
-                    "chunk_id": "chunk_task",
-                    "title": "任务资料",
-                    "url": "https://example.com/task",
-                    "section_path": ["第一节"],
-                    "text": "资料里用于补写的关键内容。",
-                    "expanded_text": "资料里用于补写的关键内容和上下文。",
-                    "score": 0.9,
-                }
-            ]
-
-    monkeypatch.setattr(resource_resolver, "adapter", _FakeSearchAdapter())
+    structure_store = SourceStructureStore(store.path)
+    SourceStructureIndexer(store=structure_store).rebuild_structure(task_source)
+    monkeypatch.setattr(resource_resolver, "structure_store", structure_store)
 
     def _fake_refinement(**kwargs):
         return BoardTaskRequirementRefinement(
@@ -440,7 +422,7 @@ def test_existing_board_source_grounded_write_requires_evidence_confirmation(
     assert response.board_decision.action == "no_change"
     assert response.candidate_evidence_bundle is not None
     assert response.candidate_evidence_bundle.status == "candidate"
-    assert response.candidate_evidence_bundle.evidence_items[0].chunk_ids == ["chunk_task"]
+    assert response.candidate_evidence_bundle.evidence_items[0].chunk_ids[0].startswith("sourcechunk_")
     assert "确认是否使用这些资料" in response.chatbot_message
     saved_lesson = store.load_for_user(user_id).packages[0].lessons[0]
     assert "资料里用于补写的关键内容" not in saved_lesson.board_document.content_text

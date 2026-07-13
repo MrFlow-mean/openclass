@@ -29,47 +29,33 @@ from app.services.source_structure_store import SourceStructureStore
 
 
 class _FakeSearchAdapter:
-    def search(self, *, notebook_id: str, query: str, limit: int, source_ids: list[str]):
-        assert notebook_id == "nb_1"
-        assert "补写" in query
-        assert source_ids == ["src_1"]
-        return [
-            {
-                "source_id": "src_1",
-                "chunk_id": "chunk_a",
-                "title": "资料 A",
-                "url": "https://example.com/a",
-                "section_path": ["第一章", "概念"],
-                "page": 3,
-                "text": "第一段命中内容。",
-                "expanded_text": "第一段命中内容，包含上下文。",
-                "score": 0.92,
-            },
-            {
-                "source_id": "src_1",
-                "chunk_id": "chunk_a",
-                "title": "资料 A",
-                "text": "第一段命中内容。",
-                "expanded_text": "重复结果应该去重。",
-                "score": 0.91,
-            },
-            {
-                "source_id": "src_1",
-                "chunk_id": "chunk_b",
-                "title": "资料 A",
-                "text": "第二段命中内容。",
-                "expanded_text": "第二段命中内容，继续提供上下文。",
-                "score": 0.81,
-            },
-            {
-                "source_id": "src_other",
-                "chunk_id": "chunk_other",
-                "title": "其他课程包资料",
-                "text": "不应该进入本课程包的证据包。",
-                "expanded_text": "不应该进入本课程包的证据包。",
-                "score": 0.99,
-            },
-        ]
+    pass
+
+
+def _save_native_text_source(
+    *,
+    tmp_path: Path,
+    store: SourceEvidenceStore,
+    package_id: str,
+    title: str,
+    body: str,
+) -> SourceIngestionRecord:
+    local_path = tmp_path / f"{title}.md"
+    local_path.write_text(body, encoding="utf-8")
+    source = store.save_source(
+        SourceIngestionRecord(
+            owner_user_id="user_1",
+            package_id=package_id,
+            title=title,
+            source_type="local_file",
+            file_name=local_path.name,
+            mime_type="text/markdown",
+            status="ready",
+            metadata={"local_source_path": str(local_path), "adapter": "openclass_native"},
+        )
+    )
+    SourceStructureIndexer(store=SourceStructureStore(store.path)).rebuild_structure(source)
+    return source
 
 
 def _save_outline_only_source(
@@ -137,18 +123,12 @@ def _seed_empty_lesson(store: SqliteCourseStore, *, user_id: str):
 
 def test_resource_resolver_builds_candidate_evidence_bundle(tmp_path) -> None:
     store = SourceEvidenceStore(tmp_path / "openclass.sqlite3")
-    store.upsert_notebook(owner_user_id="user_1", package_id="pkg_1", notebook_id="nb_1", title="资料容器")
-    store.save_source(
-        SourceIngestionRecord(
-            owner_user_id="user_1",
-            package_id="pkg_1",
-            title="资料 A",
-            source_type="web_url",
-            source_uri="https://example.com/a",
-            status="ready",
-            open_notebook_notebook_id="nb_1",
-            open_notebook_source_id="src_1",
-        )
+    source = _save_native_text_source(
+        tmp_path=tmp_path,
+        store=store,
+        package_id="pkg_1",
+        title="资料 A",
+        body="# 第一章\n\n补写资料中的概念。第一段命中内容，包含上下文。\n\n第二段继续提供上下文。",
     )
     resolver = ResourceResolver(adapter=_FakeSearchAdapter(), store=store)
 
@@ -172,38 +152,27 @@ def test_resource_resolver_builds_candidate_evidence_bundle(tmp_path) -> None:
     assert bundle.status == "candidate"
     assert bundle.purpose == "board_edit"
     assert bundle.board_task_run_id == "task_run_1"
-    assert [item.chunk_ids for item in bundle.evidence_items] == [["chunk_a"], ["chunk_b"]]
-    assert bundle.evidence_items[0].source_ingestion_id
+    assert bundle.evidence_items[0].chunk_ids
+    assert bundle.evidence_items[0].source_ingestion_id == source.id
     assert "第一章" in bundle.context_text
     assert bundle.token_count > 0
 
 
 def test_learning_requirement_preview_does_not_persist_until_bound(tmp_path) -> None:
     store = SourceEvidenceStore(tmp_path / "openclass.sqlite3")
-    store.upsert_notebook(owner_user_id="user_1", package_id="pkg_1", notebook_id="nb_1", title="资料容器")
-    selected_source = store.save_source(
-        SourceIngestionRecord(
-            owner_user_id="user_1",
-            package_id="pkg_1",
-            title="资料 A",
-            source_type="web_url",
-            source_uri="https://example.com/a",
-            status="ready",
-            open_notebook_notebook_id="nb_1",
-            open_notebook_source_id="src_1",
-        )
+    selected_source = _save_native_text_source(
+        tmp_path=tmp_path,
+        store=store,
+        package_id="pkg_1",
+        title="资料 A",
+        body="补写目标概念的原生索引正文。",
     )
-    store.save_source(
-        SourceIngestionRecord(
-            owner_user_id="user_1",
-            package_id="pkg_1",
-            title="资料 B",
-            source_type="web_url",
-            source_uri="https://example.com/b",
-            status="ready",
-            open_notebook_notebook_id="nb_1",
-            open_notebook_source_id="src_2",
-        )
+    _save_native_text_source(
+        tmp_path=tmp_path,
+        store=store,
+        package_id="pkg_1",
+        title="资料 B",
+        body="另一份没有被选中的资料正文。",
     )
     resolver = ResourceResolver(adapter=_FakeSearchAdapter(), store=store)
 

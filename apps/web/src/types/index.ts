@@ -346,8 +346,7 @@ export type SourceStructureStrategy =
   | "pdf_merged_toc"
   | "docx_heading"
   | "markdown_heading"
-  | "linear_text"
-  | "open_notebook_search_only";
+  | "linear_text";
 
 export interface SourceIngestionJob {
   id: string;
@@ -375,9 +374,6 @@ export interface SourceIngestionRecord {
   size_bytes: number;
   status: SourceIngestionStatus;
   error: string;
-  open_notebook_notebook_id: string;
-  open_notebook_source_id: string;
-  open_notebook_command_id: string;
   structure_status: SourceStructureStatus;
   structure_strategy?: SourceStructureStrategy | null;
   structure_has_verified_toc: boolean;
@@ -391,7 +387,6 @@ export interface SourceIngestionRecord {
 export interface RetrievalEvidence {
   id: string;
   source_ingestion_id: string;
-  open_notebook_source_id: string;
   source_title: string;
   source_uri?: string | null;
   chapter_id: string;
@@ -471,6 +466,11 @@ export interface SourceStructureView {
   chunks: SourceChunk[];
 }
 
+export interface SourceContentView {
+  source: SourceIngestionRecord;
+  content: string;
+}
+
 export interface EvidenceBundle {
   id: string;
   owner_user_id: string;
@@ -497,6 +497,282 @@ export interface EvidenceConfirmationResult {
   requirement_run_id?: string | null;
   requirement_version_id?: string | null;
   requirement_phase?: LearningRequirementRunStatus | null;
+}
+
+export type ResearchSearchMode = "text" | "semantic" | "hybrid";
+export type ResearchContextMode = "retrieval" | "full" | "notes" | "off";
+export type ResearchMessageRole = "user" | "assistant" | "system";
+export type ResearchArtifactStatus = "queued" | "generating" | "ready" | "failed";
+export type ResearchArtifactKind = "insight" | "summary" | "study_guide" | "faq" | "timeline" | "custom" | "podcast";
+export type ResearchArtifactLength = "short" | "medium" | "long";
+
+export interface ResearchCitation {
+  source_ingestion_id: string;
+  source_title: string;
+  source_uri?: string | null;
+  chapter_id: string;
+  section_path: string[];
+  page_range: string;
+  chunk_ids: string[];
+  excerpt: string;
+}
+
+export interface ResearchNote {
+  id: string;
+  owner_user_id: string;
+  package_id: string;
+  title: string;
+  content: string;
+  tags: string[];
+  citations: ResearchCitation[];
+  created_at: string;
+  updated_at: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface ResearchNoteCreate {
+  title?: string;
+  content: string;
+  tags?: string[];
+  citations?: ResearchCitation[];
+  metadata?: Record<string, unknown>;
+}
+
+export interface ResearchNoteUpdate {
+  title?: string;
+  content?: string;
+  tags?: string[];
+  citations?: ResearchCitation[];
+  metadata?: Record<string, unknown>;
+}
+
+export interface ResearchSearchRequest {
+  query: string;
+  mode?: ResearchSearchMode;
+  source_ingestion_ids?: string[];
+  include_notes?: boolean;
+  limit?: number;
+  token_budget?: number;
+}
+
+export interface ResearchSearchResult {
+  kind: "source" | "note";
+  score: number;
+  evidence?: RetrievalEvidence | null;
+  note?: ResearchNote | null;
+}
+
+export interface ResearchSearchResponse {
+  query: string;
+  mode: ResearchSearchMode;
+  results: ResearchSearchResult[];
+}
+
+export interface ResearchChatMessage {
+  id: string;
+  thread_id: string;
+  role: ResearchMessageRole;
+  content: string;
+  citations: ResearchCitation[];
+  created_at: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface ResearchChatThread {
+  id: string;
+  owner_user_id: string;
+  package_id: string;
+  title: string;
+  context_mode: ResearchContextMode;
+  source_ingestion_ids: string[];
+  note_ids: string[];
+  created_at: string;
+  updated_at: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface ResearchChatThreadCreate {
+  title?: string;
+  context_mode?: ResearchContextMode;
+  source_ingestion_ids?: string[];
+  note_ids?: string[];
+}
+
+export interface ResearchChatThreadUpdate {
+  title?: string;
+  context_mode?: ResearchContextMode;
+  source_ingestion_ids?: string[];
+  note_ids?: string[];
+}
+
+export interface ResearchChatRequest {
+  message: string;
+  text_model?: AIModelSelection | null;
+  context_mode?: ResearchContextMode;
+  source_ingestion_ids?: string[];
+  note_ids?: string[];
+}
+
+export interface ResearchChatResponse {
+  thread: ResearchChatThread;
+  message: ResearchChatMessage;
+}
+
+export interface ResearchSpeaker {
+  name: string;
+  role?: string;
+  voice?: string;
+  instructions?: string;
+}
+
+export interface ResearchArtifact {
+  id: string;
+  owner_user_id: string;
+  package_id: string;
+  kind: ResearchArtifactKind;
+  status: ResearchArtifactStatus;
+  title: string;
+  content: string;
+  transcript: string;
+  audio_url?: string | null;
+  source_ingestion_ids: string[];
+  note_ids: string[];
+  citations: ResearchCitation[];
+  error: string;
+  created_at: string;
+  updated_at: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface ResearchArtifactCreate {
+  kind: ResearchArtifactKind;
+  title?: string;
+  instructions?: string;
+  language?: string;
+  tone?: string;
+  length?: ResearchArtifactLength;
+  segment_count?: number | null;
+  source_ingestion_ids?: string[];
+  note_ids?: string[];
+  speakers?: ResearchSpeaker[];
+  text_model?: AIModelSelection | null;
+  synthesize_audio?: boolean;
+}
+
+export interface ResearchAskRequest {
+  question: string;
+  source_ingestion_ids?: string[];
+  note_ids?: string[];
+  include_notes?: boolean;
+  text_model?: AIModelSelection | null;
+  max_queries?: number;
+}
+
+export interface ResearchAskResponse {
+  question: string;
+  search_queries: string[];
+  answer: string;
+  citations: ResearchCitation[];
+}
+
+export interface ResearchCapabilities {
+  native_ingestion: boolean;
+  text_search: boolean;
+  semantic_search: boolean;
+  notes: boolean;
+  persisted_chat: boolean;
+  transformations: boolean;
+  podcast_script: boolean;
+  podcast_audio: boolean;
+  supported_source_types: string[];
+}
+
+export interface ResearchTransformation {
+  id: string;
+  owner_user_id: string;
+  package_id: string;
+  name: string;
+  instructions: string;
+  output_kind: ResearchArtifactKind;
+  run_on_import: boolean;
+  created_at: string;
+  updated_at: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface ResearchTransformationCreate {
+  name: string;
+  instructions: string;
+  output_kind?: ResearchArtifactKind;
+  run_on_import?: boolean;
+  metadata?: Record<string, unknown>;
+}
+
+export interface ResearchTransformationUpdate {
+  name?: string;
+  instructions?: string;
+  output_kind?: ResearchArtifactKind;
+  run_on_import?: boolean;
+  metadata?: Record<string, unknown>;
+}
+
+export interface ResearchTransformationRun {
+  title?: string;
+  source_ingestion_ids?: string[];
+  note_ids?: string[];
+  text_model?: AIModelSelection | null;
+}
+
+export interface ResearchSpeakerProfile {
+  id: string;
+  owner_user_id: string;
+  package_id: string;
+  name: string;
+  speakers: ResearchSpeaker[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ResearchSpeakerProfileCreate {
+  name: string;
+  speakers: ResearchSpeaker[];
+}
+
+export interface ResearchSpeakerProfileUpdate {
+  name?: string;
+  speakers?: ResearchSpeaker[];
+}
+
+export interface ResearchEpisodeProfile {
+  id: string;
+  owner_user_id: string;
+  package_id: string;
+  name: string;
+  language: string;
+  tone: string;
+  length: ResearchArtifactLength;
+  segment_count: number;
+  instructions: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ResearchEpisodeProfileCreate {
+  name: string;
+  language?: string;
+  tone?: string;
+  length?: ResearchArtifactLength;
+  segment_count?: number;
+  instructions?: string;
+}
+
+export interface ResearchEpisodeProfileUpdate {
+  name?: string;
+  language?: string;
+  tone?: string;
+  length?: ResearchArtifactLength;
+  segment_count?: number;
+  instructions?: string;
 }
 
 export type ResourcePageRole =

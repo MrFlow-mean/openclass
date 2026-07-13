@@ -1,7 +1,7 @@
 "use client";
 
 import clsx from "clsx";
-import { BookOpen, ChevronDown, ChevronRight, Globe2, RefreshCw, TextQuote, Trash2, UploadCloud } from "lucide-react";
+import { BookOpen, Check, ChevronDown, ChevronRight, ClipboardPaste, Download, FileText, Globe2, Pencil, RefreshCw, RotateCcw, TextQuote, Trash2, UploadCloud, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type DragEvent } from "react";
 
 import { createSourceChapterSelection, sourceChapterLabel } from "@/components/course-studio/source-reference";
@@ -51,6 +51,7 @@ function dragIncludesFiles(event: DragEvent<HTMLElement>) {
 export function SourceImportPanel({ packageId, disabled = false, onError, onSourceReference }: SourceImportPanelProps) {
   const [sources, setSources] = useState<SourceIngestionRecord[]>([]);
   const [sourceUri, setSourceUri] = useState("");
+  const [pastedText, setPastedText] = useState("");
   const [title, setTitle] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
@@ -114,26 +115,46 @@ export function SourceImportPanel({ packageId, disabled = false, onError, onSour
       return;
     }
     setIsImporting(true);
+    const imported: SourceIngestionRecord[] = [];
+    const failures: string[] = [];
     try {
-      const imported: SourceIngestionRecord[] = [];
       for (const file of fileList) {
-        imported.push(
-          await api.importPackageSource(packageId, {
+        try {
+          const record = await api.importPackageSource(packageId, {
             file,
             title: fileList.length === 1 ? title.trim() : "",
-          })
-        );
+          });
+          imported.push(record);
+          setSources((current) => [record, ...current.filter((item) => item.id !== record.id)]);
+        } catch (error) {
+          failures.push(`${file.name}: ${error instanceof Error ? error.message : "导入失败"}`);
+        }
       }
-      setSources((current) => [
-        ...imported,
-        ...current.filter((item) => !imported.some((record) => record.id === item.id)),
-      ]);
       setTitle("");
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
       }
+    } finally {
+      setIsImporting(false);
+    }
+    if (failures.length) {
+      onError(`${imported.length} 个文件导入成功，${failures.length} 个失败：${failures.join("；")}`);
+    }
+  }
+
+  async function submitPastedText() {
+    const text = pastedText.trim();
+    if (!text || disabled || isImporting) {
+      return;
+    }
+    setIsImporting(true);
+    try {
+      const record = await api.importPackageSource(packageId, { text, title: title.trim() });
+      setSources((current) => [record, ...current.filter((item) => item.id !== record.id)]);
+      setPastedText("");
+      setTitle("");
     } catch (error) {
-      onError(error instanceof Error ? error.message : "文件导入失败");
+      onError(error instanceof Error ? error.message : "粘贴文本导入失败");
     } finally {
       setIsImporting(false);
     }
@@ -248,12 +269,33 @@ export function SourceImportPanel({ packageId, disabled = false, onError, onSour
             <Globe2 className="h-4 w-4" />
           </button>
         </div>
+        <label className="mt-3 block text-[11px] font-bold uppercase tracking-widest text-gray-500">粘贴文本</label>
+        <div className="mt-2 flex items-end gap-2">
+          <textarea
+            value={pastedText}
+            onChange={(event) => setPastedText(event.target.value)}
+            placeholder="粘贴需要索引的正文或 Markdown"
+            rows={3}
+            className="min-h-20 min-w-0 flex-1 resize-y rounded-md border border-gray-200 px-3 py-2 text-sm outline-none transition focus:border-black"
+            disabled={disabled || isImporting}
+          />
+          <button
+            type="button"
+            onClick={() => void submitPastedText()}
+            disabled={!pastedText.trim() || disabled || isImporting}
+            className="flex h-9 w-9 items-center justify-center rounded-md bg-black text-white transition hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-50"
+            title="导入粘贴文本"
+            aria-label="导入粘贴文本"
+          >
+            <ClipboardPaste className="h-4 w-4" />
+          </button>
+        </div>
         <div className="mt-3 flex items-center justify-end">
           <input
             ref={fileInputRef}
             type="file"
             multiple
-            accept=".pdf,.epub,.doc,.docx,.txt,.md,.markdown,application/pdf,application/epub+zip,text/plain,text/markdown,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            accept=".pdf,.epub,.docx,.pptx,.xlsx,.csv,.txt,.md,.markdown,.html,.htm,.json,.xml,.png,.jpg,.jpeg,.webp,.gif,.mp3,.m4a,.wav,.ogg,.mp4,.mov,.webm,.mpeg,application/pdf,application/epub+zip,text/*,image/*,audio/*,video/*,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             onChange={(event) => void submitFiles(event.target.files)}
             className="hidden"
             disabled={disabled || isImporting}
@@ -359,13 +401,21 @@ function SourceRow({
   const [isStructureOpen, setIsStructureOpen] = useState(false);
   const [isLoadingStructure, setIsLoadingStructure] = useState(false);
   const [isRebuildingStructure, setIsRebuildingStructure] = useState(false);
+  const [isRetrying, setIsRetrying] = useState(false);
+  const [isEditingTitle, setIsEditingTitle] = useState(false);
+  const [draftTitle, setDraftTitle] = useState(source.title);
+  const [content, setContent] = useState<string | null>(null);
+  const [draftContent, setDraftContent] = useState("");
+  const [isContentOpen, setIsContentOpen] = useState(false);
+  const [isLoadingContent, setIsLoadingContent] = useState(false);
+  const [isEditingContent, setIsEditingContent] = useState(false);
+  const [isSavingContent, setIsSavingContent] = useState(false);
   const [expandedChapterIds, setExpandedChapterIds] = useState<Set<string>>(new Set());
   const isReady = source.status === "ready";
   const isFailed = source.status === "failed";
   const structureLabel = structureStatusLabel(source);
   const structureIsGood = source.structure_status === "ready";
   const structureIsFailed = source.structure_status === "failed";
-  const openNotebookSyncMessage = getOpenNotebookSyncMessage(source);
   const processingState = getSourceProcessingState(source);
 
   async function toggleStructure() {
@@ -407,6 +457,88 @@ function SourceRow({
     }
   }
 
+  async function retrySource() {
+    if (isRetrying) {
+      return;
+    }
+    setIsRetrying(true);
+    try {
+      onSourceUpdate(await api.retryPackageSource(packageId, source.id));
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "资料重试失败");
+    } finally {
+      setIsRetrying(false);
+    }
+  }
+
+  async function saveTitle() {
+    const nextTitle = draftTitle.trim();
+    if (!nextTitle || nextTitle === source.title) {
+      setDraftTitle(source.title);
+      setIsEditingTitle(false);
+      return;
+    }
+    try {
+      onSourceUpdate(await api.renamePackageSource(packageId, source.id, nextTitle));
+      setIsEditingTitle(false);
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "资料重命名失败");
+    }
+  }
+
+  async function toggleContent() {
+    const nextOpen = !isContentOpen;
+    setIsContentOpen(nextOpen);
+    if (!nextOpen || content !== null || isLoadingContent) {
+      return;
+    }
+    setIsLoadingContent(true);
+    try {
+      const nextContent = (await api.getPackageSourceContent(packageId, source.id)).content;
+      setContent(nextContent);
+      setDraftContent(nextContent);
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "资料正文读取失败");
+    } finally {
+      setIsLoadingContent(false);
+    }
+  }
+
+  async function saveContent() {
+    const nextContent = draftContent.trim();
+    if (!nextContent || isSavingContent) {
+      return;
+    }
+    setIsSavingContent(true);
+    try {
+      const result = await api.updatePackageSourceContent(packageId, source.id, nextContent);
+      setContent(result.content);
+      setDraftContent(result.content);
+      setStructureView(null);
+      setExpandedChapterIds(new Set());
+      setIsEditingContent(false);
+      onSourceUpdate(result.source);
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "资料正文保存失败");
+    } finally {
+      setIsSavingContent(false);
+    }
+  }
+
+  async function downloadSource() {
+    try {
+      const blob = await api.downloadPackageSource(packageId, source.id);
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = source.file_name || source.title;
+      anchor.click();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "资料下载失败");
+    }
+  }
+
   const chapterTree = buildChapterTree(structureView?.chapters ?? []);
   function toggleChapter(chapterId: string) {
     setExpandedChapterIds((current) => {
@@ -433,7 +565,33 @@ function SourceRow({
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex items-start justify-between gap-2">
-            <p className="truncate text-sm font-semibold text-gray-900">{source.title}</p>
+            {isEditingTitle ? (
+              <div className="flex min-w-0 flex-1 items-center gap-1">
+                <input
+                  value={draftTitle}
+                  onChange={(event) => setDraftTitle(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") void saveTitle();
+                    if (event.key === "Escape") setIsEditingTitle(false);
+                  }}
+                  className="h-7 min-w-0 flex-1 rounded border border-gray-300 px-2 text-sm outline-none focus:border-black"
+                  autoFocus
+                />
+                <button type="button" onClick={() => void saveTitle()} className="rounded p-1 text-emerald-700" aria-label="保存资料标题">
+                  <Check className="h-3.5 w-3.5" />
+                </button>
+                <button type="button" onClick={() => setIsEditingTitle(false)} className="rounded p-1 text-gray-500" aria-label="取消修改资料标题">
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            ) : (
+              <div className="flex min-w-0 flex-1 items-center gap-1">
+                <p className="truncate text-sm font-semibold text-gray-900">{source.title}</p>
+                <button type="button" onClick={() => setIsEditingTitle(true)} className="rounded p-1 text-gray-400 hover:text-black" aria-label={`重命名资料 ${source.title}`}>
+                  <Pencil className="h-3 w-3" />
+                </button>
+              </div>
+            )}
             <div className="flex shrink-0 items-center gap-1.5">
               <span
                 className={clsx(
@@ -462,6 +620,39 @@ function SourceRow({
                 >
                   {structureLabel}
                 </span>
+              ) : null}
+              {isReady ? (
+                <button
+                  type="button"
+                  onClick={() => void toggleContent()}
+                  disabled={isLoadingContent}
+                  className="flex h-7 w-7 items-center justify-center rounded-md text-gray-400 transition hover:bg-gray-50 hover:text-black disabled:opacity-50"
+                  title="查看完整正文"
+                  aria-label={`查看资料正文 ${source.title}`}
+                >
+                  {isLoadingContent ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <FileText className="h-3.5 w-3.5" />}
+                </button>
+              ) : null}
+              <button
+                type="button"
+                onClick={() => void downloadSource()}
+                className="flex h-7 w-7 items-center justify-center rounded-md text-gray-400 transition hover:bg-gray-50 hover:text-black"
+                title="下载原始资料"
+                aria-label={`下载资料 ${source.title}`}
+              >
+                <Download className="h-3.5 w-3.5" />
+              </button>
+              {isFailed ? (
+                <button
+                  type="button"
+                  onClick={() => void retrySource()}
+                  disabled={isRetrying}
+                  className="flex h-7 w-7 items-center justify-center rounded-md text-amber-600 transition hover:bg-amber-50 disabled:opacity-50"
+                  title="重试资料处理"
+                  aria-label={`重试资料 ${source.title}`}
+                >
+                  <RotateCcw className={clsx("h-3.5 w-3.5", isRetrying && "animate-spin")} />
+                </button>
               ) : null}
               {isReady ? (
                 <button
@@ -505,9 +696,65 @@ function SourceRow({
               已建立可验证目录；引用时会检查正文，扫描文件将自动尝试 OCR。
             </p>
           ) : null}
-          {openNotebookSyncMessage ? <p className="mt-2 text-xs leading-5 text-amber-700">{openNotebookSyncMessage}</p> : null}
           {source.error ? <p className="mt-2 text-xs leading-5 text-rose-700">{source.error}</p> : null}
           {source.structure_error ? <p className="mt-2 text-xs leading-5 text-amber-700">{source.structure_error}</p> : null}
+          {isContentOpen ? (
+            <div className="mt-3 rounded-md border border-gray-200 bg-gray-50 p-2">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <p className="text-[11px] font-semibold text-gray-600">可检索正文</p>
+                {isEditingContent ? (
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => void saveContent()}
+                      disabled={!draftContent.trim() || isSavingContent}
+                      className="rounded p-1 text-emerald-700 disabled:opacity-40"
+                      aria-label={`保存资料正文 ${source.title}`}
+                    >
+                      {isSavingContent ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDraftContent(content ?? "");
+                        setIsEditingContent(false);
+                      }}
+                      disabled={isSavingContent}
+                      className="rounded p-1 text-gray-500 disabled:opacity-40"
+                      aria-label={`取消编辑资料正文 ${source.title}`}
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDraftContent(content ?? "");
+                      setIsEditingContent(true);
+                    }}
+                    disabled={!content}
+                    className="rounded p-1 text-gray-500 hover:bg-white hover:text-black disabled:opacity-40"
+                    aria-label={`编辑资料正文 ${source.title}`}
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                  </button>
+                )}
+              </div>
+              {isEditingContent ? (
+                <textarea
+                  value={draftContent}
+                  onChange={(event) => setDraftContent(event.target.value)}
+                  rows={14}
+                  className="w-full resize-y rounded border border-gray-200 bg-white px-2 py-2 text-[11px] leading-5 text-gray-700 outline-none focus:border-black"
+                />
+              ) : (
+                <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-5 text-gray-700">
+                  {content || "资料中没有可显示的文字正文。"}
+                </pre>
+              )}
+            </div>
+          ) : null}
           {isStructureOpen ? (
             <div className="mt-3 rounded-md border border-blue-100 bg-blue-50/40 p-2">
               <div className="mb-1 flex justify-end">
@@ -557,12 +804,10 @@ function SourceStructureEmptyState({
       ? source.structure_error || structure?.error || "目录结构索引失败。"
       : source.structure_status === "linear_only"
       ? isRemoteOnlyWebUrl
-        ? "URL 资料 V1 暂不在 OpenClass 本地重建目录，当前使用 Open Notebook 全文检索。"
+        ? "这份 URL 资料未形成可验证目录，当前使用 OpenClass 原生全文片段检索。"
         : "未发现可验证目录，本资料当前只能按全文片段检索。旧上传资料如果没有保存本地原文件，需要重新上传后才能尝试建立目录。"
       : "目录结构还没有完成，稍后刷新资料状态。";
-  const visibleWarnings = (structure?.warnings ?? []).filter(
-    (warning) => isRemoteOnlyWebUrl || !warning.startsWith("URL 资料 V1")
-  );
+  const visibleWarnings = structure?.warnings ?? [];
   return (
     <div className="space-y-2">
       <p className="text-xs leading-5 text-gray-600">{message}</p>
@@ -736,23 +981,6 @@ function structureStatusLabel(source: SourceIngestionRecord) {
     return "有可信目录";
   }
   return STRUCTURE_STATUS_LABELS[source.structure_status] ?? "结构状态";
-}
-
-function getOpenNotebookSyncMessage(source: SourceIngestionRecord) {
-  const syncStatus = metadataString(source, "open_notebook_sync_status");
-  if (!syncStatus || (source.source_type !== "local_file" && source.source_type !== "web_url")) {
-    return "";
-  }
-  if (syncStatus === "unavailable" || syncStatus === "failed") {
-    if (source.source_type === "web_url") {
-      return "Open Notebook 未连接，已使用 OpenClass 本地网页快照解析；启动服务后重新导入可同步到 Open Notebook 检索。";
-    }
-    return "Open Notebook 未连接，已使用 OpenClass 本地解析；启动服务后重新上传可同步到 Open Notebook 检索。";
-  }
-  if (!["ready", "completed", "complete", "success", "succeeded", "done"].includes(syncStatus)) {
-    return "已使用 OpenClass 本地解析，Open Notebook 同步仍在后台处理中。";
-  }
-  return "";
 }
 
 function metadataString(source: SourceIngestionRecord, key: string) {

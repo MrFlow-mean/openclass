@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import html
 import re
 import zipfile
@@ -11,7 +12,9 @@ from xml.etree import ElementTree
 
 from app.models import SourceChapter, SourceChunk, SourceIngestionRecord, SourceStructure
 from app.services import workspace_state
+from app.services.image_ocr import extract_image_text, extract_pdf_pages_text
 from app.services.pdf_toc_parser import PdfOutlineAnchor, PdfTocNode, extract_pdf_toc
+from app.services.native_source_index import source_chunk_text_hash
 from app.services.source_chapter_identity import stable_source_chapter_id
 from app.services.source_structure_store import SourceStructureStore, source_structure_store
 
@@ -115,7 +118,7 @@ class SourceStructureIndexer:
                 update={
                     "status": "failed",
                     "error": str(exc),
-                    "warnings": ["资料结构索引失败，仍可在 Open Notebook 可用时走全文检索。"],
+                    "warnings": ["资料结构索引失败，请检查文件格式后重试。"],
                 }
             )
             return self.store.save_structure_bundle(structure=failed, chapters=[], chunks=[])
@@ -123,17 +126,11 @@ class SourceStructureIndexer:
     def _parse_record(self, record: SourceIngestionRecord) -> ParsedSourceDocument:
         local_path = _local_source_path(record)
         if not local_path:
-            is_url_source = record.source_type == "web_url" or bool(record.source_uri)
-            warning = (
-                "URL 资料 V1 暂不在 OpenClass 本地重建目录，使用 Open Notebook 检索。"
-                if is_url_source
-                else "未找到资料原文件，旧上传资料需要重新上传后才能尝试建立目录。"
-            )
             return ParsedSourceDocument(
                 text="",
-                strategy="open_notebook_search_only",
-                warnings=[warning],
-                metadata={"source_type": record.source_type, "missing_local_source_path": not is_url_source},
+                strategy="linear_text",
+                warnings=["未找到资料原文件，请重新导入后再建立索引。"],
+                metadata={"source_type": record.source_type, "missing_local_source_path": True},
             )
         suffix = local_path.suffix.lower()
         if suffix == ".epub" or _looks_like_epub(record.mime_type):
@@ -142,6 +139,16 @@ class SourceStructureIndexer:
             return _parse_pdf(local_path)
         if suffix in {".docx", ".doc"} or "wordprocessingml" in record.mime_type:
             return _parse_docx(local_path)
+        if suffix == ".pptx" or "presentationml" in record.mime_type:
+            return _parse_pptx(local_path)
+        if suffix in {".xlsx", ".xls"} or "spreadsheetml" in record.mime_type:
+            return _parse_xlsx(local_path)
+        if suffix in {".html", ".htm"} or record.mime_type == "text/html":
+            return _parse_html_document(local_path)
+        if record.mime_type.startswith("image/") or suffix in {".png", ".jpg", ".jpeg", ".webp", ".gif"}:
+            return _parse_image(local_path)
+        if record.mime_type.startswith(("audio/", "video/")):
+            return _parse_text_document(local_path, prefer_markdown=False)
         return _parse_text_document(local_path, prefer_markdown=suffix in {".md", ".markdown"})
 
     def _chapters_for_record(self, record: SourceIngestionRecord, parsed: ParsedSourceDocument) -> list[SourceChapter]:
@@ -241,8 +248,15 @@ class SourceStructureIndexer:
             chunk_text = parsed.text[cursor:end].strip()
             if chunk_text:
                 chapter_id, page_start, page_end = _chapter_for_chunk(cursor, end, chapter_ranges)
+                text_hash = source_chunk_text_hash(chunk_text)
                 chunks.append(
                     SourceChunk(
+                        id=_stable_source_chunk_id(
+                            source_ingestion_id=record.id,
+                            chapter_id=chapter_id,
+                            order_index=order_index,
+                            text_hash=text_hash,
+                        ),
                         owner_user_id=record.owner_user_id,
                         package_id=record.package_id,
                         source_ingestion_id=record.id,
@@ -255,6 +269,7 @@ class SourceStructureIndexer:
                         page_start=page_start,
                         page_end=page_end,
                         token_count=_estimate_tokens(chunk_text),
+                        metadata={"text_hash": text_hash},
                     )
                 )
                 order_index += 1
@@ -262,6 +277,20 @@ class SourceStructureIndexer:
                 break
             cursor = max(end - CHUNK_CHAR_OVERLAP, cursor + 1)
         return chunks
+
+
+def _stable_source_chunk_id(
+    *,
+    source_ingestion_id: str,
+    chapter_id: str | None,
+    order_index: int,
+    text_hash: str,
+) -> str:
+    identity = "\x1f".join(
+        (source_ingestion_id, chapter_id or "", str(order_index), text_hash)
+    )
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24]
+    return f"sourcechunk_{digest}"
 
 
 def _local_source_path(record: SourceIngestionRecord) -> Path | None:
@@ -349,6 +378,140 @@ def _parse_docx(path: Path) -> ParsedSourceDocument:
     )
 
 
+def _parse_html_document(path: Path) -> ParsedSourceDocument:
+    html_text = path.read_text(encoding="utf-8", errors="replace")
+    text, chapters = _html_text_and_headings(html_text, source_name=path.name)
+    for chapter in chapters:
+        chapter.source_locator = f"html:{path.name}"
+        chapter.verified = True
+        chapter.confidence = 0.86
+        chapter.metadata = {"source": "html_heading", "file": path.name}
+    _close_chapter_ranges(chapters, len(text))
+    return ParsedSourceDocument(
+        text=text,
+        chapters=chapters,
+        strategy="markdown_heading" if chapters else "linear_text",
+        metadata={"parser": "html"},
+    )
+
+
+def _parse_image(path: Path) -> ParsedSourceDocument:
+    text = extract_image_text(path) or ""
+    return ParsedSourceDocument(
+        text=text,
+        strategy="linear_text",
+        warnings=[] if text else ["图片中没有识别到可索引文字。"],
+        metadata={"parser": "vision_ocr", "ocr": True},
+    )
+
+
+def _parse_pptx(path: Path) -> ParsedSourceDocument:
+    with zipfile.ZipFile(path) as archive:
+        slide_names = sorted(
+            (name for name in archive.namelist() if re.fullmatch(r"ppt/slides/slide\d+\.xml", name)),
+            key=lambda name: int(re.search(r"(\d+)", Path(name).stem).group(1)),
+        )
+        parts: list[str] = []
+        chapters: list[DetectedChapter] = []
+        pages: list[PageText] = []
+        offset = 0
+        for slide_no, name in enumerate(slide_names, start=1):
+            root = ElementTree.fromstring(archive.read(name))
+            texts = [str(node.text or "").strip() for node in root.iter() if node.tag.endswith("}t") and str(node.text or "").strip()]
+            if not texts:
+                continue
+            slide_text = "\n".join(texts)
+            prefix = f"\n\n[Slide {slide_no}]\n"
+            start = offset
+            parts.append(prefix + slide_text)
+            offset += len(prefix) + len(slide_text)
+            pages.append(PageText(page_no=slide_no, text=slide_text, start_offset=start, end_offset=offset))
+            chapters.append(
+                DetectedChapter(
+                    title=texts[0],
+                    level=1,
+                    source_locator=f"pptx:slide:{slide_no}",
+                    start_offset=start + len(prefix),
+                    page_start=slide_no,
+                    page_end=slide_no + 1,
+                    confidence=0.9,
+                    verified=True,
+                    metadata={"source": "pptx_slide", "slide": slide_no},
+                )
+            )
+    full_text = "".join(parts).strip()
+    _close_chapter_ranges(chapters, len(full_text))
+    return ParsedSourceDocument(
+        text=full_text,
+        chapters=chapters,
+        pages=pages,
+        strategy="linear_text",
+        metadata={"parser": "pptx", "slide_count": len(pages)},
+    )
+
+
+def _parse_xlsx(path: Path) -> ParsedSourceDocument:
+    with zipfile.ZipFile(path) as archive:
+        names = archive.namelist()
+        shared: list[str] = []
+        if "xl/sharedStrings.xml" in names:
+            root = ElementTree.fromstring(archive.read("xl/sharedStrings.xml"))
+            for item in root.iter():
+                if item.tag.endswith("}si"):
+                    shared.append("".join(str(node.text or "") for node in item.iter() if node.tag.endswith("}t")))
+        sheet_names = sorted(
+            (name for name in names if re.fullmatch(r"xl/worksheets/sheet\d+\.xml", name)),
+            key=lambda name: int(re.search(r"(\d+)", Path(name).stem).group(1)),
+        )
+        parts: list[str] = []
+        chapters: list[DetectedChapter] = []
+        offset = 0
+        for sheet_no, name in enumerate(sheet_names, start=1):
+            root = ElementTree.fromstring(archive.read(name))
+            rows: list[str] = []
+            for row in (node for node in root.iter() if node.tag.endswith("}row")):
+                values: list[str] = []
+                for cell in (node for node in row if node.tag.endswith("}c")):
+                    cell_type = cell.attrib.get("t", "")
+                    value_node = next((node for node in cell.iter() if node.tag.endswith("}v")), None)
+                    if cell_type == "inlineStr":
+                        value = "".join(str(node.text or "") for node in cell.iter() if node.tag.endswith("}t"))
+                    else:
+                        value = str(value_node.text or "") if value_node is not None else ""
+                        if cell_type == "s" and value.isdigit() and int(value) < len(shared):
+                            value = shared[int(value)]
+                    values.append(value.strip())
+                if any(values):
+                    rows.append("\t".join(values).rstrip())
+            sheet_text = "\n".join(rows)
+            if not sheet_text:
+                continue
+            label = f"Sheet {sheet_no}"
+            prefix = f"\n\n[{label}]\n"
+            start = offset
+            parts.append(prefix + sheet_text)
+            offset += len(prefix) + len(sheet_text)
+            chapters.append(
+                DetectedChapter(
+                    title=label,
+                    level=1,
+                    source_locator=f"xlsx:sheet:{sheet_no}",
+                    start_offset=start + len(prefix),
+                    confidence=1.0,
+                    verified=True,
+                    metadata={"source": "xlsx_sheet", "sheet": sheet_no},
+                )
+            )
+    full_text = "".join(parts).strip()
+    _close_chapter_ranges(chapters, len(full_text))
+    return ParsedSourceDocument(
+        text=full_text,
+        chapters=chapters,
+        strategy="linear_text",
+        metadata={"parser": "xlsx", "sheet_count": len(chapters)},
+    )
+
+
 def _parse_pdf(path: Path) -> ParsedSourceDocument:
     try:
         from pypdf import PdfReader
@@ -366,6 +529,18 @@ def _parse_pdf(path: Path) -> ParsedSourceDocument:
         offset += len(page_text)
         pages.append(PageText(page_no=page_index + 1, text=text, start_offset=start, end_offset=offset))
     full_text = "".join(parts).strip()
+    ocr_used = False
+    if len(re.sub(r"\s+", "", full_text)) < max(40, len(pages) * 8) and pages:
+        ocr_text = extract_pdf_pages_text(
+            path,
+            page_start=1,
+            page_end=len(pages),
+            max_pages=min(len(pages), 200),
+        )
+        if ocr_text:
+            full_text = ocr_text.strip()
+            pages = [PageText(page_no=1, text=full_text, start_offset=0, end_offset=len(full_text))]
+            ocr_used = True
     outline_chapters = _pdf_outline_chapters(reader, pages, full_text)
     chapters = outline_chapters
     strategy = "pdf_outline" if outline_chapters else "linear_text"
@@ -409,7 +584,7 @@ def _parse_pdf(path: Path) -> ParsedSourceDocument:
         pages=pages,
         strategy=strategy,
         warnings=warnings,
-        metadata={"parser": "pdf", "page_count": len(pages), **toc_metadata},
+        metadata={"parser": "pdf", "page_count": len(reader.pages), "ocr": ocr_used, **toc_metadata},
     )
 
 

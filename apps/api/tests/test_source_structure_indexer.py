@@ -154,8 +154,10 @@ def test_source_structure_indexer_distinguishes_missing_file_from_url(tmp_path: 
 
     assert missing_file_structure.status == "linear_only"
     assert missing_file_structure.metadata["missing_local_source_path"] is True
-    assert "URL 资料" not in missing_file_structure.warnings[0]
-    assert "URL 资料" in url_structure.warnings[0]
+    assert "重新导入" in missing_file_structure.warnings[0]
+    assert "重新导入" in url_structure.warnings[0]
+    assert missing_file_structure.strategy == "linear_text"
+    assert url_structure.strategy == "linear_text"
 
 
 def test_source_structure_indexer_maps_pdf_toc_to_body_heading(tmp_path: Path) -> None:

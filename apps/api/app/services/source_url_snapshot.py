@@ -31,7 +31,7 @@ def fetch_url_source_snapshot(record: SourceIngestionRecord, source_uri: str) ->
     elif content_type.startswith("text/") or not content_type:
         text = response.text
     else:
-        raise SourceUrlSnapshotError("Only text and HTML URLs are supported by the local fallback.")
+        raise SourceUrlSnapshotError("Only text and HTML URLs are supported by the native URL importer.")
     text = "\n".join(line.strip() for line in text.splitlines() if line.strip())
     if not text:
         raise SourceUrlSnapshotError("URL did not return readable text.")

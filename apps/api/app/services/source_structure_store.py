@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 import sqlite3
 import threading
 from pathlib import Path
@@ -17,6 +16,7 @@ from app.models import (
     now_iso,
 )
 from app.services import workspace_state
+from app.services.native_source_index import NativeSearchMode, NativeSourceIndex, source_chunk_text_hash
 
 
 def _dumps(value: Any) -> str:
@@ -33,10 +33,16 @@ def _loads(raw: str | None, fallback: Any) -> Any:
 
 
 class SourceStructureStore:
-    def __init__(self, path: Path | None = None) -> None:
+    def __init__(
+        self,
+        path: Path | None = None,
+        *,
+        native_index: NativeSourceIndex | None = None,
+    ) -> None:
         self._path = path
         self._lock = threading.RLock()
         self._initialized_paths: set[str] = set()
+        self.native_index = native_index or NativeSourceIndex()
 
     @property
     def path(self) -> Path:
@@ -126,6 +132,7 @@ class SourceStructureStore:
                     page_start INTEGER,
                     page_end INTEGER,
                     token_count INTEGER NOT NULL,
+                    text_hash TEXT NOT NULL DEFAULT '',
                     metadata_json TEXT NOT NULL DEFAULT '{}'
                 );
                 CREATE INDEX IF NOT EXISTS idx_source_chunks_source
@@ -134,6 +141,20 @@ class SourceStructureStore:
                     ON source_chunks(owner_user_id, package_id, chapter_id, order_index);
                 """
             )
+            chunk_columns = {
+                str(row["name"])
+                for row in conn.execute("PRAGMA table_info(source_chunks)").fetchall()
+            }
+            if "text_hash" not in chunk_columns:
+                conn.execute("ALTER TABLE source_chunks ADD COLUMN text_hash TEXT NOT NULL DEFAULT ''")
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_source_chunks_text_hash
+                ON source_chunks(owner_user_id, package_id, source_ingestion_id, text_hash)
+                """
+            )
+            self.native_index.create_schema(conn)
+            self.native_index.backfill(conn)
             self._initialized_paths.add(path_key)
 
     def attach_summary(self, record: SourceIngestionRecord) -> SourceIngestionRecord:
@@ -158,6 +179,12 @@ class SourceStructureStore:
         with self._lock:
             with self._connect() as conn:
                 with conn:
+                    self.native_index.delete_for_source(
+                        conn,
+                        owner_user_id=owner_user_id,
+                        package_id=package_id,
+                        source_ingestion_id=source_id,
+                    )
                     for table in ("source_chunks", "source_chapters", "source_structures"):
                         conn.execute(
                             f"""
@@ -174,6 +201,7 @@ class SourceStructureStore:
         chapters: list[SourceChapter],
         chunks: list[SourceChunk],
     ) -> SourceStructure:
+        chunks = [_chunk_with_text_hash(chunk) for chunk in chunks]
         stamp = now_iso()
         structure = structure.model_copy(
             update={
@@ -265,8 +293,8 @@ class SourceStructureStore:
                         INSERT INTO source_chunks(
                             id, owner_user_id, package_id, source_ingestion_id, chapter_id, order_index,
                             source_locator, text, start_offset, end_offset, page_start, page_end, token_count,
-                            metadata_json
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            text_hash, metadata_json
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         [
                             (
@@ -283,11 +311,13 @@ class SourceStructureStore:
                                 chunk.page_start,
                                 chunk.page_end,
                                 chunk.token_count,
+                                str(chunk.metadata.get("text_hash") or source_chunk_text_hash(chunk.text)),
                                 _dumps(chunk.metadata),
                             )
                             for chunk in chunks
                         ],
                     )
+                    self.native_index.index_chunks(conn, chunks)
         return structure
 
     def record_rebuild_failure(self, *, structure: SourceStructure, error: str) -> SourceStructure:
@@ -556,21 +586,51 @@ class SourceStructureStore:
         limit: int,
         token_budget: int,
         source_ingestion_ids: list[str] | tuple[str, ...] | None = None,
+        search_mode: NativeSearchMode = "hybrid",
     ) -> list[RetrievalEvidence]:
-        terms = _search_terms(query)
-        if not terms:
+        if not query.strip() or limit <= 0:
             return []
         requested_source_ids = tuple(
             dict.fromkeys(source_id for source_id in source_ingestion_ids or [] if source_id)
         )
-        source_filter_sql = ""
-        query_params: list[object] = [owner_user_id, package_id]
-        if requested_source_ids:
-            placeholders = ", ".join("?" for _ in requested_source_ids)
-            source_filter_sql = f"AND source_chunks.source_ingestion_id IN ({placeholders})"
-            query_params.extend(requested_source_ids)
         with self._lock:
             with self._connect() as conn:
+                active_source_params: list[object] = [owner_user_id, package_id]
+                requested_filter = ""
+                if requested_source_ids:
+                    placeholders = ", ".join("?" for _ in requested_source_ids)
+                    requested_filter = f"AND source_ingestions.id IN ({placeholders})"
+                    active_source_params.extend(requested_source_ids)
+                active_source_rows = conn.execute(
+                    f"""
+                    SELECT source_ingestions.id
+                    FROM source_ingestions
+                    JOIN source_structures
+                        ON source_structures.owner_user_id = source_ingestions.owner_user_id
+                        AND source_structures.package_id = source_ingestions.package_id
+                        AND source_structures.source_ingestion_id = source_ingestions.id
+                    WHERE source_ingestions.owner_user_id = ?
+                        AND source_ingestions.package_id = ?
+                        AND source_ingestions.status = 'ready'
+                        AND source_structures.status IN ('ready', 'linear_only')
+                        {requested_filter}
+                    """,
+                    active_source_params,
+                ).fetchall()
+                active_source_ids = tuple(str(row["id"]) for row in active_source_rows)
+                matches = self.native_index.search(
+                    conn,
+                    owner_user_id=owner_user_id,
+                    package_id=package_id,
+                    query=query,
+                    source_ingestion_ids=active_source_ids,
+                    limit=max(limit * 8, 32),
+                    search_mode=search_mode,
+                )
+                if not matches:
+                    return []
+                chunk_ids = [match.chunk_id for match in matches]
+                placeholders = ", ".join("?" for _ in chunk_ids)
                 rows = conn.execute(
                     f"""
                     SELECT source_chunks.*, source_ingestions.title AS source_title,
@@ -593,25 +653,18 @@ class SourceStructureStore:
                         AND source_chapters.id = source_chunks.chapter_id
                     WHERE source_chunks.owner_user_id = ?
                         AND source_chunks.package_id = ?
-                        AND source_ingestions.status = 'ready'
-                        AND source_structures.status IN ('ready', 'linear_only')
-                        {source_filter_sql}
-                    ORDER BY source_chunks.order_index ASC
-                    LIMIT 800
+                        AND source_chunks.id IN ({placeholders})
                     """,
-                    query_params,
+                    [owner_user_id, package_id, *chunk_ids],
                 ).fetchall()
-
-        scored_rows: list[tuple[float, sqlite3.Row]] = []
-        for row in rows:
-            score = _chunk_search_score(str(row["text"] or ""), terms)
-            if score > 0:
-                scored_rows.append((score, row))
-        scored_rows.sort(key=lambda item: (-item[0], item[1]["order_index"]))
+        rows_by_id = {str(row["id"]): row for row in rows}
 
         evidence: list[RetrievalEvidence] = []
         used_tokens = 0
-        for score, row in scored_rows:
+        for match in matches:
+            row = rows_by_id.get(match.chunk_id)
+            if row is None:
+                continue
             chunk = self._chunk_from_row(row)
             token_count = chunk.token_count or _estimate_tokens(chunk.text)
             if used_tokens and used_tokens + token_count > token_budget:
@@ -631,11 +684,16 @@ class SourceStructureStore:
                     chunk_ids=[chunk.id],
                     excerpt=_compact_text(chunk.text, 360),
                     expanded_text=chunk.text,
-                    relevance_score=score,
-                    reason="Open Notebook 不可用或未命中时，命中 OpenClass 本地结构索引正文片段。",
+                    relevance_score=match.hybrid_score,
+                    reason=_native_index_reason(search_mode),
                     token_count=token_count,
                     metadata={
                         "retrieval_mode": "local_chunk_search",
+                        "native_index_mode": search_mode,
+                        "keyword_score": match.keyword_score,
+                        "semantic_score": match.semantic_score,
+                        "hybrid_score": match.hybrid_score,
+                        "match_modes": list(match.match_modes),
                         "source_locator": chunk.source_locator,
                     },
                 )
@@ -645,6 +703,12 @@ class SourceStructureStore:
         return evidence
 
     def _delete_index_rows(self, conn: sqlite3.Connection, structure: SourceStructure) -> None:
+        self.native_index.delete_for_source(
+            conn,
+            owner_user_id=structure.owner_user_id,
+            package_id=structure.package_id,
+            source_ingestion_id=structure.source_ingestion_id,
+        )
         conn.execute(
             """
             DELETE FROM source_chunks
@@ -727,34 +791,19 @@ def _compact_text(text: str, limit: int) -> str:
     return compacted if len(compacted) <= limit else compacted[: limit - 1].rstrip() + "…"
 
 
-def _search_terms(query: str) -> list[str]:
-    terms: list[str] = []
-    lowered = query.lower()
-    for token in re.findall(r"[a-z0-9]+(?:[._-][a-z0-9]+)*|\d+(?:\.\d+)+", lowered):
-        if len(token) >= 2:
-            terms.append(token)
-    for sequence in re.findall(r"[\u4e00-\u9fff]{2,}", query):
-        if len(sequence) <= 6:
-            terms.append(sequence)
-        else:
-            terms.extend(sequence[index : index + 2] for index in range(len(sequence) - 1))
-    seen: set[str] = set()
-    return [term for term in terms if not (term in seen or seen.add(term))]
+def _chunk_with_text_hash(chunk: SourceChunk) -> SourceChunk:
+    text_hash = source_chunk_text_hash(chunk.text)
+    if chunk.metadata.get("text_hash") == text_hash:
+        return chunk
+    return chunk.model_copy(update={"metadata": {**chunk.metadata, "text_hash": text_hash}})
 
 
-def _chunk_search_score(text: str, terms: list[str]) -> float:
-    lowered = text.lower()
-    score = 0.0
-    matched = 0
-    for term in terms:
-        count = lowered.count(term.lower())
-        if count <= 0:
-            continue
-        matched += 1
-        score += min(count, 3) * (1.0 + min(len(term), 12) / 12)
-    if matched == 0:
-        return 0.0
-    return score + matched / max(len(terms), 1)
+def _native_index_reason(search_mode: NativeSearchMode) -> str:
+    if search_mode == "text":
+        return "命中 OpenClass 原生全文索引。"
+    if search_mode == "semantic":
+        return "命中 OpenClass 原生语义索引。"
+    return "命中 OpenClass 原生全文与语义混合索引。"
 
 
 def _estimate_tokens(text: str) -> int:
