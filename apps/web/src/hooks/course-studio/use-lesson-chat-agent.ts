@@ -865,9 +865,12 @@ export function useLessonChatAgent({
       const shouldResumeBoardTask =
         action === "confirm" && candidateEvidenceBundle?.id === bundleId && candidateEvidenceBundle.purpose === "board_edit";
       const resumePayload = shouldResumeBoardTask
-        ? lastEvidenceRequest ?? {
-            message: activeLesson.board_task_requirements?.question_or_topic ?? "继续执行当前板书写入任务",
-            interaction_mode: "ask" as const,
+        ? {
+            ...(lastEvidenceRequest ?? {
+              message: activeLesson.board_task_requirements?.question_or_topic ?? "继续执行当前板书写入任务",
+              interaction_mode: "ask" as const,
+            }),
+            board_task_execution_action: "resume_confirmed" as const,
           }
         : null;
       setCandidateEvidenceState({

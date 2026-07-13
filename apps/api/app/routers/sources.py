@@ -283,6 +283,15 @@ def get_pending_lesson_evidence(
         )
         if board_task_bundle is not None:
             return board_task_bundle
+        confirmed_board_task_bundle = source_evidence_store.latest_bundle(
+            owner_user_id=user.id,
+            lesson_id=lesson_id,
+            status="confirmed",
+            purpose="board_edit",
+            board_task_run_id=board_task_run_id,
+        )
+        if confirmed_board_task_bundle is not None:
+            return confirmed_board_task_bundle
     history_state = workspace_state.load_learning_requirement_history_state_for_user(user.id, lesson_id)
     requirement_run_id = history_state.get("run_id") if history_state else None
     if not isinstance(requirement_run_id, str) or not requirement_run_id:

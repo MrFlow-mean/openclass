@@ -42,6 +42,17 @@ export function BoardGenerationConfirmationCard({
     void onSubmitChat(payload);
   }
 
+  function resumeConfirmedBoardTask() {
+    if (!boardTask) {
+      return;
+    }
+    void onSubmitChat({
+      message: boardTask.question_or_topic || "继续执行当前板书写入任务",
+      interaction_mode: "ask",
+      board_task_execution_action: "resume_confirmed",
+    });
+  }
+
   return (
     <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
       <p className="text-[11px] font-bold uppercase tracking-widest text-emerald-700">
@@ -91,7 +102,16 @@ export function BoardGenerationConfirmationCard({
       ) : (
         <p className="mt-2 text-xs leading-6 text-emerald-900/80">接下来将基于这份学习需求生成板书，是否开始？</p>
       )}
-      {isExistingBoardWrite ? (
+      {isExistingBoardWrite && candidateEvidenceBundle?.status === "confirmed" ? (
+        <button
+          type="button"
+          onClick={resumeConfirmedBoardTask}
+          disabled={isChatBusy}
+          className="mt-3 inline-flex h-9 items-center justify-center rounded-lg bg-emerald-600 px-3 text-xs font-semibold text-white shadow-sm transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          继续写入
+        </button>
+      ) : isExistingBoardWrite ? (
         <p className="mt-3 text-xs leading-6 text-emerald-900/80">确认资料后会自动继续写入右侧板书。</p>
       ) : (
         <button

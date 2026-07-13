@@ -186,6 +186,31 @@ def _board_task_ready_for_execution(active_board_task_sheet) -> bool:
     )
 
 
+def _is_confirmed_board_task_resume(
+    *,
+    request: ChatRequest,
+    active_board_task_sheet,
+    owner_user_id: str,
+    lesson_id: str,
+    board_task_run_id: str | None,
+) -> bool:
+    if request.board_task_execution_action != "resume_confirmed":
+        return False
+    if active_board_task_sheet is None or active_board_task_sheet.requested_action not in {"write", "edit"}:
+        return False
+    if not board_task_run_id:
+        return False
+    return (
+        resource_resolver.latest_confirmed_bundle(
+            owner_user_id=owner_user_id,
+            lesson_id=lesson_id,
+            purpose="board_edit",
+            board_task_run_id=board_task_run_id,
+        )
+        is not None
+    )
+
+
 def _run_board_task_refinement_turn(
     *,
     workspace,
@@ -208,7 +233,29 @@ def _run_board_task_refinement_turn(
         selection=target_selection,
         history_state=history_state,
     )
-    if outcome is None or (source_reference_selection(request) is not None and outcome.route == "ordinary_chat"):
+    if outcome is None:
+        return _run_basic_chat_turn(
+            workspace=workspace,
+            package=package,
+            lesson=lesson,
+            request=request,
+            user_id=user_id,
+            board_document_state=board_document_state,
+            clear_learning_requirements=True,
+        )
+    active_board_task = outcome.active_board_task_sheet
+    resume_confirmed_board_task = _is_confirmed_board_task_resume(
+        request=request,
+        active_board_task_sheet=active_board_task,
+        owner_user_id=user_id,
+        lesson_id=lesson.id,
+        board_task_run_id=outcome.history_stamp.run_id,
+    )
+    if (
+        source_reference_selection(request) is not None
+        and outcome.route == "ordinary_chat"
+        and not resume_confirmed_board_task
+    ):
         return _run_basic_chat_turn(
             workspace=workspace,
             package=package,
@@ -231,10 +278,12 @@ def _run_board_task_refinement_turn(
         if outcome.route == "board_task_refining"
         else BASIC_CHAT_METADATA_KIND
     )
-    active_board_task = outcome.active_board_task_sheet
     candidate_evidence = None
     chatbot_message = outcome.chatbot_message
-    if outcome.route == "board_task_refining" and _board_task_ready_for_execution(active_board_task):
+    if (
+        (outcome.route == "board_task_refining" or resume_confirmed_board_task)
+        and _board_task_ready_for_execution(active_board_task)
+    ):
         evidence_gate = resolve_board_task_evidence_gate(
             owner_user_id=user_id,
             package_id=package.id,

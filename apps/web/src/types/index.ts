@@ -1145,6 +1145,7 @@ export interface ChatRequestPayload {
   board_edit_action?: BoardEditConfirmationAction | null;
   board_edit_topic?: string | null;
   board_generation_action?: "start" | null;
+  board_task_execution_action?: "resume_confirmed" | null;
   teaching_action?: "continue" | "restart" | null;
   chat_edit_source_commit_id?: string | null;
   chat_edit_base_commit_id?: string | null;

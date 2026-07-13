@@ -131,6 +131,7 @@ ChatInteractionMode = Literal["ask", "direct_edit"]
 FormulaInkAction = Literal["reference", "replace"]
 TeachingAction = Literal["continue", "restart"]
 BoardGenerationAction = Literal["start"]
+BoardTaskExecutionAction = Literal["resume_confirmed"]
 BoardWorkflow = Literal["generate_from_scratch", "act_on_existing_board", "unknown"]
 LearningRequirementFactCategory = Literal["learning", "level", "vocabulary", "scenario", "output", "other"]
 LearningRequirementRunStatus = Literal["collecting", "ready", "frozen", "consumed", "archived"]
@@ -1220,6 +1221,7 @@ class ChatRequest(BaseModel):
     board_edit_action: BoardEditConfirmationAction | None = None
     board_edit_topic: str | None = None
     board_generation_action: BoardGenerationAction | None = None
+    board_task_execution_action: BoardTaskExecutionAction | None = None
     teaching_action: TeachingAction | None = None
     chat_edit_source_commit_id: str | None = None
     chat_edit_base_commit_id: str | None = None

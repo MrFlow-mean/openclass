@@ -408,6 +408,106 @@ def test_existing_board_source_grounded_write_requires_evidence_confirmation(
     assert commit.metadata["confirmed_by_user"] is False
 
 
+def test_confirmed_existing_board_write_resumes_without_reclassifying_as_chat(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    user_id = "user_existing_board_confirmed_write"
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    lesson = _seed_existing_board_workspace(store, user_id)
+    package_id = store.load_for_user(user_id).packages[0].id
+    local_path = tmp_path / "confirmed-task-source.md"
+    local_path.write_text("# 第一节\n\n资料里用于补写的确认后内容。", encoding="utf-8")
+    task_source = source_evidence_store.save_source(
+        SourceIngestionRecord(
+            owner_user_id=user_id,
+            package_id=package_id,
+            title="确认任务资料",
+            source_type="local_file",
+            file_name=local_path.name,
+            mime_type="text/markdown",
+            status="ready",
+            metadata={"local_source_path": str(local_path), "adapter": "openclass_native"},
+        )
+    )
+    structure_store = SourceStructureStore(store.path)
+    SourceStructureIndexer(store=structure_store).rebuild_structure(task_source)
+    monkeypatch.setattr(resource_resolver, "structure_store", structure_store)
+
+    calls = 0
+
+    def _fake_refinement(**kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            return BoardTaskRequirementRefinement(
+                route="ordinary_chat",
+                chatbot_message="资料已确认，板书正在生成。",
+            )
+        return BoardTaskRequirementRefinement(
+            route="board_task_refining",
+            chatbot_message="我会结合资料在第一节附近补写。",
+            board_task_sheet=BoardTaskRequirementSheet(
+                location_kind="insertion_anchor",
+                target_hint="第一节",
+                requested_action="write",
+                question_or_topic="补写资料中的确认后内容",
+                progress=100,
+            ),
+        )
+
+    def _fake_edit_existing_document(**kwargs):
+        new_document = build_document(
+            title=kwargs["lesson"].board_document.title,
+            content_text=kwargs["lesson"].board_document.content_text + "\n\n确认后写入的内容。",
+            document_id=kwargs["lesson"].board_document.id,
+            page_settings=kwargs["lesson"].board_document.page_settings,
+        )
+        return BoardDocumentEditOutcome(
+            chatbot_message="已将确认后的资料内容写入板书。",
+            new_document=new_document,
+            board_decision=BoardDecision(action="edit_board", reason="写入完成。"),
+            assistant_message_source="board_document_editor_ai",
+            operation="board_patch",
+            summary="写入确认后内容。",
+            section_titles=["第一节"],
+            changed=True,
+            operation_status="succeeded",
+            operations=[],
+            diff_preview=[],
+        )
+
+    monkeypatch.setattr(openai_course_ai, "generate_board_task_requirement_refinement", _fake_refinement)
+    monkeypatch.setattr(board_task_executor, "edit_existing_document", _fake_edit_existing_document)
+
+    pending_response = process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="结合上传资料在第一节后面补写确认后内容。"),
+        user_id=user_id,
+    )
+    assert pending_response.candidate_evidence_bundle is not None
+    source_evidence_store.confirm_bundle(
+        owner_user_id=user_id,
+        bundle_id=pending_response.candidate_evidence_bundle.id,
+    )
+
+    response = process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(
+            message="结合上传资料在第一节后面补写确认后内容。",
+            board_task_execution_action="resume_confirmed",
+        ),
+        user_id=user_id,
+    )
+
+    assert response.chatbot_message == "已将确认后的资料内容写入板书。"
+    assert response.board_document_operation_status == "succeeded"
+    assert response.board_task_phase == "consumed"
+    saved_lesson = store.load_for_user(user_id).packages[0].lessons[0]
+    assert "确认后写入的内容。" in saved_lesson.board_document.content_text
+
+
 def test_existing_board_absent_explain_asks_write_confirmation(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
