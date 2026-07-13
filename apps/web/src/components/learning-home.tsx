@@ -792,11 +792,13 @@ export function LearningHome() {
               </div>
               <div
                 id="learning-home-course-packages"
-                className={clsx("overflow-hidden", coursePackagesCollapsed && "hidden")}
+                className={clsx(
+                  "custom-scrollbar max-h-[46dvh] space-y-2 overflow-y-auto overscroll-contain pr-1",
+                  coursePackagesCollapsed && "hidden"
+                )}
               >
-                <div className="space-y-2">
-                  {coursePackages.length ? (
-                    coursePackages.map((packageItem) => {
+                {coursePackages.length ? (
+                  coursePackages.map((packageItem) => {
                       const isActive = packageItem.id === selectedPackageId;
                       const isBusy = busyKey === `package:${packageItem.id}`;
                       return (
@@ -875,23 +877,22 @@ export function LearningHome() {
                       </div>
                       );
                     })
-                  ) : isCreatingPackageInline ? null : (
-                    <div className="rounded-2xl border border-dashed border-stone-300 bg-white/70 px-4 py-6 text-sm text-stone-500">
-                      {h.noPackages}
-                    </div>
-                  )}
-                  {isCreatingPackageInline ? (
-                    <div data-package-selection-root>
-                      <InlineNameForm
-                        label={h.packageNameLabel}
-                        placeholder={h.packageNamePlaceholder}
-                        isBusy={busyKey === "package:create"}
-                        onCancel={() => setIsCreatingPackageInline(false)}
-                        onSubmit={handleCreatePackage}
-                      />
-                    </div>
-                  ) : null}
-                </div>
+                ) : isCreatingPackageInline ? null : (
+                  <div className="rounded-2xl border border-dashed border-stone-300 bg-white/70 px-4 py-6 text-sm text-stone-500">
+                    {h.noPackages}
+                  </div>
+                )}
+                {isCreatingPackageInline ? (
+                  <div data-package-selection-root>
+                    <InlineNameForm
+                      label={h.packageNameLabel}
+                      placeholder={h.packageNamePlaceholder}
+                      isBusy={busyKey === "package:create"}
+                      onCancel={() => setIsCreatingPackageInline(false)}
+                      onSubmit={handleCreatePackage}
+                    />
+                  </div>
+                ) : null}
               </div>
             </div>
 

@@ -88,6 +88,7 @@ test("collapses course package and standalone lesson lists independently", async
   const collapseStandaloneLessons = page.getByLabel("收起单独课程");
 
   await expect(packageList).toBeVisible();
+  await expect(packageList).toHaveCSS("overflow-y", "auto");
   await expect(standaloneList).toBeVisible();
 
   await collapsePackages.click();
