@@ -4,6 +4,9 @@ import pytest
 
 from app.models import (
     BoardDecision,
+    BoardSectionTeachingPlan,
+    BoardTeachingGuide,
+    BoardTeachingProgress,
     BoardTaskRequirementSheet,
     ChatRequest,
     ConversationTurn,
@@ -323,6 +326,20 @@ def test_existing_board_write_ready_generates_patch_and_consumes_board_task(
     store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
     monkeypatch.setattr(workspace_state, "STORE", store)
     lesson = _seed_existing_board_workspace(store, user_id)
+    workspace = store.load_for_user(user_id)
+    lesson = workspace.packages[0].lessons[0]
+    lesson.board_teaching_progress = BoardTeachingProgress(
+        board_document_id=lesson.board_document.id,
+        board_snapshot_hash="stale-board-snapshot",
+        current_section_index=2,
+        waiting_for_continue=True,
+    )
+    lesson.board_teaching_guide = BoardTeachingGuide(
+        board_document_id=lesson.board_document.id,
+        board_snapshot_hash="stale-board-snapshot",
+        section_plans=[BoardSectionTeachingPlan(heading="旧板书第一节")],
+    )
+    store.save_for_user(user_id, workspace)
 
     def _fake_refinement(**kwargs):
         return BoardTaskRequirementRefinement(
@@ -378,10 +395,14 @@ def test_existing_board_write_ready_generates_patch_and_consumes_board_task(
     assert response.board_task_phase == "consumed"
     saved_lesson = store.load_for_user(user_id).packages[0].lessons[0]
     assert "补写的小结" in saved_lesson.board_document.content_text
+    assert saved_lesson.board_teaching_progress is None
+    assert saved_lesson.board_teaching_guide is None
     commit = saved_lesson.history_graph.commits[-1]
     assert commit.metadata["kind"] == "board_document_edit"
     assert commit.metadata["board_task_route"] == "write"
     assert commit.metadata["board_task_cleared"] is True
+    assert commit.metadata["teaching_progress_after"] is None
+    assert commit.metadata["board_teaching_guide_invalidated"] is True
 
 
 def test_existing_board_source_grounded_write_requires_evidence_confirmation(

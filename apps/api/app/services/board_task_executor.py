@@ -377,6 +377,11 @@ def _execute_write_or_edit(
         )
     lesson.learning_requirements = None
     lesson.active_interaction_session = None
+    # A document mutation invalidates any section cursor and guide derived from
+    # the previous board snapshot. Do not let a later chat turn resume teaching
+    # stale sections after a successful write or edit.
+    lesson.board_teaching_progress = None
+    lesson.board_teaching_guide = None
     commit_operations(
         lesson,
         edit_outcome.operations or [],
@@ -393,6 +398,8 @@ def _execute_write_or_edit(
             "board_document_editor_operation": edit_outcome.operation,
             "board_document_editor_summary": edit_outcome.summary,
             "board_patch_diff": [item.model_dump(mode="json") for item in edit_outcome.diff_preview or []],
+            "teaching_progress_after": None,
+            "board_teaching_guide_invalidated": True,
             "resolved_focus": focus.model_dump(mode="json"),
             "target_scope": target_scope,
             **evidence_metadata(evidence_bundle),

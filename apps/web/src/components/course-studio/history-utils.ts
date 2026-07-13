@@ -305,7 +305,12 @@ export function buildLessonMessagesFromHistory(lesson: Lesson, commitId?: string
     const assistantMessageSource = metadataText(commit, "assistant_message_source");
     const legacyChatbotGeneratedDuringHandoff =
       metadataLearningClarificationForcedStart(commit) && assistantMessageSource === "ai";
-    if (!legacyChatbotGeneratedDuringHandoff && isDisplayableAssistantContent(assistantMessage)) {
+    const assistantMessageHidden = metadataText(commit, "chat_visibility") === "hidden";
+    if (
+      !legacyChatbotGeneratedDuringHandoff &&
+      !assistantMessageHidden &&
+      isDisplayableAssistantContent(assistantMessage)
+    ) {
       messages.push(
         createChatMessage(
           "assistant",
