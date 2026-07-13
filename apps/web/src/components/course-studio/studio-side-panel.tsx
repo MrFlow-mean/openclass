@@ -2,13 +2,11 @@ import clsx from "clsx";
 import { X } from "lucide-react";
 import type { HTMLAttributes } from "react";
 
-import { PackageNotesPanel } from "@/components/course-studio/package-notes-panel";
-import { ResearchStudioPanel } from "@/components/course-studio/research-studio-panel";
 import { SourceImportPanel } from "@/components/course-studio/source-import-panel";
 import { VersionControlPanel } from "@/components/course-studio/version-control-panel";
 import type { BoardDecision, CommitRecord, Lesson, SelectionRef } from "@/types";
 
-export type CourseStudioSidebarTab = "history" | "notes" | "sources" | "studio";
+export type CourseStudioSidebarTab = "history" | "sources";
 
 type CourseStudioSidePanelProps = {
   open: boolean;
@@ -60,27 +58,16 @@ export function CourseStudioSidePanel({
   onSourceReference,
 }: CourseStudioSidePanelProps) {
   return (
-    <>
-      {open ? (
-        <button
-          type="button"
-          aria-label="关闭课程工作台辅助"
-          onClick={onClose}
-          className="fixed inset-0 z-40 bg-black/20 xl:hidden"
-        />
-      ) : null}
-      <aside
-        className={clsx(
-          "h-full min-h-0 min-w-0 flex-col border-l border-gray-200 bg-[#fcfcfc]",
-          open
-            ? "fixed inset-y-0 right-0 z-50 flex w-[min(92vw,28rem)] shadow-2xl xl:relative xl:inset-auto xl:z-auto xl:w-auto xl:shadow-none"
-            : "hidden"
-        )}
-      >
+    <aside
+      className={clsx(
+        "relative h-full min-h-0 min-w-0 flex-col border-l border-gray-200 bg-[#fcfcfc]",
+        open ? "hidden xl:flex" : "hidden"
+      )}
+    >
       <div
         {...resizeHandleProps}
         className={clsx(
-          "group absolute inset-y-0 left-[-6px] z-30 hidden w-3 cursor-col-resize items-center justify-center outline-none xl:flex",
+          "group absolute inset-y-0 left-[-6px] z-30 flex w-3 cursor-col-resize items-center justify-center outline-none",
           isResizing && "bg-gray-100/60"
         )}
       >
@@ -105,11 +92,9 @@ export function CourseStudioSidePanel({
         </button>
       </div>
 
-      <div className="grid grid-cols-4 border-b border-gray-200 bg-white">
+      <div className="flex border-b border-gray-200 bg-white">
         {[
           { value: "sources", label: "Sources" },
-          { value: "notes", label: "Notes" },
-          { value: "studio", label: "Studio" },
           { value: "history", label: "History" },
         ].map((tab) => (
           <button
@@ -130,11 +115,7 @@ export function CourseStudioSidePanel({
 
       <div className="min-h-0 flex-1 overflow-y-auto p-5 custom-scrollbar">
         {sidebarTab === "sources" ? (
-          <SourceImportPanel key={packageId} packageId={packageId} onError={onError} onSourceReference={onSourceReference} />
-        ) : sidebarTab === "notes" ? (
-          <PackageNotesPanel key={packageId} packageId={packageId} onError={onError} />
-        ) : sidebarTab === "studio" ? (
-          <ResearchStudioPanel key={packageId} packageId={packageId} onError={onError} onSourceReference={onSourceReference} />
+          <SourceImportPanel packageId={packageId} onError={onError} onSourceReference={onSourceReference} />
         ) : sidebarTab === "history" ? (
           <VersionControlPanel
             activeLesson={activeLesson}
@@ -154,7 +135,6 @@ export function CourseStudioSidePanel({
         ) : null}
 
       </div>
-      </aside>
-    </>
+    </aside>
   );
 }
