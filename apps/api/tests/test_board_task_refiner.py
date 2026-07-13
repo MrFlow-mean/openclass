@@ -408,7 +408,7 @@ def test_existing_board_source_grounded_write_requires_evidence_confirmation(
     assert commit.metadata["confirmed_by_user"] is False
 
 
-def test_confirmed_existing_board_write_resumes_without_reclassifying_as_chat(
+def test_confirmed_existing_board_write_resumes_on_repeated_write_request(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
@@ -496,7 +496,6 @@ def test_confirmed_existing_board_write_resumes_without_reclassifying_as_chat(
         lesson.id,
         ChatRequest(
             message="结合上传资料在第一节后面补写确认后内容。",
-            board_task_execution_action="resume_confirmed",
         ),
         user_id=user_id,
     )

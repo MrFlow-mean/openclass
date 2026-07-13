@@ -19,6 +19,7 @@ from app.services.board_task_executor import execute_ready_board_task
 from app.services.board_task_history import BoardTaskHistoryStamp
 from app.services.board_task_refiner import refine_existing_board_task_requirement
 from app.services.board_teaching_orchestrator import (
+    has_explicit_board_mutation_request,
     run_board_teaching_turn,
     should_continue_board_teaching,
     should_start_board_teaching,
@@ -194,7 +195,9 @@ def _is_confirmed_board_task_resume(
     lesson_id: str,
     board_task_run_id: str | None,
 ) -> bool:
-    if request.board_task_execution_action != "resume_confirmed":
+    explicit_resume = request.board_task_execution_action == "resume_confirmed"
+    repeated_write_request = has_explicit_board_mutation_request(request.message)
+    if not explicit_resume and not repeated_write_request:
         return False
     if active_board_task_sheet is None or active_board_task_sheet.requested_action not in {"write", "edit"}:
         return False

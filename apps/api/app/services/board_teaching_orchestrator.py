@@ -29,7 +29,7 @@ def should_continue_board_teaching(lesson: Lesson, request: ChatRequest) -> bool
     progress = lesson.board_teaching_progress
     if request.teaching_action == "continue":
         return True
-    if _has_explicit_board_mutation_request(request.message):
+    if has_explicit_board_mutation_request(request.message):
         return False
     if not progress or not progress.waiting_for_continue:
         return False
@@ -127,7 +127,7 @@ def _is_continue_teaching_request(message: str) -> bool:
     return bool(re.search(r"(继续|下一节|下一部分|往下|接着讲|讲下去|下一步)", compact))
 
 
-def _has_explicit_board_mutation_request(message: str) -> bool:
+def has_explicit_board_mutation_request(message: str) -> bool:
     """Keep a typed document request out of the conversational teaching flow."""
     compact = _compact_intent_text(message)
     if not compact:
