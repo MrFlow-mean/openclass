@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import threading
@@ -13,10 +14,16 @@ from app.models import (
     SourceIngestionRecord,
     SourceStructure,
     SourceStructureView,
+    SourceVisual,
     now_iso,
 )
 from app.services import workspace_state
 from app.services.native_source_index import NativeSearchMode, NativeSourceIndex, source_chunk_text_hash
+from app.services.source_visual_storage import (
+    SourceVisualStorageError,
+    read_source_visual_asset,
+    resolve_source_visual_storage_key,
+)
 
 
 def _dumps(value: Any) -> str:
@@ -79,6 +86,9 @@ class SourceStructureStore:
                     has_verified_toc INTEGER NOT NULL,
                     chapter_count INTEGER NOT NULL,
                     chunk_count INTEGER NOT NULL,
+                    visual_count INTEGER NOT NULL DEFAULT 0,
+                    visual_index_status TEXT NOT NULL DEFAULT 'pending',
+                    visual_index_version INTEGER NOT NULL DEFAULT 0,
                     confidence REAL NOT NULL,
                     error TEXT NOT NULL,
                     warnings_json TEXT NOT NULL DEFAULT '[]',
@@ -139,8 +149,60 @@ class SourceStructureStore:
                     ON source_chunks(owner_user_id, package_id, source_ingestion_id, order_index);
                 CREATE INDEX IF NOT EXISTS idx_source_chunks_chapter
                     ON source_chunks(owner_user_id, package_id, chapter_id, order_index);
+
+                CREATE TABLE IF NOT EXISTS source_visuals (
+                    id TEXT PRIMARY KEY,
+                    owner_user_id TEXT NOT NULL,
+                    package_id TEXT NOT NULL,
+                    source_ingestion_id TEXT NOT NULL,
+                    structure_id TEXT NOT NULL,
+                    structure_version INTEGER NOT NULL DEFAULT 0,
+                    chapter_id TEXT,
+                    kind TEXT NOT NULL,
+                    order_index INTEGER NOT NULL,
+                    source_locator TEXT NOT NULL,
+                    page_no INTEGER,
+                    slide_no INTEGER,
+                    sheet_name TEXT NOT NULL DEFAULT '',
+                    bbox_json TEXT NOT NULL DEFAULT '[]',
+                    before_chunk_id TEXT,
+                    after_chunk_id TEXT,
+                    caption TEXT NOT NULL DEFAULT '',
+                    ocr_text TEXT NOT NULL DEFAULT '',
+                    anchor_status TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    storage_key TEXT NOT NULL DEFAULT '',
+                    mime_type TEXT NOT NULL DEFAULT '',
+                    content_hash TEXT NOT NULL DEFAULT '',
+                    position_hash TEXT NOT NULL,
+                    width INTEGER,
+                    height INTEGER,
+                    table_data_json TEXT NOT NULL DEFAULT '[]',
+                    created_at TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL DEFAULT '{}'
+                );
+                CREATE INDEX IF NOT EXISTS idx_source_visuals_source
+                    ON source_visuals(owner_user_id, package_id, source_ingestion_id, order_index);
+                CREATE INDEX IF NOT EXISTS idx_source_visuals_chapter
+                    ON source_visuals(owner_user_id, package_id, chapter_id, order_index);
+                CREATE INDEX IF NOT EXISTS idx_source_visuals_content_hash
+                    ON source_visuals(content_hash);
                 """
             )
+            structure_columns = {
+                str(row["name"])
+                for row in conn.execute("PRAGMA table_info(source_structures)").fetchall()
+            }
+            if "visual_count" not in structure_columns:
+                conn.execute("ALTER TABLE source_structures ADD COLUMN visual_count INTEGER NOT NULL DEFAULT 0")
+            if "visual_index_status" not in structure_columns:
+                conn.execute(
+                    "ALTER TABLE source_structures ADD COLUMN visual_index_status TEXT NOT NULL DEFAULT 'pending'"
+                )
+            if "visual_index_version" not in structure_columns:
+                conn.execute(
+                    "ALTER TABLE source_structures ADD COLUMN visual_index_version INTEGER NOT NULL DEFAULT 0"
+                )
             chunk_columns = {
                 str(row["name"])
                 for row in conn.execute("PRAGMA table_info(source_chunks)").fetchall()
@@ -176,16 +238,28 @@ class SourceStructureStore:
         )
 
     def delete_for_source(self, *, owner_user_id: str, package_id: str, source_id: str) -> None:
+        storage_keys: list[str] = []
         with self._lock:
             with self._connect() as conn:
                 with conn:
+                    storage_keys = [
+                        str(row["storage_key"])
+                        for row in conn.execute(
+                            """
+                            SELECT storage_key FROM source_visuals
+                            WHERE owner_user_id = ? AND package_id = ? AND source_ingestion_id = ?
+                                AND storage_key != ''
+                            """,
+                            (owner_user_id, package_id, source_id),
+                        ).fetchall()
+                    ]
                     self.native_index.delete_for_source(
                         conn,
                         owner_user_id=owner_user_id,
                         package_id=package_id,
                         source_ingestion_id=source_id,
                     )
-                    for table in ("source_chunks", "source_chapters", "source_structures"):
+                    for table in ("source_visuals", "source_chunks", "source_chapters", "source_structures"):
                         conn.execute(
                             f"""
                             DELETE FROM {table}
@@ -193,6 +267,7 @@ class SourceStructureStore:
                             """,
                             (owner_user_id, package_id, source_id),
                         )
+        self.cleanup_unreferenced_visual_assets(storage_keys)
 
     def save_structure_bundle(
         self,
@@ -200,7 +275,9 @@ class SourceStructureStore:
         structure: SourceStructure,
         chapters: list[SourceChapter],
         chunks: list[SourceChunk],
+        visuals: list[SourceVisual] | None = None,
     ) -> SourceStructure:
+        visuals = visuals or []
         chunks = [_chunk_with_text_hash(chunk) for chunk in chunks]
         stamp = now_iso()
         structure = structure.model_copy(
@@ -208,20 +285,37 @@ class SourceStructureStore:
                 "updated_at": stamp,
                 "chapter_count": len(chapters),
                 "chunk_count": len(chunks),
+                "visual_count": len(visuals),
                 "has_verified_toc": any(chapter.anchor_status == "verified" for chapter in chapters),
             }
         )
+        previous_storage_keys: list[str] = []
         with self._lock:
             with self._connect() as conn:
                 with conn:
+                    previous_storage_keys = [
+                        str(row["storage_key"])
+                        for row in conn.execute(
+                            """
+                            SELECT storage_key FROM source_visuals
+                            WHERE owner_user_id = ? AND package_id = ? AND source_ingestion_id = ?
+                                AND storage_key != ''
+                            """,
+                            (
+                                structure.owner_user_id,
+                                structure.package_id,
+                                structure.source_ingestion_id,
+                            ),
+                        ).fetchall()
+                    ]
                     self._delete_index_rows(conn, structure)
                     conn.execute(
                         """
                         INSERT INTO source_structures(
                             id, owner_user_id, package_id, source_ingestion_id, status, strategy, has_verified_toc,
-                            chapter_count, chunk_count, confidence, error, warnings_json, created_at, updated_at,
-                            metadata_json
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            chapter_count, chunk_count, visual_count, visual_index_status, visual_index_version,
+                            confidence, error, warnings_json, created_at, updated_at, metadata_json
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ON CONFLICT(owner_user_id, package_id, source_ingestion_id) DO UPDATE SET
                             id = excluded.id,
                             status = excluded.status,
@@ -229,6 +323,9 @@ class SourceStructureStore:
                             has_verified_toc = excluded.has_verified_toc,
                             chapter_count = excluded.chapter_count,
                             chunk_count = excluded.chunk_count,
+                            visual_count = excluded.visual_count,
+                            visual_index_status = excluded.visual_index_status,
+                            visual_index_version = excluded.visual_index_version,
                             confidence = excluded.confidence,
                             error = excluded.error,
                             warnings_json = excluded.warnings_json,
@@ -245,6 +342,9 @@ class SourceStructureStore:
                             int(structure.has_verified_toc),
                             structure.chapter_count,
                             structure.chunk_count,
+                            structure.visual_count,
+                            structure.visual_index_status,
+                            structure.visual_index_version,
                             structure.confidence,
                             structure.error,
                             _dumps(structure.warnings),
@@ -318,7 +418,76 @@ class SourceStructureStore:
                         ],
                     )
                     self.native_index.index_chunks(conn, chunks)
+                    conn.executemany(
+                        """
+                        INSERT INTO source_visuals(
+                            id, owner_user_id, package_id, source_ingestion_id, structure_id,
+                            structure_version, chapter_id, kind, order_index, source_locator,
+                            page_no, slide_no, sheet_name, bbox_json, before_chunk_id,
+                            after_chunk_id, caption, ocr_text, anchor_status, confidence,
+                            storage_key, mime_type, content_hash, position_hash, width, height,
+                            table_data_json, created_at, metadata_json
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        [
+                            (
+                                visual.id,
+                                visual.owner_user_id,
+                                visual.package_id,
+                                visual.source_ingestion_id,
+                                visual.structure_id,
+                                visual.structure_version,
+                                visual.chapter_id,
+                                visual.kind,
+                                visual.order_index,
+                                visual.source_locator,
+                                visual.page_no,
+                                visual.slide_no,
+                                visual.sheet_name,
+                                _dumps(visual.bbox),
+                                visual.before_chunk_id,
+                                visual.after_chunk_id,
+                                visual.caption,
+                                visual.ocr_text,
+                                visual.anchor_status,
+                                visual.confidence,
+                                visual.storage_key,
+                                visual.mime_type,
+                                visual.content_hash,
+                                visual.position_hash,
+                                visual.width,
+                                visual.height,
+                                _dumps(visual.table_data),
+                                visual.created_at,
+                                _dumps(visual.metadata),
+                            )
+                            for visual in visuals
+                        ],
+                    )
+        self.cleanup_unreferenced_visual_assets(previous_storage_keys)
         return structure
+
+    def cleanup_unreferenced_visual_assets(self, storage_keys: list[str] | tuple[str, ...]) -> None:
+        candidates = tuple(dict.fromkeys(key for key in storage_keys if key))
+        if not candidates:
+            return
+        with self._lock:
+            with self._connect() as conn:
+                placeholders = ", ".join("?" for _ in candidates)
+                referenced = {
+                    str(row["storage_key"])
+                    for row in conn.execute(
+                        f"SELECT DISTINCT storage_key FROM source_visuals WHERE storage_key IN ({placeholders})",
+                        candidates,
+                    ).fetchall()
+                }
+        for storage_key in candidates:
+            if storage_key in referenced:
+                continue
+            try:
+                resolve_source_visual_storage_key(storage_key).unlink()
+            except (FileNotFoundError, SourceVisualStorageError):
+                continue
 
     def record_rebuild_failure(self, *, structure: SourceStructure, error: str) -> SourceStructure:
         """Expose a failed reparse without replacing the last usable index."""
@@ -361,6 +530,7 @@ class SourceStructureStore:
         *,
         source: SourceIngestionRecord,
         chunk_limit: int = 20,
+        visual_limit: int = 500,
     ) -> SourceStructureView:
         with self._lock:
             with self._connect() as conn:
@@ -391,12 +561,95 @@ class SourceStructureStore:
                     """,
                     (source.owner_user_id, source.package_id, source.id, chunk_limit),
                 ).fetchall()
+                visual_rows = conn.execute(
+                    """
+                    SELECT *
+                    FROM source_visuals
+                    WHERE owner_user_id = ? AND package_id = ? AND source_ingestion_id = ?
+                    ORDER BY order_index
+                    LIMIT ?
+                    """,
+                    (source.owner_user_id, source.package_id, source.id, visual_limit),
+                ).fetchall()
         return SourceStructureView(
             source=self.attach_summary(source),
             structure=self._structure_from_row(structure_row) if structure_row else None,
             chapters=[self._chapter_from_row(row) for row in chapter_rows],
             chunks=[self._chunk_from_row(row) for row in chunk_rows],
+            visuals=[self._visual_from_row(row) for row in visual_rows],
         )
+
+    def list_visuals(
+        self,
+        *,
+        owner_user_id: str,
+        package_id: str,
+        source_id: str,
+        chapter_id: str | None = None,
+        verified_only: bool = False,
+    ) -> list[SourceVisual]:
+        clauses = ["owner_user_id = ?", "package_id = ?", "source_ingestion_id = ?"]
+        parameters: list[object] = [owner_user_id, package_id, source_id]
+        if chapter_id is not None:
+            clauses.append("chapter_id = ?")
+            parameters.append(chapter_id)
+        if verified_only:
+            clauses.append("anchor_status = 'verified'")
+        with self._lock:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    f"""
+                    SELECT * FROM source_visuals
+                    WHERE {' AND '.join(clauses)}
+                    ORDER BY order_index
+                    """,
+                    parameters,
+                ).fetchall()
+        return [self._visual_from_row(row) for row in rows]
+
+    def get_visual(
+        self,
+        *,
+        owner_user_id: str,
+        package_id: str,
+        source_id: str,
+        visual_id: str,
+    ) -> SourceVisual | None:
+        with self._lock:
+            with self._connect() as conn:
+                row = conn.execute(
+                    """
+                    SELECT * FROM source_visuals
+                    WHERE owner_user_id = ? AND package_id = ?
+                        AND source_ingestion_id = ? AND id = ?
+                    """,
+                    (owner_user_id, package_id, source_id, visual_id),
+                ).fetchone()
+        return self._visual_from_row(row) if row else None
+
+    def read_visual_bytes(
+        self,
+        *,
+        owner_user_id: str,
+        package_id: str,
+        source_id: str,
+        visual_id: str,
+    ) -> tuple[SourceVisual, bytes] | None:
+        visual = self.get_visual(
+            owner_user_id=owner_user_id,
+            package_id=package_id,
+            source_id=source_id,
+            visual_id=visual_id,
+        )
+        if visual is None or not visual.storage_key:
+            return None
+        try:
+            content = read_source_visual_asset(visual.storage_key)
+        except SourceVisualStorageError:
+            return None
+        if hashlib.sha256(content).hexdigest() != visual.content_hash:
+            return None
+        return visual, content
 
     def chapter_evidence_by_number(
         self,
@@ -711,6 +964,13 @@ class SourceStructureStore:
         )
         conn.execute(
             """
+            DELETE FROM source_visuals
+            WHERE owner_user_id = ? AND package_id = ? AND source_ingestion_id = ?
+            """,
+            (structure.owner_user_id, structure.package_id, structure.source_ingestion_id),
+        )
+        conn.execute(
+            """
             DELETE FROM source_chunks
             WHERE owner_user_id = ? AND package_id = ? AND source_ingestion_id = ?
             """,
@@ -735,6 +995,9 @@ class SourceStructureStore:
             has_verified_toc=bool(row["has_verified_toc"]),
             chapter_count=row["chapter_count"],
             chunk_count=row["chunk_count"],
+            visual_count=row["visual_count"],
+            visual_index_status=row["visual_index_status"],
+            visual_index_version=row["visual_index_version"],
             confidence=row["confidence"],
             error=row["error"],
             warnings=_loads(row["warnings_json"], []),
@@ -782,6 +1045,39 @@ class SourceStructureStore:
             page_start=row["page_start"],
             page_end=row["page_end"],
             token_count=row["token_count"],
+            metadata=_loads(row["metadata_json"], {}),
+        )
+
+    def _visual_from_row(self, row: sqlite3.Row) -> SourceVisual:
+        return SourceVisual(
+            id=row["id"],
+            owner_user_id=row["owner_user_id"],
+            package_id=row["package_id"],
+            source_ingestion_id=row["source_ingestion_id"],
+            structure_id=row["structure_id"],
+            structure_version=row["structure_version"],
+            chapter_id=row["chapter_id"],
+            kind=row["kind"],
+            order_index=row["order_index"],
+            source_locator=row["source_locator"],
+            page_no=row["page_no"],
+            slide_no=row["slide_no"],
+            sheet_name=row["sheet_name"],
+            bbox=_loads(row["bbox_json"], []),
+            before_chunk_id=row["before_chunk_id"],
+            after_chunk_id=row["after_chunk_id"],
+            caption=row["caption"],
+            ocr_text=row["ocr_text"],
+            anchor_status=row["anchor_status"],
+            confidence=row["confidence"],
+            storage_key=row["storage_key"],
+            mime_type=row["mime_type"],
+            content_hash=row["content_hash"],
+            position_hash=row["position_hash"],
+            width=row["width"],
+            height=row["height"],
+            table_data=_loads(row["table_data_json"], []),
+            created_at=row["created_at"],
             metadata=_loads(row["metadata_json"], {}),
         )
 

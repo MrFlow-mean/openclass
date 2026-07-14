@@ -3,20 +3,29 @@ from __future__ import annotations
 import hashlib
 import html
 import re
-import zipfile
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
-from xml.etree import ElementTree
 
 from app.models import SourceChapter, SourceChunk, SourceIngestionRecord, SourceStructure
 from app.services import workspace_state
+from app.services.ai_logging import ai_usage_logger
 from app.services.image_ocr import extract_image_text, extract_pdf_pages_text
-from app.services.pdf_toc_parser import PdfOutlineAnchor, PdfTocNode, extract_pdf_toc
 from app.services.native_source_index import source_chunk_text_hash
+from app.services.pdf_toc_parser import PdfOutlineAnchor, PdfTocNode, extract_pdf_toc
+from app.services.source_archive import SafeSourceArchive
 from app.services.source_chapter_identity import stable_source_chapter_id
+from app.services.source_markup_text import CanonicalMarkupText, OBJECT_REPLACEMENT_CHARACTER
 from app.services.source_structure_store import SourceStructureStore, source_structure_store
+from app.services.source_visual_extraction import (
+    CURRENT_SOURCE_VISUAL_INDEX_VERSION,
+    SourceVisualExtractionFatalError,
+    SourceVisualExtractionResult,
+    SourceVisualExtractor,
+    source_visual_extractor,
+)
+from app.services.source_xml import parse_untrusted_xml
 
 CHUNK_CHAR_LIMIT = 1800
 CHUNK_CHAR_OVERLAP = 160
@@ -56,8 +65,14 @@ class ParsedSourceDocument:
 
 
 class SourceStructureIndexer:
-    def __init__(self, *, store: SourceStructureStore = source_structure_store) -> None:
+    def __init__(
+        self,
+        *,
+        store: SourceStructureStore = source_structure_store,
+        visual_extractor: SourceVisualExtractor = source_visual_extractor,
+    ) -> None:
         self.store = store
+        self.visual_extractor = visual_extractor
 
     def ensure_structure(self, record: SourceIngestionRecord) -> SourceStructure | None:
         current = self.store.get_structure(
@@ -66,8 +81,75 @@ class SourceStructureIndexer:
             source_id=record.id,
         )
         if current and current.status in {"ready", "linear_only", "failed"}:
-            return current
+            if current.visual_index_version >= CURRENT_SOURCE_VISUAL_INDEX_VERSION:
+                return current
+            if current.status in {"ready", "linear_only"}:
+                return self._upgrade_visual_index(record=record, structure=current)
         return self.rebuild_structure(record)
+
+    def _upgrade_visual_index(
+        self,
+        *,
+        record: SourceIngestionRecord,
+        structure: SourceStructure,
+    ) -> SourceStructure:
+        view = self.store.get_structure_view(
+            source=record,
+            chunk_limit=max(1, structure.chunk_count),
+            visual_limit=0,
+        )
+        extracted_storage_keys: list[str] = []
+        try:
+            try:
+                visual_result = self.visual_extractor.extract(
+                    record=record,
+                    path=_local_source_path(record),
+                    structure=structure,
+                    chapters=view.chapters,
+                    chunks=view.chunks,
+                )
+            except Exception as exc:
+                ai_usage_logger.log_event(
+                    "source_visual_legacy_upgrade_failed",
+                    owner_user_id=record.owner_user_id,
+                    package_id=record.package_id,
+                    source_ingestion_id=record.id,
+                    error=str(exc),
+                )
+                visual_result = SourceVisualExtractionResult(
+                    status="failed",
+                    warnings=["旧资料的视觉索引升级失败；原有文本与章节索引已保留。"],
+                )
+            extracted_storage_keys = [
+                visual.storage_key for visual in visual_result.visuals if visual.storage_key
+            ]
+            upgraded = structure.model_copy(
+                update={
+                    "visual_index_status": visual_result.status,
+                    "visual_index_version": CURRENT_SOURCE_VISUAL_INDEX_VERSION,
+                    "warnings": list(dict.fromkeys([*structure.warnings, *visual_result.warnings])),
+                    "metadata": {
+                        **structure.metadata,
+                        "visual_count": len(visual_result.visuals),
+                        "verified_visual_count": sum(
+                            visual.anchor_status == "verified" for visual in visual_result.visuals
+                        ),
+                        "unverified_visual_count": sum(
+                            visual.anchor_status == "unverified" for visual in visual_result.visuals
+                        ),
+                        "visual_index_upgraded_from_version": structure.visual_index_version,
+                    },
+                }
+            )
+            return self.store.save_structure_bundle(
+                structure=upgraded,
+                chapters=view.chapters,
+                chunks=view.chunks,
+                visuals=visual_result.visuals,
+            )
+        except Exception as exc:
+            self.store.cleanup_unreferenced_visual_assets(extracted_storage_keys)
+            return self.store.record_rebuild_failure(structure=structure, error=str(exc))
 
     def rebuild_structure(self, record: SourceIngestionRecord) -> SourceStructure:
         previous = self.store.get_structure(
@@ -81,12 +163,50 @@ class SourceStructureIndexer:
             source_ingestion_id=record.id,
             status="building",
             strategy="linear_text",
+            visual_index_status="pending",
+            visual_index_version=CURRENT_SOURCE_VISUAL_INDEX_VERSION,
             metadata={"source_title": record.title, "mime_type": record.mime_type},
         )
+        extracted_storage_keys: list[str] = []
         try:
             parsed = self._parse_record(record)
             chapters = self._chapters_for_record(record, parsed)
             chunks = self._chunks_for_record(record, parsed, chapters)
+            try:
+                visual_result = self.visual_extractor.extract(
+                    record=record,
+                    path=_local_source_path(record),
+                    structure=building,
+                    chapters=chapters,
+                    chunks=chunks,
+                )
+                if (
+                    visual_result.status == "failed"
+                    and previous is not None
+                    and previous.status in {"ready", "linear_only"}
+                ):
+                    raise SourceVisualExtractionFatalError(
+                        "; ".join(visual_result.warnings) or "Source visual extraction failed."
+                    )
+            except Exception as visual_exc:
+                if previous is not None and previous.status in {"ready", "linear_only"}:
+                    raise
+                ai_usage_logger.log_event(
+                    "source_visual_initial_index_failed",
+                    owner_user_id=record.owner_user_id,
+                    package_id=record.package_id,
+                    source_ingestion_id=record.id,
+                    error=str(visual_exc),
+                )
+                visual_result = SourceVisualExtractionResult(
+                    status="failed",
+                    warnings=[
+                        "资料文本已建立索引，但视觉索引失败；重新构建后才能使用图表证据。"
+                    ],
+                )
+            extracted_storage_keys = [
+                visual.storage_key for visual in visual_result.visuals if visual.storage_key
+            ]
             has_verified_toc = any(chapter.anchor_status == "verified" for chapter in chapters)
             status = "ready" if has_verified_toc else "linear_only"
             confidence = max((chapter.confidence for chapter in chapters), default=0.0)
@@ -95,7 +215,9 @@ class SourceStructureIndexer:
                     "status": status,
                     "strategy": parsed.strategy,
                     "confidence": confidence,
-                    "warnings": parsed.warnings,
+                    "warnings": list(dict.fromkeys([*parsed.warnings, *visual_result.warnings])),
+                    "visual_index_status": visual_result.status,
+                    "visual_index_version": CURRENT_SOURCE_VISUAL_INDEX_VERSION,
                     "metadata": {
                         **building.metadata,
                         **parsed.metadata,
@@ -107,21 +229,36 @@ class SourceStructureIndexer:
                         "unverified_chapter_count": sum(
                             chapter.anchor_status == "unverified" for chapter in chapters
                         ),
+                        "visual_count": len(visual_result.visuals),
+                        "verified_visual_count": sum(
+                            visual.anchor_status == "verified" for visual in visual_result.visuals
+                        ),
+                        "unverified_visual_count": sum(
+                            visual.anchor_status == "unverified" for visual in visual_result.visuals
+                        ),
                     },
                 }
             )
-            return self.store.save_structure_bundle(structure=structure, chapters=chapters, chunks=chunks)
+            return self.store.save_structure_bundle(
+                structure=structure,
+                chapters=chapters,
+                chunks=chunks,
+                visuals=visual_result.visuals,
+            )
         except Exception as exc:  # pragma: no cover - defensive boundary around third-party parsers
+            self.store.cleanup_unreferenced_visual_assets(extracted_storage_keys)
             if previous is not None and previous.status in {"ready", "linear_only"}:
                 return self.store.record_rebuild_failure(structure=previous, error=str(exc))
             failed = building.model_copy(
                 update={
                     "status": "failed",
                     "error": str(exc),
+                    "visual_index_status": "failed",
+                    "visual_index_version": CURRENT_SOURCE_VISUAL_INDEX_VERSION,
                     "warnings": ["资料结构索引失败，请检查文件格式后重试。"],
                 }
             )
-            return self.store.save_structure_bundle(structure=failed, chapters=[], chunks=[])
+            return self.store.save_structure_bundle(structure=failed, chapters=[], chunks=[], visuals=[])
 
     def _parse_record(self, record: SourceIngestionRecord) -> ParsedSourceDocument:
         local_path = _local_source_path(record)
@@ -168,7 +305,12 @@ class SourceStructureIndexer:
                 )
                 end_offset = next_chapter.start_offset if next_chapter else len(parsed.text)
             excerpt = (
-                _compact(parsed.text[chapter.start_offset or 0 : end_offset or len(parsed.text)], 360)
+                _compact(
+                    parsed.text[
+                        chapter.start_offset or 0 : end_offset or len(parsed.text)
+                    ].replace(OBJECT_REPLACEMENT_CHARACTER, " "),
+                    360,
+                )
                 if is_verified
                 else ""
             )
@@ -245,9 +387,14 @@ class SourceStructureIndexer:
                 boundary = parsed.text.rfind("\n\n", cursor + CHUNK_CHAR_LIMIT // 2, end)
                 if boundary > cursor:
                     end = boundary
-            chunk_text = parsed.text[cursor:end].strip()
+            chunk_text = parsed.text[cursor:end].replace(
+                OBJECT_REPLACEMENT_CHARACTER,
+                " ",
+            ).strip()
             if chunk_text:
                 chapter_id, page_start, page_end = _chapter_for_chunk(cursor, end, chapter_ranges)
+                if page_start is None:
+                    page_start, page_end = _pages_for_offset_range(parsed.pages, cursor, end)
                 text_hash = source_chunk_text_hash(chunk_text)
                 chunks.append(
                     SourceChunk(
@@ -342,6 +489,9 @@ def _parse_docx(path: Path) -> ParsedSourceDocument:
         from docx import Document
     except Exception as exc:  # pragma: no cover - dependency guard
         raise RuntimeError("python-docx is required to parse DOCX source structure.") from exc
+    # Validate the package budget before python-docx opens the ZIP container itself.
+    with SafeSourceArchive(path):
+        pass
     document = Document(str(path))
     parts: list[str] = []
     chapters: list[DetectedChapter] = []
@@ -406,7 +556,7 @@ def _parse_image(path: Path) -> ParsedSourceDocument:
 
 
 def _parse_pptx(path: Path) -> ParsedSourceDocument:
-    with zipfile.ZipFile(path) as archive:
+    with SafeSourceArchive(path) as archive:
         slide_names = sorted(
             (name for name in archive.namelist() if re.fullmatch(r"ppt/slides/slide\d+\.xml", name)),
             key=lambda name: int(re.search(r"(\d+)", Path(name).stem).group(1)),
@@ -416,7 +566,7 @@ def _parse_pptx(path: Path) -> ParsedSourceDocument:
         pages: list[PageText] = []
         offset = 0
         for slide_no, name in enumerate(slide_names, start=1):
-            root = ElementTree.fromstring(archive.read(name))
+            root = parse_untrusted_xml(archive.read(name))
             texts = [str(node.text or "").strip() for node in root.iter() if node.tag.endswith("}t") and str(node.text or "").strip()]
             if not texts:
                 continue
@@ -451,11 +601,11 @@ def _parse_pptx(path: Path) -> ParsedSourceDocument:
 
 
 def _parse_xlsx(path: Path) -> ParsedSourceDocument:
-    with zipfile.ZipFile(path) as archive:
+    with SafeSourceArchive(path) as archive:
         names = archive.namelist()
         shared: list[str] = []
         if "xl/sharedStrings.xml" in names:
-            root = ElementTree.fromstring(archive.read("xl/sharedStrings.xml"))
+            root = parse_untrusted_xml(archive.read("xl/sharedStrings.xml"))
             for item in root.iter():
                 if item.tag.endswith("}si"):
                     shared.append("".join(str(node.text or "") for node in item.iter() if node.tag.endswith("}t")))
@@ -467,7 +617,7 @@ def _parse_xlsx(path: Path) -> ParsedSourceDocument:
         chapters: list[DetectedChapter] = []
         offset = 0
         for sheet_no, name in enumerate(sheet_names, start=1):
-            root = ElementTree.fromstring(archive.read(name))
+            root = parse_untrusted_xml(archive.read(name))
             rows: list[str] = []
             for row in (node for node in root.iter() if node.tag.endswith("}row")):
                 values: list[str] = []
@@ -589,7 +739,7 @@ def _parse_pdf(path: Path) -> ParsedSourceDocument:
 
 
 def _parse_epub(path: Path) -> ParsedSourceDocument:
-    with zipfile.ZipFile(path) as archive:
+    with SafeSourceArchive(path) as archive:
         names = archive.namelist()
         spine_items = _epub_spine_items(archive)
         html_names = spine_items or sorted(
@@ -608,7 +758,8 @@ def _parse_epub(path: Path) -> ParsedSourceDocument:
             text, headings = _html_text_and_headings(raw.decode("utf-8", errors="replace"), source_name=name)
             if not text.strip():
                 continue
-            prefix = f"\n\n[{name}]\n"
+            separator = "\n\n" if parts else ""
+            prefix = f"{separator}[{name}]\n"
             offset_by_name[name] = offset + len(prefix)
             parts.append(prefix + text)
             for heading in headings:
@@ -620,7 +771,7 @@ def _parse_epub(path: Path) -> ParsedSourceDocument:
                 heading_chapters.append(heading)
             docs.append((name, text, headings))
             offset += len(prefix) + len(text)
-        full_text = "".join(parts).strip()
+        full_text = "".join(parts)
         nav_items = _epub_navigation_items(archive, names)
         nav_chapters = _chapters_from_epub_nav(nav_items, docs, offset_by_name)
         if nav_chapters:
@@ -641,11 +792,12 @@ def _parse_epub(path: Path) -> ParsedSourceDocument:
         )
 
 
-def _epub_spine_items(archive: zipfile.ZipFile) -> list[str]:
+def _epub_spine_items(archive: SafeSourceArchive) -> list[str]:
     try:
-        container = ElementTree.fromstring(archive.read("META-INF/container.xml"))
-    except Exception:
+        container_content = archive.read("META-INF/container.xml")
+    except KeyError:
         return []
+    container = parse_untrusted_xml(container_content)
     rootfile = ""
     for element in container.iter():
         if element.tag.endswith("rootfile"):
@@ -657,9 +809,10 @@ def _epub_spine_items(archive: zipfile.ZipFile) -> list[str]:
     if base == ".":
         base = ""
     try:
-        opf = ElementTree.fromstring(archive.read(rootfile))
-    except Exception:
+        opf_content = archive.read(rootfile)
+    except KeyError:
         return []
+    opf = parse_untrusted_xml(opf_content)
     manifest: dict[str, str] = {}
     spine_ids: list[str] = []
     for element in opf.iter():
@@ -676,13 +829,16 @@ def _epub_spine_items(archive: zipfile.ZipFile) -> list[str]:
     return [manifest[item_id] for item_id in spine_ids if item_id in manifest]
 
 
-def _epub_navigation_items(archive: zipfile.ZipFile, names: list[str]) -> list[tuple[str, str, int]]:
+def _epub_navigation_items(
+    archive: SafeSourceArchive,
+    names: list[str],
+) -> list[tuple[str, str, int]]:
     items: list[tuple[str, str, int]] = []
     nav_names = [name for name in names if re.search(r"(^|/)(nav|toc)\.(xhtml|html|htm)$", name, re.I)]
     for name in nav_names:
         try:
             text = archive.read(name).decode("utf-8", errors="replace")
-        except Exception:
+        except KeyError:
             continue
         parser = _NavLinkParser()
         parser.feed(text)
@@ -699,9 +855,10 @@ def _epub_navigation_items(archive: zipfile.ZipFile, names: list[str]) -> list[t
         return _dedupe_nav_items(items)
     for name in [entry for entry in names if entry.lower().endswith(".ncx")]:
         try:
-            root = ElementTree.fromstring(archive.read(name))
-        except Exception:
+            content = archive.read(name)
+        except KeyError:
             continue
+        root = parse_untrusted_xml(content)
         base = str(Path(name).parent)
         if base == ".":
             base = ""
@@ -756,30 +913,56 @@ def _chapters_from_epub_nav(
 class _TextHeadingParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
-        self.parts: list[str] = []
+        self._canonical_text = CanonicalMarkupText()
         self.headings: list[DetectedChapter] = []
         self._heading_tag: str | None = None
         self._heading_text: list[str] = []
         self._heading_start = 0
+        self._svg_depth = 0
+        self._table_depth = 0
 
     @property
     def text_offset(self) -> int:
-        return sum(len(part) for part in self.parts)
+        return self._canonical_text.offset
+
+    @property
+    def text(self) -> str:
+        return self._canonical_text.text
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag in {"p", "div", "section", "article", "br", "li", "tr"}:
-            self.parts.append("\n")
-        if re.fullmatch(r"h[1-6]", tag):
-            self.parts.append("\n\n")
-            self._heading_tag = tag
+        lowered = tag.lower()
+        values = {key.lower(): value or "" for key, value in attrs}
+        if lowered == "svg":
+            if self._svg_depth == 0:
+                self._canonical_text.append_visual_anchor()
+            self._svg_depth += 1
+            return
+        if self._svg_depth:
+            return
+        if lowered == "img" and values.get("src"):
+            self._canonical_text.append_visual_anchor()
+        elif lowered == "table":
+            if self._table_depth == 0:
+                self._canonical_text.append_visual_anchor()
+            self._table_depth += 1
+        if re.fullmatch(r"h[1-6]", lowered):
+            self._heading_tag = lowered
             self._heading_text = []
             self._heading_start = self.text_offset
 
     def handle_endtag(self, tag: str) -> None:
-        if tag == self._heading_tag:
+        lowered = tag.lower()
+        if lowered == "svg" and self._svg_depth:
+            self._svg_depth -= 1
+            return
+        if self._svg_depth:
+            return
+        if lowered == "table" and self._table_depth:
+            self._table_depth -= 1
+        if lowered == self._heading_tag:
             text = _clean_label(" ".join(self._heading_text))
             if text:
-                level = int(tag[1])
+                level = int(lowered[1])
                 self.headings.append(
                     DetectedChapter(
                         title=text,
@@ -790,17 +973,13 @@ class _TextHeadingParser(HTMLParser):
                 )
             self._heading_tag = None
             self._heading_text = []
-            self.parts.append("\n")
-        elif tag in {"p", "div", "section", "article", "li", "tr"}:
-            self.parts.append("\n")
 
     def handle_data(self, data: str) -> None:
-        text = html.unescape(data)
-        if not text.strip():
+        text = self._canonical_text.append_text(data)
+        if not text:
             return
         if self._heading_tag:
-            self._heading_text.append(text.strip())
-        self.parts.append(text.strip() + " ")
+            self._heading_text.append(text)
 
 
 class _NavLinkParser(HTMLParser):
@@ -832,7 +1011,7 @@ class _NavLinkParser(HTMLParser):
 def _html_text_and_headings(content: str, *, source_name: str) -> tuple[str, list[DetectedChapter]]:
     parser = _TextHeadingParser()
     parser.feed(content)
-    text = _normalize_text("".join(parser.parts))
+    text = parser.text
     for heading in parser.headings:
         heading.source_locator = f"html:{source_name}"
     return text, parser.headings
@@ -1103,6 +1282,21 @@ def _locator_for_offset(pages: list[PageText], offset: int) -> str:
         if page.start_offset <= offset <= page.end_offset:
             return f"page:{page.page_no}"
     return ""
+
+
+def _pages_for_offset_range(
+    pages: list[PageText],
+    start: int,
+    end: int,
+) -> tuple[int | None, int | None]:
+    overlapping = [
+        page.page_no
+        for page in pages
+        if page.end_offset > start and page.start_offset < end
+    ]
+    if not overlapping:
+        return None, None
+    return min(overlapping), max(overlapping) + 1
 
 
 def _find_title_offset(text: str, title: str) -> int:

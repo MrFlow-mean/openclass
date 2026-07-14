@@ -531,6 +531,12 @@ class InteractionTurnDecision(BaseModel):
     user_intent: str = ""
 
 
+class LearningSourceVisualReference(BaseModel):
+    visual_id: str
+    asset_hash: str
+    anchor_hash: str
+
+
 class LearningSourceReference(BaseModel):
     evidence_bundle_id: str
     source_ingestion_id: str
@@ -552,7 +558,10 @@ class LearningSourceReference(BaseModel):
     chunk_ids: list[str] = Field(default_factory=list)
     source_structure_id: str = ""
     source_structure_updated_at: str = ""
+    source_visual_index_version: int = 0
     content_hash: str = ""
+    visual_references: list[LearningSourceVisualReference] = Field(default_factory=list)
+    visual_manifest_hash: str = ""
 
 
 class LearningSourceGrounding(BaseModel):
@@ -748,6 +757,7 @@ EvidenceBundleStatus = Literal["candidate", "confirmed", "consumed", "archived"]
 EvidencePurpose = Literal["chat", "board_generation", "board_edit", "board_explain", "board_chat"]
 EvidenceConfirmationAction = Literal["confirm", "skip"]
 SourceStructureStatus = Literal["pending", "building", "ready", "linear_only", "failed"]
+SourceVisualIndexStatus = Literal["pending", "ready", "partial", "failed", "unsupported"]
 SourceStructureStrategy = Literal[
     "epub_navigation",
     "epub_heading",
@@ -760,6 +770,8 @@ SourceStructureStrategy = Literal[
     "open_notebook_search_only",
 ]
 SourceChapterAnchorStatus = Literal["verified", "unverified"]
+SourceVisualKind = Literal["image", "chart", "diagram", "table"]
+SourceVisualAnchorStatus = Literal["verified", "unverified"]
 
 
 class SourceIngestionJob(BaseModel):
@@ -895,6 +907,38 @@ class RetrievalEvidence(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class RetrievalVisualEvidence(BaseModel):
+    visual_id: str
+    source_ingestion_id: str = ""
+    source_title: str = ""
+    chapter_id: str | None = None
+    section_path: list[str] = Field(default_factory=list)
+    kind: SourceVisualKind = "image"
+    order_index: int = 0
+    source_locator: str = ""
+    page_range: str = ""
+    page_no: int | None = None
+    slide_no: int | None = None
+    sheet_name: str = ""
+    bbox: list[float] = Field(default_factory=list)
+    before_chunk_id: str | None = None
+    after_chunk_id: str | None = None
+    caption: str = ""
+    ocr_text: str = ""
+    anchor_status: SourceVisualAnchorStatus = "unverified"
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    storage_key: str = ""
+    mime_type: str = ""
+    content_hash: str = ""
+    position_hash: str = ""
+    asset_hash: str = ""
+    anchor_hash: str = ""
+    width: int | None = None
+    height: int | None = None
+    table_data: list[list[str]] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class SourceStructure(BaseModel):
     id: str = Field(default_factory=lambda: new_id("structure"))
     owner_user_id: str = ""
@@ -905,6 +949,9 @@ class SourceStructure(BaseModel):
     has_verified_toc: bool = False
     chapter_count: int = 0
     chunk_count: int = 0
+    visual_count: int = 0
+    visual_index_status: SourceVisualIndexStatus = "pending"
+    visual_index_version: int = 0
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     error: str = ""
     warnings: list[str] = Field(default_factory=list)
@@ -953,11 +1000,44 @@ class SourceChunk(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class SourceVisual(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("sourcevisual"))
+    owner_user_id: str = ""
+    package_id: str
+    source_ingestion_id: str
+    structure_id: str = ""
+    structure_version: int = 0
+    chapter_id: str | None = None
+    kind: SourceVisualKind = "image"
+    order_index: int = 0
+    source_locator: str = ""
+    page_no: int | None = None
+    slide_no: int | None = None
+    sheet_name: str = ""
+    bbox: list[float] = Field(default_factory=list)
+    before_chunk_id: str | None = None
+    after_chunk_id: str | None = None
+    caption: str = ""
+    ocr_text: str = ""
+    anchor_status: SourceVisualAnchorStatus = "unverified"
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    storage_key: str = ""
+    mime_type: str = ""
+    content_hash: str = ""
+    position_hash: str = ""
+    width: int | None = None
+    height: int | None = None
+    table_data: list[list[str]] = Field(default_factory=list)
+    created_at: str = Field(default_factory=now_iso)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class SourceStructureView(BaseModel):
     source: SourceIngestionRecord
     structure: SourceStructure | None = None
     chapters: list[SourceChapter] = Field(default_factory=list)
     chunks: list[SourceChunk] = Field(default_factory=list)
+    visuals: list[SourceVisual] = Field(default_factory=list)
 
 
 class EvidenceBundle(BaseModel):
@@ -971,6 +1051,7 @@ class EvidenceBundle(BaseModel):
     status: EvidenceBundleStatus = "candidate"
     query: str = ""
     evidence_items: list[RetrievalEvidence] = Field(default_factory=list)
+    visual_items: list[RetrievalVisualEvidence] = Field(default_factory=list)
     context_text: str = ""
     token_count: int = 0
     confirmed_by_user: bool = False
