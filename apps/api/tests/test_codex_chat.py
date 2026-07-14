@@ -103,12 +103,17 @@ def test_codex_turn_prompt_keeps_current_board_selection_for_editing() -> None:
     assert "heading path: Section" in prompt
 
 
-def test_codex_instructions_require_latest_board_grounding() -> None:
+def test_codex_instructions_require_board_first_teaching() -> None:
     instructions = codex_chat.CODEX_DEVELOPER_INSTRUCTIONS
+    normalized_instructions = " ".join(instructions.split())
 
     assert "start of every turn, read the current `board.md`" in instructions
     assert "sole source of truth" in instructions
-    assert "leave it unchanged unless the user also asks" in instructions
+    assert "board-first" in instructions
+    assert "Before giving any substantive teaching content" in instructions
+    assert "This applies even when the interaction mode is `ask`" in normalized_instructions
+    assert "Never put a standalone lesson" in instructions
+    assert "Do not duplicate the board's substantive teaching content in chat" in normalized_instructions
 
 
 @pytest.fixture
