@@ -674,13 +674,6 @@ class SqliteCourseStore:
                 (lesson_id,),
             ).fetchall()
         }
-        learning_requirements = _loads_optional(row["learning_requirements_json"])
-        if learning_requirements is None and owner_user_id is not None:
-            learning_requirements = self._active_learning_requirement_from_history(
-                conn,
-                owner_user_id=owner_user_id,
-                lesson_id=lesson_id,
-            )
         history_graph = LessonHistoryGraph(
             branches=branches,
             commits=commits,
@@ -693,11 +686,11 @@ class SqliteCourseStore:
             summary=row["summary"],
             tags=_loads(row["tags_json"], []),
             board_document=_document_from_row(row, "board"),
-            board_teaching_guide=_loads_optional(row["board_teaching_guide_json"]),
-            board_teaching_progress=_loads_optional(row["board_teaching_progress_json"]),
-            learning_requirements=learning_requirements,
-            board_task_requirements=_loads_optional(row["board_task_requirements_json"]),
-            active_interaction_session=_loads_optional(row["interaction_session_json"]),
+            board_teaching_guide=None,
+            board_teaching_progress=None,
+            learning_requirements=None,
+            board_task_requirements=None,
+            active_interaction_session=None,
             teaching_guide=_loads(row["teaching_guide_json"], {}),
             history_graph=history_graph,
             created_at=row["created_at"],

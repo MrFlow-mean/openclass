@@ -10,7 +10,6 @@ from app.models import (
     Lesson,
     LessonHistoryGraph,
     TeachingGuide,
-    TeachingGuideMapping,
     new_id,
 )
 from app.services.renderer import build_document_for_topic_render
@@ -32,27 +31,18 @@ def build_requirements(topic: str) -> LearningRequirementSheet:
 
     return LearningRequirementSheet(
         theme=normalized_topic,
-        learning_goal="先澄清用户具体想学什么、当前水平、学习目的和使用场景，再决定讲解与板书方式。",
-        level="待确认用户在这个领域的已有基础、熟悉程度和卡点。",
-        known_background="用户背景尚未明确，需要通过对话了解已有经验、相关资料和学习约束。",
-        current_questions=[
-            "你具体想学什么内容，或想解决哪个问题？",
-            "你在这个领域目前是什么水平，已经掌握了哪些基础？",
-            "你为什么学，之后要面对什么任务、场景或输出要求？",
-        ],
+        learning_goal="",
+        level="",
+        known_background="",
+        current_questions=[],
         learning_need_checklist=[],
-        target_depth="根据用户水平和目标场景动态决定讲到入门、理解、练习还是应用。",
-        output_preference="根据用户目标、资料结构和交互意图动态决定输出形态",
-        boundary="优先围绕当前主题展开，不自动跳到无关领域",
+        target_depth="",
+        output_preference="",
+        boundary="",
         board_scope=[],
         success_criteria="",
-        board_workflow="generate_from_scratch",
+        board_workflow="unknown",
     )
-
-
-def _document_headings(document: BoardDocument) -> list[str]:
-    headings = re.findall(r"^(.{1,60})$", document.content_text or "", flags=re.MULTILINE)
-    return [heading.strip() for heading in headings if heading.strip()][:6]
 
 
 def build_teaching_guide(
@@ -61,29 +51,17 @@ def build_teaching_guide(
     document: BoardDocument,
     requirements: LearningRequirementSheet | None = None,
 ) -> TeachingGuide:
-    normalized_requirements = requirements or build_requirements(lesson_title)
-    headings = _document_headings(document) or normalized_requirements.board_scope or [lesson_title]
-    mappings = [
-        TeachingGuideMapping(
-            block_id=f"section_{index}",
-            supports_goal=heading,
-            teaching_mode="definition" if index == 1 else "example",
-            focus_points=[heading],
-            check_questions=[f"你能用自己的话说明“{heading}”和本课目标的关系吗？"],
-        )
-        for index, heading in enumerate(headings[:5], start=1)
-    ]
     return TeachingGuide(
         lesson_id=lesson_id,
-        summary=normalized_requirements.learning_goal,
-        structure_note="按学习目标、资料证据和当前板书顺序组织讲解。",
-        pacing="先讲主线，再讲关键关系，最后用例子或练习检查理解。",
-        mappings=mappings,
-        strategy="根据学习者反馈动态调整深度，不绑定特定学科或预设课程结构。",
+        summary="",
+        structure_note="",
+        pacing="",
+        mappings=[],
+        strategy="",
     )
 
 
-def _initial_history(document: BoardDocument, requirements: LearningRequirementSheet) -> LessonHistoryGraph:
+def _initial_history(document: BoardDocument) -> LessonHistoryGraph:
     commit = CommitRecord(
         label="Initial document",
         message=f"Generated starter rich document for {document.title}",
@@ -94,7 +72,7 @@ def _initial_history(document: BoardDocument, requirements: LearningRequirementS
             "history_node_kind": "system",
             "history_node_title": "Initial document",
             "history_node_summary": f"Generated starter rich document for {document.title}",
-            "active_requirement_sheet_after": requirements.model_dump(mode="json"),
+            "active_requirement_sheet_after": None,
             "active_interaction_session_after": None,
             "active_board_task_sheet_after": None,
         },
@@ -119,28 +97,8 @@ def create_lesson(
 ) -> Lesson:
     clean_title = _clean_topic(title)
     document = build_document_for_topic_render(clean_title)
-    normalized_requirements = requirements or build_requirements(clean_title)
     lesson_id = new_id("lesson")
-    guide = build_teaching_guide(lesson_id, clean_title, document, normalized_requirements)
-    return Lesson(
-        id=lesson_id,
-        title=clean_title,
-        slug=slugify(clean_title),
-        summary=normalized_requirements.learning_goal if requirements is not None else "",
-        tags=[],
-        board_document=document,
-        learning_requirements=normalized_requirements,
-        teaching_guide=guide,
-        history_graph=_initial_history(document, normalized_requirements),
-    )
-
-
-def create_empty_lesson(title: str) -> Lesson:
-    clean_title = _clean_topic(title)
-    document = build_document(title=clean_title)
-    normalized_requirements = build_requirements(clean_title)
-    lesson_id = new_id("lesson")
-    guide = build_teaching_guide(lesson_id, clean_title, document, normalized_requirements)
+    guide = build_teaching_guide(lesson_id, clean_title, document)
     return Lesson(
         id=lesson_id,
         title=clean_title,
@@ -148,7 +106,25 @@ def create_empty_lesson(title: str) -> Lesson:
         summary="",
         tags=[],
         board_document=document,
-        learning_requirements=normalized_requirements,
+        learning_requirements=None,
         teaching_guide=guide,
-        history_graph=_initial_history(document, normalized_requirements),
+        history_graph=_initial_history(document),
+    )
+
+
+def create_empty_lesson(title: str) -> Lesson:
+    clean_title = _clean_topic(title)
+    document = build_document(title=clean_title)
+    lesson_id = new_id("lesson")
+    guide = build_teaching_guide(lesson_id, clean_title, document)
+    return Lesson(
+        id=lesson_id,
+        title=clean_title,
+        slug=slugify(clean_title),
+        summary="",
+        tags=[],
+        board_document=document,
+        learning_requirements=None,
+        teaching_guide=guide,
+        history_graph=_initial_history(document),
     )

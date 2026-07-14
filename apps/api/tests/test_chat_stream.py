@@ -14,7 +14,7 @@ from app.models import (
 from app.routers import chat as chat_router
 from app.services.ai_logging import ai_log_context
 from app.services.codex_app_server import CodexTurnCancelledError
-from app.services.lesson_factory import create_empty_lesson
+from app.services.lesson_factory import build_requirements, create_empty_lesson
 from app.services.route_context import bind_ai_request_context
 from app.services.workspace_state import package_view_for_lesson
 
@@ -29,7 +29,7 @@ def _chat_response(
     lesson = create_empty_lesson("流式回合")
     lesson.id = lesson_id
     lesson.board_document.content_text = document_text
-    assert lesson.learning_requirements is not None
+    requirements = build_requirements(lesson.title)
     package = CoursePackage(
         id="course_stream_test",
         title="课程包",
@@ -42,7 +42,7 @@ def _chat_response(
     workspace = WorkspaceState(packages=[package], active_package_id=package.id)
     return ChatResponse(
         chatbot_message=chatbot_message,
-        learning_requirement_sheet=lesson.learning_requirements,
+        learning_requirement_sheet=requirements,
         learning_clarification=LearningClarificationStatus(
             progress=100,
             label="已完成",

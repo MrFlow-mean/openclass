@@ -122,6 +122,35 @@ def _codex_permission_config_args() -> list[str]:
             'shell_environment_policy.set={PATH="/usr/bin:/bin:/usr/sbin:/sbin",'
             'LANG="en_US.UTF-8",SHELL="/bin/zsh"}'
         ),
+        "-c",
+        "mcp_servers={}",
+        "-c",
+        "apps={_default={enabled=false}}",
+        *[
+            value
+            for feature in (
+                "apps",
+                "auth_elicitation",
+                "browser_use",
+                "browser_use_external",
+                "browser_use_full_cdp_access",
+                "code_mode_host",
+                "computer_use",
+                "goals",
+                "hooks",
+                "image_generation",
+                "in_app_browser",
+                "multi_agent",
+                "plugin_sharing",
+                "plugins",
+                "remote_plugin",
+                "skill_mcp_dependency_install",
+                "tool_call_mcp_elicitation",
+                "tool_suggest",
+                "workspace_dependencies",
+            )
+            for value in ("-c", f"features.{feature}=false")
+        ],
     ]
 
 
@@ -174,6 +203,29 @@ def _validate_effective_permission_config(result: dict[str, Any]) -> None:
         if isinstance(config.get("shell_environment_policy"), dict)
         else {}
     )
+    features = config.get("features") if isinstance(config.get("features"), dict) else {}
+    apps = config.get("apps") if isinstance(config.get("apps"), dict) else {}
+    disabled_features = {
+        "apps",
+        "auth_elicitation",
+        "browser_use",
+        "browser_use_external",
+        "browser_use_full_cdp_access",
+        "code_mode_host",
+        "computer_use",
+        "goals",
+        "hooks",
+        "image_generation",
+        "in_app_browser",
+        "multi_agent",
+        "plugin_sharing",
+        "plugins",
+        "remote_plugin",
+        "skill_mcp_dependency_install",
+        "tool_call_mcp_elicitation",
+        "tool_suggest",
+        "workspace_dependencies",
+    }
     if (
         config.get("sandbox_mode") is not None
         or config.get("default_permissions") != CODEX_BOARD_PERMISSION_PROFILE
@@ -184,6 +236,13 @@ def _validate_effective_permission_config(result: dict[str, Any]) -> None:
         or network.get("enabled") is not False
         or any(value is not None for key, value in network.items() if key != "enabled")
         or shell_policy.get("inherit") != "none"
+        or any(features.get(feature) is not False for feature in disabled_features)
+        or bool(config.get("mcp_servers"))
+        or set(apps) != {"_default"}
+        or not isinstance(apps.get("_default"), dict)
+        or apps["_default"].get("enabled") is not False
+        or bool(config.get("hooks"))
+        or bool(config.get("plugins"))
     ):
         raise CodexAppServerError(
             "Codex effective permissions do not enforce the exact board.md-only profile"

@@ -13,7 +13,7 @@ from app.services import codex_app_server, codex_chat, workspace_state
 from app.services.codex_app_server import CodexAppServerError, CodexTurnResult
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
 from app.services.history import commit_operations, current_head_commit
-from app.services.lesson_factory import create_empty_lesson
+from app.services.lesson_factory import build_requirements, create_empty_lesson
 from app.services.rich_document import build_document
 
 
@@ -384,11 +384,41 @@ def test_codex_app_server_command_uses_exact_board_permission_profile() -> None:
     assert "permissions.openclass_board.network.enabled=false" in rendered
     assert 'approval_policy="never"' in rendered
     assert 'web_search="disabled"' in rendered
+    assert "mcp_servers={}" in rendered
+    assert "apps={_default={enabled=false}}" in rendered
+    assert "features.apps=false" in rendered
+    assert "features.hooks=false" in rendered
+    assert "features.plugins=false" in rendered
+    assert "features.computer_use=false" in rendered
     assert "--strict-config" in command
     assert "danger-full-access" not in rendered
 
 
 def test_effective_codex_config_rejects_legacy_sandbox_override() -> None:
+    disabled_features = {
+        feature: False
+        for feature in (
+            "apps",
+            "auth_elicitation",
+            "browser_use",
+            "browser_use_external",
+            "browser_use_full_cdp_access",
+            "code_mode_host",
+            "computer_use",
+            "goals",
+            "hooks",
+            "image_generation",
+            "in_app_browser",
+            "multi_agent",
+            "plugin_sharing",
+            "plugins",
+            "remote_plugin",
+            "skill_mcp_dependency_install",
+            "tool_call_mcp_elicitation",
+            "tool_suggest",
+            "workspace_dependencies",
+        )
+    }
     valid = {
         "config": {
             "sandbox_mode": None,
@@ -406,6 +436,11 @@ def test_effective_codex_config_rejects_legacy_sandbox_override() -> None:
                 }
             },
             "shell_environment_policy": {"inherit": "none"},
+            "features": disabled_features,
+            "mcp_servers": {},
+            "apps": {"_default": {"enabled": False}},
+            "hooks": None,
+            "plugins": {},
         }
     }
 
@@ -413,6 +448,43 @@ def test_effective_codex_config_rejects_legacy_sandbox_override() -> None:
     invalid = {"config": {**valid["config"], "sandbox_mode": "workspace-write"}}
     with pytest.raises(CodexAppServerError, match="exact board.md-only profile"):
         codex_app_server._validate_effective_permission_config(invalid)
+
+    external_tool = {
+        "config": {
+            **valid["config"],
+            "features": {**disabled_features, "plugins": True},
+        }
+    }
+    with pytest.raises(CodexAppServerError, match="exact board.md-only profile"):
+        codex_app_server._validate_effective_permission_config(external_tool)
+
+
+def test_new_and_reloaded_lessons_hide_legacy_ai_runtime(
+    codex_store: SqliteCourseStore,
+) -> None:
+    lesson = create_empty_lesson("Codex-only lesson")
+    initial_metadata = current_head_commit(lesson).metadata
+
+    assert lesson.learning_requirements is None
+    assert lesson.board_task_requirements is None
+    assert lesson.active_interaction_session is None
+    assert lesson.board_teaching_guide is None
+    assert lesson.board_teaching_progress is None
+    assert initial_metadata["active_requirement_sheet_after"] is None
+    assert initial_metadata["active_board_task_sheet_after"] is None
+    assert initial_metadata["active_interaction_session_after"] is None
+
+    lesson.learning_requirements = build_requirements(lesson.title)
+    workspace = build_initial_workspace_state()
+    workspace.packages[0].lessons.append(lesson)
+    codex_store.save_for_user(TEST_USER_ID, workspace)
+
+    reloaded = codex_store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
+    assert reloaded.learning_requirements is None
+    assert reloaded.board_task_requirements is None
+    assert reloaded.active_interaction_session is None
+    assert reloaded.board_teaching_guide is None
+    assert reloaded.board_teaching_progress is None
 
 
 def test_thread_permission_response_rejects_broad_writable_root(tmp_path: Path) -> None:
