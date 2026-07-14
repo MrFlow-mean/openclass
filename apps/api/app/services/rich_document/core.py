@@ -1308,7 +1308,8 @@ def upgrade_markdown_like_document(document: BoardDocument) -> BoardDocument:
         document_id=document.id,
         page_settings=document.page_settings,
     )
-    if _would_downgrade_existing_rich_structure(existing_document, upgraded):
+    contains_unrendered_math = _json_has_raw_math_text(existing_document.content_json)
+    if _would_downgrade_existing_rich_structure(existing_document, upgraded) and not contains_unrendered_math:
         return existing_document
     return upgraded
 
