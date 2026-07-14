@@ -1,6 +1,7 @@
 "use client";
 
 import clsx from "clsx";
+import Image from "next/image";
 import Link from "next/link";
 import type { CSSProperties, FormEvent } from "react";
 import { useEffect, useState } from "react";
@@ -847,7 +848,11 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                     disabled={isAuthBusy}
                     className="flex w-full items-center justify-center gap-3 rounded-lg border border-[#3a312b] bg-[#3a312b] px-4 py-3.5 text-sm font-semibold text-white shadow-sm transition hover:bg-[#1f1a17] active:scale-[0.99] disabled:cursor-wait disabled:opacity-70"
                   >
-                    {isLoading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+                    {isLoading ? (
+                      <LoaderCircle className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Image src="/chatgpt-logo.png" alt="" width={20} height={20} className="h-5 w-5 rounded-sm" />
+                    )}
                     <span className="whitespace-nowrap">使用 ChatGPT 登录</span>
                   </button>
                   {socialSignInOptions.map((option) => {
