@@ -1,14 +1,29 @@
 from __future__ import annotations
 
+from typing import Callable
+
 from app.models import ChatRequest, ChatResponse, ConversationTurn
-from app.services.chatbot import document_ai_edit_request as _document_ai_edit_request
-from app.services.chatbot import process_chat_on_lesson as _process_chat_on_lesson
+from app.services.codex_chat import document_ai_edit_request as _document_ai_edit_request
+from app.services.codex_chat import process_codex_chat_on_lesson
 from app.services.history import bind_commit_metadata
 
 
-def process_chat_on_lesson(lesson_id: str, request: ChatRequest, *, user_id: str) -> ChatResponse:
+def process_chat_on_lesson(
+    lesson_id: str,
+    request: ChatRequest,
+    *,
+    user_id: str,
+    on_delta: Callable[[str], None] | None = None,
+    is_cancelled: Callable[[], bool] | None = None,
+) -> ChatResponse:
     with bind_commit_metadata(_chat_edit_metadata(request)):
-        return _process_chat_on_lesson(lesson_id, request, user_id=user_id)
+        return process_codex_chat_on_lesson(
+            lesson_id,
+            request,
+            user_id=user_id,
+            on_delta=on_delta,
+            is_cancelled=is_cancelled,
+        )
 
 
 def _chat_edit_metadata(request: ChatRequest) -> dict[str, object]:

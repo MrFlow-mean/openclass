@@ -10,8 +10,10 @@ import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 from pathlib import Path
-from typing import Any
+import re
+from typing import Any, Callable
 
 from pydantic import BaseModel
 
@@ -26,10 +28,16 @@ CODEX_DEFAULT_MODELS: tuple[tuple[str, str], ...] = (
 )
 CODEX_APP_SERVER_TIMEOUT_SECONDS = 180
 CODEX_LOGIN_TIMEOUT_SECONDS = 15 * 60
+CODEX_BOARD_PERMISSION_PROFILE = "openclass_board"
+CODEX_MIN_PERMISSION_PROFILE_VERSION = (0, 138, 0)
 _STATUS_CACHE_TTL_SECONDS = 10
 
 
 class CodexAppServerError(RuntimeError):
+    pass
+
+
+class CodexTurnCancelledError(CodexAppServerError):
     pass
 
 
@@ -72,7 +80,142 @@ def _env_truthy(name: str) -> bool:
 
 
 def codex_app_server_runtime_enabled() -> bool:
-    return _env_truthy("OPENCLASS_CODEX_APP_SERVER_ENABLED")
+    configured = os.getenv("OPENCLASS_CODEX_APP_SERVER_ENABLED")
+    return True if configured is None else _env_truthy("OPENCLASS_CODEX_APP_SERVER_ENABLED")
+
+
+def codex_home_path() -> Path:
+    configured = (os.getenv("OPENCLASS_CODEX_HOME") or "").strip()
+    path = Path(configured).expanduser() if configured else Path.home() / ".openclass" / "codex"
+    return path.resolve()
+
+
+def _codex_process_env() -> dict[str, str]:
+    home = codex_home_path()
+    home.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        home.chmod(0o700)
+    except OSError:
+        pass
+    return {**os.environ, "CODEX_HOME": str(home)}
+
+
+def _codex_permission_config_args() -> list[str]:
+    return [
+        "-c",
+        f'default_permissions="{CODEX_BOARD_PERMISSION_PROFILE}"',
+        "-c",
+        'approval_policy="never"',
+        "-c",
+        'web_search="disabled"',
+        "-c",
+        (
+            f'permissions.{CODEX_BOARD_PERMISSION_PROFILE}.filesystem='
+            '{":minimal"="read",":workspace_roots"={"board.md"="write"}}'
+        ),
+        "-c",
+        f"permissions.{CODEX_BOARD_PERMISSION_PROFILE}.network.enabled=false",
+        "-c",
+        'shell_environment_policy.inherit="none"',
+        "-c",
+        (
+            'shell_environment_policy.set={PATH="/usr/bin:/bin:/usr/sbin:/sbin",'
+            'LANG="en_US.UTF-8",SHELL="/bin/zsh"}'
+        ),
+    ]
+
+
+def _codex_app_server_command(binary: str) -> list[str]:
+    return [
+        binary,
+        "app-server",
+        "--strict-config",
+        *_codex_permission_config_args(),
+    ]
+
+
+@lru_cache(maxsize=8)
+def _validate_codex_cli_version(binary: str) -> None:
+    try:
+        completed = subprocess.run(
+            [binary, "--version"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env=_codex_process_env(),
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise CodexAppServerError("Unable to verify the Codex CLI version") from exc
+    match = re.search(r"\b(\d+)\.(\d+)\.(\d+)\b", completed.stdout or completed.stderr)
+    if completed.returncode != 0 or match is None:
+        raise CodexAppServerError("Unable to verify the Codex CLI version")
+    version = tuple(int(part) for part in match.groups())
+    if version < CODEX_MIN_PERMISSION_PROFILE_VERSION:
+        minimum = ".".join(str(part) for part in CODEX_MIN_PERMISSION_PROFILE_VERSION)
+        raise CodexAppServerError(
+            f"Codex CLI {minimum} or newer is required for exact board-file permissions"
+        )
+
+
+def _validate_effective_permission_config(result: dict[str, Any]) -> None:
+    config = result.get("config") if isinstance(result.get("config"), dict) else {}
+    profile_map = config.get("permissions") if isinstance(config.get("permissions"), dict) else {}
+    profile = (
+        profile_map.get(CODEX_BOARD_PERMISSION_PROFILE)
+        if isinstance(profile_map.get(CODEX_BOARD_PERMISSION_PROFILE), dict)
+        else {}
+    )
+    filesystem = profile.get("filesystem") if isinstance(profile.get("filesystem"), dict) else {}
+    active_filesystem = {key: value for key, value in filesystem.items() if value is not None}
+    network = profile.get("network") if isinstance(profile.get("network"), dict) else {}
+    shell_policy = (
+        config.get("shell_environment_policy")
+        if isinstance(config.get("shell_environment_policy"), dict)
+        else {}
+    )
+    if (
+        config.get("sandbox_mode") is not None
+        or config.get("default_permissions") != CODEX_BOARD_PERMISSION_PROFILE
+        or config.get("approval_policy") != "never"
+        or config.get("web_search") != "disabled"
+        or active_filesystem
+        != {":minimal": "read", ":workspace_roots": {"board.md": "write"}}
+        or network.get("enabled") is not False
+        or any(value is not None for key, value in network.items() if key != "enabled")
+        or shell_policy.get("inherit") != "none"
+    ):
+        raise CodexAppServerError(
+            "Codex effective permissions do not enforce the exact board.md-only profile"
+        )
+
+
+def _validate_thread_permission_response(result: dict[str, Any], *, cwd: Path) -> None:
+    active_profile = (
+        result.get("activePermissionProfile")
+        if isinstance(result.get("activePermissionProfile"), dict)
+        else {}
+    )
+    sandbox = result.get("sandbox") if isinstance(result.get("sandbox"), dict) else {}
+    writable_roots = sandbox.get("writableRoots")
+    expected_board = (cwd / "board.md").resolve()
+    resolved_roots: list[Path] = []
+    if isinstance(writable_roots, list):
+        try:
+            resolved_roots = [Path(str(value)).resolve() for value in writable_roots]
+        except (OSError, RuntimeError):
+            resolved_roots = []
+    if (
+        active_profile.get("id") != CODEX_BOARD_PERMISSION_PROFILE
+        or sandbox.get("type") != "workspaceWrite"
+        or resolved_roots != [expected_board]
+        or sandbox.get("networkAccess") is not False
+        or sandbox.get("excludeTmpdirEnvVar") is not True
+        or sandbox.get("excludeSlashTmp") is not True
+    ):
+        raise CodexAppServerError(
+            "Codex thread did not activate the exact board.md-only sandbox"
+        )
 
 
 def codex_binary_path() -> str | None:
@@ -113,18 +256,21 @@ class CodexAppServerSession:
         binary = codex_binary_path()
         if not binary:
             raise CodexAppServerError("Codex CLI is not installed or OPENCLASS_CODEX_CLI_PATH is invalid")
+        _validate_codex_cli_version(binary)
         self.timeout_seconds = timeout_seconds
         self.deadline_monotonic = _deadline_for(
             timeout_seconds,
             deadline_monotonic=deadline_monotonic,
         )
         self.process = subprocess.Popen(
-            [binary, "app-server"],
+            _codex_app_server_command(binary),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
+            cwd=str(codex_home_path()),
+            env=_codex_process_env(),
         )
         self._messages: queue.Queue[dict[str, Any]] = queue.Queue()
         self._stderr: queue.Queue[str] = queue.Queue()
@@ -132,18 +278,34 @@ class CodexAppServerSession:
         self.notifications: list[dict[str, Any]] = []
         threading.Thread(target=self._read_stdout, daemon=True).start()
         threading.Thread(target=self._read_stderr, daemon=True).start()
-        self.request(
-            "initialize",
+        try:
+            self.request(
+                "initialize",
+                {
+                    "clientInfo": {
+                        "name": "openclass",
+                        "title": "OpenClass",
+                        "version": "0.1.0",
+                    }
+                },
+                timeout_seconds=_remaining_before(self.deadline_monotonic, cap=20),
+            )
+            self.notify("initialized", {})
+            self.validate_board_permission_config(codex_home_path())
+        except Exception:
+            self.close()
+            raise
+
+    def validate_board_permission_config(self, cwd: Path) -> None:
+        result = self.request(
+            "config/read",
             {
-                "clientInfo": {
-                    "name": "openclass",
-                    "title": "OpenClass",
-                    "version": "0.1.0",
-                }
+                "cwd": str(cwd),
+                "includeLayers": True,
             },
             timeout_seconds=_remaining_before(self.deadline_monotonic, cap=20),
         )
-        self.notify("initialized", {})
+        _validate_effective_permission_config(result)
 
     def close(self) -> None:
         if self.process.poll() is not None:
@@ -527,6 +689,260 @@ class CodexAppServerTextClient:
         return CodexParsedResponse(output_parsed=parsed, output_text=output_text, usage=usage)
 
 
+@dataclass(frozen=True)
+class CodexTurnResult:
+    thread_id: str
+    turn_id: str | None
+    final_response: str
+    usage: Any = None
+    parent_thread_id: str | None = None
+    replaced_stale_thread_id: str | None = None
+
+
+def _missing_codex_thread(error: CodexAppServerError) -> bool:
+    message = str(error).lower()
+    return any(
+        marker in message
+        for marker in (
+            "no rollout found for thread id",
+            "thread not found",
+            "no thread found",
+            "unknown thread id",
+        )
+    )
+
+
+def _discard_thread(
+    session: CodexAppServerSession,
+    thread_id: str,
+    *,
+    deadline_monotonic: float,
+) -> None:
+    try:
+        session.request(
+            "thread/delete",
+            {"threadId": thread_id},
+            timeout_seconds=_remaining_before(deadline_monotonic, cap=10),
+        )
+    except Exception:
+        pass
+
+
+def delete_codex_thread(thread_id: str) -> None:
+    if not thread_id or not codex_app_server_available():
+        return
+    with _managed_session(timeout_seconds=30) as session:
+        session.request("thread/delete", {"threadId": thread_id}, timeout_seconds=20)
+
+
+def run_codex_thread_turn(
+    *,
+    model: str,
+    cwd: Path,
+    user_prompt: str,
+    developer_instructions: str,
+    thread_id: str | None = None,
+    last_turn_id: str | None = None,
+    fallback_user_prompt: str | None = None,
+    image_urls: list[str] | None = None,
+    timeout_seconds: float = CODEX_APP_SERVER_TIMEOUT_SECONDS,
+    on_delta: Callable[[str], None] | None = None,
+    is_cancelled: Callable[[], bool] | None = None,
+) -> CodexTurnResult:
+    status = codex_provider_status(refresh=False)
+    if not status.configured:
+        raise CodexAppServerError(status.message or "ChatGPT/Codex provider is not signed in")
+    deadline = _deadline_for(timeout_seconds)
+    with _managed_session(
+        timeout_seconds=_remaining_before(deadline),
+        deadline_monotonic=deadline,
+    ) as session:
+        session.validate_board_permission_config(cwd)
+        base_params: dict[str, Any] = {
+            "model": model,
+            "cwd": str(cwd),
+            "approvalPolicy": "never",
+            "developerInstructions": developer_instructions,
+        }
+        replaced_stale_thread_id: str | None = None
+        if thread_id:
+            method = "thread/fork"
+            fork_params = {
+                **base_params,
+                "threadId": thread_id,
+                "ephemeral": False,
+            }
+            if last_turn_id:
+                fork_params["lastTurnId"] = last_turn_id
+            try:
+                thread_result = session.request(
+                    method,
+                    fork_params,
+                    timeout_seconds=_remaining_before(deadline, cap=30),
+                )
+            except CodexAppServerError as exc:
+                if not _missing_codex_thread(exc):
+                    raise
+                replaced_stale_thread_id = thread_id
+                method = "thread/start"
+                thread_result = session.request(
+                    method,
+                    {
+                        **base_params,
+                        "ephemeral": False,
+                        "serviceName": "openclass_codex_chat",
+                    },
+                    timeout_seconds=_remaining_before(deadline, cap=30),
+                )
+        else:
+            method = "thread/start"
+            thread_result = session.request(
+                method,
+                {
+                    **base_params,
+                    "ephemeral": False,
+                    "serviceName": "openclass_codex_chat",
+                },
+                timeout_seconds=_remaining_before(deadline, cap=30),
+            )
+        thread = thread_result.get("thread") if isinstance(thread_result.get("thread"), dict) else {}
+        active_thread_id = str(thread.get("id") or "")
+        if not active_thread_id:
+            raise CodexAppServerError(f"Codex {method} did not return a thread id: {thread_result}")
+        try:
+            _validate_thread_permission_response(thread_result, cwd=cwd)
+            turn_result = _run_conversation_turn(
+                session=session,
+                thread_id=active_thread_id,
+                model=model,
+                cwd=cwd,
+                user_prompt=(
+                    fallback_user_prompt
+                    if replaced_stale_thread_id and fallback_user_prompt is not None
+                    else user_prompt
+                ),
+                image_urls=image_urls,
+                deadline_monotonic=deadline,
+                on_delta=on_delta,
+                is_cancelled=is_cancelled,
+            )
+        except Exception:
+            _discard_thread(session, active_thread_id, deadline_monotonic=deadline)
+            raise
+        return CodexTurnResult(
+            thread_id=turn_result.thread_id,
+            turn_id=turn_result.turn_id,
+            final_response=turn_result.final_response,
+            usage=turn_result.usage,
+            parent_thread_id=thread_id,
+            replaced_stale_thread_id=replaced_stale_thread_id,
+        )
+
+
+def _run_conversation_turn(
+    *,
+    session: CodexAppServerSession,
+    thread_id: str,
+    model: str,
+    cwd: Path,
+    user_prompt: str,
+    image_urls: list[str] | None,
+    deadline_monotonic: float,
+    on_delta: Callable[[str], None] | None,
+    is_cancelled: Callable[[], bool] | None,
+) -> CodexTurnResult:
+    request_id = session._next_id
+    session._next_id += 1
+    turn_input: list[dict[str, Any]] = [{"type": "text", "text": user_prompt}]
+    turn_input.extend(
+        {"type": "image", "url": url, "detail": "original"}
+        for url in image_urls or []
+    )
+    session._write(
+        {
+            "method": "turn/start",
+            "id": request_id,
+            "params": {
+                "threadId": thread_id,
+                "input": turn_input,
+                "model": model,
+                "cwd": str(cwd),
+                "approvalPolicy": "never",
+            },
+        }
+    )
+    final_text = ""
+    delta_text = ""
+    turn_id: str | None = None
+    usage: Any = None
+    while time.monotonic() < deadline_monotonic:
+        if is_cancelled is not None and is_cancelled():
+            if turn_id:
+                try:
+                    session.request(
+                        "turn/interrupt",
+                        {"threadId": thread_id, "turnId": turn_id},
+                        timeout_seconds=_remaining_before(deadline_monotonic, cap=10),
+                    )
+                except Exception:
+                    pass
+            raise CodexTurnCancelledError("Codex turn was cancelled")
+        try:
+            message = session._messages.get(
+                timeout=min(0.25, _remaining_before(deadline_monotonic))
+            )
+        except queue.Empty:
+            continue
+        _remaining_before(deadline_monotonic)
+        if message.get("id") == request_id:
+            if "error" in message:
+                raise _json_response_error(message)
+            result = message.get("result") if isinstance(message.get("result"), dict) else {}
+            turn = result.get("turn") if isinstance(result.get("turn"), dict) else {}
+            turn_id = str(turn.get("id") or turn_id or "") or None
+            continue
+        if "method" in message and "id" in message and "result" not in message and "error" not in message:
+            session._answer_server_request(message)
+            continue
+        method = message.get("method")
+        params = message.get("params") if isinstance(message.get("params"), dict) else {}
+        if method == "turn/started":
+            turn = params.get("turn") if isinstance(params.get("turn"), dict) else {}
+            turn_id = str(turn.get("id") or turn_id or "") or None
+        elif method == "thread/tokenUsage/updated":
+            usage = params
+        elif method == "item/agentMessage/delta":
+            delta = str(params.get("delta") or "")
+            if delta:
+                delta_text += delta
+                if on_delta is not None:
+                    on_delta(delta)
+        elif method == "item/completed":
+            item = params.get("item") if isinstance(params.get("item"), dict) else {}
+            if item.get("type") == "agentMessage" and isinstance(item.get("text"), str):
+                final_text = item["text"]
+        elif method == "turn/completed":
+            turn = params.get("turn") if isinstance(params.get("turn"), dict) else {}
+            turn_id = str(turn.get("id") or turn_id or "") or None
+            turn_status = str(turn.get("status") or "")
+            if turn_status != "completed":
+                error = turn.get("error") if isinstance(turn.get("error"), dict) else {}
+                raise CodexAppServerError(
+                    str(error.get("message") or error or f"Codex turn ended with status {turn_status or 'unknown'}")
+                )
+            response = (final_text or delta_text).strip()
+            if not response:
+                raise CodexAppServerError("Codex turn completed without an agent message")
+            return CodexTurnResult(
+                thread_id=thread_id,
+                turn_id=turn_id,
+                final_response=response,
+                usage=usage,
+            )
+    _remaining_before(deadline_monotonic)
+    raise CodexAppServerError("Timed out waiting for Codex turn completion")
+
+
 def _run_structured_turn(
     *,
     session: CodexAppServerSession,
@@ -551,7 +967,7 @@ def _run_structured_turn(
                 "model": model,
                 "cwd": cwd,
                 "approvalPolicy": "never",
-                "sandbox": "readOnly",
+                "sandbox": "read-only",
                 "serviceName": "openclass_codex_provider",
             },
             timeout_seconds=_remaining_before(deadline, cap=30),
