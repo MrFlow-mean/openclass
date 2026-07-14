@@ -261,6 +261,8 @@ def test_board_task_requirement_prompt_records_existing_board_workflow(
     ai = OpenAICourseAI()
     captured: dict[str, object] = {}
 
+    monkeypatch.setattr(type(ai), "enabled", property(lambda _instance: True))
+
     def _fake_parse(role, system_prompt, user_prompt, schema, **kwargs):
         captured["role"] = role
         captured["system_prompt"] = system_prompt

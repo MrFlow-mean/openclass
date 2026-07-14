@@ -110,6 +110,8 @@ def test_board_explanation_directive_requires_visual_description_without_copying
     ai = OpenAICourseAI()
     captured: dict[str, object] = {}
 
+    monkeypatch.setattr(type(ai), "enabled", property(lambda _instance: True))
+
     def _fake_parse(role, system_prompt, user_prompt, schema, **kwargs):
         captured["role"] = role
         captured["system_prompt"] = system_prompt
