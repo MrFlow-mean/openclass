@@ -25,8 +25,12 @@ from app.services.board_task_history import BoardTaskHistoryRecorder, BoardTaskH
 from app.services.course_runtime import effective_requirements
 from app.services.history import commit_operations
 from app.services.interaction_rule_compiler import compile_interaction_session
+from app.services.learning_source_reference_service import (
+    LearningSourceReferenceError,
+    validate_bundle_structure_versions,
+)
 from app.services.openai_course_ai import BoardTaskRouteDecision, openai_course_ai
-from app.services.resource_resolver import evidence_metadata
+from app.services.resource_resolver import evidence_metadata, resource_resolver
 from app.services.segment_resolver import FocusResolution, focus_context, resolve_board_focus
 
 
@@ -57,6 +61,7 @@ def execute_ready_board_task(
     conversation_summary: str,
     history_stamp: BoardTaskHistoryStamp,
     history_operations: list[dict[str, Any]],
+    history_state: dict[str, Any] | None = None,
     evidence_bundle: EvidenceBundle | None = None,
 ) -> BoardTaskExecutionOutcome:
     operations = list(history_operations)
@@ -66,6 +71,7 @@ def execute_ready_board_task(
         stamp=history_stamp,
         sheet=board_task,
         operations=operations,
+        history_state=history_state,
     )
     action_type = _action_type_for_task(board_task)
     resolution = resolve_board_focus(
@@ -108,6 +114,7 @@ def execute_ready_board_task(
         )
     if decision.route in {"write", "edit"}:
         return _execute_write_or_edit(
+            owner_user_id=owner_user_id,
             lesson=lesson,
             board_task=board_task,
             user_message=user_message,
@@ -305,6 +312,7 @@ def _execute_chat(
 
 def _execute_write_or_edit(
     *,
+    owner_user_id: str,
     lesson: Lesson,
     board_task: BoardTaskRequirementSheet,
     user_message: str,
@@ -315,6 +323,33 @@ def _execute_write_or_edit(
     resolution: FocusResolution,
     evidence_bundle: EvidenceBundle | None,
 ) -> BoardTaskExecutionOutcome:
+    if evidence_bundle is not None:
+        try:
+            validate_bundle_structure_versions(evidence_bundle)
+        except LearningSourceReferenceError as exc:
+            resource_resolver.store.archive_bundle(
+                owner_user_id=owner_user_id,
+                bundle_id=evidence_bundle.id,
+            )
+            stamp = recorder.execution_failed(
+                reason=str(exc),
+                metadata={"board_task_route": decision.route, "source_reference_stale": True},
+            )
+            operations.extend(recorder.operations)
+            lesson.board_task_requirements = board_task
+            return BoardTaskExecutionOutcome(
+                chatbot_message="",
+                board_decision=BoardDecision(action="no_change", reason=str(exc)),
+                active_board_task_sheet=board_task,
+                board_task_stamp=stamp,
+                board_task_questions=_board_task_questions(board_task),
+                history_operations=operations,
+                resolved_focus=_decision_focus(decision, resolution),
+                focus_candidates=resolution.candidates,
+                board_search_evidence=resolution.evidence,
+                board_document_operation_status="failed",
+                board_document_operation_failure_reason=str(exc),
+            )
     focus = _decision_focus(decision, resolution)
     if focus is None:
         return _clarify_location(
@@ -338,6 +373,22 @@ def _execute_write_or_edit(
     )
     if decision.write_proposal.strip():
         task_requirements.action_instruction = decision.write_proposal.strip()
+    visual_by_id = {
+        item.visual_id: item
+        for item in evidence_bundle.visual_items
+    } if evidence_bundle is not None else {}
+
+    def _read_confirmed_visual(visual_id: str):
+        item = visual_by_id.get(visual_id)
+        if item is None or evidence_bundle is None:
+            return None
+        return resource_resolver.structure_store.read_visual_bytes(
+            owner_user_id=owner_user_id,
+            package_id=evidence_bundle.package_id,
+            source_id=item.source_ingestion_id,
+            visual_id=visual_id,
+        )
+
     edit_outcome = edit_existing_document(
         lesson=lesson,
         requirements=task_requirements,
@@ -349,6 +400,9 @@ def _execute_write_or_edit(
         focus=focus,
         target_scope=target_scope,
         allow_replace_document=False,
+        owner_user_id=owner_user_id,
+        confirmed_visuals=evidence_bundle.visual_items if evidence_bundle is not None else (),
+        visual_bytes_resolver=_read_confirmed_visual,
     )
     source_stamp = recorder.current_stamp()
     if not edit_outcome.changed:
@@ -397,6 +451,9 @@ def _execute_write_or_edit(
             "board_document_operation_status": edit_outcome.operation_status,
             "board_document_editor_operation": edit_outcome.operation,
             "board_document_editor_summary": edit_outcome.summary,
+            "applied_visual_ids": list(edit_outcome.applied_visual_ids),
+            "skipped_visual_placements": list(edit_outcome.skipped_visual_placements),
+            "board_asset_ids": list(edit_outcome.board_asset_ids),
             "board_patch_diff": [item.model_dump(mode="json") for item in edit_outcome.diff_preview or []],
             "teaching_progress_after": None,
             "board_teaching_guide_invalidated": True,
@@ -685,9 +742,19 @@ def _recorder_from_pending_history(
     stamp: BoardTaskHistoryStamp,
     sheet: BoardTaskRequirementSheet,
     operations: list[dict[str, Any]],
+    history_state: dict[str, Any] | None,
 ) -> BoardTaskHistoryRecorder:
-    latest_version_number = 0
-    latest_sheet_json = json.dumps(sheet.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)
+    same_persisted_run = bool(history_state and history_state.get("run_id") == stamp.run_id)
+    latest_version_number = (
+        int(history_state.get("latest_version_number") or 0)
+        if same_persisted_run and history_state is not None
+        else 0
+    )
+    latest_sheet_json = (
+        str(history_state.get("latest_sheet_json") or "")
+        if same_persisted_run and history_state is not None
+        else ""
+    ) or json.dumps(sheet.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)
     for operation in operations:
         if (
             operation.get("type") == "insert_board_task_version"

@@ -58,6 +58,7 @@ def refine_blank_board_requirement(
     initial_work_mode_decision: InitialLearningWorkModeDecision | None = None,
     source_requested_by_user: bool = False,
     resolved_source_chapter: bool = False,
+    source_resolution_status: str = "",
 ) -> LearningRequirementRefinementOutcome | None:
     active_requirement = _active_requirement_from_state(lesson, history_state)
     active_clarification = _active_clarification_from_state(history_state)
@@ -168,6 +169,42 @@ def refine_blank_board_requirement(
             update={
                 "source_grounding": requirement.source_grounding.model_copy(
                     update={"requested_by_user": True}
+                )
+            },
+        )
+    if source_resolution_status in {
+        "ambiguous_source",
+        "content_unavailable",
+        "stale_source_reference",
+    }:
+        requirement = requirement.model_copy(
+            deep=True,
+            update={
+                "source_grounding": requirement.source_grounding.model_copy(
+                    update={
+                        "requested_by_user": True,
+                        "confirmation_status": "stale",
+                        "confirmed_bundle_id": "",
+                        "confirmed_at": None,
+                        "confirmed_references": [],
+                    }
+                )
+            },
+        )
+    elif (
+        source_resolution_status == "matched"
+        and requirement.source_grounding.confirmation_status == "stale"
+    ):
+        requirement = requirement.model_copy(
+            deep=True,
+            update={
+                "source_grounding": requirement.source_grounding.model_copy(
+                    update={
+                        "confirmation_status": "none",
+                        "confirmed_bundle_id": "",
+                        "confirmed_at": None,
+                        "confirmed_references": [],
+                    }
                 )
             },
         )

@@ -1,17 +1,37 @@
 from __future__ import annotations
 
 import html
+import base64
 import re
 from pathlib import Path
+from typing import Callable
 
 from app.models import BoardDocument
-from app.services.rich_document import text_to_html
+from app.services.rich_document import text_to_html, tiptap_doc_to_html
 
 _KATEX_VERSION = "0.16.45"
 _SCRIPT_TAG_RE = re.compile(r"<script\b[\s\S]*?</script\s*>", re.IGNORECASE)
 _DANGEROUS_TAG_RE = re.compile(r"</?(?:iframe|object|embed|link|meta)\b[^>]*>", re.IGNORECASE)
 _EVENT_HANDLER_ATTR_RE = re.compile(r"\s+on[a-z]+\s*=\s*(?:\"[^\"]*\"|'[^']*'|[^\s>]+)", re.IGNORECASE)
 _JAVASCRIPT_URL_RE = re.compile(r"\s+(href|src)\s*=\s*(['\"])\s*javascript:[\s\S]*?\2", re.IGNORECASE)
+_BOARD_ASSET_URL_RE = re.compile(
+    r"(?P<prefix>\bsrc\s*=\s*(?P<quote>['\"]))"
+    r"/api/board-assets/(?P<asset_id>basset_[A-Za-z0-9_-]+)/content"
+    r"(?P=quote)",
+    re.IGNORECASE,
+)
+_SECTION_RE = re.compile(
+    r"(?P<open><section\b[^>]*>)(?P<body>[\s\S]*?)(?P<close></section\s*>)",
+    re.IGNORECASE,
+)
+_FIGURE_OPEN_RE = re.compile(r"<figure\b[^>]*>", re.IGNORECASE)
+_IMAGE_TAG_RE = re.compile(r"<img\b[^>]*>", re.IGNORECASE)
+_BOARD_ASSET_ID_RE = re.compile(r"^basset_[A-Za-z0-9_-]+$")
+_ROUNDTRIP_ORIGINAL_SRC_RE = re.compile(
+    r"\s+data-original-src\s*=\s*(?:\"[^\"]*\"|'[^']*')",
+    re.IGNORECASE,
+)
+AssetResolver = Callable[[str], tuple[str, bytes] | None]
 
 
 def _safe_document_body(content_html: str) -> str:
@@ -21,9 +41,17 @@ def _safe_document_body(content_html: str) -> str:
     return _JAVASCRIPT_URL_RE.sub("", body)
 
 
-def standalone_html(document: BoardDocument) -> str:
+def standalone_html(document: BoardDocument, *, asset_resolver: AssetResolver | None = None) -> str:
     title = html.escape(document.title or "OpenClass Document")
-    content = _safe_document_body(document.content_html or text_to_html(document.content_text))
+    content_json = document.content_json if isinstance(document.content_json, dict) else {}
+    json_nodes = content_json.get("content")
+    if _has_meaningful_tiptap_nodes(json_nodes):
+        source_html = tiptap_doc_to_html(content_json)
+    else:
+        source_html = document.content_html or text_to_html(document.content_text)
+    content = _safe_document_body(source_html)
+    content = _ROUNDTRIP_ORIGINAL_SRC_RE.sub("", content)
+    content = _embed_board_assets(content, asset_resolver)
     return f"""<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -93,6 +121,18 @@ def standalone_html(document: BoardDocument) -> str:
       max-width: 100%;
       height: auto;
     }}
+    [data-type="resource-visual-block"] {{
+      margin: 20px 0;
+    }}
+    [data-type="resource-visual-block"] figure {{
+      margin: 0;
+    }}
+    [data-type="resource-visual-block"] figcaption {{
+      margin-top: 8px;
+      color: #43526a;
+      font-size: 13px;
+      text-align: center;
+    }}
     [data-type="inline-math"] {{
       display: inline-block;
       max-width: 100%;
@@ -160,7 +200,89 @@ def standalone_html(document: BoardDocument) -> str:
 """
 
 
-def export_html(document: BoardDocument, path: Path) -> Path:
+def export_html(
+    document: BoardDocument,
+    path: Path,
+    *,
+    asset_resolver: AssetResolver | None = None,
+) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(standalone_html(document), encoding="utf-8")
+    path.write_text(standalone_html(document, asset_resolver=asset_resolver), encoding="utf-8")
     return path
+
+
+def _embed_board_assets(content_html: str, asset_resolver: AssetResolver | None) -> str:
+    if asset_resolver is None:
+        return content_html
+    resolved: dict[str, str | None] = {}
+
+    def resolve_data_uri(asset_id: str) -> str | None:
+        if asset_id not in resolved:
+            asset = asset_resolver(asset_id)
+            if asset is None:
+                resolved[asset_id] = None
+            else:
+                mime_type, content = asset
+                encoded = base64.b64encode(content).decode("ascii")
+                resolved[asset_id] = f"data:{mime_type};base64,{encoded}"
+        return resolved[asset_id]
+
+    def replace_resource_section(match: re.Match[str]) -> str:
+        open_tag = match.group("open")
+        if _html_attribute(open_tag, "data-type") != "resource-visual-block":
+            return match.group(0)
+        asset_id = _html_attribute(open_tag, "data-board-asset-id")
+        if not _BOARD_ASSET_ID_RE.fullmatch(asset_id):
+            return match.group(0)
+        data_uri = resolve_data_uri(asset_id)
+        if data_uri is None:
+            return match.group(0)
+
+        caption = _html_attribute(open_tag, "data-caption") or "资料视觉素材"
+        image = (
+            f'<img src="{html.escape(data_uri, quote=True)}" '
+            f'alt="{html.escape(caption, quote=True)}">'
+        )
+        # A controlled resource block represents exactly one permanent visual.
+        # Remove any legacy round-trip image before injecting the resolved one.
+        body = _IMAGE_TAG_RE.sub("", match.group("body"))
+        figure = _FIGURE_OPEN_RE.search(body)
+        if figure is None:
+            body = image + body
+        else:
+            body = body[: figure.end()] + image + body[figure.end() :]
+        return open_tag + body + match.group("close")
+
+    content_html = _SECTION_RE.sub(replace_resource_section, content_html)
+
+    def replace(match: re.Match[str]) -> str:
+        asset_id = match.group("asset_id")
+        data_uri = resolve_data_uri(asset_id)
+        if data_uri is None:
+            return match.group(0)
+        return f"{match.group('prefix')}{data_uri}{match.group('quote')}"
+
+    return _BOARD_ASSET_URL_RE.sub(replace, content_html)
+
+
+def _html_attribute(tag: str, name: str) -> str:
+    match = re.search(
+        rf"\b{re.escape(name)}\s*=\s*(?P<quote>['\"])(?P<value>[\s\S]*?)(?P=quote)",
+        tag,
+        re.IGNORECASE,
+    )
+    return html.unescape(match.group("value")) if match else ""
+
+
+def _has_meaningful_tiptap_nodes(value: object) -> bool:
+    if not isinstance(value, list):
+        return False
+    for node in value:
+        if not isinstance(node, dict):
+            continue
+        if node.get("type") != "paragraph":
+            return True
+        content = node.get("content")
+        if isinstance(content, list) and content:
+            return True
+    return False

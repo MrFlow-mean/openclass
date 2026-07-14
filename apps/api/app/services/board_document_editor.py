@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Callable, Literal, Sequence
 
 from app.models import (
     BoardDecision,
@@ -16,6 +16,12 @@ from app.models import (
     PatchOperation,
 )
 from app.services.document_ops import apply_board_patch, read_board_snapshot
+from app.services.board_visual_insertion import (
+    BoardInsertionPlan,
+    BoardVisualInsertionResult,
+    apply_board_insertion_plan,
+    build_board_insertion_plan,
+)
 from app.services.history import current_head_commit
 from app.services.openai_course_ai import BoardDocumentEditResult, openai_course_ai
 from app.services.board_segment_index import build_board_segment_index
@@ -49,6 +55,9 @@ class BoardDocumentEditOutcome:
     diff_preview: list[DiffPreviewItem] | None = None
     patch_validation: BoardPatchValidationResult | None = None
     patch_risk_level: str | None = None
+    applied_visual_ids: tuple[str, ...] = ()
+    skipped_visual_placements: tuple[dict[str, str], ...] = ()
+    board_asset_ids: tuple[str, ...] = ()
 
 
 def generate_from_requirements(
@@ -59,6 +68,9 @@ def generate_from_requirements(
     requirement_run_id: str | None = None,
     frozen_requirement_version_id: str | None = None,
     resource_summary: str = "",
+    owner_user_id: str = "",
+    confirmed_visuals: Sequence[Any] = (),
+    visual_bytes_resolver: Callable[[str], tuple[Any, bytes] | bytes | None] | None = None,
 ) -> BoardDocumentEditOutcome:
     if not is_document_empty(lesson.board_document):
         return _no_change(
@@ -72,6 +84,7 @@ def generate_from_requirements(
         requirement_run_id=requirement_run_id,
         frozen_requirement_version_id=frozen_requirement_version_id,
     )
+    insertion_plan = build_board_insertion_plan(confirmed_visuals)
     request_kwargs = {
         "intent": "generate_from_requirements",
         "lesson_title": lesson.title,
@@ -80,6 +93,7 @@ def generate_from_requirements(
         "current_document_text": _document_text(lesson.board_document),
         "resource_summary": resource_summary,
         "selection_excerpt": None,
+        "visual_manifest": _visual_manifest_payload(insertion_plan, confirmed_visuals),
     }
     result = _request_board_document_edit(request_kwargs)
     if not result:
@@ -96,6 +110,15 @@ def generate_from_requirements(
         document_id=lesson.board_document.id,
         page_settings=lesson.board_document.page_settings,
     )
+    visual_result = _apply_visual_insertion(
+        new_document,
+        plan=insertion_plan,
+        placements=result.visual_placements,
+        owner_user_id=owner_user_id,
+        lesson_id=lesson.id,
+        visual_bytes_resolver=visual_bytes_resolver,
+    )
+    new_document = visual_result.document
     return _changed(
         lesson=lesson,
         new_document=new_document,
@@ -104,6 +127,7 @@ def generate_from_requirements(
         chatbot_message=result.chatbot_message.strip() or result.summary.strip(),
         section_titles=result.section_titles,
         reason="板书文档编辑 AI 已根据学习需求清单生成空白板书。",
+        visual_result=visual_result,
     )
 
 
@@ -119,6 +143,9 @@ def edit_existing_document(
     focus: BoardFocusRef | None = None,
     target_scope: str | None = None,
     allow_replace_document: bool = False,
+    owner_user_id: str = "",
+    confirmed_visuals: Sequence[Any] = (),
+    visual_bytes_resolver: Callable[[str], tuple[Any, bytes] | bytes | None] | None = None,
 ) -> BoardDocumentEditOutcome:
     target_excerpt = _target_excerpt(selection_excerpt=selection_excerpt, focus=focus, current_document=lesson.board_document)
     is_append_request = requirements.action_type == "append_section"
@@ -129,6 +156,7 @@ def edit_existing_document(
             "已有板书的局部编辑需要先解析目标位置。",
         )
 
+    insertion_plan = build_board_insertion_plan(confirmed_visuals)
     request_kwargs = {
         "intent": "edit_existing_document",
         "lesson_title": lesson.title,
@@ -139,8 +167,9 @@ def edit_existing_document(
         "selection_excerpt": target_excerpt,
         "target_scope": target_scope,
         "allow_replace_document": allow_replace_document or is_whole_document_scope,
+        "visual_manifest": _visual_manifest_payload(insertion_plan, confirmed_visuals),
     }
-    if not is_whole_document_scope:
+    if not is_whole_document_scope and not insertion_plan.items:
         patch_outcome = _try_patch_existing_document(
             lesson=lesson,
             requirements=requirements,
@@ -167,6 +196,14 @@ def edit_existing_document(
         and not (allow_replace_document or is_whole_document_scope)
     ):
         return _no_change(lesson, "非全文编辑返回了整篇替换结果，已阻止写入。")
+    if (
+        insertion_plan.items
+        and target_excerpt
+        and not is_append_request
+        and not is_whole_document_scope
+        and operation != "replace_selection"
+    ):
+        return _no_change(lesson, "带资料视觉的局部编辑必须返回目标范围替换，已阻止范围外写入。")
 
     new_document = _apply_edit_result(
         lesson=lesson,
@@ -175,6 +212,16 @@ def edit_existing_document(
         operation_override=operation,
         allow_replace_document=allow_replace_document or is_whole_document_scope,
     )
+    visual_result = _apply_visual_insertion(
+        new_document,
+        plan=insertion_plan,
+        placements=result.visual_placements,
+        owner_user_id=owner_user_id,
+        lesson_id=lesson.id,
+        visual_bytes_resolver=visual_bytes_resolver,
+        preserved_document=lesson.board_document,
+    )
+    new_document = visual_result.document
     if not document_changed(lesson.board_document, new_document):
         return _no_change(lesson, "板书文档编辑 AI 的结果没有改变当前文档。")
 
@@ -186,6 +233,7 @@ def edit_existing_document(
         chatbot_message=result.chatbot_message.strip() or result.summary.strip(),
         section_titles=result.section_titles,
         reason="板书文档编辑 AI 已根据解析出的目标位置和指令更新板书。",
+        visual_result=visual_result,
     )
 
 
@@ -340,14 +388,17 @@ def _changed(
     diff_preview: list[DiffPreviewItem] | None = None,
     patch_validation: BoardPatchValidationResult | None = None,
     patch_risk_level: str | None = None,
+    visual_result: BoardVisualInsertionResult | None = None,
 ) -> BoardDocumentEditOutcome:
+    visible_chatbot_message = "" if visual_result and visual_result.skipped else chatbot_message
+    verified_summary = "" if visual_result and visual_result.skipped else summary
     return BoardDocumentEditOutcome(
-        chatbot_message=chatbot_message,
+        chatbot_message=visible_chatbot_message,
         new_document=new_document,
         board_decision=BoardDecision(action="edit_board", reason=reason),
         assistant_message_source="board_document_editor_ai",
         operation=operation,
-        summary=summary,
+        summary=verified_summary,
         section_titles=[title.strip() for title in section_titles if title.strip()],
         changed=True,
         operation_status="succeeded",
@@ -356,6 +407,9 @@ def _changed(
         diff_preview=diff_preview or [],
         patch_validation=patch_validation,
         patch_risk_level=patch_risk_level,
+        applied_visual_ids=tuple(visual_result.applied_visual_ids) if visual_result else (),
+        skipped_visual_placements=tuple(visual_result.skipped) if visual_result else (),
+        board_asset_ids=tuple(visual_result.asset_ids) if visual_result else (),
     )
 
 
@@ -397,6 +451,74 @@ def _patch_section_titles(diff_preview: list[DiffPreviewItem]) -> list[str]:
 
 def _request_board_document_edit(request_kwargs: dict[str, object]) -> BoardDocumentEditResult | None:
     return openai_course_ai.generate_board_document_edit(**request_kwargs)
+
+
+def _visual_manifest_payload(
+    plan: BoardInsertionPlan,
+    confirmed_visuals: Sequence[Any],
+) -> list[dict[str, object]]:
+    raw_by_id = {
+        _visual_value(item, "visual_id", "id"): item
+        for item in confirmed_visuals
+        if _visual_value(item, "visual_id", "id")
+    }
+    payload: list[dict[str, object]] = []
+    for item in plan.items:
+        raw = raw_by_id.get(item.visual_id)
+        payload.append(
+            {
+                "visual_id": item.visual_id,
+                "marker": item.marker,
+                "order_index": item.order_index,
+                "kind": item.kind,
+                "caption": item.caption,
+                "source": item.source,
+                "source_locator": item.source_locator,
+                "page_range": _visual_value(raw, "page_range"),
+                "source_before_chunk_id": item.before_chunk_id,
+                "source_after_chunk_id": item.after_chunk_id,
+                "ocr_text": _visual_value(raw, "ocr_text")[:1200],
+            }
+        )
+    return payload
+
+
+def _apply_visual_insertion(
+    document: BoardDocument,
+    *,
+    plan: BoardInsertionPlan,
+    placements: Sequence[Any],
+    owner_user_id: str,
+    lesson_id: str,
+    visual_bytes_resolver: Callable[[str], tuple[Any, bytes] | bytes | None] | None,
+    preserved_document: BoardDocument | None = None,
+) -> BoardVisualInsertionResult:
+    has_marker_text = "[[OPENCLASS_VISUAL_" in _document_text(document)
+    if not plan.items and not has_marker_text:
+        return BoardVisualInsertionResult(document=document)
+    return apply_board_insertion_plan(
+        document,
+        plan=plan,
+        placements=placements,
+        owner_user_id=owner_user_id,
+        lesson_id=lesson_id,
+        visual_bytes_resolver=visual_bytes_resolver or (lambda _visual_id: None),
+        preserved_document=preserved_document,
+    )
+
+
+def _visual_value(value: Any, *names: str) -> str:
+    if isinstance(value, dict):
+        for name in names:
+            if name in value and value[name] is not None:
+                return str(value[name]).strip()
+        return ""
+    for name in names:
+        if hasattr(value, name):
+            candidate = getattr(value, name)
+            if candidate is not None:
+                return str(candidate).strip()
+    return ""
 
 
 def _edit_payload(result: BoardDocumentEditResult, *, prefer_content_html: bool) -> tuple[str, str]:

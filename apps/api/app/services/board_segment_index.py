@@ -17,6 +17,7 @@ INDEXABLE_NODE_TYPES = {
     "table",
     "codeBlock",
     "image",
+    "resourceVisualBlock",
     "blockMath",
 }
 
@@ -160,9 +161,9 @@ def _collect_segments(
             )
         return
 
-    if node_type in {"paragraph", "codeBlock", "image", "blockMath"}:
+    if node_type in {"paragraph", "codeBlock", "image", "resourceVisualBlock", "blockMath"}:
         text = compact_segment_text(_node_text(node), limit=1200)
-        if text or node_type == "image":
+        if text or node_type in {"image", "resourceVisualBlock"}:
             _append_segment(
                 document=document,
                 segments=segments,
@@ -241,6 +242,19 @@ def _append_segment(
 
 def _node_text(node: dict[str, Any]) -> str:
     node_type = node.get("type")
+    if node_type == "resourceVisualBlock":
+        attrs = node.get("attrs")
+        if not isinstance(attrs, dict):
+            return "资料图片"
+        caption = str(attrs.get("caption") or attrs.get("originalAlt") or "资料图片").strip()
+        source = str(
+            attrs.get("sourceTitle")
+            or attrs.get("source")
+            or attrs.get("sourceLocator")
+            or ""
+        ).strip()
+        page = str(attrs.get("pageRange") or "").strip()
+        return " / ".join(part for part in (caption, source, page) if part)
     if node_type in {"inlineMath", "blockMath"}:
         attrs = node.get("attrs")
         latex = attrs.get("latex") if isinstance(attrs, dict) else ""
@@ -276,7 +290,7 @@ def _segment_kind(node_type: str) -> BoardSegmentKind:
         return "code"
     if node_type == "table":
         return "table"
-    if node_type == "image":
+    if node_type in {"image", "resourceVisualBlock"}:
         return "image"
     if node_type in {"inlineMath", "blockMath"}:
         return "formula"

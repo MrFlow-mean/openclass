@@ -3,6 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.models import BoardTaskRequirementSheet, EvidenceBundle, EvidencePurpose, SelectionRef
+from app.services.learning_source_reference_service import (
+    LearningSourceReferenceError,
+    validate_bundle_structure_versions,
+)
 from app.services.resource_resolver import resource_resolver
 
 
@@ -66,6 +70,37 @@ def resolve_board_task_evidence_gate(
             board_task_run_id=board_task_run_id,
         )
         if confirmed is not None:
+            try:
+                validate_bundle_structure_versions(confirmed)
+            except LearningSourceReferenceError:
+                resource_resolver.store.archive_bundle(
+                    owner_user_id=owner_user_id,
+                    bundle_id=confirmed.id,
+                )
+                candidate = resource_resolver.resolve_for_board_task(
+                    owner_user_id=owner_user_id,
+                    package_id=package_id,
+                    lesson_id=lesson_id,
+                    user_message=user_message,
+                    board_task=board_task,
+                    board_task_run_id=board_task_run_id,
+                    purpose="board_edit",
+                    source_reference=source_reference,
+                )
+                if candidate is None:
+                    return EvidenceGateOutcome(
+                        chatbot_message=source_absent_message(),
+                        should_execute=False,
+                    )
+                return EvidenceGateOutcome(
+                    evidence_bundle=candidate,
+                    chatbot_message=evidence_confirmation_message(
+                        base_chatbot_message,
+                        candidate,
+                        action_label="写入或改写板书",
+                    ),
+                    should_execute=False,
+                )
             return EvidenceGateOutcome(evidence_bundle=confirmed, chatbot_message=base_chatbot_message)
         if not source_grounded:
             return EvidenceGateOutcome(chatbot_message=base_chatbot_message)

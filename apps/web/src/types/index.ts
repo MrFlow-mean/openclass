@@ -84,6 +84,12 @@ export interface DiffPreviewItem {
 
 export type LearningSourceConfirmationStatus = "none" | "confirmed" | "skipped" | "stale";
 
+export interface LearningSourceVisualReference {
+  visual_id: string;
+  asset_hash: string;
+  anchor_hash: string;
+}
+
 export interface LearningSourceReference {
   evidence_bundle_id: string;
   source_ingestion_id: string;
@@ -91,6 +97,10 @@ export interface LearningSourceReference {
   source_chapter_id: string;
   chapter_number: string;
   chapter_title: string;
+  scope_kind: "section" | "chapter";
+  scope_chapter_id: string;
+  scope_chapter_number: string;
+  scope_chapter_title: string;
   section_path: string[];
   source_locator: string;
   page_range: string;
@@ -101,7 +111,10 @@ export interface LearningSourceReference {
   chunk_ids: string[];
   source_structure_id: string;
   source_structure_updated_at: string;
+  source_visual_index_version: number;
   content_hash: string;
+  visual_references: LearningSourceVisualReference[];
+  visual_manifest_hash: string;
 }
 
 export interface LearningSourceGrounding {
@@ -338,6 +351,9 @@ export type SourceIngestionStatus = "queued" | "fetching" | "parsing" | "indexin
 export type EvidenceBundleStatus = "candidate" | "confirmed" | "consumed" | "archived";
 export type EvidencePurpose = "chat" | "board_generation" | "board_edit" | "board_explain" | "board_chat";
 export type SourceStructureStatus = "pending" | "building" | "ready" | "linear_only" | "failed";
+export type SourceVisualIndexStatus = "pending" | "ready" | "partial" | "failed" | "unsupported";
+export type SourceVisualKind = "image" | "chart" | "diagram" | "table";
+export type SourceVisualAnchorStatus = "verified" | "unverified";
 export type SourceStructureStrategy =
   | "epub_navigation"
   | "epub_heading"
@@ -401,6 +417,38 @@ export interface RetrievalEvidence {
   metadata: Record<string, unknown>;
 }
 
+export interface RetrievalVisualEvidence {
+  visual_id: string;
+  source_ingestion_id: string;
+  source_title: string;
+  chapter_id?: string | null;
+  section_path: string[];
+  kind: SourceVisualKind;
+  order_index: number;
+  source_locator: string;
+  caption: string;
+  page_no?: number | null;
+  slide_no?: number | null;
+  sheet_name: string;
+  page_range: string;
+  bbox: number[];
+  before_chunk_id?: string | null;
+  after_chunk_id?: string | null;
+  ocr_text: string;
+  anchor_status: SourceVisualAnchorStatus;
+  confidence: number;
+  storage_key: string;
+  mime_type: string;
+  content_hash: string;
+  position_hash: string;
+  asset_hash: string;
+  anchor_hash: string;
+  width?: number | null;
+  height?: number | null;
+  table_data: string[][];
+  metadata: Record<string, unknown>;
+}
+
 export interface SourceStructure {
   id: string;
   owner_user_id: string;
@@ -411,6 +459,9 @@ export interface SourceStructure {
   has_verified_toc: boolean;
   chapter_count: number;
   chunk_count: number;
+  visual_count: number;
+  visual_index_status: SourceVisualIndexStatus;
+  visual_index_version: number;
   confidence: number;
   error: string;
   warnings: string[];
@@ -459,11 +510,44 @@ export interface SourceChunk {
   metadata: Record<string, unknown>;
 }
 
+export interface SourceVisual {
+  id: string;
+  owner_user_id: string;
+  package_id: string;
+  source_ingestion_id: string;
+  structure_id: string;
+  structure_version: number;
+  chapter_id?: string | null;
+  kind: SourceVisualKind;
+  order_index: number;
+  source_locator: string;
+  page_no?: number | null;
+  slide_no?: number | null;
+  sheet_name: string;
+  bbox: number[];
+  before_chunk_id?: string | null;
+  after_chunk_id?: string | null;
+  caption: string;
+  ocr_text: string;
+  anchor_status: SourceVisualAnchorStatus;
+  confidence: number;
+  storage_key: string;
+  mime_type: string;
+  content_hash: string;
+  position_hash: string;
+  width?: number | null;
+  height?: number | null;
+  table_data: string[][];
+  created_at: string;
+  metadata: Record<string, unknown>;
+}
+
 export interface SourceStructureView {
   source: SourceIngestionRecord;
   structure?: SourceStructure | null;
   chapters: SourceChapter[];
   chunks: SourceChunk[];
+  visuals: SourceVisual[];
 }
 
 export interface SourceContentView {
@@ -482,6 +566,7 @@ export interface EvidenceBundle {
   status: EvidenceBundleStatus;
   query: string;
   evidence_items: RetrievalEvidence[];
+  visual_items: RetrievalVisualEvidence[];
   context_text: string;
   token_count: number;
   confirmed_by_user: boolean;
@@ -979,6 +1064,7 @@ export interface SelectionRef {
   source_chapter_id?: string | null;
   source_chapter_number?: string;
   source_chapter_title?: string;
+  source_excerpt?: string;
   source_page_range?: string;
   source_locator?: string;
   source_page_start?: number | null;

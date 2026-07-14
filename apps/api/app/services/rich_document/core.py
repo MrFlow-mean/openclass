@@ -817,7 +817,17 @@ def _html_node_to_blocks(node: dict[str, Any]) -> list[dict[str, Any]]:
         return [{"type": "bulletList" if tag == "ul" else "orderedList", "content": items}] if items else []
     if tag == "table":
         rows = _html_table_rows(children)
-        return [{"type": "table", "content": rows}] if rows else []
+        table_attrs = {
+            "sourceVisualId": attrs.get("data-source-visual-id", ""),
+            "sourceIngestionId": attrs.get("data-source-ingestion-id", ""),
+            "sourceChapterId": attrs.get("data-source-chapter-id", ""),
+            "sourceTitle": html.unescape(attrs.get("data-source-title", "")),
+            "sourceLocator": html.unescape(attrs.get("data-source-locator", "")),
+            "pageNo": attrs.get("data-page-no", ""),
+            "pageRange": attrs.get("data-page-range", ""),
+            "caption": html.unescape(attrs.get("data-caption", "")),
+        }
+        return [{"type": "table", "attrs": table_attrs, "content": rows}] if rows else []
     if tag == "tr":
         cells = [
             _html_table_cell_node(child)
@@ -883,8 +893,17 @@ def html_to_tiptap_doc(content_html: str) -> dict[str, Any]:
 def _resource_visual_attrs(attrs: dict[str, str]) -> dict[str, Any]:
     return {
         "marker": attrs.get("data-openclass-resource-visual", ""),
+        "visualId": attrs.get("data-visual-id", ""),
+        "assetId": attrs.get("data-board-asset-id", ""),
         "caption": html.unescape(attrs.get("data-caption", "")),
         "source": html.unescape(attrs.get("data-source", "")),
+        "sourceTitle": html.unescape(attrs.get("data-source-title", "")),
+        "sourceLocator": html.unescape(attrs.get("data-source-locator", "")),
+        "sourceIngestionId": attrs.get("data-source-ingestion-id", ""),
+        "sourceChapterId": attrs.get("data-source-chapter-id", ""),
+        "pageNo": attrs.get("data-page-no", ""),
+        "pageRange": attrs.get("data-page-range", ""),
+        "kind": attrs.get("data-visual-kind", "image"),
         "recreationKind": attrs.get("data-recreation-kind", "original"),
         "recreationStatus": attrs.get("data-recreation-status", "original_only"),
         "recreationConfidence": attrs.get("data-recreation-confidence", "0.00"),
@@ -894,6 +913,207 @@ def _resource_visual_attrs(attrs: dict[str, str]) -> dict[str, Any]:
         "originalAlt": html.unescape(attrs.get("data-original-alt", "")),
         "originalInitiallyCollapsed": attrs.get("data-original-initially-collapsed", "true") != "false",
     }
+
+
+def tiptap_doc_to_html(content_json: dict[str, Any]) -> str:
+    content = content_json.get("content") if isinstance(content_json, dict) else None
+    if not isinstance(content, list):
+        return "<p></p>"
+    rendered = "".join(_tiptap_node_to_html(node) for node in content if isinstance(node, dict))
+    return rendered or "<p></p>"
+
+
+def rebuild_document_from_content_json(
+    document: BoardDocument,
+    content_json: dict[str, Any],
+) -> BoardDocument:
+    content_html = tiptap_doc_to_html(content_json)
+    return BoardDocument(
+        id=document.id,
+        title=document.title,
+        content_json=content_json,
+        content_html=content_html,
+        content_text=html_to_text(content_html),
+        page_settings=document.page_settings,
+    )
+
+
+def _tiptap_node_to_html(node: dict[str, Any]) -> str:
+    node_type = str(node.get("type") or "")
+    attrs = node.get("attrs") if isinstance(node.get("attrs"), dict) else {}
+    content = node.get("content") if isinstance(node.get("content"), list) else []
+    children = "".join(_tiptap_node_to_html(child) for child in content if isinstance(child, dict))
+    if node_type == "text":
+        rendered = html.escape(str(node.get("text") or ""))
+        for mark in node.get("marks", []):
+            if not isinstance(mark, dict):
+                continue
+            rendered = _render_tiptap_mark(rendered, mark)
+        return rendered
+    if node_type == "hardBreak":
+        return "<br>"
+    if node_type == "paragraph":
+        return f"<p{_tiptap_block_attrs(attrs)}>{children}</p>"
+    if node_type == "heading":
+        try:
+            level = min(3, max(1, int(attrs.get("level") or 1)))
+        except (TypeError, ValueError):
+            level = 1
+        return f"<h{level}{_tiptap_block_attrs(attrs)}>{children}</h{level}>"
+    if node_type == "blockquote":
+        return f"<blockquote>{children}</blockquote>"
+    if node_type == "bulletList":
+        return f"<ul>{children}</ul>"
+    if node_type == "orderedList":
+        start = attrs.get("start")
+        start_attr = f' start="{int(start)}"' if isinstance(start, int) and start != 1 else ""
+        return f"<ol{start_attr}>{children}</ol>"
+    if node_type == "listItem":
+        return f"<li>{children}</li>"
+    if node_type == "codeBlock":
+        language = str(attrs.get("language") or "").strip()
+        class_attr = f' class="language-{html.escape(language, quote=True)}"' if language else ""
+        return f"<pre><code{class_attr}>{children}</code></pre>"
+    if node_type == "table":
+        source_attr_map = {
+            "data-source-visual-id": attrs.get("sourceVisualId"),
+            "data-source-ingestion-id": attrs.get("sourceIngestionId"),
+            "data-source-chapter-id": attrs.get("sourceChapterId"),
+            "data-source-title": attrs.get("sourceTitle"),
+            "data-source-locator": attrs.get("sourceLocator"),
+            "data-page-no": attrs.get("pageNo"),
+            "data-page-range": attrs.get("pageRange"),
+            "data-caption": attrs.get("caption"),
+        }
+        source_attrs = " ".join(
+            f'{key}="{html.escape(str(value), quote=True)}"'
+            for key, value in source_attr_map.items()
+            if value is not None and str(value) != ""
+        )
+        suffix = f" {source_attrs}" if source_attrs else ""
+        return f"<table{suffix}><tbody>{children}</tbody></table>"
+    if node_type == "tableRow":
+        return f"<tr>{children}</tr>"
+    if node_type in {"tableHeader", "tableCell"}:
+        tag = "th" if node_type == "tableHeader" else "td"
+        cell_attrs: list[str] = []
+        for key in ("colspan", "rowspan"):
+            value = attrs.get(key)
+            if isinstance(value, int) and value > 1:
+                cell_attrs.append(f'{key}="{value}"')
+        suffix = f" {' '.join(cell_attrs)}" if cell_attrs else ""
+        return f"<{tag}{suffix}>{children}</{tag}>"
+    if node_type == "inlineMath":
+        latex = str(attrs.get("latex") or "")
+        escaped = html.escape(latex, quote=True)
+        return f'<span data-type="inline-math" data-latex="{escaped}"></span>'
+    if node_type == "blockMath":
+        latex = str(attrs.get("latex") or "")
+        escaped = html.escape(latex, quote=True)
+        return f'<div data-type="block-math" data-latex="{escaped}"></div>'
+    if node_type == "image":
+        src = html.escape(str(attrs.get("src") or ""), quote=True)
+        alt = html.escape(str(attrs.get("alt") or ""), quote=True)
+        title = str(attrs.get("title") or "")
+        title_attr = f' title="{html.escape(title, quote=True)}"' if title else ""
+        return f'<img src="{src}" alt="{alt}"{title_attr}>'
+    if node_type == "pageBreak":
+        return '<div data-type="page-break"></div>'
+    if node_type == "resourceVisualBlock":
+        return _resource_visual_html(attrs)
+    return children
+
+
+def _render_tiptap_mark(rendered: str, mark: dict[str, Any]) -> str:
+    mark_type = str(mark.get("type") or "")
+    attrs = mark.get("attrs") if isinstance(mark.get("attrs"), dict) else {}
+    if mark_type == "bold":
+        return f"<strong>{rendered}</strong>"
+    if mark_type == "italic":
+        return f"<em>{rendered}</em>"
+    if mark_type == "underline":
+        return f"<u>{rendered}</u>"
+    if mark_type == "strike":
+        return f"<s>{rendered}</s>"
+    if mark_type == "code":
+        return f"<code>{rendered}</code>"
+    if mark_type == "link":
+        href = html.escape(str(attrs.get("href") or ""), quote=True)
+        target = html.escape(str(attrs.get("target") or ""), quote=True)
+        target_attr = f' target="{target}"' if target else ""
+        return f'<a href="{href}"{target_attr}>{rendered}</a>'
+    if mark_type in {"textStyle", "highlight"}:
+        styles: list[str] = []
+        style_keys = {
+            "color": "color",
+            "backgroundColor": "background-color",
+            "fontFamily": "font-family",
+            "fontSize": "font-size",
+        }
+        if mark_type == "highlight":
+            style_keys = {"color": "background-color"}
+        for key, css_key in style_keys.items():
+            value = attrs.get(key)
+            if isinstance(value, str) and value.strip():
+                styles.append(f"{css_key}:{html.escape(value.strip(), quote=True)}")
+        if mark_type == "highlight" and not styles:
+            styles.append("background-color:#ffff00")
+        style_attr = f' style="{";".join(styles)}"' if styles else ""
+        return f"<span{style_attr}>{rendered}</span>"
+    return rendered
+
+
+def _tiptap_block_attrs(attrs: dict[str, Any]) -> str:
+    values: list[str] = []
+    text_align = attrs.get("textAlign")
+    if isinstance(text_align, str) and text_align in {"left", "center", "right", "justify"}:
+        values.append(f'style="text-align:{text_align}"')
+    block_id = attrs.get("blockId") or attrs.get("id")
+    if isinstance(block_id, str) and block_id.strip():
+        values.append(f'data-block-id="{html.escape(block_id.strip(), quote=True)}"')
+    return f" {' '.join(values)}" if values else ""
+
+
+def _resource_visual_html(attrs: dict[str, Any]) -> str:
+    attr_map = {
+        "data-type": "resource-visual-block",
+        "data-openclass-resource-visual": attrs.get("marker"),
+        "data-visual-id": attrs.get("visualId"),
+        "data-board-asset-id": attrs.get("assetId"),
+        "data-caption": attrs.get("caption"),
+        "data-source": attrs.get("source"),
+        "data-source-title": attrs.get("sourceTitle") or attrs.get("source"),
+        "data-source-locator": attrs.get("sourceLocator"),
+        "data-source-ingestion-id": attrs.get("sourceIngestionId"),
+        "data-source-chapter-id": attrs.get("sourceChapterId"),
+        "data-page-no": attrs.get("pageNo"),
+        "data-page-range": attrs.get("pageRange"),
+        "data-visual-kind": attrs.get("kind") or "image",
+        "data-recreation-kind": attrs.get("recreationKind") or "original",
+        "data-recreation-status": attrs.get("recreationStatus") or "original_only",
+        "data-recreation-confidence": attrs.get("recreationConfidence") or "0.00",
+        "data-recreation-note": attrs.get("recreationNote"),
+        "data-recreation-html": attrs.get("recreationHtml"),
+        "data-original-src": attrs.get("originalSrc"),
+        "data-original-alt": attrs.get("originalAlt") or attrs.get("caption"),
+        "data-original-initially-collapsed": (
+            "true" if attrs.get("originalInitiallyCollapsed") is True else "false"
+        ),
+    }
+    rendered_attrs = " ".join(
+        f'{key}="{html.escape(str(value), quote=True)}"'
+        for key, value in attr_map.items()
+        if value is not None and str(value) != ""
+    )
+    caption = html.escape(str(attrs.get("caption") or "资料视觉素材"))
+    source = html.escape(str(attrs.get("source") or ""))
+    src = html.escape(str(attrs.get("originalSrc") or ""), quote=True)
+    visual = f'<img src="{src}" alt="{caption}">' if src else ""
+    source_line = f'<p class="openclass-resource-visual-source">来源：{source}</p>' if source else ""
+    return (
+        f"<section {rendered_attrs}><figure>{visual}"
+        f"<figcaption>{caption}</figcaption></figure>{source_line}</section>"
+    )
 
 
 def _markdown_escape(value: str) -> str:
@@ -1000,13 +1220,13 @@ def _markdown_blocks(nodes: list[dict[str, Any]], *, list_depth: int = 0) -> lis
             attrs = node.get("attrs", {})
             caption = str(attrs.get("caption") or "资料视觉素材").strip()
             source = str(attrs.get("source") or "").strip()
-            status = str(attrs.get("recreationStatus") or "").strip()
-            note = str(attrs.get("recreationNote") or "").strip()
-            blocks.append(f"复刻图示：{caption}")
-            if status and status != "recreated":
-                blocks.append(f"复刻状态：{note or '未可靠复刻，保留原图来源供核对。'}")
+            src = str(attrs.get("originalSrc") or "").strip()
+            if src:
+                blocks.append(f"![{_markdown_escape(caption)}]({src})")
+            else:
+                blocks.append(f"资料图示：{caption}")
             if source:
-                blocks.append(f"原图来源：{source}")
+                blocks.append(f"来源：{source}")
         elif content:
             blocks.extend(_markdown_blocks(content, list_depth=list_depth))
     return blocks
@@ -2289,19 +2509,21 @@ def _resource_visual_docx_blocks(attrs: dict[str, Any]) -> list[DocxBlock]:
     visual_attrs = _resource_visual_attrs({str(key): str(value or "") for key, value in attrs.items()})
     caption = str(visual_attrs.get("caption") or "资料视觉素材").strip()
     source = str(visual_attrs.get("source") or "").strip()
-    status = str(visual_attrs.get("recreationStatus") or "").strip()
-    note = str(visual_attrs.get("recreationNote") or "").strip()
     original_src = str(visual_attrs.get("originalSrc") or "").strip()
     original_alt = str(visual_attrs.get("originalAlt") or caption).strip()
-    blocks: list[DocxBlock] = [
-        ("p", [("text", f"复刻图示：{caption}")], {}),
-    ]
-    if status and status != "recreated":
-        blocks.append(("p", [("text", f"复刻状态：{note or '未可靠复刻，保留原图来源供核对。'}")], {}))
+    asset_id = str(visual_attrs.get("assetId") or "").strip()
+    blocks: list[DocxBlock] = []
+    if original_src or asset_id:
+        blocks.append(
+            (
+                "img",
+                [("text", original_alt)],
+                {"src": original_src, "alt": original_alt, "asset_id": asset_id},
+            )
+        )
+    blocks.append(("p", [("text", caption)], {"visual_caption": True}))
     if source:
-        blocks.append(("p", [("text", f"原图来源：{source}")], {}))
-    if original_src:
-        blocks.append(("img", [("text", original_alt)], {"src": original_src, "alt": original_alt}))
+        blocks.append(("p", [("text", f"来源：{source}")], {"visual_source": True}))
     return blocks
 
 
@@ -2959,7 +3181,12 @@ def _maybe_page_break_before_table(target: DocxDocument, rows: TableRows, curren
     return current_units
 
 
-def export_docx(document: BoardDocument, path: Path) -> Path:
+def export_docx(
+    document: BoardDocument,
+    path: Path,
+    *,
+    asset_resolver: Any = None,
+) -> Path:
     from app.services.docx_exporter import export_docx as _export_docx
 
-    return _export_docx(document, path)
+    return _export_docx(document, path, asset_resolver=asset_resolver)

@@ -24,6 +24,7 @@ from app.services.openai_course_ai import (
     emit_ai_stream_event,
     openai_course_ai,
 )
+from app.services.resource_resolver import ResourceResolutionOutcome, resource_resolver
 
 
 def _seed_empty_workspace(store: SqliteCourseStore, user_id: str, title: str = "空白学习页"):
@@ -259,6 +260,8 @@ def test_board_task_requirement_prompt_records_existing_board_workflow(
 ) -> None:
     ai = OpenAICourseAI()
     captured: dict[str, object] = {}
+
+    monkeypatch.setattr(type(ai), "enabled", property(lambda _instance: True))
 
     def _fake_parse(role, system_prompt, user_prompt, schema, **kwargs):
         captured["role"] = role
@@ -600,6 +603,87 @@ def test_explicit_source_intent_is_persisted_in_learning_requirement(
     versions = store.list_learning_requirement_versions(user_id, lesson.id)
     persisted_sheet = json.loads(versions[-1]["sheet_json"])
     assert persisted_sheet["source_grounding"]["requested_by_user"] is True
+
+
+@pytest.mark.parametrize(
+    ("resolution_status", "resolution_metadata"),
+    [
+        ("ambiguous_source", {"reason": "多个资料节点仍无法唯一确定。"}),
+        ("content_unavailable", {"reason": "资料位置已确定，但正文当前不可读取。"}),
+        (
+            "no_match",
+            {
+                "reason": "显式引用的旧章节已经不存在。",
+                "requested_chapter_id": "sourcechapter_stale",
+                "intent_signals": ["explicit_source_chapter_id"],
+            },
+        ),
+    ],
+)
+def test_unusable_explicit_source_reference_is_persisted_as_stale(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+    resolution_status: str,
+    resolution_metadata: dict[str, object],
+) -> None:
+    user_id = f"user_unusable_source_reference_{resolution_status}"
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    lesson = _seed_empty_workspace(store, user_id)
+    monkeypatch.setattr(resource_resolver, "has_ready_sources", lambda **kwargs: True)
+    monkeypatch.setattr(
+        resource_resolver,
+        "preview_for_learning_requirement",
+        lambda **kwargs: ResourceResolutionOutcome(
+            status=resolution_status,
+            metadata=resolution_metadata,
+        ),
+    )
+    refinement_calls = 0
+
+    def _fake_refinement(**kwargs):
+        nonlocal refinement_calls
+        refinement_calls += 1
+        return BlankBoardRequirementRefinement(
+            route="requirement_refining",
+            chatbot_message="需要继续确认资料位置。",
+            progress=100,
+            summary="学习目标已明确，但资料位置当前不可用。",
+            work_mode="knowledge_board",
+            granularity="single_knowledge_point",
+            learning_goal="目标知识点",
+            ready_for_board=True,
+        )
+
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_initial_learning_work_mode",
+        lambda **kwargs: None,
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_blank_board_requirement_refinement",
+        _fake_refinement,
+    )
+    monkeypatch.setattr(
+        openai_course_ai,
+        "generate_learning_intake_reply",
+        lambda **kwargs: ChatbotReply(chatbot_message="请确认具体资料位置。"),
+    )
+
+    response = process_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="请根据上传资料讲解目标知识点。"),
+        user_id=user_id,
+    )
+
+    assert response.active_requirement_sheet is not None
+    assert refinement_calls == 2
+    assert response.active_requirement_sheet.source_grounding.requested_by_user is True
+    assert response.active_requirement_sheet.source_grounding.confirmation_status == "stale"
+    versions = store.list_learning_requirement_versions(user_id, lesson.id)
+    persisted_sheet = json.loads(versions[-1]["sheet_json"])
+    assert persisted_sheet["source_grounding"]["confirmation_status"] == "stale"
 
 
 def test_empty_board_refinement_keeps_pm_draft_internal_and_persists_chatbot_reply(

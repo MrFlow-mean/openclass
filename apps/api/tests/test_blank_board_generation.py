@@ -4,6 +4,7 @@ from app.models import BoardDecision, ChatRequest, EvidenceBundle, LearningClari
 from app.services import blank_board_generation, workspace_state
 from app.services.board_document_editor import BoardDocumentEditOutcome
 from app.services.chat_service import process_chat_on_lesson
+from app.services.confirmed_source_context import load_confirmed_source_context
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
 from app.services.learning_requirement_history import LearningRequirementHistoryRecorder
 from app.services.lesson_factory import build_requirements, create_empty_lesson
@@ -230,6 +231,57 @@ def test_blank_board_generation_uses_confirmed_evidence_bundle(
     assert consumed.status == "consumed"
 
 
+def test_legacy_missing_source_text_bundle_uses_frozen_context(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    lesson_id = _seed_ready_blank_board(store)
+    workspace = store.load_for_user(TEST_USER_ID)
+    package = workspace.packages[0]
+    lesson = package.lessons[-1]
+    assert lesson.learning_requirements is not None
+    history_state = store.load_learning_requirement_history_state(TEST_USER_ID, lesson_id)
+    assert history_state is not None
+    bundle = source_evidence_store.save_bundle(
+        EvidenceBundle(
+            owner_user_id=TEST_USER_ID,
+            package_id=package.id,
+            lesson_id=lesson_id,
+            requirement_run_id=history_state["run_id"],
+            purpose="board_generation",
+            status="confirmed",
+            evidence_items=[
+                RetrievalEvidence(
+                    source_ingestion_id="deleted_legacy_source",
+                    source_title="历史纯文字资料",
+                    chunk_ids=["legacy_chunk"],
+                    expanded_text="历史资料正文快照。",
+                )
+            ],
+            visual_items=[],
+            context_text="历史资料冻结的纯文字上下文。",
+            confirmed_by_user=True,
+            metadata={},
+        )
+    )
+
+    context = load_confirmed_source_context(
+        owner_user_id=TEST_USER_ID,
+        package_id=package.id,
+        lesson_id=lesson_id,
+        requirement_run_id=history_state["run_id"],
+        requirements=lesson.learning_requirements,
+    )
+
+    assert context.evidence_bundle is not None
+    assert context.evidence_bundle.id == bundle.id
+    assert context.context_text == "历史资料冻结的纯文字上下文。"
+    assert context.visual_items == ()
+    assert context.used_legacy_bundle is True
+
+
 @pytest.mark.parametrize("teaching_start_message", ["好", "开始为我讲解"])
 def test_confirm_after_board_generation_teaches_from_first_section(
     monkeypatch: pytest.MonkeyPatch,
@@ -420,6 +472,54 @@ def test_board_generation_action_requires_ready_requirement(
     assert response.chatbot_message == ""
     assert response.board_document_operation_status == "failed"
     assert "学习需求尚未清晰" in (response.board_document_operation_failure_reason or "")
+    saved_lesson = store.load_for_user(TEST_USER_ID).packages[0].lessons[-1]
+    assert saved_lesson.board_document.content_text == ""
+
+
+def test_board_generation_action_blocks_stale_source_reference(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    lesson_id = _seed_ready_blank_board(store)
+    workspace = store.load_for_user(TEST_USER_ID)
+    lesson = workspace.packages[0].lessons[-1]
+    assert lesson.learning_requirements is not None
+    lesson.learning_requirements.source_grounding = lesson.learning_requirements.source_grounding.model_copy(
+        update={
+            "requested_by_user": True,
+            "confirmation_status": "stale",
+        }
+    )
+    history_state = store.load_learning_requirement_history_state(TEST_USER_ID, lesson_id)
+    recorder = LearningRequirementHistoryRecorder.from_store_state(
+        owner_user_id=TEST_USER_ID,
+        lesson_id=lesson_id,
+        state=history_state,
+    )
+    clarification = LearningClarificationStatus.model_validate_json(history_state["latest_clarification_json"])
+    recorder.record_update(requirements=lesson.learning_requirements, clarification=clarification)
+    store.save_for_user_with_learning_requirement_history(
+        TEST_USER_ID,
+        workspace,
+        learning_requirement_history_operations=recorder.operations,
+    )
+
+    monkeypatch.setattr(
+        blank_board_generation,
+        "generate_from_requirements",
+        lambda **kwargs: pytest.fail("BoardEditor must not run with a stale source reference."),
+    )
+
+    response = process_chat_on_lesson(
+        lesson_id,
+        ChatRequest(message="开始生成板书", board_generation_action="start"),
+        user_id=TEST_USER_ID,
+    )
+
+    assert response.board_document_operation_status == "failed"
+    assert "资料章节当前不可用" in (response.board_document_operation_failure_reason or "")
     saved_lesson = store.load_for_user(TEST_USER_ID).packages[0].lessons[-1]
     assert saved_lesson.board_document.content_text == ""
 

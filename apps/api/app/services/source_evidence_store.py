@@ -97,6 +97,7 @@ class SourceEvidenceStore:
                     status TEXT NOT NULL,
                     query TEXT NOT NULL,
                     evidence_items_json TEXT NOT NULL,
+                    visual_items_json TEXT NOT NULL DEFAULT '[]',
                     context_text TEXT NOT NULL,
                     token_count INTEGER NOT NULL,
                     confirmed_by_user INTEGER NOT NULL,
@@ -109,6 +110,14 @@ class SourceEvidenceStore:
                     ON evidence_bundles(owner_user_id, lesson_id, status, updated_at);
                 """
             )
+            bundle_columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(evidence_bundles)").fetchall()
+            }
+            if "visual_items_json" not in bundle_columns:
+                conn.execute(
+                    "ALTER TABLE evidence_bundles ADD COLUMN visual_items_json TEXT NOT NULL DEFAULT '[]'"
+                )
             self._initialized_paths.add(path_key)
 
     def get_notebook_id(self, *, owner_user_id: str, package_id: str) -> str | None:
@@ -287,12 +296,13 @@ class SourceEvidenceStore:
                         """
                         INSERT INTO evidence_bundles(
                             id, owner_user_id, package_id, lesson_id, requirement_run_id, board_task_run_id,
-                            purpose, status, query, evidence_items_json, context_text, token_count,
+                            purpose, status, query, evidence_items_json, visual_items_json, context_text, token_count,
                             confirmed_by_user, created_at, updated_at, confirmed_at, metadata_json
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ON CONFLICT(id) DO UPDATE SET
                             status = excluded.status,
                             evidence_items_json = excluded.evidence_items_json,
+                            visual_items_json = excluded.visual_items_json,
                             context_text = excluded.context_text,
                             token_count = excluded.token_count,
                             confirmed_by_user = excluded.confirmed_by_user,
@@ -311,6 +321,7 @@ class SourceEvidenceStore:
                             bundle.status,
                             bundle.query,
                             _dumps([item.model_dump(mode="json") for item in bundle.evidence_items]),
+                            _dumps([item.model_dump(mode="json") for item in bundle.visual_items]),
                             bundle.context_text,
                             bundle.token_count,
                             int(bundle.confirmed_by_user),
@@ -455,6 +466,7 @@ class SourceEvidenceStore:
             status=row["status"],
             query=row["query"],
             evidence_items=_loads(row["evidence_items_json"], []),
+            visual_items=_loads(row["visual_items_json"], []),
             context_text=row["context_text"],
             token_count=row["token_count"],
             confirmed_by_user=bool(row["confirmed_by_user"]),

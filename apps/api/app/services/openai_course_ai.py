@@ -387,6 +387,15 @@ class BoardExplanationDirective(BaseModel):
 BoardDocumentEditOperation = Literal["replace_document", "replace_selection", "append_section"]
 
 
+class BoardVisualPlacement(BaseModel):
+    visual_id: str
+    marker: str
+    target_text_anchor: str
+    source_before_chunk_id: str = ""
+    source_after_chunk_id: str = ""
+    reason: str = ""
+
+
 class BoardDocumentEditResult(BaseModel):
     operation: BoardDocumentEditOperation = "replace_document"
     title: str = ""
@@ -395,6 +404,7 @@ class BoardDocumentEditResult(BaseModel):
     summary: str = ""
     chatbot_message: str = ""
     section_titles: list[str] = Field(default_factory=list)
+    visual_placements: list[BoardVisualPlacement] = Field(default_factory=list)
 
     @field_validator("title", "content_text", "content_html", "summary", "chatbot_message", mode="before")
     @classmethod
@@ -1585,6 +1595,7 @@ class OpenAICourseAI:
         requirement_context: dict[str, Any],
         editor_summary: str,
         section_titles: list[str],
+        applied_visual_ids: list[str],
     ) -> ChatbotReply | None:
         if not self.enabled:
             return None
@@ -1596,7 +1607,9 @@ class OpenAICourseAI:
             "1. 不要输出板书正文、讲义正文、练习正文或长篇教学内容；右侧文档已经由板书文档编辑 AI 完成。\n"
             "2. 不要开始正式讲解，只提出下一步教学邀请，等待用户确认。\n"
             "3. 语气自然，结合学习需求和板书结构表达，不要套用固定格式。\n"
-            "4. 不写任何固定主题模板，不根据主题名、资料名或样例走特殊规则。"
+            "4. 不写任何固定主题模板，不根据主题名、资料名或样例走特殊规则。\n"
+            "5. 图表是否实际写入只能依据 applied_visual_ids。该数组为空时，不得声称已插入、已附加或已放置图表，"
+            "也不得向学习者提及被跳过、无法定位或插入失败的图表；忽略其他上下文中与此冲突的描述。"
         )
         user_prompt = _json(
             {
@@ -1607,6 +1620,7 @@ class OpenAICourseAI:
                 "requirement_context": requirement_context,
                 "board_editor_summary": editor_summary,
                 "section_titles": section_titles,
+                "applied_visual_ids": applied_visual_ids,
                 "response_contract": {
                     "chatbot_message": "面向学习者的自然语言短回复；确认板书已就绪，并询问是否要从开头开始讲解。",
                 },
@@ -1954,6 +1968,7 @@ class OpenAICourseAI:
         selection_excerpt: str | None = None,
         target_scope: str | None = None,
         allow_replace_document: bool = False,
+        visual_manifest: list[dict[str, Any]] | None = None,
     ) -> BoardDocumentEditResult | None:
         is_initial_generation = intent == "generate_from_requirements"
         system_prompt = (
@@ -1976,7 +1991,8 @@ class OpenAICourseAI:
             "每个分段标题都要表达清楚该段解决的学习问题，不要只写“第一部分”“内容”等空泛标题。\n"
             "3. intent=edit_existing_document 时，有选区就优先 replace_selection；需要新增内容时用 append_section；"
             "只有 target_scope=whole_document 且 allow_replace_document=true 时才允许 replace_document，"
-            "否则不要整体覆盖已有文档。\n"
+            "否则不要整体覆盖已有文档。visual_manifest 非空且已有选区、target_scope 不是 append 或 whole_document 时，"
+            "operation 必须使用 replace_selection，不能把局部改写及图表追加到文末。\n"
             "4. content_text 是可直接进入文档的正文；必须像 ChatGPT 正常回答一样使用 Markdown 或普通文本，"
             "用 Markdown 表达标题、列表、加粗和表格。除真正公式的 LaTeX 定界符外，"
             "不得在 content_text 或 content_html 中输出 HTML 标签，例如 <h1>、<p>、<strong>、<table>。"
@@ -2001,7 +2017,16 @@ class OpenAICourseAI:
             "并可简短说明真正图示应标出的对象和关系。只有真实代码、命令输出或算法伪代码可以使用代码块。\n"
             "12. 抽象或严格定义第一次出现时，先给概念引入，再给正式定义；"
             "如果本节只要求建立直觉，写“注：本节只要求理解该定义所刻画的思想，暂不要求进行形式化证明。”\n"
-            "13. 不写任何固定主题模板，不根据主题名、资料名或样例走特殊规则。"
+            "13. 不写任何固定主题模板，不根据主题名、资料名或样例走特殊规则。\n"
+            "14. 如果 visual_manifest 非空，其中每项的 marker 是后端为已确认资料图表生成的唯一位置标记。"
+            "只有在该图表与正文位置能够明确对应时，才把 marker 原样写成独占一个普通段落的完整内容；"
+            "marker 前后不能出现标题符号、列表符号、解释文字或代码围栏。不得修改、伪造或重复 marker，"
+            "不得输出图片地址、Base64、HTML 图片标签或自行重绘资料图表。"
+            "同一资料内的 marker 顺序必须与 visual_manifest 的 order_index 顺序一致。\n"
+            "15. 每个实际写入的 marker 必须在 visual_placements 返回一项：visual_id 和 marker 必须来自同一清单项；"
+            "target_text_anchor 必须逐字摘录 marker 紧前方且在本次 content_text 中只出现一次的正文段落；"
+            "source_before_chunk_id 与 source_after_chunk_id 必须原样返回清单中的资料文本锚点；"
+            "reason 说明该图表与目标段落的内容关系。位置不明确时不要输出该 marker，也不要在正文或 chatbot_message 中解释。"
         )
         user_payload: dict[str, Any] = {
             "intent": intent,
@@ -2029,7 +2054,12 @@ class OpenAICourseAI:
                 "summary": "一句话说明本次生成或编辑了什么。",
                 "chatbot_message": "可直接展示给学习者的自然语言短回复，说明本次动作结果，不要套用固定格式。",
                 "section_titles": "主要章节标题数组，用于分节讲解。",
+                "visual_placements": (
+                    "实际写入正文的资料视觉位置数组；每项包含 visual_id、marker、target_text_anchor、"
+                    "source_before_chunk_id、source_after_chunk_id 和 reason。没有可靠位置时返回空数组。"
+                ),
             },
+            "visual_manifest": visual_manifest or [],
         }
         if is_initial_generation:
             user_payload["generation_source"] = "frozen_learning_requirement"

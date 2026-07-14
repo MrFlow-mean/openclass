@@ -2,16 +2,21 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
-from app.models import EvidenceBundle, EvidenceConfirmationRequest, EvidenceConfirmationResult, SourceIngestionJob, SourceIngestionRecord, SourceStructureView, UserView
+from app.models import EvidenceBundle, EvidenceConfirmationRequest, EvidenceConfirmationResult, SourceIngestionJob, SourceIngestionRecord, SourceStructureView, SourceVisual, UserView
 from app.routers.auth import current_user
 from app.services import workspace_state
 from app.services.learning_source_reference_service import LearningSourceReferenceError, apply_evidence_confirmation
 from app.services.source_evidence_store import source_evidence_store
-from app.services.source_ingestion_service import SourceIngestionError, source_download_path, source_ingestion_service
+from app.services.source_ingestion_service import (
+    MAX_SOURCE_UPLOAD_BYTES,
+    SourceIngestionError,
+    source_download_path,
+    source_ingestion_service,
+)
 from app.services.source_structure_indexer import source_structure_indexer
 from app.services.source_structure_store import source_structure_store
 
@@ -51,7 +56,7 @@ async def import_package_source(
     package = workspace_state.get_package(workspace, package_id)
     try:
         if file is not None:
-            content = await file.read()
+            content = await _read_limited_source_upload(file)
             if not content:
                 raise HTTPException(status_code=400, detail="Uploaded file is empty.")
             return source_ingestion_service.add_file_source(
@@ -79,6 +84,30 @@ async def import_package_source(
     except SourceIngestionError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     raise HTTPException(status_code=400, detail="Provide a file, source_uri, or pasted text.")
+
+
+async def _read_limited_source_upload(file: UploadFile) -> bytes:
+    declared_size = getattr(file, "size", None)
+    if isinstance(declared_size, int) and declared_size > MAX_SOURCE_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Uploaded source exceeds the {MAX_SOURCE_UPLOAD_BYTES}-byte size limit.",
+        )
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        remaining = MAX_SOURCE_UPLOAD_BYTES - total
+        chunk = await file.read(min(1024 * 1024, remaining + 1))
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > MAX_SOURCE_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Uploaded source exceeds the {MAX_SOURCE_UPLOAD_BYTES}-byte size limit.",
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 @router.get("/api/packages/{package_id}/sources/jobs", response_model=list[SourceIngestionJob])
@@ -229,7 +258,74 @@ def get_package_source_structure(
     source = source_evidence_store.get_source(owner_user_id=user.id, package_id=package_id, source_id=source_id)
     if source is None:
         raise HTTPException(status_code=404, detail="Source not found.")
+    source_structure_indexer.ensure_structure(source)
     return source_structure_store.get_structure_view(source=source)
+
+
+@router.get(
+    "/api/packages/{package_id}/sources/{source_id}/visuals",
+    response_model=list[SourceVisual],
+)
+def list_package_source_visuals(
+    package_id: str,
+    source_id: str,
+    chapter_id: str | None = Query(default=None),
+    verified_only: bool = Query(default=False),
+    user: UserView = Depends(current_user),
+) -> list[SourceVisual]:
+    workspace = workspace_state.load_workspace_for_user(user.id)
+    workspace_state.get_package(workspace, package_id)
+    source = source_evidence_store.get_source(
+        owner_user_id=user.id,
+        package_id=package_id,
+        source_id=source_id,
+    )
+    if source is None:
+        raise HTTPException(status_code=404, detail="Source not found.")
+    source_structure_indexer.ensure_structure(source)
+    return source_structure_store.list_visuals(
+        owner_user_id=user.id,
+        package_id=package_id,
+        source_id=source_id,
+        chapter_id=chapter_id,
+        verified_only=verified_only,
+    )
+
+
+@router.get("/api/packages/{package_id}/sources/{source_id}/visuals/{visual_id}/asset")
+def read_package_source_visual_asset(
+    package_id: str,
+    source_id: str,
+    visual_id: str,
+    user: UserView = Depends(current_user),
+) -> Response:
+    workspace = workspace_state.load_workspace_for_user(user.id)
+    workspace_state.get_package(workspace, package_id)
+    source = source_evidence_store.get_source(
+        owner_user_id=user.id,
+        package_id=package_id,
+        source_id=source_id,
+    )
+    if source is None:
+        raise HTTPException(status_code=404, detail="Source not found.")
+    result = source_structure_store.read_visual_bytes(
+        owner_user_id=user.id,
+        package_id=package_id,
+        source_id=source_id,
+        visual_id=visual_id,
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="Source visual asset not found.")
+    visual, content = result
+    return Response(
+        content=content,
+        media_type=visual.mime_type or "application/octet-stream",
+        headers={
+            "Cache-Control": "private, max-age=31536000, immutable",
+            "ETag": f'"{visual.content_hash}"',
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @router.post("/api/packages/{package_id}/sources/{source_id}/structure/rebuild", response_model=SourceStructureView)

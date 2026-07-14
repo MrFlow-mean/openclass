@@ -14,6 +14,7 @@ from app.services.source_evidence_store import SourceEvidenceStore, source_evide
 from app.services.source_ingestion_jobs import SourceIngestionJobStore, source_ingestion_job_store
 from app.services.source_structure_indexer import SourceStructureIndexer
 from app.services.source_structure_store import SourceStructureStore, source_structure_store
+from app.services.source_visual_extraction import CURRENT_SOURCE_VISUAL_INDEX_VERSION
 from app.services.source_url_snapshot import SourceUrlSnapshotError, fetch_url_source_snapshot
 from app.services.youtube_transcript_adapter import (
     YouTubeTranscriptAdapter,
@@ -34,6 +35,7 @@ SUPPORTED_FILE_MIME_PREFIXES = (
     "video/",
     "image/",
 )
+MAX_SOURCE_UPLOAD_BYTES = 100 * 1024 * 1024
 
 
 class SourceIngestionError(RuntimeError):
@@ -116,8 +118,10 @@ class SourceIngestionService:
                 "metadata": {
                     **record.metadata,
                     **snapshot_metadata,
+                    "requested_source_uri": normalized_uri,
                     "content_hash": _file_content_hash(local_path),
                     "native_index_version": 1,
+                    "source_visual_index_version": CURRENT_SOURCE_VISUAL_INDEX_VERSION,
                 },
             }
         )
@@ -135,6 +139,10 @@ class SourceIngestionService:
     ) -> SourceIngestionRecord:
         if not file_name.strip():
             raise SourceIngestionError("File name is required.")
+        if len(content) > MAX_SOURCE_UPLOAD_BYTES:
+            raise SourceIngestionError(
+                f"Uploaded source exceeds the {MAX_SOURCE_UPLOAD_BYTES}-byte size limit."
+            )
         if not _supported_mime(mime_type, file_name):
             raise SourceIngestionError("This file type is not supported by the native source importer.")
         display_title = title.strip() or file_name
@@ -181,6 +189,7 @@ class SourceIngestionService:
                     **file_metadata,
                     "content_hash": hashlib.sha256(content).hexdigest(),
                     "native_index_version": 1,
+                    "source_visual_index_version": CURRENT_SOURCE_VISUAL_INDEX_VERSION,
                 },
             }
         )
@@ -207,7 +216,11 @@ class SourceIngestionService:
             mime_type="text/markdown",
             size_bytes=len(content.encode("utf-8")),
             status="ready",
-            metadata={"adapter": "openclass_native_text", "native_index_version": 1},
+            metadata={
+                "adapter": "openclass_native_text",
+                "native_index_version": 1,
+                "source_visual_index_version": CURRENT_SOURCE_VISUAL_INDEX_VERSION,
+            },
         )
         metadata = _save_local_source_text(record, content)
         record = record.model_copy(
@@ -282,6 +295,7 @@ class SourceIngestionService:
                     "content_hash": hashlib.sha256(normalized.encode("utf-8")).hexdigest(),
                     "content_edited": True,
                     "native_index_version": 1,
+                    "source_visual_index_version": CURRENT_SOURCE_VISUAL_INDEX_VERSION,
                 }
             }
         )
@@ -516,6 +530,7 @@ class SourceIngestionService:
                     **_save_local_source_text(record_for_file, transcript.text),
                     "content_hash": hashlib.sha256(transcript_bytes).hexdigest(),
                     "native_index_version": 1,
+                    "source_visual_index_version": CURRENT_SOURCE_VISUAL_INDEX_VERSION,
                 },
             }
         )

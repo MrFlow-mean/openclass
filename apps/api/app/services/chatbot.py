@@ -310,6 +310,7 @@ def _run_board_task_refinement_turn(
                 conversation_summary=_conversation_summary(request.conversation),
                 history_stamp=outcome.history_stamp,
                 history_operations=outcome.history_operations,
+                history_state=history_state,
                 evidence_bundle=candidate_evidence,
             )
             workspace_state.normalize_package_state(package)

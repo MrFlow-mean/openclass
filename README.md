@@ -99,9 +99,15 @@ npm run dev              # 同时启动前后端
 OPENCLASS_DATABASE_PATH=/var/lib/openclass/openclass.sqlite3
 OPENCLASS_UPLOAD_DIR=/var/lib/openclass/uploads
 OPENCLASS_EXPORT_DIR=/var/lib/openclass/exports
+OPENCLASS_BOARD_ASSET_DIR=/var/lib/openclass/board-assets
+OPENCLASS_LIBREOFFICE_PATH=/absolute/path/to/soffice
 OPENCLASS_PUBLIC_ORIGIN=https://your-domain.example
 OPENCLASS_WEB_ORIGIN=https://your-domain.example
 ```
+
+`OPENCLASS_LIBREOFFICE_PATH` 用于忠实渲染 Office（办公文档）原生图表和组合图；如果显式配置的路径不可执行，API（应用程序接口）会在启动检查时拒绝运行。未配置时，文字与可直接提取的图片、表格仍可索引，无法可靠渲染或定位的原生图表只记入部分索引状态，不会猜测插入位置。
+
+资料视觉索引只处理静态文件与网页结构。音频和视频继续只使用转录文本，不抽取视频帧，也不把画面登记为板书视觉证据。
 
 ## 模型与 Provider（模型提供方）
 

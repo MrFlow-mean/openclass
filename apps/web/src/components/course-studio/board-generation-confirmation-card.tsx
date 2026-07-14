@@ -1,4 +1,4 @@
-import { Check, FileText, X } from "lucide-react";
+import { Check, FileText, ImageIcon, X } from "lucide-react";
 
 import type {
   BoardTaskRequirementSheet,
@@ -6,6 +6,7 @@ import type {
   EvidenceBundle,
   LearningClarificationStatus,
   RetrievalEvidence,
+  RetrievalVisualEvidence,
 } from "@/types";
 
 type BoardGenerationConfirmationCardProps = {
@@ -39,6 +40,7 @@ export function BoardGenerationConfirmationCard({
     candidateEvidenceBundle?.status === "candidate" &&
     (candidateEvidenceBundle.purpose === "board_generation" || isExistingBoardWrite);
   const startDisabled = isChatBusy || isPendingEvidenceLoading || requiresEvidenceConfirmation;
+  const visualItems = candidateEvidenceBundle?.visual_items ?? [];
 
   function submitBoardGeneration() {
     const payload: ChatRequestPayload = {
@@ -61,7 +63,7 @@ export function BoardGenerationConfirmationCard({
   }
 
   return (
-    <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+    <div data-board-generation-confirmation-card className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
       <p className="text-[11px] font-bold uppercase tracking-widest text-emerald-700">
         {isExistingBoardWrite ? "板书写入已准备好" : "学习需求已清晰"}
       </p>
@@ -74,15 +76,32 @@ export function BoardGenerationConfirmationCard({
         <div className="mt-3 border-t border-emerald-100 pt-3">
           <div className="flex items-center justify-between gap-3">
             <p className="text-[11px] font-bold uppercase tracking-widest text-emerald-700">本轮资料依据</p>
-            <span className="rounded-full bg-white px-2 py-1 text-[11px] font-semibold text-emerald-700">
-              {requiresEvidenceConfirmation ? "待确认" : "已确认"}
-            </span>
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              {visualItems.length ? (
+                <span className="rounded-full bg-white px-2 py-1 text-[11px] font-semibold text-emerald-700">
+                  图表 {visualItems.length}
+                </span>
+              ) : null}
+              <span className="rounded-full bg-white px-2 py-1 text-[11px] font-semibold text-emerald-700">
+                {requiresEvidenceConfirmation ? "待确认" : "已确认"}
+              </span>
+            </div>
           </div>
           <div className="mt-3 space-y-3">
             {candidateEvidenceBundle.evidence_items.slice(0, 4).map((item) => (
               <EvidenceSummary key={item.id} item={item} />
             ))}
           </div>
+          {visualItems.length ? (
+            <div className="mt-3 border-t border-emerald-100 pt-3">
+              <p className="text-[11px] font-bold uppercase tracking-widest text-emerald-700">本轮资料图表</p>
+              <div className="mt-2 space-y-2">
+                {visualItems.map((item) => (
+                  <VisualEvidenceSummary key={item.visual_id} item={item} />
+                ))}
+              </div>
+            </div>
+          ) : null}
           {requiresEvidenceConfirmation ? (
             <div className="mt-3 grid grid-cols-2 gap-2">
               <button
@@ -144,6 +163,20 @@ function EvidenceSummary({ item }: { item: RetrievalEvidence }) {
       </p>
       {item.chapter_id ? <p className="text-[11px] font-semibold text-emerald-700">已按验证目录定位正文</p> : null}
       <p className="max-h-16 overflow-hidden text-gray-600">{item.excerpt}</p>
+    </div>
+  );
+}
+
+function VisualEvidenceSummary({ item }: { item: RetrievalVisualEvidence }) {
+  const pageLabel = item.page_range || (item.page_no != null ? `第 ${item.page_no} 页` : "");
+  const location = [item.source_title, pageLabel].filter(Boolean).join(" / ");
+  return (
+    <div className="grid gap-1 text-xs leading-5 text-emerald-950">
+      <p className="flex items-start gap-2 font-semibold">
+        <ImageIcon className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
+        <span className="min-w-0 break-words">{item.caption || "资料图表"}</span>
+      </p>
+      {location ? <p className="pl-6 text-[11px] text-gray-600">{location}</p> : null}
     </div>
   );
 }
