@@ -910,6 +910,19 @@ export interface AdminOverview {
 export interface AIModelSelection {
   provider: AIProvider;
   model: string;
+  reasoning_effort?: string | null;
+  service_tier?: string | null;
+}
+
+export interface AIReasoningEffortOption {
+  reasoning_effort: string;
+  description: string;
+}
+
+export interface AIServiceTierOption {
+  id: string;
+  name: string;
+  description: string;
 }
 
 export interface AIModelOption {
@@ -921,6 +934,10 @@ export interface AIModelOption {
   configured: boolean;
   default: boolean;
   transport?: AIRealtimeTransport | null;
+  default_reasoning_effort?: string | null;
+  supported_reasoning_efforts?: AIReasoningEffortOption[];
+  default_service_tier?: string | null;
+  service_tiers?: AIServiceTierOption[];
 }
 
 export interface AIModelCatalog {

@@ -14,6 +14,7 @@ import {
   persistModelSelection,
   readStoredModelSelection,
   resolveModelSelection,
+  selectionForModelOption,
 } from "@/components/course-studio/model-catalog";
 import type { AIModelCatalog, AIModelOption, AIModelSelection } from "@/types";
 
@@ -82,11 +83,12 @@ export function useModelCatalog() {
     selectedRealtimeOption?.transport ??
     (selectedRealtimeModel.provider === "openai" ? "openai_webrtc" : "gemini_live_websocket");
 
-  function selectTextModel(option: AIModelOption) {
-    if (!option.enabled) {
+  function selectTextModel(selection: AIModelSelection) {
+    const option = findModelOption(modelCatalog.text, selection);
+    if (!option?.enabled) {
       return;
     }
-    const nextSelection = optionToSelection(option);
+    const nextSelection = selectionForModelOption(option, selection);
     setSelectedTextModel(nextSelection);
     persistModelSelection(TEXT_MODEL_STORAGE_KEY, nextSelection);
     setOpenModelMenu(null);

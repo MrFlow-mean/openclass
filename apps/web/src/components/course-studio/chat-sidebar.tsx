@@ -17,6 +17,7 @@ import { useState, type Dispatch, type HTMLAttributes, type ReactNode, type RefO
 
 import { CourseChatMessage } from "@/components/chatbot";
 import { BoardGenerationConfirmationCard } from "@/components/course-studio/board-generation-confirmation-card";
+import { CodexModelSettingsPicker } from "@/components/course-studio/codex-model-settings-picker";
 import {
   modelButtonLabel,
   modelOptionKey,
@@ -345,7 +346,7 @@ type CourseStudioChatSidebarProps = {
   onScopeAction: (option: ScopeOption) => void | Promise<void>;
   onBoardEditAction: (action: "confirm" | "skip") => void | Promise<void>;
   onEvidenceAction: (bundleId: string, action: "confirm" | "skip") => void | Promise<void>;
-  onSelectTextModel: (option: AIModelOption) => void;
+  onSelectTextModel: (selection: AIModelSelection) => void;
   onSelectRealtimeModel: (option: AIModelOption) => void;
   onVoiceToggle: () => void | Promise<void>;
   onExitPreviewMode: () => void;
@@ -409,6 +410,7 @@ export function CourseStudioChatSidebar({
 }: CourseStudioChatSidebarProps) {
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editingMessageContent, setEditingMessageContent] = useState("");
+  const textModelReady = Boolean(selectedTextOption?.enabled);
 
   function startEditingMessage(message: ChatMessage) {
     setEditingMessageId(message.id);
@@ -417,7 +419,7 @@ export function CourseStudioChatSidebar({
 
   async function submitEditedMessage(message: ChatMessage) {
     const nextContent = editingMessageContent.trim();
-    if (!nextContent || isChatBusy) {
+    if (!nextContent || isChatBusy || !textModelReady) {
       return;
     }
     await onEditMessage(message, nextContent);
@@ -629,16 +631,14 @@ export function CourseStudioChatSidebar({
 
       <div className="shrink-0 border-t border-gray-100 bg-white px-3 py-3">
         <div className="mb-2 grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_40px] items-center gap-2">
-          <ModelPicker
-            kind="text"
-            label="文本生成"
-            icon={<BrainCircuit className="h-4 w-4 shrink-0 text-gray-600" />}
-            openModelMenu={openModelMenu}
-            setOpenModelMenu={setOpenModelMenu}
+          <CodexModelSettingsPicker
+            open={openModelMenu === "text"}
+            onOpenChange={(open) => setOpenModelMenu(open ? "text" : null)}
             selectedModel={selectedTextModel}
             selectedOption={selectedTextOption}
+            defaultSelection={modelCatalog.defaults.text}
             options={modelCatalog.text}
-            onSelect={onSelectTextModel}
+            onChange={onSelectTextModel}
           />
           <ModelPicker
             kind="realtime"
@@ -721,7 +721,7 @@ export function CourseStudioChatSidebar({
             onInput={() => onAdjustComposerHeight()}
             onKeyDown={(event) => {
               if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-                if (isChatBusy) {
+                if (isChatBusy || !textModelReady) {
                   return;
                 }
                 event.preventDefault();
@@ -812,7 +812,7 @@ export function CourseStudioChatSidebar({
               }}
               aria-label={isChatBusy ? "停止回复" : "发送消息"}
               title={isChatBusy ? "停止回复" : "发送消息"}
-              disabled={!isChatBusy && !chatInput.trim()}
+              disabled={!isChatBusy && (!chatInput.trim() || !textModelReady)}
               className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#1a1a1a] text-white shadow-sm transition-colors hover:bg-black disabled:cursor-not-allowed disabled:opacity-60"
             >
               {isChatBusy ? (

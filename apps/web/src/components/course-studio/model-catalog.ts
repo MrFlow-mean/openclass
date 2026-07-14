@@ -32,8 +32,8 @@ export const FALLBACK_MODEL_CATALOG: AIModelCatalog = {
   text: [
     {
       provider: "openai_codex",
-      model: "gpt-5.5",
-      label: "OpenAI Codex GPT-5.5",
+      model: "gpt-5.6-sol",
+      label: "OpenAI Codex GPT-5.6-Sol",
       capability: "text",
       enabled: false,
       configured: false,
@@ -52,7 +52,7 @@ export const FALLBACK_MODEL_CATALOG: AIModelCatalog = {
     },
   ],
   defaults: {
-    text: { provider: "openai_codex", model: "gpt-5.5" },
+    text: { provider: "openai_codex", model: "gpt-5.6-sol" },
     realtime: { provider: "openai_codex", model: "realtime-unavailable" },
   },
 };
@@ -123,9 +123,43 @@ export function modelButtonLabel(option: AIModelOption | null, fallback: AIModel
 }
 
 export function optionToSelection(option: AIModelOption): AIModelSelection {
+  return selectionForModelOption(option, null);
+}
+
+export function selectionForModelOption(
+  option: AIModelOption,
+  current: AIModelSelection | null
+): AIModelSelection {
+  const reasoningOptions = option.supported_reasoning_efforts ?? [];
+  const supportedEfforts = new Set(reasoningOptions.map((item) => item.reasoning_effort));
+  const currentEffort = current?.reasoning_effort?.trim() || null;
+  const defaultEffort = option.default_reasoning_effort?.trim() || null;
+  const reasoningEffort =
+    (currentEffort && supportedEfforts.has(currentEffort) ? currentEffort : null) ??
+    (defaultEffort && (!supportedEfforts.size || supportedEfforts.has(defaultEffort)) ? defaultEffort : null) ??
+    reasoningOptions[0]?.reasoning_effort ??
+    (!supportedEfforts.size ? currentEffort : null);
+
+  const serviceTiers = option.service_tiers;
+  const supportedServiceTiers = new Set((serviceTiers ?? []).map((item) => item.id));
+  const currentHasServiceTier = Boolean(current && Object.hasOwn(current, "service_tier"));
+  const currentServiceTier = current?.service_tier?.trim() || null;
+  const defaultServiceTier = option.default_service_tier?.trim() || null;
+  const serviceTier =
+    serviceTiers === undefined
+      ? currentHasServiceTier
+        ? currentServiceTier
+        : defaultServiceTier
+      : currentHasServiceTier && currentServiceTier === null
+        ? null
+        : (currentServiceTier && supportedServiceTiers.has(currentServiceTier) ? currentServiceTier : null) ??
+          (defaultServiceTier && supportedServiceTiers.has(defaultServiceTier) ? defaultServiceTier : null);
+
   return {
     provider: option.provider,
     model: option.model,
+    reasoning_effort: reasoningEffort,
+    service_tier: serviceTier,
   };
 }
 
@@ -138,7 +172,9 @@ function isModelSelection(value: unknown): value is AIModelSelection {
     typeof candidate.provider === "string" &&
     candidate.provider in PROVIDER_LABELS &&
     typeof candidate.model === "string" &&
-    candidate.model.trim().length > 0
+    candidate.model.trim().length > 0 &&
+    (candidate.reasoning_effort == null || typeof candidate.reasoning_effort === "string") &&
+    (candidate.service_tier == null || typeof candidate.service_tier === "string")
   );
 }
 
@@ -232,11 +268,13 @@ export function resolveModelSelection(
   preferred: AIModelSelection | null,
   fallback: AIModelSelection
 ): AIModelSelection {
-  if (preferred && findEnabledModelOption(options, preferred)) {
-    return preferred;
+  const preferredOption = preferred ? findEnabledModelOption(options, preferred) : null;
+  if (preferredOption) {
+    return selectionForModelOption(preferredOption, preferred);
   }
-  if (findEnabledModelOption(options, fallback)) {
-    return fallback;
+  const fallbackOption = findEnabledModelOption(options, fallback);
+  if (fallbackOption) {
+    return selectionForModelOption(fallbackOption, fallback);
   }
   const defaultOption =
     options.find((option) => option.default && option.enabled) ?? options.find((option) => option.enabled) ?? options[0];
