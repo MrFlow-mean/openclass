@@ -4,6 +4,7 @@ import {
   BrainCircuit,
   CheckCircle2,
   ChevronDown,
+  FileText,
   LoaderCircle,
   MessageSquare,
   PencilLine,
@@ -120,6 +121,24 @@ function hasVisibleLearningClarity(
     clarityStatus.key_facts.length > 0 ||
     clarityStatus.checklist.length > 0 ||
     Boolean(activeRequirementSheet?.work_mode && activeRequirementSheet.work_mode !== "unknown")
+  );
+}
+
+function DocumentAccessCard({ lesson }: { lesson: Lesson }) {
+  const documentTitle = lesson.board_document.title.trim() || "未命名文档";
+
+  return (
+    <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
+      <div className="flex items-center gap-2 text-gray-900">
+        <FileText className="h-4 w-4" />
+        <p className="text-[11px] font-bold uppercase tracking-widest">Codex · 文档工作区</p>
+      </div>
+      <p className="mt-3 text-[11px] font-semibold text-gray-500">当前可访问文件</p>
+      <p className="mt-1 truncate text-sm font-semibold text-gray-900" title={documentTitle}>
+        {documentTitle}
+      </p>
+      <p className="mt-2 text-xs leading-5 text-gray-600">本次对话只读取和修改右侧文档。</p>
+    </div>
   );
 }
 
@@ -443,6 +462,7 @@ export function CourseStudioChatSidebar({
       </div>
       <div className="flex-1 overflow-y-auto p-6 custom-scrollbar">
         <div className="space-y-6">
+          <DocumentAccessCard lesson={activeLesson} />
           <CurrentNeedCard
             activeBoardTask={!isPreviewMode ? activeBoardTask : null}
             activeRequirementSheet={!isPreviewMode ? activeRequirementSheet : null}
@@ -732,12 +752,12 @@ export function CourseStudioChatSidebar({
               isPreviewMode
                   ? "点击输入会回到当前版本并继续对话"
                   : composerMode === "direct_edit"
-                    ? "描述要怎么改这段板书，或直接说“重写整篇”..."
+                    ? "描述如何修改右侧文档，或直接说“重写整篇”..."
                     : composerSelection
                       ? composerSelection.kind === "source"
                         ? "基于引用章节继续提问"
                         : "基于选中内容继续追问"
-                      : "给 OpenClass 发消息..."
+                      : "和 Codex 讨论当前文档..."
             }
             className="custom-scrollbar block w-full resize-none border-0 bg-transparent px-3.5 py-2.5 text-[13px] leading-relaxed outline-none placeholder:text-gray-400"
           />
@@ -746,7 +766,7 @@ export function CourseStudioChatSidebar({
               <div className="flex shrink-0 items-center gap-1 rounded-md border border-gray-200 bg-gray-50 p-0.5">
                 <button
                   type="button"
-                  aria-label="Ask Mode"
+                  aria-label="对话模式"
                   onClick={() =>
                     onUpdateComposerState((current) => ({
                       ...current,
@@ -757,13 +777,13 @@ export function CourseStudioChatSidebar({
                     "flex h-7 w-7 items-center justify-center rounded text-gray-500 transition-colors hover:bg-white hover:text-black",
                     composerMode === "ask" && "bg-white text-black shadow-sm"
                   )}
-                  title="Ask Mode"
+                  title="对话模式"
                 >
                   <MessageSquare className="h-3.5 w-3.5" />
                 </button>
                 <button
                   type="button"
-                  aria-label="Agent Edit Mode"
+                  aria-label="编辑当前文档"
                   onClick={() => {
                     onUpdateComposerState((current) => ({
                       ...current,
@@ -775,7 +795,7 @@ export function CourseStudioChatSidebar({
                     "flex h-7 w-7 items-center justify-center rounded text-gray-500 transition-colors hover:bg-white hover:text-black",
                     composerMode === "direct_edit" && "bg-white text-amber-700 shadow-sm"
                   )}
-                  title="Agent Edit Mode"
+                  title="编辑当前文档"
                 >
                   <BrainCircuit className="h-3.5 w-3.5" />
                 </button>

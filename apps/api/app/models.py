@@ -1212,6 +1212,7 @@ class SectionTeachingProgressView(BaseModel):
 
 class ChatRequest(BaseModel):
     message: str
+    document_id: str | None = None
     text_model: AIModelSelection | None = None
     board_model: AIModelSelection | None = None
     selection: SelectionRef | None = None

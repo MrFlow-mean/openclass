@@ -1,6 +1,7 @@
 import json
 
 import pytest
+from fastapi import HTTPException
 
 from app.models import ChatRequest, ConversationTurn, SelectionRef, SourceIngestionRecord
 from app.services import workspace_state
@@ -164,6 +165,7 @@ def test_process_chat_on_lesson_records_basic_chat_without_document_change(
         lesson.id,
         ChatRequest(
             message="你现在能正常问答吗？",
+            document_id=lesson.board_document.id,
             conversation=[ConversationTurn(role="user", content="你好")],
         ),
         user_id=TEST_USER_ID,
@@ -221,6 +223,32 @@ def test_process_chat_on_lesson_records_basic_chat_without_document_change(
         "final",
     ]
     assert commit.metadata["document_changed"] is False
+
+
+def test_chat_request_rejects_a_document_outside_the_current_lesson(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    lesson = _seed_workspace(store)
+    workspace = store.load_for_user(TEST_USER_ID)
+    other_lesson = create_empty_lesson("另一份文档")
+    package = workspace.packages[0]
+    package.lessons.append(other_lesson)
+    package.open_lesson_ids.append(other_lesson.id)
+    package.workspace_tab_order.append(other_lesson.id)
+    store.save_for_user(TEST_USER_ID, workspace)
+
+    with pytest.raises(HTTPException) as exc_info:
+        process_chat_on_lesson(
+            lesson.id,
+            ChatRequest(message="修改当前文档", document_id=other_lesson.board_document.id),
+            user_id=TEST_USER_ID,
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "当前对话只能访问右侧文档"
+    saved = store.load_for_user(TEST_USER_ID)
+    saved_lesson = next(item for item in saved.packages[0].lessons if item.id == lesson.id)
+    assert saved_lesson.board_document.content_text == "这段右侧文档不应该被聊天修改。"
 
 
 def test_structured_source_reference_grounds_basic_chat_without_visible_locator_text(

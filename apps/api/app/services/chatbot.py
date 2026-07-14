@@ -25,6 +25,7 @@ from app.services.board_teaching_orchestrator import (
     should_start_board_teaching,
 )
 from app.services.course_runtime import effective_requirements
+from app.services.document_access_scope import ensure_request_targets_current_document
 from app.services.evidence_workflow import (
     resolve_board_task_evidence_gate,
     source_absent_message,
@@ -844,6 +845,7 @@ def _run_chat_turn(lesson_id: str, request: ChatRequest, *, user_id: str) -> Cha
     request = resolve_formula_ink_request(request)
     workspace = workspace_state.load_workspace_for_user(user_id)
     package, lesson = workspace_state.find_lesson_package(workspace, lesson_id)
+    ensure_request_targets_current_document(request, lesson.board_document)
     board_document_state = read_board_document_sensor(lesson.board_document)
     decision = decide_agent_turn(
         lesson=lesson,

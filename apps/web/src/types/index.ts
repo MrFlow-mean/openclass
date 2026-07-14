@@ -1136,6 +1136,7 @@ export interface PatchProposal {
 
 export interface ChatRequestPayload {
   message: string;
+  document_id?: string | null;
   text_model?: AIModelSelection | null;
   board_model?: AIModelSelection | null;
   selection?: SelectionRef | null;

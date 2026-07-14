@@ -317,6 +317,7 @@ export function useLessonChatAgent({
     const lessonId = lesson.id;
     const payloadWithConversation: ChatRequestPayload = {
       ...payload,
+      document_id: payload.document_id ?? currentBoardDocument?.id ?? lesson.board_document.id,
       text_model: payload.text_model ?? selectedTextModel,
       board_model: payload.board_model ?? selectedBoardModel,
       conversation: payload.conversation ?? conversationFromMessages(conversationMessages),
