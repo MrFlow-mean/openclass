@@ -42,7 +42,7 @@ import {
 import { BrandMark } from "@/components/brand-mark";
 import { userAccountLabel } from "@/lib/account";
 import { loginRedirectPath } from "@/lib/auth-redirect";
-import type { AuthProviderView, UserView } from "@/types";
+import type { AuthProviderView, CodexLoginStartResponse, UserView } from "@/types";
 
 type AuthPanelProps = {
   initialMode: "register" | "login";
@@ -562,6 +562,8 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [authProviders, setAuthProviders] = useState<AuthProviderView[]>([]);
+  const [codexLogin, setCodexLogin] = useState<CodexLoginStartResponse | null>(null);
+  const [codexLoginStatus, setCodexLoginStatus] = useState<string | null>(null);
 
   useEffect(() => {
     let disposed = false;
@@ -606,6 +608,50 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
     navigateAfterAuth(loginDestination(currentUser, nextPath), "replace");
   }, [currentUser]);
 
+  useEffect(() => {
+    if (!codexLogin || ["succeeded", "failed", "cancelled", "expired"].includes(codexLoginStatus ?? "")) {
+      return;
+    }
+    const activeCodexLogin = codexLogin;
+    let disposed = false;
+
+    async function refreshLoginStatus() {
+      try {
+        const status = await api.getCodexLoginStatus(activeCodexLogin.login_id);
+        if (disposed) {
+          return;
+        }
+        setCodexLoginStatus(status.status);
+        if (status.status === "succeeded") {
+          const provider = await api.getCodexStatus(true);
+          if (!provider.configured) {
+            throw new Error(provider.message || "ChatGPT 登录尚未完成");
+          }
+          if (!disposed) {
+            navigateAfterAuth("/studio");
+          }
+          return;
+        }
+        if (["failed", "cancelled", "expired"].includes(status.status)) {
+          setCodexLogin(null);
+          setError(status.error || "ChatGPT 登录未完成");
+        }
+      } catch (loginError) {
+        if (!disposed) {
+          setCodexLogin(null);
+          setError(loginError instanceof Error ? loginError.message : "ChatGPT 登录状态检查失败");
+        }
+      }
+    }
+
+    void refreshLoginStatus();
+    const intervalId = window.setInterval(() => void refreshLoginStatus(), 2500);
+    return () => {
+      disposed = true;
+      window.clearInterval(intervalId);
+    };
+  }, [codexLogin, codexLoginStatus]);
+
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setIsLoading(true);
@@ -647,6 +693,42 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
     }
   }
 
+  async function handleChatGPTLogin() {
+    setIsLoading(true);
+    setError(null);
+    setNotice(null);
+    try {
+      if (!readGuestAuthToken()) {
+        const guest = await api.startGuestSession();
+        storeGuestAuthToken(guest.token);
+      }
+      const login = await api.startCodexDeviceLogin();
+      setCodexLogin(login);
+      setCodexLoginStatus("pending");
+      window.open(login.verification_url, "_blank", "noopener,noreferrer");
+    } catch (loginError) {
+      setError(loginError instanceof Error ? loginError.message : "无法开始 ChatGPT 登录");
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  async function handleCancelChatGPTLogin() {
+    if (!codexLogin) {
+      return;
+    }
+    setIsLoading(true);
+    try {
+      await api.cancelCodexLogin(codexLogin.login_id);
+      setCodexLogin(null);
+      setCodexLoginStatus("cancelled");
+    } catch (cancelError) {
+      setError(cancelError instanceof Error ? cancelError.message : "无法取消 ChatGPT 登录");
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
   async function handleHomeAccess() {
     if (currentUser) {
       navigateAfterAuth(loginDestination(currentUser, "/"));
@@ -679,6 +761,8 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
 
   const isRegister = mode === "register";
   const alternateMode = isRegister ? "login" : "register";
+  const isChatGPTLoginPending = Boolean(codexLogin && codexLoginStatus === "pending");
+  const isAuthBusy = isLoading || isChatGPTLoginPending;
 
   return (
     <main className="auth-shell min-h-screen overflow-hidden bg-[#fcfbf9] text-[#3a312b]">
@@ -689,7 +773,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
               <button
                 type="button"
                 onClick={() => void handleHomeAccess()}
-                disabled={isLoading}
+                disabled={isAuthBusy}
                 className="flex min-w-0 items-center gap-3 text-left disabled:cursor-wait disabled:opacity-70"
                 aria-label="进入产品主页"
               >
@@ -704,7 +788,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
               <button
                 type="button"
                 onClick={() => void handleHomeAccess()}
-                disabled={isLoading}
+                disabled={isAuthBusy}
                 className="inline-flex h-9 shrink-0 items-center gap-2 rounded-lg border border-[#ebe2d2] bg-white px-3 text-sm font-semibold text-[#5c4c3c] transition hover:border-[#d2a878] hover:text-[#3a312b] disabled:cursor-wait disabled:opacity-70"
               >
                 <ArrowLeft className="h-4 w-4" />
@@ -757,6 +841,15 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
             ) : (
               <>
                 <div className="mb-5 space-y-3">
+                  <button
+                    type="button"
+                    onClick={() => void handleChatGPTLogin()}
+                    disabled={isAuthBusy}
+                    className="flex w-full items-center justify-center gap-3 rounded-lg border border-[#3a312b] bg-[#3a312b] px-4 py-3.5 text-sm font-semibold text-white shadow-sm transition hover:bg-[#1f1a17] active:scale-[0.99] disabled:cursor-wait disabled:opacity-70"
+                  >
+                    {isLoading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+                    <span className="whitespace-nowrap">使用 ChatGPT 登录</span>
+                  </button>
                   {socialSignInOptions.map((option) => {
                     const provider = authProviders.find((item) => item.kind === "oauth" && item.id === option.id);
                     const isUnconfigured = provider ? !provider.configured : false;
@@ -768,8 +861,9 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                         key={option.id}
                         type="button"
                         onClick={() => handleProviderSignIn(option)}
+                        disabled={isAuthBusy}
                         className={clsx(
-                          "flex w-full items-center justify-center gap-3 rounded-lg border px-4 py-3.5 text-sm font-semibold shadow-sm transition active:scale-[0.99]",
+                          "flex w-full items-center justify-center gap-3 rounded-lg border px-4 py-3.5 text-sm font-semibold shadow-sm transition active:scale-[0.99] disabled:cursor-wait disabled:opacity-70",
                           option.className
                         )}
                       >
@@ -782,6 +876,31 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                     );
                   })}
                 </div>
+
+                {codexLogin ? (
+                  <div className="mb-5 rounded-lg border border-[#b9cbb8] bg-[#f1f7ef] px-3 py-3 text-sm leading-6 text-[#496a4c]">
+                    <p className="font-semibold">请在 ChatGPT 页面完成登录</p>
+                    <p className="mt-1">输入设备码：<span className="font-mono font-bold">{codexLogin.user_code}</span></p>
+                    <div className="mt-2 flex items-center gap-3">
+                      <a
+                        href={codexLogin.verification_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="font-semibold text-[#3a312b] underline underline-offset-2"
+                      >
+                        打开 ChatGPT
+                      </a>
+                      <button
+                        type="button"
+                        onClick={() => void handleCancelChatGPTLogin()}
+                        disabled={isLoading}
+                        className="font-semibold text-[#8d8377] underline underline-offset-2 disabled:opacity-60"
+                      >
+                        取消
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
 
                 {notice ? (
                   <div className="mb-5 rounded-lg border border-[#b9cbb8] bg-[#f1f7ef] px-3 py-2 text-sm leading-6 text-[#496a4c]">
@@ -857,7 +976,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
 
                   <button
                     type="submit"
-                    disabled={isLoading}
+                    disabled={isAuthBusy}
                     className="flex w-full items-center justify-center gap-2 rounded-lg border border-transparent bg-[#3a312b] px-4 py-3 text-sm font-bold text-white shadow-[0_8px_20px_-8px_rgba(58,49,43,0.5)] transition hover:bg-[#1f1a17] focus:outline-none focus:ring-2 focus:ring-[#3a312b] focus:ring-offset-2 disabled:cursor-wait disabled:opacity-70 sm:py-3.5"
                   >
                     {isLoading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <GraduationCap className="h-4 w-4" />}
@@ -884,7 +1003,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                   <button
                     type="button"
                     onClick={() => void handleGuestAccess()}
-                    disabled={isLoading}
+                    disabled={isAuthBusy}
                     className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg border border-[#ebe2d2] bg-white px-4 py-3 text-sm font-bold text-[#5c4c3c] shadow-sm transition hover:border-[#d2a878] hover:text-[#3a312b] disabled:cursor-wait disabled:opacity-70"
                   >
                     {isLoading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
