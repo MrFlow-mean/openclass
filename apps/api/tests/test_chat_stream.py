@@ -13,8 +13,8 @@ from app.models import (
 )
 from app.routers import chat as chat_router
 from app.services.ai_logging import ai_log_context
+from app.services.codex_app_server import CodexTurnCancelledError
 from app.services.lesson_factory import create_empty_lesson
-from app.services.openai_course_ai import AIStreamCancelledError, emit_ai_stream_event
 from app.services.route_context import bind_ai_request_context
 from app.services.workspace_state import package_view_for_lesson
 
@@ -112,27 +112,19 @@ def test_chat_stream_emits_heartbeat_before_final(monkeypatch) -> None:
     ]
     assert lifecycle_elapsed == sorted(lifecycle_elapsed)
     first_chat_delta = next(event for event in logged_events if event["stream_event"] == "first_chat_delta_sent")
-    assert first_chat_delta["role"] == "chatbot"
-    assert first_chat_delta["field"] == "chatbot_message"
+    assert first_chat_delta["role"] == "codex"
+    assert first_chat_delta["field"] == "agent_message"
     assert logged_events[-1]["produced_commit_id"] is not None
 
 
-def test_chat_stream_ignores_pm_draft_and_emits_only_final_chatbot_message(monkeypatch) -> None:
+def test_chat_stream_emits_live_codex_delta_without_replaying_final_message(monkeypatch) -> None:
     logged_events: list[dict] = []
 
-    def process_with_pm_stream(*args, **kwargs) -> ChatResponse:
-        emit_ai_stream_event(
-            {
-                "type": "field_delta",
-                "role": "pm",
-                "field": "chatbot_message",
-                "delta": "正在自然收敛需求。",
-                "value": "正在自然收敛需求。",
-            }
-        )
-        return _chat_response("lesson_stream_test", chatbot_message="这是 Chatbot 的最终回复。")
+    def process_with_codex_stream(*args, **kwargs) -> ChatResponse:
+        kwargs["on_delta"]("这是 Codex 的实时回复。")
+        return _chat_response("lesson_stream_test", chatbot_message="这是 Codex 的实时回复。")
 
-    monkeypatch.setattr(chat_router, "process_chat_on_lesson", process_with_pm_stream)
+    monkeypatch.setattr(chat_router, "process_chat_on_lesson", process_with_codex_stream)
     monkeypatch.setattr(
         chat_router.ai_usage_logger,
         "log_event",
@@ -147,15 +139,14 @@ def test_chat_stream_ignores_pm_draft_and_emits_only_final_chatbot_message(monke
         )
     )
 
-    assert _joined_delta(events, "chat_delta") == "这是 Chatbot 的最终回复。"
-    assert "正在自然收敛需求。" not in _joined_delta(events, "chat_delta")
+    assert _joined_delta(events, "chat_delta") == "这是 Codex 的实时回复。"
     assert [event for event, _payload in events].count("final") == 1
     first_chat_delta_events = [
         event for event in logged_events if event["stream_event"] == "first_chat_delta_sent"
     ]
     assert len(first_chat_delta_events) == 1
-    assert first_chat_delta_events[0]["role"] == "chatbot"
-    assert first_chat_delta_events[0]["field"] == "chatbot_message"
+    assert first_chat_delta_events[0]["role"] == "codex"
+    assert first_chat_delta_events[0]["field"] == "agent_message"
 
 
 def test_chat_stream_synthesizes_final_chatbot_message_as_delta(monkeypatch) -> None:
@@ -264,21 +255,12 @@ def test_chat_stream_synthesizes_document_delta_for_succeeded_board_operation(mo
         event for event in logged_events if event["stream_event"] == "first_document_delta_sent"
     ]
     assert len(first_document_delta_events) == 1
-    assert first_document_delta_events[0]["role"] == "board"
-    assert first_document_delta_events[0]["field"] == "content_text"
+    assert first_document_delta_events[0]["role"] == "codex"
+    assert first_document_delta_events[0]["field"] == "board.md"
 
 
-def test_chat_stream_does_not_emit_intermediate_board_draft(monkeypatch) -> None:
-    def process_with_intermediate_board_draft(*args, **kwargs) -> ChatResponse:
-        emit_ai_stream_event(
-            {
-                "type": "field_delta",
-                "role": "board",
-                "field": "content_text",
-                "delta": "# 中间草稿\n\n这段不应进入右侧预览。",
-                "value": "# 中间草稿\n\n这段不应进入右侧预览。",
-            }
-        )
+def test_chat_stream_emits_only_final_validated_board_document(monkeypatch) -> None:
+    def process_with_final_board(*args, **kwargs) -> ChatResponse:
         return _chat_response(
             "lesson_stream_test",
             chatbot_message="",
@@ -286,7 +268,7 @@ def test_chat_stream_does_not_emit_intermediate_board_draft(monkeypatch) -> None
             board_document_operation_status="succeeded",
         )
 
-    monkeypatch.setattr(chat_router, "process_chat_on_lesson", process_with_intermediate_board_draft)
+    monkeypatch.setattr(chat_router, "process_chat_on_lesson", process_with_final_board)
 
     events = _collect_events(
         chat_router._chat_stream_events(
@@ -389,18 +371,10 @@ def test_chat_stream_cancels_worker_after_disconnect(monkeypatch) -> None:
 
     def cancellable_process_chat_on_lesson(*args, **kwargs) -> ChatResponse:
         allow_model_delta.wait(timeout=1)
-        try:
-            emit_ai_stream_event(
-                {
-                    "type": "field_delta",
-                    "role": "chatbot",
-                    "field": "chatbot_message",
-                    "delta": "不会继续输出",
-                }
-            )
-        except AIStreamCancelledError:
+        if kwargs["is_cancelled"]():
             cancellation_seen.set()
-            raise
+            raise CodexTurnCancelledError("cancelled")
+        kwargs["on_delta"]("不会继续输出")
         return _chat_response("lesson_stream_test")
 
     monkeypatch.setattr(chat_router, "process_chat_on_lesson", cancellable_process_chat_on_lesson)
