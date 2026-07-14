@@ -67,8 +67,26 @@ def load_workspace_for_user(user_id: str) -> WorkspaceState:
     return get_store().load_for_user(user_id)
 
 
-def save_workspace_for_user(user_id: str, workspace: WorkspaceState) -> None:
-    get_store().save_for_user(user_id, workspace)
+def load_workspace_for_user_with_revision(user_id: str) -> tuple[WorkspaceState, int]:
+    return get_store().load_for_user_with_revision(user_id)
+
+
+def save_workspace_for_user_if_revision(
+    user_id: str,
+    workspace: WorkspaceState,
+    *,
+    expected_revision: int,
+) -> None:
+    saved = get_store().save_for_user_if_revision(
+        user_id,
+        workspace,
+        expected_revision=expected_revision,
+    )
+    if not saved:
+        raise HTTPException(
+            status_code=409,
+            detail="工作区已在本次操作期间更新，请刷新后重试",
+        )
 
 
 def save_lesson_for_user_if_head(
@@ -128,6 +146,14 @@ def load_workspace_package_for_user(user_id: str) -> tuple[WorkspaceState, Cours
     workspace = load_workspace_for_user(user_id)
     package = get_active_package(workspace)
     return workspace, package
+
+
+def load_workspace_package_for_user_with_revision(
+    user_id: str,
+) -> tuple[WorkspaceState, CoursePackage, int]:
+    workspace, revision = load_workspace_for_user_with_revision(user_id)
+    package = get_active_package(workspace)
+    return workspace, package, revision
 
 
 def get_lesson(package: CoursePackage, lesson_id: str) -> Lesson:

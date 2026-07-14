@@ -22,10 +22,12 @@ from app.services.workspace_state import (
     get_package,
     get_standalone_package,
     load_workspace_for_user,
+    load_workspace_for_user_with_revision,
     load_workspace_package_for_user,
+    load_workspace_package_for_user_with_revision,
     normalize_package_state,
     package_view_for_lesson,
-    save_workspace_for_user,
+    save_workspace_for_user_if_revision,
     workspace_view,
 )
 
@@ -43,7 +45,7 @@ def create_package(request: CreatePackageRequest, user: UserView = Depends(curre
     if not title:
         raise HTTPException(status_code=400, detail="Package title is required")
 
-    workspace = load_workspace_for_user(user.id)
+    workspace, revision = load_workspace_for_user_with_revision(user.id)
     package = CoursePackage(
         title=title,
         summary=request.summary.strip(),
@@ -51,16 +53,16 @@ def create_package(request: CreatePackageRequest, user: UserView = Depends(curre
     )
     workspace.packages.append(package)
     workspace.active_package_id = package.id
-    save_workspace_for_user(user.id, workspace)
+    save_workspace_for_user_if_revision(user.id, workspace, expected_revision=revision)
     return workspace_view(workspace)
 
 
 @router.post("/api/packages/{package_id}/open", response_model=WorkspaceStateView)
 def open_package(package_id: str, user: UserView = Depends(current_user)) -> WorkspaceStateView:
-    workspace = load_workspace_for_user(user.id)
+    workspace, revision = load_workspace_for_user_with_revision(user.id)
     get_package(workspace, package_id)
     workspace.active_package_id = package_id
-    save_workspace_for_user(user.id, workspace)
+    save_workspace_for_user_if_revision(user.id, workspace, expected_revision=revision)
     return workspace_view(workspace)
 
 
@@ -70,7 +72,7 @@ def update_package(
     request: UpdatePackageRequest,
     user: UserView = Depends(current_user),
 ) -> WorkspaceStateView:
-    workspace = load_workspace_for_user(user.id)
+    workspace, revision = load_workspace_for_user_with_revision(user.id)
     package = get_package(workspace, package_id)
 
     if request.title is not None:
@@ -82,13 +84,13 @@ def update_package(
     if request.summary is not None:
         package.summary = request.summary.strip()
 
-    save_workspace_for_user(user.id, workspace)
+    save_workspace_for_user_if_revision(user.id, workspace, expected_revision=revision)
     return workspace_view(workspace)
 
 
 @router.post("/api/packages/{package_id}/delete", response_model=WorkspaceStateView)
 def delete_package(package_id: str, user: UserView = Depends(current_user)) -> WorkspaceStateView:
-    workspace = load_workspace_for_user(user.id)
+    workspace, revision = load_workspace_for_user_with_revision(user.id)
     get_package(workspace, package_id)
 
     if len(workspace.packages) <= 1:
@@ -98,7 +100,7 @@ def delete_package(package_id: str, user: UserView = Depends(current_user)) -> W
     if workspace.active_package_id == package_id:
         workspace.active_package_id = workspace.packages[0].id if workspace.packages else None
 
-    save_workspace_for_user(user.id, workspace)
+    save_workspace_for_user_if_revision(user.id, workspace, expected_revision=revision)
     return workspace_view(workspace)
 
 
@@ -108,7 +110,7 @@ def move_lesson(
     request: MoveLessonRequest,
     user: UserView = Depends(current_user),
 ) -> WorkspaceStateView:
-    workspace = load_workspace_for_user(user.id)
+    workspace, revision = load_workspace_for_user_with_revision(user.id)
     source_package, lesson = find_lesson_package(workspace, lesson_id)
     target_package = get_package(workspace, request.target_package_id)
 
@@ -131,13 +133,13 @@ def move_lesson(
 
     normalize_package_state(source_package)
     normalize_package_state(target_package)
-    save_workspace_for_user(user.id, workspace)
+    save_workspace_for_user_if_revision(user.id, workspace, expected_revision=revision)
     return workspace_view(workspace)
 
 
 @router.post("/api/lessons/{lesson_id}/delete", response_model=WorkspaceStateView)
 def delete_lesson(lesson_id: str, user: UserView = Depends(current_user)) -> WorkspaceStateView:
-    workspace = load_workspace_for_user(user.id)
+    workspace, revision = load_workspace_for_user_with_revision(user.id)
     package, _ = find_lesson_package(workspace, lesson_id)
 
     package.lessons = [current for current in package.lessons if current.id != lesson_id]
@@ -147,7 +149,7 @@ def delete_lesson(lesson_id: str, user: UserView = Depends(current_user)) -> Wor
         package.active_lesson_id = None
 
     normalize_package_state(package)
-    save_workspace_for_user(user.id, workspace)
+    save_workspace_for_user_if_revision(user.id, workspace, expected_revision=revision)
     return workspace_view(workspace)
 
 
@@ -162,7 +164,7 @@ def generate_lesson(
     request: GenerateLessonRequest,
     user: UserView = Depends(current_user),
 ) -> CoursePackageView:
-    workspace = load_workspace_for_user(user.id)
+    workspace, revision = load_workspace_for_user_with_revision(user.id)
     source_package = None
     if request.branch_from_lesson_id:
         source_package, _ = find_lesson_package(workspace, request.branch_from_lesson_id)
@@ -189,7 +191,7 @@ def generate_lesson(
                 relationship="deep_dive",
             )
         )
-    save_workspace_for_user(user.id, workspace)
+    save_workspace_for_user_if_revision(user.id, workspace, expected_revision=revision)
     return package_view_for_lesson(workspace, package, package.active_lesson_id)
 
 
@@ -198,19 +200,19 @@ def reorder_workspace_tabs(
     request: ReorderTabsRequest,
     user: UserView = Depends(current_user),
 ) -> CoursePackageView:
-    workspace, package = load_workspace_package_for_user(user.id)
+    workspace, package, revision = load_workspace_package_for_user_with_revision(user.id)
     package.workspace_tab_order = request.ordered_lesson_ids
     package.open_lesson_ids = request.ordered_lesson_ids
     package.active_lesson_id = request.active_lesson_id or (
         request.ordered_lesson_ids[0] if request.ordered_lesson_ids else None
     )
-    save_workspace_for_user(user.id, workspace)
+    save_workspace_for_user_if_revision(user.id, workspace, expected_revision=revision)
     return package_view_for_lesson(workspace, package, package.active_lesson_id)
 
 
 @router.post("/api/lessons/{lesson_id}/open", response_model=CoursePackageView)
 def open_lesson_tab(lesson_id: str, user: UserView = Depends(current_user)) -> CoursePackageView:
-    workspace = load_workspace_for_user(user.id)
+    workspace, revision = load_workspace_for_user_with_revision(user.id)
     package, _ = find_lesson_package(workspace, lesson_id)
     if lesson_id not in package.open_lesson_ids:
         package.open_lesson_ids.append(lesson_id)
@@ -218,19 +220,19 @@ def open_lesson_tab(lesson_id: str, user: UserView = Depends(current_user)) -> C
         package.workspace_tab_order.append(lesson_id)
     package.active_lesson_id = lesson_id
     workspace.active_package_id = package.id
-    save_workspace_for_user(user.id, workspace)
+    save_workspace_for_user_if_revision(user.id, workspace, expected_revision=revision)
     return package_view_for_lesson(workspace, package, lesson_id)
 
 
 @router.post("/api/lessons/{lesson_id}/close", response_model=CoursePackageView)
 def close_lesson_tab(lesson_id: str, user: UserView = Depends(current_user)) -> CoursePackageView:
-    workspace = load_workspace_for_user(user.id)
+    workspace, revision = load_workspace_for_user_with_revision(user.id)
     package, _ = find_lesson_package(workspace, lesson_id)
     package.open_lesson_ids = [current for current in package.open_lesson_ids if current != lesson_id]
     package.workspace_tab_order = [current for current in package.workspace_tab_order if current != lesson_id]
     if package.active_lesson_id == lesson_id:
         package.active_lesson_id = package.workspace_tab_order[0] if package.workspace_tab_order else None
-    save_workspace_for_user(user.id, workspace)
+    save_workspace_for_user_if_revision(user.id, workspace, expected_revision=revision)
     return package_view_for_lesson(workspace, package, package.active_lesson_id)
 
 

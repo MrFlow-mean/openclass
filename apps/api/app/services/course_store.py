@@ -36,6 +36,10 @@ def _active_package_setting_key(owner_user_id: str | None) -> str:
     return "active_package_id"
 
 
+def _workspace_revision_setting_key(owner_user_id: str) -> str:
+    return f"workspace_revision:{owner_user_id}"
+
+
 class SqliteCourseStore:
     def __init__(self, path: Path, *, legacy_json_path: Path | None = None) -> None:
         self.path = path
@@ -65,6 +69,10 @@ class SqliteCourseStore:
                     self._replace_workspace(conn, workspace)
 
     def load_for_user(self, owner_user_id: str) -> WorkspaceState:
+        workspace, _ = self.load_for_user_with_revision(owner_user_id)
+        return workspace
+
+    def load_for_user_with_revision(self, owner_user_id: str) -> tuple[WorkspaceState, int]:
         with self._lock:
             with self._connect() as conn:
                 with conn:
@@ -79,13 +87,40 @@ class SqliteCourseStore:
                             build_empty_account_workspace_state(),
                             owner_user_id=owner_user_id,
                         )
-                    return self._read_workspace(conn, owner_user_id=owner_user_id)
+                    return (
+                        self._read_workspace(conn, owner_user_id=owner_user_id),
+                        self._workspace_revision(conn, owner_user_id),
+                    )
 
     def save_for_user(self, owner_user_id: str, workspace: WorkspaceState) -> None:
         with self._lock:
             with self._connect() as conn:
                 with conn:
                     self._replace_workspace(conn, workspace, owner_user_id=owner_user_id)
+                    self._advance_workspace_revision(conn, owner_user_id)
+
+    def save_for_user_if_revision(
+        self,
+        owner_user_id: str,
+        workspace: WorkspaceState,
+        *,
+        expected_revision: int,
+    ) -> bool:
+        """Atomically replace a user workspace only when its revision is unchanged."""
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    if self._workspace_revision(conn, owner_user_id) != expected_revision:
+                        conn.rollback()
+                        return False
+                    self._replace_workspace(conn, workspace, owner_user_id=owner_user_id)
+                    self._advance_workspace_revision(conn, owner_user_id)
+                    conn.commit()
+                    return True
+                except Exception:
+                    conn.rollback()
+                    raise
 
     def save_lesson_for_user_if_head(
         self,
@@ -128,6 +163,7 @@ class SqliteCourseStore:
                         lesson,
                         int(row["sort_order"]),
                     )
+                    self._advance_workspace_revision(conn, owner_user_id)
                     conn.commit()
                     return True
                 except Exception:
@@ -446,6 +482,23 @@ class SqliteCourseStore:
     def _has_any_packages(self, conn: sqlite3.Connection) -> bool:
         row = conn.execute("SELECT 1 FROM course_packages LIMIT 1").fetchone()
         return row is not None
+
+    def _workspace_revision(self, conn: sqlite3.Connection, owner_user_id: str) -> int:
+        raw = _setting(conn, _workspace_revision_setting_key(owner_user_id))
+        if raw is None:
+            return 0
+        try:
+            return int(raw)
+        except ValueError:
+            return 0
+
+    def _advance_workspace_revision(self, conn: sqlite3.Connection, owner_user_id: str) -> int:
+        revision = self._workspace_revision(conn, owner_user_id) + 1
+        conn.execute(
+            "INSERT OR REPLACE INTO workspace_settings(key, value) VALUES (?, ?)",
+            (_workspace_revision_setting_key(owner_user_id), str(revision)),
+        )
+        return revision
 
     def _has_user_packages(self, conn: sqlite3.Connection, owner_user_id: str) -> bool:
         row = conn.execute(

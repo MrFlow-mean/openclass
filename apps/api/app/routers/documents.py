@@ -41,8 +41,9 @@ from app.services.workspace_state import (
     commit_document_snapshot,
     find_lesson_package,
     load_workspace_for_user,
+    load_workspace_for_user_with_revision,
     package_view_for_lesson,
-    save_workspace_for_user,
+    save_workspace_for_user_if_revision,
     search_document_segments_for_user,
 )
 
@@ -78,7 +79,7 @@ def search_documents(
 
 
 def _save_document_request(lesson_id: str, request: DocumentSaveRequest, user_id: str) -> CoursePackageView:
-    workspace = load_workspace_for_user(user_id)
+    workspace, revision = load_workspace_for_user_with_revision(user_id)
     package, lesson = find_lesson_package(workspace, lesson_id)
     package.active_lesson_id = lesson.id
     current_head = current_head_commit(lesson)
@@ -143,7 +144,7 @@ def _save_document_request(lesson_id: str, request: DocumentSaveRequest, user_id
             )
         )
         _clear_legacy_ai_runtime(lesson)
-        save_workspace_for_user(user_id, workspace)
+        save_workspace_for_user_if_revision(user_id, workspace, expected_revision=revision)
     return package_view_for_lesson(workspace, package, lesson.id)
 
 
@@ -213,7 +214,7 @@ def manual_commit(
     request: ManualCommitRequest,
     user: UserView = Depends(current_user),
 ) -> CoursePackageView:
-    workspace = load_workspace_for_user(user.id)
+    workspace, revision = load_workspace_for_user_with_revision(user.id)
     package, lesson = find_lesson_package(workspace, lesson_id)
     package.active_lesson_id = lesson.id
     with bind_ai_request_context(
@@ -231,7 +232,7 @@ def manual_commit(
             metadata={"kind": "manual_document_edit"},
         )
         _clear_legacy_ai_runtime(lesson)
-        save_workspace_for_user(user.id, workspace)
+        save_workspace_for_user_if_revision(user.id, workspace, expected_revision=revision)
     return package_view_for_lesson(workspace, package, lesson.id)
 
 
@@ -279,7 +280,7 @@ def import_document_docx(
     file: UploadFile = File(...),
     user: UserView = Depends(current_user),
 ) -> CoursePackageView:
-    workspace = load_workspace_for_user(user.id)
+    workspace, revision = load_workspace_for_user_with_revision(user.id)
     package, lesson = find_lesson_package(workspace, lesson_id)
     package.active_lesson_id = lesson.id
     safe_name = Path(file.filename or "document.docx").name
@@ -300,7 +301,7 @@ def import_document_docx(
             metadata={"kind": "import_docx", "filename": safe_name},
         )
         _clear_legacy_ai_runtime(lesson)
-        save_workspace_for_user(user.id, workspace)
+        save_workspace_for_user_if_revision(user.id, workspace, expected_revision=revision)
     return package_view_for_lesson(workspace, package, lesson.id)
 
 
@@ -356,7 +357,7 @@ def create_lesson_branch(
     request: CreateBranchRequest,
     user: UserView = Depends(current_user),
 ) -> CoursePackageView:
-    workspace = load_workspace_for_user(user.id)
+    workspace, revision = load_workspace_for_user_with_revision(user.id)
     package, lesson = find_lesson_package(workspace, lesson_id)
     package.active_lesson_id = lesson.id
     with bind_ai_request_context(
@@ -368,7 +369,7 @@ def create_lesson_branch(
     ):
         create_branch(lesson, request.name, request.from_commit_id)
         _clear_legacy_ai_runtime(lesson)
-        save_workspace_for_user(user.id, workspace)
+        save_workspace_for_user_if_revision(user.id, workspace, expected_revision=revision)
     return package_view_for_lesson(workspace, package, lesson.id)
 
 
@@ -378,7 +379,7 @@ def checkout_lesson_branch(
     request: SwitchBranchRequest,
     user: UserView = Depends(current_user),
 ) -> CoursePackageView:
-    workspace = load_workspace_for_user(user.id)
+    workspace, revision = load_workspace_for_user_with_revision(user.id)
     package, lesson = find_lesson_package(workspace, lesson_id)
     package.active_lesson_id = lesson.id
     with bind_ai_request_context(
@@ -389,7 +390,7 @@ def checkout_lesson_branch(
     ):
         switch_branch(lesson, request.name)
         _clear_legacy_ai_runtime(lesson)
-        save_workspace_for_user(user.id, workspace)
+        save_workspace_for_user_if_revision(user.id, workspace, expected_revision=revision)
     return package_view_for_lesson(workspace, package, lesson.id)
 
 
@@ -399,7 +400,7 @@ def restore_lesson_commit(
     request: RestoreCommitRequest,
     user: UserView = Depends(current_user),
 ) -> CoursePackageView:
-    workspace = load_workspace_for_user(user.id)
+    workspace, revision = load_workspace_for_user_with_revision(user.id)
     package, lesson = find_lesson_package(workspace, lesson_id)
     package.active_lesson_id = lesson.id
     with bind_ai_request_context(
@@ -411,7 +412,7 @@ def restore_lesson_commit(
     ):
         restore_commit(lesson, request.commit_id, request.label)
         _clear_legacy_ai_runtime(lesson)
-        save_workspace_for_user(user.id, workspace)
+        save_workspace_for_user_if_revision(user.id, workspace, expected_revision=revision)
     return package_view_for_lesson(workspace, package, lesson.id)
 
 
@@ -421,7 +422,7 @@ def apply_patch_proposal(
     proposal: ManualCommitRequest,
     user: UserView = Depends(current_user),
 ) -> CoursePackageView:
-    workspace = load_workspace_for_user(user.id)
+    workspace, revision = load_workspace_for_user_with_revision(user.id)
     package, lesson = find_lesson_package(workspace, lesson_id)
     package.active_lesson_id = lesson.id
     with bind_ai_request_context(
@@ -439,5 +440,5 @@ def apply_patch_proposal(
                 metadata={"kind": "apply_proposal"},
             )
             _clear_legacy_ai_runtime(lesson)
-            save_workspace_for_user(user.id, workspace)
+            save_workspace_for_user_if_revision(user.id, workspace, expected_revision=revision)
     return package_view_for_lesson(workspace, package, lesson.id)

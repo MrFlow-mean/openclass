@@ -16,11 +16,15 @@ def test_create_package_without_summary_keeps_summary_empty(monkeypatch) -> None
     workspace = WorkspaceState(packages=[], active_package_id=None)
     saved_workspaces = []
 
-    monkeypatch.setattr(workspace_router, "load_workspace_for_user", lambda user_id: workspace)
     monkeypatch.setattr(
         workspace_router,
-        "save_workspace_for_user",
-        lambda user_id, next_workspace: saved_workspaces.append(next_workspace),
+        "load_workspace_for_user_with_revision",
+        lambda user_id: (workspace, 0),
+    )
+    monkeypatch.setattr(
+        workspace_router,
+        "save_workspace_for_user_if_revision",
+        lambda user_id, next_workspace, *, expected_revision: saved_workspaces.append(next_workspace),
     )
 
     workspace_router.create_package(CreatePackageRequest(title="空课程包", summary=""), user=_user())
@@ -45,8 +49,16 @@ def test_generate_lesson_without_target_uses_standalone_pool(monkeypatch) -> Non
     workspace = WorkspaceState(packages=[standalone_package, course_package], active_package_id=course_package.id)
     saved_workspaces = []
 
-    monkeypatch.setattr(workspace_router, "load_workspace_for_user", lambda user_id: workspace)
-    monkeypatch.setattr(workspace_router, "save_workspace_for_user", lambda user_id, next_workspace: saved_workspaces.append(next_workspace))
+    monkeypatch.setattr(
+        workspace_router,
+        "load_workspace_for_user_with_revision",
+        lambda user_id: (workspace, 0),
+    )
+    monkeypatch.setattr(
+        workspace_router,
+        "save_workspace_for_user_if_revision",
+        lambda user_id, next_workspace, *, expected_revision: saved_workspaces.append(next_workspace),
+    )
 
     response = workspace_router.generate_lesson(
         GenerateLessonRequest(topic="独立新课", start_blank=True),
@@ -66,8 +78,16 @@ def test_generate_lesson_with_target_keeps_course_package_content_isolated(monke
     workspace = WorkspaceState(packages=[standalone_package, course_package], active_package_id=standalone_package.id)
     saved_workspaces = []
 
-    monkeypatch.setattr(workspace_router, "load_workspace_for_user", lambda user_id: workspace)
-    monkeypatch.setattr(workspace_router, "save_workspace_for_user", lambda user_id, next_workspace: saved_workspaces.append(next_workspace))
+    monkeypatch.setattr(
+        workspace_router,
+        "load_workspace_for_user_with_revision",
+        lambda user_id: (workspace, 0),
+    )
+    monkeypatch.setattr(
+        workspace_router,
+        "save_workspace_for_user_if_revision",
+        lambda user_id, next_workspace, *, expected_revision: saved_workspaces.append(next_workspace),
+    )
 
     response = workspace_router.generate_lesson(
         GenerateLessonRequest(topic="包内新课", target_package_id=course_package.id, start_blank=True),
@@ -84,8 +104,16 @@ def test_generate_lesson_with_target_keeps_course_package_content_isolated(monke
 def test_generate_lesson_without_blank_flag_still_creates_codex_only_document(monkeypatch) -> None:
     package = CoursePackage(id="course", title="Course", summary="", lessons=[])
     workspace = WorkspaceState(packages=[package], active_package_id=package.id)
-    monkeypatch.setattr(workspace_router, "load_workspace_for_user", lambda _user_id: workspace)
-    monkeypatch.setattr(workspace_router, "save_workspace_for_user", lambda *_args: None)
+    monkeypatch.setattr(
+        workspace_router,
+        "load_workspace_for_user_with_revision",
+        lambda _user_id: (workspace, 0),
+    )
+    monkeypatch.setattr(
+        workspace_router,
+        "save_workspace_for_user_if_revision",
+        lambda *_args, **_kwargs: None,
+    )
 
     workspace_router.generate_lesson(
         GenerateLessonRequest(topic="Codex document", start_blank=False),
