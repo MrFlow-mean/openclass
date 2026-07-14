@@ -281,6 +281,39 @@ def test_sqlite_store_preserves_user_lessons_in_account_workspace(tmp_path) -> N
     assert package.course_graph == []
 
 
+def test_stale_workspace_revision_cannot_overwrite_atomic_lesson_save(tmp_path) -> None:
+    db_path = tmp_path / "openclass.sqlite3"
+    store = SqliteCourseStore(db_path, legacy_json_path=None)
+
+    workspace = build_initial_workspace_state()
+    lesson = _append_lesson(workspace, "并发保护")
+    store.save_for_user("user_a", workspace)
+
+    stale_workspace, stale_revision = store.load_for_user_with_revision("user_a")
+    current_workspace = store.load_for_user("user_a")
+    current_lesson = current_workspace.packages[0].lessons[0]
+    current_branch = current_lesson.history_graph.current_branch
+    expected_head = current_lesson.history_graph.branches[current_branch].head_commit_id
+    current_lesson.title = "Codex 已提交"
+
+    assert store.save_lesson_for_user_if_head(
+        "user_a",
+        current_lesson,
+        expected_branch_name=current_branch,
+        expected_head_commit_id=expected_head,
+    )
+
+    stale_workspace.packages[0].title = "过期全量写入"
+    assert not store.save_for_user_if_revision(
+        "user_a",
+        stale_workspace,
+        expected_revision=stale_revision,
+    )
+    reloaded = store.load_for_user("user_a")
+    assert reloaded.packages[0].title != "过期全量写入"
+    assert reloaded.packages[0].lessons[0].title == "Codex 已提交"
+
+
 def test_sqlite_store_claims_legacy_workspace_for_first_user(tmp_path) -> None:
     db_path = tmp_path / "openclass.sqlite3"
     store = SqliteCourseStore(db_path, legacy_json_path=None)
