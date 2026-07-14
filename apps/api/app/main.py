@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.models import AIModelCatalog
-from app.routers import auth, chat, codex_provider, documents, research, sources, workspace
+from app.routers import auth, chat, codex_provider, documents, sources, workspace
 from app.services.ai_model_catalog import build_model_catalog
 from app.services.codex_app_server import codex_provider_status
 from app.services.workspace_state import ensure_data_dirs
@@ -34,7 +34,6 @@ app.include_router(documents.router)
 app.include_router(chat.router)
 app.include_router(codex_provider.router)
 app.include_router(sources.router)
-app.include_router(research.router)
 
 
 @app.get("/health")

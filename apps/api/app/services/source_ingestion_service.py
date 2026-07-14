@@ -22,7 +22,6 @@ from app.services.youtube_transcript_adapter import (
     youtube_transcript_adapter,
 )
 from app.services import workspace_state
-from app.services.media_transcription_adapter import MediaTranscriptionError, media_transcription_provider
 
 
 SUPPORTED_FILE_MIME_PREFIXES = (
@@ -59,13 +58,15 @@ class SourceIngestionService:
         structure_indexer: SourceStructureIndexer | None = None,
         structure_store: SourceStructureStore | None = None,
         import_automation_runner: SourceImportAutomationRunner | None = None,
+        media_transcription_provider: object | None = None,
     ) -> None:
         self.youtube_adapter = youtube_adapter
         self.store = store
         self.job_store = job_store
         self.structure_store = structure_store or _structure_store_for_source_store(store)
         self.structure_indexer = structure_indexer or SourceStructureIndexer(store=self.structure_store)
-        self.import_automation_runner = import_automation_runner or _run_research_import_automations
+        self.import_automation_runner = import_automation_runner
+        self.media_transcription_provider = media_transcription_provider
 
     def list_sources(self, *, owner_user_id: str, package_id: str) -> list[SourceIngestionRecord]:
         records = self.store.list_sources(owner_user_id=owner_user_id, package_id=package_id)
@@ -154,9 +155,36 @@ class SourceIngestionService:
         file_metadata = _save_local_source_file(record, content)
         if source_type in {"audio_file", "video_file"}:
             original_path = Path(file_metadata["local_source_path"])
+            if self.media_transcription_provider is None:
+                error = "Media transcription requires an explicitly configured adapter."
+                failed = self.store.save_source(
+                    self._failed_record(
+                        record.model_copy(update={"metadata": {**record.metadata, **file_metadata}}),
+                        error,
+                        phase="transcription",
+                    )
+                )
+                job = self._start_job(
+                    failed,
+                    adapter="openclass_native_media",
+                    phase="transcription",
+                    progress=100,
+                )
+                self._finish_job(
+                    job,
+                    record=failed,
+                    status="failed",
+                    progress=100,
+                    phase="failed",
+                    error=error,
+                )
+                return failed
             try:
-                transcript = media_transcription_provider.transcribe(original_path, mime_type=mime_type)
-            except MediaTranscriptionError as exc:
+                transcript = self.media_transcription_provider.transcribe(
+                    original_path,
+                    mime_type=mime_type,
+                )
+            except Exception as exc:
                 failed = self.store.save_source(self._failed_record(record.model_copy(update={"metadata": {**record.metadata, **file_metadata}}), str(exc), phase="transcription"))
                 job = self._start_job(failed, adapter="openclass_native_media", phase="transcription", progress=100)
                 self._finish_job(job, record=failed, status="failed", progress=100, phase="failed", error=str(exc))
@@ -405,7 +433,7 @@ class SourceIngestionService:
         final_status = "ready" if structure.status in {"ready", "linear_only"} else "failed"
         error = structure.error if final_status == "failed" else ""
         automation_outcome = SourceImportAutomationOutcome(artifact_ids=[], errors=[])
-        if final_status == "ready":
+        if final_status == "ready" and self.import_automation_runner is not None:
             transforming_job = self.job_store.save(
                 indexing_job.model_copy(
                     update={
@@ -619,25 +647,6 @@ def _structure_store_for_source_store(store: SourceEvidenceStore) -> SourceStruc
     if getattr(store, "_path", None) is None:
         return source_structure_store
     return SourceStructureStore(store.path)
-
-
-def _run_research_import_automations(
-    *,
-    owner_user_id: str,
-    package_id: str,
-    source_ingestion_id: str,
-) -> SourceImportAutomationOutcome:
-    from app.services.research_workspace import research_workspace_service
-
-    result = research_workspace_service.run_import_transformations(
-        owner_user_id=owner_user_id,
-        package_id=package_id,
-        source_ingestion_id=source_ingestion_id,
-    )
-    return SourceImportAutomationOutcome(
-        artifact_ids=[artifact.id for artifact in result.artifacts],
-        errors=result.errors,
-    )
 
 
 def _validate_public_url(raw_uri: str) -> str:

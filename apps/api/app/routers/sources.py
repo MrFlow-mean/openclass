@@ -6,10 +6,9 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from app.models import EvidenceBundle, EvidenceConfirmationRequest, EvidenceConfirmationResult, SourceIngestionJob, SourceIngestionRecord, SourceStructureView, UserView
+from app.models import SourceIngestionJob, SourceIngestionRecord, SourceStructureView, UserView
 from app.routers.auth import current_user
 from app.services import workspace_state
-from app.services.learning_source_reference_service import LearningSourceReferenceError, apply_evidence_confirmation
 from app.services.source_evidence_store import source_evidence_store
 from app.services.source_ingestion_service import SourceIngestionError, source_download_path, source_ingestion_service
 from app.services.source_structure_indexer import source_structure_indexer
@@ -231,7 +230,6 @@ def get_package_source_structure(
         raise HTTPException(status_code=404, detail="Source not found.")
     return source_structure_store.get_structure_view(source=source)
 
-
 @router.post("/api/packages/{package_id}/sources/{source_id}/structure/rebuild", response_model=SourceStructureView)
 def rebuild_package_source_structure(
     package_id: str,
@@ -245,60 +243,3 @@ def rebuild_package_source_structure(
         raise HTTPException(status_code=404, detail="Source not found.")
     source_structure_indexer.rebuild_structure(source)
     return source_structure_store.get_structure_view(source=source)
-
-
-@router.post("/api/lessons/{lesson_id}/evidence/confirm", response_model=EvidenceConfirmationResult)
-def confirm_lesson_evidence(
-    lesson_id: str,
-    request: EvidenceConfirmationRequest,
-    user: UserView = Depends(current_user),
-) -> EvidenceConfirmationResult:
-    try:
-        return apply_evidence_confirmation(
-            owner_user_id=user.id,
-            lesson_id=lesson_id,
-            bundle_id=request.bundle_id,
-            action=request.action,
-        )
-    except LearningSourceReferenceError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-
-@router.get("/api/lessons/{lesson_id}/evidence/pending", response_model=EvidenceBundle | None)
-def get_pending_lesson_evidence(
-    lesson_id: str,
-    user: UserView = Depends(current_user),
-) -> EvidenceBundle | None:
-    workspace = workspace_state.load_workspace_for_user(user.id)
-    workspace_state.find_lesson_package(workspace, lesson_id)
-    board_task_state = workspace_state.load_board_task_history_state_for_user(user.id, lesson_id)
-    board_task_run_id = board_task_state.get("run_id") if board_task_state else None
-    if isinstance(board_task_run_id, str) and board_task_run_id:
-        board_task_bundle = source_evidence_store.latest_bundle(
-            owner_user_id=user.id,
-            lesson_id=lesson_id,
-            status="candidate",
-            purpose="board_edit",
-            board_task_run_id=board_task_run_id,
-        )
-        if board_task_bundle is not None:
-            return board_task_bundle
-        confirmed_board_task_bundle = source_evidence_store.latest_bundle(
-            owner_user_id=user.id,
-            lesson_id=lesson_id,
-            status="confirmed",
-            purpose="board_edit",
-            board_task_run_id=board_task_run_id,
-        )
-        if confirmed_board_task_bundle is not None:
-            return confirmed_board_task_bundle
-    history_state = workspace_state.load_learning_requirement_history_state_for_user(user.id, lesson_id)
-    requirement_run_id = history_state.get("run_id") if history_state else None
-    if not isinstance(requirement_run_id, str) or not requirement_run_id:
-        return None
-    bundle = source_evidence_store.latest_requirement_bundle(
-        owner_user_id=user.id,
-        lesson_id=lesson_id,
-        requirement_run_id=requirement_run_id,
-    )
-    return bundle if bundle is not None and bundle.status == "candidate" else None
