@@ -4,7 +4,7 @@ import clsx from "clsx";
 import Image from "next/image";
 import Link from "next/link";
 import type { CSSProperties, FormEvent } from "react";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import {
   ArrowLeft,
   ArrowUp,
@@ -316,6 +316,19 @@ function navigateAfterAuth(path: string, mode: "assign" | "replace" = "assign") 
   window.location.assign(path);
 }
 
+function subscribeToLocationSearch(onStoreChange: () => void) {
+  window.addEventListener("popstate", onStoreChange);
+  return () => window.removeEventListener("popstate", onStoreChange);
+}
+
+function getLocationSearch() {
+  return typeof window === "undefined" ? null : window.location.search;
+}
+
+function getServerLocationSearch() {
+  return null;
+}
+
 function AuthInput({
   autoComplete,
   Icon,
@@ -566,6 +579,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
   const [authProviders, setAuthProviders] = useState<AuthProviderView[]>([]);
   const [codexLogin, setCodexLogin] = useState<CodexLoginStartResponse | null>(null);
   const [codexLoginStatus, setCodexLoginStatus] = useState<string | null>(null);
+  const loginSearch = useSyncExternalStore(subscribeToLocationSearch, getLocationSearch, getServerLocationSearch);
 
   useEffect(() => {
     let disposed = false;
@@ -611,6 +625,13 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
   }, [currentUser]);
 
   useEffect(() => {
+    if (loginSearch === null) {
+      return;
+    }
+    const loginIntent = new URLSearchParams(loginSearch).get("intent");
+    if (loginIntent === "account_upgrade") {
+      return;
+    }
     if (!readGuestAuthToken()) {
       return;
     }
@@ -632,7 +653,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
     return () => {
       disposed = true;
     };
-  }, []);
+  }, [loginSearch]);
 
   useEffect(() => {
     if (!codexLogin) {
@@ -790,6 +811,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
 
   const isRegister = mode === "register";
   const alternateMode = isRegister ? "login" : "register";
+  const authModeSearch = loginSearch ?? "";
   const isChatGPTLoginPending = Boolean(codexLogin && codexLoginStatus === "pending");
   const isAuthBusy = isLoading || isChatGPTLoginPending;
 
@@ -951,7 +973,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                   {(["login", "register"] as const).map((item) => (
                     <Link
                       key={item}
-                      href={`/${item}`}
+                      href={`/${item}${authModeSearch}`}
                       onClick={() => {
                         setMode(item);
                         setError(null);
@@ -1020,7 +1042,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
                 <p className="mt-5 text-center text-sm text-[#5c4c3c]/70">
                   {isRegister ? "已有账号？" : "还没有账号？"}
                   <Link
-                    href={`/${alternateMode}`}
+                    href={`/${alternateMode}${authModeSearch}`}
                     onClick={() => {
                       setMode(alternateMode);
                       setError(null);

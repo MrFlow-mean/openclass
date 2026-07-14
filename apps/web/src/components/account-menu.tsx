@@ -67,7 +67,11 @@ export function AccountMenu({
   function handleLoginToSave() {
     setOpen(false);
     const next = `${window.location.pathname}${window.location.search}` || "/";
-    router.push(`/login?next=${encodeURIComponent(next)}`);
+    const searchParams = new URLSearchParams({
+      intent: "account_upgrade",
+      next,
+    });
+    router.push(`/login?${searchParams.toString()}`);
   }
 
   return (
