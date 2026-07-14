@@ -610,6 +610,29 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
   }, [currentUser]);
 
   useEffect(() => {
+    if (!readGuestAuthToken()) {
+      return;
+    }
+    let disposed = false;
+
+    async function resumeCompletedChatGPTLogin() {
+      try {
+        const provider = await api.getCodexStatus();
+        if (!disposed && provider.configured) {
+          navigateAfterAuth("/studio", "replace");
+        }
+      } catch {
+        // A guest session without a completed ChatGPT login remains on this page.
+      }
+    }
+
+    void resumeCompletedChatGPTLogin();
+    return () => {
+      disposed = true;
+    };
+  }, []);
+
+  useEffect(() => {
     if (!codexLogin || ["succeeded", "failed", "cancelled", "expired"].includes(codexLoginStatus ?? "")) {
       return;
     }

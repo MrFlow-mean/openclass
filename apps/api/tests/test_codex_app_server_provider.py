@@ -138,9 +138,6 @@ def test_login_completion_with_null_login_id_is_owned_and_refreshes_account(monk
             "params": {"loginId": None, "success": True},
         }
     )
-    session._messages.put(
-        {"method": "account/updated", "params": {"authMode": "chatgpt"}}
-    )
     attempt = codex_app_server._LoginAttempt(
         owner_user_id="user_a",
         login_id="login_a",
@@ -166,15 +163,10 @@ def test_login_completion_with_null_login_id_is_owned_and_refreshes_account(monk
     assert session.closed is True
 
 
-def test_login_completion_waits_for_account_update_before_reusing_existing_account(monkeypatch) -> None:
+def test_login_watcher_does_not_read_account_before_login_completion(monkeypatch) -> None:
     class _Messages:
         def __init__(self) -> None:
-            self.items = [
-                {
-                    "method": "account/login/completed",
-                    "params": {"loginId": "login_a", "success": True},
-                }
-            ]
+            self.items: list[dict] = []
 
         def get(self, timeout: float) -> dict:
             if self.items:
@@ -208,7 +200,7 @@ def test_login_completion_waits_for_account_update_before_reusing_existing_accou
     codex_app_server._watch_login_attempt(attempt)
 
     assert attempt.status == "expired"
-    assert attempt.error == "Codex login completed without an account update"
+    assert attempt.error == "Codex login timed out"
     assert session.closed is True
 
 

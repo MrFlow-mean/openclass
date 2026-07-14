@@ -785,7 +785,6 @@ def _watch_login_attempt(attempt: _LoginAttempt) -> None:
     assert attempt.session is not None
     session = attempt.session
     login_confirmed = False
-    account_updated = False
     next_account_check = 0.0
     last_account_error: str | None = None
     terminal_statuses = {"succeeded", "failed", "cancelled", "expired"}
@@ -806,8 +805,6 @@ def _watch_login_attempt(attempt: _LoginAttempt) -> None:
                         del attempt.notifications[:-CODEX_LOGIN_NOTIFICATION_LIMIT]
                 method = message.get("method")
                 params = message.get("params") if isinstance(message.get("params"), dict) else {}
-                if method == "account/updated" and params.get("authMode") == "chatgpt":
-                    account_updated = True
                 completed_login_id = params.get("loginId")
                 if (
                     method == "account/login/completed"
@@ -825,7 +822,7 @@ def _watch_login_attempt(attempt: _LoginAttempt) -> None:
                     next_account_check = 0.0
 
             now = time.monotonic()
-            if login_confirmed and account_updated and now >= next_account_check:
+            if login_confirmed and now >= next_account_check:
                 try:
                     account, _requires = _read_account(
                         attempt.owner_user_id,
@@ -847,10 +844,10 @@ def _watch_login_attempt(attempt: _LoginAttempt) -> None:
         with _login_lock:
             if attempt.status == "pending":
                 attempt.status = "expired"
-                if login_confirmed and not account_updated:
-                    attempt.error = "Codex login completed without an account update"
-                elif login_confirmed and last_account_error:
+                if login_confirmed and last_account_error:
                     attempt.error = f"Codex login could not be confirmed: {last_account_error}"
+                elif login_confirmed:
+                    attempt.error = "Codex login completed but the ChatGPT account was not available"
                 else:
                     attempt.error = "Codex login timed out"
     except Exception as exc:
