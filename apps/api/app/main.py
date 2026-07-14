@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import os
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.models import AIModelCatalog
+from app.models import AIModelCatalog, UserView
+from app.routers.auth import current_user
 from app.routers import auth, chat, codex_provider, documents, sources, workspace
 from app.services.ai_model_catalog import build_model_catalog
-from app.services.codex_app_server import codex_provider_status
+from app.services.codex_app_server import codex_app_server_available, codex_app_server_runtime_enabled
 from app.services.workspace_state import ensure_data_dirs
 
 ensure_data_dirs()
@@ -38,15 +39,17 @@ app.include_router(sources.router)
 
 @app.get("/health")
 def health() -> dict[str, object]:
-    codex = codex_provider_status(refresh=False)
     return {
         "status": "ok",
-        "codex": codex.model_dump(mode="json"),
+        "codex": {
+            "enabled": codex_app_server_runtime_enabled(),
+            "available": codex_app_server_available(),
+        },
         "workflow": {"status": "codex_board_only"},
         "realtime": {"status": "disabled"},
     }
 
 
 @app.get("/api/ai-models", response_model=AIModelCatalog)
-def get_ai_models() -> AIModelCatalog:
-    return build_model_catalog()
+def get_ai_models(user: UserView = Depends(current_user)) -> AIModelCatalog:
+    return build_model_catalog(user.id)

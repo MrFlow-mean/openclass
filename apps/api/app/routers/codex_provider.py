@@ -21,38 +21,42 @@ def _codex_error(exc: Exception) -> HTTPException:
 
 
 @router.get("/status", response_model=CodexProviderStatus)
-def status(_: UserView = Depends(current_user), include_rate_limits: bool = False) -> CodexProviderStatus:
-    return codex_provider_status(refresh=False, include_rate_limits=include_rate_limits)
+def status(user: UserView = Depends(current_user), include_rate_limits: bool = False) -> CodexProviderStatus:
+    return codex_provider_status(
+        user.id,
+        refresh=False,
+        include_rate_limits=include_rate_limits,
+    )
 
 
 @router.post("/login/device", response_model=CodexLoginStartResponse)
-def login_device(_: UserView = Depends(current_user)) -> CodexLoginStartResponse:
+def login_device(user: UserView = Depends(current_user)) -> CodexLoginStartResponse:
     try:
-        return start_codex_device_login()
+        return start_codex_device_login(user.id)
     except CodexAppServerError as exc:
         raise _codex_error(exc) from exc
 
 
 @router.get("/login/{login_id}", response_model=CodexLoginStatusResponse)
-def login_status(login_id: str, _: UserView = Depends(current_user)) -> CodexLoginStatusResponse:
+def login_status(login_id: str, user: UserView = Depends(current_user)) -> CodexLoginStatusResponse:
     try:
-        return codex_login_status(login_id)
+        return codex_login_status(login_id, user.id)
     except CodexAppServerError as exc:
         raise _codex_error(exc) from exc
 
 
 @router.post("/login/{login_id}/cancel", response_model=CodexLoginStatusResponse)
-def login_cancel(login_id: str, _: UserView = Depends(current_user)) -> CodexLoginStatusResponse:
+def login_cancel(login_id: str, user: UserView = Depends(current_user)) -> CodexLoginStatusResponse:
     try:
-        return cancel_codex_login(login_id)
+        return cancel_codex_login(login_id, user.id)
     except CodexAppServerError as exc:
         raise _codex_error(exc) from exc
 
 
 @router.post("/logout")
-def logout(_: UserView = Depends(current_user)) -> dict[str, bool]:
+def logout(user: UserView = Depends(current_user)) -> dict[str, bool]:
     try:
-        logout_codex()
+        logout_codex(user.id)
     except CodexAppServerError as exc:
         raise _codex_error(exc) from exc
     return {"ok": True}

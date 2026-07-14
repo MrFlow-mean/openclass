@@ -28,9 +28,9 @@ def unavailable_realtime_selection() -> AIModelSelection:
     )
 
 
-def _codex_text_models() -> tuple[tuple[str, str], ...]:
+def _codex_text_models(user_id: str) -> tuple[tuple[str, str], ...]:
     try:
-        models = list_codex_models()
+        models = list_codex_models(user_id)
     except Exception:
         return CODEX_DEFAULT_MODELS
     options: list[tuple[str, str]] = []
@@ -47,11 +47,11 @@ def _codex_text_models() -> tuple[tuple[str, str], ...]:
     return tuple(options) or CODEX_DEFAULT_MODELS
 
 
-def build_model_catalog() -> AIModelCatalog:
-    status = codex_provider_status(refresh=False)
+def build_model_catalog(user_id: str) -> AIModelCatalog:
+    status = codex_provider_status(user_id, refresh=False)
     text_default = default_text_selection()
     realtime_default = unavailable_realtime_selection()
-    models = list(_codex_text_models())
+    models = list(_codex_text_models(user_id))
     if not any(model == text_default.model for model, _label in models):
         models.insert(0, (text_default.model, f"OpenAI Codex {text_default.model}"))
     text_options = [

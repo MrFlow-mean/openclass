@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import queue
@@ -85,19 +86,29 @@ def codex_app_server_runtime_enabled() -> bool:
     return True if configured is None else _env_truthy("OPENCLASS_CODEX_APP_SERVER_ENABLED")
 
 
-def codex_home_path() -> Path:
+def codex_home_root() -> Path:
     configured = (os.getenv("OPENCLASS_CODEX_HOME") or "").strip()
     path = Path(configured).expanduser() if configured else Path.home() / ".openclass" / "codex"
     return path.resolve()
 
 
-def _codex_process_env() -> dict[str, str]:
-    home = codex_home_path()
+def codex_home_path(user_id: str) -> Path:
+    normalized = user_id.strip()
+    if not normalized:
+        raise CodexAppServerError("A signed-in OpenClass user is required for Codex")
+    account_key = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    return codex_home_root() / "accounts" / account_key
+
+
+def _codex_process_env(user_id: str) -> dict[str, str]:
+    root = codex_home_root()
+    home = codex_home_path(user_id)
     home.mkdir(parents=True, exist_ok=True, mode=0o700)
-    try:
-        home.chmod(0o700)
-    except OSError:
-        pass
+    for path in (root, home.parent, home):
+        try:
+            path.chmod(0o700)
+        except OSError:
+            pass
     return {**os.environ, "CODEX_HOME": str(home)}
 
 
@@ -185,7 +196,7 @@ def _validate_codex_cli_version(binary: str) -> None:
             capture_output=True,
             text=True,
             timeout=10,
-            env=_codex_process_env(),
+            env=_codex_process_env("__runtime_probe__"),
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise CodexAppServerError("Unable to verify the Codex CLI version") from exc
@@ -322,6 +333,7 @@ class CodexAppServerSession:
     def __init__(
         self,
         *,
+        user_id: str,
         timeout_seconds: float = CODEX_APP_SERVER_TIMEOUT_SECONDS,
         deadline_monotonic: float | None = None,
     ) -> None:
@@ -329,6 +341,8 @@ class CodexAppServerSession:
         if not binary:
             raise CodexAppServerError("Codex CLI is not installed or OPENCLASS_CODEX_CLI_PATH is invalid")
         _validate_codex_cli_version(binary)
+        self.user_id = user_id
+        self.home = codex_home_path(user_id)
         self.timeout_seconds = timeout_seconds
         self.deadline_monotonic = _deadline_for(
             timeout_seconds,
@@ -341,8 +355,8 @@ class CodexAppServerSession:
             stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
-            cwd=str(codex_home_path()),
-            env=_codex_process_env(),
+            cwd=str(self.home),
+            env=_codex_process_env(user_id),
         )
         self._messages: queue.Queue[dict[str, Any]] = queue.Queue()
         self._stderr: queue.Queue[str] = queue.Queue()
@@ -363,7 +377,7 @@ class CodexAppServerSession:
                 timeout_seconds=_remaining_before(self.deadline_monotonic, cap=20),
             )
             self.notify("initialized", {})
-            self.validate_board_permission_config(codex_home_path())
+            self.validate_board_permission_config(self.home)
         except Exception:
             self.close()
             raise
@@ -484,20 +498,22 @@ class CodexAppServerSession:
         return "\n".join(lines[-10:])
 
 
-def _read_account(refresh_token: bool = False) -> tuple[CodexAccountView | None, bool]:
-    with _managed_session(timeout_seconds=30) as session:
+def _read_account(user_id: str, refresh_token: bool = False) -> tuple[CodexAccountView | None, bool]:
+    with _managed_session(user_id=user_id, timeout_seconds=30) as session:
         result = session.request("account/read", {"refreshToken": refresh_token}, timeout_seconds=30)
     return _normalize_account(result.get("account")), bool(result.get("requiresOpenaiAuth"))
 
 
 @dataclass
 class _ManagedSession:
+    user_id: str
     timeout_seconds: float
     deadline_monotonic: float
     session: CodexAppServerSession | None = None
 
     def __enter__(self) -> CodexAppServerSession:
         self.session = CodexAppServerSession(
+            user_id=self.user_id,
             timeout_seconds=self.timeout_seconds,
             deadline_monotonic=self.deadline_monotonic,
         )
@@ -510,6 +526,7 @@ class _ManagedSession:
 
 def _managed_session(
     *,
+    user_id: str,
     timeout_seconds: float,
     deadline_monotonic: float | None = None,
 ) -> _ManagedSession:
@@ -518,21 +535,39 @@ def _managed_session(
         deadline_monotonic=deadline_monotonic,
     )
     return _ManagedSession(
+        user_id=user_id,
         timeout_seconds=_remaining_before(deadline),
         deadline_monotonic=deadline,
     )
 
 
-_cached_status: tuple[float, CodexProviderStatus] | None = None
+_status_cache_lock = threading.Lock()
+_cached_status: dict[str, tuple[float, CodexProviderStatus]] = {}
 
 
-def codex_provider_status(*, refresh: bool = False, include_rate_limits: bool = False) -> CodexProviderStatus:
-    global _cached_status
+def _invalidate_status(user_id: str) -> None:
+    with _status_cache_lock:
+        _cached_status.pop(user_id, None)
+
+
+def codex_provider_status(
+    user_id: str,
+    *,
+    refresh: bool = False,
+    include_rate_limits: bool = False,
+) -> CodexProviderStatus:
     enabled = codex_app_server_runtime_enabled()
     available = codex_app_server_available()
     now = time.monotonic()
-    if not refresh and not include_rate_limits and _cached_status and now - _cached_status[0] < _STATUS_CACHE_TTL_SECONDS:
-        cached = _cached_status[1]
+    with _status_cache_lock:
+        cached_entry = _cached_status.get(user_id)
+    if (
+        not refresh
+        and not include_rate_limits
+        and cached_entry
+        and now - cached_entry[0] < _STATUS_CACHE_TTL_SECONDS
+    ):
+        cached = cached_entry[1]
         if cached.enabled == enabled and cached.available == available:
             return cached
     if not enabled:
@@ -542,7 +577,8 @@ def codex_provider_status(*, refresh: bool = False, include_rate_limits: bool = 
             configured=False,
             message="Set OPENCLASS_CODEX_APP_SERVER_ENABLED=true to enable the ChatGPT/Codex provider.",
         )
-        _cached_status = (time.monotonic(), status)
+        with _status_cache_lock:
+            _cached_status[user_id] = (time.monotonic(), status)
         return status
     if not available:
         status = CodexProviderStatus(
@@ -551,14 +587,18 @@ def codex_provider_status(*, refresh: bool = False, include_rate_limits: bool = 
             configured=False,
             message="Codex CLI is not installed or OPENCLASS_CODEX_CLI_PATH is invalid.",
         )
-        _cached_status = (time.monotonic(), status)
+        with _status_cache_lock:
+            _cached_status[user_id] = (time.monotonic(), status)
         return status
     try:
-        account, _requires_openai_auth = _read_account(refresh_token=refresh)
+        account, _requires_openai_auth = _read_account(user_id, refresh_token=refresh)
         rate_limits: dict[str, Any] | None = None
         if include_rate_limits and account and account.type == "chatgpt":
-            with _managed_session(timeout_seconds=30) as session:
-                rate_limits = session.request("account/rateLimits/read", {}, timeout_seconds=30)
+            try:
+                with _managed_session(user_id=user_id, timeout_seconds=30) as session:
+                    rate_limits = session.request("account/rateLimits/read", {}, timeout_seconds=30)
+            except Exception:
+                rate_limits = None
         status = CodexProviderStatus(
             enabled=True,
             available=True,
@@ -567,7 +607,9 @@ def codex_provider_status(*, refresh: bool = False, include_rate_limits: bool = 
             rate_limits=rate_limits,
             message="" if account and account.type == "chatgpt" else "Sign in with ChatGPT/Codex to use subscription models.",
         )
-        _cached_status = (time.monotonic(), status)
+        if not include_rate_limits:
+            with _status_cache_lock:
+                _cached_status[user_id] = (time.monotonic(), status)
         return status
     except AICallBudgetExceeded:
         raise
@@ -578,14 +620,15 @@ def codex_provider_status(*, refresh: bool = False, include_rate_limits: bool = 
             configured=False,
             message=str(exc),
         )
-        _cached_status = (time.monotonic(), status)
+        with _status_cache_lock:
+            _cached_status[user_id] = (time.monotonic(), status)
         return status
 
 
-def list_codex_models() -> list[dict[str, Any]]:
+def list_codex_models(user_id: str) -> list[dict[str, Any]]:
     if not codex_app_server_runtime_enabled() or not codex_app_server_available():
         return []
-    with _managed_session(timeout_seconds=30) as session:
+    with _managed_session(user_id=user_id, timeout_seconds=30) as session:
         result = session.request("model/list", {"limit": 20, "includeHidden": False}, timeout_seconds=30)
     data = result.get("data")
     return data if isinstance(data, list) else []
@@ -593,6 +636,7 @@ def list_codex_models() -> list[dict[str, Any]]:
 
 @dataclass
 class _LoginAttempt:
+    owner_user_id: str
     login_id: str
     verification_url: str
     user_code: str
@@ -610,10 +654,13 @@ _login_lock = threading.Lock()
 _login_attempts: dict[str, _LoginAttempt] = {}
 
 
-def start_codex_device_login() -> CodexLoginStartResponse:
+def start_codex_device_login(user_id: str) -> CodexLoginStartResponse:
     if not codex_app_server_runtime_enabled():
         raise CodexAppServerError("OPENCLASS_CODEX_APP_SERVER_ENABLED is not enabled")
-    session = CodexAppServerSession(timeout_seconds=CODEX_LOGIN_TIMEOUT_SECONDS)
+    session = CodexAppServerSession(
+        user_id=user_id,
+        timeout_seconds=CODEX_LOGIN_TIMEOUT_SECONDS,
+    )
     try:
         result = session.request(
             "account/login/start",
@@ -626,6 +673,7 @@ def start_codex_device_login() -> CodexLoginStartResponse:
         if not login_id or not verification_url or not user_code:
             raise CodexAppServerError(f"Invalid Codex device login response: {result}")
         attempt = _LoginAttempt(
+            owner_user_id=user_id,
             login_id=login_id,
             verification_url=verification_url,
             user_code=user_code,
@@ -650,44 +698,89 @@ def start_codex_device_login() -> CodexLoginStartResponse:
 
 def _watch_login_attempt(attempt: _LoginAttempt) -> None:
     assert attempt.session is not None
+    session = attempt.session
+    login_confirmed = False
+    next_account_check = 0.0
+    last_account_error: str | None = None
+    terminal_statuses = {"succeeded", "failed", "cancelled", "expired"}
     try:
         deadline = time.monotonic() + CODEX_LOGIN_TIMEOUT_SECONDS
         while time.monotonic() < deadline:
+            with _login_lock:
+                if attempt.status in terminal_statuses:
+                    break
             try:
-                message = attempt.session._messages.get(timeout=0.5)
+                message = session._messages.get(timeout=0.5)
             except queue.Empty:
-                continue
-            attempt.notifications.append(message)
-            method = message.get("method")
-            params = message.get("params") if isinstance(message.get("params"), dict) else {}
-            if method == "account/login/completed" and params.get("loginId") == attempt.login_id:
-                success = bool(params.get("success"))
-                attempt.status = "succeeded" if success else "failed"
-                attempt.error = None if success else str(params.get("error") or "Codex login failed")
-                attempt.completed_at = datetime.now(timezone.utc)
-                continue
-            if method == "account/updated" and attempt.status == "succeeded":
-                account, _requires = _read_account(refresh_token=False)
-                attempt.account = account
-                break
-        if attempt.status == "pending":
-            attempt.status = "expired"
-            attempt.error = "Codex login timed out"
+                message = None
+            if message is not None:
+                with _login_lock:
+                    attempt.notifications.append(message)
+                method = message.get("method")
+                params = message.get("params") if isinstance(message.get("params"), dict) else {}
+                completed_login_id = params.get("loginId")
+                if (
+                    method == "account/login/completed"
+                    and completed_login_id in (None, "", attempt.login_id)
+                ):
+                    success = bool(params.get("success"))
+                    if not success:
+                        with _login_lock:
+                            if attempt.status == "pending":
+                                attempt.status = "failed"
+                                attempt.error = str(params.get("error") or "Codex login failed")
+                                attempt.completed_at = datetime.now(timezone.utc)
+                        break
+                    login_confirmed = True
+                    next_account_check = 0.0
+
+            now = time.monotonic()
+            if login_confirmed and now >= next_account_check:
+                try:
+                    account, _requires = _read_account(
+                        attempt.owner_user_id,
+                        refresh_token=False,
+                    )
+                except Exception as exc:
+                    last_account_error = str(exc)
+                    next_account_check = now + 1.0
+                    continue
+                if account and account.type == "chatgpt":
+                    with _login_lock:
+                        if attempt.status == "pending":
+                            attempt.account = account
+                            attempt.status = "succeeded"
+                            attempt.error = None
+                            attempt.completed_at = datetime.now(timezone.utc)
+                    break
+                next_account_check = now + 1.0
+        with _login_lock:
+            if attempt.status == "pending":
+                attempt.status = "expired"
+                if login_confirmed and last_account_error:
+                    attempt.error = f"Codex login could not be confirmed: {last_account_error}"
+                else:
+                    attempt.error = "Codex login timed out"
     except Exception as exc:
-        attempt.status = "failed"
-        attempt.error = str(exc)
+        with _login_lock:
+            if attempt.status == "pending":
+                attempt.status = "failed"
+                attempt.error = str(exc)
     finally:
-        attempt.completed_at = attempt.completed_at or datetime.now(timezone.utc)
-        attempt.session.close()
-        attempt.session = None
-        global _cached_status
-        _cached_status = None
+        with _login_lock:
+            attempt.completed_at = attempt.completed_at or datetime.now(timezone.utc)
+            if attempt.session is session:
+                attempt.session = None
+        session.close()
+        _invalidate_status(attempt.owner_user_id)
 
 
-def codex_login_status(login_id: str) -> CodexLoginStatusResponse:
+def codex_login_status(login_id: str, user_id: str) -> CodexLoginStatusResponse:
     with _login_lock:
         attempt = _login_attempts.get(login_id)
-    if not attempt:
+        if not attempt or attempt.owner_user_id != user_id:
+            attempt = None
+    if attempt is None:
         raise CodexAppServerError("Unknown Codex login id")
     return CodexLoginStatusResponse(
         login_id=attempt.login_id,
@@ -697,34 +790,51 @@ def codex_login_status(login_id: str) -> CodexLoginStatusResponse:
     )
 
 
-def cancel_codex_login(login_id: str) -> CodexLoginStatusResponse:
+def cancel_codex_login(login_id: str, user_id: str) -> CodexLoginStatusResponse:
+    session: CodexAppServerSession | None = None
     with _login_lock:
         attempt = _login_attempts.get(login_id)
-    if not attempt:
-        raise CodexAppServerError("Unknown Codex login id")
-    if attempt.status == "pending":
-        attempt.status = "cancelled"
-        attempt.error = "Login cancelled"
-        if attempt.session:
-            try:
-                attempt.session.request("account/login/cancel", {"loginId": login_id}, timeout_seconds=10)
-            except Exception:
-                pass
-            attempt.session.close()
+        if not attempt or attempt.owner_user_id != user_id:
+            attempt = None
+        elif attempt.status == "pending":
+            attempt.status = "cancelled"
+            attempt.error = "Login cancelled"
+            attempt.completed_at = datetime.now(timezone.utc)
+            session = attempt.session
             attempt.session = None
-    return codex_login_status(login_id)
+    if attempt is None:
+        raise CodexAppServerError("Unknown Codex login id")
+    if session is not None:
+        try:
+            request_id = session._next_id
+            session._next_id += 1
+            session._write(
+                {
+                    "method": "account/login/cancel",
+                    "id": request_id,
+                    "params": {"loginId": login_id},
+                }
+            )
+        except Exception:
+            pass
+        finally:
+            session.close()
+    _invalidate_status(user_id)
+    return codex_login_status(login_id, user_id)
 
 
-def logout_codex() -> None:
+def logout_codex(user_id: str) -> None:
     if not codex_app_server_runtime_enabled() or not codex_app_server_available():
         return
-    with _managed_session(timeout_seconds=30) as session:
+    with _managed_session(user_id=user_id, timeout_seconds=30) as session:
         session.request("account/logout", {}, timeout_seconds=30)
-    global _cached_status
-    _cached_status = None
+    _invalidate_status(user_id)
 
 
 class CodexAppServerTextClient:
+    def __init__(self, user_id: str) -> None:
+        self.user_id = user_id
+
     def parse(
         self,
         *,
@@ -734,7 +844,7 @@ class CodexAppServerTextClient:
         schema: type[BaseModel],
     ) -> CodexParsedResponse:
         budget = current_ai_call_budget()
-        status = codex_provider_status(refresh=False)
+        status = codex_provider_status(self.user_id, refresh=False)
         if not status.configured:
             raise CodexAppServerError(status.message or "ChatGPT/Codex provider is not signed in")
         deadline_monotonic = (
@@ -744,6 +854,7 @@ class CodexAppServerTextClient:
         )
         timeout_seconds = _remaining_before(deadline_monotonic)
         with _managed_session(
+            user_id=self.user_id,
             timeout_seconds=timeout_seconds,
             deadline_monotonic=deadline_monotonic,
         ) as session:
@@ -800,15 +911,16 @@ def _discard_thread(
         pass
 
 
-def delete_codex_thread(thread_id: str) -> None:
+def delete_codex_thread(thread_id: str, *, user_id: str) -> None:
     if not thread_id or not codex_app_server_available():
         return
-    with _managed_session(timeout_seconds=30) as session:
+    with _managed_session(user_id=user_id, timeout_seconds=30) as session:
         session.request("thread/delete", {"threadId": thread_id}, timeout_seconds=20)
 
 
 def run_codex_thread_turn(
     *,
+    user_id: str,
     model: str,
     cwd: Path,
     user_prompt: str,
@@ -821,11 +933,12 @@ def run_codex_thread_turn(
     on_delta: Callable[[str], None] | None = None,
     is_cancelled: Callable[[], bool] | None = None,
 ) -> CodexTurnResult:
-    status = codex_provider_status(refresh=False)
+    status = codex_provider_status(user_id, refresh=False)
     if not status.configured:
         raise CodexAppServerError(status.message or "ChatGPT/Codex provider is not signed in")
     deadline = _deadline_for(timeout_seconds)
     with _managed_session(
+        user_id=user_id,
         timeout_seconds=_remaining_before(deadline),
         deadline_monotonic=deadline,
     ) as session:

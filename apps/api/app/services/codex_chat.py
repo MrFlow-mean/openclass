@@ -291,9 +291,9 @@ def _formula_image_urls(request: ChatRequest) -> list[str]:
     return [image_data_url]
 
 
-def _discard_uncommitted_thread(thread_id: str) -> None:
+def _discard_uncommitted_thread(thread_id: str, *, user_id: str) -> None:
     try:
-        delete_codex_thread(thread_id)
+        delete_codex_thread(thread_id, user_id=user_id)
     except Exception:
         pass
 
@@ -373,6 +373,7 @@ def process_codex_chat_on_lesson(
             result = None
             try:
                 result = run_codex_thread_turn(
+                    user_id=user_id,
                     model=_codex_model(request),
                     cwd=workspace_path,
                     user_prompt=user_prompt,
@@ -399,7 +400,7 @@ def process_codex_chat_on_lesson(
                 quota_monitor.join(timeout=0.2)
             if quota_exceeded.is_set():
                 if result is not None:
-                    _discard_uncommitted_thread(result.thread_id)
+                    _discard_uncommitted_thread(result.thread_id, user_id=user_id)
                 raise CodexAppServerError(
                     "Codex board output exceeds the configured size limit"
                 )
@@ -509,7 +510,7 @@ def process_codex_chat_on_lesson(
                     ),
                 )
             except Exception:
-                _discard_uncommitted_thread(result.thread_id)
+                _discard_uncommitted_thread(result.thread_id, user_id=user_id)
                 raise
 
 
