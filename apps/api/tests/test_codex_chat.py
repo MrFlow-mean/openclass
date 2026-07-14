@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.models import ChatRequest
+from app.models import ChatRequest, SelectionRef
 from app.services import codex_app_server, codex_chat, workspace_state
 from app.services.codex_app_server import (
     CODEX_PROCESS_FILE_SIZE_LIMIT_BYTES,
@@ -57,6 +57,58 @@ def _seed_workspace(store: SqliteCourseStore, *, content_text: str = "# Existing
     package.active_lesson_id = lesson.id
     store.save_for_user(TEST_USER_ID, workspace)
     return lesson
+
+
+def test_codex_turn_prompt_uses_mode_and_ignores_source_selection() -> None:
+    prompt = codex_chat._turn_prompt(
+        ChatRequest(
+            message="Explain the current document.",
+            interaction_mode="ask",
+            selection=SelectionRef(
+                kind="source",
+                excerpt="uploaded source excerpt must not be sent",
+                source_title="Uploaded source title",
+                source_chapter_title="Uploaded chapter",
+                source_page_range="10-12",
+            ),
+        ),
+        is_new_thread=True,
+    )
+
+    assert "Interaction mode: ask" in prompt
+    assert "Current user message:\nExplain the current document." in prompt
+    assert "uploaded source excerpt" not in prompt
+    assert "Uploaded source title" not in prompt
+    assert "Uploaded chapter" not in prompt
+    assert "10-12" not in prompt
+
+
+def test_codex_turn_prompt_keeps_current_board_selection_for_editing() -> None:
+    prompt = codex_chat._turn_prompt(
+        ChatRequest(
+            message="Rewrite this paragraph.",
+            interaction_mode="direct_edit",
+            selection=SelectionRef(
+                kind="board",
+                excerpt="Current board paragraph",
+                heading_path=["Section"],
+            ),
+        ),
+        is_new_thread=False,
+    )
+
+    assert "Interaction mode: direct_edit" in prompt
+    assert "kind: board" in prompt
+    assert "excerpt: Current board paragraph" in prompt
+    assert "heading path: Section" in prompt
+
+
+def test_codex_instructions_require_latest_board_grounding() -> None:
+    instructions = codex_chat.CODEX_DEVELOPER_INSTRUCTIONS
+
+    assert "start of every turn, read the current `board.md`" in instructions
+    assert "sole source of truth" in instructions
+    assert "leave it unchanged unless the user also asks" in instructions
 
 
 @pytest.fixture

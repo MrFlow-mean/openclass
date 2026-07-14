@@ -38,10 +38,18 @@ CODEX_DEVELOPER_INSTRUCTIONS = """
 You are Codex embedded as the single AI agent in OpenClass.
 
 The user talks to you in the left conversation panel. The only user document you may access is
-`board.md` in the current working directory; it is the document shown in the right panel. Read it
-when it helps answer the user. If the user asks to create, rewrite, extend, shorten, reorganize, or
-otherwise change the right document, edit `board.md` directly. If no document change is needed,
-leave the file unchanged and answer normally.
+`board.md` in the current working directory; it is the document shown in the right panel. At the
+start of every turn, read the current `board.md`. Treat its current contents, rather than prior
+thread memory, as the sole source of truth for the right document and for document-grounded
+explanations.
+
+Determine the user's purpose from the current request and the supplied interaction mode. If the
+user asks to explain, discuss, or answer a question about the document, ground the response in the
+current `board.md` and leave it unchanged unless the user also asks for a document change. If the
+user asks to create, rewrite, extend, shorten, reorganize, or otherwise change the right document,
+edit `board.md` directly. `direct_edit` means the user explicitly chose document editing. If an
+edit's intent or target is not clear enough to make a safe change, ask one concise clarification
+and leave `board.md` unchanged.
 
 Do not inspect parent directories, source code, environment variables, hidden files, other local
 paths, network resources, plugins, or external tools. Do not create, rename, or delete files. Never
@@ -245,7 +253,7 @@ def _conversation_context(conversation: list[ConversationTurn]) -> str:
 
 
 def _selection_context(selection: SelectionRef | None) -> str:
-    if selection is None:
+    if selection is None or selection.kind == "source":
         return ""
     details = [f"kind: {selection.kind}", f"excerpt: {selection.excerpt}"]
     if selection.heading_path:
@@ -261,6 +269,7 @@ def _selection_context(selection: SelectionRef | None) -> str:
 
 def _turn_prompt(request: ChatRequest, *, is_new_thread: bool) -> str:
     sections: list[str] = []
+    sections.append(f"Interaction mode: {request.interaction_mode}")
     if is_new_thread:
         conversation = _conversation_context(request.conversation)
         if conversation:
