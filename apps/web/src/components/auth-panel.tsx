@@ -35,6 +35,7 @@ import {
   api,
   clearAuthToken,
   getApiBase,
+  persistConnectedGuestAuthToken,
   readAuthToken,
   readGuestAuthToken,
   storeAuthToken,
@@ -619,6 +620,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
       try {
         const provider = await api.getCodexStatus();
         if (!disposed && provider.configured) {
+          persistConnectedGuestAuthToken();
           navigateAfterAuth("/studio", "replace");
         }
       } catch {
@@ -633,7 +635,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
   }, []);
 
   useEffect(() => {
-    if (!codexLogin || ["succeeded", "failed", "cancelled", "expired"].includes(codexLoginStatus ?? "")) {
+    if (!codexLogin) {
       return;
     }
     const activeCodexLogin = codexLogin;
@@ -645,17 +647,20 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
         if (disposed) {
           return;
         }
-        setCodexLoginStatus(status.status);
         if (status.status === "succeeded") {
-          const provider = await api.getCodexStatus(true);
+          const provider = await api.getCodexStatus();
+          if (disposed) {
+            return;
+          }
           if (!provider.configured) {
             throw new Error(provider.message || "ChatGPT 登录尚未完成");
           }
-          if (!disposed) {
-            navigateAfterAuth("/studio");
-          }
+          persistConnectedGuestAuthToken();
+          setCodexLoginStatus("succeeded");
+          navigateAfterAuth("/studio");
           return;
         }
+        setCodexLoginStatus(status.status);
         if (["failed", "cancelled", "expired"].includes(status.status)) {
           setCodexLogin(null);
           setError(status.error || "ChatGPT 登录未完成");
@@ -674,7 +679,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
       disposed = true;
       window.clearInterval(intervalId);
     };
-  }, [codexLogin, codexLoginStatus]);
+  }, [codexLogin]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();

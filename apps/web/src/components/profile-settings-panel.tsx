@@ -32,7 +32,7 @@ import {
 } from "lucide-react";
 
 import { useInterfaceLanguage } from "@/contexts/interface-language-context";
-import { api, OPENCLASS_AUTH_TOKEN_STORAGE_KEY } from "@/lib/api";
+import { api, OPENCLASS_AUTH_TOKEN_STORAGE_KEY, persistConnectedGuestAuthToken } from "@/lib/api";
 import { userAccountLabel, userPublicEmail } from "@/lib/account";
 import type { InterfaceLanguage } from "@/lib/profile-settings-state";
 import {
@@ -280,26 +280,29 @@ export function ProfileSettingsPanel({
   }, []); // eslint-disable-line react-hooks/exhaustive-deps -- fetch once per mount; error fallbacks reflect language when reopening Settings
 
   useEffect(() => {
-    if (!codexLogin || ["succeeded", "failed", "cancelled", "expired"].includes(codexLoginStatus ?? "")) {
+    if (!codexLogin) {
       return;
     }
+    const activeCodexLogin = codexLogin;
     let isDisposed = false;
     const intervalId = window.setInterval(async () => {
       try {
-        const status = await api.getCodexLoginStatus(codexLogin.login_id);
+        const status = await api.getCodexLoginStatus(activeCodexLogin.login_id);
         if (isDisposed) {
           return;
         }
-        setCodexLoginStatus(status.status);
         if (status.status === "succeeded") {
-          const codex = await api.getCodexStatus(true);
-          const catalog = await api.getAIModels();
+          const [codex, catalog] = await Promise.all([api.getCodexStatus(), api.getAIModels()]);
           if (!isDisposed) {
-            setModelCatalog(catalog);
+            persistConnectedGuestAuthToken();
+            setCodexLoginStatus("succeeded");
             setCodexStatus(codex);
+            setModelCatalog(catalog);
             setCodexLogin(null);
           }
+          return;
         }
+        setCodexLoginStatus(status.status);
         if (["failed", "cancelled", "expired"].includes(status.status)) {
           setModelError(status.error || s.models.fetchErrorFallback);
           setCodexLogin(null);
@@ -314,7 +317,7 @@ export function ProfileSettingsPanel({
       isDisposed = true;
       window.clearInterval(intervalId);
     };
-  }, [codexLogin, codexLoginStatus, s.models.fetchErrorFallback]);
+  }, [codexLogin, s.models.fetchErrorFallback]);
 
   const textModels = useMemo(() => configuredModels(modelCatalog?.text ?? []), [modelCatalog]);
   const realtimeModels = useMemo(() => configuredModels(modelCatalog?.realtime ?? []), [modelCatalog]);
