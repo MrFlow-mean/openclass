@@ -31,12 +31,12 @@ export type GoogleRealtimeAudioMessage = {
 export const FALLBACK_MODEL_CATALOG: AIModelCatalog = {
   text: [
     {
-      provider: "openai",
+      provider: "openai_codex",
       model: "gpt-5.5",
-      label: "GPT-5.5",
+      label: "OpenAI Codex GPT-5.5",
       capability: "text",
-      enabled: true,
-      configured: true,
+      enabled: false,
+      configured: false,
       default: true,
     },
   ],
@@ -52,7 +52,7 @@ export const FALLBACK_MODEL_CATALOG: AIModelCatalog = {
     },
   ],
   defaults: {
-    text: { provider: "openai", model: "gpt-5.5" },
+    text: { provider: "openai_codex", model: "gpt-5.5" },
     realtime: { provider: "openai_codex", model: "realtime-unavailable" },
   },
 };

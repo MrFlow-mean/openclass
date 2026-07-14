@@ -249,7 +249,8 @@ export function ProfileSettingsPanel({
 
     async function loadModels() {
       try {
-        const [catalog, codex] = await Promise.all([api.getAIModels(), api.getCodexStatus()]);
+        const codex = await api.getCodexStatus();
+        const catalog = await api.getAIModels();
         if (isDisposed) {
           return;
         }
@@ -291,7 +292,8 @@ export function ProfileSettingsPanel({
         }
         setCodexLoginStatus(status.status);
         if (status.status === "succeeded") {
-          const [catalog, codex] = await Promise.all([api.getAIModels(), api.getCodexStatus(true)]);
+          const codex = await api.getCodexStatus(true);
+          const catalog = await api.getAIModels();
           if (!isDisposed) {
             setModelCatalog(catalog);
             setCodexStatus(codex);
@@ -449,7 +451,8 @@ export function ProfileSettingsPanel({
   }
 
   async function refreshCodexModels() {
-    const [catalog, codex] = await Promise.all([api.getAIModels(), api.getCodexStatus(true)]);
+    const codex = await api.getCodexStatus(true);
+    const catalog = await api.getAIModels();
     setModelCatalog(catalog);
     setCodexStatus(codex);
   }
