@@ -26,8 +26,41 @@ def test_catalog_exposes_only_codex_text_models(monkeypatch) -> None:
         ai_model_catalog,
         "list_codex_models",
         lambda _user_id: [
-            {"model": "gpt-5.5", "displayName": "GPT-5.5"},
-            {"model": "gpt-5.4-mini", "displayName": "GPT-5.4 Mini"},
+            {
+                "model": "gpt-5.5",
+                "displayName": "GPT-5.5",
+                "defaultReasoningEffort": "medium",
+                "supportedReasoningEfforts": [
+                    {
+                        "reasoningEffort": "medium",
+                        "description": "Balanced reasoning",
+                    },
+                    {
+                        "reasoningEffort": "high",
+                        "description": "Deeper reasoning",
+                    },
+                ],
+                "defaultServiceTier": None,
+                "serviceTiers": [
+                    {
+                        "id": "priority",
+                        "name": "Fast",
+                        "description": "1.5x speed, increased usage",
+                    }
+                ],
+            },
+            {
+                "model": "gpt-5.4-mini",
+                "displayName": "GPT-5.4 Mini",
+                "defaultReasoningEffort": "high",
+                "supportedReasoningEfforts": [
+                    {
+                        "reasoningEffort": "high",
+                        "description": "Deeper reasoning",
+                    }
+                ],
+                "serviceTiers": [],
+            },
         ],
     )
 
@@ -48,6 +81,58 @@ def test_catalog_exposes_only_codex_text_models(monkeypatch) -> None:
     assert catalog.realtime[0].configured is False
     assert [option.model for option in catalog.text if option.default] == ["gpt-5.4-mini"]
     assert all(option.enabled and option.configured for option in catalog.text)
+    assert catalog.defaults["text"].reasoning_effort == "high"
+    assert catalog.defaults["text"].service_tier is None
+    assert [
+        option.reasoning_effort
+        for option in catalog.text[0].supported_reasoning_efforts
+    ] == ["medium", "high"]
+    assert catalog.text[0].service_tiers[0].id == "priority"
+
+
+def test_catalog_uses_codex_live_default_without_an_environment_override(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("OPENAI_CODEX_MODEL", raising=False)
+    monkeypatch.setattr(
+        ai_model_catalog,
+        "codex_provider_status",
+        lambda *_args, **_kwargs: _status(configured=True),
+    )
+    monkeypatch.setattr(
+        ai_model_catalog,
+        "list_codex_models",
+        lambda _user_id: [
+            {
+                "model": "gpt-5.6-sol",
+                "displayName": "GPT-5.6-Sol",
+                "isDefault": True,
+                "defaultReasoningEffort": "low",
+                "supportedReasoningEfforts": [
+                    {"reasoningEffort": "low", "description": "Fast"}
+                ],
+                "serviceTiers": [
+                    {
+                        "id": "priority",
+                        "name": "Fast",
+                        "description": "1.5x speed, increased usage",
+                    }
+                ],
+            },
+            {
+                "model": "gpt-5.5",
+                "displayName": "GPT-5.5",
+                "isDefault": False,
+                "defaultReasoningEffort": "medium",
+            },
+        ],
+    )
+
+    catalog = ai_model_catalog.build_model_catalog(TEST_USER_ID)
+
+    assert catalog.defaults["text"].model == "gpt-5.6-sol"
+    assert catalog.defaults["text"].reasoning_effort == "low"
+    assert catalog.text[0].default is True
 
 
 def test_catalog_adds_configured_default_when_codex_does_not_list_it(monkeypatch) -> None:

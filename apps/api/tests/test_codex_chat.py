@@ -145,10 +145,25 @@ def test_codex_chat_preserves_frontend_contract_and_persists_thread(
         )
 
     monkeypatch.setattr(codex_chat, "run_codex_thread_turn", fake_turn)
+    monkeypatch.setattr(
+        codex_chat,
+        "build_model_catalog",
+        lambda _user_id: SimpleNamespace(
+            defaults={"text": SimpleNamespace(model="gpt-5.6-sol")}
+        ),
+    )
 
     first = codex_chat.process_codex_chat_on_lesson(
         lesson.id,
-        ChatRequest(message="Explain this without editing it."),
+        ChatRequest(
+            message="Explain this without editing it.",
+            text_model={
+                "provider": "openai_codex",
+                "model": "gpt-5.6-sol",
+                "reasoning_effort": "xhigh",
+                "service_tier": "priority",
+            },
+        ),
         user_id=TEST_USER_ID,
     )
     second = codex_chat.process_codex_chat_on_lesson(
@@ -168,8 +183,14 @@ def test_codex_chat_preserves_frontend_contract_and_persists_thread(
     assert first.course_package.lessons[0].learning_requirements is None
     assert second.chatbot_message == "Codex reply"
     assert calls[0]["thread_id"] is None
+    assert calls[0]["model"] == "gpt-5.6-sol"
+    assert calls[0]["reasoning_effort"] == "xhigh"
+    assert calls[0]["service_tier"] == "priority"
+    assert calls[0]["service_tier_is_set"] is True
     assert calls[1]["thread_id"] == "thread_codex_1"
     assert calls[1]["last_turn_id"] == "turn_1"
+    assert calls[1]["model"] == "gpt-5.6-sol"
+    assert calls[1]["service_tier_is_set"] is False
 
     saved_lesson = codex_store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
     assert saved_lesson.board_document.content_text == "# Existing board"
@@ -182,6 +203,16 @@ def test_codex_chat_preserves_frontend_contract_and_persists_thread(
     assert commit.metadata["codex_thread_id"] == "thread_codex_1"
     assert commit.metadata["document_changed"] is False
     assert commit.metadata["requirement_cleared"] is True
+    configured_commit = next(
+        item
+        for item in saved_lesson.history_graph.commits
+        if item.metadata.get("codex_turn_id") == "turn_1"
+    )
+    assert configured_commit.metadata["codex_model"] == "gpt-5.6-sol"
+    assert configured_commit.metadata["codex_reasoning_effort"] == "xhigh"
+    assert configured_commit.metadata["codex_service_tier"] == "priority"
+    assert configured_commit.metadata["codex_service_tier_is_set"] is True
+    assert commit.metadata["codex_service_tier_is_set"] is False
 
 
 def test_codex_chat_writes_only_final_markdown_back_to_rich_document(
@@ -843,6 +874,9 @@ def test_conversation_turn_collects_delta_and_final_message() -> None:
         deadline_monotonic=time.monotonic() + 5,
         on_delta=deltas.append,
         is_cancelled=None,
+        reasoning_effort="xhigh",
+        service_tier="priority",
+        service_tier_is_set=True,
     )
 
     assert result.thread_id == "thread_7"
@@ -852,12 +886,32 @@ def test_conversation_turn_collects_delta_and_final_message() -> None:
     params = session.writes[0]["params"]
     assert params["cwd"] == "/tmp/board-only"
     assert params["approvalPolicy"] == "never"
+    assert params["effort"] == "xhigh"
+    assert params["serviceTier"] == "priority"
     assert params["input"][1] == {
         "type": "image",
         "url": "data:image/png;base64,YQ==",
         "detail": "original",
     }
     assert "sandboxPolicy" not in params
+
+
+def test_runtime_settings_distinguish_inherited_and_standard_speed() -> None:
+    inherited = codex_app_server._runtime_setting_params(
+        reasoning_effort=None,
+        service_tier=None,
+        service_tier_is_set=False,
+        include_effort=True,
+    )
+    standard = codex_app_server._runtime_setting_params(
+        reasoning_effort=None,
+        service_tier=None,
+        service_tier_is_set=True,
+        include_effort=True,
+    )
+
+    assert inherited == {}
+    assert standard == {"serviceTier": None}
 
 
 def test_existing_codex_thread_is_forked_before_the_next_turn(
@@ -915,12 +969,15 @@ def test_existing_codex_thread_is_forked_before_the_next_turn(
         developer_instructions="board only",
         thread_id="thread_base",
         last_turn_id="turn_base",
+        service_tier="priority",
+        service_tier_is_set=True,
     )
 
     assert session.requests[0][0] == "thread/fork"
     assert session.requests[0][1]["threadId"] == "thread_base"
     assert session.requests[0][1]["lastTurnId"] == "turn_base"
     assert session.requests[0][1]["ephemeral"] is False
+    assert session.requests[0][1]["serviceTier"] == "priority"
     assert observed_prompts == ["normal prompt"]
     assert result.thread_id == "thread_fork"
     assert result.parent_thread_id == "thread_base"
@@ -983,9 +1040,12 @@ def test_stale_codex_thread_starts_fresh_with_recovery_context(
         fallback_user_prompt="conversation recovery prompt",
         developer_instructions="board only",
         thread_id="thread_missing",
+        service_tier=None,
+        service_tier_is_set=True,
     )
 
     assert [method for method, _params in session.requests] == ["thread/fork", "thread/start"]
+    assert all(params["serviceTier"] is None for _method, params in session.requests)
     assert observed_prompts == ["conversation recovery prompt"]
     assert result.thread_id == "thread_recovered"
     assert result.parent_thread_id == "thread_missing"
