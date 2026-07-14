@@ -1,6 +1,8 @@
 from app.models import CodexProviderStatus
 from app.services import ai_model_catalog
 
+TEST_USER_ID = "user_model_catalog"
+
 
 def _status(*, configured: bool) -> CodexProviderStatus:
     return CodexProviderStatus(
@@ -18,18 +20,18 @@ def test_catalog_exposes_only_codex_text_models(monkeypatch) -> None:
     monkeypatch.setattr(
         ai_model_catalog,
         "codex_provider_status",
-        lambda **_kwargs: _status(configured=True),
+        lambda *_args, **_kwargs: _status(configured=True),
     )
     monkeypatch.setattr(
         ai_model_catalog,
         "list_codex_models",
-        lambda: [
+        lambda _user_id: [
             {"model": "gpt-5.5", "displayName": "GPT-5.5"},
             {"model": "gpt-5.4-mini", "displayName": "GPT-5.4 Mini"},
         ],
     )
 
-    catalog = ai_model_catalog.build_model_catalog()
+    catalog = ai_model_catalog.build_model_catalog(TEST_USER_ID)
 
     assert [(option.provider, option.model) for option in catalog.text] == [
         ("openai_codex", "gpt-5.5"),
@@ -53,15 +55,15 @@ def test_catalog_adds_configured_default_when_codex_does_not_list_it(monkeypatch
     monkeypatch.setattr(
         ai_model_catalog,
         "codex_provider_status",
-        lambda **_kwargs: _status(configured=True),
+        lambda *_args, **_kwargs: _status(configured=True),
     )
     monkeypatch.setattr(
         ai_model_catalog,
         "list_codex_models",
-        lambda: [{"model": "gpt-5.5", "displayName": "GPT-5.5"}],
+        lambda _user_id: [{"model": "gpt-5.5", "displayName": "GPT-5.5"}],
     )
 
-    catalog = ai_model_catalog.build_model_catalog()
+    catalog = ai_model_catalog.build_model_catalog(TEST_USER_ID)
 
     assert catalog.text[0].provider == "openai_codex"
     assert catalog.text[0].model == "custom-codex-model"
@@ -73,11 +75,11 @@ def test_catalog_disables_codex_options_until_account_is_configured(monkeypatch)
     monkeypatch.setattr(
         ai_model_catalog,
         "codex_provider_status",
-        lambda **_kwargs: _status(configured=False),
+        lambda *_args, **_kwargs: _status(configured=False),
     )
-    monkeypatch.setattr(ai_model_catalog, "list_codex_models", lambda: [])
+    monkeypatch.setattr(ai_model_catalog, "list_codex_models", lambda _user_id: [])
 
-    catalog = ai_model_catalog.build_model_catalog()
+    catalog = ai_model_catalog.build_model_catalog(TEST_USER_ID)
 
     assert catalog.text
     assert {option.provider for option in catalog.text} == {"openai_codex"}

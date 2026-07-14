@@ -64,7 +64,11 @@ def codex_store(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
     monkeypatch.setattr(workspace_state, "STORE", store)
     monkeypatch.setenv("OPENCLASS_CODEX_WORKSPACE_ROOT", str(tmp_path / "codex-workspaces"))
-    monkeypatch.setattr(codex_chat, "delete_codex_thread", lambda _thread_id: None)
+    monkeypatch.setattr(
+        codex_chat,
+        "delete_codex_thread",
+        lambda _thread_id, **_kwargs: None,
+    )
     return store
 
 
@@ -233,7 +237,11 @@ def test_codex_chat_rejects_html_without_committing(
 ) -> None:
     lesson = _seed_workspace(codex_store)
     discarded_threads: list[str] = []
-    monkeypatch.setattr(codex_chat, "delete_codex_thread", discarded_threads.append)
+    monkeypatch.setattr(
+        codex_chat,
+        "delete_codex_thread",
+        lambda thread_id, **_kwargs: discarded_threads.append(thread_id),
+    )
     before_head = current_head_commit(
         codex_store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
     ).id
@@ -386,7 +394,11 @@ def test_codex_chat_atomic_save_rejects_last_moment_target_change(
 ) -> None:
     lesson = _seed_workspace(codex_store)
     discarded_threads: list[str] = []
-    monkeypatch.setattr(codex_chat, "delete_codex_thread", discarded_threads.append)
+    monkeypatch.setattr(
+        codex_chat,
+        "delete_codex_thread",
+        lambda thread_id, **_kwargs: discarded_threads.append(thread_id),
+    )
 
     def fake_turn(**kwargs) -> CodexTurnResult:
         board_path = Path(kwargs["cwd"]) / codex_chat.BOARD_FILE_NAME
@@ -821,7 +833,7 @@ def test_existing_codex_thread_is_forked_before_the_next_turn(
     monkeypatch.setattr(
         codex_app_server,
         "codex_provider_status",
-        lambda **_kwargs: SimpleNamespace(configured=True, message=""),
+        lambda *_args, **_kwargs: SimpleNamespace(configured=True, message=""),
     )
     monkeypatch.setattr(
         codex_app_server,
@@ -838,6 +850,7 @@ def test_existing_codex_thread_is_forked_before_the_next_turn(
     )
 
     result = codex_app_server.run_codex_thread_turn(
+        user_id=TEST_USER_ID,
         model="gpt-5.5",
         cwd=tmp_path,
         user_prompt="normal prompt",
@@ -889,7 +902,7 @@ def test_stale_codex_thread_starts_fresh_with_recovery_context(
     monkeypatch.setattr(
         codex_app_server,
         "codex_provider_status",
-        lambda **_kwargs: SimpleNamespace(configured=True, message=""),
+        lambda *_args, **_kwargs: SimpleNamespace(configured=True, message=""),
     )
     monkeypatch.setattr(
         codex_app_server,
@@ -906,6 +919,7 @@ def test_stale_codex_thread_starts_fresh_with_recovery_context(
     )
 
     result = codex_app_server.run_codex_thread_turn(
+        user_id=TEST_USER_ID,
         model="gpt-5.5",
         cwd=tmp_path,
         user_prompt="normal prompt",
@@ -950,7 +964,7 @@ def test_non_stale_fork_error_is_not_retried_as_a_new_thread(
     monkeypatch.setattr(
         codex_app_server,
         "codex_provider_status",
-        lambda **_kwargs: SimpleNamespace(configured=True, message=""),
+        lambda *_args, **_kwargs: SimpleNamespace(configured=True, message=""),
     )
     monkeypatch.setattr(
         codex_app_server,
@@ -960,6 +974,7 @@ def test_non_stale_fork_error_is_not_retried_as_a_new_thread(
 
     with pytest.raises(CodexAppServerError, match="authentication failed"):
         codex_app_server.run_codex_thread_turn(
+            user_id=TEST_USER_ID,
             model="gpt-5.5",
             cwd=tmp_path,
             user_prompt="normal prompt",
