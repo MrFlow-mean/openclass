@@ -1091,6 +1091,50 @@ def _sanitize_suspicious_math_json(content_json: dict[str, Any]) -> tuple[dict[s
     return sanitized, changed
 
 
+def _repair_split_formula_paragraphs(node: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    node_type = node.get("type")
+    content = node.get("content")
+    if node_type == "paragraph" and isinstance(content, list) and content:
+        formula_parts: list[str] = []
+        for child in content:
+            if not isinstance(child, dict):
+                formula_parts = []
+                break
+            if child.get("type") == "text":
+                if child.get("marks"):
+                    formula_parts = []
+                    break
+                formula_parts.append(str(child.get("text") or ""))
+                continue
+            if child.get("type") == "inlineMath":
+                formula_parts.append(str(child.get("attrs", {}).get("latex") or ""))
+                continue
+            formula_parts = []
+            break
+        candidate = "".join(formula_parts).strip()
+        if candidate and _has_math_signal(candidate) and _is_likely_delimited_math(candidate):
+            return {"type": "blockMath", "attrs": {"latex": _normalize_latex(candidate)}}, True
+
+    repaired = dict(node)
+    if not isinstance(content, list):
+        return repaired, False
+    repaired_content: list[Any] = []
+    changed = False
+    for child in content:
+        if not isinstance(child, dict):
+            repaired_content.append(child)
+            continue
+        next_child, child_changed = _repair_split_formula_paragraphs(child)
+        repaired_content.append(next_child)
+        changed = changed or child_changed
+    repaired["content"] = repaired_content
+    return repaired, changed
+
+
+def _repair_split_formula_json(content_json: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    return _repair_split_formula_paragraphs(content_json)
+
+
 def _html_attr(raw_tag: str, name: str) -> str:
     match = re.search(rf"\b{re.escape(name)}\s*=\s*(\"([^\"]*)\"|'([^']*)')", raw_tag, flags=re.IGNORECASE)
     if not match:
@@ -1308,8 +1352,7 @@ def upgrade_markdown_like_document(document: BoardDocument) -> BoardDocument:
         document_id=document.id,
         page_settings=document.page_settings,
     )
-    contains_unrendered_math = _json_has_raw_math_text(existing_document.content_json)
-    if _would_downgrade_existing_rich_structure(existing_document, upgraded) and not contains_unrendered_math:
+    if _would_downgrade_existing_rich_structure(existing_document, upgraded):
         return existing_document
     return upgraded
 
@@ -1394,10 +1437,12 @@ def _repair_document_code_fences(document: BoardDocument) -> BoardDocument:
 def _repair_existing_document(document: BoardDocument) -> BoardDocument:
     content_json = document.content_json if isinstance(document.content_json, dict) else {}
     sanitized_json, repaired_math = _sanitize_suspicious_math_json(content_json)
+    sanitized_json, repaired_split_formula = _repair_split_formula_json(sanitized_json)
+    repaired_math = repaired_math or repaired_split_formula
     repaired_html = _repair_suspicious_math_html(document.content_html)
     stale_json = _html_has_math_nodes(repaired_html) and _json_has_raw_math_text(sanitized_json)
-    rebuild_json_from_html = stale_json or (
-        repaired_html != document.content_html and _html_has_math_nodes(repaired_html)
+    rebuild_json_from_html = not repaired_split_formula and (
+        stale_json or (repaired_html != document.content_html and _html_has_math_nodes(repaired_html))
     )
     if rebuild_json_from_html:
         sanitized_json = html_to_tiptap_doc(repaired_html)

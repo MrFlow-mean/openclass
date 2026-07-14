@@ -1100,7 +1100,7 @@ def test_build_document_keeps_factorial_equation_together() -> None:
 def test_upgrade_markdown_like_document_repairs_split_factorial_equation() -> None:
     legacy = BoardDocument(
         title="Doc",
-        content_text="$$\nn! = n \\cdot (n-1)! \\quad (n>0)\n$$\n\n\\((n-1)!\\)",
+        content_text="$$\nn! = n \\cdot (n-1)! \\quad (n>0)\n$$",
         content_html=(
             '<p>n! <span data-type="inline-math" data-latex="= n \\cdot (n-1)"></span>'
             r'! \quad (n&gt;0)</p>'
@@ -1119,7 +1119,6 @@ def test_upgrade_markdown_like_document_repairs_split_factorial_equation() -> No
                 {"type": "heading", "attrs": {"level": 1}, "content": [{"type": "text", "text": "A"}]},
                 {"type": "heading", "attrs": {"level": 1}, "content": [{"type": "text", "text": "B"}]},
                 {"type": "heading", "attrs": {"level": 1}, "content": [{"type": "text", "text": "C"}]},
-                {"type": "paragraph", "content": [{"type": "text", "text": r"\((n-1)!\)"}]},
             ],
         },
     )
@@ -1130,6 +1129,7 @@ def test_upgrade_markdown_like_document_repairs_split_factorial_equation() -> No
         "type": "blockMath",
         "attrs": {"latex": "n! = n \\cdot (n-1)! \\quad (n>0)"},
     }
+    assert [node["type"] for node in upgraded.content_json["content"][1:]] == ["heading", "heading", "heading"]
 
 
 def test_build_document_converts_inline_display_delimiters_to_inline_math() -> None:
