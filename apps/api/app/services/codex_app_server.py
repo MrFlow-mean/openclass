@@ -30,6 +30,7 @@ CODEX_APP_SERVER_TIMEOUT_SECONDS = 180
 CODEX_LOGIN_TIMEOUT_SECONDS = 15 * 60
 CODEX_BOARD_PERMISSION_PROFILE = "openclass_board"
 CODEX_MIN_PERMISSION_PROFILE_VERSION = (0, 138, 0)
+CODEX_PROCESS_FILE_SIZE_LIMIT_BYTES = 16 * 1024 * 1024
 _STATUS_CACHE_TTL_SECONDS = 10
 
 
@@ -160,6 +161,18 @@ def _codex_app_server_command(binary: str) -> list[str]:
         "app-server",
         "--strict-config",
         *_codex_permission_config_args(),
+    ]
+
+
+def _codex_limited_process_command(binary: str) -> list[str]:
+    file_limit_kib = max(1, CODEX_PROCESS_FILE_SIZE_LIMIT_BYTES // 1024)
+    return [
+        "/bin/sh",
+        "-c",
+        'trap "" XFSZ; ulimit -f "$1"; shift; exec "$@"',
+        "openclass-codex-limit",
+        str(file_limit_kib),
+        *_codex_app_server_command(binary),
     ]
 
 
@@ -322,7 +335,7 @@ class CodexAppServerSession:
             deadline_monotonic=deadline_monotonic,
         )
         self.process = subprocess.Popen(
-            _codex_app_server_command(binary),
+            _codex_limited_process_command(binary),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

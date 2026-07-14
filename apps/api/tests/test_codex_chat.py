@@ -10,7 +10,12 @@ import pytest
 
 from app.models import ChatRequest
 from app.services import codex_app_server, codex_chat, workspace_state
-from app.services.codex_app_server import CodexAppServerError, CodexTurnResult
+from app.services.codex_app_server import (
+    CODEX_PROCESS_FILE_SIZE_LIMIT_BYTES,
+    CodexAppServerError,
+    CodexTurnCancelledError,
+    CodexTurnResult,
+)
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
 from app.services.history import commit_operations, current_head_commit
 from app.services.lesson_factory import build_requirements, create_empty_lesson
@@ -487,6 +492,70 @@ def test_lesson_atomic_save_preserves_concurrent_other_lesson_change(
     assert saved_other.board_document.content_text == "# Other concurrent update"
 
 
+def test_codex_chat_rejects_oversized_existing_board_before_turn(
+    monkeypatch: pytest.MonkeyPatch,
+    codex_store: SqliteCourseStore,
+) -> None:
+    lesson = _seed_workspace(codex_store, content_text="123456789")
+    monkeypatch.setenv("OPENCLASS_CODEX_BOARD_MAX_BYTES", "8")
+    monkeypatch.setattr(
+        codex_chat,
+        "run_codex_thread_turn",
+        lambda **_kwargs: pytest.fail("Codex must not start for an oversized board"),
+    )
+
+    with pytest.raises(CodexAppServerError, match="current board exceeds"):
+        codex_chat.process_codex_chat_on_lesson(
+            lesson.id,
+            ChatRequest(message="Continue."),
+            user_id=TEST_USER_ID,
+        )
+
+
+def test_codex_chat_cancels_turn_when_board_exceeds_runtime_quota(
+    monkeypatch: pytest.MonkeyPatch,
+    codex_store: SqliteCourseStore,
+) -> None:
+    lesson = _seed_workspace(codex_store, content_text="# Board")
+    monkeypatch.setenv("OPENCLASS_CODEX_BOARD_MAX_BYTES", "64")
+    before_head = current_head_commit(
+        codex_store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
+    ).id
+
+    def oversized_turn(**kwargs) -> CodexTurnResult:
+        board_path = Path(kwargs["cwd"]) / codex_chat.BOARD_FILE_NAME
+        board_path.write_bytes(b"x" * 1024)
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            if kwargs["is_cancelled"]():
+                raise CodexTurnCancelledError("cancelled by quota")
+            time.sleep(0.01)
+        pytest.fail("quota monitor did not cancel the Codex turn")
+
+    monkeypatch.setattr(codex_chat, "run_codex_thread_turn", oversized_turn)
+
+    with pytest.raises(CodexAppServerError, match="configured size limit"):
+        codex_chat.process_codex_chat_on_lesson(
+            lesson.id,
+            ChatRequest(message="Make it very large."),
+            user_id=TEST_USER_ID,
+        )
+
+    saved_lesson = codex_store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
+    assert current_head_commit(saved_lesson).id == before_head
+    assert saved_lesson.board_document.content_text == "# Board"
+
+
+def test_board_quota_cannot_exceed_process_hard_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(
+        "OPENCLASS_CODEX_BOARD_MAX_BYTES",
+        str(CODEX_PROCESS_FILE_SIZE_LIMIT_BYTES + 1),
+    )
+
+    with pytest.raises(CodexAppServerError, match="process hard limit"):
+        codex_chat._board_max_bytes()
+
+
 def test_codex_app_server_command_uses_exact_board_permission_profile() -> None:
     command = codex_app_server._codex_app_server_command("/usr/local/bin/codex")
     rendered = "\n".join(command)
@@ -504,6 +573,16 @@ def test_codex_app_server_command_uses_exact_board_permission_profile() -> None:
     assert "features.computer_use=false" in rendered
     assert "--strict-config" in command
     assert "danger-full-access" not in rendered
+
+
+def test_codex_app_server_process_has_file_size_hard_limit() -> None:
+    command = codex_app_server._codex_limited_process_command("/usr/local/bin/codex")
+
+    assert command[:2] == ["/bin/sh", "-c"]
+    assert "ulimit -f" in command[2]
+    assert str(CODEX_PROCESS_FILE_SIZE_LIMIT_BYTES // 1024) in command
+    assert command[5:8] == ["/usr/local/bin/codex", "app-server", "--strict-config"]
+    assert command[-2:] == ["-c", "features.workspace_dependencies=false"]
 
 
 def test_effective_codex_config_rejects_legacy_sandbox_override() -> None:

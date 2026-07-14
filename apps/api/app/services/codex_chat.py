@@ -19,7 +19,9 @@ from app.models import (
 )
 from app.services import workspace_state
 from app.services.codex_app_server import (
+    CODEX_PROCESS_FILE_SIZE_LIMIT_BYTES,
     CodexAppServerError,
+    CodexTurnCancelledError,
     delete_codex_thread,
     run_codex_thread_turn,
 )
@@ -81,6 +83,9 @@ def _remove_path(path: Path) -> None:
 
 
 def _prepare_workspace(workspace: Path, content_text: str) -> Path:
+    encoded_content = content_text.encode("utf-8")
+    if len(encoded_content) > _board_max_bytes():
+        raise CodexAppServerError("The current board exceeds the configured size limit")
     root = workspace.parent
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     if workspace.is_symlink():
@@ -97,7 +102,7 @@ def _prepare_workspace(workspace: Path, content_text: str) -> Path:
     board_path = workspace / BOARD_FILE_NAME
     if board_path.is_symlink():
         board_path.unlink()
-    board_path.write_text(content_text, encoding="utf-8")
+    board_path.write_bytes(encoded_content)
     try:
         board_path.chmod(0o600)
     except OSError:
@@ -115,7 +120,44 @@ def _board_max_bytes() -> int:
         raise CodexAppServerError("OPENCLASS_CODEX_BOARD_MAX_BYTES must be an integer") from exc
     if value <= 0:
         raise CodexAppServerError("OPENCLASS_CODEX_BOARD_MAX_BYTES must be positive")
+    if value > CODEX_PROCESS_FILE_SIZE_LIMIT_BYTES:
+        raise CodexAppServerError(
+            "OPENCLASS_CODEX_BOARD_MAX_BYTES exceeds the process hard limit"
+        )
     return value
+
+
+def _watch_board_quota(
+    board_path: Path,
+    *,
+    max_bytes: int,
+    stop_event: threading.Event,
+    quota_exceeded: threading.Event,
+) -> None:
+    while not stop_event.wait(0.02):
+        try:
+            info = board_path.lstat()
+        except OSError:
+            continue
+        if not stat.S_ISREG(info.st_mode) or info.st_size <= max_bytes:
+            continue
+        quota_exceeded.set()
+        no_follow = getattr(os, "O_NOFOLLOW", 0)
+        descriptor = -1
+        try:
+            descriptor = os.open(
+                board_path,
+                os.O_WRONLY | no_follow | getattr(os, "O_CLOEXEC", 0),
+            )
+            opened = os.fstat(descriptor)
+            if stat.S_ISREG(opened.st_mode) and opened.st_size > max_bytes:
+                os.ftruncate(descriptor, max_bytes)
+        except OSError:
+            pass
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+        return
 
 
 def _read_validated_board(workspace: Path) -> str:
@@ -306,24 +348,62 @@ def process_codex_chat_on_lesson(
             dir=workspace_root,
         ) as temporary_workspace:
             workspace_path = Path(temporary_workspace)
-            _prepare_workspace(workspace_path, initial_lesson.board_document.content_text)
-            user_prompt = _turn_prompt(request, is_new_thread=prior_thread_id is None)
-            result = run_codex_thread_turn(
-                model=_codex_model(request),
-                cwd=workspace_path,
-                user_prompt=user_prompt,
-                fallback_user_prompt=(
-                    _turn_prompt(request, is_new_thread=True)
-                    if prior_thread_id is not None
-                    else user_prompt
-                ),
-                developer_instructions=CODEX_DEVELOPER_INSTRUCTIONS,
-                thread_id=prior_thread_id,
-                last_turn_id=prior_turn_id,
-                image_urls=_formula_image_urls(request),
-                on_delta=on_delta,
-                is_cancelled=is_cancelled,
+            board_path = _prepare_workspace(
+                workspace_path,
+                initial_lesson.board_document.content_text,
             )
+            user_prompt = _turn_prompt(request, is_new_thread=prior_thread_id is None)
+            quota_stop = threading.Event()
+            quota_exceeded = threading.Event()
+            quota_monitor = threading.Thread(
+                target=_watch_board_quota,
+                kwargs={
+                    "board_path": board_path,
+                    "max_bytes": _board_max_bytes(),
+                    "stop_event": quota_stop,
+                    "quota_exceeded": quota_exceeded,
+                },
+                daemon=True,
+            )
+            quota_monitor.start()
+
+            def turn_is_cancelled() -> bool:
+                return quota_exceeded.is_set() or bool(is_cancelled and is_cancelled())
+
+            result = None
+            try:
+                result = run_codex_thread_turn(
+                    model=_codex_model(request),
+                    cwd=workspace_path,
+                    user_prompt=user_prompt,
+                    fallback_user_prompt=(
+                        _turn_prompt(request, is_new_thread=True)
+                        if prior_thread_id is not None
+                        else user_prompt
+                    ),
+                    developer_instructions=CODEX_DEVELOPER_INSTRUCTIONS,
+                    thread_id=prior_thread_id,
+                    last_turn_id=prior_turn_id,
+                    image_urls=_formula_image_urls(request),
+                    on_delta=on_delta,
+                    is_cancelled=turn_is_cancelled,
+                )
+            except CodexTurnCancelledError as exc:
+                if quota_exceeded.is_set():
+                    raise CodexAppServerError(
+                        "Codex board output exceeds the configured size limit"
+                    ) from exc
+                raise
+            finally:
+                quota_stop.set()
+                quota_monitor.join(timeout=0.2)
+            if quota_exceeded.is_set():
+                if result is not None:
+                    _discard_uncommitted_thread(result.thread_id)
+                raise CodexAppServerError(
+                    "Codex board output exceeds the configured size limit"
+                )
+            assert result is not None
             try:
                 codex_content = _read_validated_board(workspace_path)
 
