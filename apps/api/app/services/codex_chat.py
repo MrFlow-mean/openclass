@@ -18,6 +18,7 @@ from app.models import (
     SelectionRef,
 )
 from app.services import workspace_state
+from app.services.ai_model_catalog import build_model_catalog
 from app.services.codex_app_server import (
     CODEX_PROCESS_FILE_SIZE_LIMIT_BYTES,
     CodexAppServerError,
@@ -221,12 +222,34 @@ def _read_validated_board(workspace: Path) -> str:
     return content_text
 
 
-def _codex_model(request: ChatRequest) -> str:
+def _codex_model(request: ChatRequest, *, user_id: str) -> str:
     if request.text_model is not None and request.text_model.provider == "openai_codex":
         selected = request.text_model.model.strip()
         if selected:
             return selected
+    try:
+        return build_model_catalog(user_id).defaults["text"].model
+    except Exception:
+        pass
     return (os.getenv("OPENAI_CODEX_MODEL") or DEFAULT_CODEX_MODEL).strip() or DEFAULT_CODEX_MODEL
+
+
+def _codex_reasoning_effort(request: ChatRequest) -> str | None:
+    selection = request.text_model
+    if selection is None or selection.provider != "openai_codex":
+        return None
+    normalized = str(selection.reasoning_effort or "").strip()
+    return normalized or None
+
+
+def _codex_service_tier(request: ChatRequest) -> tuple[str | None, bool]:
+    selection = request.text_model
+    if selection is None or selection.provider != "openai_codex":
+        return None, False
+    if "service_tier" not in selection.model_fields_set:
+        return None, False
+    normalized = str(selection.service_tier or "").strip()
+    return normalized or None, True
 
 
 def _thread_reference_for_current_branch(lesson) -> tuple[str | None, str | None]:
@@ -376,6 +399,11 @@ def process_codex_chat_on_lesson(
                 initial_lesson.board_document.content_text,
             )
             user_prompt = _turn_prompt(request, is_new_thread=prior_thread_id is None)
+            codex_model = _codex_model(request, user_id=user_id)
+            codex_reasoning_effort = _codex_reasoning_effort(request)
+            codex_service_tier, codex_service_tier_is_set = _codex_service_tier(
+                request
+            )
             quota_stop = threading.Event()
             quota_exceeded = threading.Event()
             quota_monitor = threading.Thread(
@@ -397,7 +425,7 @@ def process_codex_chat_on_lesson(
             try:
                 result = run_codex_thread_turn(
                     user_id=user_id,
-                    model=_codex_model(request),
+                    model=codex_model,
                     cwd=workspace_path,
                     user_prompt=user_prompt,
                     fallback_user_prompt=(
@@ -411,6 +439,9 @@ def process_codex_chat_on_lesson(
                     image_urls=_formula_image_urls(request),
                     on_delta=on_delta,
                     is_cancelled=turn_is_cancelled,
+                    reasoning_effort=codex_reasoning_effort,
+                    service_tier=codex_service_tier,
+                    service_tier_is_set=codex_service_tier_is_set,
                 )
             except CodexTurnCancelledError as exc:
                 if quota_exceeded.is_set():
@@ -474,7 +505,10 @@ def process_codex_chat_on_lesson(
                     "codex_turn_id": result.turn_id,
                     "codex_parent_thread_id": result.parent_thread_id,
                     "codex_replaced_stale_thread_id": result.replaced_stale_thread_id,
-                    "codex_model": _codex_model(request),
+                    "codex_model": codex_model,
+                    "codex_reasoning_effort": codex_reasoning_effort,
+                    "codex_service_tier": codex_service_tier,
+                    "codex_service_tier_is_set": codex_service_tier_is_set,
                     "codex_branch": branch_name,
                     "codex_base_commit_id": base_commit_id,
                     "active_requirement_sheet_after": None,

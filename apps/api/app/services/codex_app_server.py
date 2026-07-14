@@ -1015,6 +1015,22 @@ def delete_codex_thread(thread_id: str, *, user_id: str) -> None:
         session.request("thread/delete", {"threadId": thread_id}, timeout_seconds=20)
 
 
+def _runtime_setting_params(
+    *,
+    reasoning_effort: str | None,
+    service_tier: str | None,
+    service_tier_is_set: bool,
+    include_effort: bool,
+) -> dict[str, Any]:
+    params: dict[str, Any] = {}
+    normalized_effort = str(reasoning_effort or "").strip()
+    if include_effort and normalized_effort:
+        params["effort"] = normalized_effort
+    if service_tier_is_set:
+        params["serviceTier"] = str(service_tier or "").strip() or None
+    return params
+
+
 def run_codex_thread_turn(
     *,
     user_id: str,
@@ -1029,6 +1045,9 @@ def run_codex_thread_turn(
     timeout_seconds: float = CODEX_APP_SERVER_TIMEOUT_SECONDS,
     on_delta: Callable[[str], None] | None = None,
     is_cancelled: Callable[[], bool] | None = None,
+    reasoning_effort: str | None = None,
+    service_tier: str | None = None,
+    service_tier_is_set: bool = False,
 ) -> CodexTurnResult:
     status = codex_provider_status(user_id, refresh=False)
     if not status.configured:
@@ -1045,6 +1064,12 @@ def run_codex_thread_turn(
             "cwd": str(cwd),
             "approvalPolicy": "never",
             "developerInstructions": developer_instructions,
+            **_runtime_setting_params(
+                reasoning_effort=reasoning_effort,
+                service_tier=service_tier,
+                service_tier_is_set=service_tier_is_set,
+                include_effort=False,
+            ),
         }
         replaced_stale_thread_id: str | None = None
         if thread_id:
@@ -1107,6 +1132,9 @@ def run_codex_thread_turn(
                 deadline_monotonic=deadline,
                 on_delta=on_delta,
                 is_cancelled=is_cancelled,
+                reasoning_effort=reasoning_effort,
+                service_tier=service_tier,
+                service_tier_is_set=service_tier_is_set,
             )
         except Exception:
             _discard_thread(session, active_thread_id, deadline_monotonic=deadline)
@@ -1132,6 +1160,9 @@ def _run_conversation_turn(
     deadline_monotonic: float,
     on_delta: Callable[[str], None] | None,
     is_cancelled: Callable[[], bool] | None,
+    reasoning_effort: str | None = None,
+    service_tier: str | None = None,
+    service_tier_is_set: bool = False,
 ) -> CodexTurnResult:
     request_id = session._next_id
     session._next_id += 1
@@ -1140,17 +1171,24 @@ def _run_conversation_turn(
         {"type": "image", "url": url, "detail": "original"}
         for url in image_urls or []
     )
+    turn_params: dict[str, Any] = {
+        "threadId": thread_id,
+        "input": turn_input,
+        "model": model,
+        "cwd": str(cwd),
+        "approvalPolicy": "never",
+        **_runtime_setting_params(
+            reasoning_effort=reasoning_effort,
+            service_tier=service_tier,
+            service_tier_is_set=service_tier_is_set,
+            include_effort=True,
+        ),
+    }
     session._write(
         {
             "method": "turn/start",
             "id": request_id,
-            "params": {
-                "threadId": thread_id,
-                "input": turn_input,
-                "model": model,
-                "cwd": str(cwd),
-                "approvalPolicy": "never",
-            },
+            "params": turn_params,
         }
     )
     final_text = ""

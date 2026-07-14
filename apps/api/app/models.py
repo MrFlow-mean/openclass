@@ -1078,9 +1078,22 @@ class ConversationTurn(BaseModel):
     content: str
 
 
+class AIReasoningEffortOption(BaseModel):
+    reasoning_effort: str = Field(min_length=1)
+    description: str = ""
+
+
+class AIServiceTierOption(BaseModel):
+    id: str = Field(min_length=1)
+    name: str = ""
+    description: str = ""
+
+
 class AIModelSelection(BaseModel):
     provider: AIProvider
     model: str
+    reasoning_effort: str | None = None
+    service_tier: str | None = None
 
 
 class AIModelOption(BaseModel):
@@ -1092,6 +1105,12 @@ class AIModelOption(BaseModel):
     configured: bool = False
     default: bool = False
     transport: AIRealtimeTransport | None = None
+    default_reasoning_effort: str | None = None
+    supported_reasoning_efforts: list[AIReasoningEffortOption] = Field(
+        default_factory=list
+    )
+    default_service_tier: str | None = None
+    service_tiers: list[AIServiceTierOption] = Field(default_factory=list)
 
 
 class AIModelCatalog(BaseModel):
