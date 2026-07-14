@@ -185,9 +185,11 @@ def test_skipped_evidence_records_event_without_writing_reference(
 
     assert result.evidence_bundle.status == "archived"
     assert result.active_requirement_sheet is not None
+    assert result.active_requirement_sheet.source_grounding.confirmation_status == "skipped"
     assert result.active_requirement_sheet.source_grounding.confirmed_references == []
     versions = store.list_learning_requirement_versions(user_id, lesson_id)
-    assert len(versions) == 1
+    assert len(versions) == 2
+    assert versions[-1]["change_kind"] == "source_reference_declined"
     events = store.list_learning_requirement_events(user_id, lesson_id)
     assert events[-1]["event_type"] == "source_reference_declined"
 

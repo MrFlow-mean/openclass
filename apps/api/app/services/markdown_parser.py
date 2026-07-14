@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import re
+import shlex
 from collections.abc import Callable
 from typing import Any
 
@@ -34,8 +35,21 @@ def _is_structural_line(line: str) -> bool:
     )
 
 
+def _fence_toggles(line: str) -> bool:
+    stripped = line.strip()
+    return stripped.startswith("```") and not (len(stripped) > 6 and stripped.endswith("```"))
+
+
 def _normalize_chinese_ordered_lists(text: str) -> str:
-    return "\n".join(_CHINESE_ORDERED_RE.sub(r"\1. ", line) for line in text.splitlines())
+    output: list[str] = []
+    in_fence = False
+    for line in text.splitlines():
+        if _fence_toggles(line):
+            in_fence = not in_fence
+            output.append(line)
+            continue
+        output.append(line if in_fence else _CHINESE_ORDERED_RE.sub(r"\1. ", line))
+    return "\n".join(output)
 
 
 def _extract_block_math(text: str, normalize_latex: Callable[[str], str]) -> tuple[str, dict[str, str]]:
@@ -44,10 +58,20 @@ def _extract_block_math(text: str, normalize_latex: Callable[[str], str]) -> tup
     output: list[str] = []
     index = 0
     placeholder_index = 0
+    in_fence = False
 
     while index < len(lines):
         line = lines[index]
         stripped = line.strip()
+        if _fence_toggles(line):
+            in_fence = not in_fence
+            output.append(line)
+            index += 1
+            continue
+        if in_fence:
+            output.append(line)
+            index += 1
+            continue
         if not stripped:
             output.append(line)
             index += 1
@@ -104,9 +128,18 @@ def _insert_paragraph_breaks(text: str) -> str:
     lines = text.splitlines()
     output: list[str] = []
     previous_was_text = False
+    in_fence = False
 
     for line in lines:
         stripped = line.strip()
+        if _fence_toggles(line):
+            in_fence = not in_fence
+            output.append(line)
+            previous_was_text = False
+            continue
+        if in_fence:
+            output.append(line)
+            continue
         if not stripped:
             output.append("")
             previous_was_text = False
@@ -139,6 +172,32 @@ def _preprocess_markdown(text: str, normalize_latex: Callable[[str], str]) -> tu
 
 def _create_parser() -> MarkdownIt:
     return MarkdownIt("commonmark", {"html": False, "linkify": False, "breaks": True}).enable("table")
+
+
+def _fence_info(value: str) -> tuple[str | None, dict[str, str]]:
+    try:
+        tokens = shlex.split(value.strip())
+    except ValueError:
+        tokens = value.strip().split()
+    if not tokens:
+        return None, {}
+
+    language: str | None = None
+    attrs: dict[str, str] = {}
+    for token in tokens:
+        if "=" not in token and language is None:
+            language = token.strip() or None
+            continue
+        key, separator, raw_value = token.partition("=")
+        if separator and key in {"title", "number", "kind"} and raw_value.strip():
+            attrs[key] = raw_value.strip()
+
+    if language in {"text", "txt", "plain", "plaintext"}:
+        language = None
+    if language in {"diagram", "openclass-diagram"}:
+        attrs["kind"] = "diagram"
+        language = "openclass-diagram"
+    return language, attrs
 
 
 def _render_block_math_html(latex: str) -> str:
@@ -291,7 +350,7 @@ def parse_markdown_to_html(
     *,
     inline_html: Callable[[str], str],
     normalize_latex: Callable[[str], str],
-    code_block_html: Callable[[str | None, str], str],
+    code_block_html: Callable[[str | None, str, dict[str, str]], str],
 ) -> str:
     processed, placeholders = _preprocess_markdown(content_text, normalize_latex)
     parser = _create_parser()
@@ -322,11 +381,9 @@ def parse_markdown_to_html(
             continue
 
         if token.type == "fence":
-            language = token.info.strip() or None
-            if language in {"text", "txt", "plain", "plaintext"}:
-                language = None
+            language, attrs = _fence_info(token.info)
             code = token.content.rstrip("\n")
-            parts.append(code_block_html(language, code))
+            parts.append(code_block_html(language, code, attrs))
             index += 1
             continue
 
@@ -361,7 +418,7 @@ def parse_markdown_to_tiptap(
     *,
     inline_nodes: Callable[[str], list[dict[str, Any]]],
     normalize_latex: Callable[[str], str],
-    code_block_node: Callable[[str | None, str], dict[str, Any]],
+    code_block_node: Callable[[str | None, str, dict[str, str]], dict[str, Any]],
     paragraph_node: Callable[[str], dict[str, Any]],
 ) -> dict[str, Any]:
     processed, placeholders = _preprocess_markdown(content_text, normalize_latex)
@@ -397,11 +454,9 @@ def parse_markdown_to_tiptap(
             continue
 
         if token.type == "fence":
-            language = token.info.strip() or None
-            if language in {"text", "txt", "plain", "plaintext"}:
-                language = None
+            language, attrs = _fence_info(token.info)
             code = token.content.rstrip("\n")
-            nodes.append(code_block_node(language, code))
+            nodes.append(code_block_node(language, code, attrs))
             index += 1
             continue
 

@@ -27,6 +27,12 @@ def load_confirmed_source_context(
     requirements: LearningRequirementSheet,
 ) -> ConfirmedSourceContext:
     grounding = requirements.source_grounding
+    if grounding.confirmation_status == "stale":
+        raise ConfirmedSourceContextError(
+            "引用的资料章节当前不可用，请重新选择或重新解析资料后再生成板书。"
+        )
+    if grounding.confirmation_status == "skipped":
+        return ConfirmedSourceContext(evidence_bundle=None, context_text="")
     if grounding.confirmation_status != "confirmed" or not grounding.confirmed_references:
         latest_bundle = (
             resource_resolver.latest_requirement_bundle(

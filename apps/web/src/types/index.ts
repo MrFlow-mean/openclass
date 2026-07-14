@@ -979,6 +979,7 @@ export interface SelectionRef {
   source_chapter_id?: string | null;
   source_chapter_number?: string;
   source_chapter_title?: string;
+  source_excerpt?: string;
   source_page_range?: string;
   source_locator?: string;
   source_page_start?: number | null;

@@ -33,6 +33,7 @@ from app.services.rich_document import (
     is_document_empty,
     rich_structure_counts,
     rich_structure_score,
+    synchronize_document_representations,
     would_flatten_rich_document,
 )
 from app.services.route_context import bind_ai_request_context
@@ -75,19 +76,20 @@ def _save_document_request(lesson_id: str, request: DocumentSaveRequest, user_id
     package, lesson = find_lesson_package(workspace, lesson_id)
     package.active_lesson_id = lesson.id
     current_head = current_head_commit(lesson)
+    next_document = synchronize_document_representations(request.document)
     is_autosave = request.metadata.get("autosave") is True or request.metadata.get("kind") == "auto_document_save"
     guard_document: BoardDocument | None = None
     if request.base_commit_id and request.base_commit_id != current_head.id:
         if is_autosave:
             return package_view_for_lesson(workspace, package, lesson.id)
         raise HTTPException(status_code=409, detail="文档已在本次保存前更新，请刷新后再保存")
-    if not document_changed(lesson.board_document, request.document):
+    if not document_changed(lesson.board_document, next_document):
         return package_view_for_lesson(workspace, package, lesson.id)
     if is_autosave:
-        guard_document = _recent_structured_snapshot_for_autosave(lesson, current_head, request.document) or current_head.snapshot
+        guard_document = _recent_structured_snapshot_for_autosave(lesson, current_head, next_document) or current_head.snapshot
         if would_flatten_rich_document(
             current_document=guard_document,
-            new_document=request.document,
+            new_document=next_document,
         ):
             return package_view_for_lesson(workspace, package, lesson.id)
     with bind_ai_request_context(
@@ -96,7 +98,7 @@ def _save_document_request(lesson_id: str, request: DocumentSaveRequest, user_id
         trace_prefix="document_save",
     ):
         previous_updated_at = lesson.updated_at
-        lesson.board_document = request.document
+        lesson.board_document = next_document
         commit_metadata: dict[str, object] = {
             "kind": "manual_document_save",
             **request.metadata,
@@ -104,7 +106,7 @@ def _save_document_request(lesson_id: str, request: DocumentSaveRequest, user_id
                 base_commit_id=request.base_commit_id or current_head.id,
                 current_head_commit_id=current_head.id,
                 before_document=current_head.snapshot,
-                after_document=request.document,
+                after_document=next_document,
                 flatten_guard_evaluated=is_autosave,
             ),
         }
@@ -216,7 +218,7 @@ def manual_commit(
         commit_label=request.label,
     ):
         if request.document is not None:
-            lesson.board_document = request.document
+            lesson.board_document = synchronize_document_representations(request.document)
         commit_document_snapshot(
             lesson,
             label=request.label,

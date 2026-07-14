@@ -1,3 +1,4 @@
+from app.services import youtube_transcript_adapter
 from app.services.youtube_transcript_adapter import YouTubeTranscriptAdapter, is_youtube_url
 
 
@@ -43,3 +44,72 @@ def test_is_youtube_url_matches_standard_hosts() -> None:
     assert is_youtube_url("https://www.youtube.com/watch?v=abc")
     assert is_youtube_url("https://youtu.be/abc")
     assert not is_youtube_url("https://example.com/watch?v=abc")
+
+
+def test_youtube_adapter_uses_explicit_browser_cookie_configuration(monkeypatch) -> None:
+    captured_options = {}
+
+    class _FakeDownloader:
+        def __init__(self, options):
+            captured_options.update(options)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def extract_info(self, _source_uri, *, download):
+            assert download is False
+            return {"id": "video_1"}
+
+    monkeypatch.setenv("OPENCLASS_YTDLP_COOKIES_FROM_BROWSER", "chrome")
+    monkeypatch.setenv("OPENCLASS_YTDLP_BROWSER_PROFILE", "Profile 2")
+    monkeypatch.setenv("OPENCLASS_YTDLP_COOKIE_FILE", "/private/cookies.txt")
+    monkeypatch.setattr(youtube_transcript_adapter.shutil, "which", lambda name: "/usr/local/bin/node" if name == "node" else None)
+    monkeypatch.setitem(__import__("sys").modules, "yt_dlp", type("_YtDlp", (), {"YoutubeDL": _FakeDownloader}))
+
+    info = YouTubeTranscriptAdapter()._extract_info("https://www.youtube.com/watch?v=video_1")
+
+    assert info == {"id": "video_1"}
+    assert captured_options["cookiesfrombrowser"] == ("chrome", "Profile 2", None, None)
+    assert captured_options["cookiefile"] == "/private/cookies.txt"
+    assert captured_options["js_runtimes"] == {"node": {"path": "/usr/local/bin/node"}}
+
+
+def test_youtube_adapter_downloads_caption_through_authenticated_yt_dlp(monkeypatch) -> None:
+    captured_options = {}
+
+    class _FakeResponse:
+        def read(self):
+            return b"WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nCaption"
+
+    class _FakeDownloader:
+        def __init__(self, options):
+            captured_options.update(options)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def urlopen(self, caption_uri):
+            assert caption_uri == "https://caption.local/en.vtt"
+            return _FakeResponse()
+
+    monkeypatch.setenv("OPENCLASS_YTDLP_COOKIES_FROM_BROWSER", "chrome")
+    monkeypatch.setitem(__import__("sys").modules, "yt_dlp", type("_YtDlp", (), {"YoutubeDL": _FakeDownloader}))
+
+    caption = YouTubeTranscriptAdapter()._download_caption("https://caption.local/en.vtt")
+
+    assert caption.startswith("WEBVTT")
+    assert captured_options["cookiesfrombrowser"] == ("chrome", None, None, None)
+
+
+def test_youtube_adapter_explains_authentication_requirement() -> None:
+    error = youtube_transcript_adapter._extract_info_error_message(
+        RuntimeError("Sign in to confirm you're not a bot")
+    )
+
+    assert "OPENCLASS_YTDLP_COOKIES_FROM_BROWSER=chrome" in error

@@ -53,12 +53,31 @@ def apply_evidence_confirmation(
         archived = source_evidence_store.archive_bundle(owner_user_id=owner_user_id, bundle_id=bundle_id)
         if archived is None:
             raise LearningSourceReferenceError("Evidence bundle not found.")
+        updated_requirements = requirements
         if _belongs_to_active_requirement(bundle, history_state):
-            stamp = recorder.record_event(
-                event_type="source_reference_declined",
-                change_summary="用户跳过了本轮候选资料证据。",
-                metadata={"evidence_bundle_id": bundle.id},
-            )
+            if requirements is not None and clarification is not None:
+                skipped_grounding = LearningSourceGrounding(
+                    requested_by_user=True,
+                    confirmation_status="skipped",
+                )
+                updated_requirements = requirements.model_copy(
+                    deep=True,
+                    update={"source_grounding": skipped_grounding},
+                )
+                lesson.learning_requirements = updated_requirements
+                stamp = recorder.record_update(
+                    requirements=updated_requirements,
+                    clarification=clarification,
+                    change_summary="用户跳过了本轮候选资料证据。",
+                    change_kind_override="source_reference_declined",
+                    metadata={"evidence_bundle_id": bundle.id},
+                )
+            else:
+                stamp = recorder.record_event(
+                    event_type="source_reference_declined",
+                    change_summary="用户跳过了本轮候选资料证据。",
+                    metadata={"evidence_bundle_id": bundle.id},
+                )
             commit_operations(
                 lesson,
                 [],
@@ -69,7 +88,11 @@ def apply_evidence_confirmation(
                     "kind": "source_reference_declined",
                     **evidence_metadata(archived),
                     "document_changed": False,
-                    "active_requirement_sheet_after": requirements.model_dump(mode="json") if requirements else None,
+                    "active_requirement_sheet_after": (
+                        updated_requirements.model_dump(mode="json")
+                        if updated_requirements is not None
+                        else None
+                    ),
                     "requirement_run_id": stamp.run_id,
                     "requirement_version_id": stamp.version_id,
                     "requirement_phase": stamp.phase,
@@ -83,7 +106,7 @@ def apply_evidence_confirmation(
             )
         return EvidenceConfirmationResult(
             evidence_bundle=archived,
-            active_requirement_sheet=requirements,
+            active_requirement_sheet=updated_requirements,
             requirement_run_id=recorder.snapshot.run_id,
             requirement_version_id=recorder.snapshot.latest_version_id,
             requirement_phase=recorder.snapshot.status,
