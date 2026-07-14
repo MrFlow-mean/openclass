@@ -1082,6 +1082,54 @@ def test_build_document_converts_display_math_delimiters_to_block_math() -> None
     assert "\\lim_{x \\to a}" in document.content_html
 
 
+def test_build_document_keeps_factorial_equation_together() -> None:
+    document = build_document(
+        title="Doc",
+        content_text="$$\nn! = n \\cdot (n-1)! \\quad (n>0)\n$$",
+    )
+
+    assert document.content_json["content"] == [
+        {
+            "type": "blockMath",
+            "attrs": {"latex": "n! = n \\cdot (n-1)! \\quad (n>0)"},
+        }
+    ]
+    assert 'data-type="block-math"' in document.content_html
+
+
+def test_upgrade_markdown_like_document_repairs_split_factorial_equation() -> None:
+    legacy = BoardDocument(
+        title="Doc",
+        content_text="$$\nn! = n \\cdot (n-1)! \\quad (n>0)\n$$",
+        content_html=(
+            '<p>n! <span data-type="inline-math" data-latex="= n \\cdot (n-1)"></span>'
+            r'! \quad (n&gt;0)</p>'
+        ),
+        content_json={
+            "type": "doc",
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "n! "},
+                        {"type": "inlineMath", "attrs": {"latex": "= n \\cdot (n-1)"}},
+                        {"type": "text", "text": r"! \quad (n>0)"},
+                    ],
+                }
+            ],
+        },
+    )
+
+    upgraded = upgrade_markdown_like_document(legacy)
+
+    assert upgraded.content_json["content"] == [
+        {
+            "type": "blockMath",
+            "attrs": {"latex": "n! = n \\cdot (n-1)! \\quad (n>0)"},
+        }
+    ]
+
+
 def test_build_document_converts_inline_display_delimiters_to_inline_math() -> None:
     document = build_document(
         title="Doc",

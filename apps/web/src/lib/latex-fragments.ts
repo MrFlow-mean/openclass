@@ -11,7 +11,7 @@ const TRAILING_SENTENCE_MARKS = /[\s.,，。；;:：]+$/;
 const LEADING_SENTENCE_MARKS = /^[\s.,，。；;:：]+/;
 const LATIN_WORD = /[A-Za-z]+/g;
 const NON_FORMULA_LETTER = /[\u00c0-\u024f\u3400-\u9fff]/;
-const FORMULA_CHARS = /^[A-Za-z0-9α-ωΑ-Ω\\_{}\[\]^()+\-−*/=#·∞→←≤≥≈≠±<>|&:'\s.,]+$/;
+const FORMULA_CHARS = /^[A-Za-z0-9α-ωΑ-Ω\\_{}\[\]^()!+\-−*/=#·∞→←≤≥≈≠±<>|&:'\s.,]+$/;
 const LATEX_ENVIRONMENT = /\\(?:begin|end)\{[A-Za-z*]+\}/g;
 const LATEX_TEXT_ARGUMENT = /\\(?:text|mathrm|operatorname)\{[^{}]*\}/g;
 const LATEX_CHEM_ARGUMENT = /\\(?:ce|pu)\{[^{}]*\}/g;
@@ -140,7 +140,7 @@ export function stripOrphanMathDollars(value: string) {
 }
 
 function isRawFormulaChar(char: string) {
-  return /[A-Za-z0-9α-ωΑ-Ω\\_{}\[\]^()+\-−*/=#<>≤≥≈≠±|&'→←∞·\s]/.test(char);
+  return /[A-Za-z0-9α-ωΑ-Ω\\_{}\[\]^()!+\-−*/=#<>≤≥≈≠±|&'→←∞·\s]/.test(char);
 }
 
 function trimFragmentBounds(value: string, start: number, end: number) {

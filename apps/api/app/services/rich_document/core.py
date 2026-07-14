@@ -40,7 +40,7 @@ _MATH_SIGNAL_RE = re.compile(
 )
 _LATIN_WORD_RE = re.compile(r"[A-Za-z]+")
 _NON_FORMULA_LETTER_RE = re.compile(r"[^\W\d_A-Za-zα-ωΑ-Ω]", re.UNICODE)
-_FORMULA_CHARS_RE = re.compile(r"^[A-Za-z0-9α-ωΑ-Ω\\_{}\[\]^()+\-−*/=#·∞→←≤≥≈≠±<>|&:'\s.,]+$")
+_FORMULA_CHARS_RE = re.compile(r"^[A-Za-z0-9α-ωΑ-Ω\\_{}\[\]^()!+\-−*/=#·∞→←≤≥≈≠±<>|&:'\s.,]+$")
 _LATEX_ENVIRONMENT_RE = re.compile(r"\\(?:begin|end)\{[A-Za-z*]+\}")
 _LATEX_TEXT_ARGUMENT_RE = re.compile(r"\\(?:text|mathrm|operatorname)\{[^{}]*\}")
 _LATEX_CHEM_ARGUMENT_RE = re.compile(r"\\(?:ce|pu)\{[^{}]*\}")

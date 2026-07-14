@@ -11,7 +11,7 @@ _RAW_LATEX_COMMAND_RE = re.compile(
 _ESCAPED_SET_RE = re.compile(r"\\\{(?P<body>[^{}\n]{1,120})\\\}")
 _ESCAPED_SET_SIGNAL_RE = re.compile(r"[_^0-9,=<>≤≥≈≠+\-−*/]|\\[A-Za-z]+|[α-ωΑ-Ω]")
 _ORPHAN_MATH_DOLLAR_RE = re.compile(r"(?:(?<=^)|(?<=[\s.,，。；;:：、]))\$(?=$|[\s.,，。；;:：、])")
-_RAW_FORMULA_CHAR_RE = re.compile(r"[A-Za-z0-9α-ωΑ-Ω\\_{}\[\]^()+\-−*/=#<>≤≥≈≠±|&'→←∞·\s]")
+_RAW_FORMULA_CHAR_RE = re.compile(r"[A-Za-z0-9α-ωΑ-Ω\\_{}\[\]^()!+\-−*/=#<>≤≥≈≠±|&'→←∞·\s]")
 
 
 def strip_orphan_math_dollars(value: str, *, has_math_signal: Callable[[str], bool]) -> str:

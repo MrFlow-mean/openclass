@@ -284,6 +284,14 @@ select {
 .word-editor__content .katex {
   font-size: 1.08em;
   line-height: 1.35;
+  overflow-wrap: normal;
+  word-break: normal;
+  white-space: nowrap;
+}
+
+.word-editor__content .katex * {
+  overflow-wrap: normal;
+  word-break: normal;
 }
 
 .word-editor__content div.tiptap-mathematics-render .katex {
