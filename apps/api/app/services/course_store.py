@@ -15,7 +15,6 @@ from app.models import (
     CourseGraphEdge,
     CoursePackage,
     DocumentSegmentSearchResult,
-    LearningRequirementSheet,
     Lesson,
     LessonHistoryGraph,
     LibraryChapter,
@@ -26,8 +25,6 @@ from app.models import (
     WorkspaceState,
 )
 from app.services.document_segment_store import DocumentSegmentStore
-from app.services.board_task_history import BoardTaskHistoryStore
-from app.services.learning_requirement_history import LearningRequirementHistoryStore
 from app.services.rich_document import upgrade_markdown_like_document
 
 SCHEMA_VERSION = 10
@@ -45,8 +42,6 @@ class SqliteCourseStore:
         self.legacy_json_path = legacy_json_path
         self._lock = threading.RLock()
         self._document_segments = DocumentSegmentStore()
-        self._learning_requirement_history = LearningRequirementHistoryStore()
-        self._board_task_history = BoardTaskHistoryStore()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
@@ -138,116 +133,6 @@ class SqliteCourseStore:
                 except Exception:
                     conn.rollback()
                     raise
-
-    def save_for_user_with_learning_requirement_history(
-        self,
-        owner_user_id: str,
-        workspace: WorkspaceState,
-        *,
-        learning_requirement_history_operations: list[dict[str, Any]] | None = None,
-    ) -> None:
-        with self._lock:
-            with self._connect() as conn:
-                with conn:
-                    self._replace_workspace(conn, workspace, owner_user_id=owner_user_id)
-                    self._learning_requirement_history.apply_operations(
-                        conn,
-                        learning_requirement_history_operations or [],
-                    )
-
-    def save_for_user_with_board_task_history(
-        self,
-        owner_user_id: str,
-        workspace: WorkspaceState,
-        *,
-        board_task_history_operations: list[dict[str, Any]] | None = None,
-    ) -> None:
-        with self._lock:
-            with self._connect() as conn:
-                with conn:
-                    self._replace_workspace(conn, workspace, owner_user_id=owner_user_id)
-                    self._board_task_history.apply_operations(
-                        conn,
-                        board_task_history_operations or [],
-                    )
-
-    def load_learning_requirement_history_state(
-        self,
-        owner_user_id: str,
-        lesson_id: str,
-    ) -> dict[str, Any] | None:
-        with self._lock:
-            with self._connect() as conn:
-                return self._learning_requirement_history.load_state(
-                    conn,
-                    owner_user_id=owner_user_id,
-                    lesson_id=lesson_id,
-                )
-
-    def load_board_task_history_state(
-        self,
-        owner_user_id: str,
-        lesson_id: str,
-    ) -> dict[str, Any] | None:
-        with self._lock:
-            with self._connect() as conn:
-                return self._board_task_history.load_state(
-                    conn,
-                    owner_user_id=owner_user_id,
-                    lesson_id=lesson_id,
-                )
-
-    def list_board_task_versions(
-        self,
-        owner_user_id: str,
-        lesson_id: str,
-    ) -> list[dict[str, Any]]:
-        with self._lock:
-            with self._connect() as conn:
-                return self._board_task_history.list_versions(
-                    conn,
-                    owner_user_id=owner_user_id,
-                    lesson_id=lesson_id,
-                )
-
-    def list_board_task_events(
-        self,
-        owner_user_id: str,
-        lesson_id: str,
-    ) -> list[dict[str, Any]]:
-        with self._lock:
-            with self._connect() as conn:
-                return self._board_task_history.list_events(
-                    conn,
-                    owner_user_id=owner_user_id,
-                    lesson_id=lesson_id,
-                )
-
-    def list_learning_requirement_versions(
-        self,
-        owner_user_id: str,
-        lesson_id: str,
-    ) -> list[dict[str, Any]]:
-        with self._lock:
-            with self._connect() as conn:
-                return self._learning_requirement_history.list_versions(
-                    conn,
-                    owner_user_id=owner_user_id,
-                    lesson_id=lesson_id,
-                )
-
-    def list_learning_requirement_events(
-        self,
-        owner_user_id: str,
-        lesson_id: str,
-    ) -> list[dict[str, Any]]:
-        with self._lock:
-            with self._connect() as conn:
-                return self._learning_requirement_history.list_events(
-                    conn,
-                    owner_user_id=owner_user_id,
-                    lesson_id=lesson_id,
-                )
 
     def search_document_segments(
         self,
@@ -477,8 +362,6 @@ class SqliteCourseStore:
             """
         )
         self._migrate_schema(conn)
-        self._learning_requirement_history.create_schema(conn)
-        self._board_task_history.create_schema(conn)
         self._document_segments.create_fts_schema(conn)
         self._document_segments.backfill(conn, _document_from_row)
         conn.execute(
@@ -743,26 +626,6 @@ class SqliteCourseStore:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
-
-    def _active_learning_requirement_from_history(
-        self,
-        conn: sqlite3.Connection,
-        *,
-        owner_user_id: str,
-        lesson_id: str,
-    ) -> dict[str, Any] | None:
-        state = self._learning_requirement_history.load_state(
-            conn,
-            owner_user_id=owner_user_id,
-            lesson_id=lesson_id,
-        )
-        raw_sheet = state.get("latest_sheet_json") if state else None
-        if not isinstance(raw_sheet, str) or not raw_sheet.strip():
-            return None
-        try:
-            return LearningRequirementSheet.model_validate_json(raw_sheet).model_dump(mode="json")
-        except Exception:
-            return None
 
     def _read_commit(self, conn: sqlite3.Connection, row: sqlite3.Row) -> CommitRecord:
         parent_ids = [

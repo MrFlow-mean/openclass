@@ -17,7 +17,7 @@ from app.services.codex_app_server import (
     CodexTurnResult,
 )
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
-from app.services.history import commit_operations, current_head_commit
+from app.services.history import commit_operations, create_branch, current_head_commit
 from app.services.lesson_factory import build_requirements, create_empty_lesson
 from app.services.rich_document import build_document
 
@@ -676,6 +676,22 @@ def test_new_and_reloaded_lessons_hide_legacy_ai_runtime(
     assert reloaded.active_interaction_session is None
     assert reloaded.board_teaching_guide is None
     assert reloaded.board_teaching_progress is None
+
+
+def test_branch_restore_does_not_revive_legacy_ai_runtime() -> None:
+    lesson = create_empty_lesson("Legacy runtime")
+    lesson.history_graph.commits[0].metadata["active_requirement_sheet_after"] = (
+        build_requirements(lesson.title).model_dump(mode="json")
+    )
+    lesson.learning_requirements = build_requirements(lesson.title)
+
+    create_branch(lesson, "codex-only", lesson.history_graph.commits[0].id)
+
+    assert lesson.learning_requirements is None
+    assert lesson.board_task_requirements is None
+    assert lesson.active_interaction_session is None
+    assert lesson.board_teaching_guide is None
+    assert lesson.board_teaching_progress is None
 
 
 def test_thread_permission_response_rejects_broad_writable_root(tmp_path: Path) -> None:
