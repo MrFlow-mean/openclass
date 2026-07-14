@@ -32,10 +32,20 @@ CODEX_LOGIN_TIMEOUT_SECONDS = 15 * 60
 CODEX_BOARD_PERMISSION_PROFILE = "openclass_board"
 CODEX_MIN_PERMISSION_PROFILE_VERSION = (0, 138, 0)
 CODEX_PROCESS_FILE_SIZE_LIMIT_BYTES = 16 * 1024 * 1024
+CODEX_MAX_PENDING_LOGINS = 8
+CODEX_LOGIN_START_WINDOW_SECONDS = 60
+CODEX_MAX_LOGIN_STARTS_PER_USER = 3
+CODEX_MAX_LOGIN_STARTS_GLOBAL = 12
+CODEX_LOGIN_ATTEMPT_RETENTION_SECONDS = 10 * 60
+CODEX_LOGIN_NOTIFICATION_LIMIT = 50
 _STATUS_CACHE_TTL_SECONDS = 10
 
 
 class CodexAppServerError(RuntimeError):
+    pass
+
+
+class CodexLoginRateLimitError(CodexAppServerError):
     pass
 
 
@@ -652,16 +662,77 @@ class _LoginAttempt:
 
 _login_lock = threading.Lock()
 _login_attempts: dict[str, _LoginAttempt] = {}
+_login_starting_users: set[str] = set()
+_login_start_events: list[tuple[float, str]] = []
+
+
+def _prune_login_state_locked(*, now_monotonic: float, now_utc: datetime) -> None:
+    event_cutoff = now_monotonic - CODEX_LOGIN_START_WINDOW_SECONDS
+    _login_start_events[:] = [
+        event for event in _login_start_events if event[0] >= event_cutoff
+    ]
+    attempt_cutoff = now_utc - timedelta(seconds=CODEX_LOGIN_ATTEMPT_RETENTION_SECONDS)
+    removable_ids = [
+        login_id
+        for login_id, attempt in _login_attempts.items()
+        if attempt.status != "pending"
+        and attempt.completed_at is not None
+        and attempt.completed_at < attempt_cutoff
+        and attempt.session is None
+        and (attempt.thread is None or not attempt.thread.is_alive())
+    ]
+    for login_id in removable_ids:
+        _login_attempts.pop(login_id, None)
+
+
+def _reserve_login_start(user_id: str) -> None:
+    now_monotonic = time.monotonic()
+    with _login_lock:
+        _prune_login_state_locked(
+            now_monotonic=now_monotonic,
+            now_utc=datetime.now(timezone.utc),
+        )
+        if user_id in _login_starting_users or any(
+            attempt.owner_user_id == user_id and attempt.status == "pending"
+            for attempt in _login_attempts.values()
+        ):
+            raise CodexLoginRateLimitError("A Codex login is already in progress for this user")
+        pending_attempts = [
+            attempt for attempt in _login_attempts.values() if attempt.status == "pending"
+        ]
+        pending_owner_ids = {attempt.owner_user_id for attempt in pending_attempts}
+        starting_only_count = sum(
+            1 for owner_user_id in _login_starting_users if owner_user_id not in pending_owner_ids
+        )
+        if len(pending_attempts) + starting_only_count >= CODEX_MAX_PENDING_LOGINS:
+            raise CodexLoginRateLimitError("Too many Codex logins are already in progress")
+        user_start_count = sum(
+            1 for _started_at, owner_user_id in _login_start_events if owner_user_id == user_id
+        )
+        if user_start_count >= CODEX_MAX_LOGIN_STARTS_PER_USER:
+            raise CodexLoginRateLimitError("Too many Codex login attempts for this user")
+        if len(_login_start_events) >= CODEX_MAX_LOGIN_STARTS_GLOBAL:
+            raise CodexLoginRateLimitError("Too many Codex login attempts")
+        _login_starting_users.add(user_id)
+        _login_start_events.append((now_monotonic, user_id))
+
+
+def _release_login_start(user_id: str) -> None:
+    with _login_lock:
+        _login_starting_users.discard(user_id)
 
 
 def start_codex_device_login(user_id: str) -> CodexLoginStartResponse:
     if not codex_app_server_runtime_enabled():
         raise CodexAppServerError("OPENCLASS_CODEX_APP_SERVER_ENABLED is not enabled")
-    session = CodexAppServerSession(
-        user_id=user_id,
-        timeout_seconds=CODEX_LOGIN_TIMEOUT_SECONDS,
-    )
+    _reserve_login_start(user_id)
+    session: CodexAppServerSession | None = None
+    attempt: _LoginAttempt | None = None
     try:
+        session = CodexAppServerSession(
+            user_id=user_id,
+            timeout_seconds=CODEX_LOGIN_TIMEOUT_SECONDS,
+        )
         result = session.request(
             "account/login/start",
             {"type": "chatgptDeviceCode"},
@@ -682,24 +753,39 @@ def start_codex_device_login(user_id: str) -> CodexLoginStartResponse:
         )
         thread = threading.Thread(target=_watch_login_attempt, args=(attempt,), daemon=True)
         attempt.thread = thread
-        with _login_lock:
-            _login_attempts[login_id] = attempt
-        thread.start()
-        return CodexLoginStartResponse(
+        response = CodexLoginStartResponse(
             login_id=login_id,
             verification_url=verification_url,
             user_code=user_code,
             expires_at=attempt.expires_at.isoformat(),
         )
+        with _login_lock:
+            _login_attempts[login_id] = attempt
+        try:
+            thread.start()
+        except Exception:
+            with _login_lock:
+                if _login_attempts.get(login_id) is attempt:
+                    _login_attempts.pop(login_id, None)
+                attempt.status = "failed"
+                attempt.error = "Unable to start the Codex login watcher"
+                attempt.completed_at = datetime.now(timezone.utc)
+                attempt.session = None
+            raise
+        return response
     except Exception:
-        session.close()
+        if session is not None:
+            session.close()
         raise
+    finally:
+        _release_login_start(user_id)
 
 
 def _watch_login_attempt(attempt: _LoginAttempt) -> None:
     assert attempt.session is not None
     session = attempt.session
     login_confirmed = False
+    account_updated = False
     next_account_check = 0.0
     last_account_error: str | None = None
     terminal_statuses = {"succeeded", "failed", "cancelled", "expired"}
@@ -716,8 +802,12 @@ def _watch_login_attempt(attempt: _LoginAttempt) -> None:
             if message is not None:
                 with _login_lock:
                     attempt.notifications.append(message)
+                    if len(attempt.notifications) > CODEX_LOGIN_NOTIFICATION_LIMIT:
+                        del attempt.notifications[:-CODEX_LOGIN_NOTIFICATION_LIMIT]
                 method = message.get("method")
                 params = message.get("params") if isinstance(message.get("params"), dict) else {}
+                if method == "account/updated" and params.get("authMode") == "chatgpt":
+                    account_updated = True
                 completed_login_id = params.get("loginId")
                 if (
                     method == "account/login/completed"
@@ -735,7 +825,7 @@ def _watch_login_attempt(attempt: _LoginAttempt) -> None:
                     next_account_check = 0.0
 
             now = time.monotonic()
-            if login_confirmed and now >= next_account_check:
+            if login_confirmed and account_updated and now >= next_account_check:
                 try:
                     account, _requires = _read_account(
                         attempt.owner_user_id,
@@ -757,7 +847,9 @@ def _watch_login_attempt(attempt: _LoginAttempt) -> None:
         with _login_lock:
             if attempt.status == "pending":
                 attempt.status = "expired"
-                if login_confirmed and last_account_error:
+                if login_confirmed and not account_updated:
+                    attempt.error = "Codex login completed without an account update"
+                elif login_confirmed and last_account_error:
                     attempt.error = f"Codex login could not be confirmed: {last_account_error}"
                 else:
                     attempt.error = "Codex login timed out"
@@ -777,6 +869,10 @@ def _watch_login_attempt(attempt: _LoginAttempt) -> None:
 
 def codex_login_status(login_id: str, user_id: str) -> CodexLoginStatusResponse:
     with _login_lock:
+        _prune_login_state_locked(
+            now_monotonic=time.monotonic(),
+            now_utc=datetime.now(timezone.utc),
+        )
         attempt = _login_attempts.get(login_id)
         if not attempt or attempt.owner_user_id != user_id:
             attempt = None
@@ -793,6 +889,10 @@ def codex_login_status(login_id: str, user_id: str) -> CodexLoginStatusResponse:
 def cancel_codex_login(login_id: str, user_id: str) -> CodexLoginStatusResponse:
     session: CodexAppServerSession | None = None
     with _login_lock:
+        _prune_login_state_locked(
+            now_monotonic=time.monotonic(),
+            now_utc=datetime.now(timezone.utc),
+        )
         attempt = _login_attempts.get(login_id)
         if not attempt or attempt.owner_user_id != user_id:
             attempt = None

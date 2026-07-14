@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import queue
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -137,7 +138,9 @@ def test_login_completion_with_null_login_id_is_owned_and_refreshes_account(monk
             "params": {"loginId": None, "success": True},
         }
     )
-    session._messages.put({"method": "account/updated", "params": {}})
+    session._messages.put(
+        {"method": "account/updated", "params": {"authMode": "chatgpt"}}
+    )
     attempt = codex_app_server._LoginAttempt(
         owner_user_id="user_a",
         login_id="login_a",
@@ -163,6 +166,52 @@ def test_login_completion_with_null_login_id_is_owned_and_refreshes_account(monk
     assert session.closed is True
 
 
+def test_login_completion_waits_for_account_update_before_reusing_existing_account(monkeypatch) -> None:
+    class _Messages:
+        def __init__(self) -> None:
+            self.items = [
+                {
+                    "method": "account/login/completed",
+                    "params": {"loginId": "login_a", "success": True},
+                }
+            ]
+
+        def get(self, timeout: float) -> dict:
+            if self.items:
+                return self.items.pop(0)
+            raise queue.Empty
+
+    class _Session:
+        def __init__(self) -> None:
+            self._messages = _Messages()
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    session = _Session()
+    attempt = codex_app_server._LoginAttempt(
+        owner_user_id="user_a",
+        login_id="login_a",
+        verification_url="https://example.test/device",
+        user_code="ABCD-EFGH",
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+        session=session,  # type: ignore[arg-type]
+    )
+    monkeypatch.setattr(codex_app_server, "CODEX_LOGIN_TIMEOUT_SECONDS", 0.001)
+    monkeypatch.setattr(
+        codex_app_server,
+        "_read_account",
+        lambda *_args, **_kwargs: pytest.fail("account/read ran before account/updated"),
+    )
+
+    codex_app_server._watch_login_attempt(attempt)
+
+    assert attempt.status == "expired"
+    assert attempt.error == "Codex login completed without an account update"
+    assert session.closed is True
+
+
 def test_login_attempt_cannot_be_read_or_cancelled_by_another_user() -> None:
     attempt = codex_app_server._LoginAttempt(
         owner_user_id="user_a",
@@ -183,3 +232,157 @@ def test_login_attempt_cannot_be_read_or_cancelled_by_another_user() -> None:
     finally:
         with codex_app_server._login_lock:
             codex_app_server._login_attempts.pop(attempt.login_id, None)
+
+
+def test_cancelled_login_cannot_be_overwritten_by_late_success(monkeypatch) -> None:
+    account_read_started = threading.Event()
+    release_account_read = threading.Event()
+
+    class _Session:
+        def __init__(self) -> None:
+            self._messages: queue.Queue[dict] = queue.Queue()
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    session = _Session()
+    session._messages.put(
+        {
+            "method": "account/login/completed",
+            "params": {"loginId": "login_cancel_race", "success": True},
+        }
+    )
+    session._messages.put(
+        {"method": "account/updated", "params": {"authMode": "chatgpt"}}
+    )
+    attempt = codex_app_server._LoginAttempt(
+        owner_user_id="user_a",
+        login_id="login_cancel_race",
+        verification_url="https://example.test/device",
+        user_code="ABCD-EFGH",
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+        session=session,  # type: ignore[arg-type]
+    )
+
+    def delayed_account_read(*_args, **_kwargs):
+        account_read_started.set()
+        assert release_account_read.wait(timeout=1)
+        return CodexAccountView(type="chatgpt", email="user_a@example.test"), False
+
+    monkeypatch.setattr(codex_app_server, "_read_account", delayed_account_read)
+    watcher = threading.Thread(
+        target=codex_app_server._watch_login_attempt,
+        args=(attempt,),
+        daemon=True,
+    )
+    attempt.thread = watcher
+    with codex_app_server._login_lock:
+        codex_app_server._login_attempts[attempt.login_id] = attempt
+    try:
+        watcher.start()
+        assert account_read_started.wait(timeout=1)
+        cancelled = codex_app_server.cancel_codex_login(attempt.login_id, "user_a")
+        release_account_read.set()
+        watcher.join(timeout=1)
+
+        assert cancelled.status == "cancelled"
+        assert attempt.status == "cancelled"
+        assert attempt.account is None
+        assert watcher.is_alive() is False
+    finally:
+        release_account_read.set()
+        watcher.join(timeout=1)
+        with codex_app_server._login_lock:
+            codex_app_server._login_attempts.pop(attempt.login_id, None)
+
+
+def test_login_start_rejects_a_second_pending_attempt_for_same_user(monkeypatch) -> None:
+    attempt = codex_app_server._LoginAttempt(
+        owner_user_id="user_a",
+        login_id="login_pending",
+        verification_url="https://example.test/device",
+        user_code="ABCD-EFGH",
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+        session=None,
+    )
+    monkeypatch.setattr(codex_app_server, "codex_app_server_runtime_enabled", lambda: True)
+    with codex_app_server._login_lock:
+        codex_app_server._login_attempts[attempt.login_id] = attempt
+        codex_app_server._login_start_events.clear()
+        codex_app_server._login_starting_users.clear()
+    try:
+        with pytest.raises(codex_app_server.CodexLoginRateLimitError, match="already in progress"):
+            codex_app_server.start_codex_device_login("user_a")
+    finally:
+        with codex_app_server._login_lock:
+            codex_app_server._login_attempts.pop(attempt.login_id, None)
+            codex_app_server._login_start_events.clear()
+            codex_app_server._login_starting_users.clear()
+
+
+def test_login_start_cleans_up_when_watcher_thread_cannot_start(monkeypatch) -> None:
+    class _Session:
+        def __init__(self, **_kwargs) -> None:
+            self.closed = False
+
+        def request(self, method: str, _params: dict, **_kwargs) -> dict:
+            assert method == "account/login/start"
+            return {
+                "loginId": "login_thread_failure",
+                "verificationUrl": "https://example.test/device",
+                "userCode": "ABCD-EFGH",
+            }
+
+        def close(self) -> None:
+            self.closed = True
+
+    class _Thread:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def start(self) -> None:
+            raise RuntimeError("thread unavailable")
+
+    session = _Session()
+    monkeypatch.setattr(codex_app_server, "codex_app_server_runtime_enabled", lambda: True)
+    monkeypatch.setattr(codex_app_server, "CodexAppServerSession", lambda **_kwargs: session)
+    monkeypatch.setattr(codex_app_server.threading, "Thread", _Thread)
+    with codex_app_server._login_lock:
+        codex_app_server._login_attempts.clear()
+        codex_app_server._login_start_events.clear()
+        codex_app_server._login_starting_users.clear()
+
+    with pytest.raises(RuntimeError, match="thread unavailable"):
+        codex_app_server.start_codex_device_login("user_a")
+
+    with codex_app_server._login_lock:
+        assert "login_thread_failure" not in codex_app_server._login_attempts
+        assert "user_a" not in codex_app_server._login_starting_users
+        codex_app_server._login_start_events.clear()
+    assert session.closed is True
+
+
+def test_prune_login_state_removes_old_terminal_attempt_data() -> None:
+    completed_at = datetime.now(timezone.utc) - timedelta(
+        seconds=codex_app_server.CODEX_LOGIN_ATTEMPT_RETENTION_SECONDS + 1
+    )
+    attempt = codex_app_server._LoginAttempt(
+        owner_user_id="user_a",
+        login_id="login_old",
+        verification_url="https://example.test/device",
+        user_code="SENSITIVE-CODE",
+        expires_at=completed_at,
+        status="succeeded",
+        account=CodexAccountView(type="chatgpt", email="user_a@example.test"),
+        completed_at=completed_at,
+    )
+    with codex_app_server._login_lock:
+        codex_app_server._login_attempts[attempt.login_id] = attempt
+        codex_app_server._prune_login_state_locked(
+            now_monotonic=time.monotonic(),
+            now_utc=datetime.now(timezone.utc),
+        )
+        retained = attempt.login_id in codex_app_server._login_attempts
+
+    assert retained is False

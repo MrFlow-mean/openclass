@@ -6,6 +6,7 @@ from app.models import CodexLoginStartResponse, CodexLoginStatusResponse, CodexP
 from app.routers.auth import current_user
 from app.services.codex_app_server import (
     CodexAppServerError,
+    CodexLoginRateLimitError,
     cancel_codex_login,
     codex_login_status,
     codex_provider_status,
@@ -17,7 +18,8 @@ router = APIRouter(prefix="/api/codex")
 
 
 def _codex_error(exc: Exception) -> HTTPException:
-    return HTTPException(status_code=400, detail=str(exc))
+    status_code = 429 if isinstance(exc, CodexLoginRateLimitError) else 400
+    return HTTPException(status_code=status_code, detail=str(exc))
 
 
 @router.get("/status", response_model=CodexProviderStatus)
