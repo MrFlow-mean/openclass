@@ -32,7 +32,7 @@ type BoardEditorPanelProps = {
   onExportDocx: () => void;
   onExportHtml: () => void;
   onReferenceFormula: (selection: SelectionRef) => void;
-  onFormulaInkSubmit: (payload: FormulaInkEditorSubmitPayload) => void;
+  onFormulaInkSubmit: (payload: FormulaInkEditorSubmitPayload) => boolean;
 };
 
 function stringValue(value: unknown) {
@@ -205,6 +205,10 @@ export function BoardEditorPanel({
           })
         }
         onFormulaInkSubmit={(payload) => {
+          const accepted = onFormulaInkSubmit(payload);
+          if (!accepted) {
+            return false;
+          }
           onApplySelection(
             {
               kind: "board",
@@ -217,7 +221,7 @@ export function BoardEditorPanel({
             },
             null
           );
-          onFormulaInkSubmit(payload);
+          return true;
         }}
       />
     </section>

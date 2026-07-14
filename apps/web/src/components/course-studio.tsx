@@ -84,6 +84,7 @@ export function CourseStudio() {
     selectBoardModel,
     selectRealtimeModel,
   } = modelSelection;
+  const textModelReady = modelCatalog.text.some((option) => option.enabled);
   const [selection, setSelection] = useState<SelectionRef | null>(null);
   const [selectionPopover, setSelectionPopover] = useState<SelectionPopoverPosition | null>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
@@ -190,6 +191,7 @@ export function CourseStudio() {
     currentBoardDocument: displayedDocument,
     selectedTextModel,
     selectedBoardModel,
+    textModelReady,
     isPreviewMode: isPreviewMode || isDraftPreviewMode,
     chatRequestInFlightRef,
     flushAutoSave,
@@ -344,8 +346,8 @@ export function CourseStudio() {
   }
 
   function handleFormulaInkSubmit(payload: FormulaInkEditorSubmitPayload) {
-    if (!activeLesson) {
-      return;
+    if (!activeLesson || !textModelReady || isChatBusy || chatRequestInFlightRef.current) {
+      return false;
     }
     const formulaSelection: SelectionRef = {
       kind: "board",
@@ -371,6 +373,7 @@ export function CourseStudio() {
         source_latex: payload.sourceLatex,
       },
     });
+    return true;
   }
 
   function speakChatbotResponse(content: string) {

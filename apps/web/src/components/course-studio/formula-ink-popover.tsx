@@ -18,7 +18,7 @@ type FormulaInkPopoverProps = {
   sourceLatex: string;
   disabled?: boolean;
   onReference: () => void;
-  onSubmit: (payload: FormulaInkSubmitPayload) => void;
+  onSubmit: (payload: FormulaInkSubmitPayload) => boolean;
 };
 
 export function FormulaInkPopover({
@@ -41,11 +41,14 @@ export function FormulaInkPopover({
     if (!imageDataUrl) {
       return;
     }
-    onSubmit({
+    const accepted = onSubmit({
       action,
       imageDataUrl,
       sourceLatex,
     });
+    if (!accepted) {
+      return;
+    }
     setExpandedSourceLatex(null);
     clearCanvas();
   }

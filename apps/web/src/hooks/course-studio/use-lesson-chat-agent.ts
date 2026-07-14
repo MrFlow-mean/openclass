@@ -40,6 +40,7 @@ type UseLessonChatAgentOptions = {
   currentBoardDocument: BoardDocument | null;
   selectedTextModel: AIModelSelection;
   selectedBoardModel: AIModelSelection;
+  textModelReady: boolean;
   isPreviewMode: boolean;
   chatRequestInFlightRef: MutableRefObject<boolean>;
   flushAutoSave: (reason: AutoSaveReason) => Promise<boolean>;
@@ -87,6 +88,7 @@ export function useLessonChatAgent({
   currentBoardDocument,
   selectedTextModel,
   selectedBoardModel,
+  textModelReady,
   isPreviewMode,
   chatRequestInFlightRef,
   flushAutoSave,
@@ -314,6 +316,9 @@ export function useLessonChatAgent({
     beforeRequest,
     messageListUpdater,
   }: RunChatTurnOptions) {
+    if (!textModelReady) {
+      return;
+    }
     const lessonId = lesson.id;
     const payloadWithConversation: ChatRequestPayload = {
       ...payload,
@@ -727,7 +732,7 @@ export function useLessonChatAgent({
   }
 
   async function handleSubmitChat(payloadOverride?: ChatRequestPayload, options?: { speakResponse?: boolean }) {
-    if (!activeLesson || chatRequestInFlightRef.current || isChatBusy) {
+    if (!textModelReady || !activeLesson || chatRequestInFlightRef.current || isChatBusy) {
       return;
     }
     if (isPreviewMode) {
@@ -764,7 +769,7 @@ export function useLessonChatAgent({
   }
 
   async function handleEditMessage(sourceMessage: ChatMessage, nextContent: string) {
-    if (!activeLesson || chatRequestInFlightRef.current || isChatBusy || isPreviewMode) {
+    if (!textModelReady || !activeLesson || chatRequestInFlightRef.current || isChatBusy || isPreviewMode) {
       return;
     }
     const editedMessage = nextContent.trim();
@@ -826,7 +831,7 @@ export function useLessonChatAgent({
   }
 
   async function handleScopeAction(option: ScopeOption) {
-    if (!activeLesson || !lastScopedRequest) {
+    if (!textModelReady || !activeLesson || !lastScopedRequest) {
       return;
     }
     await handleSubmitChat({
@@ -840,7 +845,7 @@ export function useLessonChatAgent({
   }
 
   async function handleBoardEditAction(action: "confirm" | "skip") {
-    if (!boardEditPrompt || !lastBoardEditRequest) {
+    if (!textModelReady || !boardEditPrompt || !lastBoardEditRequest) {
       return;
     }
     await handleSubmitChat({
@@ -856,7 +861,7 @@ export function useLessonChatAgent({
   }
 
   async function handleEvidenceAction(bundleId: string, action: "confirm" | "skip") {
-    if (!activeLesson || isChatBusy) {
+    if (!textModelReady || !activeLesson || isChatBusy) {
       return;
     }
     setBusyAction("chat");
@@ -893,7 +898,7 @@ export function useLessonChatAgent({
   }
 
   async function handleContinueTeaching() {
-    if (!activeLesson) {
+    if (!textModelReady || !activeLesson) {
       return;
     }
     await handleSubmitChat({

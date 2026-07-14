@@ -666,7 +666,7 @@ export function WordBoardEditor({
   onExportDocx: () => void;
   onExportHtml: () => void;
   onFormulaReference?: (selection: WordBoardSelectionPayload) => void;
-  onFormulaInkSubmit?: (payload: FormulaInkEditorSubmitPayload) => void;
+  onFormulaInkSubmit?: (payload: FormulaInkEditorSubmitPayload) => boolean;
 }) {
   const importRef = useRef<HTMLInputElement | null>(null);
   const imageUploadRef = useRef<HTMLInputElement | null>(null);
