@@ -6,9 +6,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.models import AIModelCatalog
-from app.routers import auth, chat, codex_provider, documents, realtime, research, sources, workspace
-from app.services.ai_model_catalog import build_model_catalog, realtime_runtime_enabled
-from app.services.openai_course_ai import openai_course_ai
+from app.routers import auth, chat, codex_provider, documents, research, sources, workspace
+from app.services.ai_model_catalog import build_model_catalog
+from app.services.codex_app_server import codex_provider_status
 from app.services.workspace_state import ensure_data_dirs
 
 ensure_data_dirs()
@@ -33,18 +33,18 @@ app.include_router(auth.router)
 app.include_router(documents.router)
 app.include_router(chat.router)
 app.include_router(codex_provider.router)
-app.include_router(realtime.router)
 app.include_router(sources.router)
 app.include_router(research.router)
 
 
 @app.get("/health")
 def health() -> dict[str, object]:
+    codex = codex_provider_status(refresh=False)
     return {
         "status": "ok",
-        "openai": openai_course_ai.status(),
-        "workflow": {"status": "chat_active"},
-        "realtime": {"status": "enabled" if realtime_runtime_enabled() else "disabled"},
+        "codex": codex.model_dump(mode="json"),
+        "workflow": {"status": "codex_board_only"},
+        "realtime": {"status": "disabled"},
     }
 
 

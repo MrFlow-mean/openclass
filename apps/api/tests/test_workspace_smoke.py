@@ -10,7 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app.main as main_module
-from app.models import EvidenceBundle, RetrievalEvidence, SourceIngestionRecord, UserView
+from app.models import CodexProviderStatus, EvidenceBundle, RetrievalEvidence, SourceIngestionRecord, UserView
 from app.routers import auth as auth_router
 from app.routers import documents as documents_router
 from app.routers import workspace as workspace_router
@@ -59,6 +59,27 @@ def _document_with_text(document: dict, text: str) -> dict:
         "content": [{"type": "paragraph", "content": [{"type": "text", "text": text}]}],
     }
     return next_document
+
+
+def test_health_reports_codex_only_backend(api_client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        main_module,
+        "codex_provider_status",
+        lambda **_kwargs: CodexProviderStatus(
+            enabled=True,
+            available=True,
+            configured=True,
+        ),
+    )
+
+    response = api_client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json()["workflow"] == {"status": "codex_board_only"}
+    assert response.json()["realtime"] == {"status": "disabled"}
+    assert response.json()["codex"]["configured"] is True
+    assert "openai" not in response.json()
+    assert not any(route.path.startswith("/api/realtime") for route in main_module.app.routes)
 
 
 def _docx_text_nodes(content: bytes) -> list[str]:

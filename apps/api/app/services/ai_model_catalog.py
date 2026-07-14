@@ -207,29 +207,10 @@ def _normalize_provider(value: str | None, default: AIProvider) -> AIProvider:
 
 
 def default_text_selection() -> AIModelSelection:
-    provider = _normalize_provider(os.getenv("AI_TEXT_PROVIDER"), "openai")
-    if _single_api_key_mode():
-        model = os.getenv("OPENAI_MODEL", OPENAI_DEFAULT_TEXT_MODEL)
-        return AIModelSelection(provider="openai", model=model)
-    if provider == "anthropic":
-        model = os.getenv("ANTHROPIC_MODEL", ANTHROPIC_DEFAULT_TEXT_MODEL)
-    elif provider == "openai_codex":
-        model = os.getenv("OPENAI_CODEX_MODEL", OPENAI_CODEX_DEFAULT_TEXT_MODEL)
-    elif provider == "google":
-        model = os.getenv("GOOGLE_TEXT_MODEL", GOOGLE_DEFAULT_TEXT_MODEL)
-    elif provider == "deepseek":
-        model = _deepseek_model()
-    elif provider == "kimi":
-        model = _kimi_model()
-    elif provider == "minimax":
-        model = _minimax_model()
-    elif provider == "openai_compatible":
-        model = _custom_openai_model()
-    elif provider == "anthropic_compatible":
-        model = _custom_anthropic_model()
-    else:
-        model = os.getenv("OPENAI_MODEL", OPENAI_DEFAULT_TEXT_MODEL)
-    return AIModelSelection(provider=provider, model=model)
+    return AIModelSelection(
+        provider="openai_codex",
+        model=os.getenv("OPENAI_CODEX_MODEL", OPENAI_CODEX_DEFAULT_TEXT_MODEL),
+    )
 
 
 def default_realtime_selection() -> AIModelSelection:
@@ -365,101 +346,29 @@ def _catalog_default_selection(
 
 
 def build_model_catalog() -> AIModelCatalog:
-    requested_text_default = default_text_selection()
-    requested_realtime_default = default_realtime_selection()
-    text_curated_models = {
-        **CURATED_TEXT_MODELS,
-        "openai_codex": _codex_text_models(),
-    }
-    if _single_api_key_mode():
-        text_curated_models = {"openai": SINGLE_KEY_TEXT_MODELS}
-        text_options = [
-            _option(
-                provider="openai",
-                model=model,
-                label=label,
-                capability="text",
-                default=False,
-            )
-            for model, label in SINGLE_KEY_TEXT_MODELS
-        ]
-    else:
-        text_options = [
-            _option(
-                provider=provider,
-                model=model,
-                label=label,
-                capability="text",
-                default=False,
-            )
-            for provider, models in text_curated_models.items()
-            for model, label in models
-        ]
-        if _provider_enabled("openai_compatible"):
-            text_options.append(
-                _option(
-                    provider="openai_compatible",
-                    model=_custom_openai_model(),
-                    label="自定义 OpenAI 兼容模型",
-                    capability="text",
-                    default=False,
-                )
-            )
-        if _provider_enabled("anthropic_compatible"):
-            text_options.append(
-                _option(
-                    provider="anthropic_compatible",
-                    model=_custom_anthropic_model(),
-                    label="自定义 Anthropic 兼容模型",
-                    capability="text",
-                    default=False,
-                )
-            )
-    text_options.extend(_custom_options("AI_TEXT_MODELS_JSON", "text"))
-    text_options = _dedupe_options(text_options)
-    text_default = _catalog_default_selection(
-        requested=requested_text_default,
-        options=text_options,
-        curated_models=text_curated_models,
-    )
-    for option in text_options:
-        option.default = _option_matches_selection(option, text_default)
-
-    realtime_options: list[AIModelOption] = []
-    realtime_default = requested_realtime_default
-    if realtime_runtime_enabled():
-        realtime_options = [
-            _option(
-                provider=provider,
-                model=model,
-                label=label,
-                capability="realtime",
-                default=False,
-                transport=transport,
-            )
-            for provider, models in CURATED_REALTIME_MODELS.items()
-            for model, label, transport in models
-        ]
-        realtime_options.extend(_custom_options("AI_REALTIME_MODELS_JSON", "realtime"))
-        realtime_options = _dedupe_options(realtime_options)
-        realtime_default = _catalog_default_selection(
-            requested=requested_realtime_default,
-            options=realtime_options,
-            curated_models={
-                provider: tuple((model, label) for model, label, _transport in models)
-                for provider, models in CURATED_REALTIME_MODELS.items()
-            },
-            provider_enabled=_realtime_provider_enabled,
+    status = codex_provider_status(refresh=False)
+    text_default = default_text_selection()
+    models = list(_codex_text_models())
+    if not any(model == text_default.model for model, _label in models):
+        models.insert(0, (text_default.model, f"OpenAI Codex {text_default.model}"))
+    text_options = [
+        AIModelOption(
+            provider="openai_codex",
+            model=model,
+            label=label,
+            capability="text",
+            enabled=status.configured,
+            configured=status.configured,
+            default=model == text_default.model,
         )
-        for option in realtime_options:
-            option.default = _option_matches_selection(option, realtime_default)
-
+        for model, label in models
+    ]
     return AIModelCatalog(
         text=text_options,
-        realtime=realtime_options,
+        realtime=[],
         defaults={
             "text": text_default,
-            "realtime": realtime_default,
+            "realtime": text_default,
         },
     )
 

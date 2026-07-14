@@ -1,195 +1,24 @@
-from app.services import ai_model_catalog
 from app.models import CodexProviderStatus
+from app.services import ai_model_catalog
 
 
-def _disable_realtime(monkeypatch) -> None:
-    monkeypatch.delenv("OPENCLASS_REALTIME_ENABLED", raising=False)
-    monkeypatch.delenv("OPENCLASS_REALTIME_TOOLS_ENABLED", raising=False)
+def _status(*, configured: bool) -> CodexProviderStatus:
+    return CodexProviderStatus(
+        enabled=True,
+        available=True,
+        configured=configured,
+    )
 
 
-def _models_by_provider(catalog, capability: str, provider: str) -> list[str]:
-    options = catalog.text if capability == "text" else catalog.realtime
-    return [option.model for option in options if option.provider == provider]
-
-
-def test_catalog_keeps_curated_openai_models_only(monkeypatch) -> None:
-    _disable_realtime(monkeypatch)
-    monkeypatch.delenv("AI_SINGLE_API_KEY_MODE", raising=False)
-    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
-    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.example.com/v1")
-    monkeypatch.setenv("OPENAI_MODEL", "gpt-5")
-    monkeypatch.setenv("OPENAI_REALTIME_MODEL", "legacy-openai-realtime")
-    monkeypatch.setenv("AI_TEXT_PROVIDER", "openai")
-    monkeypatch.setenv("AI_REALTIME_PROVIDER", "openai")
-    monkeypatch.delenv("AI_TEXT_MODELS_JSON", raising=False)
-    monkeypatch.delenv("AI_REALTIME_MODELS_JSON", raising=False)
-    monkeypatch.delenv("OPENAI_REALTIME_API_KEY", raising=False)
-    monkeypatch.delenv("OPENAI_COMPATIBLE_API_KEY", raising=False)
-    monkeypatch.delenv("OPENAI_COMPATIBLE_BASE_URL", raising=False)
-    monkeypatch.delenv("ANTHROPIC_COMPATIBLE_API_KEY", raising=False)
-    monkeypatch.delenv("ANTHROPIC_COMPATIBLE_BASE_URL", raising=False)
-
-    catalog = ai_model_catalog.build_model_catalog()
-
-    assert _models_by_provider(catalog, "text", "openai") == ["gpt-5.5"]
-    assert catalog.defaults["text"].model == "gpt-5.5"
-    assert catalog.realtime == []
-    assert catalog.defaults["realtime"].provider == "openai"
-    assert catalog.defaults["realtime"].model == "legacy-openai-realtime"
-
-
-def test_catalog_realtime_options_are_removed_with_backend_runtime(monkeypatch) -> None:
-    _disable_realtime(monkeypatch)
-    monkeypatch.delenv("AI_SINGLE_API_KEY_MODE", raising=False)
-    monkeypatch.delenv("AI_REALTIME_MODELS_JSON", raising=False)
-    monkeypatch.delenv("OPENAI_REALTIME_MODEL", raising=False)
-    monkeypatch.delenv("GOOGLE_REALTIME_MODEL", raising=False)
-    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
-
-    catalog = ai_model_catalog.build_model_catalog()
-
-    assert catalog.defaults["realtime"].provider == "openai"
-    assert catalog.defaults["realtime"].model == "gpt-realtime-2.1"
-    assert catalog.realtime == []
-
-
-def test_catalog_exposes_openai_realtime_when_runtime_enabled(monkeypatch) -> None:
-    monkeypatch.setenv("OPENCLASS_REALTIME_ENABLED", "true")
-    monkeypatch.delenv("OPENCLASS_REALTIME_TOOLS_ENABLED", raising=False)
-    monkeypatch.delenv("AI_SINGLE_API_KEY_MODE", raising=False)
-    monkeypatch.delenv("AI_REALTIME_MODELS_JSON", raising=False)
-    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
-    monkeypatch.setenv("AI_REALTIME_PROVIDER", "openai")
-    monkeypatch.setenv("OPENAI_REALTIME_MODEL", "gpt-realtime-2.1")
-
-    catalog = ai_model_catalog.build_model_catalog()
-
-    assert catalog.defaults["realtime"].provider == "openai"
-    assert catalog.defaults["realtime"].model == "gpt-realtime-2.1"
-    assert _models_by_provider(catalog, "realtime", "openai") == ["gpt-realtime-2.1-mini", "gpt-realtime-2.1"]
-    option = next(item for item in catalog.realtime if item.model == "gpt-realtime-2.1")
-    assert option.enabled is True
-    assert option.configured is True
-    assert option.transport == "openai_webrtc"
-
-
-def test_catalog_defaults_to_configured_google_when_openai_is_missing(monkeypatch) -> None:
-    _disable_realtime(monkeypatch)
-    monkeypatch.delenv("AI_SINGLE_API_KEY_MODE", raising=False)
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("OPENAI_REALTIME_API_KEY", raising=False)
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
-    monkeypatch.delenv("KIMI_API_KEY", raising=False)
-    monkeypatch.delenv("MOONSHOT_API_KEY", raising=False)
-    monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
-    monkeypatch.delenv("OPENAI_COMPATIBLE_API_KEY", raising=False)
-    monkeypatch.delenv("OPENAI_COMPATIBLE_BASE_URL", raising=False)
-    monkeypatch.delenv("ANTHROPIC_COMPATIBLE_API_KEY", raising=False)
-    monkeypatch.delenv("ANTHROPIC_COMPATIBLE_BASE_URL", raising=False)
-    monkeypatch.delenv("AI_TEXT_PROVIDER", raising=False)
-    monkeypatch.delenv("AI_REALTIME_PROVIDER", raising=False)
-    monkeypatch.delenv("AI_TEXT_MODELS_JSON", raising=False)
-    monkeypatch.delenv("AI_REALTIME_MODELS_JSON", raising=False)
-    monkeypatch.delenv("OPENAI_REALTIME_MODEL", raising=False)
-    monkeypatch.setenv("GOOGLE_API_KEY", "google-key")
-
-    catalog = ai_model_catalog.build_model_catalog()
-
-    assert catalog.defaults["text"].provider == "google"
-    assert catalog.defaults["text"].model == "gemini-3-flash-preview"
-    assert catalog.defaults["realtime"].provider == "openai"
-    assert catalog.defaults["realtime"].model == "gpt-realtime-2.1"
-
-
-def test_single_key_mode_keeps_text_models_on_official_openai(monkeypatch) -> None:
-    _disable_realtime(monkeypatch)
-    monkeypatch.setenv("AI_SINGLE_API_KEY_MODE", "true")
-    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+def test_catalog_exposes_only_codex_text_models(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_CODEX_MODEL", "gpt-5.4-mini")
     monkeypatch.setenv("AI_TEXT_PROVIDER", "google")
-    monkeypatch.setenv("GOOGLE_TEXT_MODEL", "gemini-3-flash-preview")
-    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
-    monkeypatch.delenv("OPENAI_REALTIME_BASE_URL", raising=False)
-    monkeypatch.delenv("OPENAI_REALTIME_API_KEY", raising=False)
-    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
-    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-    monkeypatch.delenv("GOOGLE_REALTIME_API_KEY", raising=False)
-    monkeypatch.delenv("AI_TEXT_MODELS_JSON", raising=False)
-    monkeypatch.delenv("AI_REALTIME_MODELS_JSON", raising=False)
-    monkeypatch.delenv("GOOGLE_REALTIME_MODEL", raising=False)
-
-    catalog = ai_model_catalog.build_model_catalog()
-
-    assert catalog.defaults["text"].provider == "openai"
-    assert catalog.defaults["text"].model == "gpt-5.5"
-    assert _models_by_provider(catalog, "text", "openai") == ["gpt-5.5"]
-    assert _models_by_provider(catalog, "text", "google") == []
-    assert catalog.realtime == []
-
-
-def test_single_key_mode_does_not_use_shared_key_for_google_realtime(monkeypatch) -> None:
-    _disable_realtime(monkeypatch)
-    monkeypatch.setenv("AI_SINGLE_API_KEY_MODE", "true")
-    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
-    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.router.example/v1")
-    monkeypatch.setenv("AI_REALTIME_PROVIDER", "google")
-    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
-    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-    monkeypatch.delenv("GOOGLE_REALTIME_API_KEY", raising=False)
-    monkeypatch.delenv("OPENAI_REALTIME_API_KEY", raising=False)
-    monkeypatch.delenv("AI_REALTIME_MODELS_JSON", raising=False)
-
-    catalog = ai_model_catalog.build_model_catalog()
-
-    assert catalog.realtime == []
-
-
-def test_catalog_includes_official_and_configured_custom_text_providers(monkeypatch) -> None:
-    monkeypatch.delenv("AI_SINGLE_API_KEY_MODE", raising=False)
-    monkeypatch.setenv("AI_TEXT_PROVIDER", "kimi")
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek-key")
-    monkeypatch.setenv("KIMI_API_KEY", "kimi-key")
-    monkeypatch.setenv("MINIMAX_API_KEY", "minimax-key")
-    monkeypatch.setenv("OPENAI_COMPATIBLE_API_KEY", "custom-openai-key")
-    monkeypatch.setenv("OPENAI_COMPATIBLE_BASE_URL", "https://router.example.com/v1")
-    monkeypatch.setenv("OPENAI_COMPATIBLE_MODEL", "router-model")
-    monkeypatch.setenv("ANTHROPIC_COMPATIBLE_API_KEY", "custom-anthropic-key")
-    monkeypatch.setenv("ANTHROPIC_COMPATIBLE_BASE_URL", "https://anthropic-router.example.com")
-    monkeypatch.setenv("ANTHROPIC_COMPATIBLE_MODEL", "claude-router")
-
-    catalog = ai_model_catalog.build_model_catalog()
-
-    assert catalog.defaults["text"].provider == "kimi"
-    assert catalog.defaults["text"].model == "kimi-k2.6"
-    assert _models_by_provider(catalog, "text", "deepseek") == ["deepseek-v4-flash", "deepseek-v4-pro"]
-    assert _models_by_provider(catalog, "text", "kimi") == ["kimi-k2.5", "kimi-k2.6"]
-    assert _models_by_provider(catalog, "text", "minimax") == ["MiniMax-M2.7", "MiniMax-M2.7-highspeed"]
-
-    enabled = {
-        (option.provider, option.model): option.enabled
-        for option in catalog.text
-        if option.provider in {"deepseek", "kimi", "minimax", "openai_compatible", "anthropic_compatible"}
-    }
-    assert enabled[("deepseek", "deepseek-v4-flash")]
-    assert enabled[("deepseek", "deepseek-v4-pro")]
-    assert enabled[("kimi", "kimi-k2.6")]
-    assert enabled[("minimax", "MiniMax-M2.7-highspeed")]
-    assert enabled[("openai_compatible", "router-model")]
-    assert enabled[("anthropic_compatible", "claude-router")]
-
-
-def test_catalog_exposes_configured_codex_models(monkeypatch) -> None:
-    _disable_realtime(monkeypatch)
-    monkeypatch.delenv("AI_SINGLE_API_KEY_MODE", raising=False)
-    monkeypatch.setenv("OPENCLASS_CODEX_APP_SERVER_ENABLED", "true")
-    monkeypatch.setenv("AI_TEXT_PROVIDER", "openai_codex")
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("OPENCLASS_REALTIME_ENABLED", "true")
+    monkeypatch.setenv("AI_TEXT_MODELS_JSON", '[{"provider":"deepseek","model":"legacy"}]')
     monkeypatch.setattr(
         ai_model_catalog,
         "codex_provider_status",
-        lambda: CodexProviderStatus(enabled=True, available=True, configured=True),
+        lambda **_kwargs: _status(configured=True),
     )
     monkeypatch.setattr(
         ai_model_catalog,
@@ -202,9 +31,50 @@ def test_catalog_exposes_configured_codex_models(monkeypatch) -> None:
 
     catalog = ai_model_catalog.build_model_catalog()
 
-    assert _models_by_provider(catalog, "text", "openai_codex") == ["gpt-5.5", "gpt-5.4-mini"]
+    assert [(option.provider, option.model) for option in catalog.text] == [
+        ("openai_codex", "gpt-5.5"),
+        ("openai_codex", "gpt-5.4-mini"),
+    ]
     assert catalog.defaults["text"].provider == "openai_codex"
-    assert catalog.defaults["text"].model == "gpt-5.5"
-    codex_options = [option for option in catalog.text if option.provider == "openai_codex"]
-    assert codex_options
-    assert all(option.enabled and option.configured for option in codex_options)
+    assert catalog.defaults["text"].model == "gpt-5.4-mini"
+    assert catalog.defaults["realtime"] == catalog.defaults["text"]
+    assert catalog.realtime == []
+    assert [option.model for option in catalog.text if option.default] == ["gpt-5.4-mini"]
+    assert all(option.enabled and option.configured for option in catalog.text)
+
+
+def test_catalog_adds_configured_default_when_codex_does_not_list_it(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_CODEX_MODEL", "custom-codex-model")
+    monkeypatch.setattr(
+        ai_model_catalog,
+        "codex_provider_status",
+        lambda **_kwargs: _status(configured=True),
+    )
+    monkeypatch.setattr(
+        ai_model_catalog,
+        "list_codex_models",
+        lambda: [{"model": "gpt-5.5", "displayName": "GPT-5.5"}],
+    )
+
+    catalog = ai_model_catalog.build_model_catalog()
+
+    assert catalog.text[0].provider == "openai_codex"
+    assert catalog.text[0].model == "custom-codex-model"
+    assert catalog.text[0].default is True
+
+
+def test_catalog_disables_codex_options_until_account_is_configured(monkeypatch) -> None:
+    monkeypatch.delenv("OPENAI_CODEX_MODEL", raising=False)
+    monkeypatch.setattr(
+        ai_model_catalog,
+        "codex_provider_status",
+        lambda **_kwargs: _status(configured=False),
+    )
+    monkeypatch.setattr(ai_model_catalog, "list_codex_models", lambda: [])
+
+    catalog = ai_model_catalog.build_model_catalog()
+
+    assert catalog.text
+    assert {option.provider for option in catalog.text} == {"openai_codex"}
+    assert all(not option.enabled and not option.configured for option in catalog.text)
+    assert catalog.realtime == []
