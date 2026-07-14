@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 import shutil
+import tempfile
 from pathlib import Path
+from typing import Callable
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
+from starlette.background import BackgroundTask
 
 from app.models import (
     BoardDocument,
@@ -23,6 +29,7 @@ from app.models import (
 )
 from app.routers.auth import current_user
 from app.services.chat_service import document_ai_edit_request
+from app.services.board_asset_store import get_board_asset_store
 from app.services.course_runtime import refresh_lesson_runtime
 from app.services.history import create_branch, current_head_commit, restore_commit, switch_branch
 from app.services.html_document_export import export_html
@@ -54,6 +61,81 @@ _DOCX_NO_STORE_HEADERS = {
     "Pragma": "no-cache",
     "Expires": "0",
 }
+
+_EXPORT_SCOPE_TOKEN_RE = re.compile(r"[^A-Za-z0-9_-]+")
+
+
+def _temporary_export_target(
+    *,
+    owner_user_id: str,
+    lesson_id: str,
+    suffix: str,
+) -> tuple[Path, Path]:
+    EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+    owner_scope = hashlib.sha256(owner_user_id.encode("utf-8")).hexdigest()[:12]
+    lesson_scope = _EXPORT_SCOPE_TOKEN_RE.sub("-", lesson_id).strip("-")[:48] or "lesson"
+    export_directory = Path(
+        tempfile.mkdtemp(
+            prefix=f"openclass-export-{owner_scope}-{lesson_scope}-",
+            dir=EXPORT_DIR,
+        )
+    )
+    return export_directory, export_directory / f"document{suffix}"
+
+
+def _remove_export_directory(export_directory: Path) -> None:
+    shutil.rmtree(export_directory, ignore_errors=True)
+
+
+def _export_document_response(
+    *,
+    document: BoardDocument,
+    owner_user_id: str,
+    lesson_id: str,
+    download_stem: str,
+    suffix: str,
+    media_type: str,
+    exporter: Callable[..., Path],
+) -> FileResponse:
+    export_directory, target_path = _temporary_export_target(
+        owner_user_id=owner_user_id,
+        lesson_id=lesson_id,
+        suffix=suffix,
+    )
+    try:
+        exporter(document, target_path, asset_resolver=_board_asset_resolver(owner_user_id))
+        return FileResponse(
+            target_path,
+            media_type=media_type,
+            filename=f"{download_stem}{suffix}",
+            headers=_DOCX_NO_STORE_HEADERS,
+            background=BackgroundTask(_remove_export_directory, export_directory),
+        )
+    except Exception:
+        _remove_export_directory(export_directory)
+        raise
+
+
+@router.get("/api/board-assets/{asset_id}/content")
+def get_board_asset_content(
+    asset_id: str,
+    user: UserView = Depends(current_user),
+) -> Response:
+    store = get_board_asset_store()
+    resolved = store.read_bytes(asset_id, user.id)
+    if resolved is None:
+        raise HTTPException(status_code=404, detail="Board asset content is unavailable.")
+    asset, content = resolved
+    return Response(
+        content=content,
+        media_type=asset.mime_type,
+        headers={
+            "Cache-Control": "private, max-age=31536000, immutable",
+            "Content-Disposition": f"inline; filename*=UTF-8''{quote(asset.file_name)}",
+            "ETag": f'"{asset.content_hash}"',
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @router.get("/api/documents/search", response_model=DocumentSegmentSearchResponse)
@@ -304,13 +386,14 @@ def export_document_docx(lesson_id: str, user: UserView = Depends(current_user))
     document = _exportable_document_for_lesson(lesson)
     if is_document_empty(document):
         raise HTTPException(status_code=409, detail="当前板书文档为空，不能导出 DOCX")
-    target_path = EXPORT_DIR / f"{lesson.slug or lesson.id}.docx"
-    export_docx(document, target_path)
-    return FileResponse(
-        target_path,
+    return _export_document_response(
+        document=document,
+        owner_user_id=user.id,
+        lesson_id=lesson.id,
+        download_stem=lesson.slug or lesson.id,
+        suffix=".docx",
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        filename=f"{lesson.slug or lesson.id}.docx",
-        headers=_DOCX_NO_STORE_HEADERS,
+        exporter=export_docx,
     )
 
 
@@ -321,13 +404,14 @@ def export_document_html(lesson_id: str, user: UserView = Depends(current_user))
     document = _exportable_document_for_lesson(lesson)
     if is_document_empty(document):
         raise HTTPException(status_code=409, detail="当前板书文档为空，不能导出 HTML")
-    target_path = EXPORT_DIR / f"{lesson.slug or lesson.id}.html"
-    export_html(document, target_path)
-    return FileResponse(
-        target_path,
+    return _export_document_response(
+        document=document,
+        owner_user_id=user.id,
+        lesson_id=lesson.id,
+        download_stem=lesson.slug or lesson.id,
+        suffix=".html",
         media_type="text/html; charset=utf-8",
-        filename=f"{lesson.slug or lesson.id}.html",
-        headers=_DOCX_NO_STORE_HEADERS,
+        exporter=export_html,
     )
 
 
@@ -341,6 +425,19 @@ def _exportable_document_for_lesson(lesson) -> BoardDocument:
     if not is_document_empty(head_snapshot):
         return head_snapshot
     return lesson.board_document
+
+
+def _board_asset_resolver(user_id: str):
+    store = get_board_asset_store()
+
+    def resolve(asset_id: str) -> tuple[str, bytes] | None:
+        resolved = store.read_bytes(asset_id, user_id)
+        if resolved is None:
+            return None
+        asset, content = resolved
+        return asset.mime_type, content
+
+    return resolve
 
 
 @router.post("/api/lessons/{lesson_id}/branches", response_model=CoursePackageView)

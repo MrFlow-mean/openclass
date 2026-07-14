@@ -560,6 +560,20 @@ export const api = {
     }
     return response.blob();
   },
+  async getBoardAssetContent(assetId: string, options: { signal?: AbortSignal } = {}) {
+    const response = await fetch(
+      `${getApiBase()}/api/board-assets/${encodeURIComponent(assetId)}/content`,
+      {
+        headers: authHeaders(),
+        cache: "no-store",
+        signal: options.signal,
+      }
+    );
+    if (!response.ok) {
+      throw new Error(await responseErrorMessage(response, "板书图片读取失败"));
+    }
+    return response.blob();
+  },
   getPackageSourceStructure(packageId: string, sourceId: string) {
     return request<SourceStructureView>(`/api/packages/${packageId}/sources/${sourceId}/structure`);
   },

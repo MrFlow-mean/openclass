@@ -4,7 +4,6 @@ import Highlight from "@tiptap/extension-highlight";
 import ImageExtension from "@tiptap/extension-image";
 import LinkExtension from "@tiptap/extension-link";
 import { BlockMath, InlineMath } from "@tiptap/extension-mathematics";
-import { Table } from "@tiptap/extension-table";
 import TableCell from "@tiptap/extension-table-cell";
 import TableHeader from "@tiptap/extension-table-header";
 import TableRow from "@tiptap/extension-table-row";
@@ -88,6 +87,7 @@ import {
 } from "@/components/course-studio/word-editor-toolbar";
 import { BoardModelPicker } from "@/components/course-studio/board-model-picker";
 import { ResourceVisualBlock } from "@/components/course-studio/resource-visual-block-extension";
+import { SourceAwareTable } from "@/components/course-studio/source-aware-table-extension";
 import "@/lib/katex-mhchem";
 import { MATH_TEXT_SERIALIZERS, normalizeEditorMath } from "@/lib/math-content";
 import { RichCodeBlock } from "@/lib/rich-code-block-extension";
@@ -346,7 +346,7 @@ const WORD_EDITOR_EXTENSIONS = [
     },
   }),
   TextAlign.configure({ types: ["heading", "paragraph"] }),
-  Table.configure({ resizable: true, cellMinWidth: 72, lastColumnResizable: true }),
+  SourceAwareTable.configure({ resizable: true, cellMinWidth: 72, lastColumnResizable: true }),
   TableRow,
   TableHeader,
   TableCell,

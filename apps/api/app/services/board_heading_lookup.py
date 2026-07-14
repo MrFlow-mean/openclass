@@ -78,22 +78,30 @@ def _matches_by_exact_heading_text(
     headings: list[BoardSegment],
 ) -> list[HeadingLookupMatch]:
     lookup_text = _heading_text_key(" ".join([scope_hint or "", query_text or ""]))
+    exact_scope_key = _heading_text_key(scope_hint)
     if not lookup_text:
         return []
 
     matches: list[HeadingLookupMatch] = []
     for heading in headings:
         heading_key = _heading_text_key(heading.text)
-        if len(heading_key) < 6:
-            continue
-        if heading_key not in lookup_text:
+        exact_scope_match = bool(exact_scope_key and heading_key == exact_scope_key)
+        if not exact_scope_match and (len(heading_key) < 6 or heading_key not in lookup_text):
             continue
         matches.append(
             HeadingLookupMatch(
                 segment=heading,
-                confidence=0.96,
-                reason="根据用户给出的完整标题文本精确定位到板书标题。",
-                score_breakdown={"heading_text_exact": 0.96},
+                confidence=0.99 if exact_scope_match else 0.96,
+                reason=(
+                    "根据任务清单中的完整目标标题精确定位到板书标题。"
+                    if exact_scope_match
+                    else "根据用户给出的完整标题文本精确定位到板书标题。"
+                ),
+                score_breakdown={
+                    "heading_scope_exact" if exact_scope_match else "heading_text_exact": (
+                        0.99 if exact_scope_match else 0.96
+                    )
+                },
             )
         )
     return matches
