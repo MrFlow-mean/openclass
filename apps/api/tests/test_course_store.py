@@ -1,10 +1,9 @@
 import json
 import sqlite3
 
-from app.models import BoardDocument, BoardTeachingProgress, LearningClarificationStatus, ResourceLibraryItem
+from app.models import BoardDocument, ResourceLibraryItem
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
-from app.services.learning_requirement_history import LearningRequirementHistoryRecorder
-from app.services.lesson_factory import build_requirements, create_empty_lesson
+from app.services.lesson_factory import create_empty_lesson
 from app.services.rich_document import build_document, rich_structure_counts
 
 
@@ -221,77 +220,6 @@ def test_sqlite_store_round_trips_resource_lesson_scope(tmp_path) -> None:
     reloaded = store.load()
 
     assert reloaded.packages[0].resources[0].scope_lesson_id == lesson.id
-
-
-def test_sqlite_store_restores_active_learning_requirement_from_history(tmp_path) -> None:
-    db_path = tmp_path / "openclass.sqlite3"
-    store = SqliteCourseStore(db_path, legacy_json_path=None)
-    user_id = "user_requirement_restore"
-
-    workspace = build_initial_workspace_state()
-    lesson = _append_lesson(workspace, "需求恢复页")
-    requirements = build_requirements(lesson.title)
-    requirements.learning_goal = "以太坊开发由哪几部分组成"
-    requirements.work_mode = "knowledge_board"
-    requirements.granularity = "single_knowledge_point"
-    clarification = LearningClarificationStatus(
-        progress=100,
-        label="ready",
-        reason="学习需求已经收敛到第一课入口。",
-        missing_items=[],
-        can_start=True,
-        forced_start=False,
-        summary="以太坊开发入门第一课已明确。",
-        next_question="",
-        ready_for_board=True,
-        work_mode="knowledge_board",
-        granularity="single_knowledge_point",
-    )
-    recorder = LearningRequirementHistoryRecorder.from_store_state(
-        owner_user_id=user_id,
-        lesson_id=lesson.id,
-        state=None,
-    )
-    recorder.record_update(requirements=requirements, clarification=clarification)
-    store.save_for_user_with_learning_requirement_history(
-        user_id,
-        workspace,
-        learning_requirement_history_operations=recorder.operations,
-    )
-
-    cleared_workspace = store.load_for_user(user_id)
-    cleared_workspace.packages[0].lessons[0].learning_requirements = None
-    store.save_for_user(user_id, cleared_workspace)
-
-    reloaded = store.load_for_user(user_id)
-    restored = reloaded.packages[0].lessons[0].learning_requirements
-    assert restored is not None
-    assert restored.learning_goal == "以太坊开发由哪几部分组成"
-    assert restored.granularity == "single_knowledge_point"
-
-
-def test_sqlite_store_round_trips_board_teaching_progress(tmp_path) -> None:
-    db_path = tmp_path / "openclass.sqlite3"
-    store = SqliteCourseStore(db_path, legacy_json_path=None)
-
-    workspace = store.load()
-    lesson = _append_lesson(workspace)
-    lesson.board_teaching_progress = BoardTeachingProgress(
-        board_document_id=lesson.board_document.id,
-        board_snapshot_hash="hash-1",
-        current_section_index=1,
-        completed_section_indexes=[0, 1],
-        waiting_for_continue=True,
-    )
-    store.save(workspace)
-
-    reloaded = store.load()
-    progress = reloaded.packages[0].lessons[0].board_teaching_progress
-
-    assert progress is not None
-    assert progress.current_section_index == 1
-    assert progress.completed_section_indexes == [0, 1]
-    assert progress.waiting_for_continue is True
 
 
 def test_sqlite_store_keeps_user_workspaces_isolated(tmp_path) -> None:

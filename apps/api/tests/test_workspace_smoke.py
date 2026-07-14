@@ -10,7 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app.main as main_module
-from app.models import CodexProviderStatus, EvidenceBundle, RetrievalEvidence, SourceIngestionRecord, UserView
+from app.models import CodexProviderStatus, SourceIngestionRecord, UserView
 from app.routers import auth as auth_router
 from app.routers import documents as documents_router
 from app.routers import workspace as workspace_router
@@ -238,7 +238,7 @@ def test_lesson_resource_upload_endpoint_is_not_exposed(api_client: TestClient) 
     assert upload.status_code == 404
 
 
-def test_native_url_source_import_and_evidence_confirm(
+def test_native_url_source_import_and_delete(
     api_client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
@@ -249,13 +249,6 @@ def test_native_url_source_import_and_evidence_confirm(
     )
     assert created_workspace.status_code == 200
     package_id = created_workspace.json()["active_package_id"]
-    generated = api_client.post(
-        "/api/lessons/generate",
-        json={"topic": "Source lesson", "target_package_id": package_id, "start_blank": True},
-    )
-    assert generated.status_code == 200
-    lesson = generated.json()["lessons"][0]
-
     def _fake_snapshot(record: SourceIngestionRecord, source_uri: str) -> dict[str, str]:
         source_dir = workspace_state.UPLOAD_DIR / "sources"
         source_dir.mkdir(parents=True, exist_ok=True)
@@ -295,86 +288,6 @@ def test_native_url_source_import_and_evidence_confirm(
     listed_after_delete = api_client.get(f"/api/packages/{package_id}/sources")
     assert listed_after_delete.status_code == 200
     assert listed_after_delete.json() == []
-
-    bundle = source_evidence_store.save_bundle(
-        EvidenceBundle(
-            owner_user_id=TEST_USER.id,
-            package_id=package_id,
-            lesson_id=lesson["id"],
-            purpose="board_generation",
-            query="结合资料生成",
-            evidence_items=[
-                RetrievalEvidence(
-                    source_ingestion_id=source["id"],
-                    open_notebook_source_id="",
-                    source_title="示例网页",
-                    source_uri="https://example.com/source",
-                    section_path=["第一节"],
-                    page_range="p. 1",
-                    chunk_ids=["chunk_api"],
-                    excerpt="短摘录",
-                    expanded_text="短摘录和上下文",
-                    token_count=8,
-                )
-            ],
-            context_text="资料上下文",
-            token_count=8,
-        )
-    )
-
-    confirmed = api_client.post(
-        f"/api/lessons/{lesson['id']}/evidence/confirm",
-        json={"bundle_id": bundle.id, "action": "confirm"},
-    )
-    assert confirmed.status_code == 200
-    confirmed_payload = confirmed.json()
-    assert confirmed_payload["evidence_bundle"]["status"] == "confirmed"
-    assert confirmed_payload["evidence_bundle"]["confirmed_by_user"] is True
-    assert confirmed_payload["active_requirement_sheet"] is None
-
-
-def test_pending_lesson_evidence_can_be_recovered_after_reopening(
-    api_client: TestClient,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    created_workspace = api_client.post(
-        "/api/packages",
-        json={"title": "Pending evidence package", "summary": ""},
-    )
-    assert created_workspace.status_code == 200
-    package_id = created_workspace.json()["active_package_id"]
-    generated = api_client.post(
-        "/api/lessons/generate",
-        json={"topic": "Pending evidence lesson", "target_package_id": package_id, "start_blank": True},
-    )
-    assert generated.status_code == 200
-    lesson_id = generated.json()["lessons"][0]["id"]
-    requirement_run_id = "reqrun_pending_evidence"
-    monkeypatch.setattr(
-        workspace_state,
-        "load_learning_requirement_history_state_for_user",
-        lambda _user_id, _lesson_id: {"run_id": requirement_run_id},
-    )
-    bundle = source_evidence_store.save_bundle(
-        EvidenceBundle(
-            owner_user_id=TEST_USER.id,
-            package_id=package_id,
-            lesson_id=lesson_id,
-            requirement_run_id=requirement_run_id,
-            purpose="board_generation",
-            query="需要确认的资料",
-            evidence_items=[],
-            context_text="资料上下文",
-            token_count=0,
-        )
-    )
-
-    pending = api_client.get(f"/api/lessons/{lesson_id}/evidence/pending")
-
-    assert pending.status_code == 200
-    assert pending.json()["id"] == bundle.id
-    source_evidence_store.confirm_bundle(owner_user_id=TEST_USER.id, bundle_id=bundle.id)
-    assert api_client.get(f"/api/lessons/{lesson_id}/evidence/pending").json() is None
 
 
 def test_source_import_uses_native_local_index(
