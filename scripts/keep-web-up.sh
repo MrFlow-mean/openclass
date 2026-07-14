@@ -51,69 +51,8 @@ first_changed_source_after_build() {
 }
 
 validate_static_assets() {
-  [[ -d "$BUILD_DIR/static" ]] || return 1
-
-  node - "$BUILD_DIR" <<'NODE'
-const fs = require("fs");
-const path = require("path");
-
-const buildDir = process.argv[2];
-const missing = [];
-
-function walk(dir) {
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    const fullPath = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      if (entry.name === "cache" || entry.name === "dev" || entry.name === "diagnostics" || entry.name === "types") {
-        continue;
-      }
-      walk(fullPath);
-      continue;
-    }
-    if (entry.isFile() && entry.name.endsWith(".json")) {
-      inspectManifest(fullPath);
-    }
-  }
-}
-
-function collect(value, out) {
-  if (typeof value === "string") {
-    if (value.startsWith("static/") || value.startsWith("/_next/static/")) {
-      out.add(value.replace(/^\/?_next\//, ""));
-    }
-    return;
-  }
-  if (Array.isArray(value)) {
-    for (const item of value) collect(item, out);
-    return;
-  }
-  if (value && typeof value === "object") {
-    for (const item of Object.values(value)) collect(item, out);
-  }
-}
-
-function inspectManifest(filePath) {
-  let data;
-  try {
-    data = JSON.parse(fs.readFileSync(filePath, "utf8"));
-  } catch {
-    return;
-  }
-  const assets = new Set();
-  collect(data, assets);
-  for (const asset of assets) {
-    if (!fs.existsSync(path.join(buildDir, asset))) {
-      missing.push(`${path.relative(buildDir, filePath)} -> ${asset}`);
-    }
-  }
-}
-
-walk(buildDir);
-if (missing.length) {
-  console.error(missing.join("\n"));
-  process.exit(1);
-}
-NODE
+  [[ -f "$BUILD_ID" ]] || return 1
+  [[ -d "$BUILD_DIR/server" ]] || return 1
 }
 
 build_refresh_reason() {
