@@ -30,7 +30,7 @@ from app.services.board_task_history import BoardTaskHistoryStore
 from app.services.learning_requirement_history import LearningRequirementHistoryStore
 from app.services.rich_document import upgrade_markdown_like_document
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 
 def _active_package_setting_key(owner_user_id: str | None) -> str:
@@ -351,6 +351,25 @@ class SqliteCourseStore:
 
             CREATE INDEX IF NOT EXISTS idx_lesson_commits_lesson
                 ON lesson_commits(lesson_id, sort_order);
+
+            CREATE TABLE IF NOT EXISTS board_assets (
+                id TEXT PRIMARY KEY,
+                owner_user_id TEXT NOT NULL,
+                lesson_id TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                mime_type TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL,
+                storage_key TEXT NOT NULL,
+                file_name TEXT NOT NULL DEFAULT '',
+                source_visual_id TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL
+            );
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_board_assets_owner_hash
+                ON board_assets(owner_user_id, content_hash);
+
+            CREATE INDEX IF NOT EXISTS idx_board_assets_lesson
+                ON board_assets(owner_user_id, lesson_id);
 
             CREATE TABLE IF NOT EXISTS lesson_commit_parents (
                 commit_id TEXT NOT NULL REFERENCES lesson_commits(id) ON DELETE CASCADE,

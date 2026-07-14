@@ -19,10 +19,12 @@ from app.services.rich_document import (
     build_document,
     document_changed,
     looks_like_html_content,
+    rebuild_document_from_content_json,
     would_flatten_rich_document,
 )
 
-_SUPPORTED_PATCH_OPS = {"insert_block", "update_block_content", "delete_block"}
+_SUPPORTED_PATCH_OPS = {"insert_block", "update_block_content", "delete_block", "attach_asset"}
+_BOARD_ASSET_URL_RE = re.compile(r"^/api/board-assets/(?P<asset_id>basset_[A-Za-z0-9_-]+)/content$")
 
 
 @dataclass(frozen=True)
@@ -110,6 +112,9 @@ def apply_board_patch(
             validation=validation,
             operations=[],
         )
+
+    if patch.operations and all(operation.op == "attach_asset" for operation in patch.operations):
+        return _apply_attach_asset_operations(document, patch.operations, validation)
 
     blocks = _snapshot_blocks(document)
     markdown_blocks = [block["markdown"] for block in blocks]
@@ -223,6 +228,10 @@ def _validate_patch_request(
         issues.append("Patch source document hash does not match the current board document.")
     if not patch.operations:
         issues.append("Patch request has no operations.")
+    if any(operation.op == "attach_asset" for operation in patch.operations) and any(
+        operation.op != "attach_asset" for operation in patch.operations
+    ):
+        issues.append("attach_asset operations cannot be mixed with text patch operations.")
     if patch.target_scope == "whole_document" and not allow_high_risk:
         issues.append("Whole-document board patches require an explicit high-risk confirmation.")
     if patch.risk_level == "high" and not allow_high_risk:
@@ -237,6 +246,12 @@ def _validate_patch_request(
         content = _operation_content(operation)
         if operation.op in {"insert_block", "update_block_content"} and not content.strip():
             issues.append(f"{operation.op} requires non-empty content.")
+        if operation.op == "attach_asset":
+            asset_url = str(operation.asset_url or "").strip()
+            if not asset_url:
+                issues.append("attach_asset requires asset_url.")
+            elif not _BOARD_ASSET_URL_RE.fullmatch(asset_url):
+                issues.append("attach_asset only accepts a permanent board asset URL.")
         if content and looks_like_html_content(content):
             issues.append(f"{operation.op} content must be Markdown or plain text, not HTML.")
         if operation.op == "delete_block" and not allow_high_risk:
@@ -318,6 +333,8 @@ def _node_text(value: Any) -> str:
             return str(value.get("text") or "")
         if value.get("type") in {"inlineMath", "blockMath"}:
             return str(value.get("attrs", {}).get("latex") or "")
+        if value.get("type") == "resourceVisualBlock":
+            return str(value.get("attrs", {}).get("caption") or "")
         children = value.get("content")
         if isinstance(children, list):
             return "".join(_node_text(child) for child in children)
@@ -338,7 +355,7 @@ def _block_type(node_type: str) -> str:
         return "heading"
     if node_type == "table":
         return "table"
-    if node_type == "image":
+    if node_type in {"image", "resourceVisualBlock"}:
         return "image"
     if node_type == "blockMath":
         return "formula"
@@ -367,6 +384,115 @@ def _operation_content(operation: PatchOperation) -> str:
         parts = [operation.block.title.strip(), operation.block.content.strip()]
         return "\n\n".join(part for part in parts if part)
     return ""
+
+
+def attach_asset_after_block(
+    document: BoardDocument,
+    *,
+    after_block_id: str,
+    node: dict[str, Any],
+) -> BoardDocument:
+    blocks = _snapshot_blocks(document)
+    block_by_id = {block["block_id"]: index for index, block in enumerate(blocks)}
+    target_index = block_by_id.get(after_block_id)
+    if target_index is None:
+        return document
+    content_json = json.loads(json.dumps(document.content_json, ensure_ascii=False))
+    nodes = content_json.get("content") if isinstance(content_json, dict) else None
+    if not isinstance(nodes, list) or target_index >= len(nodes):
+        return document
+    nodes.insert(target_index + 1, node)
+    return rebuild_document_from_content_json(document, content_json)
+
+
+def _apply_attach_asset_operations(
+    document: BoardDocument,
+    operations: list[PatchOperation],
+    validation: BoardPatchValidationResult,
+) -> BoardPatchApplyOutcome:
+    blocks = _snapshot_blocks(document)
+    block_by_id = {block["block_id"]: index for index, block in enumerate(blocks)}
+    content_json = json.loads(json.dumps(document.content_json, ensure_ascii=False))
+    nodes = content_json.get("content") if isinstance(content_json, dict) else None
+    if not isinstance(nodes, list):
+        validation.status = "failed"
+        validation.issues.append("Board document has no editable rich content.")
+        return BoardPatchApplyOutcome(document, [], validation, [])
+
+    insertions: dict[int, list[tuple[PatchOperation, dict[str, Any]]]] = {}
+    for operation in operations:
+        target_index = _operation_target_index(operation, blocks, block_by_id)
+        if target_index is None:
+            validation.status = "failed"
+            validation.issues.append("attach_asset target block could not be resolved.")
+            return BoardPatchApplyOutcome(document, [], validation, [])
+        node = _attach_asset_node(operation)
+        if node is None:
+            validation.status = "failed"
+            validation.issues.append("attach_asset payload is invalid.")
+            return BoardPatchApplyOutcome(document, [], validation, [])
+        insertions.setdefault(target_index, []).append((operation, node))
+
+    next_nodes: list[dict[str, Any]] = []
+    diff_preview: list[DiffPreviewItem] = []
+    for index, node in enumerate(nodes):
+        if not isinstance(node, dict):
+            continue
+        next_nodes.append(node)
+        for operation, asset_node in insertions.get(index, []):
+            next_nodes.append(asset_node)
+            target = blocks[index]
+            caption = _operation_content(operation) or operation.note or "Board asset"
+            diff_preview.append(
+                DiffPreviewItem(
+                    op="attach_asset",
+                    block_id=target["block_id"],
+                    node_path=target["node_path"],
+                    heading_path=target["heading_path"],
+                    after=_preview_block(target["block_id"], caption, {**target, "type": "image"}),
+                    after_text=caption,
+                    summary=operation.note or "Attached a permanent board asset after the target block.",
+                )
+            )
+
+    next_json = {**content_json, "content": next_nodes}
+    next_document = rebuild_document_from_content_json(document, next_json)
+    result_issues = verify_board_patch_result(document, next_document)
+    if result_issues:
+        validation.status = "failed"
+        validation.issues.extend(result_issues)
+        return BoardPatchApplyOutcome(document, [], validation, [])
+    validation.applied_operations = len(operations)
+    return BoardPatchApplyOutcome(next_document, diff_preview, validation, list(operations))
+
+
+def _attach_asset_node(operation: PatchOperation) -> dict[str, Any] | None:
+    asset_url = str(operation.asset_url or "").strip()
+    caption = _operation_content(operation) or str(operation.title or operation.note or "Board asset").strip()
+    asset_match = _BOARD_ASSET_URL_RE.fullmatch(asset_url)
+    if asset_match:
+        return {
+            "type": "resourceVisualBlock",
+            "attrs": {
+                "marker": "",
+                "visualId": "",
+                "assetId": asset_match.group("asset_id"),
+                "caption": caption,
+                "source": "",
+                "sourceLocator": "",
+                "recreationKind": "original",
+                "recreationStatus": "original_only",
+                "recreationConfidence": "1.00",
+                "recreationNote": "",
+                "recreationHtml": "",
+                # Keep the URL as an input compatibility format only. New rich
+                # document nodes persist the permanent BoardAsset ID alone.
+                "originalSrc": "",
+                "originalAlt": caption,
+                "originalInitiallyCollapsed": False,
+            },
+        }
+    return None
 
 
 def _preview_block(block_id: str, content: str, source: dict[str, Any] | None) -> BoardBlock:

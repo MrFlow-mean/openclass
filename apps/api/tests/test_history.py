@@ -38,6 +38,7 @@ from app.services.rich_document import (
     document_to_markdown,
     export_docx,
     import_docx,
+    rebuild_document_from_content_json,
     replace_selection_in_document,
     upgrade_markdown_like_document,
 )
@@ -535,6 +536,37 @@ def test_board_segment_index_builds_machine_directory_from_rich_document() -> No
     assert paragraph.after_segment_id
     assert index.chunks
     assert any(paragraph.segment_id in chunk.source_segment_ids for chunk in index.chunks)
+
+
+def test_board_segment_index_treats_resource_visual_as_captioned_image() -> None:
+    base = build_document(title="视觉定位", content_text="# 主线\n\n图前正文。")
+    document = rebuild_document_from_content_json(
+        base,
+        {
+            "type": "doc",
+            "content": [
+                {"type": "heading", "attrs": {"level": 1}, "content": [{"type": "text", "text": "主线"}]},
+                {
+                    "type": "resourceVisualBlock",
+                    "attrs": {
+                        "visualId": "visual_1",
+                        "assetId": "asset_1",
+                        "caption": "变化关系图",
+                        "sourceTitle": "确认资料",
+                        "pageRange": "p. 3",
+                    },
+                },
+            ],
+        },
+    )
+
+    index = build_board_segment_index(document)
+
+    visual = next(segment for segment in index.segments if segment.kind == "image")
+    assert visual.heading_path == ["主线"]
+    assert "变化关系图" in visual.text
+    assert "确认资料" in visual.text
+    assert "p. 3" in visual.text
 
 
 def test_segment_resolver_uses_generic_semantic_aliases_without_selection() -> None:

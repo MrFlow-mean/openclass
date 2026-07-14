@@ -6,9 +6,13 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
+from app.services.guest_workspace_claim import (
+    CLAIMABLE_OWNER_TABLES,
+    claim_guest_workspace,
+)
 
-def _workspace_setting_key(owner_user_id: str) -> str:
-    return f"active_package_id:{owner_user_id}"
+
+_CLAIMABLE_OWNER_TABLES = CLAIMABLE_OWNER_TABLES
 
 
 class AuthStore:
@@ -384,23 +388,11 @@ class AuthStore:
         return row["guest_user_id"] if row is not None else None
 
     def claim_guest_workspace(self, conn: sqlite3.Connection, *, guest_user_id: str, user_id: str) -> None:
-        conn.execute(
-            "UPDATE course_packages SET owner_user_id = ? WHERE owner_user_id = ?",
-            (user_id, guest_user_id),
+        claim_guest_workspace(
+            conn,
+            guest_user_id=guest_user_id,
+            user_id=user_id,
         )
-        guest_setting_key = _workspace_setting_key(guest_user_id)
-        user_setting_key = _workspace_setting_key(user_id)
-        guest_active_row = conn.execute(
-            "SELECT value FROM workspace_settings WHERE key = ?",
-            (guest_setting_key,),
-        ).fetchone()
-        if guest_active_row is not None:
-            conn.execute(
-                "INSERT OR REPLACE INTO workspace_settings(key, value) VALUES (?, ?)",
-                (user_setting_key, guest_active_row["value"]),
-            )
-            conn.execute("DELETE FROM workspace_settings WHERE key = ?", (guest_setting_key,))
-        conn.execute("DELETE FROM auth_guest_sessions WHERE guest_user_id = ?", (guest_user_id,))
 
     def identities_for_user(self, conn: sqlite3.Connection, user_id: str) -> list[sqlite3.Row]:
         return conn.execute(

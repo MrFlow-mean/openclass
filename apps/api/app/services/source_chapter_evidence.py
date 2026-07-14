@@ -57,7 +57,6 @@ def resolve_verified_chapter_evidence(
         _attach_scope_metadata(
             evidence,
             scope_chapter=chapter,
-            covers_multiple_sections=len(targets) > 1,
             requested_chapter_number=requested_chapter_number,
         )
         _attach_scope_resolution(resolution, chapter=chapter, targets=targets)
@@ -347,7 +346,7 @@ def _ocr_chapter_evidence(
                     "chapter_page_end_exclusive": target.page_end,
                     "ocr_partial": ocr_page_end < chapter_page_end,
                     "source_locator": target.source_locator,
-                    "scope_kind": "chapter" if len(targets) > 1 else "section",
+                    "scope_kind": "chapter",
                     "scope_chapter_id": chapter.id,
                     "scope_chapter_number": chapter.normalized_number or chapter.number,
                     "scope_chapter_title": chapter.title,
@@ -407,13 +406,12 @@ def _attach_scope_metadata(
     evidence: list[RetrievalEvidence],
     *,
     scope_chapter: SourceChapter,
-    covers_multiple_sections: bool,
     requested_chapter_number: str = "",
 ) -> None:
     for item in evidence:
         item.metadata = {
             **item.metadata,
-            "scope_kind": "chapter" if covers_multiple_sections else "section",
+            "scope_kind": "chapter",
             "scope_chapter_id": scope_chapter.id,
             "scope_chapter_number": scope_chapter.normalized_number or scope_chapter.number,
             "scope_chapter_title": scope_chapter.title,

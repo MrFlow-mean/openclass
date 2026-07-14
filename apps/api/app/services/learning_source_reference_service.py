@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from collections import defaultdict
 from typing import Iterable
 
@@ -12,14 +13,18 @@ from app.models import (
     LearningRequirementSheet,
     LearningSourceGrounding,
     LearningSourceReference,
+    LearningSourceVisualReference,
     RetrievalEvidence,
+    RetrievalVisualEvidence,
 )
 from app.services import workspace_state
 from app.services.history import commit_operations
 from app.services.learning_requirement_history import LearningRequirementHistoryRecorder
-from app.services.resource_resolver import evidence_metadata
+from app.services.resource_resolver import evidence_metadata, visual_manifest_hash
 from app.services.source_evidence_store import source_evidence_store
+from app.services.source_structure_indexer import SourceStructureIndexer
 from app.services.source_structure_store import source_structure_store
+from app.services.source_visual_extraction import CURRENT_SOURCE_VISUAL_INDEX_VERSION
 
 
 class LearningSourceReferenceError(RuntimeError):
@@ -112,6 +117,7 @@ def apply_evidence_confirmation(
             requirement_phase=recorder.snapshot.status,
         )
 
+    validate_bundle_structure_versions(bundle)
     confirmed = source_evidence_store.confirm_bundle(owner_user_id=owner_user_id, bundle_id=bundle_id)
     if confirmed is None:
         raise LearningSourceReferenceError("Evidence bundle not found.")
@@ -229,10 +235,143 @@ def _build_confirmed_references(bundle: EvidenceBundle) -> list[LearningSourceRe
                 chunk_ids=_dedupe(chunk_id for item in items for chunk_id in item.chunk_ids),
                 source_structure_id=view.structure.id if view.structure else "",
                 source_structure_updated_at=view.structure.updated_at if view.structure else "",
+                source_visual_index_version=view.structure.visual_index_version if view.structure else 0,
                 content_hash=_content_hash(expanded_text or representative.excerpt),
             )
         )
-    return references
+    return _attach_visual_references(references, bundle)
+
+
+def validate_bundle_structure_versions(bundle: EvidenceBundle) -> None:
+    snapshots = bundle.metadata.get("source_structure_snapshots")
+    if bundle.visual_items and visual_manifest_hash(bundle.visual_items) != str(
+        bundle.metadata.get("visual_manifest_hash") or ""
+    ):
+        raise LearningSourceReferenceError("候选资料的视觉清单已经变化，请重新选择资料。")
+
+    items_by_source: dict[str, list[RetrievalVisualEvidence]] = defaultdict(list)
+    for item in bundle.visual_items:
+        items_by_source[item.source_ingestion_id].append(item)
+    source_ids = {
+        item.source_ingestion_id
+        for item in bundle.evidence_items
+        if item.source_ingestion_id
+    } | set(items_by_source)
+    if source_ids and not isinstance(snapshots, dict):
+        for source_id in source_ids:
+            source = source_evidence_store.get_source(
+                owner_user_id=bundle.owner_user_id,
+                package_id=bundle.package_id,
+                source_id=source_id,
+            )
+            if source is not None and source.status == "ready":
+                SourceStructureIndexer(store=source_structure_store).ensure_structure(source)
+        raise LearningSourceReferenceError("候选资料缺少视觉索引版本，请重新选择资料。")
+    snapshots = snapshots if isinstance(snapshots, dict) else {}
+    for source_id in source_ids:
+        visual_items = items_by_source.get(source_id, [])
+        source = source_evidence_store.get_source(
+            owner_user_id=bundle.owner_user_id,
+            package_id=bundle.package_id,
+            source_id=source_id,
+        )
+        snapshot = snapshots.get(source_id)
+        if source is None or source.status != "ready" or not isinstance(snapshot, dict):
+            raise LearningSourceReferenceError("候选资料当前不可用，请重新选择资料。")
+        structure = SourceStructureIndexer(store=source_structure_store).ensure_structure(source)
+        if (
+            structure is None
+            or structure.status not in {"ready", "linear_only"}
+            or structure.visual_index_status in {"pending", "failed"}
+            or structure.visual_index_version != CURRENT_SOURCE_VISUAL_INDEX_VERSION
+            or structure.id != str(snapshot.get("structure_id") or "")
+            or structure.updated_at != str(snapshot.get("structure_updated_at") or "")
+            or int(snapshot.get("visual_index_version") or 0)
+            != CURRENT_SOURCE_VISUAL_INDEX_VERSION
+        ):
+            raise LearningSourceReferenceError("候选资料索引已经重建，请重新选择并确认资料。")
+        current_by_id = {
+            visual.id: visual
+            for visual in source_structure_store.list_visuals(
+                owner_user_id=bundle.owner_user_id,
+                package_id=bundle.package_id,
+                source_id=source_id,
+            )
+        }
+        for candidate in visual_items:
+            current = current_by_id.get(candidate.visual_id)
+            if (
+                current is None
+                or current.content_hash != candidate.asset_hash
+                or current.position_hash != candidate.anchor_hash
+            ):
+                raise LearningSourceReferenceError("候选资料中的图表已经变化，请重新选择并确认资料。")
+
+
+def _attach_visual_references(
+    references: list[LearningSourceReference],
+    bundle: EvidenceBundle,
+) -> list[LearningSourceReference]:
+    if not references or not bundle.visual_items:
+        return references
+    assigned: dict[int, list[LearningSourceVisualReference]] = defaultdict(list)
+    for visual in bundle.visual_items:
+        source_indexes = [
+            index
+            for index, reference in enumerate(references)
+            if reference.source_ingestion_id == visual.source_ingestion_id
+        ]
+        if not source_indexes:
+            continue
+        target_index = next(
+            (
+                index
+                for index in source_indexes
+                if references[index].source_chapter_id == (visual.chapter_id or "")
+            ),
+            None,
+        )
+        if target_index is None:
+            target_index = next(
+                (
+                    index
+                    for index in source_indexes
+                    if references[index].scope_chapter_id == (visual.chapter_id or "")
+                ),
+                source_indexes[0],
+            )
+        assigned[target_index].append(
+            LearningSourceVisualReference(
+                visual_id=visual.visual_id,
+                asset_hash=visual.asset_hash,
+                anchor_hash=visual.anchor_hash,
+            )
+        )
+
+    updated: list[LearningSourceReference] = []
+    for index, reference in enumerate(references):
+        visual_references = sorted(assigned.get(index, []), key=lambda item: item.visual_id)
+        updated.append(
+            reference.model_copy(
+                update={
+                    "visual_references": visual_references,
+                    "visual_manifest_hash": _frozen_visual_manifest_hash(visual_references),
+                }
+            )
+        )
+    return updated
+
+
+def _frozen_visual_manifest_hash(items: list[LearningSourceVisualReference]) -> str:
+    if not items:
+        return ""
+    payload = json.dumps(
+        [item.model_dump(mode="json") for item in sorted(items, key=lambda candidate: candidate.visual_id)],
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _apply_confirmed_source_scope(

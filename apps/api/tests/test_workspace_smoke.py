@@ -264,14 +264,10 @@ def test_native_url_source_import_and_evidence_confirm(
     assert structure.json()["structure"]["strategy"] == "markdown_heading"
     assert structure.json()["chapters"]
     assert structure.json()["chunks"]
-
-    deleted = api_client.delete(f"/api/packages/{package_id}/sources/{source['id']}")
-    assert deleted.status_code == 200
-    assert deleted.json()["id"] == source["id"]
-
-    listed_after_delete = api_client.get(f"/api/packages/{package_id}/sources")
-    assert listed_after_delete.status_code == 200
-    assert listed_after_delete.json() == []
+    structure_payload = structure.json()
+    structure_record = structure_payload["structure"]
+    chapter = structure_payload["chapters"][0]
+    chunk = structure_payload["chunks"][0]
 
     bundle = source_evidence_store.save_bundle(
         EvidenceBundle(
@@ -286,16 +282,28 @@ def test_native_url_source_import_and_evidence_confirm(
                     open_notebook_source_id="",
                     source_title="示例网页",
                     source_uri="https://example.com/source",
-                    section_path=["第一节"],
+                    chapter_id=chapter["id"],
+                    section_path=chapter["path"],
                     page_range="p. 1",
-                    chunk_ids=["chunk_api"],
-                    excerpt="短摘录",
-                    expanded_text="短摘录和上下文",
+                    chunk_ids=[chunk["id"]],
+                    excerpt=chunk["text"],
+                    expanded_text=chunk["text"],
                     token_count=8,
                 )
             ],
             context_text="资料上下文",
             token_count=8,
+            metadata={
+                "source_structure_snapshots": {
+                    source["id"]: {
+                        "structure_id": structure_record["id"],
+                        "structure_updated_at": structure_record["updated_at"],
+                        "visual_index_version": structure_record["visual_index_version"],
+                    }
+                },
+                "visual_manifest_hash": "",
+                "visual_count": 0,
+            },
         )
     )
 
@@ -308,6 +316,14 @@ def test_native_url_source_import_and_evidence_confirm(
     assert confirmed_payload["evidence_bundle"]["status"] == "confirmed"
     assert confirmed_payload["evidence_bundle"]["confirmed_by_user"] is True
     assert confirmed_payload["active_requirement_sheet"] is None
+
+    deleted = api_client.delete(f"/api/packages/{package_id}/sources/{source['id']}")
+    assert deleted.status_code == 200
+    assert deleted.json()["id"] == source["id"]
+
+    listed_after_delete = api_client.get(f"/api/packages/{package_id}/sources")
+    assert listed_after_delete.status_code == 200
+    assert listed_after_delete.json() == []
 
 
 def test_pending_lesson_evidence_can_be_recovered_after_reopening(

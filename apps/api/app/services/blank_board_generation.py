@@ -20,7 +20,7 @@ from app.services.learning_requirement_history import (
     RequirementHistoryStamp,
 )
 from app.services.openai_course_ai import openai_course_ai
-from app.services.resource_resolver import evidence_metadata
+from app.services.resource_resolver import evidence_metadata, resource_resolver
 from app.services.rich_document import is_document_empty
 from app.services.source_evidence_store import source_evidence_store
 
@@ -69,6 +69,29 @@ def run_blank_board_generation(
             requirements=requirements,
         )
     except ConfirmedSourceContextError as exc:
+        stale_stamp = None
+        if exc.stale and requirements is not None:
+            requirements = requirements.model_copy(
+                deep=True,
+                update={
+                    "source_grounding": requirements.source_grounding.model_copy(
+                        update={"confirmation_status": "stale"}
+                    )
+                },
+            )
+            lesson.learning_requirements = requirements
+            stale_stamp = recorder.record_update(
+                requirements=requirements,
+                clarification=clarification,
+                change_summary="已确认资料的结构或视觉索引发生变化，需要重新确认。",
+                change_kind_override="source_reference_stale",
+                metadata={"reason": str(exc)},
+            )
+            workspace_state.save_workspace_and_learning_requirement_history_for_user(
+                user_id,
+                workspace,
+                learning_requirement_history_operations=recorder.operations,
+            )
         pending_evidence = source_evidence_store.latest_requirement_bundle(
             owner_user_id=user_id,
             lesson_id=lesson.id,
@@ -81,10 +104,24 @@ def run_blank_board_generation(
             requirements=requirements,
             clarification=clarification,
             reason=str(exc),
+            stamp=stale_stamp,
             candidate_evidence_bundle=pending_evidence if pending_evidence and pending_evidence.status == "candidate" else None,
         )
     evidence_bundle = source_context.evidence_bundle
     resource_summary = source_context.context_text
+    visual_by_id = {item.visual_id: item for item in source_context.visual_items}
+
+    def _read_confirmed_visual(visual_id: str):
+        item = visual_by_id.get(visual_id)
+        if item is None:
+            return None
+        return resource_resolver.structure_store.read_visual_bytes(
+            owner_user_id=user_id,
+            package_id=package.id,
+            source_id=item.source_ingestion_id,
+            visual_id=visual_id,
+        )
+
     lesson.learning_requirements = requirements
     frozen_stamp = recorder.freeze(
         requirements=requirements,
@@ -99,6 +136,9 @@ def run_blank_board_generation(
         requirement_run_id=frozen_stamp.run_id,
         frozen_requirement_version_id=frozen_stamp.version_id,
         resource_summary=resource_summary,
+        owner_user_id=user_id,
+        confirmed_visuals=source_context.visual_items,
+        visual_bytes_resolver=_read_confirmed_visual,
     )
 
     if outcome.operation_status != "succeeded" or not outcome.changed:
@@ -135,8 +175,9 @@ def run_blank_board_generation(
         board_summary=lesson.board_teaching_guide.chatbot_brief,
         resource_summary=resource_summary,
         requirement_context=requirements.model_dump(mode="json"),
-        editor_summary=outcome.summary,
+        editor_summary="" if outcome.skipped_visual_placements else outcome.summary,
         section_titles=outcome.section_titles or lesson.board_teaching_guide.teaching_flow,
+        applied_visual_ids=list(outcome.applied_visual_ids),
     )
     chatbot_message = (chatbot_reply.chatbot_message if chatbot_reply else outcome.chatbot_message).strip()
     assistant_message_source = (
@@ -167,6 +208,9 @@ def run_blank_board_generation(
             "board_document_editor_operation": outcome.operation,
             "board_document_editor_summary": outcome.summary,
             "section_titles": outcome.section_titles,
+            "applied_visual_ids": list(outcome.applied_visual_ids),
+            "skipped_visual_placements": list(outcome.skipped_visual_placements),
+            "board_asset_ids": list(outcome.board_asset_ids),
             "board_teaching_flow": lesson.board_teaching_guide.teaching_flow,
             "board_teaching_plan_count": len(lesson.board_teaching_guide.section_plans),
             "teaching_progress_after": None,

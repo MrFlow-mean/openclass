@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from dataclasses import dataclass
 from typing import Literal
@@ -10,6 +12,7 @@ from app.models import (
     EvidencePurpose,
     LearningRequirementSheet,
     RetrievalEvidence,
+    RetrievalVisualEvidence,
     SelectionRef,
 )
 from app.services.evidence_quality_gate import filter_relevant_local_evidence
@@ -23,6 +26,7 @@ from app.services.source_chapter_evidence import (
     resolve_verified_chapter_evidence,
 )
 from app.services.source_evidence_store import SourceEvidenceStore, source_evidence_store
+from app.services.source_structure_indexer import SourceStructureIndexer
 from app.services.source_structure_store import SourceStructureStore, source_structure_store
 
 
@@ -403,6 +407,11 @@ class ResourceResolver:
                 board_task_run_id=board_task_run_id,
                 metadata=metadata,
             )
+        visual_items = self.visual_items_for_evidence(
+            owner_user_id=owner_user_id,
+            package_id=package_id,
+            evidence=evidence,
+        )
         return EvidenceBundle(
             owner_user_id=owner_user_id,
             package_id=package_id,
@@ -413,10 +422,17 @@ class ResourceResolver:
             status="candidate",
             query=query,
             evidence_items=evidence,
+            visual_items=visual_items,
             context_text=format_evidence_context(evidence),
             token_count=sum(item.token_count for item in evidence),
             confirmed_by_user=False,
-            metadata=metadata or {},
+            metadata=self._bundle_metadata(
+                owner_user_id=owner_user_id,
+                package_id=package_id,
+                evidence=evidence,
+                visual_items=visual_items,
+                metadata=metadata,
+            ),
         )
 
     def _save_bundle(
@@ -433,6 +449,11 @@ class ResourceResolver:
         metadata: dict[str, object] | None = None,
     ) -> EvidenceBundle:
         context_text = format_evidence_context(evidence)
+        visual_items = self.visual_items_for_evidence(
+            owner_user_id=owner_user_id,
+            package_id=package_id,
+            evidence=evidence,
+        )
         bundle = EvidenceBundle(
             owner_user_id=owner_user_id,
             package_id=package_id,
@@ -443,12 +464,176 @@ class ResourceResolver:
             status="candidate",
             query=query,
             evidence_items=evidence,
+            visual_items=visual_items,
             context_text=context_text,
             token_count=sum(item.token_count for item in evidence),
             confirmed_by_user=False,
-            metadata=metadata or {},
+            metadata=self._bundle_metadata(
+                owner_user_id=owner_user_id,
+                package_id=package_id,
+                evidence=evidence,
+                visual_items=visual_items,
+                metadata=metadata,
+            ),
         )
         return self.store.save_bundle(bundle)
+
+    def _bundle_metadata(
+        self,
+        *,
+        owner_user_id: str,
+        package_id: str,
+        evidence: list[RetrievalEvidence],
+        visual_items: list[RetrievalVisualEvidence],
+        metadata: dict[str, object] | None,
+    ) -> dict[str, object]:
+        snapshots: dict[str, dict[str, object]] = {}
+        for source_id in dict.fromkeys(
+            item.source_ingestion_id for item in evidence if item.source_ingestion_id
+        ):
+            source = self.store.get_source(
+                owner_user_id=owner_user_id,
+                package_id=package_id,
+                source_id=source_id,
+            )
+            if source is None:
+                continue
+            view = self.structure_store.get_structure_view(source=source, chunk_limit=0)
+            if view.structure is None:
+                continue
+            snapshots[source_id] = {
+                "structure_id": view.structure.id,
+                "structure_updated_at": view.structure.updated_at,
+                "visual_index_version": view.structure.visual_index_version,
+            }
+        merged = dict(metadata or {})
+        merged["source_structure_snapshots"] = snapshots
+        merged["visual_manifest_hash"] = visual_manifest_hash(visual_items)
+        merged["visual_count"] = len(visual_items)
+        return merged
+
+    def visual_items_for_evidence(
+        self,
+        *,
+        owner_user_id: str,
+        package_id: str,
+        evidence: list[RetrievalEvidence],
+    ) -> list[RetrievalVisualEvidence]:
+        """Resolve visuals from the exact text scope without relevance ranking or truncation."""
+
+        items_by_source: dict[str, list[RetrievalEvidence]] = {}
+        for item in evidence:
+            if item.source_ingestion_id:
+                items_by_source.setdefault(item.source_ingestion_id, []).append(item)
+
+        resolved: list[RetrievalVisualEvidence] = []
+        for source_id, source_items in items_by_source.items():
+            source_title = next((item.source_title for item in source_items if item.source_title), "")
+            full_chapter_ids = {
+                chapter_id
+                for item in source_items
+                if str(item.metadata.get("scope_kind") or "") == "chapter"
+                for chapter_id in (
+                    item.chapter_id,
+                    str(item.metadata.get("scope_chapter_id") or ""),
+                )
+                if chapter_id
+            }
+            scope_root_ids = {
+                str(item.metadata.get("scope_chapter_id") or "")
+                for item in source_items
+                if str(item.metadata.get("scope_kind") or "") == "chapter"
+                and str(item.metadata.get("scope_chapter_id") or "")
+            }
+            if scope_root_ids:
+                source = self.store.get_source(
+                    owner_user_id=owner_user_id,
+                    package_id=package_id,
+                    source_id=source_id,
+                )
+                if source is not None:
+                    view = self.structure_store.get_structure_view(source=source, chunk_limit=0)
+                    descendants = set(scope_root_ids)
+                    changed = True
+                    while changed:
+                        changed = False
+                        for chapter in view.chapters:
+                            if (
+                                chapter.anchor_status == "verified"
+                                and chapter.parent_id in descendants
+                                and chapter.id not in descendants
+                            ):
+                                descendants.add(chapter.id)
+                                changed = True
+                    full_chapter_ids.update(descendants)
+            selected_chunk_ids = {
+                chunk_id
+                for item in source_items
+                if str(item.metadata.get("scope_kind") or "") != "chapter"
+                for chunk_id in item.chunk_ids
+                if chunk_id
+            }
+            visuals = self.structure_store.list_visuals(
+                owner_user_id=owner_user_id,
+                package_id=package_id,
+                source_id=source_id,
+                verified_only=True,
+            )
+            for visual in visuals:
+                in_scope = bool(
+                    visual.chapter_id in full_chapter_ids
+                    or visual.metadata.get("standalone_image")
+                    or (
+                        selected_chunk_ids
+                        and (
+                            visual.before_chunk_id in selected_chunk_ids
+                            or visual.after_chunk_id in selected_chunk_ids
+                        )
+                    )
+                )
+                if not in_scope:
+                    continue
+                resolved.append(
+                    RetrievalVisualEvidence(
+                        visual_id=visual.id,
+                        source_ingestion_id=visual.source_ingestion_id,
+                        source_title=source_title,
+                        chapter_id=visual.chapter_id or "",
+                        section_path=next(
+                            (
+                                item.section_path
+                                for item in source_items
+                                if item.chapter_id == visual.chapter_id and item.section_path
+                            ),
+                            [],
+                        ),
+                        kind=visual.kind,
+                        order_index=visual.order_index,
+                        source_locator=visual.source_locator,
+                        page_no=visual.page_no,
+                        page_range=(f"p. {visual.page_no}" if visual.page_no is not None else ""),
+                        slide_no=visual.slide_no,
+                        sheet_name=visual.sheet_name,
+                        bbox=visual.bbox,
+                        before_chunk_id=visual.before_chunk_id,
+                        after_chunk_id=visual.after_chunk_id,
+                        caption=visual.caption,
+                        ocr_text=visual.ocr_text,
+                        anchor_status=visual.anchor_status,
+                        confidence=visual.confidence,
+                        asset_hash=visual.content_hash,
+                        anchor_hash=visual.position_hash,
+                        table_data=visual.table_data,
+                    )
+                )
+        return sorted(
+            resolved,
+            key=lambda item: (
+                item.source_ingestion_id,
+                item.order_index,
+                item.visual_id,
+            ),
+        )
 
     def _resolve_verified_chapter(
         self,
@@ -461,6 +646,13 @@ class ResourceResolver:
         source_ingestion_ids: tuple[str, ...] | None = None,
         source_reference: SelectionRef | None = None,
     ) -> tuple[list[RetrievalEvidence], dict[str, object] | None]:
+        requested_ids = set(source_ingestion_ids or ())
+        sources = self.store.ready_sources(owner_user_id=owner_user_id, package_id=package_id)
+        if requested_ids:
+            sources = [source for source in sources if source.id in requested_ids]
+        indexer = SourceStructureIndexer(store=self.structure_store)
+        for source in sources:
+            indexer.ensure_structure(source)
         return resolve_verified_chapter_evidence(
             source_store=self.store,
             structure_store=self.structure_store,
@@ -474,6 +666,21 @@ class ResourceResolver:
             source_reference=source_reference,
         )
 
+
+
+def visual_manifest_hash(items: list[RetrievalVisualEvidence]) -> str:
+    if not items:
+        return ""
+    manifest = [
+        {
+            "visual_id": item.visual_id,
+            "asset_hash": item.asset_hash,
+            "anchor_hash": item.anchor_hash,
+        }
+        for item in sorted(items, key=lambda candidate: candidate.visual_id)
+    ]
+    payload = json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def format_evidence_context(items: list[RetrievalEvidence]) -> str:
@@ -499,6 +706,9 @@ def evidence_metadata(bundle: EvidenceBundle | None) -> dict[str, object]:
             "evidence_bundle_id": None,
             "source_ids": [],
             "chunk_ids": [],
+            "visual_ids": [],
+            "visual_count": 0,
+            "visual_manifest_hash": "",
             "confirmed_by_user": False,
         }
     source_ids = [
@@ -508,11 +718,15 @@ def evidence_metadata(bundle: EvidenceBundle | None) -> dict[str, object]:
     ]
     chunk_ids = [chunk_id for item in bundle.evidence_items for chunk_id in item.chunk_ids]
     chapter_ids = [item.chapter_id for item in bundle.evidence_items if item.chapter_id]
+    visual_ids = [item.visual_id for item in bundle.visual_items]
     return {
         "evidence_bundle_id": bundle.id,
         "source_ids": source_ids,
         "chunk_ids": chunk_ids,
         "chapter_ids": chapter_ids,
+        "visual_ids": visual_ids,
+        "visual_count": len(visual_ids),
+        "visual_manifest_hash": str(bundle.metadata.get("visual_manifest_hash") or ""),
         "confirmed_by_user": bundle.confirmed_by_user,
         "evidence_bundle_status": bundle.status,
         "evidence_purpose": bundle.purpose,

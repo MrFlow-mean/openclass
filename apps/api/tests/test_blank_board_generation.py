@@ -4,6 +4,7 @@ from app.models import BoardDecision, ChatRequest, EvidenceBundle, LearningClari
 from app.services import blank_board_generation, workspace_state
 from app.services.board_document_editor import BoardDocumentEditOutcome
 from app.services.chat_service import process_chat_on_lesson
+from app.services.confirmed_source_context import load_confirmed_source_context
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
 from app.services.learning_requirement_history import LearningRequirementHistoryRecorder
 from app.services.lesson_factory import build_requirements, create_empty_lesson
@@ -228,6 +229,57 @@ def test_blank_board_generation_uses_confirmed_evidence_bundle(
     consumed = source_evidence_store.get_bundle(owner_user_id=TEST_USER_ID, bundle_id=bundle.id)
     assert consumed is not None
     assert consumed.status == "consumed"
+
+
+def test_legacy_missing_source_text_bundle_uses_frozen_context(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    lesson_id = _seed_ready_blank_board(store)
+    workspace = store.load_for_user(TEST_USER_ID)
+    package = workspace.packages[0]
+    lesson = package.lessons[-1]
+    assert lesson.learning_requirements is not None
+    history_state = store.load_learning_requirement_history_state(TEST_USER_ID, lesson_id)
+    assert history_state is not None
+    bundle = source_evidence_store.save_bundle(
+        EvidenceBundle(
+            owner_user_id=TEST_USER_ID,
+            package_id=package.id,
+            lesson_id=lesson_id,
+            requirement_run_id=history_state["run_id"],
+            purpose="board_generation",
+            status="confirmed",
+            evidence_items=[
+                RetrievalEvidence(
+                    source_ingestion_id="deleted_legacy_source",
+                    source_title="历史纯文字资料",
+                    chunk_ids=["legacy_chunk"],
+                    expanded_text="历史资料正文快照。",
+                )
+            ],
+            visual_items=[],
+            context_text="历史资料冻结的纯文字上下文。",
+            confirmed_by_user=True,
+            metadata={},
+        )
+    )
+
+    context = load_confirmed_source_context(
+        owner_user_id=TEST_USER_ID,
+        package_id=package.id,
+        lesson_id=lesson_id,
+        requirement_run_id=history_state["run_id"],
+        requirements=lesson.learning_requirements,
+    )
+
+    assert context.evidence_bundle is not None
+    assert context.evidence_bundle.id == bundle.id
+    assert context.context_text == "历史资料冻结的纯文字上下文。"
+    assert context.visual_items == ()
+    assert context.used_legacy_bundle is True
 
 
 @pytest.mark.parametrize("teaching_start_message", ["好", "开始为我讲解"])
