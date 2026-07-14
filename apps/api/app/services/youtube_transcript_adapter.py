@@ -3,13 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 import html
 import json
+import os
 import re
+import shutil
 from typing import Any
 from urllib.parse import urlparse
 from xml.etree import ElementTree
-
-import httpx
-
 
 YOUTUBE_HOSTS = {
     "youtube.com",
@@ -79,38 +78,80 @@ class YouTubeTranscriptAdapter:
         )
 
     def _extract_info(self, source_uri: str) -> dict[str, Any]:
+        yt_dlp = self._yt_dlp_module()
         try:
-            import yt_dlp  # type: ignore[import-untyped]
-        except ModuleNotFoundError as exc:  # pragma: no cover - dependency is installed in normal runtime.
-            raise YouTubeTranscriptAdapterError("服务器缺少 yt-dlp，无法读取 YouTube 字幕。") from exc
-        options = {
-            "extract_flat": False,
-            "noplaylist": True,
-            "quiet": True,
-            "skip_download": True,
-            "writesubtitles": False,
-        }
-        try:
-            with yt_dlp.YoutubeDL(options) as downloader:
+            with yt_dlp.YoutubeDL(self._yt_dlp_options()) as downloader:
                 info = downloader.extract_info(source_uri, download=False)
         except Exception as exc:  # yt-dlp raises several extractor-specific exception classes.
-            raise YouTubeTranscriptAdapterError(f"YouTube 字幕信息读取失败：{exc}") from exc
+            raise YouTubeTranscriptAdapterError(_extract_info_error_message(exc)) from exc
         if not isinstance(info, dict):
             raise YouTubeTranscriptAdapterError("YouTube 字幕信息格式异常。")
         return info
 
     def _download_caption(self, caption_uri: str) -> str:
+        yt_dlp = self._yt_dlp_module()
         try:
-            response = httpx.get(caption_uri, timeout=self.timeout_seconds)
-            response.raise_for_status()
-        except httpx.HTTPError as exc:
+            with yt_dlp.YoutubeDL(self._yt_dlp_options()) as downloader:
+                response = downloader.urlopen(caption_uri)
+                return response.read().decode("utf-8")
+        except Exception as exc:
             raise YouTubeTranscriptAdapterError(f"YouTube 字幕下载失败：{exc}") from exc
-        return response.text
+
+    @staticmethod
+    def _yt_dlp_module():
+        try:
+            import yt_dlp  # type: ignore[import-untyped]
+        except ModuleNotFoundError as exc:  # pragma: no cover - dependency is installed in normal runtime.
+            raise YouTubeTranscriptAdapterError("服务器缺少 yt-dlp，无法读取 YouTube 字幕。") from exc
+        return yt_dlp
+
+    def _yt_dlp_options(self) -> dict[str, Any]:
+        options: dict[str, Any] = {
+            "extract_flat": False,
+            "noplaylist": True,
+            "quiet": True,
+            "skip_download": True,
+            "writesubtitles": False,
+            "socket_timeout": self.timeout_seconds,
+        }
+        cookie_browser = _optional_env("OPENCLASS_YTDLP_COOKIES_FROM_BROWSER")
+        if cookie_browser:
+            options["cookiesfrombrowser"] = _browser_cookie_config(
+                cookie_browser,
+                _optional_env("OPENCLASS_YTDLP_BROWSER_PROFILE"),
+            )
+        cookie_file = _optional_env("OPENCLASS_YTDLP_COOKIE_FILE")
+        if cookie_file:
+            options["cookiefile"] = cookie_file
+        node_path = shutil.which("node")
+        if node_path:
+            options["js_runtimes"] = {"node": {"path": node_path}}
+        return options
 
 
 def is_youtube_url(source_uri: str) -> bool:
     hostname = (urlparse(source_uri).hostname or "").lower()
     return hostname in YOUTUBE_HOSTS
+
+
+def _optional_env(name: str) -> str:
+    return (os.getenv(name) or "").strip()
+
+
+def _browser_cookie_config(browser: str, profile: str | None) -> tuple[str, str | None, None, None]:
+    """Build yt-dlp's browser-cookie option without retaining any cookie value."""
+    return (browser, profile or None, None, None)
+
+
+def _extract_info_error_message(error: Exception) -> str:
+    message = str(error)
+    if "Sign in to confirm you’re not a bot" in message or "Sign in to confirm you're not a bot" in message:
+        return (
+            "YouTube 要求浏览器验证，当前 OpenClass 未配置可用会话。"
+            "在仅供自己使用的本机工作台中，可设置 OPENCLASS_YTDLP_COOKIES_FROM_BROWSER=chrome 后重试；"
+            "部署到共享服务器时，请改用 OPENCLASS_YTDLP_COOKIE_FILE 指向受保护的 Netscape cookie 文件。"
+        )
+    return f"YouTube 字幕信息读取失败：{message}"
 
 
 def _select_caption_track(info: dict[str, Any]) -> dict[str, Any] | None:
