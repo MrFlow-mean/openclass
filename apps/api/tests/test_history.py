@@ -1952,6 +1952,70 @@ def test_build_document_renders_fenced_code_blocks() -> None:
     assert "<pre><code" in document.content_html
     assert "use std::io;" in document.content_html
     assert any(node.get("type") == "codeBlock" for node in document.content_json.get("content", []))
+    code_node = next(node for node in document.content_json["content"] if node.get("type") == "codeBlock")
+    assert code_node["content"][0]["text"] == (
+        "use std::io;\n\n"
+        "fn main() {\n"
+        '    println!("请输入您的猜测：");\n'
+        "}"
+    )
+
+
+def test_build_document_keeps_code_fences_out_of_paragraph_and_math_preprocessing() -> None:
+    source = (
+        "```python title=\"Accumulator\" number=\"4-1\"\n"
+        "def list_sum(values):\n"
+        "    total = 0\n"
+        "    for value in values:\n"
+        "        total += value\n"
+        "    return total\n"
+        "```"
+    )
+
+    document = build_document(title="Doc", content_text=source)
+    code_node = next(node for node in document.content_json["content"] if node.get("type") == "codeBlock")
+
+    assert code_node["content"][0]["text"] == (
+        "def list_sum(values):\n"
+        "    total = 0\n"
+        "    for value in values:\n"
+        "        total += value\n"
+        "    return total"
+    )
+    assert code_node["attrs"] == {
+        "language": "python",
+        "listingTitle": "Accumulator",
+        "listingNumber": "4-1",
+    }
+    assert 'data-listing-title="Accumulator"' in document.content_html
+    assert 'data-listing-number="4-1"' in document.content_html
+
+
+def test_build_document_preserves_intentional_blank_lines_inside_code() -> None:
+    source = "```python\nfirst = 1\n\nsecond = 2\n\nthird = 3\n```"
+
+    document = build_document(title="Doc", content_text=source)
+    code_node = next(node for node in document.content_json["content"] if node.get("type") == "codeBlock")
+
+    assert code_node["content"][0]["text"] == "first = 1\n\nsecond = 2\n\nthird = 3"
+
+
+def test_build_document_preserves_inline_code_as_code_not_math() -> None:
+    document = build_document(
+        title="Doc",
+        content_text='Use `list_sum` and keep the string `"1010"` unchanged.',
+    )
+    paragraph = document.content_json["content"][0]
+    code_texts = [
+        child["text"]
+        for child in paragraph["content"]
+        if any(mark.get("type") == "code" for mark in child.get("marks", []))
+    ]
+
+    assert code_texts == ["list_sum", '"1010"']
+    assert "inlineMath" not in str(paragraph)
+    assert "<code>list_sum</code>" in document.content_html
+    assert "<code>&quot;1010&quot;</code>" in document.content_html
 
 
 def test_build_document_indents_flat_fenced_code_blocks() -> None:

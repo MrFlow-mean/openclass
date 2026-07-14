@@ -59,6 +59,7 @@ _DELIMITED_MATH_RE = re.compile(
 _TRAILING_SENTENCE_MARKS_RE = re.compile(r"[\s.,，。；;:：]+$")
 _LEADING_SENTENCE_MARKS_RE = re.compile(r"^[\s.,，。；;:：]+")
 _MARKDOWN_INLINE_RE = re.compile(r"(\*\*[^*\n]+?\*\*|\*[^*\n]+?\*)")
+_MARKDOWN_CODE_SPAN_RE = re.compile(r"(?<!`)`([^`\n]+)`(?!`)")
 _MARKDOWN_HEADING_RE = re.compile(r"^(#{1,3})\s+(.+)$")
 _MARKDOWN_BULLET_RE = re.compile(r"^[-*]\s+(.+)$")
 _MARKDOWN_ORDERED_RE = re.compile(r"^\d+[.、]\s+(.+)$")
@@ -283,7 +284,7 @@ def _mixed_math_text_nodes(value: str) -> list[dict[str, Any]]:
     return nodes if has_formula else []
 
 
-def _inline_nodes(value: str) -> list[dict[str, Any]]:
+def _inline_nodes_without_code(value: str) -> list[dict[str, Any]]:
     nodes: list[dict[str, Any]] = []
     cursor = 0
     for match in _DELIMITED_MATH_RE.finditer(value):
@@ -301,6 +302,21 @@ def _inline_nodes(value: str) -> list[dict[str, Any]]:
     return nodes
 
 
+def _inline_nodes(value: str) -> list[dict[str, Any]]:
+    nodes: list[dict[str, Any]] = []
+    cursor = 0
+    for match in _MARKDOWN_CODE_SPAN_RE.finditer(value):
+        if match.start() > cursor:
+            nodes.extend(_inline_nodes_without_code(value[cursor : match.start()]))
+        code = match.group(1)
+        if code:
+            nodes.append({"type": "text", "text": code, "marks": [{"type": "code"}]})
+        cursor = match.end()
+    if cursor < len(value):
+        nodes.extend(_inline_nodes_without_code(value[cursor:]))
+    return nodes
+
+
 def _inline_html(value: str) -> str:
     parts: list[str] = []
     for node in _inline_nodes(value):
@@ -314,6 +330,8 @@ def _inline_html(value: str) -> str:
             text = f"<strong>{text}</strong>"
         if "italic" in mark_names:
             text = f"<em>{text}</em>"
+        if "code" in mark_names:
+            text = f"<code>{text}</code>"
         parts.append(text)
     return "".join(parts)
 
@@ -486,19 +504,44 @@ def _format_code_indentation(code: str, language: str | None = None) -> str:
     return _format_brace_indentation(code)
 
 
-def _code_block_html(language: str | None, code: str) -> str:
+def _code_block_html(language: str | None, code: str, metadata: dict[str, str] | None = None) -> str:
+    metadata = metadata or {}
     formatted = _format_code_indentation(code, language)
     escaped = html.escape(formatted)
+    pre_attrs = []
+    for key, attr_name in (
+        ("title", "data-listing-title"),
+        ("number", "data-listing-number"),
+        ("kind", "data-block-kind"),
+    ):
+        value = metadata.get(key, "").strip()
+        if value:
+            pre_attrs.append(f'{attr_name}="{html.escape(value, quote=True)}"')
+    pre_open = "<pre" + (" " + " ".join(pre_attrs) if pre_attrs else "") + ">"
     if language:
-        return f'<pre><code class="language-{html.escape(language, quote=True)}">{escaped}</code></pre>'
-    return f"<pre><code>{escaped}</code></pre>"
+        return f'{pre_open}<code class="language-{html.escape(language, quote=True)}">{escaped}</code></pre>'
+    return f"{pre_open}<code>{escaped}</code></pre>"
 
 
-def _code_block_node(language: str | None, code: str) -> dict[str, Any]:
+def _code_block_node(
+    language: str | None,
+    code: str,
+    metadata: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    metadata = metadata or {}
     formatted = _format_code_indentation(code, language)
     node: dict[str, Any] = {"type": "codeBlock"}
+    attrs: dict[str, str] = {}
     if language:
-        node["attrs"] = {"language": language}
+        attrs["language"] = language
+    if metadata.get("title", "").strip():
+        attrs["listingTitle"] = metadata["title"].strip()
+    if metadata.get("number", "").strip():
+        attrs["listingNumber"] = metadata["number"].strip()
+    if metadata.get("kind", "").strip():
+        attrs["blockKind"] = metadata["kind"].strip()
+    if attrs:
+        node["attrs"] = attrs
     if formatted:
         node["content"] = [{"type": "text", "text": formatted}]
     return node
@@ -807,7 +850,16 @@ def _html_node_to_blocks(node: dict[str, Any]) -> list[dict[str, Any]]:
             if match:
                 language = match.group(1)
         code_text = _html_plain_text(children).replace("\r\n", "\n")
-        return [_code_block_node(language, code_text)]
+        metadata = {
+            key: value
+            for key, value in {
+                "title": attrs.get("data-listing-title", ""),
+                "number": attrs.get("data-listing-number", ""),
+                "kind": attrs.get("data-block-kind", ""),
+            }.items()
+            if value
+        }
+        return [_code_block_node(language, code_text, metadata)]
     if tag in {"ul", "ol"}:
         items = [
             _html_list_item_node(child)
@@ -985,8 +1037,19 @@ def _markdown_blocks(nodes: list[dict[str, Any]], *, list_depth: int = 0) -> lis
                 blocks.append(f"$$\n{latex}\n$$")
         elif node_type == "codeBlock":
             code = "".join(str(child.get("text") or "") for child in content if child.get("type") == "text")
-            language = str(node.get("attrs", {}).get("language") or "").strip()
-            opener = f"```{language}" if language else "```"
+            attrs = node.get("attrs", {}) if isinstance(node.get("attrs"), dict) else {}
+            language = str(attrs.get("language") or "").strip()
+            block_kind = str(attrs.get("blockKind") or "").strip()
+            if block_kind == "diagram":
+                language = "openclass-diagram"
+            info_parts = [language] if language else []
+            listing_title = str(attrs.get("listingTitle") or "").strip()
+            listing_number = str(attrs.get("listingNumber") or "").strip()
+            if listing_title:
+                info_parts.append(f"title={json.dumps(listing_title, ensure_ascii=False)}")
+            if listing_number:
+                info_parts.append(f"number={json.dumps(listing_number, ensure_ascii=False)}")
+            opener = f"```{' '.join(info_parts)}" if info_parts else "```"
             blocks.append(f"{opener}\n{code}\n```")
         elif node_type == "pageBreak":
             blocks.append("---")
@@ -1038,6 +1101,24 @@ def document_to_markdown(document: BoardDocument) -> str:
         if markdown:
             return markdown
     return document.content_text.strip()
+
+
+def synchronize_document_representations(document: BoardDocument) -> BoardDocument:
+    """Keep the Markdown source aligned with the editor's structured document."""
+    markdown = document_to_markdown(document).strip()
+    if not markdown:
+        return document
+    content_html = document.content_html
+    if not content_html.strip():
+        content_html = text_to_html(markdown)
+    if markdown == document.content_text.strip() and content_html == document.content_html:
+        return document
+    return document.model_copy(
+        update={
+            "content_text": markdown,
+            "content_html": content_html,
+        }
+    )
 
 
 def _sanitize_suspicious_math_node(node: dict[str, Any]) -> tuple[dict[str, Any] | None, bool]:
@@ -2123,17 +2204,43 @@ class _DocxBlockParser(HTMLParser):
         self._table_row: list[list[InlineFragment]] | None = None
         self._table_cell_fragments: list[InlineFragment] | None = None
         self._table_cell_buffer: list[str] = []
+        self._pre_depth = 0
+        self._pre_buffer: list[str] = []
+        self._pre_attrs: dict[str, Any] = {}
+        self._inline_code_depth = 0
+        self._table_inline_code_depth = 0
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag = tag.lower()
         attr_map = dict(attrs)
         node_type = (attr_map.get("data-type") or "").strip()
+        if self._pre_depth:
+            if tag == "br":
+                self._pre_buffer.append("\n")
+            elif tag not in _VOID_HTML_TAGS:
+                self._pre_depth += 1
+            if tag == "code":
+                class_name = str(attr_map.get("class") or "")
+                language_match = re.search(r"language-([\w-]+)", class_name)
+                if language_match:
+                    self._pre_attrs["language"] = language_match.group(1)
+            return
         if self._ignored_atom_depth:
             if tag not in _VOID_HTML_TAGS:
                 self._ignored_atom_depth += 1
             return
         if self._table_rows is not None:
             self._handle_table_starttag(tag, attr_map, node_type)
+            return
+        if tag == "pre":
+            self._flush()
+            self._pre_depth = 1
+            self._pre_buffer = []
+            self._pre_attrs = {
+                "listingTitle": str(attr_map.get("data-listing-title") or "").strip(),
+                "listingNumber": str(attr_map.get("data-listing-number") or "").strip(),
+                "blockKind": str(attr_map.get("data-block-kind") or "").strip(),
+            }
             return
         if tag == "table":
             self._flush()
@@ -2164,6 +2271,10 @@ class _DocxBlockParser(HTMLParser):
                 self._fragments.append(("math", latex))
             self._ignored_atom_depth = 1
             return
+        if tag == "code":
+            self._flush_text()
+            self._inline_code_depth += 1
+            return
 
         if tag in {"h1", "h2", "h3", "p", "li", "blockquote"}:
             self._flush()
@@ -2179,11 +2290,24 @@ class _DocxBlockParser(HTMLParser):
 
     def handle_endtag(self, tag: str) -> None:
         tag = tag.lower()
+        if self._pre_depth:
+            if tag == "pre" and self._pre_depth == 1:
+                value = html.unescape("".join(self._pre_buffer)).replace("\r\n", "\n").replace("\r", "\n")
+                self.blocks.append(("pre", [("text", value)], dict(self._pre_attrs)))
+                self._pre_depth = 0
+                self._pre_buffer = []
+                self._pre_attrs = {}
+            else:
+                self._pre_depth = max(1, self._pre_depth - 1)
+            return
         if self._ignored_atom_depth:
             self._ignored_atom_depth -= 1
             return
         if self._table_rows is not None:
             self._handle_table_endtag(tag)
+            return
+        if tag == "code" and self._inline_code_depth:
+            self._inline_code_depth -= 1
             return
         if tag in {"h1", "h2", "h3", "p", "li", "blockquote"}:
             current = self._tag_stack.pop() if self._tag_stack else tag
@@ -2191,11 +2315,20 @@ class _DocxBlockParser(HTMLParser):
             self._flush(current, attrs)
 
     def handle_data(self, data: str) -> None:
+        if self._pre_depth:
+            self._pre_buffer.append(data)
+            return
         if self._ignored_atom_depth:
             return
         if self._table_rows is not None:
             if self._table_cell_fragments is not None:
-                self._table_cell_buffer.append(data)
+                if self._table_inline_code_depth:
+                    self._table_cell_fragments.append(("code", data))
+                else:
+                    self._table_cell_buffer.append(data)
+            return
+        if self._inline_code_depth:
+            self._fragments.append(("code", data))
             return
         self._buffer.append(data)
 
@@ -2212,6 +2345,10 @@ class _DocxBlockParser(HTMLParser):
         if tag == "br" and self._table_cell_fragments is not None:
             self._table_cell_buffer.append("\n")
             return
+        if tag == "code" and self._table_cell_fragments is not None:
+            self._flush_table_cell_text()
+            self._table_inline_code_depth += 1
+            return
         if node_type in {"inline-math", "block-math"} and self._table_cell_fragments is not None:
             self._flush_table_cell_text()
             latex = html.unescape((attrs.get("data-latex") or "").strip())
@@ -2220,6 +2357,9 @@ class _DocxBlockParser(HTMLParser):
             self._ignored_atom_depth = 1
 
     def _handle_table_endtag(self, tag: str) -> None:
+        if tag == "code" and self._table_inline_code_depth:
+            self._table_inline_code_depth -= 1
+            return
         if tag in {"td", "th"} and self._table_cell_fragments is not None:
             self._flush_table_cell_text()
             fragments = _trim_fragments(self._table_cell_fragments)
@@ -2228,6 +2368,7 @@ class _DocxBlockParser(HTMLParser):
             self._table_row.append(fragments or [("text", "")])
             self._table_cell_fragments = None
             self._table_cell_buffer = []
+            self._table_inline_code_depth = 0
             return
         if tag == "tr":
             if self._table_rows is not None and self._table_row:
@@ -2242,6 +2383,7 @@ class _DocxBlockParser(HTMLParser):
             self._table_row = None
             self._table_cell_fragments = None
             self._table_cell_buffer = []
+            self._table_inline_code_depth = 0
 
     def _flush_table_cell_text(self) -> None:
         if self._table_cell_fragments is None or not self._table_cell_buffer:
@@ -2724,13 +2866,18 @@ def _append_omml_math(paragraph, latex: str, *, display: bool = False) -> None:
     _append_normalized_omml_math(paragraph, latex, display=display, normalize_latex=_normalize_latex)
 
 
-def _set_run_font(run, font_name: str) -> None:
+def _set_run_font(run, font_name: str, *, east_asia_font: str | None = None) -> None:
     run.font.name = font_name
     r_pr = run._r.get_or_add_rPr()
     r_fonts = r_pr.rFonts
-    if r_fonts is not None:
-        r_fonts.set(qn("w:eastAsia"), font_name)
-        r_fonts.set(qn("w:cs"), font_name)
+    if r_fonts is None:
+        r_fonts = OxmlElement("w:rFonts")
+        r_pr.insert(0, r_fonts)
+    r_fonts.set(qn("w:ascii"), font_name)
+    r_fonts.set(qn("w:hAnsi"), font_name)
+    r_fonts.set(qn("w:eastAsia"), east_asia_font or font_name)
+    r_fonts.set(qn("w:cs"), font_name)
+    r_fonts.set(qn("w:hint"), "eastAsia")
 
 
 def _disable_run_proofing(run) -> None:
@@ -2744,7 +2891,7 @@ def _append_display_math_text(paragraph, latex: str) -> None:
         if index:
             paragraph.add_run().add_break()
         run = paragraph.add_run(line)
-        _set_run_font(run, "Menlo")
+        _set_run_font(run, "Menlo", east_asia_font="STSong")
         _disable_run_proofing(run)
     paragraph.paragraph_format.line_spacing = 1
 
@@ -2769,6 +2916,11 @@ def _append_fragments(
     for kind, value in fragments:
         if kind == "math":
             _append_math(paragraph, value, display=display_math)
+            continue
+        if kind == "code":
+            run = paragraph.add_run(value)
+            _set_run_font(run, "Courier New", east_asia_font="STSong")
+            _disable_run_proofing(run)
             continue
         split_fragments = _auto_math_fragments(value) if auto_math else [("text", value)]
         for split_kind, split_value in split_fragments:
@@ -2862,13 +3014,15 @@ def _fenced_code_text(value: str) -> str | None:
 
 
 def _add_preformatted_paragraph(target: DocxDocument, value: str):
-    paragraph = target.add_paragraph()
+    paragraph = target.add_paragraph(style="OpenClass Preformatted")
     lines = value.splitlines() or [value]
     for index, line in enumerate(lines):
         if index:
             paragraph.add_run().add_break()
         run = paragraph.add_run(line)
-        run.font.name = "Courier New"
+        _set_run_font(run, "Courier New", east_asia_font="STSong")
+        _disable_run_proofing(run)
+    paragraph.paragraph_format.keep_together = True
     return paragraph
 
 

@@ -245,13 +245,19 @@ def test_board_document_edit_prompt_scopes_initial_board_generation(
     assert "典型例题、解答过程、注释、习题" in system_prompt
     assert "后续学习路线" in system_prompt
     assert "绝不能用 ASCII、Unicode 线框字符" in system_prompt
-    assert "只有真实代码、命令输出或算法伪代码可以使用代码块" in system_prompt
+    assert "openclass-diagram 结构化图形围栏" in system_prompt
+    assert "真实程序代码、命令输出和算法伪代码必须使用带语言标识的独立代码围栏" in system_prompt
+    assert "任何代码都不得放进 LaTeX 公式" in system_prompt
+    assert "title 作为唯一总标题" in system_prompt
+    assert "练习难度若明显高于正文示例" in system_prompt
     assert "不写任何固定主题模板" in system_prompt
     payload = json.loads(str(captured["user_prompt"]))
     assert payload["generation_source"] == "frozen_learning_requirement"
     assert "一次可讲完的聚焦小课" in payload["response_contract"]["content_text"]
     assert "教材体/大学讲义体" in payload["response_contract"]["content_text"]
-    assert "不要在代码块中用 ASCII、Unicode 线框字符" in payload["response_contract"]["content_text"]
+    assert "openclass-diagram JSON 围栏" in payload["response_contract"]["content_text"]
+    assert "title 是唯一总标题" in payload["response_contract"]["content_text"]
+    assert "代码绝不能进入公式定界符" in payload["response_contract"]["content_text"]
     assert "后续学习路线/下一步" in payload["response_contract"]["content_text"]
 
 

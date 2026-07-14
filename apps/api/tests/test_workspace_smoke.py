@@ -123,6 +123,68 @@ def test_workspace_document_history_flow(api_client: TestClient) -> None:
     assert restored.json()["lessons"][0]["board_document"]["content_text"] == "First smoke version"
 
 
+def test_autosave_rebuilds_markdown_source_from_structured_editor_content(api_client: TestClient) -> None:
+    generated = api_client.post(
+        "/api/lessons/generate",
+        json={"topic": "Structured autosave", "start_blank": True},
+    )
+    assert generated.status_code == 200
+    lesson = generated.json()["lessons"][0]
+    document = deepcopy(lesson["board_document"])
+    document["content_text"] = "Section use list_sum def list_sum values return total"
+    document["content_html"] = (
+        "<h2>Section</h2>"
+        "<p>Use <code>list_sum</code>.</p>"
+        '<pre data-listing-title="Accumulator"><code class="language-python">'
+        "def list_sum(values):\n    return sum(values)"
+        "</code></pre>"
+    )
+    document["content_json"] = {
+        "type": "doc",
+        "content": [
+            {
+                "type": "heading",
+                "attrs": {"level": 2},
+                "content": [{"type": "text", "text": "Section"}],
+            },
+            {
+                "type": "paragraph",
+                "content": [
+                    {"type": "text", "text": "Use "},
+                    {"type": "text", "text": "list_sum", "marks": [{"type": "code"}]},
+                    {"type": "text", "text": "."},
+                ],
+            },
+            {
+                "type": "codeBlock",
+                "attrs": {"language": "python", "listingTitle": "Accumulator"},
+                "content": [{"type": "text", "text": "def list_sum(values):\n    return sum(values)"}],
+            },
+        ],
+    }
+
+    saved = api_client.post(
+        f"/api/lessons/{lesson['id']}/document/save",
+        json={
+            "document": document,
+            "label": "Auto Save",
+            "message": "Autosaved structured document",
+            "metadata": {"kind": "auto_document_save", "autosave": True},
+        },
+    )
+
+    assert saved.status_code == 200
+    content_text = saved.json()["lessons"][0]["board_document"]["content_text"]
+    assert content_text == (
+        "## Section\n\n"
+        "Use `list_sum`.\n\n"
+        "```python title=\"Accumulator\"\n"
+        "def list_sum(values):\n"
+        "    return sum(values)\n"
+        "```"
+    )
+
+
 def test_export_docx_rejects_empty_board_document(api_client: TestClient) -> None:
     created_workspace = api_client.post(
         "/api/packages",
