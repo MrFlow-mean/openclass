@@ -15,11 +15,8 @@ from app.models import (
     WorkspaceStateView,
 )
 from app.routers.auth import current_user
-from app.services.ai_logging import ai_usage_logger
-from app.services.course_runtime import build_lesson_for_topic
 from app.services.history import current_head_commit
 from app.services.lesson_factory import create_empty_lesson
-from app.services.route_context import bind_ai_request_context
 from app.services.workspace_state import (
     find_lesson_package,
     get_package,
@@ -178,47 +175,21 @@ def generate_lesson(
     if source_package is not None and source_package.id != package.id:
         raise HTTPException(status_code=400, detail="Branch source lesson must be in the target package")
 
-    with bind_ai_request_context(
-        "/api/lessons/generate",
-        trace_prefix="generate_lesson",
-        generation_topic=request.topic,
-        branch_from_lesson_id=request.branch_from_lesson_id,
-        target_package_id=package.id,
-        start_blank=request.start_blank,
-    ):
-        if not request.start_blank:
-            ai_usage_logger.log_event(
-                "lesson_generation_request",
-                topic=request.topic,
-                branch_from_lesson_id=request.branch_from_lesson_id,
+    lesson = create_empty_lesson(request.topic)
+    package.lessons.append(lesson)
+    package.open_lesson_ids.append(lesson.id)
+    package.workspace_tab_order.append(lesson.id)
+    package.active_lesson_id = lesson.id
+    workspace.active_package_id = package.id
+    if request.branch_from_lesson_id:
+        package.course_graph.append(
+            CourseGraphEdge(
+                source_lesson_id=request.branch_from_lesson_id,
+                target_lesson_id=lesson.id,
+                relationship="deep_dive",
             )
-        lesson = (
-            create_empty_lesson(request.topic)
-            if request.start_blank
-            else build_lesson_for_topic(request.topic)
         )
-        package.lessons.append(lesson)
-        package.open_lesson_ids.append(lesson.id)
-        package.workspace_tab_order.append(lesson.id)
-        package.active_lesson_id = lesson.id
-        workspace.active_package_id = package.id
-        if request.branch_from_lesson_id:
-            package.course_graph.append(
-                CourseGraphEdge(
-                    source_lesson_id=request.branch_from_lesson_id,
-                    target_lesson_id=lesson.id,
-                    relationship="deep_dive",
-                )
-            )
-        save_workspace_for_user(user.id, workspace)
-        if not request.start_blank:
-            ai_usage_logger.log_event(
-                "lesson_generation_response",
-                lesson_id=lesson.id,
-                lesson_title=lesson.title,
-                summary=lesson.summary,
-                tags=lesson.tags,
-            )
+    save_workspace_for_user(user.id, workspace)
     return package_view_for_lesson(workspace, package, package.active_lesson_id)
 
 

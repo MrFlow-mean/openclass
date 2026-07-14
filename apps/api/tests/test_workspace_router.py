@@ -79,3 +79,21 @@ def test_generate_lesson_with_target_keeps_course_package_content_isolated(monke
     assert workspace.active_package_id == course_package.id
     assert response.is_standalone is False
     assert saved_workspaces == [workspace]
+
+
+def test_generate_lesson_without_blank_flag_still_creates_codex_only_document(monkeypatch) -> None:
+    package = CoursePackage(id="course", title="Course", summary="", lessons=[])
+    workspace = WorkspaceState(packages=[package], active_package_id=package.id)
+    monkeypatch.setattr(workspace_router, "load_workspace_for_user", lambda _user_id: workspace)
+    monkeypatch.setattr(workspace_router, "save_workspace_for_user", lambda *_args: None)
+
+    workspace_router.generate_lesson(
+        GenerateLessonRequest(topic="Codex document", start_blank=False),
+        user=_user(),
+    )
+
+    lesson = package.lessons[0]
+    assert lesson.board_document.content_text == ""
+    assert lesson.learning_requirements is None
+    assert lesson.board_task_requirements is None
+    assert lesson.active_interaction_session is None

@@ -18,7 +18,6 @@ from app.models import (
 )
 from app.services.course_store import SqliteCourseStore
 from app.services.config import API_BASE_DIR as BASE_DIR, DATA_DIR, ROOT_DIR, load_root_dotenv
-from app.services.course_runtime import active_task_requirements
 from app.services.history import commit_operations
 
 
@@ -256,8 +255,21 @@ def normalize_package_state(package: CoursePackage) -> None:
 
 
 def lesson_view(lesson: Lesson) -> LessonView:
+    lesson = _codex_only_lesson(lesson)
     return LessonView.model_validate(
         lesson.model_dump(mode="json", exclude={"teaching_guide", "board_teaching_guide"})
+    )
+
+
+def _codex_only_lesson(lesson: Lesson) -> Lesson:
+    return lesson.model_copy(
+        update={
+            "board_teaching_guide": None,
+            "board_teaching_progress": None,
+            "learning_requirements": None,
+            "board_task_requirements": None,
+            "active_interaction_session": None,
+        }
     )
 
 
@@ -268,10 +280,7 @@ def package_view(
     resource_lesson_id: str | None = None,
     isolate_lesson_resources: bool = False,
 ) -> CoursePackageView:
-    lessons_for_view = [
-        lesson.model_copy(update={"learning_requirements": active_task_requirements(lesson)})
-        for lesson in package.lessons
-    ]
+    lessons_for_view = [_codex_only_lesson(lesson) for lesson in package.lessons]
     visible_package = package.model_copy(
         update={
             "lessons": lessons_for_view,

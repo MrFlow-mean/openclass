@@ -23,7 +23,6 @@ from app.models import (
 )
 from app.routers.auth import current_user
 from app.services.chat_service import document_ai_edit_request
-from app.services.course_runtime import refresh_lesson_runtime
 from app.services.history import create_branch, current_head_commit, restore_commit, switch_branch
 from app.services.html_document_export import export_html
 from app.services.rich_document import (
@@ -54,6 +53,14 @@ _DOCX_NO_STORE_HEADERS = {
     "Pragma": "no-cache",
     "Expires": "0",
 }
+
+
+def _clear_legacy_ai_runtime(lesson) -> None:
+    lesson.board_teaching_guide = None
+    lesson.board_teaching_progress = None
+    lesson.learning_requirements = None
+    lesson.board_task_requirements = None
+    lesson.active_interaction_session = None
 
 
 @router.get("/api/documents/search", response_model=DocumentSegmentSearchResponse)
@@ -135,7 +142,7 @@ def _save_document_request(lesson_id: str, request: DocumentSaveRequest, user_id
                 flatten_guard_evaluated=is_autosave,
             )
         )
-        refresh_lesson_runtime(lesson)
+        _clear_legacy_ai_runtime(lesson)
         save_workspace_for_user(user_id, workspace)
     return package_view_for_lesson(workspace, package, lesson.id)
 
@@ -223,7 +230,7 @@ def manual_commit(
             message=request.message,
             metadata={"kind": "manual_document_edit"},
         )
-        refresh_lesson_runtime(lesson)
+        _clear_legacy_ai_runtime(lesson)
         save_workspace_for_user(user.id, workspace)
     return package_view_for_lesson(workspace, package, lesson.id)
 
@@ -292,7 +299,7 @@ def import_document_docx(
             message=f"Imported {safe_name} into the rich document editor",
             metadata={"kind": "import_docx", "filename": safe_name},
         )
-        refresh_lesson_runtime(lesson)
+        _clear_legacy_ai_runtime(lesson)
         save_workspace_for_user(user.id, workspace)
     return package_view_for_lesson(workspace, package, lesson.id)
 
@@ -360,7 +367,7 @@ def create_lesson_branch(
         from_commit_id=request.from_commit_id,
     ):
         create_branch(lesson, request.name, request.from_commit_id)
-        refresh_lesson_runtime(lesson)
+        _clear_legacy_ai_runtime(lesson)
         save_workspace_for_user(user.id, workspace)
     return package_view_for_lesson(workspace, package, lesson.id)
 
@@ -381,7 +388,7 @@ def checkout_lesson_branch(
         branch_name=request.name,
     ):
         switch_branch(lesson, request.name)
-        refresh_lesson_runtime(lesson)
+        _clear_legacy_ai_runtime(lesson)
         save_workspace_for_user(user.id, workspace)
     return package_view_for_lesson(workspace, package, lesson.id)
 
@@ -403,7 +410,7 @@ def restore_lesson_commit(
         restore_label=request.label,
     ):
         restore_commit(lesson, request.commit_id, request.label)
-        refresh_lesson_runtime(lesson)
+        _clear_legacy_ai_runtime(lesson)
         save_workspace_for_user(user.id, workspace)
     return package_view_for_lesson(workspace, package, lesson.id)
 
@@ -431,6 +438,6 @@ def apply_patch_proposal(
                 message=proposal.message,
                 metadata={"kind": "apply_proposal"},
             )
-            refresh_lesson_runtime(lesson)
+            _clear_legacy_ai_runtime(lesson)
             save_workspace_for_user(user.id, workspace)
     return package_view_for_lesson(workspace, package, lesson.id)
