@@ -1061,6 +1061,7 @@ class SelectionRef(BaseModel):
     source_chapter_id: str | None = None
     source_chapter_number: str = ""
     source_chapter_title: str = ""
+    source_excerpt: str = ""
     source_page_range: str = ""
     source_locator: str = ""
     source_page_start: int | None = None

@@ -424,6 +424,54 @@ def test_board_generation_action_requires_ready_requirement(
     assert saved_lesson.board_document.content_text == ""
 
 
+def test_board_generation_action_blocks_stale_source_reference(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    store = SqliteCourseStore(tmp_path / "openclass.sqlite3", legacy_json_path=None)
+    monkeypatch.setattr(workspace_state, "STORE", store)
+    lesson_id = _seed_ready_blank_board(store)
+    workspace = store.load_for_user(TEST_USER_ID)
+    lesson = workspace.packages[0].lessons[-1]
+    assert lesson.learning_requirements is not None
+    lesson.learning_requirements.source_grounding = lesson.learning_requirements.source_grounding.model_copy(
+        update={
+            "requested_by_user": True,
+            "confirmation_status": "stale",
+        }
+    )
+    history_state = store.load_learning_requirement_history_state(TEST_USER_ID, lesson_id)
+    recorder = LearningRequirementHistoryRecorder.from_store_state(
+        owner_user_id=TEST_USER_ID,
+        lesson_id=lesson_id,
+        state=history_state,
+    )
+    clarification = LearningClarificationStatus.model_validate_json(history_state["latest_clarification_json"])
+    recorder.record_update(requirements=lesson.learning_requirements, clarification=clarification)
+    store.save_for_user_with_learning_requirement_history(
+        TEST_USER_ID,
+        workspace,
+        learning_requirement_history_operations=recorder.operations,
+    )
+
+    monkeypatch.setattr(
+        blank_board_generation,
+        "generate_from_requirements",
+        lambda **kwargs: pytest.fail("BoardEditor must not run with a stale source reference."),
+    )
+
+    response = process_chat_on_lesson(
+        lesson_id,
+        ChatRequest(message="开始生成板书", board_generation_action="start"),
+        user_id=TEST_USER_ID,
+    )
+
+    assert response.board_document_operation_status == "failed"
+    assert "资料章节当前不可用" in (response.board_document_operation_failure_reason or "")
+    saved_lesson = store.load_for_user(TEST_USER_ID).packages[0].lessons[-1]
+    assert saved_lesson.board_document.content_text == ""
+
+
 def test_board_generation_action_does_not_overwrite_non_empty_board(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,

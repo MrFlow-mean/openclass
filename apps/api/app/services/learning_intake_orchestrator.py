@@ -199,7 +199,14 @@ def run_learning_intake_turn(
     source_chapter_resolved = (
         resolved_chapter_scope is not None and initial_decision.granularity == "source_chapter"
     )
-    if probe is not None and not source_discovery.context_text and not source_chapter_resolved:
+    source_resolution_status = _source_resolution_status(source_discovery)
+    if (
+        probe is not None
+        and not source_discovery.context_text
+        and not source_chapter_resolved
+        and source_resolution_status
+        not in {"ambiguous_source", "content_unavailable", "stale_source_reference"}
+    ):
         refinement = probe
     else:
         refinement = refine_blank_board_requirement(
@@ -214,6 +221,7 @@ def run_learning_intake_turn(
             initial_work_mode_decision=initial_decision,
             source_requested_by_user=source_discovery.source_requested_by_user,
             resolved_source_chapter=source_chapter_resolved,
+            source_resolution_status=source_resolution_status,
         )
     if refinement is None or refinement.route == "refinement_failed":
         return LearningIntakeTurnOutcome(
@@ -291,6 +299,25 @@ def rollback_learning_intake_turn(
     resolver: ResourceResolver = resource_resolver,
 ) -> None:
     rollback_learning_source_discovery(outcome.source_discovery, resolver=resolver)
+
+
+def _source_resolution_status(discovery: LearningSourceDiscoveryOutcome) -> str:
+    if discovery.status in {"matched", "ambiguous_source", "content_unavailable"}:
+        return discovery.status
+    if discovery.status != "no_match":
+        return ""
+    resolution = discovery.metadata.get("resolution")
+    if not isinstance(resolution, dict):
+        return ""
+    intent_signals = resolution.get("intent_signals")
+    has_explicit_chapter = bool(
+        resolution.get("requested_chapter_id")
+        or (
+            isinstance(intent_signals, list)
+            and "explicit_source_chapter_id" in intent_signals
+        )
+    )
+    return "stale_source_reference" if has_explicit_chapter else ""
 
 
 def _active_requirement(

@@ -25,6 +25,7 @@ export function sameSelection(left: SelectionRef | null, right: SelectionRef | n
     left.source_chapter_id === right.source_chapter_id &&
     left.source_chapter_number === right.source_chapter_number &&
     left.source_chapter_title === right.source_chapter_title &&
+    left.source_excerpt === right.source_excerpt &&
     left.source_page_range === right.source_page_range &&
     left.source_locator === right.source_locator &&
     left.source_page_start === right.source_page_start &&
