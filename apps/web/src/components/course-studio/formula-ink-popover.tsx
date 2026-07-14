@@ -1,6 +1,6 @@
 "use client";
 
-import { Eraser, PenLine, RefreshCcw, Send, X } from "lucide-react";
+import { Eraser, PenLine, RefreshCcw, Send, TextQuote, X } from "lucide-react";
 import { useState } from "react";
 
 import type { SelectionPopoverPosition } from "@/components/course-studio/selection-utils";
@@ -17,6 +17,7 @@ type FormulaInkPopoverProps = {
   position: SelectionPopoverPosition | null;
   sourceLatex: string;
   disabled?: boolean;
+  onReference: () => void;
   onSubmit: (payload: FormulaInkSubmitPayload) => void;
 };
 
@@ -24,6 +25,7 @@ export function FormulaInkPopover({
   position,
   sourceLatex,
   disabled = false,
+  onReference,
   onSubmit,
 }: FormulaInkPopoverProps) {
   const [expandedSourceLatex, setExpandedSourceLatex] = useState<string | null>(null);
@@ -51,7 +53,7 @@ export function FormulaInkPopover({
   if (!isExpanded) {
     return (
       <div
-        className="fixed z-[95] -translate-x-1/2 overflow-hidden rounded-xl border border-gray-200 bg-white shadow-lg"
+        className="fixed z-[95] flex -translate-x-1/2 items-center overflow-hidden rounded-xl border border-gray-200 bg-white shadow-lg"
         style={{ left: position.left, top: position.top }}
         onMouseDown={(event) => event.preventDefault()}
       >
@@ -67,6 +69,17 @@ export function FormulaInkPopover({
         >
           <PenLine className="h-4 w-4" />
           编辑公式
+        </button>
+        <span className="h-5 w-px bg-gray-200" aria-hidden="true" />
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={onReference}
+          className="inline-flex h-10 items-center gap-2 px-3.5 text-[13px] font-medium text-gray-800 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+          title="引用公式到输入框"
+        >
+          <TextQuote className="h-4 w-4" />
+          引用
         </button>
       </div>
     );

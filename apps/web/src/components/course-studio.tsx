@@ -303,17 +303,18 @@ export function CourseStudio() {
     }));
   }
 
-  function focusComposerWithSelection(nextMode: ChatInteractionMode) {
-    if (!selection) {
+  function focusComposerWithSelection(nextMode: ChatInteractionMode, explicitSelection?: SelectionRef) {
+    const selectionToFocus = explicitSelection ?? selection;
+    if (!selectionToFocus) {
       return;
     }
-    setSelection((current) =>
-      current?.kind === "board"
+    setSelection(() =>
+      selectionToFocus.kind === "board"
         ? {
-            ...current,
-            location_kind: current.location_kind === "insertion_anchor" ? "insertion_anchor" : "target_range",
+            ...selectionToFocus,
+            location_kind: selectionToFocus.location_kind === "insertion_anchor" ? "insertion_anchor" : "target_range",
           }
-        : current
+        : selectionToFocus
     );
     updateActiveLessonComposerState((current) => ({
       ...current,
@@ -640,6 +641,7 @@ export function CourseStudio() {
           onImportDocx={(file) => void handleImportDocx(file)}
           onExportDocx={() => void handleExportDocx()}
           onExportHtml={() => void handleExportHtml()}
+          onReferenceFormula={(formulaSelection) => focusComposerWithSelection("ask", formulaSelection)}
           onFormulaInkSubmit={handleFormulaInkSubmit}
         />
 

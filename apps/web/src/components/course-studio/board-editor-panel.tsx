@@ -31,6 +31,7 @@ type BoardEditorPanelProps = {
   onImportDocx: (file: File) => void;
   onExportDocx: () => void;
   onExportHtml: () => void;
+  onReferenceFormula: (selection: SelectionRef) => void;
   onFormulaInkSubmit: (payload: FormulaInkEditorSubmitPayload) => void;
 };
 
@@ -129,6 +130,7 @@ export function BoardEditorPanel({
   onImportDocx,
   onExportDocx,
   onExportHtml,
+  onReferenceFormula,
   onFormulaInkSubmit,
 }: BoardEditorPanelProps) {
   const teachingFocus = currentTeachingFocus(activeLesson, previewCommit);
@@ -191,6 +193,17 @@ export function BoardEditorPanel({
         onImportDocx={onImportDocx}
         onExportDocx={onExportDocx}
         onExportHtml={onExportHtml}
+        onFormulaReference={(selection) =>
+          onReferenceFormula({
+            kind: "board",
+            location_kind: selection.locationKind,
+            lesson_id: activeLesson.id,
+            document_id: selection.documentId,
+            excerpt: selection.excerpt,
+            before_text: selection.beforeText,
+            after_text: selection.afterText,
+          })
+        }
         onFormulaInkSubmit={(payload) => {
           onApplySelection(
             {
