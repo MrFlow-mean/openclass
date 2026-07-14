@@ -23,8 +23,8 @@ from app.services.codex_app_server import (
     delete_codex_thread,
     run_codex_thread_turn,
 )
-from app.services.course_runtime import effective_requirements
 from app.services.history import commit_operations, current_head_commit
+from app.services.lesson_factory import build_requirements
 from app.services.rich_document import build_document, document_changed, looks_like_html_content
 
 
@@ -388,10 +388,19 @@ def process_codex_chat_on_lesson(
                     new_document=next_document,
                     metadata=metadata,
                 )
-                workspace_state.save_workspace_for_user(user_id, workspace)
+                saved = workspace_state.save_lesson_for_user_if_head(
+                    user_id,
+                    lesson,
+                    expected_branch_name=branch_name,
+                    expected_head_commit_id=base_commit_id,
+                )
+                if not saved:
+                    raise CodexAppServerError("The lesson changed while Codex was working")
+                workspace = workspace_state.load_workspace_for_user(user_id)
+                package, lesson = workspace_state.find_lesson_package(workspace, lesson_id)
                 return ChatResponse(
                     chatbot_message=result.final_response,
-                    learning_requirement_sheet=effective_requirements(lesson),
+                    learning_requirement_sheet=build_requirements(lesson.title),
                     active_requirement_sheet=None,
                     active_interaction_session=None,
                     learning_clarification=clarification,

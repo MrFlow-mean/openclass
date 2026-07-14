@@ -72,6 +72,21 @@ def save_workspace_for_user(user_id: str, workspace: WorkspaceState) -> None:
     get_store().save_for_user(user_id, workspace)
 
 
+def save_lesson_for_user_if_head(
+    user_id: str,
+    lesson: Lesson,
+    *,
+    expected_branch_name: str,
+    expected_head_commit_id: str,
+) -> bool:
+    return get_store().save_lesson_for_user_if_head(
+        user_id,
+        lesson,
+        expected_branch_name=expected_branch_name,
+        expected_head_commit_id=expected_head_commit_id,
+    )
+
+
 def save_workspace_and_learning_requirement_history_for_user(
     user_id: str,
     workspace: WorkspaceState,

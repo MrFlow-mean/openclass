@@ -375,6 +375,118 @@ def test_codex_chat_serializes_turns_and_reloads_latest_document(
     assert saved_lesson.board_document.content_text == "# Second update"
 
 
+def test_codex_chat_atomic_save_rejects_last_moment_target_change(
+    monkeypatch: pytest.MonkeyPatch,
+    codex_store: SqliteCourseStore,
+) -> None:
+    lesson = _seed_workspace(codex_store)
+    discarded_threads: list[str] = []
+    monkeypatch.setattr(codex_chat, "delete_codex_thread", discarded_threads.append)
+
+    def fake_turn(**kwargs) -> CodexTurnResult:
+        board_path = Path(kwargs["cwd"]) / codex_chat.BOARD_FILE_NAME
+        board_path.write_text("# Codex update", encoding="utf-8")
+        return CodexTurnResult("thread_conflict", "turn_conflict", "done")
+
+    original_atomic_save = workspace_state.save_lesson_for_user_if_head
+
+    def conflicting_atomic_save(user_id, next_lesson, **kwargs) -> bool:
+        concurrent_workspace = codex_store.load_for_user(TEST_USER_ID)
+        _package, concurrent_lesson = workspace_state.find_lesson_package(
+            concurrent_workspace,
+            lesson.id,
+        )
+        concurrent_document = build_document(
+            title=concurrent_lesson.board_document.title,
+            content_text="# Concurrent user update",
+            document_id=concurrent_lesson.board_document.id,
+            page_settings=concurrent_lesson.board_document.page_settings,
+        )
+        commit_operations(
+            concurrent_lesson,
+            operations=[],
+            label="Concurrent update",
+            message="A different writer changed the lesson.",
+            new_document=concurrent_document,
+        )
+        codex_store.save_for_user(TEST_USER_ID, concurrent_workspace)
+        return original_atomic_save(user_id, next_lesson, **kwargs)
+
+    monkeypatch.setattr(codex_chat, "run_codex_thread_turn", fake_turn)
+    monkeypatch.setattr(
+        workspace_state,
+        "save_lesson_for_user_if_head",
+        conflicting_atomic_save,
+    )
+
+    with pytest.raises(CodexAppServerError, match="lesson changed"):
+        codex_chat.process_codex_chat_on_lesson(
+            lesson.id,
+            ChatRequest(message="Update the document."),
+            user_id=TEST_USER_ID,
+        )
+
+    saved_lesson = codex_store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
+    assert saved_lesson.board_document.content_text == "# Concurrent user update"
+    assert discarded_threads == ["thread_conflict"]
+
+
+def test_lesson_atomic_save_preserves_concurrent_other_lesson_change(
+    codex_store: SqliteCourseStore,
+) -> None:
+    target = _seed_workspace(codex_store)
+    setup_workspace = codex_store.load_for_user(TEST_USER_ID)
+    other = create_empty_lesson("Other lesson")
+    setup_workspace.packages[0].lessons.append(other)
+    codex_store.save_for_user(TEST_USER_ID, setup_workspace)
+
+    codex_workspace = codex_store.load_for_user(TEST_USER_ID)
+    _package, codex_target = workspace_state.find_lesson_package(codex_workspace, target.id)
+    base_commit_id = current_head_commit(codex_target).id
+    target_document = build_document(
+        title=codex_target.board_document.title,
+        content_text="# Codex target update",
+        document_id=codex_target.board_document.id,
+        page_settings=codex_target.board_document.page_settings,
+    )
+    commit_operations(
+        codex_target,
+        operations=[],
+        label="Codex update",
+        message="Update only the target lesson.",
+        new_document=target_document,
+    )
+
+    latest_workspace = codex_store.load_for_user(TEST_USER_ID)
+    _package, latest_other = workspace_state.find_lesson_package(latest_workspace, other.id)
+    other_document = build_document(
+        title=latest_other.board_document.title,
+        content_text="# Other concurrent update",
+        document_id=latest_other.board_document.id,
+        page_settings=latest_other.board_document.page_settings,
+    )
+    commit_operations(
+        latest_other,
+        operations=[],
+        label="Other update",
+        message="Update a different lesson.",
+        new_document=other_document,
+    )
+    codex_store.save_for_user(TEST_USER_ID, latest_workspace)
+
+    assert codex_store.save_lesson_for_user_if_head(
+        TEST_USER_ID,
+        codex_target,
+        expected_branch_name=codex_target.history_graph.current_branch,
+        expected_head_commit_id=base_commit_id,
+    )
+    saved = codex_store.load_for_user(TEST_USER_ID)
+    _package, saved_target = workspace_state.find_lesson_package(saved, target.id)
+    _package, saved_other = workspace_state.find_lesson_package(saved, other.id)
+    assert saved_target.board_document.content_text == "# Codex target update"
+    assert saved_other.board_document.content_text == "# Other concurrent update"
+
+
 def test_codex_app_server_command_uses_exact_board_permission_profile() -> None:
     command = codex_app_server._codex_app_server_command("/usr/local/bin/codex")
     rendered = "\n".join(command)

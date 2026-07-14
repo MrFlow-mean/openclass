@@ -92,6 +92,53 @@ class SqliteCourseStore:
                 with conn:
                     self._replace_workspace(conn, workspace, owner_user_id=owner_user_id)
 
+    def save_lesson_for_user_if_head(
+        self,
+        owner_user_id: str,
+        lesson: Lesson,
+        *,
+        expected_branch_name: str,
+        expected_head_commit_id: str,
+    ) -> bool:
+        """Atomically replace one lesson only when its persisted branch head is unchanged."""
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    row = conn.execute(
+                        """
+                        SELECT lessons.package_id, lessons.sort_order, lessons.current_branch,
+                               lesson_branches.head_commit_id
+                        FROM lessons
+                        JOIN course_packages
+                          ON course_packages.id = lessons.package_id
+                        LEFT JOIN lesson_branches
+                          ON lesson_branches.lesson_id = lessons.id
+                         AND lesson_branches.name = lessons.current_branch
+                        WHERE lessons.id = ? AND course_packages.owner_user_id = ?
+                        """,
+                        (lesson.id, owner_user_id),
+                    ).fetchone()
+                    if (
+                        row is None
+                        or row["current_branch"] != expected_branch_name
+                        or row["head_commit_id"] != expected_head_commit_id
+                    ):
+                        conn.rollback()
+                        return False
+                    conn.execute("DELETE FROM lessons WHERE id = ?", (lesson.id,))
+                    self._insert_lesson(
+                        conn,
+                        row["package_id"],
+                        lesson,
+                        int(row["sort_order"]),
+                    )
+                    conn.commit()
+                    return True
+                except Exception:
+                    conn.rollback()
+                    raise
+
     def save_for_user_with_learning_requirement_history(
         self,
         owner_user_id: str,
