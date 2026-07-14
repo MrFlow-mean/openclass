@@ -37,8 +37,13 @@ def test_catalog_exposes_only_codex_text_models(monkeypatch) -> None:
     ]
     assert catalog.defaults["text"].provider == "openai_codex"
     assert catalog.defaults["text"].model == "gpt-5.4-mini"
-    assert catalog.defaults["realtime"] == catalog.defaults["text"]
-    assert catalog.realtime == []
+    assert catalog.defaults["realtime"].provider == "openai_codex"
+    assert catalog.defaults["realtime"].model == "realtime-unavailable"
+    assert len(catalog.realtime) == 1
+    assert catalog.realtime[0].model == "realtime-unavailable"
+    assert catalog.realtime[0].default is True
+    assert catalog.realtime[0].enabled is False
+    assert catalog.realtime[0].configured is False
     assert [option.model for option in catalog.text if option.default] == ["gpt-5.4-mini"]
     assert all(option.enabled and option.configured for option in catalog.text)
 
@@ -77,4 +82,6 @@ def test_catalog_disables_codex_options_until_account_is_configured(monkeypatch)
     assert catalog.text
     assert {option.provider for option in catalog.text} == {"openai_codex"}
     assert all(not option.enabled and not option.configured for option in catalog.text)
-    assert catalog.realtime == []
+    assert len(catalog.realtime) == 1
+    assert catalog.realtime[0].model == "realtime-unavailable"
+    assert catalog.realtime[0].enabled is False
