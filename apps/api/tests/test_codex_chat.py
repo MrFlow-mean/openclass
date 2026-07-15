@@ -980,6 +980,38 @@ def test_source_chapter_selection_generates_blank_board_without_requirement_ques
     assert saved_bundle.status == "confirmed"
 
 
+def test_invalid_source_selection_returns_source_error_without_running_intake(
+    monkeypatch: pytest.MonkeyPatch,
+    codex_store: SqliteCourseStore,
+) -> None:
+    lesson = _seed_workspace(codex_store, content_text="")
+
+    def fail_if_intake_runs(**_kwargs):
+        raise AssertionError("an invalid source selection must not run requirement intake")
+
+    monkeypatch.setattr(blank_board_intake.CodexAppServerTextClient, "parse", fail_if_intake_runs)
+
+    response = codex_chat.process_codex_chat_on_lesson(
+        lesson.id,
+        ChatRequest(
+            message="为我讲解",
+            selection=SelectionRef(
+                kind="source",
+                excerpt="Selected source without a verifiable chapter identity",
+            ),
+        ),
+        user_id=TEST_USER_ID,
+    )
+
+    assert response.chatbot_message == (
+        "这份资料引用缺少可验证的章节位置，请重新从资料目录中选择章节。"
+    )
+    assert response.active_requirement_sheet is None
+    assert response.learning_clarification.progress == 0
+    assert response.learning_clarification.reason == ""
+    assert response.board_document_operation_status == "none"
+
+
 def test_failed_empty_board_generation_keeps_frozen_requirement_for_retry(
     monkeypatch: pytest.MonkeyPatch,
     codex_store: SqliteCourseStore,

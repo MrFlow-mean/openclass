@@ -227,6 +227,22 @@ BoardGenerationRunner = Callable[
 ]
 
 
+def _neutral_clarification() -> LearningClarificationStatus:
+    return LearningClarificationStatus(
+        progress=0,
+        label="",
+        reason="",
+        missing_items=[],
+        can_start=False,
+        forced_start=False,
+        summary="",
+        next_question="",
+        ready_for_board=False,
+        work_mode=None,
+        granularity=None,
+    )
+
+
 def active_requirement_prompt_context(
     requirement: LearningRequirementSheet | None,
 ) -> str:
