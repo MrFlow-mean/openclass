@@ -563,6 +563,54 @@ def process_codex_chat_on_lesson(
                 ),
             )
 
+        if request.teaching_action is not None:
+            from app.services.auto_board_teaching import continue_board_teaching
+
+            teaching_result = continue_board_teaching(
+                owner_user_id=user_id,
+                lesson_id=lesson_id,
+                model=codex_model,
+                restart=request.teaching_action == "restart",
+            )
+            for event in teaching_result.activity:
+                if on_agent_activity is not None:
+                    on_agent_activity(event)
+            if teaching_result.chatbot_message and on_delta is not None:
+                on_delta(teaching_result.chatbot_message)
+            workspace = workspace_state.load_workspace_for_user(user_id)
+            package, lesson = workspace_state.find_lesson_package(workspace, lesson_id)
+            return ChatResponse(
+                chatbot_message=teaching_result.chatbot_message,
+                agent_activity=teaching_result.activity,
+                learning_requirement_sheet=build_requirements(lesson.title),
+                active_requirement_sheet=None,
+                active_interaction_session=None,
+                learning_clarification=_neutral_clarification(),
+                board_task_sheet=teaching_result.board_task,
+                active_board_task_sheet=None,
+                board_task_run_id=teaching_result.board_task_run_id,
+                board_task_version_id=teaching_result.board_task_version_id,
+                board_task_phase=(
+                    "consumed" if teaching_result.status == "succeeded" else "not_executed"
+                ),
+                board_task_questions=[],
+                board_decision=BoardDecision(
+                    action="no_change",
+                    reason="The Board AI authorized a bounded section explanation.",
+                ),
+                requirement_cleared=True,
+                board_document_operation_status="none",
+                board_patch_diff=[],
+                teaching_progress=teaching_result.progress,
+                auto_teaching_operation_status=teaching_result.status,
+                auto_teaching_operation_failure_reason=teaching_result.failure_reason,
+                course_package=workspace_state.package_view_for_lesson(
+                    workspace,
+                    package,
+                    lesson.id,
+                ),
+            )
+
         prior_thread_id, prior_turn_id = _thread_reference_for_current_branch(initial_lesson)
         workspace_key = _workspace_key(
             user_id=user_id,

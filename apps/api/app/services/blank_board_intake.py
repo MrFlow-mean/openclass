@@ -670,8 +670,16 @@ def process_blank_board_turn(
             metadata={
                 "kind": "board_document_generation",
                 "user_message": request.message,
-                "assistant_message": final_chatbot_message,
-                "assistant_message_source": "codex",
+                "assistant_message": (
+                    ""
+                    if request.post_generation_action == "auto_explain"
+                    else final_chatbot_message
+                ),
+                "assistant_message_source": (
+                    "codex_board_editor"
+                    if request.post_generation_action == "auto_explain"
+                    else "codex"
+                ),
                 "document_changed": True,
                 "board_state_before": "empty",
                 "board_state_after": "non_empty",
@@ -733,6 +741,18 @@ def process_blank_board_turn(
                 f"{failure_record_error}"
             )
         raise
+    auto_teaching_result = None
+    if request.post_generation_action == "auto_explain":
+        from app.services.auto_board_teaching import start_auto_board_teaching
+
+        auto_teaching_result = start_auto_board_teaching(
+            owner_user_id=user_id,
+            lesson_id=lesson.id,
+            model=model,
+        )
+        merge_unreported_activity(auto_teaching_result.activity)
+        if auto_teaching_result.status == "succeeded":
+            final_chatbot_message = auto_teaching_result.chatbot_message
     if on_delta is not None and final_chatbot_message:
         on_delta(final_chatbot_message)
     workspace = workspace_state.load_workspace_for_user(user_id)
@@ -748,8 +768,23 @@ def process_blank_board_turn(
         requirement_version_id=frozen_version_id,
         requirement_phase="consumed",
         learning_requirement_operation_status="succeeded",
-        board_task_sheet=None,
+        board_task_sheet=(
+            auto_teaching_result.board_task if auto_teaching_result is not None else None
+        ),
         active_board_task_sheet=None,
+        board_task_run_id=(
+            auto_teaching_result.board_task_run_id if auto_teaching_result is not None else None
+        ),
+        board_task_version_id=(
+            auto_teaching_result.board_task_version_id if auto_teaching_result is not None else None
+        ),
+        board_task_phase=(
+            "consumed"
+            if auto_teaching_result is not None and auto_teaching_result.status == "succeeded"
+            else "not_executed"
+            if auto_teaching_result is not None
+            else None
+        ),
         board_task_questions=[],
         board_decision=BoardDecision(
             action="edit_board",
@@ -758,6 +793,15 @@ def process_blank_board_turn(
         requirement_cleared=True,
         board_document_operation_status="succeeded",
         board_patch_diff=[],
+        teaching_progress=(
+            auto_teaching_result.progress if auto_teaching_result is not None else None
+        ),
+        auto_teaching_operation_status=(
+            auto_teaching_result.status if auto_teaching_result is not None else "none"
+        ),
+        auto_teaching_operation_failure_reason=(
+            auto_teaching_result.failure_reason if auto_teaching_result is not None else None
+        ),
         course_package=workspace_state.package_view_for_lesson(
             workspace,
             package,

@@ -10,6 +10,7 @@ import pytest
 
 from app.models import (
     AgentActivityEvent,
+    BoardExplanationDirective,
     ChatRequest,
     GuidedRequirementDiscovery,
     GuidedRequirementEntryPoint,
@@ -849,6 +850,7 @@ def test_complete_empty_board_requirement_is_frozen_before_board_generation(
         ChatRequest(
             message="Start now, but this exact request text is not board input.",
             conversation=[],
+            post_generation_action="stop_after_generation",
         ),
         user_id=TEST_USER_ID,
         on_requirement_update=requirement_updates.append,
@@ -1009,6 +1011,159 @@ def test_source_chapter_selection_generates_blank_board_without_requirement_ques
     assert saved_bundle is not None
     assert saved_bundle.status == "confirmed"
     assert saved_bundle.visual_items[0].visual_id == visual.visual_id
+
+
+def test_generation_auto_explains_first_section_then_continues_or_restarts(
+    monkeypatch: pytest.MonkeyPatch,
+    codex_store: SqliteCourseStore,
+) -> None:
+    lesson = _seed_workspace(codex_store, content_text="")
+    directive_prompts: list[str] = []
+    chatbot_prompts: list[str] = []
+    explanation_messages = iter(
+        ["First section explanation.", "Second section explanation.", "First section again."]
+    )
+
+    def fake_parse(_self, **kwargs):
+        schema = kwargs["schema"]
+        if schema is BlankBoardTurnDecision:
+            parsed = BlankBoardTurnDecision(
+                intent="learning_need",
+                teaching_type="knowledge_point",
+                learning_content="A bounded topic",
+                content_is_specific=True,
+                current_level="Known level",
+                target_scenario="Known purpose",
+                chatbot_message="Board generation is ready.",
+                teaching_plan="Create a structured board.",
+                reason="The requirement is complete.",
+            )
+        elif schema is BoardExplanationDirective:
+            directive_prompts.append(kwargs["user_prompt"])
+            excerpt = "## Second\n\nSecond evidence." if "## Second" in kwargs["user_prompt"] else "## First\n\nFirst evidence."
+            parsed = BoardExplanationDirective(
+                status="approved",
+                target_summary="Current section",
+                target_excerpt=excerpt,
+                teaching_instruction="Explain this section in order.",
+                constraints=["Use only the target excerpt."],
+            )
+        else:
+            chatbot_prompts.append(kwargs["user_prompt"])
+            parsed = schema(chatbot_message=next(explanation_messages))
+        return SimpleNamespace(output_parsed=parsed, activity=[])
+
+    def fake_board_turn(**kwargs) -> CodexTurnResult:
+        board_path = Path(kwargs["cwd"]) / codex_chat.BOARD_FILE_NAME
+        board_path.write_text(
+            "# Generated board\n\n## First\n\nFirst evidence.\n\n## Second\n\nSecond evidence.",
+            encoding="utf-8",
+        )
+        return CodexTurnResult(
+            thread_id="thread_auto_teaching",
+            turn_id="turn_auto_teaching",
+            final_response="Generated.",
+        )
+
+    monkeypatch.setattr(blank_board_intake.CodexAppServerTextClient, "parse", fake_parse)
+    monkeypatch.setattr(codex_chat, "run_codex_thread_turn", fake_board_turn)
+
+    generated = codex_chat.process_codex_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="Generate and teach this topic."),
+        user_id=TEST_USER_ID,
+    )
+
+    assert generated.chatbot_message == "First section explanation."
+    assert generated.auto_teaching_operation_status == "succeeded"
+    assert generated.teaching_progress is not None
+    assert generated.teaching_progress.section_index == 0
+    assert generated.teaching_progress.has_next_section is True
+    assert "Second evidence." not in directive_prompts[0]
+    assert "Second evidence." not in chatbot_prompts[0]
+
+    continued = codex_chat.process_codex_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="Continue.", teaching_action="continue"),
+        user_id=TEST_USER_ID,
+    )
+    assert continued.chatbot_message == "Second section explanation."
+    assert continued.teaching_progress is not None
+    assert continued.teaching_progress.section_index == 1
+    assert continued.teaching_progress.has_next_section is False
+
+    restarted = codex_chat.process_codex_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="Start again.", teaching_action="restart"),
+        user_id=TEST_USER_ID,
+    )
+    assert restarted.chatbot_message == "First section again."
+    assert restarted.teaching_progress is not None
+    assert restarted.teaching_progress.section_index == 0
+
+    saved_lesson = codex_store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
+    commit_kinds = [commit.metadata.get("kind") for commit in saved_lesson.history_graph.commits]
+    assert "board_document_generation" in commit_kinds
+    assert commit_kinds.count("board_task_requirement_ready") == 3
+    assert commit_kinds.count("board_directed_explanation") == 3
+    explanation_commit = next(
+        commit
+        for commit in saved_lesson.history_graph.commits
+        if commit.metadata.get("kind") == "board_directed_explanation"
+    )
+    assert explanation_commit.metadata["board_task_route"] == "explain"
+    assert explanation_commit.metadata["board_task_phase"] == "consumed"
+    assert explanation_commit.metadata["board_task_cleared"] is True
+
+
+def test_auto_explanation_failure_preserves_generated_board(
+    monkeypatch: pytest.MonkeyPatch,
+    codex_store: SqliteCourseStore,
+) -> None:
+    lesson = _seed_workspace(codex_store, content_text="")
+
+    def fake_parse(_self, **kwargs):
+        if kwargs["schema"] is BlankBoardTurnDecision:
+            return SimpleNamespace(
+                output_parsed=BlankBoardTurnDecision(
+                    intent="learning_need",
+                    teaching_type="knowledge_point",
+                    learning_content="A bounded topic",
+                    content_is_specific=True,
+                    current_level="Known level",
+                    target_scenario="Known purpose",
+                    chatbot_message="Board generation is ready.",
+                    teaching_plan="Create a structured board.",
+                    reason="The requirement is complete.",
+                ),
+                activity=[],
+            )
+        raise CodexAppServerError("directive unavailable")
+
+    def fake_board_turn(**kwargs) -> CodexTurnResult:
+        board_path = Path(kwargs["cwd"]) / codex_chat.BOARD_FILE_NAME
+        board_path.write_text("# Generated board\n\n## First\n\nPreserved.", encoding="utf-8")
+        return CodexTurnResult(
+            thread_id="thread_auto_teaching_failure",
+            turn_id="turn_auto_teaching_failure",
+            final_response="Generated.",
+        )
+
+    monkeypatch.setattr(blank_board_intake.CodexAppServerTextClient, "parse", fake_parse)
+    monkeypatch.setattr(codex_chat, "run_codex_thread_turn", fake_board_turn)
+
+    response = codex_chat.process_codex_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="Generate and teach this topic."),
+        user_id=TEST_USER_ID,
+    )
+
+    saved_lesson = codex_store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
+    assert response.auto_teaching_operation_status == "failed"
+    assert response.auto_teaching_operation_failure_reason == "directive unavailable"
+    assert saved_lesson.board_document.content_text.endswith("Preserved.")
+    assert current_head_commit(saved_lesson).metadata["kind"] == "auto_explain_failed"
+    assert saved_lesson.board_task_requirements is None
 
 
 def test_source_page_range_selection_generates_from_only_that_range(
@@ -1221,6 +1376,7 @@ def test_failed_empty_board_generation_keeps_frozen_requirement_for_retry(
         ChatRequest(
             message="Start board generation again.",
             board_generation_action="start",
+            post_generation_action="stop_after_generation",
         ),
         user_id=TEST_USER_ID,
     )
