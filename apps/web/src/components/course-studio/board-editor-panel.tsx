@@ -3,9 +3,6 @@
 import { WordBoardEditor, type FormulaInkEditorSubmitPayload } from "@/components/course-studio/word-board-editor";
 import type { SelectionPopoverPosition } from "@/components/course-studio/selection-utils";
 import type {
-  AIModelCatalog,
-  AIModelOption,
-  AIModelSelection,
   BoardDocument,
   BoardFocusRef,
   CommitRecord,
@@ -20,14 +17,10 @@ type BoardEditorPanelProps = {
   isDraftPreviewMode: boolean;
   previewCommit: CommitRecord | null;
   toolbarCollapsed: boolean;
-  modelCatalog: AIModelCatalog;
-  selectedBoardModel: AIModelSelection;
-  selectedBoardOption: AIModelOption | null;
   onExitPreviewMode: () => void;
   onDocumentChange: (document: BoardDocument) => void;
   onApplySelection: (selection: SelectionRef, position?: SelectionPopoverPosition | null) => void;
   onClearSelection: () => void;
-  onSelectBoardModel: (option: AIModelOption) => void;
   onImportDocx: (file: File) => void;
   onExportDocx: () => void;
   onExportHtml: () => void;
@@ -119,14 +112,10 @@ export function BoardEditorPanel({
   isDraftPreviewMode,
   previewCommit,
   toolbarCollapsed,
-  modelCatalog,
-  selectedBoardModel,
-  selectedBoardOption,
   onExitPreviewMode,
   onDocumentChange,
   onApplySelection,
   onClearSelection,
-  onSelectBoardModel,
   onImportDocx,
   onExportDocx,
   onExportHtml,
@@ -167,9 +156,6 @@ export function BoardEditorPanel({
         readOnly={isPreviewMode || isDraftPreviewMode}
         teachingFocus={teachingFocus}
         toolbarCollapsed={toolbarCollapsed}
-        modelOptions={modelCatalog.text}
-        selectedBoardModel={selectedBoardModel}
-        selectedBoardOption={selectedBoardOption}
         onDocumentChange={onDocumentChange}
         onSelectionChange={(payload) => {
           if (!payload) {
@@ -189,7 +175,6 @@ export function BoardEditorPanel({
             payload.position
           );
         }}
-        onSelectBoardModel={onSelectBoardModel}
         onImportDocx={onImportDocx}
         onExportDocx={onExportDocx}
         onExportHtml={onExportHtml}

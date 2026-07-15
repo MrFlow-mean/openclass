@@ -75,13 +75,11 @@ export function CourseStudio() {
     selectedBoardModel,
     selectedRealtimeModel,
     selectedTextOption,
-    selectedBoardOption,
     selectedRealtimeOption,
     selectedRealtimeTransport,
     openModelMenu,
     setOpenModelMenu,
     selectTextModel,
-    selectBoardModel,
     selectRealtimeModel,
   } = modelSelection;
   const textModelReady = modelCatalog.text.some((option) => option.enabled);
@@ -633,14 +631,10 @@ export function CourseStudio() {
           isDraftPreviewMode={isDraftPreviewMode}
           previewCommit={previewCommit}
           toolbarCollapsed={topCollapsed}
-          modelCatalog={modelCatalog}
-          selectedBoardModel={selectedBoardModel}
-          selectedBoardOption={selectedBoardOption}
           onExitPreviewMode={exitAnyPreviewMode}
           onDocumentChange={handleLocalDocumentChange}
           onApplySelection={applySelection}
           onClearSelection={clearSelection}
-          onSelectBoardModel={selectBoardModel}
           onImportDocx={(file) => void handleImportDocx(file)}
           onExportDocx={() => void handleExportDocx()}
           onExportHtml={() => void handleExportHtml()}

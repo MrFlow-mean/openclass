@@ -86,14 +86,11 @@ import {
   ToolbarButton,
   WordPageZoomControls,
 } from "@/components/course-studio/word-editor-toolbar";
-import { BoardModelPicker } from "@/components/course-studio/board-model-picker";
 import { ResourceVisualBlock } from "@/components/course-studio/resource-visual-block-extension";
 import "@/lib/katex-mhchem";
 import { MATH_TEXT_SERIALIZERS, normalizeEditorMath } from "@/lib/math-content";
 import { RichCodeBlock } from "@/lib/rich-code-block-extension";
 import type {
-  AIModelOption,
-  AIModelSelection,
   BoardDocument,
   BoardFocusRef,
   BoardTaskLocationKind,
@@ -631,12 +628,8 @@ export function WordBoardEditor({
   readOnly,
   teachingFocus,
   toolbarCollapsed,
-  modelOptions,
-  selectedBoardModel,
-  selectedBoardOption,
   onDocumentChange,
   onSelectionChange,
-  onSelectBoardModel,
   onImportDocx,
   onExportDocx,
   onExportHtml,
@@ -647,9 +640,6 @@ export function WordBoardEditor({
   readOnly: boolean;
   teachingFocus?: BoardFocusRef | null;
   toolbarCollapsed: boolean;
-  modelOptions: AIModelOption[];
-  selectedBoardModel: AIModelSelection;
-  selectedBoardOption: AIModelOption | null;
   onDocumentChange: (document: BoardDocument) => void;
   onSelectionChange: (
     selection: {
@@ -661,7 +651,6 @@ export function WordBoardEditor({
       afterText: string;
     } | null
   ) => void;
-  onSelectBoardModel: (option: AIModelOption) => void;
   onImportDocx: (file: File) => void;
   onExportDocx: () => void;
   onExportHtml: () => void;
@@ -1320,15 +1309,6 @@ export function WordBoardEditor({
 
   const renderHomeRibbon = () => (
     <>
-      <div className="flex items-center gap-2 border-r border-amber-100 pr-4">
-        <BoardModelPicker
-          modelOptions={modelOptions}
-          selectedBoardModel={selectedBoardModel}
-          selectedBoardOption={selectedBoardOption}
-          onSelectBoardModel={onSelectBoardModel}
-        />
-      </div>
-
       <div className="flex items-center gap-2 border-r border-gray-100 pr-4">
         <select
           disabled={!editor || readOnly}
