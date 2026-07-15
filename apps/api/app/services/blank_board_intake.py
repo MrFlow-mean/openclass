@@ -38,9 +38,10 @@ When the board state is EMPTY, classify and handle the turn using this contract:
 
 - `ordinary_chat`: the user has no learning request. Reply naturally, do not edit `board.md`, and
   do not create or change the learning requirement sheet.
-- `unclear`: it is not yet clear whether the user has a learning request. Give contextual learning
-  direction recommendations and ask at most one high-value question. Do not edit `board.md` and do
-  not create or change the learning requirement sheet.
+- `unclear`: it is not yet clear whether the user has a learning request, or the learning intent is
+  clear but there is not enough information to select exactly one teaching type. Give contextual
+  learning direction recommendations and ask at most one high-value question. Do not edit
+  `board.md` and do not create or change the learning requirement sheet.
 - `learning_need`: the user does want to learn. Select exactly one teaching type before recording
   its core factors:
   - `knowledge_point`: the only core factor is `learning_content`. It is complete only when the
@@ -852,7 +853,7 @@ def evaluate_blank_board_decision(
             chatbot_message=decision.chatbot_message.strip(),
             requirement_phase=previous_phase,
         )
-    if decision.intent == "unclear":
+    if decision.intent == "unclear" or decision.teaching_type is None:
         return BlankBoardIntakeOutcome(
             route="guided_discovery",
             requirement=previous_requirement,
@@ -865,8 +866,6 @@ def evaluate_blank_board_decision(
             chatbot_message=decision.chatbot_message.strip(),
             requirement_phase=previous_phase,
         )
-    if decision.teaching_type is None:
-        raise ValueError("A confirmed learning need must select a teaching type first")
 
     requirement = _requirement_from_decision(decision)
     missing_items = _missing_core_factors(decision)

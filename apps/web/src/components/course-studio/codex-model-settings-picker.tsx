@@ -143,6 +143,7 @@ export function CodexModelSettingsPicker({
   const serviceTiers = selectedOption?.service_tiers ?? [];
   const selectedServiceTier =
     serviceTiers.find((option) => option.id === normalizedSelection.service_tier) ?? null;
+  const hasSelectableSpeed = serviceTiers.length > 0;
   const modelLabel = shortModelLabel(selectedOption, normalizedSelection);
   const effortLabel = reasoningEffortLabel(normalizedSelection.reasoning_effort);
   const speedLabel = selectedServiceTier ? serviceTierLabel(selectedServiceTier) : "标准";
@@ -200,8 +201,9 @@ export function CodexModelSettingsPicker({
             />
             <SettingsRow
               label="速度"
-              value={speedLabel}
+              value={hasSelectableSpeed ? speedLabel : "仅标准"}
               active={activeMenu === "speed"}
+              disabled={!hasSelectableSpeed}
               onClick={() => setActiveMenu((current) => (current === "speed" ? null : "speed"))}
             />
             <div className="my-1 h-px bg-gray-100" />

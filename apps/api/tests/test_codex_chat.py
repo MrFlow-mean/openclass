@@ -153,6 +153,27 @@ def test_blank_board_unclear_intent_guides_without_creating_requirement_sheet() 
     assert outcome.ready_for_board is False
 
 
+def test_blank_board_learning_intent_without_teaching_type_guides_instead_of_failing() -> None:
+    decision = BlankBoardTurnDecision(
+        intent="learning_need",
+        teaching_type=None,
+        learning_content="A learning topic that is not known yet",
+        content_is_specific=False,
+        chatbot_message="Two contextual directions and one narrowing question.",
+        next_question="Which direction should we narrow first?",
+        reason="The learning intent is clear, but the teaching type cannot be selected yet.",
+    )
+
+    outcome = evaluate_blank_board_decision(decision, previous_requirement=None)
+
+    assert outcome.route == "guided_discovery"
+    assert outcome.requirement is None
+    assert outcome.requirement_changed is False
+    assert outcome.ready_for_board is False
+    assert outcome.chatbot_message == "Two contextual directions and one narrowing question."
+    assert outcome.clarification.next_question == "Which direction should we narrow first?"
+
+
 def test_broad_knowledge_direction_collects_until_content_is_specific() -> None:
     decision = BlankBoardTurnDecision(
         intent="learning_need",
