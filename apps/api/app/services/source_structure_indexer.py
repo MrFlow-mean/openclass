@@ -36,7 +36,7 @@ from app.services.source_xml import parse_untrusted_xml
 
 CHUNK_CHAR_LIMIT = 1800
 CHUNK_CHAR_OVERLAP = 160
-CURRENT_SOURCE_STRUCTURE_INDEX_VERSION = 3
+CURRENT_SOURCE_STRUCTURE_INDEX_VERSION = 4
 
 
 @dataclass
@@ -382,21 +382,20 @@ class SourceStructureIndexer:
             and chapter.body_start_offset is not None
             and chapter.body_end_offset is not None
         ]
-        verified_chapter_starts = {
-            chapter.body_start_offset
-            for chapter in chapters
-            if chapter.anchor_status == "verified"
-            and chapter.body_start_offset is not None
-            and chapter.body_start_offset > 0
-        }
-        verified_chapter_ends = {
-            chapter.body_end_offset
-            for chapter in chapters
-            if chapter.anchor_status == "verified"
-            and chapter.body_end_offset is not None
-            and chapter.body_end_offset > 0
-        }
-        chapter_boundaries = sorted(verified_chapter_starts & verified_chapter_ends)
+        verified_chapter_starts = sorted(
+            {
+                chapter.body_start_offset
+                for chapter in chapters
+                if chapter.anchor_status == "verified"
+                and chapter.body_start_offset is not None
+                and chapter.body_start_offset >= 0
+            }
+        )
+        # Do not create a tiny preamble chunk before the document's first
+        # heading (some HTML parsers report that heading a few characters in).
+        # Every later verified chapter start is a hard boundary, including a
+        # child section whose parent range continues beyond it.
+        chapter_boundaries = verified_chapter_starts[1:]
         chunks: list[SourceChunk] = []
         cursor = 0
         order_index = 0
