@@ -21,6 +21,8 @@ import type {
   AgentActivityEvent,
   BoardSearchEvidence,
   ChatInteractionMode,
+  GuidedRequirementDiscovery,
+  GuidedRequirementEntryPoint,
   SectionTeachingProgress,
   SelectionRef,
 } from "@/types";
@@ -34,6 +36,7 @@ export type CourseChatMessageView = {
   selection?: SelectionRef | null;
   agentActivity?: AgentActivityEvent[];
   boardSearchEvidence?: BoardSearchEvidence | null;
+  guidedRequirementDiscovery?: GuidedRequirementDiscovery | null;
   teachingProgress?: SectionTeachingProgress | null;
   commitId?: string | null;
   parentCommitIds?: string[];
@@ -223,6 +226,55 @@ function BoardSearchEvidenceCard({ evidence }: { evidence: BoardSearchEvidence }
   );
 }
 
+function GuidedRequirementDiscoveryCard({
+  discovery,
+  onSelectEntry,
+}: {
+  discovery: GuidedRequirementDiscovery;
+  onSelectEntry?: (entry: GuidedRequirementEntryPoint) => void;
+}) {
+  if (!discovery.entry_point_options.length) {
+    return null;
+  }
+
+  return (
+    <section className="rounded-xl border border-violet-200 bg-violet-50 p-3 text-[12px] text-violet-950">
+      <div className="flex items-center gap-2">
+        <Sparkles className="h-3.5 w-3.5 text-violet-600" />
+        <p className="font-semibold">选择一个学习入口</p>
+      </div>
+      {discovery.learning_map_summary ? <p className="mt-2 leading-5 text-violet-900">{discovery.learning_map_summary}</p> : null}
+      <div className="mt-3 space-y-2">
+        {discovery.entry_point_options.map((entry) => {
+          const isRecommended = entry.title === discovery.recommended_entry_point;
+          return (
+            <button
+              key={`${entry.title}-${entry.description}`}
+              type="button"
+              onClick={() => onSelectEntry?.(entry)}
+              disabled={!onSelectEntry}
+              className={clsx(
+                "w-full rounded-lg border bg-white px-3 py-2.5 text-left transition",
+                isRecommended ? "border-violet-300 hover:border-violet-500" : "border-violet-100 hover:border-violet-300",
+                !onSelectEntry && "cursor-default"
+              )}
+            >
+              <span className="flex items-center gap-2 text-[13px] font-semibold text-gray-900">
+                {entry.title}
+                {isRecommended ? <span className="rounded-full bg-violet-100 px-1.5 py-0.5 text-[10px] font-semibold text-violet-700">推荐</span> : null}
+              </span>
+              <span className="mt-1 block leading-5 text-gray-600">{entry.description}</span>
+            </button>
+          );
+        })}
+      </div>
+      {discovery.reason_for_recommendation ? (
+        <p className="mt-2 leading-5 text-violet-900">推荐理由：{discovery.reason_for_recommendation}</p>
+      ) : null}
+    </section>
+  );
+}
+
 export function CourseChatMessage({
   message,
   onContinueTeaching,
@@ -233,6 +285,7 @@ export function CourseChatMessage({
   onCancelEdit,
   onSubmitEdit,
   isEditDisabled = false,
+  onSelectGuidanceEntry,
 }: {
   message: CourseChatMessageView;
   onContinueTeaching?: () => void;
@@ -243,6 +296,7 @@ export function CourseChatMessage({
   onCancelEdit?: () => void;
   onSubmitEdit?: () => void;
   isEditDisabled?: boolean;
+  onSelectGuidanceEntry?: (entry: GuidedRequirementEntryPoint) => void;
 }) {
   const [isSelectionExpanded, setIsSelectionExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -253,6 +307,7 @@ export function CourseChatMessage({
   const teachingProgress = message.teachingProgress;
   const agentActivity = message.agentActivity ?? [];
   const boardSearchEvidence = message.boardSearchEvidence ?? null;
+  const guidedRequirementDiscovery = message.guidedRequirementDiscovery ?? null;
   const hasContent = message.content.trim().length > 0;
 
   async function copyMessage() {
@@ -317,6 +372,13 @@ export function CourseChatMessage({
 
         {isAssistant && agentActivity.length ? (
           <AgentActivityTimeline events={agentActivity} isPending={isPending} />
+        ) : null}
+
+        {isAssistant && guidedRequirementDiscovery ? (
+          <GuidedRequirementDiscoveryCard
+            discovery={guidedRequirementDiscovery}
+            onSelectEntry={isPending ? undefined : onSelectGuidanceEntry}
+          />
         ) : null}
 
         {isEditing && !isAssistant ? (

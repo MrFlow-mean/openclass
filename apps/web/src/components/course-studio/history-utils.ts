@@ -6,6 +6,7 @@ import type {
   BoardSearchEvidence,
   ChatInteractionMode,
   CommitRecord,
+  GuidedRequirementDiscovery,
   LearningClarificationStatus,
   LearningRequirementKeyFact,
   Lesson,
@@ -48,6 +49,7 @@ export function createChatMessage(
       | "editedFromCommitId"
       | "agentActivity"
       | "boardSearchEvidence"
+      | "guidedRequirementDiscovery"
     >
   >
 ): ChatMessage {
@@ -188,6 +190,49 @@ function boardSearchEvidenceFromMetadata(value: unknown): BoardSearchEvidence | 
     return null;
   }
   return value as BoardSearchEvidence;
+}
+
+const GUIDED_REQUIREMENT_DISCOVERY_STRATEGIES = new Set<GuidedRequirementDiscovery["strategy"]>([
+  "entry_point_discovery",
+  "level_discovery",
+  "goal_discovery",
+  "mode_discovery",
+  "bottleneck_discovery",
+]);
+
+function guidedRequirementDiscoveryFromMetadata(value: unknown): GuidedRequirementDiscovery | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const raw = value as Record<string, unknown>;
+  if (typeof raw.strategy !== "string" || !GUIDED_REQUIREMENT_DISCOVERY_STRATEGIES.has(raw.strategy as GuidedRequirementDiscovery["strategy"])) {
+    return null;
+  }
+  const entryPointOptions = Array.isArray(raw.entry_point_options)
+    ? raw.entry_point_options.flatMap((entry) => {
+        if (!entry || typeof entry !== "object") {
+          return [];
+        }
+        const candidate = entry as Record<string, unknown>;
+        if (typeof candidate.title !== "string" || typeof candidate.description !== "string") {
+          return [];
+        }
+        const title = candidate.title.trim();
+        const description = candidate.description.trim();
+        return title && description ? [{ title, description }] : [];
+      })
+    : [];
+  if (!entryPointOptions.length) {
+    return null;
+  }
+  return {
+    strategy: raw.strategy as GuidedRequirementDiscovery["strategy"],
+    learning_map_summary: typeof raw.learning_map_summary === "string" ? raw.learning_map_summary.trim() : "",
+    entry_point_options: entryPointOptions,
+    recommended_entry_point: typeof raw.recommended_entry_point === "string" ? raw.recommended_entry_point.trim() : "",
+    reason_for_recommendation: typeof raw.reason_for_recommendation === "string" ? raw.reason_for_recommendation.trim() : "",
+    learner_profile_inference: typeof raw.learner_profile_inference === "string" ? raw.learner_profile_inference.trim() : "",
+  };
 }
 
 const AGENT_ACTIVITY_STAGES = new Set<AgentActivityEvent["stage"]>([
@@ -382,6 +427,9 @@ export function buildLessonMessagesFromHistory(lesson: Lesson, commitId?: string
           {
             agentActivity: agentActivityFromMetadata(commit.metadata?.agent_activity),
             boardSearchEvidence: boardSearchEvidenceFromMetadata(commit.metadata?.board_search_evidence),
+            guidedRequirementDiscovery: guidedRequirementDiscoveryFromMetadata(
+              commit.metadata?.guided_requirement_discovery
+            ),
             commitId: commit.id,
             parentCommitIds: commit.parent_ids,
           }

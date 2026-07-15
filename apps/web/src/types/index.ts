@@ -1218,6 +1218,27 @@ export interface AgentActivityEvent {
   created_at: string;
 }
 
+export type GuidedRequirementDiscoveryStrategy =
+  | "entry_point_discovery"
+  | "level_discovery"
+  | "goal_discovery"
+  | "mode_discovery"
+  | "bottleneck_discovery";
+
+export interface GuidedRequirementEntryPoint {
+  title: string;
+  description: string;
+}
+
+export interface GuidedRequirementDiscovery {
+  strategy: GuidedRequirementDiscoveryStrategy;
+  learning_map_summary: string;
+  entry_point_options: GuidedRequirementEntryPoint[];
+  recommended_entry_point: string;
+  reason_for_recommendation: string;
+  learner_profile_inference: string;
+}
+
 export interface ChatResponse {
   chatbot_message: string;
   agent_turn_decision?: AgentTurnDecision | null;
@@ -1241,6 +1262,7 @@ export interface ChatResponse {
   board_decision: BoardDecision;
   needs_clarification: boolean;
   clarification_questions: string[];
+  guided_requirement_discovery?: GuidedRequirementDiscovery | null;
   patch_proposal?: PatchProposal | null;
   scope_options: ScopeOption[];
   board_edit_prompt?: BoardEditPrompt | null;

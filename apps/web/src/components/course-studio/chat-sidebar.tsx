@@ -538,6 +538,17 @@ export function CourseStudioChatSidebar({
                   }}
                   onSubmitEdit={() => void submitEditedMessage(message)}
                   isEditDisabled={!editingMessageContent.trim() || isChatBusy}
+                  onSelectGuidanceEntry={
+                    !isPreviewMode &&
+                    !isChatBusy &&
+                    message.role === "assistant"
+                      ? (entry) =>
+                          void onSubmitChat({
+                            message: `我想从「${entry.title}」开始：${entry.description}`,
+                            interaction_mode: "ask",
+                          })
+                      : undefined
+                  }
                   onContinueTeaching={
                     !isPreviewMode &&
                     index === displayedMessages.length - 1 &&

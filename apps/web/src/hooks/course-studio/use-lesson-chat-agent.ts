@@ -601,12 +601,14 @@ export function useLessonChatAgent({
               ? {
                   agentActivity: finalAgentActivity,
                   boardSearchEvidence: response.board_search_evidence ?? null,
+                  guidedRequirementDiscovery: response.guided_requirement_discovery ?? null,
                   commitId: responseCommit.id,
                   parentCommitIds: responseCommit.parent_ids,
                 }
               : {
                   agentActivity: finalAgentActivity,
                   boardSearchEvidence: response.board_search_evidence ?? null,
+                  guidedRequirementDiscovery: response.guided_requirement_discovery ?? null,
                 }
           )
         );
@@ -623,12 +625,14 @@ export function useLessonChatAgent({
               ? {
                   agentActivity: finalAgentActivity,
                   boardSearchEvidence: response.board_search_evidence ?? null,
+                  guidedRequirementDiscovery: response.guided_requirement_discovery ?? null,
                   commitId: responseCommit.id,
                   parentCommitIds: responseCommit.parent_ids,
                 }
               : {
                   agentActivity: finalAgentActivity,
                   boardSearchEvidence: response.board_search_evidence ?? null,
+                  guidedRequirementDiscovery: response.guided_requirement_discovery ?? null,
                 }
           )
         );
