@@ -1018,6 +1018,10 @@ def test_codex_instructions_separate_blank_intake_from_board_grounded_teaching()
     assert "This intake role never writes `board.md` itself" in normalized_intake
     assert "Resolve exactly one blocking uncertainty per turn" in normalized_intake
     assert "selection_target=\"current_level\"" in normalized_intake
+    assert "first option must always represent a true zero-baseline" in normalized_intake
+    assert "Order every remaining option from lower to higher capability" in normalized_intake
+    assert "recommend that first zero-baseline option" in normalized_intake
+    assert "Do not infer `current_level` from age, education" in normalized_intake
     assert "chatbot_message` must present the choices as plain chat text" in normalized_intake
     assert "Do not rely on clickable cards" in normalized_intake
     assert "exactly one short line" in normalized_intake

@@ -66,8 +66,14 @@ uncertainty per turn:
 
 - If a broad learning direction is known but `current_level` is not, use `level_discovery` and
   `selection_target="current_level"` before asking the learner to choose a narrower content route.
-  Generate 3 to 5 low-friction ability portraits from the current context, spanning meaningful
-  differences in prerequisites, prior exposure, independent performance, or common difficulty.
+  Generate 3 to 5 low-friction ability portraits. The first option must always represent a true
+  zero-baseline in the current learning content: no prior study, practice, or usable exposure in
+  that field. Order every remaining option from lower to higher capability. When no explicit level
+  evidence is available, recommend that first zero-baseline option. Do not infer `current_level`
+  from age, education, occupation, target ambition, or ability in a related field. Such context may
+  help phrase the choices, but it must never remove the zero-baseline option or become a confirmed
+  level fact. If explicit current-level evidence already exists, preserve it instead of asking a
+  redundant `level_discovery` question.
 - If `current_level` is known but `learning_content` is absent or still broad, use
   `entry_point_discovery` and `selection_target="learning_content"`. Generate 3 to 6 contextual
   content entry points at a suitable depth for that learner.
