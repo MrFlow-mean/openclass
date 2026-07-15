@@ -666,6 +666,89 @@ class SourceStructureStore:
                     token_budget=token_budget,
                 )
 
+    def page_range_evidence(
+        self,
+        *,
+        owner_user_id: str,
+        package_id: str,
+        source_ingestion_id: str,
+        page_start: int,
+        page_end: int,
+        token_budget: int,
+    ) -> list[RetrievalEvidence]:
+        if page_start < 1 or page_end <= page_start:
+            return []
+        with self._lock:
+            with self._connect() as conn:
+                source_row = conn.execute(
+                    """
+                    SELECT title, source_uri, open_notebook_source_id
+                    FROM source_ingestions
+                    WHERE owner_user_id = ? AND package_id = ? AND id = ? AND status = 'ready'
+                    """,
+                    (owner_user_id, package_id, source_ingestion_id),
+                ).fetchone()
+                if source_row is None:
+                    return []
+                rows = conn.execute(
+                    """
+                    SELECT source_chunks.*, source_chapters.path_json AS chapter_path_json
+                    FROM source_chunks
+                    LEFT JOIN source_chapters
+                        ON source_chapters.owner_user_id = source_chunks.owner_user_id
+                        AND source_chapters.package_id = source_chunks.package_id
+                        AND source_chapters.id = source_chunks.chapter_id
+                    WHERE source_chunks.owner_user_id = ?
+                        AND source_chunks.package_id = ?
+                        AND source_chunks.source_ingestion_id = ?
+                        AND source_chunks.page_start IS NOT NULL
+                        AND source_chunks.page_start < ?
+                        AND COALESCE(source_chunks.page_end, source_chunks.page_start + 1) > ?
+                    ORDER BY source_chunks.order_index
+                    """,
+                    (owner_user_id, package_id, source_ingestion_id, page_end, page_start),
+                ).fetchall()
+        chunk_ids: list[str] = []
+        text_parts: list[str] = []
+        used_tokens = 0
+        section_path: list[str] = []
+        for row in rows:
+            chunk = self._chunk_from_row(row)
+            chunk_tokens = chunk.token_count or _estimate_tokens(chunk.text)
+            if used_tokens and used_tokens + chunk_tokens > token_budget:
+                break
+            used_tokens += chunk_tokens
+            chunk_ids.append(chunk.id)
+            text_parts.append(chunk.text)
+            if not section_path:
+                section_path = _loads(row["chapter_path_json"], [])
+        if not text_parts:
+            return []
+        expanded_text = "\n\n".join(text_parts).strip()
+        display_end = max(page_start, page_end - 1)
+        page_range = f"p. {page_start}" if display_end == page_start else f"pp. {page_start}-{display_end}"
+        return [
+            RetrievalEvidence(
+                source_ingestion_id=source_ingestion_id,
+                open_notebook_source_id=str(source_row["open_notebook_source_id"] or ""),
+                source_title=str(source_row["title"] or ""),
+                source_uri=source_row["source_uri"],
+                section_path=section_path,
+                page_range=page_range,
+                chunk_ids=chunk_ids,
+                excerpt=_compact_text(expanded_text, 360),
+                expanded_text=expanded_text,
+                relevance_score=1.0,
+                reason="命中用户明确选择的资料页段。",
+                token_count=used_tokens,
+                metadata={
+                    "retrieval_mode": "verified_page_range",
+                    "page_start": page_start,
+                    "page_end": page_end,
+                },
+            )
+        ]
+
     def _chapter_evidence_from_rows(
         self,
         conn: sqlite3.Connection,

@@ -419,7 +419,7 @@ def process_blank_board_turn(
             requirement_changed=True,
             clarification=source_plan.clarification,
             ready_for_board=True,
-            chatbot_message="已根据你引用的资料章节开始生成板书。",
+            chatbot_message="",
             teaching_plan=source_plan.teaching_plan,
             requirement_phase="ready",
         )

@@ -23,8 +23,8 @@ from app.services.source_evidence_store import source_evidence_store
 from app.services.source_structure_store import source_structure_store
 
 
-SOURCE_BOARD_TOKEN_BUDGET = 24_000
-SOURCE_BOARD_EVIDENCE_LIMIT = 24
+SOURCE_BOARD_TOKEN_BUDGET = 48_000
+SOURCE_BOARD_EVIDENCE_LIMIT = 64
 
 
 class SourceGroundedBoardError(RuntimeError):
@@ -54,8 +54,19 @@ def resolve_source_grounded_board_plan(
     """
     if selection is None or selection.kind != "source":
         return None
-    if not selection.source_ingestion_id or not selection.source_chapter_id:
+    if not selection.source_ingestion_id:
         raise SourceGroundedBoardError("这份资料引用缺少可验证的章节位置，请重新从资料目录中选择章节。")
+    is_page_range = selection.source_scope_kind == "page_range"
+    if is_page_range:
+        if (
+            selection.source_page_start is None
+            or selection.source_page_end is None
+            or selection.source_page_start < 1
+            or selection.source_page_end <= selection.source_page_start
+        ):
+            raise SourceGroundedBoardError("这份资料引用缺少有效的页段边界。")
+    elif not selection.source_chapter_id:
+        raise SourceGroundedBoardError("这份资料引用缺少可验证的章节位置。")
 
     workspace = workspace_state.load_workspace_for_user(owner_user_id)
     package, _current_lesson = workspace_state.find_lesson_package(workspace, lesson.id)
@@ -70,7 +81,7 @@ def resolve_source_grounded_board_plan(
     view = source_structure_store.get_structure_view(source=source, chunk_limit=0)
     if view.structure is None or view.structure.status not in {"ready", "linear_only"}:
         raise SourceGroundedBoardError("这份资料的结构索引尚未完成，请稍后重试。")
-    chapter = next(
+    chapter = None if is_page_range else next(
         (
             candidate
             for candidate in view.chapters
@@ -79,7 +90,7 @@ def resolve_source_grounded_board_plan(
         ),
         None,
     )
-    if chapter is None:
+    if chapter is None and not is_page_range:
         rebound = rebind_stale_source_chapter_selection(
             selection=selection,
             source_ingestion_id=source.id,
@@ -88,18 +99,40 @@ def resolve_source_grounded_board_plan(
         if rebound.is_ambiguous:
             raise SourceGroundedBoardError("这份资料目录发生变化，当前引用对应多个章节，请重新选择一次。")
         chapter = rebound.chapter
-    if chapter is None:
+    if chapter is None and not is_page_range:
         raise SourceGroundedBoardError("找不到这份引用对应的已验证正文范围，请重新从资料目录中选择章节。")
 
-    evidence = source_structure_store.chapter_evidence_by_id(
+    if is_page_range:
+        assert selection.source_page_start is not None
+        assert selection.source_page_end is not None
+        evidence = source_structure_store.page_range_evidence(
+            owner_user_id=owner_user_id,
+            package_id=package.id,
+            source_ingestion_id=source.id,
+            page_start=selection.source_page_start,
+            page_end=selection.source_page_end,
+            token_budget=SOURCE_BOARD_TOKEN_BUDGET,
+        )
+    else:
+        assert chapter is not None
+        evidence = source_structure_store.chapter_evidence_by_id(
+            owner_user_id=owner_user_id,
+            package_id=package.id,
+            chapter_id=chapter.id,
+            limit=SOURCE_BOARD_EVIDENCE_LIMIT,
+            token_budget=SOURCE_BOARD_TOKEN_BUDGET,
+        )
+    if not evidence or not any(item.expanded_text.strip() for item in evidence):
+        raise SourceGroundedBoardError("所选资料范围尚未提取到可用正文。")
+
+    visual_evidence = source_structure_store.visual_evidence_for_scope(
         owner_user_id=owner_user_id,
         package_id=package.id,
-        chapter_id=chapter.id,
-        limit=SOURCE_BOARD_EVIDENCE_LIMIT,
-        token_budget=SOURCE_BOARD_TOKEN_BUDGET,
+        source_ingestion_id=source.id,
+        chapter_id=chapter.id if chapter else None,
+        page_start=selection.source_page_start if is_page_range else chapter.page_start if chapter else None,
+        page_end=selection.source_page_end if is_page_range else chapter.page_end if chapter else None,
     )
-    if not evidence or not any(item.expanded_text.strip() for item in evidence):
-        raise SourceGroundedBoardError("这个章节尚未提取到可用正文，不能据此生成板书。")
 
     bundle = EvidenceBundle(
         owner_user_id=owner_user_id,
@@ -109,6 +142,7 @@ def resolve_source_grounded_board_plan(
         status="confirmed",
         query=selection.excerpt,
         evidence_items=evidence,
+        visual_items=visual_evidence,
         context_text=_evidence_context_text(evidence),
         token_count=sum(item.token_count for item in evidence),
         confirmed_by_user=True,
@@ -116,33 +150,42 @@ def resolve_source_grounded_board_plan(
         metadata={
             "origin": "structured_source_selection",
             "source_ingestion_id": source.id,
-            "source_chapter_id": chapter.id,
+            "source_chapter_id": chapter.id if chapter else "",
+            "source_scope_kind": selection.source_scope_kind,
             "source_structure_id": view.structure.id,
         },
     )
     source_evidence_store.save_bundle(bundle)
 
-    chapter_label = " ".join(part for part in [chapter.normalized_number or chapter.number, chapter.title] if part).strip()
-    chapter_label = chapter_label or chapter.title or source.title
+    if chapter is not None:
+        chapter_label = " ".join(
+            part
+            for part in [chapter.normalized_number or chapter.number, chapter.title]
+            if part
+        ).strip()
+        chapter_label = chapter_label or chapter.title or source.title
+    else:
+        chapter_label = evidence[0].page_range or selection.source_page_range or source.title
     reference = LearningSourceReference(
         evidence_bundle_id=bundle.id,
         source_ingestion_id=source.id,
         source_title=source.title,
-        source_chapter_id=chapter.id,
-        chapter_number=chapter.normalized_number or chapter.number,
-        chapter_title=chapter.title,
-        scope_kind="chapter",
-        scope_chapter_id=chapter.id,
-        scope_chapter_number=chapter.normalized_number or chapter.number,
-        scope_chapter_title=chapter.title,
-        section_path=chapter.path,
-        source_locator=chapter.source_locator,
+        source_chapter_id=chapter.id if chapter else "",
+        chapter_number=(chapter.normalized_number or chapter.number) if chapter else "",
+        chapter_title=chapter.title if chapter else "",
+        scope_kind="page_range" if is_page_range else "chapter",
+        scope_chapter_id=chapter.id if chapter else "",
+        scope_chapter_number=(chapter.normalized_number or chapter.number) if chapter else "",
+        scope_chapter_title=chapter.title if chapter else "",
+        section_path=chapter.path if chapter else evidence[0].section_path,
+        source_locator=chapter.source_locator if chapter else selection.source_locator,
         page_range=evidence[0].page_range,
-        page_start=chapter.page_start,
-        page_end=chapter.page_end,
-        body_start_offset=chapter.body_start_offset,
-        body_end_offset=chapter.body_end_offset,
+        page_start=selection.source_page_start if is_page_range else chapter.page_start if chapter else None,
+        page_end=selection.source_page_end if is_page_range else chapter.page_end if chapter else None,
+        body_start_offset=chapter.body_start_offset if chapter else None,
+        body_end_offset=chapter.body_end_offset if chapter else None,
         chunk_ids=_dedupe_chunk_ids(evidence),
+        visual_ids=[item.visual_id for item in visual_evidence],
         source_structure_id=view.structure.id,
         source_structure_updated_at=view.structure.updated_at,
         content_hash=_evidence_hash(evidence),
@@ -154,6 +197,7 @@ def resolve_source_grounded_board_plan(
         confirmed_at=bundle.confirmed_at,
         confirmed_references=[reference],
         frozen_evidence=evidence,
+        frozen_visual_evidence=visual_evidence,
     )
     source_label = " / ".join(part for part in [source.title, chapter_label, reference.page_range] if part)
     requirement = LearningRequirementSheet(
@@ -181,7 +225,7 @@ def resolve_source_grounded_board_plan(
         success_criteria="覆盖所选资料范围的核心概念、结构关系与必要例证。",
         board_workflow="generate_from_scratch",
         work_mode="knowledge_board",
-        granularity="source_chapter",
+        granularity="source_range" if is_page_range else "source_chapter",
         source_grounding=grounding,
     )
     clarification = LearningClarificationStatus(
@@ -207,7 +251,7 @@ def resolve_source_grounded_board_plan(
             )
         ],
         work_mode="knowledge_board",
-        granularity="source_chapter",
+        granularity="source_range" if is_page_range else "source_chapter",
         ready_for_board=True,
     )
     return SourceGroundedBoardPlan(

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
+import mimetypes
 import os
 import shutil
 import stat
@@ -34,12 +36,14 @@ from app.services.codex_app_server import (
 from app.services.history import commit_operations, current_head_commit
 from app.services.lesson_factory import build_requirements
 from app.services.rich_document import build_document, document_changed, looks_like_html_content
+from app.services.source_structure_store import source_structure_store
 
 
 BOARD_FILE_NAME = "board.md"
 DEFAULT_CODEX_MODEL = "gpt-5.5"
 DEFAULT_BOARD_MAX_BYTES = 2 * 1024 * 1024
 MAX_FORMULA_IMAGE_DATA_URL_CHARS = 12 * 1024 * 1024
+MAX_SOURCE_VISUAL_BYTES = 4 * 1024 * 1024
 BoardState = Literal["empty", "non_empty"]
 CODEX_DEVELOPER_INSTRUCTIONS = """
 You are Codex embedded as the single AI agent in OpenClass.
@@ -447,7 +451,10 @@ def _run_frozen_board_generation(
                 ),
                 developer_instructions=BOARD_GENERATION_DEVELOPER_INSTRUCTIONS,
                 thread_id=None,
-                image_urls=[],
+                image_urls=_source_visual_image_urls(
+                    user_id=user_id,
+                    requirement=requirement,
+                ),
                 on_delta=None,
                 on_activity=on_activity,
                 is_cancelled=turn_is_cancelled,
@@ -468,6 +475,35 @@ def _run_frozen_board_generation(
             _discard_uncommitted_thread(result.thread_id, user_id=user_id)
             raise
         return result, content
+
+
+def _source_visual_image_urls(
+    *,
+    user_id: str,
+    requirement: LearningRequirementSheet,
+) -> list[str]:
+    visual_ids = [
+        evidence.visual_id
+        for evidence in requirement.source_grounding.frozen_visual_evidence
+        if evidence.visual_id
+    ]
+    paths = source_structure_store.visual_asset_paths(
+        owner_user_id=user_id,
+        visual_ids=visual_ids,
+    )
+    image_urls: list[str] = []
+    for path in paths:
+        try:
+            if not path.is_file() or path.stat().st_size > MAX_SOURCE_VISUAL_BYTES:
+                continue
+            mime_type = mimetypes.guess_type(path.name)[0] or ""
+            if mime_type not in {"image/png", "image/jpeg", "image/webp", "image/gif"}:
+                continue
+            encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+        except OSError:
+            continue
+        image_urls.append(f"data:{mime_type};base64,{encoded}")
+    return image_urls
 
 
 def _generate_blank_board(

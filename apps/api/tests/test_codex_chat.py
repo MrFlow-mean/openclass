@@ -14,7 +14,10 @@ from app.models import (
     GuidedRequirementDiscovery,
     GuidedRequirementEntryPoint,
     SelectionRef,
+    SourceChunk,
     SourceIngestionRecord,
+    SourceStructure,
+    SourceVisualEvidence,
 )
 from app.services import blank_board_intake, codex_app_server, codex_chat, workspace_state
 from app.services.blank_board_intake import (
@@ -921,6 +924,31 @@ def test_source_chapter_selection_generates_blank_board_without_requirement_ques
     source_evidence_store.save_source(source)
     SourceStructureIndexer(store=source_structure_store).rebuild_structure(source)
     chapter = source_structure_store.get_structure_view(source=source).chapters[0]
+    visual_path = tmp_path / "visual.png"
+    visual_path.write_bytes(
+        b"\x89PNG\r\n\x1a\n" + b"source-visual"
+    )
+    visual = SourceVisualEvidence(
+        visual_id="sourcevisual_selected",
+        source_ingestion_id=source.id,
+        source_chapter_id=chapter.id,
+        kind="diagram",
+        source_locator="source:visual:1",
+        caption="Selected diagram",
+        mime_type="image/png",
+        content_hash="visual-hash",
+        confidence=0.9,
+    )
+    monkeypatch.setattr(
+        source_structure_store,
+        "visual_evidence_for_scope",
+        lambda **_kwargs: [visual],
+    )
+    monkeypatch.setattr(
+        source_structure_store,
+        "visual_asset_paths",
+        lambda **_kwargs: [visual_path],
+    )
 
     def fail_if_intake_runs(**_kwargs):
         raise AssertionError("a verified source selection must bypass requirement questions")
@@ -930,6 +958,7 @@ def test_source_chapter_selection_generates_blank_board_without_requirement_ques
         assert '"granularity":"source_chapter"' in prompt
         assert "The selected source explains a durable concept" in prompt
         assert "为我讲解" not in prompt
+        assert kwargs["image_urls"] and kwargs["image_urls"][0].startswith("data:image/png;base64,")
         board_path = Path(kwargs["cwd"]) / codex_chat.BOARD_FILE_NAME
         board_path.write_text("# Source-grounded board\n\nGrounded content.", encoding="utf-8")
         return CodexTurnResult(
@@ -974,10 +1003,96 @@ def test_source_chapter_selection_generates_blank_board_without_requirement_ques
     assert frozen_requirement["granularity"] == "source_chapter"
     assert frozen_requirement["source_grounding"]["confirmation_status"] == "confirmed"
     assert frozen_requirement["source_grounding"]["frozen_evidence"][0]["chapter_id"] == chapter.id
+    assert frozen_requirement["source_grounding"]["frozen_visual_evidence"][0]["visual_id"] == visual.visual_id
     bundle_id = frozen_requirement["source_grounding"]["confirmed_bundle_id"]
     saved_bundle = source_evidence_store.get_bundle(owner_user_id=TEST_USER_ID, bundle_id=bundle_id)
     assert saved_bundle is not None
     assert saved_bundle.status == "confirmed"
+    assert saved_bundle.visual_items[0].visual_id == visual.visual_id
+
+
+def test_source_page_range_selection_generates_from_only_that_range(
+    monkeypatch: pytest.MonkeyPatch,
+    codex_store: SqliteCourseStore,
+    tmp_path: Path,
+) -> None:
+    lesson = _seed_workspace(codex_store, content_text="")
+    package_id = codex_store.load_for_user(TEST_USER_ID).packages[0].id
+    source_path = tmp_path / "pages.txt"
+    source_path.write_text("page four evidence", encoding="utf-8")
+    source = SourceIngestionRecord(
+        id="source_page_range",
+        owner_user_id=TEST_USER_ID,
+        package_id=package_id,
+        title="Paged source",
+        source_type="local_file",
+        file_name=source_path.name,
+        mime_type="text/plain",
+        size_bytes=source_path.stat().st_size,
+        status="ready",
+        metadata={"local_source_path": str(source_path)},
+    )
+    source_evidence_store.save_source(source)
+    source_structure_store.save_structure_bundle(
+        structure=SourceStructure(
+            owner_user_id=TEST_USER_ID,
+            package_id=package_id,
+            source_ingestion_id=source.id,
+            status="linear_only",
+        ),
+        chapters=[],
+        chunks=[
+            SourceChunk(
+                owner_user_id=TEST_USER_ID,
+                package_id=package_id,
+                source_ingestion_id=source.id,
+                text="page four evidence",
+                start_offset=0,
+                end_offset=18,
+                page_start=4,
+                page_end=5,
+                token_count=5,
+            )
+        ],
+    )
+
+    def fail_if_intake_runs(**_kwargs):
+        raise AssertionError("a page-range source selection must bypass requirement questions")
+
+    def fake_board_turn(**kwargs) -> CodexTurnResult:
+        assert '"granularity":"source_range"' in kwargs["user_prompt"]
+        assert "page four evidence" in kwargs["user_prompt"]
+        board_path = Path(kwargs["cwd"]) / codex_chat.BOARD_FILE_NAME
+        board_path.write_text("# Page range board\n\nGrounded content.", encoding="utf-8")
+        return CodexTurnResult(
+            thread_id="thread_page_range",
+            turn_id="turn_page_range",
+            final_response="Generated.",
+        )
+
+    monkeypatch.setattr(blank_board_intake.CodexAppServerTextClient, "parse", fail_if_intake_runs)
+    monkeypatch.setattr(codex_chat, "run_codex_thread_turn", fake_board_turn)
+
+    response = codex_chat.process_codex_chat_on_lesson(
+        lesson.id,
+        ChatRequest(
+            message="生成板书",
+            selection=SelectionRef(
+                kind="source",
+                excerpt="Paged source · pp. 4-4",
+                source_ingestion_id=source.id,
+                source_title=source.title,
+                source_scope_kind="page_range",
+                source_page_start=4,
+                source_page_end=5,
+            ),
+            post_generation_action="stop_after_generation",
+        ),
+        user_id=TEST_USER_ID,
+    )
+
+    assert response.requirement_phase == "consumed"
+    assert response.course_package.lessons[0].board_document.content_text.startswith("# Page range board")
 
 
 def test_invalid_source_selection_returns_source_error_without_running_intake(
