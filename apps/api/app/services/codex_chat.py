@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Callable, Literal
 
 from app.models import (
+    AgentActivityEvent,
     BoardDecision,
     ChatRequest,
     ChatResponse,
@@ -399,6 +400,7 @@ def _run_frozen_board_generation(
     requirement: LearningRequirementSheet,
     teaching_plan: str,
     is_cancelled: Callable[[], bool] | None,
+    on_activity: Callable[[AgentActivityEvent], None] | None = None,
 ) -> tuple[CodexTurnResult, str]:
     workspace_root = codex_workspace_root()
     workspace_root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -439,6 +441,7 @@ def _run_frozen_board_generation(
                 thread_id=None,
                 image_urls=[],
                 on_delta=None,
+                on_activity=on_activity,
                 is_cancelled=turn_is_cancelled,
             )
         finally:
@@ -465,6 +468,7 @@ def _generate_blank_board(
     requirement: LearningRequirementSheet,
     teaching_plan: str,
     is_cancelled: Callable[[], bool] | None,
+    on_activity: Callable[[AgentActivityEvent], None] | None = None,
 ) -> tuple[CodexTurnResult, str]:
     return _run_frozen_board_generation(
         user_id=user_id,
@@ -472,6 +476,7 @@ def _generate_blank_board(
         requirement=requirement,
         teaching_plan=teaching_plan,
         is_cancelled=is_cancelled,
+        on_activity=on_activity,
     )
 
 
@@ -482,6 +487,7 @@ def process_codex_chat_on_lesson(
     user_id: str,
     on_delta: Callable[[str], None] | None = None,
     on_requirement_update: Callable[[dict[str, object]], None] | None = None,
+    on_agent_activity: Callable[[AgentActivityEvent], None] | None = None,
     is_cancelled: Callable[[], bool] | None = None,
 ) -> ChatResponse:
     with _turn_lock(user_id):
@@ -504,6 +510,7 @@ def process_codex_chat_on_lesson(
                 conversation_text=_conversation_context(request.conversation),
                 on_delta=on_delta,
                 on_requirement_update=on_requirement_update,
+                on_agent_activity=on_agent_activity,
                 is_cancelled=is_cancelled,
                 generate_board=_generate_blank_board,
                 discard_generated_thread=lambda thread_id: _discard_uncommitted_thread(
@@ -576,6 +583,7 @@ def process_codex_chat_on_lesson(
                     last_turn_id=prior_turn_id,
                     image_urls=_formula_image_urls(request),
                     on_delta=on_delta,
+                    on_activity=on_agent_activity,
                     is_cancelled=turn_is_cancelled,
                     reasoning_effort=codex_reasoning_effort,
                     service_tier=codex_service_tier,
@@ -651,6 +659,9 @@ def process_codex_chat_on_lesson(
                     "codex_service_tier_is_set": codex_service_tier_is_set,
                     "codex_branch": branch_name,
                     "codex_base_commit_id": base_commit_id,
+                    "agent_activity": [
+                        event.model_dump(mode="json") for event in result.activity
+                    ],
                     "active_requirement_sheet_after": None,
                     "active_board_task_sheet_after": None,
                     "active_interaction_session_after": None,
@@ -678,6 +689,7 @@ def process_codex_chat_on_lesson(
                 package, lesson = workspace_state.find_lesson_package(workspace, lesson_id)
                 return ChatResponse(
                     chatbot_message=result.final_response,
+                    agent_activity=result.activity,
                     learning_requirement_sheet=build_requirements(lesson.title),
                     active_requirement_sheet=None,
                     active_interaction_session=None,

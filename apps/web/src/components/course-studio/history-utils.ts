@@ -1,6 +1,7 @@
 import type { CourseChatMessageView } from "@/components/chatbot";
 import { normalizePageSettings } from "@/components/course-studio/page-settings";
 import type {
+  AgentActivityEvent,
   BoardDocument,
   BoardSearchEvidence,
   ChatInteractionMode,
@@ -189,6 +190,65 @@ function boardSearchEvidenceFromMetadata(value: unknown): BoardSearchEvidence | 
   return value as BoardSearchEvidence;
 }
 
+const AGENT_ACTIVITY_STAGES = new Set<AgentActivityEvent["stage"]>([
+  "turn_decision",
+  "resolve_target",
+  "build_context",
+  "execute_role",
+  "verify",
+  "persist_history",
+  "final",
+]);
+
+const AGENT_ACTIVITY_STATUSES = new Set<AgentActivityEvent["status"]>([
+  "pending",
+  "running",
+  "completed",
+  "blocked",
+  "failed",
+  "skipped",
+]);
+
+function agentActivityFromMetadata(value: unknown): AgentActivityEvent[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((item) => {
+    if (!item || typeof item !== "object") {
+      return [];
+    }
+    const raw = item as Record<string, unknown>;
+    if (
+      typeof raw.id !== "string" ||
+      typeof raw.turn_id !== "string" ||
+      typeof raw.stage !== "string" ||
+      !AGENT_ACTIVITY_STAGES.has(raw.stage as AgentActivityEvent["stage"]) ||
+      typeof raw.label !== "string" ||
+      typeof raw.status !== "string" ||
+      !AGENT_ACTIVITY_STATUSES.has(raw.status as AgentActivityEvent["status"]) ||
+      typeof raw.role !== "string" ||
+      typeof raw.created_at !== "string"
+    ) {
+      return [];
+    }
+    return [
+      {
+        id: raw.id,
+        turn_id: raw.turn_id,
+        stage: raw.stage as AgentActivityEvent["stage"],
+        label: raw.label,
+        status: raw.status as AgentActivityEvent["status"],
+        role: raw.role,
+        metadata:
+          raw.metadata && typeof raw.metadata === "object"
+            ? (raw.metadata as Record<string, unknown>)
+            : {},
+        created_at: raw.created_at,
+      },
+    ];
+  });
+}
+
 export function currentHeadCommitId(lesson: Lesson): string | null {
   const branch = lesson.history_graph.branches[lesson.history_graph.current_branch];
   return (
@@ -320,7 +380,10 @@ export function buildLessonMessagesFromHistory(lesson: Lesson, commitId?: string
           null,
           teachingProgressFromMetadata(commit.metadata?.teaching_progress),
           {
+            agentActivity: agentActivityFromMetadata(commit.metadata?.agent_activity),
             boardSearchEvidence: boardSearchEvidenceFromMetadata(commit.metadata?.board_search_evidence),
+            commitId: commit.id,
+            parentCommitIds: commit.parent_ids,
           }
         )
       );

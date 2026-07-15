@@ -66,6 +66,17 @@ type CandidateEvidenceState = {
 
 const DEFAULT_LEARNING_REQUIREMENT_FAILURE_REASON = "本轮学习需求没有成功更新，请重试刚才的输入。";
 
+function upsertAgentActivity(
+  events: AgentActivityEvent[],
+  nextEvent: AgentActivityEvent
+): AgentActivityEvent[] {
+  const existingIndex = events.findIndex((event) => event.id === nextEvent.id);
+  if (existingIndex < 0) {
+    return [...events, nextEvent];
+  }
+  return events.map((event, index) => (index === existingIndex ? nextEvent : event));
+}
+
 export function recoveredLearningRequirementFailureReason(commit: CommitRecord | null): string | null {
   const metadata = commit?.metadata;
   if (
@@ -469,7 +480,7 @@ export function useLessonChatAgent({
             updatePendingAssistant(lessonId, pendingAssistantMessage.id, { statusLabel: label });
           },
           onAgentActivity(event) {
-            streamedAgentActivity = [...streamedAgentActivity, event];
+            streamedAgentActivity = upsertAgentActivity(streamedAgentActivity, event);
             updatePendingAssistant(lessonId, pendingAssistantMessage.id, {
               agentActivity: streamedAgentActivity,
               statusLabel: event.label,

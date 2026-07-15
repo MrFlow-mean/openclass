@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
+import { useState } from "react";
 import clsx from "clsx";
 import {
   ArrowRight,
@@ -62,22 +62,79 @@ function ChatMessageContent({ content }: { content: string }) {
   );
 }
 
-function AgentActivityTimeline({ events }: { events: AgentActivityEvent[] }) {
-  const visibleEvents = events.slice(-7);
-  if (!visibleEvents.length) {
+function activityDetail(event: AgentActivityEvent): string {
+  const detail = event.metadata.detail;
+  if (typeof detail === "string" && detail.trim()) {
+    return detail.trim();
+  }
+  const command = event.metadata.command;
+  if (typeof command === "string" && command.trim()) {
+    return command.trim();
+  }
+  const query = event.metadata.query;
+  if (typeof query === "string" && query.trim()) {
+    return query.trim();
+  }
+  const changes = event.metadata.changes;
+  if (Array.isArray(changes) && changes.length) {
+    return JSON.stringify(changes, null, 2);
+  }
+  const result = event.metadata.result;
+  if (result !== undefined && result !== null) {
+    return typeof result === "string" ? result : JSON.stringify(result, null, 2);
+  }
+  return "";
+}
+
+function AgentActivityTimeline({ events, isPending }: { events: AgentActivityEvent[]; isPending: boolean }) {
+  const [isExpanded, setIsExpanded] = useState(false);
+  if (!events.length) {
     return null;
   }
+  const latestEvent = events[events.length - 1];
+  const hasActiveEvent = events.some((event) => event.status === "pending" || event.status === "running");
+  const problemCount = events.filter((event) => event.status === "blocked" || event.status === "failed").length;
+  const summary = isPending || hasActiveEvent
+    ? latestEvent.label
+    : problemCount
+      ? `${events.length} 项工作，${problemCount} 项未完成`
+      : `${events.length} 项工作已完成`;
+
   return (
-    <div className="rounded-xl border border-gray-200 bg-gray-50 px-3 py-2">
-      <div className="space-y-1.5">
-        {visibleEvents.map((event) => {
+    <div className="overflow-hidden rounded-xl border border-gray-200 bg-gray-50/80">
+      <button
+        type="button"
+        aria-expanded={isExpanded}
+        onClick={() => setIsExpanded((current) => !current)}
+        className="flex w-full items-center gap-2 px-3 py-2 text-left transition hover:bg-gray-100"
+      >
+        <span className="flex h-5 w-5 shrink-0 items-center justify-center text-gray-500">
+          {isPending || hasActiveEvent ? (
+            <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+          ) : isExpanded ? (
+            <ChevronUp className="h-3.5 w-3.5" />
+          ) : (
+            <ChevronDown className="h-3.5 w-3.5" />
+          )}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block text-[11px] font-semibold text-gray-800">工作过程</span>
+          <span className="block truncate text-[11px] leading-5 text-gray-500">{summary}</span>
+        </span>
+        <span className="text-[10px] font-medium text-gray-400">{isExpanded ? "收起" : "展开"}</span>
+      </button>
+      {isExpanded ? <div className="space-y-2 border-t border-gray-200 px-3 py-2.5">
+        {events.map((event) => {
           const isActive = event.status === "pending" || event.status === "running";
           const isProblem = event.status === "blocked" || event.status === "failed";
+          const detail = activityDetail(event);
+          const command = typeof event.metadata.command === "string" ? event.metadata.command.trim() : "";
+          const cwd = typeof event.metadata.cwd === "string" ? event.metadata.cwd.trim() : "";
           return (
-            <div key={event.id} className="flex min-w-0 items-center gap-2 text-[11px] leading-5 text-gray-600">
+            <div key={event.id} className="flex min-w-0 items-start gap-2 text-[11px] leading-5 text-gray-600">
               <span
                 className={clsx(
-                  "flex h-4 w-4 shrink-0 items-center justify-center rounded-full border bg-white",
+                  "mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border bg-white",
                   isProblem ? "border-amber-300 text-amber-700" : "border-gray-200 text-gray-500"
                 )}
               >
@@ -89,11 +146,24 @@ function AgentActivityTimeline({ events }: { events: AgentActivityEvent[] }) {
                   <Check className="h-3 w-3" />
                 )}
               </span>
-              <span className="truncate">{event.label}</span>
+              <div className="min-w-0 flex-1">
+                <p className="font-medium text-gray-700">{event.label}</p>
+                {command && detail !== command ? (
+                  <pre className="custom-scrollbar mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md bg-white px-2 py-1.5 font-mono text-[10px] leading-4 text-gray-700">
+                    {command}
+                  </pre>
+                ) : null}
+                {cwd ? <p className="mt-1 truncate font-mono text-[10px] text-gray-400">{cwd}</p> : null}
+                {detail ? (
+                  <pre className="custom-scrollbar mt-1 max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-md bg-white px-2 py-1.5 font-sans text-[11px] leading-5 text-gray-600">
+                    {detail}
+                  </pre>
+                ) : null}
+              </div>
             </div>
           );
         })}
-      </div>
+      </div> : null}
     </div>
   );
 }
@@ -245,6 +315,10 @@ export function CourseChatMessage({
           </div>
         ) : null}
 
+        {isAssistant && agentActivity.length ? (
+          <AgentActivityTimeline events={agentActivity} isPending={isPending} />
+        ) : null}
+
         {isEditing && !isAssistant ? (
           <div
             className="ml-auto rounded-2xl rounded-tr-md border border-gray-200 bg-white p-2 shadow-sm"
@@ -329,8 +403,6 @@ export function CourseChatMessage({
         {isAssistant && boardSearchEvidence && !isPending ? (
           <BoardSearchEvidenceCard evidence={boardSearchEvidence} />
         ) : null}
-
-        {isAssistant && agentActivity.length ? <AgentActivityTimeline events={agentActivity} /> : null}
 
         {hasContent && !isEditing ? (
           <div

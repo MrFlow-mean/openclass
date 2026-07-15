@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.models import ChatRequest, SelectionRef
+from app.models import AgentActivityEvent, ChatRequest, SelectionRef
 from app.services import blank_board_intake, codex_app_server, codex_chat, workspace_state
 from app.services.blank_board_intake import (
     BlankBoardAuxiliaryFactor,
@@ -897,10 +897,19 @@ def test_codex_chat_preserves_frontend_contract_and_persists_thread(
 
     def fake_turn(**kwargs) -> CodexTurnResult:
         calls.append(kwargs)
+        activity = AgentActivityEvent(
+            id=f"activity_{len(calls)}",
+            turn_id=f"turn_{len(calls)}",
+            stage="build_context",
+            label="Codex 已完成思考",
+            role="Codex",
+            metadata={"kind": "reasoning", "detail": "Inspected the current board."},
+        )
         return CodexTurnResult(
             thread_id="thread_codex_1",
             turn_id=f"turn_{len(calls)}",
             final_response="Codex reply",
+            activity=[activity],
         )
 
     monkeypatch.setattr(codex_chat, "run_codex_thread_turn", fake_turn)
@@ -932,6 +941,7 @@ def test_codex_chat_preserves_frontend_contract_and_persists_thread(
     )
 
     assert first.chatbot_message == "Codex reply"
+    assert first.agent_activity[0].metadata["detail"] == "Inspected the current board."
     assert first.board_decision.action == "no_change"
     assert first.board_document_operation_status == "none"
     assert first.requirement_cleared is True
@@ -962,6 +972,7 @@ def test_codex_chat_preserves_frontend_contract_and_persists_thread(
     assert commit.metadata["codex_thread_id"] == "thread_codex_1"
     assert commit.metadata["document_changed"] is False
     assert commit.metadata["requirement_cleared"] is True
+    assert commit.metadata["agent_activity"][0]["id"] == "activity_2"
     configured_commit = next(
         item
         for item in saved_lesson.history_graph.commits
@@ -1726,6 +1737,172 @@ def test_conversation_turn_collects_delta_and_final_message() -> None:
         "detail": "original",
     }
     assert "sandboxPolicy" not in params
+
+
+def test_conversation_turn_separates_work_activity_from_final_answer() -> None:
+    class FakeSession:
+        _next_id = 9
+
+        def __init__(self) -> None:
+            self._messages: queue.Queue[dict] = queue.Queue()
+
+        def _write(self, _payload: dict) -> None:
+            return None
+
+        def _answer_server_request(self, message: dict) -> None:
+            raise AssertionError(message)
+
+    session = FakeSession()
+    for message in [
+        {"id": 9, "result": {"turn": {"id": "turn_activity"}}},
+        {
+            "method": "item/started",
+            "params": {
+                "turnId": "turn_activity",
+                "item": {"id": "reasoning_1", "type": "reasoning", "summary": [], "content": []},
+            },
+        },
+        {
+            "method": "item/reasoning/summaryTextDelta",
+            "params": {
+                "turnId": "turn_activity",
+                "itemId": "reasoning_1",
+                "delta": "检查板书结构",
+            },
+        },
+        {
+            "method": "item/completed",
+            "params": {
+                "turnId": "turn_activity",
+                "item": {
+                    "id": "reasoning_1",
+                    "type": "reasoning",
+                    "summary": ["检查板书结构"],
+                    "content": ["private reasoning must not be persisted"],
+                },
+            },
+        },
+        {
+            "method": "item/started",
+            "params": {
+                "turnId": "turn_activity",
+                "item": {"id": "commentary_1", "type": "agentMessage", "phase": "commentary", "text": ""},
+            },
+        },
+        {
+            "method": "item/agentMessage/delta",
+            "params": {
+                "turnId": "turn_activity",
+                "itemId": "commentary_1",
+                "delta": "正在读取当前板书",
+            },
+        },
+        {
+            "method": "item/completed",
+            "params": {
+                "turnId": "turn_activity",
+                "item": {
+                    "id": "commentary_1",
+                    "type": "agentMessage",
+                    "phase": "commentary",
+                    "text": "正在读取当前板书",
+                },
+            },
+        },
+        {
+            "method": "item/started",
+            "params": {
+                "turnId": "turn_activity",
+                "item": {
+                    "id": "command_1",
+                    "type": "commandExecution",
+                    "command": "sed -n '1,80p' board.md",
+                    "cwd": "/tmp/board-only",
+                    "status": "inProgress",
+                },
+            },
+        },
+        {
+            "method": "item/commandExecution/outputDelta",
+            "params": {
+                "turnId": "turn_activity",
+                "itemId": "command_1",
+                "delta": "# Existing board\n",
+            },
+        },
+        {
+            "method": "item/completed",
+            "params": {
+                "turnId": "turn_activity",
+                "item": {
+                    "id": "command_1",
+                    "type": "commandExecution",
+                    "command": "sed -n '1,80p' board.md",
+                    "cwd": "/tmp/board-only",
+                    "status": "completed",
+                    "aggregatedOutput": "# Existing board\n",
+                    "exitCode": 0,
+                },
+            },
+        },
+        {
+            "method": "item/started",
+            "params": {
+                "turnId": "turn_activity",
+                "item": {"id": "final_1", "type": "agentMessage", "phase": "final_answer", "text": ""},
+            },
+        },
+        {
+            "method": "item/agentMessage/delta",
+            "params": {
+                "turnId": "turn_activity",
+                "itemId": "final_1",
+                "delta": "最终回复",
+            },
+        },
+        {
+            "method": "item/completed",
+            "params": {
+                "turnId": "turn_activity",
+                "item": {
+                    "id": "final_1",
+                    "type": "agentMessage",
+                    "phase": "final_answer",
+                    "text": "最终回复",
+                },
+            },
+        },
+        {
+            "method": "turn/completed",
+            "params": {"turn": {"id": "turn_activity", "status": "completed"}},
+        },
+    ]:
+        session._messages.put(message)
+
+    final_deltas: list[str] = []
+    activity_updates: list[AgentActivityEvent] = []
+    result = codex_app_server._run_conversation_turn(
+        session=session,  # type: ignore[arg-type]
+        thread_id="thread_activity",
+        model="gpt-5.5",
+        cwd=Path("/tmp/board-only"),
+        user_prompt="Explain the board",
+        image_urls=[],
+        deadline_monotonic=time.monotonic() + 5,
+        on_delta=final_deltas.append,
+        on_activity=activity_updates.append,
+        is_cancelled=None,
+    )
+
+    assert result.final_response == "最终回复"
+    assert final_deltas == ["最终回复"]
+    assert [event.id for event in result.activity] == ["reasoning_1", "commentary_1", "command_1"]
+    assert result.activity[0].metadata["detail"] == "检查板书结构"
+    assert "private reasoning" not in str(result.activity[0].metadata)
+    assert result.activity[1].metadata["detail"] == "正在读取当前板书"
+    assert result.activity[2].metadata["detail"] == "# Existing board\n"
+    assert all(event.status == "completed" for event in result.activity)
+    assert len(activity_updates) > len(result.activity)
 
 
 def test_runtime_settings_distinguish_inherited_and_standard_speed() -> None:

@@ -7,6 +7,7 @@ from typing import Callable, Literal, Protocol
 from pydantic import BaseModel, Field
 
 from app.models import (
+    AgentActivityEvent,
     BoardDecision,
     ChatRequest,
     ChatResponse,
@@ -157,6 +158,7 @@ class BlankBoardIntakeOutcome(BaseModel):
     chatbot_message: str
     teaching_plan: str = ""
     requirement_phase: Literal["collecting", "ready", "frozen"] | None = None
+    guidance: BlankBoardGuidance = Field(default_factory=BlankBoardGuidance)
 
 
 @dataclass(frozen=True)
@@ -175,10 +177,18 @@ class BoardGenerationResult(Protocol):
     thread_id: str
     turn_id: str | None
     final_response: str
+    activity: list[AgentActivityEvent]
 
 
 BoardGenerationRunner = Callable[
-    [str, str, LearningRequirementSheet, str, Callable[[], bool] | None],
+    [
+        str,
+        str,
+        LearningRequirementSheet,
+        str,
+        Callable[[], bool] | None,
+        Callable[[AgentActivityEvent], None] | None,
+    ],
     tuple[BoardGenerationResult, str],
 ]
 
@@ -290,6 +300,7 @@ def process_blank_board_turn(
     conversation_text: str,
     on_delta: Callable[[str], None] | None,
     on_requirement_update: Callable[[dict[str, object]], None] | None,
+    on_agent_activity: Callable[[AgentActivityEvent], None] | None,
     is_cancelled: Callable[[], bool] | None,
     generate_board: BoardGenerationRunner,
     discard_generated_thread: Callable[[str], None],
@@ -298,6 +309,24 @@ def process_blank_board_turn(
 
     branch_name = lesson.history_graph.current_branch
     base_commit_id = current_head_commit(lesson).id
+    activity_by_id: dict[str, AgentActivityEvent] = {}
+    activity_order: list[str] = []
+
+    def record_activity(event: AgentActivityEvent) -> None:
+        if event.id not in activity_by_id:
+            activity_order.append(event.id)
+        activity_by_id[event.id] = event
+        if on_agent_activity is not None:
+            on_agent_activity(event)
+
+    def merge_unreported_activity(events: list[AgentActivityEvent]) -> None:
+        for event in events:
+            if event.id not in activity_by_id:
+                record_activity(event)
+
+    def current_activity() -> list[AgentActivityEvent]:
+        return [activity_by_id[event_id] for event_id in activity_order]
+
     active_state = _active_requirement_state_from_history(lesson)
     active_requirement = active_state.requirement
     frozen_retry = bool(
@@ -331,7 +360,9 @@ def process_blank_board_turn(
                 conversation_text=conversation_text,
             ),
             schema=BlankBoardTurnDecision,
+            on_activity=record_activity,
         )
+        merge_unreported_activity(getattr(parsed, "activity", []))
         decision = BlankBoardTurnDecision.model_validate(parsed.output_parsed)
         outcome = evaluate_blank_board_decision(
             decision,
@@ -349,7 +380,9 @@ def process_blank_board_turn(
                 ),
                 schema=OrdinaryChatTurnResponse,
                 allow_live_web_search=True,
+                on_activity=record_activity,
             )
+            merge_unreported_activity(getattr(ordinary_parsed, "activity", []))
             ordinary_response = OrdinaryChatTurnResponse.model_validate(
                 ordinary_parsed.output_parsed
             )
@@ -385,6 +418,7 @@ def process_blank_board_turn(
                 run_id=run_id,
                 version_id=version_id,
                 active_state=active_state,
+                activity=current_activity(),
             ),
         )
         saved = workspace_state.save_lesson_for_user_if_head(
@@ -411,6 +445,7 @@ def process_blank_board_turn(
             outcome=outcome,
             run_id=run_id,
             version_id=version_id,
+            activity=current_activity(),
         )
 
     assert outcome.requirement is not None
@@ -514,7 +549,9 @@ def process_blank_board_turn(
             outcome.requirement,
             outcome.teaching_plan,
             is_cancelled,
+            record_activity,
         )
+        merge_unreported_activity(getattr(generation_result, "activity", []))
         final_chatbot_message = (
             generation_result.final_response.strip() or outcome.chatbot_message
         )
@@ -569,6 +606,9 @@ def process_blank_board_turn(
                 "codex_base_commit_id": generation_base_commit_id,
                 "requirement_retry": frozen_retry,
                 "board_generation_action": request.board_generation_action,
+                "agent_activity": [
+                    event.model_dump(mode="json") for event in current_activity()
+                ],
             },
         )
         saved = workspace_state.save_lesson_for_user_if_head(
@@ -614,6 +654,7 @@ def process_blank_board_turn(
     package, current_lesson = workspace_state.find_lesson_package(workspace, lesson.id)
     return ChatResponse(
         chatbot_message=final_chatbot_message,
+        agent_activity=current_activity(),
         learning_requirement_sheet=outcome.requirement,
         active_requirement_sheet=None,
         active_interaction_session=None,
@@ -705,6 +746,7 @@ def _intake_metadata(
     run_id: str | None,
     version_id: str | None,
     active_state: ActiveRequirementState,
+    activity: list[AgentActivityEvent],
 ) -> dict[str, object]:
     metadata: dict[str, object] = {
         "kind": (
@@ -720,6 +762,7 @@ def _intake_metadata(
         "board_state_after": "empty",
         "blank_board_route": outcome.route,
         "requirement_changed": outcome.requirement_changed,
+        "agent_activity": [event.model_dump(mode="json") for event in activity],
     }
     if not outcome.guidance.is_empty():
         metadata["guided_requirement_discovery"] = outcome.guidance.model_dump(
@@ -792,6 +835,7 @@ def _chat_response(
     outcome: BlankBoardIntakeOutcome,
     run_id: str | None,
     version_id: str | None,
+    activity: list[AgentActivityEvent],
 ) -> ChatResponse:
     from app.services import workspace_state
 
@@ -806,6 +850,7 @@ def _chat_response(
         clarification_questions = [outcome.clarification.next_question]
     return ChatResponse(
         chatbot_message=outcome.chatbot_message,
+        agent_activity=activity,
         learning_requirement_sheet=requirement,
         active_requirement_sheet=outcome.requirement,
         active_interaction_session=None,

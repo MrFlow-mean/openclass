@@ -199,6 +199,49 @@ def test_chat_stream_emits_agent_activity_before_final(monkeypatch) -> None:
     assert event_names.index("agent_activity") < event_names.index("final")
 
 
+def test_chat_stream_emits_live_activity_updates_and_avoids_duplicate_final_event(monkeypatch) -> None:
+    running = AgentActivityEvent(
+        id="activity_live",
+        turn_id="agentturn_live",
+        stage="execute_role",
+        label="运行命令",
+        status="running",
+        role="Codex tool",
+        metadata={"kind": "commandExecution", "detail": "partial"},
+    )
+    completed = running.model_copy(
+        update={
+            "label": "命令执行完成",
+            "status": "completed",
+            "metadata": {"kind": "commandExecution", "detail": "complete"},
+        }
+    )
+
+    def process_with_live_activity(*args, **kwargs) -> ChatResponse:
+        kwargs["on_agent_activity"](running)
+        kwargs["on_agent_activity"](completed)
+        response = _chat_response("lesson_stream_test", chatbot_message="最终回复。")
+        response.agent_activity = [completed]
+        return response
+
+    monkeypatch.setattr(chat_router, "process_chat_on_lesson", process_with_live_activity)
+
+    events = _collect_events(
+        chat_router._chat_stream_events(
+            "lesson_stream_test",
+            ChatRequest(message="执行并说明过程"),
+            user_id="user_stream_test",
+        )
+    )
+
+    activity_payloads = [payload for event, payload in events if event == "agent_activity"]
+    assert [payload["status"] for payload in activity_payloads] == ["running", "completed"]
+    assert activity_payloads[-1]["metadata"]["detail"] == "complete"
+    assert [event for event, _payload in events].index("agent_activity") < [
+        event for event, _payload in events
+    ].index("final")
+
+
 def test_chat_stream_paces_visible_chat_deltas(monkeypatch) -> None:
     sleep_calls: list[float] = []
     monkeypatch.setattr(chat_router, "CHAT_STREAM_CHAT_DELTA_DELAY_SECONDS", 0.02)

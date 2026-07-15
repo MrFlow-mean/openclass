@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Callable
 
-from app.models import ChatRequest, ChatResponse, ConversationTurn
+from app.models import AgentActivityEvent, ChatRequest, ChatResponse, ConversationTurn
 from app.services.codex_chat import document_ai_edit_request as _document_ai_edit_request
 from app.services.codex_chat import process_codex_chat_on_lesson
 from app.services.history import bind_commit_metadata
@@ -15,6 +15,7 @@ def process_chat_on_lesson(
     user_id: str,
     on_delta: Callable[[str], None] | None = None,
     on_requirement_update: Callable[[dict[str, object]], None] | None = None,
+    on_agent_activity: Callable[[AgentActivityEvent], None] | None = None,
     is_cancelled: Callable[[], bool] | None = None,
 ) -> ChatResponse:
     with bind_commit_metadata(_chat_edit_metadata(request)):
@@ -24,6 +25,7 @@ def process_chat_on_lesson(
             user_id=user_id,
             on_delta=on_delta,
             on_requirement_update=on_requirement_update,
+            on_agent_activity=on_agent_activity,
             is_cancelled=is_cancelled,
         )
 

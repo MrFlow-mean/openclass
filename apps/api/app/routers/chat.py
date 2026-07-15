@@ -11,7 +11,7 @@ from time import perf_counter
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
-from app.models import ChatRequest, ChatResponse, UserView, new_id, now_iso
+from app.models import AgentActivityEvent, ChatRequest, ChatResponse, UserView, new_id, now_iso
 from app.routers.auth import current_user
 from app.services.ai_logging import ai_log_context, ai_usage_logger
 from app.services.chat_service import process_chat_on_lesson
@@ -110,6 +110,7 @@ def _chat_stream_events(lesson_id: str, request: ChatRequest, *, user_id: str) -
     )
     chat_delta_emitted = False
     document_delta_emitted = False
+    emitted_activity_payloads: dict[str, str] = {}
 
     def emit(event: str, data: object) -> None:
         events.put((event, data))
@@ -153,6 +154,15 @@ def _chat_stream_events(lesson_id: str, request: ChatRequest, *, user_id: str) -
         state.last_phase = "learning_requirement"
         emit("requirement_update", payload)
 
+    def emit_agent_activity_event(event: AgentActivityEvent) -> None:
+        state.last_phase = "codex_activity"
+        payload = event.model_dump(mode="json")
+        serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        if emitted_activity_payloads.get(event.id) == serialized:
+            return
+        emitted_activity_payloads[event.id] = serialized
+        emit("agent_activity", payload)
+
     def emit_missing_visible_deltas(response: ChatResponse) -> None:
         nonlocal chat_delta_emitted, document_delta_emitted
         if not chat_delta_emitted and response.chatbot_message:
@@ -173,7 +183,7 @@ def _chat_stream_events(lesson_id: str, request: ChatRequest, *, user_id: str) -
 
     def emit_agent_activity(response: ChatResponse) -> None:
         for event in response.agent_activity:
-            emit("agent_activity", event.model_dump(mode="json"))
+            emit_agent_activity_event(event)
 
     def run() -> None:
         with ai_log_context(
@@ -191,6 +201,7 @@ def _chat_stream_events(lesson_id: str, request: ChatRequest, *, user_id: str) -
                     user_id=user_id,
                     on_delta=emit_codex_delta,
                     on_requirement_update=emit_requirement_update,
+                    on_agent_activity=emit_agent_activity_event,
                     is_cancelled=cancel_event.is_set,
                 )
                 state.process_returned_ms = _elapsed_ms_since(state.started_at)

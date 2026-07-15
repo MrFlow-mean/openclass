@@ -18,12 +18,19 @@ from typing import Any, Callable
 
 from pydantic import BaseModel
 
-from app.models import CodexAccountView, CodexLoginStartResponse, CodexLoginStatusResponse, CodexProviderStatus
+from app.models import (
+    AgentActivityEvent,
+    CodexAccountView,
+    CodexLoginStartResponse,
+    CodexLoginStatusResponse,
+    CodexProviderStatus,
+)
 from app.services.ai_call_budget import (
     AICallBudgetExceeded,
     current_ai_call_budget,
     strict_json_schema,
 )
+from app.services.codex_activity import CodexActivityRecorder
 
 
 CODEX_DEFAULT_MODELS: tuple[tuple[str, str], ...] = (
@@ -90,6 +97,7 @@ class CodexParsedResponse:
     id: str | None = None
     output_text: str | None = None
     usage: Any = None
+    activity: list[AgentActivityEvent] = field(default_factory=list)
 
 
 def _env_truthy(name: str) -> bool:
@@ -1122,6 +1130,7 @@ class CodexAppServerTextClient:
         user_prompt: str,
         schema: type[BaseModel],
         allow_live_web_search: bool = False,
+        on_activity: Callable[[AgentActivityEvent], None] | None = None,
     ) -> CodexParsedResponse:
         budget = current_ai_call_budget()
         status = codex_provider_status(self.user_id, refresh=False)
@@ -1138,7 +1147,7 @@ class CodexAppServerTextClient:
             timeout_seconds=timeout_seconds,
             deadline_monotonic=deadline_monotonic,
         ) as session:
-            output_text, usage = _run_structured_turn(
+            output_text, usage, activity = _run_structured_turn(
                 session=session,
                 model=model,
                 system_prompt=system_prompt,
@@ -1146,11 +1155,17 @@ class CodexAppServerTextClient:
                 schema=schema,
                 deadline_monotonic=deadline_monotonic,
                 allow_live_web_search=allow_live_web_search,
+                on_activity=on_activity,
             )
         if budget is not None:
             budget.validate_output(output_text)
         parsed = schema.model_validate(_extract_json(output_text))
-        return CodexParsedResponse(output_parsed=parsed, output_text=output_text, usage=usage)
+        return CodexParsedResponse(
+            output_parsed=parsed,
+            output_text=output_text,
+            usage=usage,
+            activity=activity,
+        )
 
 
 @dataclass(frozen=True)
@@ -1161,6 +1176,7 @@ class CodexTurnResult:
     usage: Any = None
     parent_thread_id: str | None = None
     replaced_stale_thread_id: str | None = None
+    activity: list[AgentActivityEvent] = field(default_factory=list)
 
 
 def _missing_codex_thread(error: CodexAppServerError) -> bool:
@@ -1228,6 +1244,7 @@ def run_codex_thread_turn(
     image_urls: list[str] | None = None,
     timeout_seconds: float = CODEX_APP_SERVER_TIMEOUT_SECONDS,
     on_delta: Callable[[str], None] | None = None,
+    on_activity: Callable[[AgentActivityEvent], None] | None = None,
     is_cancelled: Callable[[], bool] | None = None,
     reasoning_effort: str | None = None,
     service_tier: str | None = None,
@@ -1315,6 +1332,7 @@ def run_codex_thread_turn(
                 image_urls=image_urls,
                 deadline_monotonic=deadline,
                 on_delta=on_delta,
+                on_activity=on_activity,
                 is_cancelled=is_cancelled,
                 reasoning_effort=reasoning_effort,
                 service_tier=service_tier,
@@ -1330,6 +1348,7 @@ def run_codex_thread_turn(
             usage=turn_result.usage,
             parent_thread_id=thread_id,
             replaced_stale_thread_id=replaced_stale_thread_id,
+            activity=turn_result.activity,
         )
 
 
@@ -1343,6 +1362,7 @@ def _run_conversation_turn(
     image_urls: list[str] | None,
     deadline_monotonic: float,
     on_delta: Callable[[str], None] | None,
+    on_activity: Callable[[AgentActivityEvent], None] | None = None,
     is_cancelled: Callable[[], bool] | None,
     reasoning_effort: str | None = None,
     service_tier: str | None = None,
@@ -1379,6 +1399,7 @@ def _run_conversation_turn(
     delta_text = ""
     turn_id: str | None = None
     usage: Any = None
+    activity = CodexActivityRecorder(on_activity)
     while time.monotonic() < deadline_monotonic:
         if is_cancelled is not None and is_cancelled():
             if turn_id:
@@ -1415,15 +1436,27 @@ def _run_conversation_turn(
             turn_id = str(turn.get("id") or turn_id or "") or None
         elif method == "thread/tokenUsage/updated":
             usage = params
+        elif method == "item/started":
+            activity.start_item(params)
         elif method == "item/agentMessage/delta":
             delta = str(params.get("delta") or "")
+            if activity.append_notification_delta(method, params):
+                continue
             if delta:
                 delta_text += delta
                 if on_delta is not None:
                     on_delta(delta)
+        elif activity.append_notification_delta(str(method or ""), params):
+            continue
         elif method == "item/completed":
             item = params.get("item") if isinstance(params.get("item"), dict) else {}
-            if item.get("type") == "agentMessage" and isinstance(item.get("text"), str):
+            activity.complete_item(params)
+            phase = str(item.get("phase") or "")
+            if (
+                item.get("type") == "agentMessage"
+                and phase != "commentary"
+                and isinstance(item.get("text"), str)
+            ):
                 final_text = item["text"]
         elif method == "turn/completed":
             turn = params.get("turn") if isinstance(params.get("turn"), dict) else {}
@@ -1442,6 +1475,7 @@ def _run_conversation_turn(
                 turn_id=turn_id,
                 final_response=response,
                 usage=usage,
+                activity=activity.events,
             )
     _remaining_before(deadline_monotonic)
     raise CodexAppServerError("Timed out waiting for Codex turn completion")
@@ -1456,7 +1490,8 @@ def _run_structured_turn(
     schema: type[BaseModel],
     deadline_monotonic: float | None = None,
     allow_live_web_search: bool = False,
-) -> tuple[str, Any]:
+    on_activity: Callable[[AgentActivityEvent], None] | None = None,
+) -> tuple[str, Any, list[AgentActivityEvent]]:
     deadline = _deadline_for(
         CODEX_APP_SERVER_TIMEOUT_SECONDS,
         deadline_monotonic=(
@@ -1519,6 +1554,7 @@ def _run_structured_turn(
         )
         final_text = ""
         usage: Any = None
+        activity = CodexActivityRecorder(on_activity)
         while time.monotonic() < deadline:
             try:
                 message = session._messages.get(timeout=min(0.5, _remaining_before(deadline)))
@@ -1534,9 +1570,21 @@ def _run_structured_turn(
             params = message.get("params") if isinstance(message.get("params"), dict) else {}
             if method == "thread/tokenUsage/updated":
                 usage = params
+            if method == "item/started":
+                activity.start_item(params)
+            if method == "item/agentMessage/delta":
+                activity.append_notification_delta(method, params)
+            elif activity.append_notification_delta(str(method or ""), params):
+                pass
             if method == "item/completed":
                 item = params.get("item") if isinstance(params.get("item"), dict) else {}
-                if item.get("type") == "agentMessage" and isinstance(item.get("text"), str):
+                activity.complete_item(params)
+                phase = str(item.get("phase") or "")
+                if (
+                    item.get("type") == "agentMessage"
+                    and phase != "commentary"
+                    and isinstance(item.get("text"), str)
+                ):
                     final_text = item["text"]
             if method == "turn/completed":
                 turn = params.get("turn") if isinstance(params.get("turn"), dict) else {}
@@ -1544,7 +1592,7 @@ def _run_structured_turn(
                     error = turn.get("error") if isinstance(turn.get("error"), dict) else {}
                     raise CodexAppServerError(str(error.get("message") or error or "Codex turn failed"))
                 if final_text:
-                    return final_text, usage
+                    return final_text, usage, activity.events
                 raise CodexAppServerError("Codex turn completed without an agent message")
         _remaining_before(deadline)
         raise CodexAppServerError("Timed out waiting for Codex turn completion")
