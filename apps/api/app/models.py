@@ -94,6 +94,13 @@ AgentActivityStage = Literal[
 AgentActivityStatus = Literal["pending", "running", "completed", "blocked", "failed", "skipped"]
 InitialLearningWorkMode = Literal["knowledge_board", "narrow_topic", "practice_artifact", "unknown"]
 LearningTeachingType = Literal["knowledge_point", "skill_practice"]
+GuidedRequirementDiscoveryStrategy = Literal[
+    "entry_point_discovery",
+    "level_discovery",
+    "goal_discovery",
+    "mode_discovery",
+    "bottleneck_discovery",
+]
 InitialLearningGranularity = Literal[
     "single_knowledge_point",
     "source_chapter",
@@ -644,6 +651,31 @@ class LearningClarificationStatus(BaseModel):
     teaching_type: LearningTeachingType | None = None
     work_mode: InitialLearningWorkMode | None = None
     granularity: InitialLearningGranularity | None = None
+
+
+class GuidedRequirementEntryPoint(BaseModel):
+    title: str
+    description: str
+
+
+class GuidedRequirementDiscovery(BaseModel):
+    strategy: GuidedRequirementDiscoveryStrategy = "entry_point_discovery"
+    learning_map_summary: str = ""
+    entry_point_options: list[GuidedRequirementEntryPoint] = Field(default_factory=list)
+    recommended_entry_point: str = ""
+    reason_for_recommendation: str = ""
+    learner_profile_inference: str = ""
+
+    def is_empty(self) -> bool:
+        return not any(
+            (
+                self.learning_map_summary.strip(),
+                self.entry_point_options,
+                self.recommended_entry_point.strip(),
+                self.reason_for_recommendation.strip(),
+                self.learner_profile_inference.strip(),
+            )
+        )
 
 
 class TeachingGuideMapping(BaseModel):
@@ -1376,6 +1408,7 @@ class ChatResponse(BaseModel):
     board_decision: BoardDecision
     needs_clarification: bool = False
     clarification_questions: list[str] = Field(default_factory=list)
+    guided_requirement_discovery: GuidedRequirementDiscovery | None = None
     patch_proposal: PatchProposal | None = None
     scope_options: list[ScopeOption] = Field(default_factory=list)
     board_edit_prompt: BoardEditPrompt | None = None
@@ -1401,6 +1434,7 @@ class RequirementUpdateStreamPayload(BaseModel):
     requirement_version_id: str | None = None
     requirement_phase: LearningRequirementRunStatus | None = None
     clarification_questions: list[str] = Field(default_factory=list)
+    guided_requirement_discovery: GuidedRequirementDiscovery | None = None
 
 
 class BoardTaskUpdateStreamPayload(BaseModel):

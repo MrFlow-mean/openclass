@@ -11,6 +11,7 @@ from app.models import (
     BoardDecision,
     ChatRequest,
     ChatResponse,
+    GuidedRequirementDiscovery,
     LearningClarificationStatus,
     LearningRequirementAuxiliaryFactor,
     LearningRequirementChecklistItem,
@@ -32,15 +33,6 @@ BlankBoardIntakeRoute = Literal[
     "collect_requirements",
     "generate_board",
 ]
-GuidanceStrategy = Literal[
-    "entry_point_discovery",
-    "level_discovery",
-    "goal_discovery",
-    "mode_discovery",
-    "bottleneck_discovery",
-]
-
-
 BLANK_BOARD_INTAKE_INSTRUCTIONS = """
 When the board state is EMPTY, classify and handle the turn using this contract:
 
@@ -105,31 +97,6 @@ class BlankBoardAuxiliaryFactor(BaseModel):
     evidence: str = ""
 
 
-class BlankBoardGuidanceEntryPoint(BaseModel):
-    title: str
-    description: str
-
-
-class BlankBoardGuidance(BaseModel):
-    strategy: GuidanceStrategy = "entry_point_discovery"
-    learning_map_summary: str = ""
-    entry_point_options: list[BlankBoardGuidanceEntryPoint] = Field(default_factory=list)
-    recommended_entry_point: str = ""
-    reason_for_recommendation: str = ""
-    learner_profile_inference: str = ""
-
-    def is_empty(self) -> bool:
-        return not any(
-            (
-                self.learning_map_summary.strip(),
-                self.entry_point_options,
-                self.recommended_entry_point.strip(),
-                self.reason_for_recommendation.strip(),
-                self.learner_profile_inference.strip(),
-            )
-        )
-
-
 class BlankBoardTurnDecision(BaseModel):
     intent: BlankBoardIntent
     teaching_type: LearningTeachingType | None = None
@@ -142,7 +109,7 @@ class BlankBoardTurnDecision(BaseModel):
     next_question: str = ""
     teaching_plan: str = ""
     reason: str
-    guidance: BlankBoardGuidance = Field(default_factory=BlankBoardGuidance)
+    guidance: GuidedRequirementDiscovery = Field(default_factory=GuidedRequirementDiscovery)
 
 
 class OrdinaryChatTurnResponse(BaseModel):
@@ -158,7 +125,7 @@ class BlankBoardIntakeOutcome(BaseModel):
     chatbot_message: str
     teaching_plan: str = ""
     requirement_phase: Literal["collecting", "ready", "frozen"] | None = None
-    guidance: BlankBoardGuidance = Field(default_factory=BlankBoardGuidance)
+    guidance: GuidedRequirementDiscovery = Field(default_factory=GuidedRequirementDiscovery)
 
 
 @dataclass(frozen=True)
@@ -706,6 +673,11 @@ def _emit_requirement_update(
             "requirement_version_id": version_id,
             "requirement_phase": phase,
             "clarification_questions": clarification_questions,
+            "guided_requirement_discovery": (
+                None
+                if outcome.guidance.is_empty()
+                else outcome.guidance.model_dump(mode="json")
+            ),
         }
     )
 
@@ -870,6 +842,9 @@ def _chat_response(
         ),
         needs_clarification=outcome.route in {"guided_discovery", "collect_requirements"},
         clarification_questions=clarification_questions,
+        guided_requirement_discovery=(
+            None if outcome.guidance.is_empty() else outcome.guidance
+        ),
         scope_options=[],
         focus_candidates=[],
         requirement_cleared=outcome.requirement is None,

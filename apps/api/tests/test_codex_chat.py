@@ -8,17 +8,19 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.models import AgentActivityEvent, ChatRequest, SelectionRef
+from app.models import (
+    AgentActivityEvent,
+    ChatRequest,
+    GuidedRequirementDiscovery,
+    GuidedRequirementEntryPoint,
+    SelectionRef,
+)
 from app.services import blank_board_intake, codex_app_server, codex_chat, workspace_state
 from app.services.blank_board_intake import (
     BlankBoardAuxiliaryFactor,
     BlankBoardTurnDecision,
     OrdinaryChatTurnResponse,
     evaluate_blank_board_decision,
-)
-from app.services.blank_board_intake import (
-    BlankBoardGuidance,
-    BlankBoardGuidanceEntryPoint,
 )
 from app.services.codex_app_server import (
     CODEX_PROCESS_FILE_SIZE_LIMIT_BYTES,
@@ -166,15 +168,15 @@ def test_blank_board_learning_intent_without_teaching_type_guides_instead_of_fai
         chatbot_message="Two contextual directions and one narrowing question.",
         next_question="Which direction should we narrow first?",
         reason="The learning intent is clear, but the teaching type cannot be selected yet.",
-        guidance=BlankBoardGuidance(
+        guidance=GuidedRequirementDiscovery(
             strategy="entry_point_discovery",
             learning_map_summary="A short map of useful starting directions.",
             entry_point_options=[
-                BlankBoardGuidanceEntryPoint(
+                GuidedRequirementEntryPoint(
                     title="Start from a first foundation",
                     description="Build one dependable first step before expanding.",
                 ),
-                BlankBoardGuidanceEntryPoint(
+                GuidedRequirementEntryPoint(
                     title="Start from a real task",
                     description="Use a concrete outcome to choose the first topic.",
                 ),
@@ -638,15 +640,15 @@ def test_empty_board_untyped_learning_guidance_persists_confirmed_theme(
                 chatbot_message="Here are two ways to begin, with one recommended first step.",
                 next_question="Which starting direction feels closest to where you are now?",
                 reason="The theme is clear but the learning mode is not yet resolved.",
-                guidance=BlankBoardGuidance(
+                guidance=GuidedRequirementDiscovery(
                     strategy="entry_point_discovery",
                     learning_map_summary="A short map of the available starting directions.",
                     entry_point_options=[
-                        BlankBoardGuidanceEntryPoint(
+                        GuidedRequirementEntryPoint(
                             title="Build a first foundation",
                             description="Establish one dependable entry point.",
                         ),
-                        BlankBoardGuidanceEntryPoint(
+                        GuidedRequirementEntryPoint(
                             title="Start from a concrete outcome",
                             description="Choose the entry point through a task you want to complete.",
                         ),
@@ -678,6 +680,25 @@ def test_empty_board_untyped_learning_guidance_persists_confirmed_theme(
     assert response.requirement_phase == "collecting"
     assert response.requirement_version_id is not None
     assert [update["requirement_phase"] for update in requirement_updates] == ["collecting"]
+    assert response.guided_requirement_discovery is not None
+    assert response.guided_requirement_discovery.recommended_entry_point == "Build a first foundation"
+    assert requirement_updates[0]["guided_requirement_discovery"] == {
+        "strategy": "entry_point_discovery",
+        "learning_map_summary": "A short map of the available starting directions.",
+        "entry_point_options": [
+            {
+                "title": "Build a first foundation",
+                "description": "Establish one dependable entry point.",
+            },
+            {
+                "title": "Start from a concrete outcome",
+                "description": "Choose the entry point through a task you want to complete.",
+            },
+        ],
+        "recommended_entry_point": "Build a first foundation",
+        "reason_for_recommendation": "No level or target outcome is confirmed yet.",
+        "learner_profile_inference": "",
+    }
     assert commit.metadata["kind"] == "basic_chat"
     assert commit.metadata["blank_board_route"] == "guided_discovery"
     assert commit.metadata["requirement_phase"] == "collecting"
