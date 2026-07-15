@@ -96,18 +96,28 @@ the learner changes the learning content or explicitly asks to see the map again
 Every guidance object must contain one AI-generated `question_title`, a concise learning map, 3 to
 6 `entry_point_options`, and exactly one recommended option with a reason. Each option must contain
 a short `title`, a precise `answer_value`, a concise `description`, `why_it_matters`, and `best_for`.
-`recommended_entry_point` must exactly match one option title. `chatbot_message` must present the
-choices as plain chat text after the optional field map and one question. Use the same option order
-and meaning as `entry_point_options`. Show each choice on exactly one short line in the form
-`A. concise key point`, `B. concise key point`, and so on. Each visible choice contains only the
-letter, the essential distinction, and an optional `（推荐）` marker. Do not show `description`,
-`why_it_matters`, `best_for`, suitability notes, or explanatory sentences after a visible choice.
-Do not add a separate recommendation-reason paragraph. Keep those fuller details only in the
-structured `guidance` metadata. Do not rely on clickable cards or any separate UI to expose the
-choices. The learner may answer with a letter, an option title, or natural language. Never ask the
-learner to repeat a confirmed fact. When the user selects a prior text choice, treat its answer as a
-confirmed fact for that choice's `selection_target`, preserve it in the structured requirement
-state, then generate the next single choice step if another factor is missing.
+`recommended_entry_point` must exactly match one option title. Make `chatbot_message` feel like a
+concise teacher-led orientation rather than a form. It must contain, in this order: one brief natural
+acknowledgement; the field map only when the first-turn map rule above applies; one short sentence
+explaining why resolving this turn's `selection_target` will make the next learning step more
+appropriate; one question; the choices as plain chat text; and exactly one short recommendation
+sentence after the choices. Use the same option order and meaning as `entry_point_options`. Show
+each choice on exactly one short line in the form `A. concise key point`, `B. concise key point`, and
+so on. Each visible choice contains only the letter, the essential distinction, and an optional
+`（推荐）` marker. Do not show `description`, `why_it_matters`, `best_for`, suitability notes, or
+explanatory sentences after an individual visible choice. Keep those fuller per-option details only
+in the structured `guidance` metadata.
+
+The visible recommendation sentence must be concise and consistent with
+`reason_for_recommendation`. It may use only confirmed user information or the explicit absence of
+relevant information. When no reliable level evidence exists, explain only that the lowest-threshold
+starting point is the safest way to avoid unsupported assumptions; never claim or imply that the
+learner is a beginner. Do not present `learner_profile_inference` as a confirmed fact. Do not rely on
+clickable cards or any separate UI to expose the choices. The learner may answer with a letter, an
+option title, or natural language. Never ask the learner to repeat a confirmed fact. When the user
+selects a prior text choice, treat its answer as a confirmed fact for that choice's
+`selection_target`, preserve it in the structured requirement state, then generate the next single
+choice step if another factor is missing.
 `learner_profile_inference` remains tentative guidance metadata, not a confirmed requirement fact.
 
 Choose and phrase every option from the actual context. Do not use subject-, textbook-, exam-,

@@ -1022,11 +1022,19 @@ def test_codex_instructions_separate_blank_intake_from_board_grounded_teaching()
     assert "Order every remaining option from lower to higher capability" in normalized_intake
     assert "recommend that first zero-baseline option" in normalized_intake
     assert "Do not infer `current_level` from age, education" in normalized_intake
-    assert "chatbot_message` must present the choices as plain chat text" in normalized_intake
+    assert "the choices as plain chat text" in normalized_intake
     assert "Do not rely on clickable cards" in normalized_intake
     assert "exactly one short line" in normalized_intake
     assert "Do not show `description`, `why_it_matters`, `best_for`" in normalized_intake
-    assert "Do not add a separate recommendation-reason paragraph" in normalized_intake
+    assert "concise teacher-led orientation rather than a form" in normalized_intake
+    assert "one brief natural acknowledgement" in normalized_intake
+    assert "why resolving this turn's `selection_target`" in normalized_intake
+    assert "make the next learning step more appropriate" in normalized_intake
+    assert "exactly one short recommendation sentence after the choices" in normalized_intake
+    assert "consistent with `reason_for_recommendation`" in normalized_intake
+    assert "only confirmed user information or the explicit absence" in normalized_intake
+    assert "never claim or imply that the learner is a beginner" in normalized_intake
+    assert "Do not present `learner_profile_inference` as a confirmed fact" in normalized_intake
     assert "AI-generated compact field map" in normalized_intake
     assert "first guidance turn after a broad learning direction becomes known" in normalized_intake
     assert "actual parts of the current field" in normalized_intake
