@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.models import PatchOperation
+from app.models import BoardDocument, PatchOperation
 from app.services.board_segment_index import build_board_segment_index
 from app.services.history import (
     bind_commit_metadata,
@@ -17,6 +17,7 @@ from app.services.rich_document import (
     export_docx,
     import_docx,
     replace_selection_in_document,
+    upgrade_markdown_like_document,
 )
 
 
@@ -131,6 +132,48 @@ def test_build_document_preserves_markdown_structure_and_math() -> None:
     assert "table" in types
     assert "blockMath" in types
     assert "<strong>Key:</strong> value" in document.content_html
+
+
+def test_build_document_reserves_code_blocks_for_code_and_renders_fenced_formulas() -> None:
+    document = build_document(
+        title="Fenced content",
+        content_text=(
+            "```plaintext\nF = ma\n```\n\n"
+            "```plaintext\n合外力 = 质量 × 加速度\n```\n\n"
+            "```python\ndef force(mass, acceleration):\n    return mass * acceleration\n```\n\n"
+            "```\nconst force = mass * acceleration;\n```"
+        ),
+    )
+    content = document.content_json["content"]
+
+    assert content[0] == {"type": "blockMath", "attrs": {"latex": "F = ma"}}
+    assert content[1]["type"] == "paragraph"
+    assert content[1]["content"][0]["text"] == "合外力 = 质量 × 加速度"
+    assert content[2]["type"] == "codeBlock"
+    assert content[3]["type"] == "codeBlock"
+    assert 'data-type="block-math"' in document.content_html
+    assert "<pre><code" in document.content_html
+
+
+def test_upgrade_markdown_like_document_repairs_legacy_non_code_fences() -> None:
+    document = BoardDocument(
+        title="Legacy fenced content",
+        content_text="```plaintext\nF = ma\n```\n\n```plaintext\n关键句\n```",
+        content_html="<pre><code>F = ma</code></pre><pre><code>关键句</code></pre>",
+        content_json={
+            "type": "doc",
+            "content": [
+                {"type": "codeBlock", "content": [{"type": "text", "text": "F = ma"}]},
+                {"type": "codeBlock", "content": [{"type": "text", "text": "关键句"}]},
+            ],
+        },
+    )
+
+    upgraded = upgrade_markdown_like_document(document)
+
+    assert upgraded.content_json["content"][0]["type"] == "blockMath"
+    assert upgraded.content_json["content"][1]["type"] == "paragraph"
+    assert "<pre><code" not in upgraded.content_html
 
 
 def test_document_to_markdown_preserves_rich_structure() -> None:

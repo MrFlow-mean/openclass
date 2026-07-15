@@ -16,6 +16,7 @@ from docx.oxml.ns import qn
 from docx.shared import Cm
 
 from app.models import BoardDocument, DocumentPageSettings
+from app.services.code_fence_classifier import classify_fenced_block
 from app.services.latex_fragments import find_raw_latex_fragments, strip_orphan_math_dollars
 from app.services.latex_to_omml import append_omml_math as _append_normalized_omml_math
 from app.services.markdown_parser import parse_markdown_to_html, parse_markdown_to_tiptap
@@ -537,6 +538,11 @@ def text_to_html(content_text: str) -> str:
         inline_html=_inline_html,
         normalize_latex=_normalize_latex,
         code_block_html=_code_block_html,
+        classify_fenced_block=lambda language, content: classify_fenced_block(
+            language,
+            content,
+            is_formula=_is_likely_delimited_math,
+        ),
     )
 
 
@@ -547,6 +553,11 @@ def text_to_tiptap_doc(content_text: str) -> dict[str, Any]:
         normalize_latex=_normalize_latex,
         code_block_node=_code_block_node,
         paragraph_node=_paragraph_node,
+        classify_fenced_block=lambda language, content: classify_fenced_block(
+            language,
+            content,
+            is_formula=_is_likely_delimited_math,
+        ),
     )
 
 

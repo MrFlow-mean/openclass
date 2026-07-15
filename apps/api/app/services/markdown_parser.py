@@ -3,7 +3,7 @@ from __future__ import annotations
 import html
 import re
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal
 
 from markdown_it import MarkdownIt
 from markdown_it.token import Token
@@ -292,6 +292,7 @@ def parse_markdown_to_html(
     inline_html: Callable[[str], str],
     normalize_latex: Callable[[str], str],
     code_block_html: Callable[[str | None, str], str],
+    classify_fenced_block: Callable[[str | None, str], Literal["code", "formula", "paragraph"]],
 ) -> str:
     processed, placeholders = _preprocess_markdown(content_text, normalize_latex)
     parser = _create_parser()
@@ -326,7 +327,13 @@ def parse_markdown_to_html(
             if language in {"text", "txt", "plain", "plaintext"}:
                 language = None
             code = token.content.rstrip("\n")
-            parts.append(code_block_html(language, code))
+            kind = classify_fenced_block(language, code)
+            if kind == "formula":
+                parts.append(_render_block_math_html(normalize_latex(code)))
+            elif kind == "code":
+                parts.append(code_block_html(language, code))
+            else:
+                parts.append(f"<p>{inline_html(code)}</p>")
             index += 1
             continue
 
@@ -363,6 +370,7 @@ def parse_markdown_to_tiptap(
     normalize_latex: Callable[[str], str],
     code_block_node: Callable[[str | None, str], dict[str, Any]],
     paragraph_node: Callable[[str], dict[str, Any]],
+    classify_fenced_block: Callable[[str | None, str], Literal["code", "formula", "paragraph"]],
 ) -> dict[str, Any]:
     processed, placeholders = _preprocess_markdown(content_text, normalize_latex)
     parser = _create_parser()
@@ -401,7 +409,13 @@ def parse_markdown_to_tiptap(
             if language in {"text", "txt", "plain", "plaintext"}:
                 language = None
             code = token.content.rstrip("\n")
-            nodes.append(code_block_node(language, code))
+            kind = classify_fenced_block(language, code)
+            if kind == "formula":
+                nodes.append(_render_block_math_node(normalize_latex(code)))
+            elif kind == "code":
+                nodes.append(code_block_node(language, code))
+            else:
+                nodes.append(paragraph_node(code))
             index += 1
             continue
 

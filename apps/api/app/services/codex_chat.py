@@ -63,6 +63,12 @@ board unchanged.
 Do not inspect parent directories, source code, environment variables, hidden files, other local
 paths, network resources, plugins, or external tools. Do not create, rename, or delete files. Never
 request broader permissions. Keep `board.md` as Markdown or plain text; do not put HTML in it.
+
+Formatting contract for `board.md`: use fenced code blocks only for executable or source code. Never
+put a formula, equation, key sentence, definition, explanation, or ordinary text inside a code fence.
+Write display formulas as `$$` on their own lines with LaTeX inside; write inline formulas as `$...$`.
+Use ordinary paragraphs, lists, headings, and `**bold**` for key statements. OpenClass renders those
+formula delimiters as HTML math in the board, while Markdown remains the source of truth.
 Return the learner-facing response as your final message after any file edit is complete.
 """.strip()
 
@@ -72,7 +78,9 @@ may access is `board.md` in the current working directory. It is empty at the st
 The user prompt contains a frozen, structured learning requirement and a teaching plan that were
 persisted before this call. Generate a self-contained teaching board from only that payload and
 write it to `board.md` as Markdown or plain text. Do not infer requirements from thread memory, do
-not ask the learner questions, and do not put HTML in the file. Do not inspect any other path,
+not ask the learner questions, and do not put HTML in the file. Use fenced code blocks only for real
+code. Write every display formula as `$$` on its own lines with LaTeX inside, and keep key sentences
+as normal Markdown text or `**bold**`, never inside a code fence. Do not inspect any other path,
 source code, environment variable, network resource, plugin, or external tool. Return only a brief
 completion acknowledgement after the file is written.
 """.strip()

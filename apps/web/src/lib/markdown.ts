@@ -2,6 +2,7 @@ import MarkdownIt from "markdown-it";
 import type Token from "markdown-it/lib/token.mjs";
 
 import { codeLanguageLabel, highlightCode } from "@/lib/code-highlight";
+import { classifyFencedBlock } from "@/lib/code-fence";
 import { formatCodeIndentation } from "@/lib/code-format";
 import { katex } from "@/lib/katex-mhchem";
 import { inlineMathSegments, normalizeLatex, stripOrphanMathDollars } from "@/lib/latex-fragments";
@@ -472,7 +473,15 @@ function renderMarkdownTokens(
       if (language && ["text", "txt", "plain", "plaintext"].includes(language)) {
         language = null;
       }
-      parts.push(renderer.renderCodeBlock(language, token.content.replace(/\n$/, "")));
+      const content = token.content.replace(/\n$/, "");
+      const kind = classifyFencedBlock(language, content);
+      if (kind === "formula") {
+        parts.push(renderer.renderBlockMath(normalizeLatex(content)));
+      } else if (kind === "code") {
+        parts.push(renderer.renderCodeBlock(language, content));
+      } else {
+        parts.push(renderer.renderParagraph(content));
+      }
       index += 1;
       continue;
     }

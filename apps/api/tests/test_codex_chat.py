@@ -896,18 +896,22 @@ def test_codex_instructions_separate_blank_intake_from_board_grounded_teaching()
     intake = blank_board_intake.BLANK_BOARD_INTAKE_INSTRUCTIONS
     normalized_intake = " ".join(intake.split())
     generation = codex_chat.BOARD_GENERATION_DEVELOPER_INSTRUCTIONS
+    normalized_generation = " ".join(generation.split())
 
     assert "start of every turn, read the current `board.md`" in instructions
     assert "sole source of truth" in instructions
     assert "For a non-empty board" in instructions
     assert "Never put a standalone lesson" in normalized_instructions
     assert "do not duplicate the board's substantive content in chat" in normalized_instructions
+    assert "use fenced code blocks only for executable or source code" in normalized_instructions
+    assert "Write display formulas as `$$` on their own lines with LaTeX inside" in instructions
     assert "do not create or change the learning requirement sheet" in normalized_intake
     assert "Select exactly one teaching type before recording" in normalized_intake
     assert "they never compensate for a missing core factor" in normalized_intake
     assert "This intake role never writes `board.md` itself" in normalized_intake
     assert "frozen, structured learning requirement" in generation
     assert "Generate a self-contained teaching board from only that payload" in generation
+    assert "Use fenced code blocks only for real code" in normalized_generation
 
 
 @pytest.fixture
