@@ -22,6 +22,7 @@ from app.services.source_chapter_identity import rebind_stale_source_chapter_sel
 from app.services.source_evidence_store import source_evidence_store
 from app.services.source_structure_indexer import SourceStructureIndexer
 from app.services.source_structure_store import source_structure_store
+from app.services.source_visual_extraction import CURRENT_SOURCE_VISUAL_INDEX_VERSION
 
 
 SOURCE_BOARD_TOKEN_BUDGET = 48_000
@@ -84,7 +85,7 @@ def resolve_source_grounded_board_plan(
     if view.structure is None or view.structure.status not in {"ready", "linear_only"}:
         raise SourceGroundedBoardError("这份资料的结构索引尚未完成，请稍后重试。")
     if _needs_visual_index_upgrade(source.mime_type, source.file_name, view.structure.metadata):
-        SourceStructureIndexer(store=source_structure_store).rebuild_structure(source)
+        SourceStructureIndexer(store=source_structure_store).ensure_structure(source)
         view = source_structure_store.get_structure_view(source=source, chunk_limit=0)
         if view.structure is None or view.structure.status not in {"ready", "linear_only"}:
             raise SourceGroundedBoardError("这份资料的结构索引尚未完成，请稍后重试。")
@@ -303,12 +304,40 @@ def _needs_visual_index_upgrade(
 ) -> bool:
     normalized_mime = mime_type.lower()
     normalized_name = file_name.lower()
+    supported_extensions = (
+        ".pdf",
+        ".docx",
+        ".pptx",
+        ".xlsx",
+        ".epub",
+        ".html",
+        ".htm",
+        ".md",
+        ".markdown",
+        ".csv",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".webp",
+        ".gif",
+        ".txt",
+        ".json",
+        ".xml",
+    )
     supports_visuals = (
-        normalized_mime in {"application/pdf", "application/epub+zip"}
-        or normalized_name.endswith((".pdf", ".epub"))
+        normalized_mime.startswith(("image/", "text/"))
+        or normalized_mime
+        in {
+            "application/pdf",
+            "application/epub+zip",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        }
+        or normalized_name.endswith(supported_extensions)
     )
     try:
         version = int(metadata.get("visual_index_version") or 0)
     except (TypeError, ValueError):
         version = 0
-    return supports_visuals and version < 1
+    return supports_visuals and version < CURRENT_SOURCE_VISUAL_INDEX_VERSION

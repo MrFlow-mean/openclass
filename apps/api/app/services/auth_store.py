@@ -6,6 +6,14 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
+from app.services.board_asset_identity import (
+    rewrite_board_asset_html,
+    rewrite_board_asset_json,
+    rewrite_board_asset_markdown,
+    stable_board_asset_id,
+    stable_board_asset_reference_id,
+)
+
 
 def _workspace_setting_key(prefix: str, owner_user_id: str) -> str:
     return f"{prefix}:{owner_user_id}"
@@ -13,6 +21,24 @@ def _workspace_setting_key(prefix: str, owner_user_id: str) -> str:
 
 def _quoted_identifier(value: str) -> str:
     return '"' + value.replace('"', '""') + '"'
+
+
+def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+    return (
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table_name,),
+        ).fetchone()
+        is not None
+    )
+
+
+def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
+    quoted_table = _quoted_identifier(table_name)
+    return {
+        str(row["name"])
+        for row in conn.execute(f"PRAGMA table_xinfo({quoted_table})").fetchall()
+    }
 
 
 class AuthStore:
@@ -400,11 +426,18 @@ class AuthStore:
         conn.execute("DELETE FROM auth_guest_sessions WHERE guest_user_id = ?", (guest_user_id,))
 
     def claim_guest_workspace(self, conn: sqlite3.Connection, *, guest_user_id: str, user_id: str) -> None:
+        self._claim_guest_board_assets(
+            conn,
+            guest_user_id=guest_user_id,
+            user_id=user_id,
+        )
         owner_tables = conn.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"
         ).fetchall()
         for row in owner_tables:
             table_name = str(row["name"])
+            if table_name in {"board_assets", "board_asset_refs"}:
+                continue
             quoted_table = _quoted_identifier(table_name)
             columns = {
                 str(column["name"])
@@ -456,6 +489,322 @@ class AuthStore:
                 )
                 conn.execute("DELETE FROM workspace_settings WHERE key = ?", (guest_setting_key,))
         self.delete_guest_sessions(conn, guest_user_id=guest_user_id)
+
+    def _claim_guest_board_assets(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        guest_user_id: str,
+        user_id: str,
+    ) -> None:
+        if not _table_exists(conn, "board_assets"):
+            return
+        asset_columns = _table_columns(conn, "board_assets")
+        required_columns = {"id", "owner_user_id", "content_hash"}
+        if not required_columns.issubset(asset_columns):
+            return
+
+        guest_assets = conn.execute(
+            """
+            SELECT id, content_hash
+            FROM board_assets
+            WHERE owner_user_id = ?
+            ORDER BY id
+            """,
+            (guest_user_id,),
+        ).fetchall()
+        for guest_asset in guest_assets:
+            old_asset_id = str(guest_asset["id"])
+            content_hash = str(guest_asset["content_hash"])
+            target_asset_id = stable_board_asset_id(
+                owner_user_id=user_id,
+                content_hash=content_hash,
+            )
+            existing_target = conn.execute(
+                """
+                SELECT id
+                FROM board_assets
+                WHERE owner_user_id = ? AND content_hash = ?
+                LIMIT 1
+                """,
+                (user_id, content_hash),
+            ).fetchone()
+            if existing_target is not None:
+                existing_target_id = str(existing_target["id"])
+                if existing_target_id != target_asset_id:
+                    raise sqlite3.IntegrityError(
+                        "Existing board asset does not use the stable target-owner identity."
+                    )
+            else:
+                identity_collision = conn.execute(
+                    "SELECT 1 FROM board_assets WHERE id = ? LIMIT 1",
+                    (target_asset_id,),
+                ).fetchone()
+                if identity_collision is not None:
+                    raise sqlite3.IntegrityError("Stable board asset identity collision.")
+                self._copy_board_asset_for_owner(
+                    conn,
+                    old_asset_id=old_asset_id,
+                    new_asset_id=target_asset_id,
+                    owner_user_id=user_id,
+                )
+
+            self._rewrite_claimed_board_asset_references(
+                conn,
+                owner_user_id=guest_user_id,
+                old_asset_id=old_asset_id,
+                new_asset_id=target_asset_id,
+            )
+            self._claim_guest_board_asset_refs(
+                conn,
+                guest_user_id=guest_user_id,
+                user_id=user_id,
+                old_asset_id=old_asset_id,
+                new_asset_id=target_asset_id,
+            )
+            conn.execute(
+                "DELETE FROM board_assets WHERE id = ? AND owner_user_id = ?",
+                (old_asset_id, guest_user_id),
+            )
+
+    @staticmethod
+    def _copy_board_asset_for_owner(
+        conn: sqlite3.Connection,
+        *,
+        old_asset_id: str,
+        new_asset_id: str,
+        owner_user_id: str,
+    ) -> None:
+        columns = [
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_xinfo(board_assets)").fetchall()
+            if int(row["hidden"]) == 0
+        ]
+        quoted_columns = ", ".join(_quoted_identifier(column) for column in columns)
+        select_expressions: list[str] = []
+        replacement_values: list[str] = []
+        for column in columns:
+            if column == "id":
+                select_expressions.append("?")
+                replacement_values.append(new_asset_id)
+            elif column == "owner_user_id":
+                select_expressions.append("?")
+                replacement_values.append(owner_user_id)
+            else:
+                select_expressions.append(_quoted_identifier(column))
+        select_values = ", ".join(select_expressions)
+        conn.execute(
+            f"""
+            INSERT INTO board_assets({quoted_columns})
+            SELECT {select_values}
+            FROM board_assets
+            WHERE id = ?
+            """,
+            (*replacement_values, old_asset_id),
+        )
+
+    @staticmethod
+    def _claim_guest_board_asset_refs(
+        conn: sqlite3.Connection,
+        *,
+        guest_user_id: str,
+        user_id: str,
+        old_asset_id: str,
+        new_asset_id: str,
+    ) -> None:
+        if not _table_exists(conn, "board_asset_refs"):
+            return
+        required_columns = {
+            "id",
+            "asset_id",
+            "owner_user_id",
+            "lesson_id",
+            "document_id",
+            "source_visual_id",
+        }
+        if not required_columns.issubset(_table_columns(conn, "board_asset_refs")):
+            return
+        references = conn.execute(
+            """
+            SELECT id, lesson_id, document_id, source_visual_id
+            FROM board_asset_refs
+            WHERE asset_id = ? AND owner_user_id = ?
+            ORDER BY id
+            """,
+            (old_asset_id, guest_user_id),
+        ).fetchall()
+        for reference in references:
+            existing = conn.execute(
+                """
+                SELECT id
+                FROM board_asset_refs
+                WHERE asset_id = ?
+                  AND owner_user_id = ?
+                  AND lesson_id = ?
+                  AND document_id = ?
+                  AND source_visual_id = ?
+                LIMIT 1
+                """,
+                (
+                    new_asset_id,
+                    user_id,
+                    reference["lesson_id"],
+                    reference["document_id"],
+                    reference["source_visual_id"],
+                ),
+            ).fetchone()
+            reference_id = str(reference["id"])
+            if existing is not None:
+                conn.execute("DELETE FROM board_asset_refs WHERE id = ?", (reference_id,))
+                continue
+            target_reference_id = stable_board_asset_reference_id(
+                asset_id=new_asset_id,
+                owner_user_id=user_id,
+                lesson_id=str(reference["lesson_id"]),
+                document_id=str(reference["document_id"]),
+                source_visual_id=str(reference["source_visual_id"]),
+            )
+            conn.execute(
+                """
+                UPDATE board_asset_refs
+                SET id = ?, asset_id = ?, owner_user_id = ?
+                WHERE id = ?
+                """,
+                (target_reference_id, new_asset_id, user_id, reference_id),
+            )
+
+    @staticmethod
+    def _rewrite_claimed_board_asset_references(
+        conn: sqlite3.Connection,
+        *,
+        owner_user_id: str,
+        old_asset_id: str,
+        new_asset_id: str,
+    ) -> None:
+        if _table_exists(conn, "lessons") and _table_exists(conn, "course_packages"):
+            lesson_columns = {
+                "board_content_json",
+                "board_content_html",
+                "board_content_text",
+            }
+            if lesson_columns.issubset(_table_columns(conn, "lessons")):
+                lessons = conn.execute(
+                    """
+                    SELECT lessons.id, lessons.board_content_json,
+                           lessons.board_content_html, lessons.board_content_text
+                    FROM lessons
+                    JOIN course_packages ON course_packages.id = lessons.package_id
+                    WHERE course_packages.owner_user_id = ?
+                    """,
+                    (owner_user_id,),
+                ).fetchall()
+                for lesson in lessons:
+                    rewritten = (
+                        rewrite_board_asset_json(
+                            str(lesson["board_content_json"]),
+                            old_asset_id=old_asset_id,
+                            new_asset_id=new_asset_id,
+                        ),
+                        rewrite_board_asset_html(
+                            str(lesson["board_content_html"]),
+                            old_asset_id=old_asset_id,
+                            new_asset_id=new_asset_id,
+                        ),
+                        rewrite_board_asset_markdown(
+                            str(lesson["board_content_text"]),
+                            old_asset_id=old_asset_id,
+                            new_asset_id=new_asset_id,
+                        ),
+                    )
+                    original = (
+                        str(lesson["board_content_json"]),
+                        str(lesson["board_content_html"]),
+                        str(lesson["board_content_text"]),
+                    )
+                    if rewritten != original:
+                        conn.execute(
+                            """
+                            UPDATE lessons
+                            SET board_content_json = ?, board_content_html = ?, board_content_text = ?
+                            WHERE id = ?
+                            """,
+                            (*rewritten, lesson["id"]),
+                        )
+
+        if not (
+            _table_exists(conn, "lesson_commits")
+            and _table_exists(conn, "lessons")
+            and _table_exists(conn, "course_packages")
+        ):
+            return
+        commit_columns = {
+            "operations_json",
+            "snapshot_content_json",
+            "snapshot_content_html",
+            "snapshot_content_text",
+            "metadata_json",
+        }
+        if not commit_columns.issubset(_table_columns(conn, "lesson_commits")):
+            return
+        commits = conn.execute(
+            """
+            SELECT lesson_commits.id, lesson_commits.operations_json,
+                   lesson_commits.snapshot_content_json,
+                   lesson_commits.snapshot_content_html,
+                   lesson_commits.snapshot_content_text,
+                   lesson_commits.metadata_json
+            FROM lesson_commits
+            JOIN lessons ON lessons.id = lesson_commits.lesson_id
+            JOIN course_packages ON course_packages.id = lessons.package_id
+            WHERE course_packages.owner_user_id = ?
+            """,
+            (owner_user_id,),
+        ).fetchall()
+        for commit in commits:
+            rewritten = (
+                rewrite_board_asset_json(
+                    str(commit["operations_json"]),
+                    old_asset_id=old_asset_id,
+                    new_asset_id=new_asset_id,
+                ),
+                rewrite_board_asset_json(
+                    str(commit["snapshot_content_json"]),
+                    old_asset_id=old_asset_id,
+                    new_asset_id=new_asset_id,
+                ),
+                rewrite_board_asset_html(
+                    str(commit["snapshot_content_html"]),
+                    old_asset_id=old_asset_id,
+                    new_asset_id=new_asset_id,
+                ),
+                rewrite_board_asset_markdown(
+                    str(commit["snapshot_content_text"]),
+                    old_asset_id=old_asset_id,
+                    new_asset_id=new_asset_id,
+                ),
+                rewrite_board_asset_json(
+                    str(commit["metadata_json"]),
+                    old_asset_id=old_asset_id,
+                    new_asset_id=new_asset_id,
+                ),
+            )
+            original = (
+                str(commit["operations_json"]),
+                str(commit["snapshot_content_json"]),
+                str(commit["snapshot_content_html"]),
+                str(commit["snapshot_content_text"]),
+                str(commit["metadata_json"]),
+            )
+            if rewritten != original:
+                conn.execute(
+                    """
+                    UPDATE lesson_commits
+                    SET operations_json = ?, snapshot_content_json = ?,
+                        snapshot_content_html = ?, snapshot_content_text = ?, metadata_json = ?
+                    WHERE id = ?
+                    """,
+                    (*rewritten, commit["id"]),
+                )
 
     def identities_for_user(self, conn: sqlite3.Connection, user_id: str) -> list[sqlite3.Row]:
         return conn.execute(

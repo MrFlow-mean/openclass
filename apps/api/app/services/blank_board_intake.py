@@ -665,6 +665,13 @@ def process_blank_board_turn(
         )
 
     generation_result: BoardGenerationResult | None = None
+    visual_insertion_notice = ""
+    visual_insertion_metadata: dict[str, object] = {
+        "board_visual_requested_count": 0,
+        "board_visual_applied_ids": [],
+        "board_visual_asset_ids": [],
+        "skipped_visual_placements": [],
+    }
     try:
         generation_result, generated_content = generate_board(
             user_id,
@@ -698,6 +705,55 @@ def process_blank_board_turn(
             document_id=current_lesson.board_document.id,
             page_settings=current_lesson.board_document.page_settings,
         )
+        from app.services.board_visual_insertion import (
+            apply_board_insertion_plan,
+            derive_board_visual_placements,
+        )
+
+        insertion_plan = getattr(generation_result, "insertion_plan", None)
+        if insertion_plan is not None and insertion_plan.items:
+            placements = derive_board_visual_placements(
+                next_document,
+                plan=insertion_plan,
+            )
+            evidence_by_id = {
+                item.visual_id: item
+                for item in outcome.requirement.source_grounding.frozen_visual_evidence
+                if item.visual_id
+            }
+            visual_assets = getattr(generation_result, "visual_assets", {})
+
+            def resolve_visual_bytes(visual_id: str):
+                evidence = evidence_by_id.get(visual_id)
+                stored = visual_assets.get(visual_id)
+                if evidence is None or stored is None:
+                    return None
+                source_visual, content = stored
+                if source_visual.id != evidence.visual_id:
+                    return None
+                return source_visual, content
+
+            visual_result = apply_board_insertion_plan(
+                next_document,
+                plan=insertion_plan,
+                placements=placements,
+                owner_user_id=user_id,
+                lesson_id=current_lesson.id,
+                visual_bytes_resolver=resolve_visual_bytes,
+            )
+            next_document = visual_result.document
+            visual_insertion_metadata = {
+                "board_visual_requested_count": len(insertion_plan.items),
+                "board_visual_applied_ids": list(visual_result.applied_visual_ids),
+                "board_visual_asset_ids": list(visual_result.asset_ids),
+                "skipped_visual_placements": list(visual_result.skipped),
+            }
+            if visual_result.skipped:
+                visual_insertion_notice = (
+                    f"原图已安全插入 {len(visual_result.applied_visual_ids)}/"
+                    f"{len(insertion_plan.items)} 张；其余图片因位置或资产校验未通过而未插入，"
+                    "可重新生成后重试。"
+                )
         current_lesson.learning_requirements = None
         commit_operations(
             current_lesson,
@@ -737,6 +793,7 @@ def process_blank_board_turn(
                 "codex_base_commit_id": generation_base_commit_id,
                 "requirement_retry": frozen_retry,
                 "board_generation_action": request.board_generation_action,
+                **visual_insertion_metadata,
                 "agent_activity": [
                     event.model_dump(mode="json") for event in current_activity()
                 ],
@@ -791,6 +848,10 @@ def process_blank_board_turn(
         merge_unreported_activity(auto_teaching_result.activity)
         if auto_teaching_result.status == "succeeded":
             final_chatbot_message = auto_teaching_result.chatbot_message
+    if visual_insertion_notice:
+        final_chatbot_message = "\n\n".join(
+            part for part in [final_chatbot_message.strip(), visual_insertion_notice] if part
+        )
     if on_delta is not None and final_chatbot_message:
         on_delta(final_chatbot_message)
     workspace = workspace_state.load_workspace_for_user(user_id)

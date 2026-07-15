@@ -673,41 +673,40 @@ select {
   line-height: 1.45;
 }
 
-.word-editor__resource-visual-replica {
-  max-width: 100%;
-  overflow-x: auto;
+.word-editor__resource-visual figure {
+  margin: 0;
 }
 
-.word-editor__resource-visual-replica svg,
-.openclass-resource-visual__replica-svg {
+.word-editor__resource-visual-media {
+  display: flex;
+  min-height: 7rem;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  background: #ffffff;
+}
+
+.word-editor__resource-visual-image {
   display: block;
+  width: auto;
   max-width: 100%;
-  height: auto;
-  margin: 0.4rem 0;
+  max-height: 70vh;
+  object-fit: contain;
 }
 
-.word-editor__resource-visual-replica table,
-.openclass-resource-visual__replica-table {
-  width: 100%;
-  margin: 0.4rem 0;
-  border-collapse: collapse;
-  table-layout: fixed;
+.word-editor__resource-visual-status {
+  margin: 0;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.55;
+  padding: 1rem;
+  text-align: center;
 }
 
-.word-editor__resource-visual-replica th,
-.word-editor__resource-visual-replica td,
-.openclass-resource-visual__replica-table th,
-.openclass-resource-visual__replica-table td {
-  border: 1px solid #cbd5e1;
-  padding: 0.45rem 0.55rem;
-  vertical-align: top;
-}
-
-.word-editor__resource-visual-replica th,
-.openclass-resource-visual__replica-table th {
-  background: #eef6ff;
-  color: #0f172a;
-  font-weight: 700;
+.word-editor__resource-visual-status--error {
+  color: #b45309;
 }
 
 .word-editor__resource-visual-source {
@@ -715,59 +714,6 @@ select {
   color: #64748b;
   font-size: 12px;
   line-height: 1.55;
-}
-
-.word-editor__resource-visual-toggle {
-  margin-top: 0.7rem;
-  border: 1px solid #cbd5e1;
-  border-radius: 6px;
-  background: #ffffff;
-  color: #1f2937;
-  cursor: pointer;
-  font-size: 12px;
-  font-weight: 700;
-  line-height: 1;
-  padding: 0.45rem 0.65rem;
-}
-
-.word-editor__resource-visual-toggle:hover {
-  border-color: #94a3b8;
-  background: #f8fafc;
-}
-
-.word-editor__resource-visual-original {
-  margin-top: 0.75rem;
-  border-top: 1px solid #e2e8f0;
-  padding-top: 0.7rem;
-}
-
-.word-editor__resource-visual-original-image {
-  display: block;
-  max-width: 100%;
-  height: auto;
-  margin: 0.55rem auto 0;
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
-}
-
-.openclass-resource-visual__formula {
-  margin: 0.4rem 0;
-  border: 1px solid #cbd5e1;
-  border-radius: 6px;
-  background: #ffffff;
-  color: #111827;
-  font-family: "IBM Plex Mono", "SFMono-Regular", "Menlo", monospace;
-  font-size: 13px;
-  line-height: 1.65;
-  overflow-x: auto;
-  padding: 0.6rem 0.75rem;
-}
-
-.openclass-resource-visual__unrecreated {
-  margin: 0;
-  color: #475569;
-  font-size: 13px;
-  line-height: 1.65;
 }
 
 .word-editor__page--columns-2 .word-editor__content {

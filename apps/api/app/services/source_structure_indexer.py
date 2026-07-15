@@ -2,29 +2,36 @@ from __future__ import annotations
 
 import hashlib
 import html
-import mimetypes
 import posixpath
 import re
-import zipfile
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
-from xml.etree import ElementTree
 
 from app.models import (
     SourceChapter,
     SourceChunk,
     SourceIngestionRecord,
     SourceStructure,
-    SourceVisualAsset,
 )
 from app.services import workspace_state
+from app.services.ai_logging import ai_usage_logger
 from app.services.image_ocr import extract_image_text, extract_pdf_pages_text
 from app.services.pdf_toc_parser import PdfOutlineAnchor, PdfTocNode, extract_pdf_toc
 from app.services.native_source_index import source_chunk_text_hash
 from app.services.source_chapter_identity import stable_source_chapter_id
+from app.services.source_archive import SafeSourceArchive
 from app.services.source_structure_store import SourceStructureStore, source_structure_store
+from app.services.source_visual_extraction import (
+    CURRENT_SOURCE_VISUAL_INDEX_VERSION,
+    SourceVisualExtractionFatalError,
+    SourceVisualExtractionResult,
+    SourceVisualExtractor,
+    source_visual_extractor,
+)
+from app.services.source_visual_storage import source_visual_staging
+from app.services.source_xml import parse_untrusted_xml
 
 CHUNK_CHAR_LIMIT = 1800
 CHUNK_CHAR_OVERLAP = 160
@@ -54,36 +61,24 @@ class DetectedChapter:
 
 
 @dataclass
-class DetectedVisual:
-    kind: str = "image"
-    source_locator: str = ""
-    start_offset: int | None = None
-    page_start: int | None = None
-    page_end: int | None = None
-    paragraph_index: int | None = None
-    bbox: list[float] = field(default_factory=list)
-    caption: str = ""
-    extracted_text: str = ""
-    mime_type: str = "image/png"
-    asset_bytes: bytes = b""
-    confidence: float = 0.0
-    metadata: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
 class ParsedSourceDocument:
     text: str
     chapters: list[DetectedChapter] = field(default_factory=list)
     pages: list[PageText] = field(default_factory=list)
-    visuals: list[DetectedVisual] = field(default_factory=list)
     strategy: str = "linear_text"
     warnings: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
 class SourceStructureIndexer:
-    def __init__(self, *, store: SourceStructureStore = source_structure_store) -> None:
+    def __init__(
+        self,
+        *,
+        store: SourceStructureStore = source_structure_store,
+        visual_extractor: SourceVisualExtractor = source_visual_extractor,
+    ) -> None:
         self.store = store
+        self.visual_extractor = visual_extractor
 
     def ensure_structure(self, record: SourceIngestionRecord) -> SourceStructure | None:
         current = self.store.get_structure(
@@ -92,7 +87,17 @@ class SourceStructureIndexer:
             source_id=record.id,
         )
         if current and current.status in {"ready", "linear_only", "failed"}:
-            return current
+            if current.visual_index_version >= CURRENT_SOURCE_VISUAL_INDEX_VERSION:
+                return current
+            if current.status in {"ready", "linear_only"}:
+                if not _record_supports_visual_index(record):
+                    return current
+                # Reuse the public rebuild boundary for lazy upgrades.  Besides
+                # preserving the existing observable contract, this keeps text,
+                # chapter, chunk, and visual identities on one atomic save path.
+                # rebuild_structure retains the previous usable bundle if either
+                # structural or visual parsing fails.
+                return self.rebuild_structure(record)
         return self.rebuild_structure(record)
 
     def rebuild_structure(self, record: SourceIngestionRecord) -> SourceStructure:
@@ -107,13 +112,61 @@ class SourceStructureIndexer:
             source_ingestion_id=record.id,
             status="building",
             strategy="linear_text",
+            visual_index_status="pending",
+            visual_index_version=CURRENT_SOURCE_VISUAL_INDEX_VERSION,
             metadata={"source_title": record.title, "mime_type": record.mime_type},
         )
+        with source_visual_staging():
+            return self._rebuild_structure_staged(record, previous=previous, building=building)
+
+    def _rebuild_structure_staged(
+        self,
+        record: SourceIngestionRecord,
+        *,
+        previous: SourceStructure | None,
+        building: SourceStructure,
+    ) -> SourceStructure:
+        extracted_storage_keys: list[str] = []
         try:
             parsed = self._parse_record(record)
             chapters = self._chapters_for_record(record, parsed)
             chunks = self._chunks_for_record(record, parsed, chapters)
-            visuals = self._visuals_for_record(record, parsed, chapters)
+            try:
+                visual_result = self.visual_extractor.extract(
+                    record=record,
+                    path=_local_source_path(record),
+                    structure=building,
+                    chapters=chapters,
+                    chunks=chunks,
+                )
+                if (
+                    visual_result.status == "failed"
+                    and previous is not None
+                    and previous.status in {"ready", "linear_only"}
+                ):
+                    raise SourceVisualExtractionFatalError(
+                        "; ".join(visual_result.warnings)
+                        or "Source visual extraction failed."
+                    )
+            except Exception as visual_exc:
+                if previous is not None and previous.status in {"ready", "linear_only"}:
+                    raise
+                ai_usage_logger.log_event(
+                    "source_visual_initial_index_failed",
+                    owner_user_id=record.owner_user_id,
+                    package_id=record.package_id,
+                    source_ingestion_id=record.id,
+                    error=str(visual_exc),
+                )
+                visual_result = SourceVisualExtractionResult(
+                    status="failed",
+                    warnings=[
+                        "资料文本已建立索引，但视觉索引失败；重新构建后才能使用图表证据。"
+                    ],
+                )
+            extracted_storage_keys = [
+                visual.storage_key for visual in visual_result.visuals if visual.storage_key
+            ]
             has_verified_toc = any(chapter.anchor_status == "verified" for chapter in chapters)
             status = "ready" if has_verified_toc else "linear_only"
             confidence = max((chapter.confidence for chapter in chapters), default=0.0)
@@ -122,7 +175,12 @@ class SourceStructureIndexer:
                     "status": status,
                     "strategy": parsed.strategy,
                     "confidence": confidence,
-                    "warnings": parsed.warnings,
+                    "warnings": list(
+                        dict.fromkeys([*parsed.warnings, *visual_result.warnings])
+                    ),
+                    "visual_count": len(visual_result.visuals),
+                    "visual_index_status": visual_result.status,
+                    "visual_index_version": CURRENT_SOURCE_VISUAL_INDEX_VERSION,
                     "metadata": {
                         **building.metadata,
                         **parsed.metadata,
@@ -134,8 +192,16 @@ class SourceStructureIndexer:
                         "unverified_chapter_count": sum(
                             chapter.anchor_status == "unverified" for chapter in chapters
                         ),
-                        "visual_count": len(visuals),
-                        "visual_index_version": 1,
+                        "visual_count": len(visual_result.visuals),
+                        "verified_visual_count": sum(
+                            visual.anchor_status == "verified"
+                            for visual in visual_result.visuals
+                        ),
+                        "unverified_visual_count": sum(
+                            visual.anchor_status == "unverified"
+                            for visual in visual_result.visuals
+                        ),
+                        "visual_index_version": CURRENT_SOURCE_VISUAL_INDEX_VERSION,
                     },
                 }
             )
@@ -143,9 +209,10 @@ class SourceStructureIndexer:
                 structure=structure,
                 chapters=chapters,
                 chunks=chunks,
-                visuals=visuals,
+                visuals=visual_result.visuals,
             )
         except Exception as exc:  # pragma: no cover - defensive boundary around third-party parsers
+            self.store.cleanup_unreferenced_visual_assets(extracted_storage_keys)
             if previous is not None and previous.status in {"ready", "linear_only"}:
                 return self.store.record_rebuild_failure(structure=previous, error=str(exc))
             failed = building.model_copy(
@@ -312,60 +379,6 @@ class SourceStructureIndexer:
             cursor = max(end - CHUNK_CHAR_OVERLAP, cursor + 1)
         return chunks
 
-    def _visuals_for_record(
-        self,
-        record: SourceIngestionRecord,
-        parsed: ParsedSourceDocument,
-        chapters: list[SourceChapter],
-    ) -> list[SourceVisualAsset]:
-        local_path = _local_source_path(record)
-        if local_path is None or not parsed.visuals:
-            return []
-        asset_directory = _visual_asset_directory(record, local_path)
-        asset_directory.mkdir(parents=True, exist_ok=True)
-        assets: list[SourceVisualAsset] = []
-        for order_index, visual in enumerate(parsed.visuals):
-            if not visual.asset_bytes:
-                continue
-            content_hash = hashlib.sha256(visual.asset_bytes).hexdigest()
-            suffix = mimetypes.guess_extension(visual.mime_type) or ".png"
-            if suffix == ".jpe":
-                suffix = ".jpg"
-            asset_path = asset_directory / f"{content_hash}{suffix}"
-            if not asset_path.exists():
-                asset_path.write_bytes(visual.asset_bytes)
-            chapter = _chapter_for_visual(visual, chapters)
-            surrounding_text = _surrounding_text(parsed.text, visual.start_offset)
-            identity = "\x1f".join(
-                [record.id, visual.source_locator, content_hash, str(order_index)]
-            )
-            assets.append(
-                SourceVisualAsset(
-                    id=f"sourcevisual_{hashlib.sha256(identity.encode('utf-8')).hexdigest()[:24]}",
-                    owner_user_id=record.owner_user_id,
-                    package_id=record.package_id,
-                    source_ingestion_id=record.id,
-                    chapter_id=chapter.id if chapter else None,
-                    kind=visual.kind,
-                    source_locator=visual.source_locator,
-                    page_start=visual.page_start,
-                    page_end=visual.page_end,
-                    paragraph_index=visual.paragraph_index,
-                    bbox=visual.bbox,
-                    caption=visual.caption,
-                    extracted_text=visual.extracted_text,
-                    surrounding_text=surrounding_text,
-                    mime_type=visual.mime_type,
-                    asset_path=str(asset_path),
-                    order_index=order_index,
-                    content_hash=content_hash,
-                    confidence=visual.confidence,
-                    metadata=visual.metadata,
-                )
-            )
-        return assets
-
-
 def _stable_source_chunk_id(
     *,
     source_ingestion_id: str,
@@ -405,63 +418,50 @@ def _find_legacy_upload_path(record: SourceIngestionRecord) -> Path | None:
     return None
 
 
-def _visual_asset_directory(record: SourceIngestionRecord, local_path: Path) -> Path:
-    try:
-        local_path.resolve().relative_to(workspace_state.UPLOAD_DIR.resolve())
-        base = workspace_state.UPLOAD_DIR
-    except (OSError, RuntimeError, ValueError):
-        base = local_path.parent / ".openclass-source-visuals"
-    return base / "source-visuals" / record.id
-
-
-def _chapter_for_visual(
-    visual: DetectedVisual,
-    chapters: list[SourceChapter],
-) -> SourceChapter | None:
-    if visual.start_offset is not None:
-        containing = [
-            chapter
-            for chapter in chapters
-            if chapter.anchor_status == "verified"
-            and chapter.body_start_offset is not None
-            and chapter.body_end_offset is not None
-            and chapter.body_start_offset <= visual.start_offset < chapter.body_end_offset
-        ]
-        if containing:
-            return max(containing, key=lambda chapter: (chapter.level, chapter.body_start_offset or 0))
-    if visual.page_start is not None:
-        containing = [
-            chapter
-            for chapter in chapters
-            if chapter.anchor_status == "verified"
-            and chapter.page_start is not None
-            and chapter.page_start <= visual.page_start < (chapter.page_end or chapter.page_start + 1)
-        ]
-        if containing:
-            return max(containing, key=lambda chapter: (chapter.level, chapter.page_start or 0))
-    locator_prefix = visual.source_locator.rsplit(":visual:", 1)[0]
-    return next(
-        (
-            chapter
-            for chapter in chapters
-            if chapter.anchor_status == "verified"
-            and chapter.source_locator
-            and locator_prefix.startswith(chapter.source_locator)
-        ),
-        None,
-    )
-
-
-def _surrounding_text(text: str, offset: int | None, *, radius: int = 420) -> str:
-    if offset is None or not text:
-        return ""
-    start = max(0, offset - radius)
-    end = min(len(text), offset + radius)
-    return _compact(text[start:end], 720)
-
-
 def _looks_like_epub(mime_type: str) -> bool:
     return mime_type == "application/epub+zip" or "epub" in mime_type.lower()
+
+
+def _record_supports_visual_index(record: SourceIngestionRecord) -> bool:
+    suffix = Path(record.file_name or record.title).suffix.lower()
+    mime_type = record.mime_type.split(";", 1)[0].strip().lower()
+    return bool(
+        suffix
+        in {
+            ".pdf",
+            ".docx",
+            ".pptx",
+            ".xlsx",
+            ".epub",
+            ".html",
+            ".htm",
+            ".md",
+            ".markdown",
+            ".csv",
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".webp",
+            ".gif",
+            ".tif",
+            ".tiff",
+            ".bmp",
+            ".svg",
+        }
+        or mime_type
+        in {
+            "application/pdf",
+            "application/epub+zip",
+            "text/html",
+            "text/markdown",
+            "text/x-markdown",
+            "text/csv",
+        }
+        or mime_type.startswith("image/")
+        or "wordprocessingml.document" in mime_type
+        or "presentationml.presentation" in mime_type
+        or "spreadsheetml.sheet" in mime_type
+    )
 
 
 def _parse_text_document(path: Path, *, prefer_markdown: bool) -> ParsedSourceDocument:
@@ -484,6 +484,10 @@ def _parse_docx(path: Path) -> ParsedSourceDocument:
         from docx import Document
     except Exception as exc:  # pragma: no cover - dependency guard
         raise RuntimeError("python-docx is required to parse DOCX source structure.") from exc
+    # python-docx performs its own ZIP reads; preflight the package with the
+    # shared archive limits before handing it to that parser.
+    with SafeSourceArchive(path):
+        pass
     document = Document(str(path))
     parts: list[str] = []
     chapters: list[DetectedChapter] = []
@@ -548,7 +552,7 @@ def _parse_image(path: Path) -> ParsedSourceDocument:
 
 
 def _parse_pptx(path: Path) -> ParsedSourceDocument:
-    with zipfile.ZipFile(path) as archive:
+    with SafeSourceArchive(path) as archive:
         slide_names = sorted(
             (name for name in archive.namelist() if re.fullmatch(r"ppt/slides/slide\d+\.xml", name)),
             key=lambda name: int(re.search(r"(\d+)", Path(name).stem).group(1)),
@@ -558,7 +562,7 @@ def _parse_pptx(path: Path) -> ParsedSourceDocument:
         pages: list[PageText] = []
         offset = 0
         for slide_no, name in enumerate(slide_names, start=1):
-            root = ElementTree.fromstring(archive.read(name))
+            root = parse_untrusted_xml(archive.read(name))
             texts = [str(node.text or "").strip() for node in root.iter() if node.tag.endswith("}t") and str(node.text or "").strip()]
             if not texts:
                 continue
@@ -593,11 +597,11 @@ def _parse_pptx(path: Path) -> ParsedSourceDocument:
 
 
 def _parse_xlsx(path: Path) -> ParsedSourceDocument:
-    with zipfile.ZipFile(path) as archive:
+    with SafeSourceArchive(path) as archive:
         names = archive.namelist()
         shared: list[str] = []
         if "xl/sharedStrings.xml" in names:
-            root = ElementTree.fromstring(archive.read("xl/sharedStrings.xml"))
+            root = parse_untrusted_xml(archive.read("xl/sharedStrings.xml"))
             for item in root.iter():
                 if item.tag.endswith("}si"):
                     shared.append("".join(str(node.text or "") for node in item.iter() if node.tag.endswith("}t")))
@@ -609,7 +613,7 @@ def _parse_xlsx(path: Path) -> ParsedSourceDocument:
         chapters: list[DetectedChapter] = []
         offset = 0
         for sheet_no, name in enumerate(sheet_names, start=1):
-            root = ElementTree.fromstring(archive.read(name))
+            root = parse_untrusted_xml(archive.read(name))
             rows: list[str] = []
             for row in (node for node in root.iter() if node.tag.endswith("}row")):
                 values: list[str] = []
@@ -688,12 +692,6 @@ def _parse_pdf(path: Path) -> ParsedSourceDocument:
     strategy = "pdf_outline" if outline_chapters else "linear_text"
     warnings: list[str] = []
     toc_metadata: dict[str, Any] = {}
-    visuals: list[DetectedVisual] = []
-    try:
-        visuals = _extract_pdf_visuals(path, pages)
-    except Exception as exc:
-        warnings.append(f"PDF 视觉证据索引失败：{exc}")
-
     if outline_chapters and not any(chapter.level > 1 for chapter in outline_chapters):
         extraction = extract_pdf_toc(
             path,
@@ -729,121 +727,14 @@ def _parse_pdf(path: Path) -> ParsedSourceDocument:
         text=full_text,
         chapters=chapters,
         pages=pages,
-        visuals=visuals,
         strategy=strategy,
         warnings=warnings,
         metadata={"parser": "pdf", "page_count": len(reader.pages), "ocr": ocr_used, **toc_metadata},
     )
 
 
-def _extract_pdf_visuals(path: Path, pages: list[PageText]) -> list[DetectedVisual]:
-    try:
-        import fitz
-    except Exception as exc:  # pragma: no cover - dependency guard
-        raise RuntimeError("PyMuPDF is required to index PDF visual evidence.") from exc
-    visuals: list[DetectedVisual] = []
-    with fitz.open(path) as document:
-        for page_index, page in enumerate(document):
-            page_no = page_index + 1
-            start_offset = pages[page_index].start_offset if page_index < len(pages) else None
-            page_text = _compact(page.get_text("text") or "", 360)
-            visual_index = 0
-            text_dict = page.get_text("dict") or {}
-            for block in text_dict.get("blocks", []):
-                if int(block.get("type", -1)) != 1:
-                    continue
-                bbox = [round(float(value), 3) for value in block.get("bbox", [])]
-                if len(bbox) != 4:
-                    continue
-                image_bytes = block.get("image")
-                extension = str(block.get("ext") or "png").lower()
-                if not isinstance(image_bytes, bytes) or not image_bytes:
-                    image_bytes = _render_pdf_region(page, bbox)
-                    extension = "png"
-                visuals.append(
-                    DetectedVisual(
-                        kind="image",
-                        source_locator=f"pdf:page:{page_no}:visual:{visual_index}",
-                        start_offset=start_offset,
-                        page_start=page_no,
-                        page_end=page_no,
-                        bbox=bbox,
-                        caption=page_text,
-                        mime_type=f"image/{'jpeg' if extension in {'jpg', 'jpeg'} else extension}",
-                        asset_bytes=image_bytes,
-                        confidence=0.94,
-                        metadata={"source": "pdf_image_block"},
-                    )
-                )
-                visual_index += 1
-
-            table_count = 0
-            finder = page.find_tables()
-            for table in getattr(finder, "tables", []):
-                bbox = [round(float(value), 3) for value in table.bbox]
-                rows = table.extract() or []
-                table_text = "\n".join(
-                    "\t".join(str(cell or "").strip() for cell in row)
-                    for row in rows
-                    if any(str(cell or "").strip() for cell in row)
-                )
-                visuals.append(
-                    DetectedVisual(
-                        kind="table",
-                        source_locator=f"pdf:page:{page_no}:visual:{visual_index}",
-                        start_offset=start_offset,
-                        page_start=page_no,
-                        page_end=page_no,
-                        bbox=bbox,
-                        caption=_compact(table_text, 240) or page_text,
-                        extracted_text=table_text,
-                        mime_type="image/png",
-                        asset_bytes=_render_pdf_region(page, bbox),
-                        confidence=0.9,
-                        metadata={"source": "pdf_table"},
-                    )
-                )
-                visual_index += 1
-                table_count += 1
-
-            drawings = page.get_drawings()
-            if len(drawings) >= 2 and visual_index == 0 and table_count == 0:
-                bbox = [
-                    round(float(page.rect.x0), 3),
-                    round(float(page.rect.y0), 3),
-                    round(float(page.rect.x1), 3),
-                    round(float(page.rect.y1), 3),
-                ]
-                visuals.append(
-                    DetectedVisual(
-                        kind="diagram",
-                        source_locator=f"pdf:page:{page_no}:visual:0",
-                        start_offset=start_offset,
-                        page_start=page_no,
-                        page_end=page_no,
-                        bbox=bbox,
-                        caption=page_text,
-                        mime_type="image/png",
-                        asset_bytes=_render_pdf_region(page, bbox),
-                        confidence=0.72,
-                        metadata={"source": "pdf_vector_page", "drawing_count": len(drawings)},
-                    )
-                )
-    return visuals
-
-
-def _render_pdf_region(page, bbox: list[float]) -> bytes:
-    import fitz
-
-    rect = fitz.Rect(*bbox) & page.rect
-    if rect.is_empty or rect.width <= 0 or rect.height <= 0:
-        rect = page.rect
-    pixmap = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5), clip=rect, alpha=False)
-    return pixmap.tobytes("png")
-
-
 def _parse_epub(path: Path) -> ParsedSourceDocument:
-    with zipfile.ZipFile(path) as archive:
+    with SafeSourceArchive(path) as archive:
         names = archive.namelist()
         spine_items = _epub_spine_items(archive)
         html_names = spine_items or sorted(
@@ -854,13 +745,12 @@ def _parse_epub(path: Path) -> ParsedSourceDocument:
         offset_by_name: dict[str, int] = {}
         offset = 0
         heading_chapters: list[DetectedChapter] = []
-        epub_visuals: list[DetectedVisual] = []
         for name in html_names:
             try:
                 raw = archive.read(name)
             except KeyError:
                 continue
-            text, headings, visual_refs = _html_text_headings_and_visuals(
+            text, headings, _visual_refs = _html_text_headings_and_visuals(
                 raw.decode("utf-8", errors="replace"),
                 source_name=name,
             )
@@ -877,29 +767,6 @@ def _parse_epub(path: Path) -> ParsedSourceDocument:
                 heading.metadata = {"source": "epub_heading", "file": name}
                 heading_chapters.append(heading)
             docs.append((name, text, headings))
-            for visual_index, visual_ref in enumerate(visual_refs):
-                target = posixpath.normpath(
-                    posixpath.join(posixpath.dirname(name), visual_ref.src.split("#", 1)[0])
-                ).lstrip("/")
-                if target.startswith("../") or target not in names:
-                    continue
-                asset_bytes = archive.read(target)
-                mime_type = mimetypes.guess_type(target)[0] or "application/octet-stream"
-                if not mime_type.startswith("image/") or not asset_bytes:
-                    continue
-                epub_visuals.append(
-                    DetectedVisual(
-                        kind="image",
-                        source_locator=f"epub:{name}:visual:{visual_index}",
-                        start_offset=offset + len(prefix) + visual_ref.text_offset,
-                        paragraph_index=visual_ref.paragraph_index,
-                        caption=visual_ref.caption or visual_ref.alt or visual_ref.title,
-                        mime_type=mime_type,
-                        asset_bytes=asset_bytes,
-                        confidence=0.9 if visual_ref.caption or visual_ref.alt else 0.78,
-                        metadata={"source": "epub_image", "file": name, "asset": target},
-                    )
-                )
             offset += len(prefix) + len(text)
         full_text = "".join(parts).strip()
         nav_items = _epub_navigation_items(archive, names)
@@ -909,7 +776,6 @@ def _parse_epub(path: Path) -> ParsedSourceDocument:
             return ParsedSourceDocument(
                 text=full_text,
                 chapters=nav_chapters,
-                visuals=epub_visuals,
                 strategy="epub_navigation",
                 metadata={"parser": "epub", "navigation_items": len(nav_chapters)},
             )
@@ -917,16 +783,15 @@ def _parse_epub(path: Path) -> ParsedSourceDocument:
         return ParsedSourceDocument(
             text=full_text,
             chapters=heading_chapters,
-            visuals=epub_visuals,
             strategy="epub_heading" if heading_chapters else "linear_text",
             warnings=[] if heading_chapters else ["EPUB 未发现可验证导航目录或标题结构。"],
             metadata={"parser": "epub"},
         )
 
 
-def _epub_spine_items(archive: zipfile.ZipFile) -> list[str]:
+def _epub_spine_items(archive: SafeSourceArchive) -> list[str]:
     try:
-        container = ElementTree.fromstring(archive.read("META-INF/container.xml"))
+        container = parse_untrusted_xml(archive.read("META-INF/container.xml"))
     except Exception:
         return []
     rootfile = ""
@@ -940,7 +805,7 @@ def _epub_spine_items(archive: zipfile.ZipFile) -> list[str]:
     if base == ".":
         base = ""
     try:
-        opf = ElementTree.fromstring(archive.read(rootfile))
+        opf = parse_untrusted_xml(archive.read(rootfile))
     except Exception:
         return []
     manifest: dict[str, str] = {}
@@ -959,7 +824,10 @@ def _epub_spine_items(archive: zipfile.ZipFile) -> list[str]:
     return [manifest[item_id] for item_id in spine_ids if item_id in manifest]
 
 
-def _epub_navigation_items(archive: zipfile.ZipFile, names: list[str]) -> list[tuple[str, str, int]]:
+def _epub_navigation_items(
+    archive: SafeSourceArchive,
+    names: list[str],
+) -> list[tuple[str, str, int]]:
     items: list[tuple[str, str, int]] = []
     nav_names = [name for name in names if re.search(r"(^|/)(nav|toc)\.(xhtml|html|htm)$", name, re.I)]
     for name in nav_names:
@@ -982,7 +850,7 @@ def _epub_navigation_items(archive: zipfile.ZipFile, names: list[str]) -> list[t
         return _dedupe_nav_items(items)
     for name in [entry for entry in names if entry.lower().endswith(".ncx")]:
         try:
-            root = ElementTree.fromstring(archive.read(name))
+            root = parse_untrusted_xml(archive.read(name))
         except Exception:
             continue
         base = str(Path(name).parent)

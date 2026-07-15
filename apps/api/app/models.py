@@ -831,7 +831,9 @@ SourceStructureStrategy = Literal[
     "open_notebook_search_only",
 ]
 SourceChapterAnchorStatus = Literal["verified", "unverified"]
-SourceVisualKind = Literal["image", "table", "diagram", "page_snapshot"]
+SourceVisualIndexStatus = Literal["pending", "ready", "partial", "failed", "unsupported"]
+SourceVisualAnchorStatus = Literal["verified", "unverified"]
+SourceVisualKind = Literal["image", "chart", "table", "diagram", "page_snapshot"]
 SourceScopeKind = Literal["chapter", "page_range"]
 PostGenerationAction = Literal["auto_explain", "stop_after_generation"]
 AutoTeachingOperationStatus = Literal["none", "succeeded", "failed"]
@@ -980,6 +982,9 @@ class SourceStructure(BaseModel):
     has_verified_toc: bool = False
     chapter_count: int = 0
     chunk_count: int = 0
+    visual_count: int = 0
+    visual_index_status: SourceVisualIndexStatus = "pending"
+    visual_index_version: int = 0
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     error: str = ""
     warnings: list[str] = Field(default_factory=list)
@@ -1033,26 +1038,40 @@ class SourceVisualAsset(BaseModel):
     owner_user_id: str = ""
     package_id: str
     source_ingestion_id: str
+    structure_id: str = ""
+    structure_version: int = 0
     chapter_id: str | None = None
     kind: SourceVisualKind = "image"
     source_locator: str = ""
     page_start: int | None = None
     page_end: int | None = None
     paragraph_index: int | None = None
+    slide_no: int | None = None
+    sheet_name: str = ""
     bbox: list[float] = Field(default_factory=list)
+    before_chunk_id: str | None = None
+    after_chunk_id: str | None = None
     caption: str = ""
     extracted_text: str = ""
     surrounding_text: str = ""
+    anchor_status: SourceVisualAnchorStatus = "unverified"
     mime_type: str = ""
     asset_path: str = Field(default="", exclude=True)
+    storage_key: str = Field(default="", exclude=True)
     order_index: int = 0
     content_hash: str = ""
+    position_hash: str = ""
+    width: int | None = None
+    height: int | None = None
+    table_data: list[list[str]] = Field(default_factory=list)
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    created_at: str = Field(default_factory=now_iso)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class SourceVisualEvidence(BaseModel):
     visual_id: str
+    package_id: str = ""
     source_ingestion_id: str
     source_chapter_id: str = ""
     kind: SourceVisualKind = "image"
@@ -1060,13 +1079,23 @@ class SourceVisualEvidence(BaseModel):
     page_start: int | None = None
     page_end: int | None = None
     paragraph_index: int | None = None
+    slide_no: int | None = None
+    sheet_name: str = ""
     bbox: list[float] = Field(default_factory=list)
+    before_chunk_id: str | None = None
+    after_chunk_id: str | None = None
     caption: str = ""
     extracted_text: str = ""
     surrounding_text: str = ""
+    anchor_status: SourceVisualAnchorStatus = "unverified"
     mime_type: str = ""
     content_hash: str = ""
+    position_hash: str = ""
+    width: int | None = None
+    height: int | None = None
+    table_data: list[list[str]] = Field(default_factory=list)
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class SourceStructureView(BaseModel):

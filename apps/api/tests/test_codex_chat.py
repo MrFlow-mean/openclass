@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import base64
+import hashlib
 import queue
 import threading
 import time
@@ -22,9 +24,17 @@ from app.models import (
     SourceChunk,
     SourceIngestionRecord,
     SourceStructure,
+    SourceVisualAsset,
     SourceVisualEvidence,
 )
-from app.services import blank_board_intake, codex_app_server, codex_chat, workspace_state
+from app.services import (
+    blank_board_intake,
+    board_visual_insertion,
+    codex_app_server,
+    codex_chat,
+    workspace_state,
+)
+from app.services.board_asset_store import BoardAssetStore
 from app.services.blank_board_intake import (
     BlankBoardAuxiliaryFactor,
     BlankBoardTurnDecision,
@@ -41,7 +51,7 @@ from app.services.codex_app_server import (
 from app.services.course_store import SqliteCourseStore, build_initial_workspace_state
 from app.services.history import commit_operations, create_branch, current_head_commit
 from app.services.lesson_factory import build_requirements, create_empty_lesson
-from app.services.rich_document import build_document
+from app.services.rich_document import build_document, rebuild_document_from_content_json
 from app.services.source_evidence_store import source_evidence_store
 from app.services.source_structure_indexer import SourceStructureIndexer
 from app.services.source_structure_store import source_structure_store
@@ -82,6 +92,88 @@ def _seed_workspace(store: SqliteCourseStore, *, content_text: str = "# Existing
     package.active_lesson_id = lesson.id
     store.save_for_user(TEST_USER_ID, workspace)
     return lesson
+
+
+def test_codex_text_round_trip_preserves_existing_visual_nodes() -> None:
+    base = build_document(title="Board", content_text="Before\n\nAfter")
+    content_json = base.content_json.copy()
+    content_json["content"] = [
+        base.content_json["content"][0],
+        {
+            "type": "resourceVisualBlock",
+            "attrs": {
+                "assetId": "basset_preserved",
+                "visualId": "visual_preserved",
+                "caption": "Preserved figure",
+                "kind": "image",
+            },
+        },
+        base.content_json["content"][1],
+    ]
+    document = rebuild_document_from_content_json(base, content_json)
+
+    serialized, preserved = codex_chat._document_for_codex(document)
+    marker = next(iter(preserved))
+    edited = build_document(
+        title=document.title,
+        content_text=serialized.replace("Before", "Edited before"),
+        document_id=document.id,
+        page_settings=document.page_settings,
+    )
+    restored = codex_chat._restore_preserved_visuals(edited, preserved)
+
+    assert marker in serialized
+    assert "Edited before" in restored.content_text
+    visual = next(
+        node for node in restored.content_json["content"] if node["type"] == "resourceVisualBlock"
+    )
+    assert visual["attrs"]["assetId"] == "basset_preserved"
+    assert visual["attrs"]["visualId"] == "visual_preserved"
+
+    removed = build_document(
+        title=document.title,
+        content_text=serialized.replace(marker, ""),
+        document_id=document.id,
+        page_settings=document.page_settings,
+    )
+    with pytest.raises(CodexAppServerError, match="protected visual placeholders"):
+        codex_chat._restore_preserved_visuals(removed, preserved)
+
+
+def test_frozen_visual_reader_rejects_position_hash_drift(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    content = b"source-image"
+    content_hash = hashlib.sha256(content).hexdigest()
+    evidence = SourceVisualEvidence(
+        visual_id="visual_frozen",
+        package_id="package_frozen",
+        source_ingestion_id="source_frozen",
+        anchor_status="verified",
+        mime_type="image/png",
+        content_hash=content_hash,
+        position_hash="position_frozen",
+    )
+    stored = SourceVisualAsset(
+        id=evidence.visual_id,
+        owner_user_id=TEST_USER_ID,
+        package_id=evidence.package_id,
+        source_ingestion_id=evidence.source_ingestion_id,
+        anchor_status="verified",
+        mime_type="image/png",
+        content_hash=content_hash,
+        position_hash="position_changed",
+    )
+    monkeypatch.setattr(
+        source_structure_store,
+        "read_visual_bytes",
+        lambda **_kwargs: (stored, content),
+    )
+
+    assert codex_chat._read_frozen_source_visual(
+        user_id=TEST_USER_ID,
+        evidence=evidence,
+    ) is None
 
 
 def test_codex_turn_prompt_uses_mode_and_ignores_source_selection() -> None:
@@ -931,19 +1023,35 @@ def test_source_chapter_selection_generates_blank_board_without_requirement_ques
     source_evidence_store.save_source(source)
     SourceStructureIndexer(store=source_structure_store).rebuild_structure(source)
     chapter = source_structure_store.get_structure_view(source=source).chapters[0]
-    visual_path = tmp_path / "visual.png"
-    visual_path.write_bytes(
-        b"\x89PNG\r\n\x1a\n" + b"source-visual"
+    visual_bytes = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
     )
     visual = SourceVisualEvidence(
         visual_id="sourcevisual_selected",
+        package_id=package_id,
         source_ingestion_id=source.id,
         source_chapter_id=chapter.id,
         kind="diagram",
         source_locator="source:visual:1",
         caption="Selected diagram",
+        anchor_status="verified",
         mime_type="image/png",
-        content_hash="visual-hash",
+        content_hash=hashlib.sha256(visual_bytes).hexdigest(),
+        position_hash="position_selected",
+        confidence=0.9,
+    )
+    stored_visual = SourceVisualAsset(
+        id=visual.visual_id,
+        owner_user_id=TEST_USER_ID,
+        package_id=package_id,
+        source_ingestion_id=source.id,
+        chapter_id=chapter.id,
+        kind="diagram",
+        source_locator=visual.source_locator,
+        anchor_status="verified",
+        mime_type="image/png",
+        content_hash=visual.content_hash,
+        position_hash=visual.position_hash,
         confidence=0.9,
     )
     monkeypatch.setattr(
@@ -953,8 +1061,8 @@ def test_source_chapter_selection_generates_blank_board_without_requirement_ques
     )
     monkeypatch.setattr(
         source_structure_store,
-        "visual_asset_path_map",
-        lambda **_kwargs: {visual.visual_id: visual_path},
+        "read_visual_bytes",
+        lambda **_kwargs: (stored_visual, visual_bytes),
     )
 
     def fail_if_intake_runs(**_kwargs):
@@ -966,8 +1074,13 @@ def test_source_chapter_selection_generates_blank_board_without_requirement_ques
         assert "The selected source explains a durable concept" in prompt
         assert "为我讲解" not in prompt
         assert kwargs["image_urls"] and kwargs["image_urls"][0].startswith("data:image/png;base64,")
+        payload = json.loads(prompt.split("\n", 1)[1])
+        marker = payload["visual_manifest"][0]["marker"]
         board_path = Path(kwargs["cwd"]) / codex_chat.BOARD_FILE_NAME
-        board_path.write_text("# Source-grounded board\n\nGrounded content.", encoding="utf-8")
+        board_path.write_text(
+            f"# Source-grounded board\n\nGrounded content.\n\n{marker}",
+            encoding="utf-8",
+        )
         return CodexTurnResult(
             thread_id="thread_source_generation",
             turn_id="turn_source_generation",
@@ -976,6 +1089,15 @@ def test_source_chapter_selection_generates_blank_board_without_requirement_ques
 
     monkeypatch.setattr(blank_board_intake.CodexAppServerTextClient, "parse", fail_if_intake_runs)
     monkeypatch.setattr(codex_chat, "run_codex_thread_turn", fake_board_turn)
+    board_asset_store = BoardAssetStore(
+        tmp_path / "board-assets.sqlite3",
+        tmp_path / "board-assets",
+    )
+    monkeypatch.setattr(
+        board_visual_insertion,
+        "get_board_asset_store",
+        lambda: board_asset_store,
+    )
 
     response = codex_chat.process_codex_chat_on_lesson(
         lesson.id,
@@ -1000,7 +1122,22 @@ def test_source_chapter_selection_generates_blank_board_without_requirement_ques
 
     assert response.requirement_phase == "consumed"
     saved_lesson = codex_store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
-    assert saved_lesson.board_document.content_text == "# Source-grounded board\n\nGrounded content."
+    assert saved_lesson.board_document.content_text.startswith(
+        "# Source-grounded board\n\nGrounded content."
+    )
+    assert "OPENCLASS_VISUAL" not in saved_lesson.board_document.content_text
+    generation_commit = next(
+        commit
+        for commit in saved_lesson.history_graph.commits
+        if commit.metadata.get("kind") == "board_document_generation"
+    )
+    assert generation_commit.metadata["board_visual_applied_ids"] == [
+        visual.visual_id
+    ], generation_commit.metadata["skipped_visual_placements"]
+    node_types = [
+        node["type"] for node in saved_lesson.board_document.content_json["content"]
+    ]
+    assert node_types == ["heading", "paragraph", "resourceVisualBlock"], node_types
     frozen_commit = next(
         commit
         for commit in saved_lesson.history_graph.commits
@@ -1016,6 +1153,8 @@ def test_source_chapter_selection_generates_blank_board_without_requirement_ques
     assert saved_bundle is not None
     assert saved_bundle.status == "confirmed"
     assert saved_bundle.visual_items[0].visual_id == visual.visual_id
+    assert generation_commit.metadata["board_visual_requested_count"] == 1
+    assert generation_commit.metadata["skipped_visual_placements"] == []
 
 
 def test_generation_auto_explains_first_section_then_continues_or_restarts(
@@ -1364,11 +1503,12 @@ def test_source_generation_batches_all_text_and_visual_evidence(
         )
         for index in range(9)
     ]
-    visual_paths: dict[str, Path] = {}
+    visual_bytes = b"\x89PNG\r\n\x1a\nsource-visual"
     for visual in visuals:
-        path = tmp_path / f"{visual.visual_id}.png"
-        path.write_bytes(b"\x89PNG\r\n\x1a\nsource-visual")
-        visual_paths[visual.visual_id] = path
+        visual.package_id = "package"
+        visual.anchor_status = "verified"
+        visual.content_hash = hashlib.sha256(visual_bytes).hexdigest()
+        visual.position_hash = f"position_{visual.visual_id}"
     requirement = build_requirements("Source batch test")
     requirement.source_grounding = LearningSourceGrounding(
         requested_by_user=True,
@@ -1401,8 +1541,21 @@ def test_source_generation_batches_all_text_and_visual_evidence(
     )
     monkeypatch.setattr(
         source_structure_store,
-        "visual_asset_path_map",
-        lambda **_kwargs: visual_paths,
+        "read_visual_bytes",
+        lambda **kwargs: (
+            SourceVisualAsset(
+                id=kwargs["visual_id"],
+                owner_user_id=TEST_USER_ID,
+                package_id="package",
+                source_ingestion_id="source",
+                kind="diagram",
+                anchor_status="verified",
+                mime_type="image/png",
+                content_hash=hashlib.sha256(visual_bytes).hexdigest(),
+                position_hash=f"position_{kwargs['visual_id']}",
+            ),
+            visual_bytes,
+        ),
     )
 
     class FakeAdapter:

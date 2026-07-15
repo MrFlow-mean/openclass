@@ -1,12 +1,34 @@
+import io
+import json
 import sqlite3
 
 import pytest
 from fastapi import HTTPException
+from PIL import Image
 from starlette.requests import Request
 
 from app.services import codex_app_server
 from app.services.auth_service import AuthService, OAuthProfile, _safe_next_path
+from app.services.board_asset_identity import board_asset_content_url, stable_board_asset_id
+from app.services.board_asset_store import BoardAssetStore
 from app.services.course_store import SqliteCourseStore
+from app.services.lesson_factory import create_empty_lesson
+
+
+def _png_bytes(color: tuple[int, int, int]) -> bytes:
+    output = io.BytesIO()
+    Image.new("RGB", (2, 2), color=color).save(output, format="PNG")
+    return output.getvalue()
+
+
+def _append_empty_lesson(workspace, title: str):
+    lesson = create_empty_lesson(title)
+    package = workspace.packages[0]
+    package.lessons.append(lesson)
+    package.open_lesson_ids.append(lesson.id)
+    package.workspace_tab_order.append(lesson.id)
+    package.active_lesson_id = lesson.id
+    return lesson
 
 
 def test_register_login_and_admin_overview(tmp_path) -> None:
@@ -403,3 +425,235 @@ def test_existing_account_claim_moves_owner_scopes_and_invalidates_stale_revisio
         store.load_for_user(existing_member.id),
         expected_revision=1,
     ) is False
+
+
+def test_existing_account_claim_rekeys_and_deduplicates_board_assets(tmp_path) -> None:
+    db_path = tmp_path / "openclass.sqlite3"
+    store = SqliteCourseStore(db_path, legacy_json_path=None)
+    auth = AuthService(db_path)
+    _, member = auth.register("member@example.com", "correct-password")
+    member_workspace = store.load_for_user(member.id)
+    member_lesson_id = _append_empty_lesson(member_workspace, "会员课时").id
+    store.save_for_user(member.id, member_workspace)
+
+    guest_token, guest = auth.start_guest_session()
+    guest_workspace = store.load_for_user(guest.id)
+    guest_lesson = _append_empty_lesson(guest_workspace, "游客课时")
+    store.save_for_user(guest.id, guest_workspace)
+    guest_lesson_id = guest_lesson.id
+    guest_document_id = guest_lesson.board_document.id
+
+    asset_store = BoardAssetStore(db_path, tmp_path / "board-assets")
+    duplicate_content = _png_bytes((190, 25, 25))
+    unique_content = _png_bytes((25, 70, 190))
+    member_asset = asset_store.put_bytes(
+        owner_user_id=member.id,
+        lesson_id=member_lesson_id,
+        content=duplicate_content,
+        mime_type="image/png",
+    )
+    asset_store.add_reference(
+        asset_id=member_asset.id,
+        owner_user_id=member.id,
+        lesson_id=guest_lesson_id,
+        document_id=guest_document_id,
+        source_visual_id="visual_duplicate",
+    )
+    guest_duplicate = asset_store.put_bytes(
+        owner_user_id=guest.id,
+        lesson_id=guest_lesson_id,
+        document_id=guest_document_id,
+        source_visual_id="visual_duplicate",
+        content=duplicate_content,
+        mime_type="image/png",
+    )
+    guest_unique = asset_store.put_bytes(
+        owner_user_id=guest.id,
+        lesson_id=guest_lesson_id,
+        document_id=guest_document_id,
+        source_visual_id="visual_unique",
+        content=unique_content,
+        mime_type="image/png",
+    )
+    claimed_unique_id = stable_board_asset_id(
+        owner_user_id=member.id,
+        content_hash=guest_unique.content_hash,
+    )
+    duplicate_url = board_asset_content_url(guest_duplicate.id)
+    unique_url = board_asset_content_url(guest_unique.id)
+
+    content_json = {
+        "type": "doc",
+        "content": [
+            {
+                "type": "resourceVisualBlock",
+                "attrs": {
+                    "assetId": guest_duplicate.id,
+                    "originalSrc": duplicate_url,
+                },
+            },
+            {
+                "type": "resourceVisualBlock",
+                "attrs": {
+                    "assetId": guest_unique.id,
+                    "originalSrc": unique_url,
+                },
+            },
+        ],
+        "userText": guest_duplicate.id,
+    }
+    content_html = (
+        '<section data-type="resource-visual-block" '
+        f'data-board-asset-id="{guest_duplicate.id}" data-original-src="{duplicate_url}">'
+        f'<p>{guest_duplicate.id}</p></section>'
+        '<section data-type="resource-visual-block" '
+        f'data-board-asset-id="{guest_unique.id}" data-original-src="{unique_url}"></section>'
+    )
+    content_text = (
+        f"![重复图]({duplicate_url})\n\n![独有图]({unique_url})\n\n"
+        f"用户正文保留旧 ID：{guest_duplicate.id}"
+    )
+    operations_json = json.dumps(
+        [
+            {
+                "op": "insert_after",
+                "asset_url": unique_url,
+                "note": guest_unique.id,
+            }
+        ],
+        ensure_ascii=False,
+    )
+    metadata_json = json.dumps(
+        {
+            "board_asset_ids": [guest_duplicate.id, guest_unique.id],
+            "note": guest_duplicate.id,
+        },
+        ensure_ascii=False,
+    )
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE lessons
+            SET board_content_json = ?, board_content_html = ?, board_content_text = ?
+            WHERE id = ?
+            """,
+            (json.dumps(content_json), content_html, content_text, guest_lesson_id),
+        )
+        conn.execute(
+            """
+            UPDATE lesson_commits
+            SET operations_json = ?, snapshot_content_json = ?,
+                snapshot_content_html = ?, snapshot_content_text = ?, metadata_json = ?
+            WHERE lesson_id = ?
+            """,
+            (
+                operations_json,
+                json.dumps(content_json),
+                content_html,
+                content_text,
+                metadata_json,
+                guest_lesson_id,
+            ),
+        )
+
+    _, claimed_member = auth.login(
+        "member@example.com",
+        "correct-password",
+        guest_token=guest_token,
+    )
+
+    assert claimed_member.id == member.id
+    assert member_asset.id == stable_board_asset_id(
+        owner_user_id=member.id,
+        content_hash=guest_duplicate.content_hash,
+    )
+    assert asset_store.get(guest_duplicate.id, guest.id) is None
+    assert asset_store.get(guest_unique.id, guest.id) is None
+    claimed_unique = asset_store.read_bytes(claimed_unique_id, member.id)
+    assert claimed_unique is not None
+    assert claimed_unique[1] == unique_content
+    repeated_reference = asset_store.add_reference(
+        asset_id=claimed_unique_id,
+        owner_user_id=member.id,
+        lesson_id=guest_lesson_id,
+        document_id=guest_document_id,
+        source_visual_id="visual_unique",
+    )
+    assert repeated_reference.asset_id == claimed_unique_id
+
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        asset_rows = conn.execute(
+            "SELECT id, owner_user_id, content_hash FROM board_assets ORDER BY id"
+        ).fetchall()
+        assert {(row["id"], row["owner_user_id"], row["content_hash"]) for row in asset_rows} == {
+            (member_asset.id, member.id, member_asset.content_hash),
+            (claimed_unique_id, member.id, guest_unique.content_hash),
+        }
+        assert conn.execute(
+            "SELECT count(*) FROM board_asset_refs WHERE owner_user_id = ?",
+            (guest.id,),
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            """
+            SELECT count(*) FROM board_asset_refs
+            WHERE asset_id = ? AND owner_user_id = ? AND lesson_id = ?
+              AND document_id = ? AND source_visual_id = 'visual_duplicate'
+            """,
+            (member_asset.id, member.id, guest_lesson_id, guest_document_id),
+        ).fetchone()[0] == 1
+        assert conn.execute(
+            """
+            SELECT count(*) FROM board_asset_refs
+            WHERE asset_id = ? AND owner_user_id = ? AND lesson_id = ?
+              AND document_id = ? AND source_visual_id = 'visual_unique'
+            """,
+            (claimed_unique_id, member.id, guest_lesson_id, guest_document_id),
+        ).fetchone()[0] == 1
+
+        lesson_row = conn.execute(
+            """
+            SELECT board_content_json, board_content_html, board_content_text
+            FROM lessons WHERE id = ?
+            """,
+            (guest_lesson_id,),
+        ).fetchone()
+        assert lesson_row is not None
+        claimed_json = json.loads(lesson_row["board_content_json"])
+        assert claimed_json["content"][0]["attrs"] == {
+            "assetId": member_asset.id,
+            "originalSrc": board_asset_content_url(member_asset.id),
+        }
+        assert claimed_json["content"][1]["attrs"] == {
+            "assetId": claimed_unique_id,
+            "originalSrc": board_asset_content_url(claimed_unique_id),
+        }
+        assert claimed_json["userText"] == guest_duplicate.id
+        assert f'data-board-asset-id="{member_asset.id}"' in lesson_row["board_content_html"]
+        assert f'data-board-asset-id="{claimed_unique_id}"' in lesson_row["board_content_html"]
+        assert f"<p>{guest_duplicate.id}</p>" in lesson_row["board_content_html"]
+        assert f"![重复图]({board_asset_content_url(member_asset.id)})" in lesson_row["board_content_text"]
+        assert f"![独有图]({board_asset_content_url(claimed_unique_id)})" in lesson_row["board_content_text"]
+        assert f"用户正文保留旧 ID：{guest_duplicate.id}" in lesson_row["board_content_text"]
+
+        commit_row = conn.execute(
+            """
+            SELECT operations_json, snapshot_content_json, snapshot_content_html,
+                   snapshot_content_text, metadata_json
+            FROM lesson_commits WHERE lesson_id = ? ORDER BY sort_order DESC LIMIT 1
+            """,
+            (guest_lesson_id,),
+        ).fetchone()
+        assert commit_row is not None
+        assert json.loads(commit_row["operations_json"])[0] == {
+            "op": "insert_after",
+            "asset_url": board_asset_content_url(claimed_unique_id),
+            "note": guest_unique.id,
+        }
+        assert json.loads(commit_row["metadata_json"]) == {
+            "board_asset_ids": [member_asset.id, claimed_unique_id],
+            "note": guest_duplicate.id,
+        }
+        assert json.loads(commit_row["snapshot_content_json"])["userText"] == guest_duplicate.id
+        assert f"<p>{guest_duplicate.id}</p>" in commit_row["snapshot_content_html"]
+        assert f"用户正文保留旧 ID：{guest_duplicate.id}" in commit_row["snapshot_content_text"]

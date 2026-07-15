@@ -23,6 +23,7 @@ class BoardGenerationExecutionRequest:
     requirement: LearningRequirementSheet
     teaching_plan: str
     image_inputs: list[str] = field(default_factory=list)
+    visual_manifest: list[dict[str, Any]] = field(default_factory=list)
 
 
 class BoardGenerationExecutionResult(Protocol):
@@ -76,6 +77,7 @@ BoardRunner = Callable[
         LearningRequirementSheet,
         str,
         list[str],
+        list[dict[str, Any]],
         Callable[[], bool] | None,
         Callable[[AgentActivityEvent], None] | None,
     ],
@@ -143,6 +145,7 @@ class CodexAIExecutionAdapter:
             request.requirement,
             request.teaching_plan,
             request.image_inputs,
+            request.visual_manifest,
             is_cancelled,
             on_activity,
         )

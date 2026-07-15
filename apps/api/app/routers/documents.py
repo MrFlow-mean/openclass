@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import shutil
+import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
+from starlette.background import BackgroundTask
 
 from app.models import (
     BoardDocument,
@@ -23,8 +25,9 @@ from app.models import (
 )
 from app.routers.auth import current_user
 from app.services.chat_service import document_ai_edit_request
+from app.services.board_asset_store import get_board_asset_store
 from app.services.history import create_branch, current_head_commit, restore_commit, switch_branch
-from app.services.html_document_export import export_html
+from app.services.html_document_export import HtmlExportBudgetError, export_html
 from app.services.rich_document import (
     document_changed,
     export_docx,
@@ -55,6 +58,8 @@ _DOCX_NO_STORE_HEADERS = {
     "Expires": "0",
 }
 
+_BOARD_ASSET_CACHE_CONTROL = "private, max-age=86400, immutable"
+
 
 def _clear_legacy_ai_runtime(lesson) -> None:
     lesson.board_teaching_guide = None
@@ -76,6 +81,49 @@ def search_documents(
         kind=kind,
         results=search_document_segments_for_user(user.id, q, kind=kind, limit=limit),
     )
+
+
+@router.get("/api/board-assets/{asset_id}/content")
+def get_board_asset_content(
+    asset_id: str,
+    request: Request,
+    user: UserView = Depends(current_user),
+) -> Response:
+    stored = get_board_asset_store().read_bytes(asset_id, user.id)
+    if stored is None:
+        # Owner scoping is deliberately indistinguishable from a missing asset.
+        raise HTTPException(status_code=404, detail="板书图片不存在")
+    record, content = stored
+    etag = f'"{record.content_hash}"'
+    headers = {
+        "Cache-Control": _BOARD_ASSET_CACHE_CONTROL,
+        "Content-Disposition": f'inline; filename="{record.id}{_board_asset_extension(record.mime_type)}"',
+        "ETag": etag,
+        "X-Content-Type-Options": "nosniff",
+    }
+    if _etag_matches(request.headers.get("if-none-match", ""), etag):
+        return Response(status_code=304, headers=headers)
+    return Response(content=content, media_type=record.mime_type, headers=headers)
+
+
+def _etag_matches(raw_header: str, etag: str) -> bool:
+    if not raw_header:
+        return False
+    expected = etag.removeprefix("W/")
+    for candidate in raw_header.split(","):
+        candidate = candidate.strip()
+        if candidate == "*" or candidate.removeprefix("W/") == expected:
+            return True
+    return False
+
+
+def _board_asset_extension(mime_type: str) -> str:
+    return {
+        "image/gif": ".gif",
+        "image/jpeg": ".jpg",
+        "image/png": ".png",
+        "image/webp": ".webp",
+    }.get(mime_type, ".bin")
 
 
 def _save_document_request(lesson_id: str, request: DocumentSaveRequest, user_id: str) -> CoursePackageView:
@@ -312,13 +360,14 @@ def export_document_docx(lesson_id: str, user: UserView = Depends(current_user))
     document = _exportable_document_for_lesson(lesson)
     if is_document_empty(document):
         raise HTTPException(status_code=409, detail="当前板书文档为空，不能导出 DOCX")
-    target_path = EXPORT_DIR / f"{lesson.slug or lesson.id}.docx"
-    export_docx(document, target_path)
+    target_path = _unique_export_path("docx")
+    export_docx(document, target_path, owner_user_id=user.id)
     return FileResponse(
         target_path,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         filename=f"{lesson.slug or lesson.id}.docx",
         headers=_DOCX_NO_STORE_HEADERS,
+        background=BackgroundTask(target_path.unlink, missing_ok=True),
     )
 
 
@@ -329,14 +378,26 @@ def export_document_html(lesson_id: str, user: UserView = Depends(current_user))
     document = _exportable_document_for_lesson(lesson)
     if is_document_empty(document):
         raise HTTPException(status_code=409, detail="当前板书文档为空，不能导出 HTML")
-    target_path = EXPORT_DIR / f"{lesson.slug or lesson.id}.html"
-    export_html(document, target_path)
+    target_path = _unique_export_path("html")
+    try:
+        export_html(document, target_path, owner_user_id=user.id)
+    except HtmlExportBudgetError as exc:
+        target_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
     return FileResponse(
         target_path,
         media_type="text/html; charset=utf-8",
         filename=f"{lesson.slug or lesson.id}.html",
         headers=_DOCX_NO_STORE_HEADERS,
+        background=BackgroundTask(target_path.unlink, missing_ok=True),
     )
+
+
+def _unique_export_path(extension: str) -> Path:
+    safe_extension = extension.lower().lstrip(".")
+    if safe_extension not in {"docx", "html"}:
+        raise ValueError("Unsupported document export extension.")
+    return EXPORT_DIR / "requests" / f"{uuid.uuid4().hex}.{safe_extension}"
 
 
 def _exportable_document_for_lesson(lesson) -> BoardDocument:

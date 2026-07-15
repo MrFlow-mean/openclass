@@ -1,22 +1,25 @@
 from __future__ import annotations
 
 import base64
+import copy
 import hashlib
 import json
-import mimetypes
 import os
+import re
 import shutil
 import stat
 import tempfile
 import threading
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Literal
+from typing import Any, Callable, Literal
 
 from pydantic import BaseModel
 
 from app.models import (
     AgentActivityEvent,
     BoardDecision,
+    BoardDocument,
     ChatRequest,
     ChatResponse,
     ConversationTurn,
@@ -24,6 +27,8 @@ from app.models import (
     LearningRequirementSheet,
     RetrievalEvidence,
     SelectionRef,
+    SourceVisualAsset,
+    SourceVisualEvidence,
 )
 from app.services import workspace_state
 from app.services.ai_execution_adapter import (
@@ -32,6 +37,10 @@ from app.services.ai_execution_adapter import (
 )
 from app.services.ai_model_catalog import build_model_catalog
 from app.services.blank_board_intake import process_blank_board_turn
+from app.services.board_visual_insertion import (
+    BoardInsertionPlan,
+    build_board_insertion_plan,
+)
 from app.services.codex_app_server import (
     CODEX_PROCESS_FILE_SIZE_LIMIT_BYTES,
     CodexAppServerError,
@@ -42,7 +51,12 @@ from app.services.codex_app_server import (
 )
 from app.services.history import commit_operations, current_head_commit
 from app.services.lesson_factory import build_requirements
-from app.services.rich_document import build_document, document_changed, looks_like_html_content
+from app.services.rich_document import (
+    build_document,
+    document_changed,
+    looks_like_html_content,
+    rebuild_document_from_content_json,
+)
 from app.services.source_structure_store import source_structure_store
 from app.services.source_grounded_board import SOURCE_BOARD_TOKEN_BUDGET
 
@@ -53,6 +67,9 @@ DEFAULT_BOARD_MAX_BYTES = 2 * 1024 * 1024
 MAX_FORMULA_IMAGE_DATA_URL_CHARS = 12 * 1024 * 1024
 MAX_SOURCE_VISUAL_BYTES = 4 * 1024 * 1024
 MAX_SOURCE_VISUALS_PER_BATCH = 8
+_PRESERVED_VISUAL_MARKER_RE = re.compile(
+    r"\[\[OPENCLASS_PRESERVED_VISUAL_[0-9a-f]{12}_\d{4}\]\]"
+)
 BoardState = Literal["empty", "non_empty"]
 CODEX_DEVELOPER_INSTRUCTIONS = """
 You are Codex embedded as the single AI agent in OpenClass.
@@ -77,6 +94,10 @@ Do not inspect parent directories, source code, environment variables, hidden fi
 paths, network resources, plugins, or external tools. Do not create, rename, or delete files. Never
 request broader permissions. Keep `board.md` as Markdown or plain text; do not put HTML in it.
 
+Any standalone line matching `[[OPENCLASS_PRESERVED_VISUAL_...]]` is a backend-owned placeholder
+for an existing board image. Preserve every such line exactly once and in its current relative
+position. Never alter, duplicate, move, explain, wrap, or remove these placeholders.
+
 Formatting contract for `board.md`: use fenced code blocks only for executable or source code. Never
 put a formula, equation, key sentence, definition, explanation, or ordinary text inside a code fence.
 Write display formulas as `$$` on their own lines with LaTeX inside; write inline formulas as `$...$`.
@@ -94,8 +115,16 @@ write it to `board.md` as Markdown or plain text. Do not infer requirements from
 not ask the learner questions, and do not put HTML in the file. Use fenced code blocks only for real
 code. Write every display formula as `$$` on its own lines with LaTeX inside, and keep key sentences
 as normal Markdown text or `**bold**`, never inside a code fence. Do not inspect any other path,
-source code, environment variable, network resource, plugin, or external tool. Return only a brief
-completion acknowledgement after the file is written.
+source code, environment variable, network resource, plugin, or external tool.
+
+The frozen payload may include a `visual_manifest`. Every manifest item is a verified visual from
+the learner-selected source scope. When it is non-empty, write every item\'s `marker` exactly once
+as a standalone ordinary paragraph immediately after the board paragraph that introduces or
+explains that visual. Preserve manifest order. Never alter, invent, duplicate, wrap, or place a
+marker inside a heading, list, table, code fence, formula, link, or image syntax. Do not write image
+bytes, base64, HTML, file paths, or URLs. OpenClass validates the markers and materializes the
+original assets after this turn. Return only a brief completion acknowledgement after the file is
+written.
 """.strip()
 
 SOURCE_BATCH_SUMMARY_INSTRUCTIONS = """
@@ -114,6 +143,31 @@ the prompt. Do not add facts that are not visible in the image or its supplied m
 
 class _SourceBatchSummary(BaseModel):
     summary: str
+
+
+@dataclass(frozen=True)
+class CodexBoardGenerationResult:
+    """Codex turn plus the backend-owned visual insertion contract."""
+
+    turn: CodexTurnResult
+    insertion_plan: BoardInsertionPlan
+    visual_assets: dict[str, tuple[SourceVisualAsset, bytes]]
+
+    @property
+    def thread_id(self) -> str:
+        return self.turn.thread_id
+
+    @property
+    def turn_id(self) -> str | None:
+        return self.turn.turn_id
+
+    @property
+    def final_response(self) -> str:
+        return self.turn.final_response
+
+    @property
+    def activity(self) -> list[AgentActivityEvent]:
+        return self.turn.activity
 
 
 _turn_locks_guard = threading.Lock()
@@ -174,6 +228,100 @@ def _prepare_workspace(workspace: Path, content_text: str) -> Path:
     except OSError:
         pass
     return board_path
+
+
+def _document_for_codex(
+    document: BoardDocument,
+) -> tuple[str, dict[str, dict[str, Any]]]:
+    content_json = copy.deepcopy(document.content_json)
+    nodes = content_json.get("content") if isinstance(content_json, dict) else None
+    if not isinstance(nodes, list):
+        return document.content_text, {}
+    preserved: dict[str, dict[str, Any]] = {}
+    visual_index = 0
+
+    def replace_visuals(items: list[Any]) -> list[Any]:
+        nonlocal visual_index
+        replaced: list[Any] = []
+        for item in items:
+            if not isinstance(item, dict):
+                replaced.append(item)
+                continue
+            if item.get("type") == "resourceVisualBlock":
+                digest = hashlib.sha256(
+                    json.dumps(item, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
+                        "utf-8"
+                    )
+                ).hexdigest()[:12]
+                marker = f"[[OPENCLASS_PRESERVED_VISUAL_{digest}_{visual_index:04d}]]"
+                visual_index += 1
+                preserved[marker] = copy.deepcopy(item)
+                replaced.append(
+                    {
+                        "type": "paragraph",
+                        "content": [{"type": "text", "text": marker}],
+                    }
+                )
+                continue
+            content = item.get("content")
+            if isinstance(content, list):
+                item["content"] = replace_visuals(content)
+            replaced.append(item)
+        return replaced
+
+    content_json["content"] = replace_visuals(nodes)
+    if not preserved:
+        return document.content_text, {}
+    serialized = rebuild_document_from_content_json(document, content_json)
+    return serialized.content_text, preserved
+
+
+def _restore_preserved_visuals(
+    document: BoardDocument,
+    preserved: dict[str, dict[str, Any]],
+) -> BoardDocument:
+    if not preserved:
+        return document
+    content_json = copy.deepcopy(document.content_json)
+    nodes = content_json.get("content") if isinstance(content_json, dict) else None
+    if not isinstance(nodes, list):
+        raise CodexAppServerError("Codex board output lost protected visual placeholders")
+    counts = {marker: 0 for marker in preserved}
+
+    def restore(items: list[Any]) -> list[Any]:
+        restored: list[Any] = []
+        for item in items:
+            if not isinstance(item, dict):
+                restored.append(item)
+                continue
+            text = _tiptap_plain_text(item).strip()
+            if item.get("type") == "paragraph" and text in preserved:
+                counts[text] += 1
+                restored.append(copy.deepcopy(preserved[text]))
+                continue
+            content = item.get("content")
+            if isinstance(content, list):
+                item["content"] = restore(content)
+            restored.append(item)
+        return restored
+
+    content_json["content"] = restore(nodes)
+    tokens = _PRESERVED_VISUAL_MARKER_RE.findall(document.content_text)
+    if set(tokens) != set(preserved) or any(count != 1 for count in counts.values()):
+        raise CodexAppServerError("Codex board output altered protected visual placeholders")
+    return rebuild_document_from_content_json(document, content_json)
+
+
+def _tiptap_plain_text(value: Any) -> str:
+    if isinstance(value, dict):
+        if value.get("type") == "text":
+            return str(value.get("text") or "")
+        content = value.get("content")
+        if isinstance(content, list):
+            return "".join(_tiptap_plain_text(child) for child in content)
+    if isinstance(value, list):
+        return "".join(_tiptap_plain_text(child) for child in value)
+    return ""
 
 
 def _board_max_bytes() -> int:
@@ -438,6 +586,7 @@ def _run_frozen_board_generation(
     requirement: LearningRequirementSheet,
     teaching_plan: str,
     image_inputs: list[str] | None = None,
+    visual_manifest: list[dict[str, Any]] | None = None,
     is_cancelled: Callable[[], bool] | None,
     on_activity: Callable[[AgentActivityEvent], None] | None = None,
 ) -> tuple[CodexTurnResult, str]:
@@ -466,6 +615,7 @@ def _run_frozen_board_generation(
         payload = {
             "learning_requirement": requirement.model_dump(mode="json"),
             "teaching_plan": teaching_plan,
+            "visual_manifest": visual_manifest or [],
         }
         try:
             result = run_codex_thread_turn(
@@ -506,33 +656,65 @@ def _source_visual_image_urls(
     user_id: str,
     requirement: LearningRequirementSheet,
 ) -> list[str]:
-    visuals = requirement.source_grounding.frozen_visual_evidence
-    visual_ids = [evidence.visual_id for evidence in visuals if evidence.visual_id]
-    paths = source_structure_store.visual_asset_path_map(
-        owner_user_id=user_id,
-        visual_ids=visual_ids,
-    )
     image_urls: list[str] = []
-    for visual_id in visual_ids:
-        image_url = _image_data_url(paths.get(visual_id))
-        if image_url:
-            image_urls.append(image_url)
+    for evidence in requirement.source_grounding.frozen_visual_evidence:
+        if _is_structured_table_evidence(evidence):
+            continue
+        stored = _read_frozen_source_visual(user_id=user_id, evidence=evidence)
+        image_url = _image_data_url(stored)
+        if not image_url:
+            raise CodexAppServerError(
+                f"Frozen source visual {evidence.visual_id} cannot be safely loaded"
+            )
+        image_urls.append(image_url)
     return image_urls
 
 
-def _image_data_url(path: Path | None) -> str:
-    if path is None:
+def _read_frozen_source_visual(
+    *,
+    user_id: str,
+    evidence: SourceVisualEvidence,
+) -> tuple[SourceVisualAsset, bytes] | None:
+    if not evidence.package_id or not evidence.source_ingestion_id or not evidence.visual_id:
+        return None
+    stored = source_structure_store.read_visual_bytes(
+        owner_user_id=user_id,
+        package_id=evidence.package_id,
+        source_id=evidence.source_ingestion_id,
+        visual_id=evidence.visual_id,
+    )
+    if stored is None:
+        return None
+    visual, content = stored
+    if (
+        evidence.anchor_status != "verified"
+        or visual.anchor_status != "verified"
+        or not evidence.content_hash
+        or visual.content_hash != evidence.content_hash
+        or not evidence.position_hash
+        or visual.position_hash != evidence.position_hash
+        or len(content) > MAX_SOURCE_VISUAL_BYTES
+    ):
+        return None
+    return visual, content
+
+
+def _image_data_url(stored: tuple[SourceVisualAsset, bytes] | None) -> str:
+    if stored is None:
+        return ""
+    visual, content = stored
+    mime_type = visual.mime_type.split(";", 1)[0].strip().lower()
+    if mime_type not in {"image/png", "image/jpeg", "image/webp", "image/gif"}:
         return ""
     try:
-        if not path.is_file() or path.stat().st_size > MAX_SOURCE_VISUAL_BYTES:
-            return ""
-        mime_type = mimetypes.guess_type(path.name)[0] or ""
-        if mime_type not in {"image/png", "image/jpeg", "image/webp", "image/gif"}:
-            return ""
-        encoded = base64.b64encode(path.read_bytes()).decode("ascii")
-    except OSError:
+        encoded = base64.b64encode(content).decode("ascii")
+    except (TypeError, ValueError):
         return ""
     return f"data:{mime_type};base64,{encoded}"
+
+
+def _is_structured_table_evidence(evidence: SourceVisualEvidence) -> bool:
+    return evidence.kind == "table" and bool(evidence.table_data)
 
 
 def _prepare_source_generation_inputs(
@@ -607,19 +789,21 @@ def _prepare_source_generation_inputs(
         grounding.frozen_evidence = summaries
 
     visuals = grounding.frozen_visual_evidence
-    if len(visuals) <= MAX_SOURCE_VISUALS_PER_BATCH:
+    raster_visuals = [item for item in visuals if not _is_structured_table_evidence(item)]
+    if len(raster_visuals) <= MAX_SOURCE_VISUALS_PER_BATCH:
         return prepared, _source_visual_image_urls(
             user_id=owner_user_id,
             requirement=prepared,
         )
-    paths = source_structure_store.visual_asset_path_map(
-        owner_user_id=owner_user_id,
-        visual_ids=[item.visual_id for item in visuals],
-    )
-    analyzed_visuals = []
-    for batch_start in range(0, len(visuals), MAX_SOURCE_VISUALS_PER_BATCH):
-        visual_batch = visuals[batch_start : batch_start + MAX_SOURCE_VISUALS_PER_BATCH]
-        image_inputs = [_image_data_url(paths.get(item.visual_id)) for item in visual_batch]
+    analyzed_visuals: dict[str, SourceVisualEvidence] = {}
+    for batch_start in range(0, len(raster_visuals), MAX_SOURCE_VISUALS_PER_BATCH):
+        visual_batch = raster_visuals[batch_start : batch_start + MAX_SOURCE_VISUALS_PER_BATCH]
+        image_inputs = [
+            _image_data_url(
+                _read_frozen_source_visual(user_id=owner_user_id, evidence=item)
+            )
+            for item in visual_batch
+        ]
         if any(not image_input for image_input in image_inputs):
             raise CodexAppServerError("A frozen source visual cannot be safely loaded")
         analysis = adapter.analyze_image_batch(
@@ -636,8 +820,9 @@ def _prepare_source_generation_inputs(
         if not analysis:
             raise CodexAppServerError("Source visual analysis returned empty content")
         visual_ids = [item.visual_id for item in visual_batch]
-        analyzed_visuals.extend(
-            item.model_copy(
+        analyzed_visuals.update(
+            {
+                item.visual_id: item.model_copy(
                 update={
                     "extracted_text": "\n\n".join(
                         part for part in [item.extracted_text, analysis] if part
@@ -651,10 +836,13 @@ def _prepare_source_generation_inputs(
                         if part
                     ),
                 }
-            )
-            for item in visual_batch
+                )
+                for item in visual_batch
+            }
         )
-    grounding.frozen_visual_evidence = analyzed_visuals
+    grounding.frozen_visual_evidence = [
+        analyzed_visuals.get(item.visual_id, item) for item in visuals
+    ]
     return prepared, []
 
 
@@ -681,6 +869,45 @@ def _source_text_batches(chunks) -> list[list[tuple[str, str]]]:
     return batches
 
 
+def _visual_manifest_payload(
+    *,
+    plan: BoardInsertionPlan,
+    requirement: LearningRequirementSheet,
+) -> list[dict[str, object]]:
+    visuals_by_id = {
+        item.visual_id: item
+        for item in requirement.source_grounding.frozen_visual_evidence
+        if item.visual_id
+    }
+    source_titles = {
+        reference.source_ingestion_id: reference.source_title
+        for reference in requirement.source_grounding.confirmed_references
+    }
+    manifest: list[dict[str, object]] = []
+    for item in plan.items:
+        evidence = visuals_by_id.get(item.visual_id)
+        manifest.append(
+            {
+                "visual_id": item.visual_id,
+                "marker": item.marker,
+                "order_index": item.order_index,
+                "kind": item.kind,
+                "caption": item.caption,
+                "source_title": source_titles.get(item.source_ingestion_id, ""),
+                "source_locator": item.source_locator,
+                "page_start": getattr(evidence, "page_start", None),
+                "page_end": getattr(evidence, "page_end", None),
+                "slide_no": getattr(evidence, "slide_no", None),
+                "sheet_name": getattr(evidence, "sheet_name", ""),
+                "before_chunk_id": getattr(evidence, "before_chunk_id", None),
+                "after_chunk_id": getattr(evidence, "after_chunk_id", None),
+                "extracted_text": getattr(evidence, "extracted_text", "")[:1200],
+                "surrounding_text": getattr(evidence, "surrounding_text", "")[:1200],
+            }
+        )
+    return manifest
+
+
 def _generate_blank_board(
     user_id: str,
     model: str,
@@ -688,7 +915,7 @@ def _generate_blank_board(
     teaching_plan: str,
     is_cancelled: Callable[[], bool] | None,
     on_activity: Callable[[AgentActivityEvent], None] | None = None,
-) -> tuple[CodexTurnResult, str]:
+) -> tuple[CodexBoardGenerationResult, str]:
     adapter = CodexAIExecutionAdapter(
         owner_user_id=user_id,
         model=model,
@@ -702,14 +929,47 @@ def _generate_blank_board(
         is_cancelled=is_cancelled,
         on_activity=on_activity,
     )
-    return adapter.generate_board(
+    insertion_plan = build_board_insertion_plan(
+        prepared_requirement.source_grounding.frozen_visual_evidence,
+        source_titles={
+            reference.source_ingestion_id: reference.source_title
+            for reference in prepared_requirement.source_grounding.confirmed_references
+        },
+    )
+    visual_manifest = _visual_manifest_payload(
+        plan=insertion_plan,
+        requirement=prepared_requirement,
+    )
+    turn, content = adapter.generate_board(
         BoardGenerationExecutionRequest(
             requirement=prepared_requirement,
             teaching_plan=teaching_plan,
             image_inputs=image_inputs,
+            visual_manifest=visual_manifest,
         ),
         is_cancelled=is_cancelled,
         on_activity=on_activity,
+    )
+    evidence_by_id = {
+        item.visual_id: item
+        for item in prepared_requirement.source_grounding.frozen_visual_evidence
+        if item.visual_id
+    }
+    visual_assets: dict[str, tuple[SourceVisualAsset, bytes]] = {}
+    for item in insertion_plan.items:
+        evidence = evidence_by_id.get(item.visual_id)
+        if evidence is None or _is_structured_table_evidence(evidence):
+            continue
+        stored = _read_frozen_source_visual(user_id=user_id, evidence=evidence)
+        if stored is not None:
+            visual_assets[item.visual_id] = stored
+    return (
+        CodexBoardGenerationResult(
+            turn=turn,
+            insertion_plan=insertion_plan,
+            visual_assets=visual_assets,
+        ),
+        content,
     )
 
 
@@ -719,6 +979,7 @@ def _run_codex_board_generation(
     requirement: LearningRequirementSheet,
     teaching_plan: str,
     image_inputs: list[str],
+    visual_manifest: list[dict[str, Any]],
     is_cancelled: Callable[[], bool] | None,
     on_activity: Callable[[AgentActivityEvent], None] | None,
 ) -> tuple[CodexTurnResult, str]:
@@ -728,6 +989,7 @@ def _run_codex_board_generation(
         requirement=requirement,
         teaching_plan=teaching_plan,
         image_inputs=image_inputs,
+        visual_manifest=visual_manifest,
         is_cancelled=is_cancelled,
         on_activity=on_activity,
     )
@@ -866,10 +1128,10 @@ def process_codex_chat_on_lesson(
             dir=workspace_root,
         ) as temporary_workspace:
             workspace_path = Path(temporary_workspace)
-            board_path = _prepare_workspace(
-                workspace_path,
-                initial_lesson.board_document.content_text,
+            codex_board_text, preserved_visuals = _document_for_codex(
+                initial_lesson.board_document
             )
+            board_path = _prepare_workspace(workspace_path, codex_board_text)
             user_prompt = _turn_prompt(
                 request,
                 is_new_thread=prior_thread_id is None,
@@ -951,14 +1213,18 @@ def process_codex_chat_on_lesson(
                     raise CodexAppServerError("The lesson changed while Codex was working")
 
                 current_document = lesson.board_document
-                if codex_content == current_document.content_text:
+                if codex_content == codex_board_text:
                     next_document = current_document
                 else:
-                    next_document = build_document(
+                    rebuilt_document = build_document(
                         title=current_document.title,
                         content_text=codex_content,
                         document_id=current_document.id,
                         page_settings=current_document.page_settings,
+                    )
+                    next_document = _restore_preserved_visuals(
+                        rebuilt_document,
+                        preserved_visuals,
                     )
                 changed = document_changed(current_document, next_document)
                 lesson.board_teaching_guide = None

@@ -464,27 +464,40 @@ export interface SourceChunk {
   metadata: Record<string, unknown>;
 }
 
-export type SourceVisualKind = "image" | "table" | "diagram" | "page_snapshot";
+export type SourceVisualKind = "image" | "chart" | "table" | "diagram" | "page_snapshot";
+export type SourceVisualAnchorStatus = "verified" | "unverified";
 
 export interface SourceVisualAsset {
   id: string;
   owner_user_id: string;
   package_id: string;
   source_ingestion_id: string;
+  structure_id: string;
+  structure_version: number;
   chapter_id?: string | null;
   kind: SourceVisualKind;
   source_locator: string;
   page_start?: number | null;
   page_end?: number | null;
   paragraph_index?: number | null;
+  slide_no?: number | null;
+  sheet_name: string;
   bbox: number[];
+  before_chunk_id?: string | null;
+  after_chunk_id?: string | null;
   caption: string;
   extracted_text: string;
   surrounding_text: string;
+  anchor_status: SourceVisualAnchorStatus;
   mime_type: string;
   order_index: number;
   content_hash: string;
+  position_hash: string;
+  width?: number | null;
+  height?: number | null;
+  table_data: string[][];
   confidence: number;
+  created_at: string;
   metadata: Record<string, unknown>;
 }
 
@@ -497,13 +510,23 @@ export interface SourceVisualEvidence {
   page_start?: number | null;
   page_end?: number | null;
   paragraph_index?: number | null;
+  slide_no?: number | null;
+  sheet_name: string;
   bbox: number[];
+  before_chunk_id?: string | null;
+  after_chunk_id?: string | null;
   caption: string;
   extracted_text: string;
   surrounding_text: string;
+  anchor_status: SourceVisualAnchorStatus;
   mime_type: string;
   content_hash: string;
+  position_hash: string;
+  width?: number | null;
+  height?: number | null;
+  table_data: string[][];
   confidence: number;
+  metadata: Record<string, unknown>;
 }
 
 export interface SourceStructureView {

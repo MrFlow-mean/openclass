@@ -1,18 +1,27 @@
 from __future__ import annotations
 
 import io
+from collections.abc import Callable
 from pathlib import Path
 
 from docx import Document as DocxDocument
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.image.exceptions import UnrecognizedImageError
 
 from app.models import BoardDocument
+from app.services.board_asset_store import board_asset_id_from_url, get_board_asset_store
 from app.services.rich_document import core as rd
 from app.services.docx_quality_check import assert_docx_export_quality
 from app.services.docx_styles import apply_textbook_docx_styles
 
 
-def export_docx(document: BoardDocument, path: Path) -> Path:
+def export_docx(
+    document: BoardDocument,
+    path: Path,
+    *,
+    owner_user_id: str = "",
+    asset_resolver: Callable[[str], tuple[str, bytes] | None] | None = None,
+) -> Path:
     target = DocxDocument()
     apply_textbook_docx_styles(target)
     rd._apply_page_settings(target, document.page_settings)
@@ -22,7 +31,9 @@ def export_docx(document: BoardDocument, path: Path) -> Path:
     parser = rd._DocxBlockParser()
     content_html = (document.content_html or "").strip()
     content_text = (document.content_text or "").strip()
-    if content_html and content_text and rd._html_has_visible_raw_math_text(content_html):
+    if _json_contains_resource_visual(document.content_json):
+        content_html = rd.tiptap_doc_to_html(document.content_json)
+    elif content_html and content_text and rd._html_has_visible_raw_math_text(content_html):
         content_html = rd.text_to_html(content_text)
     elif content_html:
         content_html = rd._repair_suspicious_math_html(content_html)
@@ -58,11 +69,15 @@ def export_docx(document: BoardDocument, path: Path) -> Path:
             current_page_units = rd._advance_page_units(current_page_units, rd._estimated_block_units(tag, text))
         elif tag == "img":
             src = str(attrs.get("src") or "").strip()
-            image_bytes = rd._decode_data_uri(src)
-            if image_bytes:
-                target.add_picture(io.BytesIO(image_bytes))
+            asset_id = str(attrs.get("asset_id") or "").strip() or board_asset_id_from_url(src)
+            image_bytes = (
+                _board_asset_bytes(asset_id, owner_user_id, asset_resolver)
+                or rd._decode_data_uri(src)
+            )
+            if image_bytes and _add_docx_picture(target, image_bytes):
+                pass
             elif text:
-                target.add_paragraph(f"[图片] {text}")
+                target.add_paragraph(f"[图片不可用] {text}")
             current_page_units = rd._advance_page_units(current_page_units, 10)
         elif tag == "pageBreak":
             target.add_page_break()
@@ -101,3 +116,65 @@ def export_docx(document: BoardDocument, path: Path) -> Path:
     target.save(path)
     assert_docx_export_quality(path)
     return path
+
+
+def _board_asset_bytes(
+    asset_id: str,
+    owner_user_id: str,
+    asset_resolver: Callable[[str], tuple[str, bytes] | None] | None,
+) -> bytes | None:
+    if not asset_id:
+        return None
+    if asset_resolver is not None:
+        resolved = asset_resolver(asset_id)
+        return resolved[1] if resolved is not None else None
+    if not owner_user_id:
+        return None
+    stored = get_board_asset_store().read_bytes(asset_id, owner_user_id)
+    return stored[1] if stored is not None else None
+
+
+def _json_contains_resource_visual(value: object) -> bool:
+    if isinstance(value, dict):
+        if value.get("type") == "resourceVisualBlock":
+            return True
+        return any(_json_contains_resource_visual(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_json_contains_resource_visual(item) for item in value)
+    return False
+
+
+def _add_docx_picture(target: DocxDocument, image_bytes: bytes) -> bool:
+    try:
+        shape = target.add_picture(io.BytesIO(image_bytes))
+    except UnrecognizedImageError:
+        converted = _convert_picture_to_png(image_bytes)
+        if converted is None:
+            return False
+        try:
+            shape = target.add_picture(io.BytesIO(converted))
+        except UnrecognizedImageError:
+            return False
+
+    section = target.sections[-1]
+    available_width = int(section.page_width - section.left_margin - section.right_margin)
+    if available_width > 0 and shape.width > available_width:
+        original_width = int(shape.width)
+        original_height = int(shape.height)
+        shape.width = available_width
+        shape.height = max(1, round(original_height * available_width / original_width))
+    return True
+
+
+def _convert_picture_to_png(image_bytes: bytes) -> bytes | None:
+    try:
+        from PIL import Image
+
+        with Image.open(io.BytesIO(image_bytes)) as image:
+            image.seek(0)
+            converted = image.convert("RGBA" if "A" in image.getbands() else "RGB")
+            output = io.BytesIO()
+            converted.save(output, format="PNG", optimize=True)
+            return output.getvalue()
+    except Exception:
+        return None
