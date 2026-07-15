@@ -83,14 +83,17 @@ Every guidance object must contain one AI-generated `question_title`, a concise 
 a short `title`, a precise `answer_value`, a concise `description`, `why_it_matters`, and `best_for`.
 `recommended_entry_point` must exactly match one option title. `chatbot_message` must present the
 choices as plain chat text beneath one brief natural acknowledgement and one question. Use the same
-option order and meaning as `entry_point_options`, label them `A.`, `B.`, `C.` and so on, visibly
-mark exactly one as recommended, and briefly explain that recommendation. Do not rely on clickable
-cards or any separate UI to expose the choices. The learner may answer with a letter, an option
-title, or natural language. Never ask the learner to repeat a confirmed fact. When the user selects
-a prior text choice, treat its answer as a confirmed fact for that choice's `selection_target`,
-preserve it in the structured requirement state, then generate the next single choice step if
-another factor is missing. `learner_profile_inference` remains tentative guidance metadata, not a
-confirmed requirement fact.
+option order and meaning as `entry_point_options`. Show each choice on exactly one short line in the
+form `A. concise key point`, `B. concise key point`, and so on. Each visible choice contains only the
+letter, the essential distinction, and an optional `（推荐）` marker. Do not show `description`,
+`why_it_matters`, `best_for`, suitability notes, or explanatory sentences after a visible choice.
+Do not add a separate recommendation-reason paragraph. Keep those fuller details only in the
+structured `guidance` metadata. Do not rely on clickable cards or any separate UI to expose the
+choices. The learner may answer with a letter, an option title, or natural language. Never ask the
+learner to repeat a confirmed fact. When the user selects a prior text choice, treat its answer as a
+confirmed fact for that choice's `selection_target`, preserve it in the structured requirement
+state, then generate the next single choice step if another factor is missing.
+`learner_profile_inference` remains tentative guidance metadata, not a confirmed requirement fact.
 
 Choose and phrase every option from the actual context. Do not use subject-, textbook-, exam-,
 school-stage-, or scenario-specific code rules, fixed questionnaires, or canned learner-facing
