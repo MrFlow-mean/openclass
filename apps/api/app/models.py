@@ -1337,7 +1337,7 @@ class AuthProviderView(BaseModel):
     label: str
     description: str
     configured: bool
-    kind: Literal["password", "oauth"] = "oauth"
+    kind: Literal["password", "oauth", "device"] = "oauth"
 
 
 class AdminStats(BaseModel):

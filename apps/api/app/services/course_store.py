@@ -76,7 +76,7 @@ class SqliteCourseStore:
         with self._lock:
             with self._connect() as conn:
                 with conn:
-                    if self._has_unowned_packages(conn) and not owner_user_id.startswith("guest_"):
+                    if self._has_unowned_packages(conn) and self._is_registered_user(conn, owner_user_id):
                         self._claim_unowned_workspace(
                             conn,
                             self._legacy_workspace_owner_candidate(conn) or owner_user_id,
@@ -506,6 +506,17 @@ class SqliteCourseStore:
             (owner_user_id,),
         ).fetchone()
         return row is not None
+
+    def _is_registered_user(self, conn: sqlite3.Connection, owner_user_id: str) -> bool:
+        users_table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'users'"
+        ).fetchone()
+        if users_table is None:
+            return not owner_user_id.startswith("guest_")
+        return conn.execute(
+            "SELECT 1 FROM users WHERE id = ? LIMIT 1",
+            (owner_user_id,),
+        ).fetchone() is not None
 
     def _has_unowned_packages(self, conn: sqlite3.Connection) -> bool:
         row = conn.execute(

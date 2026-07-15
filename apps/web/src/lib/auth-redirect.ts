@@ -6,7 +6,13 @@ function matchesPath(path: string, target: string) {
 }
 
 export function loginRedirectPath(value: string | null | undefined) {
-  if (!value || !value.startsWith("/") || value.startsWith("//")) {
+  if (
+    !value ||
+    !value.startsWith("/") ||
+    value.startsWith("//") ||
+    value.includes("\\") ||
+    /[\u0000-\u001f\u007f]/.test(value)
+  ) {
     return PRODUCT_HOME_PATH;
   }
   if (value === "/login" || value.startsWith("/login?") || value === "/register" || value.startsWith("/register?")) {

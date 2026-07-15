@@ -96,6 +96,10 @@ def codex_app_server_runtime_enabled() -> bool:
     return True if configured is None else _env_truthy("OPENCLASS_CODEX_APP_SERVER_ENABLED")
 
 
+def chatgpt_platform_login_enabled() -> bool:
+    return _env_truthy("OPENCLASS_CHATGPT_PLATFORM_LOGIN_ENABLED")
+
+
 def codex_home_root() -> Path:
     configured = (os.getenv("OPENCLASS_CODEX_HOME") or "").strip()
     path = Path(configured).expanduser() if configured else Path.home() / ".openclass" / "codex"
@@ -108,6 +112,53 @@ def codex_home_path(user_id: str) -> Path:
         raise CodexAppServerError("A signed-in OpenClass user is required for Codex")
     account_key = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
     return codex_home_root() / "accounts" / account_key
+
+
+def copy_codex_auth(source_user_id: str, target_user_id: str) -> None:
+    """Copy only Codex authentication when an external identity links to an existing user.
+
+    New guest upgrades keep the same user id and therefore keep their complete Codex home.
+    Existing OpenClass users retain their own thread/runtime data while receiving the newly
+    verified ChatGPT credential.
+    """
+
+    if source_user_id == target_user_id:
+        return
+    source_auth = codex_home_path(source_user_id) / "auth.json"
+    if not source_auth.is_file():
+        raise CodexAppServerError("The completed ChatGPT login credential was not found")
+    target_home = codex_home_path(target_user_id)
+    target_home.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        target_home.chmod(0o700)
+    except OSError:
+        pass
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=target_home,
+            prefix=".auth-",
+            suffix=".json.tmp",
+            delete=False,
+        ) as temporary:
+            temporary_path = Path(temporary.name)
+            with source_auth.open("rb") as source:
+                shutil.copyfileobj(source, temporary)
+        temporary_path.chmod(0o600)
+        temporary_path.replace(target_home / "auth.json")
+    finally:
+        if temporary_path is not None and temporary_path.exists():
+            temporary_path.unlink()
+    _invalidate_status(target_user_id)
+
+
+def remove_codex_auth(user_id: str) -> None:
+    auth_path = codex_home_path(user_id) / "auth.json"
+    try:
+        auth_path.unlink(missing_ok=True)
+    except OSError:
+        return
+    _invalidate_status(user_id)
 
 
 def _codex_process_env(user_id: str) -> dict[str, str]:
@@ -651,7 +702,9 @@ class _LoginAttempt:
     verification_url: str
     user_code: str
     expires_at: datetime
+    purpose: str = "provider"
     status: str = "pending"
+    completion_state: str = "available"
     error: str | None = None
     account: CodexAccountView | None = None
     session: CodexAppServerSession | None = None
@@ -685,17 +738,26 @@ def _prune_login_state_locked(*, now_monotonic: float, now_utc: datetime) -> Non
         _login_attempts.pop(login_id, None)
 
 
-def _reserve_login_start(user_id: str) -> None:
+def _reserve_login_start(user_id: str, purpose: str) -> None:
     now_monotonic = time.monotonic()
     with _login_lock:
         _prune_login_state_locked(
             now_monotonic=now_monotonic,
             now_utc=datetime.now(timezone.utc),
         )
-        if user_id in _login_starting_users or any(
-            attempt.owner_user_id == user_id and attempt.status == "pending"
+        has_active_login = any(
+            attempt.owner_user_id == user_id
+            and (
+                attempt.status == "pending"
+                or (
+                    attempt.purpose == "platform"
+                    and attempt.status == "succeeded"
+                    and attempt.completion_state != "consumed"
+                )
+            )
             for attempt in _login_attempts.values()
-        ):
+        )
+        if user_id in _login_starting_users or has_active_login:
             raise CodexLoginRateLimitError("A Codex login is already in progress for this user")
         pending_attempts = [
             attempt for attempt in _login_attempts.values() if attempt.status == "pending"
@@ -722,10 +784,10 @@ def _release_login_start(user_id: str) -> None:
         _login_starting_users.discard(user_id)
 
 
-def start_codex_device_login(user_id: str) -> CodexLoginStartResponse:
+def start_codex_device_login(user_id: str, *, purpose: str = "provider") -> CodexLoginStartResponse:
     if not codex_app_server_runtime_enabled():
         raise CodexAppServerError("OPENCLASS_CODEX_APP_SERVER_ENABLED is not enabled")
-    _reserve_login_start(user_id)
+    _reserve_login_start(user_id, purpose)
     session: CodexAppServerSession | None = None
     attempt: _LoginAttempt | None = None
     try:
@@ -749,6 +811,7 @@ def start_codex_device_login(user_id: str) -> CodexLoginStartResponse:
             verification_url=verification_url,
             user_code=user_code,
             expires_at=datetime.now(timezone.utc) + timedelta(seconds=CODEX_LOGIN_TIMEOUT_SECONDS),
+            purpose=purpose,
             session=session,
         )
         thread = threading.Thread(target=_watch_login_attempt, args=(attempt,), daemon=True)
@@ -881,6 +944,73 @@ def codex_login_status(login_id: str, user_id: str) -> CodexLoginStatusResponse:
         error=attempt.error,
         account=attempt.account,
     )
+
+
+def claim_completed_codex_platform_login(login_id: str, user_id: str) -> CodexAccountView:
+    with _login_lock:
+        attempt = _login_attempts.get(login_id)
+        if (
+            attempt is None
+            or attempt.owner_user_id != user_id
+            or attempt.purpose != "platform"
+        ):
+            raise CodexAppServerError("Unknown ChatGPT platform login id")
+        if attempt.status != "succeeded" or attempt.account is None:
+            raise CodexAppServerError("ChatGPT login has not completed")
+        if attempt.completion_state == "completing":
+            raise CodexLoginRateLimitError("ChatGPT platform login completion is already in progress")
+        if attempt.completion_state == "consumed":
+            return attempt.account
+        attempt.completion_state = "completing"
+        expected_account = attempt.account
+
+    try:
+        current_account, _requires_auth = _read_account(user_id, refresh_token=False)
+        expected_identity = (
+            (expected_account.type or "").strip().lower(),
+            (expected_account.email or "").strip().casefold(),
+        )
+        current_identity = (
+            (current_account.type or "").strip().lower() if current_account else "",
+            (current_account.email or "").strip().casefold() if current_account else "",
+        )
+        if expected_identity != current_identity or not all(current_identity):
+            with _login_lock:
+                latest_attempt = _login_attempts.get(login_id)
+                if latest_attempt is attempt:
+                    latest_attempt.status = "failed"
+                    latest_attempt.error = (
+                        "The completed ChatGPT login was superseded by a different account"
+                    )
+                    latest_attempt.completion_state = "consumed"
+                    latest_attempt.completed_at = datetime.now(timezone.utc)
+            raise CodexAppServerError(
+                "The completed ChatGPT login no longer matches the current Codex account"
+            )
+        return current_account
+    except Exception:
+        release_codex_platform_login_claim(login_id, user_id)
+        raise
+
+
+def complete_codex_platform_login_claim(login_id: str, user_id: str) -> None:
+    with _login_lock:
+        attempt = _login_attempts.get(login_id)
+        if attempt is None or attempt.owner_user_id != user_id or attempt.purpose != "platform":
+            return
+        attempt.completion_state = "consumed"
+
+
+def release_codex_platform_login_claim(login_id: str, user_id: str) -> None:
+    with _login_lock:
+        attempt = _login_attempts.get(login_id)
+        if (
+            attempt is not None
+            and attempt.owner_user_id == user_id
+            and attempt.purpose == "platform"
+            and attempt.completion_state == "completing"
+        ):
+            attempt.completion_state = "available"
 
 
 def cancel_codex_login(login_id: str, user_id: str) -> CodexLoginStatusResponse:

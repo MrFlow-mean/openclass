@@ -481,8 +481,19 @@ export const api = {
       method: "POST",
     });
   },
+  startChatGPTPlatformLogin() {
+    return request<CodexLoginStartResponse>("/api/codex/platform-login/device", {
+      method: "POST",
+    });
+  },
   getCodexLoginStatus(loginId: string) {
     return request<CodexLoginStatusResponse>(`/api/codex/login/${encodeURIComponent(loginId)}`);
+  },
+  completeCodexPlatformLogin(loginId?: string) {
+    const query = loginId ? `?login_id=${encodeURIComponent(loginId)}` : "";
+    return request<AuthSessionResponse>(`/api/codex/login/complete${query}`, {
+      method: "POST",
+    });
   },
   cancelCodexLogin(loginId: string) {
     return request<CodexLoginStatusResponse>(`/api/codex/login/${encodeURIComponent(loginId)}/cancel`, {

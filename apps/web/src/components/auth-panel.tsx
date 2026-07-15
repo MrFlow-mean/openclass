@@ -4,7 +4,7 @@ import clsx from "clsx";
 import Image from "next/image";
 import Link from "next/link";
 import type { CSSProperties, FormEvent } from "react";
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
   ArrowLeft,
   ArrowUp,
@@ -35,7 +35,6 @@ import {
   api,
   clearAuthToken,
   getApiBase,
-  persistConnectedGuestAuthToken,
   readAuthToken,
   readGuestAuthToken,
   storeAuthToken,
@@ -44,6 +43,13 @@ import {
 import { BrandMark } from "@/components/brand-mark";
 import { userAccountLabel } from "@/lib/account";
 import { loginRedirectPath } from "@/lib/auth-redirect";
+import {
+  CODEX_LOGIN_POLL_INTERVAL_MS,
+  clearPendingCodexLogin,
+  pendingCodexLoginExpired,
+  readPendingCodexLogin,
+  storePendingCodexLogin,
+} from "@/lib/codex-login-persistence";
 import type { AuthProviderView, CodexLoginStartResponse, UserView } from "@/types";
 
 type AuthPanelProps = {
@@ -300,9 +306,8 @@ function SocialBrandIcon({ brand }: { brand: SocialSignInOption["brand"] }) {
   return null;
 }
 
-function loginDestination(user: UserView, nextPath: string | null) {
-  const destination = loginRedirectPath(nextPath);
-  return user.role === "admin" && destination === "/" ? "/admin" : destination;
+function loginDestination(nextPath: string | null) {
+  return loginRedirectPath(nextPath);
 }
 
 function navigateAfterAuth(path: string, mode: "assign" | "replace" = "assign") {
@@ -580,6 +585,30 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
   const [codexLogin, setCodexLogin] = useState<CodexLoginStartResponse | null>(null);
   const [codexLoginStatus, setCodexLoginStatus] = useState<string | null>(null);
   const loginSearch = useSyncExternalStore(subscribeToLocationSearch, getLocationSearch, getServerLocationSearch);
+  const codexCompletionInFlightRef = useRef(false);
+  const chatGPTPlatformProvider = authProviders.find(
+    (provider) => provider.id === "chatgpt" && provider.kind === "device"
+  );
+
+  const completeCodexPlatformLoginOnce = useCallback(async (loginId?: string) => {
+    if (codexCompletionInFlightRef.current) {
+      return false;
+    }
+    codexCompletionInFlightRef.current = true;
+    try {
+      const payload = await api.completeCodexPlatformLogin(loginId);
+      storeAuthToken(payload.token);
+      clearPendingCodexLogin();
+      setCodexLogin(null);
+      setCodexLoginStatus("succeeded");
+      const nextPath = new URLSearchParams(window.location.search).get("next");
+      navigateAfterAuth(loginDestination(nextPath), "replace");
+      return true;
+    } catch (completionError) {
+      codexCompletionInFlightRef.current = false;
+      throw completionError;
+    }
+  }, []);
 
   useEffect(() => {
     let disposed = false;
@@ -593,7 +622,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
         if (!disposed) {
           setCurrentUser(user?.role === "guest" ? null : user);
           setAuthProviders(providers);
-          const token = readAuthToken();
+          const token = readAuthToken() ?? (user && user.role !== "guest" ? readGuestAuthToken() : null);
           if (user && token) {
             storeAuthToken(token);
           }
@@ -621,19 +650,31 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
       return;
     }
     const nextPath = new URLSearchParams(window.location.search).get("next");
-    navigateAfterAuth(loginDestination(currentUser, nextPath), "replace");
+    navigateAfterAuth(loginDestination(nextPath), "replace");
   }, [currentUser]);
 
   useEffect(() => {
     if (loginSearch === null) {
       return;
     }
-    const loginIntent = new URLSearchParams(loginSearch).get("intent");
-    if (loginIntent === "account_upgrade") {
+    if (isCheckingSession) {
+      return;
+    }
+    if (!chatGPTPlatformProvider?.configured) {
+      clearPendingCodexLogin();
       return;
     }
     if (!readGuestAuthToken()) {
+      clearPendingCodexLogin();
       return;
+    }
+    const pendingLogin = readPendingCodexLogin();
+    if (pendingLogin) {
+      const restoreTimeoutId = window.setTimeout(() => {
+        setCodexLogin(pendingLogin);
+        setCodexLoginStatus("pending");
+      }, 0);
+      return () => window.clearTimeout(restoreTimeoutId);
     }
     let disposed = false;
 
@@ -641,8 +682,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
       try {
         const provider = await api.getCodexStatus();
         if (!disposed && provider.configured) {
-          persistConnectedGuestAuthToken();
-          navigateAfterAuth("/studio", "replace");
+          await completeCodexPlatformLoginOnce();
         }
       } catch {
         // A guest session without a completed ChatGPT login remains on this page.
@@ -653,7 +693,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
     return () => {
       disposed = true;
     };
-  }, [loginSearch]);
+  }, [chatGPTPlatformProvider?.configured, completeCodexPlatformLoginOnce, isCheckingSession, loginSearch]);
 
   useEffect(() => {
     if (!codexLogin) {
@@ -661,46 +701,82 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
     }
     const activeCodexLogin = codexLogin;
     let disposed = false;
+    let timeoutId: number | null = null;
+
+    function scheduleNextPoll() {
+      if (!disposed) {
+        timeoutId = window.setTimeout(() => void refreshLoginStatus(), CODEX_LOGIN_POLL_INTERVAL_MS);
+      }
+    }
 
     async function refreshLoginStatus() {
+      if (pendingCodexLoginExpired(activeCodexLogin)) {
+        clearPendingCodexLogin();
+        setCodexLogin(null);
+        setCodexLoginStatus("expired");
+        setError("ChatGPT 登录已过期，请重新发起登录");
+        return;
+      }
+      let status;
       try {
-        const status = await api.getCodexLoginStatus(activeCodexLogin.login_id);
+        status = await api.getCodexLoginStatus(activeCodexLogin.login_id);
+      } catch (statusError) {
         if (disposed) {
           return;
         }
-        if (status.status === "succeeded") {
+        try {
           const provider = await api.getCodexStatus();
           if (disposed) {
             return;
           }
-          if (!provider.configured) {
-            throw new Error(provider.message || "ChatGPT 登录尚未完成");
+          if (provider.configured) {
+            const completed = await completeCodexPlatformLoginOnce();
+            if (!completed) {
+              scheduleNextPoll();
+            }
+            return;
           }
-          persistConnectedGuestAuthToken();
-          setCodexLoginStatus("succeeded");
-          navigateAfterAuth("/studio");
-          return;
+        } catch {
+          // Keep the pending marker and retry after transient status failures.
         }
-        setCodexLoginStatus(status.status);
-        if (["failed", "cancelled", "expired"].includes(status.status)) {
-          setCodexLogin(null);
-          setError(status.error || "ChatGPT 登录未完成");
-        }
-      } catch (loginError) {
-        if (!disposed) {
-          setCodexLogin(null);
-          setError(loginError instanceof Error ? loginError.message : "ChatGPT 登录状态检查失败");
-        }
+        setError(statusError instanceof Error ? statusError.message : "ChatGPT 登录状态检查失败");
+        scheduleNextPoll();
+        return;
       }
+      if (disposed) {
+        return;
+      }
+      if (status.status === "succeeded") {
+        try {
+          const completed = await completeCodexPlatformLoginOnce(activeCodexLogin.login_id);
+          if (!completed) {
+            scheduleNextPoll();
+          }
+        } catch (completionError) {
+          setError(completionError instanceof Error ? completionError.message : "ChatGPT 登录完成失败");
+          scheduleNextPoll();
+        }
+        return;
+      }
+      setCodexLoginStatus(status.status);
+      if (["failed", "cancelled", "expired"].includes(status.status)) {
+        clearPendingCodexLogin();
+        setCodexLogin(null);
+        setError(status.error || "ChatGPT 登录未完成");
+        return;
+      }
+      setError(null);
+      scheduleNextPoll();
     }
 
     void refreshLoginStatus();
-    const intervalId = window.setInterval(() => void refreshLoginStatus(), 2500);
     return () => {
       disposed = true;
-      window.clearInterval(intervalId);
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId);
+      }
     };
-  }, [codexLogin]);
+  }, [codexLogin, completeCodexPlatformLoginOnce]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -714,7 +790,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
       storeAuthToken(payload.token);
       setCurrentUser(payload.user);
       const nextPath = new URLSearchParams(window.location.search).get("next");
-      navigateAfterAuth(loginDestination(payload.user, nextPath));
+      navigateAfterAuth(loginDestination(nextPath));
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : "操作失败");
     } finally {
@@ -744,6 +820,10 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
   }
 
   async function handleChatGPTLogin() {
+    if (!chatGPTPlatformProvider?.configured) {
+      setError("ChatGPT 平台登录当前不可用");
+      return;
+    }
     setIsLoading(true);
     setError(null);
     setNotice(null);
@@ -752,7 +832,8 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
         const guest = await api.startGuestSession();
         storeGuestAuthToken(guest.token);
       }
-      const login = await api.startCodexDeviceLogin();
+      const login = await api.startChatGPTPlatformLogin();
+      storePendingCodexLogin(login);
       setCodexLogin(login);
       setCodexLoginStatus("pending");
       window.open(login.verification_url, "_blank", "noopener,noreferrer");
@@ -767,11 +848,13 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
     if (!codexLogin) {
       return;
     }
+    const loginId = codexLogin.login_id;
+    clearPendingCodexLogin();
+    setCodexLogin(null);
+    setCodexLoginStatus("cancelled");
     setIsLoading(true);
     try {
-      await api.cancelCodexLogin(codexLogin.login_id);
-      setCodexLogin(null);
-      setCodexLoginStatus("cancelled");
+      await api.cancelCodexLogin(loginId);
     } catch (cancelError) {
       setError(cancelError instanceof Error ? cancelError.message : "无法取消 ChatGPT 登录");
     } finally {
@@ -781,7 +864,7 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
 
   async function handleHomeAccess() {
     if (currentUser) {
-      navigateAfterAuth(loginDestination(currentUser, "/"));
+      navigateAfterAuth(loginDestination("/"));
       return;
     }
     await handleGuestAccess();
@@ -892,19 +975,24 @@ export function AuthPanel({ initialMode }: AuthPanelProps) {
             ) : (
               <>
                 <div className="mb-5 space-y-3">
-                  <button
-                    type="button"
-                    onClick={() => void handleChatGPTLogin()}
-                    disabled={isAuthBusy}
-                    className="flex w-full items-center justify-center gap-3 rounded-lg border border-[#3a312b] bg-[#3a312b] px-4 py-3.5 text-sm font-semibold text-white shadow-sm transition hover:bg-[#1f1a17] active:scale-[0.99] disabled:cursor-wait disabled:opacity-70"
-                  >
-                    {isLoading ? (
-                      <LoaderCircle className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <Image src="/chatgpt-logo.png" alt="" width={20} height={20} className="h-5 w-5 rounded-sm" />
-                    )}
-                    <span className="whitespace-nowrap">使用 ChatGPT 登录</span>
-                  </button>
+                  {chatGPTPlatformProvider ? (
+                    <button
+                      type="button"
+                      onClick={() => void handleChatGPTLogin()}
+                      disabled={isAuthBusy || !chatGPTPlatformProvider.configured}
+                      className="flex w-full items-center justify-center gap-3 rounded-lg border border-[#3a312b] bg-[#3a312b] px-4 py-3.5 text-sm font-semibold text-white shadow-sm transition hover:bg-[#1f1a17] active:scale-[0.99] disabled:cursor-wait disabled:opacity-70"
+                    >
+                      {isLoading ? (
+                        <LoaderCircle className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Image src="/chatgpt-logo.png" alt="" width={20} height={20} className="h-5 w-5 rounded-sm" />
+                      )}
+                      <span className="whitespace-nowrap">使用 ChatGPT 登录</span>
+                      {!chatGPTPlatformProvider.configured ? (
+                        <span className="shrink-0 rounded-full bg-white/20 px-2 py-0.5 text-[11px] font-semibold">暂不可用</span>
+                      ) : null}
+                    </button>
+                  ) : null}
                   {socialSignInOptions.map((option) => {
                     const provider = authProviders.find((item) => item.kind === "oauth" && item.id === option.id);
                     const isUnconfigured = provider ? !provider.configured : false;

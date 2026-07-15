@@ -7,8 +7,12 @@ from pathlib import Path
 from typing import Iterator
 
 
-def _workspace_setting_key(owner_user_id: str) -> str:
-    return f"active_package_id:{owner_user_id}"
+def _workspace_setting_key(prefix: str, owner_user_id: str) -> str:
+    return f"{prefix}:{owner_user_id}"
+
+
+def _quoted_identifier(value: str) -> str:
+    return '"' + value.replace('"', '""') + '"'
 
 
 class AuthStore:
@@ -163,6 +167,15 @@ class AuthStore:
 
     def find_user_by_id(self, conn: sqlite3.Connection, user_id: str) -> sqlite3.Row | None:
         return conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+
+    def principal_id_exists(self, conn: sqlite3.Connection, principal_id: str) -> bool:
+        return bool(
+            conn.execute("SELECT 1 FROM users WHERE id = ? LIMIT 1", (principal_id,)).fetchone()
+            or conn.execute(
+                "SELECT 1 FROM auth_guest_sessions WHERE guest_user_id = ? LIMIT 1",
+                (principal_id,),
+            ).fetchone()
+        )
 
     def create_password_user(
         self,
@@ -383,24 +396,66 @@ class AuthStore:
         ).fetchone()
         return row["guest_user_id"] if row is not None else None
 
-    def claim_guest_workspace(self, conn: sqlite3.Connection, *, guest_user_id: str, user_id: str) -> None:
-        conn.execute(
-            "UPDATE course_packages SET owner_user_id = ? WHERE owner_user_id = ?",
-            (user_id, guest_user_id),
-        )
-        guest_setting_key = _workspace_setting_key(guest_user_id)
-        user_setting_key = _workspace_setting_key(user_id)
-        guest_active_row = conn.execute(
-            "SELECT value FROM workspace_settings WHERE key = ?",
-            (guest_setting_key,),
-        ).fetchone()
-        if guest_active_row is not None:
-            conn.execute(
-                "INSERT OR REPLACE INTO workspace_settings(key, value) VALUES (?, ?)",
-                (user_setting_key, guest_active_row["value"]),
-            )
-            conn.execute("DELETE FROM workspace_settings WHERE key = ?", (guest_setting_key,))
+    def delete_guest_sessions(self, conn: sqlite3.Connection, *, guest_user_id: str) -> None:
         conn.execute("DELETE FROM auth_guest_sessions WHERE guest_user_id = ?", (guest_user_id,))
+
+    def claim_guest_workspace(self, conn: sqlite3.Connection, *, guest_user_id: str, user_id: str) -> None:
+        owner_tables = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"
+        ).fetchall()
+        for row in owner_tables:
+            table_name = str(row["name"])
+            quoted_table = _quoted_identifier(table_name)
+            columns = {
+                str(column["name"])
+                for column in conn.execute(f"PRAGMA table_xinfo({quoted_table})").fetchall()
+            }
+            if "owner_user_id" not in columns:
+                continue
+            conn.execute(
+                f"UPDATE {quoted_table} SET owner_user_id = ? WHERE owner_user_id = ?",
+                (user_id, guest_user_id),
+            )
+
+        workspace_settings_exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'workspace_settings'"
+        ).fetchone()
+        if workspace_settings_exists is not None:
+            for prefix in ("active_package_id", "workspace_revision"):
+                guest_setting_key = _workspace_setting_key(prefix, guest_user_id)
+                user_setting_key = _workspace_setting_key(prefix, user_id)
+                guest_row = conn.execute(
+                    "SELECT value FROM workspace_settings WHERE key = ?",
+                    (guest_setting_key,),
+                ).fetchone()
+                if prefix == "workspace_revision":
+                    user_row = conn.execute(
+                        "SELECT value FROM workspace_settings WHERE key = ?",
+                        (user_setting_key,),
+                    ).fetchone()
+                    try:
+                        guest_revision = int(guest_row["value"]) if guest_row is not None else 0
+                    except (TypeError, ValueError):
+                        guest_revision = 0
+                    try:
+                        user_revision = int(user_row["value"]) if user_row is not None else 0
+                    except (TypeError, ValueError):
+                        user_revision = 0
+                    conn.execute(
+                        "INSERT OR REPLACE INTO workspace_settings(key, value) VALUES (?, ?)",
+                        (user_setting_key, str(max(guest_revision, user_revision) + 1)),
+                    )
+                    if guest_row is not None:
+                        conn.execute("DELETE FROM workspace_settings WHERE key = ?", (guest_setting_key,))
+                    continue
+                if guest_row is None:
+                    continue
+                conn.execute(
+                    "INSERT OR REPLACE INTO workspace_settings(key, value) VALUES (?, ?)",
+                    (user_setting_key, str(guest_row["value"])),
+                )
+                conn.execute("DELETE FROM workspace_settings WHERE key = ?", (guest_setting_key,))
+        self.delete_guest_sessions(conn, guest_user_id=guest_user_id)
 
     def identities_for_user(self, conn: sqlite3.Connection, user_id: str) -> list[sqlite3.Row]:
         return conn.execute(

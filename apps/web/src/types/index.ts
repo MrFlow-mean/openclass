@@ -893,7 +893,7 @@ export interface AuthProviderView {
   label: string;
   description: string;
   configured: boolean;
-  kind: "password" | "oauth";
+  kind: "password" | "oauth" | "device";
 }
 
 export interface AdminOverview {

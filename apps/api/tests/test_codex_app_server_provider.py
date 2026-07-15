@@ -89,6 +89,35 @@ def test_codex_home_is_isolated_per_openclass_user(monkeypatch, tmp_path) -> Non
     assert "user_b" not in str(second)
 
 
+def test_copy_codex_auth_preserves_existing_target_runtime(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("OPENCLASS_CODEX_HOME", str(tmp_path / "codex"))
+    source_home = codex_app_server.codex_home_path("guest_a")
+    target_home = codex_app_server.codex_home_path("user_a")
+    source_home.mkdir(parents=True)
+    target_home.mkdir(parents=True)
+    (source_home / "auth.json").write_text('{"verified": true}', encoding="utf-8")
+    (target_home / "state_5.sqlite").write_text("existing runtime", encoding="utf-8")
+
+    codex_app_server.copy_codex_auth("guest_a", "user_a")
+
+    assert (target_home / "auth.json").read_text(encoding="utf-8") == '{"verified": true}'
+    assert (target_home / "state_5.sqlite").read_text(encoding="utf-8") == "existing runtime"
+    assert (target_home / "auth.json").stat().st_mode & 0o777 == 0o600
+
+
+def test_remove_codex_auth_preserves_source_runtime(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("OPENCLASS_CODEX_HOME", str(tmp_path / "codex"))
+    source_home = codex_app_server.codex_home_path("guest_a")
+    source_home.mkdir(parents=True)
+    (source_home / "auth.json").write_text('{"refresh": "credential"}', encoding="utf-8")
+    (source_home / "state_5.sqlite").write_text("guest runtime", encoding="utf-8")
+
+    codex_app_server.remove_codex_auth("guest_a")
+
+    assert (source_home / "auth.json").exists() is False
+    assert (source_home / "state_5.sqlite").read_text(encoding="utf-8") == "guest runtime"
+
+
 def test_codex_status_cache_is_isolated_per_openclass_user(monkeypatch) -> None:
     reads: list[str] = []
     monkeypatch.setattr(codex_app_server, "codex_app_server_runtime_enabled", lambda: True)
@@ -307,6 +336,102 @@ def test_login_start_rejects_a_second_pending_attempt_for_same_user(monkeypatch)
         with pytest.raises(codex_app_server.CodexLoginRateLimitError, match="already in progress"):
             codex_app_server.start_codex_device_login("user_a")
     finally:
+        with codex_app_server._login_lock:
+            codex_app_server._login_attempts.pop(attempt.login_id, None)
+            codex_app_server._login_start_events.clear()
+            codex_app_server._login_starting_users.clear()
+
+
+def test_platform_login_claim_rejects_superseded_account(monkeypatch) -> None:
+    attempt = codex_app_server._LoginAttempt(
+        owner_user_id="guest_a",
+        login_id="login_a",
+        verification_url="https://example.test/device",
+        user_code="ABCD-EFGH",
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+        purpose="platform",
+        status="succeeded",
+        account=CodexAccountView(type="chatgpt", email="account-a@example.test"),
+        completed_at=datetime.now(timezone.utc),
+    )
+    monkeypatch.setattr(
+        codex_app_server,
+        "_read_account",
+        lambda user_id, refresh_token=False: (
+            CodexAccountView(type="chatgpt", email="account-b@example.test"),
+            False,
+        ),
+    )
+    with codex_app_server._login_lock:
+        codex_app_server._login_attempts[attempt.login_id] = attempt
+    try:
+        with pytest.raises(codex_app_server.CodexAppServerError, match="no longer matches"):
+            codex_app_server.claim_completed_codex_platform_login(attempt.login_id, "guest_a")
+
+        assert attempt.status == "failed"
+        assert attempt.completion_state == "consumed"
+        assert "superseded" in (attempt.error or "")
+    finally:
+        with codex_app_server._login_lock:
+            codex_app_server._login_attempts.pop(attempt.login_id, None)
+
+
+def test_platform_login_claim_is_consumed_after_matching_account(monkeypatch) -> None:
+    account = CodexAccountView(type="chatgpt", email="account-a@example.test")
+    attempt = codex_app_server._LoginAttempt(
+        owner_user_id="guest_a",
+        login_id="login_a",
+        verification_url="https://example.test/device",
+        user_code="ABCD-EFGH",
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+        purpose="platform",
+        status="succeeded",
+        account=account,
+        completed_at=datetime.now(timezone.utc),
+    )
+    monkeypatch.setattr(
+        codex_app_server,
+        "_read_account",
+        lambda user_id, refresh_token=False: (account, False),
+    )
+    with codex_app_server._login_lock:
+        codex_app_server._login_attempts[attempt.login_id] = attempt
+    try:
+        claimed = codex_app_server.claim_completed_codex_platform_login(attempt.login_id, "guest_a")
+        codex_app_server.complete_codex_platform_login_claim(attempt.login_id, "guest_a")
+
+        assert claimed.email == "account-a@example.test"
+        assert attempt.completion_state == "consumed"
+    finally:
+        with codex_app_server._login_lock:
+            codex_app_server._login_attempts.pop(attempt.login_id, None)
+
+
+def test_unconsumed_platform_login_blocks_replacement_until_consumed() -> None:
+    attempt = codex_app_server._LoginAttempt(
+        owner_user_id="guest_a",
+        login_id="login_a",
+        verification_url="https://example.test/device",
+        user_code="ABCD-EFGH",
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+        purpose="platform",
+        status="succeeded",
+        account=CodexAccountView(type="chatgpt", email="account-a@example.test"),
+        completed_at=datetime.now(timezone.utc),
+    )
+    with codex_app_server._login_lock:
+        codex_app_server._login_attempts[attempt.login_id] = attempt
+        codex_app_server._login_start_events.clear()
+        codex_app_server._login_starting_users.clear()
+    try:
+        with pytest.raises(codex_app_server.CodexLoginRateLimitError, match="already in progress"):
+            codex_app_server._reserve_login_start("guest_a", "platform")
+
+        attempt.completion_state = "consumed"
+        codex_app_server._reserve_login_start("guest_a", "platform")
+        assert "guest_a" in codex_app_server._login_starting_users
+    finally:
+        codex_app_server._release_login_start("guest_a")
         with codex_app_server._login_lock:
             codex_app_server._login_attempts.pop(attempt.login_id, None)
             codex_app_server._login_start_events.clear()

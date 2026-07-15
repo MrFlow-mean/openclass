@@ -12,7 +12,7 @@ import ssl
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib import parse, request as urlrequest
 
 import certifi
@@ -215,6 +215,8 @@ def _frontend_origin(request: Request | None = None) -> str:
 def _safe_next_path(value: str | None) -> str:
     if not value:
         return "/"
+    if "\\" in value or any(ord(char) < 32 or ord(char) == 127 for char in value):
+        return "/"
     parsed = parse.urlparse(value)
     if parsed.scheme or parsed.netloc:
         return "/"
@@ -243,6 +245,7 @@ def _provider_label(provider: str) -> str:
     return {
         "email": "邮箱",
         "phone": "手机号",
+        "chatgpt": "ChatGPT",
         "google": "Google",
         "apple": "Apple",
         "github": "GitHub",
@@ -460,7 +463,14 @@ class AuthService:
             self._claim_guest_workspace(conn, guest_token=guest_token, user_id=row["id"])
             return self._issue_session_for_user_id(conn, row["id"])
 
-    def login_with_oauth(self, profile: OAuthProfile, *, guest_user_id: str | None = None) -> tuple[str, UserView]:
+    def login_with_oauth(
+        self,
+        profile: OAuthProfile,
+        *,
+        guest_user_id: str | None = None,
+        guest_session_token: str | None = None,
+        before_claim: Callable[[str], None] | None = None,
+    ) -> tuple[str, UserView]:
         if not profile.provider or not profile.subject:
             raise HTTPException(status_code=422, detail="第三方账号资料不完整")
         provider = profile.provider.strip().lower()
@@ -469,6 +479,25 @@ class AuthService:
         now = _now_iso()
 
         with self.store.transaction() as conn:
+            session_token_hash = self._token_hash(guest_session_token) if guest_session_token else None
+            guest_session = (
+                self.store.find_guest_session_by_token(conn, session_token_hash)
+                if session_token_hash
+                else None
+            )
+            formal_session = (
+                self.store.find_user_by_session_token(conn, session_token_hash)
+                if session_token_hash
+                else None
+            )
+            if guest_session_token and guest_session is None and formal_session is None:
+                raise HTTPException(status_code=401, detail="游客会话已失效，请重新登录")
+            if guest_session is not None:
+                token_guest_user_id = str(guest_session["guest_user_id"])
+                if guest_user_id and token_guest_user_id != guest_user_id:
+                    raise HTTPException(status_code=401, detail="游客会话与当前账户不匹配")
+                guest_user_id = token_guest_user_id
+
             identity = self.store.find_user_by_oauth_identity(conn, provider=provider, provider_subject=subject)
             if identity is not None:
                 user_id = identity["id"]
@@ -477,7 +506,9 @@ class AuthService:
                 if existing is not None:
                     user_id = existing["id"]
                 else:
-                    user_id = new_id("user")
+                    # Keeping a first-time guest upgrade on the same principal preserves
+                    # workspace ownership and provider-scoped runtime state keyed by user id.
+                    user_id = guest_user_id or new_id("user")
                     password_salt, password_hash = _hash_password(secrets.token_urlsafe(32))
                     user_count = self.store.user_count(conn)
                     role = "admin" if user_count == 0 or normalized_email in _admin_emails() else "user"
@@ -504,6 +535,11 @@ class AuthService:
                     last_login_at=now,
                 )
 
+            if formal_session is not None and str(formal_session["id"]) != str(user_id):
+                raise HTTPException(status_code=409, detail="当前会话已经属于另一个账户")
+            if before_claim is not None:
+                before_claim(str(user_id))
+
             self.store.touch_oauth_identity(
                 conn,
                 provider=provider,
@@ -520,8 +556,29 @@ class AuthService:
                 avatar_url=profile.avatar_url,
                 now=now,
             )
+            if guest_session_token and session_token_hash:
+                if formal_session is None:
+                    self.store.create_session(
+                        conn,
+                        token_hash=session_token_hash,
+                        user_id=user_id,
+                        now=now,
+                    )
+                else:
+                    self.store.touch_session(conn, session_token_hash, now)
+                self._claim_guest_workspace_by_id(conn, guest_user_id=guest_user_id, user_id=user_id)
+                refreshed = self.store.find_user_by_id(conn, user_id)
+                if refreshed is None:
+                    raise HTTPException(status_code=404, detail="用户不存在")
+                return guest_session_token, _user_view(
+                    refreshed,
+                    self._identities_for_user(conn, user_id),
+                )
             self._claim_guest_workspace_by_id(conn, guest_user_id=guest_user_id, user_id=user_id)
             return self._issue_session_for_user_id(conn, user_id)
+
+    def normalize_oauth_email(self, email: str) -> str:
+        return _normalize_email(email)
 
     def get_user_by_token(self, token: str) -> UserView:
         token_hash = self._token_hash(token)
@@ -537,16 +594,27 @@ class AuthService:
             return _user_view(row, self._identities_for_user(conn, row["id"]))
 
     def start_guest_session(self) -> tuple[str, UserView]:
-        guest_user_id = new_id("guest")
-        token = secrets.token_urlsafe(SESSION_TOKEN_BYTES)
         now = _now_iso()
         with self.store.transaction() as conn:
-            self.store.create_guest_session(
-                conn,
-                token_hash=self._token_hash(token),
-                guest_user_id=guest_user_id,
-                now=now,
-            )
+            for _attempt in range(10):
+                guest_user_id = new_id("guest")
+                token = secrets.token_urlsafe(SESSION_TOKEN_BYTES)
+                token_hash = self._token_hash(token)
+                if self.store.principal_id_exists(conn, guest_user_id):
+                    continue
+                if self.store.find_guest_session_by_token(conn, token_hash) is not None:
+                    continue
+                if self.store.find_user_by_session_token(conn, token_hash) is not None:
+                    continue
+                self.store.create_guest_session(
+                    conn,
+                    token_hash=token_hash,
+                    guest_user_id=guest_user_id,
+                    now=now,
+                )
+                break
+            else:
+                raise HTTPException(status_code=503, detail="暂时无法创建游客会话，请稍后重试")
         return token, self._guest_user_view(guest_user_id, now, now)
 
     def overview(self) -> AdminOverview:
@@ -585,6 +653,22 @@ class AuthService:
                     description=provider.description,
                     configured=provider.configured,
                     kind="oauth",
+                )
+            )
+        from app.services.codex_app_server import (
+            chatgpt_platform_login_enabled,
+            codex_app_server_available,
+            codex_app_server_runtime_enabled,
+        )
+
+        if chatgpt_platform_login_enabled():
+            options.append(
+                AuthProviderView(
+                    id="chatgpt",
+                    label="ChatGPT",
+                    description="使用 ChatGPT 账号登录并保存 OpenClass 学习记录。",
+                    configured=codex_app_server_runtime_enabled() and codex_app_server_available(),
+                    kind="device",
                 )
             )
         return options
@@ -732,7 +816,10 @@ class AuthService:
         guest_user_id: str | None,
         user_id: str,
     ) -> None:
-        if not guest_user_id or guest_user_id == user_id:
+        if not guest_user_id:
+            return
+        if guest_user_id == user_id:
+            self.store.delete_guest_sessions(conn, guest_user_id=guest_user_id)
             return
         self.store.claim_guest_workspace(conn, guest_user_id=guest_user_id, user_id=user_id)
 

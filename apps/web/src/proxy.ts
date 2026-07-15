@@ -14,7 +14,13 @@ function isPublicRoute(pathname: string) {
 }
 
 function safeNextPath(value: string | null) {
-  if (!value || !value.startsWith("/") || value.startsWith("//")) {
+  if (
+    !value ||
+    !value.startsWith("/") ||
+    value.startsWith("//") ||
+    value.includes("\\") ||
+    /[\u0000-\u001f\u007f]/.test(value)
+  ) {
     return "/";
   }
   if (value === "/login" || value.startsWith("/login?") || value === "/register" || value.startsWith("/register?")) {
