@@ -16,8 +16,9 @@ from app.models import (
     WorkspaceState,
     WorkspaceStateView,
 )
-from app.services.course_store import SqliteCourseStore
+from app.services.blank_board_intake import active_requirement_from_history
 from app.services.config import API_BASE_DIR as BASE_DIR, DATA_DIR, ROOT_DIR, load_root_dotenv
+from app.services.course_store import SqliteCourseStore
 from app.services.history import commit_operations
 
 
@@ -248,11 +249,16 @@ def lesson_view(lesson: Lesson) -> LessonView:
 
 
 def _codex_only_lesson(lesson: Lesson) -> Lesson:
+    active_requirement = (
+        active_requirement_from_history(lesson)
+        if not lesson.board_document.content_text.strip()
+        else None
+    )
     return lesson.model_copy(
         update={
             "board_teaching_guide": None,
             "board_teaching_progress": None,
-            "learning_requirements": None,
+            "learning_requirements": active_requirement,
             "board_task_requirements": None,
             "active_interaction_session": None,
         }

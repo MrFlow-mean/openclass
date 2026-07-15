@@ -93,6 +93,7 @@ AgentActivityStage = Literal[
 ]
 AgentActivityStatus = Literal["pending", "running", "completed", "blocked", "failed", "skipped"]
 InitialLearningWorkMode = Literal["knowledge_board", "narrow_topic", "practice_artifact", "unknown"]
+LearningTeachingType = Literal["knowledge_point", "skill_practice"]
 InitialLearningGranularity = Literal[
     "single_knowledge_point",
     "source_chapter",
@@ -563,7 +564,18 @@ class LearningSourceGrounding(BaseModel):
     confirmed_references: list[LearningSourceReference] = Field(default_factory=list)
 
 
+class LearningRequirementAuxiliaryFactor(BaseModel):
+    label: str
+    value: str
+    evidence: str = ""
+
+
 class LearningRequirementSheet(BaseModel):
+    teaching_type: LearningTeachingType | None = None
+    learning_content: str = ""
+    current_level: str = ""
+    target_scenario: str = ""
+    auxiliary_factors: list[LearningRequirementAuxiliaryFactor] = Field(default_factory=list)
     theme: str
     learning_goal: str
     level: str
@@ -629,6 +641,7 @@ class LearningClarificationStatus(BaseModel):
     checklist: list[LearningRequirementChecklistItem] = Field(default_factory=list)
     next_question: str = ""
     ready_for_board: bool = False
+    teaching_type: LearningTeachingType | None = None
     work_mode: InitialLearningWorkMode | None = None
     granularity: InitialLearningGranularity | None = None
 

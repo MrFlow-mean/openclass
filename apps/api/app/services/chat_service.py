@@ -14,6 +14,7 @@ def process_chat_on_lesson(
     *,
     user_id: str,
     on_delta: Callable[[str], None] | None = None,
+    on_requirement_update: Callable[[dict[str, object]], None] | None = None,
     is_cancelled: Callable[[], bool] | None = None,
 ) -> ChatResponse:
     with bind_commit_metadata(_chat_edit_metadata(request)):
@@ -22,6 +23,7 @@ def process_chat_on_lesson(
             request,
             user_id=user_id,
             on_delta=on_delta,
+            on_requirement_update=on_requirement_update,
             is_cancelled=is_cancelled,
         )
 

@@ -9,7 +9,12 @@ from types import SimpleNamespace
 import pytest
 
 from app.models import ChatRequest, SelectionRef
-from app.services import codex_app_server, codex_chat, workspace_state
+from app.services import blank_board_intake, codex_app_server, codex_chat, workspace_state
+from app.services.blank_board_intake import (
+    BlankBoardAuxiliaryFactor,
+    BlankBoardTurnDecision,
+    evaluate_blank_board_decision,
+)
 from app.services.codex_app_server import (
     CODEX_PROCESS_FILE_SIZE_LIMIT_BYTES,
     CodexAppServerError,
@@ -113,52 +118,535 @@ def test_board_state_detector_treats_whitespace_as_empty() -> None:
     assert codex_chat._board_state("# Lesson") == "non_empty"
 
 
-def test_codex_chat_passes_detected_board_state_to_every_turn(
+def test_blank_board_ordinary_chat_does_not_create_requirement_sheet() -> None:
+    decision = BlankBoardTurnDecision(
+        intent="ordinary_chat",
+        chatbot_message="A conversational reply.",
+        reason="The user is not asking to learn.",
+    )
+
+    outcome = evaluate_blank_board_decision(decision, previous_requirement=None)
+
+    assert outcome.route == "ordinary_chat"
+    assert outcome.requirement is None
+    assert outcome.requirement_changed is False
+    assert outcome.ready_for_board is False
+
+
+def test_blank_board_unclear_intent_guides_without_creating_requirement_sheet() -> None:
+    decision = BlankBoardTurnDecision(
+        intent="unclear",
+        chatbot_message="A recommendation-led clarification.",
+        next_question="Which direction should we narrow first?",
+        reason="A learning purpose is not confirmed yet.",
+    )
+
+    outcome = evaluate_blank_board_decision(decision, previous_requirement=None)
+
+    assert outcome.route == "guided_discovery"
+    assert outcome.requirement is None
+    assert outcome.requirement_changed is False
+    assert outcome.ready_for_board is False
+
+
+def test_broad_knowledge_direction_collects_until_content_is_specific() -> None:
+    decision = BlankBoardTurnDecision(
+        intent="learning_need",
+        teaching_type="knowledge_point",
+        learning_content="A broad field",
+        content_is_specific=False,
+        chatbot_message="Several possible entry points and one narrowing question.",
+        next_question="Which entry point do you want to understand first?",
+        reason="The requested field is too broad for a focused board.",
+    )
+
+    outcome = evaluate_blank_board_decision(decision, previous_requirement=None)
+
+    assert outcome.route == "collect_requirements"
+    assert outcome.requirement is not None
+    assert outcome.requirement.teaching_type == "knowledge_point"
+    assert outcome.requirement.learning_content == "A broad field"
+    assert outcome.clarification.missing_items == ["learning_content"]
+    assert outcome.ready_for_board is False
+
+
+def test_blank_board_question_wording_does_not_create_a_requirement_version() -> None:
+    first = evaluate_blank_board_decision(
+        BlankBoardTurnDecision(
+            intent="learning_need",
+            teaching_type="knowledge_point",
+            learning_content="A broad field",
+            content_is_specific=False,
+            chatbot_message="First guidance.",
+            next_question="Which part should we narrow first?",
+            reason="The content is broad.",
+        ),
+        previous_requirement=None,
+    )
+    assert first.requirement is not None
+
+    second = evaluate_blank_board_decision(
+        BlankBoardTurnDecision(
+            intent="learning_need",
+            teaching_type="knowledge_point",
+            learning_content="A broad field",
+            content_is_specific=False,
+            chatbot_message="Refined guidance.",
+            next_question="What single concept matters most right now?",
+            reason="The same core factor is still broad.",
+        ),
+        previous_requirement=first.requirement,
+    )
+
+    assert second.requirement == first.requirement
+    assert second.requirement_changed is False
+    assert second.clarification.next_question == (
+        "What single concept matters most right now?"
+    )
+
+
+def test_specific_knowledge_point_is_ready_with_only_learning_content() -> None:
+    decision = BlankBoardTurnDecision(
+        intent="learning_need",
+        teaching_type="knowledge_point",
+        learning_content="A specific concept",
+        content_is_specific=True,
+        chatbot_message="The focused board is ready.",
+        teaching_plan="Explain the concept through a definition, mechanism, and example.",
+        reason="The learning content is specific enough.",
+    )
+
+    outcome = evaluate_blank_board_decision(decision, previous_requirement=None)
+
+    assert outcome.route == "generate_board"
+    assert outcome.requirement is not None
+    assert outcome.requirement.teaching_type == "knowledge_point"
+    assert outcome.requirement.learning_goal == "A specific concept"
+    assert outcome.clarification.missing_items == []
+    assert outcome.ready_for_board is True
+
+
+def test_skill_practice_auxiliary_factors_cannot_replace_missing_core_factors() -> None:
+    decision = BlankBoardTurnDecision(
+        intent="learning_need",
+        teaching_type="skill_practice",
+        learning_content="A specific skill",
+        content_is_specific=True,
+        auxiliary_factors=[
+            BlankBoardAuxiliaryFactor(
+                label="preferred_format",
+                value="short rounds",
+                evidence="Explicitly requested by the learner.",
+            )
+        ],
+        chatbot_message="One question about the learner's current level.",
+        next_question="What can you already do independently?",
+        reason="Current level and target scenario are still missing.",
+    )
+
+    outcome = evaluate_blank_board_decision(decision, previous_requirement=None)
+
+    assert outcome.route == "collect_requirements"
+    assert outcome.clarification.missing_items == ["current_level", "target_scenario"]
+    assert outcome.ready_for_board is False
+
+
+def test_skill_practice_accepts_explicit_no_specific_scenario() -> None:
+    decision = BlankBoardTurnDecision(
+        intent="learning_need",
+        teaching_type="skill_practice",
+        learning_content="A specific skill",
+        content_is_specific=True,
+        current_level="Can complete the basic form with occasional help",
+        target_scenario="无明确应用场景",
+        chatbot_message="The practice board is ready.",
+        teaching_plan="Create progressive practice with feedback checkpoints.",
+        reason="All skill-practice core factors are resolved.",
+    )
+
+    outcome = evaluate_blank_board_decision(decision, previous_requirement=None)
+
+    assert outcome.route == "generate_board"
+    assert outcome.requirement is not None
+    assert outcome.requirement.target_scenario == "无明确应用场景"
+    assert outcome.ready_for_board is True
+
+
+def test_empty_board_ordinary_chat_is_isolated_from_requirements_and_board_agent(
     monkeypatch: pytest.MonkeyPatch,
     codex_store: SqliteCourseStore,
 ) -> None:
     lesson = _seed_workspace(codex_store, content_text=" \n")
-    prompts: list[str] = []
+    intake_prompts: list[str] = []
 
-    def fake_turn(**kwargs) -> CodexTurnResult:
-        prompts.append(kwargs["user_prompt"])
-        return CodexTurnResult(
-            thread_id="thread_board_state",
-            turn_id=f"turn_{len(prompts)}",
-            final_response="Waiting for the board update.",
+    def fake_parse(_self, **kwargs):
+        intake_prompts.append(kwargs["user_prompt"])
+        return SimpleNamespace(
+            output_parsed=BlankBoardTurnDecision(
+                intent="ordinary_chat",
+                chatbot_message="A natural conversational reply.",
+                reason="There is no learning request in this turn.",
+            )
         )
 
-    monkeypatch.setattr(codex_chat, "run_codex_thread_turn", fake_turn)
+    def fail_if_board_agent_runs(**_kwargs):
+        raise AssertionError("ordinary chat must not enter the board agent")
 
-    codex_chat.process_codex_chat_on_lesson(
+    monkeypatch.setattr(blank_board_intake.CodexAppServerTextClient, "parse", fake_parse)
+    monkeypatch.setattr(codex_chat, "run_codex_thread_turn", fail_if_board_agent_runs)
+
+    response = codex_chat.process_codex_chat_on_lesson(
         lesson.id,
-        ChatRequest(message="Create learning material."),
+        ChatRequest(message="Just chatting.", conversation=[]),
         user_id=TEST_USER_ID,
     )
-    codex_chat.process_codex_chat_on_lesson(
-        lesson.id,
-        ChatRequest(message="Continue."),
-        user_id=TEST_USER_ID,
-    )
 
-    assert len(prompts) == 2
-    assert all("Board state (computed by OpenClass): EMPTY." in prompt for prompt in prompts)
+    assert response.chatbot_message == "A natural conversational reply."
+    assert response.active_requirement_sheet is None
+    assert response.board_document_operation_status == "none"
+    assert len(intake_prompts) == 1
+    assert "Current user message:\nJust chatting." in intake_prompts[0]
+    assert "board summary" not in intake_prompts[0].lower()
     saved_lesson = codex_store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
-    assert current_head_commit(saved_lesson).metadata["board_state_before"] == "empty"
-    assert current_head_commit(saved_lesson).metadata["board_state_after"] == "empty"
+    commit = current_head_commit(saved_lesson)
+    assert saved_lesson.board_document.content_text.strip() == ""
+    assert commit.metadata["kind"] == "basic_chat"
+    assert commit.metadata["requirement_changed"] is False
+    assert "requirement_version_id" not in commit.metadata
+    assert "active_requirement_sheet_after" not in commit.metadata
+    assert "learning_clarification_after" not in commit.metadata
 
 
-def test_codex_instructions_require_board_first_teaching() -> None:
+def test_empty_board_requirement_collection_persists_and_ordinary_chat_preserves_it(
+    monkeypatch: pytest.MonkeyPatch,
+    codex_store: SqliteCourseStore,
+) -> None:
+    lesson = _seed_workspace(codex_store, content_text="")
+    requirement_updates: list[dict[str, object]] = []
+    decisions = iter(
+        [
+            BlankBoardTurnDecision(
+                intent="learning_need",
+                teaching_type="knowledge_point",
+                learning_content="A broad field",
+                content_is_specific=False,
+                chatbot_message="Two contextual directions and one narrowing question.",
+                next_question="Which direction should become the first focused concept?",
+                reason="The learning content is still too broad.",
+            ),
+            BlankBoardTurnDecision(
+                intent="ordinary_chat",
+                chatbot_message="A separate conversational reply.",
+                reason="This turn does not change the learning request.",
+            ),
+        ]
+    )
+
+    def fake_parse(_self, **_kwargs):
+        return SimpleNamespace(output_parsed=next(decisions))
+
+    def fail_if_board_agent_runs(**_kwargs):
+        raise AssertionError("an incomplete requirement must not enter the board agent")
+
+    monkeypatch.setattr(blank_board_intake.CodexAppServerTextClient, "parse", fake_parse)
+    monkeypatch.setattr(codex_chat, "run_codex_thread_turn", fail_if_board_agent_runs)
+
+    collecting = codex_chat.process_codex_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="I want to learn a broad field."),
+        user_id=TEST_USER_ID,
+        on_requirement_update=requirement_updates.append,
+    )
+    preserved = codex_chat.process_codex_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="Unrelated small talk."),
+        user_id=TEST_USER_ID,
+    )
+
+    assert collecting.active_requirement_sheet is not None
+    assert collecting.active_requirement_sheet.teaching_type == "knowledge_point"
+    assert collecting.learning_clarification.missing_items == ["learning_content"]
+    assert collecting.requirement_version_id is not None
+    assert [update["requirement_phase"] for update in requirement_updates] == [
+        "collecting"
+    ]
+    assert preserved.active_requirement_sheet == collecting.active_requirement_sheet
+    assert preserved.learning_clarification == collecting.learning_clarification
+    assert preserved.requirement_phase == "collecting"
+    assert preserved.requirement_version_id is None
+    saved_lesson = codex_store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
+    commit = current_head_commit(saved_lesson)
+    assert saved_lesson.board_document.content_text == ""
+    assert commit.metadata["kind"] == "basic_chat"
+    assert commit.metadata["requirement_changed"] is False
+    assert commit.metadata["requirement_version_id"] is None
+    assert commit.metadata["requirement_phase"] == "collecting"
+    assert commit.metadata["active_requirement_sheet_after"] == (
+        collecting.active_requirement_sheet.model_dump(mode="json")
+    )
+    assert commit.metadata["learning_clarification_after"] == (
+        collecting.learning_clarification.model_dump(mode="json")
+    )
+    restored = blank_board_intake.active_requirement_from_history(saved_lesson)
+    assert restored is not None
+    assert restored.learning_content == "A broad field"
+
+
+def test_empty_board_unclear_guidance_is_saved_as_displayable_basic_chat(
+    monkeypatch: pytest.MonkeyPatch,
+    codex_store: SqliteCourseStore,
+) -> None:
+    lesson = _seed_workspace(codex_store, content_text="")
+
+    def fake_parse(_self, **_kwargs):
+        return SimpleNamespace(
+            output_parsed=BlankBoardTurnDecision(
+                intent="unclear",
+                chatbot_message="Contextual directions with one choice.",
+                next_question="Which direction fits what you want right now?",
+                reason="The learning purpose is not confirmed yet.",
+            )
+        )
+
+    def fail_if_board_agent_runs(**_kwargs):
+        raise AssertionError("unclear intent must not enter the board agent")
+
+    monkeypatch.setattr(blank_board_intake.CodexAppServerTextClient, "parse", fake_parse)
+    monkeypatch.setattr(codex_chat, "run_codex_thread_turn", fail_if_board_agent_runs)
+
+    response = codex_chat.process_codex_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="Maybe I should learn something useful."),
+        user_id=TEST_USER_ID,
+    )
+
+    saved_lesson = codex_store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
+    commit = current_head_commit(saved_lesson)
+    assert response.active_requirement_sheet is None
+    assert response.needs_clarification is True
+    assert response.clarification_questions == [
+        "Which direction fits what you want right now?"
+    ]
+    assert commit.metadata["kind"] == "basic_chat"
+    assert commit.metadata["blank_board_route"] == "guided_discovery"
+    assert "active_requirement_sheet_after" not in commit.metadata
+
+
+def test_complete_empty_board_requirement_is_frozen_before_board_generation(
+    monkeypatch: pytest.MonkeyPatch,
+    codex_store: SqliteCourseStore,
+) -> None:
+    lesson = _seed_workspace(codex_store, content_text="")
+    generation_prompts: list[str] = []
+    requirement_updates: list[dict[str, object]] = []
+
+    def fake_parse(_self, **_kwargs):
+        return SimpleNamespace(
+            output_parsed=BlankBoardTurnDecision(
+                intent="learning_need",
+                teaching_type="knowledge_point",
+                learning_content="A specific concept",
+                content_is_specific=True,
+                chatbot_message="The board has been prepared.",
+                teaching_plan="Build a focused explanation with checks for understanding.",
+                reason="The single required core factor is complete.",
+            )
+        )
+
+    def fake_board_turn(**kwargs) -> CodexTurnResult:
+        generation_prompts.append(kwargs["user_prompt"])
+        assert [update["requirement_phase"] for update in requirement_updates] == [
+            "ready",
+            "frozen",
+        ]
+        frozen_lesson = codex_store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
+        frozen_commit = current_head_commit(frozen_lesson)
+        assert frozen_commit.metadata["kind"] == "learning_requirement_frozen"
+        assert frozen_commit.metadata["requirement_phase"] == "frozen"
+        board_path = Path(kwargs["cwd"]) / codex_chat.BOARD_FILE_NAME
+        board_path.write_text("# Focused board\n\nBoard content.", encoding="utf-8")
+        return CodexTurnResult(
+            thread_id="thread_frozen_generation",
+            turn_id="turn_frozen_generation",
+            final_response="Generated.",
+        )
+
+    monkeypatch.setattr(blank_board_intake.CodexAppServerTextClient, "parse", fake_parse)
+    monkeypatch.setattr(codex_chat, "run_codex_thread_turn", fake_board_turn)
+
+    response = codex_chat.process_codex_chat_on_lesson(
+        lesson.id,
+        ChatRequest(
+            message="Start now, but this exact request text is not board input.",
+            conversation=[],
+        ),
+        user_id=TEST_USER_ID,
+        on_requirement_update=requirement_updates.append,
+    )
+
+    assert response.board_document_operation_status == "succeeded"
+    assert response.requirement_phase == "consumed"
+    assert response.active_requirement_sheet is None
+    assert [update["requirement_phase"] for update in requirement_updates] == [
+        "ready",
+        "frozen",
+    ]
+    assert len(generation_prompts) == 1
+    assert '"learning_content":"A specific concept"' in generation_prompts[0]
+    assert '"teaching_plan":"Build a focused explanation with checks for understanding."' in generation_prompts[0]
+    assert "this exact request text" not in generation_prompts[0]
+    saved_lesson = codex_store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
+    generation_commit = current_head_commit(saved_lesson)
+    assert saved_lesson.board_document.content_text == "# Focused board\n\nBoard content."
+    assert generation_commit.metadata["kind"] == "board_document_generation"
+    assert generation_commit.metadata["requirement_phase"] == "consumed"
+    assert generation_commit.metadata["board_generation_codex_thread_id"] == (
+        "thread_frozen_generation"
+    )
+    assert "codex_thread_id" not in generation_commit.metadata
+    assert codex_chat._thread_reference_for_current_branch(saved_lesson) == (None, None)
+    assert blank_board_intake._latest_requirement_run_id(saved_lesson) is None
+    frozen_commit = next(
+        commit
+        for commit in saved_lesson.history_graph.commits
+        if commit.metadata.get("kind") == "learning_requirement_frozen"
+    )
+    assert generation_commit.parent_ids == [frozen_commit.id]
+    ready_commit = next(
+        commit
+        for commit in saved_lesson.history_graph.commits
+        if commit.metadata.get("kind") == "learning_requirement_completed"
+    )
+    assert frozen_commit.parent_ids == [ready_commit.id]
+    assert ready_commit.metadata["requirement_phase"] == "ready"
+    assert frozen_commit.metadata["requirement_parent_version_id"] == (
+        ready_commit.metadata["requirement_version_id"]
+    )
+
+
+def test_failed_empty_board_generation_keeps_frozen_requirement_for_retry(
+    monkeypatch: pytest.MonkeyPatch,
+    codex_store: SqliteCourseStore,
+) -> None:
+    lesson = _seed_workspace(codex_store, content_text="")
+    decisions = iter(
+        [
+            BlankBoardTurnDecision(
+                intent="learning_need",
+                teaching_type="knowledge_point",
+                learning_content="A specific concept",
+                content_is_specific=True,
+                chatbot_message="Preparing the board.",
+                teaching_plan="Create a focused board.",
+                reason="The requirement is complete.",
+            ),
+            BlankBoardTurnDecision(
+                intent="ordinary_chat",
+                chatbot_message="A separate conversational reply.",
+                reason="This turn is unrelated to the frozen requirement.",
+            ),
+        ]
+    )
+
+    def fake_parse(_self, **_kwargs):
+        return SimpleNamespace(output_parsed=next(decisions))
+
+    generation_calls = 0
+
+    def generate_with_one_failure(**kwargs):
+        nonlocal generation_calls
+        generation_calls += 1
+        if generation_calls == 1:
+            raise CodexAppServerError("generation failed")
+        board_path = Path(kwargs["cwd"]) / codex_chat.BOARD_FILE_NAME
+        board_path.write_text("# Retried board\n\nRecovered content.", encoding="utf-8")
+        return CodexTurnResult(
+            thread_id="thread_retry_same_frozen_version",
+            turn_id="turn_retry_same_frozen_version",
+            final_response="The board is ready after the retry.",
+        )
+
+    monkeypatch.setattr(blank_board_intake.CodexAppServerTextClient, "parse", fake_parse)
+    monkeypatch.setattr(codex_chat, "run_codex_thread_turn", generate_with_one_failure)
+
+    with pytest.raises(CodexAppServerError, match="generation failed"):
+        codex_chat.process_codex_chat_on_lesson(
+            lesson.id,
+            ChatRequest(message="Generate the focused board."),
+            user_id=TEST_USER_ID,
+        )
+
+    saved_lesson = codex_store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
+    failure_commit = current_head_commit(saved_lesson)
+    failed_version_id = failure_commit.metadata["requirement_version_id"]
+    restored = blank_board_intake.active_requirement_from_history(saved_lesson)
+    assert saved_lesson.board_document.content_text == ""
+    assert failure_commit.metadata["kind"] == "learning_requirement_generation_failed"
+    assert failure_commit.metadata["requirement_phase"] == "frozen"
+    assert restored is not None
+    assert restored.learning_content == "A specific concept"
+
+    preserved = codex_chat.process_codex_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="Unrelated small talk after the failure."),
+        user_id=TEST_USER_ID,
+    )
+
+    saved_lesson = codex_store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
+    ordinary_commit = current_head_commit(saved_lesson)
+    assert preserved.requirement_phase == "frozen"
+    assert preserved.active_requirement_sheet is not None
+    assert preserved.active_requirement_sheet.learning_content == "A specific concept"
+    assert ordinary_commit.metadata["kind"] == "basic_chat"
+    assert ordinary_commit.metadata["requirement_phase"] == "frozen"
+    assert ordinary_commit.metadata["requirement_version_id"] is None
+    assert ordinary_commit.metadata["active_requirement_version_id"] == failed_version_id
+    assert ordinary_commit.metadata["active_requirement_sheet_after"] == (
+        failure_commit.metadata["active_requirement_sheet_after"]
+    )
+    assert ordinary_commit.metadata["learning_clarification_after"] == (
+        failure_commit.metadata["learning_clarification_after"]
+    )
+
+    retried = codex_chat.process_codex_chat_on_lesson(
+        lesson.id,
+        ChatRequest(
+            message="Start board generation again.",
+            board_generation_action="start",
+        ),
+        user_id=TEST_USER_ID,
+    )
+
+    saved_lesson = codex_store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
+    retry_commit = current_head_commit(saved_lesson)
+    assert generation_calls == 2
+    assert retried.chatbot_message == "The board is ready after the retry."
+    assert retry_commit.metadata["kind"] == "board_document_generation"
+    assert retry_commit.metadata["requirement_retry"] is True
+    assert retry_commit.metadata["requirement_version_id"] == failed_version_id
+    assert saved_lesson.board_document.content_text == (
+        "# Retried board\n\nRecovered content."
+    )
+
+
+def test_codex_instructions_separate_blank_intake_from_board_grounded_teaching() -> None:
     instructions = codex_chat.CODEX_DEVELOPER_INSTRUCTIONS
     normalized_instructions = " ".join(instructions.split())
+    intake = blank_board_intake.BLANK_BOARD_INTAKE_INSTRUCTIONS
+    normalized_intake = " ".join(intake.split())
+    generation = codex_chat.BOARD_GENERATION_DEVELOPER_INSTRUCTIONS
 
     assert "start of every turn, read the current `board.md`" in instructions
     assert "sole source of truth" in instructions
-    assert "board-first" in instructions
-    assert "Before giving any substantive teaching content" in instructions
-    assert "This applies even when the interaction mode is `ask`" in normalized_instructions
-    assert "Never put a standalone lesson" in instructions
-    assert "Do not duplicate the board's substantive teaching content in chat" in normalized_instructions
+    assert "For a non-empty board" in instructions
+    assert "Never put a standalone lesson" in normalized_instructions
+    assert "do not duplicate the board's substantive content in chat" in normalized_instructions
+    assert "do not create or change the learning requirement sheet" in normalized_intake
+    assert "Select exactly one teaching type before recording" in normalized_intake
+    assert "they never compensate for a missing core factor" in normalized_intake
+    assert "This intake role never writes `board.md` itself" in normalized_intake
+    assert "frozen, structured learning requirement" in generation
+    assert "Generate a self-contained teaching board from only that payload" in generation
 
 
 @pytest.fixture

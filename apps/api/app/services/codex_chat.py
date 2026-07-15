@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shutil
 import stat
@@ -15,14 +16,17 @@ from app.models import (
     ChatResponse,
     ConversationTurn,
     LearningClarificationStatus,
+    LearningRequirementSheet,
     SelectionRef,
 )
 from app.services import workspace_state
 from app.services.ai_model_catalog import build_model_catalog
+from app.services.blank_board_intake import process_blank_board_turn
 from app.services.codex_app_server import (
     CODEX_PROCESS_FILE_SIZE_LIMIT_BYTES,
     CodexAppServerError,
     CodexTurnCancelledError,
+    CodexTurnResult,
     delete_codex_thread,
     run_codex_thread_turn,
 )
@@ -45,23 +49,11 @@ start of every turn, read the current `board.md`. Treat its current contents, ra
 thread memory, as the sole source of truth for the right document and for document-grounded
 explanations.
 
-Determine the user's purpose from the current request and the supplied interaction mode. If the
-user is learning, requests teaching content, or asks for an educational artifact, use a board-first
-workflow. `board.md` is the primary teaching surface, not the chat response:
-
-1. Before giving any substantive teaching content, write the relevant content into `board.md`. If
-   the board is empty, create a self-contained Markdown board. If it already exists, extend or
-   revise it at the relevant place before teaching from it. This applies even when the interaction
-   mode is `ask`; `direct_edit` is not a prerequisite for a teaching-related board update.
-2. During teaching, explain, practise, and answer questions only from the current `board.md`.
-   If the learner asks for material that is not yet in the board, add that material to the board
-   before discussing it. Never put a standalone lesson, exercise, example set, or course text only
-   in the left conversation panel.
-3. After a board update, make the learner-facing chat response brief: confirm the update, point to
-   the relevant board content, or ask how the learner wants to continue. Do not duplicate the
-   board's substantive teaching content in chat.
-4. If the learner explicitly forbids changing the board, do not replace the board with an
-   independent teaching response. Briefly ask whether they want the relevant content added first.
+For a non-empty board, keep every teaching action grounded in the current `board.md`. If the
+learner asks for teaching material that is absent, add it to the board before discussing it. Never
+put a standalone lesson, exercise, example set, or course text only in the left conversation
+panel. After a board update, keep the learner-facing response brief and do not duplicate the
+board's substantive content in chat.
 
 For non-teaching conversation, answer normally and leave `board.md` unchanged. If an intended
 board change lacks a safe target or enough information, ask one concise clarification and leave the
@@ -71,6 +63,17 @@ Do not inspect parent directories, source code, environment variables, hidden fi
 paths, network resources, plugins, or external tools. Do not create, rename, or delete files. Never
 request broader permissions. Keep `board.md` as Markdown or plain text; do not put HTML in it.
 Return the learner-facing response as your final message after any file edit is complete.
+""".strip()
+
+BOARD_GENERATION_DEVELOPER_INSTRUCTIONS = """
+You are Codex acting as the board-writing capability inside OpenClass. The only user document you
+may access is `board.md` in the current working directory. It is empty at the start of this turn.
+The user prompt contains a frozen, structured learning requirement and a teaching plan that were
+persisted before this call. Generate a self-contained teaching board from only that payload and
+write it to `board.md` as Markdown or plain text. Do not infer requirements from thread memory, do
+not ask the learner questions, and do not put HTML in the file. Do not inspect any other path,
+source code, environment variable, network resource, plugin, or external tool. Return only a brief
+completion acknowledgement after the file is written.
 """.strip()
 
 
@@ -389,12 +392,96 @@ def _text_hash(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def _run_frozen_board_generation(
+    *,
+    user_id: str,
+    model: str,
+    requirement: LearningRequirementSheet,
+    teaching_plan: str,
+    is_cancelled: Callable[[], bool] | None,
+) -> tuple[CodexTurnResult, str]:
+    workspace_root = codex_workspace_root()
+    workspace_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with tempfile.TemporaryDirectory(prefix="blank-board-", dir=workspace_root) as temporary:
+        workspace_path = Path(temporary)
+        board_path = _prepare_workspace(workspace_path, "")
+        quota_stop = threading.Event()
+        quota_exceeded = threading.Event()
+        quota_monitor = threading.Thread(
+            target=_watch_board_quota,
+            kwargs={
+                "board_path": board_path,
+                "max_bytes": _board_max_bytes(),
+                "stop_event": quota_stop,
+                "quota_exceeded": quota_exceeded,
+            },
+            daemon=True,
+        )
+        quota_monitor.start()
+
+        def turn_is_cancelled() -> bool:
+            return quota_exceeded.is_set() or bool(is_cancelled and is_cancelled())
+
+        payload = {
+            "learning_requirement": requirement.model_dump(mode="json"),
+            "teaching_plan": teaching_plan,
+        }
+        try:
+            result = run_codex_thread_turn(
+                user_id=user_id,
+                model=model,
+                cwd=workspace_path,
+                user_prompt=(
+                    "Frozen board-generation payload:\n"
+                    + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+                ),
+                developer_instructions=BOARD_GENERATION_DEVELOPER_INSTRUCTIONS,
+                thread_id=None,
+                image_urls=[],
+                on_delta=None,
+                is_cancelled=turn_is_cancelled,
+            )
+        finally:
+            quota_stop.set()
+            quota_monitor.join(timeout=0.2)
+        if quota_exceeded.is_set():
+            _discard_uncommitted_thread(result.thread_id, user_id=user_id)
+            raise CodexAppServerError("Codex board output exceeds the configured size limit")
+        try:
+            content = _read_validated_board(workspace_path)
+            if not content.strip():
+                raise CodexAppServerError(
+                    "Board generation completed without writing board.md"
+                )
+        except Exception:
+            _discard_uncommitted_thread(result.thread_id, user_id=user_id)
+            raise
+        return result, content
+
+
+def _generate_blank_board(
+    user_id: str,
+    model: str,
+    requirement: LearningRequirementSheet,
+    teaching_plan: str,
+    is_cancelled: Callable[[], bool] | None,
+) -> tuple[CodexTurnResult, str]:
+    return _run_frozen_board_generation(
+        user_id=user_id,
+        model=model,
+        requirement=requirement,
+        teaching_plan=teaching_plan,
+        is_cancelled=is_cancelled,
+    )
+
+
 def process_codex_chat_on_lesson(
     lesson_id: str,
     request: ChatRequest,
     *,
     user_id: str,
     on_delta: Callable[[str], None] | None = None,
+    on_requirement_update: Callable[[dict[str, object]], None] | None = None,
     is_cancelled: Callable[[], bool] | None = None,
 ) -> ChatResponse:
     with _turn_lock(user_id):
@@ -407,6 +494,24 @@ def process_codex_chat_on_lesson(
         branch_name = initial_lesson.history_graph.current_branch
         base_commit_id = current_head_commit(initial_lesson).id
         board_state_before = _board_state(initial_lesson.board_document.content_text)
+        codex_model = _codex_model(request, user_id=user_id)
+        if board_state_before == "empty":
+            return process_blank_board_turn(
+                lesson=initial_lesson,
+                request=request,
+                user_id=user_id,
+                model=codex_model,
+                conversation_text=_conversation_context(request.conversation),
+                on_delta=on_delta,
+                on_requirement_update=on_requirement_update,
+                is_cancelled=is_cancelled,
+                generate_board=_generate_blank_board,
+                discard_generated_thread=lambda thread_id: _discard_uncommitted_thread(
+                    thread_id,
+                    user_id=user_id,
+                ),
+            )
+
         prior_thread_id, prior_turn_id = _thread_reference_for_current_branch(initial_lesson)
         workspace_key = _workspace_key(
             user_id=user_id,
@@ -429,7 +534,6 @@ def process_codex_chat_on_lesson(
                 is_new_thread=prior_thread_id is None,
                 board_state=board_state_before,
             )
-            codex_model = _codex_model(request, user_id=user_id)
             codex_reasoning_effort = _codex_reasoning_effort(request)
             codex_service_tier, codex_service_tier_is_set = _codex_service_tier(
                 request
