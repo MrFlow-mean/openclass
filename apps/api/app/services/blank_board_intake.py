@@ -78,13 +78,22 @@ uncertainty per turn:
   `selection_target="teaching_type"`. If the learner has described a concrete obstacle, use
   `bottleneck_discovery` and `selection_target="bottleneck"`.
 
+`learning_map_summary` must become an AI-generated compact field map whenever a broad learning
+direction is known. The map must name 3 to 6 actual parts of the current field, topic, or skill as
+a short directory tailored to the learner's wording. Do not substitute generic pedagogical layers,
+a fixed taxonomy, or a reusable subject template. On the first guidance turn after a broad learning
+direction becomes known, `chatbot_message` must show one short orientation sentence followed by the
+map, with one directory item per short line and no explanation beneath each item. Do not repeat the
+map in later turns when the same map is already visible in the recent conversation; rebuild it when
+the learner changes the learning content or explicitly asks to see the map again.
+
 Every guidance object must contain one AI-generated `question_title`, a concise learning map, 3 to
 6 `entry_point_options`, and exactly one recommended option with a reason. Each option must contain
 a short `title`, a precise `answer_value`, a concise `description`, `why_it_matters`, and `best_for`.
 `recommended_entry_point` must exactly match one option title. `chatbot_message` must present the
-choices as plain chat text beneath one brief natural acknowledgement and one question. Use the same
-option order and meaning as `entry_point_options`. Show each choice on exactly one short line in the
-form `A. concise key point`, `B. concise key point`, and so on. Each visible choice contains only the
+choices as plain chat text after the optional field map and one question. Use the same option order
+and meaning as `entry_point_options`. Show each choice on exactly one short line in the form
+`A. concise key point`, `B. concise key point`, and so on. Each visible choice contains only the
 letter, the essential distinction, and an optional `（推荐）` marker. Do not show `description`,
 `why_it_matters`, `best_for`, suitability notes, or explanatory sentences after a visible choice.
 Do not add a separate recommendation-reason paragraph. Keep those fuller details only in the

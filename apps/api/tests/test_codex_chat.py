@@ -1023,6 +1023,11 @@ def test_codex_instructions_separate_blank_intake_from_board_grounded_teaching()
     assert "exactly one short line" in normalized_intake
     assert "Do not show `description`, `why_it_matters`, `best_for`" in normalized_intake
     assert "Do not add a separate recommendation-reason paragraph" in normalized_intake
+    assert "AI-generated compact field map" in normalized_intake
+    assert "first guidance turn after a broad learning direction becomes known" in normalized_intake
+    assert "actual parts of the current field" in normalized_intake
+    assert "Do not repeat the map" in normalized_intake
+    assert "rebuild it when the learner changes the learning content" in normalized_intake
     assert "frozen, structured learning requirement" in generation
     assert "Generate a self-contained teaching board from only that payload" in generation
     assert "Use fenced code blocks only for real code" in normalized_generation
