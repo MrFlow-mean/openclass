@@ -19,7 +19,11 @@ from typing import Any, Callable
 from pydantic import BaseModel
 
 from app.models import CodexAccountView, CodexLoginStartResponse, CodexLoginStatusResponse, CodexProviderStatus
-from app.services.ai_call_budget import AICallBudgetExceeded, current_ai_call_budget
+from app.services.ai_call_budget import (
+    AICallBudgetExceeded,
+    current_ai_call_budget,
+    strict_json_schema,
+)
 
 
 CODEX_DEFAULT_MODELS: tuple[tuple[str, str], ...] = (
@@ -1447,7 +1451,7 @@ def _run_structured_turn(
                     "cwd": cwd,
                     "approvalPolicy": "never",
                     "sandboxPolicy": {"type": "readOnly"},
-                    "outputSchema": schema.model_json_schema(),
+                    "outputSchema": strict_json_schema(schema),
                 },
             }
         )

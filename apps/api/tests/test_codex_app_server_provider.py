@@ -6,7 +6,7 @@ import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.models import CodexAccountView
 from app.services import codex_app_server
@@ -15,6 +15,15 @@ from app.services.ai_call_budget import AICallBudget, bind_ai_call_budget
 
 class _Payload(BaseModel):
     value: str = ""
+
+
+class _NestedPayload(BaseModel):
+    note: str = ""
+
+
+class _StructuredPayload(BaseModel):
+    value: str = ""
+    nested: _NestedPayload = Field(default_factory=_NestedPayload)
 
 
 def test_managed_codex_session_inherits_active_absolute_deadline(monkeypatch) -> None:
@@ -75,6 +84,61 @@ def test_structured_turn_does_not_restart_deadline_after_thread_start(monkeypatc
         )
 
     assert writes == []
+
+
+def test_structured_turn_sends_provider_strict_output_schema() -> None:
+    class _Session:
+        deadline_monotonic = time.monotonic() + 5
+        _next_id = 1
+
+        def __init__(self) -> None:
+            self._messages: queue.Queue[dict] = queue.Queue()
+            self.writes: list[dict[str, object]] = []
+            self._messages.put(
+                {
+                    "method": "item/completed",
+                    "params": {
+                        "item": {
+                            "type": "agentMessage",
+                            "text": '{"value":"ok","nested":{"note":""}}',
+                        }
+                    },
+                }
+            )
+            self._messages.put(
+                {
+                    "method": "turn/completed",
+                    "params": {"turn": {"status": "completed"}},
+                }
+            )
+
+        def request(self, method, _params, *, timeout_seconds):
+            assert method == "thread/start"
+            assert timeout_seconds > 0
+            return {"thread": {"id": "thread-id"}}
+
+        def _write(self, payload):
+            self.writes.append(payload)
+
+        def _answer_server_request(self, message):
+            raise AssertionError(message)
+
+    session = _Session()
+
+    codex_app_server._run_structured_turn(
+        session=session,  # type: ignore[arg-type]
+        model="gpt-5.5",
+        system_prompt="system",
+        user_prompt="user",
+        schema=_StructuredPayload,
+    )
+
+    output_schema = session.writes[0]["params"]["outputSchema"]
+    assert output_schema["additionalProperties"] is False
+    assert output_schema["required"] == ["value", "nested"]
+    nested_schema = output_schema["$defs"]["_NestedPayload"]
+    assert nested_schema["additionalProperties"] is False
+    assert nested_schema["required"] == ["note"]
 
 
 def test_codex_home_is_isolated_per_openclass_user(monkeypatch, tmp_path) -> None:
