@@ -20,6 +20,7 @@ from app.models import (
 from app.services import workspace_state
 from app.services.source_chapter_identity import rebind_stale_source_chapter_selection
 from app.services.source_evidence_store import source_evidence_store
+from app.services.source_structure_indexer import SourceStructureIndexer
 from app.services.source_structure_store import source_structure_store
 
 
@@ -82,6 +83,11 @@ def resolve_source_grounded_board_plan(
     view = source_structure_store.get_structure_view(source=source, chunk_limit=0)
     if view.structure is None or view.structure.status not in {"ready", "linear_only"}:
         raise SourceGroundedBoardError("这份资料的结构索引尚未完成，请稍后重试。")
+    if _needs_visual_index_upgrade(source.mime_type, source.file_name, view.structure.metadata):
+        SourceStructureIndexer(store=source_structure_store).rebuild_structure(source)
+        view = source_structure_store.get_structure_view(source=source, chunk_limit=0)
+        if view.structure is None or view.structure.status not in {"ready", "linear_only"}:
+            raise SourceGroundedBoardError("这份资料的结构索引尚未完成，请稍后重试。")
     chapter = None if is_page_range else next(
         (
             candidate
@@ -288,3 +294,21 @@ def _dedupe_chunk_ids(evidence: list[RetrievalEvidence]) -> list[str]:
 def _evidence_hash(evidence: list[RetrievalEvidence]) -> str:
     content = "\n".join(item.expanded_text for item in evidence if item.expanded_text)
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def _needs_visual_index_upgrade(
+    mime_type: str,
+    file_name: str,
+    metadata: dict[str, object],
+) -> bool:
+    normalized_mime = mime_type.lower()
+    normalized_name = file_name.lower()
+    supports_visuals = (
+        normalized_mime in {"application/pdf", "application/epub+zip"}
+        or normalized_name.endswith((".pdf", ".epub"))
+    )
+    try:
+        version = int(metadata.get("visual_index_version") or 0)
+    except (TypeError, ValueError):
+        version = 0
+    return supports_visuals and version < 1

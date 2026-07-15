@@ -1254,6 +1254,80 @@ def test_source_page_range_selection_generates_from_only_that_range(
     assert response.course_package.lessons[0].board_document.content_text.startswith("# Page range board")
 
 
+def test_legacy_pdf_source_rebuilds_visual_index_on_first_reference(
+    monkeypatch: pytest.MonkeyPatch,
+    codex_store: SqliteCourseStore,
+    tmp_path: Path,
+) -> None:
+    lesson = _seed_workspace(codex_store, content_text="")
+    package_id = codex_store.load_for_user(TEST_USER_ID).packages[0].id
+    source_path = tmp_path / "legacy.pdf"
+    source_path.write_bytes(b"legacy-pdf")
+    source = SourceIngestionRecord(
+        id="legacy_pdf_source",
+        owner_user_id=TEST_USER_ID,
+        package_id=package_id,
+        title="Legacy PDF",
+        source_type="local_file",
+        file_name=source_path.name,
+        mime_type="application/pdf",
+        size_bytes=source_path.stat().st_size,
+        status="ready",
+        metadata={"local_source_path": str(source_path)},
+    )
+    source_evidence_store.save_source(source)
+    source_structure_store.save_structure_bundle(
+        structure=SourceStructure(
+            owner_user_id=TEST_USER_ID,
+            package_id=package_id,
+            source_ingestion_id=source.id,
+            status="ready",
+            metadata={},
+        ),
+        chapters=[],
+        chunks=[],
+    )
+    rebuild_calls: list[str] = []
+
+    def fake_rebuild(_self, record):
+        rebuild_calls.append(record.id)
+        current = source_structure_store.get_structure(
+            owner_user_id=TEST_USER_ID,
+            package_id=package_id,
+            source_id=source.id,
+        )
+        assert current is not None
+        return source_structure_store.save_structure_bundle(
+            structure=current.model_copy(
+                update={"status": "linear_only", "metadata": {"visual_index_version": 1}}
+            ),
+            chapters=[],
+            chunks=[],
+        )
+
+    monkeypatch.setattr(SourceStructureIndexer, "rebuild_structure", fake_rebuild)
+
+    response = codex_chat.process_codex_chat_on_lesson(
+        lesson.id,
+        ChatRequest(
+            message="Generate from pages.",
+            selection=SelectionRef(
+                kind="source",
+                excerpt="Legacy PDF pages 1-2",
+                source_ingestion_id=source.id,
+                source_scope_kind="page_range",
+                source_page_start=1,
+                source_page_end=3,
+            ),
+            post_generation_action="stop_after_generation",
+        ),
+        user_id=TEST_USER_ID,
+    )
+
+    assert rebuild_calls == [source.id]
+    assert response.board_document_operation_status == "none"
+
+
 def test_source_generation_batches_all_text_and_visual_evidence(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
