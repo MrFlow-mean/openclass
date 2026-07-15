@@ -24,6 +24,7 @@ from app.services.source_structure_store import source_structure_store
 
 
 SOURCE_BOARD_TOKEN_BUDGET = 48_000
+SOURCE_FREEZE_TOKEN_BUDGET = 2_147_483_647
 SOURCE_BOARD_EVIDENCE_LIMIT = 64
 
 
@@ -111,7 +112,7 @@ def resolve_source_grounded_board_plan(
             source_ingestion_id=source.id,
             page_start=selection.source_page_start,
             page_end=selection.source_page_end,
-            token_budget=SOURCE_BOARD_TOKEN_BUDGET,
+            token_budget=SOURCE_FREEZE_TOKEN_BUDGET,
         )
     else:
         assert chapter is not None
@@ -120,7 +121,7 @@ def resolve_source_grounded_board_plan(
             package_id=package.id,
             chapter_id=chapter.id,
             limit=SOURCE_BOARD_EVIDENCE_LIMIT,
-            token_budget=SOURCE_BOARD_TOKEN_BUDGET,
+            token_budget=SOURCE_FREEZE_TOKEN_BUDGET,
         )
     if not evidence or not any(item.expanded_text.strip() for item in evidence):
         raise SourceGroundedBoardError("所选资料范围尚未提取到可用正文。")

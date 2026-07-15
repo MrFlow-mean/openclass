@@ -59,6 +59,15 @@ class AIExecutionAdapter(Protocol):
         schema: type[StructuredModel],
     ) -> StructuredExecutionResult: ...
 
+    def analyze_image_batch(
+        self,
+        *,
+        prompt: str,
+        image_inputs: list[str],
+        is_cancelled: Callable[[], bool] | None,
+        on_activity: Callable[[AgentActivityEvent], None] | None,
+    ) -> str: ...
+
 
 BoardRunner = Callable[
     [
@@ -72,6 +81,17 @@ BoardRunner = Callable[
     ],
     tuple[BoardGenerationExecutionResult, str],
 ]
+ImageAnalysisRunner = Callable[
+    [
+        str,
+        str,
+        str,
+        list[str],
+        Callable[[], bool] | None,
+        Callable[[AgentActivityEvent], None] | None,
+    ],
+    str,
+]
 
 
 class CodexAIExecutionAdapter:
@@ -83,10 +103,12 @@ class CodexAIExecutionAdapter:
         owner_user_id: str,
         model: str,
         board_runner: BoardRunner | None = None,
+        image_analysis_runner: ImageAnalysisRunner | None = None,
     ) -> None:
         self.owner_user_id = owner_user_id
         self.model = model
         self._board_runner = board_runner
+        self._image_analysis_runner = image_analysis_runner
 
     def parse_structured(
         self,
@@ -136,4 +158,23 @@ class CodexAIExecutionAdapter:
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             schema=schema,
+        )
+
+    def analyze_image_batch(
+        self,
+        *,
+        prompt: str,
+        image_inputs: list[str],
+        is_cancelled: Callable[[], bool] | None,
+        on_activity: Callable[[AgentActivityEvent], None] | None,
+    ) -> str:
+        if self._image_analysis_runner is None:
+            raise RuntimeError("This AI adapter has no image-analysis runner")
+        return self._image_analysis_runner(
+            self.owner_user_id,
+            self.model,
+            prompt,
+            image_inputs,
+            is_cancelled,
+            on_activity,
         )

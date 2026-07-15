@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import queue
 import threading
 import time
@@ -14,6 +15,9 @@ from app.models import (
     ChatRequest,
     GuidedRequirementDiscovery,
     GuidedRequirementEntryPoint,
+    LearningSourceGrounding,
+    LearningSourceReference,
+    RetrievalEvidence,
     SelectionRef,
     SourceChunk,
     SourceIngestionRecord,
@@ -948,8 +952,8 @@ def test_source_chapter_selection_generates_blank_board_without_requirement_ques
     )
     monkeypatch.setattr(
         source_structure_store,
-        "visual_asset_paths",
-        lambda **_kwargs: [visual_path],
+        "visual_asset_path_map",
+        lambda **_kwargs: {visual.visual_id: visual_path},
     )
 
     def fail_if_intake_runs(**_kwargs):
@@ -1248,6 +1252,112 @@ def test_source_page_range_selection_generates_from_only_that_range(
 
     assert response.requirement_phase == "consumed"
     assert response.course_package.lessons[0].board_document.content_text.startswith("# Page range board")
+
+
+def test_source_generation_batches_all_text_and_visual_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    chunk_one = SourceChunk(
+        id="chunk_one",
+        package_id="package",
+        source_ingestion_id="source",
+        text="a" * 120_000,
+        token_count=30_000,
+    )
+    chunk_two = SourceChunk(
+        id="chunk_two",
+        package_id="package",
+        source_ingestion_id="source",
+        text="b" * 120_000,
+        token_count=30_000,
+    )
+    visuals = [
+        SourceVisualEvidence(
+            visual_id=f"visual_{index}",
+            source_ingestion_id="source",
+            kind="diagram",
+            mime_type="image/png",
+        )
+        for index in range(9)
+    ]
+    visual_paths: dict[str, Path] = {}
+    for visual in visuals:
+        path = tmp_path / f"{visual.visual_id}.png"
+        path.write_bytes(b"\x89PNG\r\n\x1a\nsource-visual")
+        visual_paths[visual.visual_id] = path
+    requirement = build_requirements("Source batch test")
+    requirement.source_grounding = LearningSourceGrounding(
+        requested_by_user=True,
+        confirmation_status="confirmed",
+        confirmed_bundle_id="bundle",
+        confirmed_references=[
+            LearningSourceReference(
+                evidence_bundle_id="bundle",
+                source_ingestion_id="source",
+                chunk_ids=[chunk_one.id, chunk_two.id],
+                visual_ids=[item.visual_id for item in visuals],
+            )
+        ],
+        frozen_evidence=[
+            RetrievalEvidence(
+                id="full_evidence",
+                source_ingestion_id="source",
+                source_title="Source",
+                chunk_ids=[chunk_one.id, chunk_two.id],
+                expanded_text="full frozen source",
+                token_count=60_000,
+            )
+        ],
+        frozen_visual_evidence=visuals,
+    )
+    monkeypatch.setattr(
+        source_structure_store,
+        "source_chunks_by_ids",
+        lambda **_kwargs: [chunk_one, chunk_two],
+    )
+    monkeypatch.setattr(
+        source_structure_store,
+        "visual_asset_path_map",
+        lambda **_kwargs: visual_paths,
+    )
+
+    class FakeAdapter:
+        def __init__(self) -> None:
+            self.summary_batches: list[list[str]] = []
+            self.visual_batch_sizes: list[int] = []
+
+        def parse_structured(self, **kwargs):
+            payload = json.loads(kwargs["user_prompt"])
+            chunk_ids = [item["chunk_id"] for item in payload["chunks"]]
+            self.summary_batches.append(chunk_ids)
+            return SimpleNamespace(
+                output_parsed=kwargs["schema"](summary=f"Summary for {','.join(chunk_ids)}"),
+                activity=[],
+            )
+
+        def analyze_image_batch(self, **kwargs):
+            self.visual_batch_sizes.append(len(kwargs["image_inputs"]))
+            return f"Analysis batch {len(self.visual_batch_sizes)}"
+
+    adapter = FakeAdapter()
+    prepared, image_inputs = codex_chat._prepare_source_generation_inputs(
+        adapter=adapter,
+        requirement=requirement,
+        owner_user_id=TEST_USER_ID,
+        is_cancelled=None,
+        on_activity=None,
+    )
+
+    assert adapter.summary_batches == [[chunk_one.id], [chunk_two.id]]
+    assert [item.chunk_ids for item in prepared.source_grounding.frozen_evidence] == [
+        [chunk_one.id],
+        [chunk_two.id],
+    ]
+    assert adapter.visual_batch_sizes == [8, 1]
+    assert len(prepared.source_grounding.frozen_visual_evidence) == 9
+    assert all(item.extracted_text.startswith("Analysis batch") for item in prepared.source_grounding.frozen_visual_evidence)
+    assert image_inputs == []
 
 
 def test_invalid_source_selection_returns_source_error_without_running_intake(

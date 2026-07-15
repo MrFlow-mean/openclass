@@ -576,6 +576,54 @@ class SourceStructureStore:
                 ).fetchall()
         return [Path(str(row["asset_path"])) for row in rows if str(row["asset_path"] or "")]
 
+    def visual_asset_path_map(
+        self,
+        *,
+        owner_user_id: str,
+        visual_ids: list[str],
+    ) -> dict[str, Path]:
+        if not visual_ids:
+            return {}
+        placeholders = ", ".join("?" for _ in visual_ids)
+        with self._lock:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    f"""
+                    SELECT id, asset_path FROM source_visual_assets
+                    WHERE owner_user_id = ? AND id IN ({placeholders})
+                    """,
+                    [owner_user_id, *visual_ids],
+                ).fetchall()
+        return {
+            str(row["id"]): Path(str(row["asset_path"]))
+            for row in rows
+            if str(row["asset_path"] or "")
+        }
+
+    def source_chunks_by_ids(
+        self,
+        *,
+        owner_user_id: str,
+        chunk_ids: list[str],
+    ) -> list[SourceChunk]:
+        if not chunk_ids:
+            return []
+        placeholders = ", ".join("?" for _ in chunk_ids)
+        with self._lock:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    f"""
+                    SELECT * FROM source_chunks
+                    WHERE owner_user_id = ? AND id IN ({placeholders})
+                    """,
+                    [owner_user_id, *chunk_ids],
+                ).fetchall()
+        chunks_by_id = {
+            str(row["id"]): self._chunk_from_row(row)
+            for row in rows
+        }
+        return [chunks_by_id[chunk_id] for chunk_id in chunk_ids if chunk_id in chunks_by_id]
+
     def chapter_evidence_by_number(
         self,
         *,

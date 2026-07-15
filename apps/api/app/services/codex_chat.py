@@ -12,6 +12,8 @@ import threading
 from pathlib import Path
 from typing import Callable, Literal
 
+from pydantic import BaseModel
+
 from app.models import (
     AgentActivityEvent,
     BoardDecision,
@@ -20,6 +22,7 @@ from app.models import (
     ConversationTurn,
     LearningClarificationStatus,
     LearningRequirementSheet,
+    RetrievalEvidence,
     SelectionRef,
 )
 from app.services import workspace_state
@@ -41,6 +44,7 @@ from app.services.history import commit_operations, current_head_commit
 from app.services.lesson_factory import build_requirements
 from app.services.rich_document import build_document, document_changed, looks_like_html_content
 from app.services.source_structure_store import source_structure_store
+from app.services.source_grounded_board import SOURCE_BOARD_TOKEN_BUDGET
 
 
 BOARD_FILE_NAME = "board.md"
@@ -48,6 +52,7 @@ DEFAULT_CODEX_MODEL = "gpt-5.5"
 DEFAULT_BOARD_MAX_BYTES = 2 * 1024 * 1024
 MAX_FORMULA_IMAGE_DATA_URL_CHARS = 12 * 1024 * 1024
 MAX_SOURCE_VISUAL_BYTES = 4 * 1024 * 1024
+MAX_SOURCE_VISUALS_PER_BATCH = 8
 BoardState = Literal["empty", "non_empty"]
 CODEX_DEVELOPER_INSTRUCTIONS = """
 You are Codex embedded as the single AI agent in OpenClass.
@@ -92,6 +97,23 @@ as normal Markdown text or `**bold**`, never inside a code fence. Do not inspect
 source code, environment variable, network resource, plugin, or external tool. Return only a brief
 completion acknowledgement after the file is written.
 """.strip()
+
+SOURCE_BATCH_SUMMARY_INSTRUCTIONS = """
+Summarize one consecutive source batch for later board generation. Preserve definitions,
+relationships, examples, qualifications, formulas, and section order. Use only the supplied text.
+The summary must remain traceable to the supplied chunk IDs and must not add outside knowledge.
+""".strip()
+
+SOURCE_VISUAL_ANALYSIS_INSTRUCTIONS = """
+You are analyzing a bounded batch of source visuals for later board generation. Do not edit
+board.md. Describe every image in the supplied order, preserve labels, axes, table relationships,
+and visible qualifications, and identify each description with the corresponding visual ID from
+the prompt. Do not add facts that are not visible in the image or its supplied metadata.
+""".strip()
+
+
+class _SourceBatchSummary(BaseModel):
+    summary: str
 
 
 _turn_locks_guard = threading.Lock()
@@ -484,28 +506,179 @@ def _source_visual_image_urls(
     user_id: str,
     requirement: LearningRequirementSheet,
 ) -> list[str]:
-    visual_ids = [
-        evidence.visual_id
-        for evidence in requirement.source_grounding.frozen_visual_evidence
-        if evidence.visual_id
-    ]
-    paths = source_structure_store.visual_asset_paths(
+    visuals = requirement.source_grounding.frozen_visual_evidence
+    visual_ids = [evidence.visual_id for evidence in visuals if evidence.visual_id]
+    paths = source_structure_store.visual_asset_path_map(
         owner_user_id=user_id,
         visual_ids=visual_ids,
     )
     image_urls: list[str] = []
-    for path in paths:
-        try:
-            if not path.is_file() or path.stat().st_size > MAX_SOURCE_VISUAL_BYTES:
-                continue
-            mime_type = mimetypes.guess_type(path.name)[0] or ""
-            if mime_type not in {"image/png", "image/jpeg", "image/webp", "image/gif"}:
-                continue
-            encoded = base64.b64encode(path.read_bytes()).decode("ascii")
-        except OSError:
-            continue
-        image_urls.append(f"data:{mime_type};base64,{encoded}")
+    for visual_id in visual_ids:
+        image_url = _image_data_url(paths.get(visual_id))
+        if image_url:
+            image_urls.append(image_url)
     return image_urls
+
+
+def _image_data_url(path: Path | None) -> str:
+    if path is None:
+        return ""
+    try:
+        if not path.is_file() or path.stat().st_size > MAX_SOURCE_VISUAL_BYTES:
+            return ""
+        mime_type = mimetypes.guess_type(path.name)[0] or ""
+        if mime_type not in {"image/png", "image/jpeg", "image/webp", "image/gif"}:
+            return ""
+        encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+    except OSError:
+        return ""
+    return f"data:{mime_type};base64,{encoded}"
+
+
+def _prepare_source_generation_inputs(
+    *,
+    adapter: CodexAIExecutionAdapter,
+    requirement: LearningRequirementSheet,
+    owner_user_id: str,
+    is_cancelled: Callable[[], bool] | None,
+    on_activity: Callable[[AgentActivityEvent], None] | None,
+) -> tuple[LearningRequirementSheet, list[str]]:
+    prepared = requirement.model_copy(deep=True)
+    grounding = prepared.source_grounding
+    evidence = grounding.frozen_evidence
+    if sum(item.token_count for item in evidence) > SOURCE_BOARD_TOKEN_BUDGET:
+        chunk_ids = list(
+            dict.fromkeys(
+                chunk_id
+                for reference in grounding.confirmed_references
+                for chunk_id in reference.chunk_ids
+            )
+        )
+        chunks = source_structure_store.source_chunks_by_ids(
+            owner_user_id=owner_user_id,
+            chunk_ids=chunk_ids,
+        )
+        if len({chunk.id for chunk in chunks}) != len(set(chunk_ids)):
+            raise CodexAppServerError(
+                "The frozen source range cannot be fully reconstructed from its chunk IDs"
+            )
+        prototype = evidence[0]
+        summaries: list[RetrievalEvidence] = []
+        for batch_index, batch in enumerate(_source_text_batches(chunks)):
+            batch_chunk_ids = list(dict.fromkeys(item[0] for item in batch))
+            response = adapter.parse_structured(
+                system_prompt=SOURCE_BATCH_SUMMARY_INSTRUCTIONS,
+                user_prompt=json.dumps(
+                    {
+                        "batch_index": batch_index,
+                        "chunks": [
+                            {"chunk_id": chunk_id, "text": text}
+                            for chunk_id, text in batch
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                schema=_SourceBatchSummary,
+            )
+            if on_activity is not None:
+                for event in response.activity:
+                    on_activity(event)
+            summary = _SourceBatchSummary.model_validate(response.output_parsed).summary.strip()
+            if not summary:
+                raise CodexAppServerError("Source batch summarization returned empty content")
+            summaries.append(
+                prototype.model_copy(
+                    update={
+                        "id": f"{prototype.id}:summary:{batch_index}",
+                        "chunk_ids": batch_chunk_ids,
+                        "excerpt": summary[:360],
+                        "expanded_text": summary,
+                        "token_count": max(1, (len(summary) + 3) // 4),
+                        "reason": "Provider-generated summary of one consecutive frozen source batch.",
+                        "metadata": {
+                            **prototype.metadata,
+                            "retrieval_mode": "frozen_source_batch_summary",
+                            "batch_index": batch_index,
+                            "covered_chunk_ids": batch_chunk_ids,
+                        },
+                    }
+                )
+            )
+        grounding.frozen_evidence = summaries
+
+    visuals = grounding.frozen_visual_evidence
+    if len(visuals) <= MAX_SOURCE_VISUALS_PER_BATCH:
+        return prepared, _source_visual_image_urls(
+            user_id=owner_user_id,
+            requirement=prepared,
+        )
+    paths = source_structure_store.visual_asset_path_map(
+        owner_user_id=owner_user_id,
+        visual_ids=[item.visual_id for item in visuals],
+    )
+    analyzed_visuals = []
+    for batch_start in range(0, len(visuals), MAX_SOURCE_VISUALS_PER_BATCH):
+        visual_batch = visuals[batch_start : batch_start + MAX_SOURCE_VISUALS_PER_BATCH]
+        image_inputs = [_image_data_url(paths.get(item.visual_id)) for item in visual_batch]
+        if any(not image_input for image_input in image_inputs):
+            raise CodexAppServerError("A frozen source visual cannot be safely loaded")
+        analysis = adapter.analyze_image_batch(
+            prompt=json.dumps(
+                {
+                    "visuals": [item.model_dump(mode="json") for item in visual_batch],
+                },
+                ensure_ascii=False,
+            ),
+            image_inputs=image_inputs,
+            is_cancelled=is_cancelled,
+            on_activity=on_activity,
+        ).strip()
+        if not analysis:
+            raise CodexAppServerError("Source visual analysis returned empty content")
+        visual_ids = [item.visual_id for item in visual_batch]
+        analyzed_visuals.extend(
+            item.model_copy(
+                update={
+                    "extracted_text": "\n\n".join(
+                        part for part in [item.extracted_text, analysis] if part
+                    ),
+                    "surrounding_text": "\n\n".join(
+                        part
+                        for part in [
+                            item.surrounding_text,
+                            f"Analyzed visual batch: {', '.join(visual_ids)}",
+                        ]
+                        if part
+                    ),
+                }
+            )
+            for item in visual_batch
+        )
+    grounding.frozen_visual_evidence = analyzed_visuals
+    return prepared, []
+
+
+def _source_text_batches(chunks) -> list[list[tuple[str, str]]]:
+    batches: list[list[tuple[str, str]]] = []
+    current: list[tuple[str, str]] = []
+    used_tokens = 0
+    for chunk in chunks:
+        max_chars = SOURCE_BOARD_TOKEN_BUDGET * 4
+        text_parts = [
+            chunk.text[index : index + max_chars]
+            for index in range(0, len(chunk.text), max_chars)
+        ] or [""]
+        for text in text_parts:
+            token_count = max(1, (len(text) + 3) // 4)
+            if current and used_tokens + token_count > SOURCE_BOARD_TOKEN_BUDGET:
+                batches.append(current)
+                current = []
+                used_tokens = 0
+            current.append((chunk.id, text))
+            used_tokens += token_count
+    if current:
+        batches.append(current)
+    return batches
 
 
 def _generate_blank_board(
@@ -520,15 +693,20 @@ def _generate_blank_board(
         owner_user_id=user_id,
         model=model,
         board_runner=_run_codex_board_generation,
+        image_analysis_runner=_run_codex_visual_analysis,
+    )
+    prepared_requirement, image_inputs = _prepare_source_generation_inputs(
+        adapter=adapter,
+        requirement=requirement,
+        owner_user_id=user_id,
+        is_cancelled=is_cancelled,
+        on_activity=on_activity,
     )
     return adapter.generate_board(
         BoardGenerationExecutionRequest(
-            requirement=requirement,
+            requirement=prepared_requirement,
             teaching_plan=teaching_plan,
-            image_inputs=_source_visual_image_urls(
-                user_id=user_id,
-                requirement=requirement,
-            ),
+            image_inputs=image_inputs,
         ),
         is_cancelled=is_cancelled,
         on_activity=on_activity,
@@ -553,6 +731,39 @@ def _run_codex_board_generation(
         is_cancelled=is_cancelled,
         on_activity=on_activity,
     )
+
+
+def _run_codex_visual_analysis(
+    user_id: str,
+    model: str,
+    prompt: str,
+    image_inputs: list[str],
+    is_cancelled: Callable[[], bool] | None,
+    on_activity: Callable[[AgentActivityEvent], None] | None,
+) -> str:
+    workspace_root = codex_workspace_root()
+    workspace_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with tempfile.TemporaryDirectory(prefix="source-visuals-", dir=workspace_root) as temporary:
+        workspace_path = Path(temporary)
+        board_path = _prepare_workspace(workspace_path, "")
+        result = run_codex_thread_turn(
+            user_id=user_id,
+            model=model,
+            cwd=workspace_path,
+            user_prompt=prompt,
+            developer_instructions=SOURCE_VISUAL_ANALYSIS_INSTRUCTIONS,
+            thread_id=None,
+            image_urls=image_inputs,
+            on_delta=None,
+            on_activity=on_activity,
+            is_cancelled=is_cancelled,
+        )
+        try:
+            if board_path.read_text(encoding="utf-8"):
+                raise CodexAppServerError("Source visual analysis attempted to edit board.md")
+            return result.final_response
+        finally:
+            _discard_uncommitted_thread(result.thread_id, user_id=user_id)
 
 
 def process_codex_chat_on_lesson(
