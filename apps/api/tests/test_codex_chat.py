@@ -16,6 +16,10 @@ from app.services.blank_board_intake import (
     OrdinaryChatTurnResponse,
     evaluate_blank_board_decision,
 )
+from app.services.blank_board_intake import (
+    BlankBoardGuidance,
+    BlankBoardGuidanceEntryPoint,
+)
 from app.services.codex_app_server import (
     CODEX_PROCESS_FILE_SIZE_LIMIT_BYTES,
     CodexAppServerError,
@@ -157,11 +161,52 @@ def test_blank_board_learning_intent_without_teaching_type_guides_instead_of_fai
     decision = BlankBoardTurnDecision(
         intent="learning_need",
         teaching_type=None,
-        learning_content="A learning topic that is not known yet",
+        learning_content="A broad learning theme",
         content_is_specific=False,
         chatbot_message="Two contextual directions and one narrowing question.",
         next_question="Which direction should we narrow first?",
         reason="The learning intent is clear, but the teaching type cannot be selected yet.",
+        guidance=BlankBoardGuidance(
+            strategy="entry_point_discovery",
+            learning_map_summary="A short map of useful starting directions.",
+            entry_point_options=[
+                BlankBoardGuidanceEntryPoint(
+                    title="Start from a first foundation",
+                    description="Build one dependable first step before expanding.",
+                ),
+                BlankBoardGuidanceEntryPoint(
+                    title="Start from a real task",
+                    description="Use a concrete outcome to choose the first topic.",
+                ),
+            ],
+            recommended_entry_point="Start from a first foundation",
+            reason_for_recommendation="No prior level or target task is confirmed yet.",
+            learner_profile_inference="The learner may be at an early exploratory stage.",
+        ),
+    )
+
+    outcome = evaluate_blank_board_decision(decision, previous_requirement=None)
+
+    assert outcome.route == "guided_discovery"
+    assert outcome.requirement is not None
+    assert outcome.requirement.teaching_type is None
+    assert outcome.requirement.learning_content == "A broad learning theme"
+    assert outcome.requirement.work_mode == "unknown"
+    assert outcome.requirement.granularity == "unclear"
+    assert outcome.requirement_changed is True
+    assert outcome.ready_for_board is False
+    assert outcome.chatbot_message == "Two contextual directions and one narrowing question."
+    assert outcome.clarification.next_question == "Which direction should we narrow first?"
+    assert outcome.guidance.recommended_entry_point == "Start from a first foundation"
+
+
+def test_unclear_turn_does_not_persist_an_unconfirmed_learning_topic() -> None:
+    decision = BlankBoardTurnDecision(
+        intent="unclear",
+        learning_content="A possible topic",
+        chatbot_message="A contextual direction and one question.",
+        next_question="Which kind of learning outcome are you looking for?",
+        reason="The user has not confirmed a learning request.",
     )
 
     outcome = evaluate_blank_board_decision(decision, previous_requirement=None)
@@ -170,8 +215,37 @@ def test_blank_board_learning_intent_without_teaching_type_guides_instead_of_fai
     assert outcome.requirement is None
     assert outcome.requirement_changed is False
     assert outcome.ready_for_board is False
-    assert outcome.chatbot_message == "Two contextual directions and one narrowing question."
-    assert outcome.clarification.next_question == "Which direction should we narrow first?"
+
+
+def test_untyped_learning_turn_preserves_a_previous_requirement_when_no_topic_is_confirmed() -> None:
+    previous = evaluate_blank_board_decision(
+        BlankBoardTurnDecision(
+            intent="learning_need",
+            teaching_type="knowledge_point",
+            learning_content="A broad learning theme",
+            content_is_specific=False,
+            chatbot_message="One focused question.",
+            next_question="Which part should become the first focused topic?",
+            reason="The theme is still broad.",
+        ),
+        previous_requirement=None,
+    ).requirement
+    assert previous is not None
+
+    outcome = evaluate_blank_board_decision(
+        BlankBoardTurnDecision(
+            intent="learning_need",
+            teaching_type=None,
+            chatbot_message="A recommendation-led clarification.",
+            next_question="Which starting direction fits best?",
+            reason="The current turn does not add a confirmed topic.",
+        ),
+        previous_requirement=previous,
+    )
+
+    assert outcome.route == "guided_discovery"
+    assert outcome.requirement == previous
+    assert outcome.requirement_changed is False
 
 
 def test_broad_knowledge_direction_collects_until_content_is_specific() -> None:
@@ -515,6 +589,70 @@ def test_empty_board_unclear_guidance_is_saved_as_displayable_basic_chat(
     assert commit.metadata["kind"] == "basic_chat"
     assert commit.metadata["blank_board_route"] == "guided_discovery"
     assert "active_requirement_sheet_after" not in commit.metadata
+
+
+def test_empty_board_untyped_learning_guidance_persists_confirmed_theme(
+    monkeypatch: pytest.MonkeyPatch,
+    codex_store: SqliteCourseStore,
+) -> None:
+    lesson = _seed_workspace(codex_store, content_text="")
+    requirement_updates: list[dict[str, object]] = []
+
+    def fake_parse(_self, **_kwargs):
+        return SimpleNamespace(
+            output_parsed=BlankBoardTurnDecision(
+                intent="learning_need",
+                teaching_type=None,
+                learning_content="A broad learning theme",
+                chatbot_message="Here are two ways to begin, with one recommended first step.",
+                next_question="Which starting direction feels closest to where you are now?",
+                reason="The theme is clear but the learning mode is not yet resolved.",
+                guidance=BlankBoardGuidance(
+                    strategy="entry_point_discovery",
+                    learning_map_summary="A short map of the available starting directions.",
+                    entry_point_options=[
+                        BlankBoardGuidanceEntryPoint(
+                            title="Build a first foundation",
+                            description="Establish one dependable entry point.",
+                        ),
+                        BlankBoardGuidanceEntryPoint(
+                            title="Start from a concrete outcome",
+                            description="Choose the entry point through a task you want to complete.",
+                        ),
+                    ],
+                    recommended_entry_point="Build a first foundation",
+                    reason_for_recommendation="No level or target outcome is confirmed yet.",
+                ),
+            )
+        )
+
+    def fail_if_board_agent_runs(**_kwargs):
+        raise AssertionError("untyped learning guidance must not enter the board agent")
+
+    monkeypatch.setattr(blank_board_intake.CodexAppServerTextClient, "parse", fake_parse)
+    monkeypatch.setattr(codex_chat, "run_codex_thread_turn", fail_if_board_agent_runs)
+
+    response = codex_chat.process_codex_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="I want to learn a broad learning theme."),
+        user_id=TEST_USER_ID,
+        on_requirement_update=requirement_updates.append,
+    )
+
+    saved_lesson = codex_store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
+    commit = current_head_commit(saved_lesson)
+    assert response.active_requirement_sheet is not None
+    assert response.active_requirement_sheet.teaching_type is None
+    assert response.active_requirement_sheet.work_mode == "unknown"
+    assert response.requirement_phase == "collecting"
+    assert response.requirement_version_id is not None
+    assert [update["requirement_phase"] for update in requirement_updates] == ["collecting"]
+    assert commit.metadata["kind"] == "basic_chat"
+    assert commit.metadata["blank_board_route"] == "guided_discovery"
+    assert commit.metadata["requirement_phase"] == "collecting"
+    assert commit.metadata["guided_requirement_discovery"]["recommended_entry_point"] == (
+        "Build a first foundation"
+    )
 
 
 def test_complete_empty_board_requirement_is_frozen_before_board_generation(

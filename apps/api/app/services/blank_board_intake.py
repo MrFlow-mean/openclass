@@ -31,6 +31,13 @@ BlankBoardIntakeRoute = Literal[
     "collect_requirements",
     "generate_board",
 ]
+GuidanceStrategy = Literal[
+    "entry_point_discovery",
+    "level_discovery",
+    "goal_discovery",
+    "mode_discovery",
+    "bottleneck_discovery",
+]
 
 
 BLANK_BOARD_INTAKE_INSTRUCTIONS = """
@@ -40,8 +47,10 @@ When the board state is EMPTY, classify and handle the turn using this contract:
   do not create or change the learning requirement sheet.
 - `unclear`: it is not yet clear whether the user has a learning request, or the learning intent is
   clear but there is not enough information to select exactly one teaching type. Give contextual
-  learning direction recommendations and ask at most one high-value question. Do not edit
-  `board.md` and do not create or change the learning requirement sheet.
+  learning direction recommendations and ask at most one high-value question. When the user has
+  explicitly named a broad learning theme but the teaching type remains unclear, preserve only
+  that confirmed theme in an `unknown` requirement state; do not invent a level, scenario, or
+  teaching type. Do not edit `board.md`.
 - `learning_need`: the user does want to learn. Select exactly one teaching type before recording
   its core factors:
   - `knowledge_point`: the only core factor is `learning_content`. It is complete only when the
@@ -57,6 +66,15 @@ teaching types. If all core factors are complete, provide a concise `teaching_pl
 separate board-writing role. This intake role never writes `board.md` itself. Its learner-facing
 message for a complete requirement must stay brief and must not contain the substantive teaching
 content that belongs in the board.
+
+For every incomplete learning need or learning request with an unresolved teaching type, return
+`guidance` as a learner-facing discovery plan: choose the strategy by the uncertainty blocking
+action, give a concise learning map, 2 to 5 entry-point options, recommend exactly one entry
+point with a reason, and ask one question tied to that recommendation. The `chatbot_message` must
+present that same guidance naturally; do not turn it into a questionnaire or ask the learner to
+repeat a topic already stated. `learner_profile_inference` is tentative guidance metadata only,
+not a confirmed requirement fact. Do not use subject-, textbook-, exam-, or scenario-specific
+rules; generate the guidance from the current context.
 
 The structured response must describe the complete current requirement state, including facts
 preserved from the supplied active sheet and any corrections in the current user message. Never
@@ -86,6 +104,31 @@ class BlankBoardAuxiliaryFactor(BaseModel):
     evidence: str = ""
 
 
+class BlankBoardGuidanceEntryPoint(BaseModel):
+    title: str
+    description: str
+
+
+class BlankBoardGuidance(BaseModel):
+    strategy: GuidanceStrategy = "entry_point_discovery"
+    learning_map_summary: str = ""
+    entry_point_options: list[BlankBoardGuidanceEntryPoint] = Field(default_factory=list)
+    recommended_entry_point: str = ""
+    reason_for_recommendation: str = ""
+    learner_profile_inference: str = ""
+
+    def is_empty(self) -> bool:
+        return not any(
+            (
+                self.learning_map_summary.strip(),
+                self.entry_point_options,
+                self.recommended_entry_point.strip(),
+                self.reason_for_recommendation.strip(),
+                self.learner_profile_inference.strip(),
+            )
+        )
+
+
 class BlankBoardTurnDecision(BaseModel):
     intent: BlankBoardIntent
     teaching_type: LearningTeachingType | None = None
@@ -98,6 +141,7 @@ class BlankBoardTurnDecision(BaseModel):
     next_question: str = ""
     teaching_plan: str = ""
     reason: str
+    guidance: BlankBoardGuidance = Field(default_factory=BlankBoardGuidance)
 
 
 class OrdinaryChatTurnResponse(BaseModel):
@@ -324,7 +368,7 @@ def process_blank_board_turn(
             else existing_run_id
         )
         version_id = new_id("reqver") if outcome.requirement_changed else None
-        if outcome.route == "collect_requirements":
+        if outcome.requirement is not None and outcome.requirement_phase == "collecting":
             lesson.learning_requirements = outcome.requirement
         commit_operations(
             lesson,
@@ -351,7 +395,7 @@ def process_blank_board_turn(
         )
         if not saved:
             raise CodexAppServerError("The lesson changed while Codex was working")
-        if outcome.route == "collect_requirements":
+        if outcome.requirement is not None and outcome.requirement_phase == "collecting":
             _emit_requirement_update(
                 on_requirement_update,
                 outcome=outcome,
@@ -677,6 +721,10 @@ def _intake_metadata(
         "blank_board_route": outcome.route,
         "requirement_changed": outcome.requirement_changed,
     }
+    if not outcome.guidance.is_empty():
+        metadata["guided_requirement_discovery"] = outcome.guidance.model_dump(
+            mode="json"
+        )
     if outcome.route == "ordinary_chat":
         metadata.update(
             {
@@ -684,6 +732,22 @@ def _intake_metadata(
                 "chatbot_raw_network_access": False,
             }
         )
+    if outcome.requirement_phase == "collecting" and outcome.requirement is not None:
+        metadata.update(
+            {
+                "requirement_run_id": run_id,
+                "requirement_version_id": version_id,
+                "requirement_phase": "collecting",
+                "active_requirement_sheet_after": outcome.requirement.model_dump(
+                    mode="json"
+                ),
+                "learning_clarification_after": outcome.clarification.model_dump(
+                    mode="json"
+                ),
+                "requirement_cleared": False,
+            }
+        )
+        return metadata
     if outcome.route != "collect_requirements":
         if outcome.requirement is not None:
             metadata.update(
@@ -852,8 +916,9 @@ def evaluate_blank_board_decision(
             ),
             chatbot_message=decision.chatbot_message.strip(),
             requirement_phase=previous_phase,
+            guidance=decision.guidance,
         )
-    if decision.intent == "unclear" or decision.teaching_type is None:
+    if decision.intent == "unclear":
         return BlankBoardIntakeOutcome(
             route="guided_discovery",
             requirement=previous_requirement,
@@ -865,6 +930,25 @@ def evaluate_blank_board_decision(
             ),
             chatbot_message=decision.chatbot_message.strip(),
             requirement_phase=previous_phase,
+            guidance=decision.guidance,
+        )
+    if decision.teaching_type is None:
+        requirement = _unknown_requirement_from_decision(
+            decision,
+            previous_requirement=previous_requirement,
+        )
+        return BlankBoardIntakeOutcome(
+            route="guided_discovery",
+            requirement=requirement,
+            requirement_changed=requirement != previous_requirement,
+            clarification=_unknown_learning_clarification(
+                decision,
+                requirement=requirement,
+                previous_clarification=previous_clarification,
+            ),
+            chatbot_message=decision.chatbot_message.strip(),
+            requirement_phase="collecting" if requirement is not None else previous_phase,
+            guidance=decision.guidance,
         )
 
     requirement = _requirement_from_decision(decision)
@@ -886,6 +970,7 @@ def evaluate_blank_board_decision(
         chatbot_message=decision.chatbot_message.strip(),
         teaching_plan=decision.teaching_plan.strip(),
         requirement_phase="ready" if ready_for_board else "collecting",
+        guidance=decision.guidance,
     )
 
 
@@ -936,6 +1021,37 @@ def _requirement_from_decision(
             if is_knowledge
             else "practice_artifact"
         ),
+    )
+
+
+def _unknown_requirement_from_decision(
+    decision: BlankBoardTurnDecision,
+    *,
+    previous_requirement: LearningRequirementSheet | None,
+) -> LearningRequirementSheet | None:
+    learning_content = decision.learning_content.strip()
+    if previous_requirement is not None:
+        return previous_requirement
+    if not learning_content:
+        return None
+    return LearningRequirementSheet(
+        teaching_type=None,
+        learning_content=learning_content,
+        current_level="",
+        target_scenario="",
+        theme=learning_content,
+        learning_goal=learning_content,
+        level="",
+        known_background="",
+        current_questions=[],
+        target_depth="",
+        output_preference="",
+        boundary="",
+        board_scope=[],
+        success_criteria="",
+        board_workflow="generate_from_scratch",
+        work_mode="unknown",
+        granularity="unclear",
     )
 
 
@@ -1015,6 +1131,52 @@ def _learning_clarification(
         teaching_type=teaching_type,
         work_mode=requirement.work_mode,
         granularity=requirement.granularity,
+    )
+
+
+def _unknown_learning_clarification(
+    decision: BlankBoardTurnDecision,
+    *,
+    requirement: LearningRequirementSheet | None,
+    previous_clarification: LearningClarificationStatus | None,
+) -> LearningClarificationStatus:
+    if requirement is None:
+        return _non_learning_clarification(
+            decision,
+            previous_requirement=None,
+            previous_clarification=previous_clarification,
+        )
+    facts = [
+        LearningRequirementKeyFact(
+            label="learning_content",
+            value=requirement.learning_content,
+            evidence="confirmed_requirement_state",
+            category="learning",
+        )
+    ]
+    return LearningClarificationStatus(
+        progress=25,
+        label="正在确定学习起点",
+        reason=decision.reason.strip(),
+        missing_items=["teaching_type"],
+        can_start=False,
+        summary=(
+            decision.guidance.learning_map_summary.strip() or decision.reason.strip()
+        ),
+        key_facts=facts,
+        checklist=[
+            LearningRequirementChecklistItem(
+                title="learning_content",
+                is_clear=True,
+                evidence="confirmed_requirement_state",
+            ),
+            LearningRequirementChecklistItem(title="teaching_type", is_clear=False),
+        ],
+        next_question=decision.next_question.strip(),
+        ready_for_board=False,
+        teaching_type=None,
+        work_mode="unknown",
+        granularity="unclear",
     )
 
 
