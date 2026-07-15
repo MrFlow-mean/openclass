@@ -217,6 +217,37 @@ def test_unresolved_pdf_outline_destination_is_not_verified_from_toc_text() -> N
     assert chapters[0].metadata["verification"] == "destination_unresolved"
 
 
+def test_pdf_outline_titles_on_same_page_receive_distinct_body_offsets() -> None:
+    class OutlineItem:
+        def __init__(self, title: str) -> None:
+            self.title = title
+
+    class Reader:
+        outline = [OutlineItem("3.4.1 Queue ADT"), OutlineItem("3.4.2 Queue implementation")]
+
+        @staticmethod
+        def get_destination_page_number(_item: object) -> int:
+            return 0
+
+    page_text = "3.4.1  Queue ADT\nShort body.\n3.4.2 Queue implementation\nLong body."
+    page_prefix = "\n\n[Page 90]\n"
+    pages = [
+        PageText(
+            page_no=90,
+            text=page_text,
+            start_offset=0,
+            end_offset=len(page_prefix + page_text),
+        )
+    ]
+
+    chapters = _pdf_outline_chapters(Reader(), pages, page_prefix + page_text)
+
+    assert [chapter.verified for chapter in chapters] == [True, True]
+    assert chapters[0].start_offset == len(page_prefix)
+    assert chapters[1].start_offset == len(page_prefix) + page_text.index("3.4.2")
+    assert chapters[0].start_offset < chapters[1].start_offset
+
+
 def test_chunk_uses_physical_pages_instead_of_chapter_page_metadata(tmp_path: Path) -> None:
     path = tmp_path / "physical-pages.txt"
     path.write_text("A" * 200, encoding="utf-8")
@@ -285,6 +316,44 @@ def test_chunk_prefers_nearest_containing_chapter_over_broad_range() -> None:
     )
 
     assert chapter_id == "chapter_correct_nearby"
+
+
+def test_chunks_stop_at_verified_chapter_boundaries(tmp_path: Path) -> None:
+    path = tmp_path / "short-chapters.txt"
+    path.write_text("A" * 30 + "B" * 70, encoding="utf-8")
+    record = _source_record(path, mime_type="text/plain")
+    parsed = ParsedSourceDocument(text="A" * 30 + "B" * 70)
+    chapters = [
+        SourceChapter(
+            id="chapter_short",
+            owner_user_id=record.owner_user_id,
+            package_id=record.package_id,
+            source_ingestion_id=record.id,
+            title="Short chapter",
+            body_start_offset=0,
+            body_end_offset=30,
+            anchor_status="verified",
+        ),
+        SourceChapter(
+            id="chapter_next",
+            owner_user_id=record.owner_user_id,
+            package_id=record.package_id,
+            source_ingestion_id=record.id,
+            title="Next chapter",
+            body_start_offset=30,
+            body_end_offset=100,
+            anchor_status="verified",
+        ),
+    ]
+
+    chunks = SourceStructureIndexer(
+        store=SourceStructureStore(tmp_path / "openclass.sqlite3")
+    )._chunks_for_record(record, parsed, chapters)
+
+    assert [(chunk.chapter_id, chunk.text) for chunk in chunks] == [
+        ("chapter_short", "A" * 30),
+        ("chapter_next", "B" * 70),
+    ]
 
 
 def test_legacy_structure_version_is_lazily_rebuilt(tmp_path: Path) -> None:

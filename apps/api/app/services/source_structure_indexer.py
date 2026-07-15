@@ -35,7 +35,7 @@ from app.services.source_xml import parse_untrusted_xml
 
 CHUNK_CHAR_LIMIT = 1800
 CHUNK_CHAR_OVERLAP = 160
-CURRENT_SOURCE_STRUCTURE_INDEX_VERSION = 2
+CURRENT_SOURCE_STRUCTURE_INDEX_VERSION = 3
 
 
 @dataclass
@@ -345,13 +345,40 @@ class SourceStructureIndexer:
             and chapter.body_start_offset is not None
             and chapter.body_end_offset is not None
         ]
+        verified_chapter_starts = {
+            chapter.body_start_offset
+            for chapter in chapters
+            if chapter.anchor_status == "verified"
+            and chapter.body_start_offset is not None
+            and chapter.body_start_offset > 0
+        }
+        verified_chapter_ends = {
+            chapter.body_end_offset
+            for chapter in chapters
+            if chapter.anchor_status == "verified"
+            and chapter.body_end_offset is not None
+            and chapter.body_end_offset > 0
+        }
+        chapter_boundaries = sorted(verified_chapter_starts & verified_chapter_ends)
         chunks: list[SourceChunk] = []
         cursor = 0
         order_index = 0
         text_length = len(parsed.text)
         while cursor < text_length:
-            end = min(text_length, cursor + CHUNK_CHAR_LIMIT)
-            if end < text_length:
+            next_chapter_boundary = next(
+                (boundary for boundary in chapter_boundaries if boundary > cursor),
+                None,
+            )
+            ends_at_chapter_boundary = bool(
+                next_chapter_boundary is not None
+                and next_chapter_boundary <= cursor + CHUNK_CHAR_LIMIT
+            )
+            end = min(
+                text_length,
+                cursor + CHUNK_CHAR_LIMIT,
+                next_chapter_boundary if ends_at_chapter_boundary else text_length,
+            )
+            if end < text_length and not ends_at_chapter_boundary:
                 boundary = parsed.text.rfind("\n\n", cursor + CHUNK_CHAR_LIMIT // 2, end)
                 if boundary > cursor:
                     end = boundary
@@ -396,7 +423,11 @@ class SourceStructureIndexer:
                 order_index += 1
             if end >= text_length:
                 break
-            cursor = max(end - CHUNK_CHAR_OVERLAP, cursor + 1)
+            cursor = (
+                end
+                if ends_at_chapter_boundary
+                else max(end - CHUNK_CHAR_OVERLAP, cursor + 1)
+            )
         return chunks
 
 def _stable_source_chunk_id(
@@ -688,13 +719,13 @@ def _parse_pdf(path: Path) -> ParsedSourceDocument:
     parts: list[str] = []
     offset = 0
     for page_index, page in enumerate(reader.pages):
-        text = page.extract_text() or ""
-        page_text = f"\n\n[Page {page_index + 1}]\n{text.strip()}"
+        text = (page.extract_text() or "").strip()
+        page_text = f"\n\n[Page {page_index + 1}]\n{text}"
         start = offset
         parts.append(page_text)
         offset += len(page_text)
         pages.append(PageText(page_no=page_index + 1, text=text, start_offset=start, end_offset=offset))
-    full_text = "".join(parts).strip()
+    full_text = "".join(parts)
     ocr_used = False
     if len(re.sub(r"\s+", "", full_text)) < max(40, len(pages) * 8) and pages:
         ocr_text = extract_pdf_pages_text(
@@ -1121,13 +1152,22 @@ def _pdf_outline_chapters(reader: Any, pages: list[PageText], full_text: str) ->
         # chapter range. Preserve the navigation node, but do not verify it until
         # a physical page destination is available.
         verified = page is not None
+        start_offset = None
+        if page is not None:
+            local_title_offset = _find_title_offset(page.text, title)
+            page_content_offset = page.start_offset + len(f"\n\n[Page {page.page_no}]\n")
+            start_offset = (
+                page_content_offset + local_title_offset
+                if local_title_offset >= 0
+                else page_content_offset
+            )
         chapters.append(
             DetectedChapter(
                 title=title,
                 number=_number_from_title(title),
                 level=level,
                 source_locator=f"pdf:outline:{page.page_no if page else ''}",
-                start_offset=page.start_offset if page else None,
+                start_offset=start_offset,
                 page_start=page.page_no if page else None,
                 confidence=0.93 if verified else 0.55,
                 verified=verified,
@@ -1381,14 +1421,22 @@ def _locator_for_offset(pages: list[PageText], offset: int) -> str:
 def _find_title_offset(text: str, title: str) -> int:
     if not text or not title:
         return -1
-    normalized_title = _normalize_for_match(title)
+    normalized_title = "".join(character.lower() for character in title if not character.isspace())
     if not normalized_title:
         return -1
-    normalized_text = _normalize_for_match(text)
+    normalized_text_parts: list[str] = []
+    original_offsets: list[int] = []
+    for offset, character in enumerate(text):
+        if character.isspace():
+            continue
+        lowered = character.lower()
+        normalized_text_parts.append(lowered)
+        original_offsets.extend([offset] * len(lowered))
+    normalized_text = "".join(normalized_text_parts)
     index = normalized_text.find(normalized_title)
     if index < 0:
         return -1
-    return min(index, len(text) - 1)
+    return original_offsets[index]
 
 
 def _number_from_title(title: str) -> str:
