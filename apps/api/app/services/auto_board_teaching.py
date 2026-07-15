@@ -20,7 +20,7 @@ from app.models import (
     new_id,
 )
 from app.services import workspace_state
-from app.services.codex_app_server import CodexAppServerTextClient
+from app.services.ai_execution_adapter import AIExecutionAdapter, CodexAIExecutionAdapter
 from app.services.history import commit_operations, current_head_commit
 
 
@@ -101,6 +101,10 @@ def _teach_section(
     rebuild_guide: bool,
     trigger: str,
 ) -> AutoTeachingResult:
+    adapter: AIExecutionAdapter = CodexAIExecutionAdapter(
+        owner_user_id=owner_user_id,
+        model=model,
+    )
     workspace = workspace_state.load_workspace_for_user(owner_user_id)
     _package, lesson = workspace_state.find_lesson_package(workspace, lesson_id)
     branch_name = lesson.history_graph.current_branch
@@ -187,8 +191,7 @@ def _teach_section(
 
     activity: list[AgentActivityEvent] = []
     try:
-        directive_response = CodexAppServerTextClient(owner_user_id).parse(
-            model=model,
+        directive_response = adapter.parse_structured(
             system_prompt=BOARD_DIRECTIVE_INSTRUCTIONS,
             user_prompt=json.dumps(
                 {
@@ -205,8 +208,7 @@ def _teach_section(
         directive = BoardExplanationDirective.model_validate(directive_response.output_parsed)
         if directive.status != "approved" or not directive.target_excerpt.strip():
             raise RuntimeError(directive.reason or "board_explanation_not_approved")
-        explanation_response = CodexAppServerTextClient(owner_user_id).parse(
-            model=model,
+        explanation_response = adapter.explain_from_directive(
             system_prompt=CHATBOT_EXPLANATION_INSTRUCTIONS,
             user_prompt=json.dumps(
                 {

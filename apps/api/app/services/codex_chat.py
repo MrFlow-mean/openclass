@@ -23,6 +23,10 @@ from app.models import (
     SelectionRef,
 )
 from app.services import workspace_state
+from app.services.ai_execution_adapter import (
+    BoardGenerationExecutionRequest,
+    CodexAIExecutionAdapter,
+)
 from app.services.ai_model_catalog import build_model_catalog
 from app.services.blank_board_intake import process_blank_board_turn
 from app.services.codex_app_server import (
@@ -411,6 +415,7 @@ def _run_frozen_board_generation(
     model: str,
     requirement: LearningRequirementSheet,
     teaching_plan: str,
+    image_inputs: list[str] | None = None,
     is_cancelled: Callable[[], bool] | None,
     on_activity: Callable[[AgentActivityEvent], None] | None = None,
 ) -> tuple[CodexTurnResult, str]:
@@ -451,10 +456,7 @@ def _run_frozen_board_generation(
                 ),
                 developer_instructions=BOARD_GENERATION_DEVELOPER_INSTRUCTIONS,
                 thread_id=None,
-                image_urls=_source_visual_image_urls(
-                    user_id=user_id,
-                    requirement=requirement,
-                ),
+                image_urls=image_inputs,
                 on_delta=None,
                 on_activity=on_activity,
                 is_cancelled=turn_is_cancelled,
@@ -514,11 +516,40 @@ def _generate_blank_board(
     is_cancelled: Callable[[], bool] | None,
     on_activity: Callable[[AgentActivityEvent], None] | None = None,
 ) -> tuple[CodexTurnResult, str]:
+    adapter = CodexAIExecutionAdapter(
+        owner_user_id=user_id,
+        model=model,
+        board_runner=_run_codex_board_generation,
+    )
+    return adapter.generate_board(
+        BoardGenerationExecutionRequest(
+            requirement=requirement,
+            teaching_plan=teaching_plan,
+            image_inputs=_source_visual_image_urls(
+                user_id=user_id,
+                requirement=requirement,
+            ),
+        ),
+        is_cancelled=is_cancelled,
+        on_activity=on_activity,
+    )
+
+
+def _run_codex_board_generation(
+    user_id: str,
+    model: str,
+    requirement: LearningRequirementSheet,
+    teaching_plan: str,
+    image_inputs: list[str],
+    is_cancelled: Callable[[], bool] | None,
+    on_activity: Callable[[AgentActivityEvent], None] | None,
+) -> tuple[CodexTurnResult, str]:
     return _run_frozen_board_generation(
         user_id=user_id,
         model=model,
         requirement=requirement,
         teaching_plan=teaching_plan,
+        image_inputs=image_inputs,
         is_cancelled=is_cancelled,
         on_activity=on_activity,
     )
