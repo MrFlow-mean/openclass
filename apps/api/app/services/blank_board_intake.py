@@ -41,11 +41,11 @@ When the board state is EMPTY, classify and handle the turn using this contract:
 - `unclear`: it is not yet clear whether the user has a learning request, or the learning intent is
   clear but there is not enough information to select exactly one teaching type. Give contextual
   learning direction recommendations and ask at most one high-value question. When the user has
-  explicitly named a broad learning theme but the teaching type remains unclear, preserve only
-  that confirmed theme in an `unknown` requirement state; do not invent a level, scenario, or
-  teaching type. Do not edit `board.md`.
-- `learning_need`: the user does want to learn. Select exactly one teaching type before recording
-  its core factors:
+  explicitly confirmed a broad learning theme, current level, or target scenario while the teaching
+  type remains unclear, preserve those confirmed factors in an `unknown` requirement state; do not
+  invent any missing factor or teaching type. Do not edit `board.md`.
+- `learning_need`: the user does want to learn. Preserve every confirmed core factor even when the
+  teaching type still needs one more choice. Select exactly one teaching type before generation:
   - Both `knowledge_point` and `skill_practice` require `learning_content`, `current_level`, and
     `target_scenario`. `target_scenario="无明确应用场景"` is a valid, explicitly resolved scenario.
     All three factors are mandatory.
@@ -61,13 +61,36 @@ message for a complete requirement must stay brief and must not contain the subs
 content that belongs in the board.
 
 For every incomplete learning need or learning request with an unresolved teaching type, return
-`guidance` as a learner-facing discovery plan: choose the strategy by the uncertainty blocking
-action, give a concise learning map, 2 to 5 entry-point options, recommend exactly one entry
-point with a reason, and ask one question tied to that recommendation. The `chatbot_message` must
-present that same guidance naturally; do not turn it into a questionnaire or ask the learner to
-repeat a topic already stated. `learner_profile_inference` is tentative guidance metadata only,
-not a confirmed requirement fact. Do not use subject-, textbook-, exam-, or scenario-specific
-rules; generate the guidance from the current context.
+`guidance` as one choice-card step. Resolve exactly one blocking uncertainty per turn:
+
+- If a broad learning direction is known but `current_level` is not, use `level_discovery` and
+  `selection_target="current_level"` before asking the learner to choose a narrower content route.
+  Generate 3 to 5 low-friction ability portraits from the current context, spanning meaningful
+  differences in prerequisites, prior exposure, independent performance, or common difficulty.
+- If `current_level` is known but `learning_content` is absent or still broad, use
+  `entry_point_discovery` and `selection_target="learning_content"`. Generate 3 to 6 contextual
+  content entry points at a suitable depth for that learner.
+- If learning content and level are known but `target_scenario` is not, use `goal_discovery` and
+  `selection_target="target_scenario"`. Include a natural no-specific-scenario choice when it is
+  genuinely useful; its `answer_value` must be `no_specific_scenario`.
+- If the learning product type itself is unresolved, use `mode_discovery` and
+  `selection_target="teaching_type"`. If the learner has described a concrete obstacle, use
+  `bottleneck_discovery` and `selection_target="bottleneck"`.
+
+Every guidance object must contain one AI-generated `question_title`, a concise learning map, 3 to
+6 `entry_point_options`, and exactly one recommended option with a reason. Each option must contain
+a short `title`, a precise `answer_value`, a concise `description`, `why_it_matters`, and `best_for`.
+`recommended_entry_point` must exactly match one option title. The options are rendered as clickable
+cards, so `chatbot_message` must be only a brief natural acknowledgement plus the single question;
+do not repeat or enumerate the options in prose. Never ask the learner to repeat a confirmed fact.
+When the user selects a prior card, treat its answer as a confirmed fact for the card's
+`selection_target`, preserve it in the structured requirement state, then generate the next single
+choice step if another factor is missing. `learner_profile_inference` remains tentative guidance
+metadata, not a confirmed requirement fact.
+
+Choose and phrase every option from the actual context. Do not use subject-, textbook-, exam-,
+school-stage-, or scenario-specific code rules, fixed questionnaires, or canned learner-facing
+scripts.
 
 The structured response must describe the complete current requirement state, including facts
 preserved from the supplied active sheet and any corrections in the current user message. Never
@@ -1048,19 +1071,39 @@ def _unknown_requirement_from_decision(
     previous_requirement: LearningRequirementSheet | None,
 ) -> LearningRequirementSheet | None:
     learning_content = decision.learning_content.strip()
+    current_level = decision.current_level.strip()
+    target_scenario = decision.target_scenario.strip()
+    if target_scenario == "no_specific_scenario":
+        target_scenario = "无明确应用场景"
     if previous_requirement is not None:
-        return previous_requirement
-    if not learning_content:
+        next_content = learning_content or previous_requirement.learning_content
+        next_level = current_level or previous_requirement.current_level
+        next_scenario = target_scenario or previous_requirement.target_scenario
+        if not any((learning_content, current_level, target_scenario)):
+            return previous_requirement
+        return previous_requirement.model_copy(
+            deep=True,
+            update={
+                "learning_content": next_content,
+                "current_level": next_level,
+                "target_scenario": next_scenario,
+                "theme": next_content,
+                "learning_goal": next_content,
+                "level": next_level,
+                "known_background": next_level,
+            },
+        )
+    if not any((learning_content, current_level, target_scenario)):
         return None
     return LearningRequirementSheet(
         teaching_type=None,
         learning_content=learning_content,
-        current_level="",
-        target_scenario="",
+        current_level=current_level,
+        target_scenario=target_scenario,
         theme=learning_content,
         learning_goal=learning_content,
-        level="",
-        known_background="",
+        level=current_level,
+        known_background=current_level,
         current_questions=[],
         target_depth="",
         output_preference="",
@@ -1159,19 +1202,37 @@ def _unknown_learning_clarification(
             previous_requirement=None,
             previous_clarification=previous_clarification,
         )
+    required_items = ["learning_content", "current_level", "target_scenario", "teaching_type"]
+    confirmed_items = {
+        "learning_content": requirement.learning_content,
+        "current_level": requirement.current_level,
+        "target_scenario": requirement.target_scenario,
+        "teaching_type": requirement.teaching_type or "",
+    }
+    missing_items = [item for item, value in confirmed_items.items() if not value]
     facts = [
         LearningRequirementKeyFact(
-            label="learning_content",
-            value=requirement.learning_content,
+            label=label,
+            value=value,
             evidence="confirmed_requirement_state",
-            category="learning",
+            category=(
+                "learning"
+                if label == "learning_content"
+                else "level"
+                if label == "current_level"
+                else "scenario"
+                if label == "target_scenario"
+                else None
+            ),
         )
+        for label, value in confirmed_items.items()
+        if value
     ]
     return LearningClarificationStatus(
-        progress=25,
+        progress=round(100 * (len(required_items) - len(missing_items)) / len(required_items)),
         label="正在确定学习起点",
         reason=decision.reason.strip(),
-        missing_items=["teaching_type"],
+        missing_items=missing_items,
         can_start=False,
         summary=(
             decision.guidance.learning_map_summary.strip() or decision.reason.strip()
@@ -1179,17 +1240,17 @@ def _unknown_learning_clarification(
         key_facts=facts,
         checklist=[
             LearningRequirementChecklistItem(
-                title="learning_content",
-                is_clear=True,
-                evidence="confirmed_requirement_state",
-            ),
-            LearningRequirementChecklistItem(title="teaching_type", is_clear=False),
+                title=item,
+                is_clear=item not in missing_items,
+                evidence="confirmed_requirement_state" if item not in missing_items else "",
+            )
+            for item in required_items
         ],
         next_question=decision.next_question.strip(),
         ready_for_board=False,
-        teaching_type=None,
-        work_mode="unknown",
-        granularity="unclear",
+        teaching_type=requirement.teaching_type,
+        work_mode=requirement.work_mode,
+        granularity=requirement.granularity,
     )
 
 

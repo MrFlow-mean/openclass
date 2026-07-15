@@ -141,6 +141,7 @@ def test_blank_board_ordinary_chat_does_not_create_requirement_sheet() -> None:
     assert outcome.clarification.reason == ""
     assert outcome.clarification.summary == ""
     assert outcome.clarification.next_question == ""
+    assert outcome.guidance.is_empty()
 
 
 def test_blank_board_unclear_intent_guides_without_creating_requirement_sheet() -> None:
@@ -169,16 +170,24 @@ def test_blank_board_learning_intent_without_teaching_type_guides_instead_of_fai
         next_question="Which direction should we narrow first?",
         reason="The learning intent is clear, but the teaching type cannot be selected yet.",
         guidance=GuidedRequirementDiscovery(
-            strategy="entry_point_discovery",
+            strategy="level_discovery",
+            selection_target="current_level",
+            question_title="Which starting level is closest to you?",
             learning_map_summary="A short map of useful starting directions.",
             entry_point_options=[
                 GuidedRequirementEntryPoint(
                     title="Start from a first foundation",
                     description="Build one dependable first step before expanding.",
+                    answer_value="New to the prerequisites",
+                    why_it_matters="The first board should establish the prerequisites.",
+                    best_for="A learner without a dependable starting point.",
                 ),
                 GuidedRequirementEntryPoint(
                     title="Start from a real task",
                     description="Use a concrete outcome to choose the first topic.",
+                    answer_value="Can complete a related task with support",
+                    why_it_matters="A task can expose the next useful knowledge gap.",
+                    best_for="A learner with some practical exposure.",
                 ),
             ],
             recommended_entry_point="Start from a first foundation",
@@ -200,6 +209,66 @@ def test_blank_board_learning_intent_without_teaching_type_guides_instead_of_fai
     assert outcome.chatbot_message == "Two contextual directions and one narrowing question."
     assert outcome.clarification.next_question == "Which direction should we narrow first?"
     assert outcome.guidance.recommended_entry_point == "Start from a first foundation"
+    assert outcome.guidance.selection_target == "current_level"
+
+
+def test_untyped_learning_turn_merges_a_selected_level_before_mode_is_resolved() -> None:
+    previous = build_requirements("A broad learning theme")
+    previous.teaching_type = None
+    previous.learning_content = "A broad learning theme"
+    previous.current_level = ""
+    previous.target_scenario = ""
+    previous.theme = previous.learning_content
+    previous.learning_goal = previous.learning_content
+    previous.work_mode = "unknown"
+    previous.granularity = "unclear"
+    decision = BlankBoardTurnDecision(
+        intent="learning_need",
+        teaching_type=None,
+        learning_content="A broad learning theme",
+        current_level="Has some prerequisites but has not studied systematically",
+        chatbot_message="That gives me your starting point. Now choose the first content direction.",
+        next_question="Which content direction should we narrow first?",
+        reason="The selected level is confirmed while the content is still broad.",
+        guidance=GuidedRequirementDiscovery(
+            strategy="entry_point_discovery",
+            selection_target="learning_content",
+            question_title="Which content direction should we narrow first?",
+            learning_map_summary="The next step is to choose one focused content entry.",
+            entry_point_options=[
+                GuidedRequirementEntryPoint(
+                    title="Build the conceptual foundation",
+                    description="Choose one core idea and its meaning.",
+                    answer_value="A core concept and its meaning",
+                ),
+                GuidedRequirementEntryPoint(
+                    title="Start from a representative problem",
+                    description="Use one problem to identify the required concept.",
+                    answer_value="A representative problem and its method",
+                ),
+                GuidedRequirementEntryPoint(
+                    title="Connect ideas through a structure map",
+                    description="Narrow the broad direction through its main relationships.",
+                    answer_value="A focused relationship between core ideas",
+                ),
+            ],
+            recommended_entry_point="Build the conceptual foundation",
+            reason_for_recommendation="It best matches the selected starting level.",
+        ),
+    )
+
+    outcome = evaluate_blank_board_decision(
+        decision,
+        previous_requirement=previous,
+    )
+
+    assert outcome.requirement is not None
+    assert outcome.requirement.current_level == (
+        "Has some prerequisites but has not studied systematically"
+    )
+    assert outcome.requirement.learning_content == "A broad learning theme"
+    assert outcome.clarification.missing_items == ["target_scenario", "teaching_type"]
+    assert outcome.guidance.selection_target == "learning_content"
 
 
 def test_unclear_turn_does_not_persist_an_unconfirmed_learning_topic() -> None:
@@ -352,6 +421,7 @@ def test_specific_knowledge_point_is_ready_with_all_core_factors() -> None:
     assert outcome.requirement.target_scenario == "Preparing for an upcoming course"
     assert outcome.clarification.missing_items == []
     assert outcome.ready_for_board is True
+    assert outcome.guidance.is_empty()
 
 
 def test_skill_practice_auxiliary_factors_cannot_replace_missing_core_factors() -> None:
@@ -641,16 +711,24 @@ def test_empty_board_untyped_learning_guidance_persists_confirmed_theme(
                 next_question="Which starting direction feels closest to where you are now?",
                 reason="The theme is clear but the learning mode is not yet resolved.",
                 guidance=GuidedRequirementDiscovery(
-                    strategy="entry_point_discovery",
+                    strategy="level_discovery",
+                    selection_target="current_level",
+                    question_title="Which starting level is closest to you?",
                     learning_map_summary="A short map of the available starting directions.",
                     entry_point_options=[
                         GuidedRequirementEntryPoint(
                             title="Build a first foundation",
                             description="Establish one dependable entry point.",
+                            answer_value="New to the prerequisites",
+                            why_it_matters="The first board should establish the prerequisites.",
+                            best_for="A learner without a dependable starting point.",
                         ),
                         GuidedRequirementEntryPoint(
                             title="Start from a concrete outcome",
                             description="Choose the entry point through a task you want to complete.",
+                            answer_value="Can complete a related task with support",
+                            why_it_matters="A task can expose the next useful gap.",
+                            best_for="A learner with some practical exposure.",
                         ),
                     ],
                     recommended_entry_point="Build a first foundation",
@@ -683,16 +761,24 @@ def test_empty_board_untyped_learning_guidance_persists_confirmed_theme(
     assert response.guided_requirement_discovery is not None
     assert response.guided_requirement_discovery.recommended_entry_point == "Build a first foundation"
     assert requirement_updates[0]["guided_requirement_discovery"] == {
-        "strategy": "entry_point_discovery",
+        "strategy": "level_discovery",
+        "selection_target": "current_level",
+        "question_title": "Which starting level is closest to you?",
         "learning_map_summary": "A short map of the available starting directions.",
         "entry_point_options": [
             {
                 "title": "Build a first foundation",
                 "description": "Establish one dependable entry point.",
+                "answer_value": "New to the prerequisites",
+                "why_it_matters": "The first board should establish the prerequisites.",
+                "best_for": "A learner without a dependable starting point.",
             },
             {
                 "title": "Start from a concrete outcome",
                 "description": "Choose the entry point through a task you want to complete.",
+                "answer_value": "Can complete a related task with support",
+                "why_it_matters": "A task can expose the next useful gap.",
+                "best_for": "A learner with some practical exposure.",
             },
         ],
         "recommended_entry_point": "Build a first foundation",
@@ -927,9 +1013,12 @@ def test_codex_instructions_separate_blank_intake_from_board_grounded_teaching()
     assert "use fenced code blocks only for executable or source code" in normalized_instructions
     assert "Write display formulas as `$$` on their own lines with LaTeX inside" in instructions
     assert "do not create or change the learning requirement sheet" in normalized_intake
-    assert "Select exactly one teaching type before recording" in normalized_intake
+    assert "Select exactly one teaching type before generation" in normalized_intake
     assert "they never compensate for a missing core factor" in normalized_intake
     assert "This intake role never writes `board.md` itself" in normalized_intake
+    assert "Resolve exactly one blocking uncertainty per turn" in normalized_intake
+    assert "selection_target=\"current_level\"" in normalized_intake
+    assert "chatbot_message` must be only a brief natural acknowledgement" in normalized_intake
     assert "frozen, structured learning requirement" in generation
     assert "Generate a self-contained teaching board from only that payload" in generation
     assert "Use fenced code blocks only for real code" in normalized_generation

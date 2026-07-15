@@ -101,6 +101,13 @@ GuidedRequirementDiscoveryStrategy = Literal[
     "mode_discovery",
     "bottleneck_discovery",
 ]
+GuidedRequirementSelectionTarget = Literal[
+    "learning_content",
+    "current_level",
+    "target_scenario",
+    "teaching_type",
+    "bottleneck",
+]
 InitialLearningGranularity = Literal[
     "single_knowledge_point",
     "source_chapter",
@@ -656,26 +663,26 @@ class LearningClarificationStatus(BaseModel):
 class GuidedRequirementEntryPoint(BaseModel):
     title: str
     description: str
+    answer_value: str = ""
+    why_it_matters: str = ""
+    best_for: str = ""
 
 
 class GuidedRequirementDiscovery(BaseModel):
     strategy: GuidedRequirementDiscoveryStrategy = "entry_point_discovery"
+    selection_target: GuidedRequirementSelectionTarget = "learning_content"
+    question_title: str = ""
     learning_map_summary: str = ""
-    entry_point_options: list[GuidedRequirementEntryPoint] = Field(default_factory=list)
+    entry_point_options: list[GuidedRequirementEntryPoint] = Field(
+        default_factory=list,
+        max_length=6,
+    )
     recommended_entry_point: str = ""
     reason_for_recommendation: str = ""
     learner_profile_inference: str = ""
 
     def is_empty(self) -> bool:
-        return not any(
-            (
-                self.learning_map_summary.strip(),
-                self.entry_point_options,
-                self.recommended_entry_point.strip(),
-                self.reason_for_recommendation.strip(),
-                self.learner_profile_inference.strip(),
-            )
-        )
+        return not self.entry_point_options
 
 
 class TeachingGuideMapping(BaseModel):
