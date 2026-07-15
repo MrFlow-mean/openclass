@@ -35,6 +35,7 @@ from app.services.source_xml import parse_untrusted_xml
 
 CHUNK_CHAR_LIMIT = 1800
 CHUNK_CHAR_OVERLAP = 160
+CURRENT_SOURCE_STRUCTURE_INDEX_VERSION = 2
 
 
 @dataclass
@@ -87,10 +88,14 @@ class SourceStructureIndexer:
             source_id=record.id,
         )
         if current and current.status in {"ready", "linear_only", "failed"}:
-            if current.visual_index_version >= CURRENT_SOURCE_VISUAL_INDEX_VERSION:
+            structure_is_current = not source_structure_needs_upgrade(current)
+            visuals_are_current = (
+                current.visual_index_version >= CURRENT_SOURCE_VISUAL_INDEX_VERSION
+            )
+            if structure_is_current and visuals_are_current:
                 return current
             if current.status in {"ready", "linear_only"}:
-                if not _record_supports_visual_index(record):
+                if structure_is_current and not _record_supports_visual_index(record):
                     return current
                 # Reuse the public rebuild boundary for lazy upgrades.  Besides
                 # preserving the existing observable contract, this keeps text,
@@ -114,7 +119,11 @@ class SourceStructureIndexer:
             strategy="linear_text",
             visual_index_status="pending",
             visual_index_version=CURRENT_SOURCE_VISUAL_INDEX_VERSION,
-            metadata={"source_title": record.title, "mime_type": record.mime_type},
+            metadata={
+                "source_title": record.title,
+                "mime_type": record.mime_type,
+                "structure_index_version": CURRENT_SOURCE_STRUCTURE_INDEX_VERSION,
+            },
         )
         with source_visual_staging():
             return self._rebuild_structure_staged(record, previous=previous, building=building)
@@ -348,7 +357,18 @@ class SourceStructureIndexer:
                     end = boundary
             chunk_text = parsed.text[cursor:end].strip()
             if chunk_text:
-                chapter_id, page_start, page_end = _chapter_for_chunk(cursor, end, chapter_ranges)
+                chapter_id, chapter_page_start, chapter_page_end = _chapter_for_chunk(
+                    cursor,
+                    end,
+                    chapter_ranges,
+                )
+                physical_page_start, physical_page_end = _page_range_for_offsets(
+                    parsed.pages,
+                    cursor,
+                    end,
+                )
+                page_start = physical_page_start or chapter_page_start
+                page_end = physical_page_end or chapter_page_end
                 text_hash = source_chunk_text_hash(chunk_text)
                 chunks.append(
                     SourceChunk(
@@ -719,9 +739,13 @@ def _parse_pdf(path: Path) -> ParsedSourceDocument:
                 "printed_page_mapping_support": extraction.mapping_support,
                 "ocr_toc_node_count": len(extraction.nodes),
             }
-    if not chapters:
-        chapters = _pdf_toc_chapters(pages, full_text)
-        strategy = "pdf_toc" if chapters else "linear_text"
+    if not any(chapter.verified for chapter in chapters):
+        toc_fallback = _pdf_toc_chapters(pages, full_text)
+        if toc_fallback:
+            chapters = toc_fallback
+            strategy = "pdf_toc"
+        elif not chapters:
+            strategy = "linear_text"
     _close_pdf_navigation_ranges(chapters, pages, len(full_text))
     return ParsedSourceDocument(
         text=full_text,
@@ -1091,20 +1115,26 @@ def _pdf_outline_chapters(reader: Any, pages: list[PageText], full_text: str) ->
         except Exception:
             page_index = None
         page = pages[page_index] if isinstance(page_index, int) and 0 <= page_index < len(pages) else None
-        start_offset = page.start_offset if page else _find_title_offset(full_text, title)
-        if start_offset is None or start_offset < 0:
-            continue
+        # An outline title often also appears in the printed table of contents.
+        # When the PDF destination cannot be resolved, a global title search can
+        # therefore turn a TOC occurrence into a false body anchor with a huge
+        # chapter range. Preserve the navigation node, but do not verify it until
+        # a physical page destination is available.
+        verified = page is not None
         chapters.append(
             DetectedChapter(
                 title=title,
                 number=_number_from_title(title),
                 level=level,
                 source_locator=f"pdf:outline:{page.page_no if page else ''}",
-                start_offset=start_offset,
+                start_offset=page.start_offset if page else None,
                 page_start=page.page_no if page else None,
-                confidence=0.93,
-                verified=True,
-                metadata={"source": "pdf_outline"},
+                confidence=0.93 if verified else 0.55,
+                verified=verified,
+                metadata={
+                    "source": "pdf_outline",
+                    "verification": "destination_page" if verified else "destination_unresolved",
+                },
             )
         )
     return chapters
@@ -1289,16 +1319,56 @@ def _chapter_for_chunk(
     end: int,
     chapter_ranges: list[tuple[str, int, int, int | None, int | None, int]],
 ) -> tuple[str | None, int | None, int | None]:
-    best: tuple[str | None, int | None, int | None] = (None, None, None)
-    best_overlap = 0
-    best_level = 0
+    candidates: list[
+        tuple[bool, int, int, int, str, int | None, int | None]
+    ] = []
+    midpoint = start + max(0, end - start - 1) // 2
     for chapter_id, chapter_start, chapter_end, page_start, page_end, level in chapter_ranges:
         overlap = max(0, min(end, chapter_end) - max(start, chapter_start))
-        if overlap > best_overlap or (overlap == best_overlap and overlap > 0 and level > best_level):
-            best_overlap = overlap
-            best_level = level
-            best = (chapter_id, page_start, page_end)
-    return best
+        if overlap <= 0:
+            continue
+        contains_midpoint = chapter_start <= midpoint < chapter_end
+        candidates.append(
+            (
+                contains_midpoint,
+                chapter_start if contains_midpoint else overlap,
+                level,
+                overlap,
+                chapter_id,
+                page_start,
+                page_end,
+            )
+        )
+    if not candidates:
+        return (None, None, None)
+    # Prefer the most recently started range containing the chunk midpoint.
+    # This selects the nearest nested section instead of an older, overly broad
+    # range. If no range contains the midpoint, fall back to greatest overlap.
+    best = max(candidates, key=lambda candidate: candidate[:4])
+    return (best[4], best[5], best[6])
+
+
+def _page_range_for_offsets(
+    pages: list[PageText],
+    start: int,
+    end: int,
+) -> tuple[int | None, int | None]:
+    overlapping = [
+        page
+        for page in pages
+        if page.end_offset > start and page.start_offset < end
+    ]
+    if not overlapping:
+        return (None, None)
+    return (overlapping[0].page_no, overlapping[-1].page_no + 1)
+
+
+def source_structure_needs_upgrade(structure: SourceStructure) -> bool:
+    try:
+        version = int(structure.metadata.get("structure_index_version") or 0)
+    except (TypeError, ValueError):
+        version = 0
+    return version < CURRENT_SOURCE_STRUCTURE_INDEX_VERSION
 
 
 def _locator_for_offset(pages: list[PageText], offset: int) -> str:

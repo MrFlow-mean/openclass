@@ -7,12 +7,20 @@ from uuid import uuid4
 
 from reportlab.pdfgen import canvas
 
-from app.models import SourceIngestionRecord
+from app.models import SourceChapter, SourceChunk, SourceIngestionRecord, SourceStructure
 from app.services import pdf_toc_parser
 from app.services.image_ocr import OCRLineLayout, OCRPageLayout
 from app.services.source_evidence_store import SourceEvidenceStore
-from app.services.source_structure_indexer import SourceStructureIndexer
+from app.services.source_structure_indexer import (
+    CURRENT_SOURCE_STRUCTURE_INDEX_VERSION,
+    PageText,
+    ParsedSourceDocument,
+    SourceStructureIndexer,
+    _chapter_for_chunk,
+    _pdf_outline_chapters,
+)
 from app.services.source_structure_store import SourceStructureStore
+from app.services.source_visual_extraction import CURRENT_SOURCE_VISUAL_INDEX_VERSION
 
 
 def _source_record(path: Path, *, mime_type: str) -> SourceIngestionRecord:
@@ -174,6 +182,151 @@ def test_pdf_outline_merges_with_structured_toc_rows(tmp_path: Path, monkeypatch
     )
     assert structure_store.get_structure_view(source=record).visuals == []
     assert all(not path.exists() for path in visual_paths)
+
+
+def test_unresolved_pdf_outline_destination_is_not_verified_from_toc_text() -> None:
+    class OutlineItem:
+        title = "6.6.2 Binary heap implementation"
+
+    class Reader:
+        outline = [OutlineItem()]
+
+        @staticmethod
+        def get_destination_page_number(_item: object) -> int:
+            raise ValueError("broken destination")
+
+    pages = [
+        PageText(
+            page_no=1,
+            text="Contents 6.6.2 Binary heap implementation",
+            start_offset=0,
+            end_offset=43,
+        )
+    ]
+
+    chapters = _pdf_outline_chapters(
+        Reader(),
+        pages,
+        "Contents 6.6.2 Binary heap implementation",
+    )
+
+    assert len(chapters) == 1
+    assert chapters[0].verified is False
+    assert chapters[0].start_offset is None
+    assert chapters[0].page_start is None
+    assert chapters[0].metadata["verification"] == "destination_unresolved"
+
+
+def test_chunk_uses_physical_pages_instead_of_chapter_page_metadata(tmp_path: Path) -> None:
+    path = tmp_path / "physical-pages.txt"
+    path.write_text("A" * 200, encoding="utf-8")
+    record = _source_record(path, mime_type="text/plain")
+    parsed = ParsedSourceDocument(
+        text="A" * 200,
+        pages=[
+            PageText(page_no=1, text="A" * 100, start_offset=0, end_offset=100),
+            PageText(page_no=2, text="A" * 100, start_offset=100, end_offset=200),
+        ],
+    )
+    malformed_chapter = SourceChapter(
+        id="chapter_broad",
+        owner_user_id=record.owner_user_id,
+        package_id=record.package_id,
+        source_ingestion_id=record.id,
+        title="Broad chapter",
+        body_start_offset=0,
+        body_end_offset=200,
+        page_start=None,
+        page_end=None,
+        anchor_status="verified",
+    )
+    store = SourceStructureStore(tmp_path / "openclass.sqlite3")
+    chunks = SourceStructureIndexer(store=store)._chunks_for_record(
+        record,
+        parsed,
+        [malformed_chapter],
+    )
+
+    assert len(chunks) == 1
+    assert chunks[0].page_start == 1
+    assert chunks[0].page_end == 3
+
+    SourceEvidenceStore(tmp_path / "openclass.sqlite3").save_source(record)
+    store.save_structure_bundle(
+        structure=SourceStructure(
+            owner_user_id=record.owner_user_id,
+            package_id=record.package_id,
+            source_ingestion_id=record.id,
+            status="ready",
+        ),
+        chapters=[malformed_chapter],
+        chunks=chunks,
+    )
+    evidence = store.page_range_evidence(
+        owner_user_id=record.owner_user_id,
+        package_id=record.package_id,
+        source_ingestion_id=record.id,
+        page_start=2,
+        page_end=3,
+        token_budget=10_000,
+    )
+    assert evidence
+    assert evidence[0].expanded_text == "A" * 200
+
+
+def test_chunk_prefers_nearest_containing_chapter_over_broad_range() -> None:
+    chapter_id, _page_start, _page_end = _chapter_for_chunk(
+        450,
+        550,
+        [
+            ("chapter_wrong_broad", 0, 1_000, None, None, 3),
+            ("chapter_correct_nearby", 400, 600, 5, 7, 2),
+        ],
+    )
+
+    assert chapter_id == "chapter_correct_nearby"
+
+
+def test_legacy_structure_version_is_lazily_rebuilt(tmp_path: Path) -> None:
+    path = tmp_path / "legacy.txt"
+    path.write_text("Current body", encoding="utf-8")
+    record = _source_record(path, mime_type="text/plain")
+    database = tmp_path / "openclass.sqlite3"
+    SourceEvidenceStore(database).save_source(record)
+    store = SourceStructureStore(database)
+    store.save_structure_bundle(
+        structure=SourceStructure(
+            id="structure_legacy_text",
+            owner_user_id=record.owner_user_id,
+            package_id=record.package_id,
+            source_ingestion_id=record.id,
+            status="linear_only",
+            visual_index_version=CURRENT_SOURCE_VISUAL_INDEX_VERSION,
+            metadata={},
+        ),
+        chapters=[],
+        chunks=[
+            SourceChunk(
+                id="chunk_legacy_text",
+                owner_user_id=record.owner_user_id,
+                package_id=record.package_id,
+                source_ingestion_id=record.id,
+                text="Stale body",
+                start_offset=0,
+                end_offset=10,
+            )
+        ],
+    )
+
+    upgraded = SourceStructureIndexer(store=store).ensure_structure(record)
+    view = store.get_structure_view(source=record)
+
+    assert upgraded is not None
+    assert (
+        upgraded.metadata["structure_index_version"]
+        == CURRENT_SOURCE_STRUCTURE_INDEX_VERSION
+    )
+    assert [chunk.text for chunk in view.chunks] == ["Current body"]
 
 
 def _write_epub(path: Path) -> None:

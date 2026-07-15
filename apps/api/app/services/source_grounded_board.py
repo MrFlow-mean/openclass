@@ -20,7 +20,10 @@ from app.models import (
 from app.services import workspace_state
 from app.services.source_chapter_identity import rebind_stale_source_chapter_selection
 from app.services.source_evidence_store import source_evidence_store
-from app.services.source_structure_indexer import SourceStructureIndexer
+from app.services.source_structure_indexer import (
+    SourceStructureIndexer,
+    source_structure_needs_upgrade,
+)
 from app.services.source_structure_store import source_structure_store
 from app.services.source_visual_extraction import CURRENT_SOURCE_VISUAL_INDEX_VERSION
 
@@ -84,7 +87,11 @@ def resolve_source_grounded_board_plan(
     view = source_structure_store.get_structure_view(source=source, chunk_limit=0)
     if view.structure is None or view.structure.status not in {"ready", "linear_only"}:
         raise SourceGroundedBoardError("这份资料的结构索引尚未完成，请稍后重试。")
-    if _needs_visual_index_upgrade(source.mime_type, source.file_name, view.structure.metadata):
+    if source_structure_needs_upgrade(view.structure) or _needs_visual_index_upgrade(
+        source.mime_type,
+        source.file_name,
+        view.structure.metadata,
+    ):
         SourceStructureIndexer(store=source_structure_store).ensure_structure(source)
         view = source_structure_store.get_structure_view(source=source, chunk_limit=0)
         if view.structure is None or view.structure.status not in {"ready", "linear_only"}:

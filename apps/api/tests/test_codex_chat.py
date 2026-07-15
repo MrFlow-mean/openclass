@@ -53,7 +53,10 @@ from app.services.history import commit_operations, create_branch, current_head_
 from app.services.lesson_factory import build_requirements, create_empty_lesson
 from app.services.rich_document import build_document, rebuild_document_from_content_json
 from app.services.source_evidence_store import source_evidence_store
-from app.services.source_structure_indexer import SourceStructureIndexer
+from app.services.source_structure_indexer import (
+    CURRENT_SOURCE_STRUCTURE_INDEX_VERSION,
+    SourceStructureIndexer,
+)
 from app.services.source_structure_store import source_structure_store
 
 
@@ -1338,6 +1341,9 @@ def test_source_page_range_selection_generates_from_only_that_range(
             package_id=package_id,
             source_ingestion_id=source.id,
             status="linear_only",
+            metadata={
+                "structure_index_version": CURRENT_SOURCE_STRUCTURE_INDEX_VERSION,
+            },
         ),
         chapters=[],
         chunks=[
