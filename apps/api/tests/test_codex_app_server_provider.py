@@ -67,7 +67,14 @@ def test_structured_turn_does_not_restart_deadline_after_thread_start(monkeypatc
             assert method == "thread/start"
             assert 0 < timeout_seconds <= 5
             clock["now"] += 5.1
-            return {"thread": {"id": "thread-id"}}
+            return {
+                "thread": {"id": "thread-id"},
+                "activePermissionProfile": {"id": "openclass_chat"},
+                "sandbox": {
+                    "type": "readOnly",
+                    "networkAccess": False,
+                },
+            }
 
         def _write(self, payload):
             writes.append(payload)
@@ -94,6 +101,7 @@ def test_structured_turn_sends_provider_strict_output_schema() -> None:
         def __init__(self) -> None:
             self._messages: queue.Queue[dict] = queue.Queue()
             self.writes: list[dict[str, object]] = []
+            self.thread_params: dict[str, object] = {}
             self._messages.put(
                 {
                     "method": "item/completed",
@@ -112,10 +120,18 @@ def test_structured_turn_sends_provider_strict_output_schema() -> None:
                 }
             )
 
-        def request(self, method, _params, *, timeout_seconds):
+        def request(self, method, params, *, timeout_seconds):
             assert method == "thread/start"
             assert timeout_seconds > 0
-            return {"thread": {"id": "thread-id"}}
+            self.thread_params = params
+            return {
+                "thread": {"id": "thread-id"},
+                "activePermissionProfile": {"id": "openclass_chat"},
+                "sandbox": {
+                    "type": "readOnly",
+                    "networkAccess": False,
+                },
+            }
 
         def _write(self, payload):
             self.writes.append(payload)
@@ -131,6 +147,7 @@ def test_structured_turn_sends_provider_strict_output_schema() -> None:
         system_prompt="system",
         user_prompt="user",
         schema=_StructuredPayload,
+        allow_live_web_search=True,
     )
 
     output_schema = session.writes[0]["params"]["outputSchema"]
@@ -139,6 +156,15 @@ def test_structured_turn_sends_provider_strict_output_schema() -> None:
     nested_schema = output_schema["$defs"]["_NestedPayload"]
     assert nested_schema["additionalProperties"] is False
     assert nested_schema["required"] == ["note"]
+    turn_params = session.writes[0]["params"]
+    assert "sandboxPolicy" not in turn_params
+    assert turn_params["input"] == [{"type": "text", "text": "user"}]
+    assert session.thread_params["config"] == {
+        "default_permissions": "openclass_chat",
+        "web_search": "live",
+    }
+    assert "built-in web search" in session.thread_params["developerInstructions"]
+    assert "Role instructions:\nsystem" in session.thread_params["developerInstructions"]
 
 
 def test_codex_home_is_isolated_per_openclass_user(monkeypatch, tmp_path) -> None:

@@ -13,6 +13,7 @@ from app.services import blank_board_intake, codex_app_server, codex_chat, works
 from app.services.blank_board_intake import (
     BlankBoardAuxiliaryFactor,
     BlankBoardTurnDecision,
+    OrdinaryChatTurnResponse,
     evaluate_blank_board_decision,
 )
 from app.services.codex_app_server import (
@@ -131,6 +132,9 @@ def test_blank_board_ordinary_chat_does_not_create_requirement_sheet() -> None:
     assert outcome.requirement is None
     assert outcome.requirement_changed is False
     assert outcome.ready_for_board is False
+    assert outcome.clarification.reason == ""
+    assert outcome.clarification.summary == ""
+    assert outcome.clarification.next_question == ""
 
 
 def test_blank_board_unclear_intent_guides_without_creating_requirement_sheet() -> None:
@@ -277,14 +281,20 @@ def test_empty_board_ordinary_chat_is_isolated_from_requirements_and_board_agent
     codex_store: SqliteCourseStore,
 ) -> None:
     lesson = _seed_workspace(codex_store, content_text=" \n")
-    intake_prompts: list[str] = []
+    parse_calls: list[dict[str, object]] = []
 
     def fake_parse(_self, **kwargs):
-        intake_prompts.append(kwargs["user_prompt"])
+        parse_calls.append(kwargs)
+        if kwargs.get("allow_live_web_search"):
+            return SimpleNamespace(
+                output_parsed=OrdinaryChatTurnResponse(
+                    chatbot_message="A live, network-backed conversational reply."
+                )
+            )
         return SimpleNamespace(
             output_parsed=BlankBoardTurnDecision(
                 intent="ordinary_chat",
-                chatbot_message="A natural conversational reply.",
+                chatbot_message="The offline intake reply must not be shown.",
                 reason="There is no learning request in this turn.",
             )
         )
@@ -301,20 +311,65 @@ def test_empty_board_ordinary_chat_is_isolated_from_requirements_and_board_agent
         user_id=TEST_USER_ID,
     )
 
-    assert response.chatbot_message == "A natural conversational reply."
+    assert response.chatbot_message == "A live, network-backed conversational reply."
     assert response.active_requirement_sheet is None
     assert response.board_document_operation_status == "none"
-    assert len(intake_prompts) == 1
-    assert "Current user message:\nJust chatting." in intake_prompts[0]
-    assert "board summary" not in intake_prompts[0].lower()
+    assert response.learning_clarification.reason == ""
+    assert response.learning_clarification.summary == ""
+    assert len(parse_calls) == 2
+    assert parse_calls[0].get("allow_live_web_search") is not True
+    assert parse_calls[1]["allow_live_web_search"] is True
+    assert "Current user message:\nJust chatting." in parse_calls[0]["user_prompt"]
+    assert "Current user message:\nJust chatting." in parse_calls[1]["user_prompt"]
+    assert "board summary" not in parse_calls[1]["user_prompt"].lower()
+    assert "active learning requirement" not in parse_calls[1]["user_prompt"].lower()
     saved_lesson = codex_store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
     commit = current_head_commit(saved_lesson)
     assert saved_lesson.board_document.content_text.strip() == ""
     assert commit.metadata["kind"] == "basic_chat"
     assert commit.metadata["requirement_changed"] is False
+    assert commit.metadata["chatbot_web_search_mode"] == "live"
+    assert commit.metadata["chatbot_raw_network_access"] is False
     assert "requirement_version_id" not in commit.metadata
     assert "active_requirement_sheet_after" not in commit.metadata
     assert "learning_clarification_after" not in commit.metadata
+
+
+def test_empty_board_live_chat_failure_does_not_commit_or_change_requirements(
+    monkeypatch: pytest.MonkeyPatch,
+    codex_store: SqliteCourseStore,
+) -> None:
+    lesson = _seed_workspace(codex_store, content_text="")
+    before_head = current_head_commit(lesson).id
+    parse_calls = 0
+
+    def fake_parse(_self, **kwargs):
+        nonlocal parse_calls
+        parse_calls += 1
+        if kwargs.get("allow_live_web_search"):
+            raise CodexAppServerError("live web search failed")
+        return SimpleNamespace(
+            output_parsed=BlankBoardTurnDecision(
+                intent="ordinary_chat",
+                chatbot_message="The offline intake reply must not be shown.",
+                reason="There is no learning request in this turn.",
+            )
+        )
+
+    monkeypatch.setattr(blank_board_intake.CodexAppServerTextClient, "parse", fake_parse)
+
+    with pytest.raises(CodexAppServerError, match="live web search failed"):
+        codex_chat.process_codex_chat_on_lesson(
+            lesson.id,
+            ChatRequest(message="What is happening right now?"),
+            user_id=TEST_USER_ID,
+        )
+
+    assert parse_calls == 2
+    saved_lesson = codex_store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
+    assert current_head_commit(saved_lesson).id == before_head
+    assert saved_lesson.board_document.content_text == ""
+    assert blank_board_intake.active_requirement_from_history(saved_lesson) is None
 
 
 def test_empty_board_requirement_collection_persists_and_ordinary_chat_preserves_it(
@@ -323,6 +378,7 @@ def test_empty_board_requirement_collection_persists_and_ordinary_chat_preserves
 ) -> None:
     lesson = _seed_workspace(codex_store, content_text="")
     requirement_updates: list[dict[str, object]] = []
+    parse_calls: list[dict[str, object]] = []
     decisions = iter(
         [
             BlankBoardTurnDecision(
@@ -336,13 +392,17 @@ def test_empty_board_requirement_collection_persists_and_ordinary_chat_preserves
             ),
             BlankBoardTurnDecision(
                 intent="ordinary_chat",
-                chatbot_message="A separate conversational reply.",
+                chatbot_message="The offline intake reply must not be shown.",
                 reason="This turn does not change the learning request.",
+            ),
+            OrdinaryChatTurnResponse(
+                chatbot_message="A separate live conversational reply."
             ),
         ]
     )
 
-    def fake_parse(_self, **_kwargs):
+    def fake_parse(_self, **kwargs):
+        parse_calls.append(kwargs)
         return SimpleNamespace(output_parsed=next(decisions))
 
     def fail_if_board_agent_runs(**_kwargs):
@@ -371,9 +431,13 @@ def test_empty_board_requirement_collection_persists_and_ordinary_chat_preserves
         "collecting"
     ]
     assert preserved.active_requirement_sheet == collecting.active_requirement_sheet
+    assert preserved.chatbot_message == "A separate live conversational reply."
     assert preserved.learning_clarification == collecting.learning_clarification
     assert preserved.requirement_phase == "collecting"
     assert preserved.requirement_version_id is None
+    assert parse_calls[2]["allow_live_web_search"] is True
+    assert "A broad field" not in parse_calls[2]["user_prompt"]
+    assert "Active learning requirement" not in parse_calls[2]["user_prompt"]
     saved_lesson = codex_store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
     commit = current_head_commit(saved_lesson)
     assert saved_lesson.board_document.content_text == ""
@@ -542,8 +606,11 @@ def test_failed_empty_board_generation_keeps_frozen_requirement_for_retry(
             ),
             BlankBoardTurnDecision(
                 intent="ordinary_chat",
-                chatbot_message="A separate conversational reply.",
+                chatbot_message="The offline intake reply must not be shown.",
                 reason="This turn is unrelated to the frozen requirement.",
+            ),
+            OrdinaryChatTurnResponse(
+                chatbot_message="A separate live conversational reply."
             ),
         ]
     )
@@ -1196,6 +1263,8 @@ def test_codex_app_server_command_uses_exact_board_permission_profile() -> None:
     assert 'default_permissions="openclass_board"' in rendered
     assert '":workspace_roots"={"board.md"="write"}' in rendered
     assert "permissions.openclass_board.network.enabled=false" in rendered
+    assert 'permissions.openclass_chat.filesystem={":minimal"="read"}' in rendered
+    assert "permissions.openclass_chat.network.enabled=false" in rendered
     assert 'approval_policy="never"' in rendered
     assert 'web_search="disabled"' in rendered
     assert "mcp_servers={}" in rendered
@@ -1257,7 +1326,14 @@ def test_effective_codex_config_rejects_legacy_sandbox_override() -> None:
                         ":workspace_roots": {"board.md": "write"},
                     },
                     "network": {"enabled": False, "domains": None},
-                }
+                },
+                "openclass_chat": {
+                    "filesystem": {
+                        "glob_scan_max_depth": None,
+                        ":minimal": "read",
+                    },
+                    "network": {"enabled": False, "domains": None},
+                },
             },
             "shell_environment_policy": {"inherit": "none"},
             "features": disabled_features,
@@ -1270,7 +1346,7 @@ def test_effective_codex_config_rejects_legacy_sandbox_override() -> None:
 
     codex_app_server._validate_effective_permission_config(valid)
     invalid = {"config": {**valid["config"], "sandbox_mode": "workspace-write"}}
-    with pytest.raises(CodexAppServerError, match="exact board.md-only profile"):
+    with pytest.raises(CodexAppServerError, match="exact board and isolated Chatbot profiles"):
         codex_app_server._validate_effective_permission_config(invalid)
 
     external_tool = {
@@ -1279,8 +1355,23 @@ def test_effective_codex_config_rejects_legacy_sandbox_override() -> None:
             "features": {**disabled_features, "plugins": True},
         }
     }
-    with pytest.raises(CodexAppServerError, match="exact board.md-only profile"):
+    with pytest.raises(CodexAppServerError, match="exact board and isolated Chatbot profiles"):
         codex_app_server._validate_effective_permission_config(external_tool)
+
+    broad_chat_read = {
+        "config": {
+            **valid["config"],
+            "permissions": {
+                **valid["config"]["permissions"],
+                "openclass_chat": {
+                    **valid["config"]["permissions"]["openclass_chat"],
+                    "filesystem": {":root": "read"},
+                },
+            },
+        }
+    }
+    with pytest.raises(CodexAppServerError, match="exact board and isolated Chatbot profiles"):
+        codex_app_server._validate_effective_permission_config(broad_chat_read)
 
 
 def test_new_and_reloaded_lessons_hide_legacy_ai_runtime(
@@ -1339,7 +1430,26 @@ def test_thread_permission_response_rejects_broad_writable_root(tmp_path: Path) 
         codex_app_server._validate_thread_permission_response(unsafe, cwd=tmp_path)
 
 
-def test_structured_codex_adapter_uses_supported_read_only_sandbox() -> None:
+def test_structured_chat_permission_response_rejects_broad_file_read() -> None:
+    safe = {
+        "thread": {"id": "thread_chat"},
+        "activePermissionProfile": {"id": "openclass_chat"},
+        "sandbox": {
+            "type": "readOnly",
+            "networkAccess": False,
+        },
+    }
+    codex_app_server._validate_chat_thread_permission_response(safe)
+
+    unsafe = {
+        **safe,
+        "activePermissionProfile": {"id": ":read-only"},
+    }
+    with pytest.raises(CodexAppServerError, match="exact isolated Chatbot profile"):
+        codex_app_server._validate_chat_thread_permission_response(unsafe)
+
+
+def test_structured_codex_adapter_keeps_default_decision_turn_offline() -> None:
     captured: dict[str, object] = {}
 
     class StopSession:
@@ -1358,7 +1468,37 @@ def test_structured_codex_adapter_uses_supported_read_only_sandbox() -> None:
             schema=ChatRequest,
         )
 
-    assert captured["sandbox"] == "read-only"
+    assert captured["config"] == {"default_permissions": "openclass_chat"}
+    assert "sandbox" not in captured
+    assert "call tools" in captured["developerInstructions"]
+
+
+def test_structured_codex_adapter_uses_live_web_chat_profile() -> None:
+    captured: dict[str, object] = {}
+
+    class StopSession:
+        deadline_monotonic = time.monotonic() + 5
+
+        def request(self, method: str, params: dict, **_kwargs) -> dict:
+            captured.update(params)
+            raise CodexAppServerError("stop after capturing thread params")
+
+    with pytest.raises(CodexAppServerError, match="stop after capturing"):
+        codex_app_server._run_structured_turn(
+            session=StopSession(),  # type: ignore[arg-type]
+            model="gpt-5.5",
+            system_prompt="system",
+            user_prompt="user",
+            schema=ChatRequest,
+            allow_live_web_search=True,
+        )
+
+    assert captured["config"] == {
+        "default_permissions": "openclass_chat",
+        "web_search": "live",
+    }
+    assert "sandbox" not in captured
+    assert "built-in web search" in captured["developerInstructions"]
 
 
 def test_conversation_turn_collects_delta_and_final_message() -> None:
