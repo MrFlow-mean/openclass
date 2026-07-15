@@ -18,6 +18,7 @@ export function createSourceChapterSelection(source: SourceIngestionRecord, chap
     source_locator: chapter.source_locator,
     source_page_start: chapter.page_start,
     source_page_end: chapter.page_end,
+    source_scope_kind: "chapter",
   };
 }
 

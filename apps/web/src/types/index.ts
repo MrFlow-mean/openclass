@@ -91,6 +91,10 @@ export interface LearningSourceReference {
   source_chapter_id: string;
   chapter_number: string;
   chapter_title: string;
+  scope_kind: "chapter" | "page_range";
+  scope_chapter_id: string;
+  scope_chapter_number: string;
+  scope_chapter_title: string;
   section_path: string[];
   source_locator: string;
   page_range: string;
@@ -99,6 +103,7 @@ export interface LearningSourceReference {
   body_start_offset?: number | null;
   body_end_offset?: number | null;
   chunk_ids: string[];
+  visual_ids: string[];
   source_structure_id: string;
   source_structure_updated_at: string;
   content_hash: string;
@@ -139,7 +144,7 @@ export interface LearningRequirementSheet {
 
 export type BoardWorkflow = "generate_from_scratch" | "act_on_existing_board" | "unknown";
 export type InitialLearningWorkMode = "knowledge_board" | "narrow_topic" | "practice_artifact" | "unknown";
-export type InitialLearningGranularity = "single_knowledge_point" | "source_chapter" | "broad_topic" | "practice_artifact" | "unclear";
+export type InitialLearningGranularity = "single_knowledge_point" | "source_chapter" | "source_range" | "broad_topic" | "practice_artifact" | "unclear";
 export type BoardTaskRunStatus = "collecting" | "ready" | "awaiting_confirmation" | "consumed" | "not_executed" | "archived";
 export type BoardDocumentOperationStatus = "none" | "succeeded" | "failed";
 export type BoardTaskRequestedAction = "write" | "edit" | "explain" | "chat";
@@ -459,11 +464,54 @@ export interface SourceChunk {
   metadata: Record<string, unknown>;
 }
 
+export type SourceVisualKind = "image" | "table" | "diagram" | "page_snapshot";
+
+export interface SourceVisualAsset {
+  id: string;
+  owner_user_id: string;
+  package_id: string;
+  source_ingestion_id: string;
+  chapter_id?: string | null;
+  kind: SourceVisualKind;
+  source_locator: string;
+  page_start?: number | null;
+  page_end?: number | null;
+  paragraph_index?: number | null;
+  bbox: number[];
+  caption: string;
+  extracted_text: string;
+  surrounding_text: string;
+  mime_type: string;
+  order_index: number;
+  content_hash: string;
+  confidence: number;
+  metadata: Record<string, unknown>;
+}
+
+export interface SourceVisualEvidence {
+  visual_id: string;
+  source_ingestion_id: string;
+  source_chapter_id: string;
+  kind: SourceVisualKind;
+  source_locator: string;
+  page_start?: number | null;
+  page_end?: number | null;
+  paragraph_index?: number | null;
+  bbox: number[];
+  caption: string;
+  extracted_text: string;
+  surrounding_text: string;
+  mime_type: string;
+  content_hash: string;
+  confidence: number;
+}
+
 export interface SourceStructureView {
   source: SourceIngestionRecord;
   structure?: SourceStructure | null;
   chapters: SourceChapter[];
   chunks: SourceChunk[];
+  visuals: SourceVisualAsset[];
 }
 
 export interface SourceContentView {
@@ -482,6 +530,7 @@ export interface EvidenceBundle {
   status: EvidenceBundleStatus;
   query: string;
   evidence_items: RetrievalEvidence[];
+  visual_items: SourceVisualEvidence[];
   context_text: string;
   token_count: number;
   confirmed_by_user: boolean;
@@ -1000,6 +1049,7 @@ export interface SelectionRef {
   source_locator?: string;
   source_page_start?: number | null;
   source_page_end?: number | null;
+  source_scope_kind?: "chapter" | "page_range";
 }
 
 export type FormulaInkAction = "reference" | "replace";
@@ -1164,6 +1214,7 @@ export interface ChatRequestPayload {
   board_generation_action?: "start" | null;
   board_task_execution_action?: "resume_confirmed" | null;
   teaching_action?: "continue" | "restart" | null;
+  post_generation_action?: "auto_explain" | "stop_after_generation";
   chat_edit_source_commit_id?: string | null;
   chat_edit_base_commit_id?: string | null;
   chat_edit_original_message?: string | null;
@@ -1289,6 +1340,8 @@ export interface ChatResponse {
   board_patch_diff?: DiffPreviewItem[];
   created_lesson?: Lesson | null;
   teaching_progress?: SectionTeachingProgress | null;
+  auto_teaching_operation_status?: "none" | "succeeded" | "failed";
+  auto_teaching_operation_failure_reason?: string | null;
   course_package: CoursePackage;
 }
 

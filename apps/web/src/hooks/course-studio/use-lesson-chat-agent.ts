@@ -333,6 +333,7 @@ export function useLessonChatAgent({
     const lessonId = lesson.id;
     const payloadWithConversation: ChatRequestPayload = {
       ...payload,
+      post_generation_action: payload.post_generation_action ?? "auto_explain",
       text_model: payload.text_model ?? selectedTextModel,
       board_model: payload.board_model ?? selectedBoardModel,
       conversation: payload.conversation ?? conversationFromMessages(conversationMessages),
@@ -345,7 +346,7 @@ export function useLessonChatAgent({
     const userMessage = createChatMessage("user", userMessageContent, "ready", undefined, submittedSelection);
     const pendingAssistantMessage: ChatMessage = {
       ...createChatMessage("assistant", "", "pending"),
-      statusLabel: "正在保存当前文档",
+      statusLabel: submittedSelection?.kind === "source" ? "正在解析资料范围" : "正在保存当前文档",
     };
     let requestStarted = false;
     let streamedChatContent = "";
@@ -491,7 +492,10 @@ export function useLessonChatAgent({
             updatePendingAssistant(lessonId, pendingAssistantMessage.id, {
               content: streamedChatContent,
               agentActivity: streamedAgentActivity,
-              statusLabel: "正在回复",
+              statusLabel:
+                submittedSelection?.kind === "source" && payloadWithConversation.post_generation_action === "auto_explain"
+                  ? "正在从第一节开始讲解"
+                  : "正在回复",
             });
           },
           onDocumentDelta(delta) {
@@ -499,6 +503,9 @@ export function useLessonChatAgent({
               return;
             }
             streamedDocumentText += delta;
+            if (submittedSelection?.kind === "source") {
+              updatePendingAssistant(lessonId, pendingAssistantMessage.id, { statusLabel: "正在生成板书" });
+            }
             scheduleStreamingDocumentPreview();
           },
           onRequirementUpdate(payload) {
@@ -509,6 +516,9 @@ export function useLessonChatAgent({
             setClarificationQuestions(payload.clarification_questions);
             setLearningClarity(payload.learning_clarification);
             setStreamedRequirementSheet(payload.active_requirement_sheet ?? payload.learning_requirement_sheet);
+            if (submittedSelection?.kind === "source") {
+              updatePendingAssistant(lessonId, pendingAssistantMessage.id, { statusLabel: "资料范围已定位" });
+            }
           },
           onBoardTaskUpdate(payload) {
             setCurrentNeedPending(false);
@@ -563,6 +573,10 @@ export function useLessonChatAgent({
           response.learning_requirement_operation_failure_reason ??
             "本轮学习需求没有成功更新，请重试。"
         );
+      }
+      if (response.auto_teaching_operation_status === "failed") {
+        setError("板书已生成，但自动讲解未完成；可以发送“从第一节重新讲”重试。\n" +
+          (response.auto_teaching_operation_failure_reason ?? ""));
       }
       setLatestBoardDecision(response.board_decision);
       setCurrentNeedPending(false);
