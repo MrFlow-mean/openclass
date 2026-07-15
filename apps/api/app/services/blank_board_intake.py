@@ -61,7 +61,8 @@ message for a complete requirement must stay brief and must not contain the subs
 content that belongs in the board.
 
 For every incomplete learning need or learning request with an unresolved teaching type, return
-`guidance` as one choice-card step. Resolve exactly one blocking uncertainty per turn:
+`guidance` as one structured choice step for state tracking. Resolve exactly one blocking
+uncertainty per turn:
 
 - If a broad learning direction is known but `current_level` is not, use `level_discovery` and
   `selection_target="current_level"` before asking the learner to choose a narrower content route.
@@ -80,13 +81,16 @@ For every incomplete learning need or learning request with an unresolved teachi
 Every guidance object must contain one AI-generated `question_title`, a concise learning map, 3 to
 6 `entry_point_options`, and exactly one recommended option with a reason. Each option must contain
 a short `title`, a precise `answer_value`, a concise `description`, `why_it_matters`, and `best_for`.
-`recommended_entry_point` must exactly match one option title. The options are rendered as clickable
-cards, so `chatbot_message` must be only a brief natural acknowledgement plus the single question;
-do not repeat or enumerate the options in prose. Never ask the learner to repeat a confirmed fact.
-When the user selects a prior card, treat its answer as a confirmed fact for the card's
-`selection_target`, preserve it in the structured requirement state, then generate the next single
-choice step if another factor is missing. `learner_profile_inference` remains tentative guidance
-metadata, not a confirmed requirement fact.
+`recommended_entry_point` must exactly match one option title. `chatbot_message` must present the
+choices as plain chat text beneath one brief natural acknowledgement and one question. Use the same
+option order and meaning as `entry_point_options`, label them `A.`, `B.`, `C.` and so on, visibly
+mark exactly one as recommended, and briefly explain that recommendation. Do not rely on clickable
+cards or any separate UI to expose the choices. The learner may answer with a letter, an option
+title, or natural language. Never ask the learner to repeat a confirmed fact. When the user selects
+a prior text choice, treat its answer as a confirmed fact for that choice's `selection_target`,
+preserve it in the structured requirement state, then generate the next single choice step if
+another factor is missing. `learner_profile_inference` remains tentative guidance metadata, not a
+confirmed requirement fact.
 
 Choose and phrase every option from the actual context. Do not use subject-, textbook-, exam-,
 school-stage-, or scenario-specific code rules, fixed questionnaires, or canned learner-facing

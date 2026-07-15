@@ -1018,7 +1018,8 @@ def test_codex_instructions_separate_blank_intake_from_board_grounded_teaching()
     assert "This intake role never writes `board.md` itself" in normalized_intake
     assert "Resolve exactly one blocking uncertainty per turn" in normalized_intake
     assert "selection_target=\"current_level\"" in normalized_intake
-    assert "chatbot_message` must be only a brief natural acknowledgement" in normalized_intake
+    assert "chatbot_message` must present the choices as plain chat text" in normalized_intake
+    assert "Do not rely on clickable cards" in normalized_intake
     assert "frozen, structured learning requirement" in generation
     assert "Generate a self-contained teaching board from only that payload" in generation
     assert "Use fenced code blocks only for real code" in normalized_generation
