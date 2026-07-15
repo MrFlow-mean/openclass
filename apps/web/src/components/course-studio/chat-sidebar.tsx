@@ -2,7 +2,7 @@ import clsx from "clsx";
 import {
   AudioLines,
   BrainCircuit,
-  CheckCircle2,
+  Check,
   ChevronDown,
   LoaderCircle,
   MessageSquare,
@@ -850,29 +850,34 @@ function ModelPicker({
   onSelect: (option: AIModelOption) => void;
 }) {
   return (
-    <div className="relative">
+    <div className="relative min-w-0">
       <button
         type="button"
+        data-testid={`${kind}-model-picker-button`}
         aria-expanded={openModelMenu === kind}
         aria-label={`${label}，当前模型 ${modelButtonLabel(selectedOption, selectedModel)}`}
         onClick={() => setOpenModelMenu((current) => (current === kind ? null : kind))}
-        className="flex h-10 w-full items-center justify-between gap-2 rounded-lg border border-gray-200 bg-gray-50 px-2.5 text-left transition-colors hover:border-gray-300 hover:bg-white"
+        className="flex h-10 w-full items-center justify-center gap-1.5 rounded-full bg-gray-100 px-3 text-sm text-gray-900 transition-colors hover:bg-gray-200"
       >
         <span className="flex min-w-0 items-center gap-2">
           {icon}
-          <span className="truncate text-xs font-semibold text-gray-900">{label}</span>
+          <span className="truncate font-medium">{label}</span>
         </span>
         <ChevronDown
           className={clsx(
-            "h-4 w-4 shrink-0 text-gray-500 transition-transform",
+            "ml-auto h-4 w-4 shrink-0 text-gray-400 transition-transform",
             openModelMenu === kind && "rotate-180"
           )}
         />
       </button>
 
       {openModelMenu === kind ? (
-        <div className="absolute bottom-full left-0 z-30 mb-2 max-h-[360px] w-[min(336px,calc(100vw-2rem))] overflow-y-auto rounded-lg border border-gray-200 bg-white p-2 shadow-xl">
-          <div className="space-y-1">
+        <div
+          data-testid={`${kind}-model-picker-menu`}
+          className="absolute bottom-full left-0 z-40 mb-2 max-h-[420px] w-56 overflow-y-auto rounded-xl border border-gray-200 bg-white p-1.5 shadow-[0_18px_50px_rgba(0,0,0,0.16)]"
+        >
+          <p className="px-2.5 pb-1 pt-1.5 text-sm text-gray-400">{label}</p>
+          <div>
             {options.map((option) => {
               const selected = modelOptionKey(option) === modelSelectionKey(selectedModel);
               return (
@@ -882,19 +887,18 @@ function ModelPicker({
                   onClick={() => onSelect(option)}
                   disabled={!option.enabled}
                   className={clsx(
-                    "flex w-full items-center justify-between gap-2 rounded-md px-2 py-2 text-left transition-colors",
-                    selected ? "bg-gray-100 text-gray-950" : "text-gray-700 hover:bg-gray-50",
-                    !option.enabled && "cursor-not-allowed opacity-50 hover:bg-transparent"
+                    "flex min-h-10 w-full items-center gap-3 rounded-lg px-2.5 py-2 text-left text-sm text-gray-900 transition-colors hover:bg-gray-50",
+                    !option.enabled && "cursor-not-allowed opacity-45 hover:bg-transparent"
                   )}
                 >
-                  <span className="min-w-0">
-                    <span className="block truncate text-xs font-semibold">{option.label}</span>
-                    <span className="block truncate text-[11px] text-gray-400">
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate font-medium">{option.label}</span>
+                    <span className="mt-0.5 block truncate text-xs leading-4 text-gray-400">
                       {PROVIDER_LABELS[option.provider]} / {option.model}
                       {option.configured ? "" : " / 未配置"}
                     </span>
                   </span>
-                  {selected ? <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" /> : null}
+                  {selected ? <Check className="h-4 w-4 shrink-0 text-gray-900" /> : null}
                 </button>
               );
             })}
