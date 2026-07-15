@@ -29,6 +29,7 @@ from app.services.blank_board_intake import (
     BlankBoardAuxiliaryFactor,
     BlankBoardTurnDecision,
     OrdinaryChatTurnResponse,
+    SourceResolutionTurnResponse,
     evaluate_blank_board_decision,
 )
 from app.services.codex_app_server import (
@@ -1306,6 +1307,14 @@ def test_legacy_pdf_source_rebuilds_visual_index_on_first_reference(
         )
 
     monkeypatch.setattr(SourceStructureIndexer, "rebuild_structure", fake_rebuild)
+    monkeypatch.setattr(
+        blank_board_intake.CodexAppServerTextClient,
+        "parse",
+        lambda _self, **kwargs: SimpleNamespace(
+            output_parsed=kwargs["schema"](chatbot_message="Select a verified range."),
+            activity=[],
+        ),
+    )
 
     response = codex_chat.process_codex_chat_on_lesson(
         lesson.id,
@@ -1440,10 +1449,21 @@ def test_invalid_source_selection_returns_source_error_without_running_intake(
 ) -> None:
     lesson = _seed_workspace(codex_store, content_text="")
 
-    def fail_if_intake_runs(**_kwargs):
-        raise AssertionError("an invalid source selection must not run requirement intake")
+    def answer_source_resolution(_self, **kwargs):
+        assert kwargs["schema"] is SourceResolutionTurnResponse
+        assert "可验证的章节位置" in kwargs["user_prompt"]
+        return SimpleNamespace(
+            output_parsed=SourceResolutionTurnResponse(
+                chatbot_message="请从这份资料的目录中重新选择一个明确章节。"
+            ),
+            activity=[],
+        )
 
-    monkeypatch.setattr(blank_board_intake.CodexAppServerTextClient, "parse", fail_if_intake_runs)
+    monkeypatch.setattr(
+        blank_board_intake.CodexAppServerTextClient,
+        "parse",
+        answer_source_resolution,
+    )
 
     response = codex_chat.process_codex_chat_on_lesson(
         lesson.id,
@@ -1458,7 +1478,7 @@ def test_invalid_source_selection_returns_source_error_without_running_intake(
     )
 
     assert response.chatbot_message == (
-        "这份资料引用缺少可验证的章节位置，请重新从资料目录中选择章节。"
+        "请从这份资料的目录中重新选择一个明确章节。"
     )
     assert response.active_requirement_sheet is None
     assert response.learning_clarification.progress == 0

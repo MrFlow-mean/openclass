@@ -157,6 +157,15 @@ generate teaching-board content. The response must be produced for the current c
 than copied from a canned script.
 """.strip()
 
+SOURCE_RESOLUTION_INSTRUCTIONS = """
+The learner submitted a structured source reference, but the backend could not safely resolve one
+verified source range. Act as the learner-facing Chatbot. Use the supplied resolution state and
+reference metadata to ask one concise, context-specific question or request one concrete selection
+that would make the range unambiguous. Do not teach the source content, do not generate a board,
+do not invent chapter candidates, and do not expose internal field names or implementation details.
+Produce fresh wording for this exact context rather than copying a reusable fallback sentence.
+""".strip()
+
 
 class BlankBoardAuxiliaryFactor(BaseModel):
     label: str
@@ -180,6 +189,10 @@ class BlankBoardTurnDecision(BaseModel):
 
 
 class OrdinaryChatTurnResponse(BaseModel):
+    chatbot_message: str
+
+
+class SourceResolutionTurnResponse(BaseModel):
     chatbot_message: str
 
 
@@ -407,10 +420,35 @@ def process_blank_board_turn(
         and active_state.teaching_plan
     )
     if source_error:
+        source_resolution = CodexAppServerTextClient(user_id).parse(
+            model=model,
+            system_prompt=SOURCE_RESOLUTION_INSTRUCTIONS,
+            user_prompt=json.dumps(
+                {
+                    "resolution_state": source_error,
+                    "submitted_reference": (
+                        request.selection.model_dump(mode="json")
+                        if request.selection is not None
+                        else None
+                    ),
+                },
+                ensure_ascii=False,
+            ),
+            schema=SourceResolutionTurnResponse,
+            on_activity=record_activity,
+        )
+        merge_unreported_activity(getattr(source_resolution, "activity", []))
+        source_resolution_message = SourceResolutionTurnResponse.model_validate(
+            source_resolution.output_parsed
+        ).chatbot_message.strip()
+        if not source_resolution_message:
+            raise CodexAppServerError(
+                "Source resolution completed without a learner-facing question"
+            )
         outcome = BlankBoardIntakeOutcome(
             route="guided_discovery",
             clarification=_neutral_clarification(),
-            chatbot_message=source_error,
+            chatbot_message=source_resolution_message,
         )
     elif source_plan is not None:
         outcome = BlankBoardIntakeOutcome(
