@@ -2,6 +2,49 @@ import { expect, test, type Page } from "@playwright/test";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8110";
 
+test.beforeEach(async ({ page }) => {
+  const textModel = {
+    provider: "openai_codex",
+    model: "gpt-5.5",
+    label: "OpenAI Codex test model",
+    capability: "text",
+    enabled: true,
+    configured: true,
+    default: true,
+    default_reasoning_effort: null,
+    supported_reasoning_efforts: [],
+    default_service_tier: null,
+    service_tiers: [],
+  };
+  const realtimeModel = {
+    provider: "openai_codex",
+    model: "realtime-unavailable",
+    label: "Realtime unavailable in browser tests",
+    capability: "realtime",
+    enabled: false,
+    configured: false,
+    default: true,
+    default_reasoning_effort: null,
+    supported_reasoning_efforts: [],
+    default_service_tier: null,
+    service_tiers: [],
+  };
+  await page.route("**/api/ai-models", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        text: [textModel],
+        realtime: [realtimeModel],
+        defaults: {
+          text: { provider: textModel.provider, model: textModel.model },
+          realtime: { provider: realtimeModel.provider, model: realtimeModel.model },
+        },
+      }),
+    });
+  });
+});
+
 async function enterAsGuest(page: Page, nextPath = "/") {
   await page.goto(`/login?next=${encodeURIComponent(nextPath)}`);
   await page.getByRole("button", { name: /游客登录/ }).click();
