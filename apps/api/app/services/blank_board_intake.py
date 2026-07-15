@@ -54,11 +54,11 @@ When the board state is EMPTY, classify and handle the turn using this contract:
   teaching type. Do not edit `board.md`.
 - `learning_need`: the user does want to learn. Select exactly one teaching type before recording
   its core factors:
-  - `knowledge_point`: the only core factor is `learning_content`. It is complete only when the
-    content is specific enough for one focused teaching board.
-  - `skill_practice`: the core factors are `learning_content`, `current_level`, and
+  - Both `knowledge_point` and `skill_practice` require `learning_content`, `current_level`, and
     `target_scenario`. `target_scenario="无明确应用场景"` is a valid, explicitly resolved scenario.
     All three factors are mandatory.
+  - `knowledge_point` also requires `learning_content` to be specific enough for one focused
+    teaching board.
 
 Auxiliary factors may preserve useful constraints or preferences, but they never compensate for a
 missing core factor. If a learning need is incomplete or too broad, offer contextual
@@ -1024,10 +1024,8 @@ def _requirement_from_decision(
 ) -> LearningRequirementSheet:
     teaching_type = decision.teaching_type
     learning_content = decision.learning_content.strip()
-    current_level = decision.current_level.strip() if teaching_type == "skill_practice" else ""
-    target_scenario = (
-        decision.target_scenario.strip() if teaching_type == "skill_practice" else ""
-    )
+    current_level = decision.current_level.strip()
+    target_scenario = decision.target_scenario.strip()
     if target_scenario == "no_specific_scenario":
         target_scenario = "无明确应用场景"
     auxiliary_factors = [
@@ -1104,11 +1102,10 @@ def _missing_core_factors(decision: BlankBoardTurnDecision) -> list[str]:
     missing: list[str] = []
     if not decision.learning_content.strip() or not decision.content_is_specific:
         missing.append("learning_content")
-    if decision.teaching_type == "skill_practice":
-        if not decision.current_level.strip():
-            missing.append("current_level")
-        if not decision.target_scenario.strip():
-            missing.append("target_scenario")
+    if not decision.current_level.strip():
+        missing.append("current_level")
+    if not decision.target_scenario.strip():
+        missing.append("target_scenario")
     return missing
 
 
@@ -1119,11 +1116,7 @@ def _learning_clarification(
     missing_items: list[str],
 ) -> LearningClarificationStatus:
     teaching_type = decision.teaching_type
-    required_items = (
-        ["learning_content"]
-        if teaching_type == "knowledge_point"
-        else ["learning_content", "current_level", "target_scenario"]
-    )
+    required_items = ["learning_content", "current_level", "target_scenario"]
     progress = round(
         100 * (len(required_items) - len(missing_items)) / len(required_items)
     )

@@ -265,7 +265,11 @@ def test_broad_knowledge_direction_collects_until_content_is_specific() -> None:
     assert outcome.requirement is not None
     assert outcome.requirement.teaching_type == "knowledge_point"
     assert outcome.requirement.learning_content == "A broad field"
-    assert outcome.clarification.missing_items == ["learning_content"]
+    assert outcome.clarification.missing_items == [
+        "learning_content",
+        "current_level",
+        "target_scenario",
+    ]
     assert outcome.ready_for_board is False
 
 
@@ -304,23 +308,46 @@ def test_blank_board_question_wording_does_not_create_a_requirement_version() ->
     )
 
 
-def test_specific_knowledge_point_is_ready_with_only_learning_content() -> None:
+def test_specific_knowledge_point_requires_level_and_target_scenario() -> None:
     decision = BlankBoardTurnDecision(
         intent="learning_need",
         teaching_type="knowledge_point",
         learning_content="A specific concept",
         content_is_specific=True,
+        chatbot_message="One question about the learner context.",
+        next_question="What is your current level and where will you use this?",
+        reason="The current level and target scenario are still missing.",
+    )
+
+    outcome = evaluate_blank_board_decision(decision, previous_requirement=None)
+
+    assert outcome.route == "collect_requirements"
+    assert outcome.requirement is not None
+    assert outcome.requirement.teaching_type == "knowledge_point"
+    assert outcome.requirement.learning_goal == "A specific concept"
+    assert outcome.clarification.missing_items == ["current_level", "target_scenario"]
+    assert outcome.ready_for_board is False
+
+
+def test_specific_knowledge_point_is_ready_with_all_core_factors() -> None:
+    decision = BlankBoardTurnDecision(
+        intent="learning_need",
+        teaching_type="knowledge_point",
+        learning_content="A specific concept",
+        content_is_specific=True,
+        current_level="Can describe the basic idea with support",
+        target_scenario="Preparing for an upcoming course",
         chatbot_message="The focused board is ready.",
         teaching_plan="Explain the concept through a definition, mechanism, and example.",
-        reason="The learning content is specific enough.",
+        reason="All core factors are resolved.",
     )
 
     outcome = evaluate_blank_board_decision(decision, previous_requirement=None)
 
     assert outcome.route == "generate_board"
     assert outcome.requirement is not None
-    assert outcome.requirement.teaching_type == "knowledge_point"
-    assert outcome.requirement.learning_goal == "A specific concept"
+    assert outcome.requirement.current_level == "Can describe the basic idea with support"
+    assert outcome.requirement.target_scenario == "Preparing for an upcoming course"
     assert outcome.clarification.missing_items == []
     assert outcome.ready_for_board is True
 
@@ -520,7 +547,11 @@ def test_empty_board_requirement_collection_persists_and_ordinary_chat_preserves
 
     assert collecting.active_requirement_sheet is not None
     assert collecting.active_requirement_sheet.teaching_type == "knowledge_point"
-    assert collecting.learning_clarification.missing_items == ["learning_content"]
+    assert collecting.learning_clarification.missing_items == [
+        "learning_content",
+        "current_level",
+        "target_scenario",
+    ]
     assert collecting.requirement_version_id is not None
     assert [update["requirement_phase"] for update in requirement_updates] == [
         "collecting"
@@ -667,12 +698,14 @@ def test_complete_empty_board_requirement_is_frozen_before_board_generation(
         return SimpleNamespace(
             output_parsed=BlankBoardTurnDecision(
                 intent="learning_need",
-                teaching_type="knowledge_point",
-                learning_content="A specific concept",
-                content_is_specific=True,
-                chatbot_message="The board has been prepared.",
-                teaching_plan="Build a focused explanation with checks for understanding.",
-                reason="The single required core factor is complete.",
+                    teaching_type="knowledge_point",
+                    learning_content="A specific concept",
+                    content_is_specific=True,
+                    current_level="Can describe the basic idea with support",
+                    target_scenario="Preparing for an upcoming course",
+                    chatbot_message="The board has been prepared.",
+                    teaching_plan="Build a focused explanation with checks for understanding.",
+                    reason="All core factors are complete.",
             )
         )
 
@@ -756,11 +789,13 @@ def test_failed_empty_board_generation_keeps_frozen_requirement_for_retry(
         [
             BlankBoardTurnDecision(
                 intent="learning_need",
-                teaching_type="knowledge_point",
-                learning_content="A specific concept",
-                content_is_specific=True,
-                chatbot_message="Preparing the board.",
-                teaching_plan="Create a focused board.",
+                    teaching_type="knowledge_point",
+                    learning_content="A specific concept",
+                    content_is_specific=True,
+                    current_level="Can describe the basic idea with support",
+                    target_scenario="Preparing for an upcoming course",
+                    chatbot_message="Preparing the board.",
+                    teaching_plan="Create a focused board.",
                 reason="The requirement is complete.",
             ),
             BlankBoardTurnDecision(
