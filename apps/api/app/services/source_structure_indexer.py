@@ -14,6 +14,7 @@ from app.models import (
     SourceChunk,
     SourceIngestionRecord,
     SourceStructure,
+    SourceVisualAsset,
 )
 from app.services import workspace_state
 from app.services.ai_logging import ai_usage_logger
@@ -102,15 +103,28 @@ class SourceStructureIndexer:
                 # chapter, chunk, and visual identities on one atomic save path.
                 # rebuild_structure retains the previous usable bundle if either
                 # structural or visual parsing fails.
+                if not structure_is_current and visuals_are_current:
+                    return self.rebuild_structure(record, preserve_existing_visuals=True)
                 return self.rebuild_structure(record)
         return self.rebuild_structure(record)
 
-    def rebuild_structure(self, record: SourceIngestionRecord) -> SourceStructure:
-        previous = self.store.get_structure(
-            owner_user_id=record.owner_user_id,
-            package_id=record.package_id,
-            source_id=record.id,
-        )
+    def rebuild_structure(
+        self,
+        record: SourceIngestionRecord,
+        *,
+        preserve_existing_visuals: bool = False,
+    ) -> SourceStructure:
+        previous_visuals: list[SourceVisualAsset] = []
+        if preserve_existing_visuals:
+            previous_view = self.store.get_structure_view(source=record, chunk_limit=0)
+            previous = previous_view.structure
+            previous_visuals = previous_view.visuals
+        else:
+            previous = self.store.get_structure(
+                owner_user_id=record.owner_user_id,
+                package_id=record.package_id,
+                source_id=record.id,
+            )
         building = SourceStructure(
             owner_user_id=record.owner_user_id,
             package_id=record.package_id,
@@ -126,7 +140,13 @@ class SourceStructureIndexer:
             },
         )
         with source_visual_staging():
-            return self._rebuild_structure_staged(record, previous=previous, building=building)
+            return self._rebuild_structure_staged(
+                record,
+                previous=previous,
+                building=building,
+                preserve_existing_visuals=preserve_existing_visuals,
+                previous_visuals=previous_visuals,
+            )
 
     def _rebuild_structure_staged(
         self,
@@ -134,45 +154,62 @@ class SourceStructureIndexer:
         *,
         previous: SourceStructure | None,
         building: SourceStructure,
+        preserve_existing_visuals: bool = False,
+        previous_visuals: list[SourceVisualAsset] | None = None,
     ) -> SourceStructure:
         extracted_storage_keys: list[str] = []
         try:
             parsed = self._parse_record(record)
             chapters = self._chapters_for_record(record, parsed)
             chunks = self._chunks_for_record(record, parsed, chapters)
-            try:
-                visual_result = self.visual_extractor.extract(
-                    record=record,
-                    path=_local_source_path(record),
-                    structure=building,
-                    chapters=chapters,
-                    chunks=chunks,
-                )
-                if (
-                    visual_result.status == "failed"
-                    and previous is not None
-                    and previous.status in {"ready", "linear_only"}
-                ):
-                    raise SourceVisualExtractionFatalError(
-                        "; ".join(visual_result.warnings)
-                        or "Source visual extraction failed."
-                    )
-            except Exception as visual_exc:
-                if previous is not None and previous.status in {"ready", "linear_only"}:
-                    raise
-                ai_usage_logger.log_event(
-                    "source_visual_initial_index_failed",
-                    owner_user_id=record.owner_user_id,
-                    package_id=record.package_id,
-                    source_ingestion_id=record.id,
-                    error=str(visual_exc),
-                )
+            if preserve_existing_visuals and previous is not None:
                 visual_result = SourceVisualExtractionResult(
-                    status="failed",
-                    warnings=[
-                        "资料文本已建立索引，但视觉索引失败；重新构建后才能使用图表证据。"
-                    ],
+                    status=(
+                        previous.visual_index_status
+                        if previous.visual_index_status in {"ready", "partial"}
+                        else "ready"
+                    ),
+                    visuals=_reanchor_existing_visuals(
+                        previous_visuals or [],
+                        structure=building,
+                        chapters=chapters,
+                        chunks=chunks,
+                    ),
                 )
+            else:
+                try:
+                    visual_result = self.visual_extractor.extract(
+                        record=record,
+                        path=_local_source_path(record),
+                        structure=building,
+                        chapters=chapters,
+                        chunks=chunks,
+                    )
+                    if (
+                        visual_result.status == "failed"
+                        and previous is not None
+                        and previous.status in {"ready", "linear_only"}
+                    ):
+                        raise SourceVisualExtractionFatalError(
+                            "; ".join(visual_result.warnings)
+                            or "Source visual extraction failed."
+                        )
+                except Exception as visual_exc:
+                    if previous is not None and previous.status in {"ready", "linear_only"}:
+                        raise
+                    ai_usage_logger.log_event(
+                        "source_visual_initial_index_failed",
+                        owner_user_id=record.owner_user_id,
+                        package_id=record.package_id,
+                        source_ingestion_id=record.id,
+                        error=str(visual_exc),
+                    )
+                    visual_result = SourceVisualExtractionResult(
+                        status="failed",
+                        warnings=[
+                            "资料文本已建立索引，但视觉索引失败；重新构建后才能使用图表证据。"
+                        ],
+                    )
             extracted_storage_keys = [
                 visual.storage_key for visual in visual_result.visuals if visual.storage_key
             ]
@@ -1409,6 +1446,81 @@ def source_structure_needs_upgrade(structure: SourceStructure) -> bool:
     except (TypeError, ValueError):
         version = 0
     return version < CURRENT_SOURCE_STRUCTURE_INDEX_VERSION
+
+
+def _reanchor_existing_visuals(
+    visuals: list[SourceVisualAsset],
+    *,
+    structure: SourceStructure,
+    chapters: list[SourceChapter],
+    chunks: list[SourceChunk],
+) -> list[SourceVisualAsset]:
+    chapter_by_id = {chapter.id: chapter for chapter in chapters}
+    ordered_chunks = sorted(chunks, key=lambda chunk: chunk.order_index)
+    reanchored: list[SourceVisualAsset] = []
+    for visual in visuals:
+        chapter = chapter_by_id.get(visual.chapter_id or "")
+        page_no = visual.slide_no or visual.page_start
+        if chapter is None and page_no is not None:
+            page_chapters = [
+                candidate
+                for candidate in chapters
+                if candidate.anchor_status == "verified"
+                and candidate.page_start is not None
+                and candidate.page_start <= page_no
+                and (candidate.page_end or candidate.page_start + 1) > page_no
+            ]
+            if page_chapters:
+                chapter = max(
+                    page_chapters,
+                    key=lambda candidate: (candidate.level, candidate.order_index),
+                )
+        page_chunks = []
+        if page_no is not None:
+            page_chunks = [
+                chunk
+                for chunk in ordered_chunks
+                if chunk.page_start is not None
+                and chunk.page_start <= page_no
+                and (chunk.page_end or chunk.page_start + 1) > page_no
+            ]
+        if chapter is not None:
+            chapter_chunks = [
+                chunk for chunk in page_chunks if chunk.chapter_id == chapter.id
+            ]
+            if chapter_chunks:
+                page_chunks = chapter_chunks
+        before_chunk_id = page_chunks[0].id if page_chunks else None
+        after_chunk_id = page_chunks[-1].id if page_chunks else None
+        surrounding_text = "\n\n".join(
+            dict.fromkeys(chunk.text.strip() for chunk in page_chunks if chunk.text.strip())
+        )[:2000]
+        has_grounded_anchor = bool(
+            visual.metadata.get("standalone_image")
+            or chapter is not None
+            or page_chunks
+        )
+        reanchored.append(
+            visual.model_copy(
+                update={
+                    "structure_id": structure.id,
+                    "chapter_id": chapter.id if chapter else None,
+                    "before_chunk_id": before_chunk_id,
+                    "after_chunk_id": after_chunk_id,
+                    "surrounding_text": surrounding_text,
+                    "anchor_status": (
+                        "verified"
+                        if visual.anchor_status == "verified" and has_grounded_anchor
+                        else "unverified"
+                    ),
+                    "metadata": {
+                        **visual.metadata,
+                        "reanchored_after_structure_upgrade": True,
+                    },
+                }
+            )
+        )
+    return reanchored
 
 
 def _locator_for_offset(pages: list[PageText], offset: int) -> str:

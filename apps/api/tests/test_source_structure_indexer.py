@@ -7,7 +7,13 @@ from uuid import uuid4
 
 from reportlab.pdfgen import canvas
 
-from app.models import SourceChapter, SourceChunk, SourceIngestionRecord, SourceStructure
+from app.models import (
+    SourceChapter,
+    SourceChunk,
+    SourceIngestionRecord,
+    SourceStructure,
+    SourceVisualAsset,
+)
 from app.services import pdf_toc_parser
 from app.services.image_ocr import OCRLineLayout, OCRPageLayout
 from app.services.source_evidence_store import SourceEvidenceStore
@@ -396,6 +402,68 @@ def test_legacy_structure_version_is_lazily_rebuilt(tmp_path: Path) -> None:
         == CURRENT_SOURCE_STRUCTURE_INDEX_VERSION
     )
     assert [chunk.text for chunk in view.chunks] == ["Current body"]
+
+
+def test_structure_only_upgrade_preserves_current_visual_index(tmp_path: Path) -> None:
+    class UnexpectedVisualExtractor:
+        @staticmethod
+        def extract(**_kwargs):
+            raise AssertionError("a structure-only upgrade must not extract visuals again")
+
+    path = tmp_path / "legacy-with-visual.txt"
+    path.write_text("Current body", encoding="utf-8")
+    record = _source_record(path, mime_type="text/plain")
+    database = tmp_path / "openclass.sqlite3"
+    SourceEvidenceStore(database).save_source(record)
+    store = SourceStructureStore(database)
+    store.save_structure_bundle(
+        structure=SourceStructure(
+            id="structure_legacy_visual",
+            owner_user_id=record.owner_user_id,
+            package_id=record.package_id,
+            source_ingestion_id=record.id,
+            status="linear_only",
+            visual_index_status="ready",
+            visual_index_version=CURRENT_SOURCE_VISUAL_INDEX_VERSION,
+            metadata={},
+        ),
+        chapters=[],
+        chunks=[
+            SourceChunk(
+                id="chunk_legacy_visual",
+                owner_user_id=record.owner_user_id,
+                package_id=record.package_id,
+                source_ingestion_id=record.id,
+                text="Stale body",
+                start_offset=0,
+                end_offset=10,
+            )
+        ],
+        visuals=[
+            SourceVisualAsset(
+                id="visual_preserved",
+                owner_user_id=record.owner_user_id,
+                package_id=record.package_id,
+                source_ingestion_id=record.id,
+                structure_id="structure_legacy_visual",
+                structure_version=CURRENT_SOURCE_VISUAL_INDEX_VERSION,
+                kind="image",
+                anchor_status="verified",
+                metadata={"standalone_image": True},
+            )
+        ],
+    )
+
+    upgraded = SourceStructureIndexer(
+        store=store,
+        visual_extractor=UnexpectedVisualExtractor(),
+    ).ensure_structure(record)
+    view = store.get_structure_view(source=record)
+
+    assert upgraded is not None
+    assert upgraded.metadata["structure_index_version"] == CURRENT_SOURCE_STRUCTURE_INDEX_VERSION
+    assert [visual.id for visual in view.visuals] == ["visual_preserved"]
+    assert view.visuals[0].metadata["reanchored_after_structure_upgrade"] is True
 
 
 def _write_epub(path: Path) -> None:
