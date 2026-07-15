@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import zipfile
 from pathlib import Path
 from uuid import uuid4
@@ -50,6 +51,13 @@ def test_epub_navigation_builds_verified_stable_chapter_identity(tmp_path: Path)
     assert {tuple(chapter.path): chapter.id for chapter in first_view.chapters} == {
         tuple(chapter.path): chapter.id for chapter in second_view.chapters
     }
+    assert len(first_view.visuals) == 1
+    assert first_view.visuals[0].kind == "image"
+    assert first_view.visuals[0].caption == "A grounded figure"
+    assert first_view.visuals[0].chapter_id == first_view.chapters[0].id
+    assert first_view.visuals[0].content_hash == second_view.visuals[0].content_hash
+    assert first_view.visuals[0].asset_path
+    assert "asset_path" not in first_view.visuals[0].model_dump(mode="json")
 
 
 def test_plain_text_without_headings_uses_linear_chunks_without_fake_toc(tmp_path: Path) -> None:
@@ -156,6 +164,16 @@ def test_pdf_outline_merges_with_structured_toc_rows(tmp_path: Path, monkeypatch
     assert structure.strategy == "pdf_merged_toc"
     assert [chapter.normalized_number for chapter in view.chapters] == ["", "1", "1.1", "1.2", "2"]
     assert all(chapter.anchor_status == "verified" for chapter in view.chapters)
+    assert any(visual.kind == "diagram" and visual.page_start == 2 for visual in view.visuals)
+
+    visual_paths = [Path(visual.asset_path) for visual in view.visuals if visual.asset_path]
+    structure_store.delete_for_source(
+        owner_user_id=record.owner_user_id,
+        package_id=record.package_id,
+        source_id=record.id,
+    )
+    assert structure_store.get_structure_view(source=record).visuals == []
+    assert all(not path.exists() for path in visual_paths)
 
 
 def _write_epub(path: Path) -> None:
@@ -176,6 +194,7 @@ def _write_epub(path: Path) -> None:
                 <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
                 <item id="ch1" href="ch1.xhtml" media-type="application/xhtml+xml"/>
                 <item id="ch11" href="ch11.xhtml" media-type="application/xhtml+xml"/>
+                <item id="figure" href="images/figure.png" media-type="image/png"/>
               </manifest>
               <spine><itemref idref="ch1"/><itemref idref="ch11"/></spine>
             </package>""",
@@ -187,8 +206,17 @@ def _write_epub(path: Path) -> None:
               <li><a href="ch11.xhtml">1.1 Details</a></li>
             </ol></nav></body></html>""",
         )
-        archive.writestr("OEBPS/ch1.xhtml", "<html><body><h1>1 Foundations</h1><p>Body.</p></body></html>")
+        archive.writestr(
+            "OEBPS/ch1.xhtml",
+            '<html><body><h1>1 Foundations</h1><p>Body.</p><figure><img src="images/figure.png" alt="A grounded figure"/><figcaption>A grounded figure</figcaption></figure></body></html>',
+        )
         archive.writestr("OEBPS/ch11.xhtml", "<html><body><h2>1.1 Details</h2><p>Details.</p></body></html>")
+        archive.writestr(
+            "OEBPS/images/figure.png",
+            base64.b64decode(
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+            ),
+        )
 
 
 def _write_pdf_with_outline(path: Path) -> None:
@@ -201,6 +229,8 @@ def _write_pdf_with_outline(path: Path) -> None:
     pdf.addOutlineEntry("1 Intro", "chapter-1", level=0)
     pdf.drawString(72, 720, "1 Intro")
     pdf.drawString(72, 690, "1.1 Details")
+    pdf.rect(72, 420, 260, 180, stroke=1, fill=0)
+    pdf.line(82, 440, 300, 570)
     pdf.showPage()
     pdf.drawString(72, 720, "1.2 More")
     pdf.showPage()

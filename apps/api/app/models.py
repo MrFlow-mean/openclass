@@ -111,6 +111,7 @@ GuidedRequirementSelectionTarget = Literal[
 InitialLearningGranularity = Literal[
     "single_knowledge_point",
     "source_chapter",
+    "source_range",
     "broad_topic",
     "practice_artifact",
     "unclear",
@@ -451,6 +452,17 @@ class BoardReadContext(BaseModel):
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
+class BoardExplanationDirective(BaseModel):
+    status: Literal["approved", "needs_clarification", "blocked"] = "approved"
+    target_summary: str = ""
+    target_excerpt: str = ""
+    board_feedback: str = ""
+    teaching_instruction: str = ""
+    constraints: list[str] = Field(default_factory=list)
+    clarification_question: str = ""
+    reason: str = ""
+
+
 class BoardSearchQueryPlan(BaseModel):
     query_text: str = ""
     search_terms: list[str] = Field(default_factory=list)
@@ -565,6 +577,7 @@ class LearningSourceReference(BaseModel):
     body_start_offset: int | None = None
     body_end_offset: int | None = None
     chunk_ids: list[str] = Field(default_factory=list)
+    visual_ids: list[str] = Field(default_factory=list)
     source_structure_id: str = ""
     source_structure_updated_at: str = ""
     content_hash: str = ""
@@ -581,6 +594,7 @@ class LearningSourceGrounding(BaseModel):
     # removed after the learner has selected it; the board run must remain
     # reproducible from the material they explicitly chose.
     frozen_evidence: list["RetrievalEvidence"] = Field(default_factory=list)
+    frozen_visual_evidence: list["SourceVisualEvidence"] = Field(default_factory=list)
 
 
 class LearningRequirementAuxiliaryFactor(BaseModel):
@@ -817,6 +831,10 @@ SourceStructureStrategy = Literal[
     "open_notebook_search_only",
 ]
 SourceChapterAnchorStatus = Literal["verified", "unverified"]
+SourceVisualKind = Literal["image", "table", "diagram", "page_snapshot"]
+SourceScopeKind = Literal["chapter", "page_range"]
+PostGenerationAction = Literal["auto_explain", "stop_after_generation"]
+AutoTeachingOperationStatus = Literal["none", "succeeded", "failed"]
 
 
 class SourceIngestionJob(BaseModel):
@@ -1010,11 +1028,53 @@ class SourceChunk(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class SourceVisualAsset(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("sourcevisual"))
+    owner_user_id: str = ""
+    package_id: str
+    source_ingestion_id: str
+    chapter_id: str | None = None
+    kind: SourceVisualKind = "image"
+    source_locator: str = ""
+    page_start: int | None = None
+    page_end: int | None = None
+    paragraph_index: int | None = None
+    bbox: list[float] = Field(default_factory=list)
+    caption: str = ""
+    extracted_text: str = ""
+    surrounding_text: str = ""
+    mime_type: str = ""
+    asset_path: str = Field(default="", exclude=True)
+    order_index: int = 0
+    content_hash: str = ""
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class SourceVisualEvidence(BaseModel):
+    visual_id: str
+    source_ingestion_id: str
+    source_chapter_id: str = ""
+    kind: SourceVisualKind = "image"
+    source_locator: str = ""
+    page_start: int | None = None
+    page_end: int | None = None
+    paragraph_index: int | None = None
+    bbox: list[float] = Field(default_factory=list)
+    caption: str = ""
+    extracted_text: str = ""
+    surrounding_text: str = ""
+    mime_type: str = ""
+    content_hash: str = ""
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
 class SourceStructureView(BaseModel):
     source: SourceIngestionRecord
     structure: SourceStructure | None = None
     chapters: list[SourceChapter] = Field(default_factory=list)
     chunks: list[SourceChunk] = Field(default_factory=list)
+    visuals: list[SourceVisualAsset] = Field(default_factory=list)
 
 
 class EvidenceBundle(BaseModel):
@@ -1028,6 +1088,7 @@ class EvidenceBundle(BaseModel):
     status: EvidenceBundleStatus = "candidate"
     query: str = ""
     evidence_items: list[RetrievalEvidence] = Field(default_factory=list)
+    visual_items: list[SourceVisualEvidence] = Field(default_factory=list)
     context_text: str = ""
     token_count: int = 0
     confirmed_by_user: bool = False
@@ -1122,6 +1183,7 @@ class SelectionRef(BaseModel):
     source_locator: str = ""
     source_page_start: int | None = None
     source_page_end: int | None = None
+    source_scope_kind: SourceScopeKind = "chapter"
 
 
 class FormulaInkPayload(BaseModel):
@@ -1299,6 +1361,7 @@ class ChatRequest(BaseModel):
     board_generation_action: BoardGenerationAction | None = None
     board_task_execution_action: BoardTaskExecutionAction | None = None
     teaching_action: TeachingAction | None = None
+    post_generation_action: PostGenerationAction = "auto_explain"
     chat_edit_source_commit_id: str | None = None
     chat_edit_base_commit_id: str | None = None
     chat_edit_original_message: str | None = None
@@ -1435,6 +1498,8 @@ class ChatResponse(BaseModel):
     board_patch_diff: list[DiffPreviewItem] = Field(default_factory=list)
     created_lesson: LessonView | None = None
     teaching_progress: SectionTeachingProgressView | None = None
+    auto_teaching_operation_status: AutoTeachingOperationStatus = "none"
+    auto_teaching_operation_failure_reason: str | None = None
     course_package: CoursePackageView
 
 
