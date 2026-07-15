@@ -1026,12 +1026,21 @@ def test_codex_instructions_separate_blank_intake_from_board_grounded_teaching()
     assert "Do not rely on clickable cards" in normalized_intake
     assert "exactly one short line" in normalized_intake
     assert "Do not show `description`, `why_it_matters`, `best_for`" in normalized_intake
-    assert "concise teacher-led orientation rather than a form" in normalized_intake
+    assert "learning conversation that is already underway" in normalized_intake
+    assert "discovery embedded inside the orientation" in normalized_intake
+    assert "begin to understand the field while choosing a direction" in normalized_intake
     assert "one brief natural acknowledgement" in normalized_intake
-    assert "why resolving this turn's `selection_target`" in normalized_intake
-    assert "make the next learning step more appropriate" in normalized_intake
-    assert "exactly one short recommendation sentence after the choices" in normalized_intake
+    assert "meaningful relationships, contrasts, or possible paths" in normalized_intake
+    assert "connect the learner's confirmed choice to the next part" in normalized_intake
+    assert "must not become the substantive lesson" in normalized_intake
+    assert "exactly one short conversational suggestion" in normalized_intake
+    assert "Keep requirement collection invisible" in normalized_intake
+    assert "Do not explain why the system needs an answer" in normalized_intake
+    assert "mention `selection_target` or missing requirement fields" in normalized_intake
+    assert "survey, placement test, funnel, or task checklist" in normalized_intake
+    assert "arise naturally from the orientation" in normalized_intake
     assert "consistent with `reason_for_recommendation`" in normalized_intake
+    assert "optional conversational starting point" in normalized_intake
     assert "only confirmed user information or the explicit absence" in normalized_intake
     assert "never claim or imply that the learner is a beginner" in normalized_intake
     assert "Do not present `learner_profile_inference` as a confirmed fact" in normalized_intake
