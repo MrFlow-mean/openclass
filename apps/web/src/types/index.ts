@@ -1228,10 +1228,22 @@ export type GuidedRequirementDiscoveryStrategy =
 export interface GuidedRequirementEntryPoint {
   title: string;
   description: string;
+  answer_value: string;
+  why_it_matters: string;
+  best_for: string;
 }
+
+export type GuidedRequirementSelectionTarget =
+  | "learning_content"
+  | "current_level"
+  | "target_scenario"
+  | "teaching_type"
+  | "bottleneck";
 
 export interface GuidedRequirementDiscovery {
   strategy: GuidedRequirementDiscoveryStrategy;
+  selection_target: GuidedRequirementSelectionTarget;
+  question_title: string;
   learning_map_summary: string;
   entry_point_options: GuidedRequirementEntryPoint[];
   recommended_entry_point: string;

@@ -241,7 +241,7 @@ function GuidedRequirementDiscoveryCard({
     <section className="rounded-xl border border-violet-200 bg-violet-50 p-3 text-[12px] text-violet-950">
       <div className="flex items-center gap-2">
         <Sparkles className="h-3.5 w-3.5 text-violet-600" />
-        <p className="font-semibold">选择一个学习入口</p>
+        {discovery.question_title ? <p className="font-semibold">{discovery.question_title}</p> : null}
       </div>
       {discovery.learning_map_summary ? <p className="mt-2 leading-5 text-violet-900">{discovery.learning_map_summary}</p> : null}
       <div className="mt-3 space-y-2">
@@ -264,6 +264,16 @@ function GuidedRequirementDiscoveryCard({
                 {isRecommended ? <span className="rounded-full bg-violet-100 px-1.5 py-0.5 text-[10px] font-semibold text-violet-700">推荐</span> : null}
               </span>
               <span className="mt-1 block leading-5 text-gray-600">{entry.description}</span>
+              {entry.why_it_matters ? (
+                <span className="mt-1.5 block text-[11px] leading-5 text-violet-800">
+                  {entry.why_it_matters}
+                </span>
+              ) : null}
+              {entry.best_for ? (
+                <span className="mt-1 block text-[11px] leading-5 text-gray-500">
+                  适合：{entry.best_for}
+                </span>
+              ) : null}
             </button>
           );
         })}

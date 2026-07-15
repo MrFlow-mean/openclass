@@ -544,7 +544,7 @@ export function CourseStudioChatSidebar({
                     message.role === "assistant"
                       ? (entry) =>
                           void onSubmitChat({
-                            message: `我想从「${entry.title}」开始：${entry.description}`,
+                            message: `我的选择是「${entry.title}」。${entry.answer_value || entry.description}`,
                             interaction_mode: "ask",
                           })
                       : undefined

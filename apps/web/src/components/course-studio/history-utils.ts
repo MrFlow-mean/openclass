@@ -200,6 +200,14 @@ const GUIDED_REQUIREMENT_DISCOVERY_STRATEGIES = new Set<GuidedRequirementDiscove
   "bottleneck_discovery",
 ]);
 
+const GUIDED_REQUIREMENT_SELECTION_TARGETS = new Set<GuidedRequirementDiscovery["selection_target"]>([
+  "learning_content",
+  "current_level",
+  "target_scenario",
+  "teaching_type",
+  "bottleneck",
+]);
+
 function guidedRequirementDiscoveryFromMetadata(value: unknown): GuidedRequirementDiscovery | null {
   if (!value || typeof value !== "object") {
     return null;
@@ -219,7 +227,15 @@ function guidedRequirementDiscoveryFromMetadata(value: unknown): GuidedRequireme
         }
         const title = candidate.title.trim();
         const description = candidate.description.trim();
-        return title && description ? [{ title, description }] : [];
+        return title && description
+          ? [{
+              title,
+              description,
+              answer_value: typeof candidate.answer_value === "string" ? candidate.answer_value.trim() : "",
+              why_it_matters: typeof candidate.why_it_matters === "string" ? candidate.why_it_matters.trim() : "",
+              best_for: typeof candidate.best_for === "string" ? candidate.best_for.trim() : "",
+            }]
+          : [];
       })
     : [];
   if (!entryPointOptions.length) {
@@ -227,6 +243,12 @@ function guidedRequirementDiscoveryFromMetadata(value: unknown): GuidedRequireme
   }
   return {
     strategy: raw.strategy as GuidedRequirementDiscovery["strategy"],
+    selection_target:
+      typeof raw.selection_target === "string" &&
+      GUIDED_REQUIREMENT_SELECTION_TARGETS.has(raw.selection_target as GuidedRequirementDiscovery["selection_target"])
+        ? (raw.selection_target as GuidedRequirementDiscovery["selection_target"])
+        : "learning_content",
+    question_title: typeof raw.question_title === "string" ? raw.question_title.trim() : "",
     learning_map_summary: typeof raw.learning_map_summary === "string" ? raw.learning_map_summary.trim() : "",
     entry_point_options: entryPointOptions,
     recommended_entry_point: typeof raw.recommended_entry_point === "string" ? raw.recommended_entry_point.trim() : "",
