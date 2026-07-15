@@ -73,9 +73,11 @@ def test_codex_turn_prompt_uses_mode_and_ignores_source_selection() -> None:
             ),
         ),
         is_new_thread=True,
+        board_state="empty",
     )
 
     assert "Interaction mode: ask" in prompt
+    assert "Board state (computed by OpenClass): EMPTY." in prompt
     assert "Current user message:\nExplain the current document." in prompt
     assert "uploaded source excerpt" not in prompt
     assert "Uploaded source title" not in prompt
@@ -95,12 +97,55 @@ def test_codex_turn_prompt_keeps_current_board_selection_for_editing() -> None:
             ),
         ),
         is_new_thread=False,
+        board_state="non_empty",
     )
 
     assert "Interaction mode: direct_edit" in prompt
+    assert "Board state (computed by OpenClass): NON_EMPTY." in prompt
     assert "kind: board" in prompt
     assert "excerpt: Current board paragraph" in prompt
     assert "heading path: Section" in prompt
+
+
+def test_board_state_detector_treats_whitespace_as_empty() -> None:
+    assert codex_chat._board_state("") == "empty"
+    assert codex_chat._board_state(" \n\t") == "empty"
+    assert codex_chat._board_state("# Lesson") == "non_empty"
+
+
+def test_codex_chat_passes_detected_board_state_to_every_turn(
+    monkeypatch: pytest.MonkeyPatch,
+    codex_store: SqliteCourseStore,
+) -> None:
+    lesson = _seed_workspace(codex_store, content_text=" \n")
+    prompts: list[str] = []
+
+    def fake_turn(**kwargs) -> CodexTurnResult:
+        prompts.append(kwargs["user_prompt"])
+        return CodexTurnResult(
+            thread_id="thread_board_state",
+            turn_id=f"turn_{len(prompts)}",
+            final_response="Waiting for the board update.",
+        )
+
+    monkeypatch.setattr(codex_chat, "run_codex_thread_turn", fake_turn)
+
+    codex_chat.process_codex_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="Create learning material."),
+        user_id=TEST_USER_ID,
+    )
+    codex_chat.process_codex_chat_on_lesson(
+        lesson.id,
+        ChatRequest(message="Continue."),
+        user_id=TEST_USER_ID,
+    )
+
+    assert len(prompts) == 2
+    assert all("Board state (computed by OpenClass): EMPTY." in prompt for prompt in prompts)
+    saved_lesson = codex_store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
+    assert current_head_commit(saved_lesson).metadata["board_state_before"] == "empty"
+    assert current_head_commit(saved_lesson).metadata["board_state_after"] == "empty"
 
 
 def test_codex_instructions_require_board_first_teaching() -> None:

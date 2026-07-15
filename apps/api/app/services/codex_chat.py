@@ -7,7 +7,7 @@ import stat
 import tempfile
 import threading
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Literal
 
 from app.models import (
     BoardDecision,
@@ -35,6 +35,7 @@ BOARD_FILE_NAME = "board.md"
 DEFAULT_CODEX_MODEL = "gpt-5.5"
 DEFAULT_BOARD_MAX_BYTES = 2 * 1024 * 1024
 MAX_FORMULA_IMAGE_DATA_URL_CHARS = 12 * 1024 * 1024
+BoardState = Literal["empty", "non_empty"]
 CODEX_DEVELOPER_INSTRUCTIONS = """
 You are Codex embedded as the single AI agent in OpenClass.
 
@@ -304,9 +305,33 @@ def _selection_context(selection: SelectionRef | None) -> str:
     return "\n".join(details)
 
 
-def _turn_prompt(request: ChatRequest, *, is_new_thread: bool) -> str:
+def _board_state(content_text: str) -> BoardState:
+    return "empty" if not content_text.strip() else "non_empty"
+
+
+def _board_state_context(board_state: BoardState) -> str:
+    if board_state == "empty":
+        return (
+            "Board state (computed by OpenClass): EMPTY.\n"
+            "The right-side board contains no learning content. For a teaching request, create "
+            "the initial board before giving substantive teaching content."
+        )
+    return (
+        "Board state (computed by OpenClass): NON_EMPTY.\n"
+        "The right-side board already contains learning content. Read it before responding and "
+        "keep teaching grounded in it."
+    )
+
+
+def _turn_prompt(
+    request: ChatRequest,
+    *,
+    is_new_thread: bool,
+    board_state: BoardState,
+) -> str:
     sections: list[str] = []
     sections.append(f"Interaction mode: {request.interaction_mode}")
+    sections.append(_board_state_context(board_state))
     if is_new_thread:
         conversation = _conversation_context(request.conversation)
         if conversation:
@@ -381,6 +406,7 @@ def process_codex_chat_on_lesson(
         initial_package.active_lesson_id = initial_lesson.id
         branch_name = initial_lesson.history_graph.current_branch
         base_commit_id = current_head_commit(initial_lesson).id
+        board_state_before = _board_state(initial_lesson.board_document.content_text)
         prior_thread_id, prior_turn_id = _thread_reference_for_current_branch(initial_lesson)
         workspace_key = _workspace_key(
             user_id=user_id,
@@ -398,7 +424,11 @@ def process_codex_chat_on_lesson(
                 workspace_path,
                 initial_lesson.board_document.content_text,
             )
-            user_prompt = _turn_prompt(request, is_new_thread=prior_thread_id is None)
+            user_prompt = _turn_prompt(
+                request,
+                is_new_thread=prior_thread_id is None,
+                board_state=board_state_before,
+            )
             codex_model = _codex_model(request, user_id=user_id)
             codex_reasoning_effort = _codex_reasoning_effort(request)
             codex_service_tier, codex_service_tier_is_set = _codex_service_tier(
@@ -429,7 +459,11 @@ def process_codex_chat_on_lesson(
                     cwd=workspace_path,
                     user_prompt=user_prompt,
                     fallback_user_prompt=(
-                        _turn_prompt(request, is_new_thread=True)
+                        _turn_prompt(
+                            request,
+                            is_new_thread=True,
+                            board_state=board_state_before,
+                        )
                         if prior_thread_id is not None
                         else user_prompt
                     ),
@@ -499,6 +533,8 @@ def process_codex_chat_on_lesson(
                         else None
                     ),
                     "document_changed": changed,
+                    "board_state_before": board_state_before,
+                    "board_state_after": _board_state(next_document.content_text),
                     "document_hash_before": _text_hash(current_document.content_text),
                     "document_hash_after": _text_hash(next_document.content_text),
                     "codex_thread_id": result.thread_id,
