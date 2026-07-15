@@ -576,6 +576,11 @@ class LearningSourceGrounding(BaseModel):
     confirmed_bundle_id: str = ""
     confirmed_at: str | None = None
     confirmed_references: list[LearningSourceReference] = Field(default_factory=list)
+    # This snapshot is intentionally carried with the frozen requirement rather
+    # than looked up again during board generation.  A source may be rebuilt or
+    # removed after the learner has selected it; the board run must remain
+    # reproducible from the material they explicitly chose.
+    frozen_evidence: list["RetrievalEvidence"] = Field(default_factory=list)
 
 
 class LearningRequirementAuxiliaryFactor(BaseModel):

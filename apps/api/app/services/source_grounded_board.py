@@ -1,0 +1,245 @@
+from __future__ import annotations
+
+import hashlib
+from dataclasses import dataclass
+
+from app.models import (
+    EvidenceBundle,
+    LearningClarificationStatus,
+    LearningRequirementAuxiliaryFactor,
+    LearningRequirementChecklistItem,
+    LearningRequirementKeyFact,
+    LearningRequirementSheet,
+    LearningSourceGrounding,
+    LearningSourceReference,
+    Lesson,
+    RetrievalEvidence,
+    SelectionRef,
+    now_iso,
+)
+from app.services import workspace_state
+from app.services.source_chapter_identity import rebind_stale_source_chapter_selection
+from app.services.source_evidence_store import source_evidence_store
+from app.services.source_structure_store import source_structure_store
+
+
+SOURCE_BOARD_TOKEN_BUDGET = 24_000
+SOURCE_BOARD_EVIDENCE_LIMIT = 24
+
+
+class SourceGroundedBoardError(RuntimeError):
+    """Raised when a user-selected source cannot safely ground a new board."""
+
+
+@dataclass(frozen=True)
+class SourceGroundedBoardPlan:
+    requirement: LearningRequirementSheet
+    clarification: LearningClarificationStatus
+    teaching_plan: str
+
+
+def resolve_source_grounded_board_plan(
+    *,
+    owner_user_id: str,
+    lesson: Lesson,
+    selection: SelectionRef | None,
+) -> SourceGroundedBoardPlan | None:
+    """Turn one verified source selection into a frozen-ready blank-board input.
+
+    A structured source click is an explicit learner choice of the material
+    boundary.  It is therefore enough to start a knowledge board without
+    collecting learner level or target-scenario fields.  This function never
+    performs semantic search and never selects a different source on the
+    learner's behalf.
+    """
+    if selection is None or selection.kind != "source":
+        return None
+    if not selection.source_ingestion_id or not selection.source_chapter_id:
+        raise SourceGroundedBoardError("这份资料引用缺少可验证的章节位置，请重新从资料目录中选择章节。")
+
+    workspace = workspace_state.load_workspace_for_user(owner_user_id)
+    package, _current_lesson = workspace_state.find_lesson_package(workspace, lesson.id)
+    source = source_evidence_store.get_source(
+        owner_user_id=owner_user_id,
+        package_id=package.id,
+        source_id=selection.source_ingestion_id,
+    )
+    if source is None or source.status != "ready":
+        raise SourceGroundedBoardError("这份资料尚未准备好，暂时不能据此生成板书。")
+
+    view = source_structure_store.get_structure_view(source=source, chunk_limit=0)
+    if view.structure is None or view.structure.status not in {"ready", "linear_only"}:
+        raise SourceGroundedBoardError("这份资料的结构索引尚未完成，请稍后重试。")
+    chapter = next(
+        (
+            candidate
+            for candidate in view.chapters
+            if candidate.id == selection.source_chapter_id
+            and candidate.anchor_status == "verified"
+        ),
+        None,
+    )
+    if chapter is None:
+        rebound = rebind_stale_source_chapter_selection(
+            selection=selection,
+            source_ingestion_id=source.id,
+            chapters=view.chapters,
+        )
+        if rebound.is_ambiguous:
+            raise SourceGroundedBoardError("这份资料目录发生变化，当前引用对应多个章节，请重新选择一次。")
+        chapter = rebound.chapter
+    if chapter is None:
+        raise SourceGroundedBoardError("找不到这份引用对应的已验证正文范围，请重新从资料目录中选择章节。")
+
+    evidence = source_structure_store.chapter_evidence_by_id(
+        owner_user_id=owner_user_id,
+        package_id=package.id,
+        chapter_id=chapter.id,
+        limit=SOURCE_BOARD_EVIDENCE_LIMIT,
+        token_budget=SOURCE_BOARD_TOKEN_BUDGET,
+    )
+    if not evidence or not any(item.expanded_text.strip() for item in evidence):
+        raise SourceGroundedBoardError("这个章节尚未提取到可用正文，不能据此生成板书。")
+
+    bundle = EvidenceBundle(
+        owner_user_id=owner_user_id,
+        package_id=package.id,
+        lesson_id=lesson.id,
+        purpose="board_generation",
+        status="confirmed",
+        query=selection.excerpt,
+        evidence_items=evidence,
+        context_text=_evidence_context_text(evidence),
+        token_count=sum(item.token_count for item in evidence),
+        confirmed_by_user=True,
+        confirmed_at=now_iso(),
+        metadata={
+            "origin": "structured_source_selection",
+            "source_ingestion_id": source.id,
+            "source_chapter_id": chapter.id,
+            "source_structure_id": view.structure.id,
+        },
+    )
+    source_evidence_store.save_bundle(bundle)
+
+    chapter_label = " ".join(part for part in [chapter.normalized_number or chapter.number, chapter.title] if part).strip()
+    chapter_label = chapter_label or chapter.title or source.title
+    reference = LearningSourceReference(
+        evidence_bundle_id=bundle.id,
+        source_ingestion_id=source.id,
+        source_title=source.title,
+        source_chapter_id=chapter.id,
+        chapter_number=chapter.normalized_number or chapter.number,
+        chapter_title=chapter.title,
+        scope_kind="chapter",
+        scope_chapter_id=chapter.id,
+        scope_chapter_number=chapter.normalized_number or chapter.number,
+        scope_chapter_title=chapter.title,
+        section_path=chapter.path,
+        source_locator=chapter.source_locator,
+        page_range=evidence[0].page_range,
+        page_start=chapter.page_start,
+        page_end=chapter.page_end,
+        body_start_offset=chapter.body_start_offset,
+        body_end_offset=chapter.body_end_offset,
+        chunk_ids=_dedupe_chunk_ids(evidence),
+        source_structure_id=view.structure.id,
+        source_structure_updated_at=view.structure.updated_at,
+        content_hash=_evidence_hash(evidence),
+    )
+    grounding = LearningSourceGrounding(
+        requested_by_user=True,
+        confirmation_status="confirmed",
+        confirmed_bundle_id=bundle.id,
+        confirmed_at=bundle.confirmed_at,
+        confirmed_references=[reference],
+        frozen_evidence=evidence,
+    )
+    source_label = " / ".join(part for part in [source.title, chapter_label, reference.page_range] if part)
+    requirement = LearningRequirementSheet(
+        teaching_type="knowledge_point",
+        learning_content=chapter_label,
+        current_level="",
+        target_scenario="",
+        auxiliary_factors=[
+            LearningRequirementAuxiliaryFactor(
+                label="confirmed_source",
+                value=source_label,
+                evidence="structured_source_selection",
+            )
+        ],
+        theme=chapter_label,
+        learning_goal=f"基于《{source.title}》的所选章节建立可学习的板书。",
+        level="",
+        known_background="",
+        current_questions=[],
+        learning_need_checklist=["已确认资料范围"],
+        target_depth="按资料章节的实际结构组织讲解。",
+        output_preference="结构化 Markdown 板书",
+        boundary=source_label,
+        board_scope=[source_label],
+        success_criteria="覆盖所选资料范围的核心概念、结构关系与必要例证。",
+        board_workflow="generate_from_scratch",
+        work_mode="knowledge_board",
+        granularity="source_chapter",
+        source_grounding=grounding,
+    )
+    clarification = LearningClarificationStatus(
+        progress=100,
+        label="资料范围已确认",
+        reason="用户已选择一个可验证的资料章节，系统将直接基于该章节生成板书。",
+        missing_items=[],
+        can_start=True,
+        summary=source_label,
+        key_facts=[
+            LearningRequirementKeyFact(
+                label="source_chapter",
+                value=source_label,
+                evidence="structured_source_selection",
+                category="learning",
+            )
+        ],
+        checklist=[
+            LearningRequirementChecklistItem(
+                title="资料章节",
+                is_clear=True,
+                evidence="structured_source_selection",
+            )
+        ],
+        work_mode="knowledge_board",
+        granularity="source_chapter",
+        ready_for_board=True,
+    )
+    return SourceGroundedBoardPlan(
+        requirement=requirement,
+        clarification=clarification,
+        teaching_plan=(
+            "以冻结的资料正文为唯一事实依据，保留章节结构，提炼核心概念、"
+            "关键关系和必要例证，生成一份可独立学习的板书。"
+        ),
+    )
+
+
+def _evidence_context_text(evidence: list[RetrievalEvidence]) -> str:
+    return "\n\n".join(
+        "\n".join(
+            part
+            for part in [
+                item.source_title,
+                " > ".join(item.section_path),
+                item.page_range,
+                item.expanded_text,
+            ]
+            if part
+        )
+        for item in evidence
+    )
+
+
+def _dedupe_chunk_ids(evidence: list[RetrievalEvidence]) -> list[str]:
+    return list(dict.fromkeys(chunk_id for item in evidence for chunk_id in item.chunk_ids if chunk_id))
+
+
+def _evidence_hash(evidence: list[RetrievalEvidence]) -> str:
+    content = "\n".join(item.expanded_text for item in evidence if item.expanded_text)
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()

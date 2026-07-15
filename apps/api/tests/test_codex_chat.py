@@ -14,6 +14,7 @@ from app.models import (
     GuidedRequirementDiscovery,
     GuidedRequirementEntryPoint,
     SelectionRef,
+    SourceIngestionRecord,
 )
 from app.services import blank_board_intake, codex_app_server, codex_chat, workspace_state
 from app.services.blank_board_intake import (
@@ -32,6 +33,9 @@ from app.services.course_store import SqliteCourseStore, build_initial_workspace
 from app.services.history import commit_operations, create_branch, current_head_commit
 from app.services.lesson_factory import build_requirements, create_empty_lesson
 from app.services.rich_document import build_document
+from app.services.source_evidence_store import source_evidence_store
+from app.services.source_structure_indexer import SourceStructureIndexer
+from app.services.source_structure_store import source_structure_store
 
 
 TEST_USER_ID = "user_codex_chat"
@@ -885,6 +889,95 @@ def test_complete_empty_board_requirement_is_frozen_before_board_generation(
     assert frozen_commit.metadata["requirement_parent_version_id"] == (
         ready_commit.metadata["requirement_version_id"]
     )
+
+
+def test_source_chapter_selection_generates_blank_board_without_requirement_questions(
+    monkeypatch: pytest.MonkeyPatch,
+    codex_store: SqliteCourseStore,
+    tmp_path: Path,
+) -> None:
+    lesson = _seed_workspace(codex_store, content_text="")
+    package_id = codex_store.load_for_user(TEST_USER_ID).packages[0].id
+    source_path = tmp_path / "source.md"
+    source_path.write_text(
+        "# Chapter One\n\n"
+        "The selected source explains a durable concept and its key relationship.\n\n"
+        "## Detail\n\n"
+        "This supporting paragraph must be present in the frozen source evidence.",
+        encoding="utf-8",
+    )
+    source = SourceIngestionRecord(
+        id="source_direct_generation",
+        owner_user_id=TEST_USER_ID,
+        package_id=package_id,
+        title="Selected source",
+        source_type="local_file",
+        file_name=source_path.name,
+        mime_type="text/markdown",
+        size_bytes=source_path.stat().st_size,
+        status="ready",
+        metadata={"local_source_path": str(source_path)},
+    )
+    source_evidence_store.save_source(source)
+    SourceStructureIndexer(store=source_structure_store).rebuild_structure(source)
+    chapter = source_structure_store.get_structure_view(source=source).chapters[0]
+
+    def fail_if_intake_runs(**_kwargs):
+        raise AssertionError("a verified source selection must bypass requirement questions")
+
+    def fake_board_turn(**kwargs) -> CodexTurnResult:
+        prompt = kwargs["user_prompt"]
+        assert '"granularity":"source_chapter"' in prompt
+        assert "The selected source explains a durable concept" in prompt
+        assert "为我讲解" not in prompt
+        board_path = Path(kwargs["cwd"]) / codex_chat.BOARD_FILE_NAME
+        board_path.write_text("# Source-grounded board\n\nGrounded content.", encoding="utf-8")
+        return CodexTurnResult(
+            thread_id="thread_source_generation",
+            turn_id="turn_source_generation",
+            final_response="Generated from the selected source.",
+        )
+
+    monkeypatch.setattr(blank_board_intake.CodexAppServerTextClient, "parse", fail_if_intake_runs)
+    monkeypatch.setattr(codex_chat, "run_codex_thread_turn", fake_board_turn)
+
+    response = codex_chat.process_codex_chat_on_lesson(
+        lesson.id,
+        ChatRequest(
+            message="为我讲解",
+            selection=SelectionRef(
+                kind="source",
+                excerpt="Selected source · Chapter One",
+                source_ingestion_id=source.id,
+                source_title=source.title,
+                source_chapter_id=chapter.id,
+                source_chapter_number=chapter.number,
+                source_chapter_title=chapter.title,
+                source_locator=chapter.source_locator,
+                source_page_start=chapter.page_start,
+                source_page_end=chapter.page_end,
+                heading_path=chapter.path,
+            ),
+        ),
+        user_id=TEST_USER_ID,
+    )
+
+    assert response.requirement_phase == "consumed"
+    saved_lesson = codex_store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
+    assert saved_lesson.board_document.content_text == "# Source-grounded board\n\nGrounded content."
+    frozen_commit = next(
+        commit
+        for commit in saved_lesson.history_graph.commits
+        if commit.metadata.get("kind") == "learning_requirement_frozen"
+    )
+    frozen_requirement = frozen_commit.metadata["frozen_requirement_payload"]
+    assert frozen_requirement["granularity"] == "source_chapter"
+    assert frozen_requirement["source_grounding"]["confirmation_status"] == "confirmed"
+    assert frozen_requirement["source_grounding"]["frozen_evidence"][0]["chapter_id"] == chapter.id
+    bundle_id = frozen_requirement["source_grounding"]["confirmed_bundle_id"]
+    saved_bundle = source_evidence_store.get_bundle(owner_user_id=TEST_USER_ID, bundle_id=bundle_id)
+    assert saved_bundle is not None
+    assert saved_bundle.status == "confirmed"
 
 
 def test_failed_empty_board_generation_keeps_frozen_requirement_for_retry(

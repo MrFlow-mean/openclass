@@ -363,8 +363,26 @@ def process_blank_board_turn(
 
     active_state = _active_requirement_state_from_history(lesson)
     active_requirement = active_state.requirement
+    source_plan = None
+    source_error = ""
+    if request.selection is not None and request.selection.kind == "source":
+        from app.services.source_grounded_board import (
+            SourceGroundedBoardError,
+            resolve_source_grounded_board_plan,
+        )
+
+        try:
+            source_plan = resolve_source_grounded_board_plan(
+                owner_user_id=user_id,
+                lesson=lesson,
+                selection=request.selection,
+            )
+        except SourceGroundedBoardError as exc:
+            source_error = str(exc)
     frozen_retry = bool(
-        request.board_generation_action == "start"
+        source_plan is None
+        and not source_error
+        and request.board_generation_action == "start"
         and active_state.phase == "frozen"
         and active_state.requirement is not None
         and active_state.clarification is not None
@@ -372,7 +390,24 @@ def process_blank_board_turn(
         and active_state.version_id
         and active_state.teaching_plan
     )
-    if frozen_retry:
+    if source_error:
+        outcome = BlankBoardIntakeOutcome(
+            route="guided_discovery",
+            clarification=_neutral_clarification(),
+            chatbot_message=source_error,
+        )
+    elif source_plan is not None:
+        outcome = BlankBoardIntakeOutcome(
+            route="generate_board",
+            requirement=source_plan.requirement,
+            requirement_changed=True,
+            clarification=source_plan.clarification,
+            ready_for_board=True,
+            chatbot_message="已根据你引用的资料章节开始生成板书。",
+            teaching_plan=source_plan.teaching_plan,
+            requirement_phase="ready",
+        )
+    elif frozen_retry:
         assert active_state.requirement is not None
         assert active_state.clarification is not None
         outcome = BlankBoardIntakeOutcome(
@@ -426,7 +461,7 @@ def process_blank_board_turn(
                     "The network-enabled Chatbot completed without a learner-facing response"
                 )
             outcome = outcome.model_copy(update={"chatbot_message": chatbot_message})
-    existing_run_id = active_state.run_id
+    existing_run_id = None if source_plan is not None else active_state.run_id
 
     if not outcome.ready_for_board:
         run_id = (
