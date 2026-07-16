@@ -125,25 +125,25 @@ class CodexActivityRecorder:
                 item_id=item_id,
                 turn_id=turn_id,
                 stage="execute_role",
-                label="Codex 工作进展",
+                label="OpenAI 工作进展",
                 status="running",
-                role="Codex",
+                role="OpenAI",
                 metadata={"kind": "commentary", "detail": str(item.get("text") or "")},
             )
             return
         descriptors: dict[str, tuple[str, str, str]] = {
-            "reasoning": ("build_context", "Codex 正在思考", "Codex"),
-            "plan": ("build_context", "制定工作计划", "Codex"),
-            "commandExecution": ("execute_role", "运行命令", "Codex tool"),
-            "fileChange": ("execute_role", "更新板书文档", "Codex tool"),
-            "mcpToolCall": ("execute_role", "调用工具", "Codex tool"),
-            "dynamicToolCall": ("execute_role", "调用工具", "Codex tool"),
-            "collabAgentToolCall": ("execute_role", "协同处理", "Codex"),
-            "subAgentActivity": ("execute_role", "协同处理", "Codex"),
-            "webSearch": ("build_context", "搜索网络", "Codex tool"),
-            "imageView": ("build_context", "查看图片", "Codex tool"),
-            "imageGeneration": ("execute_role", "生成图片", "Codex tool"),
-            "contextCompaction": ("build_context", "整理上下文", "Codex"),
+            "reasoning": ("build_context", "OpenAI 正在思考", "OpenAI"),
+            "plan": ("build_context", "制定工作计划", "OpenAI"),
+            "commandExecution": ("execute_role", "运行命令", "OpenAI tool"),
+            "fileChange": ("execute_role", "更新板书文档", "OpenAI tool"),
+            "mcpToolCall": ("execute_role", "调用工具", "OpenAI tool"),
+            "dynamicToolCall": ("execute_role", "调用工具", "OpenAI tool"),
+            "collabAgentToolCall": ("execute_role", "协同处理", "OpenAI"),
+            "subAgentActivity": ("execute_role", "协同处理", "OpenAI"),
+            "webSearch": ("build_context", "搜索网络", "OpenAI tool"),
+            "imageView": ("build_context", "查看图片", "OpenAI tool"),
+            "imageGeneration": ("execute_role", "生成图片", "OpenAI tool"),
+            "contextCompaction": ("build_context", "整理上下文", "OpenAI"),
         }
         descriptor = descriptors.get(item_type)
         if descriptor is None:
@@ -188,17 +188,17 @@ class CodexActivityRecorder:
                 turn_id=turn_id,
                 delta=delta,
                 stage="execute_role",
-                label="Codex 工作进展",
-                role="Codex",
+                label="OpenAI 工作进展",
+                role="OpenAI",
                 kind="commentary",
             )
             return True
         mappings: dict[str, tuple[str, str, str, str]] = {
-            "item/reasoning/summaryTextDelta": ("build_context", "Codex 正在思考", "Codex", "reasoning"),
-            "item/plan/delta": ("build_context", "制定工作计划", "Codex", "plan"),
-            "item/commandExecution/outputDelta": ("execute_role", "运行命令", "Codex tool", "commandExecution"),
-            "item/fileChange/outputDelta": ("execute_role", "更新板书文档", "Codex tool", "fileChange"),
-            "item/mcpToolCall/progress": ("execute_role", "调用工具", "Codex tool", "mcpToolCall"),
+            "item/reasoning/summaryTextDelta": ("build_context", "OpenAI 正在思考", "OpenAI", "reasoning"),
+            "item/plan/delta": ("build_context", "制定工作计划", "OpenAI", "plan"),
+            "item/commandExecution/outputDelta": ("execute_role", "运行命令", "OpenAI tool", "commandExecution"),
+            "item/fileChange/outputDelta": ("execute_role", "更新板书文档", "OpenAI tool", "fileChange"),
+            "item/mcpToolCall/progress": ("execute_role", "调用工具", "OpenAI tool", "mcpToolCall"),
         }
         mapping = mappings.get(method)
         if mapping is None:
@@ -235,9 +235,9 @@ class CodexActivityRecorder:
                 item_id=item_id,
                 turn_id=turn_id,
                 stage="execute_role",
-                label="Codex 工作进展",
+                label="OpenAI 工作进展",
                 status="completed",
-                role="Codex",
+                role="OpenAI",
                 metadata=metadata,
             )
             return
@@ -252,24 +252,24 @@ class CodexActivityRecorder:
                 item_id=item_id,
                 turn_id=turn_id,
                 stage="build_context",
-                label="Codex 已完成思考",
+                label="OpenAI 已完成思考",
                 status="completed",
-                role="Codex",
+                role="OpenAI",
                 metadata=metadata,
             )
             return
         descriptors: dict[str, tuple[str, str, str]] = {
-            "plan": ("build_context", "工作计划已更新", "Codex"),
-            "commandExecution": ("execute_role", "命令执行完成", "Codex tool"),
-            "fileChange": ("execute_role", "板书文档已更新", "Codex tool"),
-            "mcpToolCall": ("execute_role", "工具调用完成", "Codex tool"),
-            "dynamicToolCall": ("execute_role", "工具调用完成", "Codex tool"),
-            "collabAgentToolCall": ("execute_role", "协同处理完成", "Codex"),
-            "subAgentActivity": ("execute_role", "协同处理完成", "Codex"),
-            "webSearch": ("build_context", "网络搜索完成", "Codex tool"),
-            "imageView": ("build_context", "图片查看完成", "Codex tool"),
-            "imageGeneration": ("execute_role", "图片生成完成", "Codex tool"),
-            "contextCompaction": ("build_context", "上下文整理完成", "Codex"),
+            "plan": ("build_context", "工作计划已更新", "OpenAI"),
+            "commandExecution": ("execute_role", "命令执行完成", "OpenAI tool"),
+            "fileChange": ("execute_role", "板书文档已更新", "OpenAI tool"),
+            "mcpToolCall": ("execute_role", "工具调用完成", "OpenAI tool"),
+            "dynamicToolCall": ("execute_role", "工具调用完成", "OpenAI tool"),
+            "collabAgentToolCall": ("execute_role", "协同处理完成", "OpenAI"),
+            "subAgentActivity": ("execute_role", "协同处理完成", "OpenAI"),
+            "webSearch": ("build_context", "网络搜索完成", "OpenAI tool"),
+            "imageView": ("build_context", "图片查看完成", "OpenAI tool"),
+            "imageGeneration": ("execute_role", "图片生成完成", "OpenAI tool"),
+            "contextCompaction": ("build_context", "上下文整理完成", "OpenAI"),
         }
         descriptor = descriptors.get(item_type)
         if descriptor is None:
