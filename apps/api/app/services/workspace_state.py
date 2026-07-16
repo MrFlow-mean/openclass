@@ -260,7 +260,6 @@ def _codex_only_lesson(lesson: Lesson) -> Lesson:
             "board_teaching_progress": None,
             "learning_requirements": active_requirement,
             "board_task_requirements": None,
-            "active_interaction_session": None,
         }
     )
 

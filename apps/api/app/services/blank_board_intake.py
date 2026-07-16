@@ -862,7 +862,6 @@ def process_blank_board_turn(
         agent_activity=current_activity(),
         learning_requirement_sheet=outcome.requirement,
         active_requirement_sheet=None,
-        active_interaction_session=None,
         learning_clarification=outcome.clarification,
         requirement_run_id=run_id,
         requirement_version_id=frozen_version_id,
@@ -892,7 +891,6 @@ def process_blank_board_turn(
         ),
         requirement_cleared=True,
         board_document_operation_status="succeeded",
-        board_patch_diff=[],
         teaching_progress=(
             auto_teaching_result.progress if auto_teaching_result is not None else None
         ),
@@ -1087,7 +1085,6 @@ def _chat_response(
         agent_activity=activity,
         learning_requirement_sheet=requirement,
         active_requirement_sheet=outcome.requirement,
-        active_interaction_session=None,
         learning_clarification=outcome.clarification,
         requirement_run_id=run_id,
         requirement_version_id=version_id,
@@ -1107,11 +1104,8 @@ def _chat_response(
         guided_requirement_discovery=(
             None if outcome.guidance.is_empty() else outcome.guidance
         ),
-        scope_options=[],
-        focus_candidates=[],
         requirement_cleared=outcome.requirement is None,
         board_document_operation_status="none",
-        board_patch_diff=[],
         course_package=workspace_state.package_view_for_lesson(
             workspace,
             package,

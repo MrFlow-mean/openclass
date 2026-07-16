@@ -18,8 +18,6 @@ _CHAT_HISTORY_KINDS = {
     "learning_requirement_refinement",
     "board_task_requirement_refinement",
     "chat_flow",
-    "interaction_session_start",
-    "interaction_session_turn",
     "board_section_teaching",
 }
 _DOCUMENT_HISTORY_KINDS = {
@@ -29,7 +27,6 @@ _DOCUMENT_HISTORY_KINDS = {
     "board_document_generation",
     "board_document_edit",
     "import_docx",
-    "apply_proposal",
 }
 _RESTORE_HISTORY_KINDS = {"restore_snapshot"}
 _SYSTEM_HISTORY_KINDS = {"initial_document"}
@@ -176,7 +173,6 @@ def _restore_document_from_commit(lesson: Lesson, commit: CommitRecord) -> Lesso
     lesson.board_teaching_guide = None
     lesson.board_teaching_progress = None
     lesson.learning_requirements = None
-    lesson.active_interaction_session = None
     lesson.board_task_requirements = None
     lesson.updated_at = now_iso()
     return lesson
@@ -216,7 +212,6 @@ def restore_commit(lesson: Lesson, commit_id: str, label: str) -> Lesson:
             "restored_commit_id": commit.id,
             "restored_commit_label": commit.label,
             "active_requirement_sheet_after": None,
-            "active_interaction_session_after": None,
             "active_board_task_sheet_after": None,
         },
     )

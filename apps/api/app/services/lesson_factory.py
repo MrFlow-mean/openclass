@@ -73,7 +73,6 @@ def _initial_history(document: BoardDocument) -> LessonHistoryGraph:
             "history_node_title": "Initial document",
             "history_node_summary": f"Generated starter rich document for {document.title}",
             "active_requirement_sheet_after": None,
-            "active_interaction_session_after": None,
             "active_board_task_sheet_after": None,
         },
     )
