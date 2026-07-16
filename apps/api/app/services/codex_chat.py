@@ -42,7 +42,6 @@ from app.services.board_visual_insertion import (
     build_board_insertion_plan,
 )
 from app.services.codex_app_server import (
-    CODEX_PROCESS_FILE_SIZE_LIMIT_BYTES,
     CodexAppServerError,
     CodexTurnCancelledError,
     CodexTurnResult,
@@ -354,10 +353,6 @@ def _board_max_bytes() -> int:
         raise CodexAppServerError("OPENCLASS_CODEX_BOARD_MAX_BYTES must be an integer") from exc
     if value <= 0:
         raise CodexAppServerError("OPENCLASS_CODEX_BOARD_MAX_BYTES must be positive")
-    if value > CODEX_PROCESS_FILE_SIZE_LIMIT_BYTES:
-        raise CodexAppServerError(
-            "OPENCLASS_CODEX_BOARD_MAX_BYTES exceeds the process hard limit"
-        )
     return value
 
 

@@ -43,7 +43,6 @@ from app.services.blank_board_intake import (
     evaluate_blank_board_decision,
 )
 from app.services.codex_app_server import (
-    CODEX_PROCESS_FILE_SIZE_LIMIT_BYTES,
     CodexAppServerError,
     CodexTurnCancelledError,
     CodexTurnResult,
@@ -2354,14 +2353,10 @@ def test_codex_chat_cancels_turn_when_board_exceeds_runtime_quota(
     assert saved_lesson.board_document.content_text == "# Board"
 
 
-def test_board_quota_cannot_exceed_process_hard_limit(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv(
-        "OPENCLASS_CODEX_BOARD_MAX_BYTES",
-        str(CODEX_PROCESS_FILE_SIZE_LIMIT_BYTES + 1),
-    )
+def test_board_quota_accepts_large_explicit_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENCLASS_CODEX_BOARD_MAX_BYTES", str(32 * 1024 * 1024))
 
-    with pytest.raises(CodexAppServerError, match="process hard limit"):
-        codex_chat._board_max_bytes()
+    assert codex_chat._board_max_bytes() == 32 * 1024 * 1024
 
 
 def test_codex_app_server_command_uses_exact_board_permission_profile() -> None:
@@ -2385,13 +2380,11 @@ def test_codex_app_server_command_uses_exact_board_permission_profile() -> None:
     assert "danger-full-access" not in rendered
 
 
-def test_codex_app_server_process_has_file_size_hard_limit() -> None:
-    command = codex_app_server._codex_limited_process_command("/usr/local/bin/codex")
+def test_codex_app_server_process_uses_direct_command_without_file_size_limit() -> None:
+    command = codex_app_server._codex_app_server_command("/usr/local/bin/codex")
 
-    assert command[:2] == ["/bin/sh", "-c"]
-    assert "ulimit -f" in command[2]
-    assert str(CODEX_PROCESS_FILE_SIZE_LIMIT_BYTES // 1024) in command
-    assert command[5:8] == ["/usr/local/bin/codex", "app-server", "--strict-config"]
+    assert command[:3] == ["/usr/local/bin/codex", "app-server", "--strict-config"]
+    assert "ulimit" not in " ".join(command)
     assert command[-2:] == ["-c", "features.workspace_dependencies=false"]
 
 
