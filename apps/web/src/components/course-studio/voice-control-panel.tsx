@@ -1,7 +1,10 @@
 import clsx from "clsx";
 import { Pause, Play, RotateCcw, Volume2, VolumeX, X } from "lucide-react";
+import type { CSSProperties } from "react";
 
 import type { SpeechOptionsResponse } from "@/lib/speech-api";
+
+import styles from "./voice-control-panel.module.css";
 
 type VoiceControlPanelProps = {
   autoEnabled: boolean;
@@ -43,6 +46,13 @@ function formatSpeechRate(value: number) {
   return `${multiplier.toFixed(2).replace(/\.?0+$/, "")}×`;
 }
 
+function getRangeProgress(value: number, minimum: number, maximum: number) {
+  if (maximum <= minimum) {
+    return 0;
+  }
+  return Math.max(0, Math.min(100, ((value - minimum) / (maximum - minimum)) * 100));
+}
+
 export function VoiceControlPanel({
   autoEnabled,
   isLoading,
@@ -67,6 +77,12 @@ export function VoiceControlPanel({
   onVoiceChange,
   onSpeechRateChange,
 }: VoiceControlPanelProps) {
+  const speechRateProgress = getRangeProgress(
+    speechRate,
+    options.minimum_speech_rate,
+    options.maximum_speech_rate
+  );
+
   return (
     <div className="space-y-4">
       <section className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
@@ -217,7 +233,8 @@ export function VoiceControlPanel({
           step={5}
           value={speechRate}
           onChange={(event) => onSpeechRateChange(Number(event.target.value))}
-          className="mt-3 h-1.5 w-full cursor-pointer accent-black"
+          className={clsx(styles.rateRange, "mt-3 h-5 w-full")}
+          style={{ "--speech-rate-progress": `${speechRateProgress}%` } as CSSProperties}
         />
         <div className="mt-1.5 flex justify-between text-[10px] text-gray-400">
           <span>0.5×</span>
