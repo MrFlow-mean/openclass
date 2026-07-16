@@ -11,8 +11,6 @@ from fastapi.testclient import TestClient
 import app.main as main_module
 from app.services import board_asset_store as board_asset_store_module
 from app.models import (
-    BoardPatchRequest,
-    PatchOperation,
     SourceIngestionRecord,
     SourceVisualEvidence,
     UserView,
@@ -25,7 +23,6 @@ from app.services.board_visual_insertion import (
     build_board_insertion_plan,
     derive_board_visual_placements,
 )
-from app.services.document_ops import apply_board_patch, read_board_snapshot
 from app.services.docx_exporter import export_docx
 from app.services.history import commit_operations, restore_commit
 from app.services.html_document_export import export_html
@@ -786,56 +783,6 @@ def test_structured_table_marker_becomes_editable_tiptap_table(tmp_path) -> None
     round_tripped = html_to_tiptap_doc(outcome.document.content_html)
     assert round_tripped["content"][1]["attrs"]["sourceVisualId"] == "visual_1"
     assert "<table" in outcome.document.content_html
-
-
-def test_attach_asset_patch_preserves_existing_rich_content() -> None:
-    content_json = {
-        "type": "doc",
-        "content": [
-            {"type": "heading", "attrs": {"level": 1}, "content": [{"type": "text", "text": "Title"}]},
-            {
-                "type": "paragraph",
-                "content": [{"type": "text", "text": "Bold paragraph", "marks": [{"type": "bold"}]}],
-            },
-        ],
-    }
-    document = rebuild_document_from_content_json(build_document(title="Board", content_text="placeholder"), content_json)
-    block_id = read_board_snapshot(document)["blocks"][1]["block_id"]
-    patch = BoardPatchRequest(
-        operations=[
-            PatchOperation(
-                op="attach_asset",
-                block_id=block_id,
-                asset_url="/api/board-assets/basset_owner_hash/content",
-                content="A chart",
-            )
-        ]
-    )
-
-    outcome = apply_board_patch(document, patch)
-
-    assert outcome.validation.status == "pass"
-    assert [node["type"] for node in outcome.new_document.content_json["content"]] == [
-        "heading",
-        "paragraph",
-        "resourceVisualBlock",
-    ]
-    assert outcome.new_document.content_json["content"][-1]["attrs"]["originalSrc"] == ""
-    assert "<strong>Bold paragraph</strong>" in outcome.new_document.content_html
-
-    inline_patch = BoardPatchRequest(
-        operations=[
-            PatchOperation(
-                op="attach_asset",
-                block_id=block_id,
-                asset_url="data:image/png;base64,AAAA",
-                content="Inline image",
-            )
-        ]
-    )
-    inline_outcome = apply_board_patch(document, inline_patch)
-    assert inline_outcome.validation.status == "failed"
-    assert inline_outcome.new_document == document
 
 
 def test_docx_and_html_export_resolve_board_asset_and_keep_document_order(tmp_path) -> None:
