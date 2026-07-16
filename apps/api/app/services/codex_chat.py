@@ -39,7 +39,9 @@ from app.services.ai_model_catalog import build_model_catalog
 from app.services.blank_board_intake import process_blank_board_turn
 from app.services.board_visual_insertion import (
     BoardInsertionPlan,
+    apply_board_insertion_plan,
     build_board_insertion_plan,
+    derive_board_visual_placements,
 )
 from app.services.codex_app_server import (
     CodexAppServerError,
@@ -55,6 +57,11 @@ from app.services.rich_document import (
     document_changed,
     looks_like_html_content,
     rebuild_document_from_content_json,
+    would_flatten_rich_document,
+)
+from app.services.source_grounded_board import (
+    SourceGroundedBoardError,
+    resolve_source_grounded_board_plan,
 )
 from app.services.source_structure_store import source_structure_store
 from app.services.source_grounded_board import SOURCE_BOARD_TOKEN_BUDGET
@@ -76,8 +83,21 @@ You are Codex embedded as the single AI agent in OpenClass.
 The user talks to you in the left conversation panel. The only user document you may access is
 `board.md` in the current working directory; it is the document shown in the right panel. At the
 start of every turn, read the current `board.md`. Treat its current contents, rather than prior
-thread memory, as the sole source of truth for the right document and for document-grounded
-explanations.
+thread memory, as the source of truth for the right document. When the current prompt contains a
+`Verified source context`, that backend-verified context is an additional mandatory source of truth
+for this turn.
+
+Never ignore a `Verified source context`. Before responding or editing, inspect its confirmed
+reference metadata and frozen evidence. Ground the requested work in that evidence instead of
+continuing from board content or thread memory alone. If the user asks to continue or extend the
+board from the reference, add material derived from the verified source range and do not silently
+substitute a nearby topic. Keep source-derived claims within the supplied range. If a visual
+manifest is present, handle every item exactly once. For a regular table or a single-direction
+linear flow whose labels and relationships are fully readable, recreate it as editable Markdown
+and then write its `recreation_marker` once on a standalone line. For a complex, branching,
+networked, spatial, ambiguous, or partially unreadable visual, write its `marker` once on a
+standalone line so the backend can insert the complete verified original. Never use both markers,
+never crop a visual yourself, and never omit both.
 
 For a non-empty board, keep every teaching action grounded in the current `board.md`. If the
 learner asks for teaching material that is absent, add it to the board before discussing it. Never
@@ -189,6 +209,17 @@ class CodexBoardGenerationResult:
         return self.turn.activity
 
 
+@dataclass(frozen=True)
+class ExistingBoardSourceContext:
+    """Backend-verified source material for one existing-board Codex turn."""
+
+    prompt_context: str
+    image_inputs: list[str]
+    insertion_plan: BoardInsertionPlan
+    visual_assets: dict[str, tuple[SourceVisualAsset, bytes]]
+    requirement: LearningRequirementSheet
+
+
 _turn_locks_guard = threading.Lock()
 _turn_locks: dict[str, threading.Lock] = {}
 
@@ -289,8 +320,10 @@ def _document_for_codex(
         return replaced
 
     content_json["content"] = replace_visuals(nodes)
-    if not preserved:
-        return document.content_text, {}
+    # The rich editor may persist a plain content_text projection while
+    # content_json still contains headings, lists, tables, and math nodes.  Codex
+    # must always receive a Markdown serialization of the canonical rich tree;
+    # otherwise a later write can flatten every heading into a paragraph/list.
     serialized = rebuild_document_from_content_json(document, content_json)
     return serialized.content_text, preserved
 
@@ -533,6 +566,7 @@ def _turn_prompt(
     *,
     is_new_thread: bool,
     board_state: BoardState,
+    verified_source_context: str = "",
 ) -> str:
     sections: list[str] = []
     sections.append(f"Interaction mode: {request.interaction_mode}")
@@ -544,6 +578,8 @@ def _turn_prompt(
     selection = _selection_context(request.selection)
     if selection:
         sections.append(f"Current user selection:\n{selection}")
+    if verified_source_context:
+        sections.append(f"Verified source context (mandatory for this turn):\n{verified_source_context}")
     if request.formula_ink is not None and request.formula_ink.source_latex:
         sections.append(
             "Formula context:\n"
@@ -861,6 +897,111 @@ def _prepare_source_generation_inputs(
     return prepared, []
 
 
+def _prepare_existing_board_source_context(
+    *,
+    owner_user_id: str,
+    lesson,
+    selection: SelectionRef | None,
+    model: str,
+    is_cancelled: Callable[[], bool] | None,
+    on_activity: Callable[[AgentActivityEvent], None] | None,
+) -> ExistingBoardSourceContext | None:
+    """Resolve, freeze, and serialize a structured source reference before Codex runs.
+
+    Raw source chips are intentionally not copied into the prompt.  Only evidence
+    resolved against the authenticated package and frozen by the backend reaches
+    Codex, so a visible reference can neither be ignored nor spoof its contents.
+    """
+
+    plan = resolve_source_grounded_board_plan(
+        owner_user_id=owner_user_id,
+        lesson=lesson,
+        selection=selection,
+    )
+    if plan is None:
+        return None
+    adapter = CodexAIExecutionAdapter(
+        owner_user_id=owner_user_id,
+        model=model,
+        board_runner=_run_codex_board_generation,
+        image_analysis_runner=_run_codex_visual_analysis,
+    )
+    prepared_requirement, image_inputs = _prepare_source_generation_inputs(
+        adapter=adapter,
+        requirement=plan.requirement,
+        owner_user_id=owner_user_id,
+        is_cancelled=is_cancelled,
+        on_activity=on_activity,
+    )
+    grounding = prepared_requirement.source_grounding
+    insertion_plan = build_board_insertion_plan(
+        grounding.frozen_visual_evidence,
+        source_titles={
+            reference.source_ingestion_id: reference.source_title
+            for reference in grounding.confirmed_references
+        },
+    )
+    visual_manifest = _visual_manifest_payload(
+        plan=insertion_plan,
+        requirement=prepared_requirement,
+        image_input_visual_ids=(
+            [
+                item.visual_id
+                for item in grounding.frozen_visual_evidence
+                if not _is_structured_table_evidence(item)
+            ]
+            if image_inputs
+            else []
+        ),
+    )
+    prompt_payload = {
+        "contract": (
+            "Use this backend-verified source range in the current response and any board edit. "
+            "Do not replace it with board-only continuation or outside knowledge."
+        ),
+        "confirmed_references": [
+            reference.model_dump(mode="json") for reference in grounding.confirmed_references
+        ],
+        "frozen_text_evidence": [
+            {
+                "evidence_id": evidence.id,
+                "source_title": evidence.source_title,
+                "section_path": evidence.section_path,
+                "page_range": evidence.page_range,
+                "chunk_ids": evidence.chunk_ids,
+                "text": evidence.expanded_text,
+                "retrieval_metadata": evidence.metadata,
+            }
+            for evidence in grounding.frozen_evidence
+        ],
+        "visual_manifest": visual_manifest,
+        "visual_contract": (
+            "For every visual_manifest item, follow the marker and recreation rules in the "
+            "developer instructions. Never invent, crop, or partially reproduce a verified visual."
+        ),
+    }
+    visual_assets: dict[str, tuple[SourceVisualAsset, bytes]] = {}
+    evidence_by_id = {
+        item.visual_id: item
+        for item in grounding.frozen_visual_evidence
+        if item.visual_id
+    }
+    for item in insertion_plan.items:
+        evidence = evidence_by_id.get(item.visual_id)
+        if evidence is None or _is_structured_table_evidence(evidence):
+            continue
+        stored = _read_frozen_source_visual(user_id=owner_user_id, evidence=evidence)
+        if stored is not None:
+            visual_assets[item.visual_id] = stored
+    return ExistingBoardSourceContext(
+        prompt_context=json.dumps(prompt_payload, ensure_ascii=False, separators=(",", ":")),
+        image_inputs=image_inputs,
+        insertion_plan=insertion_plan,
+        visual_assets=visual_assets,
+        requirement=prepared_requirement,
+    )
+
+
 def _source_text_batches(chunks) -> list[list[tuple[str, str]]]:
     batches: list[list[tuple[str, str]]] = []
     current: list[tuple[str, str]] = []
@@ -1150,6 +1291,23 @@ def process_codex_chat_on_lesson(
                 ),
             )
 
+        source_context = None
+        if request.selection is not None and request.selection.kind == "source":
+            try:
+                source_context = _prepare_existing_board_source_context(
+                    owner_user_id=user_id,
+                    lesson=initial_lesson,
+                    selection=request.selection,
+                    model=codex_model,
+                    is_cancelled=is_cancelled,
+                    on_activity=on_agent_activity,
+                )
+            except SourceGroundedBoardError as exc:
+                # Never fall through to a board-only Codex turn when the visible
+                # source chip cannot be verified.  Running without the reference
+                # would falsely report success while ignoring the learner's scope.
+                raise CodexAppServerError(str(exc)) from exc
+
         prior_thread_id, prior_turn_id = _thread_reference_for_current_branch(initial_lesson)
         workspace_key = _workspace_key(
             user_id=user_id,
@@ -1171,6 +1329,9 @@ def process_codex_chat_on_lesson(
                 request,
                 is_new_thread=prior_thread_id is None,
                 board_state=board_state_before,
+                verified_source_context=(
+                    source_context.prompt_context if source_context is not None else ""
+                ),
             )
             codex_reasoning_effort = _codex_reasoning_effort(request)
             codex_service_tier, codex_service_tier_is_set = _codex_service_tier(
@@ -1205,6 +1366,11 @@ def process_codex_chat_on_lesson(
                             request,
                             is_new_thread=True,
                             board_state=board_state_before,
+                            verified_source_context=(
+                                source_context.prompt_context
+                                if source_context is not None
+                                else ""
+                            ),
                         )
                         if prior_thread_id is not None
                         else user_prompt
@@ -1212,7 +1378,10 @@ def process_codex_chat_on_lesson(
                     developer_instructions=CODEX_DEVELOPER_INSTRUCTIONS,
                     thread_id=prior_thread_id,
                     last_turn_id=prior_turn_id,
-                    image_urls=_formula_image_urls(request),
+                    image_urls=(
+                        (source_context.image_inputs if source_context is not None else [])
+                        + _formula_image_urls(request)
+                    ),
                     on_delta=on_delta,
                     on_activity=on_agent_activity,
                     is_cancelled=turn_is_cancelled,
@@ -1261,6 +1430,33 @@ def process_codex_chat_on_lesson(
                         rebuilt_document,
                         preserved_visuals,
                     )
+                    if source_context is not None and source_context.insertion_plan.items:
+                        placements = derive_board_visual_placements(
+                            next_document,
+                            plan=source_context.insertion_plan,
+                        )
+
+                        def resolve_visual_bytes(visual_id: str):
+                            return source_context.visual_assets.get(visual_id)
+
+                        visual_result = apply_board_insertion_plan(
+                            next_document,
+                            plan=source_context.insertion_plan,
+                            placements=placements,
+                            owner_user_id=user_id,
+                            lesson_id=lesson.id,
+                            visual_bytes_resolver=resolve_visual_bytes,
+                            preserved_document=current_document,
+                        )
+                        next_document = visual_result.document
+                    if would_flatten_rich_document(
+                        current_document=current_document,
+                        new_document=next_document,
+                        operation="replace_document",
+                    ):
+                        raise CodexAppServerError(
+                            "Codex board output would flatten the existing document structure"
+                        )
                 changed = document_changed(current_document, next_document)
                 lesson.board_teaching_guide = None
                 lesson.board_teaching_progress = None
@@ -1277,6 +1473,32 @@ def process_codex_chat_on_lesson(
                         request.selection.model_dump(mode="json")
                         if request.selection is not None
                         else None
+                    ),
+                    "verified_source_reference_used": source_context is not None,
+                    "verified_source_bundle_ids": (
+                        [
+                            reference.evidence_bundle_id
+                            for reference in source_context.requirement.source_grounding.confirmed_references
+                        ]
+                        if source_context is not None
+                        else []
+                    ),
+                    "verified_source_chapter_ids": (
+                        [
+                            reference.source_chapter_id
+                            for reference in source_context.requirement.source_grounding.confirmed_references
+                            if reference.source_chapter_id
+                        ]
+                        if source_context is not None
+                        else []
+                    ),
+                    "verified_source_evidence_ids": (
+                        [
+                            evidence.id
+                            for evidence in source_context.requirement.source_grounding.frozen_evidence
+                        ]
+                        if source_context is not None
+                        else []
                     ),
                     "document_changed": changed,
                     "board_state_before": board_state_before,

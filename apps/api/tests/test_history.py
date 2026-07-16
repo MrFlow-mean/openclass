@@ -133,6 +133,34 @@ def test_build_document_preserves_markdown_structure_and_math() -> None:
     assert "<strong>Key:</strong> value" in document.content_html
 
 
+def test_build_document_renders_bold_vector_math_without_exposing_delimiters() -> None:
+    document = build_document(
+        title="Vector notation",
+        content_text=(
+            "$$\n"
+            "\\boldsymbol{x}=(x_1;x_2;\\cdots;x_d)\n"
+            "$$\n\n"
+            "向量 $$\\boldsymbol{x}$$ 的第 $$i$$ 个分量。"
+        ),
+    )
+
+    content = document.content_json["content"]
+    assert content[0] == {
+        "type": "blockMath",
+        "attrs": {"latex": r"\boldsymbol{x}=(x_1;x_2;\cdots;x_d)"},
+    }
+    assert content[1]["content"] == [
+        {"type": "text", "text": "向量 "},
+        {"type": "inlineMath", "attrs": {"latex": r"\boldsymbol{x}"}},
+        {"type": "text", "text": " 的第 "},
+        {"type": "inlineMath", "attrs": {"latex": "i"}},
+        {"type": "text", "text": " 个分量。"},
+    ]
+    assert "$$" not in document.content_html
+    assert 'data-type="block-math"' in document.content_html
+    assert document.content_html.count('data-type="inline-math"') == 2
+
+
 def test_build_document_reserves_code_blocks_for_code_and_renders_fenced_formulas() -> None:
     document = build_document(
         title="Fenced content",

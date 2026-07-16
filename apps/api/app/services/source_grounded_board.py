@@ -208,11 +208,15 @@ def resolve_source_grounded_board_plan(
     source_evidence_store.save_bundle(bundle)
 
     if chapter is not None:
-        chapter_label = " ".join(
-            part
-            for part in [chapter.normalized_number or chapter.number, chapter.title]
-            if part
-        ).strip()
+        chapter_number = (chapter.normalized_number or chapter.number).strip()
+        chapter_title = chapter.title.strip()
+        chapter_label = chapter_title
+        if chapter_number and not (
+            chapter_title == chapter_number
+            or chapter_title.startswith(f"{chapter_number} ")
+            or chapter_title.startswith(f"{chapter_number}\t")
+        ):
+            chapter_label = f"{chapter_number} {chapter_title}".strip()
         chapter_label = chapter_label or chapter.title or source.title
     else:
         chapter_label = evidence[0].page_range or selection.source_page_range or source.title

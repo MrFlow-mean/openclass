@@ -270,6 +270,50 @@ test("DOCX import and export entry points complete without breaking the editor",
   expect(download.suggestedFilename()).toMatch(/\.docx$/);
 });
 
+test("normalizes raw bold vector notation and math delimiters in the board editor", async ({ page }) => {
+  const unique = Date.now();
+  const lessonTitle = `公式显示回归页面 ${unique}`;
+
+  await enterAsGuest(page);
+  await createPackageFromHome(page, `公式显示回归课程包 ${unique}`);
+  await createLessonFromEmptyStudio(page, lessonTitle);
+
+  const rawBlockFormula = "\\boldsymbol{x}=(x_1;x_2;\\cdots;x_d)";
+  const rawInlineFormula = "向量 $$\\boldsymbol{x}$$ 的分量";
+  let injectedPackage: Record<string, unknown> | null = null;
+  await page.route("**/api/course-package", async (route) => {
+    if (!injectedPackage) {
+      const authHeader = route.request().headers().authorization;
+      const currentPackageResponse = await page.request.get(`${API_BASE_URL}/api/course-package`, {
+        headers: authHeader ? { Authorization: authHeader } : undefined,
+      });
+      const currentPackage = await currentPackageResponse.json();
+      const lesson = currentPackage.lessons.find((candidate: { title: string }) => candidate.title === lessonTitle);
+      lesson.board_document = {
+        ...lesson.board_document,
+        content_text: `${rawBlockFormula}\n\n${rawInlineFormula}`,
+        content_html: `<p>${rawBlockFormula}</p><p>${rawInlineFormula}</p>`,
+        content_json: {
+          type: "doc",
+          content: [
+            { type: "paragraph", content: [{ type: "text", text: rawBlockFormula }] },
+            { type: "paragraph", content: [{ type: "text", text: rawInlineFormula }] },
+          ],
+        },
+      };
+      injectedPackage = currentPackage;
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(injectedPackage) });
+  });
+
+  await page.reload();
+
+  const editor = page.locator(".ProseMirror").first();
+  await expect(editor.locator("div.tiptap-mathematics-render")).toHaveCount(1);
+  await expect(editor.locator("span.tiptap-mathematics-render")).toHaveCount(1);
+  await expect(editor).not.toContainText("$$");
+});
+
 test("keeps the learning requirement failure visible when the chat final event is missing", async ({ page }) => {
   const unique = Date.now();
   const userMessage = `继续整理我的学习需求 ${unique}`;
@@ -338,7 +382,7 @@ test("restores persisted learning-intake assistant replies after a page refresh"
   const unique = Date.now();
   const userMessage = `我想学习一个新知识点 ${unique}`;
   const assistantOpening = `这是已持久化的学习需求回复 ${unique}`;
-  const assistantMessage = `${assistantOpening}\n$$\nx(t) = \\sin(2\\pi t)\n$$\n公式后面的说明仍应正常显示。`;
+  const assistantMessage = `${assistantOpening}\n$$\nx(t) = \\sin(2\\pi t)\n$$\n向量 $$\\boldsymbol{x}$$ 也应显示为行内公式。\n公式后面的说明仍应正常显示。`;
   let persistedPackage: Record<string, unknown> | null = null;
 
   await enterAsGuest(page);
@@ -389,6 +433,8 @@ test("restores persisted learning-intake assistant replies after a page refresh"
   await expect(chatSidebar.getByText(assistantOpening)).toBeVisible();
   await expect(chatSidebar.getByText("公式后面的说明仍应正常显示。")).toBeVisible();
   await expect(chatSidebar.locator(".katex-display")).toHaveCount(1);
+  await expect(chatSidebar.locator(".katex")).toHaveCount(2);
+  await expect(chatSidebar).not.toContainText("$$");
   await expect(chatSidebar).not.toContainText("BLOCKMATH");
 });
 

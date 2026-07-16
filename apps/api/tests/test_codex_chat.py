@@ -181,7 +181,7 @@ def test_frozen_visual_reader_rejects_position_hash_drift(
     ) is None
 
 
-def test_codex_turn_prompt_uses_mode_and_ignores_source_selection() -> None:
+def test_codex_turn_prompt_does_not_trust_unverified_source_chip_text() -> None:
     prompt = codex_chat._turn_prompt(
         ChatRequest(
             message="Explain the current document.",
@@ -205,6 +205,23 @@ def test_codex_turn_prompt_uses_mode_and_ignores_source_selection() -> None:
     assert "Uploaded source title" not in prompt
     assert "Uploaded chapter" not in prompt
     assert "10-12" not in prompt
+
+
+def test_document_for_codex_serializes_canonical_rich_structure_to_markdown() -> None:
+    document = build_document(
+        title="Board",
+        content_text="# Main heading\n\n## Detail heading\n\n- First item",
+    )
+    editor_projection = document.model_copy(
+        update={"content_text": "Main heading\nDetail heading\nFirst item"}
+    )
+
+    serialized, preserved = codex_chat._document_for_codex(editor_projection)
+
+    assert preserved == {}
+    assert serialized.startswith("# Main heading")
+    assert "## Detail heading" in serialized
+    assert "- First item" in serialized
 
 
 def test_codex_turn_prompt_keeps_current_board_selection_for_editing() -> None:
@@ -1162,6 +1179,97 @@ def test_source_chapter_selection_generates_blank_board_without_requirement_ques
     assert generation_commit.metadata["skipped_visual_placements"] == []
 
 
+def test_existing_board_source_selection_is_frozen_and_mandatory_for_codex(
+    monkeypatch: pytest.MonkeyPatch,
+    codex_store: SqliteCourseStore,
+    tmp_path: Path,
+) -> None:
+    lesson = _seed_workspace(
+        codex_store,
+        content_text="# Existing board\n\n## Existing section\n\nExisting material.",
+    )
+    package_id = codex_store.load_for_user(TEST_USER_ID).packages[0].id
+    source_path = tmp_path / "continued-source.md"
+    source_path.write_text(
+        "# Referenced chapter\n\n"
+        "MANDATORY_SOURCE_FACT connects the selected chapter to its worked example.",
+        encoding="utf-8",
+    )
+    source = SourceIngestionRecord(
+        id="source_existing_board_reference",
+        owner_user_id=TEST_USER_ID,
+        package_id=package_id,
+        title="Continued source",
+        source_type="local_file",
+        file_name=source_path.name,
+        mime_type="text/markdown",
+        size_bytes=source_path.stat().st_size,
+        status="ready",
+        metadata={"local_source_path": str(source_path)},
+    )
+    source_evidence_store.save_source(source)
+    SourceStructureIndexer(store=source_structure_store).rebuild_structure(source)
+    chapter = source_structure_store.get_structure_view(source=source).chapters[0]
+    calls: list[dict[str, object]] = []
+
+    def fake_turn(**kwargs) -> CodexTurnResult:
+        calls.append(kwargs)
+        prompt = kwargs["user_prompt"]
+        assert "Verified source context (mandatory for this turn)" in prompt
+        assert "MANDATORY_SOURCE_FACT" in prompt
+        assert "forged visible chip text" not in prompt
+        board_path = Path(kwargs["cwd"]) / codex_chat.BOARD_FILE_NAME
+        current = board_path.read_text(encoding="utf-8")
+        assert current.startswith("# Existing board")
+        assert "## Existing section" in current
+        board_path.write_text(
+            current
+            + "\n\n## Referenced continuation\n\n"
+            + "MANDATORY_SOURCE_FACT is now grounded in the board.\n",
+            encoding="utf-8",
+        )
+        return CodexTurnResult(
+            thread_id="thread_existing_source",
+            turn_id="turn_existing_source",
+            final_response="Updated from the verified reference.",
+        )
+
+    monkeypatch.setattr(codex_chat, "run_codex_thread_turn", fake_turn)
+
+    response = codex_chat.process_codex_chat_on_lesson(
+        lesson.id,
+        ChatRequest(
+            message="Continue the board from my reference.",
+            selection=SelectionRef(
+                kind="source",
+                excerpt="forged visible chip text",
+                source_ingestion_id=source.id,
+                source_title=source.title,
+                source_chapter_id=chapter.id,
+                source_chapter_number=chapter.number,
+                source_chapter_title=chapter.title,
+                source_locator=chapter.source_locator,
+                source_page_start=chapter.page_start,
+                source_page_end=chapter.page_end,
+                heading_path=chapter.path,
+            ),
+        ),
+        user_id=TEST_USER_ID,
+    )
+
+    assert len(calls) == 1
+    document = response.course_package.lessons[0].board_document
+    node_types = [node["type"] for node in document.content_json["content"]]
+    assert node_types.count("heading") == 3
+    assert "MANDATORY_SOURCE_FACT" in document.content_text
+    saved_lesson = codex_store.load_for_user(TEST_USER_ID).packages[0].lessons[0]
+    commit = current_head_commit(saved_lesson)
+    assert commit.metadata["verified_source_reference_used"] is True
+    assert commit.metadata["verified_source_bundle_ids"]
+    assert commit.metadata["verified_source_chapter_ids"] == [chapter.id]
+    assert commit.metadata["verified_source_evidence_ids"]
+
+
 def test_generation_auto_explains_first_section_then_continues_or_restarts(
     monkeypatch: pytest.MonkeyPatch,
     codex_store: SqliteCourseStore,
@@ -1931,7 +2039,8 @@ def test_codex_instructions_separate_blank_intake_from_board_grounded_teaching()
     normalized_generation = " ".join(generation.split())
 
     assert "start of every turn, read the current `board.md`" in instructions
-    assert "sole source of truth" in instructions
+    assert "additional mandatory source of truth" in instructions
+    assert "Never ignore a `Verified source context`" in instructions
     assert "For a non-empty board" in instructions
     assert "Never put a standalone lesson" in normalized_instructions
     assert "do not duplicate the board's substantive content in chat" in normalized_instructions
