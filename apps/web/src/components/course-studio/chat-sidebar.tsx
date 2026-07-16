@@ -11,6 +11,7 @@ import {
   Square,
   TextQuote,
   Volume2,
+  VolumeX,
   X,
 } from "lucide-react";
 import { useState, type Dispatch, type HTMLAttributes, type ReactNode, type RefObject, type SetStateAction } from "react";
@@ -287,6 +288,12 @@ type CourseStudioChatSidebarProps = {
   onSelectTextModel: (selection: AIModelSelection) => void;
   onSelectRealtimeModel: (option: AIModelOption) => void;
   onVoiceToggle: () => void | Promise<void>;
+  speechAutoEnabled: boolean;
+  speechIsActive: boolean;
+  speechStatusText: string;
+  onSpeechAutoToggle: () => void;
+  onSpeechStop: () => void;
+  onSpeakMessage: (content: string) => void | Promise<void>;
   onExitPreviewMode: () => void;
   onClearSelection: () => void;
   onUpdateComposerState: (updater: (current: LessonComposerState) => LessonComposerState) => void;
@@ -333,6 +340,12 @@ export function CourseStudioChatSidebar({
   onSelectTextModel,
   onSelectRealtimeModel,
   onVoiceToggle,
+  speechAutoEnabled,
+  speechIsActive,
+  speechStatusText,
+  onSpeechAutoToggle,
+  onSpeechStop,
+  onSpeakMessage,
   onExitPreviewMode,
   onClearSelection,
   onUpdateComposerState,
@@ -437,6 +450,17 @@ export function CourseStudioChatSidebar({
                       : undefined
                   }
                 />
+                {message.role === "assistant" && message.status === "ready" && message.content.trim() ? (
+                  <button
+                    type="button"
+                    onClick={() => void onSpeakMessage(message.content)}
+                    className="ml-11 mt-1 inline-flex items-center gap-1.5 rounded-full px-2 py-1 text-[11px] text-gray-500 transition hover:bg-gray-100 hover:text-gray-900"
+                    aria-label="播报这条回复"
+                  >
+                    <Volume2 className="h-3 w-3" />
+                    播报
+                  </button>
+                ) : null}
               </div>
             ))}
             <div ref={chatScrollEndRef} aria-hidden="true" />
@@ -499,6 +523,35 @@ export function CourseStudioChatSidebar({
         </div>
         <p className="mb-2 truncate px-1 text-center text-[10px] leading-4 text-gray-500">{voiceStatusText}</p>
         <audio ref={remoteAudioRef} autoPlay className="hidden" />
+
+        <div className="mb-2 flex items-center gap-2 rounded-xl border border-gray-200 bg-gray-50 px-2.5 py-2">
+          <button
+            type="button"
+            onClick={onSpeechAutoToggle}
+            aria-pressed={speechAutoEnabled}
+            className={clsx(
+              "inline-flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium transition",
+              speechAutoEnabled ? "bg-black text-white" : "bg-white text-gray-700 hover:bg-gray-100"
+            )}
+          >
+            {speechAutoEnabled ? <Volume2 className="h-3.5 w-3.5" /> : <VolumeX className="h-3.5 w-3.5" />}
+            自动播报
+          </button>
+          {speechIsActive ? (
+            <button
+              type="button"
+              onClick={onSpeechStop}
+              className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-white px-2 py-1.5 text-xs text-gray-700 transition hover:bg-gray-100"
+              aria-label="停止播报"
+            >
+              <Square className="h-3 w-3 fill-current" />
+              停止
+            </button>
+          ) : null}
+          <p className="min-w-0 flex-1 truncate text-[10px] leading-4 text-gray-500" title={speechStatusText}>
+            {speechStatusText}
+          </p>
+        </div>
 
         <div
           className={clsx(

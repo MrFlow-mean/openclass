@@ -23,6 +23,7 @@ import { SelectionPopover } from "@/components/course-studio/selection-popover";
 import { CourseStudioSidePanel, type CourseStudioSidebarTab } from "@/components/course-studio/studio-side-panel";
 import { useInterfaceLanguage } from "@/contexts/interface-language-context";
 import { useBoardDraft } from "@/hooks/course-studio/use-board-draft";
+import { useChatSpeech } from "@/hooks/course-studio/use-chat-speech";
 import { useCourseWorkspace, type CoursePackageApplyOptions } from "@/hooks/course-studio/use-course-workspace";
 import { useLessonChatAgent } from "@/hooks/course-studio/use-lesson-chat-agent";
 import { useLessonHistory } from "@/hooks/course-studio/use-lesson-history";
@@ -242,6 +243,10 @@ export function CourseStudio() {
     },
   });
   const { remoteAudioRef, voiceActive, voiceStatusText, handleVoiceToggle, stopRealtimeSession } = voice;
+  const chatSpeech = useChatSpeech({
+    lessonId: activeLesson?.id ?? null,
+    messages: activeMessages,
+  });
 
   useEffect(() => {
     chatScrollEndRef.current?.scrollIntoView({ block: "end" });
@@ -372,6 +377,9 @@ export function CourseStudio() {
   }
 
   function speakChatbotResponse(content: string) {
+    if (chatSpeech.autoSpeakEnabled) {
+      return;
+    }
     voice.speakControlledChatbotMessage(content);
     voice.setVoiceStatusText("Chatbot 回复已通过受控工作流播出，可以继续提问");
   }
@@ -613,6 +621,12 @@ export function CourseStudio() {
           onSelectTextModel={selectTextModel}
           onSelectRealtimeModel={handleSelectRealtimeModel}
           onVoiceToggle={handleVoiceToggle}
+          speechAutoEnabled={chatSpeech.autoSpeakEnabled}
+          speechIsActive={chatSpeech.isSpeechActive}
+          speechStatusText={chatSpeech.speechStatusText}
+          onSpeechAutoToggle={chatSpeech.toggleAutoSpeak}
+          onSpeechStop={chatSpeech.stopSpeech}
+          onSpeakMessage={chatSpeech.speakMessage}
           onExitPreviewMode={exitAnyPreviewMode}
           onClearSelection={clearSelection}
           onUpdateComposerState={updateActiveLessonComposerState}

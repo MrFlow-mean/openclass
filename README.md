@@ -120,11 +120,16 @@ OPENCLASS_REALTIME_TOOLS_ENABLED=false
 OPENAI_REALTIME_MODEL=gpt-realtime-2.1
 OPENAI_REALTIME_REASONING_EFFORT=low
 OPENAI_IMAGE_MODEL=gpt-image-2
+OPENAI_TTS_MODEL=tts-1
+OPENAI_TTS_VOICE=marin
+OPENAI_TTS_SPEED=1.0
 ```
 
 `.env.example` 还包含 Anthropic、Google、DeepSeek、Kimi、MiniMax、自定义 OpenAI-compatible（兼容 OpenAI 接口）网关、自定义 Anthropic-compatible（兼容 Anthropic 接口）网关，以及本地 Codex app-server（Codex 应用服务）适配器配置。
 
 Realtime 默认关闭；只有设置 `OPENCLASS_REALTIME_ENABLED=true` 才会启用后端实时连接。`OPENCLASS_REALTIME_TOOLS_ENABLED=true` 时，Realtime 会通过服务端 sideband（旁路控制通道）调用同一条 Chatbot workflow；关闭时只做麦克风转写，再把文本交给普通 Chatbot。`OPENAI_REALTIME_REASONING_EFFORT=low` 是语音默认推理强度，可按延迟和复杂度调成 `medium` 或 `high`。
+
+聊天回复的自动播报使用独立的 TTS（文字转语音）链路。它通过 `OPENAI_API_KEY` 调用 Audio Speech API，不复用 Codex device login（设备登录）的额度或认证；模型、音色和语速分别由 `OPENAI_TTS_MODEL`、`OPENAI_TTS_VOICE`、`OPENAI_TTS_SPEED` 配置。
 
 ## 数据与文档格式
 

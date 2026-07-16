@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.models import AIModelCatalog, UserView
 from app.routers.auth import current_user
-from app.routers import auth, chat, codex_provider, documents, sources, workspace
+from app.routers import auth, chat, codex_provider, documents, sources, speech, workspace
 from app.services.ai_model_catalog import build_model_catalog
 from app.services.codex_app_server import codex_app_server_available, codex_app_server_runtime_enabled
 from app.services.workspace_state import ensure_data_dirs
@@ -35,6 +35,7 @@ app.include_router(documents.router)
 app.include_router(chat.router)
 app.include_router(codex_provider.router)
 app.include_router(sources.router)
+app.include_router(speech.router)
 
 
 @app.get("/health")
