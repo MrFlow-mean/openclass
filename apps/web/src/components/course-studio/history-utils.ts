@@ -3,7 +3,6 @@ import { normalizePageSettings } from "@/components/course-studio/page-settings"
 import type {
   AgentActivityEvent,
   BoardDocument,
-  BoardSearchEvidence,
   ChatInteractionMode,
   CommitRecord,
   GuidedRequirementDiscovery,
@@ -50,7 +49,6 @@ export function createChatMessage(
       | "interactionMode"
       | "editedFromCommitId"
       | "agentActivity"
-      | "boardSearchEvidence"
       | "guidedRequirementDiscovery"
     >
   >
@@ -106,8 +104,6 @@ const LEGACY_NON_AI_ASSISTANT_PATTERNS = [
 
 const DISPLAYABLE_CHAT_COMMIT_KINDS = new Set([
   "chat_flow",
-  "interaction_session_start",
-  "interaction_session_turn",
   "board_section_teaching",
   "board_document_generation",
   "board_document_edit",
@@ -175,23 +171,6 @@ function teachingProgressFromMetadata(value: unknown): SectionTeachingProgress |
     has_next_section: raw.has_next_section === true,
     waiting_for_continue: raw.waiting_for_continue === true,
   };
-}
-
-function boardSearchEvidenceFromMetadata(value: unknown): BoardSearchEvidence | null {
-  if (!value || typeof value !== "object") {
-    return null;
-  }
-  const status = (value as { status?: unknown }).status;
-  if (
-    status !== "selected" &&
-    status !== "found" &&
-    status !== "ambiguous" &&
-    status !== "missing" &&
-    status !== "content_absent"
-  ) {
-    return null;
-  }
-  return value as BoardSearchEvidence;
 }
 
 const GUIDED_REQUIREMENT_DISCOVERY_STRATEGIES = new Set<GuidedRequirementDiscovery["strategy"]>([
@@ -374,20 +353,6 @@ function chatUserContentFromCommit(commit: CommitRecord): string | null {
     return null;
   }
 
-  const scopeAction = metadataText(commit, "scope_action");
-  if (scopeAction) {
-    return `继续执行：${scopeAction}`;
-  }
-
-  const boardEditAction = metadataText(commit, "board_edit_action");
-  const boardEditTopic = metadataText(commit, "board_edit_topic");
-  if (boardEditAction === "confirm") {
-    return `扩选板书：${boardEditTopic || userMessage}`;
-  }
-  if (boardEditAction === "skip") {
-    return `暂不扩选板书：${boardEditTopic || userMessage}`;
-  }
-
   if (metadataText(commit, "board_generation_action") === "start") {
     return "开始生成板书";
   }
@@ -450,7 +415,6 @@ export function buildLessonMessagesFromHistory(lesson: Lesson, commitId?: string
           teachingProgressFromMetadata(commit.metadata?.teaching_progress),
           {
             agentActivity: agentActivityFromMetadata(commit.metadata?.agent_activity),
-            boardSearchEvidence: boardSearchEvidenceFromMetadata(commit.metadata?.board_search_evidence),
             guidedRequirementDiscovery: guidedRequirementDiscoveryFromMetadata(
               commit.metadata?.guided_requirement_discovery
             ),

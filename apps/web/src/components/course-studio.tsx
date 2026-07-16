@@ -71,7 +71,6 @@ export function CourseStudio() {
   const {
     modelCatalog,
     selectedTextModel,
-    selectedBoardModel,
     selectedRealtimeModel,
     selectedTextOption,
     selectedRealtimeOption,
@@ -188,7 +187,6 @@ export function CourseStudio() {
     composerSelection,
     currentBoardDocument: displayedDocument,
     selectedTextModel,
-    selectedBoardModel,
     textModelReady,
     isPreviewMode: isPreviewMode || isDraftPreviewMode,
     chatRequestInFlightRef,
@@ -209,19 +207,15 @@ export function CourseStudio() {
     composerMode,
     includeSelectionInPrompt,
     isChatBusy,
-    scopeOptions,
     clarificationQuestions,
     learningClarity,
     streamedRequirementSheet,
     streamedBoardTaskSheet,
     currentNeedPending,
     latestBoardDecision,
-    boardEditPrompt,
     handleSubmitChat,
     handleStopChat,
     handleEditMessage,
-    handleScopeAction,
-    handleBoardEditAction,
     handleContinueTeaching,
   } = chatAgent;
   const activeRequirements = streamedRequirementSheet ?? persistedRequirements;
@@ -590,8 +584,6 @@ export function CourseStudio() {
           displayedMessages={displayedMessages}
           isPreviewMode={isPreviewMode}
           isChatBusy={isChatBusy}
-          scopeOptions={scopeOptions}
-          boardEditPrompt={boardEditPrompt}
           clarificationQuestions={clarificationQuestions}
           activeBoardTask={activeBoardTask}
           activeRequirementSheet={activeRequirements}
@@ -618,8 +610,6 @@ export function CourseStudio() {
           onSubmitChat={(payload) => handleSubmitChat(payload)}
           onStopChat={handleStopChat}
           onEditMessage={(message, nextContent) => handleEditMessage(message, nextContent)}
-          onScopeAction={(option) => handleScopeAction(option)}
-          onBoardEditAction={(action) => handleBoardEditAction(action)}
           onSelectTextModel={selectTextModel}
           onSelectRealtimeModel={handleSelectRealtimeModel}
           onVoiceToggle={handleVoiceToggle}

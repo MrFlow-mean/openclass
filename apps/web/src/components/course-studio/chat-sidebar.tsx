@@ -32,7 +32,6 @@ import type {
   AIModelOption,
   AIModelSelection,
   BoardDecision,
-  BoardEditPrompt,
   BoardTaskRequirementSheet,
   ChatInteractionMode,
   ChatRequestPayload,
@@ -40,7 +39,6 @@ import type {
   LearningClarificationStatus,
   LearningRequirementSheet,
   Lesson,
-  ScopeOption,
   SelectionRef,
 } from "@/types";
 import type { ChatMessage, LessonComposerState } from "@/components/course-studio/history-utils";
@@ -87,25 +85,6 @@ function composerSelectionToggleLabel(selection: SelectionRef, included: boolean
     return included ? "包含资料" : "忽略资料";
   }
   return included ? "包含选区" : "忽略选区";
-}
-
-function sequenceFocusLabel(lesson: Lesson) {
-  const session = lesson.active_interaction_session;
-  if (!session || session.sequence_mode !== "section_explanation" || !session.sequence_items?.length) {
-    return null;
-  }
-  const total = session.sequence_items.length;
-  const index = Math.max(0, Math.min(session.sequence_index ?? 0, total - 1));
-  const focus = session.sequence_items[index] ?? session.target_focus;
-  const current = index + 1;
-  const label = focus?.display_label || focus?.heading_path?.join(" / ") || session.interaction_goal || "当前子节";
-  return {
-    current,
-    label,
-    progress: Math.max(0, Math.min(100, Math.round((current / total) * 100))),
-    session,
-    total,
-  };
 }
 
 function hasVisibleLearningClarity(
@@ -164,28 +143,6 @@ function CurrentNeedCard({
       ? latestExecutedNeedSnapshot(lesson, targetCommitId)
       : null;
 
-  const sequence = sequenceFocusLabel(lesson);
-  if (sequence) {
-    return (
-      <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
-        <div className="flex items-center justify-between gap-3">
-          <p className="text-[11px] font-bold uppercase tracking-widest text-emerald-700">当前顺序讲解</p>
-          <span className="rounded-full bg-white px-2 py-1 text-[11px] font-semibold text-emerald-700">
-            {sequence.current}/{sequence.total}
-          </span>
-        </div>
-        <div className="mt-3 h-2 rounded-full bg-white">
-          <div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${sequence.progress}%` }} />
-        </div>
-        <div className="mt-3 grid gap-2 text-xs leading-5 text-emerald-950">
-          <p>当前：{sequence.label}</p>
-          <p>目标：{sequence.session.interaction_goal || "按板书子节顺序讲解"}</p>
-          <p>状态：{isChatBusy ? "讲解中" : "等待确认是否继续"}</p>
-        </div>
-      </div>
-    );
-  }
-
   if (executedNeed?.kind === "board_task") {
     const task = executedNeed.boardTask;
     return (
@@ -204,10 +161,6 @@ function CurrentNeedCard({
           <p>位置：{boardTaskLocationLabel(task)}</p>
           <p>动作：{boardTaskActionLabel(task.requested_action)}</p>
           <p>内容：{task.question_or_topic || "已执行的板书任务"}</p>
-          <p>
-            互动：
-            {task.interaction_rule_draft?.rule_text || (task.requested_action === "chat" ? "按已启动规则" : "无特殊规则")}
-          </p>
         </div>
       </div>
     );
@@ -245,11 +198,6 @@ function CurrentNeedCard({
           <p>位置：{boardTaskLocationLabel(activeBoardTask)}</p>
           <p>动作：{boardTaskActionLabel(activeBoardTask.requested_action)}</p>
           <p>内容：{activeBoardTask.question_or_topic || "待确认"}</p>
-          <p>
-            互动：
-            {activeBoardTask.interaction_rule_draft?.rule_text ||
-              (activeBoardTask.requested_action === "chat" ? "待确认" : "无特殊规则")}
-          </p>
         </div>
         {activeBoardTask.confirmation_status === "awaiting" ? (
           <p className="mt-3 text-xs leading-6 text-sky-900">等待你确认是否先扩写板书。</p>
@@ -310,8 +258,6 @@ type CourseStudioChatSidebarProps = {
   displayedMessages: ChatMessage[];
   isPreviewMode: boolean;
   isChatBusy: boolean;
-  scopeOptions: ScopeOption[];
-  boardEditPrompt: BoardEditPrompt | null;
   clarificationQuestions: string[];
   activeBoardTask: BoardTaskRequirementSheet | null;
   activeRequirementSheet: LearningRequirementSheet | null;
@@ -338,8 +284,6 @@ type CourseStudioChatSidebarProps = {
   onSubmitChat: (payload?: ChatRequestPayload) => void | Promise<void>;
   onStopChat: () => void;
   onEditMessage: (message: ChatMessage, nextContent: string) => void | Promise<void>;
-  onScopeAction: (option: ScopeOption) => void | Promise<void>;
-  onBoardEditAction: (action: "confirm" | "skip") => void | Promise<void>;
   onSelectTextModel: (selection: AIModelSelection) => void;
   onSelectRealtimeModel: (option: AIModelOption) => void;
   onVoiceToggle: () => void | Promise<void>;
@@ -360,8 +304,6 @@ export function CourseStudioChatSidebar({
   displayedMessages,
   isPreviewMode,
   isChatBusy,
-  scopeOptions,
-  boardEditPrompt,
   clarificationQuestions,
   activeBoardTask,
   activeRequirementSheet,
@@ -388,8 +330,6 @@ export function CourseStudioChatSidebar({
   onSubmitChat,
   onStopChat,
   onEditMessage,
-  onScopeAction,
-  onBoardEditAction,
   onSelectTextModel,
   onSelectRealtimeModel,
   onVoiceToggle,
@@ -445,46 +385,6 @@ export function CourseStudioChatSidebar({
             lesson={activeLesson}
             targetCommitId={targetCommitId}
           />
-          {!isPreviewMode &&
-          !activeBoardTask &&
-          activeLesson?.active_interaction_session &&
-          activeLesson.active_interaction_session.sequence_mode !== "section_explanation" ? (
-            <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
-              <div className="flex items-center justify-between gap-3">
-                <p className="text-[11px] font-bold uppercase tracking-widest text-emerald-700">互动规则</p>
-                <span className="rounded-full bg-white px-2 py-1 text-[11px] font-semibold text-emerald-700">
-                  {activeLesson.active_interaction_session.turn_count}
-                </span>
-              </div>
-              <div className="mt-3 grid gap-2 text-xs leading-5 text-emerald-950">
-                <p>规则：{activeLesson.active_interaction_session.rule_text || "待确认"}</p>
-                <p>目标：{activeLesson.active_interaction_session.interaction_goal || "当前板书内容"}</p>
-                <p>
-                  合规输入：
-                  {activeLesson.active_interaction_session.compliant_input_rule ||
-                    activeLesson.active_interaction_session.expected_user_behavior ||
-                    "按当前规则回应"}
-                </p>
-                {activeLesson.active_interaction_session.rule_steps?.length ? (
-                  <p>
-                    进度：
-                    {Math.min(
-                      (activeLesson.active_interaction_session.current_step_index ?? 0) + 1,
-                      activeLesson.active_interaction_session.rule_steps.length
-                    )}{" "}
-                    / {activeLesson.active_interaction_session.rule_steps.length}
-                  </p>
-                ) : null}
-                {activeLesson.active_interaction_session.progress_note ? (
-                  <p>状态：{activeLesson.active_interaction_session.progress_note}</p>
-                ) : null}
-                {activeLesson.active_interaction_session.last_violation_reason ? (
-                  <p>最近纠错：{activeLesson.active_interaction_session.last_violation_reason}</p>
-                ) : null}
-              </div>
-            </div>
-          ) : null}
-
           <div className="space-y-5">
             {previewCommit ? (
               <div className="rounded-xl border border-violet-200 bg-violet-50 px-4 py-3 text-xs leading-6 text-violet-800">
@@ -541,49 +441,6 @@ export function CourseStudioChatSidebar({
             ))}
             <div ref={chatScrollEndRef} aria-hidden="true" />
           </div>
-
-          {!isPreviewMode && scopeOptions.length ? (
-            <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
-              <p className="text-[11px] font-bold uppercase tracking-widest text-amber-700">范围升级建议</p>
-              <div className="mt-3 space-y-2">
-                {scopeOptions.map((option) => (
-                  <button
-                    key={option.action}
-                    type="button"
-                    onClick={() => void onScopeAction(option)}
-                    className="w-full rounded-xl border border-amber-200 bg-white px-4 py-3 text-left transition hover:border-amber-300"
-                  >
-                    <span className="block text-sm font-semibold text-gray-900">{option.label}</span>
-                    <span className="mt-1 block text-xs leading-6 text-gray-500">{option.description}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          ) : null}
-
-          {!isPreviewMode && boardEditPrompt ? (
-            <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
-              <p className="text-[11px] font-bold uppercase tracking-widest text-emerald-700">扩选板书</p>
-              <p className="mt-2 text-sm leading-6 text-emerald-950">{boardEditPrompt.question}</p>
-              <p className="mt-2 text-xs leading-6 text-emerald-900/80">{boardEditPrompt.reason}</p>
-              <div className="mt-3 grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={() => void onBoardEditAction("confirm")}
-                  className="w-full rounded-xl border border-emerald-200 bg-white px-4 py-3 text-center text-sm font-semibold text-gray-900 transition hover:border-emerald-300"
-                >
-                  {boardEditPrompt.confirm_label}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void onBoardEditAction("skip")}
-                  className="w-full rounded-xl border border-emerald-200 bg-white px-4 py-3 text-center text-sm font-semibold text-gray-900 transition hover:border-emerald-300"
-                >
-                  {boardEditPrompt.skip_label}
-                </button>
-              </div>
-            </div>
-          ) : null}
 
           {!isPreviewMode && clarificationQuestions.length ? (
             <div className="rounded-xl border border-sky-200 bg-sky-50 p-4">

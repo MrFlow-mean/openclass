@@ -75,18 +75,6 @@ function currentHeadCommit(lesson: Lesson) {
   return lesson.history_graph.commits.find((commit) => commit.id === commitId) ?? null;
 }
 
-function activeSessionFocus(lesson: Lesson) {
-  const session = lesson.active_interaction_session;
-  if (!session || session.status !== "active") {
-    return null;
-  }
-  if (session.sequence_items?.length) {
-    const index = Math.max(0, Math.min(session.sequence_index ?? 0, session.sequence_items.length - 1));
-    return session.sequence_items[index] ?? session.target_focus ?? null;
-  }
-  return session.target_focus ?? null;
-}
-
 function commitTeachingFocus(commit: CommitRecord | null) {
   if (!commit?.metadata || typeof commit.metadata !== "object") {
     return null;
@@ -98,12 +86,12 @@ function commitTeachingFocus(commit: CommitRecord | null) {
   const hasDirective = Boolean(metadata.board_explanation_directive && typeof metadata.board_explanation_directive === "object");
   const isTeachingCommit =
     assistantMessage &&
-    (kind === "interaction_flow" || (kind === "chat_flow" && (boardTaskRoute === "explain" || hasDirective)));
+    kind === "chat_flow" && (boardTaskRoute === "explain" || hasDirective);
   return isTeachingCommit ? boardFocusFromMetadata(metadata.resolved_focus) : null;
 }
 
 function currentTeachingFocus(lesson: Lesson, previewCommit: CommitRecord | null) {
-  return activeSessionFocus(lesson) ?? commitTeachingFocus(previewCommit ?? currentHeadCommit(lesson));
+  return commitTeachingFocus(previewCommit ?? currentHeadCommit(lesson));
 }
 
 export function BoardEditorPanel({

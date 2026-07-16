@@ -20,7 +20,6 @@ import { writeTextToClipboard } from "@/lib/clipboard";
 import { markdownToChatHtml } from "@/lib/markdown";
 import type {
   AgentActivityEvent,
-  BoardSearchEvidence,
   ChatInteractionMode,
   GuidedRequirementDiscovery,
   SectionTeachingProgress,
@@ -35,7 +34,6 @@ export type CourseChatMessageView = {
   statusLabel?: string;
   selection?: SelectionRef | null;
   agentActivity?: AgentActivityEvent[];
-  boardSearchEvidence?: BoardSearchEvidence | null;
   guidedRequirementDiscovery?: GuidedRequirementDiscovery | null;
   teachingProgress?: SectionTeachingProgress | null;
   commitId?: string | null;
@@ -171,61 +169,6 @@ function AgentActivityTimeline({ events, isPending }: { events: AgentActivityEve
   );
 }
 
-const BOARD_SEARCH_STATUS_LABELS: Record<BoardSearchEvidence["status"], string> = {
-  selected: "已使用选区",
-  found: "已定位",
-  ambiguous: "位置需确认",
-  missing: "未定位",
-  content_absent: "板书缺内容",
-};
-
-function compactEvidenceText(value: string, limit = 180) {
-  const compact = value.replace(/\s+/g, " ").trim();
-  if (compact.length <= limit) {
-    return compact;
-  }
-  return `${compact.slice(0, limit - 1)}…`;
-}
-
-function BoardSearchEvidenceCard({ evidence }: { evidence: BoardSearchEvidence }) {
-  const isProblem = evidence.status === "ambiguous" || evidence.status === "missing" || evidence.status === "content_absent";
-  const rangeLabel =
-    evidence.range_label ||
-    evidence.read_context?.range_label ||
-    evidence.read_context?.target_focus.display_label ||
-    evidence.candidates[0]?.focus.display_label ||
-    "";
-  const excerpt = evidence.read_context?.target_excerpt
-    ? compactEvidenceText(evidence.read_context.target_excerpt)
-    : "";
-  const confidence = evidence.confidence > 0 ? `${Math.round(evidence.confidence * 100)}%` : "";
-  const detail = excerpt || evidence.reason || evidence.failure_reason_code;
-
-  return (
-    <div
-      className={clsx(
-        "rounded-xl border px-3 py-2 text-[11px] leading-5",
-        isProblem ? "border-amber-200 bg-amber-50 text-amber-950" : "border-emerald-200 bg-emerald-50 text-emerald-950"
-      )}
-    >
-      <div className="flex min-w-0 items-start gap-2">
-        <TextQuote className={clsx("mt-0.5 h-3.5 w-3.5 shrink-0", isProblem ? "text-amber-600" : "text-emerald-600")} />
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2 font-semibold">
-            <span>{BOARD_SEARCH_STATUS_LABELS[evidence.status]}</span>
-            {confidence ? <span className="rounded-full bg-white/70 px-1.5 py-0.5">{confidence}</span> : null}
-            {evidence.candidate_count > 1 ? (
-              <span className="rounded-full bg-white/70 px-1.5 py-0.5">{evidence.candidate_count} 个候选</span>
-            ) : null}
-          </div>
-          {rangeLabel ? <p className="mt-1 truncate">{rangeLabel}</p> : null}
-          {detail ? <p className="mt-1 line-clamp-2 break-words text-[12px] font-normal">“{detail}”</p> : null}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 export function CourseChatMessage({
   message,
   onContinueTeaching,
@@ -255,7 +198,6 @@ export function CourseChatMessage({
   const selectedExcerpt = message.selection?.excerpt ? selectionPreviewText(message.selection.excerpt) : "";
   const teachingProgress = message.teachingProgress;
   const agentActivity = message.agentActivity ?? [];
-  const boardSearchEvidence = message.boardSearchEvidence ?? null;
   const hasContent = message.content.trim().length > 0;
 
   async function copyMessage() {
@@ -397,10 +339,6 @@ export function CourseChatMessage({
               </div>
             ) : null}
           </div>
-        ) : null}
-
-        {isAssistant && boardSearchEvidence && !isPending ? (
-          <BoardSearchEvidenceCard evidence={boardSearchEvidence} />
         ) : null}
 
         {hasContent && !isEditing ? (
