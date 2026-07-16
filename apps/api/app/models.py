@@ -1310,6 +1310,12 @@ class MoveLessonRequest(BaseModel):
     target_package_id: str
 
 
+class BatchLessonActionRequest(BaseModel):
+    action: Literal["move", "delete"]
+    lesson_ids: list[str] = Field(default_factory=list)
+    target_package_id: str | None = None
+
+
 class GenerateLessonRequest(BaseModel):
     topic: str
     branch_from_lesson_id: str | None = None

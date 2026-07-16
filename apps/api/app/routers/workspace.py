@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.models import (
+    BatchLessonActionRequest,
     CourseGraphEdge,
     CoursePackage,
     CoursePackageView,
@@ -17,6 +18,7 @@ from app.models import (
 from app.routers.auth import current_user
 from app.services.history import current_head_commit
 from app.services.lesson_factory import create_empty_lesson
+from app.services.workspace_batch_actions import apply_lesson_batch_action
 from app.services.workspace_state import (
     find_lesson_package,
     get_package,
@@ -149,6 +151,17 @@ def delete_lesson(lesson_id: str, user: UserView = Depends(current_user)) -> Wor
         package.active_lesson_id = None
 
     normalize_package_state(package)
+    save_workspace_for_user_if_revision(user.id, workspace, expected_revision=revision)
+    return workspace_view(workspace)
+
+
+@router.post("/api/lessons/batch", response_model=WorkspaceStateView)
+def batch_lessons(
+    request: BatchLessonActionRequest,
+    user: UserView = Depends(current_user),
+) -> WorkspaceStateView:
+    workspace, revision = load_workspace_for_user_with_revision(user.id)
+    apply_lesson_batch_action(workspace, request)
     save_workspace_for_user_if_revision(user.id, workspace, expected_revision=revision)
     return workspace_view(workspace)
 

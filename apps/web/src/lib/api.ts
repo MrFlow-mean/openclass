@@ -3,6 +3,7 @@ import type {
   AdminOverview,
   AuthProviderView,
   AuthSessionResponse,
+  BatchLessonActionRequest,
   BoardTaskUpdateStreamPayload,
   ChatRequestPayload,
   ChatResponse,
@@ -517,6 +518,12 @@ export const api = {
   deleteLesson(lessonId: string) {
     return request<WorkspaceState>(`/api/lessons/${lessonId}/delete`, {
       method: "POST",
+    });
+  },
+  batchLessons(payload: BatchLessonActionRequest) {
+    return request<WorkspaceState>("/api/lessons/batch", {
+      method: "POST",
+      body: JSON.stringify(payload),
     });
   },
   getCoursePackage() {

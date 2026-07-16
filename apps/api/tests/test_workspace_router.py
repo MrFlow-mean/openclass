@@ -1,4 +1,14 @@
-from app.models import CoursePackage, CreatePackageRequest, GenerateLessonRequest, UserView, WorkspaceState
+import pytest
+from fastapi import HTTPException
+
+from app.models import (
+    BatchLessonActionRequest,
+    CoursePackage,
+    CreatePackageRequest,
+    GenerateLessonRequest,
+    UserView,
+    WorkspaceState,
+)
 from app.routers import workspace as workspace_router
 from app.services.lesson_factory import create_empty_lesson
 
@@ -124,3 +134,115 @@ def test_generate_lesson_without_blank_flag_still_creates_codex_only_document(mo
     assert lesson.board_document.content_text == ""
     assert lesson.learning_requirements is None
     assert lesson.board_task_requirements is None
+
+
+def test_batch_move_lessons_validates_then_saves_once(monkeypatch) -> None:
+    first = create_empty_lesson("First")
+    second = create_empty_lesson("Second")
+    standalone = CoursePackage(
+        id="standalone",
+        title="Standalone",
+        summary="",
+        is_standalone=True,
+        lessons=[first, second],
+        open_lesson_ids=[first.id, second.id],
+        active_lesson_id=first.id,
+        workspace_tab_order=[first.id, second.id],
+    )
+    target = CoursePackage(id="target", title="Target", summary="", lessons=[])
+    workspace = WorkspaceState(packages=[standalone, target], active_package_id=standalone.id)
+    saved_workspaces = []
+    monkeypatch.setattr(
+        workspace_router,
+        "load_workspace_for_user_with_revision",
+        lambda _user_id: (workspace, 7),
+    )
+    monkeypatch.setattr(
+        workspace_router,
+        "save_workspace_for_user_if_revision",
+        lambda _user_id, next_workspace, *, expected_revision: saved_workspaces.append(
+            (next_workspace, expected_revision)
+        ),
+    )
+
+    workspace_router.batch_lessons(
+        BatchLessonActionRequest(
+            action="move",
+            lesson_ids=[first.id, second.id, first.id],
+            target_package_id=target.id,
+        ),
+        user=_user(),
+    )
+
+    assert standalone.lessons == []
+    assert [lesson.id for lesson in target.lessons] == [first.id, second.id]
+    assert target.workspace_tab_order == [first.id, second.id]
+    assert saved_workspaces == [(workspace, 7)]
+
+
+def test_batch_delete_rejects_missing_lesson_without_partial_mutation(monkeypatch) -> None:
+    lesson = create_empty_lesson("Keep me")
+    package = CoursePackage(id="package", title="Package", summary="", lessons=[lesson])
+    workspace = WorkspaceState(packages=[package], active_package_id=package.id)
+    saved_workspaces = []
+    monkeypatch.setattr(
+        workspace_router,
+        "load_workspace_for_user_with_revision",
+        lambda _user_id: (workspace, 3),
+    )
+    monkeypatch.setattr(
+        workspace_router,
+        "save_workspace_for_user_if_revision",
+        lambda *_args, **_kwargs: saved_workspaces.append(workspace),
+    )
+
+    with pytest.raises(HTTPException) as error:
+        workspace_router.batch_lessons(
+            BatchLessonActionRequest(
+                action="delete",
+                lesson_ids=[lesson.id, "missing_lesson"],
+            ),
+            user=_user(),
+        )
+
+    assert error.value.status_code == 404
+    assert [current.id for current in package.lessons] == [lesson.id]
+    assert saved_workspaces == []
+
+
+def test_batch_delete_removes_selected_lessons_and_normalizes_package(monkeypatch) -> None:
+    first = create_empty_lesson("First")
+    second = create_empty_lesson("Second")
+    remaining = create_empty_lesson("Remaining")
+    package = CoursePackage(
+        id="package",
+        title="Package",
+        summary="",
+        lessons=[first, second, remaining],
+        open_lesson_ids=[first.id, second.id, remaining.id],
+        active_lesson_id=second.id,
+        workspace_tab_order=[first.id, second.id, remaining.id],
+    )
+    workspace = WorkspaceState(packages=[package], active_package_id=package.id)
+    saved_revisions = []
+    monkeypatch.setattr(
+        workspace_router,
+        "load_workspace_for_user_with_revision",
+        lambda _user_id: (workspace, 5),
+    )
+    monkeypatch.setattr(
+        workspace_router,
+        "save_workspace_for_user_if_revision",
+        lambda _user_id, _workspace, *, expected_revision: saved_revisions.append(expected_revision),
+    )
+
+    workspace_router.batch_lessons(
+        BatchLessonActionRequest(action="delete", lesson_ids=[first.id, second.id]),
+        user=_user(),
+    )
+
+    assert [lesson.id for lesson in package.lessons] == [remaining.id]
+    assert package.open_lesson_ids == [remaining.id]
+    assert package.workspace_tab_order == [remaining.id]
+    assert package.active_lesson_id == remaining.id
+    assert saved_revisions == [5]

@@ -103,6 +103,20 @@ export function profileSettingsTexts(lang: InterfaceLanguage) {
       expandCoursePackages: z ? "展开课程包" : "Expand course packages",
       standaloneLessons: z ? "单独课程" : "Standalone lessons",
       standaloneHint: z ? "默认仅显示未入包课程" : "Unassigned lessons only",
+      batchManage: z ? "批量管理" : "Manage",
+      batchCancel: z ? "取消" : "Cancel",
+      batchSelected: (count: number) => (z ? `已选 ${count} 项` : `${count} selected`),
+      batchSelectAll: z ? "全选当前列表" : "Select visible",
+      batchClear: z ? "清空" : "Clear",
+      batchChoosePackage: z ? "选择课程包" : "Choose package",
+      batchMove: z ? "移动" : "Move",
+      batchDelete: z ? "批量删除" : "Delete selected",
+      batchDeleteConfirm: (count: number) =>
+        z
+          ? `确定删除选中的 ${count} 节课程吗？删除后无法恢复。`
+          : `Delete the ${count} selected lesson${count === 1 ? "" : "s"}? This cannot be undone.`,
+      batchMoveFail: z ? "批量移动课程失败" : "Could not move selected lessons",
+      batchDeleteFail: z ? "批量删除课程失败" : "Could not delete selected lessons",
       collapseStandaloneLessons: z ? "收起单独课程" : "Collapse standalone lessons",
       expandStandaloneLessons: z ? "展开单独课程" : "Expand standalone lessons",
       standaloneWorkspaceAria: z ? "进入单独课程工作台" : "Open standalone workspace",

@@ -579,6 +579,12 @@ export interface WorkspaceState {
   active_package_id?: string | null;
 }
 
+export interface BatchLessonActionRequest {
+  action: "move" | "delete";
+  lesson_ids: string[];
+  target_package_id?: string | null;
+}
+
 export interface UserView {
   id: string;
   email: string;

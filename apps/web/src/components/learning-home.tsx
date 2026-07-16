@@ -12,6 +12,7 @@ import {
   BookOpen,
   BookText,
   Bookmark,
+  Check,
   ChevronDown,
   ChevronRight,
   Code2,
@@ -34,11 +35,16 @@ import {
 
 import { AccountMenu } from "@/components/account-menu";
 import { BrandMark } from "@/components/brand-mark";
+import {
+  HomeLessonBatchToggle,
+  HomeLessonBatchToolbar,
+} from "@/components/home-lesson-batch-controls";
 import { InlineNameForm } from "@/components/inline-name-form";
 import { RecentFeedCard } from "@/components/recent-feed-card";
 import { useInterfaceLanguage } from "@/contexts/interface-language-context";
 import { api } from "@/lib/api";
 import { homeRelativeFormat } from "@/lib/i18n/product-ui";
+import { useHomeLessonBatch } from "@/hooks/use-home-lesson-batch";
 import {
   PROFILE_SETTINGS_CHANGED_EVENT,
   PROFILE_SETTINGS_STORAGE_KEY,
@@ -450,6 +456,19 @@ export function LearningHome() {
       packageTitle
     )
   );
+  const lessonBatch = useHomeLessonBatch({
+    availableLessonIds: standaloneLessonItems.map(({ lesson }) => lesson.id),
+    visibleLessonIds: filteredLessonItems.map(({ lesson }) => lesson.id),
+    onWorkspaceChange: (workspace) => {
+      setWorkspaceState(workspace);
+      setSelectedLessonId(null);
+      setError(null);
+    },
+    onError: setError,
+    moveErrorMessage: h.batchMoveFail,
+    deleteErrorMessage: h.batchDeleteFail,
+    deleteConfirmMessage: h.batchDeleteConfirm,
+  });
 
   const matchingOpenCourses = useMemo(() => searchOpenCourses(deferredQuery), [deferredQuery]);
   const categoryFacetCounts = useMemo(
@@ -913,9 +932,20 @@ export function LearningHome() {
                       className={clsx("h-4 w-4 transition-transform duration-200", standaloneLessonsCollapsed && "-rotate-90")}
                     />
                   </button>
-                  <span className="rounded-full border border-stone-200 bg-white px-3 py-1 text-[10px] font-medium text-stone-500">
-                    {h.standaloneHint}
-                  </span>
+                  <HomeLessonBatchToggle
+                    isActive={lessonBatch.isActive}
+                    disabled={isLoading || !standaloneLessonItems.length || lessonBatch.isBusy}
+                    manageLabel={h.batchManage}
+                    cancelLabel={h.batchCancel}
+                    onStart={() => {
+                      setLessonMenuState(null);
+                      setLessonMoveMenuState(null);
+                      setSelectedLessonId(null);
+                      setStandaloneLessonsCollapsed(false);
+                      lessonBatch.start();
+                    }}
+                    onCancel={lessonBatch.cancel}
+                  />
                   <button
                     type="button"
                     onClick={() => void handleOpenStandaloneWorkspace()}
@@ -931,6 +961,27 @@ export function LearningHome() {
                   </button>
                 </div>
               </div>
+
+              {lessonBatch.isActive ? (
+                <HomeLessonBatchToolbar
+                  selectedCount={lessonBatch.selectedCount}
+                  allVisibleSelected={lessonBatch.allVisibleSelected}
+                  targetPackageId={lessonBatch.targetPackageId}
+                  packages={movablePackages}
+                  action={lessonBatch.action}
+                  selectedLabel={h.batchSelected}
+                  selectAllLabel={h.batchSelectAll}
+                  clearLabel={h.batchClear}
+                  choosePackageLabel={h.batchChoosePackage}
+                  moveLabel={h.batchMove}
+                  deleteLabel={h.batchDelete}
+                  onToggleAll={lessonBatch.toggleAllVisible}
+                  onClear={lessonBatch.clearSelection}
+                  onTargetPackageChange={lessonBatch.setTargetPackageId}
+                  onMove={() => void lessonBatch.moveSelected()}
+                  onDelete={() => void lessonBatch.deleteSelected()}
+                />
+              ) : null}
 
               <div
                 id="learning-home-standalone-lessons"
@@ -948,7 +999,8 @@ export function LearningHome() {
                   ))
                 ) : filteredLessonItems.length ? (
                   filteredLessonItems.map(({ lesson }) => {
-                    const isActive = lesson.id === selectedLessonId;
+                    const isLessonActive = lesson.id === selectedLessonId;
+                    const isBatchSelected = lessonBatch.selectedLessonIds.has(lesson.id);
                     const buttonBusy = busyKey === `lesson:${lesson.id}`;
                     const isMenuOpen = lessonMenuState?.lessonId === lesson.id;
                     return (
@@ -957,54 +1009,70 @@ export function LearningHome() {
                         data-lesson-selection-root
                         className={clsx(
                           "relative rounded-2xl border bg-white transition",
-                          isActive
+                          isBatchSelected || isLessonActive
                             ? "border-stone-950 shadow-[0_12px_30px_rgba(0,0,0,0.06)]"
                             : "border-transparent bg-white/65 hover:border-stone-200 hover:bg-white"
                         )}
                       >
-                        <div className="absolute right-2 top-2 z-20" data-lesson-menu-root>
-                          <button
-                            type="button"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              const rect = event.currentTarget.getBoundingClientRect();
-                              setLessonMoveMenuState(null);
-                              setLessonMenuState((current) =>
-                                current?.lessonId === lesson.id
-                                  ? null
-                                  : {
-                                      lessonId: lesson.id,
-                                      top: rect.bottom + 6,
-                                      left: Math.max(16, rect.right - 192),
-                                    }
-                              );
-                            }}
-                            className={clsx(
-                              "flex h-8 w-8 items-center justify-center rounded-lg text-stone-400 transition hover:bg-stone-100 hover:text-stone-950",
-                              isMenuOpen && "bg-stone-100 text-stone-950"
-                            )}
-                            aria-label={h.lessonMenuAria}
-                            title={h.lessonMoreTitle}
-                          >
-                            <MoreHorizontal className="h-4 w-4" />
-                          </button>
-                        </div>
+                        {!lessonBatch.isActive ? (
+                          <div className="absolute right-2 top-2 z-20" data-lesson-menu-root>
+                            <button
+                              type="button"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                const rect = event.currentTarget.getBoundingClientRect();
+                                setLessonMoveMenuState(null);
+                                setLessonMenuState((current) =>
+                                  current?.lessonId === lesson.id
+                                    ? null
+                                    : {
+                                        lessonId: lesson.id,
+                                        top: rect.bottom + 6,
+                                        left: Math.max(16, rect.right - 192),
+                                      }
+                                );
+                              }}
+                              className={clsx(
+                                "flex h-8 w-8 items-center justify-center rounded-lg text-stone-400 transition hover:bg-stone-100 hover:text-stone-950",
+                                isMenuOpen && "bg-stone-100 text-stone-950"
+                              )}
+                              aria-label={h.lessonMenuAria}
+                              title={h.lessonMoreTitle}
+                            >
+                              <MoreHorizontal className="h-4 w-4" />
+                            </button>
+                          </div>
+                        ) : null}
 
                         <button
                           type="button"
-                          onClick={() => void handleOpenLesson(lesson.id)}
-                          className="group w-full px-4 py-3 pr-14 text-left"
+                          onClick={() =>
+                            lessonBatch.isActive
+                              ? lessonBatch.toggleLesson(lesson.id)
+                              : void handleOpenLesson(lesson.id)
+                          }
+                          className={clsx(
+                            "group w-full px-4 py-3 text-left",
+                            lessonBatch.isActive ? "pr-4" : "pr-14"
+                          )}
+                          aria-pressed={lessonBatch.isActive ? isBatchSelected : undefined}
                         >
                           <div className="flex items-start gap-3">
                             <div
                               className={clsx(
                                 "mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border",
-                                isActive
+                                isBatchSelected || isLessonActive
                                   ? "border-stone-950 bg-stone-950 text-white"
                                   : "border-stone-200 bg-stone-100 text-stone-500 group-hover:text-stone-950"
                               )}
                             >
-                              {buttonBusy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <BookText className="h-4 w-4" />}
+                              {lessonBatch.isActive ? (
+                                <Check className={clsx("h-4 w-4", !isBatchSelected && "opacity-0")} />
+                              ) : buttonBusy ? (
+                                <LoaderCircle className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <BookText className="h-4 w-4" />
+                              )}
                             </div>
                             <div className="min-w-0 flex-1">
                               <div className="flex items-center justify-between gap-3">
