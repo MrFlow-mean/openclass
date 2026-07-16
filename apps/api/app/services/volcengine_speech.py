@@ -16,6 +16,8 @@ from app.services.speech_service import (
     SpeechAudio,
     SpeechGenerationError,
     SpeechNotConfiguredError,
+    SpeechOptions,
+    SpeechVoiceOption,
 )
 
 
@@ -26,9 +28,40 @@ DEFAULT_RESOURCE_ID = "seed-tts-2.0"
 DEFAULT_SPEAKER = "zh_female_vv_uranus_bigtts"
 DEFAULT_SAMPLE_RATE = 24000
 DEFAULT_SPEECH_RATE = 0
+MINIMUM_SPEECH_RATE = -50
+MAXIMUM_SPEECH_RATE = 100
 DEFAULT_TIMEOUT_SECONDS = 30.0
 SUCCESS_FRAME_CODE = 0
 FINISHED_FRAME_CODE = 20_000_000
+
+VOLCENGINE_VOICE_OPTIONS = (
+    SpeechVoiceOption(
+        id="zh_female_vv_uranus_bigtts",
+        label="Vivi 2.0",
+        description="通用场景女声",
+    ),
+    SpeechVoiceOption(
+        id="zh_male_dayi_saturn_bigtts",
+        label="大壹",
+        description="视频配音男声",
+    ),
+    SpeechVoiceOption(
+        id="zh_female_santongyongns_saturn_bigtts",
+        label="流畅女声",
+        description="视频配音女声",
+    ),
+    SpeechVoiceOption(
+        id="zh_male_ruyayichen_saturn_bigtts",
+        label="儒雅逸辰",
+        description="视频配音男声",
+    ),
+    SpeechVoiceOption(
+        id="zh_female_xueayi_saturn_bigtts",
+        label="儿童绘本",
+        description="有声阅读女声",
+    ),
+)
+VOLCENGINE_VOICE_IDS = frozenset(option.id for option in VOLCENGINE_VOICE_OPTIONS)
 
 
 def _configured_integer(name: str, default: int, minimum: int, maximum: int) -> int:
@@ -47,6 +80,60 @@ def _configured_timeout() -> float:
     except ValueError:
         return DEFAULT_TIMEOUT_SECONDS
     return max(1.0, min(120.0, value))
+
+
+def get_volcengine_speech_options() -> SpeechOptions:
+    load_root_dotenv()
+    resource_id = os.getenv("VOLCENGINE_TTS_RESOURCE_ID", DEFAULT_RESOURCE_ID).strip() or DEFAULT_RESOURCE_ID
+    configured_speaker = os.getenv("VOLCENGINE_TTS_SPEAKER", DEFAULT_SPEAKER).strip() or DEFAULT_SPEAKER
+    voices = VOLCENGINE_VOICE_OPTIONS
+    if configured_speaker not in VOLCENGINE_VOICE_IDS:
+        voices = (
+            SpeechVoiceOption(
+                id=configured_speaker,
+                label="已配置音色",
+                description="来自本地环境配置",
+            ),
+            *voices,
+        )
+    return SpeechOptions(
+        provider="volcengine",
+        model=resource_id,
+        default_voice=configured_speaker,
+        voices=voices,
+        minimum_speech_rate=MINIMUM_SPEECH_RATE,
+        maximum_speech_rate=MAXIMUM_SPEECH_RATE,
+        default_speech_rate=_configured_integer(
+            "VOLCENGINE_TTS_SPEECH_RATE",
+            DEFAULT_SPEECH_RATE,
+            MINIMUM_SPEECH_RATE,
+            MAXIMUM_SPEECH_RATE,
+        ),
+    )
+
+
+def _resolve_speaker(requested_speaker: str | None) -> str:
+    configured_speaker = os.getenv("VOLCENGINE_TTS_SPEAKER", DEFAULT_SPEAKER).strip() or DEFAULT_SPEAKER
+    if requested_speaker is None:
+        return configured_speaker
+    normalized_speaker = requested_speaker.strip()
+    allowed_speakers = {*VOLCENGINE_VOICE_IDS, configured_speaker}
+    if normalized_speaker not in allowed_speakers:
+        raise SpeechGenerationError("Unsupported Volcengine speech voice")
+    return normalized_speaker
+
+
+def _resolve_speech_rate(requested_speech_rate: int | None) -> int:
+    if requested_speech_rate is None:
+        return _configured_integer(
+            "VOLCENGINE_TTS_SPEECH_RATE",
+            DEFAULT_SPEECH_RATE,
+            MINIMUM_SPEECH_RATE,
+            MAXIMUM_SPEECH_RATE,
+        )
+    if not MINIMUM_SPEECH_RATE <= requested_speech_rate <= MAXIMUM_SPEECH_RATE:
+        raise SpeechGenerationError("Unsupported Volcengine speech rate")
+    return requested_speech_rate
 
 
 def _decode_audio_frames(lines: Iterable[str]) -> bytes:
@@ -113,7 +200,12 @@ def _request_payload(text: str, *, speaker: str, sample_rate: int, speech_rate: 
     }
 
 
-def synthesize_volcengine_speech(text: str) -> SpeechAudio:
+def synthesize_volcengine_speech(
+    text: str,
+    *,
+    speaker: str | None = None,
+    speech_rate: int | None = None,
+) -> SpeechAudio:
     load_root_dotenv()
     api_key = os.getenv("VOLCENGINE_TTS_API_KEY", "").strip()
     if not api_key:
@@ -121,19 +213,14 @@ def synthesize_volcengine_speech(text: str) -> SpeechAudio:
 
     endpoint = os.getenv("VOLCENGINE_TTS_ENDPOINT", DEFAULT_ENDPOINT).strip() or DEFAULT_ENDPOINT
     resource_id = os.getenv("VOLCENGINE_TTS_RESOURCE_ID", DEFAULT_RESOURCE_ID).strip() or DEFAULT_RESOURCE_ID
-    speaker = os.getenv("VOLCENGINE_TTS_SPEAKER", DEFAULT_SPEAKER).strip() or DEFAULT_SPEAKER
+    resolved_speaker = _resolve_speaker(speaker)
     sample_rate = _configured_integer(
         "VOLCENGINE_TTS_SAMPLE_RATE",
         DEFAULT_SAMPLE_RATE,
         8000,
         48000,
     )
-    speech_rate = _configured_integer(
-        "VOLCENGINE_TTS_SPEECH_RATE",
-        DEFAULT_SPEECH_RATE,
-        -50,
-        100,
-    )
+    resolved_speech_rate = _resolve_speech_rate(speech_rate)
     request_id = str(uuid.uuid4())
     headers = {
         "Content-Type": "application/json",
@@ -149,9 +236,9 @@ def synthesize_volcengine_speech(text: str) -> SpeechAudio:
             headers=headers,
             json=_request_payload(
                 text,
-                speaker=speaker,
+                speaker=resolved_speaker,
                 sample_rate=sample_rate,
-                speech_rate=speech_rate,
+                speech_rate=resolved_speech_rate,
             ),
             timeout=_configured_timeout(),
         ) as response:
@@ -169,7 +256,7 @@ def synthesize_volcengine_speech(text: str) -> SpeechAudio:
         request_id,
         log_id,
         resource_id,
-        speaker,
+        resolved_speaker,
         len(content),
     )
     return SpeechAudio(
@@ -177,5 +264,5 @@ def synthesize_volcengine_speech(text: str) -> SpeechAudio:
         media_type="audio/mpeg",
         provider="volcengine",
         model=resource_id,
-        voice=speaker,
+        voice=resolved_speaker,
     )

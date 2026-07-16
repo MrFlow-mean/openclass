@@ -3,11 +3,33 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import type { ChatMessage } from "@/components/course-studio/history-utils";
-import { synthesizeSpeech } from "@/lib/speech-api";
+import {
+  getSpeechOptions,
+  synthesizeSpeech,
+  type SpeechOptionsResponse,
+} from "@/lib/speech-api";
 import { prepareSpeechText } from "@/lib/speech-text";
 
 const AUTO_SPEECH_STORAGE_KEY = "openclass:studio:auto-speak-chat";
 const AUTO_SPEECH_CHANGE_EVENT = "openclass:auto-speech-change";
+const SPEECH_VOICE_STORAGE_KEY = "openclass:studio:speech-voice";
+const SPEECH_RATE_STORAGE_KEY = "openclass:studio:speech-rate";
+
+const DEFAULT_SPEECH_OPTIONS: SpeechOptionsResponse = {
+  provider: "volcengine",
+  model: "seed-tts-2.0",
+  default_voice: "zh_female_vv_uranus_bigtts",
+  voices: [
+    {
+      id: "zh_female_vv_uranus_bigtts",
+      label: "Vivi 2.0",
+      description: "通用场景女声",
+    },
+  ],
+  minimum_speech_rate: -50,
+  maximum_speech_rate: 100,
+  default_speech_rate: 0,
+};
 
 type SpeechPlaybackStatus = "idle" | "loading" | "playing" | "error";
 
@@ -48,6 +70,13 @@ export function useChatSpeech({ lessonId, messages }: UseChatSpeechOptions) {
   );
   const [status, setStatus] = useState<SpeechPlaybackStatus>("idle");
   const [statusMessage, setStatusMessage] = useState("等待新的 AI 回复");
+  const [speechOptions, setSpeechOptions] = useState(DEFAULT_SPEECH_OPTIONS);
+  const [selectedVoice, setSelectedVoiceState] = useState(DEFAULT_SPEECH_OPTIONS.default_voice);
+  const [speechRate, setSpeechRateState] = useState(DEFAULT_SPEECH_OPTIONS.default_speech_rate);
+  const [currentModel, setCurrentModel] = useState(DEFAULT_SPEECH_OPTIONS.model);
+  const [currentSpeechText, setCurrentSpeechText] = useState("");
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
 
   const latestAssistantMessage = useMemo(
     () =>
@@ -61,6 +90,9 @@ export function useChatSpeech({ lessonId, messages }: UseChatSpeechOptions) {
     const audio = audioRef.current;
     if (audio) {
       audio.onplay = null;
+      audio.onloadedmetadata = null;
+      audio.ondurationchange = null;
+      audio.ontimeupdate = null;
       audio.onended = null;
       audio.onerror = null;
       audio.pause();
@@ -79,6 +111,8 @@ export function useChatSpeech({ lessonId, messages }: UseChatSpeechOptions) {
     requestRef.current?.abort();
     requestRef.current = null;
     releaseAudio();
+    setCurrentTime(0);
+    setDuration(0);
     setStatus("idle");
     setStatusMessage(autoSpeakEnabled ? "等待新的 AI 回复" : "自动播报已关闭");
   }, [autoSpeakEnabled, releaseAudio]);
@@ -96,11 +130,18 @@ export function useChatSpeech({ lessonId, messages }: UseChatSpeechOptions) {
       releaseAudio();
       const controller = new AbortController();
       requestRef.current = controller;
+      setCurrentSpeechText(speechText);
+      setCurrentTime(0);
+      setDuration(0);
       setStatus("loading");
       setStatusMessage("豆包 TTS 2.0 正在生成音频…");
 
       try {
-        const response = await synthesizeSpeech(speechText, controller.signal);
+        const response = await synthesizeSpeech(
+          speechText,
+          { voice: selectedVoice, speechRate },
+          controller.signal
+        );
         if (requestSequenceRef.current !== requestSequence) {
           return;
         }
@@ -109,12 +150,29 @@ export function useChatSpeech({ lessonId, messages }: UseChatSpeechOptions) {
         const audio = new Audio(audioUrl);
         audioUrlRef.current = audioUrl;
         audioRef.current = audio;
+        setCurrentModel(response.model || speechOptions.model);
         const modelLabel = [response.model, response.voice].filter(Boolean).join(" · ");
+        const updateDuration = () => {
+          if (Number.isFinite(audio.duration) && audio.duration > 0) {
+            setDuration(audio.duration);
+          }
+        };
+        audio.onloadedmetadata = updateDuration;
+        audio.ondurationchange = updateDuration;
+        audio.ontimeupdate = () => {
+          setCurrentTime(audio.currentTime);
+          updateDuration();
+        };
         audio.onplay = () => {
           setStatus("playing");
           setStatusMessage(modelLabel ? `正在播报 · ${modelLabel}` : "正在播报");
         };
         audio.onended = () => {
+          const finalDuration = Number.isFinite(audio.duration) ? audio.duration : 0;
+          if (finalDuration > 0) {
+            setDuration(finalDuration);
+            setCurrentTime(finalDuration);
+          }
           releaseAudio();
           setStatus("idle");
           setStatusMessage(autoSpeakEnabled ? "播报完成，等待下一条回复" : "播报完成");
@@ -135,17 +193,63 @@ export function useChatSpeech({ lessonId, messages }: UseChatSpeechOptions) {
         setStatusMessage(error instanceof Error ? error.message : "语音播报失败");
       }
     },
-    [autoSpeakEnabled, releaseAudio]
+    [autoSpeakEnabled, releaseAudio, selectedVoice, speechOptions.model, speechRate]
+  );
+
+  const replayCurrentSpeech = useCallback(() => {
+    if (currentSpeechText) {
+      void speakMessage(currentSpeechText);
+    }
+  }, [currentSpeechText, speakMessage]);
+
+  const seekSpeech = useCallback((nextTime: number) => {
+    const audio = audioRef.current;
+    if (!audio || !Number.isFinite(nextTime)) {
+      return;
+    }
+    const boundedTime = Math.max(0, Math.min(audio.duration || nextTime, nextTime));
+    audio.currentTime = boundedTime;
+    setCurrentTime(boundedTime);
+  }, []);
+
+  const selectVoice = useCallback(
+    (voice: string) => {
+      if (!speechOptions.voices.some((option) => option.id === voice)) {
+        return;
+      }
+      setSelectedVoiceState(voice);
+      try {
+        window.localStorage.setItem(SPEECH_VOICE_STORAGE_KEY, voice);
+      } catch {
+        // The in-memory selection still works when storage is unavailable.
+      }
+    },
+    [speechOptions.voices]
+  );
+
+  const selectSpeechRate = useCallback(
+    (nextRate: number) => {
+      const boundedRate = Math.max(
+        speechOptions.minimum_speech_rate,
+        Math.min(speechOptions.maximum_speech_rate, Math.round(nextRate))
+      );
+      setSpeechRateState(boundedRate);
+      try {
+        window.localStorage.setItem(SPEECH_RATE_STORAGE_KEY, String(boundedRate));
+      } catch {
+        // The in-memory selection still works when storage is unavailable.
+      }
+    },
+    [speechOptions.maximum_speech_rate, speechOptions.minimum_speech_rate]
   );
 
   const toggleAutoSpeak = useCallback(() => {
     const nextEnabled = !autoSpeakEnabled;
     try {
       window.localStorage.setItem(AUTO_SPEECH_STORAGE_KEY, nextEnabled ? "true" : "false");
-    } catch {
-      // The current page can still use manual playback when browser storage is unavailable.
+    } finally {
+      window.dispatchEvent(new Event(AUTO_SPEECH_CHANGE_EVENT));
     }
-    window.dispatchEvent(new Event(AUTO_SPEECH_CHANGE_EVENT));
     if (nextEnabled) {
       setStatus("idle");
       setStatusMessage("等待新的 AI 回复");
@@ -155,9 +259,44 @@ export function useChatSpeech({ lessonId, messages }: UseChatSpeechOptions) {
     requestRef.current?.abort();
     requestRef.current = null;
     releaseAudio();
+    setCurrentTime(0);
+    setDuration(0);
     setStatus("idle");
     setStatusMessage("自动播报已关闭");
   }, [autoSpeakEnabled, releaseAudio]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void getSpeechOptions(controller.signal)
+      .then((options) => {
+        setSpeechOptions(options);
+        setCurrentModel(options.model);
+        let storedVoice: string | null = null;
+        let storedRate: number | null = null;
+        try {
+          storedVoice = window.localStorage.getItem(SPEECH_VOICE_STORAGE_KEY);
+          const rawRate = window.localStorage.getItem(SPEECH_RATE_STORAGE_KEY);
+          storedRate = rawRate === null ? null : Number(rawRate);
+        } catch {
+          // Use provider defaults when storage is unavailable.
+        }
+        const nextVoice = options.voices.some((voice) => voice.id === storedVoice)
+          ? storedVoice!
+          : options.default_voice;
+        const nextRate = Number.isFinite(storedRate)
+          ? Math.max(
+              options.minimum_speech_rate,
+              Math.min(options.maximum_speech_rate, Math.round(storedRate!))
+            )
+          : options.default_speech_rate;
+        setSelectedVoiceState(nextVoice);
+        setSpeechRateState(nextRate);
+      })
+      .catch(() => {
+        // The default voice remains available if option discovery fails.
+      });
+    return () => controller.abort();
+  }, []);
 
   useEffect(() => {
     const latestId = latestAssistantMessage?.id ?? null;
@@ -166,6 +305,9 @@ export function useChatSpeech({ lessonId, messages }: UseChatSpeechOptions) {
       requestRef.current?.abort();
       requestRef.current = null;
       releaseAudio();
+      setCurrentSpeechText("");
+      setCurrentTime(0);
+      setDuration(0);
       trackedLessonIdRef.current = lessonId;
       latestSeenAssistantIdRef.current = latestId;
       setStatus("idle");
@@ -196,7 +338,20 @@ export function useChatSpeech({ lessonId, messages }: UseChatSpeechOptions) {
     autoSpeakEnabled,
     isSpeechActive: status === "loading" || status === "playing",
     speechStatusText: statusMessage,
+    speechOptions,
+    selectedVoice,
+    speechRate,
+    currentModel,
+    currentSpeechText,
+    currentTime,
+    duration,
+    canSeekSpeech: status === "playing" && duration > 0,
+    canReplaySpeech: Boolean(currentSpeechText) && status !== "loading" && status !== "playing",
     speakMessage,
+    replayCurrentSpeech,
+    seekSpeech,
+    selectVoice,
+    selectSpeechRate,
     stopSpeech,
     toggleAutoSpeak,
   };

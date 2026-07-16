@@ -1,9 +1,11 @@
 import clsx from "clsx";
-import { Square, Volume2, VolumeX, X } from "lucide-react";
+import { X } from "lucide-react";
 import type { HTMLAttributes } from "react";
 
 import { SourceImportPanel } from "@/components/course-studio/source-import-panel";
 import { VersionControlPanel } from "@/components/course-studio/version-control-panel";
+import { VoiceControlPanel } from "@/components/course-studio/voice-control-panel";
+import type { SpeechOptionsResponse } from "@/lib/speech-api";
 import type { BoardDecision, CommitRecord, Lesson, SelectionRef } from "@/types";
 
 export type CourseStudioSidebarTab = "history" | "sources" | "voice";
@@ -34,8 +36,21 @@ type CourseStudioSidePanelProps = {
   speechAutoEnabled: boolean;
   speechIsActive: boolean;
   speechStatusText: string;
+  speechOptions: SpeechOptionsResponse;
+  speechSelectedVoice: string;
+  speechRate: number;
+  speechCurrentModel: string;
+  speechCurrentText: string;
+  speechCurrentTime: number;
+  speechDuration: number;
+  speechCanSeek: boolean;
+  speechCanReplay: boolean;
   onSpeechAutoToggle: () => void;
   onSpeechStop: () => void;
+  onSpeechReplay: () => void;
+  onSpeechSeek: (time: number) => void;
+  onSpeechVoiceChange: (voice: string) => void;
+  onSpeechRateChange: (rate: number) => void;
 };
 
 export function CourseStudioSidePanel({
@@ -64,8 +79,21 @@ export function CourseStudioSidePanel({
   speechAutoEnabled,
   speechIsActive,
   speechStatusText,
+  speechOptions,
+  speechSelectedVoice,
+  speechRate,
+  speechCurrentModel,
+  speechCurrentText,
+  speechCurrentTime,
+  speechDuration,
+  speechCanSeek,
+  speechCanReplay,
   onSpeechAutoToggle,
   onSpeechStop,
+  onSpeechReplay,
+  onSpeechSeek,
+  onSpeechVoiceChange,
+  onSpeechRateChange,
 }: CourseStudioSidePanelProps) {
   return (
     <aside
@@ -144,58 +172,26 @@ export function CourseStudioSidePanel({
             onSwitchBranch={onSwitchBranch}
           />
         ) : sidebarTab === "voice" ? (
-          <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
-            <div className="flex items-start justify-between gap-4">
-              <div className="min-w-0">
-                <div className="flex items-center gap-2">
-                  {speechAutoEnabled ? (
-                    <Volume2 className="h-4 w-4 shrink-0 text-gray-800" />
-                  ) : (
-                    <VolumeX className="h-4 w-4 shrink-0 text-gray-400" />
-                  )}
-                  <p className="text-sm font-semibold text-gray-900">AI 回复自动播报</p>
-                </div>
-                <p className="mt-2 text-xs leading-5 text-gray-500">
-                  AI 在聊天框中生成新回复后，自动使用豆包语音模型朗读。
-                </p>
-              </div>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={speechAutoEnabled}
-                aria-label="AI 回复自动播报"
-                onClick={onSpeechAutoToggle}
-                className={clsx(
-                  "relative mt-0.5 h-7 w-12 shrink-0 rounded-full border transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black focus-visible:ring-offset-2",
-                  speechAutoEnabled ? "border-black bg-black" : "border-gray-300 bg-gray-200"
-                )}
-              >
-                <span
-                  className={clsx(
-                    "pointer-events-none absolute left-1 top-1 h-5 w-5 rounded-full bg-white shadow-sm ring-1 ring-black/5 transition-transform duration-200",
-                    speechAutoEnabled ? "translate-x-5" : "translate-x-0"
-                  )}
-                />
-              </button>
-            </div>
-
-            <div className="mt-4 flex items-center justify-between gap-3 border-t border-gray-100 pt-3">
-              <p className="min-w-0 flex-1 text-xs leading-5 text-gray-500" title={speechStatusText}>
-                {speechStatusText}
-              </p>
-              {speechIsActive ? (
-                <button
-                  type="button"
-                  onClick={onSpeechStop}
-                  className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50"
-                  aria-label="停止播报"
-                >
-                  <Square className="h-3 w-3 fill-current" />
-                  停止
-                </button>
-              ) : null}
-            </div>
-          </div>
+          <VoiceControlPanel
+            autoEnabled={speechAutoEnabled}
+            isActive={speechIsActive}
+            statusText={speechStatusText}
+            model={speechCurrentModel}
+            currentText={speechCurrentText}
+            currentTime={speechCurrentTime}
+            duration={speechDuration}
+            canSeek={speechCanSeek}
+            canReplay={speechCanReplay}
+            options={speechOptions}
+            selectedVoice={speechSelectedVoice}
+            speechRate={speechRate}
+            onAutoToggle={onSpeechAutoToggle}
+            onStop={onSpeechStop}
+            onReplay={onSpeechReplay}
+            onSeek={onSpeechSeek}
+            onVoiceChange={onSpeechVoiceChange}
+            onSpeechRateChange={onSpeechRateChange}
+          />
         ) : null}
 
       </div>

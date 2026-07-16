@@ -24,13 +24,31 @@ class SpeechAudio:
     voice: str
 
 
-SpeechProvider = Callable[[str], SpeechAudio]
+@dataclass(frozen=True)
+class SpeechVoiceOption:
+    id: str
+    label: str
+    description: str
 
 
-def _volcengine_provider(text: str) -> SpeechAudio:
+@dataclass(frozen=True)
+class SpeechOptions:
+    provider: str
+    model: str
+    default_voice: str
+    voices: tuple[SpeechVoiceOption, ...]
+    minimum_speech_rate: int
+    maximum_speech_rate: int
+    default_speech_rate: int
+
+
+SpeechProvider = Callable[[str, str | None, int | None], SpeechAudio]
+
+
+def _volcengine_provider(text: str, voice: str | None, speech_rate: int | None) -> SpeechAudio:
     from app.services.volcengine_speech import synthesize_volcengine_speech
 
-    return synthesize_volcengine_speech(text)
+    return synthesize_volcengine_speech(text, speaker=voice, speech_rate=speech_rate)
 
 
 SPEECH_PROVIDERS: dict[str, SpeechProvider] = {
@@ -38,7 +56,23 @@ SPEECH_PROVIDERS: dict[str, SpeechProvider] = {
 }
 
 
-def synthesize_speech(text: str) -> SpeechAudio:
+def get_speech_options() -> SpeechOptions:
+    load_root_dotenv()
+    provider_name = os.getenv("OPENCLASS_SPEECH_PROVIDER", "volcengine").strip().lower() or "volcengine"
+    if provider_name != "volcengine":
+        raise SpeechNotConfiguredError(f"Unsupported speech provider: {provider_name}")
+
+    from app.services.volcengine_speech import get_volcengine_speech_options
+
+    return get_volcengine_speech_options()
+
+
+def synthesize_speech(
+    text: str,
+    *,
+    voice: str | None = None,
+    speech_rate: int | None = None,
+) -> SpeechAudio:
     load_root_dotenv()
     normalized_text = text.strip()
     if not normalized_text:
@@ -48,4 +82,4 @@ def synthesize_speech(text: str) -> SpeechAudio:
     provider = SPEECH_PROVIDERS.get(provider_name)
     if provider is None:
         raise SpeechNotConfiguredError(f"Unsupported speech provider: {provider_name}")
-    return provider(normalized_text)
+    return provider(normalized_text, voice, speech_rate)

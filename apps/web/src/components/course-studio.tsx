@@ -661,8 +661,21 @@ export function CourseStudio() {
           speechAutoEnabled={chatSpeech.autoSpeakEnabled}
           speechIsActive={chatSpeech.isSpeechActive}
           speechStatusText={chatSpeech.speechStatusText}
+          speechOptions={chatSpeech.speechOptions}
+          speechSelectedVoice={chatSpeech.selectedVoice}
+          speechRate={chatSpeech.speechRate}
+          speechCurrentModel={chatSpeech.currentModel}
+          speechCurrentText={chatSpeech.currentSpeechText}
+          speechCurrentTime={chatSpeech.currentTime}
+          speechDuration={chatSpeech.duration}
+          speechCanSeek={chatSpeech.canSeekSpeech}
+          speechCanReplay={chatSpeech.canReplaySpeech}
           onSpeechAutoToggle={chatSpeech.toggleAutoSpeak}
           onSpeechStop={chatSpeech.stopSpeech}
+          onSpeechReplay={chatSpeech.replayCurrentSpeech}
+          onSpeechSeek={chatSpeech.seekSpeech}
+          onSpeechVoiceChange={chatSpeech.selectVoice}
+          onSpeechRateChange={chatSpeech.selectSpeechRate}
         />
       </div>
     </CourseStudioPageShell>

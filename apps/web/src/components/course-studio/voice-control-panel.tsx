@@ -1,0 +1,205 @@
+import clsx from "clsx";
+import { RotateCcw, Square, Volume2, VolumeX } from "lucide-react";
+
+import type { SpeechOptionsResponse } from "@/lib/speech-api";
+
+type VoiceControlPanelProps = {
+  autoEnabled: boolean;
+  isActive: boolean;
+  statusText: string;
+  model: string;
+  currentText: string;
+  currentTime: number;
+  duration: number;
+  canSeek: boolean;
+  canReplay: boolean;
+  options: SpeechOptionsResponse;
+  selectedVoice: string;
+  speechRate: number;
+  onAutoToggle: () => void;
+  onStop: () => void;
+  onReplay: () => void;
+  onSeek: (time: number) => void;
+  onVoiceChange: (voice: string) => void;
+  onSpeechRateChange: (rate: number) => void;
+};
+
+function formatPlaybackTime(value: number) {
+  if (!Number.isFinite(value) || value <= 0) {
+    return "0:00";
+  }
+  const totalSeconds = Math.floor(value);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = String(totalSeconds % 60).padStart(2, "0");
+  return `${minutes}:${seconds}`;
+}
+
+function formatSpeechRate(value: number) {
+  const multiplier = 1 + value / 100;
+  return `${multiplier.toFixed(2).replace(/\.?0+$/, "")}×`;
+}
+
+export function VoiceControlPanel({
+  autoEnabled,
+  isActive,
+  statusText,
+  model,
+  currentText,
+  currentTime,
+  duration,
+  canSeek,
+  canReplay,
+  options,
+  selectedVoice,
+  speechRate,
+  onAutoToggle,
+  onStop,
+  onReplay,
+  onSeek,
+  onVoiceChange,
+  onSpeechRateChange,
+}: VoiceControlPanelProps) {
+  return (
+    <div className="space-y-4">
+      <section className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              {autoEnabled ? (
+                <Volume2 className="h-4 w-4 shrink-0 text-gray-800" />
+              ) : (
+                <VolumeX className="h-4 w-4 shrink-0 text-gray-400" />
+              )}
+              <p className="text-sm font-semibold text-gray-900">AI 回复自动播报</p>
+            </div>
+            <p className="mt-2 text-xs leading-5 text-gray-500">
+              AI 在聊天框中生成新回复后，自动使用豆包语音模型朗读。
+            </p>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={autoEnabled}
+            aria-label="AI 回复自动播报"
+            onClick={onAutoToggle}
+            className={clsx(
+              "relative mt-0.5 h-7 w-12 shrink-0 rounded-full border transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black focus-visible:ring-offset-2",
+              autoEnabled ? "border-black bg-black" : "border-gray-300 bg-gray-200"
+            )}
+          >
+            <span
+              className={clsx(
+                "pointer-events-none absolute left-1 top-1 h-5 w-5 rounded-full bg-white shadow-sm ring-1 ring-black/5 transition-transform duration-200",
+                autoEnabled ? "translate-x-5" : "translate-x-0"
+              )}
+            />
+          </button>
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-[11px] font-bold uppercase tracking-wider text-gray-500">当前播放</p>
+          <span className="rounded-full bg-gray-100 px-2 py-1 text-[10px] font-medium text-gray-600">
+            {model || options.model}
+          </span>
+        </div>
+
+        <p className="mt-3 max-h-14 overflow-hidden text-xs leading-5 text-gray-700">
+          {currentText || "生成新的 AI 回复后，这里会显示正在播报的内容。"}
+        </p>
+
+        <div className="mt-4">
+          <input
+            type="range"
+            min={0}
+            max={duration > 0 ? duration : 1}
+            step={0.1}
+            value={duration > 0 ? Math.min(currentTime, duration) : 0}
+            disabled={!canSeek}
+            onChange={(event) => onSeek(Number(event.target.value))}
+            aria-label="播放进度"
+            className="h-1.5 w-full cursor-pointer accent-black disabled:cursor-not-allowed disabled:opacity-40"
+          />
+          <div className="mt-1.5 flex items-center justify-between text-[10px] tabular-nums text-gray-400">
+            <span>{formatPlaybackTime(currentTime)}</span>
+            <span>{formatPlaybackTime(duration)}</span>
+          </div>
+        </div>
+
+        <div className="mt-3 flex items-center justify-between gap-3 border-t border-gray-100 pt-3">
+          <p className="min-w-0 flex-1 text-xs leading-5 text-gray-500" title={statusText}>
+            {statusText}
+          </p>
+          {isActive ? (
+            <button
+              type="button"
+              onClick={onStop}
+              className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50"
+              aria-label="停止播报"
+            >
+              <Square className="h-3 w-3 fill-current" />
+              停止
+            </button>
+          ) : canReplay ? (
+            <button
+              type="button"
+              onClick={onReplay}
+              className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50"
+            >
+              <RotateCcw className="h-3 w-3" />
+              重新播放
+            </button>
+          ) : null}
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
+        <p className="text-[11px] font-bold uppercase tracking-wider text-gray-500">声音设置</p>
+
+        <label className="mt-4 block text-xs font-medium text-gray-700" htmlFor="speech-voice-select">
+          音色
+        </label>
+        <select
+          id="speech-voice-select"
+          value={selectedVoice}
+          onChange={(event) => onVoiceChange(event.target.value)}
+          className="mt-2 h-10 w-full rounded-lg border border-gray-200 bg-white px-3 text-sm text-gray-800 outline-none transition focus:border-gray-400 focus:ring-2 focus:ring-gray-100"
+        >
+          {options.voices.map((voice) => (
+            <option key={voice.id} value={voice.id}>
+              {voice.label} · {voice.description}
+            </option>
+          ))}
+        </select>
+
+        <div className="mt-5 flex items-center justify-between gap-3">
+          <label className="text-xs font-medium text-gray-700" htmlFor="speech-rate-range">
+            语速
+          </label>
+          <span className="rounded-md bg-gray-100 px-2 py-1 text-xs font-semibold tabular-nums text-gray-700">
+            {formatSpeechRate(speechRate)}
+          </span>
+        </div>
+        <input
+          id="speech-rate-range"
+          type="range"
+          min={options.minimum_speech_rate}
+          max={options.maximum_speech_rate}
+          step={5}
+          value={speechRate}
+          onChange={(event) => onSpeechRateChange(Number(event.target.value))}
+          className="mt-3 h-1.5 w-full cursor-pointer accent-black"
+        />
+        <div className="mt-1.5 flex justify-between text-[10px] text-gray-400">
+          <span>0.5×</span>
+          <span>1.0×</span>
+          <span>2.0×</span>
+        </div>
+        <p className="mt-3 text-[11px] leading-5 text-gray-400">
+          新设置会在下一次自动播报或重新播放时生效。
+        </p>
+      </section>
+    </div>
+  );
+}

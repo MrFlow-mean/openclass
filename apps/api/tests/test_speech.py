@@ -38,36 +38,61 @@ def test_speech_endpoint_returns_generated_audio(
     monkeypatch.setattr(
         speech_router,
         "synthesize_speech",
-        lambda text: SpeechAudio(
+        lambda text, *, voice=None, speech_rate=None: SpeechAudio(
             content=f"audio:{text}".encode(),
             media_type="audio/mpeg",
             provider="volcengine",
             model="seed-tts-2.0",
-            voice="zh_female_vv_uranus_bigtts",
+            voice=voice or "zh_female_vv_uranus_bigtts",
         ),
     )
 
-    response = api_client.post("/api/speech", json={"input": "新的聊天回复"})
+    response = api_client.post(
+        "/api/speech",
+        json={
+            "input": "新的聊天回复",
+            "voice": "zh_male_dayi_saturn_bigtts",
+            "speech_rate": 25,
+        },
+    )
 
     assert response.status_code == 200
-    assert response.content == "audio:新的聊天回复".encode()
+    assert response.content == b"audio:\xe6\x96\xb0\xe7\x9a\x84\xe8\x81\x8a\xe5\xa4\xa9\xe5\x9b\x9e\xe5\xa4\x8d"
     assert response.headers["content-type"] == "audio/mpeg"
     assert response.headers["x-speech-provider"] == "volcengine"
     assert response.headers["x-speech-model"] == "seed-tts-2.0"
-    assert response.headers["x-speech-voice"] == "zh_female_vv_uranus_bigtts"
+    assert response.headers["x-speech-voice"] == "zh_male_dayi_saturn_bigtts"
     assert response.headers["cache-control"] == "no-store"
 
 
 def test_speech_endpoint_requires_nonempty_bounded_input(api_client: TestClient) -> None:
     assert api_client.post("/api/speech", json={"input": ""}).status_code == 422
     assert api_client.post("/api/speech", json={"input": "x" * 4097}).status_code == 422
+    assert api_client.post("/api/speech", json={"input": "x", "speech_rate": -51}).status_code == 422
+    assert api_client.post("/api/speech", json={"input": "x", "speech_rate": 101}).status_code == 422
+
+
+def test_speech_options_expose_doubao_model_voices_and_rate_range(api_client: TestClient) -> None:
+    response = api_client.get("/api/speech/options")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["provider"] == "volcengine"
+    assert payload["model"] == "seed-tts-2.0"
+    assert payload["default_voice"] == "zh_female_vv_uranus_bigtts"
+    assert payload["minimum_speech_rate"] == -50
+    assert payload["maximum_speech_rate"] == 100
+    assert {voice["id"] for voice in payload["voices"]} >= {
+        "zh_female_vv_uranus_bigtts",
+        "zh_male_dayi_saturn_bigtts",
+    }
 
 
 def test_speech_endpoint_reports_missing_provider_configuration(
     api_client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def unavailable(_: str) -> SpeechAudio:
+    def unavailable(_: str, *, voice: str | None = None, speech_rate: int | None = None) -> SpeechAudio:
         raise SpeechNotConfiguredError("missing key")
 
     monkeypatch.setattr(speech_router, "synthesize_speech", unavailable)
@@ -116,7 +141,11 @@ def test_volcengine_provider_uses_v3_headers_and_doubao_voice(
     monkeypatch.setenv("VOLCENGINE_TTS_API_KEY", "test-api-key")
     monkeypatch.setattr("app.services.volcengine_speech.httpx.stream", fake_stream)
 
-    audio = synthesize_volcengine_speech("需要播报的内容")
+    audio = synthesize_volcengine_speech(
+        "需要播报的内容",
+        speaker="zh_male_dayi_saturn_bigtts",
+        speech_rate=25,
+    )
 
     headers = captured["headers"]
     payload = captured["json"]
@@ -127,11 +156,11 @@ def test_volcengine_provider_uses_v3_headers_and_doubao_voice(
     assert headers["X-Api-Key"] == "test-api-key"
     assert headers["X-Api-Resource-Id"] == "seed-tts-2.0"
     assert headers["X-Api-Request-Id"]
-    assert payload["req_params"]["speaker"] == "zh_female_vv_uranus_bigtts"
+    assert payload["req_params"]["speaker"] == "zh_male_dayi_saturn_bigtts"
     assert payload["req_params"]["audio_params"] == {
         "format": "mp3",
         "sample_rate": 24000,
-        "speech_rate": 0,
+        "speech_rate": 25,
     }
     assert audio.content == b"mp3-data"
     assert audio.provider == "volcengine"
